@@ -6,12 +6,21 @@
  * a spy so the test doesn't actually kill the runner.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { assertProductionSecret } from "../src/security/assert-production-secret";
+import { assertProductionInvariant, assertProductionSecret, isProductionClassEnv } from "../src/security/assert-production-secret";
 
 let exitSpy: ReturnType<typeof vi.spyOn>;
 let errorSpy: ReturnType<typeof vi.spyOn>;
+let originalAppEnv: string | undefined;
+let originalEnvironment: string | undefined;
+let originalSingularityEnv: string | undefined;
 
 beforeEach(() => {
+  originalAppEnv = process.env.APP_ENV;
+  originalEnvironment = process.env.ENVIRONMENT;
+  originalSingularityEnv = process.env.SINGULARITY_ENV;
+  delete process.env.APP_ENV;
+  delete process.env.ENVIRONMENT;
+  delete process.env.SINGULARITY_ENV;
   exitSpy = vi.spyOn(process, "exit").mockImplementation(((_code?: number) => {
     throw new Error("__process_exit_called__");
   }) as never);
@@ -19,6 +28,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  if (originalAppEnv === undefined) delete process.env.APP_ENV; else process.env.APP_ENV = originalAppEnv;
+  if (originalEnvironment === undefined) delete process.env.ENVIRONMENT; else process.env.ENVIRONMENT = originalEnvironment;
+  if (originalSingularityEnv === undefined) delete process.env.SINGULARITY_ENV; else process.env.SINGULARITY_ENV = originalSingularityEnv;
   exitSpy.mockRestore();
   errorSpy.mockRestore();
 });
@@ -111,5 +123,45 @@ describe("assertProductionSecret / production env", () => {
         extraBadValues: ["my-org-specific-leaked-default"],
       }),
     ).toThrow("__process_exit_called__");
+  });
+
+  it("classifies production-like env names", () => {
+    expect(isProductionClassEnv("production")).toBe(true);
+    expect(isProductionClassEnv("staging")).toBe(true);
+    expect(isProductionClassEnv("development")).toBe(false);
+  });
+
+  it("treats platform env flags as production-class even when NODE_ENV stays development", () => {
+    process.env.SINGULARITY_ENV = "production";
+    expect(isProductionClassEnv("development")).toBe(true);
+    expect(() =>
+      assertProductionSecret({
+        name: "JWT_SECRET",
+        value: "changeme",
+        nodeEnv: "development",
+      }),
+    ).toThrow("__process_exit_called__");
+  });
+
+  it("exits when a production invariant is false", () => {
+    expect(() =>
+      assertProductionInvariant({
+        name: "AUTH_OPTIONAL",
+        ok: false,
+        message: "set AUTH_OPTIONAL=false",
+        nodeEnv: "production",
+      }),
+    ).toThrow("__process_exit_called__");
+  });
+
+  it("does not exit for failed invariants in development", () => {
+    expect(() =>
+      assertProductionInvariant({
+        name: "AUTH_OPTIONAL",
+        ok: false,
+        message: "set AUTH_OPTIONAL=false",
+        nodeEnv: "development",
+      }),
+    ).not.toThrow();
   });
 });

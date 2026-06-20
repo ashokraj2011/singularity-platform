@@ -4,6 +4,7 @@ import { pinoHttp } from 'pino-http'
 import { config } from './config'
 import { errorHandler } from './middleware/errorHandler'
 import { authMiddleware } from './middleware/auth'
+import { tenantDbContextMiddleware } from './lib/tenant-db-context'
 
 import { authRouter } from './modules/identity/auth.router'
 import { usersRouter } from './modules/identity/users.router'
@@ -66,6 +67,7 @@ export function createApp(): Express {
 
   app.use(pinoHttp({ quietReqLogger: true }))
   app.use(express.json({ limit: '10mb' }))
+  app.use(tenantDbContextMiddleware)
   app.use(
     cors({
       origin: config.CORS_ORIGINS.split(',').map(o => o.trim()),

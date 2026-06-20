@@ -23,6 +23,14 @@ GOV="${SEED_GOVERNANCE_MODE:-fail_open}"
 PREFER_LAPTOP="${SEED_PREFER_LAPTOP:-true}"
 dc() { docker compose $CF "$@"; }
 
+composer_exec_service() {
+  if dc ps -q platform-core >/dev/null 2>&1 && [ -n "$(dc ps -q platform-core 2>/dev/null)" ]; then
+    echo platform-core
+  else
+    echo prompt-composer
+  fi
+}
+
 sql() {  # $1 = db, $2 = file — tolerant so a re-run (already-seeded) keeps going
   echo "   • $2 → $1"
   dc exec -T at-postgres psql -v ON_ERROR_STOP=1 -U postgres -d "$1" < "$2" \
@@ -40,7 +48,7 @@ echo "── 3/6  agent-runtime: capability + role bindings (role templates auto
 sql singularity seed/01-agent-runtime.sql
 
 echo "── 4/6  prompt-composer: governed role/stage prompts"
-dc exec -T prompt-composer npm run seed || echo "   ⚠ composer seed failed — check logs"
+dc exec -T "$(composer_exec_service)" sh -c 'cd /app/apps/prompt-composer && npm run seed' || echo "   ⚠ composer seed failed — check logs"
 
 echo "── 5/6  workgraph: artifact templates (idempotent)"
 dc exec -T workgraph-api npx prisma db seed || true
@@ -55,7 +63,7 @@ dc exec -T \
   workgraph-api npx tsx prisma/seed-sdlc-copilot.ts
 
 echo
-echo "✓ Seeded. Open  http://localhost:8085  and log in:"
-echo "    admin@singularity.local / Admin1234!   (super admin)"
+echo "✓ Seeded. Open  http://localhost:5180  and log in:"
+echo "    bootstrap IAM account from ./singularity.sh config show   (super admin)"
 echo "    user1@singularity.local / Admin1234!   (demo user)"
 echo "  'feature' work items now route to the Copilot SDLC (governanceMode=$GOV, preferLaptop=$PREFER_LAPTOP)."

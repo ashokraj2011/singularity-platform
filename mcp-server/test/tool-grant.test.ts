@@ -135,6 +135,7 @@ describe("toolRequiresGrant", () => {
     expect(G.toolRequiresGrant("apply_patch")).toBe(true); // mutate
     expect(G.toolRequiresGrant("finish_work_branch")).toBe(true); // finalize
     expect(G.toolRequiresGrant("review_diff")).toBe(true); // finalize
+    expect(G.toolRequiresGrant("run_python")).toBe(true); // run, executor-only
     expect(G.toolRequiresGrant("run_command")).toBe(true); // run
     expect(G.toolRequiresGrant("run_test")).toBe(true); // run
   });
@@ -308,6 +309,7 @@ async function startApp(mode: "off" | "grace" | "enforce"): Promise<AppHandle> {
   process.env.MCP_TOOL_GRANT_MODE = mode;
   process.env.TOOL_GRANT_SIGNING_SECRET = SECRET;
   process.env.MCP_TOOL_GRANT_REQUIRED_CATEGORIES = "mutate,finalize,run";
+  process.env.MCP_REQUIRE_EFFECTIVE_CAPABILITIES = "false";
   process.env.MCP_BEARER_TOKEN = BEARER;
   process.env.LLM_GATEWAY_URL = "mock";
   process.env.MCP_SANDBOX_ROOT = process.cwd();
@@ -349,6 +351,14 @@ function post(baseUrl: string, body: unknown) {
   });
 }
 
+function postFinishBranch(baseUrl: string, body: unknown) {
+  return fetch(`${baseUrl}/mcp/work/finish-branch`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${BEARER}` },
+    body: JSON.stringify(body),
+  });
+}
+
 describe("POST /mcp/tool-run — enforce mode", () => {
   let h: AppHandle;
   beforeAll(async () => {
@@ -379,6 +389,91 @@ describe("POST /mcp/tool-run — enforce mode", () => {
       tool_name: "write_file",
       args: { path: "a.py", content: "x" },
       work_item_id: "wi-1",
+    });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error.code).toBe("TOOL_GRANT_REQUIRED");
+  });
+
+  it("refuses direct runToolByName dispatch with NO grant before transport wrapping", async () => {
+    const { runToolByName } = await import("../src/mcp/tool-run");
+
+    const err = await runToolByName({
+      tool_name: "write_file",
+      args: { path: "direct.py", content: "x" },
+      work_item_id: "wi-direct",
+      run_context: { traceId: "T-direct" },
+    }).catch((e) => e as { status?: number; code?: string; message?: string });
+
+    expect(err.status).toBe(403);
+    expect(err.code).toBe("TOOL_GRANT_REQUIRED");
+    expect(err.message).toContain("requires a signed ToolInvocationGrant");
+  });
+
+  it("refuses purpose-built finish-branch dispatch with NO grant", async () => {
+    const res = await postFinishBranch(h.baseUrl, {
+      message: "finish work",
+      push: true,
+      remote: "origin",
+      runContext: { traceId: "T-finish-1" },
+    });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error.code).toBe("TOOL_GRANT_REQUIRED");
+  });
+
+  it("fails closed for profile-backed finish-branch dispatch without effective capabilities", async () => {
+    const res = await postFinishBranch(h.baseUrl, {
+      message: "finish work",
+      push: true,
+      remote: "origin",
+      runContext: {
+        traceId: "T-finish-profile-missing",
+        profileSnapshotHash: "profile-sha",
+      },
+    });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error.code).toBe("EFFECTIVE_CAPABILITY_DENIED");
+    expect(body.error.details.reason).toBe("effective capability set required");
+  });
+
+  it("refuses purpose-built finish-branch dispatch when the effective capability is read-only", async () => {
+    const args = { message: "finish work", push: true, remote: "origin" };
+    const grant = mintGrant(h.G, {
+      toolName: "finish_work_branch",
+      args,
+      traceId: "T-finish-readonly",
+    });
+    const res = await postFinishBranch(h.baseUrl, {
+      ...args,
+      tool_grant: grant,
+      runContext: {
+        traceId: "T-finish-readonly",
+        profileSnapshotHash: "profile-sha",
+        effectiveCapabilities: [
+          { id: "finish_work_branch", permissions: ["read"] },
+        ],
+      },
+    });
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error.code).toBe("EFFECTIVE_CAPABILITY_DENIED");
+    expect(body.error.details.reason).toBe("missing invoke");
+  });
+
+  it("reaches grant enforcement when finish-branch has invoke in the effective capability set", async () => {
+    const res = await postFinishBranch(h.baseUrl, {
+      message: "finish work",
+      push: true,
+      remote: "origin",
+      runContext: {
+        traceId: "T-finish-invoke",
+        profileSnapshotHash: "profile-sha",
+        effectiveCapabilities: [
+          { id: "finish_work_branch", permissions: ["read", "invoke"] },
+        ],
+      },
     });
     expect(res.status).toBe(403);
     const body = await res.json();

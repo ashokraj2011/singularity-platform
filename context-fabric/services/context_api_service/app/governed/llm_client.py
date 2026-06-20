@@ -220,6 +220,8 @@ async def call_gateway_chat(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
     model_alias: str | None = None,
+    expected_provider: str | None = None,
+    expected_model: str | None = None,
     temperature: float | None = None,
     max_output_tokens: int | None = None,
     bearer: str | None = None,
@@ -252,6 +254,11 @@ async def call_gateway_chat(
       model_alias:        Logical alias resolved by the gateway's rate card
                           (e.g. "claude-sonnet", "mock-fast"). When unset,
                           the gateway uses its default.
+      expected_provider:  Optional fail-closed drift guard. Does not select a
+                          model; the gateway rejects the call before provider
+                          dispatch if alias resolution no longer matches it.
+      expected_model:     Optional fail-closed drift guard for the resolved
+                          provider model id.
       temperature:        Standard OpenAI param.
       max_output_tokens:  Standard OpenAI param.
       bearer:             Override env-default LLM_GATEWAY_BEARER. Used when
@@ -270,6 +277,8 @@ async def call_gateway_chat(
         messages=messages,
         tools=tools,
         model_alias=model_alias,
+        expected_provider=expected_provider,
+        expected_model=expected_model,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
         thinking_budget=thinking_budget,
@@ -346,6 +355,8 @@ def _build_chat_body(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
     model_alias: str | None,
+    expected_provider: str | None,
+    expected_model: str | None,
     temperature: float | None,
     max_output_tokens: int | None,
     thinking_budget: int | None,
@@ -359,6 +370,10 @@ def _build_chat_body(
         body["tools"] = tools
     if model_alias:
         body["model_alias"] = model_alias
+    if expected_provider:
+        body["expected_provider"] = expected_provider
+    if expected_model:
+        body["expected_model"] = expected_model
     if temperature is not None:
         body["temperature"] = temperature
     if max_output_tokens is not None:

@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Plus, Trash2 } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { useRole, useAddRolePermission, useRemoveRolePermission, useRolePermissions } from '@/hooks/useRoles'
-import { usePermissions } from '@/hooks/usePermissions'
+import { Button } from 'identity-web/components/ui/button'
+import { Input } from 'identity-web/components/ui/input'
+import { Label } from 'identity-web/components/ui/label'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from 'identity-web/components/ui/tabs'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from 'identity-web/components/ui/dialog'
+import { useRole, useAddRolePermission, useRemoveRolePermission, useRolePermissions } from 'identity-web/hooks/useRoles'
+import { usePermissions } from 'identity-web/hooks/usePermissions'
 
 export function RoleDetailPage() {
   const { roleKey } = useParams<{ roleKey: string }>()

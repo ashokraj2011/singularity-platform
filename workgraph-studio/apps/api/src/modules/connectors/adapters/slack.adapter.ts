@@ -1,5 +1,6 @@
 import axios from 'axios'
 import type { ConnectorAdapter, OperationDef } from '../connector-adapter'
+import { assertEventTargetUrlAllowed } from '../../../lib/eventbus/target-url-policy'
 
 interface SlackConfig { defaultChannel?: string }
 interface SlackCredentials { botToken?: string; webhookUrl?: string }
@@ -21,7 +22,8 @@ export class SlackAdapter implements ConnectorAdapter {
         return r.data.ok ? { ok: true } : { ok: false, error: r.data.error }
       }
       if (this.creds.webhookUrl) {
-        await axios.post(this.creds.webhookUrl, { text: '✅ WorkGraph Slack connector online.' })
+        const safeUrl = await assertEventTargetUrlAllowed(this.creds.webhookUrl)
+        await axios.post(safeUrl.toString(), { text: '✅ WorkGraph Slack connector online.' })
         return { ok: true }
       }
       return { ok: false, error: 'No token or webhook URL' }
@@ -49,7 +51,8 @@ export class SlackAdapter implements ConnectorAdapter {
   private async postWebhook(p: Record<string, unknown>) {
     const url = (p.webhookUrl as string) ?? this.creds.webhookUrl
     if (!url) throw new Error('No Slack webhook URL configured')
-    const r = await axios.post(url, { text: p.text, blocks: p.blocks })
+    const safeUrl = await assertEventTargetUrlAllowed(url)
+    const r = await axios.post(safeUrl.toString(), { text: p.text, blocks: p.blocks })
     return r.data
   }
 

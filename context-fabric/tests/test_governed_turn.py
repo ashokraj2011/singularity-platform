@@ -437,6 +437,27 @@ def test_tool_descriptors_respect_forbidden_tools():
     assert "write_file" not in names
 
 
+def test_tool_descriptors_respect_effective_agent_profile_capabilities():
+    policy = _multi_phase_policy({
+        Phase.PLAN: ["repo_map", "read_file"],
+        Phase.ACT: ["apply_patch"],
+    })
+
+    names = [
+        tool["name"]
+        for tool in _build_tool_descriptors(
+            policy,
+            Phase.PLAN,
+            effective_capabilities=[
+                {"id": "repo_map", "permissions": ["read", "invoke"]},
+                {"id": "read_file", "permissions": ["read"]},
+            ],
+        )
+    ]
+
+    assert names == ["repo_map", SUBMIT_PHASE_OUTPUT]
+
+
 def test_tool_descriptors_shape_is_provider_compatible():
     """Every descriptor must keep the strict three-field shape
     {name, description, input_schema} so Anthropic/OpenAI/Gemini accept

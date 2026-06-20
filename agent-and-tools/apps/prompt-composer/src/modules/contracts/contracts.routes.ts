@@ -9,11 +9,13 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { z } from "zod";
 import { validate } from "../../middleware/validate.middleware";
+import { requireAuth } from "../../middleware/auth.middleware";
 import { contractsService } from "./contracts.service";
 import { ok } from "../../shared/response";
 import { NotFoundError } from "../../shared/errors";
 
 export const contractsRoutes = Router();
+contractsRoutes.use(requireAuth);
 
 const mintSchema = z.object({
   agentTemplateId:      z.string().uuid(),

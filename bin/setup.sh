@@ -3,7 +3,7 @@
 # setup.sh — interactive one-shot Singularity (bare-metal) setup.
 #
 # Asks a handful of questions (Postgres + LLM), then does everything:
-#   • brings the whole stack up via bin/bare-metal.sh (DBs, deps, schema, seed,
+#   • brings the bare-metal stack up via bin/bare-metal.sh (DBs, deps, schema, seed,
 #     boot — incl. the demo workflows/artifacts),
 #   • optionally points the LLM gateway at an OpenAI-compatible bridge
 #     (Copilot/openai-compat) and restarts it,
@@ -17,7 +17,7 @@
 #   bin/setup.sh            # interactive
 #   bin/setup.sh --yes      # non-interactive (saved answers or defaults)
 #   bin/setup.sh --reset    # DROP existing databases first, then set up fresh
-#                           # (also offered as a prompt in interactive mode)
+#   bin/setup.sh --box-only # skip local llm-gateway + mcp-server
 #
 set -uo pipefail
 
@@ -33,11 +33,27 @@ ok()   { echo "${C_G}✓${C_E} $*"; }
 warn() { echo "${C_Y}!${C_E} $*"; }
 err()  { echo "${C_R}✗${C_E} $*" >&2; }
 
-ASSUME_YES=0; RESET_DB=0
+kill_non_docker_port() {
+  local port="$1" pids pid cmd
+  pids=$(lsof -ti :"$port" 2>/dev/null || true)
+  for pid in $pids; do
+    cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
+    case "$cmd" in
+      *docker*|*Docker*|*vpnkit*)
+        warn "port $port is Docker-owned (pid $pid); leaving it alone"
+        continue
+        ;;
+    esac
+    kill -9 "$pid" 2>/dev/null || true
+  done
+}
+
+ASSUME_YES=0; RESET_DB=0; BOX_ONLY_MODE="${BOX_ONLY:-}"
 for arg in "$@"; do
   case "$arg" in
     --yes|-y)      ASSUME_YES=1 ;;
     --reset|--fresh) RESET_DB=1 ;;
+    --box-only)    BOX_ONLY_MODE=1 ;;
     -h|--help)     grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) err "unknown arg: $arg (try --help)"; exit 1 ;;
   esac
@@ -61,7 +77,7 @@ ask() { # ask VAR "label"
 }
 
 echo "${C_B}Singularity — interactive setup${C_E}"
-echo "${C_D}One command sets up Postgres + the full stack + (optionally) your LLM bridge.${C_E}"
+echo "${C_D}One command sets up Postgres + the platform stack + optional local/remote runtime wiring.${C_E}"
 echo
 echo "Postgres ${C_D}(needs PG 16 + pgvector running; the role must be able to log in — usually your macOS user, not 'postgres')${C_E}"
 ask PG_USER "user"
@@ -118,16 +134,20 @@ if [ "$RESET_DB" = "1" ]; then
   fi
 fi
 
-# ── 1. bring up the whole stack ──────────────────────────────────────────────
+# ── 1. bring up the platform stack ───────────────────────────────────────────
 echo
-info "bringing up the stack — this installs deps, pushes schema, seeds, and boots all services…"
-if ! bin/bare-metal.sh up "$PG_USER" "$PG_PASS" "$PG_HOST" "$PG_PORT"; then
+if [ "$BOX_ONLY_MODE" = "1" ]; then
+  info "bringing up the platform box — local llm-gateway and MCP are skipped…"
+else
+  info "bringing up the stack — this installs deps, pushes schema, seeds, and boots local runtime services…"
+fi
+if ! BOX_ONLY="$BOX_ONLY_MODE" bin/bare-metal.sh up "$PG_USER" "$PG_PASS" "$PG_HOST" "$PG_PORT"; then
   err "bin/bare-metal.sh up failed — see the output above + logs/"
   exit 1
 fi
 
 # ── 2. point the LLM gateway at the bridge (optional) ────────────────────────
-if [ "$LLM_MODE" = "bridge" ]; then
+if [ "$LLM_MODE" = "bridge" ] && [ "$BOX_ONLY_MODE" != "1" ]; then
   echo
   info "pointing the LLM gateway at ${LLM_URL} (${LLM_MODEL})…"
   # llm-use-copilot.sh flips providers + every alias to the bridge. Its built-in
@@ -139,7 +159,7 @@ if [ "$LLM_MODE" = "bridge" ]; then
   # shellcheck source=/dev/null
   set -a; [ -f "$ROOT/.env.local" ] && . "$ROOT/.env.local"; [ -f "$ROOT/.env.llm-secrets" ] && . "$ROOT/.env.llm-secrets"; set +a
   PYBIN="$ROOT/.venv/bin/python"; [ -x "$PYBIN" ] || PYBIN=python3
-  lsof -ti :8001 2>/dev/null | xargs kill -9 2>/dev/null || true
+  kill_non_docker_port 8001
   ( cd "$ROOT/context-fabric" && \
       LLM_PROVIDER_CONFIG_PATH="${LLM_PROVIDER_CONFIG_PATH:-$ROOT/.singularity/llm-providers.json}" \
       LLM_MODEL_CATALOG_PATH="${LLM_MODEL_CATALOG_PATH:-$ROOT/.singularity/llm-models.json}" \
@@ -153,20 +173,26 @@ if [ "$LLM_MODE" = "bridge" ]; then
     warn "gateway didn't confirm copilot — check logs/llm-gateway.log and 'curl :8001/llm/providers'"
   fi
 fi
+if [ "$LLM_MODE" = "bridge" ] && [ "$BOX_ONLY_MODE" = "1" ]; then
+  warn "LLM bridge config saved, but --box-only leaves the local gateway/MCP to the laptop or remote runtime."
+fi
 
 # ── 3. smoke + URLs ──────────────────────────────────────────────────────────
 echo
 info "smoke check…"
-bin/bare-metal.sh smoke || warn "some services aren't healthy yet — give them a few seconds, then re-run 'bin/bare-metal.sh smoke'"
+BOX_ONLY="$BOX_ONLY_MODE" bin/bare-metal.sh smoke || warn "some services aren't healthy yet — give them a few seconds, then re-run 'BOX_ONLY=$BOX_ONLY_MODE bin/bare-metal.sh smoke'"
 
 echo
 ok "setup complete. Open:"
-echo "    http://localhost:5180   portal (operations + launcher)"
-echo "    http://localhost:5176   blueprint workbench (SDLC / bug-fix loops)"
-echo "    http://localhost:5174   workgraph (designer, runs, insights)"
-echo "    http://localhost:3000   agent studio (/audit, /cost)"
-echo "    http://localhost:5175   IAM admin + governance authoring"
-echo "    http://localhost:8100   IAM API  (admin@singularity.local / Admin1234!)"
+echo "    http://localhost:5180                unified platform web"
+echo "    http://localhost:5180/operations     operations + readiness"
+echo "    http://localhost:5180/agents/studio  Agent Studio"
+echo "    http://localhost:5180/workflows      workflows, runs, insights"
+echo "    http://localhost:5180/workbench      Blueprint Workbench"
+echo "    http://localhost:5180/foundry        Code Foundry"
+echo "    http://localhost:5180/identity       IAM admin + governance authoring"
+echo "    http://localhost:8100   IAM API  (bootstrap login from ./singularity.sh config show)"
 echo
 echo "${C_D}re-run anytime: bin/setup.sh (reuses your answers) · stop: bin/bare-metal.sh down · LLM status: curl :8001/llm/providers${C_E}"
+echo "${C_D}deep UI/API parity: BARE_METAL_DEEP_SMOKE=1 BOX_ONLY=$BOX_ONLY_MODE bin/bare-metal.sh smoke  # routes + APIs + browser hydration + audit/Workbench/workflow/Foundry/Agent Studio${C_E}"
 echo "${C_D}preflight check: bin/doctor.sh  (verifies services, cross-app env, seeds, auth — and prints fixes; --fix appends missing env keys)${C_E}"

@@ -93,6 +93,25 @@ async function mirrorIamUser(iamUser: IamUser): Promise<{ id: string; email: str
   return { id: created.id, email: created.email, displayName: created.displayName }
 }
 
+function isIamServicePrincipal(iamUser: IamUser): boolean {
+  return iamUser.id.startsWith('service:') || iamUser.email.endsWith('@service.local')
+}
+
+export function iamTokenKind(token: string): string | undefined {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1] ?? '', 'base64url').toString('utf8')) as Record<string, unknown>
+    const kind = payload.kind
+    return typeof kind === 'string' && kind.trim() ? kind.trim().toLowerCase() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function isNonUserIamTokenKind(token: string): boolean {
+  const kind = iamTokenKind(token)
+  return Boolean(kind && kind !== 'user')
+}
+
 export const authMiddleware: RequestHandler = async (req, res, next) => {
   let authHeader = req.headers.authorization
   if (!authHeader?.startsWith('Bearer ') && req.path.endsWith('/events/stream')) {
@@ -112,6 +131,20 @@ export const authMiddleware: RequestHandler = async (req, res, next) => {
         return
       }
       const iamUser = await verifyIamToken(token)
+      if (isNonUserIamTokenKind(token)) {
+        res.status(403).json({
+          code: 'NON_USER_TOKEN_NOT_USER_AUTH',
+          message: 'IAM service/device tokens are not accepted on user-facing Workgraph routes; use a real user session token.',
+        })
+        return
+      }
+      if (isIamServicePrincipal(iamUser)) {
+        res.status(403).json({
+          code: 'SERVICE_TOKEN_NOT_USER_AUTH',
+          message: 'IAM service tokens are not accepted on user-facing Workgraph routes; use a dedicated internal service endpoint.',
+        })
+        return
+      }
       const mirrored = await mirrorIamUser(iamUser)
       await syncIamUserTeams(mirrored.id, iamUser.id, token).catch((err) => {
         console.warn(`[auth] IAM team mirror skipped for ${iamUser.id}: ${(err as Error).message}`)

@@ -3,6 +3,7 @@ import { config } from '../../../../config'
 import { prisma } from '../../../../lib/prisma'
 import { createReceipt, logEvent, publishOutbox } from '../../../../lib/audit'
 import { redactSecrets } from '../../../../lib/redact'
+import { requestOperationalMcpToolGrant } from './mcpToolGrant'
 
 type JsonObject = Record<string, unknown>
 type WorkspaceEvidence = {
@@ -456,7 +457,33 @@ async function callMcpFinishWorkBranch(args: {
   workspaceRoot?: string
   expectedCommitSha?: string
   patch?: string
+  approvalStatus: string
 }): Promise<JsonObject> {
+  const toolArgs = {
+    message: args.message,
+    push: true,
+    remote: args.remote,
+  }
+  const runContext = {
+    traceId: `git-push-${args.instance.id}-${args.node.id}`,
+    runId: args.instance.id,
+    workflowInstanceId: args.instance.id,
+    nodeId: args.node.id,
+    workItemId: args.workItemId,
+    workItemCode: args.workItemCode,
+    branchName: args.branchName,
+    workspaceRoot: args.workspaceRoot,
+  }
+  const toolGrant = await requestOperationalMcpToolGrant({
+    toolName: 'finish_work_branch',
+    args: toolArgs,
+    runContext,
+    workflowPolicy: {
+      nodeType: 'GIT_PUSH',
+      stageKey: 'GIT_PUSH',
+      approvalStatus: args.approvalStatus,
+    },
+  })
   const response = await fetch(`${config.MCP_SERVER_URL.replace(/\/$/, '')}/mcp/work/finish-branch`, {
     method: 'POST',
     headers: {
@@ -464,21 +491,11 @@ async function callMcpFinishWorkBranch(args: {
       authorization: `Bearer ${config.MCP_BEARER_TOKEN}`,
     },
     body: JSON.stringify({
-      message: args.message,
-      push: true,
-      remote: args.remote,
+      ...toolArgs,
       expectedCommitSha: args.expectedCommitSha,
       patch: args.patch,
-      runContext: {
-        traceId: `git-push-${args.instance.id}-${args.node.id}`,
-        runId: args.instance.id,
-        workflowInstanceId: args.instance.id,
-        nodeId: args.node.id,
-        workItemId: args.workItemId,
-        workItemCode: args.workItemCode,
-        branchName: args.branchName,
-        workspaceRoot: args.workspaceRoot,
-      },
+      runContext,
+      ...(toolGrant ? { tool_grant: toolGrant } : {}),
     }),
   })
   const text = await response.text()
@@ -515,6 +532,7 @@ export async function activateGitPush(
     ?? derivedWorkbenchBranch(instance, evidence, workItemCode)
   const message = cfgString(node, 'message')
     ?? `Push Singularity work ${workItemCode ?? workItemId ?? instance.id}`
+  let approvalStatus = 'NOT_REQUIRED'
 
   if (evidence.warning) {
     const output: GitPushOutput = {
@@ -561,6 +579,7 @@ export async function activateGitPush(
       await blockNode(instance, node, output, actorId)
       return { pushed: false, output }
     }
+    approvalStatus = approved.status
   }
 
   if (!branchName && !workItemId && !workItemCode && !evidence.workspaceRoot) {
@@ -596,6 +615,7 @@ export async function activateGitPush(
       workspaceRoot: evidence.workspaceRoot,
       expectedCommitSha: evidence.commitSha,
       patch: evidence.patch,
+      approvalStatus,
     })
   } catch (err) {
     const output: GitPushOutput = {

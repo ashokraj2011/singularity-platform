@@ -1,5 +1,6 @@
 import axios from 'axios'
 import type { ConnectorAdapter, OperationDef } from '../connector-adapter'
+import { assertEventTargetUrlAllowed } from '../../../lib/eventbus/target-url-policy'
 
 interface HttpConfig {
   baseUrl: string
@@ -17,12 +18,13 @@ interface HttpCredentials {
 export class HttpAdapter implements ConnectorAdapter {
   constructor(private config: HttpConfig, private creds: HttpCredentials) {}
 
-  private get client() {
+  private async client() {
+    const safeBaseUrl = await assertEventTargetUrlAllowed(this.config.baseUrl)
     const headers: Record<string, string> = { ...this.config.defaultHeaders }
     if (this.creds.bearerToken) headers['Authorization'] = `Bearer ${this.creds.bearerToken}`
     if (this.creds.apiKey) headers[this.creds.apiKeyHeader ?? 'X-Api-Key'] = this.creds.apiKey
     return axios.create({
-      baseURL: this.config.baseUrl,
+      baseURL: safeBaseUrl.toString(),
       headers,
       timeout: this.config.timeoutMs ?? 30_000,
       auth: this.creds.basicUser ? { username: this.creds.basicUser, password: this.creds.basicPass ?? '' } : undefined,
@@ -31,7 +33,8 @@ export class HttpAdapter implements ConnectorAdapter {
 
   async testConnection() {
     try {
-      await this.client.get('/')
+      const client = await this.client()
+      await client.get('/')
       return { ok: true }
     } catch (e: any) {
       return { ok: false, error: e?.message }
@@ -40,7 +43,12 @@ export class HttpAdapter implements ConnectorAdapter {
 
   async invoke(operation: string, params: Record<string, unknown>) {
     const { method = 'POST', path = '/', body, queryParams } = params as any
-    const res = await this.client.request({ method, url: path, data: body, params: queryParams })
+    const pathText = String(path ?? '/')
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(pathText) || pathText.startsWith('//')) {
+      throw new Error('HTTP connector path must be relative to the configured baseUrl')
+    }
+    const client = await this.client()
+    const res = await client.request({ method, url: pathText, data: body, params: queryParams })
     return res.data
   }
 

@@ -68,6 +68,31 @@ async function main(): Promise<void> {
     });
     assert.equal(missingScope.status, 401);
 
+    const discoveryMissingScope = await fetch(`${base}/mcp/discovery`, {
+      headers: { authorization: `Bearer ${narrowBody.token}` },
+    });
+    assert.equal(discoveryMissingScope.status, 401);
+
+    const embedMissingScope = await fetch(`${base}/mcp/embed`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${narrowBody.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ input: ["hello"] }),
+    });
+    assert.equal(embedMissingScope.status, 401);
+
+    const codeContextMissingScope = await fetch(`${base}/mcp/code-context/build`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${narrowBody.token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ task_text: "inspect", max_token_budget: 1000 }),
+    });
+    assert.equal(codeContextMissingScope.status, 401);
+
     const revoked = await fetch(`${base}/mcp/tokens/${tokenBody.jti}/revoke`, {
       method: "POST",
       headers: { authorization: `Bearer ${process.env.MCP_BEARER_TOKEN}` },

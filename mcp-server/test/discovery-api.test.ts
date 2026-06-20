@@ -37,7 +37,7 @@ describe("GET /mcp/discovery", () => {
         kind: string;
         schemaVersion: string;
         capabilities: Record<string, unknown>;
-        endpoints: Array<{ id: string; path: string; auth: string }>;
+        endpoints: Array<{ id: string; path: string; auth: string; deprecated?: boolean; replacement?: string; deprecation_code?: string }>;
         tools: Array<{ name: string; description: string; input_schema: unknown; execution_target: string; tags?: string[] }>;
         delegation?: Record<string, unknown>;
         schemas: {
@@ -49,7 +49,13 @@ describe("GET /mcp/discovery", () => {
     expect(body.success).toBe(true);
     expect(body.data.kind).toBe("singularity.mcp.discovery");
     expect(body.data.schemaVersion).toBe("1.0.0");
-    expect(body.data.endpoints.some((endpoint) => endpoint.path === "/mcp/invoke")).toBe(true);
+    const invoke = body.data.endpoints.find((endpoint) => endpoint.path === "/mcp/invoke");
+    const resume = body.data.endpoints.find((endpoint) => endpoint.path === "/mcp/resume");
+    expect(invoke?.deprecated).toBe(true);
+    expect(invoke?.replacement).toContain("execute-governed-stage");
+    expect(invoke?.deprecation_code).toBe("MCP_INVOKE_DEPRECATED");
+    expect(resume?.deprecated).toBe(true);
+    expect(resume?.deprecation_code).toBe("MCP_RESUME_DEPRECATED");
     expect(body.data.endpoints.some((endpoint) => endpoint.path === "/mcp/discovery")).toBe(true);
     expect(body.data.endpoints.some((endpoint) => endpoint.path === "/mcp/workspaces/stats")).toBe(true);
     expect(body.data.tools.some((tool) => tool.name === "apply_patch" && tool.execution_target === "LOCAL")).toBe(true);
@@ -57,6 +63,8 @@ describe("GET /mcp/discovery", () => {
     expect(body.data.tools.every((tool) => Array.isArray(tool.tags))).toBe(true);
     expect(body.data.capabilities.workspaceStorageStats).toBe(true);
     expect(body.data.capabilities.serverToolDelegation).toBe(true);
+    expect(body.data.capabilities.agentLoop).toBe(false);
+    expect(body.data.capabilities.legacyAgentLoopHttpShim).toBe(true);
     expect(body.data.delegation).toBeTruthy();
     expect(body.data.schemas.toolDescriptor?.required).toContain("execution_target");
     expect(body.data.schemas.toolDescriptor?.properties?.tags).toBeTruthy();

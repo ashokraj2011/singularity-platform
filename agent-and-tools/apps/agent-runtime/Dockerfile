@@ -3,6 +3,10 @@
 # @agentandtools/shared without per-app inlining.
 FROM node:20-alpine AS base
 WORKDIR /app
+ENV NPM_CONFIG_FETCH_RETRIES=5 \
+    NPM_CONFIG_FETCH_RETRY_FACTOR=2 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000
 # postgresql-client provides `psql` for the M15 post-push SQL hook.
 # git is used by the M17 polling worker to clone + diff repositories.
 RUN apk add --no-cache openssl postgresql-client git

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { governanceApi } from '@/api/governance.api'
-import type { CreateGovernedByRequest, UpdateGovernedByRequest } from '@/types'
+import { governanceApi } from 'identity-web/api/governance.api'
+import type { CreateGovernedByRequest, UpdateGovernedByRequest } from 'identity-web/types'
 
 // queryKey convention mirrors useCapabilities: ['capabilities', id, 'governance', ...].
 

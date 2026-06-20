@@ -9,6 +9,9 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { PrismaClient } from "../../../generated/prisma-client";
+import { requireAuth } from "../../middleware/auth.middleware";
+import { assertAgentSourceUrlAllowed } from "../../modules/agents/agent-source-url-policy";
+import { ValidationError } from "../../shared/errors";
 
 const createSchema = z.object({
   subscriberId: z.string().min(1),
@@ -21,9 +24,16 @@ const createSchema = z.object({
 export function eventSubscriptionsRouter(prisma: PrismaClient): Router {
   const r = Router();
 
+  r.use(requireAuth);
+
   r.post("/", async (req, res, next) => {
     try {
       const body = createSchema.parse(req.body);
+      try {
+        await assertAgentSourceUrlAllowed(body.targetUrl);
+      } catch (err) {
+        throw new ValidationError((err as Error).message);
+      }
       const sub = await prisma.eventSubscription.create({
         data: {
           subscriberId: body.subscriberId,

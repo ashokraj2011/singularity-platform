@@ -112,6 +112,10 @@ export const ToolRunPayload = z.object({
   // invocation record so a laptop-side tool call is joinable to the
   // governed_step that issued it.
   run_context:  z.record(z.unknown()).default({}),
+  // Signed ToolInvocationGrant minted by Context Fabric. The laptop relay
+  // passes this through to the same transport-neutral runner as HTTP
+  // /mcp/tool-run, so mutating/high-risk tools stay grant-bound over WS.
+  tool_grant: z.unknown().optional(),
 });
 export type ToolRunPayload = z.infer<typeof ToolRunPayload>;
 

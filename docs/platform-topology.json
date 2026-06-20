@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "defaultCore": {
+    "description": "Default Docker topology for normal local operation.",
+    "requiredRunning": {
+      "platform-web": "unified Next.js/nginx frontend for every UI surface",
+      "platform-core": "agent-service, tool-service, agent-runtime, prompt-composer",
+      "iam-service": "identity, users, teams, roles, capabilities",
+      "workgraph-api": "workflow templates, designer, runs, WorkItems, Workbench APIs",
+      "context-api": "Context Fabric orchestration/context API",
+      "code-foundry-api": "Code Foundry backend for /foundry",
+      "at-postgres": "shared app/IAM/agent/tools/prompt/foundry Postgres",
+      "wg-postgres": "Workgraph Postgres",
+      "wg-minio": "Workgraph artifact object storage"
+    },
+    "oneShotCompleted": {
+      "at-postgres-bootstrap": "idempotent shared Postgres bootstrap",
+      "wg-postgres-bootstrap": "idempotent Workgraph non-bypass app-role bootstrap"
+    }
+  },
+  "agentTools": {
+    "consolidatedService": "platform-core",
+    "splitDebugServices": [
+      "agent-service",
+      "tool-service",
+      "agent-runtime",
+      "prompt-composer"
+    ],
+    "apiPorts": {
+      "agent-service": 3001,
+      "tool-service": 3002,
+      "agent-runtime": 3003,
+      "prompt-composer": 3004
+    }
+  },
+  "legacyFrontends": [
+    "portal",
+    "edge-gateway",
+    "agent-web",
+    "workgraph-web",
+    "blueprint-workbench",
+    "user-and-capability",
+    "code-foundry-web"
+  ],
+  "optionalRuntime": {
+    "llm-gateway": "optional local LLM gateway; may be remote",
+    "mcp-server": "optional/per-tenant MCP runtime; may be remote",
+    "mcp-sandbox-runner": "local sandbox runner used with local MCP",
+    "formal-verifier": "optional verification sidecar",
+    "prompt-compressor": "optional prompt compression sidecar",
+    "context-memory": "deprecated/legacy context memory sidecar"
+  },
+  "profiles": {
+    "core": {
+      "mustInclude": [
+        "platform-web",
+        "platform-core",
+        "wg-postgres-bootstrap"
+      ],
+      "mustExclude": [
+        "agent-service",
+        "tool-service",
+        "agent-runtime",
+        "prompt-composer",
+        "portal",
+        "edge-gateway",
+        "agent-web",
+        "workgraph-web",
+        "blueprint-workbench",
+        "user-and-capability",
+        "code-foundry-web"
+      ]
+    },
+    "full": {
+      "mustInclude": [
+        "platform-web",
+        "platform-core",
+        "llm-gateway",
+        "mcp-server",
+        "wg-postgres-bootstrap"
+      ],
+      "mustExclude": [
+        "agent-service",
+        "tool-service",
+        "agent-runtime",
+        "prompt-composer",
+        "portal",
+        "edge-gateway",
+        "agent-web",
+        "workgraph-web",
+        "blueprint-workbench",
+        "user-and-capability",
+        "code-foundry-web"
+      ]
+    },
+    "backend-split": {
+      "mustInclude": [
+        "platform-web",
+        "agent-service",
+        "tool-service",
+        "agent-runtime",
+        "prompt-composer",
+        "wg-postgres-bootstrap"
+      ],
+      "mustExclude": [
+        "platform-core",
+        "portal",
+        "edge-gateway",
+        "agent-web",
+        "workgraph-web",
+        "blueprint-workbench",
+        "user-and-capability",
+        "code-foundry-web"
+      ]
+    },
+    "frontend-legacy": {
+      "mustInclude": [
+        "portal",
+        "edge-gateway",
+        "workgraph-web",
+        "blueprint-workbench",
+        "user-and-capability",
+        "code-foundry-web"
+      ],
+      "mustExclude": [
+        "platform-web"
+      ]
+    }
+  }
+}

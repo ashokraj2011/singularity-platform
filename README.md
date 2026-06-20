@@ -4,7 +4,7 @@
 [![Status: Active development](https://img.shields.io/badge/status-active-brightgreen.svg)](#)
 [![Services: 11+](https://img.shields.io/badge/services-11%2B-blue.svg)](#service-inventory)
 
-An enterprise AI-agent platform composed of independently-deployable applications: identity, agent registry, prompt composition, LLM cost optimization, workflow orchestration, an Agent Execution Runtime, a single central LLM gateway, a federated lookup + receipt + event-bus platform layer, and a unified portal that wraps them all.
+An enterprise AI-agent platform composed of independently-deployable backend services: identity, agent registry, prompt composition, LLM cost optimization, workflow orchestration, an Agent Execution Runtime, a single central LLM gateway, a federated lookup + receipt + event-bus platform layer, and one unified `platform-web` frontend.
 
 > **Published as a monorepo**: `https://github.com/ashokraj2011/singularity-platform`
 
@@ -16,9 +16,9 @@ For the full architecture, capability, component, connection, installation, conf
 
 ### Prerequisites
 - Docker Desktop (Compose v2)
-- `git`, `curl`, `psql` (optional, for ad-hoc inspection)
-- Ports free: `3000, 5174, 5175, 5176, 5180, 7100, 8000-8003, 8080, 8100, 8500, 5432, 5433, 5434, 5436, 9000-9001`
-- ~6 GB free RAM for the full stack
+- `git`, `psql`; `curl` is useful for ad-hoc inspection, but the bundled doctor/smoke scripts fall back to Python HTTP checks when it is unavailable.
+- Ports free for the default Docker stack: `3005, 5180, 8000, 8080, 8100, 5432, 5434, 9000-9001`. Optional local runtime profiles add `7100` for MCP, `8001` for llm-gateway, `8010` for formal verification, `8011` for compression, and `8500` for audit-governance.
+- ~6 GB free RAM for the core stack; more if you enable local runtime/verification profiles
 
 ### 1. Clone
 ```bash
@@ -33,80 +33,111 @@ cd singularity-platform
 ./singularity.sh config write
 ./singularity.sh up
 ./singularity.sh doctor
+./singularity.sh topology
 ```
 
-This brings up:
-- **Master stack**: IAM + agent-and-tools + context-fabric + workgraph + Agent Execution Runtime (`mcp-server`) + portal + user-and-capability
-- **Audit & governance ledger** (port 8500): the cross-service event ledger every producer fires into
+This brings up the **core stack**: IAM + consolidated `platform-core` agent/tools APIs + context-api + Workgraph + `code-foundry-api` + unified `platform-web`.
+
+Runtime infrastructure is intentionally pluggable:
+
+```bash
+./singularity.sh up --profile llm-gateway   # add local LLM gateway
+./singularity.sh up --profile mcp           # add local MCP/tool runtime
+./singularity.sh up --profile audit         # add audit-governance side stack
+./singularity.sh up --full                  # historical all-local stack
+./singularity.sh core-only                  # stop optional/runtime containers and return to core
+```
+
+In production or hybrid development, point services at remote `llm-gateway` and MCP endpoints instead of starting those profiles locally.
+Operations readiness in `platform-web` separates required core services from optional runtime infrastructure. Open `/operations/readiness` to see core backend health, and the MCP/LLM Gateway/Formal Verifier/audit endpoints as local, remote, unavailable, or not configured without treating every optional runtime as a platform outage. Code Foundry API is part of the core stack because `/foundry` is a first-class platform route.
+
+Production/staging boots are intentionally fail-closed. Use `APP_ENV=production` or `SINGULARITY_ENV=production` to activate guardrails even when dev containers keep `NODE_ENV=development`; then set `AUTH_OPTIONAL=false`, `TENANT_ISOLATION_MODE=strict`, `REQUIRE_TENANT_ID=true`, and rotate all development secrets before starting services.
+
+For Docker-to-remote wiring, set container-reachable URLs:
+
+```bash
+MCP_SERVER_INTERNAL_URL=https://mcp.example.com
+LLM_GATEWAY_INTERNAL_URL=https://llm-gateway.example.com
+```
 
 First boot pulls images + builds web bundles. Wait ~3–5 minutes. Tail with `./singularity.sh logs workgraph-api -f` if you want to watch.
 
-> Need to bring up just one piece? `./singularity.sh up <service-name>` works for the master-stack services (run `./singularity.sh ls` for the list). The audit-governance side stack comes up via the no-arg form.
+> Need to bring up just one piece? `./singularity.sh up <service-name>` works for compose services (run `./singularity.sh ls` for the list). Optional side stacks come up only through their profiles.
 
 The local configuration flow is intentionally boring:
 - `.singularity/config.local.json` is the canonical local profile.
 - `./singularity.sh config write` generates the per-app env files.
-- Secrets stay in local ignored files, not in the Portal or git.
-- `./singularity.sh doctor` writes the masked setup report used by Portal `/operations`.
+- Secrets stay in local ignored files, not in Platform Web or git.
+- `./singularity.sh doctor` writes the masked setup report used by Platform Web `/operations`.
 - Operators only choose capability, workflow, budget preset, model alias, and runtime workspace; the platform resolves the service wiring.
 
 ### 3. Apply baseline seeds
 ```bash
-PGPASSWORD=singularity       psql -h localhost -p 5433 -U singularity -d singularity_iam   -f seed/00-iam.sql
-PGPASSWORD=singularity       psql -h localhost -p 5432 -U postgres    -d singularity       -f seed/01-agent-runtime.sql
-PGPASSWORD=workgraph_secret  psql -h localhost -p 5434 -U workgraph   -d workgraph         -f seed/02-workgraph.sql
-PGPASSWORD=audit             psql -h localhost -p 5436 -U postgres    -d audit_governance  -f seed/03-audit-governance.sql
+bin/seed-docker.sh
 ```
 
-Lands IAM teams/capabilities/memberships, common agent baselines, capability bindings, the demo workflow, and audit/cost demo rows. Re-running is safe.
+Seeds the full Docker demo in dependency order: IAM teams/users/capabilities, common agent baselines and capability bindings, prompt-composer profiles, Workgraph artifacts/demo workflows, and SDLC workflows. Re-running is safe.
+
+For direct database maintenance without Docker, use `seed/apply.sh <db_user> [db_password] [db_host] [db_port]` to apply the SQL seed bundle, then run the app-specific Prisma/TypeScript seeds documented in `bin/seed-docker.sh` or `bin/bare-metal.sh`.
 
 ### 4. One-line smoke check
 ```bash
 for u in \
   "http://localhost:8100/api/v1/health" \
-  "http://localhost:8500/health" \
-  "http://localhost:7100/health" \
   "http://localhost:8000/health" \
   "http://localhost:8080/health" \
-  "http://localhost:3000/api/mcp/agents/templates?scope=common&limit=3" \
-  "http://localhost:5174/" \
-  "http://localhost:5176/"; do
+  "http://localhost:5180/healthz" \
+  "http://localhost:5180/" \
+  "http://localhost:5180/agents/studio" \
+  "http://localhost:5180/workflows"; do
   printf "%-65s %s\n" "$u" "$(curl -s -o /dev/null -w '%{http_code}' $u)"
 done
 ```
 
-You should see `200` for all eight.
+You should see `200` for all entries.
+
+If you started optional local profiles, also check:
+
+```bash
+curl -s -o /dev/null -w 'llm-gateway %{http_code}\n' http://localhost:8001/health
+curl -s -o /dev/null -w 'mcp-server  %{http_code}\n' http://localhost:7100/health
+curl -s -o /dev/null -w 'audit-gov   %{http_code}\n' http://localhost:8500/health
+SINGULARITY_DOCTOR_AUDIT_SMOKE=1 ./singularity.sh doctor  # strict DB/schema + ingest/query through Platform Web
+SINGULARITY_DOCTOR_TRACE_SPINE=1 ./singularity.sh doctor  # trace_id evidence across Context Fabric, composer, MCP, audit
+```
 
 ### 5. The demo path — five clicks, five "wow" moments
 
-Start from the unified Control Plane at `http://localhost:3000/control-plane`. It is the operator shell for Agent Studio, Workgraph, WorkbenchNeo, IAM, and Operations. Context Fabric, the Agent Execution Runtime, and the LLM Gateway remain separate runtime services behind that shell.
+Start from the unified Platform Web app at `http://localhost:5180/`. It is the operator shell for Agent Studio, Workflows, Workbench, Foundry, IAM, and Operations. Context Fabric, the Agent Execution Runtime, and the LLM Gateway remain separate runtime services behind that shell.
 
-The Control Plane also exposes first-class routes under `localhost:3000` so operators can stay in one app:
-`/workflows`, `/runs`, `/work-items`, `/workbench`, `/identity`, and `/operations`.
+Platform Web exposes first-class routes under `localhost:5180` so operators can stay in one app:
+`/operations`, `/agents`, `/agents/studio`, `/workflows`, `/runs`, `/work-items`, `/workbench`, `/foundry`, and `/identity`.
 
 | Step | URL | What to show |
 |---|---|---|
-| **1. Login** | `http://localhost:5175/login` → then `http://localhost:5174` | Login with `admin@singularity.local` / `Admin1234!`, then use the IAM token in Workgraph. IAM is the source of truth for teams, roles, and capability memberships. |
-| **2. Agent Studio** | `http://localhost:3000/agent-studio` → pick the seeded capability from the dropdown | Show the four **Locked** common baselines (Architect / Developer / QA / Governance), click **Derive →** on one, name it. Mention: "derived agents inherit prompt profile + tool policy, become editable by capability owners, audit-gov captures `agent.template.derived`" |
-| **3. Run a workflow** | `localhost:5174/runs` → click **Run a Workflow** → pick "Business Initiative Delivery" → start | The new run lands in `/runs/<id>`. Open a HUMAN_TASK node, attach a file, click Complete. Workflow advances. |
+| **1. Login** | `http://localhost:5180/identity` | Login with the bootstrap IAM account from `./singularity.sh config show`, then verify with `./singularity.sh login`. IAM is the source of truth for teams, roles, and capability memberships. |
+| **2. Agent Studio** | `http://localhost:5180/agents/studio` → pick the seeded capability from the dropdown | Show the four **Locked** common baselines (Architect / Developer / QA / Governance), click **Derive →** on one, name it. Mention: "derived agents inherit prompt profile + tool policy, become editable by capability owners, audit-gov captures `agent.template.derived`" |
+| **3. Run a workflow** | `http://localhost:5180/workflows` → click **Run a Workflow** → pick "Business Initiative Delivery" → start | The new run lands in `/runs/<id>`. Open a HUMAN_TASK node, attach a file, click Complete. Workflow advances. |
 | **4. Run Insights** | Click the green **Insights →** pill at the top of the run viewer | The M24 dashboard — total duration, per-step Gantt with precise timing (`startedAt`/`completedAt` columns), artifacts list, cost-by-model, full audit timeline keyed to the run. Mention: "every step duration is authoritative, not inferred" |
-| **5. Governance & cost** | `http://localhost:3000/audit` and `http://localhost:3000/cost` | Cross-service ledger. Show the recent `agent.template.derived`, `cf.execute.completed`, `tool.execution.success`, `llm.call.completed` rows. Then `/cost` for $$ + tokens, with model breakdown. Mention: "the runtime producers — Agent Execution Runtime (`mcp-server`), workgraph-api, tool-service, context-fabric, agent-runtime — fire fire-and-forget events here; pre-flight budget/rate-limit checks happen inline." |
+| **5. Governance & cost** | `./singularity.sh up --profile audit`, then `http://localhost:5180/audit` and `/cost` | Optional local audit-governance side stack. Show the recent `agent.template.derived`, `cf.execute.completed`, `tool.execution.success`, `llm.call.completed` rows. Then `/cost` for $$ + tokens, with model breakdown. Mention: "the runtime producers — Agent Execution Runtime (`mcp-server`), workgraph-api, tool-service, context-fabric, agent-runtime — fire fire-and-forget events here; pre-flight budget/rate-limit checks happen inline." |
 
 ### 6. Optional polish for the demo
 
 - **Set a tight budget then watch DENIED**:
   ```bash
+  ./singularity.sh up --profile audit
   curl -s -X POST http://localhost:8500/api/v1/governance/budgets \
     -H 'content-type: application/json' \
+    -H 'authorization: Bearer <audit-service-token>' \
     -d '{"scope_type":"capability","scope_id":"<cap-id>","period":"day","tokens_max":1}'
   ```
   Re-run any AGENT_TASK on that capability — `status:DENIED` returns instantly, no LLM dispatch. Open `/audit` → see `governance.denied` event.
-- **Agent Execution Runtime smoke** (slick because it's the same call workflows make under the hood):
+- **Agent Execution Runtime smoke** (MCP is optional/remote-capable; this checks the supported runtime surface when you start it locally):
   ```bash
-  curl -sS -X POST http://localhost:7100/mcp/invoke \
-    -H 'authorization: Bearer demo-bearer-token-must-be-min-16-chars' \
-    -H 'content-type: application/json' \
-    -d '{"runContext":{"traceId":"t-demo","runId":"r-demo","capabilityId":"c-demo"},"message":"hi","tools":[]}'
+  ./singularity.sh up --profile mcp
+  curl -fsS -H 'authorization: Bearer demo-bearer-token-must-be-min-16-chars' \
+    http://localhost:7100/healthz/strict
+  SINGULARITY_DOCTOR_DEEP_SMOKE=1 ./singularity.sh doctor
   ```
 - **Insights for a workflow that calls an LLM**: design a workflow with an AGENT_TASK, point it at a derived agent, run. Insights will populate `cost_usd` + `tokens` + model breakdown for real.
 
@@ -119,18 +150,16 @@ The Control Plane also exposes first-class routes under `localhost:3000` so oper
 ### URLs cheat sheet (print these)
 
 ```
-Control Plane           http://localhost:3000/control-plane    unified operator shell
-Control Plane routes    http://localhost:3000/workflows        workflows inside the unified shell
-                        http://localhost:3000/runs             run dashboard inside the unified shell
-                        http://localhost:3000/work-items       WorkItem queue inside the unified shell
-                        http://localhost:3000/workbench        WorkbenchNeo inside the unified shell
-                        http://localhost:3000/identity         IAM admin inside the unified shell
-                        http://localhost:3000/operations       Operations inside the unified shell
-Workgraph SPA            http://localhost:5174    runs, designer, insights
-Blueprint Workbench      http://localhost:5176    staged agent loop + approvals
-Agent / Tools SPA        http://localhost:3000    Agent Studio, /audit, /cost
-Singularity Portal       http://localhost:5180    branded wrapper around all of it
-User & Capability SPA    http://localhost:5175    IAM admin
+Platform Web            http://localhost:5180    unified operator shell
+Platform routes         http://localhost:5180/operations
+                        http://localhost:5180/agents
+                        http://localhost:5180/agents/studio
+                        http://localhost:5180/workflows
+                        http://localhost:5180/runs
+                        http://localhost:5180/work-items
+                        http://localhost:5180/workbench
+                        http://localhost:5180/foundry
+                        http://localhost:5180/identity
 
 Workgraph API            http://localhost:8080
 Agent Runtime API        http://localhost:3003
@@ -139,7 +168,7 @@ Prompt Composer API      http://localhost:3004
 Context Fabric API       http://localhost:8000
 Agent Execution Runtime               http://localhost:7100
 IAM API                  http://localhost:8100/api/v1
-Audit & Governance API   http://localhost:8500
+Audit & Governance API   http://localhost:8500  (--profile audit or remote)
 ```
 
 ### Known gotchas (fix before the demo)
@@ -148,8 +177,8 @@ Audit & Governance API   http://localhost:8500
    ```bash
    docker exec agentandtools-postgres psql -U postgres -d singularity -c "CREATE EXTENSION IF NOT EXISTS vector;"
    ```
-2. **Token errors after a long idle**: IAM tokens expire. Re-login at `localhost:5175/login` and refresh Workgraph.
-3. **Port collisions** — `lsof -i :5174` if the workgraph SPA won't start; another stack from a previous demo might still be holding it.
+2. **Token errors after a long idle**: IAM tokens expire. Re-login through `http://localhost:5180/identity` and refresh the current page.
+3. **Port collisions** — `lsof -i :5180` if Platform Web will not start; another stack from a previous demo might still be holding it.
 
 The narrative to lead with: *"Singularity is a governed agent platform — every agent is rooted in a locked baseline, every workflow run is observable end-to-end, and every LLM call is gated against a budget."*
 
@@ -160,9 +189,13 @@ The narrative to lead with: *"Singularity is a governed agent platform — every
 The platform is monorepo-shipped but operators can adopt subsets:
 
 ```bash
-docker compose --profile full          up -d   # all 25 services (default; see .env COMPOSE_PROFILES=full)
-docker compose --profile gateway-only  up -d   # llm-gateway + at-postgres only (managed LLM gateway with provider keys)
-docker compose --profile composer-only up -d   # gateway-only + prompt-composer (composer stack)
+docker compose --profile core         up -d   # core product stack; default via .env COMPOSE_PROFILES=core
+docker compose --profile llm-gateway  up -d   # local gateway if not using a remote gateway
+docker compose --profile mcp          up -d   # local MCP/tool runtime if not using a remote runtime
+COMPOSE_PROFILES=backend-split docker compose up -d   # debug with split agent/tools backend containers
+COMPOSE_PROFILES=gateway-only docker compose up -d     # gateway + shared Postgres only
+COMPOSE_PROFILES=composer-only docker compose up -d    # prompt-composer + gateway + shared Postgres
+docker compose --profile full         up -d   # historical all-local stack
 ```
 
 Each major service has its own `RELEASE.md` documenting API surface,
@@ -188,7 +221,7 @@ Operators wanting reproducible deployments author a
 
 ## Bare-metal alternative — single Postgres, no Docker
 
-For dev machines that already have Postgres and don't want Docker. Runs real IAM, agent-and-tools services, Workgraph API/web, blueprint-workbench, audit-governance, context-api, context-memory, formal-verifier, the local Agent Execution Runtime, the UserAndCapabillity SPA (IAM admin + capability-governance authoring), and the portal. Context Fabric stores run on Postgres (DB `singularity_context_fabric`), matching the Docker stack. It skips metrics-ledger (sunset; savings moved to audit-gov) and MinIO.
+For dev machines that already have Postgres and do not want Docker. Runs real IAM, agent-and-tools services, Workgraph API, audit-governance, context-api, and the unified Platform Web app on `:5180`. By default it also runs local `llm-gateway` and `mcp-server`; set `BOX_ONLY=1` to skip those deployable runtime services and use remote/laptop endpoints instead. Context Fabric stores run on Postgres (DB `singularity_context_fabric`), matching the Docker stack. It skips metrics-ledger (sunset; savings moved to audit-gov), MinIO, and legacy split frontend apps.
 
 ### Simplest — the interactive wizard
 
@@ -203,7 +236,9 @@ It wraps everything below — collects a few answers once, runs the stack, optio
 
 ```bash
 bin/bare-metal.sh up <db_user> [db_password] [db_host] [db_port]
-bin/bare-metal.sh smoke      # curl every /health endpoint
+bin/bare-metal.sh smoke      # check every /health endpoint
+BARE_METAL_DEEP_SMOKE=1 bin/bare-metal.sh smoke  # route/API/browser parity + audit/Workbench/workflow/Foundry/Agent Studio lifecycle checks
+BARE_METAL_TRACE_SPINE=1 bin/bare-metal.sh smoke  # also verify trace_id evidence across runtime stores
 bin/bare-metal.sh status     # list running PIDs
 bin/bare-metal.sh logs workgraph-api    # tail one service
 bin/bare-metal.sh down       # stop everything + free ports
@@ -211,7 +246,7 @@ bin/bare-metal.sh down       # stop everything + free ports
 
 Idempotent — re-runs of `up` skip installs and DB creation if they already happened, just re-boots. Defaults: `db_password` from `$PGPASSWORD` env or `postgres`, `db_host=localhost`, `db_port=5432`.
 
-The bare-metal path applies the same seed bundle as Docker: `seed/00-iam.sql`, `seed/01-agent-runtime.sql`, `seed/02-workgraph.sql`, and `seed/03-audit-governance.sql`.
+The bare-metal path applies the same full seed bundle as Docker: SQL seeds, agent-runtime baseline templates, prompt-composer profiles, Workgraph demo artifacts/workflows, and SDLC workflows. Use `seed/apply.sh` only when you deliberately want the SQL-only portion.
 
 The manual recipe below is what the script does under the hood — useful if you want to step through it or diverge.
 
@@ -221,13 +256,24 @@ Adjust user/password to match your instance (defaults: `postgres@localhost:5432`
 ```bash
 psql postgres <<'SQL'
 CREATE DATABASE singularity;
+CREATE DATABASE singularity_composer;
 CREATE DATABASE workgraph;
 CREATE DATABASE audit_governance;
 CREATE DATABASE singularity_iam;
+CREATE DATABASE singularity_context_fabric;
+CREATE DATABASE singularity_codegen;
 \c singularity
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
+\c singularity_composer
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+\c singularity_context_fabric
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 \c audit_governance
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+\c singularity_codegen
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 SQL
 
@@ -244,8 +290,17 @@ export PG_USER=postgres
 export PG_PASS=postgres
 
 export DATABASE_URL_AGENT_TOOLS="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/singularity"
-export DATABASE_URL_WORKGRAPH="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/workgraph"
+export DATABASE_URL_COMPOSER="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/singularity_composer"
+export DATABASE_URL_RUNTIME_READ="$DATABASE_URL_AGENT_TOOLS"
+export WORKGRAPH_APP_DB_USER="workgraph_app"
+export WORKGRAPH_APP_DB_PASSWORD="workgraph_app_secret"
+export DATABASE_URL_WORKGRAPH_ADMIN="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/workgraph"
+export DATABASE_URL_WORKGRAPH_RUNTIME="postgresql://${WORKGRAPH_APP_DB_USER}:${WORKGRAPH_APP_DB_PASSWORD}@${PG_HOST}:${PG_PORT}/workgraph"
+export DATABASE_URL_WORKGRAPH="$DATABASE_URL_WORKGRAPH_RUNTIME"
 export DATABASE_URL_AUDIT_GOV="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/audit_governance"
+export DATABASE_URL_CODE_FOUNDRY="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/singularity_codegen"
+export DATABASE_URL_CONTEXT_FABRIC="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/singularity_context_fabric"
+export CONTEXT_FABRIC_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
 
 # Shared JWT secret (32+ chars — workgraph-api enforces)
 export JWT_SECRET="dev-secret-change-in-prod-min-32-chars!!"
@@ -261,6 +316,7 @@ export AGENT_RUNTIME_URL="http://localhost:3003"
 export TOOL_SERVICE_URL="http://localhost:3002"
 export AGENT_SERVICE_URL="http://localhost:3001"
 export CONTEXT_FABRIC_URL="http://localhost:8000"
+export CODE_FOUNDRY_API_URL="http://localhost:3005"
 export MCP_SERVER_URL="http://localhost:7100"
 export MCP_BEARER_TOKEN="demo-bearer-token-must-be-min-16-chars"
 
@@ -276,6 +332,7 @@ source .env.local
 ```bash
 ( cd agent-and-tools          && npm install )
 ( cd workgraph-studio         && pnpm install )
+( cd singularity-code-foundry && npm install )
 ( cd audit-governance-service && npm install )
 ( cd mcp-server               && npm install )
 
@@ -295,16 +352,42 @@ python3 -m pip install fastapi uvicorn httpx pydantic-settings \
 
 # Prisma push for workgraph-api
 ( cd workgraph-studio/apps/api \
-  && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx prisma db push --skip-generate \
-  && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx prisma generate )
+  && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma db push --skip-generate \
+  && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260619123000_tenant_rls_policy_scaffold/migration.sql \
+  && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma generate )
+
+# Workgraph runtime should use a non-bypass application DB role.
+psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 <<SQL
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${WORKGRAPH_APP_DB_USER}') THEN
+    CREATE ROLE ${WORKGRAPH_APP_DB_USER} LOGIN PASSWORD '${WORKGRAPH_APP_DB_PASSWORD}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;
+  ELSE
+    ALTER ROLE ${WORKGRAPH_APP_DB_USER} LOGIN PASSWORD '${WORKGRAPH_APP_DB_PASSWORD}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;
+  END IF;
+END\$\$;
+GRANT CONNECT ON DATABASE workgraph TO ${WORKGRAPH_APP_DB_USER};
+GRANT USAGE ON SCHEMA public TO ${WORKGRAPH_APP_DB_USER};
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${WORKGRAPH_APP_DB_USER};
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ${WORKGRAPH_APP_DB_USER};
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO ${WORKGRAPH_APP_DB_USER};
+ALTER DEFAULT PRIVILEGES FOR ROLE ${PG_USER} IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${WORKGRAPH_APP_DB_USER};
+ALTER DEFAULT PRIVILEGES FOR ROLE ${PG_USER} IN SCHEMA public
+  GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO ${WORKGRAPH_APP_DB_USER};
+ALTER DEFAULT PRIVILEGES FOR ROLE ${PG_USER} IN SCHEMA public
+  GRANT EXECUTE ON FUNCTIONS TO ${WORKGRAPH_APP_DB_USER};
+SQL
 ```
 
 ### 4. Boot + seed
 
-Use the launcher unless you specifically need to debug one command at a time. It starts real IAM first, waits for `/api/v1/health`, applies all four seed SQL files, then starts the rest of the demo services.
+Use the launcher unless you specifically need to debug one command at a time. It pushes schemas, runs the app-level seeds, starts real IAM, waits for `/api/v1/health`, applies the SQL seed bundle, then starts the rest of the demo services.
 
 ```bash
 bin/bare-metal.sh up postgres postgres localhost 5432
+# Runtime infra elsewhere:
+BOX_ONLY=1 bin/bare-metal.sh up postgres postgres localhost 5432
 ```
 
 ### 5. Smoke check
@@ -312,33 +395,43 @@ bin/bare-metal.sh up postgres postgres localhost 5432
 for url in \
   http://localhost:8100/api/v1/health \
   http://localhost:8500/health \
-  http://localhost:7100/health \
   http://localhost:8000/health \
+  http://localhost:3005/health \
   http://localhost:8080/health \
-  "http://localhost:3000/api/mcp/agents/templates?scope=common&limit=3" \
-  http://localhost:5174/ \
-  http://localhost:5176/ \
+  "http://localhost:5180/api/runtime/agents/templates?scope=common&limit=3" \
+  http://localhost:5180/ \
+  http://localhost:5180/agents/studio \
+  http://localhost:5180/workflows \
+  http://localhost:5180/foundry \
   ; do
   printf "%-65s %s\n" "$url" "$(curl -s -o /dev/null -w '%{http_code}' "$url")"
 done
 ```
 
-All eight should return `200`. Open `http://localhost:5174` for Workgraph, `http://localhost:5176` for Blueprint Workbench, and `http://localhost:3000` for Agent Studio. IAM login is `admin@singularity.local` / `Admin1234!`.
+All entries should return `200`. Open `http://localhost:5180` for Platform Web, `http://localhost:5180/agents/studio` for Agent Studio, `http://localhost:5180/workflows` for workflows, `http://localhost:5180/workbench` for Blueprint Workbench, and `http://localhost:5180/foundry` for Code Foundry. IAM login uses the bootstrap account shown by `./singularity.sh config show`; `./singularity.sh login` verifies it without printing the password.
+
+If you did not use `BOX_ONLY=1`, local runtime endpoints should also respond:
+
+```bash
+curl -s -o /dev/null -w 'llm-gateway %{http_code}\n' http://localhost:8001/health
+curl -s -o /dev/null -w 'mcp-server  %{http_code}\n' http://localhost:7100/health
+```
 
 ### Tear down
 ```bash
 bin/bare-metal.sh down
 # Optional — wipe data:
-psql postgres -c "DROP DATABASE singularity; DROP DATABASE workgraph; DROP DATABASE audit_governance; DROP DATABASE singularity_iam;"
+psql postgres -c "DROP DATABASE singularity; DROP DATABASE singularity_composer; DROP DATABASE workgraph; DROP DATABASE audit_governance; DROP DATABASE singularity_iam; DROP DATABASE singularity_context_fabric; DROP DATABASE singularity_codegen;"
 ```
 
 ### What's intentionally skipped
 
 | Skipped | Impact |
 |---|---|
-| llm-gateway, context-memory, metrics-ledger | None — context-api calls the Agent Execution Runtime (`mcp-server`) directly; the runtime's embedded LLM is mock |
+| `llm-gateway`, `mcp-server` with `BOX_ONLY=1` | Platform remains available, but model/tool execution is expected to use remote or laptop runtime endpoints |
+| context-memory, metrics-ledger | None — context-api owns the current routes; metrics savings moved to audit-gov |
 | MinIO | File uploads return 5xx; insights, Agent Studio, audit, cost all still work |
-| portal (`:5180`), user-and-capability (`:5175`) | Optional UI wrappers; `:5174` + `:3000` cover the demo path |
+| legacy split UIs (`:5182`, `:5174`, `:5175`, `:5176`, `:5181`, `:8085`) | Not started by default; Platform Web on `:5180` covers the normal path |
 
 Common boot failures: (a) wrong `PG_USER`/`PG_PASS`, (b) `pgvector` extension not installed in `singularity`, (c) port collision (`lsof -i :3003`).
 
@@ -357,7 +450,7 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
 | **M11.c** Snapshot provenance | `sourceHash`/`sourceVersion`/`fetchedBy` on snapshots; new `prompt_profile_snapshots` + `capability_snapshots` tables; canonical-JSON sha256 dedupe | 3 runs of same workflow → 1 capability snapshot row |
 | **M11.d** Unified Receipt envelope | cf `GET /receipts?trace_id=` + workgraph `GET /api/receipts?trace_id=` joins workgraph + cf + Agent Execution Runtime audit | 14 receipts merged from 3 services in chronological order |
 | **M11.e** Event Bus | `event_outbox` + `event_subscriptions` + `event_deliveries` in 5 publishers (IAM Python, workgraph TS, agent-runtime TS, tool-service TS, agent-service TS); Postgres LISTEN/NOTIFY dispatcher with 30s safety sweep, HMAC, 5-attempt retry; workgraph receiver at `POST /api/events/incoming`; canonical envelope shape across all publishers | Subscribe to `*.created` → trigger from any service → workgraph `event_log` captures with `incoming.<event_name>` |
-| **M11 follow-up** OTel + Jaeger | Auto-instrumentation in workgraph-api (TS), context-api (Python), tool-service (TS), agent-runtime (TS), agent-service (TS); Jaeger all-in-one in `platform-registry` compose; W3C `traceparent` propagated automatically | Single trace `1cc8ef8ac9a1207b` had **59 spans across 4 services**. UI: `http://localhost:16686` |
+| **M11 follow-up** OTel + Jaeger | Auto-instrumentation in workgraph-api (TS), context-api (Python), tool-service (TS), agent-runtime (TS), agent-service (TS); Jaeger all-in-one in `platform-registry` compose; Workgraph explicitly injects W3C `traceparent` and `x-singularity-trace-id` on Context Fabric calls | Single trace `1cc8ef8ac9a1207b` had **59 spans across 4 services**. UI: `http://localhost:16686` |
 | **M11 follow-up** Service-token auto-mint | IAM `POST /api/v1/auth/service-token` + workgraph + cf bootstrap + `IAM_BOOTSTRAP_USERNAME/PASSWORD` env. Replaces 60-min admin-JWT-passing-via-env. | Both services start with `IAM_SERVICE_TOKEN=""`, mint 30-day tokens on first call |
 | **M11 follow-up / M33 hardened** Central LLM gateway | `context-fabric/services/llm_gateway_service` is the only provider-calling service. Agent Execution Runtime, Workgraph, Prompt Composer, Agent Runtime, and Context Memory send `model_alias` requests to `LLM_GATEWAY_URL`. | Missing non-mock provider config fails closed. `ALLOW_CALLER_PROVIDER_OVERRIDE=false` by default. The only implicit fallback is explicit mock mode. |
 | **M42.7** Phased Agent Reasoning Model (v4) | Replaces the flat ReAct loop in mcp-server with an opt-in 6-phase state machine (`PLAN_DRAFT → EXPLORE → PLAN_CONFIRM → ACT → VERIFY → FINALIZE`). Per-phase tool allowlists, robust plan JSON extraction, path-coverage gate (lazy-edit fix), phase-aware repetition detection, backward-compatible approval pause/resume. See [Phased Agent Reasoning Model](#phased-agent-reasoning-model-v4) below. | Flip `MCP_AGENT_PHASES_ENABLED=true` + `WORKBENCH_AGENT_PHASES_ENABLED=true` in `.env`. `pnpm --filter @singularity/mcp-server test`: 137/139 passing (was 67; +70 new). `./bin/trace.sh --latest --stage develop` shows phase transitions. |
@@ -365,27 +458,24 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
 ---
 
 ```
-                     Singularity Portal (:5180)
-                              │
-            ┌─────────────────┼─────────────────┐
-            ▼                 ▼                 ▼
-     UserAndCapabillity  Agent & Tools     Workgraph Studio
-            (:5175)        (:3000)            (:5174)
-            │                 │                 │
-            ▼                 ▼                 ▼
-       IAM Service      ┌─prompt-composer (:3004)─┐
-        (:8100)         │  agent-runtime  (:3003)  │      Workgraph API
-            │           │  tool-service   (:3002)  │         (:8080)
-            │           │  agent-service  (:3001)  │             │
-            │           └──────────────────────────┘             │
-            │                       │                            │
-            │                       ▼                            │
-            │             Context Fabric (:8000)                 │
-            │             llm-gateway (:8001)                    │
-            │             memory      (:8002)                    │
-            │             metrics     (:8003)                    │
-            │                                                    │
-            └────────────── shared IAM JWT ──────────────────────┘
+                         Platform Web (:5180)
+                                  │
+       ┌──────────────────────────┼──────────────────────────┐
+       ▼                          ▼                          ▼
+ IAM Service                Agent & Tools              Workgraph API
+  (:8100)        ┌─prompt-composer (:3004)─┐              (:8080)
+                 │  agent-runtime  (:3003) │                 │
+                 │  tool-service   (:3002) │                 │
+                 │  agent-service  (:3001) │                 │
+                 └─────────────────────────┘                 │
+                              │                              │
+                              ▼                              │
+                    Context Fabric (:8000)                   │
+                    llm-gateway (:8001)                      │
+                    memory      (:8002)                      │
+                    metrics     (:8003)                      │
+                                                             │
+              shared IAM JWT and platform policy gates ──────┘
 ```
 
 ---
@@ -415,14 +505,14 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
 
 | App | Role | Stack | Ports |
 |-----|------|-------|-------|
-| **singularity-iam-service** | Identity, orgs, teams, roles, capabilities, skills, JWT, Agent Execution Runtime registry, service-token mint, event bus | Python · FastAPI · Postgres | `8100`, postgres `5433` |
-| **agent-and-tools** | Agent definitions, tool registry, prompt assembly, agent CRUD UI; per-service event bus + OTel | TypeScript monorepo · Express · Next.js · Prisma · Postgres+pgvector | `3000–3004`, postgres `5432` |
-| **context-fabric** | LLM cost optimizer (context compaction + token-saving ledger), `/execute` orchestrator, `/receipts` join, OTel | Python · 4× FastAPI · SQLite | `8000–8003` |
+| **singularity-iam-service** | Identity, orgs, teams, roles, capabilities, skills, JWT, Agent Execution Runtime registry, service-token mint, event bus | Python · FastAPI · Postgres | `8100`, shared postgres `5432` (`singularity_iam`) |
+| **agent-and-tools** | Agent definitions, tool registry, prompt assembly, unified Platform Web UI; per-service event bus + OTel | TypeScript monorepo · Express · Next.js · Prisma · Postgres+pgvector | `3001–3004`, `5180` web, postgres `5432` |
+| **context-fabric** | Context Fabric execution API, context optimization, laptop bridge, receipts, and governed orchestration | Python · FastAPI · Postgres | `8000`; optional sidecars use `8001`, `8010`, `8011` |
 | **mcp-server** | Agent Execution Runtime implementation and WS bridge. Customer-deployed, owns local tools/AST/branches, and calls the central LLM gateway by model alias. Ships with an opt-in [Phased Agent Reasoning Model](#phased-agent-reasoning-model-v4) (6-phase state machine with path-coverage gate) behind `MCP_AGENT_PHASES_ENABLED`. The service/package name is legacy. | TypeScript · Express · WebSocket | `7100` |
-| **workgraph-studio** | Visual DAG designer + workflow runtime, Blueprint Workbench stage loop, federated `/api/lookup/*`, snapshot layer, unified `/api/receipts`, event bus + receiver, OTel | React + ReactFlow + Zustand · Express + Prisma · MinIO | `5174` (web) / `5176` (workbench) / `8080` (api), postgres `5434`, minio `9000-9001` |
+| **workgraph-studio** | Visual DAG designer + workflow runtime, Blueprint Workbench stage loop, federated `/api/lookup/*`, snapshot layer, unified `/api/receipts`, event bus + receiver, OTel | React + ReactFlow + Zustand · Express + Prisma · MinIO | `8080` API, postgres `5434`, minio `9000-9001`; UI routes live under Platform Web |
 | **platform-registry** | Service + Contract Registry: every service self-registers on startup with capabilities + OpenAPI/event/node contracts | TypeScript · Express · Postgres | `8090`, postgres `5435` |
-| **UserAndCapabillity** | Visual admin SPA for IAM | React 19 · Vite · Tailwind · Radix · Zustand | `5175` |
-| **singularity-portal** | The wrapper SPA — single login + dashboard tiles + deep links | React 19 · Vite · Tailwind · Radix | `5180` |
+| **UserAndCapabillity** | Legacy/debug visual admin SPA for IAM | React 19 · Vite · Tailwind · Radix · Zustand | `5175` only with legacy/debug profile |
+| **singularity-portal** | Legacy wrapper SPA kept for reference/debug | React 19 · Vite · Tailwind · Radix | `5182` only with legacy/debug profile; default front door is Platform Web `:5180` |
 | **jaeger** (observability) | All-in-one OTel trace UI; receives spans from all instrumented services | docker image | `16686` (UI), `4317`/`4318` (OTLP) |
 
 11 production services. Each owns its database. `capability_id` is the join key across them; joins happen at the application layer, never in SQL.
@@ -435,7 +525,7 @@ A useful mental model when deciding "which app should this feature live in?" —
 
 ```
 ┌───────────────────────────────────────────────────────────┐
-│ CONTROL          IAM + UserAndCapabillity + Portal        │
+│ CONTROL          IAM + Platform Web                       │
 │  decides WHO can do WHAT; humans configure here           │
 └───────────────────────────────────────────────────────────┘
                             │
@@ -469,18 +559,18 @@ A useful mental model when deciding "which app should this feature live in?" —
 
 - Docker Desktop (or Docker Engine + the Compose v2 plugin)
 - 8 GB+ RAM available to Docker
-- Free host ports: `3000–3004`, `5174–5176`, `5180`, `5432–5434`, `8000–8003`, `8080`, `8100`, `9000–9001`
+- Free host ports: `3001–3005`, `5180`, `5432`, `5434`, `8000`, `8080`, `8100`, `9000–9001`. Optional local runtime profiles add `7100`, `8001`, `8010`, `8011`, and `8500`. Ports `5182`, `5174–5176`, `5181`, and `8085` are only needed for local/legacy frontend debugging.
 - Optional: explicit central LLM gateway provider config. Fresh local setup is mock-only; office setup is Copilot-only.
 
 ### Option A — master compose (one shot)
 
 ```bash
 cd /path/to/SingularityNeoNew
-docker compose up -d                       # builds + starts 18 containers
+docker compose up -d                       # builds + starts the core stack
 docker compose ps                          # see what's running
 ```
 
-Then open **http://localhost:5180** and log in with `admin@singularity.local` / `Admin1234!`.
+Then open **http://localhost:5180** and log in with the bootstrap IAM account shown by `./singularity.sh config show`.
 
 To tear down (keeps data):
 ```bash
@@ -497,13 +587,21 @@ docker compose down -v
 Wraps the master compose with friendlier subcommands. Useful for starting/stopping individual services.
 
 ```bash
-./singularity.sh up                        # start all
-./singularity.sh up portal                 # start just the portal
+./singularity.sh up                        # start core
+./singularity.sh up --profile llm-gateway  # core + local LLM gateway
+./singularity.sh up --profile mcp          # core + local MCP/tool runtime
+./singularity.sh up --full                 # historical all-local stack
+./singularity.sh backend-split             # debug: split agent/tools backend containers
+./singularity.sh up --profile gateway-only # gateway + shared Postgres only
+./singularity.sh up --profile composer-only # composer + gateway + shared Postgres only
+./singularity.sh core-only                 # return to consolidated core
+./singularity.sh up platform-web           # start just the unified frontend
 ./singularity.sh status                    # ps
+./singularity.sh topology                  # explain/count the active platform containers
 ./singularity.sh urls                      # color-coded URL cheatsheet
 ./singularity.sh logs workgraph-api -f     # follow logs
-./singularity.sh restart prompt-composer
-./singularity.sh stop workgraph-web
+./singularity.sh restart platform-core
+./singularity.sh stop platform-web
 ./singularity.sh down                      # stop all (keep data)
 ./singularity.sh nuke                      # stop + delete data volumes (confirms)
 ./singularity.sh login                     # smoke-test IAM /auth/local/login
@@ -518,12 +616,12 @@ Wraps the master compose with friendlier subcommands. Useful for starting/stoppi
 
 ### Central configuration utility
 
-Use `./singularity.sh config ...` when you need one place to manage the platform knobs that otherwise live across app-specific `.env` files. The v1 model is **hybrid local-first**: the canonical profile is `.singularity/config.local.json`, generated env files are written from it, and secrets stay on the laptop. The Portal `/operations` page shows the latest `./singularity.sh doctor` summary and never asks you to paste provider keys into the browser.
+Use `./singularity.sh config ...` when you need one place to manage the platform knobs that otherwise live across app-specific `.env` files. The v1 model is **hybrid local-first**: the canonical profile is `.singularity/config.local.json`, generated env files are written from it, and secrets stay on the laptop. Platform Web `/operations` shows the latest `./singularity.sh doctor` summary and never asks you to paste provider keys into the browser.
 
 It configures:
 
 - Database URLs for IAM, agent-and-tools, and Workgraph.
-- IAM vs pseudo-IAM endpoints.
+- IAM endpoints, with pseudo-IAM kept only as an explicit development helper.
 - Service endpoints for Workgraph, prompt-composer, context-fabric, agent-runtime, tool-service, agent-service, and Agent Execution Runtime.
 - LLM provider policy and model aliases for the central gateway. Provider policy lives in `.singularity/llm-providers.json`; secrets are passed only to the `llm-gateway` service.
 - Office-safe Copilot-only mode. `./singularity.sh config office-copilot-only` blanks OpenAI/OpenRouter/Anthropic/Ollama access in canonical config and generated env files, writes Copilot-only provider and model catalog files, and fences the gateway to the Copilot provider.
@@ -531,9 +629,9 @@ It configures:
 - Git push credentials for approved WorkItem branches. The canonical config stores only mode, remote name, token env name, or SSH key path; it never stores a token or key body. The Agent Execution Runtime is the only service that receives Git push credentials.
 - Gateway-owned model aliases. Workflows choose aliases; Agent Execution Runtime forwards aliases and receives resolved provider/model in receipts.
 - Balanced token budget defaults. Workgraph owns run budgets, Prompt Composer owns layer/retrieval budgeting, Context Fabric enforces execution limits, and the central gateway owns provider/model routing.
-- Governed artifact fetch for prompt assembly. Prompt Composer can fetch bounded text from Workgraph MinIO/document refs through `WORKGRAPH_ARTIFACT_FETCH_URL` using `WORKGRAPH_ARTIFACT_FETCH_TOKEN`; required artifacts fail closed if only a missing/unreadable ref is provided.
+- Governed artifact fetch for prompt assembly. Prompt Composer can fetch bounded text from Workgraph document-backed refs through `WORKGRAPH_ARTIFACT_FETCH_URL` using `WORKGRAPH_ARTIFACT_FETCH_TOKEN`; required artifacts fail closed if only a missing/unreadable ref is provided. In strict tenant mode, Workgraph also requires `X-Tenant-Id` and `WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS`, and rejects arbitrary MinIO object-key fetches that cannot be tied back to a tenant-owned document.
 - Optional formal verification. `formalVerification.enabled` maps to `FORMAL_VERIFICATION_ENABLED`; the default is `false`, so governance path controls are disabled/skipped unless an operator explicitly enables the SMT verifier.
-- UI env files for the portal, Workgraph web, IAM admin, and agent-and-tools web.
+- UI env files for the unified `platform-web` app; legacy split UI env files are generated only for debug/backward compatibility.
 
 Common commands:
 
@@ -545,22 +643,69 @@ Common commands:
 ./singularity.sh config git --mode ssh --ssh-key ~/.ssh/id_ed25519 --remote origin
 ./singularity.sh config git --mode token --token-env GITHUB_TOKEN --remote origin
 ./singularity.sh config mcp-catalog --default-alias mock
+./singularity.sh config rotate-secrets
+./singularity.sh config rotate-secrets --provider-manifest-key-id local-dev
+./singularity.sh config rotate-secrets --include-bootstrap-password
+./singularity.sh config production-guardrails --tenant-id legacy-local
+./singularity.sh config prepare-production --tenant-id <tenant-id> --dry-run
+./singularity.sh config reset-bootstrap-password
+./singularity.sh config mint-workgraph-proxy-token
 ./singularity.sh config providers
 ./singularity.sh config models
 ./singularity.sh config show
 ./singularity.sh doctor
 ./singularity.sh doctor git
 ./singularity.sh doctor secrets
+./singularity.sh tenant-isolation
 ./singularity.sh config export
 ```
 
-`show` masks secrets. `doctor` checks the canonical config, env drift, common ports, reachable service URLs, provider key presence, runtime token length, model-catalog readiness, Git push readiness, and tracked-file secret guardrails. `doctor git` focuses on workspace writability, remote, Git identity, and auth presence. `doctor secrets` scans tracked files for local-only config, credentialed remotes, provider keys, GitHub tokens, bearer tokens, JWT-like tokens, and private-key blocks. It also writes `singularity-portal/public/ops-doctor.json` so the Portal Setup Center can show the same status. For bare-metal runs, use `config export` to print shell exports without editing files.
+`show` masks secrets. `doctor` checks the canonical config, env drift, common ports, reachable service URLs, provider key presence, runtime token length, model-catalog readiness, Git push readiness, and secret guardrails. `doctor git` focuses on workspace writability, remote, Git identity, and auth presence. `doctor secrets` scans tracked files for local-only config, credentialed remotes, provider keys, GitHub tokens, bearer tokens, JWT-like tokens, and private-key blocks. It also checks ignored local env files for duplicate keys, production-class deployments using development defaults, and credentials placed in broad root env files instead of narrower runtime-specific secret files. Use `config prepare-production --tenant-id <tenant>` before shared/staging/production deployment to apply strict tenant guardrails and rotate deploy secrets with signed provider manifests; start with `--dry-run` to print the exact sequence without changing files. Because secret rotation changes `JWT_SECRET`, the command intentionally defers `WORKGRAPH_PROXY_SERVICE_TOKEN` minting until IAM is restarted with the generated env; after that, rerun `config prepare-production --tenant-id <tenant> --skip-rotate-secrets` to mint the tenant-scoped `platform-web` service JWT and run deploy preflight. Use `config rotate-secrets` when you only need to replace development JWT, service, runtime, Code Foundry, MCP bearer/runner, and MCP tool-grant signing defaults in `.singularity/config.local.json` and generated env files; add `--provider-manifest-key-id <id>` to create a trusted provider-manifest HMAC key and require signed external manifests. Provider manifests and URL document sources are SSRF-guarded by default; keep `AGENT_SOURCE_ALLOW_PRIVATE_URLS=false` outside deliberate local development. Production guardrails set Workgraph, Context Fabric, and direct MCP governance defaults to `fail_closed`, enable Context Fabric tool-grant minting, require MCP grant verification with `MCP_TOOL_GRANT_MODE=enforce`, and require MCP effective capability snapshots with `MCP_REQUIRE_EFFECTIVE_CAPABILITIES=true`; deploy preflight also requires `AUDIT_GOV_URL` and verifies audit-governance `/health` because fail-closed governance must not start without a reachable ledger. Keep `TOOL_GRANT_SIGNING_SECRET` identical anywhere Context Fabric and MCP are deployed separately. `WORKGRAPH_PROXY_SERVICE_TOKEN` is intentionally not generated by `rotate-secrets`; mint it with `config mint-workgraph-proxy-token` as a `platform-web` IAM service JWT before production deploy because Platform Web uses it as a Bearer token for Workgraph API routes. Use `config production-guardrails --tenant-id <tenant>` for the guardrail-only lower-level step. Bootstrap admin password rotation is opt-in with `--include-bootstrap-password`; for an existing IAM database, recreate `iam-service` with the new env and then run `./singularity.sh config reset-bootstrap-password` to update the stored local credential hash. Doctor writes the masked operations report consumed by Platform Web `/operations`. For bare-metal runs, use `config export` to print shell exports without editing files.
+`doctor` also runs `bin/check-compose-profiles.sh`, which validates every supported compose profile and the laptop/remote overlays so install paths like `backend-split`, `composer-only`, and `deprecated` cannot silently drift. The machine-readable topology source is `docs/platform-topology.json`; `bin/check-platform-topology-contract.py` validates that contract against Docker Compose and the operator docs before `bin/check-platform-topology.py` uses the same contract to verify the live Docker shape: one `platform-web`, one `platform-core` for the agent/tools APIs, the required product APIs/storage, the completed Postgres bootstrap one-shots, no running legacy frontend containers, and no mixed split/consolidated agent-tools plane. It also runs `bin/check-agent-tools-topology.sh` to ensure the agent/tools plane is either the consolidated `platform-core` container or the complete split debug set, never a mixed or partial topology. `bin/check-workgraph-tenant-guards.py` verifies strict tenant guard coverage for Workgraph runtime/admin/internal surfaces, tenant-scoped service-token contracts, and an explicit tenant-policy classification for every mounted Workgraph API route. `bin/check-workgraph-db-tenant-isolation.py` verifies the Workgraph tenant database posture: the workflow/run-snapshot tenant spine, tenant-index presence, runtime child-row connectivity, tenant RLS policy scaffold, app-role RLS-bypass posture, and, when production preflight requires it, non-null tenant data plus forced RLS on tenant-sensitive tables. `bin/check-workgraph-forced-rls-cutover.py` verifies the guarded cutover script remains non-mutating in dry-run mode, refuses apply without strict-runtime confirmation, and runs both preflight and postflight RLS checks. `bin/check-workgraph-forced-rls-enforcement.py` is enabled by `SINGULARITY_DOCTOR_DEEP_SMOKE=1` or `SINGULARITY_DOCTOR_RLS_ENFORCEMENT_SMOKE=1`; it creates a throwaway DB and non-bypass role, applies the real cutover, and proves cross-tenant reads/writes are blocked. `bin/check-m25-benchmarks.sh` verifies the DB-free M25 retrieval benchmark contract for hybrid ranking, FTS/vector fallback retention, citation markers, excerpt bounds, confidence clamping, recency boost, and capsule task-signature stability. Platform Web has two default guards: `bin/check-platform-web-routes.py` verifies canonical pages, legacy redirects, and sidebar surfaces, while `bin/check-platform-api-parity.py` verifies canonical and legacy API proxy families return parseable JSON instead of raw upstream HTML/text errors. For the stronger install audit, run `SINGULARITY_DOCTOR_DEEP_SMOKE=1 ./singularity.sh doctor`; it enables the headless Chrome UI parity check plus workflow, Workbench, Foundry, Agent Studio source-backed profile lifecycle checks. The bare-metal equivalent is `BARE_METAL_DEEP_SMOKE=1 bin/bare-metal.sh smoke`; it runs the same route/API proxy/browser hydration parity checks before the mutating lifecycle smokes. You can still run individual checks: `SINGULARITY_DOCTOR_UI_SMOKE=1` verifies Workgraph templates/designer/Planner/Inbox/runs, Eval Curation, Workbench, Operations readiness, Agent Studio source-backed skill creation, Prompt Workbench, Foundry, Singularity Engine, Identity, and Variables hydrate in Chrome. `SINGULARITY_DOCTOR_LIFECYCLE_SMOKE=1` creates a temporary workflow through Platform Web, patches it, writes a tiny START -> END design graph, starts it from a WorkItem, verifies child run completion and WorkItem submission, verifies run delete/archive compatibility, approves and archives the WorkItem, then archives the workflow. `SINGULARITY_DOCTOR_WORKBENCH_SMOKE=1` creates a temporary Workbench session through Platform Web, patches runtime settings, writes and reads stage chat, then abandons the session. `SINGULARITY_DOCTOR_FOUNDRY_SMOKE=1` validates a service spec, generates a temporary run through Platform Web, reads artifacts/file content, and fetches the receipt without calling LLM patching. For local audit-governance side-stack parity, run `python3 bin/check-audit-governance-lifecycle.py`, or set `SINGULARITY_DOCTOR_AUDIT_SMOKE=1` after `./singularity.sh up --profile audit`; it verifies strict DB/schema health, ingests an event through Platform Web, queries it back, and confirms persistence. `SINGULARITY_DOCTOR_AGENT_PROFILE_SMOKE=1` logs in through IAM, creates a temporary DRAFT profile through Platform Web with local, URL-document, and provider-manifest bindings, verifies stored source-governance summary, read-only defaults/provider-lock clamping, and failed-closed provider resolution, then archives the profile. `SINGULARITY_DOCTOR_TRACE_SPINE=1` runs `bin/test-trace-spine.sh` to prove one `trace_id` reaches Context Fabric, prompt composer, MCP resource views, and audit-governance; it expects local/host-reachable MCP and the split Postgres container.
+
+After Workgraph and Context Fabric are configured for strict tenant runtime
+(`TENANT_ISOLATION_MODE=strict` and `REQUIRE_TENANT_ID=true`), run the guarded
+tenant DB cutover. Dry-run is the default; `--apply` performs tenant-spine
+backfill, applies the RLS policy scaffold, forces RLS, and runs postflight
+checks through the non-bypass runtime app role:
+
+```bash
+./singularity.sh config prepare-production --tenant-id <tenant-id> --dry-run
+./singularity.sh config prepare-production --tenant-id <tenant-id>
+./singularity.sh recreate iam-service
+./singularity.sh config prepare-production --tenant-id <tenant-id> --skip-rotate-secrets
+./singularity.sh tenant-isolation
+./singularity.sh tenant-isolation --default-tenant-id <legacy-tenant> --apply --confirm-strict-runtime
+bin/check-deploy-env.sh --env-file <release-env>
+```
+
+Rows that cannot infer a tenant from stored runtime context require an explicit
+`--default-tenant-id <legacy-tenant>` selected by the operator. The lower-level
+break-glass scripts remain available as `bin/backfill-workgraph-tenant-ids.py`
+and `bin/enable-workgraph-forced-rls.py`.
+
+The production Workgraph app DB role must not be `SUPERUSER` and must not have
+`BYPASSRLS`; `bin/check-workgraph-db-tenant-isolation.py --require-rls` fails
+closed if it can bypass row security.
+Production-class deploy preflight requires the forced-RLS check by default.
+Set `WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED=false` only for a documented and
+verified alternate database isolation model. Disabling the forced-RLS check now
+also requires `WORKGRAPH_DB_TENANT_ISOLATION_ALTERNATE_MODEL` set to
+`schema-per-tenant`, `database-per-tenant`, or `cluster-per-tenant`, plus
+`WORKGRAPH_DB_TENANT_ISOLATION_EVIDENCE` pointing to the ticket, runbook, or
+architecture record that proves the alternate isolation is deployed.
+
+The first command is a dry run. The second only writes tenant IDs that can be
+inferred from stored runtime context. The third is for rows that cannot be
+inferred, and requires the operator to choose the tenant that should own old
+demo/imported data.
 
 Git push credential boundary:
 
 - Default is disabled: `GIT_PUSH` nodes preserve branch/commit evidence and block with `GIT_AUTH_MISSING`.
 - SSH mode mounts only the selected key path or SSH agent socket into `mcp-server`, read-only.
 - Token mode passes only the selected env var value, such as `GITHUB_TOKEN`, into Agent Execution Runtime. Tokens are not written to `.singularity/config.local.json`.
+- Production grant enforcement routes Workgraph `GIT_PUSH` through Context Fabric operational grants before MCP can run `finish_work_branch`; Context Fabric signs only when the workflow has an approved gate.
 - Agent Execution Runtime redacts credentialed remotes, GitHub PATs, provider keys, bearer tokens, private keys, and token-shaped values before returning output, writing audit events, or creating receipts.
 - Workgraph shows `COMMITTED_NOT_PUSHED` when the local commit exists but publishing failed; use `Retry push` after fixing credentials so Workbench does not rerun.
 
@@ -715,14 +860,14 @@ Formal verification is a platform-level feature toggle, off by default:
 ```bash
 ./singularity.sh config set formalVerification.enabled true
 ./singularity.sh config write
-./singularity.sh restart formal-verifier workgraph-api portal
+./singularity.sh restart formal-verifier workgraph-api platform-web
 ```
 
-When disabled, Workgraph formal-analysis endpoints return `FORMAL_VERIFICATION_DISABLED`, Policy Check nodes using `engine=formal_verifier` are marked skipped with an audit receipt, and no solver call is made. When enabled, `formal-verifier` exposes `/health`, `/healthz/strict`, and `/api/v1/verification/verify`, and Operations Portal shows **Governance Paths** for workflow/run analysis.
+When disabled, Workgraph formal-analysis endpoints return `FORMAL_VERIFICATION_DISABLED`, Policy Check nodes using `engine=formal_verifier` are marked skipped with an audit receipt, and no solver call is made. When enabled, `formal-verifier` exposes `/health`, `/healthz/strict`, and `/api/v1/verification/verify`, and Platform Web Operations shows **Governance Paths** for workflow/run analysis.
 
 ### Operator command center and guided delivery
 
-The Operations Portal (`http://localhost:5180/operations`) is the command center for day-to-day governed delivery:
+Platform Web Operations (`http://localhost:5180/operations`) is the command center for day-to-day governed delivery:
 
 - **Setup Center** — service health, DNS/reachability, config doctor summary, runtime/model readiness, and generated env drift.
 - **Readiness** — capability readiness score from agent-runtime: identity/governance, agent team, knowledge/code, workflow readiness, and runtime readiness.
@@ -743,9 +888,9 @@ GET http://localhost:8080/api/workflow-instances/:id/ai-causality-report
 GET http://localhost:8080/api/work-items
 ```
 
-The embedded Workbench at `http://localhost:5176` is now the **Story-to-Delivery Workbench**. A workflow-linked Workbench opens with resolved workflow values, guides the operator from story → agents → artifacts → gates → handoff, and mirrors stage outputs into normal Workgraph consumables so downstream nodes and resumed workflows can consume approved artifacts outside the Workbench session.
+The Workbench route at `http://localhost:5180/workbench` is the **Story-to-Delivery Workbench**. A workflow-linked Workbench opens with resolved workflow values, guides the operator from story → agents → artifacts → gates → handoff, and mirrors stage outputs into normal Workgraph consumables so downstream nodes and resumed workflows can consume approved artifacts outside the Workbench session.
 
-Capability bootstrap in agent-and-tools web (`http://localhost:3000/capabilities`) acts as a **Capability Agent Team Factory**. It previews predefined PO/Architect/Developer/QA/Security/DevOps/Governance/Verifier-style agents, marks locked governance/verifier gates, shows Git-grounded roles, and keeps generated agents or learned knowledge draft/inactive until human activation.
+Capability bootstrap in Platform Web (`http://localhost:5180/capabilities`) acts as a **Capability Agent Team Factory**. It previews predefined PO/Architect/Developer/QA/Security/DevOps/Governance/Verifier-style agents, marks locked governance/verifier gates, shows Git-grounded roles, and keeps generated agents or learned knowledge draft/inactive until human activation.
 
 Agent Execution Runtime local code intelligence indexes Python, TypeScript, TSX, JavaScript, JSX, Go, and Java files from `MCP_SANDBOX_ROOT`. Agents should prefer `find_symbol`, `get_symbol`, `get_ast_slice`, and `get_dependencies` before full-file `read_file`; this keeps local/private code local while giving the model compact symbol summaries, signatures, line ranges, imports, branches, and commit evidence.
 
@@ -758,8 +903,7 @@ cd singularity-iam-service        && docker compose up -d
 cd context-fabric                 && docker compose up -d
 cd agent-and-tools                && docker compose up -d
 cd workgraph-studio/infra/docker  && docker compose up -d   # postgres+minio+api+web
-cd UserAndCapabillity             && npm install && npm run dev
-cd singularity-portal             && npm install && npm run dev
+cd agent-and-tools/web            && npm install && PORT=5180 npm run dev
 ```
 
 > **Heads up:** the per-app compose files use *different* container names + ports than the master (e.g. `agentandtools-postgres` vs. `singularity-at-postgres`). Don't mix them — pick one approach and stick with it.
@@ -770,23 +914,20 @@ cd singularity-portal             && npm install && npm run dev
 
 | Service | URL | Auth | Notes |
 |---------|-----|------|-------|
-| **portal** | http://localhost:5180 | IAM JWT | the wrapper SPA — start here |
-| **user-and-capability** | http://localhost:5175 | IAM JWT | IAM admin SPA |
-| **workgraph-web** | http://localhost:5174 | workgraph token | Designer + Runtime UI |
-| **blueprint-workbench** | http://localhost:5176 | workgraph token | Embedded staged agent workbench |
-| **agent-web** | http://localhost:3000 | optional JWT | Next.js admin |
+| **platform-web** | http://localhost:5180 | IAM JWT | unified UI for operations, agents, workflows, workbench, foundry, and identity |
+| **platform-core** | http://localhost:3001-3004 | optional JWT | one Docker container hosting agent-service, tool-service, agent-runtime, and prompt-composer |
 | **iam-service** | http://localhost:8100/api/v1 | bearer (login) | OpenAPI: `/docs` |
 | **workgraph-api** | http://localhost:8080/api | workgraph token | DAG runtime |
-| **prompt-composer** | http://localhost:3004/api/v1 | optional JWT | `/compose-and-respond` |
-| **agent-runtime** | http://localhost:3003/api/v1 | optional JWT | agent templates, memory |
-| **tool-service** | http://localhost:3002/api/v1 | optional JWT | tool registry, `/tools/discover`, `/tools/invoke` |
-| **agent-service** | http://localhost:3001/api/v1 | optional JWT | agent CRUD |
+| **prompt-composer** | http://localhost:3004/api/v1 | optional JWT | `/compose-and-respond`, served by `platform-core` |
+| **agent-runtime** | http://localhost:3003/api/v1 | optional JWT | agent templates, memory, served by `platform-core` |
+| **tool-service** | http://localhost:3002/api/v1 | optional JWT | tool registry, `/tools/discover`, `/tools/invoke`, served by `platform-core` |
+| **agent-service** | http://localhost:3001/api/v1 | optional JWT | agent CRUD, served by `platform-core` |
 | **context-api** | http://localhost:8000 | service token for internal routes | `/execute`, `/execute/events`, legacy `/chat/respond` |
 | **llm-gateway** | http://localhost:8001 | none | `/llm/respond`, `/llm/models`, `/docs` |
 | **context-memory** | http://localhost:8002 | none | `/memory/messages`, `/context/compile` |
 | **metrics-ledger** | http://localhost:8003 | none | `/metrics/dashboard` |
-| **iam-postgres** | localhost:5433 | `singularity / singularity` | `singularity_iam` DB |
-| **at-postgres** | localhost:5432 | `postgres / singularity` | `singularity` DB (pgvector) |
+| **at-postgres** | localhost:5432 | `postgres / singularity` | `singularity`, `singularity_iam`, `singularity_composer`, `singularity_codegen`, `singularity_context_fabric` DBs |
+| **iam-postgres** | localhost:5433 | `singularity / singularity` | deprecated profile only; do not seed this for the default stack |
 | **wg-postgres** | localhost:5434 | `workgraph / workgraph_secret` | `workgraph` DB |
 | **wg-minio** | http://localhost:9000 (console :9001) | `workgraph / workgraph_secret` | artifact storage |
 
@@ -808,11 +949,11 @@ Four of the seven diagrams are **auto-generated** by `prisma-erd-generator` on e
 
 ### Sign in
 
-Open http://localhost:5180 → Sign in with `admin@singularity.local` / `Admin1234!`. The portal stores the IAM JWT in `localStorage` under `singularity-portal.auth` and forwards it to every backend.
+Open http://localhost:5180 → sign in with the bootstrap IAM account shown by `./singularity.sh config show`. Platform Web stores the IAM session locally and forwards the bearer token to backend API clients.
 
 ### What you'll see
 
-The portal home shows four live tiles pulling from each backend:
+The Platform Web home shows domain entry points and health-backed operations surfaces pulling from backend services:
 
 - **My open tasks** — counts + recent items from `workgraph /api/mcp/inbox`
 - **Workflow runs** — active and recent `WorkflowInstance`s across templates
@@ -825,7 +966,7 @@ The sidebar's **Apps** section deep-links to:
 - **Agent & Tools** — agents, prompts, tools admin
 - **IAM Admin** — users, roles, capabilities
 
-> The deep-link apps each handle their own auth right now (workgraph-web has its own login). Single-sign-on across all UIs is on the roadmap (set `AUTH_PROVIDER=iam` on workgraph + change tile auth in user-and-capability).
+> Legacy split UIs are debug-only. The normal product path uses one local session in Platform Web and internal Next navigation.
 
 ---
 
@@ -917,12 +1058,31 @@ docker exec singularity-at-postgres psql -U postgres -d singularity -tAc \
 ### Deploy Environment Check
 
 For the office laptop or any remote Docker host, configure the GitHub
-environment secrets used by `.github/workflows/deploy.yml`:
+environment secrets listed in `docs/deploy-required-secrets.json`. Check the
+GitHub Environment before a release; this verifies secret names without reading
+secret values:
 
-- `DEPLOY_HOST`
-- `DEPLOY_USER`
-- `DEPLOY_SSH_KEY`
-- `DEPLOY_PATH`
+```bash
+python3 ./bin/check-github-environment-secrets.py \
+  --repo <owner>/<repo> \
+  --github-environment production
+```
+
+For release env files, run the same manifest check locally:
+
+```bash
+python3 ./bin/check-github-environment-secrets.py --env-file .env.production
+```
+
+For external SSO targets, add `--require-oidc` so the OIDC secret names are
+also required:
+
+```bash
+python3 ./bin/check-github-environment-secrets.py \
+  --repo <owner>/<repo> \
+  --github-environment production \
+  --require-oidc
+```
 
 On a target host, run this before using the deploy workflow:
 
@@ -931,23 +1091,56 @@ DEPLOY_HOST=localhost DEPLOY_USER="$USER" DEPLOY_PATH="$PWD" DEPLOY_SSH_KEY_FILE
   ./bin/check-deploy-env.sh
 ```
 
+This check now validates more than SSH transport. It loads the shell
+environment, local env files, and `.singularity/config.local.json`, then fails
+closed unless production-class deployments have `APP_ENV` or `SINGULARITY_ENV`
+set to `production`, `staging`, or `perf`, `AUTH_OPTIONAL=false`,
+`TENANT_ISOLATION_MODE=strict`, `REQUIRE_TENANT_ID=true`, signed provider
+manifests, and rotated 32+ character service tokens for Platform Web, Workgraph,
+Context Fabric, Code Foundry, MCP, and audit-governance. Use `--config-only`
+for CI checks that only validate the deploy config contract, and reserve
+`--allow-dev` for throwaway remote Docker hosts.
+
 ### M25 Knowledge / Citation Check
 
 Prompt Composer now stores typed retrieval evidence on each `PromptAssembly`
 so Run Insights can show citations per agent step. Before demoing or after a
-DB rebuild, verify the pgvector and citation surfaces:
+DB rebuild, verify both the composer-owned citation tables and the runtime-read
+retrieval tables:
 
 ```bash
-PROMPT_COMPOSER_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/singularity" \
+# Inside the Docker network, for example from singularity-at-postgres or platform-core:
+PROMPT_COMPOSER_DATABASE_URL="postgresql://postgres:singularity@at-postgres:5432/singularity_composer" \
+PROMPT_RUNTIME_DATABASE_URL="postgresql://postgres:singularity@at-postgres:5432/singularity" \
   ./bin/check-m25-knowledge.sh
+```
+
+If you run it from the host and Docker owns `localhost:5432`, replace
+`at-postgres` with `127.0.0.1`. If another local Postgres owns host port `5432`,
+run the check inside the Docker network instead. Use `--strict-data` after
+seed/backfill when you also want to require non-empty evidence and retrieval
+rows.
+
+`./singularity.sh doctor` also runs the DB-free M25 retrieval benchmark contract
+through `bin/check-m25-benchmarks.sh`. Run it directly when editing retrieval
+primitives:
+
+```bash
+./bin/check-m25-benchmarks.sh
 ```
 
 Pass criteria:
 
 - `vector` extension exists.
-- `PromptAssembly.evidenceRefs` exists.
-- `CapabilityCompiledContext` exists.
+- `PromptAssembly.evidenceRefs`, `compiledContextId`, and trace columns exist.
+- `CapabilityCompiledContext` exists with its unique task-signature index.
+- Runtime knowledge and memory tables have pgvector HNSW indexes.
+- Runtime knowledge and memory tables have generated `content_tsv` columns and
+  GIN indexes for the FTS branch of hybrid retrieval.
 - Recent `evidenceRefs` rows stay small enough for audit replay.
+- Retrieval benchmark contract proves hybrid RRF ranking, FTS-only and
+  vector-only fallback retention, bounded citation excerpts, confidence
+  clamping, recency boost behavior, and capsule task-signature stability.
 
 ### Execution Governance Surfaces
 
@@ -963,8 +1156,21 @@ These are now implemented and should be checked during smoke tests:
 - **Citations:** Prompt Composer writes typed `RetrievedChunk[]` evidence refs;
   Run Insights renders per-step citation drill-through.
 - **Tenant guardrails:** Context Fabric can require `run_context.tenant_id` with
-  `REQUIRE_TENANT_ID=true`; call logs and event rows persist `tenant_id` so
-  event replay and rollups can be tenant-filtered.
+  `REQUIRE_TENANT_ID=true`; Workgraph `AGENT_TASK` dispatch also fails before
+  calling Context Fabric when `TENANT_ISOLATION_MODE=strict` and no
+  `tenantId`/`tenant_id` is available from node config, workflow context,
+  vars/globals, or WorkItem input. Workflow instances now persist a first-class
+  `tenantId`; strict-mode workflow-instance routes require the caller's
+  `X-Tenant-Id`/`tenant_id` to match, and pending-execution polling is scoped
+  before returning client work. Runtime artifact and approval surfaces use the
+  same strict tenant guard. Service tokens minted through IAM carry `tenant_ids`
+  when `IAM_SERVICE_TOKEN_TENANT_IDS` is configured, and strict Workgraph /
+  Context Fabric service-token resolvers reject tokens whose claim does not
+  exactly match the configured tenant scope. Workgraph internal static-token
+  surfaces require `WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS` plus `X-Tenant-Id` in
+  strict mode, and global feature-flag reads become admin-only. Call logs and
+  event rows persist `tenant_id` so event replay and rollups can be
+  tenant-filtered.
 - **Deploy readiness:** `.github/workflows/deploy.yml` is manual and SSH-based.
   It is active only after the GitHub environment secrets above are configured.
 
@@ -973,7 +1179,9 @@ These are now implemented and should be checked during smoke tests:
 ## `singularity.sh` cheatsheet
 
 ```
-up [service]        start all (or just one)
+up [--profile p] [service]
+                    start core by default, optional profiles on demand
+up --full           start the historical all-local stack
 down                stop everything (keeps volumes)
 nuke                stop + delete all data volumes (confirms)
 stop <service>      stop one service
@@ -1027,7 +1235,7 @@ non-preview composer call also delegates to `/execute`, not `/chat/respond`.
 - Reads `instance.context._vars` and `instance.context._globals`
 - Walks prior `AgentRun` outputs to populate `priorOutputs`
 - POSTs to `context-fabric /execute`; Context Fabric calls `prompt-composer /compose-and-respond` in preview mode
-- Persists the response on `AgentRunOutput.structuredPayload` with full correlation
+- Persists indexed correlation fields on `AgentRun` and full replay detail on `AgentRunOutput.structuredPayload`
 - Sets `AgentRun.status = AWAITING_REVIEW` on success, `FAILED` on composer error
 - Emits `AgentRunStarted`/`AgentRunCompleted`/`AgentRunFailed` outbox events
 
@@ -1269,13 +1477,13 @@ brew services stop postgresql@14    # or whatever version
 
 (Or remap the host port for `at-postgres` in the master compose to e.g. `5435:5432`.)
 
-### Port `5433` is taken (workgraph postgres can't start)
+### Port `5433` is taken
 
-The IAM Postgres binds `5433`. The master compose remaps **workgraph postgres to `5434`** to avoid this. If you also run the original `workgraph-studio/infra/docker/docker-compose.yml`, edit its host port from `5433:5432` to `5434:5432`.
+The default stack does not need `5433`; IAM now uses the shared `at-postgres` on `5432` with DB `singularity_iam`. Port `5433` is only used by the deprecated standalone `iam-postgres` profile or older per-app Workgraph compose files. If you run `workgraph-studio/infra/docker/docker-compose.yml` directly, edit its host port from `5433:5432` to `5434:5432` or stop the conflicting process.
 
 ### Workgraph rejects the IAM JWT (you see 401s on the My-Tasks tile)
 
-Workgraph runs `AUTH_PROVIDER=local` by default — it has its own user table and login endpoint. The portal sends the IAM JWT to all backends; workgraph 401s on it. The portal handles this gracefully (only the IAM client is "authoritative" for session — workgraph 401s show as a tile error, the user stays signed in).
+Workgraph can run with its local auth provider in older/debug topologies. The unified Platform Web path expects Workgraph to use IAM-aware service calls and shared session handling; if Workgraph rejects IAM JWTs, set `AUTH_PROVIDER=iam` on `workgraph-api`.
 
 To make workgraph honor IAM JWTs, set on `workgraph-api`:
 
@@ -1288,6 +1496,35 @@ environment:
 
 Workgraph already ships an `iam/client.ts` that handles this — just hasn't been turned on.
 
+### External SSO / OIDC Mode
+
+IAM supports a generic OIDC deployment mode for external identity providers:
+
+```bash
+IAM_AUTH_MODE=oidc
+OIDC_ISSUER_URL=https://idp.example.com/oauth2/default
+OIDC_CLIENT_ID=singularity-platform
+OIDC_CLIENT_SECRET=<rotated 32+ char secret>
+OIDC_REDIRECT_URI=https://platform.example.com/identity/oidc/callback
+```
+
+Useful checks:
+
+```bash
+curl http://localhost:8100/api/v1/auth/providers
+curl http://localhost:8100/api/v1/auth/oidc/login-url
+```
+
+Platform Web starts the OIDC redirect from `/identity/login` and completes it at
+`/identity/oidc/callback`. IAM exchanges the authorization code through
+`POST /api/v1/auth/oidc/code-login`, verifies the returned `id_token` and nonce,
+upserts the federated IAM user, and returns the normal Singularity bearer token.
+`POST /api/v1/auth/oidc/token-login` remains available for trusted non-browser
+clients that already hold an IdP `id_token`.
+Production deploy preflight fails closed if `IAM_AUTH_MODE=oidc` is missing
+issuer/client/secret/redirect settings, uses non-HTTPS URLs, or has a weak OIDC
+client secret.
+
 ### Prisma "OpenSSL not detected" inside Alpine
 
 Some images are missing `libssl`. Fix in the affected `Dockerfile`:
@@ -1296,9 +1533,9 @@ Some images are missing `libssl`. Fix in the affected `Dockerfile`:
 RUN apk add --no-cache openssl
 ```
 
-### Vite dev says "port 5180 in use"
+### Platform Web says "port 5180 in use"
 
-The master compose runs the portal in nginx on `:5180`. If you also `npm run dev` it locally, kill one or the other.
+The master compose runs `platform-web` on `:5180`. If you also run `PORT=5180 npm run dev` locally, kill one or the other.
 
 ```bash
 lsof -i :5180          # find the PID
@@ -1314,7 +1551,7 @@ Compose only re-reads env on container creation. Use:
 docker compose up -d <service>       # same
 ```
 
-For portal/web env changes (Vite bakes some at build time), rebuild:
+For Platform Web env changes, rebuild:
 
 ```bash
 ./singularity.sh build <service>
@@ -1335,12 +1572,15 @@ docker compose down -v --remove-orphans  # raw equivalent
 
 These are real gaps, not nice-to-haves:
 
-- **SSO deployment mode** — IAM is the platform identity source. Workgraph supports `AUTH_PROVIDER=iam`; make sure deployed stacks do not leave Workgraph in local auth except for offline dev.
-- **AgentRun correlation columns** — `promptAssemblyId`, `modelCallId`, `contextPackageId`, `cfCallId`, and runtime IDs are still stored in `structuredPayload` JSON. Promote to dedicated columns for faster reporting.
-- **M25 production hardening** — typed citations, compiled context, and hybrid retrieval exist, but still need benchmark enforcement, FTS migration/backfill checks, and quality comparison reviews before calling it production-grade.
-- **Hard tenant isolation** — tenant IDs are now propagated, persisted, and filterable. True isolation still needs tenant-scoped service tokens, row-level checks everywhere, and possibly database RLS/schema separation.
-- **Observability depth** — Jaeger is available and several services have OTel, but the full Workgraph → Context Fabric → Agent Execution Runtime trace is not yet stitched as one distributed trace.
-- **Deploy secrets** — Dockerfiles, CI image builds, and manual deploy workflow exist. The GitHub environment secrets must still be configured per target.
+- **SSO deployment mode** — IAM is the platform identity source. Workgraph supports `AUTH_PROVIDER=iam`, production/staging deploy preflight fails if Workgraph leaves IAM auth, and IAM now has a fail-closed `IAM_AUTH_MODE=oidc` path with provider readiness, authorization URL generation, server-side authorization-code exchange, verified OIDC `id_token` plus nonce login, Platform Web callback/session UX, and federated user mapping. Remaining work is provider-specific OAuth adapters for non-OIDC providers such as GitHub OAuth.
+- **M25 production hardening** — typed citations, compiled context, hybrid retrieval, FTS DDL/backfill repair, fail-closed DB readiness, and a doctor-enforced retrieval benchmark contract exist. Remaining work is live corpus quality comparison reviews before calling it production-grade.
+- **Hard tenant isolation** — tenant IDs are now propagated, persisted on workflow instances and browser run snapshots, filterable, required for Workgraph `AGENT_TASK` -> Context Fabric dispatch, and enforced on Workgraph workflow-instance/pending-execution routes in strict mode. Strict mode also guards Workgraph run-adjacent AgentRun, ToolRun, approval, consumable, document, code-change, receipt, insight, evidence-pack, runtime inbox, Workbench definitions, internal artifact-fetch, and feature-flag surfaces. IAM service-token minting now carries `tenant_ids`, Workgraph/Context Fabric strict-mode service-token resolvers reject broad/mismatched tokens, deploy preflight requires `IAM_SERVICE_TOKEN_TENANT_IDS` plus `WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS`, `bin/check-workgraph-tenant-guards.py` prevents known route/service-token guards plus the full Workgraph route tenant-policy ledger from silently regressing, and `bin/check-workgraph-db-tenant-isolation.py` now fails production preflight when live Workgraph data is not tenant-scoped. Workgraph also has request-scoped tenant DB context helpers, a Prisma transaction proxy, workflow-instance spine, run snapshots, AgentRun, ToolRun, approval, consumable, document, code-change, receipt, insight/evidence, runtime inbox, Workbench definitions, and internal artifact-fetch routes using tenant-scoped DB transactions, checked-in RLS policy scaffolding, a runtime-spine backfill tool, and a guarded `bin/enable-workgraph-forced-rls.py` cutover. High-assurance isolation still needs forced RLS enabled in each production target, or a move to schema-per-tenant isolation.
+- **Observability depth** — Jaeger is available, several services have OTel, and Workgraph now explicitly propagates W3C `traceparent` plus the app-level `x-singularity-trace-id` to Context Fabric. Remaining work is a release smoke gate that proves the full Workgraph → Context Fabric → Agent Execution Runtime/MCP trace appears as one distributed trace in the target environment.
+- **Deploy secrets** — Dockerfiles, CI image builds, manual deploy workflow, deploy preflight guardrails, and a required GitHub Environment secret-name manifest/checker exist. Each target must still run `bin/check-github-environment-secrets.py --github-environment <env>` plus `bin/check-deploy-env.sh` before release.
+
+Recently closed:
+
+- **AgentRun correlation columns** — Workgraph `agent_runs` has first-class indexed fields for `traceId`, `cfCallId`, `promptAssemblyId`, `mcpServerId`, `mcpInvocationId`, `contextPackageId`, `modelCallId`, and `laptopInvocationId`. New workflow, approval-resume, and laptop completion paths now keep those columns synchronized while read paths prefer the columns and fall back to `AgentRunOutput.structuredPayload` for older rows.
 
 ---
 
@@ -1367,7 +1607,7 @@ branding/
 ./bin/sync-branding.sh
 
 # Output:
-#   ✓ synced → singularity-portal/public/
+#   ✓ synced → platform-web public assets
 #   ✓ synced → UserAndCapabillity/public/
 #   ✓ synced → agent-and-tools/web/public/
 #   ✓ synced → workgraph-studio/apps/web/public/
@@ -1420,7 +1660,7 @@ SingularityNeoNew/
 │   ├── packages/{shared-types,engine}/
 │   └── infra/docker/docker-compose.yml
 ├── UserAndCapabillity/         # React + Vite — IAM admin SPA
-└── singularity-portal/         # NEW — wrapper SPA (this is the front door)
+└── singularity-portal/         # legacy wrapper SPA; default front door is agent-and-tools/web
 ```
 
 ---

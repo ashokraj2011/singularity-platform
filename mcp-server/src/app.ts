@@ -136,8 +136,8 @@ app.use("/mcp/events", requireMcpScope("events:read"));
 // Centralized GitHub source discovery for capability onboarding. Read-only
 // repo tree / file reads, so they ride the resources:read scope.
 app.use("/mcp/source", requireMcpScope("resources:read"));
-app.use("/mcp", discoveryRouter);
-app.post("/mcp/embed", async (req, res) => {
+app.use("/mcp/discovery", requireMcpScope("tools:list"));
+app.post("/mcp/embed", requireMcpScope("invoke"), async (req, res) => {
   const parsed = z.object({
     modelAlias: z.string().min(1).optional(),
     input: z.array(z.string()).min(1, "input cannot be empty"),
@@ -190,7 +190,7 @@ app.post("/mcp/embed", async (req, res) => {
 // package of AST slices that Prompt Composer renders into CODE_* layers.
 // NOT an agent-callable tool — the resulting prompt lands at step 0 of
 // the ReAct loop, fully formed.
-app.post("/mcp/code-context/build", async (req, res) => {
+app.post("/mcp/code-context/build", requireMcpScope("resources:read"), async (req, res) => {
   const parsed = z.object({
     task_text: z.string().min(1, "task_text is required"),
     target_hints: z.array(z.string()).optional(),
@@ -258,7 +258,7 @@ app.post("/mcp/code-context/build", async (req, res) => {
 // with include_slice_content=false. Optional `?kind=editable|dependency|test`
 // and `?indices=0,2,5` (indices into that kind's array). 404 if the package
 // isn't stored (expired from the LRU / never stashed / server restarted).
-app.get("/mcp/code-context/:packageId/slices", (req, res) => {
+app.get("/mcp/code-context/:packageId/slices", requireMcpScope("resources:read"), (req, res) => {
   const stored = getStoredPackageSlices(req.params.packageId);
   if (!stored) {
     throw new AppError(
@@ -297,5 +297,6 @@ app.use("/mcp/worktree", worktreeRouter);
 app.use("/mcp/worktree", worktreeTestRouter);
 app.use("/mcp", sourceDiscoverRouter);
 app.use("/mcp", eventsRouter);
+app.use("/mcp", discoveryRouter);
 
 app.use(errorMiddleware);

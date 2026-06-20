@@ -6,7 +6,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import dotenv from "dotenv";
-import { assertProductionSecret } from "@agentandtools/shared";
+import { assertProductionInvariant, assertProductionSecret } from "@agentandtools/shared";
 import { toolRoutes } from "./routes/tools";
 import { discoveryRoutes } from "./routes/discovery";
 import { executionRoutes } from "./routes/execution";
@@ -24,6 +24,12 @@ dotenv.config();
 
 // M35.1 — refuse to start in prod-class envs with a default JWT_SECRET.
 assertProductionSecret({ name: "JWT_SECRET", value: process.env.JWT_SECRET });
+assertProductionSecret({ name: "MCP_BEARER_TOKEN", value: process.env.MCP_BEARER_TOKEN, minLength: 32 });
+assertProductionInvariant({
+  name: "AUTH_OPTIONAL",
+  ok: process.env.AUTH_OPTIONAL !== "true",
+  message: "set AUTH_OPTIONAL=false or omit it; production services must require IAM auth",
+});
 
 const app = express();
 const PORT = process.env.PORT ?? 3002;

@@ -1,4 +1,4 @@
-import { cn } from '@/lib/utils'
+import { cn } from 'identity-web/lib/utils'
 
 interface StatusBadgeProps {
   label: string

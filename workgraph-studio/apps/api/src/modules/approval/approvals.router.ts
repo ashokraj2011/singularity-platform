@@ -13,8 +13,25 @@ import { approveWorkItem, requestWorkItemRework } from '../work-items/work-items
 import { config } from '../../config'
 import { authzCheck } from '../../lib/iam/client'
 import { loadCallerContext, ROLE_LOOKUP_BUDGET } from '../../lib/iam/callerContext'
+import {
+  assertApprovalRequestTenant,
+  assertWorkflowInstanceTenant,
+  assertWorkflowNodeTenant,
+  requireTenantFromRequest,
+  tenantIsolationStrict,
+} from '../../lib/tenant-isolation'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 
 export const approvalsRouter: Router = Router()
+
+async function tenantScopedInstanceIds(tenantId: string): Promise<string[]> {
+  const rows = await prisma.workflowInstance.findMany({
+    where: { tenantId },
+    select: { id: true },
+    take: 5000,
+  })
+  return rows.map(row => row.id)
+}
 
 const createApprovalSchema = z.object({
   instanceId: z.string().uuid().optional(),
@@ -34,10 +51,17 @@ const decisionSchema = z.object({
 
 approvalsRouter.post('/', validate(createApprovalSchema), async (req, res, next) => {
   try {
-    const request = await prisma.approvalRequest.create({
-      data: { ...req.body, requestedById: req.user!.userId, dueAt: req.body.dueAt ? new Date(req.body.dueAt) : undefined },
+    if (tenantIsolationStrict() && !req.body.instanceId) {
+      throw new ValidationError('TENANT_ISOLATION_MODE=strict requires instanceId when creating an approval request')
+    }
+    const request = await withTenantDbTransaction(prisma, async () => {
+      if (req.body.instanceId) await assertWorkflowInstanceTenant(req, req.body.instanceId)
+      const created = await prisma.approvalRequest.create({
+        data: { ...req.body, requestedById: req.user!.userId, dueAt: req.body.dueAt ? new Date(req.body.dueAt) : undefined },
+      })
+      await logEvent('ApprovalRequested', 'ApprovalRequest', created.id, req.user!.userId)
+      return created
     })
-    await logEvent('ApprovalRequested', 'ApprovalRequest', request.id, req.user!.userId)
     res.status(201).json(request)
   } catch (err) {
     next(err)
@@ -50,19 +74,29 @@ approvalsRouter.get('/', async (req, res, next) => {
   try {
     const pg = parsePagination(req.query as Record<string, unknown>)
     const { status, instanceId, nodeId } = req.query as Record<string, string | undefined>
+    const tenantId = requireTenantFromRequest(req, 'approval request listing')
     const where: Record<string, unknown> = {}
     if (status)     where.status     = status
     if (instanceId) where.instanceId = instanceId
     if (nodeId)     where.nodeId     = nodeId
+    const [requests, total] = await withTenantDbTransaction(prisma, async () => {
+      if (tenantIsolationStrict()) {
+        if (instanceId) {
+          await assertWorkflowInstanceTenant(req, instanceId)
+        } else {
+          where.instanceId = { in: await tenantScopedInstanceIds(tenantId!) }
+        }
+      }
 
-    const [requests, total] = await Promise.all([
-      prisma.approvalRequest.findMany({
-        where, skip: pg.skip, take: pg.take,
-        include: { decisions: true },
-        orderBy: { createdAt: 'desc' },
-      }),
-      prisma.approvalRequest.count({ where }),
-    ])
+      return Promise.all([
+        prisma.approvalRequest.findMany({
+          where, skip: pg.skip, take: pg.take,
+          include: { decisions: true },
+          orderBy: { createdAt: 'desc' },
+        }),
+        prisma.approvalRequest.count({ where }),
+      ])
+    }, tenantId)
     res.json(toPageResponse(requests, total, pg))
   } catch (err) {
     next(err)
@@ -137,23 +171,29 @@ approvalsRouter.get('/my-approvals', async (req, res, next) => {
     const pg = parsePagination(req.query as Record<string, unknown>)
     const userId = req.user!.userId
     const statusFilter = req.query.status as string | undefined
+    const tenantId = requireTenantFromRequest(req, 'my approvals')
 
     // Direct assignments PLUS delegated (role/team) PENDING approvals resolved
     // at read time — otherwise role-based work-item approvals never surface.
-    const delegatedIds = await resolveDelegatedApprovalIds(userId)
-    const where: Record<string, unknown> = delegatedIds.length > 0
-      ? { OR: [{ assignedToId: userId }, { id: { in: delegatedIds } }] }
-      : { assignedToId: userId }
-    if (statusFilter) where.status = statusFilter
+    const [requests, total] = await withTenantDbTransaction(prisma, async () => {
+      const delegatedIds = await resolveDelegatedApprovalIds(userId)
+      const where: Record<string, unknown> = delegatedIds.length > 0
+        ? { OR: [{ assignedToId: userId }, { id: { in: delegatedIds } }] }
+        : { assignedToId: userId }
+      if (statusFilter) where.status = statusFilter
+      if (tenantIsolationStrict()) {
+        where.instanceId = { in: await tenantScopedInstanceIds(tenantId!) }
+      }
 
-    const [requests, total] = await Promise.all([
-      prisma.approvalRequest.findMany({
-        where, skip: pg.skip, take: pg.take,
-        include: { decisions: true },
-        orderBy: { createdAt: 'desc' },
-      }),
-      prisma.approvalRequest.count({ where }),
-    ])
+      return Promise.all([
+        prisma.approvalRequest.findMany({
+          where, skip: pg.skip, take: pg.take,
+          include: { decisions: true },
+          orderBy: { createdAt: 'desc' },
+        }),
+        prisma.approvalRequest.count({ where }),
+      ])
+    }, tenantId)
     res.json(toPageResponse(requests, total, pg))
   } catch (err) {
     next(err)
@@ -162,24 +202,28 @@ approvalsRouter.get('/my-approvals', async (req, res, next) => {
 
 approvalsRouter.post('/workflow-node/:nodeId/ensure', async (req, res, next) => {
   try {
-    const node = await prisma.workflowNode.findUnique({ where: { id: req.params.nodeId } })
-    if (!node) throw new NotFoundError('WorkflowNode', req.params.nodeId)
-    if (node.nodeType !== 'APPROVAL') {
-      throw new ValidationError('Only APPROVAL workflow nodes can create approval requests')
-    }
-    if (node.status !== 'ACTIVE') {
-      throw new ValidationError('Approval request can only be ensured for an ACTIVE approval node')
-    }
+    const { request, requestWithDecisions } = await withTenantDbTransaction(prisma, async () => {
+      await assertWorkflowNodeTenant(req, req.params.nodeId)
+      const node = await prisma.workflowNode.findUnique({ where: { id: req.params.nodeId } })
+      if (!node) throw new NotFoundError('WorkflowNode', req.params.nodeId)
+      if (node.nodeType !== 'APPROVAL') {
+        throw new ValidationError('Only APPROVAL workflow nodes can create approval requests')
+      }
+      if (node.status !== 'ACTIVE') {
+        throw new ValidationError('Approval request can only be ensured for an ACTIVE approval node')
+      }
 
-    const instance = node.instanceId
-      ? await prisma.workflowInstance.findUnique({ where: { id: node.instanceId } })
-      : null
-    if (!instance) throw new NotFoundError('WorkflowInstance', node.instanceId ?? undefined)
+      const instance = node.instanceId
+        ? await prisma.workflowInstance.findUnique({ where: { id: node.instanceId } })
+        : null
+      if (!instance) throw new NotFoundError('WorkflowInstance', node.instanceId ?? undefined)
 
-    const request = await activateApproval(node, instance, req.user!.userId)
-    const requestWithDecisions = await prisma.approvalRequest.findUnique({
-      where: { id: request.id },
-      include: { decisions: true },
+      const created = await activateApproval(node, instance, req.user!.userId)
+      const withDecisions = await prisma.approvalRequest.findUnique({
+        where: { id: created.id },
+        include: { decisions: true },
+      })
+      return { request: created, requestWithDecisions: withDecisions }
     })
     res.status(201).json(requestWithDecisions ?? request)
   } catch (err) {
@@ -189,9 +233,12 @@ approvalsRouter.post('/workflow-node/:nodeId/ensure', async (req, res, next) => 
 
 approvalsRouter.get('/:id', async (req, res, next) => {
   try {
-    const request = await prisma.approvalRequest.findUnique({
-      where: { id: req.params.id },
-      include: { decisions: true },
+    const request = await withTenantDbTransaction(prisma, async () => {
+      await assertApprovalRequestTenant(req, req.params.id)
+      return prisma.approvalRequest.findUnique({
+        where: { id: req.params.id },
+        include: { decisions: true },
+      })
     })
     if (!request) throw new NotFoundError('ApprovalRequest', req.params.id)
     res.json(request)
@@ -202,9 +249,12 @@ approvalsRouter.get('/:id', async (req, res, next) => {
 
 approvalsRouter.get('/:id/decisions', async (req, res, next) => {
   try {
-    const decisions = await prisma.approvalDecision.findMany({
-      where: { requestId: req.params.id },
-      orderBy: { decidedAt: 'desc' },
+    const decisions = await withTenantDbTransaction(prisma, async () => {
+      await assertApprovalRequestTenant(req, req.params.id)
+      return prisma.approvalDecision.findMany({
+        where: { requestId: req.params.id },
+        orderBy: { decidedAt: 'desc' },
+      })
     })
     res.json(decisions)
   } catch (err) {
@@ -218,30 +268,32 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
     const userId = req.user!.userId
     const id = req.params.id as string
 
-    const approvalRequest = await prisma.approvalRequest.findUnique({ where: { id } })
-    if (!approvalRequest) throw new NotFoundError('ApprovalRequest', id)
-    if (approvalRequest.status !== 'PENDING') {
-      throw new ValidationError(`ApprovalRequest cannot be decided from status ${approvalRequest.status}`)
-    }
+    const { approvalRequest, approvalDecision } = await withTenantDbTransaction(prisma, async () => {
+      const found = await prisma.approvalRequest.findUnique({ where: { id } })
+      if (!found) throw new NotFoundError('ApprovalRequest', id)
+      await assertApprovalRequestTenant(req, id)
+      if (found.status !== 'PENDING') {
+        throw new ValidationError(`ApprovalRequest cannot be decided from status ${found.status}`)
+      }
 
-    const [approvalDecision] = await prisma.$transaction([
-      prisma.approvalDecision.create({
+      const created = await prisma.approvalDecision.create({
         data: { requestId: id, decidedById: userId, decision, conditions, notes },
-      }),
-      prisma.approvalRequest.update({
+      })
+      await prisma.approvalRequest.update({
         where: { id },
         data: { status: decision },
-      }),
-    ])
+      })
 
-    const eventId = await logEvent('ApprovalDecided', 'ApprovalRequest', id, userId, { decision })
-    await createReceipt('APPROVAL_DECISION', 'ApprovalRequest', id, {
-      requestId: id,
-      decision,
-      decidedBy: userId,
-      conditions,
-    }, eventId)
-    await publishOutbox('ApprovalRequest', id, 'ApprovalDecided', { requestId: id, decision })
+      const eventId = await logEvent('ApprovalDecided', 'ApprovalRequest', id, userId, { decision })
+      await createReceipt('APPROVAL_DECISION', 'ApprovalRequest', id, {
+        requestId: id,
+        decision,
+        decidedBy: userId,
+        conditions,
+      }, eventId)
+      await publishOutbox('ApprovalRequest', id, 'ApprovalDecided', { requestId: id, decision })
+      return { approvalRequest: found, approvalDecision: created }
+    })
 
     if (
       approvalRequest.subjectType === 'WorkflowRunBudget' &&
@@ -273,15 +325,18 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
 
     // Handle escalation — create new request for supervisor
     if (decision === 'ESCALATED' && escalateToId) {
-      await prisma.approvalRequest.create({
-        data: {
-          instanceId: approvalRequest.instanceId ?? undefined,
-          nodeId: approvalRequest.nodeId ?? undefined,
-          subjectType: approvalRequest.subjectType,
-          subjectId: approvalRequest.subjectId,
-          requestedById: userId,
-          assignedToId: escalateToId,
-        },
+      await withTenantDbTransaction(prisma, async () => {
+        await assertApprovalRequestTenant(req, id)
+        await prisma.approvalRequest.create({
+          data: {
+            instanceId: approvalRequest.instanceId ?? undefined,
+            nodeId: approvalRequest.nodeId ?? undefined,
+            subjectType: approvalRequest.subjectType,
+            subjectId: approvalRequest.subjectId,
+            requestedById: userId,
+            assignedToId: escalateToId,
+          },
+        })
       })
     }
 
@@ -300,9 +355,12 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
 
     // Mark node FAILED if rejected and linked
     if (decision === 'REJECTED' && approvalRequest.nodeId) {
-      await prisma.workflowNode.update({
-        where: { id: approvalRequest.nodeId },
-        data: { status: 'FAILED', completedAt: new Date() },
+      await withTenantDbTransaction(prisma, async () => {
+        await assertApprovalRequestTenant(req, id)
+        await prisma.workflowNode.update({
+          where: { id: approvalRequest.nodeId! },
+          data: { status: 'FAILED', completedAt: new Date() },
+        })
       })
     }
 
@@ -324,28 +382,32 @@ approvalsRouter.post('/:id/form-submission', validate(approvalFormSubmissionSche
     const id = req.params.id as string
     const { data, attachmentIds } = req.body as z.infer<typeof approvalFormSubmissionSchema>
 
-    const approvalRequest = await prisma.approvalRequest.findUnique({ where: { id } })
-    if (!approvalRequest) throw new NotFoundError('ApprovalRequest', id)
+    const updated = await withTenantDbTransaction(prisma, async () => {
+      const found = await prisma.approvalRequest.findUnique({ where: { id } })
+      if (!found) throw new NotFoundError('ApprovalRequest', id)
+      await assertApprovalRequestTenant(req, id)
 
-    const updated = await prisma.approvalRequest.update({
-      where: { id },
-      data: { formData: data as unknown as import('@prisma/client').Prisma.InputJsonValue },
-    })
-
-    if (attachmentIds && attachmentIds.length > 0) {
-      await prisma.document.updateMany({
-        where: { id: { in: attachmentIds } },
-        data: {
-          nodeId:     approvalRequest.nodeId,
-          instanceId: approvalRequest.instanceId,
-        },
+      const saved = await prisma.approvalRequest.update({
+        where: { id },
+        data: { formData: data as unknown as import('@prisma/client').Prisma.InputJsonValue },
       })
-    }
 
-    await logEvent('ApprovalFormSubmitted', 'ApprovalRequest', id, req.user!.userId, {
-      instanceId: approvalRequest.instanceId,
-      nodeId: approvalRequest.nodeId,
-      attachmentCount: attachmentIds?.length ?? 0,
+      if (attachmentIds && attachmentIds.length > 0) {
+        await prisma.document.updateMany({
+          where: { id: { in: attachmentIds } },
+          data: {
+            nodeId:     found.nodeId,
+            instanceId: found.instanceId,
+          },
+        })
+      }
+
+      await logEvent('ApprovalFormSubmitted', 'ApprovalRequest', id, req.user!.userId, {
+        instanceId: found.instanceId,
+        nodeId: found.nodeId,
+        attachmentCount: attachmentIds?.length ?? 0,
+      })
+      return saved
     })
 
     res.json({ approvalRequest: updated, formData: data, attachmentIds: attachmentIds ?? [] })

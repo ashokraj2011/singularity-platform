@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.database import get_db
 from app.models import Role, Permission, RolePermission, User
-from app.auth.deps import get_current_user
+from app.auth.deps import require_reference_read, require_super_admin
 from app.schemas import PageResponse
 from app.roles.schemas import RoleOut, PermissionOut, CreateRoleRequest, AssignPermissionRequest
 from app.audit.service import record_event
@@ -30,7 +30,7 @@ def _perm_out(p: Permission) -> PermissionOut:
 async def list_permissions(
     page: int = Query(1, ge=1), size: int = Query(200, ge=1, le=500),
     category: str | None = None,
-    db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read),
 ):
     q = select(Permission)
     if category:
@@ -45,7 +45,7 @@ async def list_permissions(
 @router.get("/roles", response_model=PageResponse[RoleOut])
 async def list_roles(
     page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=200),
-    db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read),
 ):
     q = select(Role)
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
@@ -57,7 +57,7 @@ async def list_roles(
 async def create_role(
     body: CreateRoleRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     existing = (await db.execute(select(Role).where(Role.role_key == body.role_key))).scalar_one_or_none()
     if existing:
@@ -76,7 +76,7 @@ async def create_role(
 
 
 @router.get("/roles/{role_key}", response_model=RoleOut)
-async def get_role(role_key: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def get_role(role_key: str, db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read)):
     role = (await db.execute(select(Role).where(Role.role_key == role_key))).scalar_one_or_none()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
@@ -87,7 +87,7 @@ async def get_role(role_key: str, db: AsyncSession = Depends(get_db), _: User = 
 async def list_role_permissions(
     role_key: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_reference_read),
 ):
     role = (await db.execute(select(Role).where(Role.role_key == role_key))).scalar_one_or_none()
     if not role:
@@ -106,7 +106,7 @@ async def list_role_permissions(
 @router.post("/roles/{role_key}/permissions", status_code=201)
 async def add_permission_to_role(
     role_key: str, body: AssignPermissionRequest,
-    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(require_super_admin),
 ):
     role = (await db.execute(select(Role).where(Role.role_key == role_key))).scalar_one_or_none()
     if not role:
@@ -134,7 +134,7 @@ async def add_permission_to_role(
 @router.delete("/roles/{role_key}/permissions/{permission_key}", status_code=204)
 async def remove_permission_from_role(
     role_key: str, permission_key: str,
-    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(require_super_admin),
 ):
     role = (await db.execute(select(Role).where(Role.role_key == role_key))).scalar_one_or_none()
     if not role:

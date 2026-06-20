@@ -10,6 +10,7 @@ import { assertTemplatePermission } from '../../lib/permissions/workflowTemplate
 import { cloneDesignToRun } from '../workflow/lib/cloneDesignToRun'
 import { getWorkflowBudgetOverview } from '../workflow/runtime/budget'
 import { normalizeMetadataKey, recordOf, resolveMetadataSnapshot } from '../metadata/metadata.service'
+import { tenantIdForCreate, tenantIsolationStrict } from '../../lib/tenant-isolation'
 
 type KVPair = { key?: string; path?: string; value?: string }
 
@@ -966,6 +967,18 @@ export async function startWorkItemTarget(
     workItemDetails: target.workItem.details,
     workItemBudget: target.workItem.budget,
   }
+  const tenantId = tenantIdForCreate({
+    _vars: vars,
+    _workItem: {
+      id: workItemId,
+      targetId,
+      input: target.workItem.input,
+      details: target.workItem.details,
+    },
+  })
+  if (tenantIsolationStrict() && !tenantId) {
+    throw new ValidationError('TENANT_ISOLATION_MODE=strict requires tenantId/tenant_id in WorkItem input before starting a child workflow run')
+  }
   const result = await cloneDesignToRun({
     templateId,
     name: `${target.workItem.workCode} · ${target.workItem.title}`,
@@ -984,6 +997,7 @@ export async function startWorkItemTarget(
     originType: target.workItem.originType,
     parentCapabilityId: target.workItem.parentCapabilityId,
     targetCapabilityId: target.targetCapabilityId,
+    tenantId: tenantId ?? null,
     sourceWorkflowInstanceId: target.workItem.sourceWorkflowInstanceId,
     sourceWorkflowNodeId: target.workItem.sourceWorkflowNodeId,
     input: target.workItem.input,
@@ -1224,9 +1238,15 @@ async function maybeRequestParentApproval(workItemId: string, actorId?: string):
     childWorkflowInstanceId: t.childWorkflowInstanceId,
     output: t.output,
   }))
+  const approvalInstanceId = workItem.sourceWorkflowInstanceId
+    ?? submittedTargets.find(t => typeof t.childWorkflowInstanceId === 'string' && t.childWorkflowInstanceId)?.childWorkflowInstanceId
+    ?? undefined
+  if (tenantIsolationStrict() && !approvalInstanceId) {
+    throw new ValidationError('TENANT_ISOLATION_MODE=strict requires WorkItem approval requests to be linked to a workflow instance')
+  }
   const approval = await prisma.approvalRequest.create({
     data: {
-      instanceId: workItem.sourceWorkflowInstanceId ?? undefined,
+      instanceId: approvalInstanceId,
       nodeId: workItem.sourceWorkflowNodeId ?? undefined,
       subjectType: 'WorkItem',
       subjectId: workItem.id,

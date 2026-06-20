@@ -14,6 +14,13 @@ import { Router, type Request, type Response } from 'express'
 import { prisma } from '../../lib/prisma'
 import { contextFabricClient } from '../../lib/context-fabric/client'
 import { assertInstancePermission } from '../../lib/permissions/workflowTemplate'
+import {
+  assertWorkflowInstanceTenant,
+  requireTenantFromRequest,
+  resolveTenantFromRequest,
+  tenantIsolationStrict,
+} from '../../lib/tenant-isolation'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 
 export const codeChangesRouter: Router = Router()
 
@@ -21,20 +28,39 @@ codeChangesRouter.get('/:runId/code-changes', async (req: Request, res: Response
   const runId = req.params.runId as string
   const explicit = typeof req.query.cf_call_id === 'string' ? req.query.cf_call_id : undefined
   const userId = (req as { user?: { userId: string } }).user?.userId as string | undefined
+  let tenantId: string | undefined
+  try {
+    tenantId = tenantIsolationStrict()
+      ? requireTenantFromRequest(req, 'code-change read')
+      : resolveTenantFromRequest(req)
+  } catch (err) {
+    const e = err as { statusCode?: number; message?: string }
+    return res.status(e.statusCode ?? 400).json({ error: e.message ?? 'Invalid tenant context' })
+  }
 
   // Permission check — `runId` is either a WorkflowInstance id (server-driven
   // run) or a RunSnapshot id (browser-driven). Try the instance check first;
   // fall back to the snapshot's underlying workflow template.
   try {
-    if (userId) {
-      await assertInstancePermission(userId, runId, 'view').catch(async () => {
-        const snap = await prisma.runSnapshot.findUnique({ where: { runId }, select: { workflowId: true } })
+    await withTenantDbTransaction(prisma, async () => {
+      if (!userId) return
+      let authorizedByInstance = false
+      try {
+        await assertInstancePermission(userId, runId, 'view')
+        authorizedByInstance = true
+      } catch (instanceErr) {
+        const snap = tenantIsolationStrict()
+          ? await prisma.runSnapshot.findFirst({ where: { runId, tenantId }, select: { workflowId: true } })
+          : await prisma.runSnapshot.findUnique({ where: { runId }, select: { workflowId: true } })
         if (snap) {
           const { assertTemplatePermission } = await import('../../lib/permissions/workflowTemplate')
           await assertTemplatePermission(userId, snap.workflowId, 'view')
+        } else {
+          throw instanceErr
         }
-      })
-    }
+      }
+      if (authorizedByInstance) await assertWorkflowInstanceTenant(req, runId)
+    }, tenantId)
   } catch (err) {
     return res.status(403).json({ error: (err as Error).message })
   }
@@ -42,7 +68,8 @@ codeChangesRouter.get('/:runId/code-changes', async (req: Request, res: Response
   // Resolve cfCallIds + per-cfCallId lookup hints (codeChangeIds + mcpServerId).
   // Two sources, fanned in together so the run-insights page sees code changes
   // regardless of who recorded them:
-  //   (a) AgentRunOutput.structuredPayload.cfCallId   (server-driven runs)
+  //   (a) AgentRun correlation columns plus AgentRunOutput detail
+  //       (server-driven runs)
   //   (b) BlueprintSession.metadata.stageAttempts[].correlation.{cfCallId,
   //       codeChangeIds, mcpServerId} + blueprint_artifacts.payload
   //       (Workbench-driven runs that pause at the bridge node)
@@ -106,23 +133,36 @@ codeChangesRouter.get('/:runId/code-changes', async (req: Request, res: Response
   if (explicit) {
     addLookup({ cfCallId: explicit })
   } else {
-    // (a) AgentRun outputs
-    const runs = await prisma.agentRun.findMany({
-      where: { instanceId: runId },
-      select: { outputs: { select: { structuredPayload: true } } },
-    })
-    for (const r of runs) for (const o of r.outputs) {
-      addLookup(isRecord(o.structuredPayload) ? o.structuredPayload : null)
+    // (a) AgentRun first-class correlation columns, plus output payloads for
+    // per-call details such as codeChangeIds and changedPaths.
+    const { runs, sessions } = await withTenantDbTransaction(prisma, async () => {
+      const [agentRuns, blueprintSessions] = await Promise.all([
+        prisma.agentRun.findMany({
+          where: { instanceId: runId },
+          select: {
+            cfCallId: true,
+            mcpServerId: true,
+            outputs: { select: { structuredPayload: true } },
+          },
+        }),
+        prisma.blueprintSession.findMany({
+          where: { workflowInstanceId: runId },
+          select: { id: true, metadata: true, artifacts: { select: { payload: true } } },
+        }),
+      ])
+      return { runs: agentRuns, sessions: blueprintSessions }
+    }, tenantId)
+    for (const r of runs) {
+      addLookup({ cfCallId: r.cfCallId ?? undefined, mcpServerId: r.mcpServerId ?? undefined })
+      for (const o of r.outputs) {
+        addLookup(isRecord(o.structuredPayload) ? o.structuredPayload : null)
+      }
     }
 
     // (b) Blueprint stage attempts + artifacts on any sessions linked to
     // this workflow run. Same shape buildLoopStageVars + the workbench
     // code-changes endpoint use, so a session paused at the Workbench
     // bridge still surfaces its diffs on the workflow run page.
-    const sessions = await prisma.blueprintSession.findMany({
-      where: { workflowInstanceId: runId },
-      select: { id: true, metadata: true, artifacts: { select: { payload: true } } },
-    })
     for (const s of sessions) {
       const meta = isRecord(s.metadata) ? s.metadata : {}
       const attempts = Array.isArray(meta.stageAttempts) ? meta.stageAttempts : []
@@ -175,7 +215,11 @@ codeChangesRouter.get('/:runId/code-changes', async (req: Request, res: Response
     // M16 — mirror to Consumable so the existing artifact UI surfaces these
     // alongside contracts/deliverables. Best-effort: failures don't fail the
     // proxy response. Idempotent on (runId, code-change id) via name match.
-    const consumableIds = await mirrorToConsumables(runId, items, userId)
+    const consumableIds = await withTenantDbTransaction(
+      prisma,
+      () => mirrorToConsumables(runId, items, userId),
+      tenantId,
+    )
     return res.json({ runId, cfCallIds: lookupList.map(l => l.cfCallId), items, stale, consumableIds, errors })
   } catch (err) {
     const e = err as { status?: number; message?: string }
@@ -212,6 +256,7 @@ async function mirrorToConsumables(runId: string, items: MirrorItem[], userId?: 
     })
     // Use WorkflowInstance.id when runId resolves to one; otherwise leave null.
     const inst = await prisma.workflowInstance.findUnique({ where: { id: runId }, select: { id: true } })
+    if (tenantIsolationStrict() && !inst) return []
     const out: string[] = []
     for (const it of items) {
       if (!it.id) continue

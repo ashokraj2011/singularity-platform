@@ -1,5 +1,5 @@
-import { api } from '@/lib/api'
-import type { Team, TeamMembership, CreateTeamRequest, UpdateTeamRequest, AddTeamMemberRequest, PageResponse } from '@/types'
+import { api } from 'identity-web/lib/api'
+import type { Team, TeamMembership, CreateTeamRequest, UpdateTeamRequest, AddTeamMemberRequest, PageResponse } from 'identity-web/types'
 
 export const teamsApi = {
   list: (params?: { page?: number; size?: number }) =>

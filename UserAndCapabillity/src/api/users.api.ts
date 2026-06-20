@@ -1,5 +1,5 @@
-import { api } from '@/lib/api'
-import type { User, CreateUserRequest, UpdateUserRequest, PageResponse, PlatformRole } from '@/types'
+import { api } from 'identity-web/lib/api'
+import type { User, CreateUserRequest, UpdateUserRequest, PageResponse, PlatformRole } from 'identity-web/types'
 
 export const usersApi = {
   list: (params?: { page?: number; size?: number; search?: string }) =>
@@ -17,5 +17,5 @@ export const usersApi = {
   removeRole: (userId: string, roleKey: string) =>
     api.delete(`/users/${userId}/roles/${roleKey}`).then(r => r.data),
   listTeams: (userId: string) =>
-    api.get(`/users/${userId}/teams`).then(r => r.data as import('@/types').Team[]),
+    api.get(`/users/${userId}/teams`).then(r => r.data as import('identity-web/types').Team[]),
 }

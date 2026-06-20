@@ -46,6 +46,9 @@ def init_db() -> None:
                 capability_id TEXT,
                 tenant_id TEXT,
                 agent_template_id TEXT,
+                profile_snapshot_hash TEXT,
+                profile_provider_resolutions_json TEXT NOT NULL DEFAULT '[]',
+                profile_effective_capabilities_json TEXT NOT NULL DEFAULT '[]',
                 session_id TEXT,
                 prompt_assembly_id TEXT,
                 mcp_server_id TEXT,
@@ -79,6 +82,9 @@ def init_db() -> None:
             f"{alter_prefix} pending_tool_args_json TEXT",
             f"{alter_prefix} code_change_ids_json TEXT NOT NULL DEFAULT '[]'",
             f"{alter_prefix} tenant_id TEXT",
+            f"{alter_prefix} profile_snapshot_hash TEXT",
+            f"{alter_prefix} profile_provider_resolutions_json TEXT NOT NULL DEFAULT '[]'",
+            f"{alter_prefix} profile_effective_capabilities_json TEXT NOT NULL DEFAULT '[]'",
         ):
             try:
                 conn.execute(stmt)
@@ -91,17 +97,66 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_call_log_continuation ON call_log(continuation_token);")
 
 
+_CAPABILITY_AUDIT_KEYS = (
+    "id",
+    "name",
+    "sourceType",
+    "sourceRef",
+    "skillId",
+    "skillName",
+    "skillType",
+    "permissions",
+    "readOnly",
+    "providerLocked",
+    "providerId",
+    "providerManifestVersion",
+    "providerManifestDigest",
+    "providerManifestSignatureKeyId",
+    "providerManifestSigned",
+)
+
+
+def _compact_effective_capabilities(value: object) -> list[dict]:
+    """Persist only non-secret profile evidence needed to replay permissions.
+
+    Effective capability objects may include provider schemas or invocation
+    endpoints. Those are useful at runtime but noisy in every call-log receipt,
+    so the durable snapshot keeps IDs, source/provenance, and effective
+    permission flags only.
+    """
+    if not isinstance(value, list):
+        return []
+    compact: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        row = {key: item[key] for key in _CAPABILITY_AUDIT_KEYS if key in item and item[key] is not None}
+        permissions = row.get("permissions")
+        if isinstance(permissions, dict):
+            row["permissions"] = sorted(str(name) for name, enabled in permissions.items() if enabled)
+        elif isinstance(permissions, list):
+            row["permissions"] = [str(permission) for permission in permissions]
+        if row:
+            compact.append(row)
+    compact.sort(key=lambda entry: str(entry.get("id") or entry.get("name") or ""))
+    return compact
+
+
 def insert(record: dict) -> str:
     row_id = record.get("id") or str(uuid.uuid4())
     started_at = record.get("started_at") or datetime.now(timezone.utc).isoformat()
     pending_args = record.get("pending_tool_args")
     pending_args_json = json.dumps(pending_args) if pending_args is not None else None
+    provider_resolutions_json = json.dumps(record.get("profile_provider_resolutions") or [])
+    effective_capabilities_json = json.dumps(_compact_effective_capabilities(record.get("profile_effective_capabilities")))
     with db_conn(DB_TARGET) as conn:
         conn.execute(
             """
             INSERT INTO call_log (
                 id, trace_id, workflow_run_id, workflow_node_id, agent_run_id,
-                capability_id, tenant_id, agent_template_id, session_id,
+                capability_id, tenant_id, agent_template_id, profile_snapshot_hash,
+                profile_provider_resolutions_json, profile_effective_capabilities_json,
+                session_id,
                 prompt_assembly_id, mcp_server_id, mcp_invocation_id,
                 llm_call_ids_json, tool_invocation_ids_json, artifact_ids_json,
                 code_change_ids_json,
@@ -109,7 +164,7 @@ def insert(record: dict) -> str:
                 input_tokens, output_tokens, total_tokens, estimated_cost,
                 started_at, completed_at, error,
                 continuation_token, pending_tool_name, pending_tool_args_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row_id,
@@ -120,6 +175,9 @@ def insert(record: dict) -> str:
                 record.get("capability_id"),
                 record.get("tenant_id"),
                 record.get("agent_template_id"),
+                record.get("profile_snapshot_hash"),
+                provider_resolutions_json,
+                effective_capabilities_json,
                 record.get("session_id"),
                 record.get("prompt_assembly_id"),
                 record.get("mcp_server_id"),
@@ -205,7 +263,7 @@ def get_by_continuation_token(token: str) -> Optional[dict]:
         row = row_to_dict(cur.fetchone())
         if not row:
             return None
-        for k in ("llm_call_ids_json", "tool_invocation_ids_json", "artifact_ids_json", "code_change_ids_json"):
+        for k in ("llm_call_ids_json", "tool_invocation_ids_json", "artifact_ids_json", "code_change_ids_json", "profile_provider_resolutions_json", "profile_effective_capabilities_json"):
             out_key = k[:-5]
             try:
                 row[out_key] = json.loads(row[k] or "[]")
@@ -223,7 +281,7 @@ def get_by_continuation_token(token: str) -> Optional[dict]:
 def _hydrate(row: Optional[dict]) -> Optional[dict]:
     if not row:
         return None
-    for k in ("llm_call_ids_json", "tool_invocation_ids_json", "artifact_ids_json", "code_change_ids_json"):
+    for k in ("llm_call_ids_json", "tool_invocation_ids_json", "artifact_ids_json", "code_change_ids_json", "profile_provider_resolutions_json", "profile_effective_capabilities_json"):
         out_key = k[:-5]  # strip trailing "_json"
         try:
             row[out_key] = json.loads(row[k] or "[]")

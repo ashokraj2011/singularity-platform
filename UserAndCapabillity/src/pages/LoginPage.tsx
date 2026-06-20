@@ -4,11 +4,11 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { useLocation } from 'react-router-dom'
 import { Fingerprint, AlertCircle, Lock, Mail } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { authApi } from '@/api/auth.api'
-import { useAuthStore } from '@/store/auth.store'
+import { Input } from 'identity-web/components/ui/input'
+import { Label } from 'identity-web/components/ui/label'
+import { authApi } from 'identity-web/api/auth.api'
+import { useAuthStore } from 'identity-web/store/auth.store'
+import { identityPath } from 'identity-web/vite-env-compat'
 
 const schema = z.object({
   email: z.string().email('Invalid email'),
@@ -24,7 +24,7 @@ export function LoginPage() {
     const pathname = next?.pathname && next.pathname.startsWith('/') && next.pathname !== '/login'
       ? next.pathname
       : '/dashboard'
-    return `${pathname}${next?.search ?? ''}`
+    return `${identityPath(pathname)}${next?.search ?? ''}`
   }, [location.state])
 
   useEffect(() => {
@@ -213,14 +213,15 @@ export function LoginPage() {
                 )}
               </div>
 
-              <Button
-                type="submit"
-                className="w-full h-10 font-semibold text-sm tracking-wide"
+              <button
+                type="button"
+                onClick={handleSubmit(onSubmit)}
+                className="w-full h-10 rounded-lg font-semibold text-sm tracking-wide transition-all disabled:pointer-events-none disabled:opacity-50"
                 disabled={isSubmitting}
                 style={{ background: '#00843D', color: '#ffffff' }}
               >
                 {isSubmitting ? 'Signing in…' : 'Sign In'}
-              </Button>
+              </button>
             </form>
           </div>
 

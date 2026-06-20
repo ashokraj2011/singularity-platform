@@ -22,39 +22,19 @@ services:
     environment:
       MCP_SERVER_URL: http://host.docker.internal:7100
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
-  agent-service:
-    environment:
-      MCP_SERVER_URL: http://host.docker.internal:7100
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
-  tool-service:
-    environment:
-      MCP_SERVER_URL: http://host.docker.internal:7100
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
-  agent-runtime:
+  platform-core:
     environment:
       MCP_SERVER_URL: http://host.docker.internal:7100
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       # agent-runtime makes its own gateway calls → host gateway.
       LLM_GATEWAY_URL: http://host.docker.internal:8001
-  prompt-composer:
+  # Platform Web readiness + server-side proxies point at the HOST mcp/gateway,
+  # so Operations does not show local runtime infra as down just because those
+  # two services are intentionally outside Docker. All UI links stay inside the
+  # unified :5180 route tree.
+  platform-web:
     environment:
       MCP_SERVER_URL: http://host.docker.internal:7100
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
-  # Operations portal /ops-health + /api/mcp proxies → the HOST mcp/gateway, so
-  # the readiness dots aren't red just because those two run outside Docker.
-  portal:
-    environment:
-      MCP_UPSTREAM: http://host.docker.internal:7100
-      LLM_UPSTREAM: http://host.docker.internal:8001
-      # Nav targets → the edge-gateway single origin (:8085). The UI images are
-      # BUILT with base paths (BASE_PATH=/workflow/, /workbench/, /iam/), so their
-      # assets only resolve under the gateway — the per-app ports (:5174/:5176/:5175)
-      # serve a blank app standalone. So the portal menu (even on :5180) jumps to
-      # :8085 where the apps actually work.
-      PORTAL_LINK_WORKGRAPH_DESIGNER: http://localhost:8085/workflow
-      PORTAL_LINK_BLUEPRINT_WORKBENCH: http://localhost:8085/workbench
-      PORTAL_LINK_IAM_ADMIN: http://localhost:8085/iam
-      PORTAL_LINK_AGENT_ADMIN: http://localhost:8085/agent
-      PORTAL_LINK_CODE_FOUNDRY: http://localhost:8085/foundry
+      LLM_GATEWAY_URL: http://host.docker.internal:8001
     extra_hosts:
       - "host.docker.internal:host-gateway"

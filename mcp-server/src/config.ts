@@ -23,6 +23,9 @@ function envBool(defaultValue: boolean): z.ZodEffects<z.ZodOptional<z.ZodString>
 
 const schema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  APP_ENV: z.string().optional(),
+  ENVIRONMENT: z.string().optional(),
+  SINGULARITY_ENV: z.string().optional(),
   PORT: z.coerce.number().default(7000),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   MCP_BEARER_TOKEN: z.string().min(16),
@@ -51,6 +54,10 @@ const schema = z.object({
   //   enforce — mutating/high-risk tools REQUIRE a valid grant; missing or
   //             invalid → 403. Read-only tools are never gated.
   MCP_TOOL_GRANT_MODE: z.enum(["off", "grace", "enforce"]).default("off"),
+  // Direct MCP invoke / approval-resume default when callers omit
+  // governanceMode/governance_mode. Local dev stays fail-open for historical
+  // laptop flows; production-class deployments must set fail_closed below.
+  MCP_DEFAULT_GOVERNANCE_MODE: z.enum(["fail_open", "fail_closed", "degraded", "human_approval_required"]).default("fail_open"),
   // Tool registry categories that require a grant under grace/enforce. The
   // genuinely state-changing + arbitrary-execution categories. Read-only ones
   // (read/analyzer/verify_meta) are intentionally excluded so the rollout
@@ -59,6 +66,12 @@ const schema = z.object({
   // Allowance for clock drift between CF (issuer) and MCP (verifier) when
   // checking issuedAt/expiresAt, in seconds.
   MCP_TOOL_GRANT_CLOCK_SKEW_SEC: z.coerce.number().int().nonnegative().default(30),
+  // Require Context Fabric / agent-runtime to send the resolved effective
+  // capability set on direct tool dispatches. This closes the read-tool side
+  // of the /mcp/tool-run bearer-token bypass: grants protect mutating/high-risk
+  // tools, while the effective capability set proves the profile/session was
+  // allowed to invoke the specific tool at all.
+  MCP_REQUIRE_EFFECTIVE_CAPABILITIES: envBool(false),
 
   // ── M33 — Central LLM Gateway ───────────────────────────────────────────
   // Every LLM call from mcp-server routes through the central
@@ -166,6 +179,7 @@ const schema = z.object({
   // now points at agent-service; the route paths are identical so callers
   // don't have to change anything else.
   LEARNING_SERVICE_URL: z.string().default("http://agent-service:3001"),
+  LEARNING_SERVICE_TOKEN: z.string().optional(),
   // M61 Wire — Optional agent-runtime URL. When set, /mcp/code-context/build
   // POSTs the workspace's repo fingerprint to
   //   ${AGENT_RUNTIME_URL}/capabilities/:id/world-model/fingerprint
@@ -187,9 +201,22 @@ if (!parsed.success) {
 // agent-service / tool-service / agent-runtime / prompt-composer.
 // Duplicated here because mcp-server lives outside the agent-and-tools
 // workspace and can't cleanly import that package.
+export function productionClassEnvLabel(): string | null {
+  for (const raw of [
+    process.env.NODE_ENV,
+    process.env.APP_ENV,
+    process.env.ENVIRONMENT,
+    process.env.SINGULARITY_ENV,
+  ]) {
+    const env = (raw ?? "").toLowerCase();
+    if (["production", "prod", "staging", "perf"].includes(env)) return env;
+  }
+  return null;
+}
+
 function assertProductionSecretLocal(name: string, value: string | undefined, minLength = 32): void {
-  const env = (process.env.NODE_ENV ?? "development").toLowerCase();
-  if (!["production", "prod", "staging", "perf"].includes(env)) return;
+  const env = productionClassEnvLabel();
+  if (!env) return;
   const KNOWN_BAD = new Set([
     "dev-secret-change-in-prod",
     "dev-secret-change-in-prod-min-32-chars!!",
@@ -210,6 +237,31 @@ function assertProductionSecretLocal(name: string, value: string | undefined, mi
   }
 }
 assertProductionSecretLocal("MCP_BEARER_TOKEN", parsed.data.MCP_BEARER_TOKEN, 16);
+
+const productionClassEnv = productionClassEnvLabel();
+if (productionClassEnv) {
+  if (parsed.data.MCP_DEFAULT_GOVERNANCE_MODE !== "fail_closed") {
+    console.error(
+      `FATAL: MCP_DEFAULT_GOVERNANCE_MODE must be fail_closed for production-class MCP deployments ` +
+        `(detected ${productionClassEnv}). Set MCP_DEFAULT_GOVERNANCE_MODE=fail_closed and restart.`,
+    );
+    process.exit(1);
+  }
+  if (parsed.data.MCP_TOOL_GRANT_MODE !== "enforce") {
+    console.error(
+      `FATAL: MCP_TOOL_GRANT_MODE must be enforce for production-class MCP deployments ` +
+        `(detected ${productionClassEnv}). Set MCP_TOOL_GRANT_MODE=enforce and restart.`,
+    );
+    process.exit(1);
+  }
+  if (!parsed.data.MCP_REQUIRE_EFFECTIVE_CAPABILITIES) {
+    console.error(
+      `FATAL: MCP_REQUIRE_EFFECTIVE_CAPABILITIES must be true for production-class MCP deployments ` +
+        `(detected ${productionClassEnv}). Set MCP_REQUIRE_EFFECTIVE_CAPABILITIES=true and restart.`,
+    );
+    process.exit(1);
+  }
+}
 
 // ToolInvocationGrant: you cannot turn on grant verification without a key to
 // verify with. Refuse to boot in grace/enforce mode if the shared signing

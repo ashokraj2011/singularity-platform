@@ -8,7 +8,7 @@ After M30 the platform owns **five disjoint Postgres databases**. Each is owned 
 
 | DB | Owner service | Port | Authoritative for |
 |---|---|---|---|
-| `singularity_iam` | `singularity-iam-service` (Python/FastAPI/SQLAlchemy) | 5433 | users, teams, BUs, capabilities, roles, permissions, Agent Execution Runtimes, user devices, audit events |
+| `singularity_iam` | `singularity-iam-service` (Python/FastAPI/SQLAlchemy) | 5432 shared `at-postgres` | users, teams, BUs, capabilities, roles, permissions, Agent Execution Runtimes, user devices, audit events |
 | `singularity` | `agent-and-tools/apps/agent-runtime` + `tool-service` (Prisma + raw SQL) | 5432 | agent templates, capability runtime metadata, tool registry, code symbols, knowledge artifacts, distilled memory |
 | `singularity_composer` | `agent-and-tools/apps/prompt-composer` (Prisma) | 5432 | prompt profiles, prompt layers, prompt assemblies, compiled-context capsules |
 | `workgraph` | `workgraph-studio/apps/api` (Prisma) | 5434 | workflow designs, instances, nodes, edges, tasks, approvals, consumables, triggers, agent-runs, tool-runs |
@@ -31,7 +31,7 @@ flowchart LR
   WG -- "AGENT_TASK fires" --> CF
   CF -- "compose-and-respond" --> PC
   PC -. "runtimeReader<br/>(read-only Prisma)" .-> AT
-  CF -- "/mcp/invoke" --> AER{{mcp-server<br/>Agent Execution Runtime}}
+  CF -- "/mcp/tool-run per call" --> AER{{mcp-server<br/>Agent Execution Runtime}}
 
   AER -. "tool descriptors" .-> TS{{tool-service}}
   TS --> AT

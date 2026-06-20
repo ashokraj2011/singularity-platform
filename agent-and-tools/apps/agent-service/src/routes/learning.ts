@@ -1,10 +1,10 @@
 import { Router, Request, Response } from "express";
 import { query, queryOne } from "../database";
-import { optionalAuth } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
 
 export const learningRoutes = Router();
-learningRoutes.use(optionalAuth);
+learningRoutes.use(requireAuth);
 
 // POST /api/v1/agents (learning-candidates at top level — mounted via separate route below)
 // Candidates route is mounted at /api/v1 separately — see index.ts note.

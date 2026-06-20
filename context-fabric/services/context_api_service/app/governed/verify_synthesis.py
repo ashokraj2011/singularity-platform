@@ -158,6 +158,10 @@ def first_runnable(recommended: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
+# Backward-compatible private alias retained for older tests/importers.
+_first_runnable = first_runnable
+
+
 def _summarise(text: Any, *, max_len: int = 1500) -> str:
     """Coerce + truncate verifier output for the LLM prompt.
 

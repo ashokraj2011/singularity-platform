@@ -137,6 +137,7 @@ class LaptopRegistry:
         run_context: dict[str, Any] | None = None,
         work_item_id: str | None = None,
         workspace_id: str | None = None,
+        grant: dict[str, Any] | None = None,
         timeout: float = INVOKE_TIMEOUT_SEC,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         """Send a single tool-run frame to the user's laptop and await
@@ -173,6 +174,8 @@ class LaptopRegistry:
             payload["work_item_id"] = work_item_id
         if workspace_id is not None:
             payload["workspace_id"] = workspace_id
+        if grant is not None:
+            payload["tool_grant"] = grant
         body, conn = await self._send_frame_await_response(
             user_id=user_id,
             frame_type="tool-run",

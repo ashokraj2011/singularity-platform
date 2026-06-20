@@ -14,6 +14,7 @@ import {
   ArrowLeft, Clock, Activity, Coins, AlertTriangle, FileText, Box, ShieldCheck, GitBranch,
   Bot, Wrench, UserCheck, Radio, Database, Cpu, Network, Route, ClipboardCheck, Zap,
   Download,
+  type LucideIcon,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { LiveEventsPanel } from './LiveEventsPanel'
@@ -1014,7 +1015,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Tile({
   icon: Icon, label, value, sub, highlight,
-}: { icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>; label: string; value: string; sub?: string; highlight?: 'red' | 'amber' }) {
+}: { icon: LucideIcon; label: string; value: string; sub?: string; highlight?: 'red' | 'amber' }) {
   const colours = highlight === 'red'
     ? { bg: '#fef2f2', border: '#fecaca', fg: '#b91c1c' }
     : highlight === 'amber'
@@ -1065,7 +1066,7 @@ function downloadAuditReport(data: InsightsResponse) {
 
 function MissionHint({
   icon: Icon, title, text,
-}: { icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>; title: string; text: string }) {
+}: { icon: LucideIcon; title: string; text: string }) {
   return (
     <div style={{
       display: 'flex', gap: 8, alignItems: 'flex-start',
@@ -1178,7 +1179,7 @@ function MissionCommandCard({
   meta,
   tone,
 }: {
-  icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>
+  icon: LucideIcon
   title: string
   value: string
   meta: string

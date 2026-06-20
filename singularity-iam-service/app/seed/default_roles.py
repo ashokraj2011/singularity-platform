@@ -13,6 +13,7 @@ DEFAULT_ROLES: list[dict] = [
         "system_role": True,
         "permissions": [
             "capability:create", "capability:view", "capability:update",
+            "governance:author",
             "role:create", "role:update", "role:assign", "permission:view", "audit:view",
         ],
     },
@@ -35,6 +36,7 @@ DEFAULT_ROLES: list[dict] = [
             "capability:view", "capability:update",
             "capability:member:add", "capability:member:remove",
             "capability:relationship:create", "capability:sharing_grant:create",
+            "governance:author",
             "workflow:create", "workflow:view", "workflow:update", "workflow:execute", "workflow:approve",
             "agent:create", "agent:view", "agent:update", "agent:execute", "agent:learning:approve",
             "tool:register", "tool:view", "tool:execute",

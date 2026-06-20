@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { teamsApi } from '@/api/teams.api'
-import type { CreateTeamRequest, UpdateTeamRequest, AddTeamMemberRequest } from '@/types'
+import { teamsApi } from 'identity-web/api/teams.api'
+import type { CreateTeamRequest, UpdateTeamRequest, AddTeamMemberRequest } from 'identity-web/types'
 
 export function useTeams(params?: { page?: number; size?: number }) {
   return useQuery({

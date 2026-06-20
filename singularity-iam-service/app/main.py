@@ -12,7 +12,7 @@ from app.seed.runner import seed_all
 import app.models  # noqa: F401
 
 from app.auth.routes import router as auth_router
-from app.auth.deps import get_current_user
+from app.auth.deps import require_real_user
 from app.auth.schemas import TokenUserOut
 from app.models import User
 from fastapi import Depends
@@ -151,7 +151,7 @@ async def health():
 
 
 @app.get("/api/v1/me", response_model=TokenUserOut)
-async def me(current_user: User = Depends(get_current_user)):
+async def me(current_user: User = Depends(require_real_user)):
     return TokenUserOut(
         id=current_user.id,
         email=current_user.email,

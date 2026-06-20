@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { sharingGrantsApi } from '@/api/sharing-grants.api'
-import type { CreateSharingGrantRequest } from '@/types'
+import { sharingGrantsApi } from 'identity-web/api/sharing-grants.api'
+import type { CreateSharingGrantRequest } from 'identity-web/types'
 
 export function useSharingGrants(params?: { page?: number; size?: number; status?: string }) {
   return useQuery({

@@ -9,14 +9,14 @@ from __future__ import annotations
 
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import Skill, User
-from app.auth.deps import get_current_user
+from app.auth.deps import require_reference_read, require_super_admin
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 
@@ -63,10 +63,8 @@ def _to_out(s: Skill) -> SkillOut:
 async def create_skill(
     body: SkillIn,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
-    if not current_user.is_super_admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="super-admin required")
     existing = (await db.execute(select(Skill).where(Skill.skill_key == body.skill_key))).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=409, detail=f"skill_key already exists: {body.skill_key}")
@@ -88,7 +86,7 @@ async def list_skills(
     category: Optional[str] = Query(default=None),
     q:        Optional[str] = Query(default=None, description="Substring match on skill_key or name"),
     db:       AsyncSession = Depends(get_db),
-    _:        User = Depends(get_current_user),
+    _:        User = Depends(require_reference_read),
 ):
     base = select(Skill)
     if category:
@@ -109,7 +107,7 @@ async def list_skills(
 async def get_skill(
     skill_key: str,
     db: AsyncSession = Depends(get_db),
-    _:  User = Depends(get_current_user),
+    _:  User = Depends(require_reference_read),
 ):
     s = (await db.execute(select(Skill).where(Skill.skill_key == skill_key))).scalar_one_or_none()
     if s is None:

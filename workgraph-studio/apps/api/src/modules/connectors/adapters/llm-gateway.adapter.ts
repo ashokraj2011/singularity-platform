@@ -1,11 +1,23 @@
 import axios from 'axios'
 import type { ConnectorAdapter, OperationDef } from '../connector-adapter'
+import { assertEventTargetUrlAllowed } from '../../../lib/eventbus/target-url-policy'
+import { contextFabricClient } from '../../../lib/context-fabric/client'
+
+const LOCAL_MCP_HOSTS = new Set([
+  'localhost',
+  '127.0.0.1',
+  '::1',
+  'host.docker.internal',
+  'mcp-server',
+  'singularity-mcp-server',
+])
 
 /**
- * MCP-routed LLM connector adapter.
+ * Governed LLM connector adapter.
  *
  * Compatibility adapter for existing "LLM Gateway" connector rows. Runtime
- * calls point at MCP; MCP is the only service allowed to talk to the gateway.
+ * chat/complete calls route through Context Fabric's governed single-turn API.
+ * Embeddings stay on MCP's active /mcp/embed endpoint.
  *
  * baseUrl examples:
  *   docker-compose:  http://mcp-server:7100
@@ -22,19 +34,45 @@ interface LlmGatewayCredentials { apiKey?: string }
 export class LlmGatewayAdapter implements ConnectorAdapter {
   constructor(private config: LlmGatewayConfig, private creds: LlmGatewayCredentials) {}
 
-  private get client() {
+  private async safeBaseUrl(): Promise<string> {
+    let parsed: URL
+    try {
+      parsed = new URL(this.config.baseUrl)
+    } catch {
+      throw new Error('LLM Gateway connector baseUrl must be absolute')
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('LLM Gateway connector baseUrl must use http or https')
+    }
+    if (parsed.username || parsed.password) {
+      throw new Error('LLM Gateway connector baseUrl must not include embedded credentials')
+    }
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+    if (LOCAL_MCP_HOSTS.has(host)) return parsed.toString().replace(/\/$/, '')
+    const safePublicUrl = await assertEventTargetUrlAllowed(parsed.toString())
+    if (safePublicUrl.protocol !== 'https:') {
+      throw new Error('Remote LLM Gateway connector baseUrl must use https')
+    }
+    return safePublicUrl.toString().replace(/\/$/, '')
+  }
+
+  private async client() {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     // MCP accepts an optional bearer; only attach when the connector config supplied one.
     if (this.creds?.apiKey) headers.Authorization = `Bearer ${this.creds.apiKey}`
     return axios.create({
-      baseURL: this.config.baseUrl.replace(/\/$/, ''),
+      baseURL: await this.safeBaseUrl(),
       headers,
       timeout: 120_000,
     })
   }
 
   async testConnection() {
-    try { await this.client.get('/health'); return { ok: true } }
+    try {
+      const client = await this.client()
+      await client.get('/health')
+      return { ok: true }
+    }
     catch (e: any) { return { ok: false, error: e?.message } }
   }
 
@@ -72,44 +110,60 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
       .map(m => m.content)
       .join('\n\n')
       .trim()
-    const conversational = messages.filter(m => m.role !== 'system')
+    const conversational = messages.filter((
+      m,
+    ): m is { role: 'user' | 'assistant' | 'tool'; content: string } => m.role !== 'system')
     const lastUserIndex = conversational.map(m => m.role).lastIndexOf('user')
     const messageIndex = lastUserIndex >= 0 ? lastUserIndex : conversational.length - 1
     const selected = conversational[messageIndex]
 
-    const r = await this.client.post('/mcp/invoke', {
-      ...(systemPrompt ? { systemPrompt } : {}),
-      history: conversational.filter((_, index) => index !== messageIndex),
-      message: selected?.content ?? String(p.prompt ?? 'Continue.'),
-      tools: [],
-      modelConfig: {
-        ...(modelAlias ? { modelAlias } : {}),
-        ...(p.temperature !== undefined ? { temperature: p.temperature } : (this.config.defaultTemperature !== undefined ? { temperature: this.config.defaultTemperature } : {})),
-        ...(p.maxTokens !== undefined ? { maxTokens: p.maxTokens } : (this.config.defaultMaxTokens !== undefined ? { maxTokens: this.config.defaultMaxTokens } : {})),
+    const task = this.formatConversationTask(
+      conversational.filter((_, index) => index !== messageIndex),
+      selected?.content ?? String(p.prompt ?? 'Continue.'),
+    )
+    const response = await contextFabricClient.executeGovernedTurn({
+      trace_id: `connector-llm-${Date.now()}`,
+      run_context: {
+        source_type: 'workgraph-llm-gateway-connector',
+        workflow_node_id: 'connector-llm-gateway',
       },
-      runContext: { traceId: `connector-llm-${Date.now()}` },
+      task,
+      ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
+      model_overrides: {
+        ...(modelAlias ? { modelAlias } : {}),
+        ...(p.temperature !== undefined ? { temperature: Number(p.temperature) } : (this.config.defaultTemperature !== undefined ? { temperature: this.config.defaultTemperature } : {})),
+        ...(p.maxTokens !== undefined ? { maxOutputTokens: Number(p.maxTokens) } : (this.config.defaultMaxTokens !== undefined ? { maxOutputTokens: this.config.defaultMaxTokens } : {})),
+      },
       limits: {
-        maxSteps: 1,
         timeoutSec: 120,
-        compressToolResults: true,
-        includeLocalTools: false,
+        ...(p.maxTokens !== undefined ? { outputTokenBudget: Number(p.maxTokens) } : (this.config.defaultMaxTokens !== undefined ? { outputTokenBudget: this.config.defaultMaxTokens } : {})),
       },
     })
-    const data = r.data?.data ?? {}
-    const usage = data.tokensUsed ?? {}
-    const modelUsage = data.modelUsage ?? {}
+    const usage: { input?: number; output?: number } = response.tokensUsed ?? {}
+    const modelUsage = response.modelUsage ?? response.usage ?? {}
     return {
-      content: data.finalResponse ?? '',
+      content: response.finalResponse ?? '',
       model: modelUsage.model,
       provider: modelUsage.provider,
       modelAlias: modelUsage.modelAlias,
-      finishReason: data.finishReason,
+      finishReason: response.finishReason,
       usage: {
         input_tokens: usage.input ?? modelUsage.inputTokens,
         output_tokens: usage.output ?? modelUsage.outputTokens,
-        latency_ms: data.metrics?.mcpLatencyMs,
+        latency_ms: response.metrics?.mcpLatencyMs,
       },
     }
+  }
+
+  private formatConversationTask(
+    history: Array<{ role: 'user' | 'assistant' | 'tool'; content: string }>,
+    currentMessage: string,
+  ): string {
+    if (history.length === 0) return currentMessage
+    const prior = history
+      .map(m => `${m.role.toUpperCase()}: ${m.content}`)
+      .join('\n')
+    return `${prior}\nUSER: ${currentMessage}`
   }
 
   private async complete(p: Record<string, unknown>) {
@@ -125,7 +179,8 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
       throw new Error('MCP embed: `input` must be a non-empty string or string[]')
     }
     const modelAlias = (p.modelAlias as string) ?? this.config.defaultModelAlias
-    const r = await this.client.post('/mcp/embed', {
+    const client = await this.client()
+    const r = await client.post('/mcp/embed', {
       ...(modelAlias ? { modelAlias } : {}),
       input,
       runContext: { traceId: `connector-emb-${Date.now()}` },
@@ -145,7 +200,7 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
     return [
       {
         id: 'chat',
-        label: 'LLM Chat (via MCP)',
+        label: 'LLM Chat (governed)',
         params: [
           { key: 'messages', label: 'Messages (JSON array)', type: 'json', required: true },
           { key: 'modelAlias', label: 'Model alias (e.g. fast, balanced, mock)', type: 'string' },
@@ -156,7 +211,7 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
       },
       {
         id: 'complete',
-        label: 'LLM Complete (via MCP)',
+        label: 'LLM Complete (governed)',
         params: [
           { key: 'prompt', label: 'Prompt', type: 'text', required: true },
           { key: 'modelAlias', label: 'Model alias', type: 'string' },

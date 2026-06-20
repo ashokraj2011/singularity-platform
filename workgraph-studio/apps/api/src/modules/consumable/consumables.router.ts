@@ -8,6 +8,13 @@ import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 import { type Verdict, runVerification } from './verify.service'
+import {
+  assertConsumableTenant,
+  assertWorkflowInstanceTenant,
+  requireTenantFromRequest,
+  tenantIsolationStrict,
+} from '../../lib/tenant-isolation'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 
 export const consumablesRouter: Router = Router()
 
@@ -25,11 +32,18 @@ const createVersionSchema = z.object({
 
 consumablesRouter.post('/', validate(createConsumableSchema), async (req, res, next) => {
   try {
-    const consumable = await prisma.consumable.create({
-      data: { ...req.body, createdById: req.user!.userId },
-      include: { type: true },
+    if (tenantIsolationStrict() && !req.body.instanceId) {
+      throw new ValidationError('TENANT_ISOLATION_MODE=strict requires instanceId when creating a consumable')
+    }
+    const consumable = await withTenantDbTransaction(prisma, async () => {
+      if (req.body.instanceId) await assertWorkflowInstanceTenant(req, req.body.instanceId)
+      const created = await prisma.consumable.create({
+        data: { ...req.body, createdById: req.user!.userId },
+        include: { type: true },
+      })
+      await logEvent('ConsumableCreated', 'Consumable', created.id, req.user!.userId)
+      return created
     })
-    await logEvent('ConsumableCreated', 'Consumable', consumable.id, req.user!.userId)
     res.status(201).json(consumable)
   } catch (err) {
     next(err)
@@ -40,20 +54,24 @@ consumablesRouter.get('/', async (req, res, next) => {
   try {
     const pg = parsePagination(req.query as Record<string, unknown>)
     const { typeId, status, instanceId, nodeId } = req.query
+    const tenantId = requireTenantFromRequest(req, 'consumable listing')
     const where: Record<string, unknown> = {}
     if (typeId)     where.typeId     = typeId
     if (status)     where.status     = status
     if (instanceId) where.instanceId = instanceId
     if (nodeId)     where.nodeId     = nodeId
+    if (tenantIsolationStrict()) where.instance = { tenantId }
 
-    const [consumables, total] = await Promise.all([
-      prisma.consumable.findMany({
-        where, skip: pg.skip, take: pg.take,
-        include: { type: true },
-        orderBy: { createdAt: 'desc' },
-      }),
-      prisma.consumable.count({ where }),
-    ])
+    const [consumables, total] = await withTenantDbTransaction(prisma, () => Promise.all([
+        prisma.consumable.findMany({
+          where, skip: pg.skip, take: pg.take,
+          include: { type: true },
+          orderBy: { createdAt: 'desc' },
+        }),
+        prisma.consumable.count({ where }),
+      ]),
+      tenantId,
+    )
     res.json(toPageResponse(consumables, total, pg))
   } catch (err) {
     next(err)
@@ -62,9 +80,12 @@ consumablesRouter.get('/', async (req, res, next) => {
 
 consumablesRouter.get('/:id', async (req, res, next) => {
   try {
-    const consumable = await prisma.consumable.findUnique({
-      where: { id: req.params.id },
-      include: { type: true, versions: { orderBy: { version: 'desc' } } },
+    const consumable = await withTenantDbTransaction(prisma, async () => {
+      await assertConsumableTenant(req, req.params.id)
+      return prisma.consumable.findUnique({
+        where: { id: req.params.id },
+        include: { type: true, versions: { orderBy: { version: 'desc' } } },
+      })
     })
     if (!consumable) throw new NotFoundError('Consumable', req.params.id)
     res.json(consumable)
@@ -77,11 +98,15 @@ consumablesRouter.post('/:id/versions', validate(createVersionSchema), async (re
   try {
     const { payload } = req.body as z.infer<typeof createVersionSchema>
     const id = req.params.id as string
-    const consumable = await prisma.consumable.findUnique({
-      where: { id },
-      include: { type: true, versions: { orderBy: { version: 'desc' }, take: 1 } },
-    }) as (Awaited<ReturnType<typeof prisma.consumable.findUnique>> & { type: ConsumableType; versions: ConsumableVersion[] }) | null
-    if (!consumable) throw new NotFoundError('Consumable', id)
+    const consumable = await withTenantDbTransaction(prisma, async () => {
+      const found = await prisma.consumable.findUnique({
+        where: { id },
+        include: { type: true, versions: { orderBy: { version: 'desc' }, take: 1 } },
+      }) as (Awaited<ReturnType<typeof prisma.consumable.findUnique>> & { type: ConsumableType; versions: ConsumableVersion[] }) | null
+      if (!found) throw new NotFoundError('Consumable', id)
+      await assertConsumableTenant(req, id)
+      return found
+    })
 
     // Schema validation against ConsumableType.schemaDef
     const schema = consumable.type.schemaDef as Record<string, unknown>
@@ -93,17 +118,20 @@ consumablesRouter.post('/:id/versions', validate(createVersionSchema), async (re
     }
 
     const nextVersion = (consumable.versions[0]?.version ?? 0) + 1
-    const version = await prisma.consumableVersion.create({
-      data: {
-        consumableId: id,
-        version: nextVersion,
-        payload: payload as unknown as Prisma.InputJsonValue,
-        createdById: req.user!.userId,
-      },
-    })
-    await prisma.consumable.update({
-      where: { id },
-      data: { currentVersion: nextVersion },
+    const version = await withTenantDbTransaction(prisma, async () => {
+      const created = await prisma.consumableVersion.create({
+        data: {
+          consumableId: id,
+          version: nextVersion,
+          payload: payload as unknown as Prisma.InputJsonValue,
+          createdById: req.user!.userId,
+        },
+      })
+      await prisma.consumable.update({
+        where: { id },
+        data: { currentVersion: nextVersion },
+      })
+      return created
     })
     res.status(201).json(version)
   } catch (err) {
@@ -134,8 +162,11 @@ async function transitionStatus(
 
 consumablesRouter.post('/:id/submit-review', async (req, res, next) => {
   try {
-    await transitionStatus(req.params.id, 'UNDER_REVIEW', req.user!.userId)
-    const c = await prisma.consumable.findUnique({ where: { id: req.params.id } })
+    const c = await withTenantDbTransaction(prisma, async () => {
+      await assertConsumableTenant(req, req.params.id)
+      await transitionStatus(req.params.id, 'UNDER_REVIEW', req.user!.userId)
+      return prisma.consumable.findUnique({ where: { id: req.params.id } })
+    })
     res.json(c)
   } catch (err) {
     next(err)
@@ -145,7 +176,12 @@ consumablesRouter.post('/:id/submit-review', async (req, res, next) => {
 consumablesRouter.post('/:id/approve', async (req, res, next) => {
   try {
     const force = req.query.force === 'true' || (req.body as { force?: unknown } | null)?.force === true
-    const existing = await prisma.consumable.findUnique({ where: { id: req.params.id } })
+    const existing = await withTenantDbTransaction(prisma, async () => {
+      const found = await prisma.consumable.findUnique({ where: { id: req.params.id } })
+      if (!found) return null
+      await assertConsumableTenant(req, req.params.id)
+      return found
+    })
     if (!existing) return res.status(404).json({ error: 'consumable not found' })
     // Verify-before-approve gate. Auto-verify: if this document was never
     // verified, run the verifier agent now (and persist the verdict) so every
@@ -156,7 +192,10 @@ consumablesRouter.post('/:id/approve', async (req, res, next) => {
       if (!v) {
         v = await runVerification(existing, req.user!.userId)
         const formData = { ...((existing.formData ?? {}) as Record<string, unknown>), _verification: v }
-        await prisma.consumable.update({ where: { id: existing.id }, data: { formData: formData as Prisma.InputJsonValue } })
+        await withTenantDbTransaction(prisma, async () => {
+          await assertConsumableTenant(req, req.params.id)
+          await prisma.consumable.update({ where: { id: existing.id }, data: { formData: formData as Prisma.InputJsonValue } })
+        })
       }
       if (v.passed === false) {
         return res.status(409).json({
@@ -166,8 +205,11 @@ consumablesRouter.post('/:id/approve', async (req, res, next) => {
         })
       }
     }
-    await transitionStatus(req.params.id, 'APPROVED', req.user!.userId, 'CONSUMABLE_APPROVAL')
-    const c = await prisma.consumable.findUnique({ where: { id: req.params.id } })
+    const c = await withTenantDbTransaction(prisma, async () => {
+      await assertConsumableTenant(req, req.params.id)
+      await transitionStatus(req.params.id, 'APPROVED', req.user!.userId, 'CONSUMABLE_APPROVAL')
+      return prisma.consumable.findUnique({ where: { id: req.params.id } })
+    })
     res.json(c)
   } catch (err) {
     next(err)
@@ -176,8 +218,11 @@ consumablesRouter.post('/:id/approve', async (req, res, next) => {
 
 consumablesRouter.post('/:id/reject', async (req, res, next) => {
   try {
-    await transitionStatus(req.params.id, 'REJECTED', req.user!.userId)
-    const c = await prisma.consumable.findUnique({ where: { id: req.params.id } })
+    const c = await withTenantDbTransaction(prisma, async () => {
+      await assertConsumableTenant(req, req.params.id)
+      await transitionStatus(req.params.id, 'REJECTED', req.user!.userId)
+      return prisma.consumable.findUnique({ where: { id: req.params.id } })
+    })
     res.json(c)
   } catch (err) {
     next(err)
@@ -190,11 +235,19 @@ consumablesRouter.post('/:id/reject', async (req, res, next) => {
 // Used by the run-graph artifact catalog "Verify" button.
 consumablesRouter.post('/:id/verify', async (req, res, next) => {
   try {
-    const c = await prisma.consumable.findUnique({ where: { id: req.params.id } })
+    const c = await withTenantDbTransaction(prisma, async () => {
+      const found = await prisma.consumable.findUnique({ where: { id: req.params.id } })
+      if (!found) return null
+      await assertConsumableTenant(req, req.params.id)
+      return found
+    })
     if (!c) return res.status(404).json({ error: 'consumable not found' })
     const verdict = await runVerification(c, req.user!.userId)
     const formData = { ...((c.formData ?? {}) as Record<string, unknown>), _verification: verdict }
-    await prisma.consumable.update({ where: { id: c.id }, data: { formData: formData as Prisma.InputJsonValue } })
+    await withTenantDbTransaction(prisma, async () => {
+      await assertConsumableTenant(req, req.params.id)
+      await prisma.consumable.update({ where: { id: c.id }, data: { formData: formData as Prisma.InputJsonValue } })
+    })
     res.json({ id: c.id, ...verdict })
   } catch (err) {
     next(err)
@@ -203,8 +256,11 @@ consumablesRouter.post('/:id/verify', async (req, res, next) => {
 
 consumablesRouter.post('/:id/publish', async (req, res, next) => {
   try {
-    await transitionStatus(req.params.id, 'PUBLISHED', req.user!.userId)
-    const c = await prisma.consumable.findUnique({ where: { id: req.params.id } })
+    const c = await withTenantDbTransaction(prisma, async () => {
+      await assertConsumableTenant(req, req.params.id)
+      await transitionStatus(req.params.id, 'PUBLISHED', req.user!.userId)
+      return prisma.consumable.findUnique({ where: { id: req.params.id } })
+    })
     res.json(c)
   } catch (err) {
     next(err)
@@ -213,8 +269,11 @@ consumablesRouter.post('/:id/publish', async (req, res, next) => {
 
 consumablesRouter.post('/:id/supersede', async (req, res, next) => {
   try {
-    await transitionStatus(req.params.id, 'SUPERSEDED', req.user!.userId)
-    const c = await prisma.consumable.findUnique({ where: { id: req.params.id } })
+    const c = await withTenantDbTransaction(prisma, async () => {
+      await assertConsumableTenant(req, req.params.id)
+      await transitionStatus(req.params.id, 'SUPERSEDED', req.user!.userId)
+      return prisma.consumable.findUnique({ where: { id: req.params.id } })
+    })
     res.json(c)
   } catch (err) {
     next(err)
@@ -233,24 +292,28 @@ consumablesRouter.post('/:id/form-submission', validate(consumableFormSubmission
     const id = req.params.id as string
     const { data, attachmentIds } = req.body as z.infer<typeof consumableFormSubmissionSchema>
 
-    const consumable = await prisma.consumable.findUnique({ where: { id } })
-    if (!consumable) throw new NotFoundError('Consumable', id)
+    const { updated } = await withTenantDbTransaction(prisma, async () => {
+      const found = await prisma.consumable.findUnique({ where: { id } })
+      if (!found) throw new NotFoundError('Consumable', id)
+      await assertConsumableTenant(req, id)
 
-    const updated = await prisma.consumable.update({
-      where: { id },
-      data: { formData: data as unknown as Prisma.InputJsonValue },
-    })
-
-    if (attachmentIds && attachmentIds.length > 0) {
-      await prisma.document.updateMany({
-        where: { id: { in: attachmentIds } },
-        data: { instanceId: consumable.instanceId },
+      const saved = await prisma.consumable.update({
+        where: { id },
+        data: { formData: data as unknown as Prisma.InputJsonValue },
       })
-    }
 
-    await logEvent('ConsumableFormSubmitted', 'Consumable', id, req.user!.userId, {
-      instanceId: consumable.instanceId,
-      attachmentCount: attachmentIds?.length ?? 0,
+      if (attachmentIds && attachmentIds.length > 0) {
+        await prisma.document.updateMany({
+          where: { id: { in: attachmentIds } },
+          data: { instanceId: found.instanceId },
+        })
+      }
+
+      await logEvent('ConsumableFormSubmitted', 'Consumable', id, req.user!.userId, {
+        instanceId: found.instanceId,
+        attachmentCount: attachmentIds?.length ?? 0,
+      })
+      return { consumable: found, updated: saved }
     })
 
     res.json({ consumable: updated, formData: data, attachmentIds: attachmentIds ?? [] })

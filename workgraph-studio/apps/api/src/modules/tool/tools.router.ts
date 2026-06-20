@@ -3,8 +3,10 @@ import { z } from 'zod'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
-import { NotFoundError } from '../../lib/errors'
+import { NotFoundError, ValidationError } from '../../lib/errors'
 import { requestToolRun } from './gateway/ToolGatewayService'
+import { assertWorkflowInstanceTenant, requireTenantFromRequest, tenantIsolationStrict } from '../../lib/tenant-isolation'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 
 export const toolsRouter: Router = Router()
 
@@ -83,15 +85,24 @@ toolsRouter.post('/:id/actions', validate(createActionSchema), async (req, res, 
 toolsRouter.post('/:id/request-run', validate(requestRunSchema), async (req, res, next) => {
   try {
     const { actionId, instanceId, inputPayload, idempotencyKey } = req.body as z.infer<typeof requestRunSchema>
-    const runId = await requestToolRun(
-      req.params.id as string,
-      actionId,
-      instanceId,
-      inputPayload,
-      req.user!.userId,
-      idempotencyKey,
-    )
-    const run = await prisma.toolRun.findUnique({ where: { id: runId } })
+    const tenantId = tenantIsolationStrict()
+      ? requireTenantFromRequest(req, 'tool-run request')
+      : undefined
+    if (tenantIsolationStrict() && !instanceId) {
+      throw new ValidationError('TENANT_ISOLATION_MODE=strict requires instanceId when requesting a tool run')
+    }
+    const run = await withTenantDbTransaction(prisma, async () => {
+      if (instanceId) await assertWorkflowInstanceTenant(req, instanceId)
+      const runId = await requestToolRun(
+        req.params.id as string,
+        actionId,
+        instanceId,
+        inputPayload,
+        req.user!.userId,
+        idempotencyKey,
+      )
+      return prisma.toolRun.findUnique({ where: { id: runId } })
+    }, tenantId)
     res.status(201).json(run)
   } catch (err) {
     next(err)

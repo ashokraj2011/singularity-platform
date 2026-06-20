@@ -22,6 +22,7 @@
 import { useState } from 'react'
 import { Download, Loader2 } from 'lucide-react'
 import { getToken } from '../api'
+import { workbenchPath } from '../vite-env-compat'
 
 type ExportFormat = 'agent-md' | 'yaml'
 
@@ -37,7 +38,7 @@ export function CopilotExportButton({ nodeId }: { nodeId: string | null | undefi
     try {
       const token = getToken()
       const res = await fetch(
-        `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/workflow-nodes/${nodeId}/workbench/export-copilot?format=${format}`,
+        workbenchPath(`/api/workflow-nodes/${nodeId}/workbench/export-copilot?format=${format}`),
         { headers: token ? { authorization: `Bearer ${token}` } : {} },
       )
       if (!res.ok) {

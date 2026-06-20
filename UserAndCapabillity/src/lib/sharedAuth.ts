@@ -18,6 +18,7 @@ export function sharedAuthToken(): string | null {
 
 export function redirectToPortalLogin(): void {
   if (typeof window === 'undefined') return
-  if (window.location.pathname === '/login') return
-  window.location.href = '/login'
+  if (window.location.pathname === '/identity/login') return
+  const next = `${window.location.pathname}${window.location.search}${window.location.hash}`
+  window.location.href = `/identity/login?next=${encodeURIComponent(next)}`
 }

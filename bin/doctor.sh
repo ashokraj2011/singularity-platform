@@ -4,7 +4,7 @@
 # One pass over the known bare-metal gap classes so you see ALL remaining issues
 # at once instead of discovering them one click at a time:
 #   1. Services      — every port up + responding
-#   2. Cross-app env — the .env.local keys that make split-origin links/auth work
+#   2. Platform env — the .env.local keys that keep Platform Web links same-origin
 #   3. Seeds         — baseline agent templates, demo users, SDLC + demo workflows,
 #                      audit risk_level column
 #   4. Auth          — IAM local login works (what every app's session depends on)
@@ -13,10 +13,12 @@
 # (append missing .env.local keys). Seed/service fixes are printed, not run.
 #
 #   bin/doctor.sh           # report
+#   BOX_ONLY=1 bin/doctor.sh # report with local llm-gateway/MCP treated as remote
 #   bin/doctor.sh --fix     # report + append any missing .env.local keys
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$ROOT"
 FIX=0; [ "${1:-}" = "--fix" ] && FIX=1
+[ "${BOX_ONLY:-}" = "1" ] || BOX_ONLY=""
 
 C_G=$'\033[32m'; C_Y=$'\033[33m'; C_R=$'\033[31m'; C_B=$'\033[1m'; C_E=$'\033[0m'
 PASS=0; WARN=0; FAIL=0
@@ -30,7 +32,63 @@ PG_USER="${PG_USER:-${USER:-postgres}}"; PG_PASS="${PG_PASS:-postgres}"
 PG_HOST="${PG_HOST:-localhost}"; PG_PORT="${PG_PORT:-5432}"
 export PGPASSWORD="$PG_PASS"
 
-http_code(){ curl -s -o /dev/null -w "%{http_code}" --max-time 4 "$1" 2>/dev/null || echo 000; }
+http_code(){
+  local code
+  if command -v curl >/dev/null 2>&1; then
+    code="$(curl -s -o /dev/null -w "%{http_code}" --max-time 4 "$1" 2>/dev/null || true)"
+  else
+    code="$(python3 - "$1" <<'PY' 2>/dev/null || true
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+try:
+    res = urlopen(Request(sys.argv[1]), timeout=4)
+    print(res.status)
+except HTTPError as exc:
+    print(exc.code)
+except (OSError, URLError, TimeoutError):
+    print("000")
+PY
+)"
+  fi
+  code="${code:-000}"
+  printf '%s' "${code: -3}"
+}
+http_get(){
+  if command -v curl >/dev/null 2>&1; then
+    curl -s --max-time "${2:-6}" "$1" 2>/dev/null || true
+  else
+    python3 - "$1" "${2:-6}" <<'PY' 2>/dev/null || true
+import sys
+from urllib.request import Request, urlopen
+
+try:
+    with urlopen(Request(sys.argv[1]), timeout=float(sys.argv[2])) as res:
+        sys.stdout.write(res.read().decode("utf-8", "replace"))
+except Exception:
+    pass
+PY
+  fi
+}
+http_post_json(){
+  local url="$1" body="$2" timeout="${3:-6}"
+  if command -v curl >/dev/null 2>&1; then
+    curl -s --max-time "$timeout" -X POST "$url" -H 'content-type: application/json' -d "$body" 2>/dev/null || true
+  else
+    python3 - "$url" "$timeout" "$body" <<'PY' 2>/dev/null || true
+import sys
+from urllib.request import Request, urlopen
+
+try:
+    req = Request(sys.argv[1], data=sys.argv[3].encode("utf-8"), headers={"content-type": "application/json"}, method="POST")
+    with urlopen(req, timeout=float(sys.argv[2])) as res:
+        sys.stdout.write(res.read().decode("utf-8", "replace"))
+except Exception:
+    pass
+PY
+  fi
+}
 psql_q(){ psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$1" -tAc "$2" 2>/dev/null | tr -d '[:space:]'; }
 db_up(){ psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$1" -tAc 'select 1' >/dev/null 2>&1; }
 
@@ -38,44 +96,89 @@ printf "${C_B}Singularity bare-metal doctor${C_E}  (pg=%s@%s:%s, fix=%s)\n" "$PG
 
 # ── 1. Services ──────────────────────────────────────────────────────────────
 section "1. Services"
-for s in \
+services=(
   "IAM|http://localhost:8100/api/v1/health" \
   "workgraph-api|http://localhost:8080/health" \
+  "agent-service|http://localhost:3001/health" \
+  "tool-service|http://localhost:3002/health" \
   "agent-runtime|http://localhost:3003/health" \
-  "context-fabric|http://localhost:8000/health" \
-  "llm-gateway|http://localhost:8001/health" \
-  "mcp-server|http://localhost:7100/health" \
+  "prompt-composer|http://localhost:3004/health" \
+  "code-foundry-api|http://localhost:3005/health" \
   "audit-gov|http://localhost:8500/health" \
-  "agent-web|http://localhost:3000/" \
-  "workgraph-web|http://localhost:5174/" \
-  "iam-admin|http://localhost:5175/" \
-  "blueprint-workbench|http://localhost:5176/" \
-  "portal|http://localhost:5180/"; do
+  "context-fabric|http://localhost:8000/health" \
+  "platform-web|http://localhost:5180/" \
+  "platform-agents|http://localhost:5180/agents/studio" \
+  "platform-workflows|http://localhost:5180/workflows" \
+  "platform-workbench|http://localhost:5180/workbench" \
+  "platform-foundry|http://localhost:5180/foundry" \
+  "platform-identity|http://localhost:5180/identity"
+)
+for s in "${services[@]}"; do
   name="${s%%|*}"; url="${s##*|}"; code=$(http_code "$url")
   if [ "$code" = "000" ]; then fail "$name down ($url)" "start: bin/setup.sh --yes   ·   logs: bin/bare-metal.sh logs $name"
   else pass "$name up ($code)"; fi
 done
+runtime_services=(
+  "llm-gateway|http://localhost:8001/health"
+  "mcp-server|http://localhost:7100/health"
+)
+if [ -n "$BOX_ONLY" ]; then
+  warn "local runtime checks skipped" "BOX_ONLY=1 assumes llm-gateway and MCP run on a laptop or remote endpoint"
+else
+  for s in "${runtime_services[@]}"; do
+    name="${s%%|*}"; url="${s##*|}"; code=$(http_code "$url")
+    case "$name" in
+      llm-gateway) profile_hint="llm-gateway" ;;
+      mcp-server) profile_hint="mcp" ;;
+      audit-gov) profile_hint="audit" ;;
+      *) profile_hint="$name" ;;
+    esac
+    if [ "$code" = "000" ]; then warn "$name not running locally" "optional/remote-capable runtime; start locally with ./singularity.sh up --profile $profile_hint"
+    else pass "$name up ($code)"; fi
+  done
+fi
+runtime_status=$(http_get http://localhost:5180/api/runtime-infrastructure 6)
+runtime_summary=$(printf '%s' "$runtime_status" | python3 -c 'import json,sys
+try:
+  data=json.load(sys.stdin)
+  s=data.get("summary",{})
+  print("%s/%s optional healthy" % (s.get("optionalHealthy",0), s.get("optionalConfigured",0)))
+  sys.exit(0 if s.get("requiredHealthy") else 2)
+except Exception:
+  print("")
+  sys.exit(1)' 2>/dev/null)
+case "$?" in
+  0) pass "platform runtime registry ($runtime_summary)" ;;
+  2) fail "platform runtime registry reports required service unhealthy" "open http://localhost:5180/operations/readiness" ;;
+  *) warn "platform runtime registry unavailable" "open http://localhost:5180/operations/readiness after platform-web is running" ;;
+esac
 
-# ── 2. Cross-app env (.env.local) ────────────────────────────────────────────
-section "2. Cross-app env (.env.local)"
+# ── 2. Platform Web env (.env.local) ─────────────────────────────────────────
+section "2. Platform Web env (.env.local)"
 ensure_kv(){ # relpath  KEY=VALUE
   local rel="$1" kv="$2" key="${2%%=*}" f="$ROOT/$1"
-  if [ -f "$f" ] && grep -q "^${key}=" "$f"; then pass "$rel · $key"
-  elif [ "$FIX" = "1" ]; then mkdir -p "$(dirname "$f")"; printf '%s\n' "$kv" >> "$f"; pass "$rel · $key ${C_Y}(added)${C_E}"
-  else fail "$rel missing $key" "echo '$kv' >> $rel   (or re-run bin/setup.sh)"; fi
+  if [ -f "$f" ] && grep -q "^${key}=${kv#*=}$" "$f"; then
+    pass "$rel · $key"
+  elif [ "$FIX" = "1" ]; then
+    mkdir -p "$(dirname "$f")"; touch "$f"
+    if grep -q "^${key}=" "$f"; then
+      tmp="${f}.tmp.$$"
+      sed "s#^${key}=.*#${kv}#" "$f" > "$tmp" && mv "$tmp" "$f"
+      pass "$rel · $key ${C_Y}(updated)${C_E}"
+    else
+      printf '%s\n' "$kv" >> "$f"
+      pass "$rel · $key ${C_Y}(added)${C_E}"
+    fi
+  else
+    fail "$rel missing or stale $key" "set '$kv' in $rel   (or run bin/doctor.sh --fix)"
+  fi
 }
-for app in singularity-portal UserAndCapabillity workgraph-studio/apps/web workgraph-studio/apps/blueprint-workbench; do
-  ensure_kv "$app/.env.local" "VITE_IAM_BASE_URL=http://localhost:8100/api/v1"
-  ensure_kv "$app/.env.local" "VITE_BLUEPRINT_WORKBENCH_URL=http://localhost:5176"
-  ensure_kv "$app/.env.local" "VITE_LINK_BLUEPRINT_WORKBENCH=http://localhost:5176"
-  ensure_kv "$app/.env.local" "VITE_LINK_OPERATIONS_PORTAL=http://localhost:5180/operations"
-  ensure_kv "$app/.env.local" "VITE_LINK_IAM_ADMIN=http://localhost:5175"
-done
-ensure_kv "workgraph-studio/apps/blueprint-workbench/.env.local" "VITE_PSEUDO_IAM_LOGIN_URL=http://localhost:8100/api/v1/auth/local/login"
-ensure_kv "agent-and-tools/web/.env.local" "NEXT_PUBLIC_LINK_WORKGRAPH_DESIGNER=http://localhost:5174"
-ensure_kv "agent-and-tools/web/.env.local" "NEXT_PUBLIC_LINK_BLUEPRINT_WORKBENCH=http://localhost:5176"
-ensure_kv "agent-and-tools/web/.env.local" "NEXT_PUBLIC_LINK_IAM_ADMIN=http://localhost:5175"
-[ "$FIX" = "1" ] && warn "env keys were appended" "restart the affected dev servers (Vite reads .env.local only at startup): bin/bare-metal.sh down && bin/setup.sh --yes"
+ensure_kv "agent-and-tools/web/.env.local" "NEXT_PUBLIC_LINK_WORKGRAPH_DESIGNER=/workflows"
+ensure_kv "agent-and-tools/web/.env.local" "NEXT_PUBLIC_LINK_BLUEPRINT_WORKBENCH=/workbench"
+ensure_kv "agent-and-tools/web/.env.local" "NEXT_PUBLIC_LINK_IAM_ADMIN=/identity"
+ensure_kv "agent-and-tools/web/.env.local" "NEXT_PUBLIC_LINK_OPERATIONS_PORTAL=/operations"
+ensure_kv "agent-and-tools/web/.env.local" "NEXT_PUBLIC_WORKGRAPH_WEB_URL=/workflows"
+[ "$FIX" = "1" ] && warn "env keys were appended" "restart Platform Web: bin/bare-metal.sh down && bin/setup.sh --yes"
 
 # ── 3. Seeds ─────────────────────────────────────────────────────────────────
 section "3. Seeds"
@@ -109,24 +212,93 @@ else fail "cannot reach DB 'audit_governance'" "Postgres / creds"; fi
 
 # ── 4. Auth ──────────────────────────────────────────────────────────────────
 section "4. Auth"
-tok=$(curl -s --max-time 6 -X POST http://localhost:8100/api/v1/auth/local/login \
-  -H 'content-type: application/json' \
-  -d '{"email":"admin@singularity.local","password":"Admin1234!"}' 2>/dev/null \
+login_payload=$(python3 - <<'PY'
+import json
+from pathlib import Path
+
+try:
+    identity = json.loads(Path(".singularity/config.local.json").read_text()).get("identity", {})
+except Exception:
+    identity = {}
+print(json.dumps({
+    "email": identity.get("bootstrapEmail") or "admin@singularity.local",
+    "password": identity.get("bootstrapPassword") or "Admin1234!",
+}))
+PY
+)
+login_email=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["email"])' <<< "$login_payload")
+tok=$(http_post_json http://localhost:8100/api/v1/auth/local/login "$login_payload" 6 \
   | python3 -c 'import sys,json;print(json.load(sys.stdin).get("access_token",""))' 2>/dev/null)
-[ -n "$tok" ] && pass "IAM local login works (admin)" \
-  || fail "IAM local login failed" "is IAM (:8100) up? admin@singularity.local / Admin1234! — check logs/iam-service.log"
+[ -n "$tok" ] && pass "IAM local login works ($login_email)" \
+  || fail "IAM local login failed" "is IAM (:8100) up? check .singularity/config.local.json and logs/iam-service.log"
 
 # ── 5. LLM (gateway → provider actually callable) ────────────────────────────
 section "5. LLM"
-llm=$(curl -s --max-time 30 http://localhost:8001/v1/chat/completions -H 'content-type: application/json' \
-  -d '{"model_alias":"mock","messages":[{"role":"user","content":"ping"}],"max_output_tokens":5}' 2>/dev/null)
-if echo "$llm" | grep -q 'model_not_supported\|not supported'; then
-  fail "gateway model not callable (model_not_supported)" \
-    "your Copilot plan lists but rejects the configured model — repoint to a working one (gpt-4o): sed -i '' 's/claude-sonnet-4.6/gpt-4o/g' .singularity/llm-models.json ; then restart the gateway (kill :8001 + bin/setup.sh --yes)"
-elif echo "$llm" | grep -qE '"content"'; then
-  pass "gateway completion works (model: $(printf '%s' "$llm" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("model","?"))' 2>/dev/null))"
+if [ -n "$BOX_ONLY" ]; then
+  warn "gateway completion skipped" "BOX_ONLY=1: verify the laptop/remote gateway from that runtime host"
+elif [ "$(http_code http://localhost:8001/health)" = "000" ]; then
+  warn "gateway completion skipped" "llm-gateway is optional/remote-capable and is not running locally"
 else
-  warn "gateway LLM check inconclusive" "$(printf '%s' "$llm" | head -c 140)"
+  model_alias="${LLM_PROBE_MODEL_ALIAS:-}"
+  if [ -z "$model_alias" ]; then
+    model_alias=$(python3 - <<'PY'
+import json
+from pathlib import Path
+
+root = Path(".")
+for env_path in [root / ".env", root / "mcp-server/.env", root / "agent-and-tools/.env"]:
+    if not env_path.exists():
+        continue
+    for raw in env_path.read_text().splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        key = key.strip().removeprefix("export ").strip()
+        value = value.strip().strip("\"'")
+        if key in {"MCP_LLM_MODEL", "LLM_MODEL"} and value:
+            print(value)
+            raise SystemExit(0)
+
+for model_path in [root / ".singularity/mcp-models.json", root / ".singularity/llm-models.json"]:
+    if not model_path.exists():
+        continue
+    try:
+        rows = json.loads(model_path.read_text())
+    except Exception:
+        continue
+    if isinstance(rows, list):
+        default = next((row for row in rows if isinstance(row, dict) and row.get("default")), None)
+        if default and default.get("id"):
+            print(default["id"])
+            raise SystemExit(0)
+        first = next((row for row in rows if isinstance(row, dict) and row.get("id")), None)
+        if first:
+            print(first["id"])
+            raise SystemExit(0)
+
+print("mock-fast")
+PY
+)
+  fi
+  llm_payload=$(MODEL_ALIAS="$model_alias" python3 - <<'PY'
+import json
+import os
+print(json.dumps({
+    "model_alias": os.environ.get("MODEL_ALIAS", "mock-fast"),
+    "messages": [{"role": "user", "content": "ping"}],
+    "max_output_tokens": 5,
+}))
+PY
+)
+  llm=$(http_post_json http://localhost:8001/v1/chat/completions "$llm_payload" 30)
+  if echo "$llm" | grep -q 'model_not_supported\|not supported'; then
+    fail "gateway model not callable: $model_alias" \
+      "set LLM_PROBE_MODEL_ALIAS to a working alias or update .env/.singularity/llm-models.json, then restart the gateway"
+  elif echo "$llm" | grep -qE '"content"'; then
+    pass "gateway completion works (model: $(printf '%s' "$llm" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("model","?"))' 2>/dev/null))"
+  else
+    warn "gateway LLM check inconclusive" "$(printf '%s' "$llm" | head -c 140)"
+  fi
 fi
 
 # ── summary ──────────────────────────────────────────────────────────────────

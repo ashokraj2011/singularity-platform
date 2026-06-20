@@ -163,7 +163,7 @@ function legacyRuntimeEvidence(agentTemplateId: string, message: string): Prisma
     confidence: 1,
     metadata: {
       replacement_path: "Workflow Manager -> workflow run -> AGENT_TASK -> Context Fabric /execute -> MCP",
-      workgraph_runs_url: "http://localhost:5174/runs",
+      workgraph_runs_url: "/runs",
     },
   }];
 }

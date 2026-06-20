@@ -8,17 +8,21 @@ import {
   Bot,
   CheckCircle2,
   CircleAlert,
+  FileText,
   GitBranch,
   History,
   Layers,
+  Link as LinkIcon,
   Library,
   Lock,
+  Plus,
   RefreshCw,
   RotateCcw,
   Save,
   Search,
   ShieldCheck,
   Sparkles,
+  Upload,
   X,
 } from "lucide-react";
 
@@ -83,6 +87,89 @@ type PromptProfile = {
   }>;
 };
 
+type ProfileSkillBinding = {
+  sourceType: "local" | "provider_manifest" | "url_document" | "uploaded_document";
+  skillId?: string;
+  name?: string;
+  description?: string;
+  skillType?: string;
+  sourceRef?: string;
+  providerManifestUrl?: string;
+  url?: string;
+  fileName?: string;
+  permissions?: Array<"read" | "invoke" | "configure" | "edit">;
+  readOnly?: boolean;
+  providerLocked?: boolean;
+  isDefault?: boolean;
+  metadata?: Record<string, unknown>;
+};
+
+type CapabilityPermission = "read" | "invoke" | "configure" | "edit";
+
+type ProviderPreviewCapability = {
+  id?: string;
+  name?: string;
+  description?: string;
+  permissions?: CapabilityPermission[];
+  defaultPermissions?: CapabilityPermission[];
+  readOnly?: boolean;
+  providerLocked?: boolean;
+  constraints?: {
+    readOnly?: boolean;
+    providerLocked?: boolean;
+  };
+  schema?: unknown;
+  invocationEndpoint?: string;
+};
+
+type ProviderPreview = {
+  title?: string;
+  description?: string;
+  sourceRef?: string;
+  defaultPermissions?: CapabilityPermission[];
+  readOnly?: boolean;
+  providerLocked?: boolean;
+  capabilities?: ProviderPreviewCapability[];
+  manifestVersion?: unknown;
+};
+
+type ProfileSourceGovernance = {
+  bindingId?: string;
+  skillId: string;
+  skillName: string;
+  skillType: string;
+  sourceType: string;
+  sourceRef?: string | null;
+  capabilityId?: string | null;
+  permissions?: CapabilityPermission[];
+  readOnly?: boolean;
+  providerLocked?: boolean;
+  liveResolutionRequired?: boolean;
+  sourceArtifact?: { kind?: string; id?: string; sourceRef?: string; title?: string } | Record<string, unknown>;
+  warnings?: string[];
+};
+
+type ProfileSourcesResponse = {
+  sources?: ProfileSourceGovernance[];
+  summary?: {
+    totalBindings?: number;
+    externalBindings?: number;
+    providerManifestBindings?: number;
+    documentBindings?: number;
+    readOnlyBindings?: number;
+    providerLockedBindings?: number;
+    invokableBindings?: number;
+    liveResolutionRequired?: number;
+    missingSourceRefs?: number;
+    knowledgeSources?: number;
+    knowledgeArtifacts?: number;
+    warnings?: string[];
+  };
+};
+
+const ROLE_OPTIONS = ["ARCHITECT", "DEVELOPER", "QA", "GOVERNANCE", "BUSINESS_ANALYST", "PRODUCT_OWNER", "DEVOPS", "SECURITY"] as const;
+const CAPABILITY_PERMISSION_OPTIONS: CapabilityPermission[] = ["read", "invoke", "configure", "edit"];
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function apiErrorSummary(error: unknown): { title: string; message: string; detail?: string } {
@@ -115,6 +202,7 @@ export default function AgentStudioPage() {
   const [signedIn, setSignedIn] = useState(false);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "editable" | "locked" | "missing-profile">("all");
+  const [showCreateProfile, setShowCreateProfile] = useState(false);
 
   const { data: capabilities = [], error: capabilitiesError, isLoading: capabilitiesLoading } = useSWR(
     "runtime-capabilities-for-agent-studio",
@@ -178,6 +266,12 @@ export default function AgentStudioPage() {
             <MetricCard label="Editable" value={stats.editable} tone="slate" />
             <MetricCard label="Needs profile" value={stats.missingProfiles} tone={stats.missingProfiles ? "amber" : "slate"} />
           </div>
+        </div>
+        <div className="mt-5 flex flex-wrap gap-2">
+          <button type="button" className="btn-primary text-sm" onClick={() => setShowCreateProfile(true)}>
+            <Plus size={15} />
+            Create Agent
+          </button>
         </div>
       </div>
 
@@ -339,6 +433,442 @@ export default function AgentStudioPage() {
           onDone={() => { setDeriveTarget(null); mutate(); }}
         />
       )}
+
+      {showCreateProfile && (
+        <CreateAgentProfileWizard
+          capabilities={capabilities}
+          initialCapabilityId={capabilityId}
+          onAuthRequired={() => setSignedIn(false)}
+          onClose={() => setShowCreateProfile(false)}
+          onDone={(agent) => {
+            setShowCreateProfile(false);
+            setCapabilityId(String(agent.capabilityId ?? ""));
+            setSelected(agent as Agent);
+            mutate();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function CreateAgentProfileWizard({
+  capabilities,
+  initialCapabilityId,
+  onAuthRequired,
+  onClose,
+  onDone,
+}: {
+  capabilities: Capability[];
+  initialCapabilityId: string;
+  onAuthRequired: () => void;
+  onClose: () => void;
+  onDone: (agent: Record<string, unknown>) => void;
+}) {
+  const { data: skills = [] } = useSWR("agent-profile-local-skills", () => runtimeApi.listSkills());
+  const { data: profiles = [] } = useSWR("agent-profile-prompt-profiles", () => runtimeApi.listProfiles());
+  const [step, setStep] = useState(0);
+  const [capabilityId, setCapabilityId] = useState(initialCapabilityId);
+  const [name, setName] = useState("");
+  const [roleType, setRoleType] = useState<typeof ROLE_OPTIONS[number]>("DEVELOPER");
+  const [description, setDescription] = useState("");
+  const [instructions, setInstructions] = useState("");
+  const [basePromptProfileId, setBasePromptProfileId] = useState("");
+  const [bindings, setBindings] = useState<ProfileSkillBinding[]>([]);
+  const [localSkillId, setLocalSkillId] = useState("");
+  const [providerUrl, setProviderUrl] = useState("");
+  const [providerPreview, setProviderPreview] = useState<ProviderPreview | null>(null);
+  const [providerPermissions, setProviderPermissions] = useState<CapabilityPermission[]>(["read"]);
+  const [providerBusy, setProviderBusy] = useState(false);
+  const [documentUrl, setDocumentUrl] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const selectedCapability = capabilities.find((cap) => cap.id === capabilityId);
+  const localSkills = (skills as Array<Record<string, unknown>>);
+  const promptProfiles = (profiles as Array<Record<string, unknown>>);
+
+  function addBinding(binding: ProfileSkillBinding) {
+    setBindings((current) => [...current, binding]);
+  }
+
+  function addLocalSkill() {
+    const skill = localSkills.find((s) => s.id === localSkillId);
+    if (!skill) return;
+    addBinding({
+      sourceType: "local",
+      skillId: String(skill.id),
+      name: String(skill.name ?? "Local skill"),
+      description: typeof skill.description === "string" ? skill.description : undefined,
+      permissions: ["read", "invoke"],
+      readOnly: false,
+      providerLocked: false,
+      isDefault: true,
+    });
+    setLocalSkillId("");
+  }
+
+  async function previewProviderManifestSource() {
+    const url = providerUrl.trim();
+    if (!url) return;
+    setProviderBusy(true);
+    setErr(null);
+    try {
+      const preview = await runtimeApi.previewSkillSource({ sourceType: "provider_manifest", providerManifestUrl: url }) as ProviderPreview;
+      setProviderPreview(preview);
+      setProviderPermissions(["read"]);
+    } catch (e) {
+      const formatted = apiErrorSummary(e);
+      setErr(`${formatted.title}: ${formatted.message}`);
+    } finally {
+      setProviderBusy(false);
+    }
+  }
+
+  function canProviderGrant(permission: CapabilityPermission): boolean {
+    if (permission === "read") return true;
+    return Boolean(providerPreview?.capabilities?.some((capability) => (
+      !capability.readOnly &&
+      !capability.providerLocked &&
+      capability.permissions?.includes(permission)
+    )));
+  }
+
+  function toggleProviderPermission(permission: CapabilityPermission) {
+    if (permission === "read" || !canProviderGrant(permission)) return;
+    setProviderPermissions((current) => (
+      current.includes(permission)
+        ? current.filter((value) => value !== permission)
+        : [...current, permission]
+    ));
+  }
+
+  function addProviderManifest() {
+    const url = providerUrl.trim();
+    if (!url || !providerPreview) return;
+    const selectedPermissions = Array.from(new Set<CapabilityPermission>(["read", ...providerPermissions]));
+    const hasWritePermission = selectedPermissions.some((permission) => permission !== "read");
+    addBinding({
+      sourceType: "provider_manifest",
+      name: String(providerPreview.title ?? "Provider skill"),
+      description: typeof providerPreview.description === "string" ? providerPreview.description : undefined,
+      skillType: "PROVIDER_MANIFEST",
+      providerManifestUrl: url,
+      sourceRef: url,
+      permissions: selectedPermissions,
+      readOnly: !hasWritePermission,
+      providerLocked: false,
+      isDefault: true,
+      metadata: {
+        manifestVersion: providerPreview.manifestVersion,
+        capabilities: providerPreview.capabilities,
+      },
+    });
+    setProviderUrl("");
+    setProviderPreview(null);
+    setProviderPermissions(["read"]);
+  }
+
+  function addDocumentUrl() {
+    const url = documentUrl.trim();
+    if (!url) return;
+    addBinding({
+      sourceType: "url_document",
+      name: url.replace(/^https?:\/\//, "").slice(0, 120),
+      description: "Read-only linked agent source document.",
+      skillType: "DOCUMENT_SOURCE",
+      url,
+      sourceRef: url,
+      permissions: ["read"],
+      readOnly: true,
+      providerLocked: true,
+      isDefault: true,
+    });
+    setDocumentUrl("");
+  }
+
+  function addFiles(nextFiles: FileList | null) {
+    if (!nextFiles) return;
+    const accepted = Array.from(nextFiles).filter((file) => /\.(txt|md|markdown|pdf|docx|xlsx|pptx)$/i.test(file.name));
+    setFiles((current) => [...current, ...accepted]);
+    const uploadBindings: ProfileSkillBinding[] = accepted.map((file) => ({
+      sourceType: "uploaded_document",
+      name: file.name,
+      description: "Read-only uploaded agent source document.",
+      skillType: "DOCUMENT_SOURCE",
+      sourceRef: file.name,
+      fileName: file.name,
+      permissions: ["read"],
+      readOnly: true,
+      providerLocked: true,
+      isDefault: true,
+    }));
+    setBindings((current) => [
+      ...current,
+      ...uploadBindings,
+    ]);
+  }
+
+  function removeBinding(index: number) {
+    const binding = bindings[index];
+    setBindings((current) => current.filter((_, i) => i !== index));
+    if (binding?.sourceType === "uploaded_document" && binding.fileName) {
+      setFiles((current) => current.filter((file) => file.name !== binding.fileName));
+    }
+  }
+
+  async function submit() {
+    if (!capabilityId || !name.trim()) {
+      setErr("Capability and agent name are required.");
+      return;
+    }
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const result = await runtimeApi.createAgentProfile({
+        capabilityId,
+        name: name.trim(),
+        roleType,
+        description: description.trim() || undefined,
+        instructions: instructions.trim() || undefined,
+        basePromptProfileId: basePromptProfileId || undefined,
+        skillBindings: bindings,
+      }, files);
+      const template = (result.template ?? result.profile) as Record<string, unknown>;
+      onDone(template);
+    } catch (e) {
+      if (isUnauthorized(e)) onAuthRequired();
+      const formatted = apiErrorSummary(e);
+      setErr(`${formatted.title}: ${formatted.message}${formatted.detail ? ` (${formatted.detail})` : ""}`);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const steps = ["Identity", "Instructions", "Skills", "Review"];
+  const externalCount = bindings.filter((binding) => binding.sourceType !== "local").length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4">
+      <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between border-b border-slate-200 p-5">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-950">Create Agent</h2>
+            <p className="mt-1 text-sm text-slate-500">Create a capability-scoped draft with source-backed skills and explicit permissions.</p>
+          </div>
+          <button onClick={onClose} className="rounded p-1 hover:bg-slate-100"><X size={16} /></button>
+        </div>
+
+        <div className="grid grid-cols-4 gap-2 border-b border-slate-200 p-4">
+          {steps.map((label, index) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => setStep(index)}
+              className={`rounded-lg border px-3 py-2 text-xs font-semibold ${step === index ? "border-emerald-600 bg-emerald-50 text-emerald-800" : "border-slate-200 bg-white text-slate-500"}`}
+            >
+              {index + 1}. {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="overflow-y-auto p-5">
+          {step === 0 && (
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="text-sm font-medium text-slate-700">
+                Capability
+                <select className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" value={capabilityId} onChange={(e) => setCapabilityId(e.target.value)}>
+                  <option value="">Select capability...</option>
+                  {capabilities.map((cap) => <option key={cap.id} value={cap.id}>{cap.name ?? cap.id}</option>)}
+                </select>
+              </label>
+              <label className="text-sm font-medium text-slate-700">
+                Role
+                <select className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" value={roleType} onChange={(e) => setRoleType(e.target.value as typeof roleType)}>
+                  {ROLE_OPTIONS.map((role) => <option key={role} value={role}>{role.replace(/_/g, " ")}</option>)}
+                </select>
+              </label>
+              <label className="text-sm font-medium text-slate-700 md:col-span-2">
+                Agent name
+                <input className="mt-1 h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" value={name} onChange={(e) => setName(e.target.value)} placeholder={selectedCapability ? `${selectedCapability.name} Developer` : "Agent name"} />
+              </label>
+              <label className="text-sm font-medium text-slate-700 md:col-span-2">
+                Short purpose
+                <textarea rows={3} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What this agent should help with." />
+              </label>
+            </div>
+          )}
+
+          {step === 1 && (
+            <div className="space-y-4">
+              <label className="block text-sm font-medium text-slate-700">
+                Prompt profile
+                <select className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" value={basePromptProfileId} onChange={(e) => setBasePromptProfileId(e.target.value)}>
+                  <option value="">No existing profile</option>
+                  {promptProfiles.map((profile) => <option key={profile.id as string} value={profile.id as string}>{String(profile.name ?? profile.id)}</option>)}
+                </select>
+              </label>
+              <label className="block text-sm font-medium text-slate-700">
+                Inline instructions
+                <textarea rows={8} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="Rules, boundaries, preferred behavior, or source usage guidance for this agent." />
+              </label>
+            </div>
+          )}
+
+          {step === 2 && (
+            <div className="space-y-5">
+              <div className="rounded-lg border border-slate-200 p-4">
+                <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900"><Sparkles size={15} /> Local skill</div>
+                <div className="flex gap-2">
+                  <select className="h-10 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm" value={localSkillId} onChange={(e) => setLocalSkillId(e.target.value)}>
+                    <option value="">Select existing local skill...</option>
+                    {localSkills.map((skill) => <option key={skill.id as string} value={skill.id as string}>{String(skill.name ?? skill.id)}</option>)}
+                  </select>
+                  <button type="button" className="btn-secondary text-xs" onClick={addLocalSkill} disabled={!localSkillId}>Add</button>
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="rounded-lg border border-slate-200 p-4">
+                  <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900"><LinkIcon size={15} /> Provider/API manifest</div>
+                  <input
+                    className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm"
+                    value={providerUrl}
+                    onChange={(e) => {
+                      setProviderUrl(e.target.value);
+                      setProviderPreview(null);
+                      setProviderPermissions(["read"]);
+                    }}
+                    placeholder="https://provider.example/manifest.json"
+                  />
+                  <button type="button" className="btn-secondary mt-3 text-xs" onClick={() => void previewProviderManifestSource()} disabled={!providerUrl.trim() || providerBusy}>
+                    {providerBusy ? "Previewing..." : "Preview manifest"}
+                  </button>
+                  {providerPreview && (
+                    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div className="text-sm font-semibold text-slate-900">{providerPreview.title ?? "Provider skill"}</div>
+                      {providerPreview.description && <p className="mt-1 line-clamp-2 text-xs text-slate-500">{providerPreview.description}</p>}
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        {CAPABILITY_PERMISSION_OPTIONS.map((permission) => {
+                          const checked = providerPermissions.includes(permission);
+                          const disabled = permission === "read" || !canProviderGrant(permission);
+                          return (
+                            <label key={permission} className={`flex items-center gap-2 rounded border px-2 py-1.5 text-xs ${checked ? "border-emerald-200 bg-white text-emerald-800" : "border-slate-200 bg-white text-slate-600"} ${disabled ? "opacity-60" : ""}`}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={disabled}
+                                onChange={() => toggleProviderPermission(permission)}
+                              />
+                              {permission}
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-3 max-h-32 space-y-2 overflow-auto">
+                        {(providerPreview.capabilities ?? []).slice(0, 8).map((capability) => (
+                          <div key={capability.id ?? capability.name} className="rounded border border-slate-200 bg-white p-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate text-xs font-semibold text-slate-800">{capability.name ?? capability.id}</span>
+                              {(capability.providerLocked || capability.readOnly) && (
+                                <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700">
+                                  {capability.providerLocked ? "locked" : "read-only"}
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-1 text-[11px] text-slate-500">{(capability.permissions ?? ["read"]).join(", ")}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <button type="button" className="btn-secondary mt-3 text-xs" onClick={addProviderManifest}>
+                        Add provider skill
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="rounded-lg border border-slate-200 p-4">
+                  <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900"><FileText size={15} /> Document URL</div>
+                  <input className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" value={documentUrl} onChange={(e) => setDocumentUrl(e.target.value)} placeholder="https://.../runbook.md" />
+                  <button type="button" className="btn-secondary mt-3 text-xs" onClick={addDocumentUrl} disabled={!documentUrl.trim()}>Add read-only link</button>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-dashed border-slate-300 p-4">
+                <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900"><Upload size={15} /> Upload files</div>
+                <input type="file" multiple accept=".txt,.md,.markdown,.pdf,.docx,.xlsx,.pptx" onChange={(e) => addFiles(e.target.files)} className="block w-full text-sm text-slate-600" />
+                <p className="mt-2 text-xs text-slate-500">Supports .txt, .md, .pdf, .docx, .xlsx, and .pptx. Uploaded sources are read-only.</p>
+              </div>
+
+              <SkillBindingList bindings={bindings} onRemove={removeBinding} />
+            </div>
+          )}
+
+          {step === 3 && (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-slate-200 p-4 text-sm">
+                <div className="font-semibold text-slate-900">{name || "Unnamed agent"}</div>
+                <div className="mt-1 text-slate-500">{selectedCapability?.name ?? "No capability selected"} · {roleType.replace(/_/g, " ")}</div>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                  <MetricPill label="Skills" value={bindings.length} />
+                  <MetricPill label="External" value={externalCount} />
+                  <MetricPill label="Files" value={files.length} />
+                </div>
+              </div>
+              <SkillBindingList bindings={bindings} onRemove={removeBinding} />
+            </div>
+          )}
+
+          {err && <div className="mt-4 rounded border border-red-200 bg-red-50 p-3 text-xs text-red-700">{err}</div>}
+        </div>
+
+        <div className="flex items-center justify-between border-t border-slate-200 p-4">
+          <button type="button" className="btn-secondary text-xs" onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0}>Back</button>
+          <div className="flex gap-2">
+            {step < 3 ? (
+              <button type="button" className="btn-primary text-xs" onClick={() => setStep((s) => Math.min(3, s + 1))}>Next</button>
+            ) : (
+              <button type="button" className="btn-primary text-xs" onClick={() => void submit()} disabled={submitting || !capabilityId || !name.trim()}>
+                {submitting ? "Creating..." : "Create draft agent"}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MetricPill({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-lg bg-slate-50 p-3">
+      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{label}</div>
+      <div className="mt-1 text-lg font-bold text-slate-900">{value}</div>
+    </div>
+  );
+}
+
+function SkillBindingList({ bindings, onRemove }: { bindings: ProfileSkillBinding[]; onRemove: (index: number) => void }) {
+  if (!bindings.length) return <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">No skills added yet.</div>;
+  return (
+    <div className="space-y-2">
+      {bindings.map((binding, index) => (
+        <div key={`${binding.sourceType}-${binding.sourceRef ?? binding.skillId ?? index}`} className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 p-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium text-slate-900">{binding.name ?? binding.sourceRef ?? binding.skillId}</span>
+              <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-600">{binding.sourceType.replace(/_/g, " ")}</span>
+              {binding.readOnly && <span className="rounded bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700">read-only</span>}
+              {binding.providerLocked && <span className="rounded bg-amber-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-700">provider-locked</span>}
+            </div>
+            {binding.sourceRef && <div className="mt-1 truncate font-mono text-xs text-slate-400">{binding.sourceRef}</div>}
+            <div className="mt-1 text-xs text-slate-500">Permissions: {(binding.permissions ?? ["read"]).join(", ")}</div>
+          </div>
+          <button type="button" onClick={() => onRemove(index)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+            <X size={14} />
+          </button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -399,7 +929,7 @@ function AgentStudioAuthCard({ onAuthenticated }: { onAuthenticated: () => void 
     setError(null);
     try {
       const res = await identityApi.login({ email, password });
-      saveAgentToolsToken(res.access_token);
+      saveAgentToolsToken(res.access_token, res.user);
       onAuthenticated();
     } catch (e) {
       setError((e as Error).message ?? "Sign in failed");
@@ -417,7 +947,7 @@ function AgentStudioAuthCard({ onAuthenticated }: { onAuthenticated: () => void 
             Sign in for governed agent changes
           </div>
           <p className="mt-1 text-xs text-slate-600">
-            Agent Studio runs on port 3000, so it needs its own IAM bearer before creating or editing governed templates.
+            Platform Web uses your IAM session for governed template changes across agents, tools, workflows, and identity.
           </p>
         </div>
         <div className="grid min-w-0 flex-1 grid-cols-1 gap-2 sm:grid-cols-[1fr_180px_auto]">
@@ -616,6 +1146,14 @@ function DetailPanel({ agent, onChanged }: { agent: Agent | null; onChanged: (ag
     agent?.id ? `agent-template-versions-${agent.id}` : null,
     () => runtimeApi.listTemplateVersions(agent!.id) as Promise<AgentVersion[]>,
   );
+  const {
+    data: sourceGovernance,
+    error: sourceGovernanceError,
+    isLoading: sourceGovernanceLoading,
+  } = useSWR(
+    agent?.id ? `agent-template-sources-${agent.id}` : null,
+    () => runtimeApi.getAgentProfileSources(agent!.id) as Promise<ProfileSourcesResponse>,
+  );
 
   if (!agent) {
     return (
@@ -702,6 +1240,52 @@ function DetailPanel({ agent, onChanged }: { agent: Agent | null; onChanged: (ag
           ) : (
             <span className="text-amber-700">Cross-capability common library baseline.</span>
           )}
+        </DetailBlock>
+
+        <DetailBlock title="Skill Sources" icon={Library}>
+        {sourceGovernanceLoading ? (
+          <div className="space-y-2">
+            <div className="h-8 rounded bg-slate-100" />
+            <div className="h-8 rounded bg-slate-100" />
+          </div>
+        ) : sourceGovernanceError ? (
+          <div className="text-xs text-red-700">{apiErrorSummary(sourceGovernanceError).message}</div>
+        ) : (sourceGovernance?.sources ?? []).length === 0 ? (
+          <p className="text-xs text-slate-500">No skill sources are bound to this profile yet.</p>
+        ) : (
+          <div className="space-y-2">
+            <div className="grid grid-cols-3 gap-2">
+              <MetricPill label="External" value={sourceGovernance?.summary?.externalBindings ?? 0} />
+              <MetricPill label="Read-only" value={sourceGovernance?.summary?.readOnlyBindings ?? 0} />
+              <MetricPill label="Live" value={sourceGovernance?.summary?.liveResolutionRequired ?? 0} />
+            </div>
+            {(sourceGovernance?.sources ?? []).slice(0, 6).map((source) => (
+              <div key={source.bindingId ?? `${source.skillId}-${source.sourceType}`} className="rounded-lg border border-slate-200 bg-white px-2 py-2">
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="text-[11px] font-semibold text-slate-800">{source.skillName}</span>
+                  <Badge color="slate" label={source.sourceType.replace(/_/g, " ")} />
+                  {source.readOnly && <Badge color="emerald" label="read-only" />}
+                  {source.providerLocked && <Badge color="amber" label="locked" />}
+                  {source.liveResolutionRequired && <Badge color="blue" label="live manifest" />}
+                </div>
+                <div className="mt-1 text-[10px] text-slate-500">
+                  Permissions: {(source.permissions ?? ["read"]).join(", ")}
+                </div>
+                {source.sourceRef && (
+                  <div className="mt-1 truncate font-mono text-[10px] text-slate-400" title={source.sourceRef}>{source.sourceRef}</div>
+                )}
+                {Array.isArray(source.warnings) && source.warnings.length > 0 && (
+                  <div className="mt-1 text-[10px] text-red-700">{source.warnings[0]}</div>
+                )}
+              </div>
+            ))}
+            {(sourceGovernance?.summary?.warnings ?? []).length > 0 && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] text-red-700">
+                {(sourceGovernance?.summary?.warnings ?? [])[0]}
+              </div>
+            )}
+          </div>
+        )}
         </DetailBlock>
 
         <DetailBlock title="Prompt Layers" icon={Layers}>

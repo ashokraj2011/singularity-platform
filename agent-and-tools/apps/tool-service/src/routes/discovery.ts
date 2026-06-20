@@ -1,12 +1,54 @@
 import { Router, Request, Response } from "express";
 import { query } from "../database";
-import { optionalAuth } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
+import { capabilityMetadataForTool } from "../lib/capability-metadata";
+import { effectiveCapabilityGate } from "../lib/effective-capability-gate";
 
 export const discoveryRoutes = Router();
-discoveryRoutes.use(optionalAuth);
+discoveryRoutes.use(requireAuth);
 
 const RISK_ORDER = ["low", "medium", "high", "critical"];
+
+function effectiveCapabilitySetRequired(): boolean {
+  return process.env.TOOL_EFFECTIVE_CAPABILITY_REQUIRED !== "false";
+}
+
+function firstString(record: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function firstBoolean(record: Record<string, unknown> | undefined, keys: string[]): boolean | undefined {
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "boolean") return value;
+  }
+  return undefined;
+}
+
+function manifestEvidenceFromCapability(capability: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!capability) return {};
+  return {
+    provider_id: firstString(capability, ["providerId", "provider_id"]),
+    provider_manifest_version: firstString(capability, ["providerManifestVersion", "provider_manifest_version", "manifestVersion", "manifest_version"]),
+    provider_manifest_digest: firstString(capability, ["providerManifestDigest", "provider_manifest_digest", "manifestDigest", "manifest_digest"]),
+    provider_manifest_signature_key_id: firstString(capability, [
+      "providerManifestSignatureKeyId",
+      "provider_manifest_signature_key_id",
+      "signatureKeyId",
+      "signature_key_id",
+    ]),
+    provider_manifest_signed: firstBoolean(capability, ["providerManifestSigned", "provider_manifest_signed", "signedManifest", "signed_manifest"]),
+    source_type: firstString(capability, ["sourceType", "source_type"]),
+    source_ref: firstString(capability, ["sourceRef", "source_ref"]),
+  };
+}
 
 function rankTools(tools: Record<string, unknown>[], queryStr: string, taskType: string): Record<string, unknown>[] {
   return tools
@@ -33,9 +75,17 @@ function rankTools(tools: Record<string, unknown>[], queryStr: string, taskType:
 
 // POST /api/v1/tools/discover
 discoveryRoutes.post("/discover", async (req: Request, res: Response) => {
-  const { capability_id, agent_uid, agent_id, task_type, query: q, risk_max, limit } = req.body;
+  const {
+    capability_id, agent_uid, agent_id, task_type, query: q, risk_max, limit,
+    effective_capabilities, effectiveCapabilities,
+  } = req.body;
+  const effectiveCapabilitySet = effective_capabilities ?? effectiveCapabilities;
+  const effectiveCapabilitySetProvided = Array.isArray(effectiveCapabilitySet);
 
   if (!capability_id || !agent_uid) throw new AppError("capability_id and agent_uid are required");
+  if (effectiveCapabilitySetRequired() && !effectiveCapabilitySetProvided) {
+    throw new AppError("effective_capabilities is required for governed tool discovery");
+  }
 
   const maxRiskIndex = RISK_ORDER.indexOf(risk_max ?? "medium");
   const allowedRisks = RISK_ORDER.slice(0, maxRiskIndex + 1);
@@ -43,7 +93,7 @@ discoveryRoutes.post("/discover", async (req: Request, res: Response) => {
   const allTools = await query(
     `SELECT tool_name, version, description, display_name, input_schema, risk_level,
             requires_approval, execution_target, mcp_server_ref,
-            runtime, tags, allowed_capabilities, allowed_agents
+            runtime, tags, allowed_capabilities, allowed_agents, metadata
      FROM tool.tools
      WHERE status='active'`
   );
@@ -56,13 +106,34 @@ discoveryRoutes.post("/discover", async (req: Request, res: Response) => {
     const capOk = caps.length === 0 || caps.includes(capability_id);
     const agentOk = agents.length === 0 || agents.includes(agent_uid) || agents.includes(`${capability_id}:${agent_id}`);
     const riskOk = allowedRisks.includes(risk);
+    const capabilityMetadata = capabilityMetadataForTool(t, capability_id);
+    const capabilityGate = effectiveCapabilityGate({
+      effectiveCapabilities: effectiveCapabilitySet,
+      effectiveCapabilitiesProvided: effectiveCapabilitySetProvided,
+      requireEffectiveCapabilities: effectiveCapabilitySetRequired(),
+      requestedCapabilityId: capabilityMetadata.capability_id ?? t.tool_name,
+      requestedPermission: "invoke",
+      toolName: t.tool_name as string,
+    });
 
-    return capOk && agentOk && riskOk;
+    return capOk && agentOk && riskOk && capabilityGate.allowed;
   });
 
   const ranked = rankTools(filtered, q ?? "", task_type ?? "");
   const results = ranked.slice(0, limit ?? 8).map((t) => {
     const runtime = t.runtime as Record<string, unknown>;
+    const capabilityMetadata = capabilityMetadataForTool(t, capability_id);
+    const capabilityGate = effectiveCapabilityGate({
+      effectiveCapabilities: effectiveCapabilitySet,
+      effectiveCapabilitiesProvided: effectiveCapabilitySetProvided,
+      requireEffectiveCapabilities: effectiveCapabilitySetRequired(),
+      requestedCapabilityId: capabilityMetadata.capability_id ?? t.tool_name,
+      requestedPermission: "invoke",
+      toolName: t.tool_name as string,
+    });
+    const manifestEvidence = capabilityGate.allowed && capabilityGate.matchingCapability
+      ? manifestEvidenceFromCapability(capabilityGate.matchingCapability as Record<string, unknown>)
+      : {};
     return {
       tool_name: t.tool_name,
       version: t.version,
@@ -74,6 +145,8 @@ discoveryRoutes.post("/discover", async (req: Request, res: Response) => {
       mcp_server_ref: t.mcp_server_ref ?? null,
       execution_location: runtime.execution_location,
       runtime_type: runtime.runtime_type,
+      ...capabilityMetadata,
+      ...Object.fromEntries(Object.entries(manifestEvidence).filter(([, value]) => value !== undefined)),
     };
   });
 

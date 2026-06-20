@@ -11,8 +11,36 @@ function req(name: string, fallback?: string): string {
   return v
 }
 
+const PROD_ENVS = new Set(['production', 'prod', 'staging', 'perf'])
+const DEV_DEFAULTS = new Set([
+  '',
+  'changeme',
+  'dev-audit-gov-service-token',
+  'dev-codegen-service-token',
+  'dev-workgraph-internal-token',
+])
+
+export function isProductionClassEnv(): boolean {
+  return [
+    process.env.NODE_ENV,
+    process.env.APP_ENV,
+    process.env.ENVIRONMENT,
+    process.env.SINGULARITY_ENV,
+  ].some((value) => PROD_ENVS.has((value ?? '').toLowerCase()))
+}
+
+function assertProductionSecret(name: string, value: string, minLength = 32): void {
+  if (!isProductionClassEnv()) return
+  if (value.length < minLength || DEV_DEFAULTS.has(value)) {
+    throw new Error(
+      `${name} is unsafe for production-class environment; set a rotated ${minLength}+ character secret.`,
+    )
+  }
+}
+
 export const config = {
   PORT: Number(process.env.PORT ?? 3005),
+  HOST: process.env.HOST ?? '0.0.0.0',
   NODE_ENV: process.env.NODE_ENV ?? 'development',
   DATABASE_URL: req(
     'DATABASE_URL',
@@ -43,3 +71,7 @@ export const config = {
   // Per-key cache TTL for the feature-flag client (ms).
   FEATURE_FLAG_TTL_MS: Number(process.env.FEATURE_FLAG_TTL_MS ?? 30_000),
 }
+
+assertProductionSecret('WORKGRAPH_INTERNAL_TOKEN', config.WORKGRAPH_INTERNAL_TOKEN)
+assertProductionSecret('AUDIT_GOV_SERVICE_TOKEN', config.AUDIT_GOV_SERVICE_TOKEN)
+assertProductionSecret('CODEGEN_SERVICE_TOKEN', config.CODEGEN_SERVICE_TOKEN)

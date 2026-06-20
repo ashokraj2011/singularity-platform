@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { config } from '../../config'
+import { mergeAgentRunCorrelation } from '../../lib/agent-run-correlation'
 import { ForbiddenError, NotFoundError, ValidationError } from '../../lib/errors'
 import { promptComposerClient } from '../../lib/prompt-composer/client'
 import { assertCanViewWorkItem } from '../work-items/work-items.service'
@@ -343,6 +344,7 @@ export async function completeLaptopInvocation(invocationId: string, actorId: st
   await prisma.agentRun.update({
     where: { id: loaded.agentRunId },
     data: {
+      ...mergeAgentRunCorrelation({}, payload),
       status: status === 'COMPLETED' ? 'APPROVED' : 'FAILED',
       completedAt: now,
       outputs: {

@@ -13,6 +13,7 @@
  *     The execution.ts server path POSTs to runtime.endpoint_url.
  */
 import { query } from "../database";
+import { capabilityMetadataForTool } from "./capability-metadata";
 
 const VERSION = "1.0.0";
 const INTERNAL_BASE   = process.env.INTERNAL_TOOLS_BASE_URL    ?? "http://tool-service:3002/api/v1/internal-tools";
@@ -29,6 +30,7 @@ interface SeedTool {
   runtime: Record<string, unknown>;
   executionTarget: "LOCAL" | "SERVER";
   tags: string[];
+  metadata?: Record<string, unknown>;
 }
 
 const SEEDS: SeedTool[] = [
@@ -252,13 +254,24 @@ export async function seedCoreToolkit(): Promise<void> {
       [t.name, VERSION],
     );
     if (existing.length > 0) { skipped += 1; continue; }
+    const metadata = {
+      ...capabilityMetadataForTool({
+        tool_name: t.name,
+        metadata: {
+          source: t.tags.includes("connector") ? "runtime" : "local",
+          ...(t.metadata ?? {}),
+        },
+        runtime: t.runtime,
+      }),
+      ...(t.metadata ?? {}),
+    };
     await query(
       `INSERT INTO tool.tools
         (tool_name, version, display_name, description, status, risk_level,
          requires_approval, input_schema, output_schema, runtime,
          allowed_capabilities, allowed_agents, tags, metadata, execution_target)
        VALUES ($1,$2,$3,$4,'active',$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,
-               '[]'::jsonb,'[]'::jsonb,$10::jsonb,'{}'::jsonb,$11)`,
+               '[]'::jsonb,'[]'::jsonb,$10::jsonb,$11::jsonb,$12)`,
       [
         t.name, VERSION, t.display, t.description, t.riskLevel,
         t.requiresApproval,
@@ -266,6 +279,7 @@ export async function seedCoreToolkit(): Promise<void> {
         JSON.stringify(t.outputSchema ?? {}),
         JSON.stringify(t.runtime),
         JSON.stringify(t.tags),
+        JSON.stringify(metadata),
         t.executionTarget,
       ],
     );

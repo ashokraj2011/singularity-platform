@@ -34,10 +34,18 @@ from typing import Any
 GOVERNANCE_MODES = {"fail_open", "fail_closed", "degraded", "human_approval_required"}
 
 
-def governance_mode(value: str | None) -> str:
-    """Normalise a governance-mode string. Defaults to fail_open on garbage."""
-    mode = (value or "fail_open").strip().lower()
-    return mode if mode in GOVERNANCE_MODES else "fail_open"
+def governance_mode(value: str | None, *, fallback: str | None = None) -> str:
+    """Normalise a governance-mode string.
+
+    Legacy callers omit ``fallback`` and retain the historic fail-open default.
+    Runtime execution paths should pass the deployment default so malformed
+    caller input cannot silently downgrade a fail-closed environment.
+    """
+    fallback_mode = (fallback or "fail_open").strip().lower()
+    if fallback_mode not in GOVERNANCE_MODES:
+        fallback_mode = "fail_open"
+    mode = (value or fallback_mode).strip().lower()
+    return mode if mode in GOVERNANCE_MODES else fallback_mode
 
 
 def stage_policy_value(req: Any, key: str) -> str:

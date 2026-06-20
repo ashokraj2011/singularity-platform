@@ -5,23 +5,42 @@ import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
+import { mergeAgentRunCorrelation } from '../../lib/agent-run-correlation'
 import { contextFabricClient, ContextFabricError } from '../../lib/context-fabric/client'
 import { governedStageRespToExecuteResp } from '../workflow/runtime/executors/governed-execute-adapter'
+import { assertAgentRunTenant, requireTenantFromRequest, tenantIsolationStrict } from '../../lib/tenant-isolation'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 
 export const agentRunsRouter: Router = Router()
+
+type GovernanceMode = 'fail_open' | 'fail_closed' | 'degraded' | 'human_approval_required'
+
+function isGovernanceMode(value: unknown): value is GovernanceMode {
+  return value === 'fail_open'
+    || value === 'fail_closed'
+    || value === 'degraded'
+    || value === 'human_approval_required'
+}
 
 agentRunsRouter.get('/pending-review', async (req, res, next) => {
   try {
     const pg = parsePagination(req.query as Record<string, unknown>)
-    const [runs, total] = await Promise.all([
-      prisma.agentRun.findMany({
-        where: { status: 'AWAITING_REVIEW' },
-        include: { agent: true, outputs: true },
-        skip: pg.skip, take: pg.take,
-        orderBy: { completedAt: 'desc' },
-      }),
-      prisma.agentRun.count({ where: { status: 'AWAITING_REVIEW' } }),
-    ])
+    const tenantId = requireTenantFromRequest(req, 'pending agent-run review')
+    const where = {
+      status: 'AWAITING_REVIEW',
+      ...(tenantIsolationStrict() ? { instance: { tenantId } } : {}),
+    } as const
+    const [runs, total] = await withTenantDbTransaction(prisma, () => Promise.all([
+        prisma.agentRun.findMany({
+          where,
+          include: { agent: true, outputs: true },
+          skip: pg.skip, take: pg.take,
+          orderBy: { completedAt: 'desc' },
+        }),
+        prisma.agentRun.count({ where }),
+      ]),
+      tenantId,
+    )
     res.json(toPageResponse(runs, total, pg))
   } catch (err) {
     next(err)
@@ -33,18 +52,25 @@ agentRunsRouter.get('/pending-review', async (req, res, next) => {
 agentRunsRouter.get('/pending-approval', async (req, res, next) => {
   try {
     const pg = parsePagination(req.query as Record<string, unknown>)
-    const [runs, total] = await Promise.all([
-      prisma.agentRun.findMany({
-        where: { status: 'PAUSED' },
-        include: {
-          agent: true,
-          outputs: { where: { outputType: 'APPROVAL_REQUIRED' }, orderBy: { createdAt: 'desc' }, take: 1 },
-        },
-        skip: pg.skip, take: pg.take,
-        orderBy: { startedAt: 'desc' },
-      }),
-      prisma.agentRun.count({ where: { status: 'PAUSED' } }),
-    ])
+    const tenantId = requireTenantFromRequest(req, 'pending agent-run approval')
+    const where = {
+      status: 'PAUSED',
+      ...(tenantIsolationStrict() ? { instance: { tenantId } } : {}),
+    } as const
+    const [runs, total] = await withTenantDbTransaction(prisma, () => Promise.all([
+        prisma.agentRun.findMany({
+          where,
+          include: {
+            agent: true,
+            outputs: { where: { outputType: 'APPROVAL_REQUIRED' }, orderBy: { createdAt: 'desc' }, take: 1 },
+          },
+          skip: pg.skip, take: pg.take,
+          orderBy: { startedAt: 'desc' },
+        }),
+        prisma.agentRun.count({ where }),
+      ]),
+      tenantId,
+    )
     res.json(toPageResponse(runs, total, pg))
   } catch (err) {
     next(err)
@@ -53,9 +79,12 @@ agentRunsRouter.get('/pending-approval', async (req, res, next) => {
 
 agentRunsRouter.get('/:id', async (req, res, next) => {
   try {
-    const run = await prisma.agentRun.findUnique({
-      where: { id: req.params.id },
-      include: { agent: true, inputs: true, outputs: true, reviews: true },
+    const run = await withTenantDbTransaction(prisma, async () => {
+      await assertAgentRunTenant(req, req.params.id)
+      return prisma.agentRun.findUnique({
+        where: { id: req.params.id },
+        include: { agent: true, inputs: true, outputs: true, reviews: true },
+      })
     })
     if (!run) throw new NotFoundError('AgentRun', req.params.id)
     res.json(run)
@@ -66,9 +95,12 @@ agentRunsRouter.get('/:id', async (req, res, next) => {
 
 agentRunsRouter.get('/:id/outputs', async (req, res, next) => {
   try {
-    const outputs = await prisma.agentRunOutput.findMany({
-      where: { runId: req.params.id },
-      orderBy: { createdAt: 'desc' },
+    const outputs = await withTenantDbTransaction(prisma, async () => {
+      await assertAgentRunTenant(req, req.params.id)
+      return prisma.agentRunOutput.findMany({
+        where: { runId: req.params.id },
+        orderBy: { createdAt: 'desc' },
+      })
     })
     res.json(outputs)
   } catch (err) {
@@ -87,18 +119,20 @@ agentRunsRouter.post('/:id/review', validate(reviewSchema), async (req, res, nex
     const userId = req.user!.userId
     const id = req.params.id as string
 
-    const run = await prisma.agentRun.findUnique({ where: { id } })
-    if (!run) throw new NotFoundError('AgentRun', id)
+    const review = await withTenantDbTransaction(prisma, async () => {
+      const run = await prisma.agentRun.findUnique({ where: { id } })
+      if (!run) throw new NotFoundError('AgentRun', id)
+      await assertAgentRunTenant(req, id)
 
-    const [review] = await prisma.$transaction([
-      prisma.agentReview.create({
+      const created = await prisma.agentReview.create({
         data: { runId: id, reviewedById: userId, decision, notes },
-      }),
-      prisma.agentRun.update({
+      })
+      await prisma.agentRun.update({
         where: { id },
         data: { status: decision },
-      }),
-    ])
+      })
+      return created
+    })
 
     const eventId = await logEvent('AgentRunReviewed', 'AgentRun', id, userId, { decision })
     await createReceipt('AGENT_REVIEW', 'AgentRun', id, {
@@ -128,17 +162,21 @@ agentRunsRouter.post('/:id/approve', validate(approveSchema), async (req, res, n
     const userId = req.user!.userId
     const id = req.params.id as string
 
-    const run = await prisma.agentRun.findUnique({
-      where: { id },
-      include: {
-        outputs: {
-          where: { outputType: 'APPROVAL_REQUIRED' },
-          orderBy: { createdAt: 'desc' },
-          take: 1,
+    const run = await withTenantDbTransaction(prisma, async () => {
+      const found = await prisma.agentRun.findUnique({
+        where: { id },
+        include: {
+          outputs: {
+            where: { outputType: 'APPROVAL_REQUIRED' },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+          },
         },
-      },
+      })
+      if (!found) throw new NotFoundError('AgentRun', id)
+      await assertAgentRunTenant(req, id)
+      return found
     })
-    if (!run) throw new NotFoundError('AgentRun', id)
     if (run.status !== 'PAUSED') {
       throw new ValidationError(`AgentRun ${id} is not PAUSED (current status: ${run.status})`)
     }
@@ -150,7 +188,8 @@ agentRunsRouter.post('/:id/approve', validate(approveSchema), async (req, res, n
     const governedFinalState = payload.governedFinalState && typeof payload.governedFinalState === 'object'
       ? payload.governedFinalState as Record<string, unknown>
       : null
-    const cfCallId = payload.cfCallId as string | undefined
+    const cfCallId = (payload.cfCallId as string | undefined) ?? run.cfCallId ?? undefined
+    const governanceMode = isGovernanceMode(payload.governanceMode) ? payload.governanceMode : undefined
     if (!governedFinalState && !cfCallId) {
       throw new ValidationError(`AgentRun ${id} has no cfCallId/phase_state on its APPROVAL_REQUIRED output`)
     }
@@ -171,6 +210,7 @@ agentRunsRouter.post('/:id/approve', validate(approveSchema), async (req, res, n
         })
         cfResult = governedStageRespToExecuteResp(govResp, {
           traceId: (govRunContext.trace_id as string | undefined) ?? null,
+          governanceMode,
         })
       } else {
         cfResult = await contextFabricClient.resume({
@@ -184,16 +224,18 @@ agentRunsRouter.post('/:id/approve', validate(approveSchema), async (req, res, n
       const message = err instanceof ContextFabricError
         ? `context-fabric resume error (${err.status}): ${err.message}`
         : (err as Error).message
-      await prisma.agentRunOutput.create({
-        data: {
-          runId: id,
-          outputType: 'ERROR',
-          rawContent: message,
-          structuredPayload: { errorCode: 'cf-resume-error' },
-        },
+      await withTenantDbTransaction(prisma, async () => {
+        await prisma.agentRunOutput.create({
+          data: {
+            runId: id,
+            outputType: 'ERROR',
+            rawContent: message,
+            structuredPayload: { errorCode: 'cf-resume-error' },
+          },
+        })
+        await prisma.agentRun.update({ where: { id }, data: { status: 'FAILED', completedAt: new Date() } })
+        await logEvent('AgentRunFailed', 'AgentRun', id, userId, { errorCode: 'cf-resume-error', message })
       })
-      await prisma.agentRun.update({ where: { id }, data: { status: 'FAILED', completedAt: new Date() } })
-      await logEvent('AgentRunFailed', 'AgentRun', id, userId, { errorCode: 'cf-resume-error', message })
       throw err
     }
 
@@ -214,56 +256,57 @@ agentRunsRouter.post('/:id/approve', validate(approveSchema), async (req, res, n
       reviewer: userId,
     }
 
-    await prisma.agentRunOutput.create({
-      data: {
-        runId: id,
-        outputType: cfResult.status === 'WAITING_APPROVAL' ? 'APPROVAL_REQUIRED' : 'LLM_RESPONSE',
-        rawContent: cfResult.finalResponse ?? '',
-        structuredPayload: cfResult.status === 'WAITING_APPROVAL'
-          ? ({
-              ...correlation,
-              pendingApproval: cfResult.pendingApproval ?? null,
-              // Carry the (possibly advanced) governed state forward so a
-              // follow-up /approve can resume the re-paused stage again.
-              governedFinalState: cfResult.governedFinalState ?? governedFinalState,
-              governedRunContext: payload.governedRunContext ?? null,
-            } as unknown as object)
-          : (correlation as unknown as object),
-        tokenCount: cfResult.tokensUsed?.input ?? null,
-      },
-    })
-
     let nextStatus: 'PAUSED' | 'AWAITING_REVIEW' | 'REJECTED' | 'FAILED'
     if (cfResult.status === 'WAITING_APPROVAL') nextStatus = 'PAUSED'
     else if (cfResult.status === 'FAILED') nextStatus = 'FAILED'
     else if (decision === 'rejected') nextStatus = 'REJECTED'
     else nextStatus = 'AWAITING_REVIEW'
 
-    await prisma.agentRun.update({
-      where: { id },
-      data: {
-        status: nextStatus,
-        completedAt: nextStatus === 'PAUSED' ? null : new Date(),
-      },
-    })
-
     const eventName = nextStatus === 'PAUSED' ? 'AgentRunPaused' : 'AgentRunResumed'
-    const eventId = await logEvent(eventName, 'AgentRun', id, userId, {
-      decision,
-      cfCallId: cfResult.correlation.cfCallId,
-      finishReason: cfResult.finishReason,
-    })
-    await createReceipt('AGENT_APPROVAL', 'AgentRun', id, {
-      runId: id,
-      decision,
-      reviewedBy: userId,
-      cfCallId: cfResult.correlation.cfCallId,
-    }, eventId)
-    await publishOutbox('AgentRun', id, eventName, {
-      runId: id,
-      decision,
-      cfCallId: cfResult.correlation.cfCallId,
-      pendingApproval: cfResult.pendingApproval ?? null,
+    await withTenantDbTransaction(prisma, async () => {
+      await prisma.agentRunOutput.create({
+        data: {
+          runId: id,
+          outputType: cfResult.status === 'WAITING_APPROVAL' ? 'APPROVAL_REQUIRED' : 'LLM_RESPONSE',
+          rawContent: cfResult.finalResponse ?? '',
+          structuredPayload: cfResult.status === 'WAITING_APPROVAL'
+            ? ({
+                ...correlation,
+                pendingApproval: cfResult.pendingApproval ?? null,
+                // Carry the (possibly advanced) governed state forward so a
+                // follow-up /approve can resume the re-paused stage again.
+                governedFinalState: cfResult.governedFinalState ?? governedFinalState,
+                governedRunContext: payload.governedRunContext ?? null,
+                governanceMode: cfResult.governanceMode ?? cfResult.correlation?.governanceMode ?? governanceMode,
+              } as unknown as object)
+            : (correlation as unknown as object),
+          tokenCount: cfResult.tokensUsed?.input ?? null,
+        },
+      })
+      await prisma.agentRun.update({
+        where: { id },
+        data: mergeAgentRunCorrelation({
+          status: nextStatus,
+          completedAt: nextStatus === 'PAUSED' ? null : new Date(),
+        }, correlation),
+      })
+      const eventId = await logEvent(eventName, 'AgentRun', id, userId, {
+        decision,
+        cfCallId: cfResult.correlation.cfCallId,
+        finishReason: cfResult.finishReason,
+      })
+      await createReceipt('AGENT_APPROVAL', 'AgentRun', id, {
+        runId: id,
+        decision,
+        reviewedBy: userId,
+        cfCallId: cfResult.correlation.cfCallId,
+      }, eventId)
+      await publishOutbox('AgentRun', id, eventName, {
+        runId: id,
+        decision,
+        cfCallId: cfResult.correlation.cfCallId,
+        pendingApproval: cfResult.pendingApproval ?? null,
+      })
     })
 
     res.json({

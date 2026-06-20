@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models import User
-from app.auth.deps import get_current_user
+from app.auth.deps import require_reference_read
 from app.authz.resolver import check_authorization
 from app.authz.schemas import (
     AuthzCheckRequest, AuthzCheckResponse, BulkCheckRequest, BulkCheckResponse,
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/authz", tags=["authz"])
 async def authz_check(
     body: AuthzCheckRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_reference_read),
 ):
     result = await check_authorization(
         db=db,
@@ -82,7 +82,7 @@ async def authz_check(
 async def authz_bulk_check(
     body: BulkCheckRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_reference_read),
 ):
     results = []
     for check in body.checks:

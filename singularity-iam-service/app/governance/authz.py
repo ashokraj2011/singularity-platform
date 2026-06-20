@@ -1,30 +1,33 @@
 """Capability Governance Model — G7a authorization + contributions validation.
 
-Pure, DB-free helpers (like resolver.py) so they unit-test without a database
-or FastAPI app wiring. The route layer imports these for the mutate endpoints
-(POST attach / PATCH / deactivate / reactivate).
+The route layer imports these for the mutate endpoints (POST attach / PATCH /
+deactivate / reactivate). Service-principal checks are pure; real-user checks
+delegate to the DB-backed IAM authorization resolver so governance writes can
+be capability-scoped.
 
-Authority model (coarse, per the G7a plan):
-  * ADVISORY authoring — any authenticated real user, OR a service principal
-    carrying an explicit `governance:author` (or `governance:enforce`) scope.
-  * Enforcing modes (REQUIRED / BLOCKING) — elevated authority: super-admin
-    (real user) or the explicit `governance:enforce` scope. A service token's
-    blanket M11 `is_super_admin` is NOT sufficient to set/raise/toggle an
-    enforcing attachment.
-Finer-grained *per-capability* governance permissions are a deliberate
-follow-up; this is the coarse gate that closes the "anyone can flip BLOCKING"
-hole called out in review.
+Authority model:
+  * Service principals need explicit JWT scopes: `governance:author` for
+    ADVISORY writes and `governance:enforce` for REQUIRED/BLOCKING writes.
+  * Real users need the matching permission through platform roles or active
+    capability membership on both the governed capability and the governing
+    capability. Super-admin remains the only global bypass.
+This keeps governance authoring capability-scoped instead of letting any
+authenticated user bind a security/compliance capability to arbitrary work.
 """
 from __future__ import annotations
 
 from typing import Any
 
 from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz.resolver import check_authorization
 from app.governance.resolver import MODE_RANK
 
 # Modes at/above this rank are "enforcing" and require elevated authority.
 ENFORCING_MIN_RANK = MODE_RANK["REQUIRED"]
+GOVERNANCE_AUTHOR_PERMISSION = "governance:author"
+GOVERNANCE_ENFORCE_PERMISSION = "governance:enforce"
 
 
 def is_service_principal(u: Any) -> bool:
@@ -49,33 +52,65 @@ def mode_is_enforcing(mode: str) -> bool:
     return MODE_RANK.get((mode or "ADVISORY").strip().upper(), 1) >= ENFORCING_MIN_RANK
 
 
-def assert_governance_authority(u: Any, *, enforcing: bool) -> None:
-    """Raise 403 unless the principal may author (enforcing=False) or enforce
-    (enforcing=True) governance. See module docstring for the model."""
+def required_governance_permission(*, enforcing: bool) -> str:
+    return GOVERNANCE_ENFORCE_PERMISSION if enforcing else GOVERNANCE_AUTHOR_PERMISSION
+
+
+def assert_governance_service_scope(u: Any, *, enforcing: bool) -> bool:
+    """Return True after handling service principals, False for real users.
+
+    Service principals never fall through to user/capability membership checks.
+    """
     scopes = principal_scopes(u)
     service = is_service_principal(u)
+    if not service:
+        return False
     if enforcing:
-        if "governance:enforce" in scopes:
-            return
-        if service:
-            raise HTTPException(
-                403,
-                "enforcing governance (REQUIRED/BLOCKING) requires the 'governance:enforce' "
-                "scope on the service token; a service principal's blanket super-admin is not sufficient",
-            )
-        if not getattr(u, "is_super_admin", False):
-            raise HTTPException(
-                403,
-                "enforcing governance (REQUIRED/BLOCKING) requires super-admin or the "
-                "'governance:enforce' scope",
-            )
-        return
+        if GOVERNANCE_ENFORCE_PERMISSION in scopes:
+            return True
+        raise HTTPException(
+            403,
+            "enforcing governance (REQUIRED/BLOCKING) requires the 'governance:enforce' "
+            "scope on the service token; service principals cannot inherit super-admin",
+        )
     # ADVISORY authoring.
-    if service and not (scopes & {"governance:author", "governance:enforce"}):
+    if not (scopes & {GOVERNANCE_AUTHOR_PERMISSION, GOVERNANCE_ENFORCE_PERMISSION}):
         raise HTTPException(
             403, "service principals require the 'governance:author' scope to author governance"
         )
-    # Any authenticated real user may author ADVISORY (per-capability perms TBD).
+    return True
+
+
+async def assert_governance_authority(
+    db: AsyncSession,
+    u: Any,
+    *,
+    governed_capability_id: str,
+    governing_capability_id: str,
+    enforcing: bool,
+) -> None:
+    """Raise 403 unless the principal can write governance for this edge."""
+    if assert_governance_service_scope(u, enforcing=enforcing):
+        return
+    if getattr(u, "is_super_admin", False):
+        return
+
+    required = required_governance_permission(enforcing=enforcing)
+    missing: list[str] = []
+    for cap_id in sorted({governed_capability_id, governing_capability_id}):
+        result = await check_authorization(
+            db=db,
+            user_id=str(getattr(u, "id", "") or ""),
+            capability_id=cap_id,
+            action=required,
+        )
+        if not result.allowed:
+            missing.append(cap_id)
+    if missing:
+        raise HTTPException(
+            403,
+            f"{required} permission required on capability/capabilities: {', '.join(missing)}",
+        )
 
 
 _CONTRIB_LIST_KEYS = {

@@ -14,13 +14,15 @@
  *   2. For non-preview calls, delegates to context-fabric /execute and returns
  *      the unified response.
  *
- * Returns three correlation IDs we persist on AgentRunOutput.structuredPayload:
+ * Returns correlation IDs that Workgraph mirrors onto AgentRun columns and
+ * keeps in AgentRunOutput.structuredPayload for full replay detail:
  *   - promptAssemblyId  → composer.PromptAssembly
  *   - modelCallId       → context-fabric.ModelCall
  *   - contextPackageId  → context-fabric.ContextPackage
  */
 
 import { config } from '../../config'
+import { getIamServiceToken } from '../iam/service-token'
 
 export interface ComposeArtifact {
   consumableId?: string
@@ -151,6 +153,15 @@ interface SysPromptCacheEntry {
 const sysPromptCache = new Map<string, SysPromptCacheEntry>()
 const sysPromptInflight = new Map<string, Promise<{ content: string; version: number }>>()
 
+export async function promptComposerAuthHeaders(
+  baseHeaders: Record<string, string> = {},
+): Promise<Record<string, string>> {
+  const token = await getIamServiceToken()
+  return token
+    ? { ...baseHeaders, authorization: `Bearer ${token}` }
+    : baseHeaders
+}
+
 async function getSystemPromptCached(key: string, vars?: Record<string, unknown>): Promise<{ content: string; version: number }> {
   const ttlMs = Number(process.env.SYSTEM_PROMPT_CACHE_TTL_SEC ?? 300) * 1000
   const cacheKey = vars ? `${key}::${JSON.stringify(vars, Object.keys(vars).sort())}` : key
@@ -167,7 +178,7 @@ async function getSystemPromptCached(key: string, vars?: Record<string, unknown>
     try {
       const res = await fetch(url, {
         method: vars ? 'POST' : 'GET',
-        headers: { 'content-type': 'application/json' },
+        headers: await promptComposerAuthHeaders({ 'content-type': 'application/json' }),
         body: vars ? JSON.stringify({ vars }) : undefined,
         signal: AbortSignal.timeout(10_000),
       })
@@ -196,7 +207,7 @@ export const promptComposerClient = {
     const url = `${config.PROMPT_COMPOSER_URL}/api/v1/compose-and-respond`
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: await promptComposerAuthHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify(input),
       signal: AbortSignal.timeout(240_000),
     })
@@ -230,7 +241,7 @@ export const promptComposerClient = {
     const url = `${config.PROMPT_COMPOSER_URL}/api/v1/stage-prompts/resolve`
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: await promptComposerAuthHeaders({ 'content-type': 'application/json' }),
       body: JSON.stringify(input),
       signal: AbortSignal.timeout(15_000),
     })

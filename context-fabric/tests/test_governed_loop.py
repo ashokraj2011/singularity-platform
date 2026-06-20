@@ -177,6 +177,47 @@ async def test_refused_tool_is_captured_and_not_dispatched(monkeypatch):
     assert outcome.allowed_tools == ["repo_map"]
 
 
+@pytest.mark.asyncio
+async def test_effective_profile_capability_refuses_policy_allowed_tool(monkeypatch):
+    dispatch_called = False
+
+    async def fake_dispatch(*, tool_name, args, **_kwargs):
+        nonlocal dispatch_called
+        dispatch_called = True
+        return ToolDispatchResult(
+            result=None, duration_ms=0, tool_invocation_id="x", tool_success=True, tool_error=None
+        )
+
+    monkeypatch.setattr(
+        "context_api_service.app.governed.loop.dispatch_tool", fake_dispatch
+    )
+    policy = _policy({Phase.PLAN: ["repo_map", "read_file"]})
+    state = _fresh_state(Phase.PLAN)
+
+    result = await governed_step(
+        state=state,
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        tool_calls=[{"tool_name": "read_file", "args": {"path": "README.md"}}],
+        run_context={
+            "effectiveCapabilities": [
+                {"id": "repo_map", "permissions": ["read", "invoke"]},
+                {"id": "read_file", "permissions": ["read"]},
+            ],
+        },
+        policy=policy,
+    )
+
+    assert dispatch_called is False
+    assert len(result.tool_outcomes) == 1
+    outcome = result.tool_outcomes[0]
+    assert outcome.allowed is False
+    assert outcome.tool_name == "read_file"
+    assert outcome.refusal_reason is not None
+    assert "effective agent profile capability set" in outcome.refusal_reason
+    assert "missing invoke" in outcome.refusal_reason
+
+
 # ── mix of allowed + refused ───────────────────────────────────────────────
 
 

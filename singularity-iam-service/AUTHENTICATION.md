@@ -122,200 +122,63 @@ Microsoft Entra ID, GitHub, Okta, etc.). After consent the provider issues an
 authorization code that the IAM service exchanges for an ID token containing
 the user's identity claims.
 
-### How to add it
+### Implemented mode
 
-**Step 1 — Install the OAuth2 client library**
-
-```bash
-pip install "authlib>=1.3"         # handles PKCE, token exchange, JWKS
-```
-
-Add to `pyproject.toml`:
-
-```toml
-"authlib>=1.3",
-```
-
-And add to the `Dockerfile` pip install line:
-
-```dockerfile
-"authlib>=1.3"
-```
-
-**Step 2 — Add env vars**
+IAM now supports a generic OIDC deployment mode:
 
 ```ini
-# .env
-
-# Google
-GOOGLE_CLIENT_ID=1234567890-abc.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=GOCSPX-xxxx
-GOOGLE_REDIRECT_URI=http://localhost:8100/api/v1/auth/google/callback
-
-# Microsoft (Entra / Azure AD)
-MICROSOFT_CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-MICROSOFT_CLIENT_SECRET=xxxx~xxxx
-MICROSOFT_TENANT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-MICROSOFT_REDIRECT_URI=http://localhost:8100/api/v1/auth/microsoft/callback
-
-# GitHub
-GITHUB_CLIENT_ID=Iv1.xxxxxxxxxxxxxxxx
-GITHUB_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-GITHUB_REDIRECT_URI=http://localhost:8100/api/v1/auth/github/callback
+IAM_AUTH_MODE=oidc
+OIDC_ISSUER_URL=https://idp.example.com/oauth2/default
+OIDC_CLIENT_ID=singularity-platform
+OIDC_CLIENT_SECRET=<rotated 32+ char client secret>
+OIDC_REDIRECT_URI=https://platform.example.com/identity/oidc/callback
+OIDC_ALLOWED_DOMAINS=example.com
+OIDC_ADMIN_EMAILS=platform-admin@example.com
 ```
 
-Add to [`app/config.py`](app/config.py):
+When `IAM_AUTH_MODE=oidc`, local password login returns `403` and human login
+must use the configured external provider. Production-class config validation
+fails closed unless issuer and redirect URLs are HTTPS and the client secret is
+rotated.
 
-```python
-GOOGLE_CLIENT_ID: str | None = None
-GOOGLE_CLIENT_SECRET: str | None = None
-GOOGLE_REDIRECT_URI: str = "http://localhost:8100/api/v1/auth/google/callback"
+### Endpoints
 
-MICROSOFT_CLIENT_ID: str | None = None
-MICROSOFT_CLIENT_SECRET: str | None = None
-MICROSOFT_TENANT_ID: str | None = None
-MICROSOFT_REDIRECT_URI: str = "http://localhost:8100/api/v1/auth/microsoft/callback"
-
-GITHUB_CLIENT_ID: str | None = None
-GITHUB_CLIENT_SECRET: str | None = None
-GITHUB_REDIRECT_URI: str = "http://localhost:8100/api/v1/auth/github/callback"
+```text
+GET  /api/v1/auth/providers
+GET  /api/v1/auth/oidc/login-url
+POST /api/v1/auth/oidc/code-login
+POST /api/v1/auth/oidc/token-login
 ```
 
-**Step 3 — Create `app/auth/oauth_routes.py`**
+`/auth/providers` reports local-vs-OIDC readiness and the configured OIDC
+metadata. `/auth/oidc/login-url` returns an authorization URL plus generated
+state and nonce values for Platform Web or another trusted UI to start the
+redirect. Platform Web handles `/identity/oidc/callback`, checks the stored
+state, and posts the authorization code to `/auth/oidc/code-login`; IAM then
+exchanges the code server-side with the OIDC client secret, verifies the
+returned `id_token` and nonce against the provider JWKS, maps the configured
+subject/email/name claims, upserts the federated IAM user
+(`auth_provider=oidc`, `external_subject=<sub>`), and returns the normal
+Singularity bearer token. `/auth/oidc/token-login` remains available for trusted
+test harnesses or non-browser clients that already hold an IdP `id_token`.
 
-```python
-from authlib.integrations.starlette_client import OAuth
-from fastapi import APIRouter, Depends, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from app.database import get_db
-from app.models import User
-from app.auth.jwt import create_access_token
-from app.auth.schemas import LoginResponse, TokenUserOut
-from app.config import settings
+Deploy verification:
 
-router = APIRouter(prefix="/auth", tags=["auth/oauth"])
-oauth = OAuth()
-
-# ── Google ──────────────────────────────────────────────────────────────────
-
-if settings.GOOGLE_CLIENT_ID:
-    oauth.register(
-        name="google",
-        client_id=settings.GOOGLE_CLIENT_ID,
-        client_secret=settings.GOOGLE_CLIENT_SECRET,
-        server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-        client_kwargs={"scope": "openid email profile"},
-    )
-
-    @router.get("/google/login")
-    async def google_login(request: Request):
-        return await oauth.google.authorize_redirect(
-            request, settings.GOOGLE_REDIRECT_URI
-        )
-
-    @router.get("/google/callback", response_model=LoginResponse)
-    async def google_callback(request: Request, db: AsyncSession = Depends(get_db)):
-        token = await oauth.google.authorize_access_token(request)
-        userinfo = token["userinfo"]
-        return await _upsert_oauth_user(
-            db,
-            provider="google",
-            subject=userinfo["sub"],
-            email=userinfo["email"],
-            display_name=userinfo.get("name"),
-        )
-
-# ── Microsoft ────────────────────────────────────────────────────────────────
-
-if settings.MICROSOFT_CLIENT_ID:
-    oauth.register(
-        name="microsoft",
-        client_id=settings.MICROSOFT_CLIENT_ID,
-        client_secret=settings.MICROSOFT_CLIENT_SECRET,
-        server_metadata_url=(
-            f"https://login.microsoftonline.com/{settings.MICROSOFT_TENANT_ID}"
-            "/v2.0/.well-known/openid-configuration"
-        ),
-        client_kwargs={"scope": "openid email profile"},
-    )
-
-    @router.get("/microsoft/login")
-    async def microsoft_login(request: Request):
-        return await oauth.microsoft.authorize_redirect(
-            request, settings.MICROSOFT_REDIRECT_URI
-        )
-
-    @router.get("/microsoft/callback", response_model=LoginResponse)
-    async def microsoft_callback(request: Request, db: AsyncSession = Depends(get_db)):
-        token = await oauth.microsoft.authorize_access_token(request)
-        userinfo = token["userinfo"]
-        return await _upsert_oauth_user(
-            db,
-            provider="microsoft",
-            subject=userinfo["sub"],
-            email=userinfo.get("email") or userinfo.get("preferred_username"),
-            display_name=userinfo.get("name"),
-        )
-
-# ── Shared helper ────────────────────────────────────────────────────────────
-
-async def _upsert_oauth_user(
-    db: AsyncSession, provider: str, subject: str, email: str, display_name: str | None
-) -> LoginResponse:
-    user = (await db.execute(
-        select(User).where(
-            User.auth_provider == provider, User.external_subject == subject
-        )
-    )).scalar_one_or_none()
-
-    if not user:
-        user = User(
-            email=email,
-            display_name=display_name,
-            auth_provider=provider,
-            external_subject=subject,
-            is_local_account=False,
-            status="active",
-        )
-        db.add(user)
-        await db.flush()
-
-    await db.commit()
-    token = create_access_token(user.id, user.email, user.is_super_admin)
-    return LoginResponse(
-        access_token=token,
-        user=TokenUserOut(
-            id=user.id, email=user.email,
-            display_name=user.display_name, is_super_admin=user.is_super_admin,
-        ),
-    )
+```bash
+python3 ./bin/check-github-environment-secrets.py --require-oidc --github-environment production
+IAM_AUTH_MODE=oidc ... ./bin/check-deploy-env.sh --config-only
 ```
 
-**Step 4 — Mount the router in `app/main.py`**
+The first command verifies the GitHub Environment has all required OIDC secret
+names. The second verifies the release values are production-safe.
 
-```python
-from app.auth.oauth_routes import router as oauth_router
-app.include_router(oauth_router, prefix=PREFIX)
-```
+### Provider notes
 
-**Step 5 — Add session middleware** (Authlib needs server-side state for PKCE)
-
-```python
-# app/main.py
-from starlette.middleware.sessions import SessionMiddleware
-app.add_middleware(SessionMiddleware, secret_key=settings.JWT_SECRET)
-```
-
-### Provider-specific notes
-
-| Provider | Discovery URL | Notes |
-|---|---|---|
-| Google | `https://accounts.google.com/.well-known/openid-configuration` | Add authorized redirect URI in Google Cloud Console |
-| Microsoft | `https://login.microsoftonline.com/{tenant}/v2.0/.well-known/...` | Use `common` as tenant for multi-tenant apps |
-| GitHub | No OIDC — use `https://github.com/login/oauth/authorize` + `/user` API | `sub` = numeric GitHub user ID |
-| Okta | `https://{domain}.okta.com/.well-known/openid-configuration` | Requires Okta application created in admin console |
-| Auth0 | `https://{domain}.auth0.com/.well-known/openid-configuration` | Supports social + enterprise in one integration |
+- Google Workspace, Microsoft Entra ID, and Okta all work through the generic
+  issuer/client/secret/redirect settings when their app registration supports
+  OpenID Connect.
+- GitHub OAuth is not an OIDC provider for normal web apps; use an OIDC-capable
+  enterprise IdP in front of GitHub identities or add a dedicated OAuth adapter.
 
 ---
 
@@ -743,12 +606,17 @@ mfa_secret_ref = "secret/iam/mfa/user-uuid"
 | `LOCAL_SUPER_ADMIN_EMAIL` | `admin@singularity.local` | Seeded super-admin email |
 | `LOCAL_SUPER_ADMIN_PASSWORD` | `change-me-now` | Seeded super-admin password |
 | `CORS_ORIGINS` | `["http://localhost:5175"]` | Allowed CORS origins (JSON array) |
-| `GOOGLE_CLIENT_ID` | — | OAuth2: Google app client ID |
-| `GOOGLE_CLIENT_SECRET` | — | OAuth2: Google app client secret |
-| `GOOGLE_REDIRECT_URI` | — | OAuth2: Google callback URL |
-| `MICROSOFT_CLIENT_ID` | — | OAuth2: Entra/Azure app client ID |
-| `MICROSOFT_CLIENT_SECRET` | — | OAuth2: Entra/Azure client secret |
-| `MICROSOFT_TENANT_ID` | — | OAuth2: Entra directory tenant ID |
+| `IAM_AUTH_MODE` | `local` | Human login mode: `local` or `oidc` |
+| `OIDC_ISSUER_URL` | — | OIDC: external IdP issuer URL, HTTPS required in production |
+| `OIDC_CLIENT_ID` | — | OIDC: registered client ID |
+| `OIDC_CLIENT_SECRET` | — | OIDC: rotated client secret |
+| `OIDC_REDIRECT_URI` | — | OIDC: callback URL registered with the IdP |
+| `OIDC_SCOPES` | `openid email profile` | OIDC scopes requested by login URL |
+| `OIDC_SUBJECT_CLAIM` | `sub` | OIDC claim used as external subject |
+| `OIDC_EMAIL_CLAIM` | `email` | OIDC claim used as IAM email |
+| `OIDC_NAME_CLAIM` | `name` | OIDC claim used as display name |
+| `OIDC_ALLOWED_DOMAINS` | — | Optional comma-separated email domain allow-list |
+| `OIDC_ADMIN_EMAILS` | — | Optional comma-separated emails promoted to IAM super-admin |
 | `SAML_IDP_METADATA_URL` | — | SAML: IdP metadata endpoint |
 | `SAML_SP_ENTITY_ID` | — | SAML: This SP's entity ID (URL) |
 | `SAML_SP_ACS_URL` | — | SAML: Assertion Consumer Service URL |

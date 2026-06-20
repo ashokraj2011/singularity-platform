@@ -7,8 +7,8 @@ import { LogoutButton } from "@/components/LogoutButton";
 import { Bell, Settings } from "lucide-react";
 
 export const metadata: Metadata = {
-  title: "Singularity — Agent Studio",
-  description: "Governed Agentic Delivery — agent and tool runtime platform.",
+  title: "Singularity Platform",
+  description: "Unified platform web app for operations, agents, workflows, workbench, foundry, and identity.",
   icons: { icon: "/favicon.png" },
 };
 
@@ -62,7 +62,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                       flexShrink: 0,
                     }}
                   />
-                  Agent Runtime
+                  Platform Web
                 </span>
               </div>
 

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Cpu, HardDrive, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
-import { apiPath } from "@/lib/api";
+import { apiPath, readResponseBody, responseMessage } from "@/lib/api";
 
 type GatewayResult = {
   ok: boolean;
@@ -102,8 +102,10 @@ export default function LlmSettingsPage() {
     setError(null);
     try {
       const res = await fetch(apiPath("/api/llm-settings"), { cache: "no-store" });
-      const data = await res.json() as LlmSettings;
-      if (!res.ok) throw new Error(JSON.stringify(data).slice(0, 400));
+      const { raw, parsed } = await readResponseBody(res);
+      if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+      if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 400) : "Empty LLM settings response");
+      const data = parsed as LlmSettings;
       setSettings(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load LLM settings");

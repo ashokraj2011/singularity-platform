@@ -1,11 +1,11 @@
 import { useState } from 'react'
 import { ClipboardList, ChevronDown, ChevronRight } from 'lucide-react'
-import { PageHeader } from '@/components/PageHeader'
-import { EmptyState } from '@/components/EmptyState'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { useAuditEvents } from '@/hooks/useAuditEvents'
-import { formatDateTime } from '@/lib/format'
+import { PageHeader } from 'identity-web/components/PageHeader'
+import { EmptyState } from 'identity-web/components/EmptyState'
+import { Input } from 'identity-web/components/ui/input'
+import { Label } from 'identity-web/components/ui/label'
+import { useAuditEvents } from 'identity-web/hooks/useAuditEvents'
+import { formatDateTime } from 'identity-web/lib/format'
 
 export function AuditEventsPage() {
   const [eventType, setEventType] = useState('')

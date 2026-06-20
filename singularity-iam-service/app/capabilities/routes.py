@@ -6,7 +6,7 @@ from app.models import (
     Capability, CapabilityRelationship, CapabilityMembership,
     CapabilitySharingGrant, BusinessUnit, Team, Role, User,
 )
-from app.auth.deps import get_current_user
+from app.auth.deps import assert_super_admin_or_service_scope, get_current_user, require_reference_read, require_super_admin
 from app.schemas import PageResponse
 from app.capabilities.schemas import (
     CapabilityOut, CreateCapabilityRequest, UpdateCapabilityRequest,
@@ -85,7 +85,7 @@ async def list_capabilities(
     page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=500),
     capability_type: str | None = None,
     is_governing: bool | None = Query(None, description="Filter to (non-)governing capabilities; the governance authoring UI uses ?is_governing=true to populate the policy picker."),
-    db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read),
 ):
     q = select(Capability)
     if capability_type:
@@ -101,7 +101,7 @@ async def list_capabilities(
 async def create_capability(
     body: CreateCapabilityRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     existing = (await db.execute(select(Capability).where(Capability.capability_id == body.capability_id))).scalar_one_or_none()
     if existing:
@@ -171,6 +171,7 @@ async def upsert_capability_reference(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    assert_super_admin_or_service_scope(current_user, "write:reference-data")
     if body.capability_id != capability_id:
         raise HTTPException(status_code=400, detail="capability_id path/body mismatch")
 
@@ -259,7 +260,7 @@ async def upsert_capability_reference(
 
 
 @router.get("/capabilities/{capability_id}", response_model=CapabilityOut)
-async def get_capability(capability_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def get_capability(capability_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read)):
     cap = (await db.execute(select(Capability).where(Capability.capability_id == capability_id))).scalar_one_or_none()
     if not cap:
         raise HTTPException(status_code=404, detail="Capability not found")
@@ -269,7 +270,7 @@ async def get_capability(capability_id: str, db: AsyncSession = Depends(get_db),
 @router.patch("/capabilities/{capability_id}", response_model=CapabilityOut)
 async def update_capability(
     capability_id: str, body: UpdateCapabilityRequest,
-    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(require_super_admin),
 ):
     cap = (await db.execute(select(Capability).where(Capability.capability_id == capability_id))).scalar_one_or_none()
     if not cap:
@@ -293,7 +294,7 @@ async def update_capability(
 # ---- Capability Relationships ----
 
 @router.get("/capabilities/{capability_id}/relationships", response_model=list[CapabilityRelationshipOut])
-async def list_relationships(capability_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def list_relationships(capability_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read)):
     result = await db.execute(select(CapabilityRelationship).where(CapabilityRelationship.source_capability_id == capability_id))
     return [_rel_out(r) for r in result.scalars().all()]
 
@@ -301,7 +302,7 @@ async def list_relationships(capability_id: str, db: AsyncSession = Depends(get_
 @router.post("/capabilities/{capability_id}/relationships", response_model=CapabilityRelationshipOut, status_code=201)
 async def add_relationship(
     capability_id: str, body: CreateCapabilityRelationshipRequest,
-    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(require_super_admin),
 ):
     rel = CapabilityRelationship(
         source_capability_id=capability_id, target_capability_id=body.target_capability_id,
@@ -320,7 +321,7 @@ async def add_relationship(
 # ---- Capability Members ----
 
 @router.get("/capabilities/{capability_id}/members", response_model=list[CapabilityMembershipOut])
-async def list_members(capability_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def list_members(capability_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read)):
     result = await db.execute(select(CapabilityMembership).where(CapabilityMembership.capability_id == capability_id))
     return [_mem_out(m) for m in result.scalars().all()]
 
@@ -328,7 +329,7 @@ async def list_members(capability_id: str, db: AsyncSession = Depends(get_db), _
 @router.post("/capabilities/{capability_id}/members", response_model=CapabilityMembershipOut, status_code=201)
 async def add_member(
     capability_id: str, body: AddCapabilityMemberRequest,
-    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(require_super_admin),
 ):
     if not body.user_id and not body.team_id:
         raise HTTPException(status_code=400, detail="user_id or team_id required")
@@ -357,7 +358,7 @@ async def add_member(
 async def list_grants(
     page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=200),
     status: str | None = None,
-    db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read),
 ):
     q = select(CapabilitySharingGrant)
     if status:
@@ -371,7 +372,7 @@ async def list_grants(
 async def create_grant(
     body: CreateSharingGrantRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     grant = CapabilitySharingGrant(
         provider_capability_id=body.provider_capability_id,
@@ -390,7 +391,7 @@ async def create_grant(
 
 @router.post("/capability-sharing-grants/{grant_id}/approve", response_model=SharingGrantOut)
 async def approve_grant(
-    grant_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+    grant_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(require_super_admin),
 ):
     grant = (await db.execute(select(CapabilitySharingGrant).where(CapabilitySharingGrant.id == grant_id))).scalar_one_or_none()
     if not grant:
@@ -405,7 +406,7 @@ async def approve_grant(
 
 @router.post("/capability-sharing-grants/{grant_id}/revoke", response_model=SharingGrantOut)
 async def revoke_grant(
-    grant_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+    grant_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(require_super_admin),
 ):
     grant = (await db.execute(select(CapabilitySharingGrant).where(CapabilitySharingGrant.id == grant_id))).scalar_one_or_none()
     if not grant:

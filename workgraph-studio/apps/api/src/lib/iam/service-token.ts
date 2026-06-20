@@ -42,6 +42,47 @@ function decodeExp(jwt: string): Date | null {
   } catch { return null }
 }
 
+function decodePayload(jwt: string): Record<string, unknown> | null {
+  try {
+    const parts = jwt.split('.')
+    if (parts.length < 2) return null
+    return JSON.parse(Buffer.from(parts[1], 'base64url').toString()) as Record<string, unknown>
+  } catch { return null }
+}
+
+export function configuredTenantIdsForServiceToken(): string[] {
+  return [...new Set(
+    config.IAM_SERVICE_TOKEN_TENANT_IDS
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean),
+  )].sort()
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false
+  return left.every((value, index) => value === right[index])
+}
+
+export function validateIamServiceTokenTenantScope(jwt: string | undefined): boolean {
+  if (config.TENANT_ISOLATION_MODE !== 'strict') return true
+  const required = configuredTenantIdsForServiceToken()
+  if (required.length === 0) {
+    console.warn('[iam-service-token] TENANT_ISOLATION_MODE=strict requires IAM_SERVICE_TOKEN_TENANT_IDS')
+    return false
+  }
+  const payload = jwt ? decodePayload(jwt) : null
+  const rawTenantIds = payload?.tenant_ids
+  const actual = Array.isArray(rawTenantIds)
+    ? [...new Set(rawTenantIds.filter((value): value is string => typeof value === 'string' && value.trim() !== '').map(value => value.trim()))].sort()
+    : []
+  if (!sameStringSet(actual, required)) {
+    console.warn('[iam-service-token] service token tenant_ids do not match IAM_SERVICE_TOKEN_TENANT_IDS')
+    return false
+  }
+  return true
+}
+
 function isFresh(t: CachedToken | null): t is CachedToken {
   if (!t) return false
   const ms = t.expiresAt.getTime() - Date.now()
@@ -78,6 +119,7 @@ async function mint(): Promise<string | undefined> {
     body:    JSON.stringify({
       service_name: SERVICE_NAME,
       scopes:       SCOPES,
+      tenant_ids:   configuredTenantIdsForServiceToken(),
       ttl_hours:    TTL_HOURS,
     }),
     signal:  AbortSignal.timeout(10_000),
@@ -89,6 +131,7 @@ async function mint(): Promise<string | undefined> {
   const body = await mintRes.json() as { access_token?: string }
   const svcJwt = body.access_token
   if (!svcJwt) return undefined
+  if (!validateIamServiceTokenTenantScope(svcJwt)) return undefined
 
   const exp = decodeExp(svcJwt)
   cached = { jwt: svcJwt, expiresAt: exp ?? new Date(Date.now() + TTL_HOURS * 3600 * 1000) }
@@ -103,7 +146,11 @@ async function mint(): Promise<string | undefined> {
  */
 export async function getIamServiceToken(): Promise<string | undefined> {
   // Explicit override wins (operator-set, e.g. for one-off testing).
-  if (config.IAM_SERVICE_TOKEN) return config.IAM_SERVICE_TOKEN
+  if (config.IAM_SERVICE_TOKEN) {
+    return validateIamServiceTokenTenantScope(config.IAM_SERVICE_TOKEN)
+      ? config.IAM_SERVICE_TOKEN
+      : undefined
+  }
   if (isFresh(cached)) return cached.jwt
   if (inflight) return inflight
   inflight = (async () => {

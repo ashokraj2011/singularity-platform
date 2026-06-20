@@ -6,11 +6,17 @@ function learningBase(): string {
   return config.LEARNING_SERVICE_URL.replace(/\/+$/, "");
 }
 
+function learningServiceHeaders(): Record<string, string> {
+  const token = config.LEARNING_SERVICE_TOKEN ?? process.env.AUDIT_GOV_SERVICE_TOKEN ?? "";
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
 async function learningFetch(path: string, init?: RequestInit): Promise<unknown> {
   const res = await fetch(`${learningBase()}${path}`, {
     ...init,
     headers: {
       "content-type": "application/json",
+      ...learningServiceHeaders(),
       ...(init?.headers ?? {}),
     },
     signal: AbortSignal.timeout(8_000),

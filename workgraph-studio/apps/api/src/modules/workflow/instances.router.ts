@@ -1,7 +1,9 @@
-import { Router } from 'express'
+import { Router, type Request } from 'express'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
+import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
+import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
@@ -12,11 +14,21 @@ import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { getWorkflowBudgetOverview } from './runtime/budget'
 import { analyzeWorkflowInstance } from './formal-verification'
+import {
+  assertPendingExecutionTenant,
+  assertWorkflowInstanceTenant,
+  resolveTenantFromRequest,
+  resolveTenantFromContext,
+  tenantIdForCreate,
+  tenantIsolationStrict,
+} from '../../lib/tenant-isolation'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 
 export const workflowInstancesRouter: Router = Router()
 
 workflowInstancesRouter.post('/:id/formal-analysis', async (req, res, next) => {
   try {
+    await assertWorkflowInstanceTenant(req, req.params.id)
     await assertInstancePermission(req.user!.userId, req.params.id, 'view')
     const analysis = await analyzeWorkflowInstance(req.params.id, req.user!.userId)
     res.json({ data: analysis })
@@ -28,6 +40,8 @@ workflowInstancesRouter.post('/:id/formal-analysis', async (req, res, next) => {
 const createInstanceSchema = z.object({
   templateId: z.string().uuid().optional(),
   initiativeId: z.string().uuid().optional(),
+  tenantId: z.string().min(1).optional(),
+  tenant_id: z.string().min(1).optional(),
   name: z.string().min(1),
   // Optional: per-instance overrides for INPUT-scoped template variables.
   vars: z.record(z.unknown()).optional(),
@@ -93,11 +107,42 @@ const cancelSchema = z.object({
   reason: z.string().max(500).optional(),
 })
 
+function instanceRouteAction(req: Request): 'view' | 'edit' | 'start' {
+  const path = req.originalUrl.split('?')[0] ?? ''
+  if (req.method === 'GET' || req.method === 'HEAD') return 'view'
+  if (req.method === 'POST' && path.endsWith('/start')) return 'start'
+  if (req.method === 'POST' && path.endsWith('/test-branches')) return 'view'
+  return 'edit'
+}
+
+workflowInstancesRouter.use('/:id', async (req, _res, next) => {
+  try {
+    if (req.params.id === 'pending-executions') {
+      next()
+      return
+    }
+    await assertWorkflowInstanceTenant(req, req.params.id)
+    await assertInstancePermission(req.user!.userId, req.params.id, instanceRouteAction(req))
+    next()
+  } catch (err) {
+    next(err)
+  }
+})
+
 workflowInstancesRouter.delete('/:id', async (req, res, next) => {
   try {
     const id = req.params.id as string
-    await assertInstancePermission(req.user!.userId, id, 'edit')
-    await prisma.workflowInstance.delete({ where: { id } })
+    await withTenantDbTransaction(prisma, async () => {
+      await assertInstancePermission(req.user!.userId, id, 'edit')
+      // Runtime instances carry audit/mutation rows, budgets, WorkItem links,
+      // documents, and execution traces. Treat DELETE as a soft delete so old UI
+      // delete actions hide the run without corrupting the audit trail.
+      const instance = await prisma.workflowInstance.update({
+        where: { id },
+        data: { archivedAt: new Date() },
+      })
+      await logEvent('InstanceArchived', 'WorkflowInstance', instance.id, req.user!.userId, { via: 'delete' })
+    })
     res.status(204).end()
   } catch (err) {
     next(err)
@@ -115,16 +160,26 @@ workflowInstancesRouter.post('/', validate(createInstanceSchema), async (req, re
     }
 
     // No templateId — create a blank instance (rare; mostly used for tests).
-    const { vars: _ignoreVars, globals: _ignoreGlobals, ...persistable } = body
-    const instance = await prisma.workflowInstance.create({
-      data: {
-        ...persistable,
-        createdById: req.user!.userId,
-      },
-      include: { phases: true, nodes: true, edges: true },
-    })
-    await logEvent('WorkflowStarted', 'WorkflowInstance', instance.id, req.user!.userId)
-    await publishOutbox('WorkflowInstance', instance.id, 'WorkflowStarted', { instanceId: instance.id })
+    const tenantId = body.tenantId ?? body.tenant_id ?? resolveTenantFromRequest(req)
+    if (tenantIsolationStrict() && !tenantId) {
+      throw new ValidationError('TENANT_ISOLATION_MODE=strict requires tenantId/tenant_id or X-Tenant-Id when creating a workflow instance')
+    }
+    const { vars: _ignoreVars, globals: _ignoreGlobals, tenantId: _tenantId, tenant_id: _tenant_id, ...persistable } = body
+    const context: Record<string, unknown> = tenantId ? { tenantId } : {}
+    const instance = await withTenantDbTransaction(prisma, async () => {
+      const created = await prisma.workflowInstance.create({
+        data: {
+          ...persistable,
+          tenantId,
+          context: context as Prisma.InputJsonValue,
+          createdById: req.user!.userId,
+        },
+        include: { phases: true, nodes: true, edges: true },
+      })
+      await logEvent('WorkflowStarted', 'WorkflowInstance', created.id, req.user!.userId)
+      await publishOutbox('WorkflowInstance', created.id, 'WorkflowStarted', { instanceId: created.id })
+      return created
+    }, tenantId)
     res.status(201).json(instance)
   } catch (err) {
     next(err)
@@ -135,16 +190,23 @@ workflowInstancesRouter.get('/', async (req, res, next) => {
   try {
     const pg = parsePagination(req.query as Record<string, unknown>)
     const { initiativeId, capabilityId } = req.query
+    const tenantId = resolveTenantFromRequest(req)
+    if (tenantIsolationStrict() && !tenantId) {
+      throw new ValidationError('TENANT_ISOLATION_MODE=strict requires X-Tenant-Id or tenant_id when listing workflow instances')
+    }
     const where: Prisma.WorkflowInstanceWhereInput = {
+      ...(tenantIsolationStrict() ? { tenantId } : {}),
       ...(initiativeId ? { initiativeId: String(initiativeId) } : {}),
       ...(typeof capabilityId === 'string' && capabilityId.trim()
         ? { template: { capabilityId: capabilityId.trim() } }
         : {}),
     }
-    const [instances, total] = await Promise.all([
-      prisma.workflowInstance.findMany({ where, skip: pg.skip, take: pg.take, orderBy: { createdAt: 'desc' } }),
-      prisma.workflowInstance.count({ where }),
-    ])
+    const [instances, total] = await withTenantDbTransaction(prisma, () => Promise.all([
+        prisma.workflowInstance.findMany({ where, skip: pg.skip, take: pg.take, orderBy: { createdAt: 'desc' } }),
+        prisma.workflowInstance.count({ where }),
+      ]),
+      tenantId,
+    )
     res.json(toPageResponse(instances, total, pg))
   } catch (err) {
     next(err)
@@ -153,10 +215,12 @@ workflowInstancesRouter.get('/', async (req, res, next) => {
 
 workflowInstancesRouter.get('/:id', async (req, res, next) => {
   try {
-    const instance = await prisma.workflowInstance.findUnique({
-      where: { id: req.params.id },
-      include: { phases: { orderBy: { displayOrder: 'asc' } }, nodes: true, edges: true },
-    })
+    const instance = await withTenantDbTransaction(prisma, () => prisma.workflowInstance.findUnique({
+        where: { id: req.params.id },
+        include: { phases: { orderBy: { displayOrder: 'asc' } }, nodes: true, edges: true },
+      }),
+      resolveTenantFromRequest(req),
+    )
     if (!instance) throw new NotFoundError('WorkflowInstance', req.params.id)
     res.json(instance)
   } catch (err) {
@@ -1011,22 +1075,36 @@ workflowInstancesRouter.get('/:id/pending-executions', async (req, res, next) =>
 workflowInstancesRouter.get('/pending-executions/poll', async (req, res, next) => {
   try {
     const location = ((req.query.location as string) ?? 'CLIENT').toUpperCase()
-    const pending = await prisma.pendingExecution.findMany({
+    const requestTenant = resolveTenantFromRequest(req)
+    if (tenantIsolationStrict() && !requestTenant) {
+      throw new ValidationError('TENANT_ISOLATION_MODE=strict requires X-Tenant-Id or tenant_id when polling pending executions')
+    }
+    const pendingRaw = await prisma.pendingExecution.findMany({
       where: { location: location as any, completedAt: null, expiresAt: { gt: new Date() } },
       include: {
         node: { select: { nodeType: true, label: true, config: true } },
-        instance: { select: { name: true, status: true } },
+        instance: { select: { name: true, status: true, tenantId: true, context: true } },
       },
       orderBy: { createdAt: 'asc' },
-      take: 50,
+      take: tenantIsolationStrict() ? 200 : 50,
     })
-    res.json(pending)
+    const pending = tenantIsolationStrict()
+      ? pendingRaw
+          .filter(exec => (exec.instance.tenantId ?? resolveTenantFromContext(exec.instance.context)) === requestTenant)
+          .slice(0, 50)
+      : pendingRaw
+    const shaped = pending.map(exec => {
+      const { context: _context, tenantId: _tenantId, ...instance } = exec.instance
+      return { ...exec, instance }
+    })
+    res.json(shaped)
   } catch (err) { next(err) }
 })
 
 // POST /api/workflow-instances/pending-executions/:execId/claim
 workflowInstancesRouter.post('/pending-executions/:execId/claim', async (req, res, next) => {
   try {
+    await assertPendingExecutionTenant(req, req.params.execId)
     const exec = await prisma.pendingExecution.update({
       where: { id: req.params.execId, completedAt: null },
       data: { claimedAt: new Date(), claimedBy: req.user?.userId },
@@ -1038,6 +1116,7 @@ workflowInstancesRouter.post('/pending-executions/:execId/claim', async (req, re
 // POST /api/workflow-instances/pending-executions/:execId/complete
 workflowInstancesRouter.post('/pending-executions/:execId/complete', async (req, res, next) => {
   try {
+    await assertPendingExecutionTenant(req, req.params.execId)
     const { result, error } = req.body as { result?: Record<string, unknown>; error?: string }
     const exec = await prisma.pendingExecution.update({
       where: { id: req.params.execId },
@@ -1057,7 +1136,6 @@ workflowInstancesRouter.post('/pending-executions/:execId/complete', async (req,
 // Live event tap (M9.y) — proxies to context-fabric's events store.
 // Same surface for poll (`?since_id=`) and live (SSE) consumers.
 // ─────────────────────────────────────────────────────────────────────
-import { config } from '../../config'
 
 // GET /api/workflow-instances/:id/events?since_id=&limit=
 workflowInstancesRouter.get('/:id/events', async (req, res, next) => {
@@ -1068,7 +1146,10 @@ workflowInstancesRouter.get('/:id/events', async (req, res, next) => {
     if (typeof req.query.since_id === 'string') url.searchParams.set('since_id', req.query.since_id)
     if (typeof req.query.since_timestamp === 'string') url.searchParams.set('since_timestamp', req.query.since_timestamp)
     if (typeof req.query.limit === 'string') url.searchParams.set('limit', req.query.limit)
-    const r = await fetch(url, { signal: AbortSignal.timeout(15_000) })
+    const r = await fetch(url, {
+      headers: contextFabricServiceHeaders(),
+      signal: AbortSignal.timeout(15_000),
+    })
     const body = await r.text()
     res.status(r.status).type(r.headers.get('content-type') || 'application/json').send(body)
   } catch (err) { next(err) }
@@ -1079,10 +1160,8 @@ workflowInstancesRouter.get('/:id/events', async (req, res, next) => {
 // Server-Sent Events pass-through. We hold the upstream connection open and
 // pipe each chunk to the browser. Browsers can't add `Authorization` to an
 // EventSource handshake, so this endpoint authenticates via the workgraph
-// JWT (existing authMiddleware) and then upstream calls context-fabric on
-// the user's behalf — context-fabric's stream endpoint is open today
-// (it's behind context-fabric's network boundary). When IAM federation
-// for context-fabric lands, we'll forward a service token instead.
+// JWT (existing authMiddleware) and then uses Workgraph's Context Fabric
+// service token for the backend hop.
 workflowInstancesRouter.get('/:id/events/stream', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'view')
@@ -1093,7 +1172,10 @@ workflowInstancesRouter.get('/:id/events/stream', async (req, res, next) => {
     const callsUrl = new URL(`${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/execute/calls`)
     callsUrl.searchParams.set('workflow_run_id', req.params.id)
     callsUrl.searchParams.set('limit', '1')
-    const callsResp = await fetch(callsUrl, { signal: AbortSignal.timeout(10_000) })
+    const callsResp = await fetch(callsUrl, {
+      headers: contextFabricServiceHeaders(),
+      signal: AbortSignal.timeout(10_000),
+    })
     if (!callsResp.ok) {
       res.status(502).json({ error: 'context-fabric unreachable for call lookup' })
       return
@@ -1119,7 +1201,10 @@ workflowInstancesRouter.get('/:id/events/stream', async (req, res, next) => {
     })
     res.flushHeaders?.()
 
-    const upstream = await fetch(sseUrl, { signal: AbortSignal.timeout(600_000) })
+    const upstream = await fetch(sseUrl, {
+      headers: contextFabricServiceHeaders(),
+      signal: AbortSignal.timeout(600_000),
+    })
     if (!upstream.ok || !upstream.body) {
       res.write(`event: error\ndata: ${JSON.stringify({ status: upstream.status })}\n\n`)
       res.end()

@@ -13,10 +13,21 @@ ok()   { echo -e "${C_GREEN}✓${C_END} $*"; }
 warn() { echo -e "${C_YELLOW}⚠${C_END} $*"; }
 
 info "stopping services on demo ports…"
-for port in 3000 3001 3002 3003 3004 5174 5175 5176 5180 7100 8000 8080 8100 8101 8500; do
+for port in 3001 3002 3003 3004 5180 7100 8000 8080 8100 8101 8500; do
   pids=$(lsof -nP -iTCP:$port -sTCP:LISTEN -t 2>/dev/null || true)
   if [ -n "$pids" ]; then
-    kill -9 $pids 2>/dev/null && echo "  port $port → killed $pids"
+    killed=""
+    for pid in $pids; do
+      cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
+      case "$cmd" in
+        *docker*|*Docker*|*vpnkit*)
+          warn "port $port is Docker-owned (pid $pid); leaving it alone"
+          continue
+          ;;
+      esac
+      kill -9 "$pid" 2>/dev/null && killed="$killed $pid"
+    done
+    [ -n "$killed" ] && echo "  port $port → killed$killed"
   fi
 done
 
@@ -28,12 +39,16 @@ sleep 1
 
 info "final port check…"
 STUCK=0
-for port in 3000 3001 3002 3003 3004 5174 5175 5176 5180 7100 8000 8080 8100 8101 8500; do
-  pid=$(lsof -nP -iTCP:$port -sTCP:LISTEN -t 2>/dev/null || true)
-  if [ -n "$pid" ]; then
+for port in 3001 3002 3003 3004 5180 7100 8000 8080 8100 8101 8500; do
+  pids=$(lsof -nP -iTCP:$port -sTCP:LISTEN -t 2>/dev/null || true)
+  for pid in $pids; do
+    cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
+    case "$cmd" in
+      *docker*|*Docker*|*vpnkit*) continue ;;
+    esac
     warn "port $port still has pid $pid"
     STUCK=1
-  fi
+  done
 done
 [ $STUCK -eq 0 ] && ok "all demo ports clear"
 

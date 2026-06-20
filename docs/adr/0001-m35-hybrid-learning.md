@@ -12,10 +12,10 @@ M35 needs closed-loop learning without creating a second prompt lesson system. P
 
 Use a hybrid model:
 
-- `agent-and-tools/apps/learning-service` owns summary and pattern APIs on port `3006`.
+- `agent-service` owns the folded learning summary and pattern APIs under `/api/v1`, replacing the former standalone learning-service.
 - Prompt Composer keeps `EngineLesson` as the canonical prompt-lesson store.
-- Prompt Composer queries learning-service first for `PRIOR_FAILURE_SUMMARY` and `LEARNED_PATTERNS`, then merges existing `GLOBAL_LESSON` retrieval.
-- If learning-service is unavailable, prompt assembly degrades gracefully and emits a warning instead of failing the run.
+- Prompt Composer queries the folded learning APIs first for `PRIOR_FAILURE_SUMMARY` and `LEARNED_PATTERNS`, then merges existing `GLOBAL_LESSON` retrieval.
+- The folded learning APIs require `LEARNING_SERVICE_TOKEN`; if they are unavailable or unauthorized, prompt assembly degrades gracefully and emits a warning instead of failing the run.
 
 ## Consequences
 

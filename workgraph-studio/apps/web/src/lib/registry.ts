@@ -2,6 +2,8 @@ import axios, { type AxiosRequestConfig } from 'axios'
 import { useAuthStore } from '../store/auth.store'
 import { api } from './api'
 
+const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
+
 export type RegistryAgent = {
   id: string
   name: string
@@ -65,8 +67,8 @@ export type RegistryTool = {
   actions?: RegistryToolAction[]
 }
 
-const AGENT_REGISTRY_URL = (import.meta.env.VITE_AGENT_REGISTRY_URL as string | undefined)?.replace(/\/+$/, '')
-const TOOL_REGISTRY_URL = (import.meta.env.VITE_TOOL_REGISTRY_URL as string | undefined)?.replace(/\/+$/, '')
+const AGENT_REGISTRY_URL = viteEnv.VITE_AGENT_REGISTRY_URL?.replace(/\/+$/, '')
+const TOOL_REGISTRY_URL = viteEnv.VITE_TOOL_REGISTRY_URL?.replace(/\/+$/, '')
 
 function authConfig(): AxiosRequestConfig {
   const token = useAuthStore.getState().token

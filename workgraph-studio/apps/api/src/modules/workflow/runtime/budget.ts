@@ -3,6 +3,7 @@ import type { WorkflowInstance, WorkflowNode } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 import { ValidationError } from '../../../lib/errors'
+import { config } from '../../../config'
 
 export type BudgetEnforcementMode = 'PAUSE_FOR_APPROVAL' | 'FAIL_HARD' | 'WARN_ONLY'
 export type GovernanceMode = 'fail_open' | 'fail_closed' | 'degraded' | 'human_approval_required'
@@ -60,7 +61,7 @@ export const DEFAULT_WORKFLOW_BUDGET_POLICY: WorkflowBudgetPolicy = {
   maxEstimatedCost: null,
   warnAtPercent: 80,
   enforcementMode: 'PAUSE_FOR_APPROVAL',
-  governanceMode: 'fail_open',
+  governanceMode: config.DEFAULT_GOVERNANCE_MODE as GovernanceMode,
   nodeTypeGovernanceModes: {
     SECURITY_REVIEW: 'fail_closed',
     POLICY_CHECK: 'fail_closed',

@@ -2,11 +2,13 @@
 import useSWR from "swr";
 import { Users } from "lucide-react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { apiPath } from "@/lib/api";
+import { apiPath, readResponseBody, responseMessage } from "@/lib/api";
 
 const fetcher = async () => {
   const res = await fetch(apiPath("/api/client-runners"));
-  return res.json() as Promise<{ runners: Record<string, unknown>[] }>;
+  const { raw, parsed } = await readResponseBody(res);
+  if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+  return (parsed && typeof parsed === "object" ? parsed : { runners: [] }) as { runners: Record<string, unknown>[] };
 };
 
 export default function RunnersPage() {

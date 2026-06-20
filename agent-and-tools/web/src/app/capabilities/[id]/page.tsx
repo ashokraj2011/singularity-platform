@@ -1,8 +1,8 @@
 "use client";
 import { useRef, useState } from "react";
 import useSWR from "swr";
-import { useSearchParams } from "next/navigation";
-import { apiPath, identityApi, runtimeApi, workgraphApi, workgraphRunInsightsUrl, type IamBusinessUnit, type IamTeam } from "@/lib/api";
+import { useParams, useSearchParams } from "next/navigation";
+import { apiPath, identityApi, readResponseBody, responseMessage, runtimeApi, workgraphApi, workgraphRunInsightsUrl, type IamBusinessUnit, type IamTeam } from "@/lib/api";
 import { CAPABILITY_ROLE_OPTIONS, capabilityRoleLabel } from "@/lib/capabilityRoles";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Archive, Bot, CheckCircle2, ExternalLink, Pencil, PlayCircle, Plus, RefreshCw, Rocket, Save, Sparkles, Upload, X } from "lucide-react";
@@ -19,7 +19,8 @@ type CapabilityEditForm = {
 
 type ArchitectureLayer = { key: string; label: string; items: string[] };
 
-export default function CapabilityDetailPage({ params }: { params: { id: string } }) {
+export default function CapabilityDetailPage() {
+  const params = useParams<{ id: string }>();
   const id = decodeURIComponent(params.id);
   const searchParams = useSearchParams();
   const { data: cap, mutate: mutateCap } = useSWR(`cap-${id}`, () => runtimeApi.getCapability(id));
@@ -1693,10 +1694,12 @@ function KnowledgeUploadCard({
         { method: "POST", body: fd },
       );
       if (!res.ok) {
-        const detail = await res.text().catch(() => "");
-        throw new Error(`Upload failed (${res.status}): ${detail.slice(0, 200)}`);
+        const { raw, parsed } = await readResponseBody(res);
+        throw new Error(`Upload failed (${res.status}): ${responseMessage(parsed, raw, res.statusText)}`);
       }
-      const body = await res.json() as { data?: { uploaded: number; skipped?: Array<{name:string; reason:string}> } };
+      const { raw, parsed } = await readResponseBody(res);
+      if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 300) : "Upload returned an empty response");
+      const body = parsed as { data?: { uploaded: number; skipped?: Array<{name:string; reason:string}> } };
       const skipped = body.data?.skipped ?? [];
       if (skipped.length > 0) {
         setError(`Skipped ${skipped.length}: ${skipped.map(s => `${s.name} (${s.reason})`).join(", ")}`);
@@ -2108,8 +2111,10 @@ function TuningTab({ capabilityId }: { capabilityId: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ capabilityId, task }),
       });
-      if (!res.ok) throw new Error(`debug ${res.status}: ${(await res.text()).slice(0, 200)}`);
-      setData(await res.json());
+      const { raw, parsed } = await readResponseBody(res);
+      if (!res.ok) throw new Error(`debug ${res.status}: ${responseMessage(parsed, raw, res.statusText)}`);
+      if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 300) : "debug response was empty");
+      setData(parsed as DebugResponse);
     } catch (err) {
       setError(err instanceof Error ? err.message : "request failed");
     } finally { setBusy(false); }

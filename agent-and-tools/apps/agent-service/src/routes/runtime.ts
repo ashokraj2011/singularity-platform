@@ -127,17 +127,17 @@ runtimeRoutes.post("/learning-candidates/:id/review", async (req: Request, res: 
 // POST /api/v1/learning-candidates/distill
 //   { capability_id, agent_uid, candidate_type, candidate_ids[] }
 //
-// Looks up the named accepted candidates, batches their content, asks MCP to
-// synthesize 1-3 distilled memory rules, writes
+// Looks up the named accepted candidates, batches their content, asks Context
+// Fabric to synthesize 1-3 distilled memory rules, writes
 // DistilledMemory rows the prompt-composer auto-pulls, and marks the
 // originating candidates as `distilled`.
 //
-// All LLM synthesis goes through MCP. Provider keys and gateway URLs never
-// live in agent-service.
+// All LLM synthesis goes through Context Fabric's governed single-turn endpoint.
+// Provider keys and gateway URLs never live in agent-service.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MCP_SERVER_URL      = (process.env.MCP_SERVER_URL ?? "http://mcp-server:7100").replace(/\/$/, "");
-const MCP_BEARER_TOKEN    = process.env.MCP_BEARER_TOKEN ?? "";
+const CONTEXT_FABRIC_URL  = (process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000").replace(/\/$/, "");
+const CONTEXT_FABRIC_SERVICE_TOKEN = process.env.CONTEXT_FABRIC_SERVICE_TOKEN ?? "";
 const DISTILL_MODEL_ALIAS = process.env.DISTILL_MODEL_ALIAS?.trim();
 
 interface DistilledMemoryEntry {
@@ -167,39 +167,37 @@ async function synthesiseCandidates(args: {
   ].join("\n");
 
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (MCP_BEARER_TOKEN) headers.authorization = `Bearer ${MCP_BEARER_TOKEN}`;
-  const res = await fetch(`${MCP_SERVER_URL}/mcp/invoke`, {
+  if (CONTEXT_FABRIC_SERVICE_TOKEN) headers["x-service-token"] = CONTEXT_FABRIC_SERVICE_TOKEN;
+  const res = await fetch(`${CONTEXT_FABRIC_URL}/api/v1/execute-governed-single-turn`, {
     method: "POST",
     headers,
     body: JSON.stringify({
-      systemPrompt,
-      message: userMessage,
-      tools: [],
-      modelConfig: {
+      trace_id: args.traceId,
+      system_prompt: systemPrompt,
+      task: userMessage,
+      model_overrides: {
         ...(DISTILL_MODEL_ALIAS ? { modelAlias: DISTILL_MODEL_ALIAS } : {}),
         temperature: 0,
-        maxTokens: 1500,
+        maxOutputTokens: 1500,
       },
-      runContext: {
-        traceId: args.traceId,
-        capabilityId: args.capabilityId,
-        agentId: args.agentUid,
+      run_context: {
+        trace_id: args.traceId,
+        capability_id: args.capabilityId,
+        agent_id: args.agentUid,
+        source_type: "agent-service-distillation",
       },
       limits: {
-        maxSteps: 1,
         timeoutSec: 70,
-        compressToolResults: true,
-        includeLocalTools: false,
       },
     }),
     signal: AbortSignal.timeout(70_000),
   });
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 400);
-    throw new AppError(`Distillation MCP_UPSTREAM (${res.status}): ${detail}`, 502);
+    throw new AppError(`Distillation CONTEXT_FABRIC_UPSTREAM (${res.status}): ${detail}`, 502);
   }
-  const data = (await res.json()) as { data?: { finalResponse?: string } };
-  const raw = data.data?.finalResponse ?? "";
+  const data = (await res.json()) as { finalResponse?: string; data?: { finalResponse?: string } };
+  const raw = data.finalResponse ?? data.data?.finalResponse ?? "";
 
   // Synthetic fallback used when the LLM returns no parseable JSON (mock
   // provider, malformed reply, etc). Joins observations into one rule so the

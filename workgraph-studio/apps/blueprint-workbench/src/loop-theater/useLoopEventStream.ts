@@ -13,6 +13,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { eventToScene, deriveToolCallScene, type AuditEvent, type SceneAction } from './eventToScene'
+import { workbenchPath } from '../vite-env-compat'
 
 // In dev, audit-gov is reachable via the Vite proxy added in vite.config.ts.
 // In prod, the nginx `/audit-gov/` location proxies to audit-gov.
@@ -25,7 +26,7 @@ import { eventToScene, deriveToolCallScene, type AuditEvent, type SceneAction } 
 // in the M100 plan. See vite.config.ts + Dockerfile for the injection sites.
 // M100 P1 — base-relative so it resolves under the edge-gateway prefix
 // (/workbench/audit-gov) and standalone (/audit-gov). Mirrors src/base.ts.
-const AUDIT_GOV_BASE = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/audit-gov`
+const AUDIT_GOV_BASE = workbenchPath('/audit-gov')
 
 interface UseLoopEventStreamOptions {
   /** Trace ID prefix to filter events by. The audit-gov /search endpoint

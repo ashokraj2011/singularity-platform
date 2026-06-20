@@ -97,6 +97,7 @@ from .validators import (
     check_context_receipt_substance,
     validate_phase_output,
 )
+from ..execute_modules.tool_policy import effective_capability_allows_tool
 from .baseline_diff import (
     enrich_verification_receipt,
     extract_failing_tests_from_tool_output,
@@ -217,6 +218,22 @@ _MUTATING_TOOLS = frozenset({
     "write_file",
     "finish_work_branch",
 })
+
+
+def _effective_capabilities_from_context(run_context: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(run_context, dict):
+        return []
+    raw = run_context.get("effective_capabilities") or run_context.get("effectiveCapabilities")
+    return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+
+
+def _effective_capabilities_required(run_context: dict[str, Any] | None) -> bool:
+    if not isinstance(run_context, dict):
+        return False
+    raw = run_context.get("effective_capabilities_required")
+    if raw is None:
+        raw = run_context.get("effectiveCapabilitiesRequired")
+    return raw is True or (isinstance(raw, str) and raw.strip().lower() in {"1", "true", "yes", "on"})
 
 
 def _normalise_change_path(path: str) -> str:
@@ -519,6 +536,47 @@ async def governed_step(
                 policy=policy,
                 run_context=run_context,
                 payload={"tool_name": tool_name, "reason": "governance_blocked", "allowed_tools": []},
+                severity="warn",
+            )
+            continue
+
+        effective_capabilities = _effective_capabilities_from_context(run_context)
+        profile_allowed, profile_refusal = effective_capability_allows_tool(
+            {"name": tool_name},
+            effective_capabilities,
+            require_effective_capabilities=_effective_capabilities_required(run_context),
+        )
+        if not profile_allowed:
+            log.info(
+                "tool refused by effective profile tool=%s phase=%s reason=%s",
+                tool_name,
+                state.current_phase.value,
+                profile_refusal,
+            )
+            result.tool_outcomes.append(
+                ToolCallOutcome(
+                    tool_name=tool_name,
+                    phase=state.current_phase.value,
+                    allowed=False,
+                    args=args,
+                    refusal_reason=(
+                        f"tool '{tool_name}' is not allowed by the effective "
+                        f"agent profile capability set: {profile_refusal}"
+                    ),
+                    submission_index=sub_idx,
+                )
+            )
+            await emit_governed_event(
+                kind="governed.tool_refused",
+                state=state,
+                policy=policy,
+                run_context=run_context,
+                payload={
+                    "tool_name": tool_name,
+                    "reason": "effective_capability_denied",
+                    "detail": profile_refusal,
+                    "allowed_tools": [],
+                },
                 severity="warn",
             )
             continue

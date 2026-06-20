@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { LogOut } from "lucide-react";
 import { clearAgentToolsToken } from "@/lib/api";
 
-/** Top-bar logout: clears the stored token(s) and returns to the Agent Studio login. */
+/** Top-bar logout: clears the stored token(s) and returns to the unified home. */
 export function LogoutButton() {
   const router = useRouter();
 
@@ -12,11 +12,11 @@ export function LogoutButton() {
     try {
       clearAgentToolsToken();
       // authHeaders() also reads these fallbacks — clear them for a full sign-out.
-      for (const k of ["agent-tools-token", "auth-token", "token"]) localStorage.removeItem(k);
+      for (const k of ["agent-tools-token", "auth-token", "token", "singularity-portal.auth", "workgraph-auth", "iam-auth"]) localStorage.removeItem(k);
     } catch {
       /* ignore storage errors */
     }
-    router.push("/agent-studio");
+    router.push("/");
     router.refresh();
   }
 

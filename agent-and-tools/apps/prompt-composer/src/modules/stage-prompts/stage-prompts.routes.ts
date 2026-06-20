@@ -11,11 +11,13 @@
  */
 import { Router, Request, Response, NextFunction } from "express";
 import { validate } from "../../middleware/validate.middleware";
+import { requireAuth } from "../../middleware/auth.middleware";
 import { stagePromptsService } from "./stage-prompts.service";
 import { resolveStageSchema } from "./stage-prompts.schemas";
 import { ok } from "../../shared/response";
 
 export const stagePromptsRoutes = Router();
+stagePromptsRoutes.use(requireAuth);
 
 stagePromptsRoutes.post(
   "/resolve",

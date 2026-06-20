@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { Search, Key } from 'lucide-react'
-import { PageHeader } from '@/components/PageHeader'
-import { EmptyState } from '@/components/EmptyState'
-import { Input } from '@/components/ui/input'
-import { usePermissions } from '@/hooks/usePermissions'
+import { PageHeader } from 'identity-web/components/PageHeader'
+import { EmptyState } from 'identity-web/components/EmptyState'
+import { Input } from 'identity-web/components/ui/input'
+import { usePermissions } from 'identity-web/hooks/usePermissions'
 
 export function PermissionsPage() {
   const [search, setSearch] = useState('')

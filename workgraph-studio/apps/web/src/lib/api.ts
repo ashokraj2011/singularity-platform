@@ -2,11 +2,20 @@ import axios from 'axios'
 import { useAuthStore } from '../store/auth.store'
 import { sharedAuthToken, redirectToPortalLogin } from './sharedAuth'
 
+const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
+
 // M100 P1 — base-relative API path so that under the single-origin edge
 // gateway (base e.g. '/workflow/') calls go to '/workflow/api' and route to
 // this app's backend; standalone (base '/') stays '/api'. import.meta.env
 // .BASE_URL always ends with '/'.
-const API_BASE = `${import.meta.env.BASE_URL}api`.replace(/\/{2,}/g, '/')
+const API_BASE = viteEnv.BASE_URL
+  ? `${viteEnv.BASE_URL}api`.replace(/\/{2,}/g, '/')
+  : '/api/workgraph'
+
+export function workgraphApiPath(path: string): string {
+  const suffix = path.startsWith('/') ? path : `/${path}`
+  return `${API_BASE.replace(/\/+$/, '')}${suffix}`
+}
 
 export const api = axios.create({
   baseURL: API_BASE,

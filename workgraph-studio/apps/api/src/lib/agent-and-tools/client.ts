@@ -7,6 +7,7 @@
  */
 
 import { config } from '../../config'
+import { getIamServiceToken } from '../iam/service-token'
 
 export class AgentAndToolsError extends Error {
   constructor(
@@ -17,6 +18,15 @@ export class AgentAndToolsError extends Error {
     super(message)
     this.name = 'AgentAndToolsError'
   }
+}
+
+async function resolvedAgentToolsAuthHeader(authHeader?: string): Promise<string | undefined> {
+  const callerHeader = authHeader?.trim()
+  if (callerHeader) {
+    return callerHeader.startsWith('Bearer ') ? callerHeader : `Bearer ${callerHeader}`
+  }
+  const token = await getIamServiceToken()
+  return token ? `Bearer ${token}` : undefined
 }
 
 /**
@@ -35,7 +45,8 @@ async function proxyGet(
     if (v !== undefined && v !== '') url.searchParams.set(k, v)
   }
   const headers: Record<string, string> = { accept: 'application/json' }
-  if (authHeader) headers.authorization = authHeader
+  const authorization = await resolvedAgentToolsAuthHeader(authHeader)
+  if (authorization) headers.authorization = authorization
   let res: Response
   try {
     res = await fetch(url, { method: 'GET', headers })
@@ -69,7 +80,8 @@ async function proxyPost(
     accept: 'application/json',
     'content-type': 'application/json',
   }
-  if (authHeader) headers.authorization = authHeader
+  const authorization = await resolvedAgentToolsAuthHeader(authHeader)
+  if (authorization) headers.authorization = authorization
   let res: Response
   try {
     res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) })
@@ -135,6 +147,8 @@ export async function discoverTools(
     query?: string
     risk_max?: string
     limit?: number
+    effective_capabilities?: Array<Record<string, unknown>>
+    effectiveCapabilities?: Array<Record<string, unknown>>
   },
   authHeader?: string,
 ): Promise<{ tools: ToolDescriptor[] }> {
@@ -265,7 +279,8 @@ export async function patchAgentTemplate(
     accept: 'application/json',
     'content-type': 'application/json',
   }
-  if (authHeader) headers.authorization = authHeader
+  const authorization = await resolvedAgentToolsAuthHeader(authHeader)
+  if (authorization) headers.authorization = authorization
   let res: Response
   try {
     res = await fetch(url, { method: 'PATCH', headers, body: JSON.stringify(payload) })

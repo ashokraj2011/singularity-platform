@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { requireVerifiedCallerBearer } from "../_proxy";
 
 export const dynamic = "force-dynamic";
 
@@ -50,7 +51,10 @@ function configuredPath(envKey: string, fallback: string): string {
   return process.env[envKey] ?? process.env[`MCP_${envKey}`] ?? fallback;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const authFailure = await requireVerifiedCallerBearer(request, "LLM settings");
+  if (authFailure) return authFailure;
+
   const mcpUrl = trimTrailingSlash(process.env.MCP_SERVER_URL ?? "http://localhost:7100");
   const rawEventHorizonProvider = process.env.EVENT_HORIZON_PROVIDER || process.env.NEXT_PUBLIC_EVENT_HORIZON_PROVIDER || null;
   const rawEventHorizonModel = process.env.EVENT_HORIZON_MODEL || process.env.NEXT_PUBLIC_EVENT_HORIZON_MODEL || null;

@@ -1,14 +1,14 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ExternalLink, Layers, ShieldCheck } from 'lucide-react'
-import { PageHeader } from '@/components/PageHeader'
-import { EmptyState } from '@/components/EmptyState'
-import { StatusBadge } from '@/components/StatusBadge'
-import { Button } from '@/components/ui/button'
-import { useCapabilities } from '@/hooks/useCapabilities'
-import { capabilityTypeColor, capabilityTypeLabel, formatDate } from '@/lib/format'
-import { agentStudioCapabilitiesHref } from '@/lib/links'
-import type { CapabilityType } from '@/types'
+import { PageHeader } from 'identity-web/components/PageHeader'
+import { EmptyState } from 'identity-web/components/EmptyState'
+import { StatusBadge } from 'identity-web/components/StatusBadge'
+import { Button } from 'identity-web/components/ui/button'
+import { useCapabilities } from 'identity-web/hooks/useCapabilities'
+import { capabilityTypeColor, capabilityTypeLabel, formatDate } from 'identity-web/lib/format'
+import { agentStudioCapabilitiesHref } from 'identity-web/lib/links'
+import type { CapabilityType } from 'identity-web/types'
 
 const TYPES: CapabilityType[] = [
   'business_capability', 'application_capability', 'shared_capability',

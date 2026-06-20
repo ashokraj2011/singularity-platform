@@ -2,7 +2,7 @@ import { API_BASE, sharedAuthToken } from './base'
 
 export type SourceType = 'github' | 'localdir'
 export type Stage = string
-export type SessionStatus = 'DRAFT' | 'SNAPSHOTTED' | 'RUNNING' | 'COMPLETED' | 'APPROVED' | 'FAILED'
+export type SessionStatus = 'DRAFT' | 'SNAPSHOTTED' | 'RUNNING' | 'COMPLETED' | 'APPROVED' | 'FAILED' | 'ABANDONED'
 export type StageStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
 export type GateMode = 'manual' | 'auto'
 export type SnapshotMode = 'summary' | 'relevant_excerpts' | 'full_debug'
@@ -596,10 +596,6 @@ export type CreateSessionRequest = {
 type PersistedAuth = { state?: { token?: string | null } }
 
 export const BLUEPRINT_AUTH_INVALID_EVENT = 'blueprintWorkbench.auth.invalid'
-const PSEUDO_IAM_LOGIN_URL = import.meta.env.VITE_PSEUDO_IAM_LOGIN_URL
-  ?? `${window.location.protocol}//${window.location.hostname}:8100/api/v1/auth/local/login`
-const PSEUDO_LOGIN_EMAIL = import.meta.env.VITE_PSEUDO_LOGIN_EMAIL ?? 'admin@singularity.local'
-const PSEUDO_LOGIN_PASSWORD = import.meta.env.VITE_PSEUDO_LOGIN_PASSWORD ?? 'Admin1234!'
 
 export function getToken() {
   // M100 P2 — prefer the canonical portal session (shared localStorage under
@@ -616,28 +612,22 @@ export function getToken() {
 }
 
 export function saveToken(token: string) {
-  localStorage.setItem('workgraph-auth', JSON.stringify({ state: { token }, version: 0 }))
+  const persisted = JSON.stringify({ state: { token }, version: 0 })
+  localStorage.setItem('workgraph-auth', persisted)
+  localStorage.setItem('singularity-portal.auth', persisted)
+  localStorage.setItem('agent-tools-token', token)
 }
 
 export function clearToken() {
   localStorage.removeItem('workgraph-auth')
+  localStorage.removeItem('singularity-portal.auth')
+  localStorage.removeItem('agent-tools-token')
+  localStorage.removeItem('iam-auth')
 }
 
 function notifyInvalidAuth() {
   if (typeof window === 'undefined') return
   window.dispatchEvent(new Event(BLUEPRINT_AUTH_INVALID_EVENT))
-}
-
-export async function pseudoLogin() {
-  const res = await fetch(PSEUDO_IAM_LOGIN_URL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email: PSEUDO_LOGIN_EMAIL, password: PSEUDO_LOGIN_PASSWORD }),
-  })
-  if (!res.ok) throw new Error(`Workbench login failed against ${PSEUDO_IAM_LOGIN_URL} (${res.status})`)
-  const body = await res.json() as { access_token: string }
-  saveToken(body.access_token)
-  return body.access_token
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -746,6 +736,8 @@ export const api = {
   createSession: (body: CreateSessionRequest) => request<BlueprintSession>('/blueprint/sessions', { method: 'POST', body: JSON.stringify(body) }),
   updateSettings: (id: string, body: WorkbenchExecutionConfig & { maxLoopsPerStage?: number; maxTotalSendBacks?: number }) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/settings`, { method: 'PATCH', body: JSON.stringify(body) }),
+  abandonSession: (id: string) =>
+    request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/abandon`, { method: 'POST' }),
   resetStageAttempts: (id: string, stageKey: string) =>
     request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}/stages/${encodeURIComponent(stageKey)}/reset-attempts`, { method: 'POST' }),
   // M89.e — Surgical cancel of the in-flight attempt for a stage.

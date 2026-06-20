@@ -21,9 +21,11 @@ import { logger } from "../../config/logger";
 import { render as renderMustache } from "../../shared/mustache";
 import { NotFoundError } from "../../shared/errors";
 import { validate } from "../../middleware/validate.middleware";
+import { requireAuth } from "../../middleware/auth.middleware";
 import { ok } from "../../shared/response";
 
 export const systemPromptsRoutes = Router();
+systemPromptsRoutes.use(requireAuth);
 
 const renderSchema = z.object({
   vars: z.record(z.unknown()).optional(),

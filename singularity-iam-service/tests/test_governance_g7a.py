@@ -1,15 +1,22 @@
-"""G7a — governance mutate-endpoint helpers + resolver hardening (pure tests).
+"""G7a — governance mutate-endpoint helpers + resolver hardening.
 
-Covers the DB-free units: authority gate, contributions validation, and the
-resolver's per-evidence mode stamping (the "no mode bleed" regression).
+Covers authority gates, contributions validation, and the resolver's
+per-evidence mode stamping (the "no mode bleed" regression).
 """
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
-from app.governance.authz import assert_governance_authority, validate_contributions
+from app.authz.resolver import AuthzResult
+import app.governance.authz as governance_authz
+from app.governance.authz import (
+    assert_governance_authority,
+    assert_governance_service_scope,
+    validate_contributions,
+)
 from app.governance.resolver import resolve_overlay
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -30,40 +37,115 @@ def _service(*, scopes=None):
 
 # ── authority gate ────────────────────────────────────────────────────────
 
-def test_advisory_authoring_allows_any_real_user():
-    assert_governance_authority(_user(), enforcing=False)  # no raise
+def test_advisory_authoring_requires_capability_permission_for_real_user(monkeypatch):
+    async def deny(**_kwargs):
+        return AuthzResult(False, "missing")
 
-
-def test_enforcing_requires_elevated_authority_for_real_user():
+    monkeypatch.setattr(governance_authz, "check_authorization", deny)
     with pytest.raises(HTTPException) as ei:
-        assert_governance_authority(_user(super_admin=False), enforcing=True)
+        asyncio.run(assert_governance_authority(
+            db=object(),
+            u=_user(),
+            governed_capability_id="delivery",
+            governing_capability_id="security",
+            enforcing=False,
+        ))
+    assert ei.value.status_code == 403
+    assert "governance:author" in str(ei.value.detail)
+
+
+def test_advisory_authoring_requires_permission_on_both_edge_capabilities(monkeypatch):
+    seen: list[str] = []
+
+    async def allow_security_only(**kwargs):
+        seen.append(kwargs["capability_id"])
+        return AuthzResult(kwargs["capability_id"] == "security", "test")
+
+    monkeypatch.setattr(governance_authz, "check_authorization", allow_security_only)
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(assert_governance_authority(
+            db=object(),
+            u=_user(),
+            governed_capability_id="delivery",
+            governing_capability_id="security",
+            enforcing=False,
+        ))
+    assert ei.value.status_code == 403
+    assert "delivery" in str(ei.value.detail)
+    assert sorted(seen) == ["delivery", "security"]
+
+
+def test_advisory_authoring_allows_user_with_permission_on_both_edge_capabilities(monkeypatch):
+    async def allow(**_kwargs):
+        return AuthzResult(True, "ok")
+
+    monkeypatch.setattr(governance_authz, "check_authorization", allow)
+    asyncio.run(assert_governance_authority(
+        db=object(),
+        u=_user(),
+        governed_capability_id="delivery",
+        governing_capability_id="security",
+        enforcing=False,
+    ))
+
+
+def test_enforcing_requires_elevated_authority_for_real_user(monkeypatch):
+    async def deny(**_kwargs):
+        return AuthzResult(False, "missing")
+
+    monkeypatch.setattr(governance_authz, "check_authorization", deny)
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(assert_governance_authority(
+            db=object(),
+            u=_user(super_admin=False),
+            governed_capability_id="delivery",
+            governing_capability_id="security",
+            enforcing=True,
+        ))
     assert ei.value.status_code == 403
 
 
 def test_enforcing_allowed_for_super_admin():
-    assert_governance_authority(_user(super_admin=True), enforcing=True)
+    asyncio.run(assert_governance_authority(
+        db=object(),
+        u=_user(super_admin=True),
+        governed_capability_id="delivery",
+        governing_capability_id="security",
+        enforcing=True,
+    ))
 
 
-def test_enforcing_allowed_for_real_user_with_enforce_scope():
-    assert_governance_authority(_user(scopes=["governance:enforce"]), enforcing=True)
+def test_enforcing_allowed_for_real_user_with_enforce_permission_on_both_caps(monkeypatch):
+    async def allow(**kwargs):
+        assert kwargs["action"] == "governance:enforce"
+        return AuthzResult(True, "ok")
+
+    monkeypatch.setattr(governance_authz, "check_authorization", allow)
+    asyncio.run(assert_governance_authority(
+        db=object(),
+        u=_user(),
+        governed_capability_id="delivery",
+        governing_capability_id="security",
+        enforcing=True,
+    ))
 
 
 def test_service_principal_needs_author_scope_even_for_advisory():
     with pytest.raises(HTTPException) as ei:
-        assert_governance_authority(_service(scopes=[]), enforcing=False)
+        assert_governance_service_scope(_service(scopes=[]), enforcing=False)
     assert ei.value.status_code == 403
-    assert_governance_authority(_service(scopes=["governance:author"]), enforcing=False)
+    assert_governance_service_scope(_service(scopes=["governance:author"]), enforcing=False)
 
 
 def test_service_blanket_super_admin_cannot_enforce():
     # author scope is NOT enough to enforce, and blanket is_super_admin must not bypass.
     with pytest.raises(HTTPException) as ei:
-        assert_governance_authority(_service(scopes=["governance:author"]), enforcing=True)
+        assert_governance_service_scope(_service(scopes=["governance:author"]), enforcing=True)
     assert ei.value.status_code == 403
 
 
 def test_service_with_enforce_scope_can_enforce():
-    assert_governance_authority(_service(scopes=["governance:enforce"]), enforcing=True)
+    assert_governance_service_scope(_service(scopes=["governance:enforce"]), enforcing=True)
 
 
 # ── contributions validation ────────────────────────────────────────────────

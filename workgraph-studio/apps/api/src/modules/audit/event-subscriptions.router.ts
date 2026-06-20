@@ -9,7 +9,8 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { prisma } from '../../lib/prisma'
-import { NotFoundError } from '../../lib/errors'
+import { NotFoundError, ValidationError } from '../../lib/errors'
+import { assertEventTargetUrlAllowed } from '../../lib/eventbus/target-url-policy'
 
 export const eventSubscriptionsRouter: Router = Router()
 
@@ -24,6 +25,11 @@ const createSchema = z.object({
 eventSubscriptionsRouter.post('/', async (req, res, next) => {
   try {
     const body = createSchema.parse(req.body)
+    try {
+      await assertEventTargetUrlAllowed(body.targetUrl)
+    } catch (err) {
+      throw new ValidationError((err as Error).message)
+    }
     const sub = await prisma.eventSubscription.create({
       data: {
         subscriberId: body.subscriberId,
@@ -60,6 +66,13 @@ eventSubscriptionsRouter.get('/:id', async (req, res, next) => {
 eventSubscriptionsRouter.patch('/:id', async (req, res, next) => {
   try {
     const body = createSchema.partial().parse(req.body)
+    if (body.targetUrl !== undefined) {
+      try {
+        await assertEventTargetUrlAllowed(body.targetUrl)
+      } catch (err) {
+        throw new ValidationError((err as Error).message)
+      }
+    }
     const sub = await prisma.eventSubscription.update({
       where: { id: req.params.id },
       data: {

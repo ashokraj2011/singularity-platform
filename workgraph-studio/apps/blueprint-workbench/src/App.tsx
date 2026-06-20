@@ -81,7 +81,6 @@ import {
   BLUEPRINT_AUTH_INVALID_EVENT,
   clearToken,
   getToken,
-  pseudoLogin,
   saveToken,
   type BlueprintArtifact,
   type CodeChangeRecord,
@@ -120,6 +119,7 @@ import { stageMode, stageModeMeta, stageAllowsMutation, stageUsesRepoContext } f
 import { LoopTheater } from './loop-theater/LoopTheater'
 import { NeoThemePicker, lookClass, useNeoLook } from './neo/NeoThemePicker'
 import { MarkdownView } from './neo/MarkdownView'
+import { viteEnv, workbenchPath } from './vite-env-compat'
 
 const knownRoleMeta: Record<string, { label: string; icon: typeof Brain }> = {
   ARCHITECT: { label: 'Architect', icon: Brain },
@@ -137,9 +137,9 @@ type WorkbenchSection = 'workflow' | 'artifacts' | 'terminal' | 'loop' | 'replay
 // workbench share the current origin, so postMessage targets / origin checks
 // default to window.location.origin (was hardcoded :5174 / :5176). The
 // VITE_*_ORIGIN overrides remain for split-origin deployments.
-const WORKGRAPH_WEB_ORIGIN = normalizeOrigin(import.meta.env.VITE_WORKGRAPH_WEB_ORIGIN)
+const WORKGRAPH_WEB_ORIGIN = normalizeOrigin(viteEnv.VITE_WORKGRAPH_WEB_ORIGIN)
   ?? window.location.origin
-const WORKBENCH_ORIGIN = normalizeOrigin(import.meta.env.VITE_BLUEPRINT_WORKBENCH_ORIGIN)
+const WORKBENCH_ORIGIN = normalizeOrigin(viteEnv.VITE_BLUEPRINT_WORKBENCH_ORIGIN)
   ?? window.location.origin
 
 type WorkbenchHydratedDefaults = {
@@ -292,7 +292,7 @@ export default function App() {
   }, [sessionStatusQuery.data?.updatedAt, sessionStatusQuery.data?.id, activeSessionId, localCreatedSessionIds, queryClient])
 
   if (!hasToken) {
-    return <AuthGate onAuthed={() => setAuthTick(v => v + 1)} />
+    return <AuthGate />
   }
 
   return (
@@ -429,25 +429,27 @@ function SetupDrawer({ open, onClose, children }: { open: boolean; onClose: () =
   )
 }
 
-function AuthGate({ onAuthed }: { onAuthed: () => void }) {
-  const loginMutation = useMutation({ mutationFn: pseudoLogin, onSuccess: onAuthed })
+function AuthGate() {
+  const openPlatformLogin = () => {
+    const next = `${window.location.pathname}${window.location.search}${window.location.hash}`
+    window.location.assign(`/identity/login?next=${encodeURIComponent(next)}`)
+  }
   return (
     <main className="auth-empty">
       <div>
         <span className="auth-mark"><Sparkles size={26} /></span>
         <span className="auth-kicker">Agentic delivery cockpit</span>
         <h1>Blueprint Workbench</h1>
-        <p>This standalone Workbench uses the Workgraph API and needs a browser token from the workflow portal.</p>
+        <p>Sign in once through Platform Web to use Workbench, workflows, agents, and identity with the same governed session.</p>
         <div className="auth-feature-grid" aria-hidden>
           <span>Stages</span>
           <span>Evidence</span>
           <span>Approvals</span>
         </div>
-        <button className="primary-action" onClick={() => loginMutation.mutate()} disabled={loginMutation.isPending}>
-          {loginMutation.isPending ? <Loader2 className="spin" size={16} /> : <ShieldCheck size={16} />}
-          Continue as super admin
+        <button className="primary-action" onClick={openPlatformLogin}>
+          <ShieldCheck size={16} />
+          Open Platform Login
         </button>
-        {loginMutation.isError && <p className="error-text">{loginMutation.error.message}</p>}
       </div>
     </main>
   )
@@ -3198,7 +3200,7 @@ function WorktreeTestRunner({ sessionId }: { sessionId: string }) {
       }
     }
     try {
-      const resp = await fetch(`${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/run-test`, {
+      const resp = await fetch(workbenchPath(`/api/blueprint/sessions/${encodeURIComponent(sessionId)}/worktree/run-test`), {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

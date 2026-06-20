@@ -20,10 +20,11 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { eventToScene, deriveToolCallScene, type AuditEvent, type SceneAction } from './eventToScene'
+import { workbenchPath } from '../vite-env-compat'
 
 // M100 P1 — base-relative so it resolves under the edge-gateway prefix
 // (/workbench/audit-gov) and standalone (/audit-gov). Mirrors src/base.ts.
-const AUDIT_GOV_BASE = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/audit-gov`
+const AUDIT_GOV_BASE = workbenchPath('/audit-gov')
 
 export interface UseLiveLoopEventStreamOptions {
   /** Match every event whose trace_id starts with this. */

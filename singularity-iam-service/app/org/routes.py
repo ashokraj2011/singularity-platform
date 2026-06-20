@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.database import get_db
 from app.models import BusinessUnit, Team, TeamMembership, User, Capability, CapabilityMembership, Role
-from app.auth.deps import get_current_user
+from app.auth.deps import require_real_user, require_reference_read, require_super_admin
 from app.schemas import PageResponse
 from app.org.schemas import (
     BusinessUnitOut, CreateBusinessUnitRequest, UpdateBusinessUnitRequest, SetChildBuRequest,
@@ -77,7 +77,7 @@ async def _capability_memberships_for_user(db: AsyncSession, user_id: str) -> li
 @router.get("/business-units", response_model=PageResponse[BusinessUnitOut])
 async def list_bus(
     page: int = Query(1, ge=1), size: int = Query(50, ge=1, le=500),
-    db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read),
 ):
     q = select(BusinessUnit)
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
@@ -89,7 +89,7 @@ async def list_bus(
 async def create_bu(
     body: CreateBusinessUnitRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     existing = (await db.execute(select(BusinessUnit).where(BusinessUnit.bu_key == body.bu_key))).scalar_one_or_none()
     if existing:
@@ -109,7 +109,7 @@ async def create_bu(
 
 
 @router.get("/business-units/{bu_id}", response_model=BusinessUnitOut)
-async def get_bu(bu_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def get_bu(bu_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read)):
     bu = (await db.execute(select(BusinessUnit).where(BusinessUnit.id == bu_id))).scalar_one_or_none()
     if not bu:
         raise HTTPException(status_code=404, detail="Business unit not found")
@@ -143,7 +143,7 @@ async def update_bu(
     bu_id: str,
     body: UpdateBusinessUnitRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     bu = (await db.execute(select(BusinessUnit).where(BusinessUnit.id == bu_id))).scalar_one_or_none()
     if not bu:
@@ -173,7 +173,7 @@ async def update_bu(
 
 
 @router.get("/business-units/{bu_id}/children", response_model=list[BusinessUnitOut])
-async def list_child_bus(bu_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def list_child_bus(bu_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read)):
     bu = (await db.execute(select(BusinessUnit.id).where(BusinessUnit.id == bu_id))).scalar_one_or_none()
     if not bu:
         raise HTTPException(status_code=404, detail="Business unit not found")
@@ -188,7 +188,7 @@ async def add_child_bu(
     bu_id: str,
     body: SetChildBuRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     """Re-parent an existing business unit under {bu_id}."""
     parent = (await db.execute(select(BusinessUnit.id).where(BusinessUnit.id == bu_id))).scalar_one_or_none()
@@ -214,7 +214,7 @@ async def add_child_bu(
 @router.get("/teams", response_model=PageResponse[TeamOut])
 async def list_teams(
     page: int = Query(1, ge=1), size: int = Query(20, ge=1, le=200),
-    db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read),
 ):
     q = select(Team)
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
@@ -226,7 +226,7 @@ async def list_teams(
 async def create_team(
     body: CreateTeamRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     existing = (await db.execute(select(Team).where(Team.team_key == body.team_key))).scalar_one_or_none()
     if existing:
@@ -253,7 +253,7 @@ async def create_team(
 
 
 @router.get("/teams/{team_id}", response_model=TeamOut)
-async def get_team(team_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def get_team(team_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read)):
     team = (await db.execute(select(Team).where(Team.id == team_id))).scalar_one_or_none()
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
@@ -288,7 +288,7 @@ async def update_team(
     team_id: str,
     body: UpdateTeamRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     team = (await db.execute(select(Team).where(Team.id == team_id))).scalar_one_or_none()
     if not team:
@@ -318,7 +318,7 @@ async def update_team(
 
 
 @router.get("/teams/{team_id}/children", response_model=list[TeamOut])
-async def list_child_teams(team_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def list_child_teams(team_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read)):
     team = (await db.execute(select(Team.id).where(Team.id == team_id))).scalar_one_or_none()
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
@@ -333,7 +333,7 @@ async def add_child_team(
     team_id: str,
     body: SetChildTeamRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     """Re-parent an existing team under {team_id} (sets the child's parent)."""
     parent = (await db.execute(select(Team.id).where(Team.id == team_id))).scalar_one_or_none()
@@ -357,7 +357,7 @@ async def add_child_team(
 
 
 @router.get("/teams/{team_id}/members", response_model=list[TeamMembershipOut])
-async def list_team_members(team_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def list_team_members(team_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read)):
     result = await db.execute(select(TeamMembership).where(TeamMembership.team_id == team_id))
     members = result.scalars().all()
     return [TeamMembershipOut(id=m.id, team_id=m.team_id, user_id=m.user_id,
@@ -365,7 +365,7 @@ async def list_team_members(team_id: str, db: AsyncSession = Depends(get_db), _:
 
 
 @router.get("/users/{user_id}/teams", response_model=list[TeamOut])
-async def list_user_teams(user_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def list_user_teams(user_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read)):
     result = await db.execute(
         select(Team)
         .join(TeamMembership, TeamMembership.team_id == Team.id)
@@ -375,12 +375,12 @@ async def list_user_teams(user_id: str, db: AsyncSession = Depends(get_db), _: U
 
 
 @router.get("/users/{user_id}/memberships")
-async def list_user_memberships(user_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def list_user_memberships(user_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read)):
     return await _capability_memberships_for_user(db, user_id)
 
 
 @router.get("/me/memberships")
-async def list_my_memberships(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def list_my_memberships(db: AsyncSession = Depends(get_db), current_user: User = Depends(require_real_user)):
     return await _capability_memberships_for_user(db, current_user.id)
 
 
@@ -389,7 +389,7 @@ async def add_team_member(
     team_id: str,
     body: AddTeamMemberRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     team = (await db.execute(select(Team).where(Team.id == team_id))).scalar_one_or_none()
     if not team:
@@ -416,7 +416,7 @@ async def add_team_member(
 async def remove_team_member(
     team_id: str, user_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     membership = (await db.execute(
         select(TeamMembership).where(TeamMembership.team_id == team_id, TeamMembership.user_id == user_id)

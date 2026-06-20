@@ -1,11 +1,11 @@
 import { Router, Request, Response } from "express";
 import { query, queryOne } from "../database";
-import { optionalAuth } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
 import { emitAuditEvent } from "../middleware/audit";
 import { AppError } from "../middleware/errorHandler";
 
 export const versionRoutes = Router();
-versionRoutes.use(optionalAuth);
+versionRoutes.use(requireAuth);
 
 // POST /api/v1/agents/:uid/versions
 versionRoutes.post("/:uid/versions", async (req: Request, res: Response) => {

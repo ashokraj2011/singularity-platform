@@ -4,6 +4,7 @@ import { logEvent, publishOutbox } from '../../../lib/audit'
 import { createWorkItem } from '../../work-items/work-items.service'
 import { routeWorkItem } from '../../work-items/work-item-routing.service'
 import { normalizeMetadataKey, recordOf } from '../../metadata/metadata.service'
+import { tenantIdForCreate } from '../../../lib/tenant-isolation'
 
 const EVENT_LOOKBACK_CAP_MS = 24 * 60 * 60 * 1000
 const EVENT_TRIGGER_BATCH_SIZE = 200
@@ -410,6 +411,7 @@ async function spawnInstance(
       templateId,
       name: `${templateName} (auto-triggered)`,
       status: 'DRAFT',
+      tenantId: tenantIdForCreate(context),
       context: context as object,
     },
   })

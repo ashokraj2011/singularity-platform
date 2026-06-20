@@ -1,9 +1,5 @@
-// M100 P1 — under the Next basePath (/agent behind the edge gateway) every
-// client API call must hit /agent/api/* (Next auto-prefixes both its API route
-// handlers AND its rewrite sources, but NOT raw fetch). Rather than prefix every
-// call site, the central req()/reqEnv() wrappers prepend the base path via
-// apiPath(); raw fetch() callers import apiPath. Bases stay bare here.
-// Empty standalone (no basePath) → apiPath is a no-op.
+// The unified platform web app is mounted at root by default. Keep the optional
+// prefix hook for split deployments, but normal local Docker now leaves it empty.
 const BP = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 export function apiPath(p: string): string {
   return p.startsWith("/") ? `${BP}${p}` : p;
@@ -24,6 +20,26 @@ export class ApiError extends Error {
     super(message);
     this.name = "ApiError";
   }
+}
+
+export async function readResponseBody(res: Response): Promise<{ raw: string; parsed: unknown }> {
+  const raw = await res.text();
+  if (!raw) return { raw, parsed: null };
+  try {
+    return { raw, parsed: JSON.parse(raw) as unknown };
+  } catch {
+    return { raw, parsed: raw };
+  }
+}
+
+export function responseMessage(parsed: unknown, raw: string, fallback: string): string {
+  if (parsed && typeof parsed === "object") {
+    const obj = parsed as Record<string, unknown>;
+    const message = obj.message ?? obj.error ?? obj.detail ?? obj.title;
+    if (typeof message === "string" && message.trim()) return message;
+    if (message != null) return JSON.stringify(message).slice(0, 500);
+  }
+  return raw ? raw.slice(0, 500) : fallback;
 }
 
 function bearerHeader(token?: string | null): Record<string, string> | null {
@@ -48,14 +64,21 @@ export function hasAgentToolsToken(): boolean {
   return Boolean(authHeaders().Authorization);
 }
 
-export function saveAgentToolsToken(token: string): void {
+export function saveAgentToolsToken(token: string, user?: Row): void {
   if (typeof window === "undefined") return;
   localStorage.setItem("agent-tools-token", token);
+  localStorage.setItem("singularity-portal.auth", JSON.stringify({
+    state: { token, user: user ?? null },
+    version: 0,
+  }));
 }
 
 export function clearAgentToolsToken(): void {
   if (typeof window === "undefined") return;
   localStorage.removeItem("agent-tools-token");
+  localStorage.removeItem("singularity-portal.auth");
+  localStorage.removeItem("workgraph-auth");
+  localStorage.removeItem("iam-auth");
 }
 
 export function authHeaders(): Record<string, string> {
@@ -70,8 +93,7 @@ export function authHeaders(): Record<string, string> {
     if (header) return header;
   }
 
-  const envToken = process.env.NEXT_PUBLIC_AGENT_TOOLS_TOKEN;
-  return bearerHeader(envToken) ?? {};
+  return {};
 }
 
 async function req<T>(url: string, opts?: RequestInit): Promise<T> {
@@ -81,13 +103,18 @@ async function req<T>(url: string, opts?: RequestInit): Promise<T> {
   } catch (err) {
     throw new ApiError((err as Error).message || "Network request failed");
   }
+  const { raw, parsed } = await readResponseBody(res);
   if (!res.ok) {
-    const raw = await res.text();
-    let parsed: { error?: string; message?: string } | null = null;
-    try { parsed = raw ? JSON.parse(raw) as { error?: string; message?: string } : null; } catch { parsed = null; }
-    throw new ApiError(parsed?.error ?? parsed?.message ?? raw.slice(0, 240) ?? res.statusText, res.status);
+    const obj = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+    throw new ApiError(
+      responseMessage(parsed, raw, res.statusText),
+      res.status,
+      typeof obj.code === "string" ? obj.code : undefined,
+      obj.details,
+      typeof obj.requestId === "string" ? obj.requestId : null,
+    );
   }
-  return res.json() as Promise<T>;
+  return parsed as T;
 }
 
 // ── Agent Service ─────────────────────────────────────────
@@ -180,16 +207,15 @@ async function reqEnv<T>(url: string, opts?: RequestInit): Promise<T> {
     throw new ApiError((err as Error).message || "Network request failed");
   }
 
-  const raw = await res.text();
-  let json: Envelope<T> | null = null;
-  try {
-    json = raw ? JSON.parse(raw) as Envelope<T> : null;
-  } catch {
+  const { raw, parsed } = await readResponseBody(res);
+  if (!parsed || typeof parsed !== "object") {
     const message = raw
-      ? `${res.status} ${res.statusText}: ${raw.slice(0, 240)}`
+      ? `${res.status} ${res.statusText}: ${raw.slice(0, 500)}`
       : `${res.status} ${res.statusText}`;
     throw new ApiError(message, res.status);
   }
+
+  const json = parsed as Envelope<T>;
   if (!json) {
     throw new ApiError(`${res.status} ${res.statusText}: empty response`, res.status);
   }
@@ -206,15 +232,32 @@ async function reqEnv<T>(url: string, opts?: RequestInit): Promise<T> {
   return json.data;
 }
 
+async function reqEnvForm<T>(url: string, form: FormData): Promise<T> {
+  let res: Response;
+  try {
+    res = await fetch(apiPath(url), { method: "POST", headers: { ...authHeaders() }, body: form });
+  } catch (err) {
+    throw new ApiError((err as Error).message || "Network request failed");
+  }
+
+  const { raw, parsed } = await readResponseBody(res);
+  if (!parsed || typeof parsed !== "object") {
+    throw new ApiError(raw ? `${res.status} ${res.statusText}: ${raw.slice(0, 500)}` : res.statusText, res.status);
+  }
+  const json = parsed as Envelope<T>;
+  if (!res.ok || !json.success) {
+    throw new ApiError(json.error?.message ?? responseMessage(parsed, raw, res.statusText), res.status, json.error?.code, json.error?.details, json.requestId);
+  }
+  return json.data;
+}
+
 type Row = Record<string, unknown>;
 
 export type IamTeam = { id: string; team_key?: string; name: string; bu_id?: string | null };
 export type IamBusinessUnit = { id: string; bu_key?: string; name: string };
 
 export function workgraphRunInsightsUrl(runId: string): string {
-  // M100 P3 — same-origin path prefix under the edge gateway (was localhost:5174).
-  const base = process.env.NEXT_PUBLIC_WORKGRAPH_WEB_URL ?? "/workflow";
-  return `${base.replace(/\/$/, "")}/runs/${encodeURIComponent(runId)}/insights`;
+  return `/runs/${encodeURIComponent(runId)}/insights`;
 }
 
 function unwrapList<T>(data: unknown, key?: string): T[] {
@@ -271,6 +314,26 @@ export const runtimeApi = {
   },
   deriveTemplate: (baseId: string, body: { capabilityId: string; name?: string; description?: string }) =>
     reqEnv<Row>(`${RUNTIME_BASE}/agents/templates/${baseId}/derive`, { method: "POST", body: JSON.stringify(body) }),
+  createAgentProfile: (body: Row, files?: File[]) => {
+    if (files?.length) {
+      const form = new FormData();
+      form.append("profile", JSON.stringify(body));
+      for (const file of files) form.append("files", file, file.name);
+      return reqEnvForm<Row>(`${RUNTIME_BASE}/agents/profiles`, form);
+    }
+    return reqEnv<Row>(`${RUNTIME_BASE}/agents/profiles`, { method: "POST", body: JSON.stringify(body) });
+  },
+  getAgentProfileSources: (id: string) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/agents/profiles/${id}/sources`),
+  previewSkillSource: (body: Row, file?: File) => {
+    if (file) {
+      const form = new FormData();
+      form.append("source", JSON.stringify(body));
+      form.append("file", file, file.name);
+      return reqEnvForm<Row>(`${RUNTIME_BASE}/agents/skill-sources/preview`, form);
+    }
+    return reqEnv<Row>(`${RUNTIME_BASE}/agents/skill-sources/preview`, { method: "POST", body: JSON.stringify(body) });
+  },
   patchTemplate: (id: string, body: Row) =>
     reqEnv<Row>(`${RUNTIME_BASE}/agents/templates/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   listTemplateVersions: (id: string) =>
@@ -557,6 +620,34 @@ export const auditGovApi = {
     req<{ traceId: string; items: Array<TraceTimelineRow>; count: number }>(
       `${AUDIT_GOV_BASE}/traces/${encodeURIComponent(traceId)}/timeline?limit=${limit}`,
     ),
+  engineStats: () => req<Record<string, number>>(`${AUDIT_GOV_BASE}/engine/stats`),
+  engineIssues: (params?: { status?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.status && params.status !== "all") qs.set("status", params.status);
+    if (params?.limit) qs.set("limit", String(params.limit));
+    return req<{ items: Array<Record<string, unknown>> }>(`${AUDIT_GOV_BASE}/engine/issues?${qs}`);
+  },
+  engineIssue: (id: string) =>
+    req<Record<string, unknown>>(`${AUDIT_GOV_BASE}/engine/issues/${encodeURIComponent(id)}`),
+  engineSweep: () =>
+    req<Record<string, unknown>>(`${AUDIT_GOV_BASE}/engine/sweep`, { method: "POST", body: "{}" }),
+  engineDiagnose: (id: string) =>
+    req<Record<string, unknown>>(`${AUDIT_GOV_BASE}/engine/issues/${encodeURIComponent(id)}/diagnose`, { method: "POST", body: "{}" }),
+  engineResolve: (id: string, body: { resolved_by?: string; resolution_notes?: string; create_evaluator?: boolean; create_dataset?: boolean } = {}) =>
+    req<Record<string, unknown>>(`${AUDIT_GOV_BASE}/engine/issues/${encodeURIComponent(id)}/resolve`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  engineDismiss: (id: string, body: { resolved_by?: string; resolution_notes?: string } = {}) =>
+    req<Record<string, unknown>>(`${AUDIT_GOV_BASE}/engine/issues/${encodeURIComponent(id)}/dismiss`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  engineEvaluators: (params?: { enabled?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (params?.enabled !== undefined) qs.set("enabled", String(params.enabled));
+    return req<{ items: Array<Record<string, unknown>> }>(`${AUDIT_GOV_BASE}/engine/evaluators?${qs}`);
+  },
 
   // M63 Slice B — SSE live-tail stream. Returns the absolute URL so
   // the caller constructs the EventSource directly (EventSource can't

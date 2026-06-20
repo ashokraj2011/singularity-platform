@@ -703,8 +703,8 @@ type LoopState = {
   decisionAnswers: DecisionAnswer[]
   finalPack?: FinalPack
   // M66 — Receipts (test runs, lint runs, formal verifier results)
-  // accumulated across stages in this session. Each stage's /mcp/invoke
-  // runs in its own state.verificationReceipts array, so without this
+  // accumulated across stages in this session. Each stage execution keeps
+  // its own state.verificationReceipts array, so without this
   // session-level accumulator the developer stage's auto-finish would see
   // an empty receipt list even though an earlier QA stage ran tests. Bumped
   // by appendVerificationReceipts() after every runCodingStage call; read
@@ -1269,6 +1269,51 @@ blueprintRouter.patch('/sessions/:id/settings', validate(updateSessionSettingsSc
       maxLoopsPerStage: nextLoopDefinition.maxLoopsPerStage,
       maxTotalSendBacks: nextLoopDefinition.maxTotalSendBacks,
       executionConfig: nextExecutionConfig,
+    })
+    res.json(await loadSession(session.id, req.user!.userId))
+  } catch (err) { next(err) }
+})
+
+blueprintRouter.post('/sessions/:id/abandon', async (req, res, next) => {
+  try {
+    const sessionId = String(req.params.id)
+    const session = await prisma.blueprintSession.findUnique({ where: { id: sessionId } })
+    if (!session) throw new NotFoundError('BlueprintSession', sessionId)
+    assertBlueprintAccess(session, req.user!.userId)
+
+    if (session.status === BlueprintSessionStatus.ABANDONED) {
+      res.json(await loadSession(session.id, req.user!.userId))
+      return
+    }
+    if (session.status === BlueprintSessionStatus.RUNNING) {
+      throw new ValidationError('Running Workbench sessions must be cancelled before they can be abandoned.')
+    }
+
+    const state = readLoopState(session)
+    const nextState: LoopState = {
+      ...state,
+      reviewEvents: [
+        ...state.reviewEvents,
+        {
+          id: crypto.randomUUID(),
+          type: 'SESSION_ABANDONED',
+          stageKey: state.currentStageKey ?? undefined,
+          message: 'Workbench session was abandoned.',
+          actorId: req.user!.userId,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    }
+    await prisma.blueprintSession.update({
+      where: { id: session.id },
+      data: {
+        status: BlueprintSessionStatus.ABANDONED,
+        metadata: stateToMetadata(session, nextState),
+      },
+    })
+    await recordBlueprintAudit(session.id, 'BlueprintSessionAbandoned', req.user!.userId, {
+      capabilityId: session.capabilityId,
+      previousStatus: session.status,
     })
     res.json(await loadSession(session.id, req.user!.userId))
   } catch (err) { next(err) }
@@ -2800,7 +2845,7 @@ async function resolveWorkbenchGovernanceMode(workflowInstanceId?: string | null
   const instanceId = typeof workflowInstanceId === 'string' && workflowInstanceId.trim()
     ? workflowInstanceId.trim()
     : undefined
-  if (!instanceId) return 'fail_open'
+  if (!instanceId) return config.DEFAULT_GOVERNANCE_MODE as GovernanceMode
 
   const instance = await prisma.workflowInstance.findUnique({
     where: { id: instanceId },
@@ -2828,7 +2873,7 @@ async function resolveWorkbenchGovernanceMode(workflowInstanceId?: string | null
     return 'human_approval_required'
   }
   if (template?.status && template.status !== 'DRAFT') return 'human_approval_required'
-  return 'fail_open'
+  return config.DEFAULT_GOVERNANCE_MODE as GovernanceMode
 }
 
 function isGovernanceMode(value: unknown): value is GovernanceMode {
@@ -3295,7 +3340,7 @@ function readExecutionConfig(value: unknown): LoopState['executionConfig'] {
     stagePhaseModelAliases: sanitizeStagePhaseModelAliases(value.stagePhaseModelAliases),
     governanceMode: ['fail_open', 'fail_closed', 'degraded', 'human_approval_required'].includes(String(value.governanceMode))
       ? value.governanceMode as NonNullable<LoopState['executionConfig']>['governanceMode']
-      : 'fail_open',
+      : config.DEFAULT_GOVERNANCE_MODE as NonNullable<LoopState['executionConfig']>['governanceMode'],
     maxContextTokens: typeof value.maxContextTokens === 'number' ? value.maxContextTokens : undefined,
     maxOutputTokens: typeof value.maxOutputTokens === 'number' ? value.maxOutputTokens : undefined,
     maxPromptChars: typeof value.maxPromptChars === 'number' ? value.maxPromptChars : undefined,
@@ -5718,8 +5763,8 @@ async function runLoopStageExecute(
   // StagePolicy from prompt-composer, resolves the per-phase prompt, calls
   // llm-gateway, hard-refuses out-of-phase tool calls (PHASE_TOOL_FORBIDDEN),
   // dispatches allowed calls to mcp-server /mcp/tool-run, validates phase
-  // receipts, and advances the state machine. The legacy /execute → mcp /invoke
-  // chain is retired (POST /mcp/invoke now returns 410 — see Slice I).
+  // receipts, and advances the state machine. The legacy invoke loop chain is
+  // retired and only the governed stage path should be used here.
   //
   // Most of the old executeRequest fields are no longer needed:
   //   - prior_verification_receipts: receipts persist in PhaseState.receipts

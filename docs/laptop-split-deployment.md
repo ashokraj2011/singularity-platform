@@ -15,14 +15,14 @@ Everything below is driven by exactly two scripts:
 cp .env.laptop.example .env.laptop   # then fill it in — loaded on every run
 
 # ── terminal 1: the Docker BOX (everything except mcp + llm-gateway) ─────────
-bin/box.sh up           # add --build after a git pull (or: bin/box.sh rebuild)
+bin/box.sh up           # core box; add --build after a git pull (or: bin/box.sh rebuild)
 bin/box.sh seed         # first time: users, capability, prompts, SDLC workflows
 
 # ── terminal 2 + 3: the LAPTOP apps ──────────────────────────────────────────
 bin/laptop.sh gateway   # llm-gateway :8001
 bin/laptop.sh mcp       # mcp-server  :7100 (checks `copilot` CLI, frees stale port)
 
-# ── verify, then open http://localhost:8085 ──────────────────────────────────
+# ── verify, then open http://localhost:5180 ──────────────────────────────────
 bin/box.sh status
 ```
 
@@ -41,10 +41,10 @@ later inside a run with `spawn copilot ENOENT`.
  ┌────────────────────────────┐            ┌─────────────────────────────────────┐
  │  llm-gateway   :8001        │            │  context-api (Context Fabric) :8000   │
  │  mcp-server    :7100        │            │  workgraph-api  :8080                 │
- │  + Copilot CLI              │◀──────────▶│  iam-service / agent-runtime /        │
- │  + git creds (GITHUB_TOKEN) │   bridge   │  agent-service / tool-service /       │
- │  + BYOK provider key        │     or     │  prompt-composer / formal-verifier    │
- │                             │   direct   │  web UIs / edge-gateway :8085         │
+ │  + Copilot CLI              │◀──────────▶│  iam-service / platform-core          │
+ │  + git creds (GITHUB_TOKEN) │   bridge   │  (agent/tool/runtime/composer APIs)   │
+ │  + BYOK provider key        │     or     │                                       │
+ │                             │   direct   │  platform-web :5180                   │
  │                             │   HTTP     │  Postgres (wg :5434, at :5432) / MinIO│
  └────────────────────────────┘            └─────────────────────────────────────┘
 ```
@@ -56,9 +56,9 @@ later inside a run with `spawn copilot ENOENT`.
 | Copilot CLI / local model | — | **Laptop** | external |
 | context-api (Context Fabric) | 8000 | Box | Docker |
 | workgraph-api | 8080 | Box | Docker |
-| iam / agent-runtime / agent-service / tool-service / prompt-composer | 8100 / 3003 / 3001 / 3002 / 3004 | Box | Docker |
-| web UIs (workgraph-web / blueprint-workbench / portal / …) | 5174 / 5176 / 5180 / … | Box | Docker |
-| edge-gateway (single origin) | 8085 | Box | Docker |
+| iam / platform-core | 8100 / 3001-3004 | Box | Docker |
+| platform-web | 5180 | Box | Docker |
+| legacy split UIs / edge-gateway | 5174 / 5175 / 5176 / 5181 / 8085 | Box | Docker, debug profile only |
 | Postgres (workgraph / app) + MinIO | 5434 / 5432 / 9000 | Box | Docker |
 
 **Why the laptop:** provider keys, `GITHUB_TOKEN`, the Copilot CLI, and the work-item code sandbox never leave the laptop. The box stores work-items, workflow state, audit, prompts, and approvals.
@@ -83,25 +83,28 @@ The box calls the laptop's mcp/gateway over HTTP at `http://<laptop-host>:7100` 
 
 ## 3. The BOX (the other machine), in Docker
 
-mcp-server and llm-gateway are behind compose profiles, so a default `up` **excludes** them. Bring up everything else:
+mcp-server and llm-gateway are behind compose profiles, so a default `up` **excludes** them. Bring up the core box:
 
 **Bridge mode** — no laptop address needed, just the shared secret:
 ```bash
 export JWT_SECRET=<one-shared-secret>
-docker compose up -d \
-  iam-postgres at-postgres at-postgres-bootstrap wg-postgres wg-minio \
-  iam-service context-memory context-api workgraph-api prompt-composer agent-runtime \
-  agent-service tool-service formal-verifier workgraph-web blueprint-workbench \
-  user-and-capability agent-web portal edge-gateway
+docker compose up -d
 # expose context-api :8000 so the laptop can reach /api/laptop-bridge/connect
+```
+
+Optional box-side services are explicit:
+
+```bash
+docker compose --profile verification up -d formal-verifier
+docker compose --profile compression up -d prompt-compressor
 ```
 
 **Direct-HTTP mode** — re-point the box's MCP/LLM consumers at the laptop with the ready-made overlay:
 ```bash
 export JWT_SECRET=<shared> MCP_BEARER_TOKEN=<shared> LAPTOP_HOST=<laptop-ip-or-tailscale>
-docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d <same service list>
+docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d
 ```
-`docker-compose.remote.yml` sets `MCP_SERVER_URL=http://<LAPTOP_HOST>:7100` on the six MCP consumers; uncomment its `LLM_GATEWAY_URL` line (on context-api **and** agent-runtime) for "all AI on the laptop".
+`docker-compose.remote.yml` sets `MCP_SERVER_URL=http://<LAPTOP_HOST>:7100` on the MCP consumers, including `platform-core`; uncomment its `LLM_GATEWAY_URL` line where needed for "all AI on the laptop".
 
 ---
 
@@ -111,7 +114,7 @@ docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d <same se
 
 The real auth path goes through IAM, not a hand-minted secret:
 
-1. **Generate an Access Key** (the GitHub-like PAT) in the portal: **Operations → Access Keys**.
+1. **Generate an Access Key** (the GitHub-like PAT) in Platform Web: `http://<box>:5180/operations/access-keys`.
 2. **Pair** the laptop with it, either way:
    - **Singularity Desktop** (`clients/singularity-desktop`) — paste the Access Key (or sign in), and it exchanges it at IAM `POST /api/v1/auth/device-token` for a 90-day device token, stores it in the OS keychain, spawns `mcp-server` in `LAPTOP_MODE`, and (one toggle) runs a **Copilot LLM shim** so you don't run a separate `llm-gateway`.
    - **CLI** — `singularity-mcp login --email you@org --platform http://<box>:8100/api/v1`, then `singularity-mcp start --bridge wss://<box>:8000/api/laptop-bridge/connect`.
@@ -242,10 +245,9 @@ The standards the verifier checks come from the run's `acceptanceCriteria` / `de
   kill -9 $(lsof -ti :8080) 2>/dev/null; kill -9 $(lsof -ti :3003) 2>/dev/null
   ```
   Then bring the box up again. Don't run a full bare-metal stack **and** the Docker box — they double-bind every port.
-- **Web changes not showing** — the UI lives in the `workgraph-web` image. After a `git pull`, **rebuild** (`bin/laptop-bridge.sh rebuild`) and hard-refresh (Cmd-Shift-R); a running container serves the old bundle.
-- **Enter via the edge-gateway `http://localhost:8085`** — this is the single origin and the simplest correct entry. The UI images are **built with base paths** (`BASE_PATH=/workflow/`, `/workbench/`, `/iam/` — set in docker-compose build args), so their assets only resolve **under the gateway**. The standalone per-app ports (`:5174/:5176/:5175`) therefore serve a **blank** app in Docker (assets 404 at `/workflow/assets/…`), and `:5174` ≠ a working app. At `:8085` the portal's default same-origin links (`/workflow`) just work.
-- **Portal menu bounces back to the portal (on `:5180`)** — the nav links default to single-origin paths that resolve to the portal itself on its own port. The portal reads link targets at **runtime** from `/env.js` (`PORTAL_LINK_*` env, written at container start — no rebuild); the direct overlay points them at the **edge-gateway** (`http://localhost:8085/workflow`, …) so `:5180`'s menu jumps to where the apps actually work. Rebuild + recreate the portal after pulling to pick it up.
-- **Operations portal shows LLM / MCP "offline" (split)** — the portal's nginx proxies `/ops-health/{mcp-server,llm-gateway}` to those *container* names, which don't exist when they run on the laptop. The direct overlay re-points them at `host.docker.internal` via `MCP_UPSTREAM`/`LLM_UPSTREAM`; **rebuild + recreate the portal** after pulling (`docker compose … build portal && … up -d portal`). The dots still require the host gateway + mcp to actually be running. (Your CF→mcp run path is unaffected either way.)
+- **Web changes not showing** — the UI lives in the `platform-web` image. After a `git pull`, **rebuild** (`bin/laptop-bridge.sh rebuild`) and hard-refresh (Cmd-Shift-R); a running container serves the old bundle.
+- **Enter via Platform Web `http://localhost:5180`** — this is the single origin and the normal entry. The old per-app UIs and edge-gateway are debug-only under the `frontend-legacy` profile.
+- **Operations shows LLM / MCP "offline" (split)** — make sure the host gateway + mcp are running and that the direct/bridge overlay points backend health checks at the laptop path. Rebuild + recreate `platform-web` after pulling (`docker compose … build platform-web && … up -d --no-deps platform-web`).
 - **`invalid input value for enum NodeType: VERIFIER`** — run the §6 enum migration before the seed.
 - **Agent phase fails immediately under `fail_closed`** — audit-governance isn't reachable; re-seed with `SEED_GOVERNANCE_MODE=fail_open`.
 - **Bridge shows no laptop** — check `GET https://<box>:8000/api/laptop-bridge/status`; the device token must be signed with the box's `JWT_SECRET` and carry `kind=device`, `sub`, `device_id`.

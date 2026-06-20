@@ -13,8 +13,12 @@
  */
 import { Router, type Request, type Response } from 'express'
 import { prisma } from '../../lib/prisma'
+import { promptComposerAuthHeaders } from '../../lib/prompt-composer/client'
 import { config } from '../../config'
+import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
 import { assertInstancePermission } from '../../lib/permissions/workflowTemplate'
+import { assertWorkflowInstanceTenant } from '../../lib/tenant-isolation'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import {
   fetchEventsForInstance,
   fetchEventsForTrace,
@@ -40,17 +44,21 @@ function sseWrite(res: Response, event: string, data: unknown, id?: string) {
 }
 
 async function traceIdsForInstance(instanceId: string): Promise<string[]> {
-  const runs = await prisma.agentRun.findMany({
-    where: { instanceId },
-    select: {
-      outputs: {
-        where: { outputType: { in: ['EXECUTION_TRACE', 'LLM_RESPONSE', 'APPROVAL_REQUIRED'] } },
-        select: { structuredPayload: true },
+  const runs = await withTenantDbTransaction(prisma, async () => {
+    return prisma.agentRun.findMany({
+      where: { instanceId },
+      select: {
+        traceId: true,
+        outputs: {
+          where: { outputType: { in: ['EXECUTION_TRACE', 'LLM_RESPONSE', 'APPROVAL_REQUIRED'] } },
+          select: { structuredPayload: true },
+        },
       },
-    },
+    })
   })
   const ids = new Set<string>()
   for (const run of runs) {
+    if (run.traceId) ids.add(run.traceId)
     for (const out of run.outputs) {
       const payload = out.structuredPayload as Record<string, unknown> | null
       const trace = payload?.traceId
@@ -63,12 +71,16 @@ async function traceIdsForInstance(instanceId: string): Promise<string[]> {
 insightsRouter.get('/:id/events/stream', async (req: Request, res: Response, next) => {
   try {
     const instanceId = String(req.params.id)
-    const instance = await prisma.workflowInstance.findUnique({
-      where: { id: instanceId },
-      select: { id: true, templateId: true },
+    const instance = await withTenantDbTransaction(prisma, async () => {
+      await assertWorkflowInstanceTenant(req, instanceId)
+      const found = await prisma.workflowInstance.findUnique({
+        where: { id: instanceId },
+        select: { id: true, templateId: true },
+      })
+      if (found) await assertInstancePermission(req.user!.userId, found.id, 'view')
+      return found
     })
     if (!instance) return res.status(404).json({ code: 'NOT_FOUND', message: 'Workflow instance not found' })
-    await assertInstancePermission(req.user!.userId, instance.id, 'view')
 
     res.writeHead(200, {
       'content-type': 'text/event-stream',
@@ -94,9 +106,7 @@ insightsRouter.get('/:id/events/stream', async (req: Request, res: Response, nex
         // swallowing them. SSE streams that show no events are otherwise
         // indistinguishable from CF being down.
         const cf = await fetch(url, {
-          headers: config.CONTEXT_FABRIC_SERVICE_TOKEN
-            ? { 'X-Service-Token': config.CONTEXT_FABRIC_SERVICE_TOKEN }
-            : undefined,
+          headers: contextFabricServiceHeaders(),
         }).catch((err) => {
           req.log?.warn?.({ url: url.toString(), traceId, err: (err as Error).message },
             '[insights] context-fabric /execute/events fetch failed')
@@ -382,7 +392,10 @@ function runDuration(run: { startedAt: Date | null; completedAt: Date | null; cr
 async function fetchAssemblyCitations(promptAssemblyId: string): Promise<NodeInsight['citations']> {
   try {
     const url = `${config.PROMPT_COMPOSER_URL.replace(/\/$/, '')}/api/v1/prompt-assemblies/${encodeURIComponent(promptAssemblyId)}`
-    const resp = await fetch(url, { signal: AbortSignal.timeout(5000) })
+    const resp = await fetch(url, {
+      headers: await promptComposerAuthHeaders(),
+      signal: AbortSignal.timeout(5000),
+    })
     if (!resp.ok) return []
     const body = await resp.json() as { data?: { evidenceRefs?: unknown } }
     const refs = body.data?.evidenceRefs
@@ -548,68 +561,78 @@ function verdictFor(classification: CausalityClassification): string {
 insightsRouter.get('/:id/ai-causality-report', async (req: Request, res: Response, next) => {
   try {
     const id = String(req.params.id)
-    await assertInstancePermission(req.user!.userId, id, 'view')
+    const [instance, nodes, agentRuns, approvals, consumables, budget, blueprintSessions] = await withTenantDbTransaction(prisma, async () => {
+      await assertWorkflowInstanceTenant(req, id)
+      await assertInstancePermission(req.user!.userId, id, 'view')
 
-    const [instance, nodes, agentRuns, approvals, consumables, budget, blueprintSessions, auditEvents] = await Promise.all([
-      prisma.workflowInstance.findUnique({
-        where: { id },
-        select: { id: true, name: true, status: true, templateId: true, startedAt: true, completedAt: true, createdAt: true },
-      }),
-      prisma.workflowNode.findMany({
-        where: { instanceId: id },
-        select: { id: true, label: true, nodeType: true, status: true },
-      }),
-      prisma.agentRun.findMany({
-        where: { instanceId: id },
-        orderBy: { createdAt: 'asc' },
-        select: {
-          id: true,
-          nodeId: true,
-          status: true,
-          startedAt: true,
-          completedAt: true,
-          createdAt: true,
-          outputs: {
-            orderBy: { createdAt: 'asc' },
-            select: { id: true, outputType: true, rawContent: true, structuredPayload: true, tokenCount: true, createdAt: true },
+      return Promise.all([
+        prisma.workflowInstance.findUnique({
+          where: { id },
+          select: { id: true, name: true, status: true, templateId: true, startedAt: true, completedAt: true, createdAt: true },
+        }),
+        prisma.workflowNode.findMany({
+          where: { instanceId: id },
+          select: { id: true, label: true, nodeType: true, status: true },
+        }),
+        prisma.agentRun.findMany({
+          where: { instanceId: id },
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            nodeId: true,
+            status: true,
+            traceId: true,
+            cfCallId: true,
+            promptAssemblyId: true,
+            mcpServerId: true,
+            mcpInvocationId: true,
+            contextPackageId: true,
+            modelCallId: true,
+            startedAt: true,
+            completedAt: true,
+            createdAt: true,
+            outputs: {
+              orderBy: { createdAt: 'asc' },
+              select: { id: true, outputType: true, rawContent: true, structuredPayload: true, tokenCount: true, createdAt: true },
+            },
           },
-        },
-      }),
-      prisma.approvalRequest.findMany({
-        where: { instanceId: id },
-        orderBy: { createdAt: 'asc' },
-        select: {
-          id: true,
-          nodeId: true,
-          subjectType: true,
-          subjectId: true,
-          status: true,
-          createdAt: true,
-          updatedAt: true,
-          decisions: { select: { decision: true, notes: true, decidedAt: true, decidedById: true } },
-        },
-      }),
-      prisma.consumable.findMany({
-        where: { instanceId: id },
-        orderBy: { createdAt: 'asc' },
-        select: { id: true, nodeId: true, name: true, status: true, currentVersion: true, formData: true, createdAt: true, updatedAt: true },
-      }),
-      prisma.workflowRunBudget.findUnique({
-        where: { instanceId: id },
-        include: { events: { orderBy: { createdAt: 'asc' } } },
-      }),
-      prisma.blueprintSession.findMany({
-        where: { workflowInstanceId: id },
-        orderBy: { createdAt: 'asc' },
-        select: {
-          id: true,
-          status: true,
-          goal: true,
-          artifacts: { orderBy: { createdAt: 'asc' }, select: { id: true, stage: true, kind: true, title: true, payload: true, createdAt: true } },
-        },
-      }),
-      fetchEventsForInstance(id, 500),
-    ])
+        }),
+        prisma.approvalRequest.findMany({
+          where: { instanceId: id },
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            nodeId: true,
+            subjectType: true,
+            subjectId: true,
+            status: true,
+            createdAt: true,
+            updatedAt: true,
+            decisions: { select: { decision: true, notes: true, decidedAt: true, decidedById: true } },
+          },
+        }),
+        prisma.consumable.findMany({
+          where: { instanceId: id },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true, nodeId: true, name: true, status: true, currentVersion: true, formData: true, createdAt: true, updatedAt: true },
+        }),
+        prisma.workflowRunBudget.findUnique({
+          where: { instanceId: id },
+          include: { events: { orderBy: { createdAt: 'asc' } } },
+        }),
+        prisma.blueprintSession.findMany({
+          where: { workflowInstanceId: id },
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            status: true,
+            goal: true,
+            artifacts: { orderBy: { createdAt: 'asc' }, select: { id: true, stage: true, kind: true, title: true, payload: true, createdAt: true } },
+          },
+        }),
+      ])
+    })
+    const auditEvents = await fetchEventsForInstance(id, 500)
     if (!instance) return res.status(404).json({ code: 'NOT_FOUND', message: 'Workflow instance not found' })
 
     const nodeById = new Map(nodes.map(node => [node.id, node]))
@@ -628,7 +651,10 @@ insightsRouter.get('/:id/ai-causality-report', async (req: Request, res: Respons
         const changedPaths = extractNamedStrings(payload, ['changedPaths', 'changed_paths', 'paths_touched', 'touchedPaths'])
         const commits = extractNamedStrings(payload, ['workspaceCommitSha', 'commitSha', 'commit_sha'])
         const artifactIds = extractNamedStrings(payload, ['artifactIds', 'artifact_ids', 'consumableIds', 'consumableId'])
-        const promptAssemblyIds = extractNamedStrings(payload, ['promptAssemblyId', 'prompt_assembly_id'])
+        const promptAssemblyIds = uniqueStrings([
+          run.promptAssemblyId,
+          ...extractNamedStrings(payload, ['promptAssemblyId', 'prompt_assembly_id']),
+        ])
         const modelAliases = extractNamedStrings(payload, ['modelAlias', 'model_alias'])
         return {
           source: 'agent_run_output',
@@ -761,7 +787,7 @@ insightsRouter.get('/:id/ai-causality-report', async (req: Request, res: Respons
 })
 
 async function buildInsightsResponse(id: string): Promise<InsightsResponse | null> {
-    const [instance, nodes, documents, consumables, agentRuns, budget, blueprintSessions, approvalRequests, workItems] = await Promise.all([
+    const [instance, nodes, documents, consumables, agentRuns, budget, blueprintSessions, approvalRequests, workItems] = await withTenantDbTransaction(prisma, async () => Promise.all([
       prisma.workflowInstance.findUnique({
         where: { id },
         select: {
@@ -799,6 +825,13 @@ async function buildInsightsResponse(id: string): Promise<InsightsResponse | nul
           id: true,
           nodeId: true,
           status: true,
+          traceId: true,
+          cfCallId: true,
+          promptAssemblyId: true,
+          mcpServerId: true,
+          mcpInvocationId: true,
+          contextPackageId: true,
+          modelCallId: true,
           startedAt: true,
           completedAt: true,
           createdAt: true,
@@ -865,7 +898,7 @@ async function buildInsightsResponse(id: string): Promise<InsightsResponse | nul
           },
         },
       }),
-    ])
+    ]))
 
     if (!instance) return null
 
@@ -951,10 +984,11 @@ async function buildInsightsResponse(id: string): Promise<InsightsResponse | nul
     const assemblyIdsByNode = new Map<string, string>()
     for (const r of agentRuns) {
       if (!r.nodeId) continue
-      const payload = r.outputs[0]?.structuredPayload as Record<string, unknown> | null
-      if (!payload) continue
-      const promptAssemblyId = (payload.promptAssemblyId
-        ?? (payload.correlation as Record<string, unknown> | undefined)?.promptAssemblyId) as string | undefined
+      const payload = payloadOf(r.outputs[0]?.structuredPayload)
+      const nestedCorrelation = payloadOf(payload.correlation)
+      const promptAssemblyId = r.promptAssemblyId
+        ?? str(payload.promptAssemblyId)
+        ?? str(nestedCorrelation.promptAssemblyId)
       if (promptAssemblyId) assemblyIdsByNode.set(r.nodeId, promptAssemblyId)
       const modelUsage = payload.modelUsage as Record<string, unknown> | undefined
       const tokensUsed = payload.tokensUsed as Record<string, unknown> | undefined
@@ -993,9 +1027,9 @@ async function buildInsightsResponse(id: string): Promise<InsightsResponse | nul
       receiptArr.push({
         agentRunId: r.id,
         status: String(r.status),
-        cfCallId: (payload.cfCallId ?? (payload.correlation as Record<string, unknown> | undefined)?.cfCallId) as string | undefined,
+        cfCallId: r.cfCallId ?? str(payload.cfCallId) ?? str(nestedCorrelation.cfCallId),
         promptAssemblyId,
-        mcpInvocationId: (payload.mcpInvocationId ?? (payload.correlation as Record<string, unknown> | undefined)?.mcpInvocationId) as string | undefined,
+        mcpInvocationId: r.mcpInvocationId ?? str(payload.mcpInvocationId) ?? str(nestedCorrelation.mcpInvocationId),
         modelAlias: (payload.modelAlias ?? modelUsage?.modelAlias) as string | undefined,
         modelSelectionReason: payload.modelSelectionReason as string | undefined,
         provider: modelUsage?.provider as string | undefined,
@@ -1579,20 +1613,24 @@ function buildEvidencePack(insights: InsightsResponse) {
 }
 
 async function traceIdsByNodeForInstance(instanceId: string): Promise<Map<string, string[]>> {
-  const runs = await prisma.agentRun.findMany({
-    where: { instanceId },
-    select: {
-      nodeId: true,
-      outputs: {
-        where: { outputType: { in: ['EXECUTION_TRACE', 'LLM_RESPONSE', 'APPROVAL_REQUIRED'] } },
-        select: { structuredPayload: true, rawContent: true },
+  const runs = await withTenantDbTransaction(prisma, async () => {
+    return prisma.agentRun.findMany({
+      where: { instanceId },
+      select: {
+        nodeId: true,
+        traceId: true,
+        outputs: {
+          where: { outputType: { in: ['EXECUTION_TRACE', 'LLM_RESPONSE', 'APPROVAL_REQUIRED'] } },
+          select: { structuredPayload: true, rawContent: true },
+        },
       },
-    },
+    })
   })
   const byNode = new Map<string, Set<string>>()
   for (const run of runs) {
     if (!run.nodeId) continue
     const ids = byNode.get(run.nodeId) ?? new Set<string>()
+    if (run.traceId) ids.add(run.traceId)
     for (const output of run.outputs) {
       const payload = payloadOf(output.structuredPayload)
       const traceId = str(payload.traceId)
@@ -1757,7 +1795,10 @@ function buildDeliveryReceipt(insights: InsightsResponse) {
 insightsRouter.get('/:id/trust-trace', async (req: Request, res: Response, next) => {
   try {
     const id = String(req.params.id)
-    await assertInstancePermission(req.user!.userId, id, 'view')
+    await withTenantDbTransaction(prisma, async () => {
+      await assertWorkflowInstanceTenant(req, id)
+      await assertInstancePermission(req.user!.userId, id, 'view')
+    })
     const insights = await buildInsightsResponse(id)
     if (!insights) return res.status(404).json({ code: 'NOT_FOUND' })
     const traceMap = await traceIdsByNodeForInstance(id)
@@ -1775,7 +1816,10 @@ insightsRouter.get('/:id/trust-trace', async (req: Request, res: Response, next)
 insightsRouter.get('/:id/delivery-receipt', async (req: Request, res: Response, next) => {
   try {
     const id = String(req.params.id)
-    await assertInstancePermission(req.user!.userId, id, 'view')
+    await withTenantDbTransaction(prisma, async () => {
+      await assertWorkflowInstanceTenant(req, id)
+      await assertInstancePermission(req.user!.userId, id, 'view')
+    })
     const insights = await buildInsightsResponse(id)
     if (!insights) return res.status(404).json({ code: 'NOT_FOUND' })
     const receipt = buildDeliveryReceipt(insights)
@@ -1792,27 +1836,32 @@ insightsRouter.get('/:id/delivery-receipt', async (req: Request, res: Response, 
 insightsRouter.post('/:id/eval-examples', async (req: Request, res: Response, next) => {
   try {
     const id = String(req.params.id)
-    await assertInstancePermission(req.user!.userId, id, 'view')
-    const instance = await prisma.workflowInstance.findUnique({
-      where: { id },
-      select: { id: true, name: true, status: true, templateId: true, context: true, createdAt: true },
-    })
-    if (!instance) return res.status(404).json({ code: 'NOT_FOUND' })
-
     const nodeId = typeof req.body?.nodeId === 'string' ? req.body.nodeId
       : typeof req.body?.node_id === 'string' ? req.body.node_id
       : undefined
     const requestedTraceId = typeof req.body?.traceId === 'string' ? req.body.traceId
       : typeof req.body?.trace_id === 'string' ? req.body.trace_id
       : undefined
-    const node = nodeId
-      ? await prisma.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } })
-      : null
-    const run = await prisma.agentRun.findFirst({
-      where: { instanceId: id, ...(nodeId ? { nodeId } : {}) },
-      orderBy: { createdAt: 'desc' },
-      include: { outputs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+    const { instance, node, run } = await withTenantDbTransaction(prisma, async () => {
+      await assertWorkflowInstanceTenant(req, id)
+      await assertInstancePermission(req.user!.userId, id, 'view')
+      const [foundInstance, foundNode, foundRun] = await Promise.all([
+        prisma.workflowInstance.findUnique({
+          where: { id },
+          select: { id: true, name: true, status: true, templateId: true, context: true, createdAt: true },
+        }),
+        nodeId
+          ? prisma.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } })
+          : Promise.resolve(null),
+        prisma.agentRun.findFirst({
+          where: { instanceId: id, ...(nodeId ? { nodeId } : {}) },
+          orderBy: { createdAt: 'desc' },
+          include: { outputs: { orderBy: { createdAt: 'desc' }, take: 10 } },
+        }),
+      ])
+      return { instance: foundInstance, node: foundNode, run: foundRun }
     })
+    if (!instance) return res.status(404).json({ code: 'NOT_FOUND' })
     const output = run?.outputs.find(item => item.outputType === 'LLM_RESPONSE') ?? run?.outputs[0]
     const traceId = requestedTraceId
       ?? str(payloadOf(output?.structuredPayload).traceId)
@@ -1890,7 +1939,10 @@ insightsRouter.post('/:id/eval-examples', async (req: Request, res: Response, ne
 insightsRouter.get('/:id/evidence-pack', async (req: Request, res: Response, next) => {
   try {
     const id = String(req.params.id)
-    await assertInstancePermission(req.user!.userId, id, 'view')
+    await withTenantDbTransaction(prisma, async () => {
+      await assertWorkflowInstanceTenant(req, id)
+      await assertInstancePermission(req.user!.userId, id, 'view')
+    })
     const insights = await buildInsightsResponse(id)
     if (!insights) return res.status(404).json({ code: 'NOT_FOUND' })
     const pack = buildEvidencePack(insights)
@@ -1917,7 +1969,10 @@ insightsRouter.get('/:id/insights', async (req: Request, res: Response, next) =>
     const id = String(req.params.id)
     // Reuse the existing instance-permission helper so the dashboard is scoped
     // to capabilities the user can already see.
-    await assertInstancePermission(req.user!.userId, id, 'view')
+    await withTenantDbTransaction(prisma, async () => {
+      await assertWorkflowInstanceTenant(req, id)
+      await assertInstancePermission(req.user!.userId, id, 'view')
+    })
     const response = await buildInsightsResponse(id)
     if (!response) return res.status(404).json({ code: 'NOT_FOUND' })
     res.json(response)

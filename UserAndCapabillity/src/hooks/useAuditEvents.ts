@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { auditApi } from '@/api/audit.api'
+import { auditApi } from 'identity-web/api/audit.api'
 
 export function useAuditEvents(params?: {
   page?: number

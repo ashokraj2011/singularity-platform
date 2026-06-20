@@ -15,8 +15,10 @@
 import { Router } from "express";
 import { prisma } from "../../config/prisma";
 import { compileSlotSnapshot, compileFailureSnapshot } from "./capsule-gc";
+import { requireAuth } from "../../middleware/auth.middleware";
 
 export const compiledContextRoutes = Router();
+compiledContextRoutes.use(requireAuth);
 
 compiledContextRoutes.get("/", async (req, res, next) => {
   try {

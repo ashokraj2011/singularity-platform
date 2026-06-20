@@ -624,7 +624,7 @@ export async function reorderStages(
       `reorderStages requires every stage id; got ${orderedStageIds.length}, expected ${def.stages.length}`,
     )
   }
-  await prisma.$transaction(
+  await Promise.all(
     orderedStageIds.map((id, idx) =>
       prisma.workbenchStage.update({ where: { id }, data: { ordinal: idx } }),
     ),

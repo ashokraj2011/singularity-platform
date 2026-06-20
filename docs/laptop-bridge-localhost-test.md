@@ -19,10 +19,10 @@ Driver: [`bin/laptop-bridge.sh`](../bin/laptop-bridge.sh) · overlay: [`docker-c
 
 ## Why this is "two apps", not Docker
 
-`mcp-server` (`profiles: [full]`) and `llm-gateway` (`profiles: [full, gateway-only, …]`)
+`mcp-server` (`profiles: [mcp, full]`) and `llm-gateway` (`profiles: [llm-gateway, full, gateway-only, …]`)
 are already **profile-gated** in `docker-compose.yml`, so a normal box bring-up
 leaves them out. The driver starts the box with `--no-deps` + an explicit
-service list so `context-api`'s `depends_on` can't pull them back in — then you
+core service list so `context-api`'s optional `depends_on` can't pull them back in — then you
 run those two as plain host processes (`npm run dev`, `uvicorn`). That's the same
 topology as the office deployment, just collapsed onto one machine via
 `host.docker.internal`.
@@ -61,7 +61,9 @@ topology as the office deployment, just collapsed onto one machine via
 # <iam-user-id> = the 'sub' of the user who will launch runs (see "Find your
 # user id" below). The bridge routes to this laptop by that user id.
 bin/laptop-bridge.sh mint-token <iam-user-id>
-bin/laptop-bridge.sh box-up        # Docker box, WITHOUT mcp-server / llm-gateway
+bin/laptop-bridge.sh box-up        # core Docker box, WITHOUT mcp-server / llm-gateway
+# Optional: add --with-verifier, --with-compression, or --with-legacy-ui.
+# Foundry API is core; --with-foundry is accepted only for old scripts.
 
 # ── Terminal 2 — host llm-gateway on :8001 ───────────────────────────────────
 bin/laptop-bridge.sh gateway
@@ -85,7 +87,7 @@ mcp/gateway over plain HTTP at `host.docker.internal`. No device token, no
 
 ```bash
 # T1 — rebuild the feature-code images (after a git pull), then the box
-bin/laptop-bridge.sh rebuild          # context-api, workgraph-api, workgraph-web
+bin/laptop-bridge.sh rebuild          # context-api, workgraph-api, platform-web
 bin/laptop-bridge.sh box-up-direct    # box → host mcp via host.docker.internal:7100
 
 # T2 — host llm-gateway
@@ -107,7 +109,7 @@ answer the cards → **Save answers & re-run** (you'll see the next `copilot -p`
 include an `## Answers to your clarifying questions` block).
 
 > **Rebuild matters:** the Copilot-questions feature lives in the *Docker* images
-> (`context-api`, `workgraph-api`, `workgraph-web`), not in mcp. After a `git
+> (`context-api`, `workgraph-api`, `platform-web`), not in mcp. After a `git
 > pull`, run `rebuild` or the box will serve stale code.
 
 ---
@@ -127,7 +129,7 @@ curl http://localhost:8001/health                       # gateway
 curl http://localhost:8000/api/laptop-bridge/status      # connected laptop(s)
 ```
 
-**End-to-end:** open the portal (http://localhost:5180) → launch a Workbench /
+**End-to-end:** open Platform Web (http://localhost:5180) → launch a Workbench /
 Copilot SDLC run with **`prefer_laptop = true`** (chat already routes via
 `PREFER_LAPTOP_LLM=true` set on context-api by the overlay). Watch **Terminal 3** —
 you should see `running tool-run`, `running model-run (local LLM)`, and
@@ -154,7 +156,7 @@ the box stores work-items, audit, prompts, and approvals.
 
 The device JWT's `sub` must equal `run_context.user_id` for the run. Get it from:
 
-- the portal: after logging in, decode the bearer token (jwt.io) and read `sub`; or
+- Platform Web: after logging in, decode the bearer token (jwt.io) and read `sub`; or
 - `curl -H "authorization: Bearer <token>" http://localhost:8100/api/v1/me`.
 
 Re-mint any time: `bin/laptop-bridge.sh mint-token <sub>` (then restart `mcp`).

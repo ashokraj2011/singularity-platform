@@ -1,5 +1,5 @@
-import { EmbeddedControlPlaneApp } from "@/components/EmbeddedControlPlaneApp";
+import { LegacyWorkflowsRoute } from "@/components/workflows/LegacyWorkgraphAdminRoute";
 
-export default function WorkflowsPage() {
-  return <EmbeddedControlPlaneApp appId="workflows" />;
+export default function WorkflowsDomainPage() {
+  return <LegacyWorkflowsRoute />;
 }

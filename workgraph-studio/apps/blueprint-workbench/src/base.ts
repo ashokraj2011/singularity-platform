@@ -6,7 +6,9 @@
 // '/workbench/api' / '/workbench/audit-gov' under the gateway. The edge strips
 // the '/workbench' prefix before proxying, so the workbench's own nginx
 // `location /api/` and `location /audit-gov/` blocks handle them unchanged.
-const PREFIX = import.meta.env.BASE_URL.replace(/\/$/, '')
+import { WORKBENCH_BASE } from './vite-env-compat'
+
+const PREFIX = WORKBENCH_BASE.replace(/\/$/, '')
 
 export const API_BASE = `${PREFIX}/api`
 export const AUDIT_GOV_BASE = `${PREFIX}/audit-gov`

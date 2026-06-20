@@ -55,7 +55,7 @@ EXPOSE 8080
 # upserts (prisma/seed.ts → seed-demo-workflows.ts), best-effort so a seed hiccup
 # never blocks the API from starting. Runs via ts-node, present in this dev image.
 # (The prod stage ships compiled JS without ts-node, so it is NOT seeded here.)
-CMD ["sh", "-c", "npx prisma migrate deploy && (npx prisma db seed || echo 'seed skipped/failed (non-fatal)') && pnpm dev"]
+CMD ["sh", "-c", "ADMIN_DATABASE_URL=\"${WORKGRAPH_DATABASE_URL_ADMIN:-$DATABASE_URL}\"; RUNTIME_DATABASE_URL=\"${WORKGRAPH_RUNTIME_DATABASE_URL:-$DATABASE_URL}\"; DATABASE_URL=\"$ADMIN_DATABASE_URL\" npx prisma migrate deploy && (DATABASE_URL=\"$ADMIN_DATABASE_URL\" npx prisma db seed || echo 'seed skipped/failed (non-fatal)') && exec env DATABASE_URL=\"$RUNTIME_DATABASE_URL\" pnpm dev"]
 
 FROM base AS build
 WORKDIR /app
@@ -91,4 +91,4 @@ COPY --from=build /app/packages/engine ./packages/engine
 
 WORKDIR /app/apps/api
 EXPOSE 8080
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/apps/api/src/index.js"]
+CMD ["sh", "-c", "ADMIN_DATABASE_URL=\"${WORKGRAPH_DATABASE_URL_ADMIN:-$DATABASE_URL}\"; RUNTIME_DATABASE_URL=\"${WORKGRAPH_RUNTIME_DATABASE_URL:-$DATABASE_URL}\"; DATABASE_URL=\"$ADMIN_DATABASE_URL\" npx prisma migrate deploy && exec env DATABASE_URL=\"$RUNTIME_DATABASE_URL\" node dist/apps/api/src/index.js"]

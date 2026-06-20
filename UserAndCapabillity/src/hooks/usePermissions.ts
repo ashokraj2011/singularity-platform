@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { permissionsApi } from '@/api/permissions.api'
+import { permissionsApi } from 'identity-web/api/permissions.api'
 
 export function usePermissions(params?: { page?: number; size?: number; category?: string }) {
   return useQuery({

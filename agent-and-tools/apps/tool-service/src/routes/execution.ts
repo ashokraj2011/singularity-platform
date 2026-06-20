@@ -3,12 +3,27 @@ import { query, queryOne } from "../database";
 import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
 import { emitAuditEvent } from "../lib/audit-gov-emit";
+import { effectiveCapabilityGate } from "../lib/effective-capability-gate";
+import { capabilityMetadataForTool } from "../lib/capability-metadata";
+import { serverToolUrlPolicy } from "../lib/server-tool-url-policy";
 
 export const executionRoutes = Router();
 // M35.1 — tool execution is an action; every route here mutates state and
 // requires a valid JWT. Previously `optionalAuth` silently permitted
 // anonymous tool runs.
 executionRoutes.use(requireAuth);
+
+function effectiveCapabilitySetRequired(): boolean {
+  return process.env.TOOL_EFFECTIVE_CAPABILITY_REQUIRED !== "false";
+}
+
+function verifiedCallerAuthHeaders(req: Request): Record<string, string> {
+  const header = req.headers.authorization;
+  if (typeof header === "string" && header.startsWith("Bearer ")) {
+    return { Authorization: header };
+  }
+  return {};
+}
 
 // M22 — central audit-governance ledger. One call per terminal status
 // transition on tool.tool_executions. Fire-and-forget; never blocks.
@@ -48,7 +63,12 @@ executionRoutes.post("/invoke", async (req: Request, res: Response) => {
   const {
     capability_id, agent_uid, agent_id, session_id, workflow_id, task_id,
     tool_name, tool_version, arguments: args, context_package_id, approval_id,
+    effective_capabilities, effectiveCapabilities,
+    requested_capability_id, requestedCapabilityId,
+    requested_permission, requestedPermission,
   } = req.body;
+  const effectiveCapabilitySet = effective_capabilities ?? effectiveCapabilities;
+  const effectiveCapabilitySetProvided = Array.isArray(effectiveCapabilitySet);
 
   if (!capability_id || !agent_uid || !tool_name) {
     throw new AppError("capability_id, agent_uid, and tool_name are required");
@@ -62,6 +82,26 @@ executionRoutes.post("/invoke", async (req: Request, res: Response) => {
 
   if (!tool) {
     res.json({ status: "blocked", reason: "Tool not found or inactive" });
+    return;
+  }
+
+  const capabilityMetadata = capabilityMetadataForTool(tool, capability_id);
+  const capabilityGate = effectiveCapabilityGate({
+    effectiveCapabilities: effectiveCapabilitySet,
+    effectiveCapabilitiesProvided: effectiveCapabilitySetProvided,
+    requireEffectiveCapabilities: effectiveCapabilitySetRequired(),
+    requestedCapabilityId: requested_capability_id ?? requestedCapabilityId ?? capabilityMetadata.capability_id,
+    requestedPermission: requested_permission ?? requestedPermission,
+    toolName: tool_name,
+  });
+  if (!capabilityGate.allowed) {
+    res.json({
+      status: "blocked",
+      reason: capabilityGate.reason,
+      policy_gate: "effective_capability_set",
+      requested_capability_id: capabilityGate.capabilityId,
+      requested_permission: capabilityGate.permission,
+    });
     return;
   }
 
@@ -145,20 +185,26 @@ executionRoutes.post("/invoke", async (req: Request, res: Response) => {
   if (location === "server") {
     // Execute HTTP server tool
     const endpointUrl = runtime.endpoint_url as string | undefined;
-    if (!endpointUrl) {
+    const endpointPolicy = serverToolUrlPolicy(endpointUrl);
+    if (!endpointPolicy.allowed) {
       await query("UPDATE tool.tool_executions SET status='error', error=$1, completed_at=now() WHERE id=$2", [
-        "No endpoint_url configured", execId,
+        endpointPolicy.reason, execId,
       ]);
-      res.json({ status: "error", tool_execution_id: execId, error: "No endpoint_url configured for server tool" });
+      emitToolStatus({ execId, status: "error", capabilityId: capability_id, agentUid: agent_uid, toolName: tool_name, toolVersion: version, riskLevel: risk, error: endpointPolicy.reason });
+      res.json({ status: "blocked", tool_execution_id: execId, reason: endpointPolicy.reason, policy_gate: "server_tool_endpoint_allowlist" });
       return;
     }
 
     try {
       const method = (runtime.method as string | undefined) ?? "POST";
-      const response = await fetch(endpointUrl, {
+      const response = await fetch(endpointPolicy.normalizedUrl, {
         method,
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...verifiedCallerAuthHeaders(req),
+        },
         body: JSON.stringify(args),
+        signal: AbortSignal.timeout(Number(process.env.TOOL_SERVER_ENDPOINT_TIMEOUT_MS ?? "30000")),
       });
       const output = await response.json() as Record<string, unknown>;
 

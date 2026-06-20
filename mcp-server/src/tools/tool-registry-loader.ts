@@ -61,7 +61,9 @@ export function workspaceIndependentTools(): Set<string> {
 
 /** Look up a tool's category. Returns 'unknown' when the tool isn't
  *  in the registry — that's the conservative default the M90.C
- *  workspace check expects (unknown → requires workspace). */
+ *  workspace check expects (unknown → requires workspace). High-risk
+ *  executor-only tools still belong in this registry so grant enforcement can
+ *  classify them even when they are not agent-facing. */
 export function categoryForTool(name: string): string {
   return TOOL_REGISTRY.tools[name]?.category ?? 'unknown'
 }

@@ -19,6 +19,7 @@ import { registerLocalTool } from "../src/tools/registry";
 
 let server: http.Server;
 let baseUrl = "";
+let countedInvocations = 0;
 
 beforeAll(async () => {
   // Match discovery-api.test.ts: only set if not already provided. config.ts
@@ -45,6 +46,15 @@ beforeAll(async () => {
     inputSchema: { type: "object" },
     async execute() {
       return { success: false, output: null, error: "intentional failure" };
+    },
+  });
+  registerLocalTool({
+    name: "test_counted",
+    description: "Counts executions. Capability-gate test fixture.",
+    inputSchema: { type: "object" },
+    async execute(args: Record<string, unknown>) {
+      countedInvocations += 1;
+      return { success: true, output: { echoed: args } };
     },
   });
 
@@ -142,5 +152,182 @@ describe("POST /mcp/tool-run", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.data.result).toEqual({ echoed: { x: 1 } });
+  });
+
+  it("refuses tools denied by the effective agent profile capability set", async () => {
+    countedInvocations = 0;
+    const res = await fetch(`${baseUrl}/mcp/tool-run`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${process.env.MCP_BEARER_TOKEN}` },
+      body: JSON.stringify({
+        tool_name: "test_counted",
+        args: { x: 1 },
+        run_context: {
+          profileSnapshotHash: "profile-sha",
+          effectiveCapabilities: [
+            { id: "test_counted", permissions: ["read"] },
+          ],
+        },
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error?.code).toBe("EFFECTIVE_CAPABILITY_DENIED");
+    expect(body.error?.details?.reason).toBe("missing invoke");
+    expect(countedInvocations).toBe(0);
+  });
+
+  it("accepts effective capabilities with snake_case ids and object permissions", async () => {
+    countedInvocations = 0;
+    const res = await fetch(`${baseUrl}/mcp/tool-run`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${process.env.MCP_BEARER_TOKEN}` },
+      body: JSON.stringify({
+        tool_name: "test_counted",
+        args: { x: 1 },
+        run_context: {
+          profile_snapshot_hash: "profile-sha",
+          effective_capabilities: [
+            {
+              capability_id: "test_counted",
+              permissions: { read: true, invoke: true, edit: false },
+            },
+          ],
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data.toolSuccess).toBe(true);
+    expect(countedInvocations).toBe(1);
+  });
+
+  it("refuses tools when a profile-backed run requires an unresolved effective capability set", async () => {
+    countedInvocations = 0;
+    const res = await fetch(`${baseUrl}/mcp/tool-run`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${process.env.MCP_BEARER_TOKEN}` },
+      body: JSON.stringify({
+        tool_name: "test_counted",
+        args: { x: 1 },
+        run_context: {
+          profileSnapshotHash: "profile-sha",
+          effectiveCapabilities: [],
+          effectiveCapabilitiesRequired: true,
+        },
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error?.code).toBe("EFFECTIVE_CAPABILITY_DENIED");
+    expect(body.error?.details?.reason).toBe("effective capability set required");
+    expect(countedInvocations).toBe(0);
+  });
+
+  it("fails closed for profile-backed tool-runs when effective capabilities are omitted", async () => {
+    countedInvocations = 0;
+    const res = await fetch(`${baseUrl}/mcp/tool-run`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${process.env.MCP_BEARER_TOKEN}` },
+      body: JSON.stringify({
+        tool_name: "test_counted",
+        args: { x: 1 },
+        run_context: {
+          profileSnapshotHash: "profile-sha",
+        },
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error?.code).toBe("EFFECTIVE_CAPABILITY_DENIED");
+    expect(body.error?.details?.reason).toBe("effective capability set required");
+    expect(countedInvocations).toBe(0);
+  });
+
+  it("also gates legacy /mcp/tools/call with the effective profile capability set", async () => {
+    countedInvocations = 0;
+    const res = await fetch(`${baseUrl}/mcp/tools/call`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${process.env.MCP_BEARER_TOKEN}` },
+      body: JSON.stringify({
+        name: "test_counted",
+        arguments: { y: 2 },
+        runContext: {
+          profileSnapshotHash: "profile-sha",
+          effectiveCapabilities: [
+            { id: "test_counted", permissions: ["read"] },
+          ],
+        },
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error?.code).toBe("EFFECTIVE_CAPABILITY_DENIED");
+    expect(body.error?.details?.reason).toBe("missing invoke");
+    expect(countedInvocations).toBe(0);
+  });
+
+  it("also fails closed for profile-backed legacy /mcp/tools/call without effective capabilities", async () => {
+    countedInvocations = 0;
+    const res = await fetch(`${baseUrl}/mcp/tools/call`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${process.env.MCP_BEARER_TOKEN}` },
+      body: JSON.stringify({
+        name: "test_counted",
+        arguments: { y: 2 },
+        runContext: {
+          profileSnapshotHash: "profile-sha",
+        },
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error?.code).toBe("EFFECTIVE_CAPABILITY_DENIED");
+    expect(body.error?.details?.reason).toBe("effective capability set required");
+    expect(countedInvocations).toBe(0);
+  });
+
+  it("disables legacy /mcp/tools/call for production-class APP_ENV labels", async () => {
+    const priorNodeEnv = process.env.NODE_ENV;
+    const priorAppEnv = process.env.APP_ENV;
+    const priorAllow = process.env.MCP_ALLOW_GENERIC_TOOLS_CALL;
+    process.env.NODE_ENV = "development";
+    process.env.APP_ENV = "staging";
+    delete process.env.MCP_ALLOW_GENERIC_TOOLS_CALL;
+    try {
+      const res = await fetch(`${baseUrl}/mcp/tools/call`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${process.env.MCP_BEARER_TOKEN}` },
+        body: JSON.stringify({
+          name: "test_counted",
+          arguments: { y: 3 },
+          runContext: {},
+        }),
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.success).toBe(false);
+      expect(body.error?.code).toBe("GENERIC_TOOLS_CALL_DISABLED");
+    } finally {
+      if (priorNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = priorNodeEnv;
+      if (priorAppEnv === undefined) delete process.env.APP_ENV;
+      else process.env.APP_ENV = priorAppEnv;
+      if (priorAllow === undefined) delete process.env.MCP_ALLOW_GENERIC_TOOLS_CALL;
+      else process.env.MCP_ALLOW_GENERIC_TOOLS_CALL = priorAllow;
+    }
   });
 });

@@ -28,6 +28,12 @@ const RUN_CONTEXT_SCHEMA = {
     sourceType: { type: "string" },
     sourceUri: { type: "string" },
     sourceRef: { type: "string" },
+    effectiveCapabilities: { type: "array", items: { type: "object", additionalProperties: true } },
+    effective_capabilities: { type: "array", items: { type: "object", additionalProperties: true } },
+    effectiveCapabilitiesRequired: { type: "boolean" },
+    effective_capabilities_required: { type: "boolean" },
+    profileSnapshotHash: { type: "string" },
+    profile_snapshot_hash: { type: "string" },
     dependencyState: {
       type: "object",
       properties: {
@@ -69,6 +75,10 @@ const ENDPOINT_DESCRIPTOR_SCHEMA = {
     response_schema: { type: ["object", "null"] },
     query: { type: "object" },
     path_params: { type: "object" },
+    status: { enum: ["active", "deprecated", "retired"] },
+    deprecated: { type: "boolean" },
+    replacement: { type: "string" },
+    deprecation_code: { type: "string" },
   },
 };
 
@@ -193,7 +203,11 @@ function endpointDescriptors() {
       path: "/mcp/invoke",
       auth: "bearer",
       category: "execution",
-      description: "Run the LLM/tool agent loop.",
+      status: "deprecated",
+      deprecated: true,
+      replacement: "POST /api/v1/execute-governed-stage on Context Fabric",
+      deprecation_code: "MCP_INVOKE_DEPRECATED",
+      description: "Deprecated 410 shim. Context Fabric now owns the LLM/tool agent loop.",
       request_schema: INVOKE_REQUEST_SCHEMA,
     },
     {
@@ -202,7 +216,11 @@ function endpointDescriptors() {
       path: "/mcp/resume",
       auth: "bearer",
       category: "execution",
-      description: "Resume a paused approval flow.",
+      status: "deprecated",
+      deprecated: true,
+      replacement: "POST /api/v1/execute-governed-stage on Context Fabric with persisted PhaseState",
+      deprecation_code: "MCP_RESUME_DEPRECATED",
+      description: "Deprecated 410 shim. Governed stages resume by re-calling Context Fabric with PhaseState.",
       request_schema: {
         type: "object",
         required: ["continuation_token", "decision"],
@@ -255,6 +273,18 @@ function endpointDescriptors() {
       auth: "bearer",
       category: "work",
       description: "Commit and optionally push the prepared work branch.",
+      request_schema: {
+        type: "object",
+        properties: {
+          message: { type: "string" },
+          remote: { type: "string" },
+          push: { type: "boolean" },
+          expectedCommitSha: { type: "string" },
+          patch: { type: "string" },
+          tool_grant: { type: "object" },
+          runContext: RUN_CONTEXT_SCHEMA,
+        },
+      },
     },
     {
       id: "mcp.workspaces.stats",
@@ -372,7 +402,8 @@ discoveryRouter.get("/discovery", async (req, res) => {
         },
       },
       capabilities: {
-        agentLoop: true,
+        agentLoop: false,
+        legacyAgentLoopHttpShim: true,
         embeddings: true,
         localToolListing: true,
         directToolCall: true,

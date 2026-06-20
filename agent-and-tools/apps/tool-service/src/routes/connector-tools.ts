@@ -22,6 +22,7 @@
  * IAM_SERVICE_TOKEN for cross-service calls).
  */
 import { Router, Request, Response } from "express";
+import { requireAuth } from "../middleware/auth";
 
 const WORKGRAPH_API_URL    = process.env.WORKGRAPH_API_URL ?? "http://host.docker.internal:8080";
 const WORKGRAPH_API_BEARER = process.env.WORKGRAPH_API_BEARER ?? "";
@@ -66,6 +67,7 @@ async function invokeConnector(connectorId: string, operation: string, params: R
 }
 
 export const connectorToolsRoutes = Router();
+connectorToolsRoutes.use(requireAuth);
 
 // Generic — agent provides connector_name + operation explicitly.
 connectorToolsRoutes.post("/connector_invoke", async (req: Request, res: Response) => {

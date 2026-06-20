@@ -4,8 +4,8 @@ import {
   ShieldCheck, Key, GitBranch, ClipboardList,
   LogOut, BarChart3, ChevronRight,
 } from 'lucide-react'
-import { useAuthStore } from '@/store/auth.store'
-import { cn } from '@/lib/utils'
+import { useAuthStore } from 'identity-web/store/auth.store'
+import { cn } from 'identity-web/lib/utils'
 import { AppSwitcher } from './AppSwitcher'
 
 interface NavItem {

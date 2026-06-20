@@ -23,6 +23,17 @@ export interface AssertSecretInput {
   nodeEnv?: string;
 }
 
+export interface AssertProductionInvariantInput {
+  /** Human-readable invariant name used in the fatal message. */
+  name: string;
+  /** True when the invariant is safe. */
+  ok: boolean;
+  /** Concrete remediation text for operators. */
+  message: string;
+  /** Override NODE_ENV detection (mostly for tests). */
+  nodeEnv?: string;
+}
+
 /** The catalogue of dev defaults that every service in the monorepo has
  *  baked into config fallbacks. Add to this list as new ones are found. */
 const KNOWN_DEV_DEFAULTS: ReadonlySet<string> = new Set([
@@ -31,15 +42,31 @@ const KNOWN_DEV_DEFAULTS: ReadonlySet<string> = new Set([
   "changeme_dev_only_min_32_chars_long!!",
   "demo-bearer-token-must-be-min-16-chars",
   "dev-audit-gov-service-token",
+  "dev-codegen-service-token",
+  "dev-context-fabric-service-token",
+  "dev-mcp-runner-token-min-16-chars",
+  "dev-mcp-session-secret-min-32-chars!!",
+  "dev-tool-grant-signing-secret-min-32-chars!!",
+  "dev-workgraph-internal-token",
+  "Admin1234!",
   "changeme",
   "test-secret",
 ]);
 
 const PROD_ENVS = new Set(["production", "prod", "staging", "perf"]);
 
+export function isProductionClassEnv(nodeEnv = process.env.NODE_ENV ?? "development"): boolean {
+  return [
+    nodeEnv,
+    process.env.APP_ENV,
+    process.env.ENVIRONMENT,
+    process.env.SINGULARITY_ENV,
+  ].some((env) => Boolean(env && PROD_ENVS.has(env.toLowerCase())));
+}
+
 export function assertProductionSecret(input: AssertSecretInput): void {
   const env = (input.nodeEnv ?? process.env.NODE_ENV ?? "development").toLowerCase();
-  if (!PROD_ENVS.has(env)) return; // dev mode: tolerate weak secrets
+  if (!isProductionClassEnv(env)) return; // dev mode: tolerate weak secrets
 
   const value = input.value ?? "";
   const minLength = input.minLength ?? 32;
@@ -58,9 +85,17 @@ export function assertProductionSecret(input: AssertSecretInput): void {
   }
 
   if (reasons.length > 0) {
-    const msg = `FATAL: ${input.name} is unsafe for NODE_ENV=${env}: ${reasons.join("; ")}. Set ${input.name} to a strong random value (${minLength}+ chars) and restart.`;
+    const msg = `FATAL: ${input.name} is unsafe for production-class environment (${env}): ${reasons.join("; ")}. Set ${input.name} to a strong random value (${minLength}+ chars) and restart.`;
     // eslint-disable-next-line no-console
     console.error(msg);
     process.exit(1);
   }
+}
+
+export function assertProductionInvariant(input: AssertProductionInvariantInput): void {
+  const env = (input.nodeEnv ?? process.env.NODE_ENV ?? "development").toLowerCase();
+  if (!isProductionClassEnv(env) || input.ok) return;
+  // eslint-disable-next-line no-console
+  console.error(`FATAL: ${input.name} is unsafe for production-class environment (${env}): ${input.message}`);
+  process.exit(1);
 }

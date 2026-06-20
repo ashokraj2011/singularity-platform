@@ -5,6 +5,7 @@ import { publishEvent } from "../../lib/eventbus/publisher";
 import { emitAuditEvent } from "../../lib/audit-gov-emit";
 import { prisma } from "../../config/prisma";
 import type { AuthUser } from "../../middleware/auth.middleware";
+import { createAgentProfileSchema, previewSkillSourceSchema } from "./agent.schemas";
 
 function canEditTemplate(template: { capabilityId?: string | null; lockedReason?: string | null }, user?: AuthUser): boolean {
   const roles = (user?.roles ?? []).map((r) => r.toLowerCase());
@@ -29,7 +30,54 @@ function shapeTemplate<T extends { capabilityId?: string | null; lockedReason?: 
   };
 }
 
+function parseMaybeJsonBody(req: Request, key: string): unknown {
+  const value = (req.body as Record<string, unknown> | undefined)?.[key];
+  if (typeof value === "string") return JSON.parse(value);
+  return req.body;
+}
+
 export const agentController = {
+  async createProfile(req: Request, res: Response) {
+    const body = createAgentProfileSchema.parse(parseMaybeJsonBody(req, "profile"));
+    const files = (req as Request & { files?: Express.Multer.File[] }).files ?? [];
+    const result = await agentService.createProfile(body, files, req.user);
+    const template = result.template as { id: string; name?: string; roleType?: string; capabilityId?: string; version?: number } | null;
+    if (template) {
+      void publishEvent(prisma, {
+        eventName: "agent.profile.created",
+        envelope: {
+          source_service: "agent-runtime",
+          subject: { kind: "agent_profile", id: template.id },
+          actor: req.user?.user_id ? { kind: "user", id: req.user.user_id } : null,
+          status: "emitted",
+          started_at: new Date().toISOString(),
+          payload: {
+            name: template.name,
+            roleType: template.roleType,
+            capabilityId: template.capabilityId,
+            version: template.version,
+            skillBindings: result.effectivePermissions.length,
+          },
+        },
+      }).catch((err) => console.warn("[eventbus] publishEvent failed:", (err as Error).message));
+    }
+    return ok(res, result, 201);
+  },
+
+  async previewSkillSource(req: Request, res: Response) {
+    const body = previewSkillSourceSchema.parse(parseMaybeJsonBody(req, "source"));
+    const file = (req as Request & { file?: Express.Multer.File }).file;
+    return ok(res, await agentService.previewSkillSource(body, file));
+  },
+
+  async resolveProfile(req: Request, res: Response) {
+    return ok(res, await agentService.resolveProfile(req.params.id, req.user));
+  },
+
+  async getProfileSources(req: Request, res: Response) {
+    return ok(res, await agentService.getProfileSources(req.params.id, req.user));
+  },
+
   async createTemplate(req: Request, res: Response) {
     const t = await agentService.createTemplate(req.body, req.user);
     // M11.e — emit canonical event so workgraph etc. can react

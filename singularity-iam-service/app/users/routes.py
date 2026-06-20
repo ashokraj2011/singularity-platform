@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 from app.database import get_db
 from app.models import User, PlatformRoleAssignment, Role
-from app.auth.deps import get_current_user
+from app.auth.deps import require_reference_read, require_super_admin
 from app.schemas import PageResponse
 from app.users.schemas import UserOut, CreateUserRequest, UpdateUserRequest
 from app.audit.service import record_event
@@ -34,7 +34,7 @@ async def list_users(
     size: int = Query(20, ge=1, le=200),
     search: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_reference_read),
 ):
     q = select(User)
     if search:
@@ -48,7 +48,7 @@ async def list_users(
 async def create_user(
     body: CreateUserRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     existing = (await db.execute(select(User).where(User.email == body.email))).scalar_one_or_none()
     if existing:
@@ -72,7 +72,7 @@ async def create_user(
 
 
 @router.get("/{user_id}", response_model=UserOut)
-async def get_user(user_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def get_user(user_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read)):
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -84,7 +84,7 @@ async def update_user(
     user_id: str,
     body: UpdateUserRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
@@ -113,7 +113,7 @@ async def update_user(
 async def list_user_roles(
     user_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_reference_read),
 ):
     from app.roles.schemas import RoleOut
     rows = (await db.execute(
@@ -133,7 +133,7 @@ async def assign_role_to_user(
     user_id: str,
     body: AssignRoleRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if not user:
@@ -162,7 +162,7 @@ async def remove_role_from_user(
     user_id: str,
     role_key: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     role = (await db.execute(select(Role).where(Role.role_key == role_key))).scalar_one_or_none()
     if not role:

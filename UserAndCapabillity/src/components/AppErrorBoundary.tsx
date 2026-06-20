@@ -23,7 +23,7 @@ export class AppErrorBoundary extends Component<Props, State> {
     localStorage.removeItem('iam-auth')
     localStorage.removeItem('event-horizon.iam.session')
     localStorage.removeItem('event-horizon.iam.session-id')
-    window.location.assign('/login')
+    window.location.assign('/identity/login')
   }
 
   render() {

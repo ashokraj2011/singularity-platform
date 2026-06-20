@@ -3,6 +3,55 @@ from __future__ import annotations
 from pydantic_settings import BaseSettings
 import os
 
+PROD_ENVS = {"production", "prod", "staging", "perf"}
+KNOWN_DEV_DEFAULTS = {
+    "Admin1234!",
+    "changeme",
+    "changeme_dev_only_min_32_chars_long!!",
+    "demo-bearer-token-must-be-min-16-chars",
+    "dev-audit-gov-service-token",
+    "dev-context-fabric-service-token",
+    "dev-mcp-runner-token-min-16-chars",
+    "dev-mcp-session-secret-min-32-chars!!",
+    "dev-tool-grant-signing-secret-min-32-chars!!",
+    "dev-workgraph-internal-token",
+    "test-secret",
+}
+
+
+def _is_prod_env() -> bool:
+    return any(
+        os.getenv(name, "").strip().lower() in PROD_ENVS
+        for name in ("APP_ENV", "ENVIRONMENT", "NODE_ENV", "SINGULARITY_ENV")
+    )
+
+
+def is_production_class_env() -> bool:
+    return _is_prod_env()
+
+
+def _assert_prod_secret(name: str, value: str | None, min_length: int = 32) -> None:
+    if not _is_prod_env():
+        return
+    current = (value or "").strip()
+    reasons: list[str] = []
+    if not current:
+        reasons.append("unset")
+    elif len(current) < min_length:
+        reasons.append(f"shorter than {min_length} chars (got {len(current)})")
+    if current in KNOWN_DEV_DEFAULTS:
+        reasons.append("matches a known development default")
+    if reasons:
+        raise RuntimeError(
+            f"FATAL: {name} is unsafe for production-class Context Fabric: "
+            f"{'; '.join(reasons)}. Set a strong random value and restart."
+        )
+
+
+def _assert_prod_invariant(name: str, ok: bool, message: str) -> None:
+    if _is_prod_env() and not ok:
+        raise RuntimeError(f"FATAL: {name} is unsafe for production-class Context Fabric: {message}")
+
 
 class Settings(BaseSettings):
     context_memory_url: str = "http://localhost:8002"
@@ -18,6 +67,7 @@ class Settings(BaseSettings):
     # login token. In prod: short-lived service token issued by IAM.
     iam_base_url: str = "http://localhost:8100/api/v1"
     iam_service_token: str = ""
+    iam_service_token_tenant_ids: str = ""
 
     # M8 — orchestrator dependencies for /execute
     composer_url: str = "http://localhost:3004"
@@ -60,6 +110,7 @@ class Settings(BaseSettings):
     # return 503 when this is unset (no silent fallback to metrics-ledger,
     # which has been sunset).
     audit_gov_url: str = ""
+    default_governance_mode: str = "fail_open"
 
     # M62 Slice E — prompt compression toggle for compose calls.
     # When enabled, the compose request body carries a `compression`
@@ -88,3 +139,31 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+_assert_prod_secret("JWT_SECRET", os.getenv("JWT_SECRET"))
+_assert_prod_secret("IAM_SERVICE_TOKEN", settings.iam_service_token)
+_assert_prod_invariant(
+    "IAM_SERVICE_TOKEN_TENANT_IDS",
+    (not settings.require_tenant_id) or bool((settings.iam_service_token_tenant_ids or "").strip()),
+    "set IAM_SERVICE_TOKEN_TENANT_IDS to the tenant ids this service token may access",
+)
+_assert_prod_secret("MCP_BEARER_TOKEN", settings.mcp_default_bearer_token)
+_assert_prod_secret("AUDIT_GOV_SERVICE_TOKEN", os.getenv("AUDIT_GOV_SERVICE_TOKEN"))
+_assert_prod_invariant(
+    "DEFAULT_GOVERNANCE_MODE",
+    settings.default_governance_mode.strip().lower() == "fail_closed",
+    "set DEFAULT_GOVERNANCE_MODE=fail_closed so omitted run governance cannot default to fail-open",
+)
+_cf_tool_grant_enabled = os.getenv("CF_TOOL_GRANT_ENABLED", "").strip().lower() in {"true", "1", "yes", "on"}
+_assert_prod_invariant(
+    "CF_TOOL_GRANT_ENABLED",
+    _cf_tool_grant_enabled,
+    "set CF_TOOL_GRANT_ENABLED=true so MCP can verify Context Fabric-issued grants for mutating tools",
+)
+if _cf_tool_grant_enabled:
+    _assert_prod_secret("TOOL_GRANT_SIGNING_SECRET", os.getenv("TOOL_GRANT_SIGNING_SECRET"))
+_assert_prod_invariant(
+    "REQUIRE_TENANT_ID",
+    settings.require_tenant_id,
+    "set REQUIRE_TENANT_ID=true so calls cannot omit tenant scope",
+)

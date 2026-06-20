@@ -1,4 +1,4 @@
-import { api } from '@/lib/api'
+import { api } from 'identity-web/lib/api'
 
 export interface AuthzCheckRequest {
   user_id: string

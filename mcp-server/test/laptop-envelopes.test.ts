@@ -77,7 +77,7 @@ describe("HelloFrame.supported_frame_types", () => {
   it("SUPPORTED_FRAME_TYPES export matches schema enum", () => {
     // Pin the constant to prevent drift — Slice 2 imports this to
     // build the bridge's capability matcher.
-    expect(SUPPORTED_FRAME_TYPES).toEqual(["invoke", "tool-run", "model-run"]);
+    expect(SUPPORTED_FRAME_TYPES).toEqual(["invoke", "tool-run", "model-run", "code-context"]);
   });
 });
 
@@ -97,6 +97,37 @@ describe("ToolRunFrame", () => {
     expect(frame.type).toBe("tool-run");
     expect(frame.payload.tool_name).toBe("read_file");
     expect(frame.payload.args).toEqual({ path: "src/a.py" });
+  });
+
+  it("preserves an optional ToolInvocationGrant for WS tool-run dispatch", () => {
+    const grant = {
+      v: 1,
+      traceId: "t1",
+      stageKey: "stage",
+      phase: "ACT",
+      toolName: "write_file",
+      argsHash: "sha256:abc",
+      policyId: "p",
+      policyVersion: 1,
+      policyHash: "sha256:def",
+      issuedAt: 1,
+      expiresAt: 2,
+      nonce: "n",
+      alg: "HMAC-SHA256",
+      sig: "sig",
+    };
+    const frame = ToolRunFrame.parse({
+      type: "tool-run",
+      request_id: "req-grant",
+      payload: {
+        tool_name: "write_file",
+        args: { path: "a.py", content: "x" },
+        run_context: { traceId: "t1" },
+        tool_grant: grant,
+      },
+    });
+
+    expect(frame.payload.tool_grant).toEqual(grant);
   });
 
   it("defaults args + run_context to empty objects", () => {

@@ -28,6 +28,9 @@ import type {
   GovernedStageRequest,
   GovernedStageResponse,
 } from '../../../../lib/context-fabric/client'
+import { config } from '../../../../config'
+
+type GovernanceMode = NonNullable<ExecuteRequest['governance_mode']>
 
 /**
  * Map a legacy ExecuteRequest to a GovernedStageRequest. The two shapes
@@ -119,9 +122,10 @@ export function executeReqToGovernedStageReq(req: ExecuteRequest, opts: {
  */
 export function governedStageRespToExecuteResp(
   resp: GovernedStageResponse,
-  opts: { traceId?: string | null; sessionId?: string | null } = {},
+  opts: { traceId?: string | null; sessionId?: string | null; governanceMode?: GovernanceMode } = {},
 ): ExecuteResponse {
   const cfCallId = `governed:${resp.final_state.stage_key}:${resp.turns.length}`
+  const governanceMode = opts.governanceMode ?? config.DEFAULT_GOVERNANCE_MODE as GovernanceMode
   // Aggregate tool_invocation_ids across all turns so the legacy
   // correlation table still gets populated (downstream code reads
   // result.correlation.toolInvocationIds).
@@ -184,7 +188,7 @@ export function governedStageRespToExecuteResp(
       artifactIds: [],
       codeChangeIds: [],
       contextPlanHash: null,
-      governanceMode: 'fail_open' as const,
+      governanceMode,
       executionPosture: 'governed' as const,
       workspaceBranch: null,
       workspaceCommitSha: copilotCommitSha,
@@ -219,7 +223,7 @@ export function governedStageRespToExecuteResp(
     blockedReason: resp.error_code ?? null,
     requiredContextStatus: null,
     contextPlanHash: null,
-    governanceMode: 'fail_open' as const,
+    governanceMode,
     executionPosture: 'governed' as const,
     prompt: undefined,
     verificationReceipts: [],

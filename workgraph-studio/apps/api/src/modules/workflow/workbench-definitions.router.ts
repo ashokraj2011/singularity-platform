@@ -30,6 +30,8 @@ import { validate } from '../../middleware/validate'
 // it for genuinely-missing nodes; an empty definition returns an
 // empty-shell view instead of 404.
 import * as service from './workbench-definitions.service'
+import { prisma } from '../../lib/prisma'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { promptComposerClient, PromptComposerError } from '../../lib/prompt-composer/client'
 import {
   buildCopilotAgentMd,
@@ -46,6 +48,10 @@ export const workbenchDefinitionsRouter: Router = Router({ mergeParams: true })
 // stay readable.
 function nodeIdOf(req: Request): string {
   return (req.params as Record<string, string>).nodeId
+}
+
+function runTenantScoped<T>(callback: () => Promise<T>): Promise<T> {
+  return withTenantDbTransaction(prisma, callback)
 }
 
 // ─── Zod schemas ───────────────────────────────────────────────────────────
@@ -236,7 +242,7 @@ const pinConsumesSchema = z.object({
 
 workbenchDefinitionsRouter.get('/', async (req, res, next) => {
   try {
-    const view = await service.getDefinition(nodeIdOf(req), req.user!.userId)
+    const view = await runTenantScoped(() => service.getDefinition(nodeIdOf(req), req.user!.userId))
     if (!view) {
       // M84.s2-followup — return an empty-shell instead of 404 when
       // the node exists but has no definition yet. The UI distinguishes
@@ -328,7 +334,7 @@ workbenchDefinitionsRouter.get('/export-copilot', async (req, res, next) => {
     const nodeId = nodeIdOf(req)
     const format = (req.query.format === 'yaml' ? 'yaml' : 'agent-md') as 'agent-md' | 'yaml'
 
-    const def = await service.getDefinition(nodeId, req.user!.userId)
+    const def = await runTenantScoped(() => service.getDefinition(nodeId, req.user!.userId))
     if (!def || def.stages.length === 0) {
       res.status(404).json({
         error: {
@@ -389,22 +395,22 @@ workbenchDefinitionsRouter.get('/export-copilot', async (req, res, next) => {
 
 workbenchDefinitionsRouter.patch('/', validate(patchDefinitionSchema), async (req, res, next) => {
   try {
-    const view = await service.patchDefinition(
+    const view = await runTenantScoped(() => service.patchDefinition(
       nodeIdOf(req),
       req.body as z.infer<typeof patchDefinitionSchema>,
       req.user!.userId,
-    )
+    ))
     res.json({ data: view })
   } catch (err) { next(err) }
 })
 
 workbenchDefinitionsRouter.post('/stages', validate(createStageSchema), async (req, res, next) => {
   try {
-    const view = await service.createStage(
+    const view = await runTenantScoped(() => service.createStage(
       nodeIdOf(req),
       req.body as z.infer<typeof createStageSchema>,
       req.user!.userId,
-    )
+    ))
     res.status(201).json({ data: view })
   } catch (err) { next(err) }
 })
@@ -412,26 +418,26 @@ workbenchDefinitionsRouter.post('/stages', validate(createStageSchema), async (r
 workbenchDefinitionsRouter.post('/stages/reorder', validate(reorderSchema), async (req, res, next) => {
   try {
     const body = req.body as z.infer<typeof reorderSchema>
-    const view = await service.reorderStages(nodeIdOf(req), body.stageIds, req.user!.userId)
+    const view = await runTenantScoped(() => service.reorderStages(nodeIdOf(req), body.stageIds, req.user!.userId))
     res.json({ data: view })
   } catch (err) { next(err) }
 })
 
 workbenchDefinitionsRouter.patch('/stages/:stageId', validate(patchStageSchema), async (req, res, next) => {
   try {
-    const view = await service.patchStage(
+    const view = await runTenantScoped(() => service.patchStage(
       nodeIdOf(req),
       req.params.stageId!,
       req.body as z.infer<typeof patchStageSchema>,
       req.user!.userId,
-    )
+    ))
     res.json({ data: view })
   } catch (err) { next(err) }
 })
 
 workbenchDefinitionsRouter.delete('/stages/:stageId', async (req, res, next) => {
   try {
-    const view = await service.deleteStage(nodeIdOf(req), req.params.stageId!, req.user!.userId)
+    const view = await runTenantScoped(() => service.deleteStage(nodeIdOf(req), req.params.stageId!, req.user!.userId))
     res.json({ data: view })
   } catch (err) { next(err) }
 })
@@ -441,12 +447,12 @@ workbenchDefinitionsRouter.post(
   validate(createArtifactSchema),
   async (req, res, next) => {
     try {
-      const view = await service.createArtifact(
+      const view = await runTenantScoped(() => service.createArtifact(
         nodeIdOf(req),
         req.params.stageId!,
         req.body as z.infer<typeof createArtifactSchema>,
         req.user!.userId,
-      )
+      ))
       res.status(201).json({ data: view })
     } catch (err) { next(err) }
   },
@@ -457,12 +463,12 @@ workbenchDefinitionsRouter.patch(
   validate(patchArtifactSchema),
   async (req, res, next) => {
     try {
-      const view = await service.patchArtifact(
+      const view = await runTenantScoped(() => service.patchArtifact(
         nodeIdOf(req),
         req.params.artifactId!,
         req.body as z.infer<typeof patchArtifactSchema>,
         req.user!.userId,
-      )
+      ))
       res.json({ data: view })
     } catch (err) { next(err) }
   },
@@ -470,11 +476,11 @@ workbenchDefinitionsRouter.patch(
 
 workbenchDefinitionsRouter.delete('/artifacts/:artifactId', async (req, res, next) => {
   try {
-    const view = await service.deleteArtifact(
+    const view = await runTenantScoped(() => service.deleteArtifact(
       nodeIdOf(req),
       req.params.artifactId!,
       req.user!.userId,
-    )
+    ))
     res.json({ data: view })
   } catch (err) { next(err) }
 })
@@ -485,12 +491,12 @@ workbenchDefinitionsRouter.post(
   validate(createQuestionSchema),
   async (req, res, next) => {
     try {
-      const view = await service.createQuestion(
+      const view = await runTenantScoped(() => service.createQuestion(
         nodeIdOf(req),
         req.params.stageId!,
         req.body as z.infer<typeof createQuestionSchema>,
         req.user!.userId,
-      )
+      ))
       res.status(201).json({ data: view })
     } catch (err) { next(err) }
   },
@@ -501,12 +507,12 @@ workbenchDefinitionsRouter.patch(
   validate(patchQuestionSchema),
   async (req, res, next) => {
     try {
-      const view = await service.patchQuestion(
+      const view = await runTenantScoped(() => service.patchQuestion(
         nodeIdOf(req),
         req.params.questionId!,
         req.body as z.infer<typeof patchQuestionSchema>,
         req.user!.userId,
-      )
+      ))
       res.json({ data: view })
     } catch (err) { next(err) }
   },
@@ -514,51 +520,51 @@ workbenchDefinitionsRouter.patch(
 
 workbenchDefinitionsRouter.delete('/questions/:questionId', async (req, res, next) => {
   try {
-    const view = await service.deleteQuestion(
+    const view = await runTenantScoped(() => service.deleteQuestion(
       nodeIdOf(req),
       req.params.questionId!,
       req.user!.userId,
-    )
+    ))
     res.json({ data: view })
   } catch (err) { next(err) }
 })
 
 workbenchDefinitionsRouter.post('/edges', validate(createEdgeSchema), async (req, res, next) => {
   try {
-    const view = await service.createEdge(
+    const view = await runTenantScoped(() => service.createEdge(
       nodeIdOf(req),
       req.body as z.infer<typeof createEdgeSchema>,
       req.user!.userId,
-    )
+    ))
     res.status(201).json({ data: view })
   } catch (err) { next(err) }
 })
 
 workbenchDefinitionsRouter.delete('/edges/:edgeId', async (req, res, next) => {
   try {
-    const view = await service.deleteEdge(nodeIdOf(req), req.params.edgeId!, req.user!.userId)
+    const view = await runTenantScoped(() => service.deleteEdge(nodeIdOf(req), req.params.edgeId!, req.user!.userId))
     res.json({ data: view })
   } catch (err) { next(err) }
 })
 
 workbenchDefinitionsRouter.post('/consumes', validate(pinConsumesSchema), async (req, res, next) => {
   try {
-    const view = await service.pinConsumes(
+    const view = await runTenantScoped(() => service.pinConsumes(
       nodeIdOf(req),
       req.body as z.infer<typeof pinConsumesSchema>,
       req.user!.userId,
-    )
+    ))
     res.status(201).json({ data: view })
   } catch (err) { next(err) }
 })
 
 workbenchDefinitionsRouter.delete('/consumes/:consumesId', async (req, res, next) => {
   try {
-    const view = await service.deleteConsumes(
+    const view = await runTenantScoped(() => service.deleteConsumes(
       nodeIdOf(req),
       req.params.consumesId!,
       req.user!.userId,
-    )
+    ))
     res.json({ data: view })
   } catch (err) { next(err) }
 })

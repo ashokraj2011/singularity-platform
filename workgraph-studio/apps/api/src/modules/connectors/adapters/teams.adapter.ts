@@ -1,5 +1,6 @@
 import axios from 'axios'
 import type { ConnectorAdapter, OperationDef } from '../connector-adapter'
+import { assertEventTargetUrlAllowed } from '../../../lib/eventbus/target-url-policy'
 
 interface TeamsConfig {
   // Simple webhook mode (no Graph API auth needed)
@@ -44,7 +45,8 @@ export class TeamsAdapter implements ConnectorAdapter {
       const webhookUrl = this.creds.webhookUrl ?? this.config.defaultWebhookUrl
       if (webhookUrl) {
         // Sending a test ping to webhook
-        await axios.post(webhookUrl, { type: 'message', text: '✅ WorkGraph connector connected.' })
+        const safeUrl = await assertEventTargetUrlAllowed(webhookUrl)
+        await axios.post(safeUrl.toString(), { type: 'message', text: '✅ WorkGraph connector connected.' })
         return { ok: true }
       }
       if (this.creds.clientId) {
@@ -69,14 +71,16 @@ export class TeamsAdapter implements ConnectorAdapter {
   private async postWebhook(p: Record<string, unknown>) {
     const url = (p.webhookUrl as string) ?? this.creds.webhookUrl ?? this.config.defaultWebhookUrl
     if (!url) throw new Error('No Teams webhook URL configured')
-    const res = await axios.post(url, { type: 'message', text: p.text ?? p.message ?? '' })
+    const safeUrl = await assertEventTargetUrlAllowed(url)
+    const res = await axios.post(safeUrl.toString(), { type: 'message', text: p.text ?? p.message ?? '' })
     return res.data
   }
 
   private async postAdaptiveCard(p: Record<string, unknown>) {
     const url = (p.webhookUrl as string) ?? this.creds.webhookUrl ?? this.config.defaultWebhookUrl
     if (!url) throw new Error('No Teams webhook URL configured')
-    const res = await axios.post(url, {
+    const safeUrl = await assertEventTargetUrlAllowed(url)
+    const res = await axios.post(safeUrl.toString(), {
       type: 'message',
       attachments: [{
         contentType: 'application/vnd.microsoft.card.adaptive',

@@ -12,6 +12,7 @@
 import { prisma } from "../../config/prisma";
 import { logger } from "../../config/logger";
 import { assembleBundle } from "./bundler";
+import { ValidationError } from "../../shared/errors";
 
 const MCP_SERVER_URL     = (process.env.MCP_SERVER_URL ?? "http://mcp-server:7100").replace(/\/$/, "");
 const MCP_BEARER_TOKEN   = process.env.MCP_BEARER_TOKEN ?? "";
@@ -26,7 +27,18 @@ export interface MintContractInput {
   consumableId?: string;
 }
 
-async function resolveModelAlias(alias: string | undefined): Promise<{
+type ModelCatalogResponse = {
+  success?: boolean;
+  data?: {
+    defaultModelAlias?: string;
+    default_model_alias?: string;
+    models?: Array<{ id: string; provider: string; model: string; version?: string }>;
+  };
+  default_model_alias?: string;
+  models?: Array<{ id: string; provider: string; model: string; version?: string }>;
+};
+
+export async function resolveModelAlias(alias: string | undefined): Promise<{
   alias: string | null;
   provider: string;
   model: string;
@@ -34,9 +46,6 @@ async function resolveModelAlias(alias: string | undefined): Promise<{
   resolvedAt: string;
 }> {
   const resolvedAt = new Date().toISOString();
-  if (!alias) {
-    return { alias: null, provider: "unresolved", model: "unresolved", version: null, resolvedAt };
-  }
   try {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (MCP_BEARER_TOKEN) headers.authorization = `Bearer ${MCP_BEARER_TOKEN}`;
@@ -47,26 +56,34 @@ async function resolveModelAlias(alias: string | undefined): Promise<{
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       logger.warn({ alias, status: res.status, body: text.slice(0, 200) },
-        "[contracts] MCP model catalog failed; bundle uses placeholder");
-      return { alias, provider: "unresolved", model: alias, version: null, resolvedAt };
+        "[contracts] MCP model catalog failed; refusing unresolved contract model");
+      throw new ValidationError(`Cannot mint ImmutableContract: model catalog lookup failed for alias "${alias ?? "<default>"}"`);
     }
-    const json = await res.json() as { data?: { models?: Array<{ id: string; provider: string; model: string; version?: string }> } };
-    const row = (json.data?.models ?? []).find((model) => model.id === alias);
+    const json = await res.json() as ModelCatalogResponse;
+    const defaultAlias = json.data?.defaultModelAlias ?? json.data?.default_model_alias ?? json.default_model_alias ?? null;
+    const effectiveAlias = alias ?? defaultAlias;
+    if (!effectiveAlias) {
+      logger.warn({ alias }, "[contracts] model catalog has no default alias; refusing unresolved contract model");
+      throw new ValidationError("Cannot mint ImmutableContract: no modelAlias supplied and model catalog has no default alias");
+    }
+    const models = json.data?.models ?? json.models ?? [];
+    const row = models.find((model) => model.id === effectiveAlias);
     if (!row) {
-      logger.warn({ alias }, "[contracts] MCP model alias not found; bundle uses placeholder");
-      return { alias, provider: "unresolved", model: alias, version: null, resolvedAt };
+      logger.warn({ alias: effectiveAlias }, "[contracts] model alias not found; refusing unresolved contract model");
+      throw new ValidationError(`Cannot mint ImmutableContract: model alias "${effectiveAlias}" was not found in the model catalog`);
     }
     return {
-      alias,
+      alias: effectiveAlias,
       provider: row.provider,
       model: row.model,
       version: row.version ?? null,
       resolvedAt,
     };
   } catch (err) {
+    if (err instanceof ValidationError) throw err;
     logger.warn({ alias, err: (err as Error).message },
-      "[contracts] MCP model catalog threw; bundle uses placeholder");
-    return { alias, provider: "unresolved", model: alias, version: null, resolvedAt };
+      "[contracts] MCP model catalog threw; refusing unresolved contract model");
+    throw new ValidationError(`Cannot mint ImmutableContract: model catalog lookup failed for alias "${alias ?? "<default>"}"`);
   }
 }
 

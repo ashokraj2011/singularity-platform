@@ -8,7 +8,7 @@
  *   x-event-signature   — "sha256=<hex>" if subscriber registered with secret
  *
  * On receipt we:
- *   1. Verify HMAC if a shared secret is configured for the upstream
+ *   1. Verify HMAC with the shared secret configured for the upstream
  *      service (env: WORKGRAPH_INCOMING_EVENT_SECRETS, JSON keyed by
  *      source_service: { "iam": "<secret>", "agent-runtime": "<secret>", ... })
  *   2. Persist into workgraph EventLog (existing audit table) with
@@ -16,12 +16,13 @@
  *   3. Optionally fan to local handlers based on event_name (none today;
  *      this is the hook for cache-invalidation, snapshot refresh, etc.)
  *
- * Endpoint is unauthenticated but signature-gated when a secret is set.
- * Without a secret it accepts any caller — fine for dev, harden in prod.
+ * Endpoint is unauthenticated at the user-auth layer but always signature-gated.
+ * Missing source secrets fail closed instead of accepting unsigned events.
  */
 
 import { Router, type Request } from 'express'
 import crypto from 'node:crypto'
+import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
 
 export const incomingEventsRouter: Router = Router()
@@ -47,9 +48,17 @@ interface IncomingBody {
 }
 
 function loadSecrets(): Record<string, string> {
-  const raw = process.env.WORKGRAPH_INCOMING_EVENT_SECRETS
+  const raw = config.WORKGRAPH_INCOMING_EVENT_SECRETS
   if (!raw) return {}
-  try { return JSON.parse(raw) as Record<string, string> }
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([source, secret]) => source.trim().length > 0 && typeof secret === 'string' && secret.trim().length > 0)
+        .map(([source, secret]) => [source, (secret as string).trim()]),
+    )
+  }
   catch { return {} }
 }
 
@@ -73,18 +82,22 @@ incomingEventsRouter.post('/', async (req, res) => {
   if (!body || !eventName || !body.envelope) {
     return res.status(400).json({ code: 'BAD_REQUEST', message: 'event_name + envelope required' })
   }
-  const source = body.envelope.source_service ?? 'unknown'
+  const source = body.envelope.source_service
+  if (!source || source === 'unknown') {
+    return res.status(400).json({ code: 'BAD_REQUEST', message: 'envelope.source_service is required' })
+  }
 
-  // HMAC verify when a secret is configured for the source service.
+  // HMAC verify for every source; unconfigured sources are not trusted.
   const secrets = loadSecrets()
   const secret = secrets[source]
-  if (secret) {
-    // Re-serialize from parsed body to compare against signature over the
-    // exact bytes the dispatcher sent. Both ends use compact JSON.
-    const reserialized = JSON.stringify({ event_name: eventName, envelope: body.envelope })
-    if (!verifySignature(req, reserialized, secret)) {
-      return res.status(401).json({ code: 'BAD_SIGNATURE', message: 'HMAC verification failed' })
-    }
+  if (!secret) {
+    return res.status(401).json({ code: 'UNTRUSTED_SOURCE', message: `No incoming event secret configured for ${source}` })
+  }
+  // Re-serialize from parsed body to compare against signature over the
+  // exact bytes the dispatcher sent. The platform dispatchers use compact JSON.
+  const reserialized = JSON.stringify({ event_name: eventName, envelope: body.envelope })
+  if (!verifySignature(req, reserialized, secret)) {
+    return res.status(401).json({ code: 'BAD_SIGNATURE', message: 'HMAC verification failed' })
   }
 
   // Persist into workgraph audit log so the unified /api/receipts timeline

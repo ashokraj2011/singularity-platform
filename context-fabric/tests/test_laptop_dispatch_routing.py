@@ -153,12 +153,14 @@ def test_dispatch_with_laptop_user_id_routes_via_bridge():
         )
 
     with _patch_registry(bridge_returns_ok):
+        grant = {"v": 1, "toolName": "repo_map", "sig": "signed"}
         outcome = _run(dispatch_tool(
             "repo_map",
             {"max_directories": 50},
             work_item_id="WI-2",
             run_context={"traceId": "t2", "attemptId": "a2"},
             laptop_user_id="user-42",
+            grant=grant,
         ))
 
     assert isinstance(outcome, ToolDispatchResult)
@@ -177,6 +179,60 @@ def test_dispatch_with_laptop_user_id_routes_via_bridge():
     assert seen_call["args"] == {"max_directories": 50}
     assert seen_call["work_item_id"] == "WI-2"
     assert seen_call["run_context"] == {"traceId": "t2", "attemptId": "a2"}
+    assert seen_call["grant"] == grant
+
+
+def test_registry_tool_run_frame_includes_tool_grant():
+    """The registry is the last platform-side hop before the WebSocket
+    frame. Pin the actual tool-run payload shape so grant enforcement
+    remains transport-neutral between HTTP and laptop bridge dispatch."""
+    from context_api_service.app.laptop_registry import LaptopRegistry
+
+    registry = LaptopRegistry()
+    seen_frame: dict[str, Any] = {}
+
+    async def fake_send_frame_await_response(**kwargs):
+        seen_frame.update(kwargs)
+        conn = type("Conn", (), {
+            "device_id": "dev-grant",
+            "device_name": "grant-laptop",
+        })()
+        return (
+            {
+                "result": {"ok": True},
+                "duration_ms": 3,
+                "tool_invocation_id": "ti-grant",
+                "tool_success": True,
+                "tool_error": None,
+            },
+            conn,
+        )
+
+    registry._send_frame_await_response = fake_send_frame_await_response  # type: ignore[method-assign]
+    grant = {
+        "v": 1,
+        "traceId": "t3",
+        "toolName": "write_file",
+        "sig": "signed",
+    }
+
+    payload, device = _run(registry.dispatch_tool_via_laptop(
+        user_id="user-grant",
+        tool_name="write_file",
+        args={"path": "a.py", "content": "x"},
+        run_context={"traceId": "t3"},
+        work_item_id="WI-3",
+        workspace_id="WS-3",
+        grant=grant,
+    ))
+
+    assert payload["tool_invocation_id"] == "ti-grant"
+    assert device == {"device_id": "dev-grant", "device_name": "grant-laptop"}
+    assert seen_frame["user_id"] == "user-grant"
+    assert seen_frame["frame_type"] == "tool-run"
+    assert seen_frame["payload"]["tool_name"] == "write_file"
+    assert seen_frame["payload"]["tool_grant"] == grant
+    assert seen_frame["payload"]["run_context"] == {"traceId": "t3"}
 
 
 def test_dispatch_bridge_tool_soft_failure_passes_through():

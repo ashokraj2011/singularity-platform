@@ -23,11 +23,11 @@ This guide has two halves you can mix:
 | context-api (Context Fabric) | `8000` | Python | Remote |
 | workgraph-api | `8080` | Node 22 | Remote |
 | iam-service | `8100` | Python | Remote |
-| prompt-composer | `3004` | Node 20 | Remote |
-| agent-runtime / agent-service / tool-service | `3003 / 3001 / 3002` | Node 20 | Remote |
+| platform-core | `3001-3004` | Node 20 | Remote |
+| agent-runtime / agent-service / tool-service / prompt-composer | `3003 / 3001 / 3002 / 3004` | Node 20 | Remote, served by `platform-core` in Docker |
 | formal-verifier / prompt-compressor | `8010 / 8011` | Python | Remote |
-| UIs: portal / workgraph-web / blueprint-workbench / user-and-capability / agent-web | `5180 / 5174 / 5176 / 5175 / 3000` | static/Next | Remote |
-| edge-gateway (single-origin entry) | `8085` | nginx | Remote |
+| platform-web | `5180` | Next.js + nginx | Remote |
+| legacy split UIs / edge-gateway | `5182 / 5174 / 5176 / 5175 / 5181 / 8085` | static/nginx | Remote, debug profile only |
 | Postgres `at-postgres` / `wg-postgres`, MinIO | `5432 / 5434 / 9000` | — | Remote |
 
 **Why the laptop:** provider keys (`.env.llm-secrets`), git credentials (`GITHUB_TOKEN`), local models, and the code sandbox all stay on the laptop. The cloud never sees them.
@@ -79,7 +79,7 @@ When services are split across hosts, these are the vars that change from their 
 
 | Env var | Default (single host) | Set to (split) | On which services |
 |---|---|---|---|
-| `MCP_SERVER_URL` · *Direct only* | `http://mcp-server:7100` | **Bridge:** leave default (unused). **Direct:** `http://<laptop>:7100` | context-api, workgraph-api, agent-service, tool-service, agent-runtime, prompt-composer, agent-web |
+| `MCP_SERVER_URL` · *Direct only* | `http://mcp-server:7100` | **Bridge:** leave default (unused). **Direct:** `http://<laptop>:7100` | context-api, workgraph-api, agent-service, tool-service, agent-runtime, prompt-composer, platform-web |
 | `MCP_DEFAULT_BASE_URL` · *Direct only* | `http://mcp-server:7100` | same as above | context-api |
 | `MCP_BEARER_TOKEN` / `MCP_DEFAULT_BEARER_TOKEN` | `demo-bearer-token-…` | one strong shared token (≥16 chars, ≥32 in prod) | all of the above + laptop mcp-server |
 | `LLM_GATEWAY_URL` | `http://llm-gateway:8001` | laptop mcp-server: `http://localhost:8001`. Remote (option a): `http://<laptop>:8001` | mcp-server (+ remote LLM consumers if option a) |
@@ -149,7 +149,7 @@ docker compose up -d mcp-server     # (profile 'full') — or run on the host pe
 
 ### 4.2 Remote side (Docker)
 
-Run the rest of the stack with your normal compose, plus the ready-made override [**`docker-compose.remote.yml`**](../docker-compose.remote.yml) (at the repo root). It re-points the six MCP consumers at the laptop for **Direct-HTTP mode**; in **Bridge mode** you don't need it at all (just export `JWT_SECRET`). The base compose already reads `${JWT_SECRET}`, so a single shared export covers identity for every service + the laptop bridge token.
+Run the rest of the stack with your normal compose, plus the ready-made override [**`docker-compose.remote.yml`**](../docker-compose.remote.yml) (at the repo root). It re-points the MCP consumers, including `platform-core`, at the laptop for **Direct-HTTP mode**; in **Bridge mode** you don't need it at all (just export `JWT_SECRET`). The base compose already reads `${JWT_SECRET}`, so a single shared export covers identity for every service + the laptop bridge token.
 
 ```bash
 # On the remote host — do NOT start the laptop services there.
@@ -158,12 +158,12 @@ Run the rest of the stack with your normal compose, plus the ready-made override
 export JWT_SECRET=<shared> MCP_BEARER_TOKEN=<shared> LAPTOP_HOST=<laptop-addr>
 
 docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d \
-  at-postgres wg-postgres wg-minio iam-service context-api workgraph-api workgraph-web \
-  blueprint-workbench user-and-capability prompt-composer agent-runtime agent-service \
-  tool-service agent-web formal-verifier prompt-compressor portal edge-gateway
+  at-postgres wg-postgres wg-minio iam-service context-api workgraph-api \
+  platform-core platform-web \
+  formal-verifier prompt-compressor
 ```
 
-The override re-points `MCP_SERVER_URL`/`MCP_DEFAULT_BASE_URL` + `MCP_BEARER_TOKEN` on `context-api`, `workgraph-api`, `agent-service`, `tool-service`, `agent-runtime`, and `prompt-composer`. For **full-local LLM** (option a, §2.3), uncomment the `LLM_GATEWAY_URL` line in the file.
+The override re-points `MCP_SERVER_URL`/`MCP_DEFAULT_BASE_URL` + `MCP_BEARER_TOKEN` on `context-api`, `workgraph-api`, and `platform-core` (which hosts agent-service, tool-service, agent-runtime, and prompt-composer). For **full-local LLM** (option a, §2.3), uncomment the `LLM_GATEWAY_URL` line in the file.
 
 > In **Bridge mode**, the remote `MCP_SERVER_URL` can stay at its default — it's only a fallback. The real routing happens over the WebSocket when `prefer_laptop=true`.
 
@@ -251,7 +251,8 @@ CONTEXT_FABRIC_URL=http://<remote>:8000 PROMPT_COMPOSER_URL=http://<remote>:3004
 MCP_SERVER_URL=http://<laptop>:7100 MCP_BEARER_TOKEN=<token> \
 node dist/apps/api/src/index.js      # or: pnpm dev
 
-# agent-runtime / agent-service / tool-service / prompt-composer (Node 20)
+# platform-core equivalent, when running bare-metal instead of Docker (Node 20)
+# agent-runtime / agent-service / tool-service / prompt-composer remain separate local processes for hot reload
 #   cd agent-and-tools/apps/<svc> && npm install && npm run build
 #   set DATABASE_URL (singularity / singularity_composer), JWT_SECRET=<shared>,
 #       IAM_SERVICE_URL=http://<remote>:8100, MCP_SERVER_URL=http://<laptop>:7100, MCP_BEARER_TOKEN=<token>
@@ -261,8 +262,8 @@ node dist/apps/api/src/index.js      # or: pnpm dev
 #   uvicorn services.formal_verifier_service.app.main:app --port 8010
 #   uvicorn services.prompt_compressor_service.app.main:app --port 8011
 
-# UIs (Vite static): build with `npm run build` and serve apps/*/dist with any static server / nginx.
-# edge-gateway: optional — only needed for the single-origin :8085 entry. Run nginx with edge-gateway/nginx.conf.
+# UI: build/run `platform-web` from agent-and-tools/web and expose :5180.
+# Legacy Vite UIs / edge-gateway are debug-only and not needed for the normal path.
 ```
 
 ---

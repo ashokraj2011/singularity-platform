@@ -22,10 +22,9 @@ import { runsRouter } from './routes/runs.js'
 
 export const codegenRouter: Router = Router()
 
-// M42.6 — Bearer auth applied to every codegen route. Pass-through
-// when CODEGEN_SERVICE_TOKEN is the dev default OR the caller is on
-// localhost, so the local docker-compose flow + the SPA running on
-// :5181 against :3005 both keep working without extra configuration.
+// M42.6 — Bearer auth applied to every codegen route. Localhost may
+// pass through only when CODEGEN_SERVICE_TOKEN is still the dev default,
+// so local Docker/CLI flows work without opening the API to the network.
 codegenRouter.use(bearerAuth())
 
 // Master gate.

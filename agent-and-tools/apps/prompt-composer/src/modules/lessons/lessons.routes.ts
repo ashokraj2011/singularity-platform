@@ -9,11 +9,13 @@
  */
 import { Router, Request, Response, NextFunction } from "express";
 import { validate } from "../../middleware/validate.middleware";
+import { requireAuth } from "../../middleware/auth.middleware";
 import { lessonsService } from "./lessons.service";
 import { createLessonSchema, deactivateLessonSchema } from "./lessons.schemas";
 import { ok } from "../../shared/response";
 
 export const lessonsRoutes = Router();
+lessonsRoutes.use(requireAuth);
 
 lessonsRoutes.post("/", validate(createLessonSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {

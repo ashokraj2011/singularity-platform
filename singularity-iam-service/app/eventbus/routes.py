@@ -8,8 +8,9 @@ from pydantic import BaseModel, AnyHttpUrl, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.deps import require_event_publish
 from app.database import get_db
-from app.models import EventSubscription, EventDelivery, EventOutbox
+from app.models import EventSubscription, EventDelivery, EventOutbox, User
 
 router = APIRouter(prefix="/api/v1/events", tags=["events"])
 
@@ -35,7 +36,11 @@ class SubscriptionOut(BaseModel):
 
 
 @router.post("/subscriptions", response_model=SubscriptionOut, status_code=201)
-async def create_subscription(body: SubscriptionIn, db: AsyncSession = Depends(get_db)):
+async def create_subscription(
+    body: SubscriptionIn,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_event_publish),
+):
     sub = EventSubscription(
         subscriber_id=body.subscriber_id,
         event_pattern=body.event_pattern,
@@ -57,6 +62,7 @@ async def list_subscriptions(
     subscriber_id: Optional[str] = Query(default=None),
     is_active:     Optional[bool] = Query(default=None),
     db:            AsyncSession = Depends(get_db),
+    _:             User = Depends(require_event_publish),
 ):
     q = select(EventSubscription)
     if subscriber_id is not None:
@@ -75,7 +81,11 @@ async def list_subscriptions(
 
 
 @router.delete("/subscriptions/{sub_id}", status_code=204)
-async def delete_subscription(sub_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_subscription(
+    sub_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_event_publish),
+):
     r = (await db.execute(select(EventSubscription).where(EventSubscription.id == sub_id))).scalar_one_or_none()
     if r is None:
         raise HTTPException(status_code=404, detail="subscription not found")
@@ -84,7 +94,11 @@ async def delete_subscription(sub_id: str, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/subscriptions/{sub_id}/deliveries")
-async def list_deliveries(sub_id: str, db: AsyncSession = Depends(get_db)):
+async def list_deliveries(
+    sub_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_event_publish),
+):
     rows = (await db.execute(
         select(EventDelivery, EventOutbox)
         .join(EventOutbox, EventOutbox.id == EventDelivery.outbox_id)

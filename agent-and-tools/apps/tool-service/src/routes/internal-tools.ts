@@ -10,21 +10,23 @@
  *   - recall_memory:    semantic search over DistilledMemory
  *   - search_knowledge: semantic search over CapabilityKnowledgeArtifact
  *   - search_symbols:   semantic search over CapabilityCodeSymbol (joined to embeddings)
- *   - summarise_text:   MCP-routed LLM wrapper
- *   - extract_entities: MCP-routed LLM wrapper that asks for JSON entities
+ *   - summarise_text:   Context Fabric governed single-turn LLM wrapper
+ *   - extract_entities: Context Fabric governed single-turn LLM wrapper that asks for JSON entities
  *
  * The first three use M15's pgvector + the same hybrid scoring formula
  * (cosine × recency boost) as the prompt-composer. The LLM wrappers call
- * MCP /mcp/invoke; MCP is the only service that can talk to the gateway.
+ * Context Fabric's governed single-turn endpoint; Context Fabric owns runtime
+ * governance and talks to the gateway.
  */
 import { Router, Request, Response } from "express";
 import { query } from "../database";
+import { requireAuth } from "../middleware/auth";
 import { getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral } from "@agentandtools/shared";
 
 const RECENCY_BOOST_DAYS = Number(process.env.EMBEDDING_RECENCY_DAYS ?? 30);
 const RECENCY_BOOST_MAX  = Number(process.env.EMBEDDING_RECENCY_BOOST ?? 0.2);
-const MCP_SERVER_URL     = (process.env.MCP_SERVER_URL ?? "http://mcp-server:7100").replace(/\/$/, "");
-const MCP_BEARER_TOKEN   = process.env.MCP_BEARER_TOKEN ?? "";
+const CONTEXT_FABRIC_URL = (process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000").replace(/\/$/, "");
+const CONTEXT_FABRIC_SERVICE_TOKEN = process.env.CONTEXT_FABRIC_SERVICE_TOKEN ?? "";
 const TOOL_LLM_MODEL_ALIAS = process.env.TOOL_LLM_MODEL_ALIAS?.trim();
 
 function recencyBoost(ageDays: number): number {
@@ -46,6 +48,7 @@ async function embedQuery(text: string): Promise<string> {
 }
 
 export const internalToolsRoutes = Router();
+internalToolsRoutes.use(requireAuth);
 
 // ── recall_memory ───────────────────────────────────────────────────────────
 
@@ -146,9 +149,10 @@ internalToolsRoutes.post("/summarise_text", async (req: Request, res: Response) 
   // "tool-service.summarise-text") with {{maxChars}} substitution.
   const { getSystemPrompt } = await import("@agentandtools/shared");
   const { content: systemPrompt } = await getSystemPrompt("tool-service.summarise-text", { maxChars: cap });
-  const r = await callMcp({
+  const r = await callContextFabricSingleTurn({
     systemPrompt,
     message: `Summarise:\n${String(text).slice(0, 12_000)}`,
+    traceId: `tool-summarise-${Date.now()}`,
   });
   res.json({ summary: r.slice(0, cap) });
 });
@@ -163,9 +167,10 @@ internalToolsRoutes.post("/extract_entities", async (req: Request, res: Response
   // "tool-service.extract-entities").
   const { getSystemPrompt } = await import("@agentandtools/shared");
   const { content: extractSystemPrompt } = await getSystemPrompt("tool-service.extract-entities");
-  const r = await callMcp({
+  const r = await callContextFabricSingleTurn({
     systemPrompt: extractSystemPrompt,
     message: `Kinds: ${wanted}\n\nText:\n${String(text).slice(0, 12_000)}`,
+    traceId: `tool-entities-${Date.now()}`,
   });
   // Best-effort JSON parse with synthetic empty fallback (mock provider noise).
   const m = r.match(/\{[\s\S]*\}/);
@@ -174,38 +179,35 @@ internalToolsRoutes.post("/extract_entities", async (req: Request, res: Response
   res.json({ entities: Array.isArray(parsed.entities) ? parsed.entities : [], raw: r.slice(0, 600) });
 });
 
-// ── shared MCP-routed LLM call ─────────────────────────────────────────────
+// ── shared Context Fabric single-turn LLM call ─────────────────────────────
 //
-// Pure synthesis calls go through MCP with local tools hidden. No gateway URL
-// or provider keys live in tool-service.
-async function callMcp(opts: { systemPrompt: string; message: string }): Promise<string> {
+// Pure synthesis calls go through Context Fabric. No gateway URL or provider
+// keys live in tool-service.
+async function callContextFabricSingleTurn(opts: { systemPrompt: string; message: string; traceId: string }): Promise<string> {
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (MCP_BEARER_TOKEN) headers.authorization = `Bearer ${MCP_BEARER_TOKEN}`;
-  const res = await fetch(`${MCP_SERVER_URL}/mcp/invoke`, {
+  if (CONTEXT_FABRIC_SERVICE_TOKEN) headers["x-service-token"] = CONTEXT_FABRIC_SERVICE_TOKEN;
+  const res = await fetch(`${CONTEXT_FABRIC_URL}/api/v1/execute-governed-single-turn`, {
     method: "POST",
     headers,
     body: JSON.stringify({
-      systemPrompt: opts.systemPrompt,
-      message: opts.message,
-      tools: [],
-      modelConfig: {
+      trace_id: opts.traceId,
+      system_prompt: opts.systemPrompt,
+      task: opts.message,
+      model_overrides: {
         ...(TOOL_LLM_MODEL_ALIAS ? { modelAlias: TOOL_LLM_MODEL_ALIAS } : {}),
         temperature: 0,
-        maxTokens: 1500,
+        maxOutputTokens: 1500,
       },
-      runContext: { traceId: `tool-${Date.now()}` },
+      run_context: { trace_id: opts.traceId, source_type: "tool-service-internal" },
       limits: {
-        maxSteps: 1,
         timeoutSec: 70,
-        compressToolResults: true,
-        includeLocalTools: false,
       },
     }),
     signal: AbortSignal.timeout(70_000),
   });
-  if (!res.ok) throw new Error(`MCP_UPSTREAM ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const data = (await res.json()) as { data?: { finalResponse?: string } };
-  return (data.data?.finalResponse ?? "").trim();
+  if (!res.ok) throw new Error(`CONTEXT_FABRIC_UPSTREAM ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const data = (await res.json()) as { finalResponse?: string; data?: { finalResponse?: string } };
+  return (data.finalResponse ?? data.data?.finalResponse ?? "").trim();
 }
 
 // Required-dim guard surfaced for visibility in /healthz-style probes.

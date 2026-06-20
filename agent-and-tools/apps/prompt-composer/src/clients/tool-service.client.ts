@@ -12,6 +12,18 @@ export interface DiscoveredTool {
   execution_target?: "LOCAL" | "SERVER" | string;
   execution_location: string;
   runtime_type: string;
+  capability_id?: string;
+  capability_permissions?: string[];
+  read_only?: boolean;
+  provider_locked?: boolean;
+  provider_id?: string;
+  provider_manifest_version?: string;
+  provider_manifest_digest?: string;
+  provider_manifest_signature_key_id?: string;
+  provider_manifest_signed?: boolean;
+  source?: string;
+  source_type?: string;
+  source_ref?: string;
 }
 
 export interface DiscoverInput {
@@ -22,6 +34,8 @@ export interface DiscoverInput {
   query?: string;
   risk_max?: "low" | "medium" | "high" | "critical";
   limit?: number;
+  effective_capabilities?: Array<Record<string, unknown>>;
+  effectiveCapabilities?: Array<Record<string, unknown>>;
 }
 
 export const toolServiceClient = {

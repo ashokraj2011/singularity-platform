@@ -28,6 +28,9 @@ import { recordToolInvocation } from "../audit/store";
 import { applyPatchToCleanWorkspace, branchNameForWork, currentHeadSha, prepareWorkBranch } from "../workspace/git-workspace";
 import { withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbox";
 import { redactSecrets } from "../security/redact";
+import { grantMode, toolRequiresGrant, verifyToolGrant } from "../security/tool-grant";
+import { log } from "../shared/log";
+import { assertEffectiveCapabilityAllowsTool } from "./effective-capability";
 
 export const workRouter = Router();
 
@@ -37,6 +40,7 @@ const FinishBranchSchema = z.object({
   push: z.boolean().default(true),
   expectedCommitSha: z.string().optional(),
   patch: z.string().optional(),
+  tool_grant: z.unknown().optional(),
   runContext: z
     .object({
       traceId: z.string().optional(),
@@ -51,6 +55,12 @@ const FinishBranchSchema = z.object({
       workspaceRoot: z.string().optional(),
       capabilityId: z.string().optional(),
       agentId: z.string().optional(),
+      effectiveCapabilities: z.array(z.record(z.unknown())).optional(),
+      effective_capabilities: z.array(z.record(z.unknown())).optional(),
+      effectiveCapabilitiesRequired: z.boolean().optional(),
+      effective_capabilities_required: z.boolean().optional(),
+      profileSnapshotHash: z.string().optional(),
+      profile_snapshot_hash: z.string().optional(),
     })
     .default({}),
 });
@@ -66,6 +76,34 @@ workRouter.post("/work/finish-branch", async (req, res) => {
     );
   }
   const body = parsed.data;
+  const toolArgs = { message: body.message, push: body.push, remote: body.remote };
+  assertEffectiveCapabilityAllowsTool("finish_work_branch", body.runContext);
+  const mode = grantMode();
+  if (mode !== "off" && toolRequiresGrant("finish_work_branch")) {
+    const verdict = verifyToolGrant(body.tool_grant, {
+      toolName: "finish_work_branch",
+      args: toolArgs,
+      runContext: body.runContext,
+    });
+    if (!verdict.ok) {
+      const missing = verdict.code === "TOOL_GRANT_REQUIRED";
+      if (mode === "grace" && missing) {
+        log.warn(
+          { tool: "finish_work_branch", mode },
+          "[work/finish-branch] grace mode: dispatching finalize tool WITHOUT a ToolInvocationGrant",
+        );
+      } else {
+        log.warn(
+          { tool: "finish_work_branch", mode, code: verdict.code },
+          "[work/finish-branch] refusing finalize dispatch: grant verification failed",
+        );
+        throw new AppError(verdict.message, 403, verdict.code, {
+          tool_name: "finish_work_branch",
+          mode,
+        });
+      }
+    }
+  }
   const correlation = { ...body.runContext, mcpInvocationId: uuidv4() };
   const workspaceRoot = workspaceRootForRunContext({
     workItemId: body.runContext.workItemId,
@@ -105,9 +143,9 @@ workRouter.post("/work/finish-branch", async (req, res) => {
         throw new Error(`approved patch could not be restored before push: ${patchRestore.skippedReason}`);
       }
       const result = await finishWorkBranchTool.execute({
-        message: body.message,
-        push: body.push,
-        remote: body.remote,
+        message: toolArgs.message,
+        push: toolArgs.push,
+        remote: toolArgs.remote,
       });
       if (patchRestore && result.output && typeof result.output === "object") {
         Object.assign(result.output as Record<string, unknown>, {
@@ -120,7 +158,7 @@ workRouter.post("/work/finish-branch", async (req, res) => {
     const rec = recordToolInvocation({
       correlation,
       tool_name: "finish_work_branch",
-      args: redactSecrets({ message: body.message, push: body.push, remote: body.remote }),
+      args: redactSecrets(toolArgs),
       output: redactSecrets(r.output),
       success: r.success,
       error: r.error ? redactSecrets(r.error) : undefined,
@@ -136,7 +174,7 @@ workRouter.post("/work/finish-branch", async (req, res) => {
     const rec = recordToolInvocation({
       correlation,
       tool_name: "finish_work_branch",
-      args: redactSecrets({ message: body.message, push: body.push, remote: body.remote }),
+      args: redactSecrets(toolArgs),
       output: null,
       success: false,
       error: message,

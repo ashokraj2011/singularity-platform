@@ -3,7 +3,9 @@
 // '/agent'. In split-origin deployments (bare-metal) VITE_LINK_AGENT_ADMIN
 // points at Agent Studio's own host (e.g. http://localhost:3000), so the link
 // resolves there instead of bouncing back on this app's router.
-const AGENT_BASE = (import.meta.env.VITE_LINK_AGENT_ADMIN ?? '/agent').replace(/\/+$/, '')
+import { viteEnv } from 'identity-web/vite-env-compat'
+
+const AGENT_BASE = (viteEnv.VITE_LINK_AGENT_ADMIN ?? '/agents').replace(/\/+$/, '')
 
 /** Link to the Agent Studio capabilities page (optionally a specific capability). */
 export function agentStudioCapabilitiesHref(capabilityId?: string): string {

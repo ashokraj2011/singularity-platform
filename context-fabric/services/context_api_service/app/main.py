@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 import httpx
 import uuid
@@ -10,7 +10,7 @@ from context_fabric_shared.schemas import ContextPolicy
 from context_fabric_shared.http_client import post_json, get_json
 from .config import settings
 from .internal_mcp import router as internal_mcp_router
-from .execute import router as execute_router
+from .execute import check_execute_service_token, router as execute_router
 from .receipts import router as receipts_router
 from .laptop_bridge import (
     router as laptop_bridge_router,
@@ -173,7 +173,12 @@ def gateway_messages_from_compiled(compiled_messages: list[dict[str, Any]], user
 
 
 @app.post("/chat/respond", response_model=ChatRespondResponse)
-async def chat_respond(req: ChatRespondRequest, response: Response):
+async def chat_respond(
+    req: ChatRespondRequest,
+    response: Response,
+    x_service_token: str | None = Header(default=None, alias="X-Service-Token"),
+):
+    check_execute_service_token(x_service_token)
     response.headers["Deprecation"] = "true"
     response.headers["Sunset"] = "2026-07-01"
     response.headers["Link"] = '</execute>; rel="successor-version"'

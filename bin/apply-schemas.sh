@@ -25,6 +25,22 @@ C_BLUE=$'\033[1;34m'; C_GREEN=$'\033[1;32m'; C_END=$'\033[0m'
 info() { echo -e "${C_BLUE}▸${C_END} $*"; }
 ok()   { echo -e "${C_GREEN}✓${C_END} $*"; }
 
+runtime_container() {
+  if docker compose ps -q platform-core >/dev/null 2>&1 && [ -n "$(docker compose ps -q platform-core 2>/dev/null)" ]; then
+    echo singularity-platform-core
+  else
+    echo singularity-agent-runtime
+  fi
+}
+
+composer_container() {
+  if docker compose ps -q platform-core >/dev/null 2>&1 && [ -n "$(docker compose ps -q platform-core 2>/dev/null)" ]; then
+    echo singularity-platform-core
+  else
+    echo singularity-prompt-composer
+  fi
+}
+
 info "waiting for at-postgres…"
 for _ in $(seq 1 30); do
   docker exec singularity-at-postgres pg_isready -U postgres >/dev/null 2>&1 && break
@@ -44,19 +60,23 @@ docker exec singularity-at-postgres psql -U postgres -d singularity_composer -c 
 
 # Stage 1: agent-runtime pushes against `singularity`.
 info "applying agent-runtime schema (DB: singularity)…"
-docker exec singularity-agent-runtime sh -c \
+docker exec "$(runtime_container)" sh -c \
   "cd /app/apps/agent-runtime && npx prisma db push --skip-generate --accept-data-loss" \
+  2>&1 | tail -3
+info "applying agent-runtime post-push SQL (pgvector indexes + retrieval FTS)…"
+docker exec "$(runtime_container)" sh -c \
+  "cd /app/apps/agent-runtime && psql \"\$DATABASE_URL\" -v ON_ERROR_STOP=1 -q -f prisma/post-push.sql" \
   2>&1 | tail -3
 
 # Stage 2: prompt-composer pushes its OWNED schema against `singularity_composer`.
 # Its runtime-reader schema generates client only — no DDL on `singularity`.
 info "applying prompt-composer OWNED schema (DB: singularity_composer)…"
-docker exec singularity-prompt-composer sh -c \
+docker exec "$(composer_container)" sh -c \
   "cd /app/apps/prompt-composer && DATABASE_URL=postgresql://postgres:singularity@at-postgres:5432/singularity_composer npx prisma db push --schema=prisma/schema.prisma --skip-generate --accept-data-loss" \
   2>&1 | tail -3
 
 info "seeding prompt-composer base prompt profiles…"
-docker exec singularity-prompt-composer sh -c \
+docker exec "$(composer_container)" sh -c \
   "cd /app/apps/prompt-composer && DATABASE_URL=postgresql://postgres:singularity@at-postgres:5432/singularity_composer npm run seed" \
   2>&1 | tail -6
 
@@ -74,8 +94,13 @@ else
 fi
 
 # Restart both so any cached "table missing" errors clear.
-info "restarting agent-runtime + prompt-composer to clear cached errors…"
-docker compose restart agent-runtime prompt-composer 2>&1 | tail -3
+if docker compose ps -q platform-core >/dev/null 2>&1 && [ -n "$(docker compose ps -q platform-core 2>/dev/null)" ]; then
+  info "restarting platform-core to clear cached errors…"
+  docker compose restart platform-core 2>&1 | tail -3
+else
+  info "restarting agent-runtime + prompt-composer to clear cached errors…"
+  docker compose restart agent-runtime prompt-composer 2>&1 | tail -3
+fi
 
 ok "done."
 echo

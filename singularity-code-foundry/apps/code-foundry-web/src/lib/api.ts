@@ -107,7 +107,8 @@ class ApiError extends Error {
 // M100 P1 — prefix every API path with the Vite base so that behind the
 // single-origin edge gateway (base '/foundry/') requests go to /foundry/api/*
 // and route to this app; standalone (base '/') it stays /api/*.
-const API_PREFIX = import.meta.env.BASE_URL.replace(/\/$/, '')
+const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
+const API_PREFIX = (viteEnv.BASE_URL ?? '/').replace(/\/$/, '')
 
 function getToken(): string | null {
   // M100 P0 — the SERVICE token is NOT read from a build-time env var anymore

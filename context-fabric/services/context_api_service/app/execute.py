@@ -26,13 +26,13 @@ import asyncio
 import json
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from . import call_log, events_store
 from .audit_gov_emit import emit_audit_event
-from .config import settings
+from .config import is_production_class_env, settings
 from .governed import placement as _placement
 from .iam_service_token import get_iam_service_token, invalidate_iam_service_token
 
@@ -78,11 +78,26 @@ _normalize_tool_for_mcp = _tool_mod.normalize_tool_for_mcp
 _local_tool = _tool_mod.local_tool
 _mandatory_local_tools_for_request = _tool_mod.mandatory_local_tools_for_request
 _merge_mandatory_local_tools = _tool_mod.merge_mandatory_local_tools
+_filter_tools_by_effective_capabilities = _tool_mod.filter_tools_by_effective_capabilities
 _default_mcp_record = _runtime_mod.default_mcp_record
 _resolve_mcp_record = _runtime_mod.resolve_mcp_record
 _mcp_record_by_id = _runtime_mod.mcp_record_by_id
 
 router = APIRouter()
+
+
+def check_execute_service_token(provided: Optional[str]) -> None:
+    if not is_production_class_env():
+        return
+    expected = settings.iam_service_token
+    if not expected:
+        raise HTTPException(status_code=503, detail="IAM_SERVICE_TOKEN is not configured on context-fabric")
+    if not provided or provided != expected:
+        raise HTTPException(status_code=401, detail="invalid service token")
+
+
+def _check_execute_read_service_token(provided: Optional[str]) -> None:
+    check_execute_service_token(provided)
 
 
 # ── Request/Response models ───────────────────────────────────────────────
@@ -103,6 +118,9 @@ class RunContext(BaseModel):
     source_type: Optional[str] = None
     source_uri: Optional[str] = None
     source_ref: Optional[str] = None
+    effective_capabilities: list[dict[str, Any]] = Field(default_factory=list)
+    profile_snapshot_hash: Optional[str] = None
+    profile_provider_resolutions: list[dict[str, Any]] = Field(default_factory=list)
     # §13.4 — when "copilot", CF does NOT run the function-calling loop; it
     # dispatches the `copilot_execute` tool to mcp-server (laptop-routed) which
     # runs `copilot -p --allow-all` in the work-item workspace, and wraps the
@@ -140,15 +158,49 @@ class ExecuteRequest(BaseModel):
     # laptop. When None, the bridge is used opportunistically (auto-prefer
     # if a connection exists for the user).
     prefer_laptop: Optional[bool] = None
-    # Governance posture for this execution:
-    # fail_open, fail_closed, degraded, human_approval_required.
-    governance_mode: str = "fail_open"
+    # Governance posture for this execution. When omitted, Context Fabric uses
+    # DEFAULT_GOVERNANCE_MODE; production-class deploys require fail_closed.
+    governance_mode: Optional[str] = None
 
 
 GOVERNANCE_MODES = {"fail_open", "fail_closed", "degraded", "human_approval_required"}
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────
+
+def _agent_runtime_api_base() -> str:
+    base = settings.agent_runtime_url.rstrip("/")
+    if not base:
+        return ""
+    return base if base.endswith("/api/v1") else f"{base}/api/v1"
+
+
+async def _resolve_agent_profile_capabilities(
+    agent_template_id: Optional[str],
+    existing_capabilities: Any = None,
+    existing_snapshot_hash: Optional[str] = None,
+    existing_provider_resolutions: Any = None,
+) -> tuple[list[dict[str, Any]], Optional[str], list[dict[str, Any]]]:
+    if isinstance(existing_capabilities, list):
+        provider_resolutions = [item for item in existing_provider_resolutions if isinstance(item, dict)] if isinstance(existing_provider_resolutions, list) else []
+        return [item for item in existing_capabilities if isinstance(item, dict)], existing_snapshot_hash, provider_resolutions
+    base = _agent_runtime_api_base()
+    if not base or not agent_template_id:
+        return [], existing_snapshot_hash, []
+    service_token = await get_iam_service_token()
+    resolved = await _post(
+        f"{base}/agents/profiles/{agent_template_id}/resolve",
+        {},
+        timeout=10.0,
+        headers={"Authorization": f"Bearer {service_token or ''}"},
+    )
+    data = resolved.get("data") if isinstance(resolved.get("data"), dict) else resolved
+    raw_capabilities = data.get("effectiveCapabilities") if isinstance(data, dict) else []
+    capabilities = [item for item in raw_capabilities if isinstance(item, dict)] if isinstance(raw_capabilities, list) else []
+    snapshot_hash = data.get("snapshotHash") if isinstance(data, dict) and isinstance(data.get("snapshotHash"), str) else existing_snapshot_hash
+    raw_provider_resolutions = data.get("providerResolutions") if isinstance(data, dict) else []
+    provider_resolutions = [item for item in raw_provider_resolutions if isinstance(item, dict)] if isinstance(raw_provider_resolutions, list) else []
+    return capabilities, snapshot_hash, provider_resolutions
 
 async def _get(url: str, params: Optional[dict] = None, timeout: float = 30.0,
                headers: Optional[dict] = None) -> dict:
@@ -176,11 +228,15 @@ TOOL_RISK_LEVELS = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 # ── Orchestrator ──────────────────────────────────────────────────────────
 
 @router.post("/execute")
-async def execute(req: ExecuteRequest):
+async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")):
+    check_execute_service_token(x_service_token)
     cf_call_id = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc).isoformat()
     trace_id = req.trace_id or req.run_context.trace_id or str(uuid.uuid4())
-    governance_mode = _governance_mode(req.governance_mode)
+    governance_mode = _governance_mode(
+        req.governance_mode or settings.default_governance_mode,
+        fallback=settings.default_governance_mode,
+    )
     session_id = (
         f"wf:{req.run_context.workflow_instance_id}:{req.run_context.workflow_node_id}"
         if req.run_context.workflow_instance_id and req.run_context.workflow_node_id
@@ -218,6 +274,31 @@ async def execute(req: ExecuteRequest):
     if settings.require_tenant_id and not req.run_context.tenant_id:
         raise HTTPException(status_code=400, detail="run_context.tenant_id is required when REQUIRE_TENANT_ID=true")
 
+    effective_capabilities: list[dict[str, Any]] = []
+    profile_snapshot_hash: Optional[str] = None
+    profile_provider_resolutions: list[dict[str, Any]] = []
+    effective_capabilities_provided = bool(req.run_context.effective_capabilities)
+    effective_capabilities_required = bool(req.run_context.agent_template_id or effective_capabilities_provided)
+    if req.run_context.effective_capabilities:
+        effective_capabilities = req.run_context.effective_capabilities
+        profile_snapshot_hash = req.run_context.profile_snapshot_hash
+        profile_provider_resolutions = req.run_context.profile_provider_resolutions
+    elif settings.agent_runtime_url and req.run_context.agent_template_id:
+        try:
+            effective_capabilities, profile_snapshot_hash, profile_provider_resolutions = await _resolve_agent_profile_capabilities(
+                req.run_context.agent_template_id,
+                req.run_context.effective_capabilities,
+                req.run_context.profile_snapshot_hash,
+                req.run_context.profile_provider_resolutions,
+            )
+            req.run_context.effective_capabilities = effective_capabilities
+            req.run_context.profile_snapshot_hash = profile_snapshot_hash
+            req.run_context.profile_provider_resolutions = profile_provider_resolutions
+        except Exception as exc:
+            if governance_mode == "fail_closed":
+                raise HTTPException(status_code=502, detail=f"agent profile resolution failed: {exc!s}")
+            composer_warnings.append(f"agent profile resolution unavailable: {exc!s}")
+
     # Context Fabric owns the run-level tool list. The same descriptors are
     # rendered into the prompt by Prompt Composer and sent to MCP for execution.
     tools_for_mcp: list[dict[str, Any]] = []
@@ -231,6 +312,7 @@ async def execute(req: ExecuteRequest):
                     "query": req.task,
                     "risk_max": "high",
                     "limit": 8,
+                    "effective_capabilities": effective_capabilities,
                 },
                 timeout=10.0,
             )
@@ -243,6 +325,12 @@ async def execute(req: ExecuteRequest):
             composer_warnings.append(f"tool discovery unavailable: {exc!s}")
 
     tools_for_mcp = _merge_mandatory_local_tools(tools_for_mcp, req)
+    tools_for_mcp, tool_gate_warnings = _filter_tools_by_effective_capabilities(
+        tools_for_mcp,
+        effective_capabilities,
+        require_effective_capabilities=effective_capabilities_required,
+    )
+    composer_warnings.extend(tool_gate_warnings)
 
     # M52 — Code Context Budgeter orchestration. For Developer-style stages,
     # call mcp-server's /mcp/code-context/build BEFORE prompt composition so
@@ -317,6 +405,8 @@ async def execute(req: ExecuteRequest):
                 "modelOverrides": req.model_overrides,
                 "contextPolicy": _composer_context_policy(req.context_policy, req.limits),
                 "toolDescriptors": tools_for_mcp,
+                "effectiveCapabilities": effective_capabilities,
+                "effectiveCapabilitiesRequired": effective_capabilities_required,
                 # M44 Slice C — Context Fabric always sends tools through the
                 # structured channel (toolDescriptors → MCP → LLM provider's
                 # `tools` parameter), so the schema dump duplicated inside
@@ -357,10 +447,20 @@ async def execute(req: ExecuteRequest):
                 ),
                 "previewOnly": True,
             }
+            composer_headers: dict[str, str] = {}
+            composer_bearer = (
+                req.bearer
+                or await get_iam_service_token()
+                or os.environ.get("PROMPT_COMPOSER_SERVICE_TOKEN")
+                or os.environ.get("CONTEXT_FABRIC_SERVICE_TOKEN")
+            )
+            if composer_bearer:
+                composer_headers["authorization"] = f"Bearer {composer_bearer}"
             composed = await _post(
                 f"{settings.composer_url.rstrip('/')}/api/v1/compose-and-respond",
                 compose_payload,
                 timeout=60.0,
+                headers=composer_headers or None,
             )
             data = composed.get("data") or composed
             composer_available = True
@@ -382,6 +482,33 @@ async def execute(req: ExecuteRequest):
             composer_warnings.append(f"composer unreachable: {exc!s}")
 
     required_context_status = _context_plan_status(context_plan, composer_available if req.run_context.agent_template_id else bool(system_prompt))
+    approved_context_plan_bypass = req.context_policy.get("approvedContextPlanBypass")
+    if approved_context_plan_bypass and not required_context_status.get("valid"):
+        bypassed_status = dict(required_context_status)
+        required_context_status = {
+            **bypassed_status,
+            "valid": True,
+            "reason": None,
+            "approvedContextPlanBypass": approved_context_plan_bypass,
+            "bypassedRequiredContextStatus": bypassed_status,
+            "missingRequired": [],
+        }
+        composer_warnings.append(
+            f"context plan approval {approved_context_plan_bypass} bypassed missing required prompt context"
+        )
+        emit_audit_event(
+            kind="governance.context_approval.bypass_used",
+            trace_id=trace_id,
+            subject_type="CfCallLog",
+            subject_id=cf_call_id,
+            capability_id=req.run_context.capability_id,
+            severity="warn",
+            payload={
+                "approved_context_plan_bypass": approved_context_plan_bypass,
+                "governance_mode": governance_mode,
+                "bypassed_required_context_status": bypassed_status,
+            },
+        )
     context_plan_hash = context_plan_hash or required_context_status.get("contextPlanHash")
     if required_context_status.get("valid"):
         emit_audit_event(
@@ -456,6 +583,9 @@ async def execute(req: ExecuteRequest):
                 "capability_id": req.run_context.capability_id,
                 "tenant_id": req.run_context.tenant_id,
                 "agent_template_id": req.run_context.agent_template_id,
+                "profile_snapshot_hash": profile_snapshot_hash,
+                "profile_provider_resolutions": profile_provider_resolutions,
+                "profile_effective_capabilities": effective_capabilities,
                 "session_id": session_id,
                 "prompt_assembly_id": prompt_assembly_id,
                 "status": "WAITING_APPROVAL",
@@ -633,6 +763,10 @@ async def execute(req: ExecuteRequest):
             "sourceType": req.run_context.source_type,
             "sourceUri": req.run_context.source_uri,
             "sourceRef": req.run_context.source_ref,
+            "effectiveCapabilities": effective_capabilities,
+            "effectiveCapabilitiesRequired": effective_capabilities_required,
+            "profileSnapshotHash": profile_snapshot_hash,
+            "profileProviderResolutions": profile_provider_resolutions,
             "traceId": trace_id,
         }),
         "limits": _strip_nones({
@@ -890,6 +1024,9 @@ async def execute(req: ExecuteRequest):
         "capability_id": req.run_context.capability_id,
         "tenant_id": req.run_context.tenant_id,
         "agent_template_id": req.run_context.agent_template_id,
+        "profile_snapshot_hash": profile_snapshot_hash,
+        "profile_provider_resolutions": profile_provider_resolutions,
+        "profile_effective_capabilities": effective_capabilities,
         "session_id": session_id,
         "prompt_assembly_id": prompt_assembly_id,
         "mcp_server_id": mcp_server_id,
@@ -1039,6 +1176,9 @@ def _persist_failure(
             "capability_id": req.run_context.capability_id,
             "tenant_id": req.run_context.tenant_id,
             "agent_template_id": req.run_context.agent_template_id,
+            "profile_snapshot_hash": req.run_context.profile_snapshot_hash,
+            "profile_provider_resolutions": req.run_context.profile_provider_resolutions,
+            "profile_effective_capabilities": req.run_context.effective_capabilities,
             "session_id": session_id,
             "prompt_assembly_id": prompt_assembly_id,
             "mcp_server_id": mcp_server_id,
@@ -1054,7 +1194,8 @@ def _persist_failure(
 # ── CallLog read endpoints ────────────────────────────────────────────────
 
 @router.get("/execute/calls/{call_id}")
-async def get_call(call_id: str):
+async def get_call(call_id: str, x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")):
+    _check_execute_read_service_token(x_service_token)
     rec = call_log.get_by_id(call_id)
     if not rec:
         raise HTTPException(status_code=404, detail="call not found")
@@ -1065,7 +1206,9 @@ async def get_call(call_id: str):
 async def list_calls(trace_id: Optional[str] = None,
                      workflow_run_id: Optional[str] = None,
                      tenant_id: Optional[str] = None,
-                     limit: int = 50):
+                     limit: int = 50,
+                     x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")):
+    _check_execute_read_service_token(x_service_token)
     if trace_id:
         return {"items": call_log.list_by_trace(trace_id, limit)}
     if workflow_run_id:
@@ -1087,7 +1230,9 @@ async def list_events(
     since_id: Optional[str] = None,
     since_timestamp: Optional[str] = None,
     limit: int = 500,
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
 ):
+    _check_execute_read_service_token(x_service_token)
     """List persisted MCP events.
 
     One of `trace_id` or `run_id` must be provided. `since_id` /
@@ -1123,7 +1268,9 @@ async def stream_events(
     since_id: Optional[str] = None,
     poll_interval_ms: int = 800,
     max_idle_seconds: int = 60,
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
 ):
+    _check_execute_read_service_token(x_service_token)
     """Server-Sent Events stream — long-poll the events table for `trace_id`.
 
     Sends:
@@ -1172,7 +1319,8 @@ async def stream_events(
 
 
 @router.get("/execute/events/{event_id}")
-async def get_event(event_id: str):
+async def get_event(event_id: str, x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")):
+    _check_execute_read_service_token(x_service_token)
     rec = events_store.get_by_id(event_id)
     if not rec:
         raise HTTPException(status_code=404, detail="event not found")
@@ -1180,7 +1328,8 @@ async def get_event(event_id: str):
 
 
 @router.post("/execute/calls/{call_id}/refresh-events")
-async def refresh_events_for_call(call_id: str):
+async def refresh_events_for_call(call_id: str, x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")):
+    _check_execute_read_service_token(x_service_token)
     """Re-drain events from the MCP server for an existing CallLog row.
 
     Useful when the original drain at /execute time missed events (network
@@ -1217,7 +1366,8 @@ class ResumeRequest(BaseModel):
 
 
 @router.post("/execute/resume")
-async def execute_resume(req: ResumeRequest):
+async def execute_resume(req: ResumeRequest, x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")):
+    check_execute_service_token(x_service_token)
     if req.decision not in ("approved", "rejected"):
         raise HTTPException(status_code=400, detail="decision must be 'approved' or 'rejected'")
 
@@ -1305,7 +1455,10 @@ async def execute_resume(req: ResumeRequest):
         if not isinstance(original, dict):
             raise HTTPException(status_code=409, detail="context_plan_approval row has no saved executeRequest")
         approved_request = dict(original)
-        approved_request["governance_mode"] = "fail_open"
+        approved_request["governance_mode"] = _governance_mode(
+            approved_request.get("governance_mode") or settings.default_governance_mode,
+            fallback=settings.default_governance_mode,
+        )
         context_policy = dict(approved_request.get("context_policy") or {})
         context_policy["approvedContextPlanBypass"] = rec["id"]
         approved_request["context_policy"] = context_policy
@@ -1331,13 +1484,13 @@ async def execute_resume(req: ResumeRequest):
             "pending_tool_name": None,
             "pending_tool_args": None,
         })
-        resumed = await execute(ExecuteRequest.model_validate(approved_request))
+        resumed = await execute(ExecuteRequest.model_validate(approved_request), x_service_token=x_service_token)
         if isinstance(resumed, dict):
             resumed["decision"] = req.decision
             resumed["approvedContextPlanCfCallId"] = rec["id"]
             resumed.setdefault("warnings", [])
             if isinstance(resumed["warnings"], list):
-                resumed["warnings"].append(f"context plan approval {rec['id']} allowed one fail_open retry")
+                resumed["warnings"].append(f"context plan approval {rec['id']} bypassed the missing context plan once")
         return resumed
 
     mcp_server_id = rec.get("mcp_server_id")
@@ -1562,12 +1715,13 @@ class GovernedStepRequest(BaseModel):
 
 
 @router.post("/api/v1/execute-governed")
-async def execute_governed(req: GovernedStepRequest) -> dict[str, Any]:
+async def execute_governed(req: GovernedStepRequest, x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")) -> dict[str, Any]:
     """Run one governed turn.
 
     Returns the result of `governed_step`, with the next PhaseState the
     caller is expected to persist before the next turn.
     """
+    check_execute_service_token(x_service_token)
     # Construct or rehydrate the phase state.
     if req.phase_state:
         try:
@@ -1677,8 +1831,9 @@ class GovernedTurnRequest(BaseModel):
 
 
 @router.post("/api/v1/execute-governed-turn")
-async def execute_governed_turn(req: GovernedTurnRequest) -> dict[str, Any]:
+async def execute_governed_turn(req: GovernedTurnRequest, x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")) -> dict[str, Any]:
     """Run one governed LLM turn."""
+    check_execute_service_token(x_service_token)
     if req.phase_state:
         try:
             state = PhaseState.from_dict(req.phase_state)
@@ -1829,8 +1984,9 @@ class GovernedStageRequest(BaseModel):
 
 
 @router.post("/api/v1/execute-governed-stage")
-async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
+async def execute_governed_stage(req: GovernedStageRequest, x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")) -> dict[str, Any]:
     """Run a governed stage end-to-end (multi-turn)."""
+    check_execute_service_token(x_service_token)
     # Laptop preflight — when the caller requires the user's laptop bridge but no
     # live bridge is connected, refuse rather than silently falling back to the
     # managed HTTP runtime (governed dispatch.py would otherwise do a silent
@@ -1851,6 +2007,48 @@ async def execute_governed_stage(req: GovernedStageRequest) -> dict[str, Any]:
                 "message": "Your laptop mcp-server is not connected. Run `singularity-mcp start` and retry.",
                 "user_id": str(_gov_user_id),
             })
+
+    _agent_template_id = (
+        _gov_run_ctx.get("agent_template_id")
+        or _gov_run_ctx.get("agentTemplateId")
+        or _gov_run_ctx.get("agentId")
+    )
+    try:
+        _effective_caps, _profile_snapshot_hash, _profile_provider_resolutions = await _resolve_agent_profile_capabilities(
+            str(_agent_template_id) if _agent_template_id else None,
+            _gov_run_ctx.get("effective_capabilities") or _gov_run_ctx.get("effectiveCapabilities"),
+            _gov_run_ctx.get("profile_snapshot_hash") or _gov_run_ctx.get("profileSnapshotHash"),
+            _gov_run_ctx.get("profile_provider_resolutions") or _gov_run_ctx.get("profileProviderResolutions"),
+        )
+        if _agent_template_id or _effective_caps:
+            req.run_context = {
+                **_gov_run_ctx,
+                "effective_capabilities": _effective_caps,
+                "effectiveCapabilities": _effective_caps,
+                "effective_capabilities_required": bool(_agent_template_id),
+                "effectiveCapabilitiesRequired": bool(_agent_template_id),
+                "profile_snapshot_hash": _profile_snapshot_hash,
+                "profileSnapshotHash": _profile_snapshot_hash,
+                "profile_provider_resolutions": _profile_provider_resolutions,
+                "profileProviderResolutions": _profile_provider_resolutions,
+            }
+    except Exception as exc:
+        if _agent_template_id:
+            req.run_context = {
+                **_gov_run_ctx,
+                "effective_capabilities": [],
+                "effectiveCapabilities": [],
+                "effective_capabilities_required": True,
+                "effectiveCapabilitiesRequired": True,
+                "profile_resolution_warning": f"agent profile resolution unavailable: {exc!s}",
+            }
+        else:
+            # Legacy governed stages without profile identity retain the
+            # historical stage-policy gate.
+            req.run_context = {
+                **_gov_run_ctx,
+                "profile_resolution_warning": f"agent profile resolution unavailable: {exc!s}",
+            }
 
     if req.phase_state:
         try:
@@ -2020,14 +2218,19 @@ class GovernedSingleTurnRequest(BaseModel):
     # Caller-supplied prompt, used VERBATIM (the whole point — no re-assembly).
     system_prompt: str = ""
     task: str
-    model_overrides: Optional[dict[str, Any]] = None  # {modelAlias, temperature, maxOutputTokens}
+    model_overrides: Optional[dict[str, Any]] = None  # {modelAlias, provider/model expectations, temperature, maxOutputTokens}
     limits: Optional[dict[str, Any]] = None
     governance_overlay: Optional[dict[str, Any]] = None
     governance_waivers: Optional[list[str]] = None
+    governance_mode: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("governance_mode", "governanceMode"),
+    )
 
 
 @router.post("/api/v1/execute-governed-single-turn")
-async def execute_governed_single_turn(req: GovernedSingleTurnRequest) -> dict[str, Any]:
+async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")) -> dict[str, Any]:
+    check_execute_service_token(x_service_token)
     from .governed.llm_client import call_gateway_chat
     from .governed.placement import llm_laptop_target
 
@@ -2038,6 +2241,13 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest) -> dict[s
     overlay_hash = overlay.get("overlayHash") if overlay else None
     mo = req.model_overrides or {}
     limits = req.limits or {}
+    governance_mode = _governance_mode(
+        req.governance_mode
+        or rc.get("governance_mode")
+        or rc.get("governanceMode")
+        or settings.default_governance_mode,
+        fallback=settings.default_governance_mode,
+    )
 
     messages: list[dict[str, Any]] = []
     if req.system_prompt and req.system_prompt.strip():
@@ -2048,6 +2258,8 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest) -> dict[s
         resp = await call_gateway_chat(
             messages=messages,
             model_alias=mo.get("modelAlias") or mo.get("model_alias"),
+            expected_provider=mo.get("expectedProvider") or mo.get("expected_provider") or mo.get("provider"),
+            expected_model=mo.get("expectedModel") or mo.get("expected_model") or mo.get("model"),
             temperature=mo.get("temperature"),
             max_output_tokens=(
                 mo.get("maxOutputTokens")
@@ -2073,6 +2285,7 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest) -> dict[s
         payload={
             "posture": "governed_turn",
             "overlayHash": overlay_hash,
+            "governanceMode": governance_mode,
             "governanceOverlay": overlay,
             "governanceWaivers": req.governance_waivers,
             "provider": resp.provider, "model": resp.model, "modelAlias": resp.model_alias,
@@ -2094,7 +2307,7 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest) -> dict[s
             "cfCallId": f"governed-turn:{trace_id}",
             "traceId": trace_id,
             "modelAlias": resp.model_alias,
-            "governanceMode": "fail_open",
+            "governanceMode": governance_mode,
             "executionPosture": "governed",
             "llmCallIds": [], "toolInvocationIds": [], "artifactIds": [], "codeChangeIds": [],
         },

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { businessUnitsApi } from '@/api/business-units.api'
-import type { CreateBusinessUnitRequest, UpdateBusinessUnitRequest } from '@/types'
+import { businessUnitsApi } from 'identity-web/api/business-units.api'
+import type { CreateBusinessUnitRequest, UpdateBusinessUnitRequest } from 'identity-web/types'
 
 export function useBusinessUnits(params?: { page?: number; size?: number }) {
   return useQuery({

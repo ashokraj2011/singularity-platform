@@ -6,6 +6,7 @@ This directory is the starting point for operating, extending, and explaining th
 
 - [Platform Handbook](./platform-handbook.md) - detailed architecture, capabilities, components, installation, configuration, runtime flows, operations, and troubleshooting.
 - [Platform Handbook HTML](./platform-handbook.html) - browser-friendly standalone version of the handbook.
+- [Unified Platform Web](./unified-platform-web.md) - one frontend container, canonical routes, redirects, and bare-metal notes.
 - [Data Model Overview](./data-model/00-platform-overview.md) - database ownership, service boundaries, and cross-service relationships.
 - [Runtime Discovery](./runtime-discovery.md) - standardized runtime discovery surface.
 - [Trace Contract](./trace-contract.md) - trace propagation and event correlation contract.

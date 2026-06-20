@@ -116,6 +116,9 @@ const InvokeSchema = z.object({
     sourceType: z.string().optional(),
     sourceUri: z.string().optional(),
     sourceRef: z.string().optional(),
+    effectiveCapabilities: z.array(z.record(z.unknown())).optional(),
+    effectiveCapabilitiesRequired: z.boolean().optional(),
+    profileSnapshotHash: z.string().optional(),
     dependencyState: z.object({
       changed_paths: z.array(z.string()).optional(),
     }).optional(),
@@ -147,7 +150,7 @@ const InvokeSchema = z.object({
       FINALIZE: z.number().int().positive().optional(),
     }).optional(),
   }).default({}),
-  governanceMode: z.enum(["fail_open", "fail_closed", "degraded", "human_approval_required"]).default("fail_open"),
+  governanceMode: z.enum(["fail_open", "fail_closed", "degraded", "human_approval_required"]).optional(),
   contextPlanHash: z.string().optional(),
   degradedActionsAllowed: z.array(z.string()).default([]),
   allowAutonomousMutation: z.boolean().optional(),
@@ -622,6 +625,15 @@ let cachedNudgePrompt: string | null = null;
 let cachedNudgePromptAt = 0;
 const NUDGE_PROMPT_TTL_MS = Number(process.env.SYSTEM_PROMPT_CACHE_TTL_SEC ?? 300) * 1000;
 
+function promptComposerAuthHeaders(): Record<string, string> {
+  const token = (
+    process.env.PROMPT_COMPOSER_SERVICE_TOKEN
+    ?? process.env.CONTEXT_FABRIC_SERVICE_TOKEN
+    ?? ""
+  ).trim();
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
 async function getNudgePrompt(): Promise<string> {
   if (cachedNudgePrompt && Date.now() - cachedNudgePromptAt < NUDGE_PROMPT_TTL_MS) {
     return cachedNudgePrompt;
@@ -633,7 +645,7 @@ async function getNudgePrompt(): Promise<string> {
     );
   }
   const url = `${composerUrl.replace(/\/$/, "")}/api/v1/system-prompts/${encodeURIComponent(NUDGE_PROMPT_KEY)}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+  const res = await fetch(url, { headers: promptComposerAuthHeaders(), signal: AbortSignal.timeout(5_000) });
   if (!res.ok) {
     if (cachedNudgePrompt) return cachedNudgePrompt; // stale-ok
     throw new Error(`mcp-server nudge prompt fetch ${NUDGE_PROMPT_KEY} failed: ${res.status}`);
@@ -663,7 +675,7 @@ async function getApplierPrompt(): Promise<string> {
   }
   const url = `${composerUrl.replace(/\/$/, "")}/api/v1/system-prompts/${encodeURIComponent(APPLIER_PROMPT_KEY)}`;
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+    const res = await fetch(url, { headers: promptComposerAuthHeaders(), signal: AbortSignal.timeout(5_000) });
     if (!res.ok) {
       if (cachedApplierPrompt) return cachedApplierPrompt;
       return DEFAULT_APPLIER_PROMPT;
@@ -3180,7 +3192,7 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
       astIndexedFiles: astStats.indexedFiles,
       astIndexedSymbols: astStats.indexedSymbols,
     },
-    governanceMode: body.governanceMode,
+    governanceMode: body.governanceMode ?? config.MCP_DEFAULT_GOVERNANCE_MODE,
     contextPlanHash: body.contextPlanHash,
     degradedActionsAllowed: body.degradedActionsAllowed ?? [],
     allowAutonomousMutation: body.allowAutonomousMutation === true,
@@ -3379,7 +3391,7 @@ invokeRouter.post("/resume", async (req, res) => {
       toolResultsCompressed: 0,
       toolResultBytesSaved: 0,
     },
-    governanceMode: env.governance_mode ?? "fail_open",
+    governanceMode: env.governance_mode ?? config.MCP_DEFAULT_GOVERNANCE_MODE,
     contextPlanHash: env.context_plan_hash,
     degradedActionsAllowed: env.degraded_actions_allowed ?? [],
     allowAutonomousMutation: env.allow_autonomous_mutation === true,
@@ -4479,6 +4491,11 @@ async function dispatchToolCall(
           toolName: tc.name,
           toolVersion: desc.version,
           approvalId: approvedContinuationToken,
+          requestedCapabilityId: tc.name,
+          requestedPermission: "invoke",
+          effectiveCapabilities: Array.isArray((correlation as unknown as Record<string, unknown>).effectiveCapabilities)
+            ? (correlation as unknown as Record<string, unknown>).effectiveCapabilities
+            : [],
           args: tc.args ?? {},
         }),
         signal: AbortSignal.timeout((config.TIMEOUT_SEC ?? 240) * 1000),
@@ -4486,47 +4503,47 @@ async function dispatchToolCall(
       // M35.4 — capture raw response body even when JSON parse fails so we
       // can debug 5xx errors from context-fabric. Previously the silent
       // .catch(() => ({})) made every parse failure look like an empty 200.
-      let body: { status?: string; error?: unknown; reason?: unknown; tool_execution_id?: unknown; receipt?: unknown } = {};
+      let serverBody: { status?: string; error?: unknown; reason?: unknown; tool_execution_id?: unknown; receipt?: unknown } = {};
       let rawBody = "";
       try {
         rawBody = await response.text();
-        body = rawBody ? JSON.parse(rawBody) : {};
+        serverBody = rawBody ? JSON.parse(rawBody) : {};
       } catch (parseErr) {
         log.warn({ url, status: response.status, parseErr: (parseErr as Error).message, rawBody: rawBody.slice(0, 200) },
           "context-fabric SERVER tool adapter returned non-JSON body");
       }
       if (!response.ok) {
-        throw new Error(`context-fabric SERVER tool adapter returned ${response.status}: ${rawBody.slice(0, 400) || JSON.stringify(body).slice(0, 400)}`);
+        throw new Error(`context-fabric SERVER tool adapter returned ${response.status}: ${rawBody.slice(0, 400) || JSON.stringify(serverBody).slice(0, 400)}`);
       }
-      if (body.status === "waiting_approval") {
+      if (serverBody.status === "waiting_approval") {
         const rec = recordToolInvocation({
           correlation,
           tool_name: tc.name,
           args: tc.args,
-          output: body,
+          output: serverBody,
           success: false,
-          error: String(body.reason ?? "SERVER tool requires approval"),
+          error: String(serverBody.reason ?? "SERVER tool requires approval"),
           latency_ms: Date.now() - start,
         });
         const out = finishWith(rec, "info");
         return {
           ...out,
           approvalRequired: {
-            reason: String(body.reason ?? "SERVER tool requires approval"),
+            reason: String(serverBody.reason ?? "SERVER tool requires approval"),
             riskLevel: desc.risk_level,
           },
         };
       }
-      const success = body.status === "success";
+      const success = serverBody.status === "success";
       const delegationReceipt = {
         kind: "delegation_receipt",
         execution_target: "SERVER",
         tool_name: tc.name,
         tool_version: desc.version,
-        status: body.status ?? "unknown",
+        status: serverBody.status ?? "unknown",
         context_fabric_url: config.CONTEXT_FABRIC_URL,
-        tool_execution_id: typeof body.tool_execution_id === "string" ? body.tool_execution_id : undefined,
-        downstream_receipt: body.receipt,
+        tool_execution_id: typeof serverBody.tool_execution_id === "string" ? serverBody.tool_execution_id : undefined,
+        downstream_receipt: serverBody.receipt,
         capturedAt: new Date().toISOString(),
       };
       return finishWith(
@@ -4534,9 +4551,9 @@ async function dispatchToolCall(
           correlation,
           tool_name: tc.name,
           args: tc.args,
-          output: { ...body, delegation_receipt: delegationReceipt },
+          output: { ...serverBody, delegation_receipt: delegationReceipt },
           success,
-          error: success ? undefined : String(body.error ?? body.reason ?? `SERVER tool returned ${body.status ?? "unknown"}`),
+          error: success ? undefined : String(serverBody.error ?? serverBody.reason ?? `SERVER tool returned ${serverBody.status ?? "unknown"}`),
           latency_ms: Date.now() - start,
         }),
         success ? "info" : "error",

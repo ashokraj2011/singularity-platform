@@ -4,6 +4,12 @@ import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
 import { minioClient } from '../../lib/minio'
 import { NotFoundError, ValidationError } from '../../lib/errors'
+import {
+  assertDocumentTenant,
+  requireTenantScopedInternalToken,
+  tenantIsolationStrict,
+} from '../../lib/tenant-isolation'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 
 export const internalArtifactFetchRouter: Router = Router()
 
@@ -85,6 +91,7 @@ internalArtifactFetchRouter.post('/fetch', async (req, res, next) => {
     if (!hasServiceToken(req)) {
       return res.status(401).json({ code: 'UNAUTHORIZED', message: 'Invalid artifact fetch service token' })
     }
+    requireTenantScopedInternalToken(req, 'internal artifact fetch')
     const body = fetchSchema.parse(req.body ?? {})
     const maxBytes = Math.min(body.maxBytes ?? MAX_BYTES, MAX_BYTES)
     let bucket = config.MINIO_BUCKET
@@ -94,7 +101,10 @@ internalArtifactFetchRouter.post('/fetch', async (req, res, next) => {
 
     const documentId = body.documentId ?? (body.minioRef ? parseObjectRef(body.minioRef).documentId : undefined)
     if (documentId) {
-      const doc = await prisma.document.findUnique({ where: { id: documentId } })
+      const doc = await withTenantDbTransaction(prisma, async () => {
+        await assertDocumentTenant(req, documentId)
+        return prisma.document.findUnique({ where: { id: documentId } })
+      })
       if (!doc) throw new NotFoundError('Document', documentId)
       if (doc.kind === 'LINK') throw new ValidationError('Linked documents are not fetched server-side; pass an excerpt or governed upload.')
       if (!doc.bucket || !doc.storageKey) throw new ValidationError('Document has no MinIO object reference')
@@ -104,6 +114,9 @@ internalArtifactFetchRouter.post('/fetch', async (req, res, next) => {
       mediaType = doc.mimeType
       source = `document:${doc.id}`
     } else if (body.minioRef) {
+      if (tenantIsolationStrict()) {
+        throw new ValidationError('TENANT_ISOLATION_MODE=strict requires documentId or document: minioRef for internal artifact fetch')
+      }
       const parsed = parseObjectRef(body.minioRef)
       bucket = parsed.bucket
       key = parsed.key

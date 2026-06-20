@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { rolesApi } from '@/api/roles.api'
-import type { CreateRoleRequest, AssignPermissionRequest } from '@/types'
+import { rolesApi } from 'identity-web/api/roles.api'
+import type { CreateRoleRequest, AssignPermissionRequest } from 'identity-web/types'
 
 export function useRoles(params?: { page?: number; size?: number }) {
   return useQuery({

@@ -15,6 +15,7 @@ import pg from "pg";
 import crypto from "node:crypto";
 import type { PrismaClient } from "../../../generated/prisma-client";
 import { EVENT_CHANNEL } from "./publisher";
+import { assertAgentSourceUrlAllowed } from "../../modules/agents/agent-source-url-policy";
 
 const SWEEP_INTERVAL_MS    = 30_000;
 const MAX_DELIVERY_TRIES   = 5;
@@ -64,7 +65,8 @@ async function deliverOne(
   let responseStatus: number | null = null;
   let error: string | null = null;
   try {
-    const res = await fetch(targetUrl, {
+    const safeUrl = await assertAgentSourceUrlAllowed(targetUrl);
+    const res = await fetch(safeUrl, {
       method:  "POST",
       headers,
       body,
@@ -150,9 +152,17 @@ async function sweep(prisma: PrismaClient): Promise<void> {
         }).catch(() => null);
       }
     }
+  } catch (err) {
+    console.warn("[eventbus] safety sweep failed:", (err as Error).message);
   } finally {
     inFlight = false;
   }
+}
+
+function scheduleSweep(prisma: PrismaClient): void {
+  void sweep(prisma).catch((err) => {
+    console.warn("[eventbus] safety sweep rejected:", (err as Error).message);
+  });
 }
 
 export async function startEventDispatcher(prisma: PrismaClient): Promise<void> {
@@ -178,9 +188,9 @@ export async function startEventDispatcher(prisma: PrismaClient): Promise<void> 
     console.error("[eventbus] LISTEN client error:", err.message);
   });
 
-  sweepTimer = setInterval(() => { void sweep(prisma); }, SWEEP_INTERVAL_MS);
+  sweepTimer = setInterval(() => scheduleSweep(prisma), SWEEP_INTERVAL_MS);
   if (sweepTimer.unref) sweepTimer.unref();
-  void sweep(prisma);
+  scheduleSweep(prisma);
 
   console.log(`[eventbus] dispatcher listening on '${EVENT_CHANNEL}'; safety sweep every ${SWEEP_INTERVAL_MS / 1000}s`);
 }

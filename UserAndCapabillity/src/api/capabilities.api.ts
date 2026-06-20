@@ -1,10 +1,10 @@
-import { api } from '@/lib/api'
+import { api } from 'identity-web/lib/api'
 import type {
   Capability, CreateCapabilityRequest,
   CapabilityRelationship, CreateCapabilityRelationshipRequest,
   CapabilityMembership, AddCapabilityMemberRequest,
   PageResponse,
-} from '@/types'
+} from 'identity-web/types'
 
 export const capabilitiesApi = {
   list: (params?: { page?: number; size?: number; capability_type?: string }) =>

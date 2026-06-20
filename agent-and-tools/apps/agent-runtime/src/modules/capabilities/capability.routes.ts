@@ -2,6 +2,7 @@ import { Router } from "express";
 import multer from "multer";
 import { capabilityController } from "./capability.controller";
 import { validate } from "../../middleware/validate.middleware";
+import { requireAuth } from "../../middleware/auth.middleware";
 import {
   createCapabilitySchema, attachRepositorySchema, bindAgentSchema, knowledgeArtifactSchema,
   extractSymbolsSchema,
@@ -19,6 +20,8 @@ const knowledgeUpload = multer({
 });
 
 export const capabilityRoutes = Router();
+
+capabilityRoutes.use(requireAuth);
 
 capabilityRoutes.post("/bootstrap", validate(bootstrapCapabilitySchema), capabilityController.bootstrap);
 capabilityRoutes.get("/bootstrap-agent-catalog", capabilityController.bootstrapAgentCatalog);

@@ -289,14 +289,13 @@ async function main() {
   await seedDemoWorkflows(prisma)
 
   // M42.0 — Feature-flag defaults for the Singularity Code Foundry.
-  // Master kill switch ships OFF so a fresh install can't write code or
-  // dispatch LLM calls until an admin explicitly turns it on. Sub-flags
-  // ship in their intended-on-by-default state but only take effect once
-  // the master is also on (resolution AND'd in the gate library).
+  // Code Foundry is part of the core Platform Web surface, so local/demo
+  // installs ship enabled. Production operators can still turn these off
+  // through /api/admin/feature-flags before exposing the surface.
   const codeFoundryFlags: Array<{ key: string; enabled: boolean; description: string }> = [
     {
       key: 'code_foundry.enabled',
-      enabled: false,
+      enabled: true,
       description: 'Master switch for the Singularity Code Foundry. When OFF every Foundry entry point (CLI / REST / web) returns FEATURE_DISABLED.',
     },
     {
@@ -306,8 +305,8 @@ async function main() {
     },
     {
       key: 'code_foundry.brownfield.enabled',
-      enabled: false,
-      description: 'Brownfield enhancement mode: scan an existing repo and apply typed change recipes. Off by default; turn on once the supported recipe library matches the change you need.',
+      enabled: true,
+      description: 'Brownfield enhancement mode: scan an existing repo and apply typed change recipes. Enabled for local/demo parity with the Foundry cockpit.',
     },
     {
       key: 'code_foundry.llm_patch.enabled',
@@ -333,7 +332,7 @@ async function main() {
   console.log('Seed complete!')
   console.log('  Admin: admin@workgraph.local / admin123')
   console.log('  Demo:  demo@workgraph.local / demo123')
-  console.log(`  Feature flags seeded: ${codeFoundryFlags.length} (master code_foundry.enabled defaults OFF)`)
+  console.log(`  Feature flags seeded: ${codeFoundryFlags.length} (Code Foundry defaults ON for local/demo)`)
 }
 
 main()

@@ -35,6 +35,36 @@ from .stage_policy import classify_stage_role, stage_is_story_only
 
 TOOL_EXECUTION_TARGETS = {"LOCAL", "SERVER"}
 TOOL_RISK_LEVELS = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+TOOL_CAPABILITY_PERMISSIONS = {"read", "invoke", "configure", "edit"}
+TOOL_SOURCES = {"local", "provider", "runtime", "provider_manifest", "url_document", "uploaded_document"}
+
+
+def _first_string(tool: dict[str, Any], *keys: str) -> Optional[str]:
+    for key in keys:
+        value = tool.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _capability_permissions(tool: dict[str, Any]) -> list[str]:
+    raw = (
+        tool.get("capability_permissions")
+        or tool.get("capabilityPermissions")
+        or tool.get("permissions")
+        or ["read", "invoke"]
+    )
+    if isinstance(raw, dict):
+        raw = [name for name, enabled in raw.items() if enabled]
+    if not isinstance(raw, list):
+        raw = ["read", "invoke"]
+
+    permissions: list[str] = []
+    for item in raw:
+        value = str(item).strip().lower()
+        if value in TOOL_CAPABILITY_PERMISSIONS and value not in permissions:
+            permissions.append(value)
+    return permissions or ["read", "invoke"]
 
 
 def normalize_tool_for_mcp(
@@ -66,6 +96,30 @@ def normalize_tool_for_mcp(
     if not isinstance(input_schema, dict):
         input_schema = {"type": "object"}
 
+    permissions = _capability_permissions(tool)
+    provider_id = _first_string(tool, "provider_id", "providerId")
+    provider_manifest_version = (
+        _first_string(tool, "provider_manifest_version", "providerManifestVersion", "manifest_version", "manifestVersion")
+    )
+    provider_manifest_digest = (
+        _first_string(tool, "provider_manifest_digest", "providerManifestDigest", "manifest_digest", "manifestDigest")
+    )
+    provider_manifest_signature_key_id = (
+        _first_string(
+            tool,
+            "provider_manifest_signature_key_id",
+            "providerManifestSignatureKeyId",
+            "signature_key_id",
+            "signatureKeyId",
+        )
+    )
+    source = str(_first_string(tool, "source") or ("provider" if provider_id else "local")).lower()
+    if source not in TOOL_SOURCES:
+        source = "runtime"
+    source_type = _first_string(tool, "source_type", "sourceType") or ("provider_manifest" if source == "provider" else source)
+    source_ref = _first_string(tool, "source_ref", "sourceRef", "manifest_url", "manifestUrl")
+    provider_locked = bool(tool.get("provider_locked") or tool.get("providerLocked"))
+
     return {
         "name": clean_name,
         "description": tool.get("description", ""),
@@ -73,6 +127,22 @@ def normalize_tool_for_mcp(
         "execution_target": execution_target,
         "requires_approval": bool(tool.get("requires_approval", False)),
         "risk_level": risk_level,
+        "capability_id": tool.get("capability_id") or tool.get("capabilityId"),
+        "capability_permissions": permissions,
+        "read_only": bool(tool.get("read_only") or tool.get("readOnly") or ("edit" not in permissions and "configure" not in permissions)),
+        "provider_locked": provider_locked,
+        "provider_id": provider_id,
+        "provider_manifest_version": provider_manifest_version,
+        "provider_manifest_digest": provider_manifest_digest,
+        "provider_manifest_signature_key_id": provider_manifest_signature_key_id,
+        "provider_manifest_signed": tool.get("provider_manifest_signed")
+        if isinstance(tool.get("provider_manifest_signed"), bool)
+        else tool.get("providerManifestSigned")
+        if isinstance(tool.get("providerManifestSigned"), bool)
+        else None,
+        "source_type": source_type,
+        "source_ref": source_ref,
+        "source": source,
     }, warnings
 
 
@@ -84,6 +154,11 @@ def local_tool(
     requires_approval: bool = False,
 ) -> dict[str, Any]:
     """Build a LOCAL-target tool descriptor for the inline inventory below."""
+    mutation_tools = {
+        "apply_patch", "replace_text", "replace_range", "write_file",
+        "git_commit", "finish_work_branch",
+    }
+    permissions = ["read", "invoke", "edit"] if name in mutation_tools else ["read", "invoke"]
     return {
         "name": name,
         "description": description,
@@ -91,6 +166,9 @@ def local_tool(
         "execution_target": "LOCAL",
         "requires_approval": requires_approval,
         "risk_level": risk_level,
+        "capability_permissions": permissions,
+        "read_only": "edit" not in permissions and "configure" not in permissions,
+        "source": "local",
     }
 
 
@@ -337,3 +415,115 @@ def merge_mandatory_local_tools(
             merged.append(tool)
             seen.add(tool["name"])
     return merged
+
+
+def _permission_values(raw: Any) -> list[str]:
+    if isinstance(raw, dict):
+        raw = [name for name, enabled in raw.items() if enabled]
+    if not isinstance(raw, list):
+        return []
+
+    permissions: list[str] = []
+    for item in raw:
+        value = str(item).strip().lower()
+        if value in TOOL_CAPABILITY_PERMISSIONS and value not in permissions:
+            permissions.append(value)
+    return permissions
+
+
+def _effective_capability_names(capability: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for key in ("id", "name", "skillName", "skill_name", "toolName", "tool_name"):
+        value = capability.get(key)
+        if isinstance(value, str) and value.strip():
+            names.add(value.strip())
+    return names
+
+
+def _tool_capability_names(tool: dict[str, Any]) -> set[str]:
+    names: set[str] = set()
+    for key in ("capability_id", "capabilityId", "name", "tool_name", "toolName"):
+        value = tool.get(key)
+        if isinstance(value, str) and value.strip():
+            names.add(value.strip())
+    return names
+
+
+def effective_capability_allows_tool(
+    tool: dict[str, Any],
+    effective_capabilities: list[dict[str, Any]],
+    *,
+    permission: str = "invoke",
+    require_effective_capabilities: bool = False,
+) -> tuple[bool, str]:
+    """Return whether a tool is allowed by the effective profile set."""
+    capabilities = [
+        capability for capability in effective_capabilities
+        if isinstance(capability, dict)
+    ]
+    if not capabilities:
+        if require_effective_capabilities:
+            return False, "effective capability set required"
+        return True, ""
+
+    requested_permission = str(permission).strip().lower()
+    if requested_permission not in TOOL_CAPABILITY_PERMISSIONS:
+        return False, f"unsupported permission {requested_permission}"
+
+    capability_index: dict[str, dict[str, Any]] = {}
+    for capability in capabilities:
+        for name in _effective_capability_names(capability):
+            capability_index[name] = capability
+
+    tool_names = _tool_capability_names(tool)
+    matched_name = next((name for name in tool_names if name in capability_index), None)
+    if not matched_name:
+        return False, "no matching capability"
+
+    permissions = _permission_values(capability_index[matched_name].get("permissions"))
+    if requested_permission not in permissions:
+        return False, f"missing {requested_permission}"
+
+    return True, ""
+
+
+def filter_tools_by_effective_capabilities(
+    tools: list[dict[str, Any]],
+    effective_capabilities: list[dict[str, Any]],
+    *,
+    require_effective_capabilities: bool = False,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Apply the resolved Agent Profile capability set to MCP tools.
+
+    Empty capability sets preserve legacy behavior only when no agent profile is
+    in play. Once a caller declares a profile-backed run, the set is
+    authoritative even when empty; no tool may be exposed until resolution
+    yields a capability that grants invoke.
+    """
+    capabilities = [
+        capability for capability in effective_capabilities
+        if isinstance(capability, dict)
+    ]
+    if not capabilities:
+        if require_effective_capabilities:
+            return [], [
+                "all tools hidden: effective capability set is required for this agent profile run"
+            ]
+        return tools, []
+
+    filtered: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for tool in tools:
+        allowed, reason = effective_capability_allows_tool(
+            tool,
+            capabilities,
+            require_effective_capabilities=require_effective_capabilities,
+        )
+        if not allowed:
+            display_name = str(tool.get("name") or tool.get("tool_name") or "unknown")
+            warnings.append(f"tool {display_name} hidden by effective capability set: {reason}")
+            continue
+
+        filtered.append(tool)
+
+    return filtered, warnings

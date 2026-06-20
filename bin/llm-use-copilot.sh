@@ -69,6 +69,21 @@ ok()   { c "32" "✓ $1"; }
 warn() { c "33" "! $1"; }
 die()  { c "31" "✗ $1"; exit 1; }
 
+kill_non_docker_port() {
+  local port="$1" pids pid cmd
+  pids="$(lsof -ti :"$port" 2>/dev/null || true)"
+  for pid in $pids; do
+    cmd="$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")"
+    case "$cmd" in
+      *docker*|*Docker*|*vpnkit*)
+        warn "port $port is Docker-owned (pid $pid); leaving it alone"
+        continue
+        ;;
+    esac
+    kill -9 "$pid" 2>/dev/null || true
+  done
+}
+
 BASE_URL=""; MODEL=""; TOKEN="${COPILOT_TOKEN:-}"; RESTORE=0; SKIP_PREFLIGHT=0; PRESET=""; GH_MODELS=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -118,7 +133,7 @@ recreate_and_verify() {
     local pybin="$ROOT/.venv/bin/python"; [ -x "$pybin" ] || pybin="python3"
     # shellcheck source=/dev/null
     set -a; . "$ROOT/.env.local"; [ -f "$SECRETS" ] && . "$SECRETS"; set +a
-    lsof -ti :"${GATEWAY_PORT}" 2>/dev/null | xargs kill -9 2>/dev/null || true
+    kill_non_docker_port "${GATEWAY_PORT}"
     mkdir -p "$ROOT/logs"
     ( cd "$ROOT/context-fabric" && \
         LLM_PROVIDER_CONFIG_PATH="$PROVIDERS" LLM_MODEL_CATALOG_PATH="$CATALOG" \
@@ -127,8 +142,7 @@ recreate_and_verify() {
           --host 0.0.0.0 --port "${GATEWAY_PORT}" > "$ROOT/logs/llm-gateway.log" 2>&1 & )
   elif command -v docker >/dev/null 2>&1 && docker ps -a --format '{{.Names}}' | grep -qx 'singularity-llm-gateway'; then
     info "recreating the llm-gateway container…"
-    ( cd "$ROOT" && COMPOSE_PROFILES="${COMPOSE_PROFILES:-full}" \
-        docker compose up -d --force-recreate --no-deps llm-gateway >/dev/null )
+    ( cd "$ROOT" && docker compose --profile llm-gateway up -d --force-recreate --no-deps llm-gateway >/dev/null )
   else
     warn "no bare-metal (.env.local/.pids) state and no Docker llm-gateway container found."
     warn "config is written — restart your llm-gateway manually to apply it, then: curl :${GATEWAY_PORT}/llm/providers"

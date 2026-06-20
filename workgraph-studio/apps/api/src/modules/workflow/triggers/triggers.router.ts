@@ -7,6 +7,7 @@ import { logEvent, publishOutbox } from '../../../lib/audit'
 import { createWorkItem } from '../../work-items/work-items.service'
 import { routeWorkItem } from '../../work-items/work-item-routing.service'
 import { recordOf } from '../../metadata/metadata.service'
+import { tenantIdForCreate } from '../../../lib/tenant-isolation'
 
 export const triggersRouter: Router = Router()
 
@@ -100,12 +101,19 @@ webhookRouter.post('/:secret', async (req, res, next) => {
       return
     }
 
+    const payloadTenantId = tenantIdForCreate(req.body)
+    const context = {
+      ...(payloadTenantId ? { tenantId: payloadTenantId } : {}),
+      _webhookPayload: req.body,
+      _triggeredAt: new Date().toISOString(),
+    }
     const instance = await prisma.workflowInstance.create({
       data: {
         templateId: match.templateId,
         name: `${match.template.name} (webhook)`,
         status: 'DRAFT',
-        context: { _webhookPayload: req.body, _triggeredAt: new Date().toISOString() } as object,
+        tenantId: tenantIdForCreate(context),
+        context: context as object,
       },
     })
     await prisma.workflowTrigger.update({

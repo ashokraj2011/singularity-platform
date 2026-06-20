@@ -1,5 +1,5 @@
-import { api } from '@/lib/api'
-import type { BusinessUnit, CreateBusinessUnitRequest, UpdateBusinessUnitRequest, PageResponse } from '@/types'
+import { api } from 'identity-web/lib/api'
+import type { BusinessUnit, CreateBusinessUnitRequest, UpdateBusinessUnitRequest, PageResponse } from 'identity-web/types'
 
 export const businessUnitsApi = {
   list: (params?: { page?: number; size?: number }) =>

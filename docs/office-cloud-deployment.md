@@ -10,7 +10,7 @@ the bridge — the box holds no laptop address.
  ┌───────────────────────────────┐          ┌────────────────────────────────┐
  │ Singularity Desktop app        │          │ context-api · workgraph-api    │
  │  ├─ mcp runner (LAPTOP_MODE)   │──wss────▶│ iam · prompt-composer · agent-*│
- │  ├─ Copilot shim (:4319)       │  dials   │ UIs · edge-gateway :8085       │
+ │  ├─ Copilot shim (:4319)       │  dials   │ platform-web :5180             │
  │  └─ keys in OS keychain        │   in     │ postgres · minio               │
  │ copilot CLI (corp GitHub login)│          │ (NO mcp / NO llm-gateway)      │
  └───────────────────────────────┘          └────────────────────────────────┘
@@ -21,7 +21,7 @@ the bridge — the box holds no laptop address.
 ## A — Cloud box (once)
 
 ```bash
-# A1. VM with Docker + compose; open ports 8085 (UI), 8000 (bridge), 8100 (IAM)
+# A1. VM with Docker + compose; open ports 5180 (UI), 8000 (bridge), 8100 (IAM)
 #     to your office network/VPN only; put TLS in front if possible.
 
 # A2. Clone + the one shared secret
@@ -31,25 +31,25 @@ export JWT_SECRET='<ONE strong 32+ char secret>'   # signs+verifies device keys 
 # A3. Bring up the box — base + the CLOUD overlay (NOT laptop-direct;
 #     host.docker.internal would mean "this box", not your laptop)
 DC="docker compose -f docker-compose.yml -f docker-compose.cloud.yml"
-$DC up -d iam-postgres at-postgres wg-postgres wg-minio
-$DC up -d at-postgres-bootstrap
-$DC up -d --no-deps iam-service context-memory context-api formal-verifier \
-  agent-service tool-service agent-runtime prompt-composer workgraph-api \
-  workgraph-web blueprint-workbench user-and-capability agent-web portal edge-gateway
+$DC up -d
+
+# Optional box-side services:
+$DC --profile verification up -d formal-verifier
+$DC --profile compression up -d prompt-compressor
 
 # A4. Seed users + capability + prompts + SDLC workflows — bridge routing ON
 COMPOSE_FILES="-f docker-compose.yml -f docker-compose.cloud.yml" \
   SEED_PREFER_LAPTOP=true bin/seed-docker.sh
 ```
 
-- Entry point: **`http://<box-host>:8085`** (portal `/`, `/operations`, `/workflow`, `/workbench`, `/iam`). The portal's nav defaults are same-origin paths, so they work at the box hostname unchanged.
-- Logins after seeding: `admin@singularity.local` / `Admin1234!` (+ `user1…10`).
+- Entry point: **`http://<box-host>:5180`** (`/operations`, `/agents`, `/workflows`, `/workbench`, `/foundry`, `/identity`). Platform Web uses same-origin routes, so links work at the box hostname unchanged.
+- Logins after seeding use the bootstrap IAM account shown by `./singularity.sh config show` on the box. Demo users remain available if the seed bundle has not been customized.
 - `docker-compose.cloud.yml` sets `PREFER_LAPTOP_LLM=true` on context-api: the platform's **own** LLM calls (verifier agent, event-horizon chat, summaries) ride the bridge to your laptop's Copilot shim — there is no llm-gateway container in this topology.
 
 ## A-alt — Cloud box WITHOUT Docker (bare-metal)
 
-No Docker/compose on the box? `bin/bare-metal.sh` boots the whole platform as
-host processes; **`BOX_ONLY=1`** skips the two laptop apps (mcp-server,
+No Docker/compose on the box? `bin/bare-metal.sh` boots the platform as host
+processes; **`BOX_ONLY=1`** skips the two laptop apps (mcp-server,
 llm-gateway) and sets `PREFER_LAPTOP_LLM=true` on context-api so the platform's
 own LLM calls ride the bridge to your laptop.
 
@@ -62,12 +62,13 @@ export JWT_SECRET='<ONE strong 32+ char secret>'     # the script respects it (a
 BOX_ONLY=1 bin/bare-metal.sh up
 ```
 
-- `up` installs deps, migrates the DBs, and **seeds the SDLC workflows itself**
-  (the copilot seed defaults to `preferLaptop:true` — bridge routing on).
-- Demo users beyond the super-admin: `seed/apply.sh` (runs the IAM SQL seeds).
-- **Entry point on bare-metal is the portal at `http://<box-host>:5180`** (Vite
-  apps are served at root base — the `:8085` edge-gateway is a Docker-only
-  concern; per-app ports `:5174/:5176` work directly here).
+- `up` installs deps, migrates the DBs, and seeds IAM demo users/capabilities,
+  agent baselines, prompt-composer profiles, Workgraph demo data, and the SDLC
+  workflows itself (the copilot seed defaults to `preferLaptop:true` — bridge
+  routing on).
+- For SQL-only repair/replay, run `seed/apply.sh <db_user> [db_password] [db_host] [db_port]`.
+- **Entry point on bare-metal is Platform Web at `http://<box-host>:5180`**.
+  Legacy per-app UI ports are debug-only and are not part of the normal office path.
 - Laptop settings (§B) are identical — point Platform/Bridge at
   `http://<box-host>:8100/api/v1` and `ws://<box-host>:8000/api/laptop-bridge/connect`.
 - Stop with `bin/bare-metal.sh down`; status with `bin/bare-metal.sh status`.
@@ -102,7 +103,7 @@ npm start                    # launch from a terminal so the runner inherits PAT
 ## C — Daily use
 
 1. Open the desktop app → **Start runner** (one button = runner + shim; menu-bar dot ●).
-2. `http://<box-host>:8085` → log in **as the paired user** → create a `feature` work item (`story` + `repoUrl` = your office GitHub repo) → run.
+2. `http://<box-host>:5180` → log in **as the paired user** → create a `feature` work item (`story` + `repoUrl` = your office GitHub repo) → run.
 3. Phases execute on your laptop via Copilot → answer the **Questions** tab if Copilot asks → **Verify documents** gate → GIT_PUSH with your token.
 
 ## D — Office gotchas
@@ -111,6 +112,6 @@ npm start                    # launch from a terminal so the runner inherits PAT
 - **The app must be running** for stages to execute — runs fail fast with `MCP_NOT_CONNECTED` when it's off. The tray dot is the health check; the Operations page MCP indicator is bridge-aware.
 - **Same user everywhere:** pair and launch runs as the same login — Context Fabric routes runs to your laptop by user id.
 - **No Anthropic key at the office:** a 401 at `api.anthropic.com` means an old BYOK key is still configured — clear the Anthropic field in Settings → Credentials (the runner auto-restarts).
-- **Box upgrades:** `git pull && $DC build context-api workgraph-api workgraph-web portal && $DC up -d --no-deps <same app list>`.
+- **Box upgrades:** `git pull && $DC build context-api workgraph-api platform-web && $DC up -d --no-deps context-api workgraph-api platform-web`.
 
 > Related: [`laptop-split-deployment.md`](./laptop-split-deployment.md) (single-machine + BYOK variants), [`hybrid-laptop-deployment.md`](./hybrid-laptop-deployment.md) (full env reference).

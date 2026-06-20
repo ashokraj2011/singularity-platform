@@ -15,7 +15,6 @@ import { z } from 'zod'
 import { proxyGet as iamProxyGet, IamUnauthorizedError, IamUnavailableError } from '../../lib/iam/client'
 import {
   listTools,
-  discoverTools,
   listAgentTemplates,
   listRuntimeCapabilities,
   listPromptProfiles,
@@ -106,6 +105,13 @@ function clientFilter<T>(items: T[], q: string | undefined, fields: (item: T) =>
   if (!q) return items
   const needle = q.toLowerCase()
   return items.filter((it) => fields(it).some((f) => caseFold(f).includes(needle)))
+}
+
+const RISK_ORDER: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 }
+
+function filterByRiskMax(items: ToolDescriptor[], riskMax: string | undefined) {
+  const max = RISK_ORDER[String(riskMax ?? 'high').toLowerCase()] ?? RISK_ORDER.high
+  return items.filter((tool) => (RISK_ORDER[String(tool.risk_level ?? 'low').toLowerCase()] ?? 0) <= max)
 }
 
 function normalizeRuntimeCapability(cap: RuntimeCapability): Record<string, unknown> {
@@ -381,21 +387,14 @@ lookupRouter.get('/tools', async (req, res) => {
     const riskMax = (req.query.risk_max as string | undefined) ?? 'high'
     const q = req.query.q as string | undefined
 
-    let tools: ToolDescriptor[]
-    if (capabilityId) {
-      const out = await discoverTools({
-        capability_id: capabilityId,
-        agent_uid: 'lookup-proxy',
-        query: q ?? '',
-        risk_max: riskMax,
-        limit: 100,
-      }, authHeader(req))
-      tools = out.tools ?? []
-    } else {
-      const out = await listTools({}, authHeader(req))
-      tools = out.tools ?? []
-      tools = clientFilter(tools, q, (t) => [t.tool_name, t.description, t.display_name])
-    }
+    // Lookup is catalog browsing for designers/pickers, not a governed agent
+    // execution. Governed discovery now requires a resolved Agent Profile
+    // effective capability set, so capability-only lookup must use the catalog
+    // endpoint and leave invocation eligibility to runtime resolution.
+    const out = await listTools(capabilityId ? { capability_id: capabilityId } : {}, authHeader(req))
+    let tools = out.tools ?? []
+    tools = filterByRiskMax(tools, riskMax)
+    tools = clientFilter(tools, q, (t) => [t.tool_name, t.description, t.display_name])
     return res.json(paginate(tools, page, size))
   } catch (err) { handleError(err, res) }
 })

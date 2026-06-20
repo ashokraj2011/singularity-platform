@@ -1,11 +1,11 @@
 import { Users, Layers, UsersRound, Activity, ArrowRight } from 'lucide-react'
-import { StatCard } from '@/components/StatCard'
-import { PageHeader } from '@/components/PageHeader'
-import { useUsers } from '@/hooks/useUsers'
-import { useCapabilities } from '@/hooks/useCapabilities'
-import { useTeams } from '@/hooks/useTeams'
-import { useAuditEvents } from '@/hooks/useAuditEvents'
-import { formatDateTime } from '@/lib/format'
+import { StatCard } from 'identity-web/components/StatCard'
+import { PageHeader } from 'identity-web/components/PageHeader'
+import { useUsers } from 'identity-web/hooks/useUsers'
+import { useCapabilities } from 'identity-web/hooks/useCapabilities'
+import { useTeams } from 'identity-web/hooks/useTeams'
+import { useAuditEvents } from 'identity-web/hooks/useAuditEvents'
+import { formatDateTime } from 'identity-web/lib/format'
 
 const EVENT_TYPE_COLORS: Record<string, { bg: string; text: string }> = {
   user_created:       { bg: '#e6f4ed', text: '#006236' },

@@ -158,6 +158,16 @@ async def chat_completions(
         provider=req.provider,
         model=req.model,
     )
+    if req.expected_provider and provider.lower() != req.expected_provider.lower():
+        raise HTTPException(
+            status_code=409,
+            detail=f"resolved provider {provider} does not match expected provider {req.expected_provider}",
+        )
+    if req.expected_model and model != req.expected_model:
+        raise HTTPException(
+            status_code=409,
+            detail=f"resolved model {model} does not match expected model {req.expected_model}",
+        )
     if not provider_config.is_provider_allowed(provider):
         raise HTTPException(status_code=400, detail=f"provider {provider} is not allowed by gateway config")
 

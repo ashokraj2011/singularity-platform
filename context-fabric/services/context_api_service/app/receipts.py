@@ -64,8 +64,22 @@ _EVENT_STATUS_MAP: dict[str, str] = {
 }
 
 
+def _profile_capability_summary(capabilities: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "total": len(capabilities),
+        "readOnly": sum(1 for capability in capabilities if capability.get("readOnly") is True),
+        "invokable": sum(
+            1
+            for capability in capabilities
+            if "invoke" in (capability.get("permissions") or [])
+        ),
+        "providerLocked": sum(1 for capability in capabilities if capability.get("providerLocked") is True),
+    }
+
+
 def _envelope_from_call_log(row: dict[str, Any]) -> dict[str, Any]:
     """Each /execute call → one model_call receipt summarising the orchestration."""
+    profile_effective_capabilities = row.get("profile_effective_capabilities") or []
     return {
         "receipt_id":     row.get("id"),
         "kind":           "model_call",
@@ -92,6 +106,9 @@ def _envelope_from_call_log(row: dict[str, Any]) -> dict[str, Any]:
             "workflowRunId":     row.get("workflow_run_id"),
             "workflowNodeId":    row.get("workflow_node_id"),
             "agentRunId":        row.get("agent_run_id"),
+            "profileSnapshotHash": row.get("profile_snapshot_hash"),
+            "profileProviderResolutions": row.get("profile_provider_resolutions") or [],
+            "profileEffectiveCapabilities": profile_effective_capabilities,
         },
         "metrics": {
             "input_tokens":  row.get("input_tokens"),
@@ -104,6 +121,7 @@ def _envelope_from_call_log(row: dict[str, Any]) -> dict[str, Any]:
             "continuation_token":   row.get("continuation_token"),
             "pending_tool_name":    row.get("pending_tool_name"),
             "error":                row.get("error"),
+            "profile_effective_capability_summary": _profile_capability_summary(profile_effective_capabilities),
             "final_response_chars": (
                 len(row["final_response"]) if isinstance(row.get("final_response"), str) else None
             ),

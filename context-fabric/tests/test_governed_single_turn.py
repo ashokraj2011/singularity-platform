@@ -52,6 +52,23 @@ def test_uses_caller_prompt_verbatim_and_reports_governed(monkeypatch):
     assert captured["max_output_tokens"] == 50
 
 
+def test_forwards_frozen_model_resolution_as_gateway_expectation(monkeypatch):
+    req = execute_mod.GovernedSingleTurnRequest(
+        trace_id="t-model",
+        task="replay",
+        system_prompt="frozen",
+        model_overrides={
+            "modelAlias": "balanced",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5-20251001",
+        },
+    )
+    _out, captured = _run_turn(req, monkeypatch)
+    assert captured["model_alias"] == "balanced"
+    assert captured["expected_provider"] == "anthropic"
+    assert captured["expected_model"] == "claude-sonnet-4-5-20251001"
+
+
 def test_no_system_prompt_sends_only_user_message(monkeypatch):
     req = execute_mod.GovernedSingleTurnRequest(trace_id="t2", task="hi", system_prompt="")
     _out, captured = _run_turn(req, monkeypatch)
@@ -63,6 +80,29 @@ def test_token_usage_rolled_up(monkeypatch):
     out, _ = _run_turn(req, monkeypatch)
     assert out["tokensUsed"] == {"input": 10, "output": 5, "total": 15}
     assert out["modelUsage"]["provider"] == "mock"
+
+
+def test_governance_mode_reported_from_request(monkeypatch):
+    req = execute_mod.GovernedSingleTurnRequest(
+        trace_id="t4",
+        task="x",
+        system_prompt="y",
+        governanceMode="fail_closed",
+    )
+    out, _ = _run_turn(req, monkeypatch)
+    assert out["correlation"]["governanceMode"] == "fail_closed"
+
+
+def test_invalid_governance_mode_falls_back_to_deployment_default(monkeypatch):
+    monkeypatch.setattr(execute_mod.settings, "default_governance_mode", "fail_closed")
+    req = execute_mod.GovernedSingleTurnRequest(
+        trace_id="t5",
+        task="x",
+        system_prompt="y",
+        governanceMode="definitely-not-a-mode",
+    )
+    out, _ = _run_turn(req, monkeypatch)
+    assert out["correlation"]["governanceMode"] == "fail_closed"
 
 
 # ── HTTP-level routing tests ────────────────────────────────────────────────

@@ -17,12 +17,7 @@ import { distillAndUpsertWorldModel } from "./bootstrap-phase3-distill";
 // "Verify" button. Spawns the cmd in an isolated tmp dir with a 10s
 // timeout; returns exit code + capped stdout/stderr.
 import { probeCommand } from "./command-probe.service";
-// pdf-parse ships a CommonJS bundle whose root index.js triggers test code
-// when imported without a file path. Importing the lib subpath skips that.
-// @ts-expect-error — sub-path has no bundled types; we type the call shape locally below.
-import pdfParse from "pdf-parse/lib/pdf-parse.js";
-type PdfParseFn = (data: Buffer) => Promise<{ text?: string }>;
-const pdfExtract = pdfParse as unknown as PdfParseFn;
+import { extractKnowledgeText } from "./document-extract";
 
 export const capabilityController = {
   async bootstrapAgentCatalog(_req: Request, res: Response) {
@@ -146,21 +141,9 @@ export const capabilityController = {
     for (const f of files) {
       let content: string;
       try {
-        if (
-          f.mimetype === "text/plain" ||
-          f.mimetype === "text/markdown" ||
-          /\.(txt|md|markdown)$/i.test(f.originalname)
-        ) {
-          content = f.buffer.toString("utf8");
-        } else if (f.mimetype === "application/pdf" || /\.pdf$/i.test(f.originalname)) {
-          const parsed = await pdfExtract(f.buffer);
-          content = (parsed.text ?? "").trim();
-          if (!content) {
-            skipped.push({ name: f.originalname, reason: "pdf-empty" });
-            continue;
-          }
-        } else {
-          skipped.push({ name: f.originalname, reason: `unsupported mime: ${f.mimetype}` });
+        content = await extractKnowledgeText(f);
+        if (!content) {
+          skipped.push({ name: f.originalname, reason: "empty-text" });
           continue;
         }
       } catch (err) {

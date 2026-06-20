@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
-import { useAuthStore } from '@/store/auth.store'
-import { sharedAuthToken, redirectToPortalLogin } from '@/lib/sharedAuth'
+import { useAuthStore } from 'identity-web/store/auth.store'
+import { sharedAuthToken, redirectToPortalLogin } from 'identity-web/lib/sharedAuth'
 
 export function RequireAuth({ children }: { children: React.ReactNode }) {
   // M100 P2 — prefer the canonical portal session (shared localStorage under

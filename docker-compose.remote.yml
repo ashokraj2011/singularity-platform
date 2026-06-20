@@ -22,7 +22,7 @@
 #
 # ── DIRECT-HTTP MODE ─────────────────────────────────────────────────────────
 # Use this file only when there is NO bridge and remote services must call the
-# laptop over a private tunnel. It re-points the six MCP consumers at the laptop.
+# laptop over a private tunnel. It re-points the MCP consumers at the laptop.
 
 services:
   context-api:
@@ -40,22 +40,7 @@ services:
       MCP_SERVER_URL: http://${LAPTOP_HOST}:7100
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
 
-  agent-service:
-    environment:
-      MCP_SERVER_URL: http://${LAPTOP_HOST}:7100
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
-
-  tool-service:
-    environment:
-      MCP_SERVER_URL: http://${LAPTOP_HOST}:7100
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
-
-  agent-runtime:
-    environment:
-      MCP_SERVER_URL: http://${LAPTOP_HOST}:7100
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
-
-  prompt-composer:
+  platform-core:
     environment:
       MCP_SERVER_URL: http://${LAPTOP_HOST}:7100
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}

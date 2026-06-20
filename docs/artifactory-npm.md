@@ -11,8 +11,10 @@ registry), make every Node install resolve from Artifactory — and stop hitting
    fetched from upstream **on first request**, so a pinned-but-unmirrored
    version usually just works — no version edits needed.
 2. Point installs at it via `.npmrc`. Token comes from env, never committed.
-3. For Docker image builds, pass the registry + token as build args and write
-   `.npmrc` before the install step.
+3. For Docker image builds, pass the registry as a build arg and the token as a
+   BuildKit secret. Do not pass tokens as Docker build args for canonical
+   images; args are visible in build metadata and trigger Docker secret
+   warnings.
 
 ## Why this is the right fix (vs. loosening versions)
 
@@ -44,10 +46,54 @@ time, so nothing secret is written to disk.
 ## Docker image builds
 
 Installs run during `docker build`, so each image needs `.npmrc` available
-during its install step. Mirror the existing build-arg convention (e.g. the
-`AUDIT_GOV_TOKEN` ARG in `workgraph-studio/apps/blueprint-workbench/Dockerfile`).
+during its install step. Prefer BuildKit secrets so the token never becomes a
+Dockerfile ARG, image label, or cached layer value.
 
-Reference pattern — **npm** service (e.g. `mcp-server/Dockerfile`):
+The canonical `platform-web` image already uses this pattern:
+
+```dockerfile
+ARG ARTIFACTORY_NPM_REGISTRY=
+RUN --mount=type=secret,id=artifactory_npm_token,required=false \
+    if [ -n "$ARTIFACTORY_NPM_REGISTRY" ]; then \
+      registry_host="$(printf '%s' "$ARTIFACTORY_NPM_REGISTRY" | sed -E 's#^https?://##')"; \
+      printf 'registry=%s\naudit=false\nfund=false\n' "$ARTIFACTORY_NPM_REGISTRY" > .npmrc; \
+      token="$(cat /run/secrets/artifactory_npm_token 2>/dev/null || true)"; \
+      if [ -n "$token" ]; then printf '//%s:_authToken=%s\n' "$registry_host" "$token" >> .npmrc; fi; \
+    fi \
+ && npm install \
+ && rm -f .npmrc
+```
+
+Compose passes that secret from your shell environment:
+
+```yaml
+services:
+  platform-web:
+    build:
+      args:
+        ARTIFACTORY_NPM_REGISTRY: ${ARTIFACTORY_NPM_REGISTRY:-}
+      secrets:
+        - artifactory_npm_token
+
+secrets:
+  artifactory_npm_token:
+    environment: ARTIFACTORY_NPM_TOKEN
+```
+
+Then build normally:
+
+```bash
+export ARTIFACTORY_NPM_REGISTRY="https://artifactory.your-co.com/artifactory/api/npm/npm-virtual/"
+export ARTIFACTORY_NPM_TOKEN="<artifactory identity token>"
+./singularity.sh build platform-web
+```
+
+If no Artifactory env vars are set, the same build falls back to the default npm
+registry and no secret file is mounted.
+
+Legacy/reference pattern — **npm** service that has not yet been migrated:
+
+> Use this only for older images until they are migrated to BuildKit secrets.
 
 ```dockerfile
 FROM base AS deps
@@ -82,15 +128,17 @@ RUN printf 'registry=%s\n//%s:_authToken=%s\n' \
  && rm -f .npmrc
 ```
 
-Better still, use BuildKit secrets so the token never enters a layer at all:
+For standalone `docker buildx build` commands, pass the same secret directly:
 
-```dockerfile
-RUN --mount=type=secret,id=npmrc,target=/app/.npmrc \
-    npm install --no-audit --no-fund
-# build: docker build --secret id=npmrc,src=$PWD/.npmrc ...
+```bash
+docker buildx build \
+  --build-arg ARTIFACTORY_NPM_REGISTRY="$ARTIFACTORY_NPM_REGISTRY" \
+  --secret id=artifactory_npm_token,env=ARTIFACTORY_NPM_TOKEN \
+  -f agent-and-tools/web/Dockerfile .
 ```
 
-Pass the args via compose:
+Legacy compose build-arg wiring looks like this, but should not be copied into
+new Dockerfiles:
 
 ```yaml
 services:
@@ -102,10 +150,10 @@ services:
         ARTIFACTORY_NPM_TOKEN: ${ARTIFACTORY_NPM_TOKEN}
 ```
 
-This PR wires the pattern into a few **reference** Dockerfiles (one npm, one
-npm-workspaces, one pnpm). Roll it out to the rest by copying the same 3 lines;
-they're additive and no-op when the ARGs are empty (falls back to the default
-registry), so they're safe to land before the office switch-over.
+`platform-web` no longer accepts `ARTIFACTORY_NPM_TOKEN` as a build arg. The
+remaining older Dockerfiles should be migrated the same way: keep the registry
+arg, replace the token arg with `--mount=type=secret`, and wire the service to
+the shared `artifactory_npm_token` compose secret.
 
 ## If your Artifactory can't proxy upstream (hard allowlist)
 

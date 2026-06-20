@@ -1,5 +1,5 @@
-import { api } from '@/lib/api'
-import type { LoginRequest, LoginResponse, AuthUser } from '@/types'
+import { api } from 'identity-web/lib/api'
+import type { LoginRequest, LoginResponse, AuthUser } from 'identity-web/types'
 
 export const authApi = {
   login: (body: LoginRequest) =>

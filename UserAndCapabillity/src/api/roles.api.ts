@@ -1,5 +1,5 @@
-import { api } from '@/lib/api'
-import type { Role, CreateRoleRequest, AssignPermissionRequest, PageResponse } from '@/types'
+import { api } from 'identity-web/lib/api'
+import type { Role, CreateRoleRequest, AssignPermissionRequest, PageResponse } from 'identity-web/types'
 
 export const rolesApi = {
   list: (params?: { page?: number; size?: number }) =>
@@ -13,5 +13,5 @@ export const rolesApi = {
   removePermission: (roleKey: string, permissionKey: string) =>
     api.delete(`/roles/${roleKey}/permissions/${permissionKey}`).then(r => r.data),
   listPermissions: (roleKey: string) =>
-    api.get<import('@/types').Permission[]>(`/roles/${roleKey}/permissions`).then(r => r.data),
+    api.get<import('identity-web/types').Permission[]>(`/roles/${roleKey}/permissions`).then(r => r.data),
 }

@@ -1,14 +1,11 @@
 import { Router, Request, Response } from "express";
 import { query, queryOne } from "../database";
-import { optionalAuth, requireAuth } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
 import { publishEvent } from "../lib/eventbus/publisher";
 
 export const toolRoutes = Router();
-// M35.1 — tools.ts is a CRUD router: GETs (browse the catalog) tolerate
-// anonymous access; POST/PATCH mutations require a valid JWT. Per-route
-// `requireAuth` is applied to mutations below.
-toolRoutes.use(optionalAuth);
+toolRoutes.use(requireAuth);
 
 // POST /api/v1/tools — register tool (M35.1 — requires JWT)
 toolRoutes.post("/", requireAuth, async (req: Request, res: Response) => {
@@ -108,14 +105,15 @@ toolRoutes.get("/:name/versions/:version", async (req: Request, res: Response) =
 });
 
 // PATCH /api/v1/tools/:name/versions/:version — partial update of editable
-// fields. M20 ships requires_approval / status / risk_level; the rest stay
-// register-time concerns.
+// fields. Metadata is patchable so runtime/provider manifests can refresh
+// source, permission, and manifest-version hints without re-registering.
 toolRoutes.patch("/:name/versions/:version", requireAuth, async (req: Request, res: Response) => {
   const { name, version } = req.params;
-  const ALLOWED: Record<string, "boolean" | "string"> = {
+  const ALLOWED: Record<string, "boolean" | "string" | "object"> = {
     requires_approval: "boolean",
     status:            "string",
     risk_level:        "string",
+    metadata:          "object",
   };
   const sets: string[] = [];
   const params: unknown[] = [];
@@ -123,8 +121,11 @@ toolRoutes.patch("/:name/versions/:version", requireAuth, async (req: Request, r
     if (k in req.body) {
       const v = req.body[k];
       if (typeof v !== t) throw new AppError(`${k} must be ${t}`, 400);
-      params.push(v);
-      sets.push(`${k} = $${params.length}`);
+      if (t === "object" && (v === null || Array.isArray(v))) {
+        throw new AppError(`${k} must be object`, 400);
+      }
+      params.push(t === "object" ? JSON.stringify(v ?? {}) : v);
+      sets.push(`${k} = $${params.length}${t === "object" ? "::jsonb" : ""}`);
     }
   }
   if (sets.length === 0) throw new AppError("no patchable fields in body", 400);

@@ -1,14 +1,13 @@
 "use client";
 import useSWR from "swr";
 import Link from "next/link";
-import { ExternalLink, Info } from "lucide-react";
+import { useParams } from "next/navigation";
+import { Activity, Info, Workflow } from "lucide-react";
 import { runtimeApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 
-// M100 P3 — same-origin path prefix under the edge gateway (was localhost:5174).
-const WORKGRAPH_WEB_URL = process.env.NEXT_PUBLIC_WORKGRAPH_WEB_URL ?? "/workflow";
-
-export default function RuntimeExecutionDetailPage({ params }: { params: { id: string } }) {
+export default function RuntimeExecutionDetailPage() {
+  const params = useParams<{ id: string }>();
   const id = decodeURIComponent(params.id);
   const { data: exec } = useSWR(`exec-${id}`, () => runtimeApi.getExecution(id), { refreshInterval: 3000 });
   const { data: receipt } = useSWR(`exec-receipt-${id}`, () => runtimeApi.getReceipt(id), { refreshInterval: 3000 });
@@ -62,12 +61,12 @@ export default function RuntimeExecutionDetailPage({ params }: { params: { id: s
                 {message || "Direct agent-runtime execution is retired. Use a workflow AGENT_TASK for governed execution."}
               </p>
               <div className="flex flex-wrap gap-2 mt-3">
-                <a className="btn-secondary text-xs" href={`${WORKGRAPH_WEB_URL}/runs`} target="_blank" rel="noreferrer">
-                  <ExternalLink size={12} /> Open Runs
-                </a>
-                <a className="btn-primary text-xs" href={`${WORKGRAPH_WEB_URL}/workflows`} target="_blank" rel="noreferrer">
-                  <ExternalLink size={12} /> Workflow Manager
-                </a>
+                <Link className="btn-secondary text-xs" href="/runs">
+                  <Activity size={12} /> Open Runs
+                </Link>
+                <Link className="btn-primary text-xs" href="/workflows">
+                  <Workflow size={12} /> Workflow Manager
+                </Link>
               </div>
             </div>
           </div>

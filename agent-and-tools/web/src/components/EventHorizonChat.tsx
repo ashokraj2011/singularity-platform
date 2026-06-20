@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Bot, RefreshCcw, Send, Sparkles, Trash2, X } from "lucide-react";
-import { apiPath, authHeaders, runtimeApi } from "@/lib/api";
+import { apiPath, authHeaders, readResponseBody, responseMessage, runtimeApi } from "@/lib/api";
 
 type ChatMessage = {
   id: string;
@@ -43,7 +43,7 @@ function greeting(path: string): ChatMessage {
 function surfaceFor(path: string): string {
   if (path.startsWith("/capabilities/")) return "Capability Detail";
   if (path.startsWith("/capabilities")) return "Capabilities";
-  if (path.startsWith("/agent-studio")) return "Agent Studio";
+  if (path.startsWith("/agents/studio") || path.startsWith("/agent-studio")) return "Agent Studio";
   if (path.startsWith("/tools")) return "Tools";
   if (path.startsWith("/prompt-workbench")) return "Prompt Workbench";
   if (path.startsWith("/prompt-profiles")) return "Agent Behavior Profiles";
@@ -143,7 +143,11 @@ export function EventHorizonChat() {
   // M37.4 — fetch the EventHorizonAction catalog once on first mount.
   useEffect(() => {
     fetch(apiPath("/api/event-horizon/actions?surface=capability-admin"))
-      .then((r) => (r.ok ? r.json() : []))
+      .then(async (r) => {
+        if (!r.ok) return [];
+        const { parsed } = await readResponseBody(r);
+        return parsed;
+      })
       .then((data) => setActions(Array.isArray(data) ? data : []))
       .catch((err) => console.warn("[EventHorizonChat] failed to load action catalog:", err));
   }, []);
@@ -194,7 +198,7 @@ export function EventHorizonChat() {
           next.hints.push(`Capability ${capabilityId} is in the URL, but I could not load details right now.`);
         }
       }
-      if (pathname.startsWith("/agent-studio")) next.hints.push("This is where agent lineage, editability, and version history are maintained.");
+      if (pathname.startsWith("/agents/studio") || pathname.startsWith("/agent-studio")) next.hints.push("This is where agent lineage, editability, and version history are maintained.");
       if (pathname.startsWith("/tools")) next.hints.push("This is where tools are registered, activated, risk-classified, and approval-gated.");
       if (pathname.startsWith("/prompt-workbench")) next.hints.push("This is where prompt drafts, model aliases, token budgets, and Composer context plans are compared before execution.");
       if (pathname.startsWith("/prompt")) next.hints.push("Prompt surfaces control behavior presets, layer content, and auditability.");
@@ -221,11 +225,10 @@ export function EventHorizonChat() {
         context: { ...ctx, actionIntent: actionIntent ?? ctx.actionIntent ?? null },
       }),
     });
-    if (!res.ok) {
-      const raw = await res.text();
-      throw new Error(raw.slice(0, 300) || `Event Horizon returned ${res.status}`);
-    }
-    const json = await res.json() as { response?: string; status?: string };
+    const { raw, parsed } = await readResponseBody(res);
+    if (!res.ok) throw new Error(responseMessage(parsed, raw, `Event Horizon returned ${res.status}`));
+    if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 300) : "Event Horizon returned an empty response");
+    const json = parsed as { response?: string; status?: string };
     return json.response || `Event Horizon completed with status ${json.status ?? "UNKNOWN"}, but returned no text.`;
   }
 

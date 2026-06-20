@@ -2,7 +2,9 @@
 # Free all Singularity dev ports and restart the docker-compose stack.
 #
 # Usage:
-#   ./restart.sh              # free ports + docker down/up
+#   ./restart.sh              # free core ports + docker down/up core
+#   ./restart.sh --profile p  # restart core plus an optional compose profile
+#   ./restart.sh --full       # restart the historical all-local stack
 #   ./restart.sh --no-docker  # only free ports (use when running services locally)
 #   ./restart.sh --ports-only # alias of --no-docker
 
@@ -24,27 +26,22 @@ warn()  { echo -e "${C_YELLOW}!${C_END} $*"; }
 err()   { echo -e "${C_RED}✗${C_END} $*" >&2; }
 
 # Application ports (UIs + APIs). Storage ports (5432/5433/5434/9000/9001)
-# are intentionally excluded — docker-compose owns those.
-PORTS=(
-  3000   # agent-web (Next.js)
-  3001   # agent-service
-  3002   # tool-service
-  3003   # agent-runtime
-  3004   # prompt-composer
-  5174   # workgraph-web
-  5175   # user-and-capability
-  5176   # blueprint-workbench
-  5180   # portal
-  7000   # mcp-server (local dev default)
-  7100   # mcp-server
+# are intentionally excluded — docker-compose owns those. Runtime infra ports
+# are optional so we do not kill a laptop/remote gateway by default.
+CORE_PORTS=(
+  3000   # legacy/dev Next port
+  3001   # platform-core compatibility port: agent-service
+  3002   # platform-core compatibility port: tool-service
+  3003   # platform-core compatibility port: agent-runtime
+  3004   # platform-core compatibility port: prompt-composer
+  3005   # code-foundry-api
+  5180   # platform-web
   8000   # context-api
-  8001   # llm-gateway
-  8002   # context-memory
-  8003   # metrics-ledger
-  8010   # formal-verifier
   8080   # workgraph-api
   8100   # iam-service
 )
+OPTIONAL_PORTS=(5174 5175 5176 5182 7000 7100 8001 8002 8003 8010 8011 8101 8500)
+PORTS=("${CORE_PORTS[@]}")
 
 free_port() {
   local port=$1
@@ -57,6 +54,12 @@ free_port() {
   for pid in $pids; do
     local cmd
     cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
+    case "$cmd" in
+      *docker*|*Docker*|*vpnkit*)
+        warn "  port $port: leaving Docker-owned listener pid=$pid ($cmd)"
+        continue
+        ;;
+    esac
     info "  port $port: killing pid=$pid ($cmd)"
     kill "$pid" 2>/dev/null || true
   done
@@ -65,6 +68,11 @@ free_port() {
   pids=$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)
   if [ -n "$pids" ]; then
     for pid in $pids; do
+      local cmd
+      cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
+      case "$cmd" in
+        *docker*|*Docker*|*vpnkit*) continue ;;
+      esac
       warn "  port $port: pid=$pid did not exit; SIGKILL"
       kill -9 "$pid" 2>/dev/null || true
     done
@@ -130,22 +138,77 @@ docker_up() {
   # cannot bind-mount. mcp-server's compose entry falls back to /dev/null
   # when SSH_AUTH_SOCK is empty, so clear it for the docker invocation. Dev
   # mode defaults to MCP_GIT_PUSH_ENABLED=false, so no SSH agent is needed.
-  info "starting master docker-compose stack …"
-  SSH_AUTH_SOCK="" docker compose up -d
-  if [ -d audit-governance-service ]; then
-    info "starting audit-governance stack …"
-    ( cd audit-governance-service && SSH_AUTH_SOCK="" docker compose up -d ) || warn "audit-governance up failed"
+  if [ "$RESTART_FULL" = "1" ]; then
+    info "starting full local stack …"
+  else
+    info "starting core docker-compose stack …"
   fi
+  SSH_AUTH_SOCK="" ./singularity.sh up "${SINGULARITY_UP_ARGS[@]}"
   ok "docker stack up. Tail logs with: ./singularity.sh logs <service> -f"
 }
 
-mode=${1:-full}
+RESTART_FULL=0
+SINGULARITY_UP_ARGS=()
+mode="core"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --full|full)
+      RESTART_FULL=1
+      SINGULARITY_UP_ARGS+=(--full)
+      PORTS+=("${OPTIONAL_PORTS[@]}")
+      ;;
+    --profile)
+      shift
+      profile="${1:?usage: $0 --profile <name>}"
+      SINGULARITY_UP_ARGS+=(--profile "$profile")
+      case "$profile" in
+        llm-gateway|gateway-only|composer-only) PORTS+=(8001) ;;
+        mcp) PORTS+=(7000 7100) ;;
+        foundry|code-foundry) PORTS+=(3005) ;;
+        verification) PORTS+=(8010) ;;
+        compression) PORTS+=(8011) ;;
+        frontend-legacy) PORTS+=(5174 5175 5176 5182 8085) ;;
+        audit) PORTS+=(8500) ;;
+      esac
+      ;;
+    --profile=*)
+      profile="${1#--profile=}"
+      SINGULARITY_UP_ARGS+=(--profile "$profile")
+      case "$profile" in
+        llm-gateway|gateway-only|composer-only) PORTS+=(8001) ;;
+        mcp) PORTS+=(7000 7100) ;;
+        foundry|code-foundry) PORTS+=(3005) ;;
+        verification) PORTS+=(8010) ;;
+        compression) PORTS+=(8011) ;;
+        frontend-legacy) PORTS+=(5174 5175 5176 5182 8085) ;;
+        audit) PORTS+=(8500) ;;
+      esac
+      ;;
+    --with-llm-gateway|--llm-gateway)
+      SINGULARITY_UP_ARGS+=(--profile llm-gateway)
+      PORTS+=(8001)
+      ;;
+    --with-mcp|--mcp)
+      SINGULARITY_UP_ARGS+=(--profile mcp)
+      PORTS+=(7000 7100)
+      ;;
+    --no-docker|--ports-only|help|--help|-h|"")
+      mode="$1"
+      ;;
+    *)
+      err "unknown flag: $1"
+      echo "Run \`$0 --help\` for usage."
+      exit 1
+      ;;
+  esac
+  shift || true
+done
 case "$mode" in
   --no-docker|--ports-only)
     free_all_ports
     ok "done (ports-only mode). Start your local services manually."
     ;;
-  ""|full|--full)
+  ""|core|full|--full)
     docker_down
     free_all_ports
     docker_up

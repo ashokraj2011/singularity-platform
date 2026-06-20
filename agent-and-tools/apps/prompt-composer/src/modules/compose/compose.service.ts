@@ -55,6 +55,29 @@ function noMeaningfulHits<S extends { cosineSimilarity: number; fts_score?: numb
   );
 }
 
+const CAPABILITY_PERMISSION_ORDER = ["read", "invoke", "configure", "edit"] as const;
+
+function effectiveCapabilityPermissions(
+  permissions: unknown,
+  opts: { readOnly?: boolean | null; providerLocked?: boolean | null; fallback?: string[] } = {},
+): string[] {
+  const normalized = Array.isArray(permissions)
+    ? permissions.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    : [];
+  let unique = Array.from(new Set(normalized));
+  if (unique.length === 0) unique = opts.fallback?.length ? opts.fallback : ["read"];
+  if (opts.readOnly || opts.providerLocked) unique = unique.filter((permission) => permission === "read");
+  if (!unique.includes("read")) unique.unshift("read");
+  return unique.sort((a, b) => {
+    const ai = CAPABILITY_PERMISSION_ORDER.indexOf(a as typeof CAPABILITY_PERMISSION_ORDER[number]);
+    const bi = CAPABILITY_PERMISSION_ORDER.indexOf(b as typeof CAPABILITY_PERMISSION_ORDER[number]);
+    if (ai === -1 && bi === -1) return a.localeCompare(b);
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+}
+
 interface SemanticHit {
   cosineSimilarity: number;
   ageDays: number;
@@ -177,6 +200,7 @@ type ArtifactFetchResponse = {
 const PRIORITY = {
   PLATFORM: 10,
   AGENT_ROLE: 100,
+  AGENT_INSTRUCTIONS: 110,
   CAPABILITY_CONTEXT: 200,
   RUNTIME_EVIDENCE: 250,
   PRIOR_FAILURE_SUMMARY: 270,
@@ -207,6 +231,7 @@ const PRIORITY = {
   CODE_TEST_SLICES:        315,
   CODE_CONTEXT_RECEIPT:    316,
   CODE_CONTEXT: 320, // M14 — legacy monolithic; emitted only when no codeContextPackage
+  AGENT_SKILL_SOURCES: 340,
   WORKFLOW_PHASE_BASE: 350,
   TOOL_CONTRACT: 500,
   ARTIFACT_CONTEXT: 600,
@@ -230,6 +255,11 @@ type LearningStateResponse = {
   degraded?: boolean;
 };
 
+function learningServiceHeaders(): Record<string, string> {
+  const token = env.LEARNING_SERVICE_TOKEN ?? process.env.AUDIT_GOV_SERVICE_TOKEN ?? "";
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
+
 async function fetchLearningState(input: {
   capabilityId: string;
   capabilityType?: string | null;
@@ -242,6 +272,7 @@ async function fetchLearningState(input: {
   if (input.task) params.set("situation", input.task.slice(0, 500));
   try {
     const res = await fetch(`${env.LEARNING_SERVICE_URL.replace(/\/+$/, "")}/api/v1/state?${params.toString()}`, {
+      headers: learningServiceHeaders(),
       signal: AbortSignal.timeout(3_000),
     });
     if (!res.ok) throw new Error(`learning-service ${res.status}`);
@@ -464,6 +495,17 @@ export const composeService = {
     if (!template) throw new NotFoundError("Agent template not found");
     if (template.basePromptProfileId) {
       layers.push(...await this.loadProfileLayers(template.basePromptProfileId, "agent template base profile", ctx, warnings));
+    }
+    if (template.instructions?.trim()) {
+      const content = `Agent instructions\n${template.instructions.trim()}`;
+      const r = renderMustache(content, ctx); warnings.push(...r.warnings);
+      layers.push({
+        layerType: "AGENT_INSTRUCTIONS",
+        priority: PRIORITY.AGENT_INSTRUCTIONS,
+        inclusionReason: "agent profile inline instructions",
+        contentSnapshot: r.rendered,
+        layerHash: sha256(r.rendered),
+      });
     }
 
     // 2. Binding overlay
@@ -869,6 +911,19 @@ export const composeService = {
       layers.push({ layerType: "TOOL_CONTRACT", priority: PRIORITY.TOOL_CONTRACT, inclusionReason: "tool grants + dynamic discovery", contentSnapshot: r.rendered, layerHash: sha256(r.rendered) });
     }
 
+    const skillSourceLayer = await this.buildAgentSkillSourceLayer(template.id);
+    if (skillSourceLayer) {
+      const r = renderMustache(trimText(skillSourceLayer, budget.maxLayerChars), ctx); warnings.push(...r.warnings);
+      if (skillSourceLayer.length > budget.maxLayerChars) retrievalStats.trimmedLayers += 1;
+      layers.push({
+        layerType: "AGENT_SKILL_SOURCES",
+        priority: PRIORITY.AGENT_SKILL_SOURCES,
+        inclusionReason: "agent profile skill sources and permissions",
+        contentSnapshot: r.rendered,
+        layerHash: sha256(r.rendered),
+      });
+    }
+
     // 6. Artifact context (workgraph passes consumables)
     for (const art of input.artifacts) {
       const rendered = await this.renderArtifact(art, warnings);
@@ -1056,8 +1111,9 @@ export const composeService = {
       };
     }
 
-    // 11. Call context-fabric /execute. Direct /chat/respond is intentionally
-    // bypassed so every real LLM-backed agent call uses the governed MCP path.
+    // 11. Call context-fabric governed single-turn. Direct /chat/respond is
+    // intentionally bypassed so every real LLM-backed agent call uses the
+    // governed execution path.
     const sessionId = `wf:${input.workflowContext.instanceId}:${input.workflowContext.nodeId}`;
     const cfResp = await contextFabricClient.executeRespond({
       trace_id: resolvedTraceId ?? input.workflowContext.instanceId,
@@ -1182,6 +1238,33 @@ export const composeService = {
       });
   },
 
+  async buildAgentSkillSourceLayer(agentTemplateId: string): Promise<string | null> {
+    const rows = await runtimeReader.agentTemplateSkill.findMany({
+      where: { agentTemplateId },
+      orderBy: { createdAt: "asc" },
+      include: { skill: true },
+    });
+    if (rows.length === 0) return null;
+    const lines = ["Agent profile skill sources:"];
+    for (const row of rows) {
+      const permissions = effectiveCapabilityPermissions(row.permissions, {
+        readOnly: row.readOnly,
+        providerLocked: row.providerLocked,
+        fallback: ["read"],
+      });
+      const access = [
+        permissions.join(","),
+        row.readOnly ? "read-only" : null,
+        row.providerLocked ? "provider-locked" : null,
+      ].filter(Boolean).join("; ");
+      lines.push(`- ${row.skill.name} [${row.sourceType}] permissions=${access}`);
+      if (row.sourceRef) lines.push(`  Source: ${row.sourceRef}`);
+      if (row.skill.description) lines.push(`  Purpose: ${row.skill.description}`);
+    }
+    lines.push("Use read-only sources only as reference context. Invoke or edit only when the capability permissions explicitly allow it.");
+    return lines.join("\n");
+  },
+
   async buildToolContractLayer(input: ComposeInput, capabilityId: string | null, agentTemplateId: string, retrievalStats?: { toolContractsIncluded: number }): Promise<string | null> {
     // M44 Slice C — compact mode omits the JSON schema dump (the LLM gets it
     // via the structured tools parameter instead). Slimmer system prefix =>
@@ -1200,6 +1283,18 @@ export const composeService = {
           requires_approval: t.requires_approval,
           input_schema: t.input_schema,
           execution_target: t.execution_target,
+          capability_id: t.capability_id,
+          capability_permissions: t.capability_permissions,
+          read_only: t.read_only,
+          provider_locked: t.provider_locked,
+          provider_id: t.provider_id,
+          provider_manifest_version: t.provider_manifest_version,
+          provider_manifest_digest: t.provider_manifest_digest,
+          provider_manifest_signature_key_id: t.provider_manifest_signature_key_id,
+          provider_manifest_signed: t.provider_manifest_signed,
+          source_type: t.source_type,
+          source_ref: t.source_ref,
+          source: t.source,
         }, compact));
         if (retrievalStats) retrievalStats.toolContractsIncluded += 1;
       }
@@ -1235,8 +1330,10 @@ export const composeService = {
       if (retrievalStats) retrievalStats.toolContractsIncluded += 1;
     }
 
-    // Dynamic tool discovery via tool-service (only if capability is provided and discovery enabled)
-    if (input.toolDiscovery.enabled && capabilityId) {
+    // Dynamic tool discovery via tool-service (only if capability is provided and discovery enabled).
+    // Tool-service is fail-closed for governed discovery, so direct compose
+    // callers must provide the resolved Agent Profile capability snapshot.
+    if (input.toolDiscovery.enabled && capabilityId && Array.isArray(input.effectiveCapabilities)) {
       const discovered = await toolServiceClient.discover({
         capability_id: capabilityId,
         agent_uid: agentTemplateId,
@@ -1244,6 +1341,7 @@ export const composeService = {
         query: input.task,
         risk_max: input.toolDiscovery.riskMax,
         limit: input.toolDiscovery.limit,
+        effective_capabilities: input.effectiveCapabilities,
       });
       for (const t of discovered) {
         // Skip duplicates already covered by static grants
@@ -1255,6 +1353,18 @@ export const composeService = {
           requires_approval: this.requiresApprovalForDiscoveredTool(t),
           input_schema: t.input_schema,
           execution_target: t.execution_target,
+          capability_id: t.capability_id,
+          capability_permissions: t.capability_permissions,
+          read_only: t.read_only,
+          provider_locked: t.provider_locked,
+          provider_id: t.provider_id,
+          provider_manifest_version: t.provider_manifest_version,
+          provider_manifest_digest: t.provider_manifest_digest,
+          provider_manifest_signature_key_id: t.provider_manifest_signature_key_id,
+          provider_manifest_signed: t.provider_manifest_signed,
+          source_type: t.source_type,
+          source_ref: t.source_ref,
+          source: t.source,
         }, compact));
         if (retrievalStats) retrievalStats.toolContractsIncluded += 1;
       }
@@ -1271,12 +1381,45 @@ export const composeService = {
     requires_approval: boolean;
     input_schema?: Record<string, unknown>;
     execution_target?: string;
+    capability_id?: string;
+    capability_permissions?: string[];
+    read_only?: boolean;
+    provider_locked?: boolean;
+    provider_id?: string;
+    provider_manifest_version?: string;
+    provider_manifest_digest?: string;
+    provider_manifest_signature_key_id?: string;
+    provider_manifest_signed?: boolean;
+    source_type?: string;
+    source_ref?: string;
+    source?: string;
   }, compact: boolean = false): string {
     const target = (t.execution_target || "LOCAL").toUpperCase();
+    const permissions = effectiveCapabilityPermissions(t.capability_permissions, {
+      readOnly: t.read_only,
+      providerLocked: t.provider_locked,
+      fallback: ["read", "invoke"],
+    }).join(", ");
+    const originParts = [
+      `source=${t.source || "local"}`,
+      t.source_type ? `sourceType=${t.source_type}` : null,
+      t.source_ref ? `sourceRef=${t.source_ref}` : null,
+      t.provider_id ? `provider=${t.provider_id}` : null,
+      t.provider_manifest_version ? `manifest=${t.provider_manifest_version}` : null,
+      t.provider_manifest_digest ? `manifestDigest=${t.provider_manifest_digest}` : null,
+      t.provider_manifest_signature_key_id ? `signatureKey=${t.provider_manifest_signature_key_id}` : null,
+      typeof t.provider_manifest_signed === "boolean" ? `signedManifest=${String(t.provider_manifest_signed)}` : null,
+    ].filter(Boolean).join(", ");
+    const lockState = [
+      t.read_only ? "read-only" : null,
+      t.provider_locked ? "provider-locked" : null,
+    ].filter(Boolean).join(", ");
     const header = `## Tool: ${t.tool_name}
 Description: ${t.natural_language}
 Risk: ${t.risk_level}${t.requires_approval ? " (requires approval)" : ""}
-Execution target: ${target === "SERVER" ? "SERVER" : "LOCAL"}`;
+Execution target: ${target === "SERVER" ? "SERVER" : "LOCAL"}
+Capability permissions: ${permissions}${lockState ? ` (${lockState})` : ""}
+Runtime origin: ${originParts}`;
     if (compact) {
       // M44 Slice C — schema is sent through the LLM provider's structured
       // tools channel; duplicating ~200-500 token JSON dump per tool in the
@@ -1867,7 +2010,7 @@ export function appendCodeContextLayers(layers: AssembledLayer[], pkg: CodeConte
 // agent-runtime and passing it in.
 // ─────────────────────────────────────────────────────────────────────────
 
-type WorldModelInput = NonNullable<ComposeInput["worldModel"]>;
+type WorldModelInput = Partial<NonNullable<ComposeInput["worldModel"]>> & { capabilityId: string };
 
 /**
  * CODE_AGENT_RULES — verbatim agent-rule files (CLAUDE.md, AGENTS.md,
@@ -1920,8 +2063,9 @@ export function renderCodeWorldModelLayer(wm: WorldModelInput): string | null {
     sections.push(["### Facts", "", ...facts].join("\n"));
   }
 
-  if ((wm.testCommands ?? []).length > 0) {
-    const lines = wm.testCommands.map((c) => {
+  const testCommands = wm.testCommands ?? [];
+  if (testCommands.length > 0) {
+    const lines = testCommands.map((c) => {
       const cwd = c.cwd ? ` (cwd: ${c.cwd})` : "";
       const dur = c.expectedDurationSec ? `, ~${c.expectedDurationSec}s` : "";
       const net = c.requiresNetwork ? ", network" : "";
@@ -1930,8 +2074,9 @@ export function renderCodeWorldModelLayer(wm: WorldModelInput): string | null {
     sections.push(["### Test commands", "", ...lines].join("\n"));
   }
 
-  if ((wm.buildCommands ?? []).length > 0) {
-    const lines = wm.buildCommands.map((c) => {
+  const buildCommands = wm.buildCommands ?? [];
+  if (buildCommands.length > 0) {
+    const lines = buildCommands.map((c) => {
       const cwd = c.cwd ? ` (cwd: ${c.cwd})` : "";
       return `- ${c.kind}: \`${c.cmd}\`${cwd}`;
     });

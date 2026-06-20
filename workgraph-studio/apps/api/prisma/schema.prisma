@@ -721,12 +721,14 @@ model RunSnapshot {
   payload     Json // entire RunState blob
   version     Int      @default(1) // monotonic; rejects POST with stale version
   createdById String?
+  tenantId    String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   workflow    Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
 
   @@index([workflowId])
   @@index([createdById])
+  @@index([tenantId])
   @@index([status])
   @@map("run_snapshots")
 }
@@ -864,6 +866,7 @@ model WorkflowInstance {
   templateVersion   Int?
   template          Workflow?          @relation(fields: [templateId], references: [id])
   initiativeId      String?
+  tenantId          String?
   name              String
   status            InstanceStatus     @default(DRAFT)
   context           Json               @default("{}")
@@ -898,6 +901,7 @@ model WorkflowInstance {
   updatedAt         DateTime           @updatedAt
 
   @@index([templateId])
+  @@index([tenantId])
   @@map("workflow_instances")
 }
 

@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from app.database import get_db
 from app.models import AuditEvent, User
-from app.auth.deps import get_current_user
+from app.auth.deps import require_audit_read
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
@@ -41,7 +41,7 @@ async def list_audit_events(
     capability_id: Optional[str] = None,
     actor_user_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_audit_read),
 ):
     q = select(AuditEvent)
     if event_type:

@@ -3,8 +3,8 @@
  * instance via SSE through workgraph-api → context-fabric.
  *
  * Behaviour:
- *   1. On mount, opens an EventSource to /api/workflow-instances/:runId/events/stream
- *   2. Falls back to polling /api/workflow-instances/:runId/events every 1.5s
+ *   1. On mount, opens an EventSource to the Workgraph API events stream
+ *   2. Falls back to polling the Workgraph API events endpoint every 1.5s
  *      if EventSource fails (e.g. browsers behind HTTP/1.1 proxies that drop
  *      long connections, or the server has no trace_id yet).
  *   3. Renders a colourised chronological list with kind, timestamp, and a
@@ -15,6 +15,8 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { useAuthStore } from '../../store/auth.store'
+import { workgraphApiPath } from '../../lib/api'
+import { sharedAuthToken } from '../../lib/sharedAuth'
 
 type EventRow = {
   id: string
@@ -77,7 +79,8 @@ function timeOnly(iso: string): string {
 }
 
 export function LiveEventsPanel({ runId }: { runId: string }) {
-  const token = useAuthStore((s) => s.token)
+  const legacyToken = useAuthStore((s) => s.token)
+  const token = sharedAuthToken() ?? legacyToken
   const [events, setEvents] = useState<EventRow[]>([])
   const [liveText, setLiveText] = useState('')
   const [status, setStatus] = useState<'connecting' | 'streaming' | 'polling' | 'idle' | 'error'>('connecting')
@@ -107,7 +110,7 @@ export function LiveEventsPanel({ runId }: { runId: string }) {
     async function poll(sinceId?: string) {
       if (stopped) return
       try {
-        const url = new URL(`${import.meta.env.BASE_URL}api/workflow-instances/${runId}/events`, window.location.origin)
+        const url = new URL(workgraphApiPath(`/workflow-instances/${runId}/events`), window.location.origin)
         if (sinceId) url.searchParams.set('since_id', sinceId)
         const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
         if (!r.ok) {
@@ -127,7 +130,7 @@ export function LiveEventsPanel({ runId }: { runId: string }) {
       if (!stopped) pollTimer = setTimeout(() => poll(sinceId), 1500)
     }
 
-    const streamUrl = new URL(`${import.meta.env.BASE_URL}api/workflow-instances/${runId}/events/stream`, window.location.origin)
+    const streamUrl = new URL(workgraphApiPath(`/workflow-instances/${runId}/events/stream`), window.location.origin)
     streamUrl.searchParams.set('access_token', token)
     streamUrl.searchParams.set('max_idle_seconds', '120')
     es = new EventSource(streamUrl.toString())

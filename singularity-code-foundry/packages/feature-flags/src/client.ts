@@ -91,9 +91,15 @@ export class FeatureFlagsClient {
       return cached.enabled
     }
     const url = `${this.baseUrl}/api/internal/feature-flags/${encodeURIComponent(key)}`
-    const res = await this.fetchImpl(url, {
-      headers: { 'x-service-token': this.token },
-    })
+    let res: Response
+    try {
+      res = await this.fetchImpl(url, {
+        headers: { 'x-service-token': this.token },
+      })
+    } catch (err) {
+      if (cached) return cached.enabled
+      throw err
+    }
     if (res.status === 404) {
       // Unknown key behaves as off — safer default for a kill-switch
       // system. Cache the off state so we don't poll missing keys.
@@ -101,7 +107,11 @@ export class FeatureFlagsClient {
       return false
     }
     if (!res.ok) {
-      // Don't cache transient failures — try again next call.
+      // Don't cache transient failures — try again next call. If we have a
+      // stale value, keep serving it so Workgraph restarts do not flap every
+      // Foundry route into 500s while preserving fail-closed behavior on cold
+      // start with no known value.
+      if (cached) return cached.enabled
       throw new Error(`feature-flag fetch ${url} returned ${res.status}`)
     }
     const flag = (await res.json()) as FeatureFlagRecord

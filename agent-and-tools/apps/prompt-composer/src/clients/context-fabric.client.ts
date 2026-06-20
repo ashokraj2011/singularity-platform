@@ -95,16 +95,23 @@ export interface ExecuteRespondResponse {
 }
 
 export const contextFabricClient = {
+  serviceHeaders(baseHeaders: Record<string, string> = {}): Record<string, string> {
+    return env.CONTEXT_FABRIC_SERVICE_TOKEN
+      ? { ...baseHeaders, "X-Service-Token": env.CONTEXT_FABRIC_SERVICE_TOKEN }
+      : baseHeaders;
+  },
+
   async executeRespond(input: ExecuteRespondRequest): Promise<ExecuteRespondResponse> {
     // The prompt is ALREADY assembled here, so route through CF's governed
-    // SINGLE-TURN endpoint when enabled (prompt sent verbatim — no re-assembly,
-    // no composer↔CF cycle) for the governed audit trail; else legacy /execute.
+    // SINGLE-TURN endpoint by default (prompt sent verbatim, no re-assembly,
+    // no composer <-> CF cycle). The legacy /execute switch remains only for
+    // incident recovery.
     const governed = env.CONTEXT_FABRIC_GOVERNED_TURN;
     const path = governed ? "/api/v1/execute-governed-single-turn" : "/execute";
     const url = `${env.CONTEXT_FABRIC_URL}${path}`;
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: contextFabricClient.serviceHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(input),
       signal: AbortSignal.timeout(240_000),
     });
@@ -125,7 +132,7 @@ export const contextFabricClient = {
     const url = `${env.CONTEXT_FABRIC_URL}/chat/respond`;
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: contextFabricClient.serviceHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(input),
       // context-fabric /chat/respond chains downstream calls; allow up to ~4min
       signal: AbortSignal.timeout(240_000),

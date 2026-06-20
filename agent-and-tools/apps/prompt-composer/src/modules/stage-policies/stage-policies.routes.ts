@@ -17,6 +17,7 @@
  */
 import { Router, Request, Response, NextFunction } from "express";
 import { validate } from "../../middleware/validate.middleware";
+import { requireAuth } from "../../middleware/auth.middleware";
 import { stagePoliciesService } from "./stage-policies.service";
 import {
   resolveStagePolicySchema,
@@ -25,6 +26,7 @@ import {
 import { ok } from "../../shared/response";
 
 export const stagePoliciesRoutes = Router();
+stagePoliciesRoutes.use(requireAuth);
 
 stagePoliciesRoutes.post(
   "/resolve",

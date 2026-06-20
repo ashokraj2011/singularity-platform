@@ -20,6 +20,7 @@ import type { Prisma } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
 import { ValidationError } from '../../../lib/errors'
 import { createWorkflowRunBudgetSnapshot } from '../runtime/budget'
+import { tenantIdForCreate } from '../../../lib/tenant-isolation'
 
 export type CloneOpts = {
   templateId:      string
@@ -249,6 +250,7 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
         templateVersion: versionResult.version,
         name:        runName,
         status:      'DRAFT',
+        tenantId:    tenantIdForCreate(initialContext),
         context:     initialContext as Prisma.InputJsonValue,
         createdById: opts.createdById,
         initiativeId: opts.initiativeId,

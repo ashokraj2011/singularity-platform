@@ -1,5 +1,5 @@
-import { EmbeddedControlPlaneApp } from "@/components/EmbeddedControlPlaneApp";
+import { LegacyRunsDashboardRoute } from "@/components/workflows/LegacyWorkgraphAdminRoute";
 
 export default function RunsPage() {
-  return <EmbeddedControlPlaneApp appId="runs" />;
+  return <LegacyRunsDashboardRoute />;
 }

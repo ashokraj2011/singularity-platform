@@ -3,11 +3,11 @@ import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { ShieldCheck, ShieldX } from 'lucide-react'
-import { PageHeader } from '@/components/PageHeader'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { authzApi, type AuthzCheckResponse } from '@/api/authz.api'
+import { PageHeader } from 'identity-web/components/PageHeader'
+import { Button } from 'identity-web/components/ui/button'
+import { Input } from 'identity-web/components/ui/input'
+import { Label } from 'identity-web/components/ui/label'
+import { authzApi, type AuthzCheckResponse } from 'identity-web/api/authz.api'
 
 const schema = z.object({
   user_id: z.string().min(1),

@@ -19,14 +19,15 @@ def create_service_token(
     service_name: str,
     issued_by_user_id: str,
     scopes: list[str],
+    tenant_ids: list[str] | None = None,
     ttl_hours: int = 24 * 30,    # 30 days default — service-to-service, not user
 ) -> str:
     """M11 follow-up — long-lived JWT for service-to-service calls.
 
     Distinguished from user tokens by `kind=service` and `sub=service:<name>`.
-    Carries explicit `scopes` (e.g. ["read:reference-data"]) so deps can
-    check what the bearer is allowed to do, instead of relying on
-    `is_super_admin`.
+    Carries explicit `scopes` (e.g. ["read:reference-data"]) and optional
+    `tenant_ids` so deps can check what the bearer is allowed to do, instead
+    of relying on `is_super_admin`.
     """
     expire = datetime.now(timezone.utc) + timedelta(hours=ttl_hours)
     payload = {
@@ -34,6 +35,7 @@ def create_service_token(
         "kind":           "service",
         "service_name":   service_name,
         "scopes":         list(scopes),
+        "tenant_ids":     sorted({tenant_id.strip() for tenant_id in (tenant_ids or []) if tenant_id.strip()}),
         "issued_by":      issued_by_user_id,
         "exp":            expire,
         # Mark super-admin so existing deps that gate on it keep working until

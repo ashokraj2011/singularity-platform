@@ -29,13 +29,18 @@ import type { FormWidget } from '../forms/widgets/types'
 import { uploadAttachment, attachLink, type UploadedDocument } from '../../lib/uploadAttachment'
 import { api } from '../../lib/api'
 
-const BLUEPRINT_WORKBENCH_URL = import.meta.env.VITE_BLUEPRINT_WORKBENCH_URL
+const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
+
+const BLUEPRINT_WORKBENCH_URL = viteEnv.VITE_BLUEPRINT_WORKBENCH_URL
   // M100 P3 — same-origin under the edge gateway (was :5176). The launch URL is
   // built via new URL(this, location.href) → http://<edge>/workbench/?…, and
   // BLUEPRINT_WORKBENCH_ORIGIN derives from .origin (stays the current origin,
   // valid for the postMessage target).
   ?? '/workbench/'
-const BLUEPRINT_WORKBENCH_ORIGIN = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href).origin
+function blueprintWorkbenchOrigin() {
+  if (typeof window === 'undefined') return ''
+  return new URL(BLUEPRINT_WORKBENCH_URL, window.location.href).origin
+}
 
 interface Props {
   runtime: BrowserWorkflowRuntime
@@ -296,7 +301,7 @@ function BlueprintWorkbenchBody({
     iframeRef.current.contentWindow.postMessage({
       type: 'blueprintWorkbench.auth',
       token,
-    }, BLUEPRINT_WORKBENCH_ORIGIN)
+    }, blueprintWorkbenchOrigin())
   }
   const postWorkbenchAuthTo = (target: MessageEventSource | null) => {
     const token = readWorkgraphToken()
@@ -304,12 +309,12 @@ function BlueprintWorkbenchBody({
     ;(target as Window).postMessage({
       type: 'blueprintWorkbench.auth',
       token,
-    }, BLUEPRINT_WORKBENCH_ORIGIN)
+    }, blueprintWorkbenchOrigin())
   }
 
   useEffect(() => {
     const handler = (event: MessageEvent) => {
-      if (event.origin !== BLUEPRINT_WORKBENCH_ORIGIN) return
+      if (event.origin !== blueprintWorkbenchOrigin()) return
       const data = event.data
       if (data && typeof data === 'object' && data.type === 'blueprintWorkbench.auth.request') {
         postWorkbenchAuthTo(event.source)

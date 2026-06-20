@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { config } from '../../config'
 import { contextFabricClient, type ExecuteRequest } from '../../lib/context-fabric/client'
 // M36.4 — system_prompt now resolved from prompt-composer SystemPrompt table
-import { promptComposerClient } from '../../lib/prompt-composer/client'
+import { promptComposerAuthHeaders, promptComposerClient } from '../../lib/prompt-composer/client'
 import { prisma } from '../../lib/prisma'
 import { resolveLlmRouting } from '../llm-routing/resolve'
 
@@ -93,7 +93,10 @@ eventHorizonRouter.get('/actions', async (req, res) => {
   const surface = String(req.query.surface ?? 'workflow-manager').trim()
   try {
     const url = `${config.PROMPT_COMPOSER_URL.replace(/\/$/, '')}/api/v1/event-horizon-actions?surface=${encodeURIComponent(surface)}`
-    const r = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+    const r = await fetch(url, {
+      headers: await promptComposerAuthHeaders(),
+      signal: AbortSignal.timeout(10_000),
+    })
     if (!r.ok) {
       const text = await r.text().catch(() => '')
       return res.status(r.status).json({ error: 'composer fetch failed', detail: text.slice(0, 300) })
@@ -158,11 +161,10 @@ eventHorizonRouter.post('/chat', async (req, res) => {
     },
     prefer_laptop: false,
   }
-  // Phase 4 cutover — flag-gated dual path. EH chat is single-shot Q&A with a
-  // PROVIDED system prompt, so it routes through the governed SINGLE-TURN path
-  // (governed audit + posture, prompt used verbatim) — NOT the multi-phase stage
-  // loop, which would re-assemble the prompt. Legacy is the default until
-  // CONTEXT_FABRIC_GOVERN_SIDE_CALLERS is flipped + soaked.
+  // EH chat is single-shot Q&A with a PROVIDED system prompt, so it routes
+  // through the governed SINGLE-TURN path (governed audit + posture, prompt
+  // used verbatim), not the multi-phase stage loop. The legacy /execute
+  // fallback remains only for incident recovery.
   let result
   if (config.CONTEXT_FABRIC_GOVERN_SIDE_CALLERS) {
     result = await contextFabricClient.executeGovernedTurn({

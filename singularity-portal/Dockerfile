@@ -24,18 +24,26 @@ ENV MCP_UPSTREAM=http://mcp-server:7100 \
     LLM_UPSTREAM=http://llm-gateway:8001 \
     NGINX_ENVSUBST_FILTER="^(MCP_UPSTREAM|LLM_UPSTREAM)$"
 RUN mkdir -p /etc/nginx/templates && cat > /etc/nginx/templates/default.conf.template <<'EOF'
+map $http_upgrade $connection_upgrade {
+  default upgrade;
+  ''      close;
+}
+
 server {
   listen 80;
   root /usr/share/nginx/html;
   index index.html;
 
   resolver 127.0.0.11 valid=10s ipv6=off;
+  absolute_redirect off;
 
   proxy_http_version 1.1;
   proxy_set_header Host $host;
   proxy_set_header X-Real-IP $remote_addr;
   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
   proxy_set_header X-Forwarded-Proto $scheme;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection $connection_upgrade;
   proxy_read_timeout 300s;
 
   location /api/iam/ {
@@ -147,6 +155,44 @@ server {
   location /ops-health/mcp-server {
     set $upstream ${MCP_UPSTREAM};
     rewrite ^/ops-health/mcp-server$ /health break;
+    proxy_pass $upstream;
+  }
+
+  # Standalone portal cross-app routes. The edge gateway exposes the same
+  # prefixes on :8085; these keep :5180 from treating app links as portal SPA
+  # routes and redirecting users back to the dashboard.
+  location /agent {
+    set $upstream http://agent-web:3000;
+    proxy_pass $upstream;
+  }
+
+  location = /workflow { return 302 /workflow/; }
+  location /workflow/ {
+    set $upstream http://workgraph-web:80;
+    rewrite ^/workflow/(.*)$ /$1 break;
+    proxy_pass $upstream;
+  }
+
+  location = /workbench { return 302 /workbench/; }
+  location /workbench/ {
+    set $upstream http://blueprint-workbench:80;
+    rewrite ^/workbench/(.*)$ /$1 break;
+    proxy_pass $upstream;
+    proxy_buffering off;
+    proxy_read_timeout 3600s;
+  }
+
+  location /foundry {
+    set $upstream http://code-foundry-web:5181;
+    proxy_pass $upstream;
+    proxy_buffering off;
+    proxy_read_timeout 3600s;
+  }
+
+  location = /iam { return 302 /iam/; }
+  location /iam/ {
+    set $upstream http://user-and-capability:80;
+    rewrite ^/iam/(.*)$ /$1 break;
     proxy_pass $upstream;
   }
 

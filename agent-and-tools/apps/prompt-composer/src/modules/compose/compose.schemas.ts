@@ -33,8 +33,22 @@ const toolDescriptorSchema = z.object({
   execution_target: z.enum(["LOCAL", "SERVER"]).default("LOCAL"),
   risk_level: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).default("LOW"),
   requires_approval: z.boolean().default(false),
+  capability_id: z.string().max(180).optional(),
+  capability_permissions: z.array(z.enum(["read", "invoke", "configure", "edit"])).default(["read", "invoke"]),
+  read_only: z.boolean().default(false),
+  provider_locked: z.boolean().default(false),
+  provider_id: z.string().max(180).optional(),
+  provider_manifest_version: z.string().max(120).optional(),
+  provider_manifest_digest: z.string().max(160).optional(),
+  provider_manifest_signature_key_id: z.string().max(180).optional(),
+  provider_manifest_signed: z.boolean().optional(),
+  source: z.enum(["local", "provider", "runtime", "provider_manifest", "url_document", "uploaded_document"]).default("local"),
+  source_type: z.string().max(120).optional(),
+  source_ref: z.string().max(1_000).optional(),
   version: z.string().max(80).optional(),
 });
+
+const effectiveCapabilitySchema = z.record(z.unknown()).refine(v => jsonCharLength(v) <= 12_000, "effective capability entry is too large");
 
 export const composeSchema = z.object({
   agentTemplateId: z.string().uuid(),
@@ -82,6 +96,10 @@ export const composeSchema = z.object({
   // Tool Service once, so Prompt Composer renders the same descriptors MCP
   // will receive instead of doing a second discovery pass.
   toolDescriptors: z.array(toolDescriptorSchema).max(64).optional(),
+  // Resolved Agent Profile capability snapshot. Direct compose callers that
+  // do not pass toolDescriptors must provide this before Prompt Composer can
+  // safely ask tool-service for dynamic tools under fail-closed governance.
+  effectiveCapabilities: z.array(effectiveCapabilitySchema).max(128).optional(),
   // M52 — Pre-budgeted code-context package from mcp-server. When present,
   // Prompt Composer emits 7 CODE_* layers (TASK_INTENT, TARGET_SYMBOLS,
   // EDITABLE_SLICES, DEPENDENCY_SLICES, TYPE_CONTRACTS, TEST_SLICES,

@@ -49,6 +49,42 @@ assert(
   "canonical tool descriptors must short-circuit static grants and dynamic discovery",
 );
 assert(
+  serviceSource.includes("Array.isArray(input.effectiveCapabilities)"),
+  "dynamic tool discovery must require a resolved effective capability set",
+);
+assert(
+  serviceSource.includes("effective_capabilities: input.effectiveCapabilities"),
+  "dynamic tool discovery must forward the resolved effective capability set",
+);
+assert(
+  serviceSource.includes("capability_permissions: t.capability_permissions"),
+  "dynamic discovered tools must preserve capability permission metadata in prompt tool blocks",
+);
+assert(
+  serviceSource.includes("read_only: t.read_only"),
+  "dynamic discovered tools must preserve read-only metadata in prompt tool blocks",
+);
+assert(
+  serviceSource.includes("provider_locked: t.provider_locked"),
+  "dynamic discovered tools must preserve provider-locked metadata in prompt tool blocks",
+);
+assert(
+  serviceSource.includes("source_ref: t.source_ref"),
+  "dynamic discovered tools must preserve source references in prompt tool blocks",
+);
+assert(
+  serviceSource.includes("function learningServiceHeaders(): Record<string, string>"),
+  "learning-service calls must use an explicit service-token header helper",
+);
+assert(
+  serviceSource.includes("env.LEARNING_SERVICE_TOKEN ?? process.env.AUDIT_GOV_SERVICE_TOKEN"),
+  "learning-service calls must fall back to the existing audit governance service token",
+);
+assert(
+  serviceSource.includes("headers: learningServiceHeaders()"),
+  "learning-service state reads must send service auth headers",
+);
+assert(
   serviceSource.includes("trace_id:       resolvedTraceId ?? input.workflowContext.instanceId"),
   "prompt audit events should use the resolved trace id",
 );

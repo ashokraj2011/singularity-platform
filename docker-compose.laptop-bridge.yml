@@ -27,7 +27,7 @@ services:
       # Fallback when no laptop is serving model-run: reach the HOST gateway
       # (Docker → host on macOS/Win) instead of the absent box llm-gateway.
       LLM_GATEWAY_URL: http://host.docker.internal:8001
-  agent-runtime:
+  platform-core:
     environment:
       # agent-runtime makes its own gateway calls (world-model distill); point it
       # at the host gateway since the box llm-gateway container isn't running.

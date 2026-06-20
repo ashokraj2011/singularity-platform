@@ -26,6 +26,7 @@
 .singularity/downloads/
 .singularity/source-cache/
 singularity-portal/public/ops-doctor.json
+agent-and-tools/web/public/ops-doctor.json
 *.pem
 *.key
 *.p8

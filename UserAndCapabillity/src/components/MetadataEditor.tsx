@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Plus, X } from 'lucide-react'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
+import { Input } from 'identity-web/components/ui/input'
+import { Button } from 'identity-web/components/ui/button'
 
 interface MetadataEditorProps {
   value: Record<string, string>

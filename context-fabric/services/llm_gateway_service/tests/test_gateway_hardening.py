@@ -129,6 +129,33 @@ def test_mock_alias_succeeds(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     )
 
 
+def test_expected_model_guard_rejects_alias_drift_before_provider_call(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    providers = {
+        "defaultProvider": "mock",
+        "allowedProviders": ["mock"],
+        "providers": {"mock": {"enabled": True, "defaultModel": "mock-fast"}},
+    }
+    catalog = [{"id": "mock", "provider": "mock", "model": "mock-fast", "default": True}]
+    _, _, router = load_modules(monkeypatch, tmp_path, providers, catalog)
+
+    async def should_not_dispatch(*_args, **_kwargs):
+        raise AssertionError("provider dispatch must not run when expected_model mismatches")
+
+    monkeypatch.setattr(router.mock_provider, "respond", should_not_dispatch)
+    req = router.ChatCompletionRequest(
+        model_alias="mock",
+        expected_provider="mock",
+        expected_model="mock-slow",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(router.chat_completions(req))
+
+    assert exc.value.status_code == 409
+    assert "does not match expected model mock-slow" in str(exc.value.detail)
+
+
 def test_non_mock_embeddings_response_uses_resolved_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     providers = {
         "defaultProvider": "openai",

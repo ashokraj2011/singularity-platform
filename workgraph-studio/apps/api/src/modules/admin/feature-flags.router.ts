@@ -23,6 +23,7 @@ import { validate } from '../../middleware/validate'
 import { ForbiddenError, NotFoundError } from '../../lib/errors'
 import { isAdminUser } from '../../lib/permissions/admin'
 import { logEvent, publishOutbox } from '../../lib/audit'
+import { requireTenantScopedInternalToken, tenantIsolationStrict } from '../../lib/tenant-isolation'
 
 export const featureFlagsRouter: Router = Router()
 
@@ -41,11 +42,16 @@ function hasServiceToken(req: Request): boolean {
 }
 
 internalFeatureFlagsRouter.use((req, res, next) => {
-  if (!hasServiceToken(req)) {
-    res.status(401).json({ code: 'UNAUTHORIZED', message: 'Missing or invalid service token' })
-    return
+  try {
+    if (!hasServiceToken(req)) {
+      res.status(401).json({ code: 'UNAUTHORIZED', message: 'Missing or invalid service token' })
+      return
+    }
+    requireTenantScopedInternalToken(req, 'internal feature-flag reads')
+    next()
+  } catch (err) {
+    next(err)
   }
-  next()
 })
 
 internalFeatureFlagsRouter.get('/', async (_req, res, next) => {
@@ -76,8 +82,17 @@ const toggleSchema = z.object({
   description: z.string().max(500).optional(),
 })
 
-featureFlagsRouter.get('/', async (_req, res, next) => {
+async function assertFeatureFlagReader(req: Request): Promise<void> {
+  if (!tenantIsolationStrict()) return
+  const actorId = req.user!.userId
+  if (!(await isAdminUser(actorId))) {
+    throw new ForbiddenError('Only admins can read global feature flags when tenant isolation is strict')
+  }
+}
+
+featureFlagsRouter.get('/', async (req, res, next) => {
   try {
+    await assertFeatureFlagReader(req)
     const flags = await prisma.featureFlag.findMany({ orderBy: { key: 'asc' } })
     res.json({ items: flags })
   } catch (err) {
@@ -87,6 +102,7 @@ featureFlagsRouter.get('/', async (_req, res, next) => {
 
 featureFlagsRouter.get('/:key', async (req, res, next) => {
   try {
+    await assertFeatureFlagReader(req)
     if (!KEY_PATTERN.test(req.params.key)) {
       throw new NotFoundError('FeatureFlag', req.params.key)
     }

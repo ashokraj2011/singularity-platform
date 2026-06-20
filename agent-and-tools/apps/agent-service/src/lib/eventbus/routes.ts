@@ -4,6 +4,9 @@
 import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../../database";
+import { requireAuth } from "../../middleware/auth";
+import { AppError } from "../../middleware/errorHandler";
+import { assertEventTargetUrlAllowed } from "./target-url-policy";
 
 const createSchema = z.object({
   subscriberId: z.string().min(1),
@@ -15,9 +18,16 @@ const createSchema = z.object({
 
 export const eventSubscriptionsRouter = Router();
 
+eventSubscriptionsRouter.use(requireAuth);
+
 eventSubscriptionsRouter.post("/", async (req, res, next) => {
   try {
     const body = createSchema.parse(req.body);
+    try {
+      await assertEventTargetUrlAllowed(body.targetUrl);
+    } catch (err) {
+      throw new AppError((err as Error).message, 400);
+    }
     const { rows } = await pool.query(
       `INSERT INTO agent.event_subscriptions (subscriber_id, event_pattern, target_url, secret, metadata)
        VALUES ($1, $2, $3, $4, $5) RETURNING *`,

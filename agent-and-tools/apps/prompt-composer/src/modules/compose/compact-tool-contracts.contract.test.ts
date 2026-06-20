@@ -22,6 +22,10 @@ const sampleTool = {
   risk_level: "MEDIUM",
   requires_approval: false,
   execution_target: "LOCAL",
+  capability_id: "cap-dev",
+  capability_permissions: ["read", "invoke", "edit"],
+  read_only: false,
+  source: "local",
   input_schema: {
     type: "object",
     properties: {
@@ -72,8 +76,44 @@ assert(
   "compact mode must preserve execution_target",
 );
 assert(
+  compactBlock.includes("Capability permissions: read, invoke, edit"),
+  "compact mode must preserve capability permissions",
+);
+assert(
+  compactBlock.includes("Runtime origin: source=local"),
+  "compact mode must preserve runtime origin",
+);
+assert(
   compactBlock.includes("Required args: patch"),
   "compact mode must preserve required-args summary",
+);
+
+const externalReadOnlyTool = composeService.renderToolBlock({
+  ...sampleTool,
+  tool_name: "github.issue.read",
+  capability_permissions: ["read", "invoke"],
+  read_only: true,
+  provider_locked: true,
+  source: "provider",
+  source_type: "provider_manifest",
+  source_ref: "https://api.github.test/.well-known/agent-manifest.json",
+  provider_id: "github",
+  provider_manifest_version: "2026-06-17",
+  provider_manifest_digest: "sha256:abc123",
+  provider_manifest_signature_key_id: "github-key-1",
+  provider_manifest_signed: true,
+}, true);
+assert(
+  externalReadOnlyTool.includes("Capability permissions: read (read-only, provider-locked)"),
+  "provider tools must clamp prompt-visible permissions to the effective read-only/provider-locked state",
+);
+assert(
+  externalReadOnlyTool.includes("Runtime origin: source=provider, sourceType=provider_manifest, sourceRef=https://api.github.test/.well-known/agent-manifest.json, provider=github, manifest=2026-06-17, manifestDigest=sha256:abc123, signatureKey=github-key-1, signedManifest=true"),
+  "provider tools must render external runtime source, source ref, manifest, digest, and signature evidence",
+);
+assert(
+  !externalReadOnlyTool.includes("Capability permissions: read, invoke"),
+  "provider-locked prompt blocks must not imply invoke access",
 );
 
 // ── compact mode size win: must be materially smaller than default ────────
@@ -93,4 +133,4 @@ assert(
   "compact mode must omit Required args line when schema has none",
 );
 
-console.log("M44 compact tool contracts: 9 assertions passed");
+console.log("M44 compact tool contracts: 13 assertions passed");

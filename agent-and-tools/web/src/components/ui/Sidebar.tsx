@@ -3,21 +3,28 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
-  LayoutDashboard, Wrench, Play, Users, BookOpen,
+  LayoutDashboard, Wrench, Play, Users,
   GitBranch, Layers, ScrollText, ShieldCheck, Activity, Brain,
   ChevronLeft, ChevronRight, DollarSign, Cpu, WandSparkles,
+  Bot, Hammer, Inbox, Network, Route, Workflow, Zap,
+  Database, FileText, Globe, Link2, Package, Puzzle, ClipboardCheck,
 } from "lucide-react";
 
-const registry = [
-  { label: "Dashboard",     href: "/",              icon: LayoutDashboard },
-  { label: "Tools",         href: "/tools",         icon: Wrench },
-  { label: "Executions",    href: "/executions",    icon: Play },
-  { label: "Runners",       href: "/runners",       icon: Users },
-  { label: "Learning",      href: "/learning",      icon: BookOpen },
+const domains = [
+  { label: "Home",       href: "/",           icon: LayoutDashboard },
+  { label: "Operations", href: "/operations", icon: Network },
+  { label: "Agents",     href: "/agents",     icon: Bot },
+  { label: "Workflows",  href: "/workflows",  icon: Workflow },
+  { label: "Workbench",  href: "/workbench",  icon: Wrench },
+  { label: "Foundry",    href: "/foundry",    icon: Hammer },
+  { label: "Identity",   href: "/identity",   icon: Users },
 ];
 
-const runtime = [
+const agentRuntime = [
+  { label: "Agent Studio",        href: "/agents/studio",       icon: Bot },
   { label: "Capabilities",        href: "/capabilities",        icon: GitBranch },
+  { label: "Tools",               href: "/tools",               icon: Wrench },
+  { label: "Executions",          href: "/executions",          icon: Play },
   { label: "Behavior Profiles",   href: "/prompt-profiles",     icon: Layers },
   { label: "Prompt Workbench",    href: "/prompt-workbench",    icon: WandSparkles },
   { label: "Instruction Blocks",  href: "/prompt-layers",       icon: ScrollText },
@@ -26,13 +33,66 @@ const runtime = [
   { label: "Memory",              href: "/memory",              icon: Brain },
 ];
 
+const workflowOperate = [
+  { label: "Planner", href: "/workflows/planner", icon: Route },
+  { label: "Inbox", href: "/workflows/inbox", icon: Inbox },
+  { label: "Work Hub", href: "/work-items", icon: Network },
+  { label: "Start Workflow", href: "/workflows/run", icon: Play },
+  { label: "Runs", href: "/runs", icon: Activity },
+  { label: "Run History", href: "/workflows/history", icon: FileText },
+  { label: "Runtime", href: "/workflows/runtime", icon: Zap },
+  { label: "Artifacts", href: "/workflows/artifacts/explorer", icon: Package },
+];
+
+const workflowAuthoring = [
+  { label: "Workflow Manager", href: "/workflows/templates", icon: Workflow },
+  { label: "Metadata", href: "/workflows/metadata", icon: Database },
+  { label: "Artifact Studio", href: "/workflows/artifacts", icon: ScrollText },
+  { label: "Node Types", href: "/workflows/node-types", icon: Puzzle },
+  { label: "Variables", href: "/identity/variables", icon: Globe },
+  { label: "Connectors", href: "/workflows/connectors", icon: Link2 },
+  { label: "LLM Routing", href: "/llm-settings", icon: Cpu },
+];
+
+const workbenchRuntime = [
+  { label: "Cockpit",       href: "/workbench/cockpit",      icon: Wrench },
+  { label: "Loop Theater",  href: "/workbench/loop-theater", icon: Play },
+  { label: "Governance",    href: "/workbench/governance",   icon: ShieldCheck },
+  { label: "Artifacts",     href: "/workbench/artifacts",    icon: ScrollText },
+];
+
+const foundryRuntime = [
+  { label: "Generation Cockpit", href: "/foundry", icon: Hammer },
+  { label: "Run History", href: "/foundry/history", icon: Activity },
+  { label: "Artifacts", href: "/foundry/artifacts", icon: Package },
+  { label: "Gaps", href: "/foundry/gaps", icon: ShieldCheck },
+  { label: "LLM Tasks", href: "/foundry/llm-tasks", icon: Cpu },
+  { label: "Receipts", href: "/foundry/receipts", icon: FileText },
+  { label: "Repos", href: "/foundry/repos", icon: GitBranch },
+  { label: "Change Plans", href: "/foundry/change-plans", icon: Route },
+  { label: "Verification", href: "/foundry/verification", icon: ClipboardCheck },
+];
+
+const identityAdmin = [
+  { label: "Dashboard", href: "/identity/dashboard", icon: LayoutDashboard },
+  { label: "Users", href: "/identity/users", icon: Users },
+  { label: "Teams", href: "/identity/teams", icon: Network },
+  { label: "Roles", href: "/identity/roles", icon: ShieldCheck },
+  { label: "Capabilities", href: "/identity/capabilities", icon: GitBranch },
+  { label: "Permissions", href: "/identity/permissions", icon: ShieldCheck },
+  { label: "Variables", href: "/identity/variables", icon: Globe },
+];
+
 const governance = [
+  { label: "Engine",       href: "/engine",       icon: Zap },
   { label: "LLM Settings", href: "/llm-settings", icon: Cpu },
   { label: "Audit",        href: "/audit",         icon: ShieldCheck },
+  { label: "Eval Curation", href: "/audit/curation", icon: ClipboardCheck },
   { label: "Cost",         href: "/cost",          icon: DollarSign },
 ];
 
 type ItemDef = { label: string; href: string; icon: typeof LayoutDashboard };
+type NavSection = { label: string; items: ItemDef[] };
 
 function NavItem({
   label, href, icon: Icon, active, collapsed,
@@ -62,7 +122,7 @@ function NavItem({
         )}
         <Icon
           size={16}
-          style={{ color: active ? "var(--brand-green-accent)" : "rgba(245,242,234,0.5)", flexShrink: 0 }}
+          style={{ color: active ? "var(--color-primary)" : "var(--color-outline)", flexShrink: 0 }}
         />
         {!collapsed && <span>{label}</span>}
       </div>
@@ -73,10 +133,19 @@ function NavItem({
 export function Sidebar() {
   const path = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const [narrowViewport, setNarrowViewport] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem("sidebar-collapsed");
     if (stored !== null) setCollapsed(stored === "true");
+  }, []);
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 760px)");
+    const sync = () => setNarrowViewport(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
   }, []);
 
   function toggle() {
@@ -90,10 +159,48 @@ export function Sidebar() {
   const isActive = (href: string) =>
     href === "/" ? path === "/" : path.startsWith(href);
   const canvasRoute = path.startsWith("/prompt-workbench");
-  const effectiveCollapsed = collapsed || canvasRoute;
+  const effectiveCollapsed = collapsed || canvasRoute || narrowViewport;
+
+  const sidebarWidth = effectiveCollapsed ? 64 : 246;
+  const sections: NavSection[] = [
+    { label: "Agent Runtime", items: agentRuntime },
+    { label: "Workflow Operations", items: workflowOperate },
+    { label: "Workflow Authoring", items: workflowAuthoring },
+    { label: "Workbench Neo", items: workbenchRuntime },
+    { label: "Code Foundry", items: foundryRuntime },
+    { label: "Identity", items: identityAdmin },
+    { label: "Governance", items: governance },
+  ];
+
+  function renderSection(section: NavSection) {
+    return !effectiveCollapsed ? (
+      <div key={section.label} style={{ marginTop: 16 }}>
+        <p className="label-xs" style={{ padding: "0 12px", marginBottom: 6 }}>{section.label}</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {section.items.map(item => (
+            <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={false} />
+          ))}
+        </div>
+      </div>
+    ) : (
+      <div key={section.label} style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
+        {section.items.map(item => (
+          <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={true} />
+        ))}
+      </div>
+    );
+  }
 
   return (
-    <aside className="shell-sidebar" style={{ width: effectiveCollapsed ? 64 : 236 }}>
+    <aside
+      className="shell-sidebar"
+      style={{
+        width: sidebarWidth,
+        minWidth: sidebarWidth,
+        maxWidth: sidebarWidth,
+        flexBasis: sidebarWidth,
+      }}
+    >
 
       {/* ── Brand header ── */}
       <div
@@ -140,7 +247,7 @@ export function Sidebar() {
                 fontFamily: "var(--font-sans)",
                 fontSize: "0.9375rem",
                 fontWeight: 700,
-                color: "var(--brand-warm-white)",
+                color: "var(--color-on-surface)",
                 letterSpacing: "0.04em",
                 lineHeight: 1.2,
                 margin: 0,
@@ -159,7 +266,7 @@ export function Sidebar() {
                 // their share, so it wrapped word-by-word onto three lines.
                 // 0.10em keeps the airy microcaps feel and fits one line.
                 letterSpacing: "0.10em",
-                color: "rgba(245,242,234,0.55)",
+                color: "var(--color-outline)",
                 opacity: 0.85,
                 marginTop: 2,
                 marginBottom: 0,
@@ -177,18 +284,18 @@ export function Sidebar() {
         {/* Collapse toggle */}
         <button
           onClick={toggle}
-          title={effectiveCollapsed ? (canvasRoute ? "Prompt Workbench uses compact navigation" : "Expand sidebar") : "Collapse sidebar"}
-          disabled={canvasRoute}
+          title={effectiveCollapsed ? (canvasRoute || narrowViewport ? "Compact navigation" : "Expand sidebar") : "Collapse sidebar"}
+          disabled={canvasRoute || narrowViewport}
           style={{
             width: 32, height: 32, borderRadius: 8, border: "none",
-            background: "rgba(245,242,234,0.08)", cursor: canvasRoute ? "default" : "pointer",
+            background: "var(--color-surface-container)", cursor: canvasRoute || narrowViewport ? "default" : "pointer",
             display: "flex", alignItems: "center", justifyContent: "center",
-            color: "var(--brand-green-accent)", transition: "all 0.15s",
-            opacity: canvasRoute ? 0.55 : 1,
+            color: "var(--color-primary)", transition: "all 0.15s",
+            opacity: canvasRoute || narrowViewport ? 0.55 : 1,
             flexShrink: 0,
           }}
-          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(245,242,234,0.14)"; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(245,242,234,0.08)"; }}
+          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(0,132,61,0.10)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = "var(--color-surface-container)"; }}
         >
           {effectiveCollapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
         </button>
@@ -197,12 +304,12 @@ export function Sidebar() {
       {/* ── Navigation ── */}
       <nav style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "12px 8px" }}>
 
-        {/* Registry section */}
+        {/* Domains section */}
         {!effectiveCollapsed && (
-          <p className="label-xs" style={{ padding: "0 12px", marginBottom: 6 }}>Registry</p>
+          <p className="label-xs" style={{ padding: "0 12px", marginBottom: 6 }}>Platform</p>
         )}
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {registry.map(item => {
+          {domains.map(item => {
             const active = isActive(item.href);
             return (
               <div key={item.href}>
@@ -212,41 +319,7 @@ export function Sidebar() {
           })}
         </div>
 
-        {/* Runtime section */}
-        {!effectiveCollapsed ? (
-          <div style={{ marginTop: 16 }}>
-            <p className="label-xs" style={{ padding: "0 12px", marginBottom: 6 }}>Runtime</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {runtime.map(item => (
-                <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={false} />
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
-            {runtime.map(item => (
-              <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={true} />
-            ))}
-          </div>
-        )}
-
-        {/* Governance section (M21) */}
-        {!effectiveCollapsed ? (
-          <div style={{ marginTop: 16 }}>
-            <p className="label-xs" style={{ padding: "0 12px", marginBottom: 6 }}>Governance</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {governance.map(item => (
-                <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={false} />
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
-            {governance.map(item => (
-              <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={true} />
-            ))}
-          </div>
-        )}
+        {sections.map(renderSection)}
       </nav>
 
       {/* ── Footer ── */}
@@ -257,7 +330,7 @@ export function Sidebar() {
             borderTop: "1px solid rgba(245,242,234,0.08)",
             fontFamily: "var(--font-mono)",
             fontSize: "0.6875rem",
-            color: "rgba(245,242,234,0.45)",
+            color: "var(--color-outline)",
             opacity: 0.6,
             flexShrink: 0,
           }}

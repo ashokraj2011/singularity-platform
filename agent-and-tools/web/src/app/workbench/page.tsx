@@ -1,5 +1,5 @@
-import { EmbeddedControlPlaneApp } from "@/components/EmbeddedControlPlaneApp";
+import { WorkbenchRoute } from "@/components/workbench/WorkbenchRoute";
 
-export default function WorkbenchPage() {
-  return <EmbeddedControlPlaneApp appId="workbench" />;
+export default function WorkbenchDomainPage() {
+  return <WorkbenchRoute mode="cockpit" view="cockpit" />;
 }

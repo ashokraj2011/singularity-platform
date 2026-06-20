@@ -238,7 +238,8 @@ export function requiredGrantCategories(): Set<string> {
  * configured required set (default: mutate, finalize, run). Read-only
  * categories (read/analyzer/verify_meta) are never gated, so the rollout can't
  * break safe tools. A tool absent from the manifest reports category "unknown"
- * and is NOT gated by default — real mutating tools are all in the manifest.
+ * and is NOT gated by default — real mutating/high-risk tools, including
+ * executor-only tools such as run_python, must be listed in the registry.
  */
 export function toolRequiresGrant(toolName: string): boolean {
   return requiredGrantCategories().has(categoryForTool(toolName));

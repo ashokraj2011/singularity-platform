@@ -160,8 +160,13 @@ async def load_stage_policy(
 
     url = f"{_COMPOSER_URL}/api/v1/stage-policies/resolve"
     headers = {"content-type": "application/json"}
-    if bearer:
-        headers["authorization"] = f"Bearer {bearer}"
+    composer_bearer = (
+        bearer
+        or os.environ.get("PROMPT_COMPOSER_SERVICE_TOKEN")
+        or os.environ.get("CONTEXT_FABRIC_SERVICE_TOKEN")
+    )
+    if composer_bearer:
+        headers["authorization"] = f"Bearer {composer_bearer}"
     body: dict[str, Any] = {"stageKey": stage_key}
     if agent_role:
         body["agentRole"] = agent_role

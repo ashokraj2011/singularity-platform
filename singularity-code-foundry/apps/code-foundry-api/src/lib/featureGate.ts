@@ -21,7 +21,12 @@ export function requireFlag(flag: FoundryFlag) {
         res.status(503).json(err.toJSON())
         return
       }
-      next(err)
+      res.status(503).json({
+        code: 'FEATURE_FLAG_UNAVAILABLE',
+        flag,
+        message: `Could not resolve Foundry feature flag '${flag}'. Workgraph feature-flag service may be unavailable.`,
+      })
+      return
     }
   }
 }

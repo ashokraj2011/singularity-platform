@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { platformWebCredentialError, platformWebProductionEnv } from "@/lib/serverEnvGuard";
+import { requireVerifiedCallerBearer } from "../../_proxy";
 
 type ComposerEnvelope<T = unknown> = {
   success?: boolean;
@@ -20,13 +22,43 @@ function composerUrl(): string {
   return trimTrailingSlash(process.env.PROMPT_COMPOSER_URL ?? "http://localhost:3004");
 }
 
-function forwardHeaders(request: NextRequest): HeadersInit {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+function composerServiceToken(): string | undefined {
+  return (
+    process.env.PROMPT_COMPOSER_SERVICE_TOKEN
+    || process.env.WORKGRAPH_PROXY_SERVICE_TOKEN
+    || process.env.IAM_SERVICE_TOKEN
+    || ""
+  ).trim() || undefined;
+}
+
+export function composerServiceTokenError(): string | null {
+  return platformWebCredentialError("PROMPT_COMPOSER_SERVICE_TOKEN", composerServiceToken());
+}
+
+export function composerAuthHeaders(request: NextRequest, options: { contentType?: boolean } = {}): Headers {
+  const headers = new Headers();
+  if (options.contentType !== false) headers.set("content-type", "application/json");
   const auth = request.headers.get("authorization");
-  if (auth) headers.Authorization = auth;
+  if (auth) headers.set("authorization", auth);
+  else {
+    const token = composerServiceToken();
+    if (token) headers.set("authorization", token.startsWith("Bearer ") ? token : `Bearer ${token}`);
+  }
   const requestId = request.headers.get("x-request-id");
-  if (requestId) headers["x-request-id"] = requestId;
+  if (requestId) headers.set("x-request-id", requestId);
   return headers;
+}
+
+export async function composerAuthFailure(request: NextRequest): Promise<NextResponse | null> {
+  const authRequired = await requireVerifiedCallerBearer(request, "Prompt Composer");
+  if (authRequired) return authRequired;
+  if (request.headers.get("authorization")) return null;
+  if (composerServiceToken()) return null;
+  if (!platformWebProductionEnv()) return null;
+  return NextResponse.json({
+    error: "Prompt Composer service auth is not configured",
+    detail: composerServiceTokenError(),
+  }, { status: 503 });
 }
 
 async function readJson(res: Response): Promise<unknown> {
@@ -52,10 +84,20 @@ export async function callComposer<T = unknown>(
   body: PromptWorkbenchComposeBody,
   previewOnly: boolean,
 ): Promise<{ ok: true; data: T; requestId?: string | null } | { ok: false; status: number; error: string; details?: unknown; requestId?: string | null }> {
+  const authFailure = await composerAuthFailure(request);
+  if (authFailure) {
+    const body = await authFailure.json().catch(() => ({ error: "Prompt Composer service auth is not configured" }));
+    return {
+      ok: false,
+      status: authFailure.status,
+      error: String((body as Record<string, unknown>).error ?? "Prompt Composer service auth is not configured"),
+      details: (body as Record<string, unknown>).detail,
+    };
+  }
   try {
     const res = await fetch(`${composerUrl()}/api/v1/compose-and-respond`, {
       method: "POST",
-      headers: forwardHeaders(request),
+      headers: composerAuthHeaders(request),
       body: JSON.stringify({ ...body, previewOnly }),
       cache: "no-store",
     });

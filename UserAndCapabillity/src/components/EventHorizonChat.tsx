@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { Bot, RefreshCcw, Send, Sparkles, Trash2, X } from 'lucide-react'
-import { api } from '@/lib/api'
-import { useAuthStore } from '@/store/auth.store'
+import { api } from 'identity-web/lib/api'
+import { useAuthStore } from 'identity-web/store/auth.store'
 
 type ChatMessage = { id: string; role: 'assistant' | 'user'; text: string; createdAt: string }
 type ContextSnapshot = {
@@ -173,7 +173,7 @@ export function EventHorizonChat() {
   async function callEventHorizon(text: string) {
     const sid = activeSessionId()
     const capability = String(ctx.capability?.id ?? ctx.capability?.capability_id ?? capabilityId ?? '00000000-0000-0000-0000-00000000aaaa')
-    const res = await fetch(`${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/wg/event-horizon/chat`, {
+    const res = await fetch('/api/workgraph/event-horizon/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

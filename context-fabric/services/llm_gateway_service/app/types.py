@@ -66,6 +66,10 @@ class ChatCompletionRequest(BaseModel):
     model_alias: Optional[str] = None
     provider:    Optional[str] = None
     model:       Optional[str] = None
+    # Optional drift guard for immutable/replay callers. These do not select a
+    # model; they assert that alias resolution still matches a frozen bundle.
+    expected_provider: Optional[str] = None
+    expected_model:    Optional[str] = None
 
     messages: List[ChatMessage]
     tools:    Optional[List[ToolDescriptor]] = None

@@ -4,7 +4,8 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test:contracts": "ts-node --transpile-only src/lib/capability-metadata.contract.test.ts && ts-node --transpile-only src/lib/effective-capability-gate.contract.test.ts && ts-node --transpile-only src/lib/server-tool-url-policy.contract.test.ts && ts-node --transpile-only src/lib/eventbus-target-url-policy.contract.test.ts && ts-node --transpile-only src/routes/route-auth.contract.test.ts && ts-node --transpile-only src/routes/effective-capability-routing.contract.test.ts && ts-node --transpile-only src/routes/context-fabric-single-turn.contract.test.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",

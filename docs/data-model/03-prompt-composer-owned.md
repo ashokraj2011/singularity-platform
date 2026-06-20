@@ -168,6 +168,10 @@ GLOBAL_LESSON GLOBAL_LESSON
     String consumableId "❓"
     }
   
+Immutable contracts are replayed from the stored JSON bundle, not from live prompt rows. Workgraph fetches the contract once, renders the frozen prompt from `promptLayerVersions.contentSnapshot`, `systemPromptVersions`, `stageBindingVersions`, `toolPins`, `bundleHash`, and model alias metadata, then calls Context Fabric `POST /api/v1/execute-governed-single-turn` with that prompt verbatim. The saved provider/model are forwarded as LLM gateway expectations so alias drift rejects before provider dispatch. If replay receives an `originalRunId`, it tenant-validates the referenced Workgraph `AgentRun` and compares the replay response against the stored `LLM_RESPONSE` output with deterministic hashes, sizes, exact-match status, and first-difference excerpts.
+
+Contract minting must pin a resolved model. When no `modelAlias` is supplied, Prompt Composer resolves the current catalog default alias from `/llm/models`; if the catalog is unavailable or the alias is missing, minting rejects rather than storing unresolved placeholder provider/model metadata.
+
 
   "EngineLesson" {
     String id "🗝️"

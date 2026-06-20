@@ -1,8 +1,10 @@
 "use client";
 import useSWR from "swr";
+import { useParams } from "next/navigation";
 import { runtimeApi } from "@/lib/api";
 
-export default function PromptAssemblyDetailPage({ params }: { params: { id: string } }) {
+export default function PromptAssemblyDetailPage() {
+  const params = useParams<{ id: string }>();
   const id = decodeURIComponent(params.id);
   const { data } = useSWR(`assembly-${id}`, () => runtimeApi.getAssembly(id));
 

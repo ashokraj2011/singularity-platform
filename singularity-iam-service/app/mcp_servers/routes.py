@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import record_event
-from app.auth.deps import get_current_user
+from app.auth.deps import require_mcp_server_read, require_super_admin
 from app.database import get_db
 from app.mcp_servers.schemas import (
     CreateMcpServerRequest, HealthCheckOut, McpServerOut, McpServerSummary,
@@ -86,7 +86,7 @@ async def register_mcp_server(
     cap_uuid: str,
     body: CreateMcpServerRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     cap = await _load_capability(db, cap_uuid)
     srv = McpServer(
@@ -129,7 +129,7 @@ async def list_mcp_servers_for_capability(
     cap_uuid: str,
     status: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_mcp_server_read),
 ):
     await _load_capability(db, cap_uuid)
     q = select(McpServer).where(McpServer.capability_id == cap_uuid)
@@ -145,7 +145,7 @@ async def list_mcp_servers_for_capability(
 async def get_mcp_server(
     server_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_mcp_server_read),
 ):
     srv = await _load_server(db, server_id)
     return _full(srv)
@@ -156,7 +156,7 @@ async def update_mcp_server(
     server_id: str,
     body: UpdateMcpServerRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     srv = await _load_server(db, server_id)
     fields = body.model_dump(exclude_unset=True)
@@ -182,7 +182,7 @@ async def update_mcp_server(
 async def delete_mcp_server(
     server_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     srv = await _load_server(db, server_id)
     cap_id = srv.capability_id
@@ -203,7 +203,7 @@ async def delete_mcp_server(
 async def test_mcp_server(
     server_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_super_admin),
 ):
     """Probe an MCP server's health endpoint with the stored bearer token.
     Updates `last_health_check_at` + `last_health_check_status`. Returns the

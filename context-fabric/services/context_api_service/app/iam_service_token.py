@@ -51,6 +51,46 @@ def _decode_exp(jwt: str) -> Optional[datetime]:
         return None
 
 
+def _decode_payload(jwt: str) -> Optional[dict]:
+    try:
+        parts = jwt.split(".")
+        if len(parts) < 2:
+            return None
+        b = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(b).decode())
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
+
+
+def configured_tenant_ids_for_service_token() -> list[str]:
+    return sorted({
+        item.strip()
+        for item in (settings.iam_service_token_tenant_ids or "").split(",")
+        if item.strip()
+    })
+
+
+def validate_iam_service_token_tenant_scope(jwt: Optional[str]) -> bool:
+    if not settings.require_tenant_id:
+        return True
+    required = configured_tenant_ids_for_service_token()
+    if not required:
+        log.warning("[iam-service-token] REQUIRE_TENANT_ID=true requires IAM_SERVICE_TOKEN_TENANT_IDS")
+        return False
+    payload = _decode_payload(jwt or "")
+    raw_tenant_ids = payload.get("tenant_ids") if isinstance(payload, dict) else None
+    actual = sorted({
+        item.strip()
+        for item in raw_tenant_ids
+        if isinstance(item, str) and item.strip()
+    }) if isinstance(raw_tenant_ids, list) else []
+    if actual != required:
+        log.warning("[iam-service-token] service token tenant_ids do not match IAM_SERVICE_TOKEN_TENANT_IDS")
+        return False
+    return True
+
+
 def _is_fresh() -> bool:
     if _cached_jwt is None or _cached_exp is None:
         return False
@@ -81,13 +121,20 @@ async def _mint() -> Optional[str]:
             mint = await client.post(
                 f"{base}/auth/service-token",
                 headers={"authorization": f"Bearer {user_jwt}"},
-                json={"service_name": _SERVICE_NAME, "scopes": _SCOPES, "ttl_hours": _TTL_HOURS},
+                json={
+                    "service_name": _SERVICE_NAME,
+                    "scopes": _SCOPES,
+                    "tenant_ids": configured_tenant_ids_for_service_token(),
+                    "ttl_hours": _TTL_HOURS,
+                },
             )
             if mint.status_code >= 400:
                 log.warning("[iam-service-token] mint failed (%s): %s", mint.status_code, mint.text[:200])
                 return None
             jwt = mint.json().get("access_token")
             if not jwt:
+                return None
+            if not validate_iam_service_token_tenant_scope(jwt):
                 return None
     except Exception as exc:
         log.warning("[iam-service-token] mint errored: %s", exc)
@@ -109,7 +156,7 @@ async def get_iam_service_token() -> Optional[str]:
     explicit = (settings.iam_service_token or "").strip()
     if explicit:
         exp = _decode_exp(explicit)
-        if exp and exp > datetime.now(timezone.utc) + timedelta(minutes=5):
+        if exp and exp > datetime.now(timezone.utc) + timedelta(minutes=5) and validate_iam_service_token_tenant_scope(explicit):
             return explicit
         log.warning("[iam-service-token] ignoring non-JWT or expired IAM_SERVICE_TOKEN; attempting bootstrap mint")
     if _is_fresh():

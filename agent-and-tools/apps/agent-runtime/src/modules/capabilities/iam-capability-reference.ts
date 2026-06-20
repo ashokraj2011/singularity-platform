@@ -1,5 +1,5 @@
 import type { Capability } from "../../../generated/prisma-client";
-import jwt from "jsonwebtoken";
+import { getIamServiceAuthHeader } from "../../lib/iam/service-token";
 
 const DEFAULT_IAM_BASE_URL = "http://localhost:8100";
 
@@ -24,7 +24,7 @@ export async function syncIamCapabilityReference(
   };
   if (options.authHeader) headers.authorization = options.authHeader;
   else {
-    const fallback = serviceAuthHeader();
+    const fallback = await getIamServiceAuthHeader();
     if (fallback) headers.authorization = fallback;
   }
 
@@ -65,7 +65,7 @@ export async function syncIamCapabilityReference(
   try {
     const res = await fetch(url, { method: "PUT", headers, body: JSON.stringify(body) });
     if ((res.status === 401 || res.status === 403) && options.authHeader) {
-      const fallback = serviceAuthHeader();
+      const fallback = await getIamServiceAuthHeader();
       if (fallback && fallback !== options.authHeader) {
         const retry = await fetch(url, {
           method: "PUT",
@@ -85,25 +85,6 @@ export async function syncIamCapabilityReference(
   } catch (err) {
     return `IAM capability reference sync skipped: ${(err as Error).message}`;
   }
-}
-
-function serviceAuthHeader(): string | undefined {
-  const explicit = process.env.IAM_SERVICE_TOKEN?.trim();
-  if (explicit) return explicit.startsWith("Bearer ") ? explicit : `Bearer ${explicit}`;
-  const secret = process.env.JWT_SECRET?.trim();
-  if (!secret) return undefined;
-  const token = jwt.sign({
-    sub: "service:agent-runtime",
-    kind: "service",
-    service_name: "agent-runtime",
-    scopes: ["read:reference-data", "write:reference-data"],
-    issued_by: "agent-runtime",
-    is_super_admin: true,
-  }, secret, {
-    algorithm: "HS256",
-    expiresIn: "30d",
-  });
-  return `Bearer ${token}`;
 }
 
 function iamApiBase(): string {

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { usersApi } from '@/api/users.api'
-import type { CreateUserRequest, UpdateUserRequest } from '@/types'
+import { usersApi } from 'identity-web/api/users.api'
+import type { CreateUserRequest, UpdateUserRequest } from 'identity-web/types'
 
 export function useUsers(params?: { page?: number; size?: number; search?: string }) {
   return useQuery({

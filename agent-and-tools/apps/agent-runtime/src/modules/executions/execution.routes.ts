@@ -1,9 +1,12 @@
 import { Router } from "express";
 import { executionController } from "./execution.controller";
 import { validate } from "../../middleware/validate.middleware";
+import { requireAuth } from "../../middleware/auth.middleware";
 import { createExecutionSchema, startExecutionSchema } from "./execution.schemas";
 
 export const executionRoutes = Router();
+
+executionRoutes.use(requireAuth);
 
 executionRoutes.post("/", validate(createExecutionSchema), executionController.create);
 executionRoutes.get("/", executionController.list);

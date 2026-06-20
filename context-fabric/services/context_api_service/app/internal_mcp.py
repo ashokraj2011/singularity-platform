@@ -23,6 +23,9 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .config import settings
+from .governed.grant import grant_enabled, mint_tool_grant
+from .governed.phase_state import Phase
+from .governed.policy_loader import PhasePolicy, StagePolicy
 from .iam_service_token import get_iam_service_token, invalidate_iam_service_token
 
 
@@ -41,7 +44,17 @@ class ServerToolCallRequest(BaseModel):
     toolName: Optional[str] = None
     toolVersion: Optional[str] = None
     approvalId: Optional[str] = None
+    requestedCapabilityId: Optional[str] = None
+    requestedPermission: Optional[str] = None
+    effectiveCapabilities: list[dict[str, Any]] = Field(default_factory=list)
     args: dict[str, Any] = Field(default_factory=dict)
+
+
+class OperationalToolGrantRequest(BaseModel):
+    toolName: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    runContext: dict[str, Any] = Field(default_factory=dict)
+    workflowPolicy: dict[str, Any] = Field(default_factory=dict)
 
 
 def _check_service_token(provided: Optional[str]) -> None:
@@ -55,6 +68,91 @@ def _check_service_token(provided: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="invalid service token")
 
 
+_OPERATIONAL_TOOL_PHASES: dict[str, Phase] = {
+    "finish_work_branch": Phase.FINALIZE,
+    "run_python": Phase.ACT,
+}
+
+
+def _require_nonempty_string(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise HTTPException(status_code=400, detail=f"{field} is required")
+    return value.strip()
+
+
+def _operational_policy_for(tool_name: str, body: OperationalToolGrantRequest) -> tuple[StagePolicy, Phase]:
+    phase = _OPERATIONAL_TOOL_PHASES.get(tool_name)
+    if phase is None:
+        raise HTTPException(status_code=403, detail=f"operational grants are not available for tool {tool_name!r}")
+
+    run_context = body.runContext or {}
+    workflow_policy = body.workflowPolicy or {}
+    workflow_instance_id = _require_nonempty_string(
+        run_context.get("workflowInstanceId") or run_context.get("workflow_instance_id") or run_context.get("runId"),
+        "runContext.workflowInstanceId",
+    )
+    node_id = _require_nonempty_string(
+        run_context.get("nodeId") or run_context.get("node_id") or run_context.get("runStepId"),
+        "runContext.nodeId",
+    )
+    _require_nonempty_string(run_context.get("traceId") or run_context.get("trace_id"), "runContext.traceId")
+
+    if tool_name == "finish_work_branch":
+        approval_status = str(workflow_policy.get("approvalStatus") or "")
+        if approval_status not in {"APPROVED", "APPROVED_WITH_CONDITIONS"}:
+            raise HTTPException(
+                status_code=403,
+                detail="finish_work_branch operational grant requires an approved workflow approval gate",
+            )
+        if body.args.get("push") is not True:
+            raise HTTPException(status_code=403, detail="finish_work_branch operational grant is only issued for push=true")
+
+    if tool_name == "run_python":
+        _require_nonempty_string(body.args.get("code"), "args.code")
+        if body.args.get("allow_network") is True and workflow_policy.get("allowNetwork") is not True:
+            raise HTTPException(
+                status_code=403,
+                detail="run_python network access requires workflowPolicy.allowNetwork=true",
+            )
+
+    stage_key = str(
+        workflow_policy.get("stageKey")
+        or workflow_policy.get("nodeType")
+        or f"workflow:{node_id}"
+    )
+    phase_policy = PhasePolicy(
+        phase=phase,
+        allowed_tools=frozenset({tool_name}),
+        forbidden_tools=frozenset(),
+        required_output_schema={},
+        max_input_tokens=None,
+        max_output_tokens=None,
+        max_tool_calls=1,
+    )
+    policy = StagePolicy(
+        policy_id=f"context-fabric.operational.{tool_name}",
+        stage_key=stage_key,
+        agent_role="workflow-runtime",
+        version=1,
+        status="ACTIVE",
+        approval_model={
+            "source": "workgraph-runtime",
+            "approvalStatus": workflow_policy.get("approvalStatus"),
+        },
+        limits={"max_tool_calls": 1},
+        context_policy={},
+        edit_policy={},
+        verification_policy={},
+        risk_policy={
+            "workflowInstanceId": workflow_instance_id,
+            "nodeId": node_id,
+            "source": "operational-mcp-grant",
+        },
+        phases={phase: phase_policy},
+    )
+    return policy, phase
+
+
 async def _iam_get(url: str, params: Optional[dict[str, str]] = None, timeout: float = 10.0) -> httpx.Response:
     token = await get_iam_service_token()
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -65,6 +163,46 @@ async def _iam_get(url: str, params: Optional[dict[str, str]] = None, timeout: f
     token = await get_iam_service_token()
     async with httpx.AsyncClient(timeout=timeout) as client:
         return await client.get(url, params=params, headers={"Authorization": f"Bearer {token or ''}"})
+
+
+@router.post("/tool-grants")
+async def mint_operational_tool_grant(
+    body: OperationalToolGrantRequest,
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+):
+    """Mint a one-shot MCP ToolInvocationGrant for deterministic workflow tools.
+
+    Workgraph owns workflow state and human approval records; Context Fabric owns
+    the signing key and final grant policy. This endpoint is deliberately narrow:
+    it only signs the deterministic MCP tools listed in `_OPERATIONAL_TOOL_PHASES`
+    after the request presents enough workflow identity and policy evidence.
+    """
+    _check_service_token(x_service_token)
+    policy, phase = _operational_policy_for(body.toolName, body)
+    if not grant_enabled():
+        return {
+            "grant": None,
+            "grantEnabled": False,
+            "toolName": body.toolName,
+            "policyId": policy.policy_id,
+            "phase": phase.value,
+        }
+    grant = mint_tool_grant(
+        policy=policy,
+        phase=phase,
+        tool_name=body.toolName,
+        args=body.args,
+        run_context=body.runContext,
+    )
+    if grant is None:
+        raise HTTPException(status_code=503, detail="tool grant minting is enabled but no grant could be minted")
+    return {
+        "grant": grant,
+        "grantEnabled": True,
+        "toolName": body.toolName,
+        "policyId": policy.policy_id,
+        "phase": phase.value,
+    }
 
 
 @router.post("/tools/{tool_name}/call")
@@ -94,6 +232,9 @@ async def call_server_tool(
         "tool_name": body.toolName or tool_name,
         "tool_version": body.toolVersion,
         "approval_id": body.approvalId,
+        "requested_capability_id": body.requestedCapabilityId,
+        "requested_permission": body.requestedPermission,
+        "effective_capabilities": body.effectiveCapabilities,
         "arguments": body.args,
         "context_package_id": None,
     }

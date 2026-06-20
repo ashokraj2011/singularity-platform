@@ -21,6 +21,11 @@ Rules:
 - Cached or reused content may share hashes, but run-owned receipt rows must
   remain tied to the current `traceId` and `workflowInstanceId`.
 - Audit events use `traceId`; payloads may include child ids for joins.
+- HTTP calls that cross service boundaries must propagate W3C `traceparent`
+  for OpenTelemetry stitching and should also carry `x-singularity-trace-id`
+  when an application-level `traceId` is already known. Workgraph's Context
+  Fabric client injects both on `/execute`, governed execution, resume, and
+  internal code-change lookups.
 
 ## Shared Types
 

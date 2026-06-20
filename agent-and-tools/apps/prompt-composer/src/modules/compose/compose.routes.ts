@@ -1,10 +1,12 @@
 import { Router } from "express";
 import { composeController } from "./compose.controller";
 import { validate } from "../../middleware/validate.middleware";
+import { requireAuth } from "../../middleware/auth.middleware";
 import { composeSchema } from "./compose.schemas";
 import { composeService } from "./compose.service";
 
 export const composeRoutes = Router();
+composeRoutes.use(requireAuth);
 
 // POST /api/v1/compose-and-respond
 composeRoutes.post("/", validate(composeSchema), composeController.composeAndRespond);
@@ -14,6 +16,7 @@ composeRoutes.post("/", validate(composeSchema), composeController.composeAndRes
 //   POST /api/v1/compose-and-respond/debug-retrieval
 //   body: { capabilityId: string; task: string }
 export const composeDebugRoutes = Router();
+composeDebugRoutes.use(requireAuth);
 composeDebugRoutes.post("/", async (req, res, next) => {
   try {
     const { capabilityId, task } = req.body ?? {};

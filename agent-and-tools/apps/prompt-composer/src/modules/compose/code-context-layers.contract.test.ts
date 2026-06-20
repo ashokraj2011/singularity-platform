@@ -111,7 +111,7 @@ assert(receipt.includes("99.77%"));
 assert(receipt.includes("over token budget"));
 
 // ── 8. appendCodeContextLayers emits exactly the right 7 layer types in priority order ─
-const layers: { layerType: string; priority: number; contentSnapshot: string; inclusionReason?: string; layerHash?: string }[] = [];
+const layers: Parameters<typeof svc.appendCodeContextLayers>[0] = [];
 svc.appendCodeContextLayers(layers, samplePkg);
 const names = layers.map((l) => l.layerType);
 assert.deepEqual(names, [
@@ -134,7 +134,7 @@ const minimalPkg = {
   dependency_slices: [],
   test_slices: [],
 };
-const minimalLayers: { layerType: string; priority: number; contentSnapshot: string; inclusionReason?: string; layerHash?: string }[] = [];
+const minimalLayers: Parameters<typeof svc.appendCodeContextLayers>[0] = [];
 svc.appendCodeContextLayers(minimalLayers, minimalPkg);
 const minimalNames = minimalLayers.map((l) => l.layerType);
 assert(!minimalNames.includes("CODE_DEPENDENCY_SLICES"), "no deps → no dependency-slices layer");

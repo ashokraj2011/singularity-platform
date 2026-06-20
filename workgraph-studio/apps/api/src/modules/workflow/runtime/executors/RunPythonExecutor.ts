@@ -1,6 +1,7 @@
 import { type WorkflowInstance, type WorkflowNode } from '@prisma/client'
 import { config } from '../../../../config'
 import { redactSecrets } from '../../../../lib/redact'
+import { requestOperationalMcpToolGrant } from './mcpToolGrant'
 
 /**
  * RUN_PYTHON executor — runs an inline Python program in the mcp-server sandbox.
@@ -102,9 +103,32 @@ export async function activateRunPython(
   const timeoutMs = Math.min(Math.max(cfgNumber(node, 'timeoutMs', 120_000), 1), 600_000)
   const allowNetwork = cfgBool(node, 'allowNetwork', false)
   const failOnNonZero = cfgBool(node, 'failOnNonZero', true)
+  const toolArgs = {
+    code,
+    args: scriptArgs,
+    env: envResult.env,
+    timeout_ms: timeoutMs,
+    allow_network: allowNetwork,
+    max_output_chars: 12_000,
+  }
+  const runContext = {
+    traceId: `run-python-${instance.id}-${node.id}`,
+    runId: instance.id,
+    workflowInstanceId: instance.id,
+    nodeId: node.id,
+  }
 
   let receipt: Record<string, unknown>
   try {
+    const toolGrant = await requestOperationalMcpToolGrant({
+      toolName: 'run_python',
+      args: toolArgs,
+      runContext,
+      workflowPolicy: {
+        nodeType: 'RUN_PYTHON',
+        allowNetwork,
+      },
+    })
     const response = await fetch(`${config.MCP_SERVER_URL.replace(/\/$/, '')}/mcp/tool-run`, {
       method: 'POST',
       headers: {
@@ -115,20 +139,9 @@ export async function activateRunPython(
       // workflowInstanceId + nodeId key the sandbox per instance (not shared /workspace).
       body: JSON.stringify({
         tool_name: 'run_python',
-        args: {
-          code,
-          args: scriptArgs,
-          env: envResult.env,
-          timeout_ms: timeoutMs,
-          allow_network: allowNetwork,
-          max_output_chars: 12_000,
-        },
-        run_context: {
-          traceId: `run-python-${instance.id}-${node.id}`,
-          runId: instance.id,
-          workflowInstanceId: instance.id,
-          nodeId: node.id,
-        },
+        args: toolArgs,
+        run_context: runContext,
+        ...(toolGrant ? { tool_grant: toolGrant } : {}),
       }),
       signal: AbortSignal.timeout(timeoutMs + 10_000),
     })

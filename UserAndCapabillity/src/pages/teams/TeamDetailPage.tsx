@@ -1,14 +1,14 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, UserPlus, Trash2 } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { useTeam, useTeams, useTeamMembers, useTeamChildren, useAddTeamMember, useRemoveTeamMember, useUpdateTeam, useAddChildTeam } from '@/hooks/useTeams'
-import { formatDate } from '@/lib/format'
+import { Button } from 'identity-web/components/ui/button'
+import { Input } from 'identity-web/components/ui/input'
+import { Label } from 'identity-web/components/ui/label'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from 'identity-web/components/ui/dialog'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from 'identity-web/components/ui/tabs'
+import { ConfirmDialog } from 'identity-web/components/ConfirmDialog'
+import { useTeam, useTeams, useTeamMembers, useTeamChildren, useAddTeamMember, useRemoveTeamMember, useUpdateTeam, useAddChildTeam } from 'identity-web/hooks/useTeams'
+import { formatDate } from 'identity-web/lib/format'
 
 export function TeamDetailPage() {
   const { teamId } = useParams<{ teamId: string }>()

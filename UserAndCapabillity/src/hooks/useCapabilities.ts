@@ -1,10 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { capabilitiesApi } from '@/api/capabilities.api'
+import { capabilitiesApi } from 'identity-web/api/capabilities.api'
 import type {
   CreateCapabilityRequest,
   CreateCapabilityRelationshipRequest,
   AddCapabilityMemberRequest,
-} from '@/types'
+} from 'identity-web/types'
 
 export function useCapabilities(params?: { page?: number; size?: number; capability_type?: string }) {
   return useQuery({

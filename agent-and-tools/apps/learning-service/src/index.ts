@@ -7,7 +7,18 @@ import { ensureSchema, pool, query } from './db'
 
 const PORT = Number(process.env.PORT ?? 3006)
 const SERVICE_TOKEN = process.env.LEARNING_SERVICE_TOKEN ?? process.env.AUDIT_GOV_SERVICE_TOKEN ?? ''
-const AUTH_OPTIONAL = process.env.AUTH_OPTIONAL === 'true' || process.env.NODE_ENV !== 'production'
+
+function isProductionClassEnv(): boolean {
+  return [
+    process.env.NODE_ENV,
+    process.env.APP_ENV,
+    process.env.ENVIRONMENT,
+    process.env.SINGULARITY_ENV,
+  ].some((value) => ['production', 'prod', 'staging', 'perf'].includes((value ?? '').toLowerCase()))
+}
+
+const AUTH_OPTIONAL = !isProductionClassEnv()
+  && (process.env.AUTH_OPTIONAL === 'true' || process.env.NODE_ENV !== 'production')
 
 function requireServiceAuth(req: Request, res: Response, next: NextFunction): void {
   if (!SERVICE_TOKEN && AUTH_OPTIONAL) return next()

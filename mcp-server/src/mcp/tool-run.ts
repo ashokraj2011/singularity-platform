@@ -92,6 +92,7 @@ const _WORKSPACE_INDEPENDENT_TOOLS = workspaceIndependentTools();
 // unless MCP_TOOL_GRANT_MODE is grace/enforce.
 import { grantMode, toolRequiresGrant, verifyToolGrant } from "../security/tool-grant";
 import { log } from "../shared/log";
+import { assertEffectiveCapabilityAllowsTool } from "./effective-capability";
 
 export function isWorkspaceIndependentTool(name: string): boolean {
   return _WORKSPACE_INDEPENDENT_TOOLS.has(name);
@@ -155,6 +156,12 @@ export const ToolRunSchema = z.object({
       source_uri: z.string().optional(),
       sourceRef: z.string().optional(),
       source_ref: z.string().optional(),
+      effectiveCapabilities: z.array(z.record(z.unknown())).optional(),
+      effective_capabilities: z.array(z.record(z.unknown())).optional(),
+      effectiveCapabilitiesRequired: z.boolean().optional(),
+      effective_capabilities_required: z.boolean().optional(),
+      profileSnapshotHash: z.string().optional(),
+      profile_snapshot_hash: z.string().optional(),
       // M81 P4 (2026-05-26) — long-lived workitem branch. workgraph-api
       // computes `wi/<workItemCode>` and sends it via workitem_branch
       // (snake_case); ensureWorkspaceSource aligns the worktree HEAD
@@ -259,6 +266,36 @@ export interface ToolRunOutcome {
   toolError: string | null;
 }
 
+export function enforceToolGrantForDispatch(body: z.infer<typeof ToolRunSchema>): void {
+  const mode = grantMode();
+  if (mode === "off" || !toolRequiresGrant(body.tool_name)) return;
+
+  const verdict = verifyToolGrant(body.tool_grant, {
+    toolName: body.tool_name,
+    args: body.args,
+    runContext: body.run_context,
+  });
+  if (verdict.ok) return;
+
+  const missing = verdict.code === "TOOL_GRANT_REQUIRED";
+  if (mode === "grace" && missing) {
+    log.warn(
+      { tool: body.tool_name, mode },
+      "[tool-run] grace mode: dispatching mutating/high-risk tool WITHOUT a ToolInvocationGrant",
+    );
+    return;
+  }
+
+  log.warn(
+    { tool: body.tool_name, mode, code: verdict.code },
+    "[tool-run] refusing tool dispatch: grant verification failed",
+  );
+  throw new AppError(verdict.message, 403, verdict.code, {
+    tool_name: body.tool_name,
+    mode,
+  });
+}
+
 /**
  * M75 Slice 2 — transport-neutral tool runner. Pulled out of the HTTP
  * route so the laptop bridge (relay-client) can dispatch tool-run
@@ -282,6 +319,12 @@ export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promis
   if (!handler) {
     throw new NotFoundError(`tool '${body.tool_name}' not in local registry`);
   }
+  assertEffectiveCapabilityAllowsTool(body.tool_name, body.run_context);
+  // Transport-neutral ToolInvocationGrant enforcement. Keep this before
+  // workspace materialization and before alias normalization: Context Fabric
+  // signs the raw args it sends, and every transport (HTTP, laptop bridge, or a
+  // future runner) must verify the same raw request before any side effect.
+  enforceToolGrantForDispatch(body);
 
   const workItemId = body.work_item_id ?? body.workspace_id ?? undefined;
   const correlation = {
@@ -489,48 +532,6 @@ toolRunRouter.post("/tool-run", async (req, res) => {
   const parsed = ToolRunSchema.safeParse(req.body);
   if (!parsed.success) {
     throw new AppError("invalid /mcp/tool-run payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
-  }
-
-  // ── ToolInvocationGrant enforcement (defence-in-depth) ──────────────────
-  //
-  // The bearer (checked by middleware upstream) only proves the caller may
-  // talk to MCP — not that THIS (tool, args, stage/phase) was authorized by
-  // CF's governed loop. For mutating / high-risk tools we additionally require
-  // a CF-signed grant and verify it here, BEFORE any workspace materialization
-  // or tool execution.
-  //
-  // Crucially the args-hash is checked against the RAW received args, before
-  // runToolByName runs its alias-normalization pass — CF hashed the same raw
-  // args it sent, so the two hashes line up only at this point.
-  //
-  // Modes: off = skip entirely (backward compatible). grace = a present grant
-  // must be valid, but a MISSING one is allowed + logged (rollout window).
-  // enforce = a valid grant is mandatory. Read-only tools are never gated.
-  const mode = grantMode();
-  if (mode !== "off" && toolRequiresGrant(parsed.data.tool_name)) {
-    const verdict = verifyToolGrant(parsed.data.tool_grant, {
-      toolName: parsed.data.tool_name,
-      args: parsed.data.args,
-      runContext: parsed.data.run_context,
-    });
-    if (!verdict.ok) {
-      const missing = verdict.code === "TOOL_GRANT_REQUIRED";
-      if (mode === "grace" && missing) {
-        log.warn(
-          { tool: parsed.data.tool_name, mode },
-          "[tool-run] grace mode: dispatching mutating/high-risk tool WITHOUT a ToolInvocationGrant",
-        );
-      } else {
-        log.warn(
-          { tool: parsed.data.tool_name, mode, code: verdict.code },
-          "[tool-run] refusing tool dispatch: grant verification failed",
-        );
-        throw new AppError(verdict.message, 403, verdict.code, {
-          tool_name: parsed.data.tool_name,
-          mode,
-        });
-      }
-    }
   }
 
   // M75 Slice 2 — both transports share runToolByName. HTTP wraps the

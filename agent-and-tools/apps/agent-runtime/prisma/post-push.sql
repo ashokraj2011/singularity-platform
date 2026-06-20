@@ -25,6 +25,31 @@ CREATE INDEX IF NOT EXISTS idx_knowledgeartifact_embedding
 CREATE INDEX IF NOT EXISTS idx_distilledmemory_embedding
   ON "DistilledMemory" USING hnsw (embedding vector_cosine_ops);
 
+-- M25.6 — hybrid retrieval FTS sidecar. Prompt Composer reads these columns
+-- through its runtime-read client and falls back silently if they are absent;
+-- production deploy checks should never rely on that fallback.
+ALTER TABLE "CapabilityKnowledgeArtifact"
+  ADD COLUMN IF NOT EXISTS content_tsv tsvector
+  GENERATED ALWAYS AS (
+    setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(content, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce("artifactType", '')), 'C')
+  ) STORED;
+
+CREATE INDEX IF NOT EXISTS idx_knowledgeartifact_content_tsv
+  ON "CapabilityKnowledgeArtifact" USING GIN (content_tsv);
+
+ALTER TABLE "DistilledMemory"
+  ADD COLUMN IF NOT EXISTS content_tsv tsvector
+  GENERATED ALWAYS AS (
+    setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(content, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce("memoryType", '')), 'C')
+  ) STORED;
+
+CREATE INDEX IF NOT EXISTS idx_distilledmemory_content_tsv
+  ON "DistilledMemory" USING GIN (content_tsv);
+
 -- Agent template version history. Prisma db push owns this in fresh
 -- databases, but this idempotent block keeps older local/docker databases in
 -- step without forcing unrelated unique-index warnings.

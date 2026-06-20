@@ -51,6 +51,8 @@ DEFAULT_PERMISSIONS: list[dict] = [
     {"permission_key": "capability:sharing_grant:create", "category": "capability"},
     {"permission_key": "capability:sharing_grant:approve","category": "capability"},
     {"permission_key": "capability:use_shared",           "category": "capability"},
+    {"permission_key": "governance:author",               "category": "governance"},
+    {"permission_key": "governance:enforce",              "category": "governance"},
     # Admin / Audit
     {"permission_key": "role:create",         "category": "admin"},
     {"permission_key": "role:update",         "category": "admin"},

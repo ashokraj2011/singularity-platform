@@ -27,6 +27,7 @@
  * Closes streams on unmount.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { workbenchPath } from '../vite-env-compat'
 
 interface CockpitEvent {
   id: string
@@ -45,7 +46,7 @@ type CockpitStatus = 'connecting' | 'streaming' | 'reconnecting' | 'idle' | 'err
 
 // M100 P1 — base-relative so it resolves under the edge-gateway prefix
 // (/workbench/audit-gov) and standalone (/audit-gov). Mirrors src/base.ts.
-const AUDIT_GOV_BASE = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/audit-gov`
+const AUDIT_GOV_BASE = workbenchPath('/audit-gov')
 const EVENT_CAP = 200      // ring buffer; oldest drops when exceeded
 
 // Event kinds we render. Anything not in here is filtered out so the

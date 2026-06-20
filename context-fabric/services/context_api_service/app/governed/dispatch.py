@@ -114,15 +114,13 @@ async def dispatch_tool(
       bearer:        Override the env-default MCP_BEARER_TOKEN. Ignored on
                      the laptop path (the bridge handshake owns auth there).
       grant:         Optional signed ToolInvocationGrant (see governed.grant).
-                     When present it's attached to the HTTP payload as
+                     When present it's attached to the tool-run payload as
                      ``tool_grant`` so mcp-server can verify the call was
                      authorized by CF's governed loop before executing a
                      mutating / high-risk tool. ``None`` (the default, and what
                      ``mint_tool_grant`` returns when the feature is off) means
-                     no grant is sent — the pre-hardening wire shape. Only the
-                     HTTP transport carries the grant today; the laptop bridge
-                     runs on the user's own device behind the handshake and is
-                     out of scope for this slice.
+                     no grant is sent — the pre-hardening wire shape. HTTP and
+                     laptop-bridge transports both carry the same grant field.
       laptop_user_id: M75 Slice 3 — when set, route via the laptop bridge
                      instead of HTTP. The caller (loop.py) populates this
                      from run_context.user_id when prefer_laptop is true
@@ -166,6 +164,7 @@ async def dispatch_tool(
                 workspace_id=workspace_id,
                 work_item_id=work_item_id,
                 run_context=run_context,
+                grant=grant,
             )
         except _LaptopUnavailable as exc:
             # Bridge isn't actually connected at dispatch time — fall
@@ -268,6 +267,7 @@ async def _dispatch_via_laptop(
     workspace_id: str | None,
     work_item_id: str | None,
     run_context: dict[str, Any] | None,
+    grant: dict[str, Any] | None = None,
 ) -> ToolDispatchResult:
     """Bridge-side counterpart to the HTTP dispatch_tool body. Sends a
     tool-run frame via the laptop_registry and normalises the response
@@ -303,6 +303,7 @@ async def _dispatch_via_laptop(
             run_context=run_context or {},
             work_item_id=work_item_id,
             workspace_id=workspace_id,
+            grant=grant,
             timeout=_timeout_for(tool_name),
         )
     except LaptopNotConnected as exc:

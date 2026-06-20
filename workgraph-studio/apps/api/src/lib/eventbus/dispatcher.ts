@@ -20,6 +20,7 @@ import crypto from 'node:crypto'
 import { prisma } from '../prisma'
 import { config } from '../../config'
 import { EVENT_CHANNEL } from './publisher'
+import { assertEventTargetUrlAllowed } from './target-url-policy'
 
 const SWEEP_INTERVAL_MS  = 30_000
 const MAX_DELIVERY_TRIES = 5
@@ -28,6 +29,10 @@ const DELIVERY_TIMEOUT_MS = 5_000
 let listenerClient: pg.Client | null = null
 let sweepTimer: NodeJS.Timeout | null = null
 let inFlight = false
+
+function logSweepFailure(err: unknown): void {
+  console.warn('[eventbus] sweep failed:', (err as Error).message)
+}
 
 function patternToRegex(pattern: string): RegExp {
   if (!pattern.includes('*')) return new RegExp(`^${pattern.replace(/\./g, '\\.')}$`)
@@ -71,7 +76,8 @@ async function deliverOne(
   let responseStatus: number | null = null
   let error: string | null = null
   try {
-    const res = await fetch(targetUrl, {
+    const safeUrl = await assertEventTargetUrlAllowed(targetUrl)
+    const res = await fetch(safeUrl, {
       method:  'POST',
       headers,
       body,
@@ -188,11 +194,11 @@ export async function startEventDispatcher(): Promise<void> {
   })
 
   // Safety sweep — catches anything missed (NOTIFY before LISTEN, restarts).
-  sweepTimer = setInterval(() => { void sweep() }, SWEEP_INTERVAL_MS)
+  sweepTimer = setInterval(() => { void sweep().catch(logSweepFailure) }, SWEEP_INTERVAL_MS)
   if (sweepTimer.unref) sweepTimer.unref()
 
   // Drain anything already pending at startup.
-  void sweep()
+  void sweep().catch(logSweepFailure)
 
   console.log(`[eventbus] dispatcher listening on '${EVENT_CHANNEL}'; safety sweep every ${SWEEP_INTERVAL_MS / 1000}s`)
 }

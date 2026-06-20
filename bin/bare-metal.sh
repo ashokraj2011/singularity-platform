@@ -14,11 +14,16 @@
 #   db_host     : 'localhost'
 #   db_port     : '5432'
 #
-# Boots: iam, audit-gov, llm-gateway, agent/tool/runtime/composer, mcp-server,
-# context-api, context-memory, formal-verifier, workgraph-api, agent-web,
-# workgraph-web, blueprint-workbench, user-and-capability.
+# Boots: iam, audit-gov, agent/tool/runtime/composer, context-api,
+# workgraph-api, and the unified platform-web Next app on :5180. By default it
+# also starts local llm-gateway and mcp-server; set BOX_ONLY=1 when those
+# runtime services are deployed elsewhere. Deprecated/optional sidecars such as
+# context-memory and formal-verifier are opt-in (BARE_METAL_FULL=1, or
+# FORMAL_VERIFICATION_ENABLED=true for the verifier).
+# Set BARE_METAL_TRACE_SPINE=1 with `smoke` to run the Docker/split-DB trace
+# evidence gate after endpoint health checks.
 # Skips on purpose: metrics-ledger (M65: sunset in the singularity stack —
-# savings analytics moved to audit-gov :8500), MinIO, portal.
+# savings analytics moved to audit-gov :8500), MinIO, and legacy split UI apps.
 #
 # Context Fabric stores run on Postgres (DB: singularity_context_fabric) to
 # match the Docker stack — see CONTEXT_FABRIC_DATABASE_URL below. The legacy
@@ -59,13 +64,45 @@ require() {
   command -v "$1" >/dev/null 2>&1 || { err "missing binary: $1"; exit 1; }
 }
 
+validate_sql_ident() {
+  case "$1" in
+    ""|*[!A-Za-z0-9_]*|[0-9]*)
+      err "invalid SQL identifier for $2: '$1'"
+      exit 1
+      ;;
+  esac
+}
+
+http_code() {
+  local url="$1" timeout="${2:-3}" code
+  if command -v curl >/dev/null 2>&1; then
+    code=$(curl -s -o /dev/null -w "%{http_code}" "$url" --max-time "$timeout" 2>/dev/null || true)
+  else
+    code=$(python3 - "$url" "$timeout" <<'PY' 2>/dev/null || true
+import sys
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+try:
+    res = urlopen(Request(sys.argv[1]), timeout=float(sys.argv[2]))
+    print(res.status)
+except HTTPError as exc:
+    print(exc.code)
+except (OSError, URLError, TimeoutError):
+    print("000")
+PY
+)
+  fi
+  printf '%s' "${code:-000}"
+}
+
 wait_http() {
   local name="$1"
   local url="$2"
   local tries="${3:-30}"
   local code
   for _ in $(seq 1 "$tries"); do
-    code=$(curl -s -o /dev/null -w "%{http_code}" "$url" --max-time 2 || true)
+    code=$(http_code "$url" 2)
     if [ "$code" = "200" ] || [ "$code" = "204" ]; then
       ok "$name is ready"
       return 0
@@ -97,12 +134,37 @@ cmd_up() {
   # touch the databases. Storage ports (5432/5434/9000/9001) are EXCLUDED on
   # purpose: those are your Postgres/MinIO, not ours to kill.
   info "freeing our service ports…"
-  for _p in 3000 3001 3002 3003 3004 5174 5175 5176 5180 7100 8000 8001 8002 8003 8010 8080 8100 8101 8500; do
+  local _ports_to_free=(3001 3002 3003 3004 3005 5174 5175 5176 5180 5181 5182 8000 8002 8003 8010 8080 8085 8100 8101 8500)
+  if [ "${BOX_ONLY:-}" != "1" ]; then
+    _ports_to_free+=(7100 8001)
+  fi
+  for _p in "${_ports_to_free[@]}"; do
     _pids=$(lsof -ti tcp:"$_p" -sTCP:LISTEN 2>/dev/null || true)
-    if [ -n "$_pids" ]; then kill $_pids 2>/dev/null || true; sleep 0.2; kill -9 $_pids 2>/dev/null || true; fi
+    for _pid in $_pids; do
+      _cmd=$(ps -p "$_pid" -o comm= 2>/dev/null || echo "?")
+      case "$_cmd" in
+        *docker*|*Docker*|*vpnkit*)
+          warn "port $_p is Docker-owned (pid $_pid); leaving it alone"
+          continue
+          ;;
+      esac
+      kill "$_pid" 2>/dev/null || true
+      sleep 0.2
+      kill -9 "$_pid" 2>/dev/null || true
+    done
   done
 
   info "using Postgres at ${db_user}@${db_host}:${db_port}"
+  WORKGRAPH_APP_DB_USER="${WORKGRAPH_APP_DB_USER:-workgraph_app}"
+  WORKGRAPH_APP_DB_PASSWORD="${WORKGRAPH_APP_DB_PASSWORD:-workgraph_app_secret}"
+  validate_sql_ident "$db_user" "db_user"
+  validate_sql_ident "$WORKGRAPH_APP_DB_USER" "WORKGRAPH_APP_DB_USER"
+  case "$WORKGRAPH_APP_DB_PASSWORD" in
+    *"'"*)
+      err "WORKGRAPH_APP_DB_PASSWORD cannot contain a single quote"
+      exit 1
+      ;;
+  esac
 
   # ── 1. Create databases + extensions ────────────────────────────────────
   info "creating databases (idempotent)…"
@@ -113,6 +175,7 @@ SELECT 'CREATE DATABASE workgraph'            WHERE NOT EXISTS (SELECT FROM pg_d
 SELECT 'CREATE DATABASE audit_governance'     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='audit_governance')\gexec
 SELECT 'CREATE DATABASE singularity_iam'      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_iam')\gexec
 SELECT 'CREATE DATABASE singularity_context_fabric' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_context_fabric')\gexec
+SELECT 'CREATE DATABASE singularity_codegen'  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_codegen')\gexec
 SQL
 
   info "enabling pgvector + pgcrypto in 'singularity' (agent-runtime + tool-service)…"
@@ -146,6 +209,10 @@ SQL
   PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d audit_governance \
     -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>&1 | grep -vE "NOTICE" || true
 
+  info "enabling pgcrypto in 'singularity_codegen' (Code Foundry)…"
+  PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d singularity_codegen \
+    -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>&1 | grep -vE "NOTICE" || true
+
   info "applying audit-governance schema…"
   PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d audit_governance \
     -f audit-governance-service/db/init.sql >/dev/null 2>&1 || \
@@ -171,8 +238,11 @@ export DATABASE_URL_AGENT_TOOLS="postgresql://${db_user}:${db_pass}@${db_host}:$
 # M30 — composer owns this DB; agent-runtime data is read via DATABASE_URL_RUNTIME_READ (= AGENT_TOOLS)
 export DATABASE_URL_COMPOSER="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_composer"
 export DATABASE_URL_RUNTIME_READ="$DATABASE_URL_AGENT_TOOLS"
-export DATABASE_URL_WORKGRAPH="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/workgraph"
+export DATABASE_URL_WORKGRAPH_ADMIN="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/workgraph"
+export DATABASE_URL_WORKGRAPH_RUNTIME="postgresql://${WORKGRAPH_APP_DB_USER}:${WORKGRAPH_APP_DB_PASSWORD}@${db_host}:${db_port}/workgraph"
+export DATABASE_URL_WORKGRAPH="$DATABASE_URL_WORKGRAPH_RUNTIME"
 export DATABASE_URL_AUDIT_GOV="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/audit_governance"
+export DATABASE_URL_CODE_FOUNDRY="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_codegen"
 # Context Fabric stores (call_log, events_store, context_memory) — Postgres,
 # matching the Docker stack. The CF services read CONTEXT_FABRIC_DATABASE_URL.
 export DATABASE_URL_CONTEXT_FABRIC="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_context_fabric"
@@ -188,13 +258,69 @@ export EVENTS_STORE_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
 export CONTEXT_MEMORY_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
 export METRICS_LEDGER_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
 
+config_value() {
+  local dotted="$1" fallback="$2"
+  python3 - "$dotted" "$fallback" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+dotted, fallback = sys.argv[1], sys.argv[2]
+try:
+    data = json.loads(Path(".singularity/config.local.json").read_text())
+except Exception:
+    data = {}
+cur = data
+for part in dotted.split("."):
+    if not isinstance(cur, dict) or part not in cur:
+        print(fallback)
+        raise SystemExit
+    cur = cur[part]
+if cur is True:
+    print("true")
+elif cur is False:
+    print("false")
+else:
+    print(cur if cur not in (None, "") else fallback)
+PY
+}
+
 # Respect an operator-provided secret (office/cloud!); dev default matches
 # docker-compose + IAM + the laptop bridge so dev pairing verifies everywhere.
-export JWT_SECRET="${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}"
+export JWT_SECRET="${JWT_SECRET:-$(config_value identity.jwtSecret changeme_dev_only_min_32_chars_long!!)}"
+export LOCAL_SUPER_ADMIN_EMAIL="${LOCAL_SUPER_ADMIN_EMAIL:-$(config_value identity.bootstrapEmail admin@singularity.local)}"
+export LOCAL_SUPER_ADMIN_PASSWORD="${LOCAL_SUPER_ADMIN_PASSWORD:-$(config_value identity.bootstrapPassword Admin1234!)}"
+export WORKGRAPH_INTERNAL_TOKEN="${WORKGRAPH_INTERNAL_TOKEN:-$(config_value tokens.workgraphInternalToken dev-workgraph-internal-token)}"
+export WORKGRAPH_INCOMING_EVENT_SECRETS="${WORKGRAPH_INCOMING_EVENT_SECRETS:-$(config_value tokens.workgraphIncomingEventSecrets '{"agent-runtime":"dev-workgraph-incoming-event-secret-min-32-chars","agent-service":"dev-workgraph-incoming-event-secret-min-32-chars","tool-service":"dev-workgraph-incoming-event-secret-min-32-chars","iam":"dev-workgraph-incoming-event-secret-min-32-chars"}')}"
+export CONTEXT_FABRIC_SERVICE_TOKEN="${CONTEXT_FABRIC_SERVICE_TOKEN:-$(config_value tokens.contextFabricServiceToken dev-context-fabric-service-token)}"
+export IAM_SERVICE_TOKEN_TENANT_IDS="${IAM_SERVICE_TOKEN_TENANT_IDS:-$(config_value tokens.iamServiceTokenTenantIds "")}"
+export WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS="${WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS:-$(config_value tokens.workgraphInternalTokenTenantIds "")}"
+export WORKGRAPH_PROXY_SERVICE_TOKEN="${WORKGRAPH_PROXY_SERVICE_TOKEN:-$(config_value platform.workgraphProxyServiceToken "")}"
+export PROMPT_COMPOSER_SERVICE_TOKEN="${PROMPT_COMPOSER_SERVICE_TOKEN:-$WORKGRAPH_PROXY_SERVICE_TOKEN}"
+export AUDIT_GOV_SERVICE_TOKEN="${AUDIT_GOV_SERVICE_TOKEN:-$(config_value tokens.auditGovServiceToken dev-audit-gov-service-token)}"
+export LEARNING_SERVICE_TOKEN="${LEARNING_SERVICE_TOKEN:-$AUDIT_GOV_SERVICE_TOKEN}"
+export CODEGEN_SERVICE_TOKEN="${CODEGEN_SERVICE_TOKEN:-$(config_value tokens.codegenServiceToken dev-codegen-service-token)}"
+export FOUNDRY_TOKEN="${FOUNDRY_TOKEN:-$CODEGEN_SERVICE_TOKEN}"
+export APP_ENV="${APP_ENV:-${SINGULARITY_ENV:-development}}"
+export ENVIRONMENT="${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}"
+export SINGULARITY_ENV="${SINGULARITY_ENV:-${APP_ENV:-development}}"
+export AUTH_OPTIONAL="${AUTH_OPTIONAL:-$(config_value platform.authOptional true)}"
+export REQUIRE_TENANT_ID="${REQUIRE_TENANT_ID:-$(config_value platform.requireTenantId false)}"
+export TENANT_ISOLATION_MODE="${TENANT_ISOLATION_MODE:-$(config_value platform.tenantIsolationMode off)}"
+export PROVIDER_MANIFEST_SIGNATURE_MODE="${PROVIDER_MANIFEST_SIGNATURE_MODE:-$(config_value agentRuntime.providerManifestSignatureMode auto)}"
+export PROVIDER_MANIFEST_TRUSTED_KEYS="${PROVIDER_MANIFEST_TRUSTED_KEYS:-$(config_value agentRuntime.providerManifestTrustedKeys "")}"
+export PROVIDER_MANIFEST_MAX_TTL_SECONDS="${PROVIDER_MANIFEST_MAX_TTL_SECONDS:-$(config_value agentRuntime.providerManifestMaxTtlSeconds 2592000)}"
+export AGENT_SOURCE_ALLOW_PRIVATE_URLS="${AGENT_SOURCE_ALLOW_PRIVATE_URLS:-$(config_value agentRuntime.allowPrivateSourceUrls false)}"
+export DEFAULT_GOVERNANCE_MODE="${DEFAULT_GOVERNANCE_MODE:-$(config_value contextFabric.defaultGovernanceMode fail_open)}"
+export WORKGRAPH_FORCE_GOVERNED_CODING="${WORKGRAPH_FORCE_GOVERNED_CODING:-$(config_value workgraph.forceGovernedCoding true)}"
+export CONTEXT_FABRIC_GOVERN_SIDE_CALLERS="${CONTEXT_FABRIC_GOVERN_SIDE_CALLERS:-$(config_value workgraph.governSideCallers true)}"
+export CF_TOOL_GRANT_ENABLED="${CF_TOOL_GRANT_ENABLED:-$(config_value contextFabric.toolGrantEnabled false)}"
+export TOOL_SERVER_ENDPOINT_ALLOWLIST="${TOOL_SERVER_ENDPOINT_ALLOWLIST:-$(config_value toolService.serverEndpointAllowlist "")}"
 # BOX_ONLY=1 → office/cloud box: skip the two laptop apps (llm-gateway,
 # mcp-server) and route the platform's own LLM over the bridge. Normalize so
 # only exactly "1" activates it.
 [ "${BOX_ONLY:-}" = "1" ] || BOX_ONLY=""
+[ "${BARE_METAL_FULL:-}" = "1" ] || BARE_METAL_FULL=""
 export AUTH_PROVIDER="iam"
 export IAM_BASE_URL="http://localhost:8100/api/v1"
 export IAM_SERVICE_URL="http://localhost:8100"
@@ -207,10 +333,15 @@ export AGENT_SERVICE_URL="http://localhost:3001"
 export CONTEXT_FABRIC_URL="http://localhost:8000"
 export CONTEXT_MEMORY_URL="http://localhost:8002"
 export FORMAL_VERIFIER_URL="http://localhost:8010"
-export MCP_SERVER_URL="http://localhost:7100"
-export MCP_BEARER_TOKEN="demo-bearer-token-must-be-min-16-chars"
+export CODE_FOUNDRY_API_URL="http://localhost:3005"
+export MCP_SERVER_URL="${MCP_SERVER_URL:-http://localhost:7100}"
+export MCP_BEARER_TOKEN="${MCP_BEARER_TOKEN:-$(config_value mcpRuntime.bearerToken demo-bearer-token-must-be-min-16-chars)}"
+export MCP_DEFAULT_GOVERNANCE_MODE="${MCP_DEFAULT_GOVERNANCE_MODE:-$(config_value mcpRuntime.defaultGovernanceMode fail_open)}"
+export MCP_TOOL_GRANT_MODE="${MCP_TOOL_GRANT_MODE:-$(config_value mcpRuntime.toolGrantMode off)}"
+export MCP_REQUIRE_EFFECTIVE_CAPABILITIES="${MCP_REQUIRE_EFFECTIVE_CAPABILITIES:-$(config_value mcpRuntime.requireEffectiveCapabilities false)}"
+export TOOL_GRANT_SIGNING_SECRET="${TOOL_GRANT_SIGNING_SECRET:-$(config_value mcpRuntime.toolGrantSigningSecret dev-tool-grant-signing-secret-min-32-chars!!)}"
 
-export LLM_GATEWAY_URL="http://localhost:8001"
+export LLM_GATEWAY_URL="${LLM_GATEWAY_URL:-http://localhost:8001}"
 export LLM_PROVIDER_CONFIG_PATH="$ROOT/.singularity/llm-providers.json"
 export LLM_MODEL_CATALOG_PATH="$ROOT/.singularity/llm-models.json"
 export WORKBENCH_DEFAULT_MODEL_ALIAS="mock"
@@ -360,9 +491,10 @@ JSON
   ensure_install agent-and-tools/web      npm
   ensure_install workgraph-studio         pnpm
   ensure_install audit-governance-service npm
-  ensure_install mcp-server               npm
-  ensure_install UserAndCapabillity       npm
-  ensure_install singularity-portal       npm
+  ensure_install singularity-code-foundry npm
+  if [ -z "$BOX_ONLY" ]; then
+    ensure_install mcp-server             npm
+  fi
 
   # Build the agent-and-tools workspace libraries (@agentandtools/shared, db,
   # tool-registry). The apps import them by their package "main" (dist/index.js),
@@ -379,6 +511,7 @@ JSON
   info "applying agent-runtime schema…"
   ( cd agent-and-tools/apps/agent-runtime \
     && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma db push --skip-generate >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_AGENT_TOOLS" -v ON_ERROR_STOP=1 -q -f prisma/post-push.sql >/dev/null 2>&1 \
     && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate >/dev/null 2>&1 ) \
     || warn "agent-runtime schema push had warnings"
 
@@ -412,9 +545,39 @@ JSON
 
   info "applying workgraph-api schema…"
   ( cd workgraph-studio/apps/api \
-    && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx prisma db push --skip-generate >/dev/null 2>&1 \
-    && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx prisma generate >/dev/null 2>&1 ) \
+    && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma db push --skip-generate >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260619123000_tenant_rls_policy_scaffold/migration.sql >/dev/null 2>&1 \
+    && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma generate >/dev/null 2>&1 ) \
     || warn "workgraph schema push had warnings"
+
+  info "provisioning Workgraph non-bypass app role…"
+  PGPASSWORD="$db_pass" psql -v ON_ERROR_STOP=1 -h "$db_host" -p "$db_port" -U "$db_user" -d workgraph <<SQL >/dev/null
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${WORKGRAPH_APP_DB_USER}') THEN
+    CREATE ROLE ${WORKGRAPH_APP_DB_USER} LOGIN PASSWORD '${WORKGRAPH_APP_DB_PASSWORD}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;
+  ELSE
+    ALTER ROLE ${WORKGRAPH_APP_DB_USER} LOGIN PASSWORD '${WORKGRAPH_APP_DB_PASSWORD}' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;
+  END IF;
+END\$\$;
+GRANT CONNECT ON DATABASE workgraph TO ${WORKGRAPH_APP_DB_USER};
+GRANT USAGE ON SCHEMA public TO ${WORKGRAPH_APP_DB_USER};
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${WORKGRAPH_APP_DB_USER};
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ${WORKGRAPH_APP_DB_USER};
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO ${WORKGRAPH_APP_DB_USER};
+ALTER DEFAULT PRIVILEGES FOR ROLE ${db_user} IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${WORKGRAPH_APP_DB_USER};
+ALTER DEFAULT PRIVILEGES FOR ROLE ${db_user} IN SCHEMA public
+  GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO ${WORKGRAPH_APP_DB_USER};
+ALTER DEFAULT PRIVILEGES FOR ROLE ${db_user} IN SCHEMA public
+  GRANT EXECUTE ON FUNCTIONS TO ${WORKGRAPH_APP_DB_USER};
+SQL
+
+  info "applying Code Foundry schema…"
+  ( cd singularity-code-foundry/apps/code-foundry-api \
+    && DATABASE_URL="$DATABASE_URL_CODE_FOUNDRY" npx prisma db push --skip-generate >/dev/null 2>&1 \
+    && DATABASE_URL="$DATABASE_URL_CODE_FOUNDRY" npx prisma generate >/dev/null 2>&1 ) \
+    || warn "Code Foundry schema push had warnings"
 
   # Seed workgraph demo data — agents, the SDLC + bug-fix workbench workflows,
   # sample workflows, routing policies, and a completed blueprint session with
@@ -422,8 +585,8 @@ JSON
   # seeds; without this the designer/workbench come up empty.
   info "seeding workgraph demo workflows + artifacts…"
   ( cd workgraph-studio/apps/api \
-    && DATABASE_URL="$DATABASE_URL_WORKGRAPH" npm run prisma:seed >/dev/null 2>&1 ) \
-    || warn "workgraph prisma:seed had warnings — run it manually: (cd workgraph-studio/apps/api && DATABASE_URL=\"$DATABASE_URL_WORKGRAPH\" npm run prisma:seed)"
+    && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npm run prisma:seed >/dev/null 2>&1 ) \
+    || warn "workgraph prisma:seed had warnings — run it manually: (cd workgraph-studio/apps/api && DATABASE_URL=\"$DATABASE_URL_WORKGRAPH_ADMIN\" npm run prisma:seed)"
 
   # The top-level "SDLC Delivery" workflow lives in separate self-running seeds
   # (NOT prisma/seed.ts): seed-sdlc-workbench.ts creates the "SDLC implementation
@@ -439,13 +602,13 @@ JSON
   SEED_PL="${SEED_PREFER_LAPTOP:-$([ -n "$BOX_ONLY" ] && echo true || echo false)}"
   ( cd workgraph-studio/apps/api \
     && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 \
-       DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts >/dev/null 2>&1 \
+       DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts >/dev/null 2>&1 \
     && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 \
-       DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx ts-node --transpile-only prisma/seed-sdlc-main.ts >/dev/null 2>&1 \
+       DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx ts-node --transpile-only prisma/seed-sdlc-main.ts >/dev/null 2>&1 \
     && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 \
        SEED_PREFER_LAPTOP="$SEED_PL" SEED_GOVERNANCE_MODE="${SEED_GOVERNANCE_MODE:-fail_open}" \
-       DATABASE_URL="$DATABASE_URL_WORKGRAPH" npx ts-node --transpile-only prisma/seed-sdlc-copilot.ts >/dev/null 2>&1 ) \
-    || warn "SDLC Delivery seed had warnings — run manually: (cd workgraph-studio/apps/api && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=\"\$DATABASE_URL_WORKGRAPH\" npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts && … seed-sdlc-main.ts)"
+       DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx ts-node --transpile-only prisma/seed-sdlc-copilot.ts >/dev/null 2>&1 ) \
+    || warn "SDLC Delivery seed had warnings — run manually: (cd workgraph-studio/apps/api && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=\"\$DATABASE_URL_WORKGRAPH_ADMIN\" npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts && … seed-sdlc-main.ts)"
 
   # ── 5. Python deps ─────────────────────────────────────────────────────────
   # Installed into .venv above (PEP 668-safe). Verify the import surface is
@@ -468,14 +631,14 @@ JSON
     ok "${name} (PID ${pid})  → tail -f logs/${name}.log"
   }
   info "booting services…"
-  boot iam-service      "cd singularity-iam-service  && DATABASE_URL=\"postgresql+asyncpg://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_iam\" JWT_SECRET=\"$JWT_SECRET\" JWT_EXPIRE_MINUTES=720 LOCAL_SUPER_ADMIN_EMAIL=admin@singularity.local LOCAL_SUPER_ADMIN_PASSWORD=Admin1234! CORS_ORIGINS='[\"http://localhost:3000\",\"http://localhost:5174\",\"http://localhost:5175\",\"http://localhost:5176\",\"http://localhost:5180\"]' python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8100"
+  boot iam-service      "cd singularity-iam-service  && DATABASE_URL=\"postgresql+asyncpg://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_iam\" JWT_SECRET=\"$JWT_SECRET\" JWT_EXPIRE_MINUTES=720 LOCAL_SUPER_ADMIN_EMAIL=\"$LOCAL_SUPER_ADMIN_EMAIL\" LOCAL_SUPER_ADMIN_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" CORS_ORIGINS='[\"http://localhost:5180\"]' python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8100"
   wait_http iam-service "http://localhost:8100/api/v1/health" 45
 
   info "applying SQL seed data…"
   ( "$ROOT/seed/apply.sh" "$db_user" "$db_pass" "$db_host" "$db_port" >/dev/null 2>&1 ) \
     || warn "seed/apply.sh had warnings — run it manually: seed/apply.sh $db_user"
 
-  boot audit-gov        "cd audit-governance-service  && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8500 MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" npm run dev"
+  boot audit-gov        "cd audit-governance-service  && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8500 AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" npm run dev"
   sleep 2
   # BOX_ONLY=1 — office/cloud box: skip the two LAPTOP apps (llm-gateway +
   # mcp-server run on the operator's laptop via the desktop app; LLM rides the
@@ -485,10 +648,10 @@ JSON
   fi
   sleep 1
 
-  boot agent-service    "cd agent-and-tools/apps/agent-service   && PORT=3001 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
-  boot tool-service     "cd agent-and-tools/apps/tool-service    && PORT=3002 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
-  boot agent-runtime    "cd agent-and-tools/apps/agent-runtime   && PORT=3003 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" LLM_GATEWAY_URL=http://localhost:8001 WORLD_MODEL_DISTILL_MODEL_ALIAS=\"${WORLD_MODEL_DISTILL_MODEL_ALIAS:-claude-haiku-4-5-20251001}\" npm run dev"
-  boot prompt-composer  "cd agent-and-tools/apps/prompt-composer && PORT=3004 DATABASE_URL=\"$DATABASE_URL_COMPOSER\" DATABASE_URL_RUNTIME_READ=\"$DATABASE_URL_RUNTIME_READ\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" CAPSULE_COMPILE_MODEL_ALIAS=mock JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+  boot agent-service    "cd agent-and-tools/apps/agent-service   && PORT=3001 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" LEARNING_SERVICE_TOKEN=\"$LEARNING_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+  boot tool-service     "cd agent-and-tools/apps/tool-service    && PORT=3002 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" TOOL_SERVER_ENDPOINT_ALLOWLIST=\"$TOOL_SERVER_ENDPOINT_ALLOWLIST\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+  boot agent-runtime    "cd agent-and-tools/apps/agent-runtime   && PORT=3003 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" WORLD_MODEL_DISTILL_MODEL_ALIAS=\"${WORLD_MODEL_DISTILL_MODEL_ALIAS:-claude-haiku-4-5-20251001}\" npm run dev"
+  boot prompt-composer  "cd agent-and-tools/apps/prompt-composer && PORT=3004 DATABASE_URL=\"$DATABASE_URL_COMPOSER\" DATABASE_URL_RUNTIME_READ=\"$DATABASE_URL_RUNTIME_READ\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" LEARNING_SERVICE_TOKEN=\"$LEARNING_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" CAPSULE_COMPILE_MODEL_ALIAS=mock JWT_SECRET=\"$JWT_SECRET\" npm run dev"
 
   # MCP_SANDBOX_ROOT defaults to /workspace (the Docker mount path); on bare
   # metal that dir can't be created at the FS root, so every workspace tool
@@ -505,7 +668,7 @@ JSON
   # instead of the GitHub Copilot quota. Export COPILOT_PROVIDER_TYPE=anthropic,
   # COPILOT_PROVIDER_BASE_URL, COPILOT_PROVIDER_API_KEY, COPILOT_MODEL then re-run up.
   if [ "${BOX_ONLY:-0}" != "1" ]; then
-  boot mcp-server       "cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_SANDBOX_ROOT=\"$MCP_WS\" MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" ${COPILOT_PROVIDER_TYPE:+COPILOT_PROVIDER_TYPE=\"$COPILOT_PROVIDER_TYPE\" }${COPILOT_PROVIDER_BASE_URL:+COPILOT_PROVIDER_BASE_URL=\"$COPILOT_PROVIDER_BASE_URL\" }${COPILOT_PROVIDER_API_KEY:+COPILOT_PROVIDER_API_KEY=\"$COPILOT_PROVIDER_API_KEY\" }${COPILOT_MODEL:+COPILOT_MODEL=\"$COPILOT_MODEL\" }${MCP_GIT_PUSH_ENABLED:+MCP_GIT_PUSH_ENABLED=\"$MCP_GIT_PUSH_ENABLED\" }${MCP_GIT_AUTH_MODE:+MCP_GIT_AUTH_MODE=\"$MCP_GIT_AUTH_MODE\" }${GITHUB_TOKEN:+GITHUB_TOKEN=\"$GITHUB_TOKEN\" }${GH_TOKEN:+GH_TOKEN=\"$GH_TOKEN\" }npm run dev"
+  boot mcp-server       "cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" MCP_DEFAULT_GOVERNANCE_MODE=\"$MCP_DEFAULT_GOVERNANCE_MODE\" MCP_TOOL_GRANT_MODE=\"$MCP_TOOL_GRANT_MODE\" MCP_REQUIRE_EFFECTIVE_CAPABILITIES=\"$MCP_REQUIRE_EFFECTIVE_CAPABILITIES\" TOOL_GRANT_SIGNING_SECRET=\"$TOOL_GRANT_SIGNING_SECRET\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_SANDBOX_ROOT=\"$MCP_WS\" MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" LEARNING_SERVICE_TOKEN=\"$LEARNING_SERVICE_TOKEN\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" ${COPILOT_PROVIDER_TYPE:+COPILOT_PROVIDER_TYPE=\"$COPILOT_PROVIDER_TYPE\" }${COPILOT_PROVIDER_BASE_URL:+COPILOT_PROVIDER_BASE_URL=\"$COPILOT_PROVIDER_BASE_URL\" }${COPILOT_PROVIDER_API_KEY:+COPILOT_PROVIDER_API_KEY=\"$COPILOT_PROVIDER_API_KEY\" }${COPILOT_MODEL:+COPILOT_MODEL=\"$COPILOT_MODEL\" }${MCP_GIT_PUSH_ENABLED:+MCP_GIT_PUSH_ENABLED=\"$MCP_GIT_PUSH_ENABLED\" }${MCP_GIT_AUTH_MODE:+MCP_GIT_AUTH_MODE=\"$MCP_GIT_AUTH_MODE\" }${GITHUB_TOKEN:+GITHUB_TOKEN=\"$GITHUB_TOKEN\" }${GH_TOKEN:+GH_TOKEN=\"$GH_TOKEN\" }npm run dev"
   fi
   # context-api / context-memory import `context_fabric_shared` (in
   # context-fabric/shared/) and the `services.` namespace — so run them from the
@@ -515,71 +678,72 @@ JSON
   # JWT_SECRET: context-api verifies the laptop-bridge device tokens IAM signs —
   # must receive the same secret. BOX_ONLY: no local gateway → the platform's own
   # LLM calls ride the bridge to the laptop (PREFER_LAPTOP_LLM).
-  boot context-api      "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" ${BOX_ONLY:+PREFER_LAPTOP_LLM=true }python3 -m uvicorn services.context_api_service.app.main:app --host 0.0.0.0 --port 8000"
-  boot context-memory   "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8002 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn services.context_memory_service.app.main:app --host 0.0.0.0 --port 8002"
-  boot formal-verifier  "cd context-fabric/services/formal_verifier_service && PORT=8010 CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8010"
+  boot context-api      "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" DEFAULT_GOVERNANCE_MODE=\"$DEFAULT_GOVERNANCE_MODE\" CF_TOOL_GRANT_ENABLED=\"$CF_TOOL_GRANT_ENABLED\" TOOL_GRANT_SIGNING_SECRET=\"$TOOL_GRANT_SIGNING_SECRET\" ${BOX_ONLY:+PREFER_LAPTOP_LLM=true }python3 -m uvicorn services.context_api_service.app.main:app --host 0.0.0.0 --port 8000"
+  if [ -n "$BARE_METAL_FULL" ]; then
+    boot context-memory "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" PORT=8002 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn services.context_memory_service.app.main:app --host 0.0.0.0 --port 8002"
+  fi
+  if [ "${FORMAL_VERIFICATION_ENABLED:-false}" = "true" ] || [ -n "$BARE_METAL_FULL" ]; then
+    boot formal-verifier "cd context-fabric/services/formal_verifier_service && PORT=8010 CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8010"
+  fi
   sleep 3
 
-  boot workgraph-api    "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" FORMAL_VERIFIER_URL=\"$FORMAL_VERIFIER_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" WORKBENCH_DEFAULT_MODEL_ALIAS=mock AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
+  boot workgraph-api    "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH_RUNTIME\" WORKGRAPH_RUNTIME_DATABASE_URL=\"$DATABASE_URL_WORKGRAPH_RUNTIME\" WORKGRAPH_DATABASE_URL_ADMIN=\"$DATABASE_URL_WORKGRAPH_ADMIN\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" FORMAL_VERIFIER_URL=\"$FORMAL_VERIFIER_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" MCP_TOOL_GRANT_MODE=\"$MCP_TOOL_GRANT_MODE\" DEFAULT_GOVERNANCE_MODE=\"$DEFAULT_GOVERNANCE_MODE\" WORKGRAPH_FORCE_GOVERNED_CODING=\"$WORKGRAPH_FORCE_GOVERNED_CODING\" CONTEXT_FABRIC_GOVERN_SIDE_CALLERS=\"$CONTEXT_FABRIC_GOVERN_SIDE_CALLERS\" WORKGRAPH_INTERNAL_TOKEN=\"$WORKGRAPH_INTERNAL_TOKEN\" WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS=\"$WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS\" WORKGRAPH_INCOMING_EVENT_SECRETS=\"$WORKGRAPH_INCOMING_EVENT_SECRETS\" WORKBENCH_DEFAULT_MODEL_ALIAS=mock AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
+  boot code-foundry-api "cd singularity-code-foundry/apps/code-foundry-api && HOST=127.0.0.1 PORT=3005 DATABASE_URL=\"$DATABASE_URL_CODE_FOUNDRY\" WORKGRAPH_API_URL=\"http://localhost:8080\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" WORKGRAPH_INTERNAL_TOKEN=\"$WORKGRAPH_INTERNAL_TOKEN\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" CODEGEN_SERVICE_TOKEN=\"${CODEGEN_SERVICE_TOKEN:-dev-codegen-service-token}\" FOUNDRY_WEB_ORIGIN=\"http://localhost:5180\" GENERATOR_VERSION=code-foundry-0.2.0 TEMPLATE_VERSION=spec-only-0.1.0 WORKSPACE_ROOT=\"$ROOT/singularity-code-foundry/.workspace\" npm run dev"
 
-  # PORT=3000 forces Next.js to fail loudly on a port collision rather than
-  # silently auto-bumping to 3001 (which would dodge the SPA proxy rewrites).
-  boot agent-web        "cd agent-and-tools/web        && PORT=3000 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" npm run dev"
-  boot workgraph-web    "cd workgraph-studio/apps/web  && VITE_API_BASE=http://localhost:8080 VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" VITE_IAM_LOGIN_URL=http://localhost:5175/login VITE_AUTO_LOGIN=0 npm run dev -- --host 0.0.0.0 --port 5174"
-  boot blueprint-workbench "cd workgraph-studio/apps/blueprint-workbench && VITE_PSEUDO_IAM_LOGIN_URL=http://localhost:8100/api/v1/auth/local/login npm run dev -- --host 0.0.0.0 --port 5176"
-  # Vite reliably reads .env.local; the inline VITE_LINK_* on the boot lines do
-  # not always reach import.meta.env. Ensure each SPA's .env.local carries the
-  # cross-app link targets so the portal tiles, the AppSwitcher dropdown, and the
-  # IAM-admin "Bootstrap in Agent Studio" button resolve to the per-port apps
-  # instead of single-origin /agent, /workflow, … paths (which only exist behind
-  # the Docker edge-gateway and otherwise bounce back to the same app).
-  # Append-only — never clobbers an existing key (e.g. workgraph-web's API config).
+  # The unified platform web app owns every UI route on :5180. It proxies backend
+  # calls through Next rewrites and keeps users in one shell:
+  # /operations, /agents, /agents/studio, /workflows, /workbench, /foundry,
+  # and /identity. The old split Vite apps are legacy/debug-only now.
+  boot platform-web     "cd agent-and-tools/web        && PORT=5180 IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_HEALTH_URL=\"http://localhost:8100/api/v1/health\" IAM_BOOTSTRAP_USERNAME=\"$LOCAL_SUPER_ADMIN_EMAIL\" IAM_BOOTSTRAP_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" TENANT_ISOLATION_MODE=\"$TENANT_ISOLATION_MODE\" REQUIRE_TENANT_ID=\"$REQUIRE_TENANT_ID\" IAM_SERVICE_TOKEN_TENANT_IDS=\"$IAM_SERVICE_TOKEN_TENANT_IDS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" WORKGRAPH_API_URL=\"http://localhost:8080\" WORKGRAPH_PROXY_SERVICE_AUTH=true WORKGRAPH_PROXY_SERVICE_TOKEN=\"$WORKGRAPH_PROXY_SERVICE_TOKEN\" CODE_FOUNDRY_API_URL=\"$CODE_FOUNDRY_API_URL\" CODEGEN_SERVICE_TOKEN=\"$CODEGEN_SERVICE_TOKEN\" FOUNDRY_TOKEN=\"$CODEGEN_SERVICE_TOKEN\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" NEXT_PUBLIC_WORKGRAPH_WEB_URL=\"/workflows\" npm run dev"
+
+  # Append-only helper for anyone who starts the legacy/debug UIs manually.
   _ensure_kv() { # $1=file  $2=KEY=VALUE
     local f="$1" kv="$2" key="${2%%=*}"
     mkdir -p "$(dirname "$f")"; touch "$f"
     grep -q "^${key}=" "$f" 2>/dev/null || printf '%s\n' "$kv" >> "$f"
   }
-  for _app in singularity-portal UserAndCapabillity workgraph-studio/apps/web workgraph-studio/apps/blueprint-workbench; do
+  _set_kv() { # $1=file  $2=KEY=VALUE
+    local f="$1" kv="$2" key="${2%%=*}"
+    mkdir -p "$(dirname "$f")"; touch "$f"
+    if grep -q "^${key}=" "$f" 2>/dev/null; then
+      tmp="${f}.tmp.$$"
+      sed "s#^${key}=.*#${kv}#" "$f" > "$tmp" && mv "$tmp" "$f"
+    else
+      printf '%s\n' "$kv" >> "$f"
+    fi
+  }
+  for _app in singularity-portal UserAndCapabillity workgraph-studio/apps/web workgraph-studio/apps/blueprint-workbench singularity-code-foundry/apps/code-foundry-web; do
     _f="$ROOT/$_app/.env.local"
     _ensure_kv "$_f" "VITE_IAM_BASE_URL=$IAM_BASE_URL"
     _ensure_kv "$_f" "VITE_LINK_OPERATIONS_PORTAL=http://localhost:5180/operations"
-    _ensure_kv "$_f" "VITE_LINK_AGENT_ADMIN=http://localhost:3000"
-    _ensure_kv "$_f" "VITE_LINK_WORKGRAPH_DESIGNER=http://localhost:5174"
-    _ensure_kv "$_f" "VITE_LINK_BLUEPRINT_WORKBENCH=http://localhost:5176"
+    _ensure_kv "$_f" "VITE_LINK_AGENT_ADMIN=http://localhost:5180/agents"
+    _ensure_kv "$_f" "VITE_LINK_WORKGRAPH_DESIGNER=http://localhost:5180/workflows"
+    _ensure_kv "$_f" "VITE_LINK_BLUEPRINT_WORKBENCH=http://localhost:5180/workbench"
+    _ensure_kv "$_f" "VITE_LINK_CODE_FOUNDRY=http://localhost:5180/foundry"
     # The run pages (RunViewer/WorkDetail/NodeRunModal "Open WorkbenchNeo") read
     # VITE_BLUEPRINT_WORKBENCH_URL — NOT the _LINK_ var the AppSwitcher uses.
-    # Without it they fall back to same-origin '/workbench/', which bounces back
-    # to :5174 on bare-metal (no edge gateway). Point it at the standalone app.
-    _ensure_kv "$_f" "VITE_BLUEPRINT_WORKBENCH_URL=http://localhost:5176"
-    _ensure_kv "$_f" "VITE_LINK_IAM_ADMIN=http://localhost:5175"
+    # Without it they fall back to same-origin '/workbench/'. Point legacy
+    # callers at the unified platform route.
+    _ensure_kv "$_f" "VITE_BLUEPRINT_WORKBENCH_URL=http://localhost:5180/workbench"
+    _ensure_kv "$_f" "VITE_LINK_IAM_ADMIN=http://localhost:5180/identity"
   done
-  # Agent Studio (:3000) is Next.js (NEXT_PUBLIC_* prefix). Its AppSwitcher uses
-  # nativeHref only when it starts with http, else the same-origin /runs path —
-  # which 404s on the standalone :3000 build. Set NEXT_PUBLIC_LINK_* so nativeHref
-  # points at the per-port apps (e.g. http://localhost:5174/runs).
+  # Platform web is Next.js (NEXT_PUBLIC_* prefix). Keep all app links same-origin.
   _AW="$ROOT/agent-and-tools/web/.env.local"
-  _ensure_kv "$_AW" "NEXT_PUBLIC_LINK_WORKGRAPH_DESIGNER=http://localhost:5174"
-  _ensure_kv "$_AW" "NEXT_PUBLIC_LINK_BLUEPRINT_WORKBENCH=http://localhost:5176"
-  _ensure_kv "$_AW" "NEXT_PUBLIC_LINK_IAM_ADMIN=http://localhost:5175"
-  _ensure_kv "$_AW" "NEXT_PUBLIC_LINK_OPERATIONS_PORTAL=http://localhost:5180/operations"
-
-  # IAM admin SPA — hosts the capability-governance authoring UI (G7–G9).
-  boot user-and-capability "cd UserAndCapabillity && VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" npm run dev -- --host 0.0.0.0 --port 5175"
-  # Unified operations/launcher portal (Vite; dev script binds 5180 itself).
-  # VITE_LINK_* point the portal's app cards at the per-port bare-metal apps.
-  # Without them the portal defaults to single-origin paths (/workflow, /workbench,
-  # …) that only resolve behind the Docker edge-gateway — in bare-metal they bounce
-  # back to the portal index.
-  boot portal "cd singularity-portal && VITE_IAM_BASE_URL=\"$IAM_BASE_URL\" VITE_LINK_WORKGRAPH_DESIGNER=http://localhost:5174 VITE_LINK_BLUEPRINT_WORKBENCH=http://localhost:5176 VITE_LINK_AGENT_ADMIN=http://localhost:3000 VITE_LINK_IAM_ADMIN=http://localhost:5175 npm run dev -- --host 0.0.0.0"
+  _set_kv "$_AW" "NEXT_PUBLIC_LINK_WORKGRAPH_DESIGNER=/workflows"
+  _set_kv "$_AW" "NEXT_PUBLIC_LINK_BLUEPRINT_WORKBENCH=/workbench"
+  _set_kv "$_AW" "NEXT_PUBLIC_LINK_CODE_FOUNDRY=/foundry"
+  _set_kv "$_AW" "NEXT_PUBLIC_LINK_IAM_ADMIN=/identity"
+  _set_kv "$_AW" "NEXT_PUBLIC_LINK_OPERATIONS_PORTAL=/operations"
 
   echo
-  ok "all services booted — run '$0 smoke' in ~30s to verify, then open:"
-  echo "    http://localhost:5174    (workgraph: runs, insights, designer)"
-  echo "    http://localhost:5176    (blueprint workbench: staged agent loop)"
-  echo "    http://localhost:5180    (portal: unified operations center + launcher)"
-  echo "    http://localhost:5175    (user-and-capability: IAM admin + governance authoring)"
-  echo "    http://localhost:3000    (agent-web: Agent Studio, /audit, /cost)"
-  echo "    http://localhost:8100    (real IAM API; admin@singularity.local / Admin1234!)"
+  ok "platform services booted — run '$0 smoke' in ~30s to verify, then open:"
+  echo "    http://localhost:5180              (unified platform web)"
+  echo "    http://localhost:5180/agents/studio (Agent Studio)"
+  echo "    http://localhost:5180/workflows     (workflows and runs)"
+  echo "    http://localhost:5180/workbench     (Blueprint Workbench)"
+  echo "    http://localhost:5180/foundry       (Code Foundry)"
+  echo "    http://localhost:5180/identity      (IAM admin + governance authoring)"
+  echo "    http://localhost:8100    (real IAM API; ${LOCAL_SUPER_ADMIN_EMAIL} / configured bootstrap password)"
   echo
   dim "stop everything:   $0 down"
   dim "tail any service:  tail -f logs/<name>.log"
@@ -597,10 +761,22 @@ cmd_down() {
       kill "$pid" 2>/dev/null && dim "  killed $pid"
     fi
   done < "$PID_FILE"
-  # Hard sweep — anything still hogging our ports gets terminated.
-  for p in 3000 3001 3002 3003 3004 5174 5175 5176 5180 7100 8000 8002 8010 8080 8100 8101 8500; do
+  # Hard sweep — anything still hogging our ports gets terminated. In BOX_ONLY
+  # mode leave laptop-owned runtime ports alone.
+  local ports=(3001 3002 3003 3004 3005 5174 5175 5176 5180 5181 5182 8000 8002 8010 8080 8085 8100 8101 8500)
+  if [ -z "$BOX_ONLY" ]; then ports+=(7100 8001); fi
+  for p in "${ports[@]}"; do
     pids=$(lsof -ti :"$p" 2>/dev/null || true)
-    [ -n "$pids" ] && kill $pids 2>/dev/null && dim "  freed port $p"
+    for pid in $pids; do
+      cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
+      case "$cmd" in
+        *docker*|*Docker*|*vpnkit*)
+          warn "port $p is Docker-owned (pid $pid); leaving it alone"
+          continue
+          ;;
+      esac
+      kill "$pid" 2>/dev/null && dim "  freed port $p (pid $pid)"
+    done
   done
   rm -f "$PID_FILE"
   ok "stack down."
@@ -608,21 +784,35 @@ cmd_down() {
 
 cmd_smoke() {
   local fail=0
-  for url in \
+  if [ -f "$ENV_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+  fi
+  local urls=(
     "http://localhost:8100/api/v1/health" \
     "http://localhost:8500/health" \
-    "http://localhost:7100/health" \
     "http://localhost:8000/health" \
-    "http://localhost:8002/health" \
-    "http://localhost:8010/health" \
+    "http://localhost:3005/health" \
     "http://localhost:8080/health" \
-    "http://localhost:3000/api/runtime/agents/templates?scope=common&limit=3" \
-    "http://localhost:5174/" \
-    "http://localhost:5175/" \
-    "http://localhost:5176/" \
+    "http://localhost:5180/api/runtime/agents/templates?scope=common&limit=3" \
     "http://localhost:5180/" \
-  ; do
-    code=$(curl -s -o /dev/null -w "%{http_code}" "$url" --max-time 3)
+    "http://localhost:5180/agents/studio" \
+    "http://localhost:5180/workflows" \
+    "http://localhost:5180/workbench" \
+    "http://localhost:5180/foundry" \
+    "http://localhost:5180/identity"
+  )
+  if [ -z "$BOX_ONLY" ]; then
+    urls+=("http://localhost:8001/health" "http://localhost:7100/health")
+  fi
+  if [ -n "$BARE_METAL_FULL" ]; then
+    urls+=("http://localhost:8002/health")
+  fi
+  if [ "${FORMAL_VERIFICATION_ENABLED:-false}" = "true" ] || [ -n "$BARE_METAL_FULL" ]; then
+    urls+=("http://localhost:8010/health")
+  fi
+  for url in "${urls[@]}"; do
+    code=$(http_code "$url" 3)
     if [ "$code" = "200" ] || [ "$code" = "304" ]; then
       printf "  ${C_GREEN}%s${C_END}  %s\n" "$code" "$url"
     else
@@ -631,7 +821,51 @@ cmd_smoke() {
     fi
   done
   echo
-  if [ "$fail" = "0" ]; then ok "all healthy."; else err "$fail endpoint(s) failing — check logs/"; exit 1; fi
+  if [ "$fail" != "0" ]; then
+    err "$fail endpoint(s) failing — check logs/"
+    exit 1
+  fi
+
+  ok "all healthy."
+  info "checking Context Fabric profile evidence contract..."
+  python3 bin/check-context-profile-evidence.py
+  ok "Context Fabric profile evidence contract passed."
+  info "checking Workgraph tenant database posture..."
+  if [ -n "${DATABASE_URL_WORKGRAPH_RUNTIME:-}" ]; then
+    python3 bin/check-workgraph-db-tenant-isolation.py --database-url "$DATABASE_URL_WORKGRAPH_RUNTIME"
+  else
+    python3 bin/check-workgraph-db-tenant-isolation.py --schema-only
+  fi
+  ok "Workgraph tenant database posture check passed."
+  case "${BARE_METAL_DEEP_SMOKE:-}" in
+    1|true|TRUE|yes|YES)
+      info "running deep Platform Web route/API/browser parity checks..."
+      python3 bin/check-platform-web-routes.py
+      python3 bin/check-platform-api-parity.py
+      node bin/check-platform-web-ui.mjs
+      ok "deep Platform Web route/API/browser parity checks passed."
+      info "running deep Platform Web lifecycle checks..."
+      python3 bin/check-audit-governance-lifecycle.py
+      python3 bin/check-workbench-lifecycle.py
+      python3 bin/check-workflow-lifecycle.py
+      python3 bin/check-foundry-lifecycle.py
+      python3 bin/check-agent-profile-lifecycle.py
+      ok "deep Platform Web lifecycle checks passed."
+      ;;
+    *)
+      echo "${C_DIM}deep parity checks: BARE_METAL_DEEP_SMOKE=1 $0 smoke  # routes + API proxy + browser hydration + audit/Workbench/workflow/Foundry/Agent Studio lifecycle${C_END}"
+      ;;
+  esac
+  case "${BARE_METAL_TRACE_SPINE:-${SINGULARITY_DOCTOR_TRACE_SPINE:-}}" in
+    1|true|TRUE|yes|YES)
+      info "running trace spine evidence gate..."
+      bash bin/test-trace-spine.sh
+      ok "trace spine evidence gate passed."
+      ;;
+    *)
+      echo "${C_DIM}trace spine gate: BARE_METAL_TRACE_SPINE=1 $0 smoke  # requires context-api, audit-gov, and Docker split-DB inspection; MCP resources are checked when reachable${C_END}"
+      ;;
+  esac
 }
 
 cmd_status() {
@@ -666,7 +900,7 @@ cmd_reset_db() {
   require psql
   warn "DROPPING all Singularity databases on ${db_user}@${db_host}:${db_port} — ALL DATA WILL BE LOST."
   local db
-  for db in singularity singularity_composer workgraph audit_governance singularity_iam singularity_context_fabric; do
+  for db in singularity singularity_composer workgraph audit_governance singularity_iam singularity_context_fabric singularity_codegen; do
     if PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d postgres \
          -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE);" >/dev/null 2>&1; then
       dim "  dropped $db"
@@ -692,7 +926,9 @@ Singularity bare-metal launcher.
 
   $0 up <db_user> [db_password] [db_host] [db_port]
                             create DBs, install deps, push schemas, seed,
-                            boot all services. Idempotent.
+                            boot platform services. Idempotent.
+                            Set BOX_ONLY=1 to skip local llm-gateway and
+                            mcp-server and use remote/laptop runtime services.
 
   $0 reset-db <db_user> [db_password] [db_host] [db_port]
                             DROP all platform databases (clean slate). DESTRUCTIVE.

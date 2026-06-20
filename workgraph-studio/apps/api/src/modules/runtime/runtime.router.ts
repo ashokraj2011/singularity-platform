@@ -23,6 +23,8 @@ import { prisma } from '../../lib/prisma'
 import { config } from '../../config'
 import { authzCheck } from '../../lib/iam/client'
 import { loadCallerContext, ROLE_LOOKUP_BUDGET } from '../../lib/iam/callerContext'
+import { requireTenantFromRequest, resolveTenantFromRequest, tenantIsolationStrict } from '../../lib/tenant-isolation'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 
 export const runtimeRouter: Router = Router()
 
@@ -169,9 +171,11 @@ runtimeRouter.get('/inbox', async (req, res, next) => {
     const ctx = await loadCallerContext(req.user!.userId)
 
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+    const tenantId = tenantIsolationStrict()
+      ? requireTenantFromRequest(req, 'runtime inbox')
+      : resolveTenantFromRequest(req)
 
-    // ── Fetch base data in parallel ───────────────────────────────────────
-    const [
+    const {
       directTasks,
       assignedTasks,
       directApprovals,
@@ -180,136 +184,163 @@ runtimeRouter.get('/inbox', async (req, res, next) => {
       queueItems,
       doneTasks,
       doneApprovals,
-    ] = await Promise.all([
-      // Tasks where the caller is the direct assignee (assignmentMode = DIRECT_USER)
-      prisma.task.findMany({
-        where: {
-          status: { in: ['OPEN', 'IN_PROGRESS', 'PENDING_REVIEW'] },
-          OR: [
-            { assignments: { some: { assignedToId: ctx.userId } } },
-          ],
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 100,
-      }),
-      // Tasks the caller has already claimed from a queue (assignedToId on TaskAssignment after claim)
-      prisma.task.findMany({
-        where: {
-          status: 'IN_PROGRESS',
-          queueItems: { some: { claimedById: ctx.userId } },
-        },
-        orderBy: { updatedAt: 'desc' },
-        take: 100,
-      }),
-      // Approvals directly assigned to the caller
-      prisma.approvalRequest.findMany({
-        where: {
-          assignedToId: ctx.userId,
-          status: 'PENDING',
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 100,
-      }),
-      // Consumables directly assigned to the caller
-      prisma.consumable.findMany({
-        where: {
-          assignedToId: ctx.userId,
-          status: { in: ['DRAFT', 'UNDER_REVIEW'] },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 100,
-      }),
-      prisma.workItemTarget.findMany({
-        where: {
-          status: { in: ['QUEUED', 'REWORK_REQUESTED', 'CLAIMED', 'IN_PROGRESS', 'SUBMITTED'] },
-          workItem: { status: { not: 'ARCHIVED' } },
-          OR: [
-            { claimedById: ctx.userId },
-            { claimedById: null },
-          ],
-        },
-        include: { workItem: true },
-        orderBy: { updatedAt: 'desc' },
-        take: 200,
-      }),
-      // Unclaimed queue items the caller might be eligible for.  We pull a
-      // generous batch and filter in app code (the routing-field indexes keep
-      // this fast).
-      prisma.teamQueueItem.findMany({
-        where: {
-          claimedById: null,
-          OR: [
-            ...(ctx.teamIds.length   > 0 ? [{ teamId:   { in: ctx.teamIds   } }] : []),
-            ...(ctx.skillKeys.length > 0 ? [{ skillKey: { in: ctx.skillKeys } }] : []),
-            // ROLE_BASED: pull all and filter via IAM below
-            { roleKey: { not: null }, capabilityId: { not: null } },
-          ],
-        },
-        orderBy: { enqueuedAt: 'desc' },
-        take: 200,
-        include: { task: true },
-      }),
-      // Done — recent completed tasks (caller was claimer or assignee)
-      prisma.task.findMany({
-        where: {
-          status: 'COMPLETED',
-          updatedAt: { gte: thirtyDaysAgo },
-          OR: [
-            { assignments: { some: { assignedToId: ctx.userId } } },
-            { queueItems:  { some: { claimedById: ctx.userId } } },
-          ],
-        },
-        orderBy: { updatedAt: 'desc' },
-        take: 50,
-      }),
-      // Done — recent decided approvals
-      prisma.approvalRequest.findMany({
-        where: {
-          status: { in: ['APPROVED', 'REJECTED', 'APPROVED_WITH_CONDITIONS'] },
-          updatedAt: { gte: thirtyDaysAgo },
-          OR: [
-            { assignedToId: ctx.userId },
-            { decisions: { some: { decidedById: ctx.userId } } },
-          ],
-        },
-        orderBy: { updatedAt: 'desc' },
-        take: 50,
-      }),
-    ])
+      instanceById,
+      nodeById,
+    } = await withTenantDbTransaction(prisma, async () => {
+      // ── Fetch base data in parallel ─────────────────────────────────────
+      const [
+        directTasks,
+        assignedTasks,
+        directApprovals,
+        directConsumables,
+        workItemTargets,
+        queueItems,
+        doneTasks,
+        doneApprovals,
+      ] = await Promise.all([
+        // Tasks where the caller is the direct assignee (assignmentMode = DIRECT_USER)
+        prisma.task.findMany({
+          where: {
+            status: { in: ['OPEN', 'IN_PROGRESS', 'PENDING_REVIEW'] },
+            OR: [
+              { assignments: { some: { assignedToId: ctx.userId } } },
+            ],
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        }),
+        // Tasks the caller has already claimed from a queue (assignedToId on TaskAssignment after claim)
+        prisma.task.findMany({
+          where: {
+            status: 'IN_PROGRESS',
+            queueItems: { some: { claimedById: ctx.userId } },
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 100,
+        }),
+        // Approvals directly assigned to the caller
+        prisma.approvalRequest.findMany({
+          where: {
+            assignedToId: ctx.userId,
+            status: 'PENDING',
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        }),
+        // Consumables directly assigned to the caller
+        prisma.consumable.findMany({
+          where: {
+            assignedToId: ctx.userId,
+            status: { in: ['DRAFT', 'UNDER_REVIEW'] },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        }),
+        prisma.workItemTarget.findMany({
+          where: {
+            status: { in: ['QUEUED', 'REWORK_REQUESTED', 'CLAIMED', 'IN_PROGRESS', 'SUBMITTED'] },
+            workItem: { status: { not: 'ARCHIVED' } },
+            OR: [
+              { claimedById: ctx.userId },
+              { claimedById: null },
+            ],
+          },
+          include: { workItem: true },
+          orderBy: { updatedAt: 'desc' },
+          take: 200,
+        }),
+        // Unclaimed queue items the caller might be eligible for.  We pull a
+        // generous batch and filter in app code (the routing-field indexes keep
+        // this fast).
+        prisma.teamQueueItem.findMany({
+          where: {
+            claimedById: null,
+            OR: [
+              ...(ctx.teamIds.length   > 0 ? [{ teamId:   { in: ctx.teamIds   } }] : []),
+              ...(ctx.skillKeys.length > 0 ? [{ skillKey: { in: ctx.skillKeys } }] : []),
+              // ROLE_BASED: pull all and filter via IAM below
+              { roleKey: { not: null }, capabilityId: { not: null } },
+            ],
+          },
+          orderBy: { enqueuedAt: 'desc' },
+          take: 200,
+          include: { task: true },
+        }),
+        // Done — recent completed tasks (caller was claimer or assignee)
+        prisma.task.findMany({
+          where: {
+            status: 'COMPLETED',
+            updatedAt: { gte: thirtyDaysAgo },
+            OR: [
+              { assignments: { some: { assignedToId: ctx.userId } } },
+              { queueItems:  { some: { claimedById: ctx.userId } } },
+            ],
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 50,
+        }),
+        // Done — recent decided approvals
+        prisma.approvalRequest.findMany({
+          where: {
+            status: { in: ['APPROVED', 'REJECTED', 'APPROVED_WITH_CONDITIONS'] },
+            updatedAt: { gte: thirtyDaysAgo },
+            OR: [
+              { assignedToId: ctx.userId },
+              { decisions: { some: { decidedById: ctx.userId } } },
+            ],
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 50,
+        }),
+      ])
 
-    // ── Enrich with instance + node names (single batched fetch) ──────────
-    const allInstanceIds = new Set<string>()
-    const allNodeIds     = new Set<string>()
-    const collectIds = (rows: Array<{ instanceId: string | null; nodeId: string | null }>) => {
-      for (const r of rows) {
-        if (r.instanceId) allInstanceIds.add(r.instanceId)
-        if (r.nodeId)     allNodeIds.add(r.nodeId)
+      // ── Enrich with instance + node names (single batched fetch) ────────
+      const allInstanceIds = new Set<string>()
+      const allNodeIds     = new Set<string>()
+      const collectIds = (rows: Array<{ instanceId: string | null; nodeId: string | null }>) => {
+        for (const r of rows) {
+          if (r.instanceId) allInstanceIds.add(r.instanceId)
+          if (r.nodeId)     allNodeIds.add(r.nodeId)
+        }
       }
-    }
-    collectIds(directTasks); collectIds(assignedTasks)
-    collectIds(directApprovals); collectIds(directConsumables)
-    collectIds(workItemTargets.map(t => ({
-      instanceId: t.workItem.sourceWorkflowInstanceId,
-      nodeId: t.workItem.sourceWorkflowNodeId,
-    })))
-    collectIds(doneTasks); collectIds(doneApprovals)
-    for (const q of queueItems) {
-      if (q.task.instanceId) allInstanceIds.add(q.task.instanceId)
-      if (q.task.nodeId)     allNodeIds.add(q.task.nodeId)
-    }
+      collectIds(directTasks); collectIds(assignedTasks)
+      collectIds(directApprovals); collectIds(directConsumables)
+      collectIds(workItemTargets.map(t => ({
+        instanceId: t.workItem.sourceWorkflowInstanceId,
+        nodeId: t.workItem.sourceWorkflowNodeId,
+      })))
+      collectIds(doneTasks); collectIds(doneApprovals)
+      for (const q of queueItems) {
+        if (q.task.instanceId) allInstanceIds.add(q.task.instanceId)
+        if (q.task.nodeId)     allNodeIds.add(q.task.nodeId)
+      }
 
-    const [instancesRaw, nodesRaw] = await Promise.all([
-      prisma.workflowInstance.findMany({
-        where: { id: { in: Array.from(allInstanceIds) } },
-        select: { id: true, name: true },
-      }),
-      prisma.workflowNode.findMany({
-        where: { id: { in: Array.from(allNodeIds) } },
-        select: { id: true, label: true },
-      }),
-    ])
-    const instanceById: Record<string, InstanceLite> = Object.fromEntries(instancesRaw.map(x => [x.id, x]))
-    const nodeById:     Record<string, NodeLite>     = Object.fromEntries(nodesRaw.map(x => [x.id, x]))
+      const [instancesRaw, nodesRaw] = await Promise.all([
+        prisma.workflowInstance.findMany({
+          where: { id: { in: Array.from(allInstanceIds) } },
+          select: { id: true, name: true },
+        }),
+        prisma.workflowNode.findMany({
+          where: { id: { in: Array.from(allNodeIds) } },
+          select: { id: true, label: true },
+        }),
+      ])
+      const instanceById: Record<string, InstanceLite> = Object.fromEntries(instancesRaw.map(x => [x.id, x]))
+      const nodeById:     Record<string, NodeLite>     = Object.fromEntries(nodesRaw.map(x => [x.id, x]))
+
+      return {
+        directTasks,
+        assignedTasks,
+        directApprovals,
+        directConsumables,
+        workItemTargets,
+        queueItems,
+        doneTasks,
+        doneApprovals,
+        instanceById,
+        nodeById,
+      }
+    }, tenantId)
 
     // ── ROLE_BASED filtering via IAM (when configured) ────────────────────
     let roleEligibility: Map<string, boolean> = new Map()

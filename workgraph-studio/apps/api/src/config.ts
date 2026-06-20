@@ -3,6 +3,17 @@ import { z } from 'zod'
 
 dotenvConfig()
 
+function envBool(defaultValue: boolean) {
+  return z.string().optional().transform((raw) => {
+    if (raw === undefined || raw === null) return defaultValue
+    const normalized = String(raw).trim().toLowerCase()
+    if (normalized === '') return defaultValue
+    if (['true', '1', 'yes', 'on'].includes(normalized)) return true
+    if (['false', '0', 'no', 'off'].includes(normalized)) return false
+    return defaultValue
+  })
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(8080),
@@ -10,7 +21,7 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(32),
   MINIO_ENDPOINT: z.string().default('localhost'),
   MINIO_PORT: z.coerce.number().default(9000),
-  MINIO_USE_SSL: z.coerce.boolean().default(false),
+  MINIO_USE_SSL: envBool(false),
   MINIO_ACCESS_KEY: z.string().default('workgraph'),
   MINIO_SECRET_KEY: z.string().default('workgraph_secret'),
   MINIO_BUCKET: z.string().default('workgraph-documents'),
@@ -25,6 +36,9 @@ const envSchema = z.object({
   // Long-lived bearer used by workgraph-studio when calling IAM as a service
   // (e.g. for member lookups, skill resolution).  Required if AUTH_PROVIDER=iam.
   IAM_SERVICE_TOKEN: z.string().optional(),
+  // Comma-separated tenant ids this service token may operate on. Required
+  // for strict tenant-isolated service-to-service calls.
+  IAM_SERVICE_TOKEN_TENANT_IDS: z.string().default(''),
   // TTL (seconds) for the in-memory token-verification cache.
   IAM_VERIFY_CACHE_TTL: z.coerce.number().default(60),
 
@@ -33,6 +47,7 @@ const envSchema = z.object({
 
   // ── Context Fabric (M8 — AGENT_TASK executor calls /execute) ──
   CONTEXT_FABRIC_URL: z.string().default('http://localhost:8000'),
+  DEFAULT_GOVERNANCE_MODE: z.enum(['fail_open', 'fail_closed', 'degraded', 'human_approval_required']).default('fail_open'),
   // M13 — service token for context-fabric's /internal/mcp/* surface (the
   // proxy that resolves code-changes through MCP). Should match the value
   // configured on context-fabric as IAM_SERVICE_TOKEN. In dev with no IAM
@@ -56,21 +71,24 @@ const envSchema = z.object({
   // routing. Workflow execution passes model aliases through Context Fabric.
   MCP_SERVER_URL: z.string().default('http://localhost:7100'),
   MCP_BEARER_TOKEN: z.string().default('demo-bearer-token-must-be-min-16-chars'),
+  MCP_TOOL_GRANT_MODE: z.enum(['off', 'grace', 'enforce']).default('off'),
   WORKGRAPH_INTERNAL_TOKEN: z.string().default('dev-workgraph-internal-token'),
+  WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS: z.string().default(''),
+  WORKGRAPH_INCOMING_EVENT_SECRETS: z.string().default(''),
   LAPTOP_HEARTBEAT_TIMEOUT_SEC: z.coerce.number().int().positive().default(300),
   LAPTOP_HEARTBEAT_SWEEP_SEC: z.coerce.number().int().positive().default(60),
   LAPTOP_MCP_TOKEN_TTL_SEC: z.coerce.number().int().positive().default(12 * 60 * 60),
   TENANT_ISOLATION_MODE: z.enum(['off', 'strict']).default('off'),
   EVENT_HORIZON_MODEL_ALIAS: z.string().optional(),
 
-  // ── M34 — One-shot LLM calls now route through MCP_SERVER_URL above ──────
-  // LLM_GATEWAY_URL and LLM_GATEWAY_BEARER are retired; all LLM egress
-  // flows through the MCP Server. Timeout is kept for the /mcp/invoke call.
+  // One-shot LLM calls route through Context Fabric's governed single-turn API.
+  // LLM_GATEWAY_URL and LLM_GATEWAY_BEARER are retired; this timeout remains
+  // the compatibility knob for those legacy one-shot callers.
   LLM_GATEWAY_TIMEOUT_SEC: z.coerce.number().int().positive().default(240),
 
   // Optional SMT governance path analyzer. Default off; disabled callers must
   // skip/return clear evidence and never call the verifier service.
-  FORMAL_VERIFICATION_ENABLED: z.coerce.boolean().default(false),
+  FORMAL_VERIFICATION_ENABLED: envBool(false),
   FORMAL_VERIFIER_URL: z.string().default('http://localhost:8010'),
 
   // M78 Slice 4 — Auto-remediation pipeline. When ON, the develop-stage
@@ -81,47 +99,52 @@ const envSchema = z.object({
   // The original WI's gate stays blocked (no auto-unblock yet — operator
   // re-tries approval once the remediation WIs land). Off by default;
   // operator opts in at the platform level by setting this in compose.
-  WORKGRAPH_AUTO_REMEDIATE_INHERITED_FAILURES: z.coerce.boolean().default(false),
+  WORKGRAPH_AUTO_REMEDIATE_INHERITED_FAILURES: envBool(false),
 
-  // Task #119 — feature flag for the non-blueprint governed migration.
+  // Task #119 — compatibility flag for the non-blueprint governed migration.
   // When true, the workflow AGENT_TASK executor routes through context-
   // fabric's /api/v1/execute-governed-stage (the M71 phase-based path
   // already used by blueprint flows) instead of the legacy /api/v1/
-  // execute endpoint. Off by default; per-deployment opt-in via env.
-  // Phased rollout — flip on for one workflow, observe via audit-gov,
-  // then expand. ContractReplay / EventHorizonChat / PromptComposer
-  // stay on legacy until their adapters land in follow-ups.
-  CONTEXT_FABRIC_USE_GOVERNED_FOR_NON_BLUEPRINT: z.coerce.boolean().default(false),
+  // execute endpoint. Kept for older deployments; the normal default is
+  // WORKGRAPH_FORCE_GOVERNED_CODING=true below.
+  CONTEXT_FABRIC_USE_GOVERNED_FOR_NON_BLUEPRINT: envBool(false),
 
-  // M99 S3.1 — Phase-3 rollout flag for "Centralize Agentic Coding Around
-  // Context Fabric". When true, NON-blueprint AGENT_TASK coding nodes default
-  // to the governed path even without a per-node useGovernedExecutor toggle —
-  // i.e. governed becomes the Workbench default, with the legacy /execute
-  // path reachable only by an explicit per-node opt-OUT. Distinct from
-  // CONTEXT_FABRIC_USE_GOVERNED_FOR_NON_BLUEPRINT (the earlier task-#119
-  // opt-IN); this is the broader default-flip the spec's Phase 3 calls for.
-  // Off by default — ships dark; flip per-deployment once Phase 1/2 are
-  // validated in shadow. The CF env flags (CF_AGENTIC_CODING_V2_ENABLED etc.)
-  // gate the automation behaviors independently.
-  WORKGRAPH_FORCE_GOVERNED_CODING: z.coerce.boolean().default(false),
+  // M99 S3.1 — Phase-3 default flip for "Centralize Agentic Coding Around
+  // Context Fabric". NON-blueprint AGENT_TASK coding nodes now default to the
+  // governed path even without a per-node useGovernedExecutor toggle. The
+  // legacy /execute path is reachable only by explicit per-node opt-out
+  // (useGovernedExecutor === false) or by setting this env var to false for
+  // incident recovery.
+  WORKGRAPH_FORCE_GOVERNED_CODING: envBool(true),
 
-  // Phase 4 cutover — route the single-shot "side" CF callers (Event Horizon
-  // chat, contracts replay) through /api/v1/execute-governed-stage via the
-  // generic governed-execute adapter instead of legacy /execute. Off by default
-  // (ships dark): these are single-shot Q&A, not coding stages, so flip + soak
-  // per-deployment after validating the governed 'loop.stage' policy behaves for
-  // them. prompt-composer (separate repo) + the AgentTaskExecutor default flip
-  // are gated independently.
-  CONTEXT_FABRIC_GOVERN_SIDE_CALLERS: z.coerce.boolean().default(false),
+  // Route single-shot side callers that already hold a complete prompt through
+  // Context Fabric's governed single-turn endpoint. Event Horizon chat is the
+  // current user-facing side caller; set false only for incident recovery.
+  CONTEXT_FABRIC_GOVERN_SIDE_CALLERS: envBool(true),
 })
 
 // M35.1 — production-class envs refuse to start with weak secrets.
 // Mirrors the @agentandtools/shared assertProductionSecret helper.
 // Inlined here because workgraph-api lives outside the agent-and-tools
 // workspace and can't import that package.
+const PROD_ENVS = new Set(['production', 'prod', 'staging', 'perf'])
+
+function productionClassEnv(): string | null {
+  for (const env of [
+    process.env.NODE_ENV,
+    process.env.APP_ENV,
+    process.env.ENVIRONMENT,
+    process.env.SINGULARITY_ENV,
+  ]) {
+    const normalized = (env ?? '').toLowerCase()
+    if (PROD_ENVS.has(normalized)) return normalized
+  }
+  return null
+}
+
 function assertProductionSecretLocal(name: string, value: string | undefined, minLength = 32): void {
-  const env = (process.env.NODE_ENV ?? 'development').toLowerCase()
-  if (!['production', 'prod', 'staging', 'perf'].includes(env)) return
+  const env = productionClassEnv()
+  if (!env) return
   const KNOWN_BAD = new Set([
     'dev-secret-change-in-prod',
     'dev-secret-change-in-prod-min-32-chars!!',
@@ -137,9 +160,38 @@ function assertProductionSecretLocal(name: string, value: string | undefined, mi
   else if (v.length < minLength) reasons.push(`shorter than ${minLength} chars (got ${v.length})`)
   if (KNOWN_BAD.has(v)) reasons.push('matches a known development default')
   if (reasons.length > 0) {
-    console.error(`FATAL: ${name} is unsafe for NODE_ENV=${env}: ${reasons.join('; ')}. Set ${name} to a strong random value (${minLength}+ chars) and restart.`)
+    console.error(`FATAL: ${name} is unsafe for production-class environment (${env}): ${reasons.join('; ')}. Set ${name} to a strong random value (${minLength}+ chars) and restart.`)
     process.exit(1)
   }
+}
+
+function assertProductionInvariantLocal(name: string, ok: boolean, message: string): void {
+  const env = productionClassEnv()
+  if (!env || ok) return
+  console.error(`FATAL: ${name} is unsafe for production-class environment (${env}): ${message}`)
+  process.exit(1)
+}
+
+function parseIncomingEventSecrets(raw: string): Record<string, string> {
+  const trimmed = raw.trim()
+  if (!trimmed) return {}
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([source, secret]) => source.trim().length > 0 && typeof secret === 'string' && secret.trim().length > 0)
+        .map(([source, secret]) => [source, (secret as string).trim()]),
+    )
+  } catch {
+    return {}
+  }
+}
+
+function hasOnlyStrongIncomingEventSecrets(raw: string): boolean {
+  const secrets = parseIncomingEventSecrets(raw)
+  const values = Object.values(secrets)
+  return values.length > 0 && values.every((value) => value.length >= 32 && !value.startsWith('dev-') && !value.startsWith('test-') && value !== 'changeme')
 }
 
 function loadConfig() {
@@ -149,6 +201,35 @@ function loadConfig() {
     process.exit(1)
   }
   assertProductionSecretLocal('JWT_SECRET', result.data.JWT_SECRET)
+  assertProductionSecretLocal('MCP_BEARER_TOKEN', result.data.MCP_BEARER_TOKEN)
+  assertProductionSecretLocal('WORKGRAPH_INTERNAL_TOKEN', result.data.WORKGRAPH_INTERNAL_TOKEN)
+  assertProductionSecretLocal('CONTEXT_FABRIC_SERVICE_TOKEN', result.data.CONTEXT_FABRIC_SERVICE_TOKEN)
+  assertProductionInvariantLocal(
+    'WORKGRAPH_INCOMING_EVENT_SECRETS',
+    hasOnlyStrongIncomingEventSecrets(result.data.WORKGRAPH_INCOMING_EVENT_SECRETS),
+    'set WORKGRAPH_INCOMING_EVENT_SECRETS to a non-empty JSON object of source_service -> 32+ character HMAC secrets',
+  )
+  assertProductionInvariantLocal(
+    'AUTH_PROVIDER',
+    result.data.AUTH_PROVIDER === 'iam',
+    'set AUTH_PROVIDER=iam; local auth is development-only',
+  )
+  assertProductionInvariantLocal(
+    'TENANT_ISOLATION_MODE',
+    result.data.TENANT_ISOLATION_MODE === 'strict',
+    'set TENANT_ISOLATION_MODE=strict for production-class deployments',
+  )
+  assertProductionInvariantLocal(
+    'DEFAULT_GOVERNANCE_MODE',
+    result.data.DEFAULT_GOVERNANCE_MODE === 'fail_closed',
+    'set DEFAULT_GOVERNANCE_MODE=fail_closed so workflow defaults cannot override Context Fabric fail-closed governance',
+  )
+  assertProductionInvariantLocal(
+    'IAM_SERVICE_TOKEN',
+    Boolean(result.data.IAM_SERVICE_TOKEN)
+      || (Boolean(process.env.IAM_BOOTSTRAP_USERNAME) && Boolean(process.env.IAM_BOOTSTRAP_PASSWORD)),
+    'set IAM_SERVICE_TOKEN or IAM_BOOTSTRAP_USERNAME/IAM_BOOTSTRAP_PASSWORD so Workgraph can authenticate service-to-service calls to Prompt Composer, agent-and-tools, and IAM',
+  )
   return result.data
 }
 

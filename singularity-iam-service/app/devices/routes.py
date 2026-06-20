@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import record_event
 from app.audit_gov_emit import emit_audit_event
-from app.auth.deps import get_current_user
+from app.auth.deps import require_real_user
 from app.auth.jwt import create_device_token
 from app.database import get_db
 from app.devices.schemas import DeviceList, DeviceOut, DeviceTokenRequest, DeviceTokenResponse
@@ -63,7 +63,7 @@ def _to_out(device: UserDevice) -> DeviceOut:
 async def mint_device_token(
     body: DeviceTokenRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_real_user),
 ):
     """Mint a long-lived device JWT for the calling user's laptop.
 
@@ -154,7 +154,7 @@ async def mint_device_token(
 @router.get("/me/devices", response_model=DeviceList)
 async def list_my_devices(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_real_user),
 ):
     q = await db.execute(
         select(UserDevice)
@@ -169,7 +169,7 @@ async def list_my_devices(
 async def revoke_device(
     device_pk: str = Path(..., description="UserDevice.id (row PK), NOT the client-generated device_id"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_real_user),
 ):
     """Mark a device as revoked. The laptop bridge sweeps every 60s and
     drops live connections whose device row has `revoked_at` set (M26 A2)."""

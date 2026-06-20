@@ -1,4 +1,5 @@
 import { Router } from "express";
+import multer from "multer";
 import { agentController } from "./agent.controller";
 import { validate } from "../../middleware/validate.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
@@ -9,6 +10,18 @@ import {
 } from "./agent.schemas";
 
 export const agentRoutes = Router();
+
+const profileUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024, files: 10 },
+});
+
+agentRoutes.use(requireAuth);
+
+agentRoutes.post("/profiles", requireAuth, profileUpload.array("files", 10), agentController.createProfile);
+agentRoutes.get("/profiles/:id/sources", requireAuth, agentController.getProfileSources);
+agentRoutes.post("/profiles/:id/resolve", requireAuth, agentController.resolveProfile);
+agentRoutes.post("/skill-sources/preview", requireAuth, profileUpload.single("file"), agentController.previewSkillSource);
 
 agentRoutes.post("/templates", requireAuth, validate(createAgentTemplateSchema), agentController.createTemplate);
 agentRoutes.get("/templates", validate(listAgentTemplatesQuerySchema, "query"), agentController.listTemplates);

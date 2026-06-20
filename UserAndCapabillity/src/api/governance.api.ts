@@ -1,8 +1,8 @@
-import { api } from '@/lib/api'
+import { api } from 'identity-web/lib/api'
 import type {
   Capability, PageResponse,
   GovernanceAttachment, CreateGovernedByRequest, UpdateGovernedByRequest,
-} from '@/types'
+} from 'identity-web/types'
 
 // Capability Governance Model (G7) — authoring client against the IAM
 // governance endpoints (G1 read/create + G7a mutate).

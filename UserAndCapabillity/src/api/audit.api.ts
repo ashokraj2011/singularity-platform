@@ -1,5 +1,5 @@
-import { api } from '@/lib/api'
-import type { AuditEvent, PageResponse } from '@/types'
+import { api } from 'identity-web/lib/api'
+import type { AuditEvent, PageResponse } from 'identity-web/types'
 
 export const auditApi = {
   list: (params?: {

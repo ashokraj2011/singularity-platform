@@ -3,8 +3,8 @@
 # laptop-bridge.sh — localhost BRIDGE-mode split test.
 #
 #   ┌─────────────── Docker "box" ───────────────┐        ┌──── host apps ────┐
-#   │ context-api · workgraph-api · agent-runtime │        │ mcp-server (:7100)│
-#   │ prompt-composer · iam · UIs · postgres …    │◀──WSS──│  LAPTOP_MODE      │
+#   │ context-api · workgraph-api · platform-core │        │ mcp-server (:7100)│
+#   │ iam · platform-web · dbs                    │◀──WSS──│  LAPTOP_MODE      │
 #   └─────────────────────────────────────────────┘  out  │ llm-gateway(:8001)│
 #                  (no mcp-server / no llm-gateway)        └───────────────────┘
 #
@@ -14,7 +14,8 @@
 #
 # Usage:
 #   bin/laptop-bridge.sh mint-token <iam-user-id>   # 1. device JWT (sub = user)
-#   bin/laptop-bridge.sh box-up                     # 2. Docker box (no mcp/gw)
+#   bin/laptop-bridge.sh box-up                     # 2. core Docker box (no mcp/gw)
+#   bin/laptop-bridge.sh box-up                     #    includes Platform Web + Foundry API
 #   bin/laptop-bridge.sh gateway                     # 3. host llm-gateway :8001
 #   bin/laptop-bridge.sh mcp                         # 4. host mcp-server (bridge)
 #   bin/laptop-bridge.sh status                      #    health + bridge status
@@ -51,14 +52,30 @@ dc()  { docker compose -f docker-compose.yml -f docker-compose.laptop-bridge.yml
 dcd() { docker compose -f docker-compose.yml -f docker-compose.laptop-direct.yml "$@"; }
 # The three services that carry the Copilot-questions feature code (rebuild these
 # after a git pull so the box runs your new code, not a stale image).
-FEATURE_SVCS="context-api workgraph-api workgraph-web"
+FEATURE_SVCS="platform-core context-api workgraph-api platform-web"
 
 # Box services — everything EXCEPT the two host apps (mcp-server, llm-gateway)
 # and the laptop-side sandbox runner. --no-deps stops context-api's depends_on
 # from pulling the profiled mcp-server / llm-gateway back in.
-INFRA="iam-postgres at-postgres wg-postgres wg-minio"
+INFRA="at-postgres wg-postgres wg-minio"
 BOOTSTRAP="at-postgres-bootstrap"
-APPS="iam-service context-memory context-api formal-verifier agent-service tool-service agent-runtime prompt-composer workgraph-api workgraph-web blueprint-workbench user-and-capability agent-web portal edge-gateway"
+CORE_APPS="iam-service platform-core context-api workgraph-api code-foundry-api platform-web"
+
+build_app_list() {
+  APPS="$CORE_APPS"
+  BUILD=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --build) BUILD="--build" ;;
+      --with-foundry|--foundry) ;; # retained for compatibility; Code Foundry API is core now.
+      --with-verifier|--verification) APPS="$APPS formal-verifier" ;;
+      --with-compression|--compression) APPS="$APPS prompt-compressor" ;;
+      --with-legacy-ui|--legacy-ui) APPS="$APPS workgraph-web blueprint-workbench user-and-capability code-foundry-web portal edge-gateway" ;;
+      *) echo "unknown box option: $1" >&2; exit 1 ;;
+    esac
+    shift
+  done
+}
 
 # ── commands ─────────────────────────────────────────────────────────────────
 cmd_mint_token() {
@@ -67,7 +84,7 @@ cmd_mint_token() {
     echo "usage: $0 mint-token <iam-user-id>" >&2
     echo "  <iam-user-id> is the 'sub' of the user who launches runs — it must" >&2
     echo "  match run_context.user_id, or the bridge won't route to this laptop." >&2
-    echo "  Find it: log into the portal, then the JWT 'sub' (jwt.io) or GET /api/v1/me." >&2
+    echo "  Find it: log into Platform Web, then decode the JWT 'sub' (jwt.io) or GET /api/v1/me." >&2
     exit 1
   fi
   mkdir -p "$(dirname "$DEVICE_TOKEN_FILE")"
@@ -90,28 +107,28 @@ cmd_mint_token() {
 }
 
 cmd_box_up() {
+  build_app_list "$@"
   echo "[box] infra (postgres + minio)…";            dc up -d $INFRA
   echo "[box] seed (at-postgres-bootstrap)…";         dc up -d $BOOTSTRAP
   echo "[box] apps — --no-deps so mcp-server/llm-gateway are NOT started…"
-  dc up -d --no-deps $APPS
+  dc up -d $BUILD --no-deps $APPS
   entry_banner
   echo "Next:  $0 gateway   (terminal 2)   and   $0 mcp   (terminal 3)"
 }
 
-# The UI images are built with base paths for the edge-gateway single origin, so
-# :8085 is the ONLY entry that renders working apps — the per-app ports
-# (:5174/:5176/:5180) serve a blank app standalone in Docker.
 entry_banner() {
   echo
   echo "════════════════════════════════════════════════════════════════════"
-  echo "  ▶  OPEN THE PLATFORM AT:   http://localhost:8085"
-  echo "        portal /   ·   /operations   ·   /workflow   ·   /workbench   ·   /iam"
-  echo "  Do NOT use :5174/:5176/:5180 directly — those are built for the"
-  echo "  gateway and render blank standalone."
+  echo "  ▶  OPEN THE PLATFORM AT:   http://localhost:5180"
+  echo "        /operations · /agents · /workflows · /workbench · /foundry · /identity"
+  echo "  Legacy split UIs are debug-only under the frontend-legacy profile."
   echo "════════════════════════════════════════════════════════════════════"
 }
 
-cmd_box_down() { dc stop $APPS $BOOTSTRAP $INFRA; echo "[box] stopped (data kept; 'dc down -v' to wipe)."; }
+cmd_box_down() {
+  dc stop $CORE_APPS formal-verifier prompt-compressor workgraph-web blueprint-workbench user-and-capability code-foundry-web portal edge-gateway $BOOTSTRAP $INFRA
+  echo "[box] stopped (data kept; 'dc down -v' to wipe)."
+}
 
 # Rebuild ONLY the services whose images carry your new code. Run after a git
 # pull, then box-up-direct (or box-up) to recreate them.
@@ -134,10 +151,11 @@ cmd_seed() {
 # gateway at host.docker.internal (docker-compose.laptop-direct.yml). No bridge,
 # no device token, no prefer_laptop. --build picks up new feature code.
 cmd_box_up_direct() {
+  build_app_list "$@"
   echo "[box:direct] infra…"; dcd up -d $INFRA
   echo "[box:direct] seed…";  dcd up -d $BOOTSTRAP
   echo "[box:direct] apps — --build (new code) + --no-deps (no mcp/gateway containers)…"
-  dcd up -d --build --no-deps $APPS
+  dcd up -d ${BUILD:---build} --no-deps $APPS
   entry_banner
   echo "The box calls your host mcp at http://host.docker.internal:7100."
   echo "Next:  $0 gateway   (terminal 2)   and   $0 mcp-direct   (terminal 3)"
@@ -207,8 +225,8 @@ cmd_status() {
 
 case "${1:-}" in
   mint-token)    shift; cmd_mint_token "$@" ;;
-  box-up)        cmd_box_up ;;          # bridge mode: box (no mcp/gateway)
-  box-up-direct) cmd_box_up_direct ;;   # direct mode: box → host mcp via HTTP
+  box-up)        shift; cmd_box_up "$@" ;;          # bridge mode: box (no mcp/gateway)
+  box-up-direct) shift; cmd_box_up_direct "$@" ;;   # direct mode: box → host mcp via HTTP
   box-down)      cmd_box_down ;;
   rebuild)       cmd_rebuild ;;         # rebuild the 3 feature-code images after a pull
   seed)          cmd_seed ;;            # seed users + capability + prompts + SDLC workflows
@@ -216,7 +234,7 @@ case "${1:-}" in
   mcp)           cmd_mcp ;;             # host mcp-server, BRIDGE (dials out)
   mcp-direct)    cmd_mcp_direct ;;      # host mcp-server, DIRECT (HTTP :7100)
   status)        cmd_status ;;
-  *) echo "usage: $0 {mint-token <iam-user-id>|rebuild|box-up|box-up-direct|seed|gateway|mcp|mcp-direct|status|box-down}
+  *) echo "usage: $0 {mint-token <iam-user-id>|rebuild|box-up [--build] [--with-foundry] [--with-verifier] [--with-compression] [--with-legacy-ui]|box-up-direct [same opts]|seed|gateway|mcp|mcp-direct|status|box-down}
   bridge mode:  mint-token → box-up        → gateway + mcp
   direct mode:  rebuild    → box-up-direct  → gateway + mcp-direct   (simplest; tests the Copilot-questions feature)" >&2; exit 1 ;;
 esac

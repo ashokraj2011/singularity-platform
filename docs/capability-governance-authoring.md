@@ -75,12 +75,14 @@ Files: `singularity-iam-service/app/governance/{routes,schemas,authz}.py`,
     `is_active` (idempotent; bumps `version`).
   - `GET /api/v1/capabilities?is_governing=true` — governing-capability picker.
   - `GovernanceAttachmentOut.updated_at`; `UpdateGovernedByRequest`.
-- **Authz** (`app/governance/authz.py`, pure/unit-tested): ADVISORY authoring =
-  any authenticated user, or a service principal with `governance:author`.
-  REQUIRED/BLOCKING (set/raise via POST or PATCH, and toggling an enforcing
-  attachment) = super-admin **real user** or explicit `governance:enforce`
-  scope. A service token's blanket M11 `is_super_admin` is **not** sufficient to
-  enforce. (Finer-grained *per-capability* permission is a follow-up.)
+- **Authz** (`app/governance/authz.py`, unit-tested): ADVISORY authoring =
+  real users with `governance:author` on both the governed capability and the
+  governing capability, or a service principal with the `governance:author`
+  scope. REQUIRED/BLOCKING (set/raise via POST or PATCH, and toggling an
+  enforcing attachment) requires `governance:enforce` on both edge
+  capabilities for real users, or the explicit `governance:enforce` service
+  scope. Super-admin is the only global user bypass. A service token's blanket
+  `is_super_admin` is **not** sufficient to enforce.
 - **Audit:** every attach/patch/deactivate/reactivate emits `record_event` (DB
   row, in-txn) + `emit_audit_event` (fire-and-forget to audit-gov) with actor,
   capability, attachment, before/after mode+scope+is_active, version;
@@ -138,8 +140,9 @@ attach/patch/deactivate/reactivate; show `version`/`updated_at`.
 
 - **ADVISORY-first.** Pickers default ADVISORY; ADVISORY never fires the CF
   `GOVERNANCE_BLOCKED` gate.
-- **Enforcement gated** behind `governance:enforce` authority (G7a) **and** a
-  feature-flagged designer toggle, off initially.
+- **Enforcement gated** behind `governance:enforce` authority on both the
+  governed and governing capabilities (G7a) **and** a feature-flagged designer
+  toggle, off initially.
 - **Don't break live runs:** deactivate-not-delete + D3 run-start overlay
   pinning. A global "disable all BLOCKING" kill-switch on the resolve/CF path.
 - **Audit** on every mutation; reconciler events tagged system/reconciler.

@@ -6,6 +6,8 @@ import { getLocalTool, listLocalTools } from "../tools/registry";
 import { recordToolInvocation } from "../audit/store";
 import { branchNameForWork, prepareWorkBranch } from "../workspace/git-workspace";
 import { withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbox";
+import { assertEffectiveCapabilityAllowsTool } from "./effective-capability";
+import { productionClassEnvLabel } from "../config";
 
 export const toolsRouter = Router();
 
@@ -41,8 +43,7 @@ toolsRouter.get("/tools/list", (_req, res) => {
  * Body: { name: string, arguments: object, runContext?: { traceId, runId, ... } }
  */
 function isProdClass(): boolean {
-  const env = (process.env.NODE_ENV ?? "development").toLowerCase();
-  return ["production", "prod", "staging", "perf"].includes(env);
+  return productionClassEnvLabel() !== null;
 }
 
 function genericToolsCallEnabled(): boolean {
@@ -68,6 +69,12 @@ const CallSchema = z.object({
       workspaceRoot: z.string().optional(),
       capabilityId: z.string().optional(),
       agentId: z.string().optional(),
+      effectiveCapabilities: z.array(z.record(z.unknown())).optional(),
+      effective_capabilities: z.array(z.record(z.unknown())).optional(),
+      effectiveCapabilitiesRequired: z.boolean().optional(),
+      effective_capabilities_required: z.boolean().optional(),
+      profileSnapshotHash: z.string().optional(),
+      profile_snapshot_hash: z.string().optional(),
     })
     .default({}),
 });
@@ -92,6 +99,7 @@ toolsRouter.post("/tools/call", async (req, res) => {
   const body = parsed.data;
   const handler = getLocalTool(body.name);
   if (!handler) throw new NotFoundError(`tool '${body.name}' not in local registry`);
+  assertEffectiveCapabilityAllowsTool(body.name, body.runContext);
 
   const correlation = { ...body.runContext, mcpInvocationId: uuidv4() };
   const workspaceRoot = workspaceRootForRunContext({

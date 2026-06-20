@@ -16,6 +16,7 @@ import type {
   ExecuteRequest,
   GovernedStageResponse,
 } from '../src/lib/context-fabric/client'
+import { config } from '../src/config'
 
 describe('#119 — executeReqToGovernedStageReq', () => {
   it('uses loop.stage as default stage_key when caller does not override', () => {
@@ -95,6 +96,20 @@ describe('#119 — governedStageRespToExecuteResp', () => {
     const out = governedStageRespToExecuteResp(baseResp)
     expect(out.status).toBe('COMPLETED')
     expect(out.finishReason).toBe('stop')
+  })
+
+  it('preserves the caller governance mode in the legacy response envelope', () => {
+    const out = governedStageRespToExecuteResp(baseResp, { governanceMode: 'fail_closed' })
+
+    expect(out.governanceMode).toBe('fail_closed')
+    expect(out.correlation.governanceMode).toBe('fail_closed')
+  })
+
+  it('falls back to the configured governance default when caller mode is missing', () => {
+    const out = governedStageRespToExecuteResp(baseResp)
+
+    expect(out.governanceMode).toBe(config.DEFAULT_GOVERNANCE_MODE)
+    expect(out.correlation.governanceMode).toBe(config.DEFAULT_GOVERNANCE_MODE)
   })
 
   it('maps MAX_TURNS → FAILED + length finish_reason', () => {

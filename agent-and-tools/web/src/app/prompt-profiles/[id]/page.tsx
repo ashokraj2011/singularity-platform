@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import {
@@ -159,7 +160,8 @@ function runtimeNote(sectionKey: string) {
   return "This section is normally human-authored in the behavior profile.";
 }
 
-export default function PromptProfileDetailPage({ params }: { params: { id: string } }) {
+export default function PromptProfileDetailPage() {
+  const params = useParams<{ id: string }>();
   const id = decodeURIComponent(params.id);
   const { data: profile, error: profileError, isLoading: profileLoading, mutate: mutateProfile } = useSWR(`profile-${id}`, () => runtimeApi.getProfile(id));
   const { data: allLayers, error: layersError, mutate: mutateLayers } = useSWR("all-layers", () => runtimeApi.listLayers());

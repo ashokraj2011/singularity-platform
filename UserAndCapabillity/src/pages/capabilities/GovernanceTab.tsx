@@ -1,19 +1,19 @@
 import { useMemo, useState } from 'react'
 import { ShieldCheck } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { StatusBadge } from '@/components/StatusBadge'
+import { Button } from 'identity-web/components/ui/button'
+import { Input } from 'identity-web/components/ui/input'
+import { Label } from 'identity-web/components/ui/label'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from 'identity-web/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from 'identity-web/components/ui/select'
+import { StatusBadge } from 'identity-web/components/StatusBadge'
 import {
   useGovernedBy, useGoverningCapabilities, useAttachGovernance,
   useUpdateGovernance, useDeactivateGovernance, useReactivateGovernance,
-} from '@/hooks/useGovernance'
+} from 'identity-web/hooks/useGovernance'
 import {
   GOVERNANCE_MODES, GOVERNANCE_SCOPES,
   type GovernanceAttachment, type GovernanceMode, type GovernanceScope,
-} from '@/types'
+} from 'identity-web/types'
 
 const MODE_CLASS: Record<GovernanceMode, string> = {
   ADVISORY: 'bg-sky-100 text-sky-700',

@@ -1,13 +1,13 @@
 import { Router, Request, Response } from "express";
 import { createHash } from "crypto";
 import { query, queryOne } from "../database";
-import { optionalAuth } from "../middleware/auth";
+import { requireAuth } from "../middleware/auth";
 import { emitAuditEvent } from "../middleware/audit";
 import { AppError } from "../middleware/errorHandler";
 import { publishEvent } from "../lib/eventbus/publisher";
 
 export const agentRoutes = Router();
-agentRoutes.use(optionalAuth);
+agentRoutes.use(requireAuth);
 
 // POST /api/v1/agents
 agentRoutes.post("/", async (req: Request, res: Response) => {

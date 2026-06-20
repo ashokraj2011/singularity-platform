@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import 'reactflow/dist/style.css';
 
 @tailwind base;
 @tailwind components;
@@ -7,11 +8,11 @@
 /* ─── Design tokens ──────────────────────────────────────────────────────── */
 @layer base {
   :root {
-    /* Singularity brand */
-    --brand-forest:             #0E3B2D;
-    --brand-forest-deep:        #082821;
-    --brand-warm-white:         #F5F2EA;
-    --brand-green-accent:       #00A651;
+    /* Singularity neutral platform shell */
+    --brand-forest:             #eef4f1;
+    --brand-forest-deep:        #dfe9e5;
+    --brand-warm-white:         #162033;
+    --brand-green-accent:       #00843D;
 
     --color-primary:             #00843D;
     --color-primary-dark:        #006227;
@@ -22,7 +23,7 @@
     --color-secondary-dim:       rgba(0, 75, 141, 0.10);
 
     /* Surfaces */
-    --color-surface:             #f4f7f7;
+    --color-surface:             #f6f8f8;
     --color-surface-bright:      #ffffff;
     --color-surface-container:   #eef3f4;
     --color-surface-low:         #f8fbfb;
@@ -80,8 +81,8 @@
     position: sticky;
     top: 0;
     height: 100vh;
-    border-right: 1px solid rgba(245,242,234,0.08);
-    background: linear-gradient(180deg, var(--brand-forest) 0%, var(--brand-forest-deep) 100%);
+    border-right: 1px solid var(--color-outline-variant);
+    background: linear-gradient(180deg, #ffffff 0%, var(--brand-forest) 100%);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     transition: width 0.24s ease-out;
@@ -177,19 +178,19 @@
     padding: 0.5rem 0.75rem;
     font-size: 0.875rem;
     font-weight: 500;
-    color: rgba(245,242,234,0.65);
+    color: var(--color-on-surface-variant);
     transition: background 0.15s, color 0.15s;
     position: relative;
     cursor: pointer;
     text-decoration: none;
   }
   .nav-item:hover {
-    background: rgba(245,242,234,0.06);
-    color: var(--brand-warm-white);
+    background: var(--color-primary-dim);
+    color: var(--color-on-surface);
   }
   .nav-item.active {
-    background: rgba(245,242,234,0.08);
-    color: var(--brand-warm-white);
+    background: var(--color-primary-dim);
+    color: var(--color-on-surface);
     font-weight: 600;
   }
 

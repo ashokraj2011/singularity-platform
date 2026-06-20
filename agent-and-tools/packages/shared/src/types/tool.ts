@@ -6,6 +6,10 @@ export type ExecutionLocation = "server" | "edge" | "browser" | "client_local_ru
 
 export type RuntimeType = "http" | "wasm" | "local_command" | "mcp" | "queue" | "docker" | "python" | "node";
 
+export type CapabilityPermission = "read" | "invoke" | "configure" | "edit";
+
+export type ToolSource = "local" | "provider" | "runtime" | "provider_manifest" | "url_document" | "uploaded_document";
+
 export type ToolExecutionStatus =
   | "success"
   | "error"
@@ -43,6 +47,17 @@ export interface Tool {
   allowed_agents: string[];
   tags: string[];
   metadata: Record<string, unknown>;
+  execution_target?: "LOCAL" | "SERVER";
+  mcp_server_ref?: string;
+  capability_id?: string;
+  capability_permissions?: CapabilityPermission[];
+  read_only?: boolean;
+  provider_locked?: boolean;
+  provider_id?: string;
+  provider_manifest_version?: string;
+  source_type?: ToolSource | string;
+  source_ref?: string;
+  source?: ToolSource;
   created_by?: string;
   approved_by?: string;
   approved_at?: string;
@@ -140,8 +155,19 @@ export interface ToolCard {
   description: string;
   input_schema: Record<string, unknown>;
   risk_level: RiskLevel;
+  requires_approval?: boolean;
+  execution_target?: "LOCAL" | "SERVER";
   execution_location: ExecutionLocation;
   runtime_type: RuntimeType;
+  capability_id?: string;
+  capability_permissions?: CapabilityPermission[];
+  read_only?: boolean;
+  provider_locked?: boolean;
+  provider_id?: string;
+  provider_manifest_version?: string;
+  source_type?: ToolSource | string;
+  source_ref?: string;
+  source?: ToolSource;
 }
 
 export interface InvokeToolRequest {

@@ -1,5 +1,5 @@
-import { api } from '@/lib/api'
-import type { SharingGrant, CreateSharingGrantRequest, PageResponse } from '@/types'
+import { api } from 'identity-web/lib/api'
+import type { SharingGrant, CreateSharingGrantRequest, PageResponse } from 'identity-web/types'
 
 export const sharingGrantsApi = {
   list: (params?: { page?: number; size?: number; status?: string }) =>

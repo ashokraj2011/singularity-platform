@@ -135,6 +135,7 @@ from .prompt_resolver import (
 from .stage_execution_policy import StageExecutionPolicy, apply_execution_policy
 from .tool_gateway import allowed_tools_for
 from .tool_schemas import schema_for_tool
+from ..execute_modules.tool_policy import filter_tools_by_effective_capabilities
 
 log = logging.getLogger(__name__)
 
@@ -186,6 +187,22 @@ def _render_policy_facts(
 # the next phase. NEVER dispatched to mcp-server. The loop catches the call
 # by name and routes the payload through the receipt validator.
 SUBMIT_PHASE_OUTPUT = "submit_phase_output"
+
+
+def _effective_capabilities_from_context(run_context: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(run_context, dict):
+        return []
+    raw = run_context.get("effective_capabilities") or run_context.get("effectiveCapabilities")
+    return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+
+
+def _effective_capabilities_required(run_context: dict[str, Any] | None) -> bool:
+    if not isinstance(run_context, dict):
+        return False
+    raw = run_context.get("effective_capabilities_required")
+    if raw is None:
+        raw = run_context.get("effectiveCapabilitiesRequired")
+    return raw is True or (isinstance(raw, str) and raw.strip().lower() in {"1", "true", "yes", "on"})
 
 
 @dataclass
@@ -243,7 +260,13 @@ def _build_messages(prompt: ResolvedPrompt, history: list[dict[str, Any]]) -> li
     return messages
 
 
-def _build_tool_descriptors(policy: StagePolicy, phase: Phase, blocked: set[str] | None = None) -> list[dict[str, Any]]:
+def _build_tool_descriptors(
+    policy: StagePolicy,
+    phase: Phase,
+    blocked: set[str] | None = None,
+    effective_capabilities: list[dict[str, Any]] | None = None,
+    require_effective_capabilities: bool = False,
+) -> list[dict[str, Any]]:
     """Tool descriptors handed to the LLM.
 
     M72 Slice A — Cache-stable variant. The descriptor list is now the UNION
@@ -306,6 +329,11 @@ def _build_tool_descriptors(policy: StagePolicy, phase: Phase, blocked: set[str]
             ),
             "input_schema": schema_for_tool(tool_name),
         })
+    descriptors, _warnings = filter_tools_by_effective_capabilities(
+        descriptors,
+        effective_capabilities or [],
+        require_effective_capabilities=require_effective_capabilities,
+    )
     # The meta-tool. The phase output schema lives in the prompt; we don't
     # try to mirror it as JSON Schema here (too many phase-specific shapes
     # to keep in sync). The validator catches any malformed payload.
@@ -875,7 +903,14 @@ async def run_turn(
     _blocked_tools: set[str] = set()
     if isinstance(_gov_tp, dict):
         _blocked_tools.update(str(t) for t in (_gov_tp.get("blocked") or []) if t)
-    tools = _build_tool_descriptors(policy, state.current_phase, _blocked_tools or None)
+    effective_capabilities = _effective_capabilities_from_context(run_context)
+    tools = _build_tool_descriptors(
+        policy,
+        state.current_phase,
+        _blocked_tools or None,
+        effective_capabilities,
+        _effective_capabilities_required(run_context),
+    )
 
     # Audit the LLM call now — useful for cost accounting even when the
     # call fails. The completion event lands after the response below.

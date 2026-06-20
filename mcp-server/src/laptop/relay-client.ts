@@ -245,6 +245,7 @@ export class LaptopRelayClient {
           work_item_id: frame.payload.work_item_id,
           workspace_id: frame.payload.workspace_id,
           run_context: frame.payload.run_context as Parameters<typeof runToolByName>[0]["run_context"],
+          tool_grant: frame.payload.tool_grant,
         });
         // Response payload shape matches ToolRunResponsePayload in
         // envelopes.ts and the HTTP /tool-run response's `data` field.

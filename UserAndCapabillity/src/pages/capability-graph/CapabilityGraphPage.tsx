@@ -5,11 +5,11 @@ import ReactFlow, {
   Handle, Position, useNodesState, useEdgesState,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { PageHeader } from '@/components/PageHeader'
-import { StatusBadge } from '@/components/StatusBadge'
-import { useCapabilities } from '@/hooks/useCapabilities'
-import { capabilityTypeColor, capabilityTypeLabel } from '@/lib/format'
-import type { Capability } from '@/types'
+import { PageHeader } from 'identity-web/components/PageHeader'
+import { StatusBadge } from 'identity-web/components/StatusBadge'
+import { useCapabilities } from 'identity-web/hooks/useCapabilities'
+import { capabilityTypeColor, capabilityTypeLabel } from 'identity-web/lib/format'
+import type { Capability } from 'identity-web/types'
 
 function CapNode({ data }: { data: { cap: Capability } }) {
   const { cap } = data

@@ -6,21 +6,20 @@
  *     middleware REQUIRES `Authorization: Bearer <token>` matching it
  *     on every request, returning 401 UNAUTHORIZED otherwise.
  *   - When `CODEGEN_SERVICE_TOKEN` is empty or the dev-default
- *     `dev-codegen-service-token`, the middleware accepts unauthenticated
- *     requests (the dev/docker-compose flow). The default value is
- *     considered a sentinel — production deployments MUST override it.
+ *     `dev-codegen-service-token`, only localhost requests may skip auth.
+ *     Non-local requests must still present the configured bearer.
  *
  * The Foundry web SPA passes `Authorization: Bearer <token>` when
  * VITE_FOUNDRY_TOKEN is set; the CLI passes it via --token or
  * CODE_FOUNDRY_TOKEN env. The dev defaults keep local-compose flows
  * working out of the box.
  *
- * Localhost requests are also pass-through, regardless of token, so an
- * operator running the SPA against http://localhost:3005 from
- * http://localhost:5181 doesn't need to manage a token.
+ * Localhost requests are pass-through only for the dev-default token, so an
+ * operator running a local SPA can iterate without credentials while exposed
+ * host/office-box traffic cannot ride the default into an open API.
  */
 import type { NextFunction, Request, Response } from 'express'
-import { config } from '../config.js'
+import { config, isProductionClassEnv } from '../config.js'
 
 const DEV_DEFAULTS = new Set(['dev-codegen-service-token', 'changeme', ''])
 
@@ -43,12 +42,7 @@ export function requireBearer(_req: Request, _res: Response, _next: NextFunction
 
 export function bearerAuth() {
   return function check(req: Request, res: Response, next: NextFunction): void {
-    if (!isProductionToken()) {
-      // Dev / docker-compose default token in use; skip auth so the
-      // operator running on localhost without env overrides isn't blocked.
-      return next()
-    }
-    if (isLocalhost(req)) {
+    if (!isProductionToken() && !isProductionClassEnv() && isLocalhost(req)) {
       return next()
     }
     const header = req.headers.authorization

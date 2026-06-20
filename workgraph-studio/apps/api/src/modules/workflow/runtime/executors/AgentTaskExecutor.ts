@@ -7,6 +7,8 @@ import {
   contextFabricClient, type ExecuteRequest, ContextFabricError,
 } from '../../../../lib/context-fabric/client'
 import { config } from '../../../../config'
+import { agentRunCorrelationUpdate, mergeAgentRunCorrelation } from '../../../../lib/agent-run-correlation'
+import { resolveRuntimeTenantId, runtimeTenantRequired } from '../../../../lib/runtime-tenant'
 import { snapshotAgentTemplate, snapshotCapability } from '../../../../lib/snapshot'
 import { enrichStageRequestWithGovernance } from '../../../governance/governance.service'
 import { prepareLlmBudget, recordWorkflowLlmUsage } from '../budget'
@@ -46,7 +48,7 @@ type GovernanceMode = NonNullable<ExecuteRequest['governance_mode']>
  *   2. Enriches with conversation history + summaries
  *   3. Resolves the per-capability MCP server (via IAM mcp_servers table)
  *   4. Discovers tools (via tool-service /tools/discover)
- *   5. Invokes the MCP /mcp/invoke loop
+ *   5. Executes through Context Fabric's governed loop / tool dispatch
  *   6. Persists CallLog + memory + metrics
  *   7. Returns unified status + 7-level correlation chain
  *
@@ -192,6 +194,15 @@ export async function activateAgentTask(
   const instanceCtx = (instance.context ?? {}) as Record<string, unknown>
   const vars = (instanceCtx._vars ?? instanceCtx.vars ?? {}) as Record<string, unknown>
   const globals = (instanceCtx._globals ?? instanceCtx.globals ?? {}) as Record<string, unknown>
+  const tenantId = resolveRuntimeTenantId({ nodeConfig: cfg, instanceContext: instanceCtx })
+  if (runtimeTenantRequired(config.TENANT_ISOLATION_MODE) && !tenantId) {
+    await failRun(
+      run.id,
+      'tenant-id-required',
+      'TENANT_ISOLATION_MODE=strict requires a tenantId/tenant_id on the node config, workflow context, vars/globals, or WorkItem input before AGENT_TASK can call Context Fabric.',
+    )
+    return
+  }
 
   // §13.4 working-dir — resolve the repo a copilot node clones into its sandbox.
   // Precedence: work-item `repoUrl` var (per item) → the capability's LINKED repo
@@ -218,6 +229,10 @@ export async function activateAgentTask(
         contextFabricUrl: config.CONTEXT_FABRIC_URL,
       },
     },
+  })
+  await prisma.agentRun.update({
+    where: { id: run.id },
+    data: { traceId },
   })
   const workflowDefaultModelAlias = await resolveWorkflowDefaultModelAlias(instance.templateId)
   const workflowDefaultGovernanceMode = await resolveWorkflowGovernanceMode(instance.templateId, node)
@@ -332,7 +347,7 @@ export async function activateAgentTask(
       work_item_id: realWorkItemId,
       work_item_code: workCode,
       capability_id: capabilityId,
-      tenant_id: configString('tenantId'),
+      tenant_id: tenantId,
       agent_template_id: agentTemplateId,
       // M26 — the calling user's IAM sub (resolved from users.iamUserId; falls
       // back to the instance creator for auto-advanced nodes). context-fabric
@@ -373,13 +388,14 @@ export async function activateAgentTask(
     governance_mode: governanceMode,
   }
 
-  // Architecture gap #1 / task #119 — feature-flagged governed migration.
+  // Architecture gap #1 / task #119 — governed migration.
   //
-  // Two opt-in paths, either flips this node to /execute-governed-stage:
+  // Compatibility opt-in paths also flip this node to /execute-governed-stage:
   //   - cfg.useGovernedExecutor === true on the node design (per-node)
   //   - config.CONTEXT_FABRIC_USE_GOVERNED_FOR_NON_BLUEPRINT === true (deployment-wide)
   //
-  // When neither is on, the legacy /execute path runs (existing behaviour).
+  // By default, WORKGRAPH_FORCE_GOVERNED_CODING is on, so only explicit
+  // per-node opt-out or incident-recovery env config reaches legacy /execute.
   // The adapter (governed-execute-adapter.ts) maps the legacy ExecuteRequest
   // into a GovernedStageRequest and the response back into the
   // ExecuteResponse shape the downstream persistence + correlation code
@@ -394,7 +410,7 @@ export async function activateAgentTask(
   // the node explicitly opts OUT (useGovernedExecutor === false). This is the
   // inverse polarity of the two task-#119 opt-IN paths below, so it's
   // evaluated first and an explicit per-node false still wins (operator escape
-  // hatch). Off by default → no behaviour change until the env flag is set.
+  // hatch).
   const forceGoverned = config.WORKGRAPH_FORCE_GOVERNED_CODING === true
     && cfg.useGovernedExecutor !== false
   const useGoverned = forceGoverned
@@ -423,6 +439,7 @@ export async function activateAgentTask(
       const govResp = await contextFabricClient.executeGovernedStage(govReq)
       result = governedStageRespToExecuteResp(govResp, {
         traceId: executeReq.trace_id ?? null,
+        governanceMode,
         // sessionId isn't a typed field on ExecuteRunContext today;
         // pull it from the loose dict-shape if the caller stashed one,
         // otherwise null. Audit-gov correlation still wires up via
@@ -508,6 +525,10 @@ export async function activateAgentTask(
     contextPlan: result.prompt?.contextPlan,
     contextFabricUrl: config.CONTEXT_FABRIC_URL,
   }
+  await prisma.agentRun.update({
+    where: { id: run.id },
+    data: agentRunCorrelationUpdate(correlation),
+  })
 
   await prisma.agentRunOutput.create({
     data: {
@@ -597,7 +618,7 @@ export async function activateAgentTask(
   if (result.status === 'FAILED') {
     await prisma.agentRun.update({
       where: { id: run.id },
-      data: { status: 'FAILED', completedAt: new Date() },
+      data: mergeAgentRunCorrelation({ status: 'FAILED', completedAt: new Date() }, correlation),
     })
     await logEvent('AgentRunFailed', 'AgentRun', run.id, undefined, {
       cfCallId: result.correlation.cfCallId,
@@ -626,6 +647,7 @@ export async function activateAgentTask(
           cfCallId: result.correlation.cfCallId,
           traceId: result.correlation.traceId,
           mcpInvocationId: result.correlation.mcpInvocationId,
+          governanceMode: result.governanceMode ?? result.correlation.governanceMode,
           // Governed pause — persist the PhaseState + run_context so /approve can
           // rehydrate + resume via the governed path (legacy resume can't: the
           // cfCallId is synthetic). null for legacy tool pauses (continuation_token).
@@ -638,7 +660,12 @@ export async function activateAgentTask(
     })
     await prisma.agentRun.update({
       where: { id: run.id },
-      data: { status: 'PAUSED' },
+      data: mergeAgentRunCorrelation({ status: 'PAUSED' }, {
+        ...correlation,
+        cfCallId: result.correlation.cfCallId,
+        traceId: result.correlation.traceId,
+        mcpInvocationId: result.correlation.mcpInvocationId,
+      }),
     })
     await logEvent('AgentRunPaused', 'AgentRun', run.id, undefined, {
       cfCallId: result.correlation.cfCallId,
@@ -655,7 +682,7 @@ export async function activateAgentTask(
 
   await prisma.agentRun.update({
     where: { id: run.id },
-    data: { status: 'AWAITING_REVIEW', completedAt: new Date() },
+    data: mergeAgentRunCorrelation({ status: 'AWAITING_REVIEW', completedAt: new Date() }, correlation),
   })
 
   await logEvent('AgentRunCompleted', 'AgentRun', run.id, undefined, {
@@ -924,7 +951,7 @@ async function resolveWorkflowGovernanceMode(templateId: string | null | undefin
   if (securityHint.includes('security') || securityHint.includes('compliance') || securityHint.includes('policy')) {
     return 'fail_closed'
   }
-  if (!templateId) return 'fail_open'
+  if (!templateId) return config.DEFAULT_GOVERNANCE_MODE as GovernanceMode
   const workflow = await prisma.workflow.findUnique({
     where: { id: templateId },
     select: { status: true, budgetPolicy: true, metadata: true },
@@ -940,7 +967,7 @@ async function resolveWorkflowGovernanceMode(templateId: string | null | undefin
     return 'human_approval_required'
   }
   if (workflow?.status && workflow.status !== 'DRAFT') return 'human_approval_required'
-  return 'fail_open'
+  return config.DEFAULT_GOVERNANCE_MODE as GovernanceMode
 }
 
 function isGovernanceMode(value: unknown): value is GovernanceMode {

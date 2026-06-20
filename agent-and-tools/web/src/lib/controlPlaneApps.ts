@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Bot, ServerCog, ShieldCheck, Workflow, Wrench } from "lucide-react";
+import { Bot, Hammer, ServerCog, ShieldCheck, Workflow, Wrench } from "lucide-react";
 
 export type ControlPlaneApp = {
   id: string;
@@ -17,20 +17,13 @@ export function localUrl(port: number, path = "") {
 }
 
 export function controlPlaneApps(): ControlPlaneApp[] {
-  // M100 P3 — same-origin path prefixes under the edge gateway (was localUrl(port)).
-  // NEXT_PUBLIC_LINK_* overrides remain for split-origin deployments.
-  const workgraphBase = process.env.NEXT_PUBLIC_LINK_WORKGRAPH_DESIGNER ?? "/workflow";
-  const workbenchBase = process.env.NEXT_PUBLIC_LINK_BLUEPRINT_WORKBENCH ?? "/workbench/?ui=neo";
-  const identityBase = process.env.NEXT_PUBLIC_LINK_IAM_ADMIN ?? "/iam";
-  const operationsBase = process.env.NEXT_PUBLIC_LINK_OPERATIONS_PORTAL ?? "/operations";
-
   return [
     {
       id: "agent-studio",
       label: "Agent Studio",
       group: "Agent Runtime",
-      href: "/agent-studio",
-      nativeHref: "/agent-studio",
+      href: "/agents/studio",
+      nativeHref: "/agents/studio",
       summary: "Agents, capability teams, tools, prompt profiles, and model settings.",
       icon: Bot,
     },
@@ -39,7 +32,7 @@ export function controlPlaneApps(): ControlPlaneApp[] {
       label: "Workflows",
       group: "Workgraph",
       href: "/workflows",
-      nativeHref: process.env.NEXT_PUBLIC_LINK_WORKGRAPH_WORKFLOWS ?? `${workgraphBase.replace(/\/$/, "")}/workflows`,
+      nativeHref: "/workflows",
       summary: "Workflow templates, designer, node settings, and run launch.",
       icon: Workflow,
     },
@@ -48,7 +41,7 @@ export function controlPlaneApps(): ControlPlaneApp[] {
       label: "Runs",
       group: "Workgraph",
       href: "/runs",
-      nativeHref: process.env.NEXT_PUBLIC_LINK_WORKGRAPH_RUNS ?? `${workgraphBase.replace(/\/$/, "")}/runs`,
+      nativeHref: "/runs",
       summary: "Mission Control, approvals, live events, stage restarts, and run evidence.",
       icon: Workflow,
     },
@@ -57,25 +50,34 @@ export function controlPlaneApps(): ControlPlaneApp[] {
       label: "WorkItems",
       group: "Workgraph",
       href: "/work-items",
-      nativeHref: process.env.NEXT_PUBLIC_LINK_WORKGRAPH_WORKITEMS ?? `${workgraphBase.replace(/\/$/, "")}/work-items`,
+      nativeHref: "/work-items",
       summary: "Capability-scoped work queue, parent delegation, attach workflow, and start.",
       icon: Workflow,
     },
     {
       id: "workbench",
-      label: "WorkbenchNeo",
+      label: "Workbench",
       group: "Delivery",
       href: "/workbench",
-      nativeHref: workbenchBase,
+      nativeHref: "/workbench",
       summary: "Story-to-delivery stages, artifacts, approvals, terminal, and code review.",
       icon: Wrench,
+    },
+    {
+      id: "foundry",
+      label: "Foundry",
+      group: "Delivery",
+      href: "/foundry",
+      nativeHref: "/foundry",
+      summary: "Code generation runs, repositories, gaps, guarded LLM tasks, and receipts.",
+      icon: Hammer,
     },
     {
       id: "identity",
       label: "Identity",
       group: "IAM",
       href: "/identity",
-      nativeHref: `${identityBase.replace(/\/$/, "")}/capabilities`,
+      nativeHref: "/identity",
       summary: "Users, teams, roles, capabilities, sharing grants, and authorization checks.",
       icon: ShieldCheck,
     },
@@ -84,7 +86,7 @@ export function controlPlaneApps(): ControlPlaneApp[] {
       label: "Operations",
       group: "Operations",
       href: "/operations",
-      nativeHref: operationsBase,
+      nativeHref: "/operations",
       summary: "Setup Center, readiness, audit packs, architecture, and trust evidence.",
       icon: ServerCog,
     },

@@ -9,10 +9,15 @@ import type { UploadedDocument } from '../../lib/uploadAttachment'
 import { useCapabilityLabels } from './useCapabilityLabels'
 import { WorkItemArtifactsPanel } from './WorkItemArtifactsPanel'
 
-const BLUEPRINT_WORKBENCH_URL = import.meta.env.VITE_BLUEPRINT_WORKBENCH_URL
+const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
+
+const BLUEPRINT_WORKBENCH_URL = viteEnv.VITE_BLUEPRINT_WORKBENCH_URL
   // M100 P3 — same-origin under the edge gateway (was :5176).
   ?? '/workbench/'
-const BLUEPRINT_WORKBENCH_ORIGIN = new URL(BLUEPRINT_WORKBENCH_URL, window.location.href).origin
+function blueprintWorkbenchOrigin() {
+  if (typeof window === 'undefined') return ''
+  return new URL(BLUEPRINT_WORKBENCH_URL, window.location.href).origin
+}
 
 type Kind = 'task' | 'approval' | 'consumable' | 'workitem'
 
@@ -881,7 +886,7 @@ function WorkbenchTaskCard({
   useEffect(() => {
     if (!canBuildUrl) return
     const handler = (event: MessageEvent) => {
-      if (event.origin !== BLUEPRINT_WORKBENCH_ORIGIN) return
+      if (event.origin !== blueprintWorkbenchOrigin()) return
       const data = event.data
       if (data && typeof data === 'object' && data.type === 'blueprintWorkbench.auth.request') {
         const token = readWorkgraphToken()

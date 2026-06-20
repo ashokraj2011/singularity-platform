@@ -1,4 +1,4 @@
-import type { CapabilityType, UserStatus, GrantStatus } from '@/types'
+import type { CapabilityType, UserStatus, GrantStatus } from 'identity-web/types'
 
 export function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('en-US', {

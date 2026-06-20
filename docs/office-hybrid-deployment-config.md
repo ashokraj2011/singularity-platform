@@ -165,7 +165,7 @@ Apply these direct-HTTP values to:
 - `tool-service`
 - `agent-runtime`
 - `prompt-composer`
-- `agent-web`
+- `platform-web`
 - deprecated `context-memory`, only if it still runs
 
 Important: the current `docker-compose.yml` hardcodes several internal URLs, so root `.env` alone is not enough for direct HTTP. For AWS, use a compose override or ECS/Kubernetes environment injection to replace those values.

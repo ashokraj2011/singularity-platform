@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import Capability, CapabilityRelationship, GovernanceAttachment, User
-from app.auth.deps import get_current_user
+from app.auth.deps import get_current_user, require_reference_read
 from app.audit.service import record_event
 from app.audit_gov_emit import emit_audit_event
 from app.governance.schemas import (
@@ -70,10 +70,9 @@ async def attach_governance(
         raise HTTPException(422, f"invalid mode {body.mode!r}; expected one of {sorted(MODE_RANK)}")
     if scope not in SCOPE_RANK:
         raise HTTPException(422, f"invalid scope {body.scope!r}; expected one of {sorted(SCOPE_RANK)}")
+    _validate_contributions(body.contributions, mode)
     if capability_id == body.governing_capability_id:
         raise HTTPException(422, "a capability cannot govern itself")
-    _assert_governance_authority(current_user, enforcing=MODE_RANK[mode] >= _ENFORCING_MIN_RANK)
-    _validate_contributions(body.contributions, mode)
 
     governed = await _get_cap(db, capability_id)
     if governed is None:
@@ -81,6 +80,13 @@ async def attach_governance(
     governing = await _get_cap(db, body.governing_capability_id)
     if governing is None:
         raise HTTPException(404, f"governing capability {body.governing_capability_id!r} not found")
+    await _assert_governance_authority(
+        db,
+        current_user,
+        governed_capability_id=capability_id,
+        governing_capability_id=body.governing_capability_id,
+        enforcing=MODE_RANK[mode] >= _ENFORCING_MIN_RANK,
+    )
 
     # Reuse the governed_by edge if it exists; else create it.
     rel = (await db.execute(select(CapabilityRelationship).where(
@@ -144,7 +150,7 @@ async def attach_governance(
             response_model=list[GovernanceAttachmentOut])
 async def list_governed_by(
     capability_id: str, include_inactive: bool = False,
-    db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read),
 ):
     q = select(GovernanceAttachment).where(GovernanceAttachment.capability_id == capability_id)
     if not include_inactive:
@@ -157,7 +163,7 @@ async def list_governed_by(
             response_model=list[GovernanceAttachmentOut])
 async def list_governs(
     capability_id: str,
-    db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read),
 ):
     rows = (await db.execute(select(GovernanceAttachment).where(
         GovernanceAttachment.governing_capability_id == capability_id
@@ -190,7 +196,13 @@ async def update_governance(
             raise HTTPException(422, f"invalid scope {body.scope!r}; expected one of {sorted(SCOPE_RANK)}")
     # Authority is checked against the RESULTING mode — can't escalate
     # ADVISORY -> REQUIRED/BLOCKING without enforcing authority.
-    _assert_governance_authority(current_user, enforcing=MODE_RANK[new_mode] >= _ENFORCING_MIN_RANK)
+    await _assert_governance_authority(
+        db,
+        current_user,
+        governed_capability_id=att.capability_id,
+        governing_capability_id=att.governing_capability_id,
+        enforcing=MODE_RANK[new_mode] >= _ENFORCING_MIN_RANK,
+    )
     if body.contributions is not None:
         _validate_contributions(body.contributions, new_mode)
 
@@ -260,7 +272,13 @@ async def _set_active(db, capability_id: str, attachment_id: str, current_user, 
     # Touching an enforcing attachment (either direction) needs enforcing
     # authority — you can't silently disable a BLOCKING control with mere
     # ADVISORY-authoring rights, nor re-arm one.
-    _assert_governance_authority(current_user, enforcing=MODE_RANK[att.mode] >= _ENFORCING_MIN_RANK)
+    await _assert_governance_authority(
+        db,
+        current_user,
+        governed_capability_id=att.capability_id,
+        governing_capability_id=att.governing_capability_id,
+        enforcing=MODE_RANK[att.mode] >= _ENFORCING_MIN_RANK,
+    )
     if att.is_active == active:
         return att  # idempotent no-op (no version bump)
     att.is_active = active
@@ -313,7 +331,7 @@ async def reactivate_governance(
 @router.post("/governance/resolve")
 async def resolve_governance(
     body: GovernanceResolveRequest,
-    db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db), _: User = Depends(require_reference_read),
 ):
     rows = (await db.execute(select(GovernanceAttachment).where(
         GovernanceAttachment.capability_id == body.capability_id,

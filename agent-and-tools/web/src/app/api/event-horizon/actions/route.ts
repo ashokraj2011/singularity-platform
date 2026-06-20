@@ -11,6 +11,7 @@
  * Callers can override with ?surface=...
  */
 import { NextRequest, NextResponse } from "next/server";
+import { composerAuthFailure, composerAuthHeaders } from "../../prompt-workbench/_shared/composer";
 
 export const dynamic = "force-dynamic";
 
@@ -18,22 +19,34 @@ function composerUrl(): string {
   return (process.env.PROMPT_COMPOSER_URL ?? "http://localhost:3004").replace(/\/+$/, "");
 }
 
+async function readBody(res: Response): Promise<unknown> {
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return text;
+  }
+}
+
 export async function GET(request: NextRequest) {
+  const authFailure = await composerAuthFailure(request);
+  if (authFailure) return authFailure;
   const surface = request.nextUrl.searchParams.get("surface")?.trim() || "capability-admin";
   try {
     const r = await fetch(
       `${composerUrl()}/api/v1/event-horizon-actions?surface=${encodeURIComponent(surface)}`,
-      { signal: AbortSignal.timeout(10_000) },
+      { headers: composerAuthHeaders(request, { contentType: false }), signal: AbortSignal.timeout(10_000) },
     );
+    const body = await readBody(r);
     if (!r.ok) {
-      const text = await r.text().catch(() => "");
       return NextResponse.json(
-        { error: "composer fetch failed", detail: text.slice(0, 300) },
+        { error: "composer fetch failed", detail: typeof body === "string" ? body.slice(0, 300) : body },
         { status: r.status },
       );
     }
-    const json = (await r.json()) as { success?: boolean; data?: unknown };
-    return NextResponse.json(json.data ?? []);
+    const json = body && typeof body === "object" ? body as { success?: boolean; data?: unknown } : null;
+    return NextResponse.json(json?.data ?? (Array.isArray(body) ? body : []));
   } catch (err) {
     return NextResponse.json(
       { error: "event-horizon actions fetch failed", detail: (err as Error).message },

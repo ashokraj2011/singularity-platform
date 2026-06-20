@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 # Demo launcher — brings up the FULL stack ready for the demo.
 #
-# Wraps bin/bare-metal.sh (core stack) + the three pieces it skips:
-#   - portal (5180) — the main entry SPA
-#   - UserAndCapabillity (5175) — IAM admin SPA
-#   - Blueprint Workbench (5176) now comes from bare-metal.sh with Workgraph
-#   - pseudo-iam (8101) — for `singularity-mcp login` demo
+# Wraps bin/bare-metal.sh (core stack) + pseudo-iam (8101) for the
+# `singularity-mcp login` demo. Platform Web (:5180) is started by bare-metal.
 #
 # Also fixes the things bare-metal.sh doesn't do by default:
 #   - mcp-server pointed at /tmp/todoapp-demo with real OpenAI (gpt-4.1)
@@ -13,7 +10,7 @@
 #   - audit-gov schema applied (idempotent)
 #   - default-demo MCP server registered in IAM (idempotent)
 #   - todoapp-demo cloned/refreshed at /tmp/todoapp-demo with git user configured
-#   - portal .env.local pinned to the seeded IAM capability_id
+#   - Platform Web uses the seeded IAM capability_id
 #
 # Usage:
 #   ./bin/demo-up.sh
@@ -44,6 +41,38 @@ err()   { echo -e "${C_RED}✗${C_END} $*" >&2; }
 dim()   { echo -e "${C_DIM}$*${C_END}"; }
 
 mkdir -p "$LOG_DIR"
+
+bootstrap_json=$(python3 - <<'PY'
+import json
+from pathlib import Path
+
+try:
+    identity = json.loads(Path(".singularity/config.local.json").read_text()).get("identity", {})
+except Exception:
+    identity = {}
+print(json.dumps({
+    "email": identity.get("bootstrapEmail") or "admin@singularity.local",
+    "password": identity.get("bootstrapPassword") or "Admin1234!",
+}))
+PY
+)
+BOOTSTRAP_EMAIL=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["email"])' <<< "$bootstrap_json")
+BOOTSTRAP_PASSWORD=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["password"])' <<< "$bootstrap_json")
+
+free_non_docker_port() {
+  local port="$1" pids pid cmd
+  pids=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
+  for pid in $pids; do
+    cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
+    case "$cmd" in
+      *docker*|*Docker*|*vpnkit*)
+        warn "port $port is Docker-owned (pid $pid); leaving it alone"
+        continue
+        ;;
+    esac
+    kill -9 "$pid" 2>/dev/null || true
+  done
+}
 
 # ── 1. Prereqs ─────────────────────────────────────────────────────────────
 require() { command -v "$1" >/dev/null 2>&1 || { err "missing binary: $1"; exit 1; }; }
@@ -91,7 +120,7 @@ PGPASSWORD=postgres psql -h localhost -p 5432 -U ashokraj -d audit_governance \
 
 # ── 5. Re-launch mcp-server with todoapp sandbox + central gateway ─────────
 info "swapping mcp-server to todoapp sandbox + central LLM gateway…"
-lsof -nP -iTCP:7100 -sTCP:LISTEN -t 2>/dev/null | xargs -I{} kill -9 {} 2>/dev/null || true
+free_non_docker_port 7100
 sleep 1
 (cd "$ROOT/mcp-server" && nohup env \
    PORT=7100 \
@@ -108,7 +137,7 @@ ok "mcp-server relaunched"
 
 # ── 6. Re-launch context-api with IAM bootstrap + Postgres store ───────────
 info "swapping context-api to use IAM bootstrap creds + Postgres store…"
-lsof -nP -iTCP:8000 -sTCP:LISTEN -t 2>/dev/null | xargs -I{} kill -9 {} 2>/dev/null || true
+free_non_docker_port 8000
 sleep 1
 PGPASSWORD=postgres psql -h localhost -p 5432 -U ashokraj -d postgres -tAc \
   "SELECT 1 FROM pg_database WHERE datname='singularity_context_fabric'" | grep -q 1 || \
@@ -118,8 +147,8 @@ SHARED="$ROOT/context-fabric/shared"
 (cd "$ROOT/context-fabric/services/context_api_service" && nohup env \
    PYTHONPATH="$SHARED:${PYTHONPATH:-}" \
    CONTEXT_FABRIC_DATABASE_URL="$CONTEXT_FABRIC_DATABASE_URL" \
-   IAM_BOOTSTRAP_USERNAME=admin@singularity.local \
-   IAM_BOOTSTRAP_PASSWORD=Admin1234! \
+   IAM_BOOTSTRAP_USERNAME="$BOOTSTRAP_EMAIL" \
+   IAM_BOOTSTRAP_PASSWORD="$BOOTSTRAP_PASSWORD" \
    IAM_BASE_URL="${IAM_BASE_URL:-http://localhost:8100/api/v1}" \
    MCP_SERVER_URL="${MCP_SERVER_URL:-http://localhost:7100}" \
    MCP_BEARER_TOKEN="$MCP_BEARER" \
@@ -128,19 +157,11 @@ SHARED="$ROOT/context-fabric/shared"
    > "$LOG_DIR/context-api.log" 2>&1 &)
 ok "context-api relaunched"
 
-# ── 7. Start portal, UAC, pseudo-iam (skipped by bare-metal) ───────────────
-info "booting portal (5180), UserAndCapabillity (5175), pseudo-iam (8101)…"
+# ── 7. Start pseudo-iam (bare-metal already started Platform Web) ──────────
+info "booting pseudo-iam (8101)…"
 
-# Portal: pin the capability_id Event Horizon uses
-cat > "$ROOT/singularity-portal/.env.local" <<EOF
-VITE_API_MODE=proxy
-VITE_EVENT_HORIZON_CAPABILITY_ID=$CAP_IAM_UUID
-EOF
-
-(cd "$ROOT/singularity-portal" && nohup npm run dev > "$LOG_DIR/portal.log" 2>&1 &)
-(cd "$ROOT/UserAndCapabillity" && nohup env VITE_IAM_BASE_URL="$IAM_BASE_URL" npm run dev > "$LOG_DIR/uac.log" 2>&1 &)
 (cd "$ROOT/pseudo-iam-service" && nohup env PORT=8101 JWT_SECRET="$JWT_SECRET" npm run dev > "$LOG_DIR/pseudo-iam.log" 2>&1 &)
-ok "frontends + pseudo-iam launched"
+ok "pseudo-iam launched"
 
 # ── 8. Wait for everything to be ready ─────────────────────────────────────
 info "waiting for services to be healthy…"
@@ -154,11 +175,12 @@ declare -a CHECKS=(
   "mcp-server|http://localhost:7100/health"
   "context-api|http://localhost:8000/health"
   "workgraph-api|http://localhost:8080/health"
-  "agent-web|http://localhost:3000/"
-  "workgraph-web|http://localhost:5174/"
-  "blueprint-workbench|http://localhost:5176/"
-  "portal|http://localhost:5180/"
-  "uac|http://localhost:5175/"
+  "platform-web|http://localhost:5180/"
+  "platform-agents|http://localhost:5180/agents/studio"
+  "platform-workflows|http://localhost:5180/workflows"
+  "platform-workbench|http://localhost:5180/workbench"
+  "platform-foundry|http://localhost:5180/foundry"
+  "platform-identity|http://localhost:5180/identity"
   "pseudo-iam|http://localhost:8101/health"
 )
 
@@ -178,7 +200,7 @@ done
 info "registering MCP server in IAM for capability $CAP_IAM_UUID (idempotent)…"
 TOKEN=$(curl -sS -X POST http://localhost:8100/api/v1/auth/local/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@singularity.local","password":"Admin1234!"}' \
+  -d "$bootstrap_json" \
   | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('access_token',''))")
 
 EXISTING=$(curl -sS -H "Authorization: Bearer $TOKEN" \
@@ -196,14 +218,15 @@ fi
 
 # ── 10. Final summary ──────────────────────────────────────────────────────
 echo
-ok "Demo stack is up. Open the portal:"
-echo "    ${C_BLUE}http://localhost:5180${C_END}    Singularity Portal (Event Horizon chat, tiles)"
-echo "    http://localhost:5174    Workgraph (designer + Run Insights)"
-echo "    http://localhost:5176    Blueprint Workbench (embedded agent loop)"
-echo "    http://localhost:3000    Agent Studio + Audit + Cost"
-echo "    http://localhost:5175    UserAndCapabillity (IAM admin)"
+ok "Demo stack is up. Open Platform Web:"
+echo "    ${C_BLUE}http://localhost:5180${C_END}                 unified platform shell"
+echo "    http://localhost:5180/agents/studio  Agent Studio"
+echo "    http://localhost:5180/workflows      Workflows + Run Insights"
+echo "    http://localhost:5180/workbench      Blueprint Workbench"
+echo "    http://localhost:5180/foundry        Code Foundry"
+echo "    http://localhost:5180/identity       IAM admin"
 echo
-echo "  Real IAM:    admin@singularity.local / Admin1234!"
+echo "  Real IAM:    $BOOTSTRAP_EMAIL / configured bootstrap password"
 echo "  Pseudo-IAM:  any email / any password  (port 8101, for laptop CLI)"
 echo
 echo "  Code-change demo:    ${C_BLUE}./bin/demo-todoapp.sh${C_END}  (deterministic, real commit)"

@@ -1,12 +1,15 @@
 import { Router } from "express";
 import { toolController } from "./tool.controller";
 import { validate } from "../../middleware/validate.middleware";
+import { requireAuth } from "../../middleware/auth.middleware";
 import {
   registerToolSchema, createContractSchema, createPolicySchema,
   grantSchema, validateCallSchema,
 } from "./tool.schemas";
 
 export const toolRoutes = Router();
+
+toolRoutes.use(requireAuth);
 
 toolRoutes.post("/", validate(registerToolSchema), toolController.register);
 toolRoutes.get("/", toolController.list);

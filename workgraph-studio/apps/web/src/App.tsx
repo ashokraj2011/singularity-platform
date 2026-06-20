@@ -83,6 +83,7 @@ export default function App() {
           <Route path="runtime/work/:kind/:id" element={<WorkDetailPage />} />
           <Route path="run"                element={<RunWorkflowPage />} />
           <Route path="workflows"          element={<WorkflowsListPage />} />
+          <Route path="templates"          element={<WorkflowsListPage />} />
           <Route path="node-types"         element={<CustomNodeTypesPage />} />
           <Route path="design/:workflowId"   element={<WorkflowStudioPage />} />
           {/* Retired — runtime view lives at /runs/:id (RunViewerPage). The
@@ -91,6 +92,7 @@ export default function App() {
           <Route path="runs"                 element={<RunsDashboardPage />} />
           <Route path="runs/:id"             element={<RunViewerPage />} />
           <Route path="artifacts-explorer"   element={<ArtifactsExplorerPage />} />
+          <Route path="artifacts"            element={<ArtifactsExplorerPage />} />
           <Route path="runs/:id/artifacts"   element={<RunArtifactsPage />} />
           <Route path="runs/:id/insights"    element={<RunInsightsPage />} />
           <Route path="mission-control/:id"  element={<RunInsightsPage />} />
@@ -103,6 +105,8 @@ export default function App() {
           <Route path="artifacts"          element={<ArtifactDesignerPage />} />
           <Route path="artifacts/:id"      element={<ArtifactEditorPage />} />
           <Route path="metadata"           element={<MetadataRegistryPage />} />
+          <Route path="history"            element={<HistoryPage />} />
+          <Route path="runtime"            element={<InboxPage />} />
           <Route path="team-variables"     element={<TeamVariablesPage />} />
           <Route path="global-variables"   element={<TeamVariablesPage />} />
           <Route path="*"                  element={<Navigate to="/dashboard" replace />} />

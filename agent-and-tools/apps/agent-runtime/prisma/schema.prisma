@@ -90,6 +90,7 @@ model AgentTemplate {
   name                String
   roleType            AgentRoleType
   description         String?
+  instructions        String?
   basePromptProfileId String?
   defaultToolPolicyId String?
   version             Int          @default(1)
@@ -155,6 +156,28 @@ model AgentSkill {
   updatedAt     DateTime     @updatedAt
 
   agentTemplates AgentTemplateSkill[]
+  sources        AgentSkillSource[]
+}
+
+model AgentSkillSource {
+  id             String       @id @default(uuid())
+  skillId        String
+  sourceType     String
+  sourceRef      String?
+  capabilityId   String?
+  permissions    Json         @default("[\"read\"]")
+  readOnly       Boolean      @default(true)
+  providerLocked Boolean      @default(false)
+  metadata       Json         @default("{}")
+  status         EntityStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  skill AgentSkill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@index([skillId])
+  @@index([sourceType, sourceRef])
+  @@index([capabilityId])
 }
 
 model AgentTemplateSkill {
@@ -162,12 +185,21 @@ model AgentTemplateSkill {
   agentTemplateId String
   skillId         String
   isDefault       Boolean  @default(true)
+  sourceType      String   @default("local")
+  sourceRef       String?
+  capabilityId    String?
+  permissions     Json     @default("[\"read\", \"invoke\"]")
+  readOnly        Boolean  @default(false)
+  providerLocked  Boolean  @default(false)
+  metadata        Json     @default("{}")
   createdAt       DateTime @default(now())
 
   agentTemplate AgentTemplate @relation(fields: [agentTemplateId], references: [id])
   skill         AgentSkill    @relation(fields: [skillId], references: [id])
 
   @@unique([agentTemplateId, skillId])
+  @@index([sourceType, sourceRef])
+  @@index([capabilityId])
 }
 
 model Capability {

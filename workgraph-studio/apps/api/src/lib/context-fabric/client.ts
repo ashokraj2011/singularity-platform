@@ -13,6 +13,7 @@
 
 import { Agent } from 'undici'
 import { config } from '../../config'
+import { tracingHeaders } from '../observability/http-trace'
 
 // undici (Node's built-in fetch) enforces its own default headers/body timeouts
 // (~300s) PER CONNECTION, independent of the fetch AbortSignal. A governed stage
@@ -222,10 +223,19 @@ export interface GovernedTurnRequest {
   run_context?: Record<string, unknown>
   system_prompt?: string
   task: string
-  model_overrides?: { modelAlias?: string; temperature?: number; maxOutputTokens?: number }
+  model_overrides?: {
+    modelAlias?: string
+    provider?: string
+    model?: string
+    expectedProvider?: string
+    expectedModel?: string
+    temperature?: number
+    maxOutputTokens?: number
+  }
   limits?: { outputTokenBudget?: number; timeoutSec?: number }
   governance_overlay?: Record<string, unknown>
   governance_waivers?: string[]
+  governance_mode?: 'fail_open' | 'fail_closed' | 'degraded' | 'human_approval_required'
 }
 
 // M71 Slice F — Governed-stage request shape. Mirrors the GovernedStageRequest
@@ -403,12 +413,18 @@ export class ContextFabricError extends Error {
   }
 }
 
+export function contextFabricServiceHeaders(baseHeaders: Record<string, string> = {}): Record<string, string> {
+  return config.CONTEXT_FABRIC_SERVICE_TOKEN
+    ? { ...baseHeaders, 'X-Service-Token': config.CONTEXT_FABRIC_SERVICE_TOKEN }
+    : baseHeaders
+}
+
 export const contextFabricClient = {
   async execute(input: ExecuteRequest): Promise<ExecuteResponse> {
     const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/execute`
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: tracingHeaders(contextFabricServiceHeaders({ 'content-type': 'application/json' }), input.trace_id ?? input.run_context.trace_id),
       body: JSON.stringify(input),
       dispatcher: longCallDispatcher,
       signal: AbortSignal.timeout((input.limits?.timeoutSec ?? 240) * 1000 + 10_000),
@@ -442,7 +458,7 @@ export const contextFabricClient = {
     const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/api/v1/execute-governed-single-turn`
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: tracingHeaders(contextFabricServiceHeaders({ 'content-type': 'application/json' }), input.trace_id),
       body: JSON.stringify(input),
       dispatcher: longCallDispatcher,
       signal: AbortSignal.timeout((input.limits?.timeoutSec ?? 240) * 1000 + 10_000),
@@ -470,7 +486,7 @@ export const contextFabricClient = {
     const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/internal/mcp/code-changes?${params.toString()}`
     const res = await fetch(url, {
       method:  'GET',
-      headers: { 'X-Service-Token': config.CONTEXT_FABRIC_SERVICE_TOKEN ?? '' },
+      headers: tracingHeaders(contextFabricServiceHeaders()),
       signal:  AbortSignal.timeout(15_000),
     })
     if (!res.ok) {
@@ -493,7 +509,7 @@ export const contextFabricClient = {
     const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/api/v1/execute-governed-stage`
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: tracingHeaders(contextFabricServiceHeaders({ 'content-type': 'application/json' }), input.run_context?.trace_id as string | undefined),
       body: JSON.stringify(input),
       // undici's default ~300s headers/body timeout would sever this long
       // synchronous call before CF responds; longCallDispatcher disables it so
@@ -535,7 +551,7 @@ export const contextFabricClient = {
     const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/execute/resume`
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: tracingHeaders(contextFabricServiceHeaders({ 'content-type': 'application/json' })),
       body: JSON.stringify(input),
       signal: AbortSignal.timeout(250_000),
     })

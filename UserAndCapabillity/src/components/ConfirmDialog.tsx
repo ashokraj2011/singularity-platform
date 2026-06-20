@@ -2,7 +2,7 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel,
   AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
+} from 'identity-web/components/ui/alert-dialog'
 
 interface ConfirmDialogProps {
   open: boolean

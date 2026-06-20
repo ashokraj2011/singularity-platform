@@ -1,10 +1,10 @@
 import axios from 'axios'
 import { sharedAuthToken, redirectToPortalLogin } from './sharedAuth'
 
-// M100 P1 — base-relative API path: under the single-origin edge gateway
-// (base '/iam/') calls go to '/iam/api/v1' and route to this app; standalone
-// (base '/') it stays '/api/v1'. import.meta.env.BASE_URL ends with '/'.
-const API_BASE = `${import.meta.env.BASE_URL}api/v1`.replace(/\/{2,}/g, '/')
+// Platform Web proxies IAM through /api/iam. The old Vite app used
+// BASE_URL + /api/v1, but in the unified Next shell /identity is a UI route,
+// not an API prefix.
+const API_BASE = '/api/iam'
 
 export const api = axios.create({
   baseURL: API_BASE,

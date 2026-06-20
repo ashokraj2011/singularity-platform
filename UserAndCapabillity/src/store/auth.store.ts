@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { AuthUser } from '@/types'
+import type { AuthUser } from 'identity-web/types'
 
 interface AuthState {
   token: string | null

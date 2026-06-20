@@ -15,9 +15,11 @@
  */
 import { Router, Request, Response, NextFunction } from "express";
 import { prisma } from "../../config/prisma";
+import { requireAuth } from "../../middleware/auth.middleware";
 import { ok } from "../../shared/response";
 
 export const eventHorizonActionsRoutes = Router();
+eventHorizonActionsRoutes.use(requireAuth);
 
 eventHorizonActionsRoutes.get("/", async (req: Request, res: Response, next: NextFunction) => {
   try {

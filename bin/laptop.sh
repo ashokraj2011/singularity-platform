@@ -32,9 +32,26 @@ free_port() { # $1 = port — kill whatever stale process holds it (ours in this
   local pids; pids="$(lsof -ti ":$1" 2>/dev/null || true)"
   [ -z "$pids" ] && return 0
   echo "[laptop] :$1 busy (pid $pids) — freeing the stale process…"
-  kill $pids 2>/dev/null || true; sleep 1
+  local pid cmd killable=""
+  for pid in $pids; do
+    cmd="$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")"
+    case "$cmd" in
+      *docker*|*Docker*|*vpnkit*)
+        echo "[laptop] :$1 is Docker-owned (pid $pid); leaving it alone"
+        continue
+        ;;
+    esac
+    kill "$pid" 2>/dev/null || true
+    killable="$killable $pid"
+  done
+  sleep 1
   pids="$(lsof -ti ":$1" 2>/dev/null || true)"
-  [ -n "$pids" ] && { kill -9 $pids 2>/dev/null || true; sleep 1; }
+  for pid in $pids; do
+    cmd="$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")"
+    case "$cmd" in *docker*|*Docker*|*vpnkit*) continue ;; esac
+    kill -9 "$pid" 2>/dev/null || true
+  done
+  [ -n "$killable" ] && sleep 1
 }
 
 case "${1:-}" in

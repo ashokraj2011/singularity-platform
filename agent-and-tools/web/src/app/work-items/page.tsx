@@ -1,5 +1,5 @@
-import { EmbeddedControlPlaneApp } from "@/components/EmbeddedControlPlaneApp";
+import { LegacyWorkItemsRoute } from "@/components/workflows/LegacyWorkgraphAdminRoute";
 
 export default function WorkItemsPage() {
-  return <EmbeddedControlPlaneApp appId="work-items" />;
+  return <LegacyWorkItemsRoute />;
 }

@@ -1,12 +1,9 @@
 "use client";
 import useSWR from "swr";
 import Link from "next/link";
-import { Activity, ExternalLink, Info } from "lucide-react";
+import { Activity, Info, Workflow } from "lucide-react";
 import { runtimeApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-
-// M100 P3 — same-origin path prefix under the edge gateway (was localhost:5174).
-const WORKGRAPH_WEB_URL = process.env.NEXT_PUBLIC_WORKGRAPH_WEB_URL ?? "/workflow";
 
 export default function RuntimeExecutionsPage() {
   const { data: execs, isLoading } = useSWR("runtime-executions", () => runtimeApi.listExecutions(), { refreshInterval: 5000 });
@@ -20,12 +17,12 @@ export default function RuntimeExecutionsPage() {
           <p className="text-slate-500 mt-1">Historical direct-runtime receipts · workflow execution now lives in Workflow Manager.</p>
         </div>
         <div className="flex gap-2">
-          <a className="btn-secondary" href={`${WORKGRAPH_WEB_URL}/runs`} target="_blank" rel="noreferrer">
-            <ExternalLink size={16} /> Open Runs
-          </a>
-          <a className="btn-primary" href={`${WORKGRAPH_WEB_URL}/workflows`} target="_blank" rel="noreferrer">
-            <ExternalLink size={16} /> Workflow Manager
-          </a>
+          <Link className="btn-secondary" href="/runs">
+            <Activity size={16} /> Open Runs
+          </Link>
+          <Link className="btn-primary" href="/workflows">
+            <Workflow size={16} /> Workflow Manager
+          </Link>
         </div>
       </div>
 

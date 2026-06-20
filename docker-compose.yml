@@ -1,45 +1,55 @@
 # Singularity Platform — master docker compose.
 #
-# Brings up every Singularity service in one stack:
-#   - IAM (Postgres :5433 + iam-service :8100)
-#   - agent-and-tools (Postgres :5432 + agent-service :3001 + tool-service :3002
-#                      + agent-runtime :3003 + prompt-composer :3004 + web :3000)
-#   - context-fabric (api :8000 + llm-gateway :8001 + memory :8002)
+# Brings up the core Singularity product stack by default:
+#   - IAM (shared Postgres :5432 + iam-service :8100)
+#   - platform-core (one agent-and-tools backend container exposing
+#                    agent-service :3001 + tool-service :3002
+#                    + agent-runtime :3003 + prompt-composer :3004)
+#   - context-fabric API (:8000)
 #     [M65: metrics-ledger sunset — savings analytics moved to audit-gov :8500]
-#   - workgraph-studio (Postgres :5434 + MinIO :9000/:9001 + api :8080 + web :5174 + workbench :5176)
-#   - UserAndCapabillity (:5175)
-#   - singularity-portal (:5180)
+#   - workgraph-studio (Postgres :5434 + MinIO :9000/:9001 + api :8080)
+#   - platform-web (:5180, one frontend container for all web surfaces)
+#
+# Runtime infrastructure is intentionally optional/deployable elsewhere:
+#   - llm-gateway       profile: llm-gateway
+#   - mcp-server        profile: mcp
+#   - mcp-sandbox       profile: mcp
+#   - formal-verifier   profile: verification
+#   - prompt-compressor profile: compression
+#   - code-foundry-api  (core backend for /foundry)
 #
 # Usage:
-#   docker compose up -d                   # start everything (default; relies on
-#                                          # .env COMPOSE_PROFILES=full)
+#   docker compose up -d                   # start core (default; .env COMPOSE_PROFILES=core)
+#   docker compose --profile llm-gateway up -d
+#   docker compose --profile mcp up -d
+#   docker compose --profile full up -d    # start everything
 #   docker compose up -d <service>         # start one
 #   docker compose stop <service>          # stop one
 #   docker compose down                    # tear everything down (keeps volumes)
 #   docker compose down -v                 # tear down + delete data volumes
 #
 # M65 Slice 2A — Compose profiles. Every service is tagged
-# (`profiles: [full, ...]` after `container_name:`). Operators can run
+# (`profiles: [core, ...]` after `container_name:`). Operators can run
 # subsets instead of all-or-nothing:
-#   docker compose --profile full          up -d   # all 25 services (default)
-#   docker compose --profile gateway-only  up -d   # llm-gateway + at-postgres
-#   docker compose --profile composer-only up -d   # prompt-composer + gateway + postgres
-# .env's COMPOSE_PROFILES=full keeps plain `docker compose up -d` starting
-# everything for backward compatibility.
+#   docker compose --profile core          up -d   # product app stack
+#   docker compose --profile llm-gateway   up -d   # local gateway if not remote
+#   docker compose --profile mcp           up -d   # local MCP runtime if not remote
+#   docker compose --profile full          up -d   # all services
+# .env's COMPOSE_PROFILES=core keeps plain `docker compose up -d` lightweight.
 #
 # Or use the wrapper:
 #   ./singularity.sh up                    # = docker compose up -d
-#   ./singularity.sh up portal             # = docker compose up -d portal
+#   ./singularity.sh up platform-web       # = docker compose up -d platform-web
 #   ./singularity.sh status                # = docker compose ps
 #   ./singularity.sh logs api              # = docker compose logs -f workgraph-api
 #
 # Port map (host → container):
-#   3000 agent-and-tools/web (Next.js admin)
+#   5180 platform-web (unified Next.js platform UI)
 #   3001 agent-service             3002 tool-service           3003 agent-runtime
-#   3004 prompt-composer          3005 code-foundry-api      3006 learning-service
-#   5174 workgraph-web             5175 UserAndCapabillity     5176 Blueprint Workbench
-#   5180 singularity-portal
-#   5432 agent-and-tools postgres  5433 IAM postgres           5434 workgraph postgres
+#   3004 prompt-composer          3005 code-foundry-api
+#   5182/5174/5175/5176/5181/8085 legacy frontend debug profile only
+#   5432 shared app/IAM postgres   5433 deprecated IAM postgres profile only
+#   5434 workgraph postgres
 #   8000-8003 context-fabric       8080 workgraph-api
 #   8100 IAM API                   9000-9001 MinIO
 
@@ -86,8 +96,11 @@ services:
       dockerfile: Dockerfile
     container_name: singularity-iam-service
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [core, full, backend-split]
     environment:
+      APP_ENV: ${APP_ENV:-${SINGULARITY_ENV:-development}}
+      ENVIRONMENT: ${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}
+      SINGULARITY_ENV: ${SINGULARITY_ENV:-${APP_ENV:-development}}
       # M67 Slice 3A — was iam-postgres:5432; now reads from at-postgres
       # which init.sql provisions with singularity_iam DB + singularity role.
       DATABASE_URL: postgresql+asyncpg://singularity:singularity@at-postgres:5432/singularity_iam
@@ -130,7 +143,7 @@ services:
     image: pgvector/pgvector:pg16
     container_name: singularity-at-postgres
     # M65 Slice 2A — compose profiles.
-    profiles: [full, gateway-only, composer-only]
+    profiles: [core, full, backend-split, gateway-only, composer-only, deprecated]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: singularity
@@ -162,7 +175,7 @@ services:
   at-postgres-bootstrap:
     image: postgres:16-alpine
     container_name: singularity-at-postgres-bootstrap
-    profiles: [full]
+    profiles: [core, full, backend-split, composer-only, deprecated]
     environment:
       PGHOST: at-postgres
       PGPORT: 5432
@@ -176,23 +189,115 @@ services:
         condition: service_healthy
     restart: "no"
 
+  platform-core:
+    build:
+      context: ./agent-and-tools
+      dockerfile: platform-core.Dockerfile
+      args:
+        ARTIFACTORY_NPM_REGISTRY: ${ARTIFACTORY_NPM_REGISTRY:-}
+      secrets:
+        - artifactory_npm_token
+    container_name: singularity-platform-core
+    profiles: [core, full]
+    environment:
+      NODE_ENV: development
+      APP_ENV: ${APP_ENV:-${SINGULARITY_ENV:-development}}
+      ENVIRONMENT: ${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}
+      SINGULARITY_ENV: ${SINGULARITY_ENV:-${APP_ENV:-development}}
+      AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
+      DATABASE_URL_AGENT_TOOLS: postgresql://postgres:singularity@at-postgres:5432/singularity
+      DATABASE_URL_COMPOSER: postgresql://postgres:singularity@at-postgres:5432/singularity_composer
+      DATABASE_URL_RUNTIME_READ: postgresql://postgres:singularity@at-postgres:5432/singularity
+      JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
+      LOG_LEVEL: info
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5180}
+      IAM_SERVICE_URL: http://iam-service:8100
+      IAM_BASE_URL: http://iam-service:8100/api/v1
+      IAM_SERVICE_TOKEN: ${AGENT_RUNTIME_IAM_SERVICE_TOKEN:-}
+      IAM_SERVICE_TOKEN_TENANT_IDS: ${IAM_SERVICE_TOKEN_TENANT_IDS:-}
+      IAM_BOOTSTRAP_USERNAME: ${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
+      IAM_BOOTSTRAP_PASSWORD: ${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
+      TOOL_SERVICE_URL: http://tool-service:3002
+      AGENT_RUNTIME_URL: http://agent-runtime:3003
+      CONTEXT_FABRIC_URL: http://context-api:8000
+      CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
+      PROMPT_COMPOSER_SERVICE_TOKEN: ${PROMPT_COMPOSER_SERVICE_TOKEN:-${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}}
+      LEARNING_SERVICE_URL: http://agent-service:3001
+      WORKGRAPH_ARTIFACT_FETCH_URL: http://workgraph-api:8080/api/internal/artifacts/fetch
+      WORKGRAPH_ARTIFACT_FETCH_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}
+      AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
+      MCP_SERVER_URL: ${MCP_SERVER_INTERNAL_URL:-http://mcp-server:7100}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
+      LLM_GATEWAY_URL: ${LLM_GATEWAY_INTERNAL_URL:-http://llm-gateway:8001}
+      TOOL_SERVER_ENDPOINT_ALLOWLIST: ${TOOL_SERVER_ENDPOINT_ALLOWLIST:-}
+      AGENT_RUN_FALLBACK_PROVIDER: stub
+      AGENT_RUN_FALLBACK_MODEL: stub-model
+      PROVIDER_MANIFEST_SIGNATURE_MODE: ${PROVIDER_MANIFEST_SIGNATURE_MODE:-auto}
+      PROVIDER_MANIFEST_TRUSTED_KEYS: ${PROVIDER_MANIFEST_TRUSTED_KEYS:-}
+      PROVIDER_MANIFEST_MAX_TTL_SECONDS: ${PROVIDER_MANIFEST_MAX_TTL_SECONDS:-2592000}
+      AGENT_SOURCE_ALLOW_PRIVATE_URLS: ${AGENT_SOURCE_ALLOW_PRIVATE_URLS:-false}
+      WORLD_MODEL_DISTILL_MODEL_ALIAS: ${WORLD_MODEL_DISTILL_MODEL_ALIAS:-claude-haiku-4-5-20251001}
+      CAPSULE_COMPILE_MODEL_ALIAS: ${CAPSULE_COMPILE_MODEL_ALIAS:-}
+      EMBEDDING_MODEL_ALIAS: ${EMBEDDING_MODEL_ALIAS:-}
+    ports:
+      - "3001:3001"
+      - "3002:3002"
+      - "3003:3003"
+      - "3004:3004"
+    depends_on:
+      at-postgres:
+        condition: service_healthy
+      at-postgres-bootstrap:
+        condition: service_completed_successfully
+      iam-service:
+        condition: service_healthy
+      llm-gateway:
+        condition: service_healthy
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      default:
+        aliases:
+          - agent-service
+          - tool-service
+          - agent-runtime
+          - prompt-composer
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const http=require('http');const ports=[3001,3002,3003,3004];let done=0,ok=0;for(const port of ports){const req=http.get({host:'127.0.0.1',port,path:'/health'},r=>{if(r.statusCode===200)ok++;r.resume();r.on('end',()=>{done++;if(done===ports.length)process.exit(ok===ports.length?0:1);});});req.on('error',()=>process.exit(1));}setTimeout(()=>process.exit(1),5000);\""]
+      interval: 10s
+      timeout: 6s
+      retries: 18
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+          cpus: '2.0'
+
   agent-service:
     build:
       context: ./agent-and-tools
       dockerfile: apps/agent-service/Dockerfile
     container_name: singularity-agent-service
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [backend-split]
     environment:
       NODE_ENV: development
+      APP_ENV: ${APP_ENV:-${SINGULARITY_ENV:-development}}
+      ENVIRONMENT: ${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}
+      SINGULARITY_ENV: ${SINGULARITY_ENV:-${APP_ENV:-development}}
       AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
       PORT: 3001
       DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
       IAM_SERVICE_URL: http://iam-service:8100
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
-      MCP_SERVER_URL: http://mcp-server:7100
-      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      LEARNING_SERVICE_TOKEN: ${LEARNING_SERVICE_TOKEN:-${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}}
+      MCP_SERVER_URL: ${MCP_SERVER_INTERNAL_URL:-http://mcp-server:7100}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
+      TOOL_SERVER_ENDPOINT_ALLOWLIST: ${TOOL_SERVER_ENDPOINT_ALLOWLIST:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5180}
     ports:
       - "3001:3001"
@@ -221,16 +326,19 @@ services:
       dockerfile: apps/tool-service/Dockerfile
     container_name: singularity-tool-service
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [backend-split]
     environment:
       NODE_ENV: development
+      APP_ENV: ${APP_ENV:-${SINGULARITY_ENV:-development}}
+      ENVIRONMENT: ${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}
+      SINGULARITY_ENV: ${SINGULARITY_ENV:-${APP_ENV:-development}}
       AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
       PORT: 3002
       DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
       IAM_SERVICE_URL: http://iam-service:8100
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
-      MCP_SERVER_URL: http://mcp-server:7100
-      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      MCP_SERVER_URL: ${MCP_SERVER_INTERNAL_URL:-http://mcp-server:7100}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5180}
     ports:
       - "3002:3002"
@@ -260,9 +368,12 @@ services:
       target: dev
     container_name: singularity-agent-runtime
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [backend-split]
     environment:
       NODE_ENV: development
+      APP_ENV: ${APP_ENV:-${SINGULARITY_ENV:-development}}
+      ENVIRONMENT: ${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}
+      SINGULARITY_ENV: ${SINGULARITY_ENV:-${APP_ENV:-development}}
       AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
       PORT: 3003
       DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
@@ -273,24 +384,36 @@ services:
       # when no model_alias is supplied; real LLM work goes through MCP.
       AGENT_RUN_FALLBACK_PROVIDER: stub
       AGENT_RUN_FALLBACK_MODEL: stub-model
-      MCP_SERVER_URL: http://mcp-server:7100
-      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      PROVIDER_MANIFEST_SIGNATURE_MODE: ${PROVIDER_MANIFEST_SIGNATURE_MODE:-auto}
+      PROVIDER_MANIFEST_TRUSTED_KEYS: ${PROVIDER_MANIFEST_TRUSTED_KEYS:-}
+      PROVIDER_MANIFEST_MAX_TTL_SECONDS: ${PROVIDER_MANIFEST_MAX_TTL_SECONDS:-2592000}
+      AGENT_SOURCE_ALLOW_PRIVATE_URLS: ${AGENT_SOURCE_ALLOW_PRIVATE_URLS:-false}
+      MCP_SERVER_URL: ${MCP_SERVER_INTERNAL_URL:-http://mcp-server:7100}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
       IAM_SERVICE_URL: http://iam-service:8100
+      IAM_BASE_URL: http://iam-service:8100/api/v1
+      IAM_SERVICE_TOKEN: ${AGENT_RUNTIME_IAM_SERVICE_TOKEN:-}
+      IAM_SERVICE_TOKEN_TENANT_IDS: ${IAM_SERVICE_TOKEN_TENANT_IDS:-}
+      IAM_BOOTSTRAP_USERNAME: ${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
+      IAM_BOOTSTRAP_PASSWORD: ${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       # LLM-based world-model distillation at capability onboarding (bootstrap
       # Phase 3). When WORLD_MODEL_DISTILL_MODEL_ALIAS is set, the README is
       # distilled through the gateway; unset → heuristic fallback. This is the
       # only path where agent-runtime calls the gateway directly.
-      LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://llm-gateway:8001}
+      LLM_GATEWAY_URL: ${LLM_GATEWAY_INTERNAL_URL:-http://llm-gateway:8001}
       WORLD_MODEL_DISTILL_MODEL_ALIAS: ${WORLD_MODEL_DISTILL_MODEL_ALIAS:-claude-haiku-4-5-20251001}
     ports:
       - "3003:3003"
     depends_on:
       at-postgres:
         condition: service_healthy
+      at-postgres-bootstrap:
+        condition: service_completed_successfully
       llm-gateway:
         condition: service_healthy
+        required: false
     volumes:
       - ./agent-and-tools/apps/agent-runtime/src:/app/apps/agent-runtime/src
       - ./agent-and-tools/apps/agent-runtime/prisma:/app/apps/agent-runtime/prisma
@@ -325,9 +448,12 @@ services:
       target: dev
     container_name: singularity-prompt-composer
     # M65 Slice 2A — compose profiles.
-    profiles: [full, composer-only]
+    profiles: [backend-split, composer-only]
     environment:
       NODE_ENV: development
+      APP_ENV: ${APP_ENV:-${SINGULARITY_ENV:-development}}
+      ENVIRONMENT: ${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}
+      SINGULARITY_ENV: ${SINGULARITY_ENV:-${APP_ENV:-development}}
       AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
       PORT: 3004
       # M30 — composer owns `singularity_composer` (PromptAssembly etc.) and
@@ -339,14 +465,17 @@ services:
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       CONTEXT_FABRIC_URL: http://context-api:8000
+      CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
+      PROMPT_COMPOSER_SERVICE_TOKEN: ${PROMPT_COMPOSER_SERVICE_TOKEN:-${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}}
       # M67 Slice 1A — points at agent-service (learning-service was folded in)
       LEARNING_SERVICE_URL: http://agent-service:3001
+      LEARNING_SERVICE_TOKEN: ${LEARNING_SERVICE_TOKEN:-${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}}
       WORKGRAPH_ARTIFACT_FETCH_URL: http://workgraph-api:8080/api/internal/artifacts/fetch
       WORKGRAPH_ARTIFACT_FETCH_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       # Composer's capsule compiler + model catalog lookups flow through MCP.
-      MCP_SERVER_URL: http://mcp-server:7100
-      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      MCP_SERVER_URL: ${MCP_SERVER_INTERNAL_URL:-http://mcp-server:7100}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
       CAPSULE_COMPILE_MODEL_ALIAS: ${CAPSULE_COMPILE_MODEL_ALIAS:-}
       EMBEDDING_MODEL_ALIAS:       ${EMBEDDING_MODEL_ALIAS:-}
     ports:
@@ -354,8 +483,11 @@ services:
     depends_on:
       at-postgres:
         condition: service_healthy
+      at-postgres-bootstrap:
+        condition: service_completed_successfully
       llm-gateway:
         condition: service_healthy
+        required: false
     volumes:
       - ./agent-and-tools/apps/prompt-composer/src:/app/apps/prompt-composer/src
       - ./agent-and-tools/apps/prompt-composer/prisma:/app/apps/prompt-composer/prisma
@@ -397,12 +529,10 @@ services:
       dockerfile: apps/code-foundry-api/Dockerfile
       target: dev
     container_name: singularity-code-foundry-api
-    # M65 Slice 2A — compose profiles.
-    # M67 Slice 2B — moved out of `full`. Code-foundry is an optional
-    # product surface; default deployments don't need it running. Depends
-    # on services in `full` (at-postgres, llm-gateway), so activate both:
-    #   `COMPOSE_PROFILES=full,code-foundry docker compose up -d`
-    profiles: [code-foundry]
+    # Platform Web serves /foundry, so the API is part of the core stack.
+    # The old standalone code-foundry-web dev server is debug-only under
+    # frontend-legacy, never paired with the normal foundry API profile.
+    profiles: [core, full, backend-split]
     environment:
       NODE_ENV: development
       PORT: 3005
@@ -423,13 +553,13 @@ services:
       # M42.6 — origins allowed by the CORS layer. The SPA on :5181 hits
       # the API on :3005; production should override with the SPA's
       # public URL.
-      FOUNDRY_WEB_ORIGIN: ${FOUNDRY_WEB_ORIGIN:-http://localhost:5181}
+      FOUNDRY_WEB_ORIGIN: ${FOUNDRY_WEB_ORIGIN:-http://localhost:5180}
       GENERATOR_VERSION: code-foundry-0.2.0
       TEMPLATE_VERSION: spec-only-0.1.0
       WORKSPACE_ROOT: /workspace
       FEATURE_FLAG_TTL_MS: 30000
     ports:
-      - "3005:3005"
+      - "127.0.0.1:3005:3005"
     volumes:
       # Hot-reload sources for the dev target.
       - ./singularity-code-foundry/apps/code-foundry-api/src:/app/apps/code-foundry-api/src
@@ -450,19 +580,16 @@ services:
           cpus: '1.0'
 
   # ─────────────────────────────────────────────────────────────────────
-  # M42.6 — Code Foundry approval UI. Vite + React dev server on :5181.
-  # Talks to code-foundry-api via /api/* (Vite dev proxy). Production
-  # builds would serve the static `dist/` behind the API host directly.
+  # M42.6 — Legacy Code Foundry approval UI. Platform Web serves the canonical
+  # /foundry routes; this dev server is retained only for direct debugging.
   # ─────────────────────────────────────────────────────────────────────
   code-foundry-web:
     build:
       context: ./singularity-code-foundry
       dockerfile: apps/code-foundry-web/Dockerfile
     container_name: singularity-code-foundry-web
-    # M65 Slice 2A — compose profiles.
-    # M67 Slice 2B — paired with code-foundry-api; lives behind the
-    # `code-foundry` opt-in profile.
-    profiles: [code-foundry]
+    # Legacy/debug UI only. The normal /foundry route is served by platform-web.
+    profiles: [frontend-legacy]
     environment:
       NODE_ENV: development
       VITE_FOUNDRY_API_URL: http://code-foundry-api:3005
@@ -481,59 +608,76 @@ services:
       - ./singularity-code-foundry/apps/code-foundry-web/src:/app/apps/code-foundry-web/src
       - ./singularity-code-foundry/apps/code-foundry-web/index.html:/app/apps/code-foundry-web/index.html
       - ./singularity-code-foundry/apps/code-foundry-web/public:/app/apps/code-foundry-web/public
-    depends_on:
-      code-foundry-api:
-        condition: service_started
+    # Debug-only UI. Start the core stack separately when live API data is
+    # needed; avoiding depends_on keeps the legacy profile isolated.
     deploy:
       resources:
         limits:
           memory: 1G
           cpus: '0.5'
 
-  agent-web:
+  platform-web:
     build:
-      context: ./agent-and-tools/web
-      dockerfile: Dockerfile
-      # M100 P1 — served under /agent by the edge gateway (Next basePath).
+      context: .
+      dockerfile: agent-and-tools/web/Dockerfile
       args:
-        BASE_PATH: /agent
-        NEXT_PUBLIC_BASE_PATH: /agent
-    container_name: singularity-agent-web
-    # M65 Slice 2A — compose profiles.
-    profiles: [full]
+        ARTIFACTORY_NPM_REGISTRY: ${ARTIFACTORY_NPM_REGISTRY:-}
+        CODE_FOUNDRY_API_URL: http://code-foundry-api:3005
+      secrets:
+        - artifactory_npm_token
+    container_name: singularity-platform-web
+    profiles: [core, full, backend-split]
     environment:
+      APP_ENV: ${APP_ENV:-${SINGULARITY_ENV:-development}}
+      ENVIRONMENT: ${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}
+      SINGULARITY_ENV: ${SINGULARITY_ENV:-${APP_ENV:-development}}
       NEXT_PUBLIC_AGENT_SERVICE_URL: http://localhost:3001
       NEXT_PUBLIC_TOOL_SERVICE_URL: http://localhost:3002
       NEXT_PUBLIC_AGENT_RUNTIME_URL: http://localhost:3003
       NEXT_PUBLIC_PROMPT_COMPOSER_URL: http://localhost:3004
+      NEXT_PUBLIC_WORKGRAPH_WEB_URL: /workflows
       AGENT_SERVICE_URL: http://agent-service:3001
       TOOL_SERVICE_URL: http://tool-service:3002
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
+      WORKGRAPH_API_URL: http://workgraph-api:8080
       CONTEXT_FABRIC_URL: http://context-api:8000
+      CODE_FOUNDRY_API_URL: http://code-foundry-api:3005
+      CODEGEN_SERVICE_TOKEN: ${CODEGEN_SERVICE_TOKEN:-dev-codegen-service-token}
+      FOUNDRY_TOKEN: ${FOUNDRY_TOKEN:-${CODEGEN_SERVICE_TOKEN:-dev-codegen-service-token}}
       EVENT_HORIZON_MODEL_ALIAS: ${EVENT_HORIZON_MODEL_ALIAS:-}
-      MCP_SERVER_URL: http://mcp-server:7100
-      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      MCP_SERVER_URL: ${MCP_SERVER_INTERNAL_URL:-http://mcp-server:7100}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
+      LLM_GATEWAY_URL: ${LLM_GATEWAY_INTERNAL_URL:-http://llm-gateway:8001}
+      LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
+      FORMAL_VERIFIER_URL: ${FORMAL_VERIFIER_INTERNAL_URL:-http://formal-verifier:8010}
       IAM_BASE_URL: http://iam-service:8100/api/v1
+      IAM_BOOTSTRAP_USERNAME: ${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
+      IAM_BOOTSTRAP_PASSWORD: ${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
+      TENANT_ISOLATION_MODE: ${TENANT_ISOLATION_MODE:-off}
+      REQUIRE_TENANT_ID: ${REQUIRE_TENANT_ID:-false}
+      IAM_SERVICE_TOKEN_TENANT_IDS: ${IAM_SERVICE_TOKEN_TENANT_IDS:-}
+      WORKGRAPH_PROXY_SERVICE_AUTH: ${WORKGRAPH_PROXY_SERVICE_AUTH:-true}
+      WORKGRAPH_PROXY_SERVICE_TOKEN: ${WORKGRAPH_PROXY_SERVICE_TOKEN:-}
+      PROMPT_COMPOSER_SERVICE_TOKEN: ${PROMPT_COMPOSER_SERVICE_TOKEN:-${WORKGRAPH_PROXY_SERVICE_TOKEN:-}}
+      IAM_HEALTH_URL: http://iam-service:8100
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     ports:
-      - "3000:3000"
-    # M35.3 — long-form depends_on with condition: service_healthy
+      - "5180:80"
     depends_on:
-      agent-service:
+      workgraph-api:
         condition: service_healthy
-      tool-service:
+      iam-service:
         condition: service_healthy
-      agent-runtime:
-        condition: service_healthy
-      prompt-composer:
-        condition: service_healthy
-    # M35.3 — resource limits (frontend SPA: 1G memory / 1 CPU)
+      context-api:
+        condition: service_started
+      code-foundry-api:
+        condition: service_started
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 2G
           cpus: '1.0'
 
   # ─────────────────────────────────────────────────────────────────────
@@ -557,8 +701,8 @@ services:
     # or LLM gateway directly.
     environment:
       CONTEXT_FABRIC_DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity_context_fabric
-      MCP_SERVER_URL: http://mcp-server:7100
-      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      MCP_SERVER_URL: ${MCP_SERVER_INTERNAL_URL:-http://mcp-server:7100}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
       SUMMARIZER_MODEL_ALIAS: ${SUMMARIZER_MODEL_ALIAS:-}
     ports:
       - "8002:8002"
@@ -590,10 +734,13 @@ services:
       dockerfile: services/context_api_service/Dockerfile
     container_name: singularity-context-api
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [core, full, backend-split]
     # context-api orchestrates but doesn't call providers or the LLM gateway
     # directly. LLM traffic routes through MCP.
     environment:
+      APP_ENV: ${APP_ENV:-${SINGULARITY_ENV:-development}}
+      ENVIRONMENT: ${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}
+      SINGULARITY_ENV: ${SINGULARITY_ENV:-${APP_ENV:-development}}
       # M67 Slice 1C — context-memory's routes are now in-process inside
       # context-api. Leaving CONTEXT_MEMORY_URL set so the one remaining
       # internal proxy (/sessions/{id}/messages) hits a valid host; the
@@ -610,8 +757,12 @@ services:
       # returns 404 — preferred over silently routing to a dead host.
       COMPOSER_URL: http://prompt-composer:3004
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
+      PROMPT_COMPOSER_SERVICE_TOKEN: ${PROMPT_COMPOSER_SERVICE_TOKEN:-${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}}
       IAM_BASE_URL: http://iam-service:8100/api/v1
+      REQUIRE_TENANT_ID: ${REQUIRE_TENANT_ID:-false}
+      DEFAULT_GOVERNANCE_MODE: ${DEFAULT_GOVERNANCE_MODE:-fail_open}
       IAM_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
+      IAM_SERVICE_TOKEN_TENANT_IDS: ${IAM_SERVICE_TOKEN_TENANT_IDS:-}
       IAM_BOOTSTRAP_USERNAME: ${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
       IAM_BOOTSTRAP_PASSWORD: ${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
       # Laptop-bridge device tokens are SIGNED by iam-service and VERIFIED here
@@ -620,9 +771,9 @@ services:
       # context-api was the one service compose didn't give the shared secret.
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
       MCP_DEFAULT_BASE_URL: ${MCP_DEFAULT_BASE_URL:-http://mcp-server:7100}
-      MCP_DEFAULT_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
-      MCP_SERVER_URL: http://mcp-server:7100
-      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      MCP_DEFAULT_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
+      MCP_SERVER_URL: ${MCP_SERVER_INTERNAL_URL:-http://mcp-server:7100}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
       MCP_DEFAULT_SERVER_ID: ${MCP_DEFAULT_SERVER_ID:-local-default-mcp}
       # ── ToolInvocationGrant (defence-in-depth) ──────────────────────────
       # The governed loop signs a per-call grant binding (tool, args,
@@ -666,9 +817,9 @@ services:
       COMPRESSOR_URL: http://prompt-compressor:8011
       COMPRESSION_ENABLED: ${COMPRESSION_ENABLED:-false}
       COMPRESSION_PER_LAYER_BUDGET_TOKENS: ${COMPRESSION_PER_LAYER_BUDGET_TOKENS:-1500}
-      # M64 — Wait time on /mcp/invoke before context-fabric aborts.
+      # M64 — Compatibility timeout for legacy Context Fabric MCP dispatch.
       # Must exceed mcp-server's TIMEOUT_SEC (300) plus subscriber-drain
-      # window (≈1s). 480s = 8 min headroom.
+      # window (about 1s). 480s = 8 min headroom.
       CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC: ${CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC:-480}
       # M65 Slice 1A — audit-gov is the canonical home for token-savings
       # analytics. /metrics/dashboard and /sessions/{id}/metrics proxy
@@ -696,10 +847,12 @@ services:
         condition: service_healthy
       llm-gateway:
         condition: service_healthy
+        required: false
       # M67 Slice 1C — context-memory dep removed; routes are now in-process.
       # M65 Slice 1B — metrics-ledger removed from depends_on.
       mcp-server:
         condition: service_started
+        required: false
     # M35.3 — resource limits (orchestrator: 2G memory / 1 CPU)
     deploy:
       resources:
@@ -730,7 +883,7 @@ services:
       dockerfile: services/formal_verifier_service/Dockerfile
     container_name: singularity-formal-verifier
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [full, verification]
     environment:
       LOG_LEVEL: info
       # Pydantic-settings reads these as snake_case fields, but env vars
@@ -780,7 +933,7 @@ services:
       dockerfile: services/prompt_compressor_service/Dockerfile
     container_name: singularity-prompt-compressor
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [full, compression]
     environment:
       LOG_LEVEL: info
       COMPRESSION_ENABLED: ${COMPRESSION_ENABLED:-true}
@@ -821,7 +974,7 @@ services:
       dockerfile: services/llm_gateway_service/Dockerfile
     container_name: singularity-llm-gateway
     # M65 Slice 2A — compose profiles.
-    profiles: [full, gateway-only, composer-only]
+    profiles: [full, llm-gateway, gateway-only, composer-only, deprecated]
     # M53 — Provider credentials are read from .env.llm-secrets via env_file
     # (NOT via ${...} shell substitution), so an empty `ANTHROPIC_API_KEY` in
     # the operator's shell can never shadow the real value during a
@@ -886,7 +1039,7 @@ services:
     image: postgres:16-alpine
     container_name: singularity-wg-postgres
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [core, full, backend-split]
     environment:
       POSTGRES_DB: workgraph
       POSTGRES_USER: workgraph
@@ -907,11 +1060,32 @@ services:
           memory: 4G
           cpus: '2.0'
 
+  wg-postgres-bootstrap:
+    image: postgres:16-alpine
+    container_name: singularity-wg-postgres-bootstrap
+    profiles: [core, full, backend-split]
+    environment:
+      PGHOST: wg-postgres
+      PGPORT: 5432
+      PGUSER: workgraph
+      PGPASSWORD: workgraph_secret
+      POSTGRES_DB: workgraph
+      POSTGRES_USER: workgraph
+      WORKGRAPH_APP_DB_USER: ${WORKGRAPH_APP_DB_USER:-workgraph_app}
+      WORKGRAPH_APP_DB_PASSWORD: ${WORKGRAPH_APP_DB_PASSWORD:-workgraph_app_secret}
+    volumes:
+      - ./workgraph-studio/apps/api/prisma/bootstrap-app-role.sh:/bootstrap-workgraph.sh:ro
+    entrypoint: ["/bin/sh", "/bootstrap-workgraph.sh"]
+    depends_on:
+      wg-postgres:
+        condition: service_healthy
+    restart: "no"
+
   wg-minio:
     image: minio/minio:latest
     container_name: singularity-wg-minio
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [core, full, backend-split]
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: workgraph
@@ -940,11 +1114,16 @@ services:
       target: dev
     container_name: singularity-workgraph-api
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [core, full, backend-split]
     environment:
       NODE_ENV: development
+      APP_ENV: ${APP_ENV:-${SINGULARITY_ENV:-development}}
+      ENVIRONMENT: ${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}
+      SINGULARITY_ENV: ${SINGULARITY_ENV:-${APP_ENV:-development}}
       PORT: 8080
-      DATABASE_URL: postgresql://workgraph:workgraph_secret@wg-postgres:5432/workgraph
+      DATABASE_URL: postgresql://${WORKGRAPH_APP_DB_USER:-workgraph_app}:${WORKGRAPH_APP_DB_PASSWORD:-workgraph_app_secret}@wg-postgres:5432/workgraph
+      WORKGRAPH_RUNTIME_DATABASE_URL: postgresql://${WORKGRAPH_APP_DB_USER:-workgraph_app}:${WORKGRAPH_APP_DB_PASSWORD:-workgraph_app_secret}@wg-postgres:5432/workgraph
+      WORKGRAPH_DATABASE_URL_ADMIN: postgresql://workgraph:workgraph_secret@wg-postgres:5432/workgraph
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
       MINIO_ENDPOINT: wg-minio
       MINIO_PORT: 9000
@@ -952,6 +1131,7 @@ services:
       MINIO_SECRET_KEY: workgraph_secret
       MINIO_BUCKET: workgraph-documents
       WORKGRAPH_INTERNAL_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}
+      WORKGRAPH_INCOMING_EVENT_SECRETS: '${WORKGRAPH_INCOMING_EVENT_SECRETS:-{"agent-runtime":"dev-workgraph-incoming-event-secret-min-32-chars","agent-service":"dev-workgraph-incoming-event-secret-min-32-chars","tool-service":"dev-workgraph-incoming-event-secret-min-32-chars","iam":"dev-workgraph-incoming-event-secret-min-32-chars"}}'
       # M84.s6 — when 'true', the first-class WorkbenchStage tables are the
       # sole source of truth: the legacy loopDefinition JSON-blob write-through
       # (workbench-definitions.service), the form-save PATCH promote
@@ -974,7 +1154,17 @@ services:
       CORS_ORIGINS: http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5176,http://localhost:5180
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
       AUTH_PROVIDER: iam
+      TENANT_ISOLATION_MODE: ${TENANT_ISOLATION_MODE:-off}
+      DEFAULT_GOVERNANCE_MODE: ${DEFAULT_GOVERNANCE_MODE:-fail_open}
+      # Default workflow AGENT_TASK execution to Context Fabric's governed
+      # stage path. Explicit node opt-out remains available for incident
+      # recovery/migration replay.
+      WORKGRAPH_FORCE_GOVERNED_CODING: ${WORKGRAPH_FORCE_GOVERNED_CODING:-true}
+      # Event Horizon chat uses the governed single-turn path by default.
+      CONTEXT_FABRIC_GOVERN_SIDE_CALLERS: ${CONTEXT_FABRIC_GOVERN_SIDE_CALLERS:-true}
       IAM_BASE_URL: http://iam-service:8100/api/v1
+      IAM_SERVICE_TOKEN_TENANT_IDS: ${IAM_SERVICE_TOKEN_TENANT_IDS:-}
+      WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS: ${WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS:-}
       # Service-to-service IAM auth for the workflow runtime (e.g. Epic→child
       # capability-relationship discovery). Auto-mints a service token via these
       # bootstrap creds — same dev defaults other services already use.
@@ -987,14 +1177,16 @@ services:
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       CONTEXT_FABRIC_URL: http://context-api:8000
       CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
-      MCP_SERVER_URL: http://mcp-server:7100
-      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      MCP_SERVER_URL: ${MCP_SERVER_INTERNAL_URL:-http://mcp-server:7100}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
+      MCP_TOOL_GRANT_MODE: ${MCP_TOOL_GRANT_MODE:-off}
+      MCP_REQUIRE_EFFECTIVE_CAPABILITIES: ${MCP_REQUIRE_EFFECTIVE_CAPABILITIES:-false}
       MCP_SESSION_JWT_SECRET: ${MCP_SESSION_JWT_SECRET:-dev-mcp-session-secret-min-32-chars!!}
       # M60 Slice 1 — Formal verification gate (Z3). Disabled by default;
       # flip FORMAL_VERIFICATION_ENABLED=true in .env to activate. URL is
       # the compose-internal hostname, not localhost.
       FORMAL_VERIFICATION_ENABLED: ${FORMAL_VERIFICATION_ENABLED:-false}
-      FORMAL_VERIFIER_URL: http://formal-verifier:8010
+      FORMAL_VERIFIER_URL: ${FORMAL_VERIFIER_INTERNAL_URL:-http://formal-verifier:8010}
       FORMAL_VERIFICATION_TIMEOUT_MS: ${FORMAL_VERIFICATION_DEFAULT_TIMEOUT_MS:-3000}
       WORKBENCH_DEFAULT_MODEL_ALIAS: ${WORKBENCH_DEFAULT_MODEL_ALIAS:-}
       EVENT_HORIZON_MODEL_ALIAS: ${EVENT_HORIZON_MODEL_ALIAS:-}
@@ -1025,10 +1217,14 @@ services:
     depends_on:
       wg-postgres:
         condition: service_healthy
+      wg-postgres-bootstrap:
+        condition: service_completed_successfully
       llm-gateway:
         condition: service_healthy
+        required: false
       formal-verifier:
         condition: service_started
+        required: false
     # M35.3 — healthcheck so dependent services can use condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:8080/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
@@ -1052,13 +1248,11 @@ services:
         BASE_PATH: /workflow/
     container_name: singularity-workgraph-web
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [frontend-legacy]
     ports:
       - "5174:80"
-    # M35.3 — long-form depends_on with condition: service_healthy
-    depends_on:
-      workgraph-api:
-        condition: service_healthy
+    # Debug-only static UI. Start the core stack separately when live API data
+    # is needed; avoiding depends_on keeps the legacy profile isolated.
     # M35.3 — resource limits (frontend SPA: 512M memory / 0.5 CPU)
     deploy:
       resources:
@@ -1076,13 +1270,11 @@ services:
         BASE_PATH: /workbench/
     container_name: singularity-blueprint-workbench
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [frontend-legacy]
     ports:
       - "5176:80"
-    # M35.3 — long-form depends_on with condition: service_healthy
-    depends_on:
-      workgraph-api:
-        condition: service_healthy
+    # Debug-only static UI. Start the core stack separately when live API data
+    # is needed; avoiding depends_on keeps the legacy profile isolated.
     # M35.3 — resource limits (frontend SPA: 512M memory / 0.5 CPU)
     deploy:
       resources:
@@ -1102,12 +1294,11 @@ services:
         BASE_PATH: /iam/
     container_name: singularity-user-and-capability
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [frontend-legacy]
     ports:
       - "5175:80"
-    depends_on:
-      iam-service:
-        condition: service_healthy
+    # Debug-only static UI. Start the core stack separately when live API data
+    # is needed; avoiding depends_on keeps the legacy profile isolated.
     # M35.3 — resource limits (frontend SPA: 512M memory / 0.5 CPU)
     deploy:
       resources:
@@ -1133,7 +1324,7 @@ services:
       target: sandbox-runner
     container_name: singularity-mcp-sandbox-runner
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [full, mcp]
     environment:
       NODE_ENV: production
       PORT: 7110
@@ -1194,11 +1385,9 @@ services:
       target: dev
     container_name: singularity-mcp-server
     # M65 Slice 2A — compose profiles.
-    # NOTE: must stay in `full` — context-api depends on it as the default
-    # MCP endpoint in dev. The real (laptop-bridged) mcp-server runs OUTSIDE
-    # compose. Tried moving to a `demo` profile in M67 — the depends_on
-    # graph broke. Keep here unless context-api's dep is rewritten.
-    profiles: [full]
+    # MCP is runtime infrastructure, not a web-app backend. Run it locally
+    # with `--profile mcp` or point MCP_* URLs at a remote/customer runtime.
+    profiles: [full, mcp]
     # M101 — service-local git config. mcp-server follows its OWN
     # mcp-server/.env (env_file below) for git push/auth/token settings, so
     # each deployment is self-contained: edit mcp-server/.env on that host and
@@ -1220,7 +1409,7 @@ services:
       NODE_ENV: development
       PORT: 7100
       LOG_LEVEL: info
-      MCP_BEARER_TOKEN: ${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
       # ── ToolInvocationGrant verification (defence-in-depth) ─────────────
       # Verify CF-signed grants before running mutating / high-risk tools.
       #   off (default) — grants ignored; pre-hardening behaviour.
@@ -1228,7 +1417,9 @@ services:
       #                   allowed + logged (rollout window).
       #   enforce       — mutating/high-risk tools REQUIRE a valid grant.
       # TOOL_GRANT_SIGNING_SECRET MUST equal context_api_service's value.
+      MCP_DEFAULT_GOVERNANCE_MODE: ${MCP_DEFAULT_GOVERNANCE_MODE:-fail_open}
       MCP_TOOL_GRANT_MODE: ${MCP_TOOL_GRANT_MODE:-off}
+      MCP_REQUIRE_EFFECTIVE_CAPABILITIES: ${MCP_REQUIRE_EFFECTIVE_CAPABILITIES:-false}
       TOOL_GRANT_SIGNING_SECRET: ${TOOL_GRANT_SIGNING_SECRET:-dev-tool-grant-signing-secret-min-32-chars!!}
       MCP_TOOL_GRANT_REQUIRED_CATEGORIES: ${MCP_TOOL_GRANT_REQUIRED_CATEGORIES:-mutate,finalize,run}
       MCP_TOOL_GRANT_CLOCK_SKEW_SEC: ${MCP_TOOL_GRANT_CLOCK_SKEW_SEC:-30}
@@ -1274,7 +1465,7 @@ services:
       # MCP no longer holds provider keys. Every LLM call routes through the
       # llm-gateway service. No provider fallback chain; gateway errors
       # propagate. The only allowed fallback is the gateway's `mock` provider.
-      LLM_GATEWAY_URL:        http://llm-gateway:8001
+      LLM_GATEWAY_URL:        ${LLM_GATEWAY_INTERNAL_URL:-http://llm-gateway:8001}
       LLM_GATEWAY_BEARER:     ${LLM_GATEWAY_BEARER:-}
       LLM_GATEWAY_TIMEOUT_SEC: ${LLM_GATEWAY_TIMEOUT_SEC:-300}
       # ── M60 Slice 1 — Formal verification gate (Z3). Disabled by default.
@@ -1282,7 +1473,7 @@ services:
       # call the verifier. URL must use the compose-internal hostname so the
       # localhost default in mcp-server/config.ts doesn't escape the container.
       FORMAL_VERIFICATION_ENABLED:        ${FORMAL_VERIFICATION_ENABLED:-false}
-      FORMAL_VERIFIER_URL:                http://formal-verifier:8010
+      FORMAL_VERIFIER_URL:                ${FORMAL_VERIFIER_INTERNAL_URL:-http://formal-verifier:8010}
       FORMAL_VERIFICATION_TIMEOUT_MS:     ${FORMAL_VERIFICATION_DEFAULT_TIMEOUT_MS:-3000}
       FORMAL_VERIFICATION_BLOCK_ON_UNKNOWN: ${FORMAL_VERIFICATION_BLOCK_ON_UNKNOWN:-true}
       # ── M61 Wire E + Wire B P2 — best-effort CapabilityWorldModel
@@ -1320,8 +1511,10 @@ services:
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
       CONTEXT_FABRIC_URL: http://context-api:8000
       CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
+      PROMPT_COMPOSER_SERVICE_TOKEN: ${PROMPT_COMPOSER_SERVICE_TOKEN:-${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}}
       # M67 Slice 1A — points at agent-service (learning-service was folded in)
       LEARNING_SERVICE_URL: http://agent-service:3001
+      LEARNING_SERVICE_TOKEN: ${LEARNING_SERVICE_TOKEN:-${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}}
       # M36.7 — mcp-server fetches the "code-tool-use nudge" SystemPrompt
       # (key=mcp.code-tool-use-nudge) from prompt-composer at run time so
       # there are no inline prompts in mcp-server source. Required when
@@ -1337,6 +1530,7 @@ services:
         condition: service_healthy
       formal-verifier:
         condition: service_started
+        required: false
     volumes:
       - ./mcp-server/src:/app/src
       # Generated by `./singularity.sh config mcp-catalog`; mounted read-only
@@ -1374,7 +1568,7 @@ services:
           cpus: '1.0'
 
   # ─────────────────────────────────────────────────────────────────────
-  # Singularity Portal (the wrapper SPA)
+  # Legacy Singularity Portal (debug profile only; platform-web is canonical)
   # ─────────────────────────────────────────────────────────────────────
   portal:
     build:
@@ -1382,21 +1576,19 @@ services:
       dockerfile: Dockerfile
     container_name: singularity-portal
     # M65 Slice 2A — compose profiles.
-    profiles: [full]
+    profiles: [frontend-legacy]
     ports:
-      - "5180:80"
-    # M35.3 — long-form depends_on with condition: service_healthy.
-    # context-api uses service_started because it has no formal healthcheck;
-    # the others use service_healthy.
-    depends_on:
-      iam-service:
-        condition: service_healthy
-      workgraph-api:
-        condition: service_healthy
-      prompt-composer:
-        condition: service_healthy
-      context-api:
-        condition: service_started
+      - "5182:80"
+    environment:
+      # Legacy-only. Keep links pointed at the canonical Platform Web routes
+      # so enabling the debug profile does not reintroduce split-app navigation.
+      PORTAL_LINK_AGENT_ADMIN: ${PORTAL_LINK_AGENT_ADMIN:-http://localhost:5180/agents}
+      PORTAL_LINK_IAM_ADMIN: ${PORTAL_LINK_IAM_ADMIN:-http://localhost:5180/identity}
+      PORTAL_LINK_WORKGRAPH_DESIGNER: ${PORTAL_LINK_WORKGRAPH_DESIGNER:-http://localhost:5180/workflows}
+      PORTAL_LINK_BLUEPRINT_WORKBENCH: ${PORTAL_LINK_BLUEPRINT_WORKBENCH:-http://localhost:5180/workbench}
+      PORTAL_LINK_CODE_FOUNDRY: ${PORTAL_LINK_CODE_FOUNDRY:-http://localhost:5180/foundry}
+    # Debug-only wrapper. Start the core stack separately when live API data is
+    # needed; avoiding depends_on keeps the legacy profile isolated.
     # M35.3 — resource limits (frontend SPA: 512M memory / 0.5 CPU)
     deploy:
       resources:
@@ -1405,25 +1597,20 @@ services:
           cpus: '0.5'
 
   # ─────────────────────────────────────────────────────────────────────
-  # M100 P1 — Edge gateway: the single operator origin. Path-prefix routes to
-  # all six UIs (/ portal, /agent, /workflow, /workbench, /foundry, /iam).
-  # Additive: the per-app host ports still work standalone. code-foundry-web is
-  # in the `code-foundry` profile so it is NOT a hard dependency here; the
-  # gateway resolves upstreams lazily and 502s a prefix only if its app is down.
+  # Legacy edge gateway (debug profile only). The canonical operator origin is
+  # platform-web on :5180.
   # ─────────────────────────────────────────────────────────────────────
   edge-gateway:
     build:
       context: ./edge-gateway
       dockerfile: Dockerfile
     container_name: singularity-edge-gateway
-    profiles: [full]
-    # 8085 — 8090 is reserved for PLATFORM_REGISTRY_URL. This is the single
-    # operator origin once Phase 1 is deployed.
+    profiles: [frontend-legacy]
+    # 8085 — 8090 is reserved for PLATFORM_REGISTRY_URL.
     ports:
       - "8085:80"
     depends_on:
       - portal
-      - agent-web
       - workgraph-web
       - blueprint-workbench
       - user-and-capability
@@ -1438,3 +1625,7 @@ volumes:
   at_postgres_data:
   wg_postgres_data:
   wg_minio_data:
+
+secrets:
+  artifactory_npm_token:
+    environment: ARTIFACTORY_NPM_TOKEN

@@ -3,8 +3,8 @@
  *
  * Returns a chronological merged timeline for a given `trace_id`:
  *   1. workgraph-side receipts (AgentRun, ToolRun, ApprovalRequest, AgentReview)
- *      - traceId is stored on AgentRunOutput.structuredPayload (M9.z),
- *        so we join AgentRun via that JSON path.
+ *      - AgentRun trace/correlation IDs are first-class columns; older rows
+ *        still fall back through AgentRunOutput.structuredPayload.
  *   2. context-fabric-side receipts (CallLog + events_store) — fetched live
  *      from cf `/receipts?trace_id=` and concatenated.
  *
@@ -18,6 +18,8 @@ import { Router } from 'express'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { config } from '../../config'
+import { requireTenantFromRequest, resolveTenantFromRequest, tenantIsolationStrict } from '../../lib/tenant-isolation'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 
 export const receiptsRouter: Router = Router()
 
@@ -42,21 +44,39 @@ function asIso(d: Date | null | undefined): string | null {
 
 // ── workgraph local receipts ───────────────────────────────────────────────
 
-async function localReceipts(traceId: string): Promise<ReceiptEnvelope[]> {
+async function localReceipts(traceId: string, tenantId?: string): Promise<ReceiptEnvelope[]> {
   const out: ReceiptEnvelope[] = []
 
-  // M9.z stores traceId on AgentRunOutput.structuredPayload. Use a raw query
-  // for the JSON path since Prisma can't filter into nested JSON ergonomically.
+  // Prefer first-class AgentRun.traceId. Keep the JSON fallback for rows that
+  // predate the correlation-column backfill.
   const agentRuns = await prisma.$queryRaw<Array<{
     id: string; agent_id: string; instance_id: string | null; node_id: string | null;
     status: string; started_at: Date | null; completed_at: Date | null;
+    cf_call_id: string | null; prompt_assembly_id: string | null;
+    mcp_server_id: string | null; mcp_invocation_id: string | null;
   }>>(Prisma.sql`
     SELECT DISTINCT ar.id, ar."agentId" AS agent_id, ar."instanceId" AS instance_id,
            ar."nodeId" AS node_id, ar.status::text AS status,
-           ar."startedAt" AS started_at, ar."completedAt" AS completed_at
+           ar."startedAt" AS started_at, ar."completedAt" AS completed_at,
+           ar."cfCallId" AS cf_call_id, ar."promptAssemblyId" AS prompt_assembly_id,
+           ar."mcpServerId" AS mcp_server_id, ar."mcpInvocationId" AS mcp_invocation_id
     FROM agent_runs ar
-    JOIN agent_run_outputs aro ON aro."runId" = ar.id
-    WHERE aro."structuredPayload"->>'traceId' = ${traceId}
+    WHERE (
+        ar."traceId" = ${traceId}
+        OR EXISTS (
+          SELECT 1 FROM agent_run_outputs aro
+          WHERE aro."runId" = ar.id
+            AND aro."structuredPayload"->>'traceId' = ${traceId}
+        )
+      )
+      AND (
+        ${tenantId ?? null}::text IS NULL
+        OR EXISTS (
+          SELECT 1 FROM workflow_instances wi
+          WHERE wi.id = ar."instanceId"
+            AND wi."tenantId" = ${tenantId ?? null}
+        )
+      )
   `)
 
   for (const r of agentRuns) {
@@ -75,6 +95,10 @@ async function localReceipts(traceId: string): Promise<ReceiptEnvelope[]> {
         agentRunId:        r.id,
         workflowInstanceId: r.instance_id,
         workflowNodeId:    r.node_id,
+        cfCallId:          r.cf_call_id,
+        promptAssemblyId:  r.prompt_assembly_id,
+        mcpServerId:       r.mcp_server_id,
+        mcpInvocationId:   r.mcp_invocation_id,
       },
       metrics: {},
       payload: {},
@@ -181,9 +205,18 @@ receiptsRouter.get('/', async (req, res) => {
     return res.status(400).json({ code: 'BAD_REQUEST', message: 'trace_id is required' })
   }
   const includeCf = req.query.include_cf !== '0'
+  let tenantId: string | undefined
+  try {
+    tenantId = tenantIsolationStrict()
+      ? requireTenantFromRequest(req, 'receipt timeline')
+      : resolveTenantFromRequest(req)
+  } catch (err) {
+    const e = err as { statusCode?: number; message?: string }
+    return res.status(e.statusCode ?? 400).json({ code: 'BAD_REQUEST', message: e.message ?? 'Invalid tenant context' })
+  }
 
   const [local, cf] = await Promise.all([
-    localReceipts(traceId).catch(() => []),
+    withTenantDbTransaction(prisma, () => localReceipts(traceId, tenantId), tenantId).catch(() => []),
     includeCf ? cfReceipts(traceId) : Promise.resolve([]),
   ])
 

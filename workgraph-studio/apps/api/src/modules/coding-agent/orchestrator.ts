@@ -390,8 +390,8 @@ export function adaptGovernedStageToCodingRun(
   // (2026-05-26) Also harvest the FULL code-change envelope from each
   // successful mutating tool outcome. mcp-server's /resources/code-changes
   // ring is keyed by its own cc_<uuid> id which the governed loop never
-  // sees (the legacy /mcp/invoke path used to mint these via
-  // provenanceExtractor; /mcp/tool-run does not). Without inline records,
+  // sees (the legacy invoke loop used to mint these via provenanceExtractor;
+  // /mcp/tool-run does not). Without inline records,
   // the workbench's "Code review" panel queried MCP by tool_invocation_id,
   // got an empty hit, and surfaced the "no diff body was available" banner
   // even though the diff was right there in the governed response.

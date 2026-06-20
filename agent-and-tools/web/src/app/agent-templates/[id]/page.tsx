@@ -1,9 +1,11 @@
 "use client";
 import useSWR from "swr";
+import { useParams } from "next/navigation";
 import { runtimeApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 
-export default function AgentTemplateDetailPage({ params }: { params: { id: string } }) {
+export default function AgentTemplateDetailPage() {
+  const params = useParams<{ id: string }>();
   const id = decodeURIComponent(params.id);
   const { data: tmpl } = useSWR(`tmpl-${id}`, () => runtimeApi.getTemplate(id));
 

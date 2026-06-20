@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
-    "build": "prisma generate && tsc",
+    "build": "DISABLE_ERD=true prisma generate && tsc",
     "start": "node dist/server.js",
+    "test:contracts": "ts-node --transpile-only src/modules/capabilities/document-extract.contract.test.ts && ts-node --transpile-only src/modules/agents/agent-profile-resolve.contract.test.ts && ts-node --transpile-only src/modules/agents/agent-provider-manifest.contract.test.ts && ts-node --transpile-only src/modules/agents/agent-source-url-policy.contract.test.ts && ts-node --transpile-only src/modules/agents/agent-runtime-route-auth.contract.test.ts && ts-node --transpile-only src/lib/iam/service-token.contract.test.ts && ts-node --transpile-only src/modules/agents/agent-service-auth.contract.test.ts && ts-node --transpile-only src/modules/agents/agent-contract-mint-required.contract.test.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:dev": "prisma migrate dev",

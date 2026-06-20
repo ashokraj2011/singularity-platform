@@ -9,22 +9,32 @@
  * The `learning.*` schema now lives in the `singularity` DB (was its own
  * `singularity_learning` DB) — see ensureLearningSchema() below.
  */
+import { timingSafeEqual } from "crypto";
 import { Router, Request, Response, NextFunction } from "express";
 import { z, ZodError } from "zod";
 import { query, pool } from "../database";
 
 const SERVICE_TOKEN = process.env.LEARNING_SERVICE_TOKEN ?? process.env.AUDIT_GOV_SERVICE_TOKEN ?? "";
-const AUTH_OPTIONAL = process.env.AUTH_OPTIONAL === "true" || process.env.NODE_ENV !== "production";
 
 // Local service-token gate (matches the standalone learning-service's
 // posture so mcp-server / prompt-composer can keep their existing tokens).
+function tokenMatches(candidate: string): boolean {
+  if (!SERVICE_TOKEN || !candidate) return false;
+  const expected = Buffer.from(SERVICE_TOKEN);
+  const actual = Buffer.from(candidate);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
 function requireServiceAuth(req: Request, res: Response, next: NextFunction): void {
-  if (!SERVICE_TOKEN && AUTH_OPTIONAL) return next();
+  if (!SERVICE_TOKEN) {
+    res.status(503).json({ error: "learning service token not configured" });
+    return;
+  }
   const header = req.headers.authorization;
   const token = typeof header === "string" && header.startsWith("Bearer ")
     ? header.slice(7)
     : String(req.headers["x-service-token"] ?? "");
-  if (token && token === SERVICE_TOKEN) {
+  if (tokenMatches(token)) {
     next();
     return;
   }
@@ -32,6 +42,8 @@ function requireServiceAuth(req: Request, res: Response, next: NextFunction): vo
 }
 
 export const learningPatternsRoutes = Router();
+
+learningPatternsRoutes.use(requireServiceAuth);
 
 learningPatternsRoutes.get("/failures/:capabilityId/summary", async (req: Request, res: Response) => {
   const rows = await query(
@@ -72,7 +84,7 @@ const patternSchema = z.object({
   successRate: z.number().min(0).max(1).optional(),
 });
 
-learningPatternsRoutes.post("/patterns", requireServiceAuth, async (req: Request, res: Response) => {
+learningPatternsRoutes.post("/patterns", async (req: Request, res: Response) => {
   try {
     const input = patternSchema.parse(req.body ?? {});
     const rows = await query<{ id: string }>(
@@ -107,7 +119,7 @@ const refreshSchema = z.object({
   lastFailureAt: z.string().optional(),
 });
 
-learningPatternsRoutes.post("/summarize/refresh", requireServiceAuth, async (req: Request, res: Response) => {
+learningPatternsRoutes.post("/summarize/refresh", async (req: Request, res: Response) => {
   try {
     const input = refreshSchema.parse(req.body ?? {});
     const rows = await query<{ id: string }>(
