@@ -338,7 +338,7 @@ def config_template(profile: str, args: argparse.Namespace | None = None) -> dic
             "iamBaseUrl": "http://localhost:8101/api/v1" if use_pseudo else "http://localhost:8100/api/v1",
             "iamServiceUrl": "http://localhost:8101" if use_pseudo else "http://localhost:8100",
             "iamDatabaseUrl": "postgresql+asyncpg://singularity:singularity@localhost:5432/singularity_iam",
-            "jwtSecret": os.getenv("JWT_SECRET", "dev-secret-change-in-prod-min-32-chars!!"),
+            "jwtSecret": os.getenv("JWT_SECRET", "changeme_dev_only_min_32_chars_long!!"),
             "bootstrapEmail": "admin@singularity.local",
             "bootstrapPassword": "Admin1234!",
         },
@@ -585,7 +585,7 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
     copilot_token = pick("COPILOT_TOKEN", "copilot_token", None, "")
     copilot_base_url = pick("COPILOT_BASE_URL", "copilot_base_url", None, "https://api.githubcopilot.com" if llm_provider == "copilot" else "")
     mcp_token = pick("MCP_BEARER_TOKEN", "mcp_bearer_token", "MCP_BEARER_TOKEN", "demo-bearer-token-must-be-min-16-chars")
-    jwt_secret = pick("JWT_SECRET", "jwt_secret", "JWT_SECRET", "dev-secret-change-in-prod-min-32-chars!!")
+    jwt_secret = pick("JWT_SECRET", "jwt_secret", "JWT_SECRET", "changeme_dev_only_min_32_chars_long!!")
     service_token = pick("CONTEXT_FABRIC_SERVICE_TOKEN", "service_token", "CONTEXT_FABRIC_SERVICE_TOKEN", "dev-context-fabric-service-token")
     audit_token = pick("AUDIT_GOV_SERVICE_TOKEN", "audit_token", "AUDIT_GOV_SERVICE_TOKEN", "dev-audit-gov-service-token")
     learning_token = pick("LEARNING_SERVICE_TOKEN", "learning_token", "LEARNING_SERVICE_TOKEN", audit_token)
@@ -877,6 +877,10 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
             "APP_ENV": values["APP_ENV"],
             "ENVIRONMENT": values["ENVIRONMENT"],
             "SINGULARITY_ENV": values["SINGULARITY_ENV"],
+            # context-api verifies the laptop-bridge device tokens IAM signs —
+            # it MUST share IAM's JWT_SECRET or every bridge connect 403s
+            # ("signature mismatch"). Was missing here → compiled-in fallback.
+            "JWT_SECRET": values["JWT_SECRET"],
             "REQUIRE_TENANT_ID": values["REQUIRE_TENANT_ID"],
             "DEFAULT_GOVERNANCE_MODE": values["DEFAULT_GOVERNANCE_MODE"],
             "CF_TOOL_GRANT_ENABLED": values["CF_TOOL_GRANT_ENABLED"],

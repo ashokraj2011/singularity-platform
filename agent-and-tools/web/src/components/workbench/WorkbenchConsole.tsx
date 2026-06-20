@@ -265,14 +265,16 @@ async function fetchSession(id: string): Promise<BlueprintSession> {
   return workgraphFetch(`/blueprint/sessions/${encodeURIComponent(id)}`);
 }
 
-async function fetchCodeChanges(input: [string, string | undefined]): Promise<CodeChangeRecord[]> {
-  const [sessionId, stageKey] = input;
+// Key is a namespaced 3-tuple [ns, sessionId, stageKey] — the leading namespace
+// keeps these two fetchers' SWR cache entries distinct (see the useSWR calls).
+async function fetchCodeChanges(input: [string, string, string | undefined]): Promise<CodeChangeRecord[]> {
+  const [, sessionId, stageKey] = input;
   const qs = stageKey ? `?stageKey=${encodeURIComponent(stageKey)}` : "";
   return unwrapWorkgraphItems<CodeChangeRecord>(await workgraphFetch(`/blueprint/sessions/${encodeURIComponent(sessionId)}/code-changes${qs}`), ["items"]);
 }
 
-async function fetchLoopTrace(input: [string, string | undefined]): Promise<LoopTraceResponse | null> {
-  const [sessionId, stageKey] = input;
+async function fetchLoopTrace(input: [string, string, string | undefined]): Promise<LoopTraceResponse | null> {
+  const [, sessionId, stageKey] = input;
   if (!stageKey) return null;
   return workgraphFetch(`/blueprint/sessions/${encodeURIComponent(sessionId)}/stages/${encodeURIComponent(stageKey)}/loop-trace`);
 }
@@ -295,8 +297,8 @@ export function WorkbenchConsole({ mode = "cockpit", view }: { mode?: WorkbenchM
   const { data: session, error: sessionError, isLoading: loadingSession, mutate: reloadSession } = useSWR(selectedId ? ["blueprint-session", selectedId] : null, () => fetchSession(selectedId as string), { refreshInterval: 8000 });
   const activeStage = currentStage(session);
   const activeStageKey = session?.currentStageKey ?? activeStage?.key;
-  const { data: codeChanges = [], error: codeError, mutate: reloadCode } = useSWR(session?.id ? [session.id, activeStageKey] : null, fetchCodeChanges, { refreshInterval: 15000 });
-  const { data: loopTrace, error: traceError, mutate: reloadTrace } = useSWR(session?.id && activeStageKey ? [session.id, activeStageKey] : null, fetchLoopTrace, { refreshInterval: mode === "theater" ? 5000 : 12000 });
+  const { data: codeChanges = [], error: codeError, mutate: reloadCode } = useSWR(session?.id ? ["wb-code-changes", session.id, activeStageKey] : null, fetchCodeChanges, { refreshInterval: 15000 });
+  const { data: loopTrace, error: traceError, mutate: reloadTrace } = useSWR(session?.id && activeStageKey ? ["wb-loop-trace", session.id, activeStageKey] : null, fetchLoopTrace, { refreshInterval: mode === "theater" ? 5000 : 12000 });
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);

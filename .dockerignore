@@ -18,6 +18,18 @@
 !UserAndCapabillity/
 !UserAndCapabillity/src/
 !UserAndCapabillity/src/**
+# platform-web Dockerfile COPYs these blueprint-workbench build files + the
+# engine package (workbench-deps/builder stages + the engine-src copy). Without
+# re-including them the COPY aborts and `docker compose build platform-web` fails.
+!workgraph-studio/apps/blueprint-workbench/package.json
+!workgraph-studio/apps/blueprint-workbench/package-lock.json
+!workgraph-studio/apps/blueprint-workbench/index.html
+!workgraph-studio/apps/blueprint-workbench/tsconfig.json
+!workgraph-studio/apps/blueprint-workbench/vite.config.ts
+!workgraph-studio/packages/
+!workgraph-studio/packages/engine/
+!workgraph-studio/packages/engine/src/
+!workgraph-studio/packages/engine/src/**
 agent-and-tools/web/.next
 agent-and-tools/web/node_modules
 agent-and-tools/web/.env.local
