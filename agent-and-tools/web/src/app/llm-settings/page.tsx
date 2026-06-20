@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Cpu, HardDrive, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
-import { apiPath, readResponseBody, responseMessage } from "@/lib/api";
+import { AlertTriangle, CheckCircle2, Cpu, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
+import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 
 type GatewayResult = {
   ok: boolean;
@@ -15,13 +15,26 @@ type GatewayResult = {
 type LlmSettings = {
   generatedAt: string;
   gatewayUrl: string;
+  llmGatewayUrl?: string;
+  mcpUrl: string;
+  contextFabricUrl: string;
   authMode: string;
+  mcpAuthMode: string;
+  topology?: {
+    mode: string;
+    hub: string;
+    llmGateway: string;
+    mcpRuntime: string;
+  };
   configuredPaths: {
     providerConfigPath: string;
     modelCatalogPath: string;
   };
   consumers: Record<string, string | null>;
   health: GatewayResult;
+  gatewayHealth?: GatewayResult;
+  mcpHealth?: GatewayResult;
+  contextFabricHealth?: GatewayResult;
   providers: GatewayResult;
   models: GatewayResult;
   workspaceStats?: GatewayResult;
@@ -101,7 +114,7 @@ export default function LlmSettingsPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(apiPath("/api/llm-settings"), { cache: "no-store" });
+      const res = await fetch(apiPath("/api/llm-settings"), { cache: "no-store", headers: authHeaders() });
       const { raw, parsed } = await readResponseBody(res);
       if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
       if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 400) : "Empty LLM settings response");
@@ -131,7 +144,9 @@ export default function LlmSettingsPage() {
   const warnings = useMemo(() => [
     ...asStringArray(providerData.warnings),
     ...asStringArray(modelData.warnings),
-    ...(settings?.health.ok ? [] : [`Gateway health failed: ${settings?.health.error ?? settings?.health.status ?? "unknown"}`]),
+    ...(settings?.gatewayHealth?.ok ?? settings?.health.ok ? [] : [`LLM Gateway health failed: ${settings?.gatewayHealth?.error ?? settings?.health.error ?? settings?.gatewayHealth?.status ?? settings?.health.status ?? "unknown"}`]),
+    ...(settings?.mcpHealth?.ok ? [] : [`MCP runtime health failed: ${settings?.mcpHealth?.error ?? settings?.mcpHealth?.status ?? "unknown"}`]),
+    ...(settings?.contextFabricHealth?.ok ? [] : [`Context Fabric health failed: ${settings?.contextFabricHealth?.error ?? settings?.contextFabricHealth?.status ?? "unknown"}`]),
     ...(settings?.providers.ok ? [] : [`Provider status failed: ${settings?.providers.error ?? settings?.providers.status ?? "unknown"}`]),
     ...(settings?.models.ok ? [] : [`Model catalog failed: ${settings?.models.error ?? settings?.models.status ?? "unknown"}`]),
     ...(settings?.workspaceStats?.ok === false ? [`Workspace stats failed: ${settings.workspaceStats.error ?? settings.workspaceStats.status ?? "unknown"}`] : []),
@@ -146,7 +161,7 @@ export default function LlmSettingsPage() {
         <div>
           <h1 className="page-header">Active LLM Settings</h1>
           <p className="text-sm text-slate-500 mt-1">
-            The central gateway is the only allowed provider-calling surface. This page shows the live gateway, provider readiness, and approved model aliases.
+            LLM Gateway and MCP are independent runtime containers or remote services. Context Fabric is the governed hub that routes model calls through the gateway and tool/workspace calls through MCP.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -167,25 +182,34 @@ export default function LlmSettingsPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-3 mb-6">
-        <SummaryTile icon={settings?.health.ok ? CheckCircle2 : XCircle} label="MCP" value={settings?.health.ok ? "Online" : "Offline"} tone={settings?.health.ok ? "ok" : "bad"} />
+      <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-6 gap-3 mb-6">
+        <SummaryTile icon={settings?.contextFabricHealth?.ok ? CheckCircle2 : XCircle} label="Context Fabric" value={settings?.contextFabricHealth?.ok ? "Online" : "Check"} tone={settings?.contextFabricHealth?.ok ? "ok" : "bad"} />
+        <SummaryTile icon={(settings?.gatewayHealth?.ok ?? settings?.health.ok) ? CheckCircle2 : XCircle} label="LLM Gateway" value={(settings?.gatewayHealth?.ok ?? settings?.health.ok) ? "Online" : "Offline"} tone={(settings?.gatewayHealth?.ok ?? settings?.health.ok) ? "ok" : "bad"} />
+        <SummaryTile icon={settings?.mcpHealth?.ok ? CheckCircle2 : XCircle} label="MCP Runtime" value={settings?.mcpHealth?.ok ? "Online" : "Offline"} tone={settings?.mcpHealth?.ok ? "ok" : "bad"} />
         <SummaryTile icon={Cpu} label="Default provider" value={defaultProvider} />
         <SummaryTile icon={ShieldCheck} label="Default alias" value={defaultModelAlias} />
         <SummaryTile icon={Cpu} label="Ready models" value={`${readyModels}/${models.length || 0}`} />
-        <SummaryTile icon={HardDrive} label="MCP storage" value={formatBytes(workspaceData.totalManagedBytes)} tone={settings?.workspaceStats?.ok === false ? "bad" : "neutral"} />
       </div>
 
       <section className="card p-5 mb-6">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
-            <h2 className="text-lg font-semibold text-slate-900">MCP Control Plane</h2>
-            <p className="text-sm text-slate-500">These values come from the running agent-and-tools web container and MCP model responses.</p>
+            <h2 className="text-lg font-semibold text-slate-900">Dial-in Runtime Topology</h2>
+            <p className="text-sm text-slate-500">Provider calls, workspace tools, and governed orchestration stay on separate runtime boundaries.</p>
           </div>
-          <span className={`badge ${statusClass(settings?.health.ok)}`}>{settings?.health.ok ? "healthy" : "unhealthy"}</span>
+          <span className={`badge ${statusClass(Boolean(settings?.contextFabricHealth?.ok && (settings?.gatewayHealth?.ok ?? settings?.health.ok) && settings?.mcpHealth?.ok))}`}>
+            {settings?.topology?.mode ?? "dial-in-runtime"}
+          </span>
+        </div>
+        <div className="grid md:grid-cols-3 gap-3 text-sm mb-4">
+          <Field label="Context Fabric hub" value={settings?.contextFabricUrl ?? "loading"} mono />
+          <Field label="LLM_GATEWAY_URL" value={settings?.llmGatewayUrl ?? settings?.gatewayUrl ?? "loading"} mono />
+          <Field label="MCP_SERVER_URL" value={settings?.mcpUrl ?? "loading"} mono />
+          <Field label="LLM Gateway auth" value={settings?.authMode ?? "unknown"} />
+          <Field label="MCP auth" value={settings?.mcpAuthMode ?? "unknown"} />
+          <Field label="Runtime mode" value={settings?.topology?.mode ?? "dial-in-runtime"} />
         </div>
         <div className="grid md:grid-cols-2 gap-3 text-sm">
-          <Field label="MCP_SERVER_URL" value={settings?.gatewayUrl ?? "loading"} mono />
-          <Field label="MCP auth" value={settings?.authMode ?? "unknown"} />
           <Field label="Provider config" value={String(gatewayConfig.provider_config_path ?? settings?.configuredPaths.providerConfigPath ?? "unknown")} mono />
           <Field label="Model catalog" value={String(gatewayConfig.model_catalog_path ?? settings?.configuredPaths.modelCatalogPath ?? "unknown")} mono />
           <Field label="Caller provider override" value={String(gatewayConfig.allow_caller_provider_override ?? "unknown")} />
@@ -223,7 +247,7 @@ export default function LlmSettingsPage() {
       {warnings.length > 0 && (
         <section className="card border-amber-200 bg-amber-50 p-4 mb-6">
           <div className="flex items-center gap-2 text-amber-800 font-semibold mb-2">
-            <AlertTriangle size={16} /> Gateway warnings
+            <AlertTriangle size={16} /> Runtime warnings
           </div>
           <ul className="list-disc pl-5 text-sm text-amber-800 space-y-1">
             {warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}
@@ -308,6 +332,11 @@ export default function LlmSettingsPage() {
 
       <section className="card p-5">
         <h2 className="text-lg font-semibold text-slate-900 mb-3">Consumers</h2>
+        <div className="grid md:grid-cols-3 gap-3 text-sm mb-4">
+          <Field label="Hub" value="Context Fabric governs calls" />
+          <Field label="Model path" value="Context Fabric -> LLM Gateway" />
+          <Field label="Tool path" value="Context Fabric -> MCP Runtime" />
+        </div>
         <div className="grid md:grid-cols-2 gap-3 text-sm">
           {Object.entries(settings?.consumers ?? {}).map(([key, value]) => (
             <Field key={key} label={consumerLabels[key] ?? key} value={value ?? "-"} mono={key.toLowerCase().includes("url")} />

@@ -429,6 +429,19 @@ const checks = [
     `,
   },
   {
+    name: "llm settings dial-in topology",
+    path: "/llm-settings",
+    expression: `
+      (() => {
+        const text = document.body?.innerText || "";
+        return {
+          ok: /Active LLM Settings/i.test(text) && /Dial-in Runtime Topology/i.test(text) && /Context Fabric/i.test(text) && /LLM Gateway/i.test(text) && /MCP Runtime/i.test(text) && /Context Fabric -> LLM Gateway/i.test(text) && /Context Fabric -> MCP Runtime/i.test(text) && !/AUTH_REQUIRED|Unable to load|Could not load|Unexpected token|Internal Server Error/i.test(text),
+          detail: text.slice(0, 360)
+        };
+      })()
+    `,
+  },
+  {
     name: "identity surface",
     path: "/identity",
     expression: `
@@ -718,7 +731,7 @@ if (discoveredRunId) {
         const text = document.body?.innerText || "";
         const flow = document.querySelector(".react-flow");
         return {
-          ok: /Timeline/i.test(text) && (/COMPLETED|ACTIVE|PAUSED|FAILED|CANCELLED/i.test(text)) && (Boolean(flow) || /Graph view|Step timeline|Mission Control|Artifacts/i.test(text)) && !/Run not found|Could not load|Unexpected token|Internal Server Error/i.test(text),
+          ok: /Timeline/i.test(text) && /Copilot YAML/i.test(text) && /Runner/i.test(text) && (/COMPLETED|ACTIVE|PAUSED|FAILED|CANCELLED/i.test(text)) && (Boolean(flow) || /Graph view|Step timeline|Mission Control|Artifacts/i.test(text)) && !/Run not found|Could not load|Unexpected token|Internal Server Error/i.test(text),
           detail: "react-flow=" + Boolean(flow) + " text=" + text.slice(0, 260)
         };
       })()

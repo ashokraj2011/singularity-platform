@@ -103,6 +103,43 @@ const advanceSchema = z.object({
   output: z.record(z.unknown()).default({}),
 })
 
+const copilotResultArtifactSchema = z.object({
+  path: z.string().min(1).max(1000),
+  sha256: z.string().max(128).optional(),
+  bytes: z.number().int().nonnegative().optional(),
+  mimeType: z.string().max(160).optional(),
+  contentBase64: z.string().max(1_500_000).optional(),
+  stageKey: z.string().max(160).optional(),
+  nodeId: z.string().uuid().optional(),
+  truncated: z.boolean().optional(),
+})
+
+const copilotStageResultSchema = z.object({
+  key: z.string().max(160).optional(),
+  nodeId: z.string().uuid().optional(),
+  label: z.string().max(300).optional(),
+  status: z.string().max(80).optional(),
+  startedAt: z.string().max(80).optional(),
+  completedAt: z.string().max(80).optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  exitCode: z.number().int().optional(),
+  logPath: z.string().max(1000).optional(),
+  changedFiles: z.array(z.string().max(1000)).max(200).optional(),
+  metrics: z.record(z.unknown()).optional(),
+})
+
+const copilotResultsSchema = z.object({
+  source: z.string().max(120).default('copilot-cli-export'),
+  status: z.string().max(80).default('completed'),
+  startedAt: z.string().max(80).optional(),
+  completedAt: z.string().max(80).optional(),
+  workflow: z.record(z.unknown()).optional(),
+  git: z.record(z.unknown()).optional(),
+  metrics: z.record(z.unknown()).default({}),
+  stages: z.array(copilotStageResultSchema).max(80).default([]),
+  artifacts: z.array(copilotResultArtifactSchema).max(80).default([]),
+})
+
 const cancelSchema = z.object({
   reason: z.string().max(500).optional(),
 })
@@ -587,46 +624,551 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/answer-questions', async (req, 
   }
 })
 
-// Export the run's copilot SDLC as a portable YAML the user can run directly on
-// the Copilot client (clone the repo, then `copilot -p "<prompt>"` per stage).
+type CopilotExportNode = {
+  id: string
+  label: string
+  nodeType: string
+  config: unknown
+  createdAt: Date
+}
+
+type CopilotExportStage = {
+  key: string
+  nodeId: string
+  label: string
+  nodeType: string
+  role: string
+  prompt: string
+}
+
+function yamlString(value: unknown): string {
+  return JSON.stringify(value ?? '')
+}
+
+function yamlBlock(text: string, spaces: number): string {
+  const indent = ' '.repeat(spaces)
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  return lines.length ? lines.map(line => `${indent}${line}`).join('\n') : `${indent}`
+}
+
+function slugForFile(value: string): string {
+  const slug = value.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+  return slug.slice(0, 80) || 'workflow'
+}
+
+function topologicalCopilotNodes(nodes: CopilotExportNode[], edges: Array<{ sourceNodeId: string; targetNodeId: string }>): CopilotExportNode[] {
+  const byId = new Map(nodes.map(node => [node.id, node]))
+  const indegree = new Map(nodes.map(node => [node.id, 0]))
+  const outgoing = new Map<string, string[]>()
+  for (const edge of edges) {
+    if (!byId.has(edge.sourceNodeId) || !byId.has(edge.targetNodeId)) continue
+    indegree.set(edge.targetNodeId, (indegree.get(edge.targetNodeId) ?? 0) + 1)
+    outgoing.set(edge.sourceNodeId, [...(outgoing.get(edge.sourceNodeId) ?? []), edge.targetNodeId])
+  }
+  const createdOrder = new Map(nodes.map((node, index) => [node.id, index]))
+  const queue = nodes
+    .filter(node => (indegree.get(node.id) ?? 0) === 0)
+    .sort((a, b) => (createdOrder.get(a.id) ?? 0) - (createdOrder.get(b.id) ?? 0))
+  const ordered: CopilotExportNode[] = []
+  while (queue.length) {
+    const node = queue.shift()!
+    ordered.push(node)
+    for (const nextId of outgoing.get(node.id) ?? []) {
+      const next = byId.get(nextId)
+      if (!next) continue
+      indegree.set(nextId, Math.max(0, (indegree.get(nextId) ?? 0) - 1))
+      if ((indegree.get(nextId) ?? 0) === 0) {
+        queue.push(next)
+        queue.sort((a, b) => (createdOrder.get(a.id) ?? 0) - (createdOrder.get(b.id) ?? 0))
+      }
+    }
+  }
+  const seen = new Set(ordered.map(node => node.id))
+  return [...ordered, ...nodes.filter(node => !seen.has(node.id))]
+}
+
+function buildCopilotRunnerScript(workflow: Record<string, unknown>): string {
+  const workflowJson = JSON.stringify(workflow, null, 2)
+  return `#!/usr/bin/env bash
+set -euo pipefail
+
+# Executes this exported Singularity workflow with GitHub Copilot CLI and posts
+# artifacts/metrics back to Platform Web.
+#
+# Required:
+#   export SINGULARITY_TOKEN="<your platform bearer token>"
+# Optional:
+#   export SINGULARITY_PLATFORM_URL="http://localhost:5180"
+#   export COPILOT_BIN="copilot"
+#   export WORK_DIR="/path/to/cloned/repo"
+#   export COPILOT_ALLOW_ALL="1"
+#   export COPILOT_CONTINUE_ON_ERROR="0"
+#   export COPILOT_ARTIFACT_MAX_BYTES="262144"
+python3 - "$@" <<'PY'
+import base64
+import hashlib
+import json
+import mimetypes
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+WORKFLOW = ${workflowJson}
+
+def now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+def run_git(args, cwd):
+    return subprocess.run(["git", *args], cwd=str(cwd), text=True, capture_output=True)
+
+def status_paths(cwd):
+    proc = run_git(["status", "--porcelain"], cwd)
+    paths = []
+    for line in proc.stdout.splitlines():
+        raw = line[3:] if len(line) > 3 else line
+        if " -> " in raw:
+            raw = raw.split(" -> ", 1)[1]
+        raw = raw.strip().strip('"')
+        if raw:
+            paths.append(raw)
+    return sorted(set(paths))
+
+def safe_name(value):
+    value = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-").lower()
+    return value[:80] or "stage"
+
+def file_artifact(cwd, rel_path, stage_key=None, node_id=None, max_bytes=262144):
+    rel_path = rel_path.replace("\\\\", "/")
+    target = (cwd / rel_path).resolve()
+    try:
+        target.relative_to(cwd)
+    except ValueError:
+        return None
+    if not target.is_file():
+        return None
+    data = target.read_bytes()
+    artifact = {
+        "path": rel_path,
+        "stageKey": stage_key,
+        "nodeId": node_id,
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "mimeType": mimetypes.guess_type(str(target))[0] or "application/octet-stream",
+    }
+    if len(data) <= max_bytes:
+        artifact["contentBase64"] = base64.b64encode(data).decode("ascii")
+    else:
+        artifact["truncated"] = True
+    return artifact
+
+def add_artifact(artifacts, artifact):
+    if not artifact:
+        return
+    artifacts[artifact["path"]] = artifact
+
+def post_results(platform_url, token, run_id, payload):
+    endpoint = platform_url.rstrip("/") + "/api/workgraph/workflow-instances/" + urllib.parse.quote(run_id) + "/export/copilot-results"
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint,
+        data=body,
+        method="POST",
+        headers={
+            "content-type": "application/json",
+            "authorization": "Bearer " + token,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as res:
+            return res.status, res.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as err:
+        return err.code, err.read().decode("utf-8", errors="replace")
+
+def main():
+    metadata = WORKFLOW["metadata"]
+    stages = WORKFLOW.get("stages", [])
+    run_id = metadata["runId"]
+    platform_url = os.environ.get("SINGULARITY_PLATFORM_URL", "http://localhost:5180").rstrip("/")
+    token = os.environ.get("SINGULARITY_TOKEN") or os.environ.get("WORKGRAPH_TOKEN") or os.environ.get("PLATFORM_TOKEN")
+    if not token:
+        print("Set SINGULARITY_TOKEN to a Platform Web bearer token before running this export.", file=sys.stderr)
+        return 2
+    copilot_bin = os.environ.get("COPILOT_BIN", "copilot")
+    allow_all = os.environ.get("COPILOT_ALLOW_ALL", "1").lower() not in ("0", "false", "no")
+    continue_on_error = os.environ.get("COPILOT_CONTINUE_ON_ERROR", "0").lower() in ("1", "true", "yes")
+    max_artifact_bytes = int(os.environ.get("COPILOT_ARTIFACT_MAX_BYTES", "262144"))
+    max_artifacts = int(os.environ.get("COPILOT_ARTIFACT_MAX_FILES", "40"))
+    cwd = pathlib.Path(os.environ.get("WORK_DIR", os.getcwd())).resolve()
+    out_dir = pathlib.Path(os.environ.get("COPILOT_OUTPUT_DIR", str(cwd / ".singularity" / "copilot-runs" / run_id))).resolve()
+    prompt_dir = out_dir / "prompts"
+    log_dir = out_dir / "logs"
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    started = now_iso()
+    stage_results = []
+    artifacts = {}
+    overall_status = "completed"
+
+    for index, stage in enumerate(stages, start=1):
+        stage_key = stage.get("key") or f"stage-{index}"
+        node_id = stage.get("nodeId")
+        prompt = stage.get("prompt") or ""
+        prompt_path = prompt_dir / f"{index:02d}-{safe_name(stage_key)}.md"
+        log_path = log_dir / f"{index:02d}-{safe_name(stage_key)}.log"
+        prompt_path.write_text(prompt, encoding="utf-8")
+        before = set(status_paths(cwd))
+        started_ms = int(time.time() * 1000)
+        started_at = now_iso()
+        args = [copilot_bin, "-p", prompt]
+        if allow_all:
+            args.append("--allow-all")
+        print(f"[singularity] running {stage_key} with {' '.join(args[:2])} ...")
+        proc = subprocess.run(args, cwd=str(cwd), text=True, capture_output=True)
+        completed_at = now_iso()
+        duration_ms = int(time.time() * 1000) - started_ms
+        log_path.write_text(
+            "COMMAND: " + " ".join(args[:2]) + " <prompt>" + (" --allow-all" if allow_all else "") + "\\n"
+            + "EXIT_CODE: " + str(proc.returncode) + "\\n\\n"
+            + "STDOUT\\n" + proc.stdout + "\\n\\nSTDERR\\n" + proc.stderr,
+            encoding="utf-8",
+        )
+        after = set(status_paths(cwd))
+        changed = sorted(after or before)
+        for path in changed[:max_artifacts]:
+            add_artifact(artifacts, file_artifact(cwd, path, stage_key, node_id, max_artifact_bytes))
+        try:
+            rel_log_path = str(log_path.relative_to(cwd)).replace("\\\\", "/")
+        except ValueError:
+            rel_log_path = str(log_path)
+        add_artifact(artifacts, file_artifact(cwd, rel_log_path, stage_key, node_id, max_artifact_bytes))
+        status = "completed" if proc.returncode == 0 else "failed"
+        if status == "failed":
+            overall_status = "failed"
+        stage_results.append({
+            "key": stage_key,
+            "nodeId": node_id,
+            "label": stage.get("label"),
+            "status": status,
+            "startedAt": started_at,
+            "completedAt": completed_at,
+            "durationMs": duration_ms,
+            "exitCode": proc.returncode,
+            "logPath": rel_log_path,
+            "changedFiles": changed,
+            "metrics": {
+                "promptChars": len(prompt),
+                "stdoutChars": len(proc.stdout),
+                "stderrChars": len(proc.stderr),
+                "changedFileCount": len(changed),
+            },
+        })
+        if proc.returncode != 0 and not continue_on_error:
+            break
+
+    payload = {
+        "source": "copilot-cli-export",
+        "status": overall_status,
+        "startedAt": started,
+        "completedAt": now_iso(),
+        "workflow": metadata,
+        "git": {
+            "workDir": str(cwd),
+            "status": status_paths(cwd),
+        },
+        "metrics": {
+            "stageCount": len(stage_results),
+            "completedStageCount": sum(1 for s in stage_results if s["status"] == "completed"),
+            "failedStageCount": sum(1 for s in stage_results if s["status"] == "failed"),
+            "artifactCount": len(artifacts),
+        },
+        "stages": stage_results,
+        "artifacts": list(artifacts.values())[:max_artifacts],
+    }
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "copilot-results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    if os.environ.get("SINGULARITY_PUSH_RESULTS", "1").lower() not in ("0", "false", "no"):
+        code, body = post_results(platform_url, token, run_id, payload)
+        (out_dir / "platform-response.json").write_text(body, encoding="utf-8")
+        if code >= 300:
+            print(f"[singularity] platform push failed: HTTP {code} {body[:500]}", file=sys.stderr)
+            return 3
+        print(f"[singularity] platform push accepted: HTTP {code}")
+    print(f"[singularity] results written to {out_dir}")
+    return 1 if overall_status == "failed" else 0
+
+raise SystemExit(main())
+PY
+`
+}
+
+function buildCopilotWorkflowExport(instance: { id: string; name: string; context: unknown }, nodes: CopilotExportNode[], edges: Array<{ sourceNodeId: string; targetNodeId: string }>) {
+  const vars = (((instance.context ?? {}) as Record<string, unknown>)._vars ?? {}) as Record<string, unknown>
+  const cfgOf = (n: { config: unknown }) => (n.config ?? {}) as Record<string, unknown>
+  const interpolate = (s: string) => s.replace(/\{\{\s*instance\.vars\.(\w+)\s*\}\}/g, (_m, k) => String(vars[k] ?? ''))
+  const repo = String(vars.repoUrl ?? nodes.map(cfgOf).find(c => c.sourceUri)?.sourceUri ?? '')
+  const story = String(vars.story ?? vars.workItemDescription ?? '')
+  const workCode = String(vars.workCode ?? '')
+  const orderedNodes = topologicalCopilotNodes(nodes, edges)
+  const stages: CopilotExportStage[] = orderedNodes
+    .map(n => {
+      const c = cfgOf(n)
+      const task = typeof c.task === 'string' ? interpolate(c.task) : ''
+      if (!task.trim()) return null
+      const executor = String(c.executor ?? '').toLowerCase()
+      const isCopilot = executor === 'copilot' || n.nodeType === 'AGENT_TASK'
+      if (!isCopilot) return null
+      return {
+        key: String(c.governedStageKey ?? n.label ?? n.id),
+        nodeId: n.id,
+        label: n.label,
+        nodeType: n.nodeType,
+        role: String(c.governedAgentRole ?? ''),
+        prompt: task,
+      }
+    })
+    .filter((stage): stage is CopilotExportStage => Boolean(stage))
+  const exportedAt = new Date().toISOString()
+  const filenameBase = `copilot-sdlc-${slugForFile(workCode || instance.name || instance.id.slice(0, 8))}`
+  const workflow = {
+    apiVersion: 'singularity.dev/v1alpha1',
+    kind: 'CopilotWorkflowRun',
+    metadata: {
+      runId: instance.id,
+      name: instance.name,
+      workItem: workCode || null,
+      exportedAt,
+    },
+    platform: {
+      resultEndpoint: `/api/workgraph/workflow-instances/${instance.id}/export/copilot-results`,
+      tokenEnv: 'SINGULARITY_TOKEN',
+    },
+    repository: {
+      url: repo || null,
+    },
+    story,
+    stages,
+  }
+  const script = buildCopilotRunnerScript(workflow)
+  const yaml: string[] = [
+    '# Singularity -> Copilot workflow export',
+    '#',
+    '# Run from a cloned repo with:',
+    '#   export SINGULARITY_TOKEN="<platform bearer token>"',
+    '#   export SINGULARITY_PLATFORM_URL="http://localhost:5180"',
+    `#   curl -L "$SINGULARITY_PLATFORM_URL/api/workgraph/workflow-instances/${instance.id}/export/copilot-runner.sh" -H "Authorization: Bearer $SINGULARITY_TOKEN" | bash`,
+    '#',
+    'apiVersion: "singularity.dev/v1alpha1"',
+    'kind: "CopilotWorkflowRun"',
+    'metadata:',
+    `  runId: ${yamlString(instance.id)}`,
+    `  name: ${yamlString(instance.name)}`,
+    `  exportedAt: ${yamlString(exportedAt)}`,
+  ]
+  if (workCode) yaml.push(`  workItem: ${yamlString(workCode)}`)
+  yaml.push(
+    'platform:',
+    `  resultEndpoint: ${yamlString(`/api/workgraph/workflow-instances/${instance.id}/export/copilot-results`)}`,
+    '  tokenEnv: "SINGULARITY_TOKEN"',
+    'repository:',
+    `  url: ${repo ? yamlString(repo) : 'null'}`,
+  )
+  if (story) {
+    yaml.push('story: |', yamlBlock(story, 2))
+  }
+  yaml.push('stages:')
+  if (!stages.length) {
+    yaml.push('  []')
+  } else {
+    for (const stage of stages) {
+      yaml.push(`  - key: ${yamlString(stage.key)}`)
+      yaml.push(`    nodeId: ${yamlString(stage.nodeId)}`)
+      yaml.push(`    label: ${yamlString(stage.label)}`)
+      yaml.push(`    nodeType: ${yamlString(stage.nodeType)}`)
+      if (stage.role) yaml.push(`    role: ${yamlString(stage.role)}`)
+      yaml.push('    copilot:')
+      yaml.push('      command: "copilot"')
+      yaml.push('      args: ["-p", "<prompt>", "--allow-all"]')
+      yaml.push('    prompt: |')
+      yaml.push(yamlBlock(stage.prompt, 6))
+    }
+  }
+  yaml.push(
+    'runner:',
+    '  language: "bash"',
+    `  scriptEndpoint: ${yamlString(`/api/workgraph/workflow-instances/${instance.id}/export/copilot-runner.sh`)}`,
+    '  script: |',
+    yamlBlock(script, 4),
+  )
+  return { yaml: `${yaml.join('\n')}\n`, script, filenameBase, stageCount: stages.length }
+}
+
+async function loadCopilotExportData(id: string) {
+  const [instance, nodes, edges] = await Promise.all([
+    prisma.workflowInstance.findUnique({ where: { id }, select: { id: true, name: true, context: true } }),
+    prisma.workflowNode.findMany({
+      where: { instanceId: id },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, label: true, nodeType: true, config: true, createdAt: true },
+    }),
+    prisma.workflowEdge.findMany({
+      where: { instanceId: id },
+      select: { sourceNodeId: true, targetNodeId: true },
+    }),
+  ])
+  if (!instance) return null
+  return buildCopilotWorkflowExport(instance, nodes.map(n => ({ ...n, nodeType: String(n.nodeType) })), edges)
+}
+
+// Export the run as a portable Copilot workflow YAML. The YAML includes an
+// embedded runner script; the adjacent .sh endpoint serves that script directly
+// for shells that do not have a YAML extractor installed.
 workflowInstancesRouter.get('/:id/export/copilot-yaml', async (req, res, next) => {
   try {
     const id = req.params.id as string
     await assertInstancePermission(req.user!.userId, id, 'view')
-    const instance = await prisma.workflowInstance.findUnique({ where: { id } })
-    if (!instance) return res.status(404).json({ error: 'run not found' })
-    const nodes = await prisma.workflowNode.findMany({ where: { instanceId: id }, orderBy: { createdAt: 'asc' } })
-    const vars = (((instance.context ?? {}) as Record<string, unknown>)._vars ?? {}) as Record<string, unknown>
-    const cfgOf = (n: { config: unknown }) => (n.config ?? {}) as Record<string, unknown>
-    const interpolate = (s: string) => s.replace(/\{\{\s*instance\.vars\.(\w+)\s*\}\}/g, (_m, k) => String(vars[k] ?? ''))
-    const block = (text: string, spaces: number) => text.split('\n').map(l => ' '.repeat(spaces) + l).join('\n')
-    const repo = String(vars.repoUrl ?? nodes.map(cfgOf).find(c => c.sourceUri)?.sourceUri ?? '')
-    const story = String(vars.story ?? vars.workItemDescription ?? '')
-    const workCode = String(vars.workCode ?? '')
-    const stages = nodes.filter(n => cfgOf(n).executor === 'copilot' && cfgOf(n).task)
-
-    const L: string[] = [
-      '# Singularity → Copilot SDLC workflow export',
-      '# Run: clone the repo, then inside it run each stage in order:',
-      '#   copilot -p "<stage prompt>" --allow-all',
-      `name: ${JSON.stringify(instance.name)}`,
-      `repo: ${repo ? JSON.stringify(repo) : '""  # resolved from the capability at runtime'}`,
-    ]
-    if (workCode) L.push(`workItem: ${JSON.stringify(workCode)}`)
-    if (story) { L.push('story: |'); L.push(block(story, 2)) }
-    L.push('stages:')
-    for (const n of stages) {
-      const c = cfgOf(n)
-      const key = String(c.governedStageKey ?? n.label ?? '')
-      const role = String(c.governedAgentRole ?? '')
-      L.push(`  - key: ${JSON.stringify(key)}`)
-      if (role) L.push(`    role: ${JSON.stringify(role)}`)
-      L.push('    prompt: |')
-      L.push(block(interpolate(String(c.task ?? '')), 6))
-    }
+    const exported = await loadCopilotExportData(id)
+    if (!exported) return res.status(404).json({ error: 'run not found' })
     res.setHeader('Content-Type', 'application/x-yaml')
-    res.setHeader('Content-Disposition', `attachment; filename="copilot-sdlc-${workCode || id.slice(0, 8)}.yaml"`)
-    res.send(L.join('\n') + '\n')
+    res.setHeader('Content-Disposition', `attachment; filename="${exported.filenameBase}.yaml"`)
+    res.send(exported.yaml)
+  } catch (err) {
+    next(err)
+  }
+})
+
+workflowInstancesRouter.get('/:id/export/copilot-runner.sh', async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    await assertInstancePermission(req.user!.userId, id, 'view')
+    const exported = await loadCopilotExportData(id)
+    if (!exported) return res.status(404).json({ error: 'run not found' })
+    res.setHeader('Content-Type', 'text/x-shellscript; charset=utf-8')
+    res.setHeader('Content-Disposition', `attachment; filename="${exported.filenameBase}.sh"`)
+    res.send(exported.script)
+  } catch (err) {
+    next(err)
+  }
+})
+
+workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    await assertInstancePermission(req.user!.userId, id, 'edit')
+    const parsed = copilotResultsSchema.safeParse(req.body)
+    if (!parsed.success) return res.status(400).json({ error: 'invalid copilot results payload', issues: parsed.error.flatten() })
+    const instance = await prisma.workflowInstance.findUnique({
+      where: { id },
+      select: { id: true, nodes: { select: { id: true } } },
+    })
+    if (!instance) return res.status(404).json({ error: 'run not found' })
+    const validNodeIds = new Set(instance.nodes.map(n => n.id))
+    const payload = parsed.data
+    const eventId = await prisma.workflowEvent.create({
+      data: {
+        instanceId: id,
+        eventType: 'CopilotWorkflowResultsImported',
+        payload: payload as unknown as Prisma.InputJsonValue,
+      },
+      select: { id: true },
+    })
+    const eventLogId = await logEvent('CopilotWorkflowResultsImported', 'WorkflowInstance', id, req.user!.userId, {
+      status: payload.status,
+      metrics: payload.metrics,
+      stageCount: payload.stages.length,
+      artifactCount: payload.artifacts.length,
+      source: payload.source,
+      workflowEventId: eventId.id,
+    })
+    const receipt = await prisma.receipt.create({
+      data: {
+        receiptType: 'copilot.workflow.results',
+        entityType: 'WorkflowInstance',
+        entityId: id,
+        eventLogId,
+        content: {
+          source: payload.source,
+          status: payload.status,
+          startedAt: payload.startedAt,
+          completedAt: payload.completedAt,
+          metrics: payload.metrics,
+          git: payload.git,
+          stages: payload.stages,
+          artifactCount: payload.artifacts.length,
+        } as Prisma.InputJsonValue,
+      },
+      select: { id: true },
+    })
+    const type = payload.artifacts.length
+      ? await prisma.consumableType.upsert({
+          where: { name: 'Copilot CLI Artifact' },
+          update: {},
+          create: {
+            name: 'Copilot CLI Artifact',
+            description: 'Artifact imported from an exported Copilot CLI workflow run.',
+            schemaDef: {},
+            requiresApproval: true,
+            allowVersioning: true,
+          },
+        })
+      : null
+    const createdArtifacts: string[] = []
+    if (type) {
+      for (const artifact of payload.artifacts) {
+        const nodeId = artifact.nodeId && validNodeIds.has(artifact.nodeId) ? artifact.nodeId : undefined
+        const consumable = await prisma.consumable.create({
+          data: {
+            typeId: type.id,
+            instanceId: id,
+            nodeId,
+            name: `copilot:${artifact.stageKey ?? 'run'}:${artifact.path}`.slice(0, 240),
+            status: 'UNDER_REVIEW' as never,
+            formData: {
+              source: payload.source,
+              path: artifact.path,
+              sha256: artifact.sha256,
+              bytes: artifact.bytes,
+              mimeType: artifact.mimeType,
+              stageKey: artifact.stageKey,
+              truncated: artifact.truncated === true,
+              receiptId: receipt.id,
+            } as Prisma.InputJsonValue,
+            createdById: req.user!.userId,
+          },
+          select: { id: true },
+        })
+        await prisma.consumableVersion.create({
+          data: {
+            consumableId: consumable.id,
+            version: 1,
+            payload: artifact as unknown as Prisma.InputJsonValue,
+            createdById: req.user!.userId,
+          },
+        })
+        createdArtifacts.push(consumable.id)
+      }
+    }
+    await publishOutbox('WorkflowInstance', id, 'CopilotWorkflowResultsImported', {
+      actorId: req.user!.userId,
+      receiptId: receipt.id,
+      workflowEventId: eventId.id,
+      status: payload.status,
+      metrics: payload.metrics,
+      artifactCount: createdArtifacts.length,
+    })
+    res.status(201).json({
+      ok: true,
+      workflowEventId: eventId.id,
+      eventLogId,
+      receiptId: receipt.id,
+      artifactsCreated: createdArtifacts.length,
+      artifactIds: createdArtifacts,
+    })
   } catch (err) {
     next(err)
   }

@@ -14,16 +14,31 @@ function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-function mcpHeaders(): HeadersInit {
-  const bearer = process.env.MCP_BEARER_TOKEN?.trim();
+function bearerHeaders(token: string | null | undefined): HeadersInit {
+  const bearer = token?.trim();
   return bearer ? { Authorization: bearer.startsWith("Bearer ") ? bearer : `Bearer ${bearer}` } : {};
 }
 
-async function mcpGet(path: string): Promise<McpFetchResult> {
-  const mcpUrl = trimTrailingSlash(process.env.MCP_SERVER_URL ?? "http://localhost:7100");
+function mcpHeaders(): HeadersInit {
+  return bearerHeaders(process.env.MCP_BEARER_TOKEN);
+}
+
+function llmGatewayHeaders(): HeadersInit {
+  return bearerHeaders(process.env.LLM_GATEWAY_BEARER);
+}
+
+function localDevAllowsAnonymousRead(): boolean {
+  if (process.env.LLM_SETTINGS_REQUIRE_AUTH === "true") return false;
+  if (process.env.LLM_SETTINGS_REQUIRE_AUTH === "false") return true;
+  const env = (process.env.SINGULARITY_ENV ?? process.env.APP_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
+  return !["production", "staging", "perf"].includes(env);
+}
+
+async function getJson(baseUrl: string, path: string, headers: HeadersInit = {}): Promise<McpFetchResult> {
+  const trimmedBase = trimTrailingSlash(baseUrl);
   try {
-    const res = await fetch(`${mcpUrl}${path}`, {
-      headers: path === "/health" ? {} : mcpHeaders(),
+    const res = await fetch(`${trimmedBase}${path}`, {
+      headers,
       cache: "no-store",
     });
     const text = await res.text();
@@ -43,8 +58,23 @@ async function mcpGet(path: string): Promise<McpFetchResult> {
     }
     return { ok: true, status: res.status, data };
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : "MCP request failed" };
+    return { ok: false, error: err instanceof Error ? err.message : "runtime request failed" };
   }
+}
+
+async function mcpGet(path: string): Promise<McpFetchResult> {
+  const mcpUrl = trimTrailingSlash(process.env.MCP_SERVER_URL ?? "http://mcp-server:7100");
+  return getJson(mcpUrl, path, path === "/health" ? {} : mcpHeaders());
+}
+
+async function llmGatewayGet(path: string): Promise<McpFetchResult> {
+  const gatewayUrl = trimTrailingSlash(process.env.LLM_GATEWAY_URL ?? process.env.LLM_GATEWAY_INTERNAL_URL ?? "http://llm-gateway:8001");
+  return getJson(gatewayUrl, path, path === "/health" ? {} : llmGatewayHeaders());
+}
+
+async function contextFabricGet(path: string): Promise<McpFetchResult> {
+  const contextFabricUrl = trimTrailingSlash(process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000");
+  return getJson(contextFabricUrl, path);
 }
 
 function configuredPath(envKey: string, fallback: string): string {
@@ -52,24 +82,39 @@ function configuredPath(envKey: string, fallback: string): string {
 }
 
 export async function GET(request: NextRequest) {
-  const authFailure = await requireVerifiedCallerBearer(request, "LLM settings");
-  if (authFailure) return authFailure;
+  if (!localDevAllowsAnonymousRead()) {
+    const authFailure = await requireVerifiedCallerBearer(request, "LLM settings");
+    if (authFailure) return authFailure;
+  }
 
-  const mcpUrl = trimTrailingSlash(process.env.MCP_SERVER_URL ?? "http://localhost:7100");
+  const mcpUrl = trimTrailingSlash(process.env.MCP_SERVER_URL ?? "http://mcp-server:7100");
+  const llmGatewayUrl = trimTrailingSlash(process.env.LLM_GATEWAY_URL ?? process.env.LLM_GATEWAY_INTERNAL_URL ?? "http://llm-gateway:8001");
+  const contextFabricUrl = trimTrailingSlash(process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000");
   const rawEventHorizonProvider = process.env.EVENT_HORIZON_PROVIDER || process.env.NEXT_PUBLIC_EVENT_HORIZON_PROVIDER || null;
   const rawEventHorizonModel = process.env.EVENT_HORIZON_MODEL || process.env.NEXT_PUBLIC_EVENT_HORIZON_MODEL || null;
-  const [health, providers, models, workspaceStats] = await Promise.all([
+  const [gatewayHealth, providers, models, mcpHealth, workspaceStats, contextFabricHealth] = await Promise.all([
+    llmGatewayGet("/health"),
+    llmGatewayGet("/llm/providers"),
+    llmGatewayGet("/llm/models"),
     mcpGet("/health"),
-    mcpGet("/llm/providers"),
-    mcpGet("/llm/models"),
     mcpGet("/mcp/workspaces/stats"),
+    contextFabricGet("/health"),
   ]);
 
   return NextResponse.json({
     generatedAt: new Date().toISOString(),
-    gatewayUrl: mcpUrl,
+    topology: {
+      mode: "dial-in-runtime",
+      hub: "context-fabric",
+      llmGateway: "separate-container-or-remote",
+      mcpRuntime: "separate-container-or-remote",
+    },
+    gatewayUrl: llmGatewayUrl,
+    llmGatewayUrl,
     mcpUrl,
-    authMode: process.env.MCP_BEARER_TOKEN?.trim() ? "bearer" : "none",
+    contextFabricUrl,
+    authMode: process.env.LLM_GATEWAY_BEARER?.trim() ? "bearer" : "none",
+    mcpAuthMode: process.env.MCP_BEARER_TOKEN?.trim() ? "bearer" : "none",
     configuredPaths: {
       providerConfigPath: configuredPath("LLM_PROVIDER_CONFIG_PATH", "/etc/singularity/llm-providers.json"),
       modelCatalogPath: configuredPath("LLM_MODEL_CATALOG_PATH", "/etc/singularity/llm-models.json"),
@@ -84,7 +129,10 @@ export async function GET(request: NextRequest) {
         legacyEventHorizonModel: rawEventHorizonModel,
       } : {}),
     },
-    health,
+    health: gatewayHealth,
+    gatewayHealth,
+    mcpHealth,
+    contextFabricHealth,
     providers,
     models,
     workspaceStats,

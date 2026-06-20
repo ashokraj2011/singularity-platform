@@ -250,13 +250,15 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
     onError: (e) => toast.error(errText(e, 'Complete & advance failed')),
   })
 
-  // Export the run as a portable Copilot SDLC YAML (run it on the Copilot client).
-  const downloadYaml = useCallback(async () => {
-    const res = await api.get(`/workflow-instances/${instanceId}/export/copilot-yaml`, { responseType: 'blob' })
+  // Export the run as a portable Copilot workflow + executable local runner.
+  const downloadCopilotExport = useCallback(async (kind: 'yaml' | 'runner') => {
+    const path = kind === 'yaml' ? 'copilot-yaml' : 'copilot-runner.sh'
+    const ext = kind === 'yaml' ? 'yaml' : 'sh'
+    const res = await api.get(`/workflow-instances/${instanceId}/export/${path}`, { responseType: 'blob' })
     const url = URL.createObjectURL(res.data as Blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `copilot-sdlc-${instanceId.slice(0, 8)}.yaml`
+    a.download = `copilot-sdlc-${instanceId.slice(0, 8)}.${ext}`
     document.body.appendChild(a); a.click(); a.remove()
     URL.revokeObjectURL(url)
   }, [instanceId])
@@ -315,7 +317,8 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
         <button onClick={onBack} style={topBtn}><ArrowLeft size={13} /> Back</button>
         <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{runName}</div>
         <span style={{ fontSize: 11, fontWeight: 700, color: st(instanceStatus).color, padding: '3px 9px', borderRadius: 20, background: st(instanceStatus).bg, border: `1px solid ${st(instanceStatus).ring}` }}>{instanceStatus}</span>
-        <button onClick={downloadYaml} style={topBtn} title="Download this SDLC as a Copilot workflow YAML to run on the Copilot client"><Download size={13} /> YAML</button>
+        <button onClick={() => downloadCopilotExport('yaml')} style={topBtn} title="Download this run as a Copilot workflow YAML with artifact/metric pushback instructions"><Download size={13} /> Copilot YAML</button>
+        <button onClick={() => downloadCopilotExport('runner')} style={topBtn} title="Download an executable script that runs Copilot CLI and posts artifacts/metrics back to the platform"><Download size={13} /> Runner</button>
         <button onClick={() => { setShowCatalog(c => !c); setSelected(null) }} style={{ ...topBtn, ...(showCatalog ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }}><Library size={13} /> Catalog</button>
         <button onClick={onTimeline} style={topBtn}><List size={13} /> Timeline</button>
       </div>
