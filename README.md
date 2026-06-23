@@ -200,7 +200,15 @@ Audit & Governance API   http://localhost:8500  (--profile audit or remote)
    ```
 2. **Token errors after a long idle**: IAM tokens expire. Re-login through `http://localhost:5180/identity` and refresh the current page.
 3. **Port collisions** — `lsof -i :5180` if Platform Web will not start; another stack from a previous demo might still be holding it.
-4. **Context Fabric crashes with `Read-only file system: '/data'` and Platform Web never comes up**: pull the latest repo, rebuild the affected images, and recreate the core services so Context API uses Postgres or the mounted `/app/data` fallback instead of legacy `/data` SQLite paths:
+4. **Context Fabric crashes with `Read-only file system: '/data'` and Platform Web never comes up**: pull the latest repo so Context API uses Postgres or the writable app-local fallback instead of legacy `/data` SQLite paths.
+   For bare-metal:
+   ```bash
+   git pull
+   bin/bare-metal-apps.sh down
+   bin/bare-metal-apps.sh up <db_user> [db_password] [db_host] [db_port]
+   tail -f logs/context-api.log logs/platform-web.log
+   ```
+   For Docker:
    ```bash
    git pull
    docker compose build context-api platform-web
