@@ -28,13 +28,23 @@ type Json = Record<string, unknown>
 
 async function hasMainParent(workbenchId: string): Promise<string[]> {
   const callers = await (prisma as any).workflowDesignNode.findMany({
-    where: { nodeType: 'CALL_WORKFLOW', config: { path: ['workflowId'], equals: workbenchId } },
-    select: { workflowId: true },
+    where: { nodeType: 'CALL_WORKFLOW' },
+    select: { workflowId: true, config: true },
   })
-  const parentIds = [...new Set(callers.map((c: any) => c.workflowId))]
+  const parentIds = [...new Set(callers
+    .filter((c: any) => callsWorkbench(c.config, workbenchId))
+    .map((c: any) => c.workflowId))]
   if (parentIds.length === 0) return []
   const mains = await prisma.workflow.findMany({ where: { id: { in: parentIds }, profile: 'main' }, select: { name: true } })
   return mains.map((m) => m.name)
+}
+
+function callsWorkbench(config: unknown, workbenchId: string): boolean {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return false
+  const cfg = config as Record<string, any>
+  return cfg.workflowId === workbenchId
+    || cfg.templateId === workbenchId
+    || cfg.standard?.templateId === workbenchId
 }
 
 async function seedParent(wb: { id: string; name: string; capabilityId: string | null; teamId: string; workflowTypeKey: string }) {
@@ -77,6 +87,14 @@ async function seedParent(wb: { id: string; name: string; capabilityId: string |
   return wfId
 }
 
+async function repointDirectRoutingPolicies(workbenchId: string, parentId: string): Promise<number> {
+  const result = await prisma.workItemRoutingPolicy.updateMany({
+    where: { workflowId: workbenchId, isActive: true },
+    data: { workflowId: parentId },
+  })
+  return result.count
+}
+
 function graph(nStart: string, nCall: string, nEnd: string) {
   return {
     nodes: [{ id: nStart, type: 'START' }, { id: nCall, type: 'CALL_WORKFLOW' }, { id: nEnd, type: 'END' }],
@@ -102,10 +120,21 @@ async function main() {
   let created = 0
   for (const wb of wbs) {
     const parents = await hasMainParent(wb.id)
-    if (parents.length) { console.log(`  ✓ "${wb.name}" already driven by: ${parents.join(', ')}`); continue }
-    const wfId = await seedParent(wb)
-    created++
-    console.log(`  + seeded Main parent "Run: ${wb.name}" (${wfId})`)
+    let wfId: string
+    if (parents.length) {
+      console.log(`  ✓ "${wb.name}" already driven by: ${parents.join(', ')}`)
+      const preferred = await prisma.workflow.findFirst({
+        where: { name: parents[0], profile: 'main' },
+        select: { id: true },
+      })
+      wfId = preferred?.id ?? await seedParent(wb)
+    } else {
+      wfId = await seedParent(wb)
+      created++
+      console.log(`  + seeded Main parent "Run: ${wb.name}" (${wfId})`)
+    }
+    const repointed = await repointDirectRoutingPolicies(wb.id, wfId)
+    if (repointed) console.log(`    ↳ repointed ${repointed} direct routing polic${repointed === 1 ? 'y' : 'ies'} to the Main parent`)
   }
   console.log(`Done. ${created} parent(s) created, ${wbs.length - created} already had one.`)
 }

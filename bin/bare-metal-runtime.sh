@@ -15,6 +15,7 @@ cd "$ROOT"
 LOG_DIR="$ROOT/logs"
 PID_FILE="$ROOT/.pids.runtime"
 ENV_FILE="$ROOT/.env.local"
+DEVICE_TOKEN_FILE="${DEVICE_TOKEN_FILE:-$ROOT/.singularity/laptop-device-token}"
 
 C_BLUE=$'\033[1;34m'; C_GREEN=$'\033[1;32m'; C_YELLOW=$'\033[1;33m'
 C_RED=$'\033[1;31m';  C_DIM=$'\033[2m';      C_END=$'\033[0m'
@@ -67,6 +68,43 @@ select_python_bin() {
   err "bare-metal runtime requires Python >= ${PYTHON_MIN_VERSION}; found python3 ${found}."
   err "Install Python 3.11+ or run with SINGULARITY_PYTHON=/path/to/python3.11."
   exit 1
+}
+
+RUNTIME_PORT_SPECS=(
+  "8001:llm-gateway"
+  "7100:mcp-server"
+)
+
+free_port_specs() {
+  local scope="$1"; shift || true
+  local spec port label pids pid cmd
+  command -v lsof >/dev/null 2>&1 || { warn "lsof not found; cannot free $scope ports"; return 0; }
+  for spec in "$@"; do
+    [ -n "$spec" ] || continue
+    port="${spec%%:*}"
+    label="${spec#*:}"
+    pids=$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)
+    [ -n "$pids" ] || continue
+    for pid in $pids; do
+      cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
+      case "$cmd" in
+        *docker*|*Docker*|*vpnkit*)
+          warn "port $port ($label) is Docker-owned (pid $pid); leaving it alone"
+          continue
+          ;;
+      esac
+      dim "  freeing $label on :$port (pid $pid, $cmd)"
+      kill "$pid" 2>/dev/null || true
+      for _ in 1 2 3 4 5; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.2
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+        warn "force-killed $label on :$port (pid $pid)"
+      fi
+    done
+  done
 }
 
 load_laptop_env() {
@@ -124,6 +162,9 @@ load_platform_env() {
   export MCP_TOOL_GRANT_MODE="${MCP_TOOL_GRANT_MODE:-$(config_value mcpRuntime.toolGrantMode off)}"
   export MCP_REQUIRE_EFFECTIVE_CAPABILITIES="${MCP_REQUIRE_EFFECTIVE_CAPABILITIES:-$(config_value mcpRuntime.requireEffectiveCapabilities false)}"
   export TOOL_GRANT_SIGNING_SECRET="${TOOL_GRANT_SIGNING_SECRET:-$(config_value mcpRuntime.toolGrantSigningSecret dev-tool-grant-signing-secret-min-32-chars!!)}"
+  export IAM_BASE_URL="${IAM_BASE_URL:-http://localhost:8100/api/v1}"
+  export LOCAL_SUPER_ADMIN_EMAIL="${LOCAL_SUPER_ADMIN_EMAIL:-$(config_value identity.bootstrapEmail admin@singularity.local)}"
+  export LOCAL_SUPER_ADMIN_PASSWORD="${LOCAL_SUPER_ADMIN_PASSWORD:-$(config_value identity.bootstrapPassword Admin1234!)}"
 
   export LLM_GATEWAY_URL="${LLM_GATEWAY_URL:-http://localhost:8001}"
   export LLM_PROVIDER_CONFIG_PATH="${LLM_PROVIDER_CONFIG_PATH:-$ROOT/.singularity/llm-providers.json}"
@@ -135,12 +176,6 @@ load_platform_env() {
   export PROMPT_COMPOSER_SERVICE_TOKEN="${PROMPT_COMPOSER_SERVICE_TOKEN:-${WORKGRAPH_PROXY_SERVICE_TOKEN:-}}"
   export LEARNING_SERVICE_TOKEN="${LEARNING_SERVICE_TOKEN:-$AUDIT_GOV_SERVICE_TOKEN}"
 
-  if [ -z "${SINGULARITY_RUNTIME_TOKEN:-}" ] && [ -n "${SINGULARITY_DEVICE_TOKEN:-}" ]; then
-    export SINGULARITY_RUNTIME_TOKEN="$SINGULARITY_DEVICE_TOKEN"
-  fi
-  if [ -z "${SINGULARITY_RUNTIME_TOKEN:-}" ] && [ -f "$ROOT/.singularity/laptop-device-token" ]; then
-    export SINGULARITY_RUNTIME_TOKEN="$(cat "$ROOT/.singularity/laptop-device-token")"
-  fi
 }
 
 ensure_provider_configs() {
@@ -187,22 +222,7 @@ ensure_node_runtime() {
 }
 
 free_ports() {
-  local ports=(8001 7100)
-  for port in "${ports[@]}"; do
-    pids=$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)
-    for pid in $pids; do
-      cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
-      case "$cmd" in
-        *docker*|*Docker*|*vpnkit*)
-          warn "port $port is Docker-owned (pid $pid); leaving it alone"
-          continue
-          ;;
-      esac
-      kill "$pid" 2>/dev/null || true
-      sleep 0.2
-      kill -9 "$pid" 2>/dev/null || true
-    done
-  done
+  free_port_specs "bare-metal runtime" "${RUNTIME_PORT_SPECS[@]}"
 }
 
 boot() {
@@ -238,6 +258,161 @@ PY
   printf '%s' "${code:-000}"
 }
 
+runtime_token_is_fresh() {
+  local token="$1"
+  [ -n "$token" ] || return 1
+  TOKEN="$token" "${SINGULARITY_PYTHON_BIN:-python3}" - <<'PY' >/dev/null 2>&1
+import base64
+import json
+import os
+import time
+
+token = os.environ.get("TOKEN", "")
+try:
+    payload_b64 = token.split(".")[1]
+    payload_b64 += "=" * (-len(payload_b64) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
+except Exception:
+    raise SystemExit(1)
+if payload.get("kind") not in {"runtime", "device"}:
+    raise SystemExit(1)
+exp = payload.get("exp")
+if exp is not None and float(exp) <= time.time() + 300:
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
+load_runtime_token() {
+  local token source
+  if [ -n "${SINGULARITY_RUNTIME_TOKEN:-}" ]; then
+    token="$SINGULARITY_RUNTIME_TOKEN"
+    source="SINGULARITY_RUNTIME_TOKEN"
+  elif [ -n "${SINGULARITY_DEVICE_TOKEN:-}" ]; then
+    token="$SINGULARITY_DEVICE_TOKEN"
+    source="SINGULARITY_DEVICE_TOKEN"
+  elif [ -s "$DEVICE_TOKEN_FILE" ]; then
+    token="$(tr -d '\n' < "$DEVICE_TOKEN_FILE")"
+    source="$DEVICE_TOKEN_FILE"
+  else
+    return 1
+  fi
+  if runtime_token_is_fresh "$token"; then
+    export SINGULARITY_RUNTIME_TOKEN="$token"
+    export SINGULARITY_DEVICE_TOKEN="$token"
+    ok "runtime bridge token loaded from $source"
+    return 0
+  fi
+  warn "runtime bridge token from $source is missing, expired, or invalid"
+  if [ "$source" = "$DEVICE_TOKEN_FILE" ]; then
+    rm -f "$DEVICE_TOKEN_FILE"
+  else
+    unset SINGULARITY_RUNTIME_TOKEN SINGULARITY_DEVICE_TOKEN
+  fi
+  return 1
+}
+
+mint_runtime_token_via_iam() {
+  case "${SINGULARITY_AUTO_MINT_RUNTIME_TOKEN:-true}" in
+    0|false|FALSE|no|NO) return 1 ;;
+  esac
+  local iam_base="${IAM_BASE_URL:-http://localhost:8100/api/v1}"
+  local email="${SINGULARITY_RUNTIME_USER_EMAIL:-${LOCAL_SUPER_ADMIN_EMAIL:-admin@singularity.local}}"
+  local password="${SINGULARITY_RUNTIME_USER_PASSWORD:-${LOCAL_SUPER_ADMIN_PASSWORD:-Admin1234!}}"
+  local runtime_id="${SINGULARITY_RUNTIME_ID:-baremetal-mcp-runtime}"
+  local runtime_name="${SINGULARITY_RUNTIME_NAME:-bare-metal-mcp-runtime}"
+  local code
+  code=$(http_code "${iam_base%/}/health" 3)
+  if [ "$code" != "200" ] && [ "$code" != "204" ]; then
+    warn "IAM is not ready at ${iam_base%/}/health; cannot auto-mint runtime bridge token"
+    return 1
+  fi
+  mkdir -p "$(dirname "$DEVICE_TOKEN_FILE")"
+  IAM_BASE_URL="${iam_base%/}" \
+  RUNTIME_TOKEN_EMAIL="$email" \
+  RUNTIME_TOKEN_PASSWORD="$password" \
+  RUNTIME_TOKEN_FILE="$DEVICE_TOKEN_FILE" \
+  RUNTIME_ID="$runtime_id" \
+  RUNTIME_NAME="$runtime_name" \
+  RUNTIME_TENANT_ID="${SINGULARITY_TENANT_ID:-}" \
+  RUNTIME_SCOPE="${SINGULARITY_RUNTIME_SCOPE:-user}" \
+  RUNTIME_CAPABILITY_TAGS="${SINGULARITY_RUNTIME_CAPABILITY_TAGS:-mcp,tools,llm}" \
+  "${SINGULARITY_PYTHON_BIN:-python3}" - <<'PY'
+import json
+import os
+import stat
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+base = os.environ["IAM_BASE_URL"].rstrip("/")
+email = os.environ["RUNTIME_TOKEN_EMAIL"]
+password = os.environ["RUNTIME_TOKEN_PASSWORD"]
+token_file = Path(os.environ["RUNTIME_TOKEN_FILE"])
+capability_tags = [item.strip() for item in os.environ.get("RUNTIME_CAPABILITY_TAGS", "").split(",") if item.strip()]
+
+def post_json(path: str, payload: dict, bearer: str | None = None) -> dict:
+    headers = {"content-type": "application/json"}
+    if bearer:
+        headers["authorization"] = f"Bearer {bearer}"
+    req = urllib.request.Request(
+        f"{base}{path}",
+        data=json.dumps(payload).encode(),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            return json.loads(res.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:500]
+        print(f"IAM {path} failed with HTTP {exc.code}: {detail}", file=sys.stderr)
+        raise SystemExit(1)
+    except Exception as exc:
+        print(f"IAM {path} failed: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+
+login = post_json("/auth/local/login", {"email": email, "password": password})
+admin_token = login.get("access_token")
+if not admin_token:
+    print("IAM login did not return an access_token", file=sys.stderr)
+    raise SystemExit(1)
+
+payload = {
+    "device_id": os.environ["RUNTIME_ID"],
+    "device_name": os.environ["RUNTIME_NAME"],
+    "token_kind": "runtime",
+    "runtime_type": "mcp",
+    "runtime_scope": os.environ.get("RUNTIME_SCOPE") or "user",
+    "allowed_frame_types": ["tool-run", "model-run", "code-context", "invoke"],
+    "capability_tags": capability_tags or ["mcp", "tools", "llm"],
+    "ttl_days": 90,
+}
+tenant_id = os.environ.get("RUNTIME_TENANT_ID", "").strip()
+if tenant_id:
+    payload["tenant_id"] = tenant_id
+
+minted = post_json("/auth/device-token", payload, admin_token)
+runtime_token = minted.get("access_token")
+if not runtime_token:
+    print("IAM device-token mint did not return an access_token", file=sys.stderr)
+    raise SystemExit(1)
+token_file.write_text(runtime_token + "\n")
+token_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+print(f"minted runtime JWT for user_id={minted.get('user_id')} runtime_id={minted.get('device_id')} -> {token_file}")
+PY
+}
+
+ensure_runtime_token() {
+  load_runtime_token && return 0
+  if mint_runtime_token_via_iam; then
+    load_runtime_token && return 0
+  fi
+  warn "no runtime bridge token available; MCP will start in direct HTTP debug mode unless you set SINGULARITY_RUNTIME_TOKEN"
+  return 1
+}
+
 cmd_up() {
   require node
   require npm
@@ -251,6 +426,7 @@ cmd_up() {
   : > "$PID_FILE"
 
   load_platform_env
+  ensure_runtime_token || true
   ensure_provider_configs
   ensure_python_runtime
   ensure_node_runtime
@@ -304,6 +480,7 @@ cmd_down() {
 cmd_smoke() {
   local fail=0
   load_platform_env
+  load_runtime_token >/dev/null 2>&1 || true
   for url in "http://localhost:8001/health"; do
     code=$(http_code "$url" 3)
     if [ "$code" = "200" ] || [ "$code" = "304" ]; then

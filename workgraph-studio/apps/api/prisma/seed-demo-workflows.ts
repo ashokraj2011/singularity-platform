@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client'
+import { promoteWorkbenchToTables } from '../src/modules/workflow/lib/promote-workbench'
 
 /**
  * Demo workflow + workbench + artifact seed (bare-metal / demo bring-up).
@@ -278,6 +279,7 @@ export async function seedDemoWorkflows(prisma: AnyPrisma) {
     await upsertNode(prisma, { id: nStart, workflowId: wfId, phaseId, nodeType: 'START', label: 'Start', positionX: 80, positionY: 160 })
     await upsertNode(prisma, { id: nWb, workflowId: wfId, phaseId, nodeType: 'WORKBENCH_TASK', label: 'SDLC Workbench', config: wbConfig, positionX: 320, positionY: 160 })
     await upsertNode(prisma, { id: nEnd, workflowId: wfId, phaseId, nodeType: 'END', label: 'End', positionX: 600, positionY: 160 })
+    await promoteWorkbenchToTables(prisma, nWb, wbConfig)
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000010', workflowId: wfId, sourceNodeId: nStart, targetNodeId: nWb })
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000011', workflowId: wfId, sourceNodeId: nWb, targetNodeId: nEnd })
   }
@@ -300,6 +302,7 @@ export async function seedDemoWorkflows(prisma: AnyPrisma) {
     await upsertNode(prisma, { id: nStart, workflowId: wfId, phaseId, nodeType: 'START', label: 'Start', positionX: 80, positionY: 160 })
     await upsertNode(prisma, { id: nWb, workflowId: wfId, phaseId, nodeType: 'WORKBENCH_TASK', label: 'Bug-fix Workbench', config: wbConfig, positionX: 320, positionY: 160 })
     await upsertNode(prisma, { id: nEnd, workflowId: wfId, phaseId, nodeType: 'END', label: 'End', positionX: 600, positionY: 160 })
+    await promoteWorkbenchToTables(prisma, nWb, wbConfig)
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000020', workflowId: wfId, sourceNodeId: nStart, targetNodeId: nWb })
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000021', workflowId: wfId, sourceNodeId: nWb, targetNodeId: nEnd })
   }

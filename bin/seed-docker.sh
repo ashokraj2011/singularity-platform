@@ -53,7 +53,7 @@ dc exec -T "$(composer_exec_service)" sh -c 'cd /app/apps/prompt-composer && npm
 echo "── 5/6  workgraph: artifact templates (idempotent)"
 dc exec -T workgraph-api npx prisma db seed || true
 
-echo "── 6/6  workgraph: SDLC workflows (workbench → main → copilot)"
+echo "── 6/6  workgraph: SDLC workflows (workbench → main → copilot → parent wrappers)"
 dc exec -T workgraph-api npx tsx prisma/seed-sdlc-workbench.ts || echo "   ⚠ workbench seed failed"
 dc exec -T workgraph-api npx tsx prisma/seed-sdlc-main.ts      || echo "   ⚠ main seed failed"
 dc exec -T \
@@ -61,6 +61,7 @@ dc exec -T \
   -e SEED_PREFER_LAPTOP="$PREFER_LAPTOP" \
   ${SEED_COPILOT_REPO_URL:+-e SEED_COPILOT_REPO_URL="$SEED_COPILOT_REPO_URL"} \
   workgraph-api npx tsx prisma/seed-sdlc-copilot.ts
+dc exec -T workgraph-api npx tsx prisma/seed-workbench-parents.ts || echo "   ⚠ workbench parent seed failed"
 
 echo
 echo "✓ Seeded. Open  http://localhost:5180  and log in:"

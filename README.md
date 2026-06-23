@@ -97,7 +97,7 @@ The local configuration flow is intentionally boring:
 bin/seed-docker.sh
 ```
 
-Seeds the full Docker demo in dependency order: IAM teams/users/capabilities, common agent baselines and capability bindings, prompt-composer profiles, Workgraph artifacts/demo workflows, and SDLC workflows. Re-running is safe.
+Seeds the full Docker demo in dependency order: IAM teams/users/capabilities, common agent baselines and capability bindings, prompt-composer profiles, Workgraph artifacts/demo workflows, SDLC workflows, and main-profile parent wrappers for workbench workflows. Re-running is safe. Doctor verifies the expected workflow set, runnable routing policies, linked workbench definitions, parent entry points, and orphan-free workbench rows.
 
 For direct database maintenance without Docker, use `seed/apply.sh <db_user> [db_password] [db_host] [db_port]` to apply the SQL seed bundle, then run the app-specific Prisma/TypeScript seeds documented in `bin/seed-docker.sh` or the bare-metal app launcher path.
 
@@ -288,7 +288,11 @@ bin/bare-metal-runtime.sh down    # stop only local runtime infra
 
 Idempotent — re-runs of `up` skip installs and DB creation if they already happened, just re-boots. `bin/bare-metal.sh` remains as a compatibility all-in-one launcher; prefer the split scripts for normal work. Defaults: `db_password` from `$PGPASSWORD` env or `postgres`, `db_host=localhost`, `db_port=5432`.
 
-The bare-metal path applies the same full seed bundle as Docker: SQL seeds, agent-runtime baseline templates, prompt-composer profiles, Workgraph demo artifacts/workflows, and SDLC workflows. Use `seed/apply.sh` only when you deliberately want the SQL-only portion.
+The launchers free only Singularity-owned app/runtime ports before boot. Storage ports (`5432`, `5434`, `9000`, `9001`) are never killed. Legacy/debug UI ports (`5174`, `5175`, `5176`, `5181`, `5182`, `8085`) are swept by default to clear old split-web processes; set `SINGULARITY_FREE_LEGACY_PORTS=0` if another local app owns one of those ports.
+
+Runtime bridge tokens are also bootstrapped for local bare-metal runs. `bin/bare-metal-runtime.sh up` and the compatibility all-in-one path first reuse `SINGULARITY_RUNTIME_TOKEN`, `SINGULARITY_DEVICE_TOKEN`, or `.singularity/laptop-device-token`; expired/invalid file tokens are discarded. When IAM is reachable, they auto-mint a 90-day `kind=runtime` MCP token through `/auth/device-token` using the configured local admin credentials and save it with `0600` permissions. Set `SINGULARITY_AUTO_MINT_RUNTIME_TOKEN=false` to disable that and require an explicit token.
+
+The bare-metal path applies the same full seed bundle as Docker: SQL seeds, agent-runtime baseline templates, prompt-composer profiles, Workgraph demo artifacts/workflows, SDLC workflows, and main-profile parent wrappers for workbench workflows. Use `seed/apply.sh` only when you deliberately want the SQL-only portion.
 
 The manual recipe below is what the script does under the hood — useful if you want to step through it or diverge.
 

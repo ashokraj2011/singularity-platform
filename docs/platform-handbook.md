@@ -815,13 +815,15 @@ bin/bare-metal-runtime.sh up  # optional local LLM Gateway + MCP
 
 `bin/bare-metal-apps.sh` starts all platform applications except MCP and LLM Gateway. `bin/bare-metal-runtime.sh` has its own PID file and owns only ports `8001` and `7100`. Both scripts require Python 3.11+ and prefer `SINGULARITY_PYTHON`, then `python3.12`, `python3.11`, and finally `python3` when it is new enough. If `.venv` was previously created with Python 3.9, the launchers recreate it before installing IAM or LLM Gateway dependencies.
 
+Before boot, the app launcher frees named Singularity app ports and leaves storage ports (`5432`, `5434`, `9000`, `9001`) alone. It also sweeps legacy split-frontend/debug ports by default so old local UIs cannot shadow Platform Web; set `SINGULARITY_FREE_LEGACY_PORTS=0` when another process intentionally owns one of those ports. The runtime launcher frees only `8001` (`llm-gateway`) and `7100` (`mcp-server`). Runtime bridge tokens are loaded from env or `.singularity/laptop-device-token`; if absent or expired, local bare-metal can auto-mint a `kind=runtime` token through IAM and save it with owner-only permissions. Disable that with `SINGULARITY_AUTO_MINT_RUNTIME_TOKEN=false`.
+
 ### 10.5 Apply Seeds
 
 ```bash
 bin/seed-docker.sh
 ```
 
-This applies the full Docker seed path in dependency order: IAM teams/users/capabilities, common agent baselines and capability bindings, prompt-composer profiles, Workgraph artifacts/demo workflows, and SDLC workflows. Seeds are designed to be safe to re-run. Use `seed/apply.sh <db_user> [db_password] [db_host] [db_port]` only for the SQL-only bare database seed path.
+This applies the full Docker seed path in dependency order: IAM teams/users/capabilities, common agent baselines and capability bindings, prompt-composer profiles, Workgraph artifacts/demo workflows, SDLC workflows, and main-profile parent wrappers for workbench workflows. Seeds are designed to be safe to re-run. Doctor verifies the expected workflow set, runnable routing policies, linked workbench definitions, parent entry points, and orphan-free workbench rows. Use `seed/apply.sh <db_user> [db_password] [db_host] [db_port]` only for the SQL-only bare database seed path.
 
 ### 10.6 Verify Health
 

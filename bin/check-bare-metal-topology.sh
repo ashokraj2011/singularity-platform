@@ -19,7 +19,6 @@ fail() { printf '%sFAIL%s %s\n' "$C_RED" "$C_END" "$*" >&2; failures=$((failures
 
 python3 - <<'PY'
 from pathlib import Path
-import re
 import sys
 
 bare = Path("bin/bare-metal.sh").read_text()
@@ -40,7 +39,9 @@ checks["bare-metal-runtime has independent pid file"] = (
     and 'PID_FILE="$ROOT/.pids"\n' not in runtime
 )
 checks["bare-metal-runtime frees only llm/mcp ports"] = (
-    'local ports=(8001 7100)' in runtime
+    'RUNTIME_PORT_SPECS=(' in runtime
+    and '"8001:llm-gateway"' in runtime
+    and '"7100:mcp-server"' in runtime
     and '5180' not in runtime
     and '3001' not in runtime
 )
@@ -69,20 +70,30 @@ checks["copilot switcher recognizes split runtime pid file"] = (
     and '[ -f "$ROOT/.pids.runtime" ] || [ -f "$ROOT/.pids" ]' in copilot
 )
 
-base_ports = re.search(r"local _ports_to_free=\(([^)]*)\)", bare, re.S)
 checks["bare-metal up base port sweep excludes llm/mcp"] = bool(
-    base_ports and "7100" not in base_ports.group(1).split() and "8001" not in base_ports.group(1).split()
+    'BARE_METAL_APP_PORT_SPECS=(' in bare
+    and '"8001:llm-gateway"' not in bare.split('BARE_METAL_APP_PORT_SPECS=(', 1)[1].split(')', 1)[0]
+    and '"7100:mcp-server"' not in bare.split('BARE_METAL_APP_PORT_SPECS=(', 1)[1].split(')', 1)[0]
 )
 checks["bare-metal up only sweeps llm/mcp outside split-runtime mode"] = (
-    'if [ "${SKIP_LOCAL_RUNTIME:-}" != "1" ]; then\n    _ports_to_free+=(7100 8001)' in bare
+    'if [ "${SKIP_LOCAL_RUNTIME:-}" != "1" ]; then\n    _ports_to_free+=("${BARE_METAL_RUNTIME_PORT_SPECS[@]}")' in bare
 )
 
-down_ports = re.search(r"local ports=\(([^)]*)\)", bare, re.S)
 checks["bare-metal down base port sweep excludes llm/mcp"] = bool(
-    down_ports and "7100" not in down_ports.group(1).split() and "8001" not in down_ports.group(1).split()
+    'local ports=(\n    "${BARE_METAL_APP_PORT_SPECS[@]}"' in bare
+    and '"8001:llm-gateway"' not in bare.split('BARE_METAL_APP_PORT_SPECS=(', 1)[1].split(')', 1)[0]
+    and '"7100:mcp-server"' not in bare.split('BARE_METAL_APP_PORT_SPECS=(', 1)[1].split(')', 1)[0]
 )
 checks["bare-metal down only sweeps llm/mcp outside split-runtime mode"] = (
-    'if [ -z "$SKIP_LOCAL_RUNTIME" ]; then ports+=(7100 8001); fi' in bare
+    'if [ -z "$SKIP_LOCAL_RUNTIME" ]; then\n    ports+=("${BARE_METAL_RUNTIME_PORT_SPECS[@]}")' in bare
+)
+checks["bare-metal runtime token is auto-minted through IAM"] = (
+    'ensure_runtime_token' in bare
+    and '/auth/device-token' in bare
+    and 'token_kind": "runtime"' in bare
+    and 'RUNTIME_TOKEN_FILE="$DEVICE_TOKEN_FILE"' in bare
+    and 'ensure_runtime_token' in runtime
+    and '/auth/device-token' in runtime
 )
 
 checks["bare-metal respects MCP_SERVER_URL"] = (

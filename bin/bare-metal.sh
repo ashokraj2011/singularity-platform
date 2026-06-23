@@ -42,6 +42,7 @@ cd "$ROOT"
 LOG_DIR="$ROOT/logs"
 PID_FILE="$ROOT/.pids"
 ENV_FILE="$ROOT/.env.local"
+DEVICE_TOKEN_FILE="${DEVICE_TOKEN_FILE:-$ROOT/.singularity/laptop-device-token}"
 
 # Laptop secrets (.env.laptop — Copilot BYOK key/model, GITHUB_TOKEN, git push
 # flags). Same file bin/laptop.sh and the desktop app read, so a bare-metal `up`
@@ -187,6 +188,224 @@ wait_http() {
   return 1
 }
 
+BARE_METAL_APP_PORT_SPECS=(
+  "3001:agent-service"
+  "3002:tool-service"
+  "3003:agent-runtime"
+  "3004:prompt-composer"
+  "5180:platform-web"
+  "8000:context-api"
+  "8080:workgraph-api"
+  "8100:iam-service"
+  "8500:audit-governance"
+)
+BARE_METAL_OPTIONAL_PORT_SPECS=(
+  "8002:context-memory"
+  "8010:formal-verifier"
+  "8011:prompt-compressor"
+  "8003:legacy-metrics-ledger"
+  "8101:legacy-pseudo-iam"
+)
+BARE_METAL_LEGACY_UI_PORT_SPECS=(
+  "5174:legacy-agent-web"
+  "5175:legacy-workgraph-web"
+  "5176:legacy-blueprint-workbench"
+  "5181:legacy-edge-gateway"
+  "5182:legacy-portal"
+  "8085:legacy-user-and-capability"
+)
+BARE_METAL_RUNTIME_PORT_SPECS=(
+  "8001:llm-gateway"
+  "7100:mcp-server"
+)
+
+free_port_specs() {
+  local scope="$1"; shift || true
+  local spec port label pids pid cmd
+  command -v lsof >/dev/null 2>&1 || { warn "lsof not found; cannot free $scope ports"; return 0; }
+  for spec in "$@"; do
+    [ -n "$spec" ] || continue
+    port="${spec%%:*}"
+    label="${spec#*:}"
+    pids=$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)
+    [ -n "$pids" ] || continue
+    for pid in $pids; do
+      cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
+      case "$cmd" in
+        *docker*|*Docker*|*vpnkit*)
+          warn "port $port ($label) is Docker-owned (pid $pid); leaving it alone"
+          continue
+          ;;
+      esac
+      dim "  freeing $label on :$port (pid $pid, $cmd)"
+      kill "$pid" 2>/dev/null || true
+      for _ in 1 2 3 4 5; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.2
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+        warn "force-killed $label on :$port (pid $pid)"
+      fi
+    done
+  done
+}
+
+runtime_token_is_fresh() {
+  local token="$1"
+  [ -n "$token" ] || return 1
+  TOKEN="$token" "${SINGULARITY_PYTHON_BIN:-python3}" - <<'PY' >/dev/null 2>&1
+import base64
+import json
+import os
+import time
+
+token = os.environ.get("TOKEN", "")
+try:
+    payload_b64 = token.split(".")[1]
+    payload_b64 += "=" * (-len(payload_b64) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
+except Exception:
+    raise SystemExit(1)
+if payload.get("kind") not in {"runtime", "device"}:
+    raise SystemExit(1)
+exp = payload.get("exp")
+if exp is not None and float(exp) <= time.time() + 300:
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
+load_runtime_token() {
+  local token source
+  if [ -n "${SINGULARITY_RUNTIME_TOKEN:-}" ]; then
+    token="$SINGULARITY_RUNTIME_TOKEN"
+    source="SINGULARITY_RUNTIME_TOKEN"
+  elif [ -n "${SINGULARITY_DEVICE_TOKEN:-}" ]; then
+    token="$SINGULARITY_DEVICE_TOKEN"
+    source="SINGULARITY_DEVICE_TOKEN"
+  elif [ -s "$DEVICE_TOKEN_FILE" ]; then
+    token="$(tr -d '\n' < "$DEVICE_TOKEN_FILE")"
+    source="$DEVICE_TOKEN_FILE"
+  else
+    return 1
+  fi
+  if runtime_token_is_fresh "$token"; then
+    export SINGULARITY_RUNTIME_TOKEN="$token"
+    export SINGULARITY_DEVICE_TOKEN="$token"
+    ok "runtime bridge token loaded from $source"
+    return 0
+  fi
+  warn "runtime bridge token from $source is missing, expired, or invalid"
+  if [ "$source" = "$DEVICE_TOKEN_FILE" ]; then
+    rm -f "$DEVICE_TOKEN_FILE"
+  else
+    unset SINGULARITY_RUNTIME_TOKEN SINGULARITY_DEVICE_TOKEN
+  fi
+  return 1
+}
+
+mint_runtime_token_via_iam() {
+  case "${SINGULARITY_AUTO_MINT_RUNTIME_TOKEN:-true}" in
+    0|false|FALSE|no|NO) return 1 ;;
+  esac
+  local iam_base="${IAM_BASE_URL:-http://localhost:8100/api/v1}"
+  local email="${SINGULARITY_RUNTIME_USER_EMAIL:-${LOCAL_SUPER_ADMIN_EMAIL:-admin@singularity.local}}"
+  local password="${SINGULARITY_RUNTIME_USER_PASSWORD:-${LOCAL_SUPER_ADMIN_PASSWORD:-Admin1234!}}"
+  local runtime_id="${SINGULARITY_RUNTIME_ID:-baremetal-mcp-runtime}"
+  local runtime_name="${SINGULARITY_RUNTIME_NAME:-bare-metal-mcp-runtime}"
+  local code
+  code=$(http_code "${iam_base%/}/health" 3)
+  if [ "$code" != "200" ] && [ "$code" != "204" ]; then
+    warn "IAM is not ready at ${iam_base%/}/health; cannot auto-mint runtime bridge token"
+    return 1
+  fi
+  mkdir -p "$(dirname "$DEVICE_TOKEN_FILE")"
+  IAM_BASE_URL="${iam_base%/}" \
+  RUNTIME_TOKEN_EMAIL="$email" \
+  RUNTIME_TOKEN_PASSWORD="$password" \
+  RUNTIME_TOKEN_FILE="$DEVICE_TOKEN_FILE" \
+  RUNTIME_ID="$runtime_id" \
+  RUNTIME_NAME="$runtime_name" \
+  RUNTIME_TENANT_ID="${SINGULARITY_TENANT_ID:-}" \
+  RUNTIME_SCOPE="${SINGULARITY_RUNTIME_SCOPE:-user}" \
+  RUNTIME_CAPABILITY_TAGS="${SINGULARITY_RUNTIME_CAPABILITY_TAGS:-mcp,tools,llm}" \
+  "${SINGULARITY_PYTHON_BIN:-python3}" - <<'PY'
+import json
+import os
+import stat
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+base = os.environ["IAM_BASE_URL"].rstrip("/")
+email = os.environ["RUNTIME_TOKEN_EMAIL"]
+password = os.environ["RUNTIME_TOKEN_PASSWORD"]
+token_file = Path(os.environ["RUNTIME_TOKEN_FILE"])
+capability_tags = [item.strip() for item in os.environ.get("RUNTIME_CAPABILITY_TAGS", "").split(",") if item.strip()]
+
+def post_json(path: str, payload: dict, bearer: str | None = None) -> dict:
+    headers = {"content-type": "application/json"}
+    if bearer:
+        headers["authorization"] = f"Bearer {bearer}"
+    req = urllib.request.Request(
+        f"{base}{path}",
+        data=json.dumps(payload).encode(),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            return json.loads(res.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:500]
+        print(f"IAM {path} failed with HTTP {exc.code}: {detail}", file=sys.stderr)
+        raise SystemExit(1)
+    except Exception as exc:
+        print(f"IAM {path} failed: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+
+login = post_json("/auth/local/login", {"email": email, "password": password})
+admin_token = login.get("access_token")
+if not admin_token:
+    print("IAM login did not return an access_token", file=sys.stderr)
+    raise SystemExit(1)
+
+payload = {
+    "device_id": os.environ["RUNTIME_ID"],
+    "device_name": os.environ["RUNTIME_NAME"],
+    "token_kind": "runtime",
+    "runtime_type": "mcp",
+    "runtime_scope": os.environ.get("RUNTIME_SCOPE") or "user",
+    "allowed_frame_types": ["tool-run", "model-run", "code-context", "invoke"],
+    "capability_tags": capability_tags or ["mcp", "tools", "llm"],
+    "ttl_days": 90,
+}
+tenant_id = os.environ.get("RUNTIME_TENANT_ID", "").strip()
+if tenant_id:
+    payload["tenant_id"] = tenant_id
+
+minted = post_json("/auth/device-token", payload, admin_token)
+runtime_token = minted.get("access_token")
+if not runtime_token:
+    print("IAM device-token mint did not return an access_token", file=sys.stderr)
+    raise SystemExit(1)
+token_file.write_text(runtime_token + "\n")
+token_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
+print(f"minted runtime JWT for user_id={minted.get('user_id')} runtime_id={minted.get('device_id')} -> {token_file}")
+PY
+}
+
+ensure_runtime_token() {
+  load_runtime_token && return 0
+  if mint_runtime_token_via_iam; then
+    load_runtime_token && return 0
+  fi
+  warn "no runtime bridge token available; MCP will start in direct HTTP debug mode unless you set SINGULARITY_RUNTIME_TOKEN"
+  return 1
+}
+
 # ── Subcommands ────────────────────────────────────────────────────────────
 
 cmd_up() {
@@ -212,25 +431,17 @@ cmd_up() {
   # touch the databases. Storage ports (5432/5434/9000/9001) are EXCLUDED on
   # purpose: those are your Postgres/MinIO, not ours to kill.
   info "freeing our service ports…"
-  local _ports_to_free=(3001 3002 3003 3004 5174 5175 5176 5180 5181 5182 8000 8002 8003 8010 8080 8085 8100 8101 8500)
-  if [ "${SKIP_LOCAL_RUNTIME:-}" != "1" ]; then
-    _ports_to_free+=(7100 8001)
+  local _ports_to_free=(
+    "${BARE_METAL_APP_PORT_SPECS[@]}"
+    "${BARE_METAL_OPTIONAL_PORT_SPECS[@]}"
+  )
+  if [ "${SINGULARITY_FREE_LEGACY_PORTS:-1}" != "0" ]; then
+    _ports_to_free+=("${BARE_METAL_LEGACY_UI_PORT_SPECS[@]}")
   fi
-  for _p in "${_ports_to_free[@]}"; do
-    _pids=$(lsof -ti tcp:"$_p" -sTCP:LISTEN 2>/dev/null || true)
-    for _pid in $_pids; do
-      _cmd=$(ps -p "$_pid" -o comm= 2>/dev/null || echo "?")
-      case "$_cmd" in
-        *docker*|*Docker*|*vpnkit*)
-          warn "port $_p is Docker-owned (pid $_pid); leaving it alone"
-          continue
-          ;;
-      esac
-      kill "$_pid" 2>/dev/null || true
-      sleep 0.2
-      kill -9 "$_pid" 2>/dev/null || true
-    done
-  done
+  if [ "${SKIP_LOCAL_RUNTIME:-}" != "1" ]; then
+    _ports_to_free+=("${BARE_METAL_RUNTIME_PORT_SPECS[@]}")
+  fi
+  free_port_specs "bare-metal" "${_ports_to_free[@]}"
 
   info "using Postgres at ${db_user}@${db_host}:${db_port}"
   WORKGRAPH_APP_DB_USER="${WORKGRAPH_APP_DB_USER:-workgraph_app}"
@@ -666,7 +877,8 @@ SQL
        DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx ts-node --transpile-only prisma/seed-sdlc-main.ts >/dev/null 2>&1 \
     && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 \
        SEED_PREFER_LAPTOP="$SEED_PL" SEED_GOVERNANCE_MODE="${SEED_GOVERNANCE_MODE:-fail_open}" \
-       DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx ts-node --transpile-only prisma/seed-sdlc-copilot.ts >/dev/null 2>&1 ) \
+       DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx ts-node --transpile-only prisma/seed-sdlc-copilot.ts >/dev/null 2>&1 \
+    && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx ts-node --transpile-only prisma/seed-workbench-parents.ts >/dev/null 2>&1 ) \
     || warn "SDLC Delivery seed had warnings — run manually: (cd workgraph-studio/apps/api && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=\"\$DATABASE_URL_WORKGRAPH_ADMIN\" npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts && … seed-sdlc-main.ts)"
 
   # ── 5. Python deps ─────────────────────────────────────────────────────────
@@ -726,12 +938,7 @@ SQL
   # instead of the GitHub Copilot quota. Export COPILOT_PROVIDER_TYPE=anthropic,
   # COPILOT_PROVIDER_BASE_URL, COPILOT_PROVIDER_API_KEY, COPILOT_MODEL then re-run up.
   if [ "${SKIP_LOCAL_RUNTIME:-0}" != "1" ]; then
-    if [ -z "${SINGULARITY_RUNTIME_TOKEN:-}" ] && [ -n "${SINGULARITY_DEVICE_TOKEN:-}" ]; then
-      export SINGULARITY_RUNTIME_TOKEN="$SINGULARITY_DEVICE_TOKEN"
-    fi
-    if [ -z "${SINGULARITY_RUNTIME_TOKEN:-}" ] && [ -f "$ROOT/.singularity/laptop-device-token" ]; then
-      export SINGULARITY_RUNTIME_TOKEN="$(cat "$ROOT/.singularity/laptop-device-token")"
-    fi
+    ensure_runtime_token || true
     MCP_COMMON="cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" MCP_DEFAULT_GOVERNANCE_MODE=\"$MCP_DEFAULT_GOVERNANCE_MODE\" MCP_TOOL_GRANT_MODE=\"$MCP_TOOL_GRANT_MODE\" MCP_REQUIRE_EFFECTIVE_CAPABILITIES=\"$MCP_REQUIRE_EFFECTIVE_CAPABILITIES\" TOOL_GRANT_SIGNING_SECRET=\"$TOOL_GRANT_SIGNING_SECRET\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_SANDBOX_ROOT=\"$MCP_WS\" MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" LEARNING_SERVICE_TOKEN=\"$LEARNING_SERVICE_TOKEN\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" ${COPILOT_PROVIDER_TYPE:+COPILOT_PROVIDER_TYPE=\"$COPILOT_PROVIDER_TYPE\" }${COPILOT_PROVIDER_BASE_URL:+COPILOT_PROVIDER_BASE_URL=\"$COPILOT_PROVIDER_BASE_URL\" }${COPILOT_PROVIDER_API_KEY:+COPILOT_PROVIDER_API_KEY=\"$COPILOT_PROVIDER_API_KEY\" }${COPILOT_MODEL:+COPILOT_MODEL=\"$COPILOT_MODEL\" }${MCP_GIT_PUSH_ENABLED:+MCP_GIT_PUSH_ENABLED=\"$MCP_GIT_PUSH_ENABLED\" }${MCP_GIT_AUTH_MODE:+MCP_GIT_AUTH_MODE=\"$MCP_GIT_AUTH_MODE\" }${GITHUB_TOKEN:+GITHUB_TOKEN=\"$GITHUB_TOKEN\" }${GH_TOKEN:+GH_TOKEN=\"$GH_TOKEN\" }"
     if [ -n "${SINGULARITY_RUNTIME_TOKEN:-}" ]; then
       boot mcp-server "$MCP_COMMON RUNTIME_DIAL_IN_MODE=true LAPTOP_MODE=true RUNTIME_BRIDGE_URL=\"$RUNTIME_BRIDGE_URL\" LAPTOP_BRIDGE_URL=\"$RUNTIME_BRIDGE_URL\" SINGULARITY_RUNTIME_TOKEN=\"$SINGULARITY_RUNTIME_TOKEN\" SINGULARITY_DEVICE_TOKEN=\"$SINGULARITY_RUNTIME_TOKEN\" SINGULARITY_RUNTIME_ID=\"${SINGULARITY_RUNTIME_ID:-baremetal-mcp-runtime}\" SINGULARITY_DEVICE_ID=\"${SINGULARITY_RUNTIME_ID:-baremetal-mcp-runtime}\" SINGULARITY_RUNTIME_NAME=\"${SINGULARITY_RUNTIME_NAME:-bare-metal-mcp-runtime}\" SINGULARITY_DEVICE_NAME=\"${SINGULARITY_RUNTIME_NAME:-bare-metal-mcp-runtime}\" SINGULARITY_RUNTIME_TYPE=mcp SINGULARITY_TENANT_ID=\"${SINGULARITY_TENANT_ID:-}\" SINGULARITY_USER_ID=\"${SINGULARITY_USER_ID:-}\" SINGULARITY_RUNTIME_CAPABILITY_TAGS=\"${SINGULARITY_RUNTIME_CAPABILITY_TAGS:-mcp,tools,llm}\" npm run dev"
@@ -831,21 +1038,17 @@ cmd_down() {
   done < "$PID_FILE"
   # Hard sweep — anything still hogging our ports gets terminated. When runtime
   # infra is split/remote, leave those ports alone.
-  local ports=(3001 3002 3003 3004 5174 5175 5176 5180 5181 5182 8000 8002 8010 8080 8085 8100 8101 8500)
-  if [ -z "$SKIP_LOCAL_RUNTIME" ]; then ports+=(7100 8001); fi
-  for p in "${ports[@]}"; do
-    pids=$(lsof -ti :"$p" 2>/dev/null || true)
-    for pid in $pids; do
-      cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
-      case "$cmd" in
-        *docker*|*Docker*|*vpnkit*)
-          warn "port $p is Docker-owned (pid $pid); leaving it alone"
-          continue
-          ;;
-      esac
-      kill "$pid" 2>/dev/null && dim "  freed port $p (pid $pid)"
-    done
-  done
+  local ports=(
+    "${BARE_METAL_APP_PORT_SPECS[@]}"
+    "${BARE_METAL_OPTIONAL_PORT_SPECS[@]}"
+  )
+  if [ "${SINGULARITY_FREE_LEGACY_PORTS:-1}" != "0" ]; then
+    ports+=("${BARE_METAL_LEGACY_UI_PORT_SPECS[@]}")
+  fi
+  if [ -z "$SKIP_LOCAL_RUNTIME" ]; then
+    ports+=("${BARE_METAL_RUNTIME_PORT_SPECS[@]}")
+  fi
+  free_port_specs "bare-metal" "${ports[@]}"
   rm -f "$PID_FILE"
   ok "stack down."
 }

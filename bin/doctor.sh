@@ -90,6 +90,7 @@ PY
   fi
 }
 psql_q(){ psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$1" -tAc "$2" 2>/dev/null | tr -d '[:space:]'; }
+psql_rows(){ psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$1" -tAc "$2" 2>/dev/null | sed '/^[[:space:]]*$/d'; }
 db_up(){ psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$1" -tAc 'select 1' >/dev/null 2>&1; }
 
 printf "${C_B}Singularity bare-metal doctor${C_E}  (pg=%s@%s:%s, fix=%s)\n" "$PG_USER" "$PG_HOST" "$PG_PORT" "$FIX"
@@ -191,11 +192,78 @@ if db_up singularity; then
 else fail "cannot reach DB 'singularity'" "Postgres / creds"; fi
 
 if db_up workgraph; then
-  n=$(psql_q workgraph "select count(*) from workflow_templates where name='SDLC Delivery'")
-  [ "${n:-0}" -ge 1 ] && pass "SDLC Delivery workflow" \
-    || fail "SDLC Delivery workflow missing" "(cd workgraph-studio/apps/api && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-sdlc-main.ts)"
+  wg_seed_fix="(cd workgraph-studio/apps/api && DATABASE_URL=$wg_url npm run prisma:seed && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-sdlc-main.ts && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-sdlc-copilot.ts && DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-workbench-parents.ts)"
+  missing_workflows=$(psql_rows workgraph "with expected(name, profile, type_key) as (values
+    ('SDLC — Capability Implementation (Workbench)', 'workbench', 'SDLC'),
+    ('Bug Fix (Workbench)', 'workbench', 'BUGFIX'),
+    ('Approval Pipeline', 'main', 'GENERAL'),
+    ('Branching Review', 'main', 'GENERAL'),
+    ('Epic → Story (Parent → Child)', 'main', 'GENERAL'),
+    ('SDLC implementation loop', 'workbench', 'SDLC'),
+    ('SDLC Delivery', 'main', 'SDLC'),
+    ('SDLC (Copilot CLI)', 'main', 'SDLC')
+  )
+  select e.name
+  from expected e
+  left join workflow_templates w
+    on w.name=e.name and w.profile=e.profile and w.\"workflowTypeKey\"=e.type_key and w.\"archivedAt\" is null
+  where w.id is null
+  order by e.name")
+  [ -z "$missing_workflows" ] && pass "SDLC + demo workflow templates seeded (8/8)" \
+    || fail "missing workflow seed(s): $(printf '%s' "$missing_workflows" | paste -sd ', ' -)" "$wg_seed_fix"
+
+  missing_routes=$(psql_rows workgraph "with expected(id, work_item, type_key) as (values
+    ('34000000-0000-0000-0000-000000000001', 'feature', 'SDLC'),
+    ('34000000-0000-0000-0000-000000000002', 'bug', 'BUGFIX'),
+    ('34000000-0000-0000-0000-0000000000a0', 'feature', 'SDLC'),
+    ('3b400000-0000-0000-0000-0000000000c0', 'feature', 'SDLC')
+  )
+  select e.id
+  from expected e
+  left join work_item_routing_policies p
+    on p.id=e.id and p.\"workItemTypeKey\"=e.work_item and p.\"workflowTypeKey\"=e.type_key and p.\"isActive\"=true
+  left join workflow_templates w on w.id=p.\"workflowId\" and w.profile='main'
+  where p.id is null or w.id is null
+  order by e.id")
+  [ -z "$missing_routes" ] && pass "work-item routing policies point at runnable main workflows" \
+    || fail "missing/unrunnable routing policy seed(s): $(printf '%s' "$missing_routes" | paste -sd ', ' -)" "$wg_seed_fix"
+
+  missing_defs=$(psql_rows workgraph "select w.name
+  from workflow_templates w
+  join workflow_design_nodes n on n.\"workflowId\"=w.id and n.\"nodeType\"='WORKBENCH_TASK'
+  where w.name in ('SDLC — Capability Implementation (Workbench)', 'Bug Fix (Workbench)', 'SDLC implementation loop')
+    and not exists (select 1 from workbench_definitions d where d.\"workflowNodeId\"=n.id)
+  order by w.name")
+  [ -z "$missing_defs" ] && pass "workbench workflow definitions linked to WORKBENCH_TASK nodes" \
+    || fail "missing WorkbenchDefinition row(s): $(printf '%s' "$missing_defs" | paste -sd ', ' -)" "$wg_seed_fix"
+
+  missing_parents=$(psql_rows workgraph "select wb.name
+  from workflow_templates wb
+  where wb.profile='workbench' and wb.\"archivedAt\" is null
+    and not exists (
+      select 1
+      from workflow_design_nodes call
+      join workflow_templates parent on parent.id=call.\"workflowId\" and parent.profile='main' and parent.\"archivedAt\" is null
+      where call.\"nodeType\"='CALL_WORKFLOW'
+        and (
+          call.config #>> '{workflowId}' = wb.id
+          or call.config #>> '{templateId}' = wb.id
+          or call.config #>> '{standard,templateId}' = wb.id
+        )
+    )
+  order by wb.name")
+  [ -z "$missing_parents" ] && pass "workbench workflows have main-profile parent entry points" \
+    || fail "workbench workflow(s) without a main parent: $(printf '%s' "$missing_parents" | paste -sd ', ' -)" "$wg_seed_fix"
+
+  orphan_defs=$(psql_q workgraph "select count(*)
+  from workbench_definitions d
+  where not exists (select 1 from workflow_design_nodes dn where dn.id=d.\"workflowNodeId\")
+    and not exists (select 1 from workflow_nodes rn where rn.id=d.\"workflowNodeId\")")
+  [ "${orphan_defs:-0}" -eq 0 ] && pass "no orphan WorkbenchDefinition rows" \
+    || fail "orphan WorkbenchDefinition rows ($orphan_defs)" "$wg_seed_fix"
+
   d=$(psql_q workgraph "select count(*) from workflow_templates")
-  [ "${d:-0}" -ge 4 ] && pass "demo workflows present ($d total)" || warn "few workflows ($d)" "(cd workgraph-studio/apps/api && DATABASE_URL=$wg_url npm run prisma:seed)"
+  [ "${d:-0}" -ge 8 ] && pass "workflow catalog populated ($d total)" || warn "few workflows ($d)" "$wg_seed_fix"
 else fail "cannot reach DB 'workgraph'" "Postgres / creds"; fi
 
 if db_up audit_governance; then

@@ -25,6 +25,7 @@
  * (Prereq: run seed-artifact-templates.ts so the catalog templates exist.)
  */
 import { PrismaClient, Prisma, type NodeType } from '@prisma/client'
+import { promoteWorkbenchToTables } from '../src/modules/workflow/lib/promote-workbench'
 
 const prisma = new PrismaClient()
 
@@ -115,6 +116,15 @@ async function main(): Promise<void> {
   console.log(`Seeding "${SDLC_NAME}" (proper SDLC workbench loop with catalog artifacts)…`)
   const prior = await prisma.workflow.findFirst({ where: { name: SDLC_NAME } })
   if (prior) { await prisma.workflow.delete({ where: { id: prior.id } }); console.log(`✓ removed prior (${prior.id})`) }
+  const staleDefinitions = await prisma.$executeRaw`
+    DELETE FROM workbench_definitions d
+    WHERE d.name = ${SDLC_NAME}
+      AND NOT EXISTS (SELECT 1 FROM workflow_design_nodes dn WHERE dn.id = d."workflowNodeId")
+      AND NOT EXISTS (SELECT 1 FROM workflow_nodes rn WHERE rn.id = d."workflowNodeId")
+  `
+  if (Number(staleDefinitions) > 0) {
+    console.log(`✓ removed ${staleDefinitions} stale WorkbenchDefinition row(s)`)
+  }
 
   const wf = await prisma.workflow.create({
     data: {
@@ -154,7 +164,7 @@ async function main(): Promise<void> {
     outputs: { finalPackKey: 'finalSdlcPack' },
   }
 
-  await prisma.workflowDesignNode.create({
+  const workbenchNode = await prisma.workflowDesignNode.create({
     data: {
       workflowId: wf.id, nodeType: 'WORKBENCH_TASK' as NodeType, label: 'SDLC Workbench',
       positionX: 320, positionY: 220, executionLocation: 'SERVER',
@@ -164,41 +174,10 @@ async function main(): Promise<void> {
   console.log('  + WORKBENCH_TASK node (6-stage SDLC loop)')
 
   // First-class WorkbenchDefinition + stage rows so the designer canvas renders.
-  // (WorkbenchExpectedArtifact.templateId is a follow-up migration — the JSON
-  // loopDefinition above is the runnable, templateId-carrying source of truth.)
-  const wbDef = await prisma.workbenchDefinition.create({
-    data: {
-      workflowNodeId: wf.id, name: SDLC_NAME, version: 1, goal: '', sourceType: 'github',
-      capabilityId: CAPABILITY_ID, architectAgentTemplateId: ARCHITECT_AGENT,
-      developerAgentTemplateId: DEVELOPER_AGENT, qaAgentTemplateId: QA_AGENT,
-      maxLoopsPerStage: 3, maxTotalSendBacks: 8, gateMode: 'manual',
-    },
-  })
-  const rowByKey: Record<string, string> = {}
-  for (const [idx, stage] of SDLC_STAGES.entries()) {
-    const row = await prisma.workbenchStage.create({
-      data: {
-        definitionId: wbDef.id, stageKey: stage.key, label: stage.label, agentRole: stage.agentRole,
-        agentTemplateId: stage.agentTemplateId, ordinal: idx, required: true, terminal: stage.terminal,
-        approvalRequired: stage.approvalRequired, repoAccess: stage.repoAccess, toolPolicy: stage.toolPolicy, contextPolicy: stage.contextPolicy,
-      },
-    })
-    rowByKey[stage.key] = row.id
-    for (const [artIdx, art] of stage.expectedArtifacts.entries()) {
-      await prisma.workbenchExpectedArtifact.create({
-        data: { stageId: row.id, kind: art.kind, title: art.title, format: art.format, required: art.required, ordinal: artIdx },
-      })
-    }
-  }
-  for (let i = 0; i < SDLC_STAGES.length - 1; i++) {
-    await prisma.workbenchStageEdge.create({ data: { fromStageId: rowByKey[SDLC_STAGES[i]!.key]!, toStageId: rowByKey[SDLC_STAGES[i + 1]!.key]!, kind: 'FORWARD' } })
-  }
-  for (const stage of SDLC_STAGES) {
-    for (const target of stage.sendBackTo) {
-      await prisma.workbenchStageEdge.create({ data: { fromStageId: rowByKey[stage.key]!, toStageId: rowByKey[target]!, kind: 'SEND_BACK' } })
-    }
-  }
-  console.log(`  + WorkbenchDefinition + ${SDLC_STAGES.length} stage rows`)
+  // Use the same promotion path as the API/runtime so the definition is keyed by
+  // the actual WORKBENCH_TASK node id, not the owning workflow id.
+  const promoted = await promoteWorkbenchToTables(prisma, workbenchNode.id, { workbench: workbenchConfig })
+  console.log(`  + WorkbenchDefinition + ${promoted.stageCount} stage rows`)
   console.log(`\n✓ "${SDLC_NAME}" seeded. Each stage emits its catalog artifact(s); templateId drives section structure.`)
 }
 
