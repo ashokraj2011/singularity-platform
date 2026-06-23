@@ -1,5 +1,5 @@
 import { OperationsStatusPage } from "@/components/OperationsStatusPage";
 
 export default function OperationsTrustPage() {
-  return <OperationsStatusPage title="Trust Evidence" description="Health-backed service evidence for audit, governance, and verification paths." />;
+  return <OperationsStatusPage view="trust" title="Trust Evidence" description="Health-backed evidence grouped by identity, agent profiles, prompts, workflows, runtime dial-in, and governance." />;
 }

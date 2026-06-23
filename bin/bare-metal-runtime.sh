@@ -28,6 +28,47 @@ require() {
   command -v "$1" >/dev/null 2>&1 || { err "missing binary: $1"; exit 1; }
 }
 
+PYTHON_MIN_VERSION="3.11"
+
+python_version_at_least() {
+  local py="$1"
+  "$py" - "$PYTHON_MIN_VERSION" <<'PY' >/dev/null 2>&1
+import sys
+
+required = tuple(int(part) for part in sys.argv[1].split("."))
+raise SystemExit(0 if sys.version_info[: len(required)] >= required else 1)
+PY
+}
+
+python_version_label() {
+  local py="$1"
+  "$py" - <<'PY' 2>/dev/null || printf 'unknown'
+import sys
+
+print(".".join(str(part) for part in sys.version_info[:3]))
+PY
+}
+
+select_python_bin() {
+  local candidate
+  for candidate in "${SINGULARITY_PYTHON:-}" python3.12 python3.11 python3; do
+    [ -n "$candidate" ] || continue
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    if python_version_at_least "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  local found="not found"
+  if command -v python3 >/dev/null 2>&1; then
+    found="$(python_version_label python3)"
+  fi
+  err "bare-metal runtime requires Python >= ${PYTHON_MIN_VERSION}; found python3 ${found}."
+  err "Install Python 3.11+ or run with SINGULARITY_PYTHON=/path/to/python3.11."
+  exit 1
+}
+
 load_laptop_env() {
   if [ -f "$ROOT/.env.laptop" ]; then
     while IFS='=' read -r key value; do
@@ -39,7 +80,8 @@ load_laptop_env() {
 
 config_value() {
   local dotted="$1" fallback="$2"
-  python3 - "$dotted" "$fallback" <<'PY'
+  local py="${SINGULARITY_PYTHON_BIN:-python3}"
+  "$py" - "$dotted" "$fallback" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -113,9 +155,19 @@ ensure_provider_configs() {
 
 ensure_python_runtime() {
   local venv="$ROOT/.venv"
+  local pybin="${SINGULARITY_PYTHON_BIN:-$(select_python_bin)}"
+  if [ -x "$venv/bin/python" ] && ! python_version_at_least "$venv/bin/python"; then
+    warn ".venv uses Python $(python_version_label "$venv/bin/python"), below ${PYTHON_MIN_VERSION}; recreating it."
+    rm -rf "$venv"
+  fi
   if [ ! -x "$venv/bin/python" ]; then
-    info "creating python venv at .venv..."
-    python3 -m venv "$venv"
+    info "creating python venv at .venv with $(python_version_label "$pybin")..."
+    "$pybin" -m venv "$venv" || { err "venv create failed at $venv (need Python ${PYTHON_MIN_VERSION}+ with venv support)"; exit 1; }
+  fi
+  if ! python_version_at_least "$venv/bin/python"; then
+    err ".venv is using Python $(python_version_label "$venv/bin/python"); expected >= ${PYTHON_MIN_VERSION}."
+    err "Remove .venv or set SINGULARITY_PYTHON=/path/to/python3.11 and retry."
+    exit 1
   fi
   export VIRTUAL_ENV="$venv"
   export PATH="$venv/bin:$PATH"
@@ -189,7 +241,10 @@ PY
 cmd_up() {
   require node
   require npm
-  require python3
+  local python_bin
+  python_bin="$(select_python_bin)"
+  export SINGULARITY_PYTHON_BIN="$python_bin"
+  info "using Python $(python_version_label "$python_bin") for bare-metal runtime"
 
   info "freeing runtime ports..."
   free_ports

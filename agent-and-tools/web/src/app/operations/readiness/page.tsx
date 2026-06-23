@@ -1,5 +1,5 @@
 import { OperationsStatusPage } from "@/components/OperationsStatusPage";
 
 export default function OperationsReadinessPage() {
-  return <OperationsStatusPage title="Platform Readiness" description="Live readiness checks across the backend services used by Platform Web." />;
+  return <OperationsStatusPage view="readiness" title="Platform Readiness" description="Health dashboard for required backend APIs, Context Fabric, and runtime infrastructure." />;
 }

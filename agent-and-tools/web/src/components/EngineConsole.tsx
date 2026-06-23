@@ -6,7 +6,7 @@ import {
   AlertTriangle, BarChart3, CheckCircle2, Eye, RefreshCw, Search,
   ShieldCheck, XCircle, Zap,
 } from "lucide-react";
-import { auditGovApi } from "@/lib/api";
+import { ApiError, auditGovApi } from "@/lib/api";
 
 type EngineIssue = {
   id: string;
@@ -76,6 +76,22 @@ function severityTone(severity?: string | null) {
   return { bg: "rgba(70,80,99,0.08)", fg: "var(--color-outline)", border: "var(--color-outline-variant)" };
 }
 
+function engineErrorMessage(error: unknown): string | null {
+  if (!error) return null;
+  const message = error instanceof Error ? error.message : String(error);
+  const apiError = error instanceof ApiError ? error : null;
+  if (apiError?.code === "AUTH_REQUIRED" || apiError?.code === "AUTH_INVALID" || apiError?.status === 401) {
+    return "Sign in again so Platform Web can verify your session before proxying Audit Governance.";
+  }
+  if (
+    apiError?.code === "UPSTREAM_UNREACHABLE"
+    || /fetch failed|failed to fetch|ECONNREFUSED|connection refused/i.test(message)
+  ) {
+    return "Audit Governance is not connected. Start it with `./singularity.sh up --profile audit`, or use `./singularity.sh up --full` when you want the governance engine locally.";
+  }
+  return message;
+}
+
 function JsonBlock({ value }: { value: unknown }) {
   if (!value || (typeof value === "object" && Object.keys(value as Record<string, unknown>).length === 0)) {
     return <p style={{ color: "var(--color-outline)", fontSize: 13 }}>No details recorded.</p>;
@@ -111,6 +127,10 @@ export function EngineConsole() {
 
   const issueItems = useMemo(() => (issues.data?.items ?? []).map(asIssue), [issues.data]);
   const selected = detail.data as EngineIssue | undefined;
+  const engineError = useMemo(
+    () => engineErrorMessage(stats.error ?? issues.error ?? evaluators.error),
+    [stats.error, issues.error, evaluators.error],
+  );
 
   async function mutateAll() {
     await Promise.all([stats.mutate(), issues.mutate(), detail.mutate(), evaluators.mutate()]);
@@ -158,6 +178,12 @@ export function EngineConsole() {
         </div>
       )}
 
+      {engineError && (
+        <div className="card" style={{ padding: 14, borderColor: "#fed7aa", background: "#fff7ed", color: "#9a3412", marginBottom: 16, fontSize: 13, lineHeight: 1.5 }}>
+          {engineError}
+        </div>
+      )}
+
       <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 18 }}>
         {STAT_LABELS.map(([key, label]) => (
           <div className="card" key={key} style={{ padding: 16 }}>
@@ -192,7 +218,7 @@ export function EngineConsole() {
             ))}
           </div>
           <div style={{ maxHeight: 620, overflow: "auto" }}>
-            {issues.error && <div style={{ padding: 16, color: "#991b1b" }}>{issues.error.message}</div>}
+            {issues.error && <div style={{ padding: 16, color: "#991b1b" }}>{engineErrorMessage(issues.error)}</div>}
             {issues.isLoading && <div style={{ padding: 16, color: "var(--color-outline)" }}>Loading issues...</div>}
             {!issues.isLoading && issueItems.length === 0 && (
               <div style={{ padding: 18, color: "var(--color-outline)" }}>No issues found for this filter.</div>
@@ -243,7 +269,7 @@ export function EngineConsole() {
               </div>
             )}
             {selectedId && detail.isLoading && <div style={{ color: "var(--color-outline)" }}>Loading issue...</div>}
-            {selectedId && detail.error && <div style={{ color: "#991b1b" }}>{detail.error.message}</div>}
+            {selectedId && detail.error && <div style={{ color: "#991b1b" }}>{engineErrorMessage(detail.error)}</div>}
             {selected && (
               <div>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", marginBottom: 14 }}>
@@ -297,7 +323,7 @@ export function EngineConsole() {
           <div className="card" style={{ padding: 18 }}>
             <h2 style={{ margin: 0, fontSize: 16, fontWeight: 850, color: "var(--color-on-surface)" }}>Active Evaluators</h2>
             <p style={{ margin: "5px 0 14px", color: "var(--color-outline)", fontSize: 12 }}>Auto-created and built-in evaluators available to catch regressions.</p>
-            {evaluators.error && <div style={{ color: "#991b1b", fontSize: 13 }}>{evaluators.error.message}</div>}
+            {evaluators.error && <div style={{ color: "#991b1b", fontSize: 13 }}>{engineErrorMessage(evaluators.error)}</div>}
             <div style={{ display: "grid", gap: 10 }}>
               {((evaluators.data?.items ?? []) as Evaluator[]).slice(0, 8).map((ev) => (
                 <div key={ev.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 12 }}>

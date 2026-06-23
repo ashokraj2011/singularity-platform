@@ -33,6 +33,22 @@ cd "$ROOT"
 # uses, so bridge-mode mcp gets them too without per-terminal exports.
 if [ -f .env.laptop ]; then set -a; . ./.env.laptop; set +a; fi
 
+# The Docker box reads JWT_SECRET from the repo .env. Load just that default here
+# when the operator has not exported one, otherwise minted runtime JWTs will be
+# signed with the script's dev fallback and Context Fabric will reject them.
+if [ -z "${JWT_SECRET:-}" ] && [ -f .env ]; then
+  JWT_SECRET="$(python3 - <<'PY'
+from pathlib import Path
+for line in Path(".env").read_text().splitlines():
+    line = line.strip()
+    if line.startswith("JWT_SECRET="):
+        print(line.split("=", 1)[1].strip().strip('"').strip("'"))
+        break
+PY
+)"
+  [ -n "$JWT_SECRET" ] && export JWT_SECRET
+fi
+
 # ── shared config (override via env) ─────────────────────────────────────────
 # JWT_SECRET MUST be identical for the box (verifies the device JWT) and the
 # mint step (signs it). Default matches docker-compose + IAM + the bridge so the
@@ -200,13 +216,27 @@ cmd_mcp() {
   mkdir -p "$MCP_WS"
   echo "[mcp] RUNTIME_DIAL_IN_MODE → $RUNTIME_BRIDGE_URL   gateway $LLM_GATEWAY_URL   sandbox $MCP_WS"
   cd mcp-server
+  local runtime_token runtime_id
+  runtime_token="$(cat "$DEVICE_TOKEN_FILE")"
+  runtime_id="$(TOKEN="$runtime_token" node -e '
+    try {
+      const payload = JSON.parse(Buffer.from((process.env.TOKEN || "").split(".")[1] || "", "base64url").toString("utf8"));
+      process.stdout.write(String(payload.runtime_id || payload.device_id || ""));
+    } catch {
+      process.stdout.write("");
+    }
+  ')"
   # Required bridge + runtime env. COPILOT_* / GITHUB_TOKEN / MCP_GIT_* inherit
   # from your shell (export them once) and pass straight through to npm run dev.
   export RUNTIME_DIAL_IN_MODE=true LAPTOP_MODE=true
   export RUNTIME_BRIDGE_URL LAPTOP_BRIDGE_URL
   export SINGULARITY_RUNTIME_NAME="mcp-runtime-test" SINGULARITY_DEVICE_NAME="mcp-runtime-test"
-  export SINGULARITY_RUNTIME_TOKEN="$(cat "$DEVICE_TOKEN_FILE")"
+  export SINGULARITY_RUNTIME_TOKEN="$runtime_token"
   export SINGULARITY_DEVICE_TOKEN="$SINGULARITY_RUNTIME_TOKEN"
+  if [ -n "$runtime_id" ]; then
+    export SINGULARITY_RUNTIME_ID="$runtime_id"
+    export SINGULARITY_DEVICE_ID="$runtime_id"
+  fi
   export SINGULARITY_RUNTIME_TYPE=mcp
   export JWT_SECRET PORT=7100 MCP_BEARER_TOKEN LLM_GATEWAY_URL
   export MCP_COMMAND_EXECUTION_MODE=process

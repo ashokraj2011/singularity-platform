@@ -188,6 +188,7 @@ closed if it can bypass row security.
 | Path | Purpose |
 |---|---|
 | `singularity.sh` | Local operator wrapper for config, compose up/down, logs, doctor, urls, and status. |
+| `bin/docker-core.sh` | Plain Docker launcher for the core platform apps without Docker Compose; excludes MCP and LLM Gateway. |
 | `docker-compose.yml` | Main local stack definition. |
 | `seed/` | Baseline seed SQL for IAM, agent runtime, Workgraph, and audit governance. |
 | `workgraph-studio/apps/api` | Workgraph API. |
@@ -738,7 +739,7 @@ Install:
 - Curl.
 - PostgreSQL client tools, optional but useful for seed and inspection.
 - Node.js and pnpm for local package work.
-- Python tooling for IAM and Context Fabric local development.
+- Python 3.11+ tooling for IAM, Context Fabric, bare-metal launchers, and local Python smoke helpers.
 
 Keep these ports available:
 
@@ -794,14 +795,25 @@ Rotate development defaults before any shared/staging/production deployment:
 
 This starts the core Docker Compose stack. Local LLM Gateway, MCP, verification, compression, and audit-governance are optional profiles or remote services. `/foundry` is included in Platform Web and backed by Workgraph.
 
+Plain Docker without Compose uses the same core-app split:
+
+```bash
+bin/docker-core.sh up --build
+bin/docker-core.sh seed
+bin/docker-core.sh smoke
+```
+
+Add `--with-audit` when the local audit-governance app should run on the same host. `bin/docker-core.sh` does not start MCP or LLM Gateway; those remain dial-in runtimes and default to `host.docker.internal:7100` and `host.docker.internal:8001` for debug/direct URLs.
+
 Bare-metal deployments use split launchers:
 
 ```bash
+export SINGULARITY_PYTHON=/path/to/python3.11  # optional; only needed when python3 is older than 3.11
 bin/bare-metal-apps.sh up postgres postgres localhost 5432
 bin/bare-metal-runtime.sh up  # optional local LLM Gateway + MCP
 ```
 
-`bin/bare-metal-apps.sh` starts all platform applications except MCP and LLM Gateway. `bin/bare-metal-runtime.sh` has its own PID file and owns only ports `8001` and `7100`.
+`bin/bare-metal-apps.sh` starts all platform applications except MCP and LLM Gateway. `bin/bare-metal-runtime.sh` has its own PID file and owns only ports `8001` and `7100`. Both scripts require Python 3.11+ and prefer `SINGULARITY_PYTHON`, then `python3.12`, `python3.11`, and finally `python3` when it is new enough. If `.venv` was previously created with Python 3.9, the launchers recreate it before installing IAM or LLM Gateway dependencies.
 
 ### 10.5 Apply Seeds
 

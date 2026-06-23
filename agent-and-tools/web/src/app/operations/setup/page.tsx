@@ -1,5 +1,5 @@
 import { OperationsStatusPage } from "@/components/OperationsStatusPage";
 
 export default function OperationsSetupPage() {
-  return <OperationsStatusPage title="Setup Center" description="Service checks and operator-facing setup state for the unified local stack." />;
+  return <OperationsStatusPage view="setup" title="Setup Center" description="Operator checklist, startup scripts, environment targets, and runtime bridge setup status." />;
 }

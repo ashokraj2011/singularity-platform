@@ -1,5 +1,5 @@
 import { OperationsStatusPage } from "@/components/OperationsStatusPage";
 
 export default function OperationsDomainPage() {
-  return <OperationsStatusPage title="Operations and Readiness" description="Live readiness checks, service topology, and runtime infrastructure state for the unified platform web app." />;
+  return <OperationsStatusPage view="overview" title="Operations Center" description="Command center for readiness, live topology, setup state, runtime dial-in, and trust evidence." />;
 }

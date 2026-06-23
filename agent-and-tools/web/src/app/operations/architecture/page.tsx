@@ -1,5 +1,5 @@
 import { OperationsStatusPage } from "@/components/OperationsStatusPage";
 
 export default function OperationsArchitecturePage() {
-  return <OperationsStatusPage title="Platform Architecture" description="Live service boundary checks for the consolidated web runtime and its backend dependencies." />;
+  return <OperationsStatusPage view="architecture" title="Live App Map" description="Service topology showing one web shell, domain routes, backend APIs, Context Fabric, and runtime dial-in connections." />;
 }

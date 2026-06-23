@@ -1,5 +1,5 @@
-import { LegacyPlannerRoute } from "@/components/workflows/LegacyWorkgraphAdminRoute";
+import { WorkflowPlannerConsole } from "@/components/workflows/WorkflowPlannerConsole";
 
 export default function WorkflowPlannerPage() {
-  return <LegacyPlannerRoute />;
+  return <WorkflowPlannerConsole />;
 }

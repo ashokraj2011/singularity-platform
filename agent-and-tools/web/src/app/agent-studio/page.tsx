@@ -465,7 +465,7 @@ function CreateAgentProfileWizard({
   onClose: () => void;
   onDone: (agent: Record<string, unknown>) => void;
 }) {
-  const { data: skills = [] } = useSWR("agent-profile-local-skills", () => runtimeApi.listSkills());
+  const { data: skills = [], mutate: refreshSkills } = useSWR("agent-profile-local-skills", () => runtimeApi.listSkills());
   const { data: profiles = [] } = useSWR("agent-profile-prompt-profiles", () => runtimeApi.listProfiles());
   const [step, setStep] = useState(0);
   const [capabilityId, setCapabilityId] = useState(initialCapabilityId);
@@ -476,6 +476,10 @@ function CreateAgentProfileWizard({
   const [basePromptProfileId, setBasePromptProfileId] = useState("");
   const [bindings, setBindings] = useState<ProfileSkillBinding[]>([]);
   const [localSkillId, setLocalSkillId] = useState("");
+  const [localSkillName, setLocalSkillName] = useState("");
+  const [localSkillType, setLocalSkillType] = useState("TOOL");
+  const [localSkillDescription, setLocalSkillDescription] = useState("");
+  const [localSkillBusy, setLocalSkillBusy] = useState(false);
   const [providerUrl, setProviderUrl] = useState("");
   const [providerPreview, setProviderPreview] = useState<ProviderPreview | null>(null);
   const [providerPermissions, setProviderPermissions] = useState<CapabilityPermission[]>(["read"]);
@@ -507,6 +511,44 @@ function CreateAgentProfileWizard({
       isDefault: true,
     });
     setLocalSkillId("");
+  }
+
+  async function createAndAddLocalSkill() {
+    const trimmedName = localSkillName.trim();
+    if (!trimmedName) {
+      setErr("Local skill name is required.");
+      return;
+    }
+    setLocalSkillBusy(true);
+    setErr(null);
+    try {
+      const skill = await runtimeApi.createSkill({
+        name: trimmedName,
+        skillType: localSkillType.trim() || "TOOL",
+        description: localSkillDescription.trim() || undefined,
+      }) as Record<string, unknown>;
+      await refreshSkills();
+      addBinding({
+        sourceType: "local",
+        skillId: String(skill.id),
+        name: String(skill.name ?? trimmedName),
+        description: typeof skill.description === "string" ? skill.description : localSkillDescription.trim() || undefined,
+        skillType: String(skill.skillType ?? localSkillType),
+        permissions: ["read", "invoke"],
+        readOnly: false,
+        providerLocked: false,
+        isDefault: true,
+      });
+      setLocalSkillName("");
+      setLocalSkillType("TOOL");
+      setLocalSkillDescription("");
+    } catch (e) {
+      if (isUnauthorized(e)) onAuthRequired();
+      const formatted = apiErrorSummary(e);
+      setErr(`${formatted.title}: ${formatted.message}${formatted.detail ? ` (${formatted.detail})` : ""}`);
+    } finally {
+      setLocalSkillBusy(false);
+    }
   }
 
   async function previewProviderManifestSource() {
@@ -718,8 +760,65 @@ function CreateAgentProfileWizard({
 
           {step === 2 && (
             <div className="space-y-5">
+              <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-4">
+                <div className="flex items-start gap-3">
+                  <ShieldCheck size={18} className="mt-0.5 shrink-0 text-emerald-700" />
+                  <div>
+                    <div className="text-sm font-semibold text-emerald-950">Skills are capability sources for this agent</div>
+                    <p className="mt-1 text-xs leading-5 text-emerald-800">
+                      A skill can be an invokable local tool, an external provider/API manifest, or read-only knowledge from a URL or uploaded file.
+                      Document and API sources default to read-only unless permissions are explicitly granted.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               <div className="rounded-lg border border-slate-200 p-4">
-                <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900"><Sparkles size={15} /> Local skill</div>
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Sparkles size={15} /> Local platform skill</div>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">
+                      Create a reusable platform-owned skill here, or select an existing one. Local skills are stored in Agent Runtime and can be invoked by agents.
+                    </p>
+                  </div>
+                  <a href="/tools" className="btn-secondary text-xs">Tool catalog</a>
+                </div>
+                <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Create local skill</div>
+                  <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_150px_auto]">
+                    <input
+                      className="h-10 rounded-lg border border-slate-200 px-3 text-sm"
+                      value={localSkillName}
+                      onChange={(e) => setLocalSkillName(e.target.value)}
+                      placeholder="Example: GitHub triage, DB read query, test runner"
+                    />
+                    <select
+                      className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm"
+                      value={localSkillType}
+                      onChange={(e) => setLocalSkillType(e.target.value)}
+                    >
+                      <option value="TOOL">Tool</option>
+                      <option value="GITHUB">GitHub</option>
+                      <option value="MCP">MCP</option>
+                      <option value="KNOWLEDGE">Knowledge</option>
+                      <option value="PROMPT">Prompt</option>
+                    </select>
+                    <button type="button" className="btn-secondary text-xs" onClick={() => void createAndAddLocalSkill()} disabled={!localSkillName.trim() || localSkillBusy}>
+                      <Plus size={14} />
+                      {localSkillBusy ? "Creating..." : "Create + add"}
+                    </button>
+                  </div>
+                  <textarea
+                    rows={2}
+                    className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                    value={localSkillDescription}
+                    onChange={(e) => setLocalSkillDescription(e.target.value)}
+                    placeholder="What this skill lets the agent do, and any important boundary."
+                  />
+                  <p className="mt-2 text-[11px] leading-4 text-slate-500">
+                    Creating a local skill requires platform-admin permission. For existing MCP/API tools, create or register the tool in the tool catalog, then bind it here as a local skill or provider manifest.
+                  </p>
+                </div>
                 <div className="flex gap-2">
                   <select className="h-10 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm" value={localSkillId} onChange={(e) => setLocalSkillId(e.target.value)}>
                     <option value="">Select existing local skill...</option>
@@ -731,7 +830,10 @@ function CreateAgentProfileWizard({
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="rounded-lg border border-slate-200 p-4">
-                  <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900"><LinkIcon size={15} /> Provider/API manifest</div>
+                  <div className="mb-3">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-slate-900"><LinkIcon size={15} /> Provider/API manifest</div>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">Use this when GitHub, Jira, ServiceNow, or another API publishes a signed manifest of capabilities and permissions.</p>
+                  </div>
                   <input
                     className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm"
                     value={providerUrl}
@@ -788,14 +890,20 @@ function CreateAgentProfileWizard({
                   )}
                 </div>
                 <div className="rounded-lg border border-slate-200 p-4">
-                  <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900"><FileText size={15} /> Document URL</div>
+                  <div className="mb-3">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-slate-900"><FileText size={15} /> Document URL</div>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">Use this for read-only runbooks, API docs, product docs, SharePoint-export links, or markdown/PDF knowledge.</p>
+                  </div>
                   <input className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm" value={documentUrl} onChange={(e) => setDocumentUrl(e.target.value)} placeholder="https://.../runbook.md" />
                   <button type="button" className="btn-secondary mt-3 text-xs" onClick={addDocumentUrl} disabled={!documentUrl.trim()}>Add read-only link</button>
                 </div>
               </div>
 
               <div className="rounded-lg border border-dashed border-slate-300 p-4">
-                <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900"><Upload size={15} /> Upload files</div>
+                <div className="mb-3">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Upload size={15} /> Upload files</div>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">Use this for one-off read-only source material. Office files are extracted into knowledge artifacts.</p>
+                </div>
                 <input type="file" multiple accept=".txt,.md,.markdown,.pdf,.docx,.xlsx,.pptx" onChange={(e) => addFiles(e.target.files)} className="block w-full text-sm text-slate-600" />
                 <p className="mt-2 text-xs text-slate-500">Supports .txt, .md, .pdf, .docx, .xlsx, and .pptx. Uploaded sources are read-only.</p>
               </div>

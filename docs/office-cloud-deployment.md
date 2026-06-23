@@ -55,11 +55,15 @@ LLM calls over the bridge to your laptop. If you intentionally want MCP and LLM
 Gateway on the same machine, start them separately with
 `bin/bare-metal-runtime.sh up`.
 
-Prereqs on the box: Node 20 + 22, Python 3.11 + 3.12, pnpm, and a **Postgres +
-MinIO you run yourself** (the script connects to them; it never manages them).
+Prereqs on the box: Node 20 + 22, Python 3.11+ (3.12 is fine), pnpm, and a
+**Postgres + MinIO you run yourself** (the script connects to them; it never
+manages them). If the OS `python3` is older, set `SINGULARITY_PYTHON` to a
+Python 3.11+ binary; the launchers rebuild a stale `.venv` that was created
+with Python 3.9.
 
 ```bash
 git clone https://github.com/ashokraj2011/singularity-platform.git && cd singularity-platform
+export SINGULARITY_PYTHON="$(brew --prefix python@3.11 2>/dev/null)/bin/python3.11"  # macOS/Homebrew example
 export JWT_SECRET='<ONE strong 32+ char secret>'     # the script respects it (and passes it to IAM + context-api)
 PREFER_LAPTOP_LLM=true bin/bare-metal-apps.sh up <db_user> [db_password] [db_host] [db_port]
 ```

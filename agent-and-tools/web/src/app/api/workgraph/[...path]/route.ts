@@ -164,7 +164,9 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path?: strin
   const params = await context.params;
   const suffix = normalizeWorkgraphPath(params.path ?? []);
   const search = req.nextUrl.search ?? "";
-  const upstream = `${WORKGRAPH_API_URL.replace(/\/$/, "")}/api/${suffix}${search}`;
+  const base = WORKGRAPH_API_URL.replace(/\/$/, "");
+  const upstreamPath = suffix === "health" ? "/health" : `/api/${suffix}`;
+  const upstream = `${base}${upstreamPath}${search}`;
   const first = await proxyRequest(req, upstream, proxyHeaders(req, WORKGRAPH_API_URL), { normalizeTextErrors: true });
   if (first.status !== 401 || !SERVICE_AUTH_ENABLED || !allowsServiceTokenRetry(req, suffix)) return first;
 

@@ -17,6 +17,7 @@ For the full architecture, capability, component, connection, installation, conf
 ### Prerequisites
 - Docker Desktop (Compose v2)
 - `git`, `psql`; `curl` is useful for ad-hoc inspection, but the bundled doctor/smoke scripts fall back to Python HTTP checks when it is unavailable.
+- Python 3.11+ for bare-metal app/runtime launchers and local Python smoke helpers. If your laptop's `python3` is 3.9.x, install Python 3.11+ and set `SINGULARITY_PYTHON=/path/to/python3.11`.
 - Ports free for the default Docker stack: `5180, 8000, 8080, 8100, 5432, 5434, 9000-9001`. Optional local runtime profiles add `7100` for MCP, `8001` for llm-gateway, `8010` for formal verification, `8011` for compression, and `8500` for audit-governance.
 - ~6 GB free RAM for the core stack; more if you enable local runtime/verification profiles
 
@@ -47,6 +48,26 @@ Runtime infrastructure is intentionally pluggable:
 ./singularity.sh up --full                  # historical all-local stack
 ./singularity.sh core-only                  # stop optional/runtime containers and return to core
 ```
+
+If Docker is available but Docker Compose is not desired, use the plain Docker launcher:
+
+```bash
+bin/docker-core.sh up --build        # core platform apps only, no MCP/LLM containers
+bin/docker-core.sh seed
+bin/docker-core.sh smoke
+```
+
+Add audit-governance with `--with-audit`. MCP and LLM Gateway stay outside this launcher and should dial into Context Fabric as separate runtimes. See [Plain Docker Deployment](./docs/plain-docker-deployment.md).
+
+To prove the deployment options from a clean checkout, use the clone test matrix:
+
+```bash
+bin/clone-and-test-deployments.sh \
+  --target /Users/ashokraj/Downloads/singularity-platform-deploy-test \
+  --reset-target
+```
+
+See [Deployment Test Matrix](./docs/deployment-test-matrix.md) for pushed-clone, dirty-working-tree, bare-metal, and runtime-bridge variants.
 
 In production or hybrid development, point services at remote `llm-gateway` and MCP endpoints instead of starting those profiles locally.
 Operations readiness in `platform-web` separates required core services from optional runtime infrastructure. Open `/operations/readiness` to see core backend health, and the MCP/LLM Gateway/Formal Verifier/audit endpoints as local, remote, unavailable, or not configured without treating every optional runtime as a platform outage. `/foundry` is a first-class route backed by Workgraph, not a separate Code Foundry API container.
@@ -198,6 +219,16 @@ COMPOSE_PROFILES=composer-only docker compose up -d    # prompt-composer + gatew
 docker compose --profile full         up -d   # historical all-local stack
 ```
 
+Plain Docker without Compose is also supported for the core platform apps:
+
+```bash
+bin/docker-core.sh up --build [--with-audit]
+bin/docker-core.sh seed [--with-audit]
+bin/docker-core.sh smoke [--with-audit]
+```
+
+That path intentionally excludes MCP and LLM Gateway. Run those as dial-in runtimes with `bin/laptop-bridge.sh`, `bin/bare-metal-runtime.sh`, or a remote deployment.
+
 Each major service has its own `RELEASE.md` documenting API surface,
 env vars, dependencies, and M-numbered milestone history:
 
@@ -222,6 +253,13 @@ Operators wanting reproducible deployments author a
 ## Bare-metal alternative — single Postgres, no Docker
 
 For dev machines that already have Postgres and do not want Docker. The bare-metal path is split into two launchers: `bin/bare-metal-apps.sh` starts the platform apps, and `bin/bare-metal-runtime.sh` starts only local `llm-gateway` plus `mcp-server` when you want those deployable runtime services on the same machine. The apps launcher runs real IAM, agent-and-tools services, Workgraph API, audit-governance, context-api, and the unified Platform Web app on `:5180`; it expects MCP/LLM to be remote, laptop-hosted, or started separately. Context Fabric stores run on Postgres (DB `singularity_context_fabric`), matching the Docker stack. It skips metrics-ledger (sunset; savings moved to audit-gov), MinIO, and legacy split frontend apps.
+
+Bare-metal Python services require Python 3.11+. The launchers prefer `SINGULARITY_PYTHON`, then `python3.12`, `python3.11`, and finally `python3` if it is new enough. If an office laptop reports an error such as `singularity-iam-service requires a different python: 3.9.6`, install Python 3.11+ and retry; any stale repo-local `.venv` created with Python 3.9 is rebuilt automatically.
+
+```bash
+brew install python@3.11
+SINGULARITY_PYTHON="$(brew --prefix python@3.11)/bin/python3.11" bin/bare-metal-apps.sh up <db_user> [db_password] [db_host] [db_port]
+```
 
 ### Simplest — the interactive wizard
 
@@ -812,6 +850,14 @@ In office Copilot-only mode, `/llm/providers` should report `copilot` as allowed
 
 #### Route the gateway through GitHub Copilot — `bin/llm-use-copilot.sh`
 
+For MCP, switch the **LLM Gateway**, not MCP itself. Normal model traffic flows through the runtime fabric:
+
+```text
+Context Fabric -> Runtime Bridge WebSocket -> MCP runtime -> LLM_GATEWAY_URL -> LLM Gateway -> provider
+```
+
+Once the gateway default provider is `copilot`, MCP-backed `model-run` frames use Copilot automatically.
+
 `bin/llm-use-copilot.sh` flips **every** model alias through Copilot via the gateway, and back. It edits `llm-providers.json` (adds + enables a `copilot` provider, makes it the default), repoints **all** aliases in `llm-models.json` to `copilot/<model>` (so `claude-*`/`gpt-4o` aliases route to Copilot too), writes `COPILOT_TOKEN` to `.env.llm-secrets`, then restarts the gateway and verifies. It auto-detects deployment and works for **both** — bare-metal (restarts the `uvicorn` process on `:8001` via the repo-root `.env.local` plus `.pids.runtime` from `bin/bare-metal-runtime.sh`, with legacy `.pids` fallback) and Docker (recreates the `singularity-llm-gateway` container). Originals are backed up to `*.copilot-bak`; `--restore` reverts.
 
 > **Prerequisite (fresh clone):** `.singularity/llm-providers.json` + `llm-models.json` are gitignored, so generate them and bring a stack up *before* running this — `./singularity.sh config init --profile office-laptop && ./singularity.sh config mcp-catalog --default-alias mock && ./singularity.sh up` (Docker). For bare-metal, just run `bin/setup.sh`: it generates config, brings the stack up, **and** points the gateway at your Copilot bridge in one step (you don't call this script yourself).
@@ -831,6 +877,21 @@ bin/llm-use-copilot.sh --preset github-models --token <GITHUB_PAT>
 
 # Revert to the pre-Copilot config:
 bin/llm-use-copilot.sh --restore
+```
+
+If the runtime pieces were already running, restart them so MCP uses the refreshed gateway config:
+
+```bash
+bin/laptop-bridge.sh gateway
+bin/laptop-bridge.sh mcp
+```
+
+Verify the active provider/model catalog and the runtime bridge connection:
+
+```bash
+curl -s http://localhost:8001/llm/providers | jq
+curl -s http://localhost:8001/llm/models | jq
+curl -s http://localhost:8000/api/runtime-bridge/status | jq
 ```
 
 > For the **bare-metal** stack, the interactive wizard `bin/setup.sh` asks for the bridge URL/model/token and runs this for you (choose the *bridge* LLM option).
