@@ -29,6 +29,8 @@ setup = Path("bin/setup.sh").read_text()
 copilot = Path("bin/llm-use-copilot.sh").read_text()
 web_package = Path("agent-and-tools/web/package.json").read_text()
 healthz_route = Path("agent-and-tools/web/src/app/healthz/route.ts")
+runtime_infra_route = Path("agent-and-tools/web/src/app/api/runtime-infrastructure/route.ts").read_text()
+platform_topology_route = Path("agent-and-tools/web/src/app/api/platform-topology/route.ts").read_text()
 
 checks: dict[str, bool] = {}
 
@@ -115,6 +117,15 @@ checks["platform-web IAM health rewrite accepts full health URL"] = (
     'function healthDestination' in Path("agent-and-tools/web/next.config.mjs").read_text()
     and 'const iamHealthDestination = healthDestination(process.env.IAM_HEALTH_URL' in Path("agent-and-tools/web/next.config.mjs").read_text()
     and 'destination: iamHealthDestination' in Path("agent-and-tools/web/next.config.mjs").read_text()
+)
+checks["platform-web treats MCP HTTP as explicit debug probe"] = (
+    'flagEnabled(process.env.RUNTIME_HTTP_FALLBACK_ENABLED)' in runtime_infra_route
+    and 'flagEnabled(process.env.MCP_HTTP_DEBUG_PROBE_ENABLED)' in runtime_infra_route
+    and 'Direct MCP HTTP probe disabled. Normal traffic uses the Runtime Bridge WebSocket.' in runtime_infra_route
+    and 'url: mcpHttpDebugEnabled ? cleanUrl(process.env.MCP_SERVER_URL) : null' in runtime_infra_route
+    and 'flagEnabled(process.env.RUNTIME_HTTP_FALLBACK_ENABLED)' in platform_topology_route
+    and 'flagEnabled(process.env.MCP_HTTP_DEBUG_PROBE_ENABLED)' in platform_topology_route
+    and 'url: mcpHttpDebugEnabled ? cleanUrl(process.env.MCP_SERVER_URL) : null' in platform_topology_route
 )
 
 checks["bare-metal up base port sweep excludes llm/mcp"] = bool(

@@ -32,6 +32,10 @@ function cleanUrl(value: string | null | undefined): string | null {
   return trimmed.replace(/\/+$/, "");
 }
 
+function flagEnabled(value: string | null | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
+}
+
 function authHeader(token: string | null | undefined): HeadersInit {
   const trimmed = token?.trim();
   if (!trimmed) return {};
@@ -95,6 +99,9 @@ export async function GET(request: NextRequest) {
   const authFailure = await requireVerifiedCallerBearer(request, "Runtime infrastructure");
   if (authFailure) return authFailure;
 
+  const mcpHttpDebugEnabled =
+    flagEnabled(process.env.RUNTIME_HTTP_FALLBACK_ENABLED) ||
+    flagEnabled(process.env.MCP_HTTP_DEBUG_PROBE_ENABLED);
   const entries: RuntimeEntryConfig[] = [
     {
       id: "context-api",
@@ -123,10 +130,12 @@ export async function GET(request: NextRequest) {
     {
       id: "mcp",
       label: "MCP HTTP Debug",
-      description: "Direct MCP HTTP endpoint. Used only when RUNTIME_HTTP_FALLBACK_ENABLED=true or for diagnostics.",
+      description: mcpHttpDebugEnabled
+        ? "Direct MCP HTTP endpoint. Used only when RUNTIME_HTTP_FALLBACK_ENABLED=true or for diagnostics."
+        : "Direct MCP HTTP probe disabled. Normal traffic uses the Runtime Bridge WebSocket.",
       category: "runtime",
       envKey: "MCP_SERVER_URL",
-      url: cleanUrl(process.env.MCP_SERVER_URL),
+      url: mcpHttpDebugEnabled ? cleanUrl(process.env.MCP_SERVER_URL) : null,
       healthPath: "/health",
       required: false,
       remoteCapable: true,

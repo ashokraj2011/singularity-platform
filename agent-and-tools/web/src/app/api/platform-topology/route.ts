@@ -50,6 +50,10 @@ function cleanUrl(value: string | null | undefined): string | null {
   return trimmed.replace(/\/+$/, "");
 }
 
+function flagEnabled(value: string | null | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
+}
+
 function authHeader(token: string | null | undefined): HeadersInit {
   const trimmed = token?.trim();
   if (!trimmed) return {};
@@ -142,6 +146,9 @@ export async function GET(request: NextRequest) {
   if (authFailure) return authFailure;
 
   const platformUrl = cleanUrl(process.env.PLATFORM_WEB_PUBLIC_URL ?? "http://localhost:5180");
+  const mcpHttpDebugEnabled =
+    flagEnabled(process.env.RUNTIME_HTTP_FALLBACK_ENABLED) ||
+    flagEnabled(process.env.MCP_HTTP_DEBUG_PROBE_ENABLED);
   const staticNodes: TopologyNode[] = [
     staticNode({
       id: "browser",
@@ -294,11 +301,13 @@ export async function GET(request: NextRequest) {
     {
       id: "mcp-server",
       label: "MCP HTTP Debug",
-      description: "Direct MCP endpoint used only for diagnostics or explicit HTTP fallback.",
+      description: mcpHttpDebugEnabled
+        ? "Direct MCP endpoint used only for diagnostics or explicit HTTP fallback."
+        : "Direct MCP HTTP probe disabled. Normal traffic uses the Runtime Bridge WebSocket.",
       kind: "runtime",
       group: "runtime",
       envKey: "MCP_SERVER_URL",
-      url: cleanUrl(process.env.MCP_SERVER_URL),
+      url: mcpHttpDebugEnabled ? cleanUrl(process.env.MCP_SERVER_URL) : null,
       required: false,
       remoteCapable: true,
       position: { x: 40, y: 92 },
