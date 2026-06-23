@@ -1101,31 +1101,34 @@ cmd_smoke() {
     # shellcheck disable=SC1090
     . "$ENV_FILE"
   fi
-  local urls=(
-    "http://localhost:8100/api/v1/health" \
-    "http://localhost:8500/health" \
-    "http://localhost:8000/health" \
-    "http://localhost:8080/health" \
-    "http://localhost:5180/api/runtime/agents/templates?scope=common&limit=3" \
-    "http://localhost:5180/" \
-    "http://localhost:5180/agents/studio" \
-    "http://localhost:5180/workflows" \
-    "http://localhost:5180/workbench" \
-    "http://localhost:5180/foundry" \
-    "http://localhost:5180/identity"
+  local checks=(
+    "http://localhost:8100/api/v1/health|200,304|5" \
+    "http://localhost:8500/health|200,304|5" \
+    "http://localhost:8000/health|200,304|5" \
+    "http://localhost:8080/health|200,304|5" \
+    "http://localhost:5180/api/runtime/agents/templates?scope=common&limit=3|200,401,403|10" \
+    "http://localhost:5180/healthz|200,304|10" \
+    "http://localhost:5180/|200,304|20" \
+    "http://localhost:5180/agents/studio|200,304|20" \
+    "http://localhost:5180/workflows|200,304|20" \
+    "http://localhost:5180/workbench|200,304|20" \
+    "http://localhost:5180/foundry|200,304|20" \
+    "http://localhost:5180/identity|200,304|20"
   )
   if [ -z "$SKIP_LOCAL_RUNTIME" ]; then
-    urls+=("http://localhost:8001/health" "http://localhost:7100/health")
+    checks+=("http://localhost:8001/health|200,304|5" "http://localhost:7100/health|200,304|5")
   fi
   if [ -n "$BARE_METAL_FULL" ]; then
-    urls+=("http://localhost:8002/health")
+    checks+=("http://localhost:8002/health|200,304|5")
   fi
   if [ "${FORMAL_VERIFICATION_ENABLED:-false}" = "true" ] || [ -n "$BARE_METAL_FULL" ]; then
-    urls+=("http://localhost:8010/health")
+    checks+=("http://localhost:8010/health|200,304|5")
   fi
-  for url in "${urls[@]}"; do
-    code=$(http_code "$url" 3)
-    if [ "$code" = "200" ] || [ "$code" = "304" ]; then
+  local check url allowed timeout code
+  for check in "${checks[@]}"; do
+    IFS="|" read -r url allowed timeout <<< "$check"
+    code=$(http_code "$url" "$timeout")
+    if [[ ",$allowed," == *",$code,"* ]]; then
       printf "  ${C_GREEN}%s${C_END}  %s\n" "$code" "$url"
     else
       printf "  ${C_RED}%s${C_END}  %s\n" "$code" "$url"

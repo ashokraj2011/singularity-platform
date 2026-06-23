@@ -28,6 +28,7 @@ doctor = Path("bin/doctor.sh").read_text()
 setup = Path("bin/setup.sh").read_text()
 copilot = Path("bin/llm-use-copilot.sh").read_text()
 web_package = Path("agent-and-tools/web/package.json").read_text()
+healthz_route = Path("agent-and-tools/web/src/app/healthz/route.ts")
 
 checks: dict[str, bool] = {}
 
@@ -80,6 +81,13 @@ checks["bare-metal clears only stale repo-owned platform-web :3000"] = (
     and '$ROOT/agent-and-tools/web' in bare
     and 'warn "port $port is in use by pid $pid ($cmd) but is not this repo' in bare
     and '"3000:' not in bare.split('BARE_METAL_APP_PORT_SPECS=(', 1)[1].split(')', 1)[0]
+)
+checks["bare-metal smoke accepts guarded platform APIs and Next cold compile"] = (
+    'http://localhost:5180/api/runtime/agents/templates?scope=common&limit=3|200,401,403|10' in bare
+    and 'http://localhost:5180/workflows|200,304|20' in bare
+    and 'http://localhost:5180/healthz|200,304|10' in bare
+    and '[[ ",$allowed," == *",$code,"* ]]' in bare
+    and healthz_route.exists()
 )
 
 checks["bare-metal up base port sweep excludes llm/mcp"] = bool(
