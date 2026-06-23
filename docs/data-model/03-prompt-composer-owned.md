@@ -7,7 +7,7 @@ ACTIVE ACTIVE
 INACTIVE INACTIVE
 ARCHIVED ARCHIVED
         }
-    
+
 
 
         PromptScopeType {
@@ -21,7 +21,7 @@ WORKFLOW WORKFLOW
 WORKFLOW_PHASE WORKFLOW_PHASE
 EXECUTION EXECUTION
         }
-    
+
 
 
         PromptLayerType {
@@ -53,54 +53,54 @@ APPROVAL_POLICY APPROVAL_POLICY
 DATA_ACCESS_POLICY DATA_ACCESS_POLICY
 GLOBAL_LESSON GLOBAL_LESSON
         }
-    
+
   "PromptProfile" {
     String id "🗝️"
-    String name 
+    String name
     String description "❓"
     PromptScopeType ownerScopeType "❓"
     String ownerScopeId "❓"
-    Int version 
-    EntityStatus status 
-    DateTime createdAt 
-    DateTime updatedAt 
+    Int version
+    EntityStatus status
+    DateTime createdAt
+    DateTime updatedAt
     String taskTemplate "❓"
     String extraContextTemplate "❓"
     String stageKey "❓"
     String roleGate "❓"
     }
-  
+
 
   "PromptLayer" {
     String id "🗝️"
-    String name 
-    PromptLayerType layerType 
-    PromptScopeType scopeType 
+    String name
+    PromptLayerType layerType
+    PromptScopeType scopeType
     String scopeId "❓"
-    String content 
-    Int priority 
-    Boolean isRequired 
-    Int version 
-    EntityStatus status 
+    String content
+    Int priority
+    Boolean isRequired
+    Int version
+    EntityStatus status
     String contentHash "❓"
     String createdBy "❓"
-    DateTime createdAt 
-    DateTime updatedAt 
+    DateTime createdAt
+    DateTime updatedAt
     }
-  
+
 
   "PromptProfileLayer" {
     String id "🗝️"
-    Int priority 
-    Boolean isEnabled 
-    DateTime createdAt 
+    Int priority
+    Boolean isEnabled
+    DateTime createdAt
     }
-  
+
 
   "PromptAssembly" {
     String id "🗝️"
     String executionId "❓"
-    String agentTemplateId 
+    String agentTemplateId
     String agentBindingId "❓"
     String capabilityId "❓"
     String workflowExecutionId "❓"
@@ -110,109 +110,138 @@ GLOBAL_LESSON GLOBAL_LESSON
     String finalPromptHash "❓"
     String finalPromptPreview "❓"
     Int estimatedInputTokens "❓"
-    DateTime createdAt 
+    DateTime createdAt
     String traceId "❓"
     Json evidenceRefs "❓"
     String compiledContextId "❓"
     String immutableContractId "❓"
     }
-  
+
 
   "CapabilityCompiledContext" {
     String id "🗝️"
-    String capabilityId 
-    String agentTemplateId 
-    String taskSignature 
-    String intent 
-    String compiledContent 
-    String compileMode 
-    Json citations 
-    Int estimatedTokens 
-    Int hitCount 
-    String status 
+    String capabilityId
+    String agentTemplateId
+    String taskSignature
+    String intent
+    String compiledContent
+    String compileMode
+    Json citations
+    Int estimatedTokens
+    Int hitCount
+    String status
     DateTime expiresAt "❓"
-    DateTime createdAt 
-    DateTime updatedAt 
+    DateTime createdAt
+    DateTime updatedAt
     }
-  
+
 
   "EventHorizonAction" {
     String id "🗝️"
-    String surface 
-    String intent 
-    String label 
-    String prompt 
-    Int displayOrder 
-    Boolean isActive 
+    String surface
+    String intent
+    String label
+    String prompt
+    Int displayOrder
+    Boolean isActive
     String description "❓"
-    DateTime createdAt 
-    DateTime updatedAt 
+    DateTime createdAt
+    DateTime updatedAt
     }
-  
+
 
   "ImmutableContract" {
     String id "🗝️"
-    String bundleHash 
-    String agentTemplateId 
-    Int agentTemplateVersion 
+    String bundleHash
+    String agentTemplateId
+    Int agentTemplateVersion
     String capabilityId "❓"
-    Json promptProfileVersions 
-    Json promptLayerVersions 
-    Json systemPromptVersions 
-    Json stageBindingVersions 
-    Json toolPins 
-    Json modelResolution 
-    DateTime capturedAt 
+    Json promptProfileVersions
+    Json promptLayerVersions
+    Json systemPromptVersions
+    Json stageBindingVersions
+    Json toolPins
+    Json modelResolution
+    DateTime capturedAt
     String capturedBy "❓"
     String capturedFrom "❓"
     String consumableId "❓"
     }
-  
-Immutable contracts are replayed from the stored JSON bundle, not from live prompt rows. Workgraph fetches the contract once, renders the frozen prompt from `promptLayerVersions.contentSnapshot`, `systemPromptVersions`, `stageBindingVersions`, `toolPins`, `bundleHash`, and model alias metadata, then calls Context Fabric `POST /api/v1/execute-governed-single-turn` with that prompt verbatim. The saved provider/model are forwarded as LLM gateway expectations so alias drift rejects before provider dispatch. If replay receives an `originalRunId`, it tenant-validates the referenced Workgraph `AgentRun` and compares the replay response against the stored `LLM_RESPONSE` output with deterministic hashes, sizes, exact-match status, and first-difference excerpts.
-
-Contract minting must pin a resolved model. When no `modelAlias` is supplied, Prompt Composer resolves the current catalog default alias from `/llm/models`; if the catalog is unavailable or the alias is missing, minting rejects rather than storing unresolved placeholder provider/model metadata.
 
 
   "EngineLesson" {
     String id "🗝️"
-    String capabilityId 
+    String capabilityId
     String toolName "❓"
-    String ruleText 
+    String ruleText
     String sourceIssueId "❓"
-    Json sourceTraceIds 
-    Float confidence 
-    Boolean isActive 
+    Json sourceTraceIds
+    Float confidence
+    Boolean isActive
     String supersededBy "❓"
     String extractedBy "❓"
-    DateTime createdAt 
-    DateTime updatedAt 
+    DateTime createdAt
+    DateTime updatedAt
     }
-  
+
 
   "SystemPrompt" {
     String id "🗝️"
-    String key 
-    Int version 
-    String content 
+    String key
+    Int version
+    String content
     Json jsonSchema "❓"
     String modelHint "❓"
-    Boolean isActive 
+    Boolean isActive
     String description "❓"
-    DateTime createdAt 
-    DateTime updatedAt 
+    DateTime createdAt
+    DateTime updatedAt
     }
-  
+
 
   "StagePromptBinding" {
     String id "🗝️"
-    String stageKey 
+    String stageKey
     String agentRole "❓"
-    Boolean isActive 
+    String phase "❓"
+    Boolean isActive
     String description "❓"
-    DateTime createdAt 
-    DateTime updatedAt 
+    DateTime createdAt
+    DateTime updatedAt
     }
-  
+
+
+  "StagePolicy" {
+    String id "🗝️"
+    String stageKey
+    String agentRole "❓"
+    Int version
+    String status
+    String description "❓"
+    Json approvalModel
+    Json limits
+    Json contextPolicy
+    Json editPolicy
+    Json verificationPolicy
+    Json riskPolicy
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "StagePhasePolicy" {
+    String id "🗝️"
+    String phase
+    String allowedTools
+    String forbiddenTools
+    Json requiredOutputSchema
+    Int maxInputTokens "❓"
+    Int maxOutputTokens "❓"
+    Int maxToolCalls "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
 
   "PromptAssemblyLayer" {
     String id "🗝️"
@@ -220,11 +249,11 @@ Contract minting must pin a resolved model. When no `modelAlias` is supplied, Pr
     String layerType "❓"
     String layerHash "❓"
     Int priority "❓"
-    Boolean included 
+    Boolean included
     String inclusionReason "❓"
     String contentSnapshot "❓"
     }
-  
+
     "PromptProfile" |o--|o "PromptScopeType" : "enum:ownerScopeType"
     "PromptProfile" |o--|| "EntityStatus" : "enum:status"
     "PromptLayer" |o--|| "PromptLayerType" : "enum:layerType"
@@ -233,5 +262,6 @@ Contract minting must pin a resolved model. When no `modelAlias` is supplied, Pr
     "PromptProfileLayer" }o--|| "PromptProfile" : "promptProfile"
     "PromptProfileLayer" }o--|| "PromptLayer" : "promptLayer"
     "StagePromptBinding" }o--|| "PromptProfile" : "promptProfile"
+    "StagePhasePolicy" }o--|| "StagePolicy" : "stagePolicy"
     "PromptAssemblyLayer" }o--|| "PromptAssembly" : "promptAssembly"
 ```

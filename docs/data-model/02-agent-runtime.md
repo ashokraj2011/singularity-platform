@@ -93,8 +93,6 @@ PROMOTED PROMOTED
     String contractHash "❓"
     String contractId "❓"
     }
-  
-Production-class `AgentTemplate` activation requires this contract pin. Agent Runtime waits for Prompt Composer to mint the immutable contract after the template update commits; if minting fails, it restores the prior template status and returns `CONTRACT_MINT_REQUIRED` rather than leaving an active template without replay evidence.
 
 
   "AgentSkill" {

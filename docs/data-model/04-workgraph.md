@@ -606,6 +606,7 @@ EVENT EVENT
     Json payload
     Int version
     String createdById "❓"
+    String tenantId "❓"
     DateTime createdAt
     DateTime updatedAt
     }
@@ -1649,6 +1650,145 @@ EVENT EVENT
     DateTime updatedAt
     }
 
+
+  "codegen_specs" {
+    String id "🗝️"
+    String specName
+    String version
+    String kind
+    String state
+    String yaml
+    Json canonicalJson
+    String specHash
+    Json irJson "❓"
+    String irHash "❓"
+    String workItemId "❓"
+    String createdById "❓"
+    String tenantId "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "codegen_spec_lifecycle_events" {
+    String id "🗝️"
+    String fromState "❓"
+    String toState
+    String actorId "❓"
+    String reason "❓"
+    Json payload "❓"
+    DateTime occurredAt
+    }
+
+
+  "codegen_runs" {
+    String id "🗝️"
+    String irHash
+    String templateVersion
+    String generatorVersion
+    String status
+    String mode
+    String outputPath "❓"
+    String workflowInstanceId "❓"
+    String tenantId "❓"
+    DateTime startedAt
+    DateTime completedAt "❓"
+    }
+
+
+  "codegen_repo_models" {
+    String id "🗝️"
+    String repoPath
+    String language
+    String framework
+    Json modelJson
+    String modelHash
+    String scannedById "❓"
+    String tenantId "❓"
+    DateTime scannedAt
+    }
+
+
+  "codegen_change_plans" {
+    String id "🗝️"
+    Json enhancementSpecJson
+    String enhancementSpecHash
+    Json planJson
+    String planHash
+    String status
+    String tenantId "❓"
+    DateTime createdAt
+    DateTime appliedAt "❓"
+    }
+
+
+  "codegen_artifacts" {
+    String id "🗝️"
+    String path
+    String contentHash
+    String fileType
+    String generatedBy
+    Boolean protected
+    String content "❓"
+    Int sizeBytes "❓"
+    DateTime createdAt
+    }
+
+
+  "codegen_gaps" {
+    String id "🗝️"
+    String gapType
+    String severity
+    String filePath "❓"
+    String className "❓"
+    String methodName "❓"
+    String regionId "❓"
+    String description
+    String recommendedResolution "❓"
+    Boolean llmEligible
+    Boolean resolved
+    DateTime createdAt
+    DateTime resolvedAt "❓"
+    }
+
+
+  "codegen_llm_patch_tasks" {
+    String id "🗝️"
+    String gapId "❓"
+    String taskType
+    String status
+    String targetFile
+    String targetClass "❓"
+    String targetMethod "❓"
+    String regionId
+    Json allowedChanges
+    Json forbiddenChanges
+    String promptHash "❓"
+    String responseHash "❓"
+    String cfCallId "❓"
+    String bundleHash "❓"
+    Json metadata "❓"
+    DateTime createdAt
+    DateTime dispatchedAt "❓"
+    DateTime completedAt "❓"
+    }
+
+
+  "codegen_verifications" {
+    String id "🗝️"
+    String status
+    Json result
+    DateTime createdAt
+    }
+
+
+  "codegen_receipts" {
+    String id "🗝️"
+    Json receiptJson
+    String receiptHash
+    DateTime createdAt
+    }
+
     "users" }o--|o teams : "team"
     "teams" }o--|o departments : "department"
     "team_variables" }o--|| teams : "team"
@@ -1788,4 +1928,13 @@ EVENT EVENT
     "workbench_artifact_consumes" }o--|| workbench_stages : "consumerStage"
     "workbench_artifact_consumes" }o--|| workbench_expected_artifacts : "producerArtifact"
     "workbench_stage_questions" }o--|| workbench_stages : "stage"
+    "codegen_spec_lifecycle_events" }o--|| codegen_specs : "spec"
+    "codegen_runs" }o--|| codegen_specs : "spec"
+    "codegen_runs" }o--|o codegen_change_plans : "changePlan"
+    "codegen_change_plans" }o--|| codegen_repo_models : "repoModel"
+    "codegen_artifacts" }o--|| codegen_runs : "run"
+    "codegen_gaps" }o--|| codegen_runs : "run"
+    "codegen_llm_patch_tasks" }o--|| codegen_runs : "run"
+    "codegen_verifications" }o--|| codegen_runs : "run"
+    "codegen_receipts" |o--|| codegen_runs : "run"
 ```
