@@ -675,6 +675,12 @@ services:
       # M67 Slice 1C — was context-memory's own store; now backed by
       # Postgres through CONTEXT_FABRIC_DATABASE_URL.
       CONTEXT_FABRIC_DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity_context_fabric
+      # Fallback only. Normal Docker uses CONTEXT_FABRIC_DATABASE_URL above, but
+      # keep SQLite paths app-local and volume-backed so misconfigured dev runs
+      # do not try to mkdir a read-only root-level /data directory.
+      CALL_LOG_DB: /app/data/call_log.db
+      EVENTS_STORE_DB: /app/data/call_log_events.db
+      CONTEXT_MEMORY_DB: /app/data/context_memory.db
       SUMMARIZER_MODEL_ALIAS: ${SUMMARIZER_MODEL_ALIAS:-}
       # M65 Slice 1B — METRICS_LEDGER_URL removed. /metrics/dashboard and
       # /sessions/{id}/metrics now proxy to audit-gov (AUDIT_GOV_URL below).
@@ -766,6 +772,8 @@ services:
       CF_AUTO_VERIFY_ENABLED: ${CF_AUTO_VERIFY_ENABLED:-true}
     ports:
       - "8000:8000"
+    volumes:
+      - context_api_data:/app/data
     depends_on:
       at-postgres:
         condition: service_healthy
@@ -1553,6 +1561,7 @@ volumes:
   at_postgres_data:
   wg_postgres_data:
   wg_minio_data:
+  context_api_data:
 
 secrets:
   artifactory_npm_token:

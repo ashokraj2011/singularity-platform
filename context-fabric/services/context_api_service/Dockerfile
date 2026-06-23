@@ -13,5 +13,6 @@ COPY services/context_api_service /app/services/context_api_service
 # image so context-api can import services.context_memory_service.app.routes.
 # Required because the routes touch the local SQLite DB via repository.py.
 COPY services/context_memory_service /app/services/context_memory_service
+RUN mkdir -p /app/data && chmod 0777 /app/data
 EXPOSE 8000
 CMD ["uvicorn", "services.context_api_service.app.main:app", "--host", "0.0.0.0", "--port", "8000"]

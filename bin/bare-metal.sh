@@ -559,11 +559,10 @@ export DATABASE_URL_AUDIT_GOV="postgresql://${db_user}:${db_pass}@${db_host}:${d
 export DATABASE_URL_CONTEXT_FABRIC="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_context_fabric"
 export CONTEXT_FABRIC_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
 # Pin EACH CF store to Postgres explicitly (highest precedence in
-# resolve_database_target). This guarantees the services never fall back to the
-# SQLite default (/data/*.db) — a read-only path on macOS that crashes
-# context-api at init_db with "OSError: Read-only file system: '/data'". Belt-
-# and-suspenders alongside the per-boot CONTEXT_FABRIC_DATABASE_URL, and it also
-# covers manual runs that source .env.local.
+# resolve_database_target). This guarantees the services never fall back to
+# SQLite during bare-metal runs. Belt-and-suspenders alongside the per-boot
+# CONTEXT_FABRIC_DATABASE_URL, and it also covers manual runs that source
+# .env.local.
 export CALL_LOG_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
 export EVENTS_STORE_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
 export CONTEXT_MEMORY_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"

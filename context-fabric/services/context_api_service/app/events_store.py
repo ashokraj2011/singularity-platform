@@ -19,13 +19,14 @@ from typing import Optional
 from context_fabric_shared.database import db_conn, resolve_database_target, row_to_dict, rows_to_dicts
 
 
-DB_PATH = os.environ.get("EVENTS_STORE_DB", "/data/call_log_events.db")
-DB_TARGET = resolve_database_target("EVENTS_STORE_DATABASE_URL", "EVENTS_STORE_DB", "/data/call_log_events.db")
+DEFAULT_EVENTS_STORE_DB = "./data/call_log_events.db"
+DB_PATH = os.environ.get("EVENTS_STORE_DB", DEFAULT_EVENTS_STORE_DB)
+DB_TARGET = resolve_database_target("EVENTS_STORE_DATABASE_URL", "EVENTS_STORE_DB", DEFAULT_EVENTS_STORE_DB)
 
 
 def refresh_db_target() -> None:
     global DB_PATH, DB_TARGET
-    DB_PATH = os.environ.get("EVENTS_STORE_DB", "/data/call_log_events.db")
+    DB_PATH = os.environ.get("EVENTS_STORE_DB", DEFAULT_EVENTS_STORE_DB)
     DB_TARGET = resolve_database_target("EVENTS_STORE_DATABASE_URL", "EVENTS_STORE_DB", DB_PATH)
 
 

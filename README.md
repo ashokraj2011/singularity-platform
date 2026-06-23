@@ -200,6 +200,13 @@ Audit & Governance API   http://localhost:8500  (--profile audit or remote)
    ```
 2. **Token errors after a long idle**: IAM tokens expire. Re-login through `http://localhost:5180/identity` and refresh the current page.
 3. **Port collisions** — `lsof -i :5180` if Platform Web will not start; another stack from a previous demo might still be holding it.
+4. **Context Fabric crashes with `Read-only file system: '/data'` and Platform Web never comes up**: pull the latest repo, rebuild the affected images, and recreate the core services so Context API uses Postgres or the mounted `/app/data` fallback instead of legacy `/data` SQLite paths:
+   ```bash
+   git pull
+   docker compose build context-api platform-web
+   docker compose --profile core up -d --force-recreate context-api platform-web
+   docker compose logs -f context-api platform-web
+   ```
 
 The narrative to lead with: *"Singularity is a governed agent platform — every agent is rooted in a locked baseline, every workflow run is observable end-to-end, and every LLM call is gated against a budget."*
 

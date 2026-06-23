@@ -39,6 +39,7 @@ services:
       dockerfile: services/context_memory_service/Dockerfile
     environment:
       - CONTEXT_FABRIC_DATABASE_URL=${CONTEXT_FABRIC_DATABASE_URL:-postgresql://postgres:singularity@context-fabric-postgres:5432/singularity_context_fabric}
+      - CONTEXT_MEMORY_DB=/app/data/context_memory.db
       - MCP_SERVER_URL=${MCP_SERVER_URL:-http://host.docker.internal:7100}
       - MCP_BEARER_TOKEN=${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}
       - SUMMARIZER_MODEL_ALIAS=${SUMMARIZER_MODEL_ALIAS:-}
@@ -47,6 +48,8 @@ services:
       - PUBLIC_BASE_URL=${CONTEXT_MEMORY_PUBLIC_URL:-http://host.docker.internal:8002}
     ports:
       - "8002:8002"
+    volumes:
+      - context_memory_data:/app/data
     depends_on:
       context-fabric-postgres:
         condition: service_healthy
@@ -87,6 +90,9 @@ services:
       - IAM_BASE_URL=${IAM_BASE_URL:-http://host.docker.internal:8100/api/v1}
       # M9.x — persisted MCP events (drained at end of /execute)
       - CONTEXT_FABRIC_DATABASE_URL=${CONTEXT_FABRIC_DATABASE_URL:-postgresql://postgres:singularity@context-fabric-postgres:5432/singularity_context_fabric}
+      - CALL_LOG_DB=/app/data/call_log.db
+      - EVENTS_STORE_DB=/app/data/call_log_events.db
+      - CONTEXT_MEMORY_DB=/app/data/context_memory.db
       # M11.a — self-register
       - PLATFORM_REGISTRY_URL=${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
       - PUBLIC_BASE_URL=${CONTEXT_API_PUBLIC_URL:-http://host.docker.internal:8000}
@@ -111,6 +117,8 @@ services:
       - AUDIT_GOV_SERVICE_TOKEN=${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
     ports:
       - "8000:8000"
+    volumes:
+      - context_api_data:/app/data
     depends_on:
       context-fabric-postgres:
         condition: service_healthy
@@ -123,3 +131,5 @@ services:
 
 volumes:
   context_fabric_postgres_data:
+  context_api_data:
+  context_memory_data:

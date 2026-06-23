@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     # M8 — orchestrator dependencies for /execute
     composer_url: str = "http://localhost:3004"
     tool_service_url: str = "http://localhost:3002"
-    call_log_db: str = "/data/call_log.db"
+    call_log_db: str = "./data/call_log.db"
     require_tenant_id: bool = False
 
     # MCP execution runtime. Capabilities still scope prompts, memory, and

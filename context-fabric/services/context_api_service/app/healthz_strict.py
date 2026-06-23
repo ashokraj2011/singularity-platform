@@ -144,8 +144,8 @@ async def _check_audit_gov_reachable() -> InvariantResult:
 async def run_invariant_checks() -> dict:
     """Run all checks in parallel. Returns {ok: bool, checks: [..]}."""
     results: List[InvariantResult] = await asyncio.gather(
-        _check_store_backend("call_log", "CALL_LOG_DATABASE_URL", "CALL_LOG_DB", "/data/call_log.db"),
-        _check_store_backend("events_store", "EVENTS_STORE_DATABASE_URL", "EVENTS_STORE_DB", "/data/call_log_events.db"),
+        _check_store_backend("call_log", "CALL_LOG_DATABASE_URL", "CALL_LOG_DB", "./data/call_log.db"),
+        _check_store_backend("events_store", "EVENTS_STORE_DATABASE_URL", "EVENTS_STORE_DB", "./data/call_log_events.db"),
         _check_iam_reachable(),
         _check_iam_bootstrap_works(),
         _check_audit_gov_reachable(),
