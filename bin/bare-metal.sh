@@ -221,7 +221,7 @@ BARE_METAL_RUNTIME_PORT_SPECS=(
 
 free_port_specs() {
   local scope="$1"; shift || true
-  local spec port label pids pid cmd
+  local spec port label pids pid cmd target
   command -v lsof >/dev/null 2>&1 || { warn "lsof not found; cannot free $scope ports"; return 0; }
   for spec in "$@"; do
     [ -n "$spec" ] || continue
@@ -237,18 +237,42 @@ free_port_specs() {
           continue
           ;;
       esac
-      dim "  freeing $label on :$port (pid $pid, $cmd)"
-      kill "$pid" 2>/dev/null || true
-      for _ in 1 2 3 4 5; do
-        kill -0 "$pid" 2>/dev/null || break
-        sleep 0.2
-      done
-      if kill -0 "$pid" 2>/dev/null; then
-        kill -9 "$pid" 2>/dev/null || true
-        warn "force-killed $label on :$port (pid $pid)"
-      fi
+      target="$(repo_owned_process_root "$pid")"
+      dim "  freeing $label on :$port (pid $pid, $cmd; root $target)"
+      kill_process_tree "$target" "$label on :$port"
     done
   done
+}
+
+repo_owned_process_root() {
+  local pid="$1" parent cmd
+  while :; do
+    parent=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ' || true)
+    [ -n "$parent" ] && [ "$parent" != "0" ] && [ "$parent" != "1" ] || break
+    cmd=$(ps -p "$parent" -o command= 2>/dev/null || true)
+    case "$cmd" in
+      *"$ROOT"*) pid="$parent" ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$pid"
+}
+
+kill_process_tree() {
+  local pid="$1" label="${2:-process}" child
+  [ -n "$pid" ] || return 0
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    kill_process_tree "$child" "$label"
+  done
+  kill "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.2
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null || true
+    warn "force-killed $label (pid $pid)"
+  fi
 }
 
 free_stale_platform_web_legacy_port() {
@@ -311,6 +335,149 @@ if exp is not None and float(exp) <= time.time() + 300:
     raise SystemExit(1)
 raise SystemExit(0)
 PY
+}
+
+platform_web_service_token_is_fresh() {
+  local token="$1"
+  [ -n "$token" ] || return 1
+  TOKEN="$token" "${SINGULARITY_PYTHON_BIN:-python3}" - <<'PY' >/dev/null 2>&1
+import base64
+import json
+import os
+import time
+
+required_scopes = {"read:reference-data", "read:mcp-servers", "publish:events"}
+token = os.environ.get("TOKEN", "")
+try:
+    payload_b64 = token.split(".")[1]
+    payload_b64 += "=" * (-len(payload_b64) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
+except Exception:
+    raise SystemExit(1)
+if payload.get("kind") != "service" or payload.get("service_name") != "platform-web" or payload.get("sub") != "service:platform-web":
+    raise SystemExit(1)
+if not required_scopes.issubset(set(payload.get("scopes") or [])):
+    raise SystemExit(1)
+exp = payload.get("exp")
+if exp is not None and float(exp) <= time.time() + 300:
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
+set_env_export() {
+  local key="$1" value="$2" tmp
+  [ -f "$ENV_FILE" ] || return 0
+  tmp="${ENV_FILE}.tmp.$$"
+  awk -v key="$key" -v value="$value" '
+    BEGIN { done = 0 }
+    $0 ~ "^export " key "=" {
+      print "export " key "=\"" value "\""
+      done = 1
+      next
+    }
+    { print }
+    END {
+      if (!done) print "export " key "=\"" value "\""
+    }
+  ' "$ENV_FILE" > "$tmp" && mv "$tmp" "$ENV_FILE"
+  chmod 600 "$ENV_FILE" 2>/dev/null || true
+}
+
+mint_platform_web_service_token_via_iam() {
+  case "${SINGULARITY_AUTO_MINT_PLATFORM_WEB_TOKEN:-true}" in
+    0|false|FALSE|no|NO) return 1 ;;
+  esac
+  local iam_base="${IAM_BASE_URL:-http://localhost:8100/api/v1}"
+  local email="${LOCAL_SUPER_ADMIN_EMAIL:-admin@singularity.local}"
+  local password="${LOCAL_SUPER_ADMIN_PASSWORD:-Admin1234!}"
+  local code token
+  code=$(http_code "${iam_base%/}/health" 3)
+  if [ "$code" != "200" ] && [ "$code" != "204" ]; then
+    warn "IAM is not ready at ${iam_base%/}/health; cannot auto-mint platform-web service token"
+    return 1
+  fi
+  token=$(IAM_BASE_URL="${iam_base%/}" \
+    PLATFORM_WEB_TOKEN_EMAIL="$email" \
+    PLATFORM_WEB_TOKEN_PASSWORD="$password" \
+    PLATFORM_WEB_TOKEN_TENANT_IDS="${IAM_SERVICE_TOKEN_TENANT_IDS:-}" \
+    "${SINGULARITY_PYTHON_BIN:-python3}" - <<'PY'
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+base = os.environ["IAM_BASE_URL"].rstrip("/")
+email = os.environ["PLATFORM_WEB_TOKEN_EMAIL"]
+password = os.environ["PLATFORM_WEB_TOKEN_PASSWORD"]
+tenant_ids = [item.strip() for item in os.environ.get("PLATFORM_WEB_TOKEN_TENANT_IDS", "").split(",") if item.strip()]
+
+def post_json(path: str, payload: dict, bearer: str | None = None) -> dict:
+    headers = {"content-type": "application/json"}
+    if bearer:
+        headers["authorization"] = f"Bearer {bearer}"
+    req = urllib.request.Request(
+        f"{base}{path}",
+        data=json.dumps(payload).encode(),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            return json.loads(res.read().decode() or "{}")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:500]
+        print(f"IAM {path} failed with HTTP {exc.code}: {detail}", file=sys.stderr)
+        raise SystemExit(1)
+    except Exception as exc:
+        print(f"IAM {path} failed: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+
+login = post_json("/auth/local/login", {"email": email, "password": password})
+admin_token = login.get("access_token")
+if not admin_token:
+    print("IAM login did not return an access_token", file=sys.stderr)
+    raise SystemExit(1)
+
+minted = post_json(
+    "/auth/service-token",
+    {
+        "service_name": "platform-web",
+        "scopes": ["read:reference-data", "read:mcp-servers", "publish:events"],
+        "tenant_ids": tenant_ids,
+        "ttl_hours": 24 * 90,
+    },
+    admin_token,
+)
+service_token = minted.get("access_token")
+if not service_token:
+    print("IAM service-token mint did not return an access_token", file=sys.stderr)
+    raise SystemExit(1)
+print(service_token)
+PY
+) || return 1
+  [ -n "$token" ] || return 1
+  export WORKGRAPH_PROXY_SERVICE_TOKEN="$token"
+  export PROMPT_COMPOSER_SERVICE_TOKEN="${PROMPT_COMPOSER_SERVICE_TOKEN:-$token}"
+  set_env_export WORKGRAPH_PROXY_SERVICE_TOKEN "$WORKGRAPH_PROXY_SERVICE_TOKEN"
+  set_env_export PROMPT_COMPOSER_SERVICE_TOKEN "$PROMPT_COMPOSER_SERVICE_TOKEN"
+  ok "platform-web service token minted through IAM (redacted) → .env.local"
+}
+
+ensure_platform_web_service_token() {
+  if platform_web_service_token_is_fresh "${WORKGRAPH_PROXY_SERVICE_TOKEN:-}"; then
+    export PROMPT_COMPOSER_SERVICE_TOKEN="${PROMPT_COMPOSER_SERVICE_TOKEN:-$WORKGRAPH_PROXY_SERVICE_TOKEN}"
+    set_env_export WORKGRAPH_PROXY_SERVICE_TOKEN "$WORKGRAPH_PROXY_SERVICE_TOKEN"
+    set_env_export PROMPT_COMPOSER_SERVICE_TOKEN "$PROMPT_COMPOSER_SERVICE_TOKEN"
+    ok "platform-web service token loaded (redacted)"
+    return 0
+  fi
+  if mint_platform_web_service_token_via_iam; then
+    return 0
+  fi
+  warn "platform-web service token was not minted; Workgraph/Composer server-side proxy calls may require manual WORKGRAPH_PROXY_SERVICE_TOKEN"
+  return 1
 }
 
 load_runtime_token() {
@@ -590,24 +757,24 @@ export PG_PASS="$db_pass"
 export DATABASE_URL_AGENT_TOOLS="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity"
 # M30 — composer owns this DB; agent-runtime data is read via DATABASE_URL_RUNTIME_READ (= AGENT_TOOLS)
 export DATABASE_URL_COMPOSER="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_composer"
-export DATABASE_URL_RUNTIME_READ="$DATABASE_URL_AGENT_TOOLS"
+export DATABASE_URL_RUNTIME_READ="\$DATABASE_URL_AGENT_TOOLS"
 export DATABASE_URL_WORKGRAPH_ADMIN="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/workgraph"
 export DATABASE_URL_WORKGRAPH_RUNTIME="postgresql://${WORKGRAPH_APP_DB_USER}:${WORKGRAPH_APP_DB_PASSWORD}@${db_host}:${db_port}/workgraph"
-export DATABASE_URL_WORKGRAPH="$DATABASE_URL_WORKGRAPH_RUNTIME"
+export DATABASE_URL_WORKGRAPH="\$DATABASE_URL_WORKGRAPH_RUNTIME"
 export DATABASE_URL_AUDIT_GOV="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/audit_governance"
 # Context Fabric stores (call_log, events_store, context_memory) — Postgres,
 # matching the Docker stack. The CF services read CONTEXT_FABRIC_DATABASE_URL.
 export DATABASE_URL_CONTEXT_FABRIC="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_context_fabric"
-export CONTEXT_FABRIC_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
+export CONTEXT_FABRIC_DATABASE_URL="\$DATABASE_URL_CONTEXT_FABRIC"
 # Pin EACH CF store to Postgres explicitly (highest precedence in
 # resolve_database_target). This guarantees the services never fall back to
 # SQLite during bare-metal runs. Belt-and-suspenders alongside the per-boot
 # CONTEXT_FABRIC_DATABASE_URL, and it also covers manual runs that source
 # .env.local.
-export CALL_LOG_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
-export EVENTS_STORE_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
-export CONTEXT_MEMORY_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
-export METRICS_LEDGER_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
+export CALL_LOG_DATABASE_URL="\$DATABASE_URL_CONTEXT_FABRIC"
+export EVENTS_STORE_DATABASE_URL="\$DATABASE_URL_CONTEXT_FABRIC"
+export CONTEXT_MEMORY_DATABASE_URL="\$DATABASE_URL_CONTEXT_FABRIC"
+export METRICS_LEDGER_DATABASE_URL="\$DATABASE_URL_CONTEXT_FABRIC"
 
 # Respect an operator-provided secret (office/cloud!); dev default matches
 # docker-compose + IAM + the laptop bridge so dev pairing verifies everywhere.
@@ -620,9 +787,9 @@ export CONTEXT_FABRIC_SERVICE_TOKEN="${CONTEXT_FABRIC_SERVICE_TOKEN:-$(config_va
 export IAM_SERVICE_TOKEN_TENANT_IDS="${IAM_SERVICE_TOKEN_TENANT_IDS:-$(config_value tokens.iamServiceTokenTenantIds "")}"
 export WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS="${WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS:-$(config_value tokens.workgraphInternalTokenTenantIds "")}"
 export WORKGRAPH_PROXY_SERVICE_TOKEN="${WORKGRAPH_PROXY_SERVICE_TOKEN:-$(config_value platform.workgraphProxyServiceToken "")}"
-export PROMPT_COMPOSER_SERVICE_TOKEN="${PROMPT_COMPOSER_SERVICE_TOKEN:-$WORKGRAPH_PROXY_SERVICE_TOKEN}"
+export PROMPT_COMPOSER_SERVICE_TOKEN="\${PROMPT_COMPOSER_SERVICE_TOKEN:-\$WORKGRAPH_PROXY_SERVICE_TOKEN}"
 export AUDIT_GOV_SERVICE_TOKEN="${AUDIT_GOV_SERVICE_TOKEN:-$(config_value tokens.auditGovServiceToken dev-audit-gov-service-token)}"
-export LEARNING_SERVICE_TOKEN="${LEARNING_SERVICE_TOKEN:-$AUDIT_GOV_SERVICE_TOKEN}"
+export LEARNING_SERVICE_TOKEN="\${LEARNING_SERVICE_TOKEN:-\$AUDIT_GOV_SERVICE_TOKEN}"
 export APP_ENV="${APP_ENV:-${SINGULARITY_ENV:-development}}"
 export ENVIRONMENT="${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}"
 export SINGULARITY_ENV="${SINGULARITY_ENV:-${APP_ENV:-development}}"
@@ -652,7 +819,7 @@ export CONTEXT_FABRIC_URL="http://localhost:8000"
 export CONTEXT_MEMORY_URL="http://localhost:8002"
 export FORMAL_VERIFIER_URL="http://localhost:8010"
 export RUNTIME_BRIDGE_URL="${RUNTIME_BRIDGE_URL:-${LAPTOP_BRIDGE_URL:-ws://localhost:8000/api/runtime-bridge/connect}}"
-export LAPTOP_BRIDGE_URL="$RUNTIME_BRIDGE_URL"
+export LAPTOP_BRIDGE_URL="\$RUNTIME_BRIDGE_URL"
 export RUNTIME_HTTP_FALLBACK_ENABLED="${RUNTIME_HTTP_FALLBACK_ENABLED:-false}"
 export MCP_SERVER_URL="${MCP_SERVER_URL:-http://localhost:7100}"
 export MCP_BEARER_TOKEN="${MCP_BEARER_TOKEN:-$(config_value mcpRuntime.bearerToken demo-bearer-token-must-be-min-16-chars)}"
@@ -944,6 +1111,7 @@ SQL
   info "booting services…"
   boot iam-service      "cd singularity-iam-service  && DATABASE_URL=\"postgresql+asyncpg://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_iam\" JWT_SECRET=\"$JWT_SECRET\" JWT_EXPIRE_MINUTES=720 LOCAL_SUPER_ADMIN_EMAIL=\"$LOCAL_SUPER_ADMIN_EMAIL\" LOCAL_SUPER_ADMIN_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" CORS_ORIGINS='[\"http://localhost:5180\"]' python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8100"
   wait_http iam-service "http://localhost:8100/api/v1/health" 45
+  ensure_platform_web_service_token || true
 
   info "applying SQL seed data…"
   ( "$ROOT/seed/apply.sh" "$db_user" "$db_pass" "$db_host" "$db_port" >/dev/null 2>&1 ) \
@@ -1008,7 +1176,7 @@ SQL
   # calls through Next rewrites and keeps users in one shell:
   # /operations, /agents, /agents/studio, /workflows, /workbench, /foundry,
   # and /identity. The old split Vite apps are legacy/debug-only now.
-  boot platform-web     "cd agent-and-tools/web        && PORT=5180 IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_HEALTH_URL=\"http://localhost:8100/api/v1/health\" IAM_BOOTSTRAP_USERNAME=\"$LOCAL_SUPER_ADMIN_EMAIL\" IAM_BOOTSTRAP_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" TENANT_ISOLATION_MODE=\"$TENANT_ISOLATION_MODE\" REQUIRE_TENANT_ID=\"$REQUIRE_TENANT_ID\" IAM_SERVICE_TOKEN_TENANT_IDS=\"$IAM_SERVICE_TOKEN_TENANT_IDS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" WORKGRAPH_API_URL=\"http://localhost:8080\" WORKGRAPH_PROXY_SERVICE_AUTH=true WORKGRAPH_PROXY_SERVICE_TOKEN=\"$WORKGRAPH_PROXY_SERVICE_TOKEN\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" NEXT_PUBLIC_WORKGRAPH_WEB_URL=\"/workflows\" npm run dev"
+  boot platform-web     "cd agent-and-tools/web        && PORT=5180 IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_HEALTH_URL=\"http://localhost:8100/api/v1/health\" IAM_BOOTSTRAP_USERNAME=\"$LOCAL_SUPER_ADMIN_EMAIL\" IAM_BOOTSTRAP_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" TENANT_ISOLATION_MODE=\"$TENANT_ISOLATION_MODE\" REQUIRE_TENANT_ID=\"$REQUIRE_TENANT_ID\" IAM_SERVICE_TOKEN_TENANT_IDS=\"$IAM_SERVICE_TOKEN_TENANT_IDS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" WORKGRAPH_API_URL=\"http://localhost:8080\" WORKGRAPH_PROXY_SERVICE_AUTH=true WORKGRAPH_PROXY_SERVICE_TOKEN=\"$WORKGRAPH_PROXY_SERVICE_TOKEN\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" NEXT_PUBLIC_WORKGRAPH_WEB_URL=\"/workflows\" npm run dev"
 
   # Append-only helper for anyone who starts the legacy/debug UIs manually.
   _ensure_kv() { # $1=file  $2=KEY=VALUE
@@ -1073,7 +1241,8 @@ cmd_down() {
   while read -r pid; do
     [ -z "$pid" ] && continue
     if kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null && dim "  killed $pid"
+      kill_process_tree "$pid" "bare-metal pidfile process"
+      dim "  killed $pid"
     fi
   done < "$PID_FILE"
   # Hard sweep — anything still hogging our ports gets terminated. When runtime

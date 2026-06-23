@@ -82,12 +82,39 @@ checks["bare-metal clears only stale repo-owned platform-web :3000"] = (
     and 'warn "port $port is in use by pid $pid ($cmd) but is not this repo' in bare
     and '"3000:' not in bare.split('BARE_METAL_APP_PORT_SPECS=(', 1)[1].split(')', 1)[0]
 )
+checks["bare-metal port sweep kills repo-owned process tree"] = (
+    'repo_owned_process_root' in bare
+    and 'kill_process_tree' in bare
+    and 'target="$(repo_owned_process_root "$pid")"' in bare
+    and 'kill_process_tree "$target" "$label on :$port"' in bare
+    and 'kill_process_tree "$pid" "bare-metal pidfile process"' in bare
+)
 checks["bare-metal smoke accepts guarded platform APIs and Next cold compile"] = (
     'http://localhost:5180/api/runtime/agents/templates?scope=common&limit=3|200,401,403|10' in bare
     and 'http://localhost:5180/workflows|200,304|20' in bare
     and 'http://localhost:5180/healthz|200,304|10' in bare
     and '[[ ",$allowed," == *",$code,"* ]]' in bare
     and healthz_route.exists()
+)
+checks["bare-metal env preserves dependent variable references"] = (
+    'export DATABASE_URL_RUNTIME_READ="\\$DATABASE_URL_AGENT_TOOLS"' in bare
+    and 'export CONTEXT_FABRIC_DATABASE_URL="\\$DATABASE_URL_CONTEXT_FABRIC"' in bare
+    and 'export CALL_LOG_DATABASE_URL="\\$DATABASE_URL_CONTEXT_FABRIC"' in bare
+    and 'export PROMPT_COMPOSER_SERVICE_TOKEN="\\${PROMPT_COMPOSER_SERVICE_TOKEN:-\\$WORKGRAPH_PROXY_SERVICE_TOKEN}"' in bare
+    and 'export LAPTOP_BRIDGE_URL="\\$RUNTIME_BRIDGE_URL"' in bare
+)
+checks["bare-metal auto-mints platform-web service token"] = (
+    'ensure_platform_web_service_token' in bare
+    and '/auth/service-token' in bare
+    and '"service_name": "platform-web"' in bare
+    and 'set_env_export WORKGRAPH_PROXY_SERVICE_TOKEN "$WORKGRAPH_PROXY_SERVICE_TOKEN"' in bare
+    and 'set_env_export PROMPT_COMPOSER_SERVICE_TOKEN "$PROMPT_COMPOSER_SERVICE_TOKEN"' in bare
+    and 'LLM_GATEWAY_URL=\\"$LLM_GATEWAY_URL\\"' in bare
+)
+checks["platform-web IAM health rewrite accepts full health URL"] = (
+    'function healthDestination' in Path("agent-and-tools/web/next.config.mjs").read_text()
+    and 'const iamHealthDestination = healthDestination(process.env.IAM_HEALTH_URL' in Path("agent-and-tools/web/next.config.mjs").read_text()
+    and 'destination: iamHealthDestination' in Path("agent-and-tools/web/next.config.mjs").read_text()
 )
 
 checks["bare-metal up base port sweep excludes llm/mcp"] = bool(
@@ -163,7 +190,7 @@ checks["bare-metal wires Prompt Composer service token to composer callers"] = (
     and 'IAM_SERVICE_TOKEN=\\"$CONTEXT_FABRIC_SERVICE_TOKEN\\"' in bare
 )
 checks["bare-metal wires folded learning-service token"] = (
-    'export LEARNING_SERVICE_TOKEN="${LEARNING_SERVICE_TOKEN:-$AUDIT_GOV_SERVICE_TOKEN}"' in bare
+    'export LEARNING_SERVICE_TOKEN="\\${LEARNING_SERVICE_TOKEN:-\\$AUDIT_GOV_SERVICE_TOKEN}"' in bare
     and 'cd agent-and-tools/apps/agent-service' in bare
     and 'LEARNING_SERVICE_TOKEN=\\"$LEARNING_SERVICE_TOKEN\\"' in bare
     and 'cd agent-and-tools/apps/prompt-composer' in bare

@@ -9,6 +9,11 @@ const codeFoundryWebSource = new URL("../../singularity-code-foundry/apps/code-f
 const blueprintWorkbenchSource = new URL("../../workgraph-studio/apps/blueprint-workbench/src", import.meta.url).pathname;
 const identityWebSource = new URL("../../UserAndCapabillity/src", import.meta.url).pathname;
 
+function healthDestination(value, defaultBase, path) {
+  const raw = (value || defaultBase).replace(/\/+$/, "");
+  return raw.endsWith(path) ? raw : `${raw}${path}`;
+}
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
@@ -111,6 +116,7 @@ const nextConfig = {
     ];
   },
   async rewrites() {
+    const iamHealthDestination = healthDestination(process.env.IAM_HEALTH_URL, "http://iam-service:8100", "/api/v1/health");
     return [
       // Prompt Composer is proxied by src/app/api/composer/[...path]/route.ts
       // so Platform Web can attach server-side service auth when no browser
@@ -138,7 +144,7 @@ const nextConfig = {
       },
       {
         source: "/ops-health/iam",
-        destination: `${process.env.IAM_HEALTH_URL ?? "http://iam-service:8100"}/api/v1/health`,
+        destination: iamHealthDestination,
       },
       {
         source: "/ops-health/workgraph-api",
