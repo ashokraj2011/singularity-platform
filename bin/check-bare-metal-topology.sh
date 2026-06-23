@@ -27,6 +27,7 @@ runtime = Path("bin/bare-metal-runtime.sh").read_text()
 doctor = Path("bin/doctor.sh").read_text()
 setup = Path("bin/setup.sh").read_text()
 copilot = Path("bin/llm-use-copilot.sh").read_text()
+web_package = Path("agent-and-tools/web/package.json").read_text()
 
 checks: dict[str, bool] = {}
 
@@ -68,6 +69,17 @@ checks["setup box-only uses runtime bridge default"] = (
 checks["copilot switcher recognizes split runtime pid file"] = (
     '.pids.runtime' in copilot
     and '[ -f "$ROOT/.pids.runtime" ] || [ -f "$ROOT/.pids" ]' in copilot
+)
+checks["platform-web package scripts honor launcher PORT"] = (
+    '"dev": "next dev -p ${PORT:-3000}"' in web_package
+    and '"start": "next start -p ${PORT:-3000}"' in web_package
+)
+checks["bare-metal clears only stale repo-owned platform-web :3000"] = (
+    'free_stale_platform_web_legacy_port' in bare
+    and 'SINGULARITY_FREE_STALE_PLATFORM_WEB_PORT' in bare
+    and '$ROOT/agent-and-tools/web' in bare
+    and 'warn "port $port is in use by pid $pid ($cmd) but is not this repo' in bare
+    and '"3000:' not in bare.split('BARE_METAL_APP_PORT_SPECS=(', 1)[1].split(')', 1)[0]
 )
 
 checks["bare-metal up base port sweep excludes llm/mcp"] = bool(

@@ -1040,7 +1040,7 @@ cd singularity-platform</code></pre>
 <p>Bare-metal deployments use split launchers:</p>
 <pre><code class="language-bash">bin/bare-metal-apps.sh up postgres postgres localhost 5432
 bin/bare-metal-runtime.sh up  # optional local LLM Gateway + MCP</code></pre>
-<p><code>bin/bare-metal-apps.sh</code> starts all platform applications except MCP and LLM Gateway. <code>bin/bare-metal-runtime.sh</code> has its own PID file and owns only ports <code>8001</code> and <code>7100</code>.</p>
+<p><code>bin/bare-metal-apps.sh</code> starts all platform applications except MCP and LLM Gateway. <code>bin/bare-metal-runtime.sh</code> has its own PID file and owns only ports <code>8001</code> and <code>7100</code>. Before boot, the app launcher frees named Singularity app ports, leaves storage ports alone, and clears stale repo-owned Next dev listeners on <code>:3000</code> left by older Platform Web scripts while leaving unrelated <code>:3000</code> processes alone.</p>
 <h3 id="105-apply-seeds">10.5 Apply Seeds<a class="anchor" href="#105-apply-seeds" aria-label="Link to 10.5 Apply Seeds">#</a></h3>
 <pre><code class="language-bash">bin/seed-docker.sh</code></pre>
 <p>This applies the full Docker seed path in dependency order: IAM teams/users/capabilities, common agent baselines and capability bindings, prompt-composer profiles, Workgraph artifacts/demo workflows, and SDLC workflows. Seeds are designed to be safe to re-run. Use <code>seed/apply.sh &lt;db_user&gt; [db_password] [db_host] [db_port]</code> only for the SQL-only bare database seed path.</p>

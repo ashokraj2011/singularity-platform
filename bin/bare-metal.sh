@@ -251,6 +251,43 @@ free_port_specs() {
   done
 }
 
+free_stale_platform_web_legacy_port() {
+  local port=3000
+  local pids pid cmd full_cmd cwd
+  [ "${SINGULARITY_FREE_STALE_PLATFORM_WEB_PORT:-1}" != "0" ] || return 0
+  command -v lsof >/dev/null 2>&1 || return 0
+  pids=$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)
+  [ -n "$pids" ] || return 0
+  for pid in $pids; do
+    cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "?")
+    case "$cmd" in
+      *docker*|*Docker*|*vpnkit*)
+        warn "port $port (legacy platform-web Next dev) is Docker-owned (pid $pid); leaving it alone"
+        continue
+        ;;
+    esac
+    cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1 || true)
+    full_cmd=$(ps -p "$pid" -o command= 2>/dev/null || true)
+    case "$cwd:$full_cmd" in
+      "$ROOT/agent-and-tools/web:"*|"$ROOT/agent-and-tools/web/"*|*"$ROOT/agent-and-tools/web"*)
+        dim "  freeing stale platform-web Next dev listener on :$port (pid $pid, $cmd)"
+        kill "$pid" 2>/dev/null || true
+        for _ in 1 2 3 4 5; do
+          kill -0 "$pid" 2>/dev/null || break
+          sleep 0.2
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+          kill -9 "$pid" 2>/dev/null || true
+          warn "force-killed stale platform-web Next dev listener on :$port (pid $pid)"
+        fi
+        ;;
+      *)
+        warn "port $port is in use by pid $pid ($cmd) but is not this repo's Platform Web; leaving it alone"
+        ;;
+    esac
+  done
+}
+
 runtime_token_is_fresh() {
   local token="$1"
   [ -n "$token" ] || return 1
@@ -442,6 +479,10 @@ cmd_up() {
     _ports_to_free+=("${BARE_METAL_RUNTIME_PORT_SPECS[@]}")
   fi
   free_port_specs "bare-metal" "${_ports_to_free[@]}"
+  # Older Platform Web package scripts ignored PORT=5180 and launched Next on
+  # :3000. Clear only that repo-owned stale listener; do not treat :3000 as a
+  # normal Singularity app port.
+  free_stale_platform_web_legacy_port
 
   info "using Postgres at ${db_user}@${db_host}:${db_port}"
   WORKGRAPH_APP_DB_USER="${WORKGRAPH_APP_DB_USER:-workgraph_app}"
@@ -1048,6 +1089,7 @@ cmd_down() {
     ports+=("${BARE_METAL_RUNTIME_PORT_SPECS[@]}")
   fi
   free_port_specs "bare-metal" "${ports[@]}"
+  free_stale_platform_web_legacy_port
   rm -f "$PID_FILE"
   ok "stack down."
 }

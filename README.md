@@ -303,7 +303,7 @@ bin/bare-metal-runtime.sh down    # stop only local runtime infra
 
 Idempotent — re-runs of `up` skip installs and DB creation if they already happened, just re-boots. `bin/bare-metal.sh` remains as a compatibility all-in-one launcher; prefer the split scripts for normal work. Defaults: `db_password` from `$PGPASSWORD` env or `postgres`, `db_host=localhost`, `db_port=5432`.
 
-The launchers free only Singularity-owned app/runtime ports before boot. Storage ports (`5432`, `5434`, `9000`, `9001`) are never killed. Legacy/debug UI ports (`5174`, `5175`, `5176`, `5181`, `5182`, `8085`) are swept by default to clear old split-web processes; set `SINGULARITY_FREE_LEGACY_PORTS=0` if another local app owns one of those ports.
+The launchers free only Singularity-owned app/runtime ports before boot. Storage ports (`5432`, `5434`, `9000`, `9001`) are never killed. Legacy/debug UI ports (`5174`, `5175`, `5176`, `5181`, `5182`, `8085`) are swept by default to clear old split-web processes; set `SINGULARITY_FREE_LEGACY_PORTS=0` if another local app owns one of those ports. Platform Web runs on `:5180`; the launcher also clears a stale repo-owned Next dev listener on `:3000` from older scripts, but leaves unrelated `:3000` processes alone.
 
 Runtime bridge tokens are also bootstrapped for local bare-metal runs. `bin/bare-metal-runtime.sh up` and the compatibility all-in-one path first reuse `SINGULARITY_RUNTIME_TOKEN`, `SINGULARITY_DEVICE_TOKEN`, or `.singularity/laptop-device-token`; expired/invalid file tokens are discarded. When IAM is reachable, they auto-mint a 90-day `kind=runtime` MCP token through `/auth/device-token` using the configured local admin credentials and save it with `0600` permissions. Set `SINGULARITY_AUTO_MINT_RUNTIME_TOKEN=false` to disable that and require an explicit token.
 
@@ -993,6 +993,8 @@ cd workgraph-studio/infra/docker  && docker compose up -d   # postgres+minio+api
 cd agent-and-tools/web            && npm install && PORT=5180 npm run dev
 ```
 
+Platform Web's npm scripts honor `PORT`; bare-metal uses `PORT=5180`. If an old checkout left a Next dev server on `:3000`, `bin/bare-metal-apps.sh up` clears it only when the listener belongs to this repo's `agent-and-tools/web` directory.
+
 > **Heads up:** the per-app compose files use *different* container names + ports than the master (e.g. `agentandtools-postgres` vs. `singularity-at-postgres`). Don't mix them — pick one approach and stick with it.
 
 ---
@@ -1628,6 +1630,8 @@ The master compose runs `platform-web` on `:5180`. If you also run `PORT=5180 np
 lsof -i :5180          # find the PID
 kill <pid>
 ```
+
+If bare-metal logs mention `address already in use :::3000`, pull the latest scripts. Older Platform Web npm scripts hardcoded `next dev -p 3000`; current scripts honor `PORT=5180`, and the launcher clears stale repo-owned `:3000` listeners from that older behavior.
 
 ### Master compose service didn't pick up an env change
 
