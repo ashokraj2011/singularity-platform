@@ -41,6 +41,21 @@ if (!path.isAbsolute(parsed.data.MCP_RUNNER_HOST_WORKSPACE_PATH)) {
   process.exit(1);
 }
 
+// Production-class secret gate. The runner is an arbitrary-code execution edge,
+// so refuse to boot with the known dev default token in a real deployment. The
+// runner image always sets NODE_ENV=production, so we key off the DEPLOYMENT env
+// vars (APP_ENV/ENVIRONMENT/SINGULARITY_ENV), not NODE_ENV — dev keeps working.
+const KNOWN_DEFAULT_RUNNER_TOKEN = "dev-mcp-runner-token-min-16-chars";
+const DEPLOY_ENV = (process.env.APP_ENV || process.env.ENVIRONMENT || process.env.SINGULARITY_ENV || "development").toLowerCase();
+const IS_PROD_CLASS = ["production", "prod", "staging", "perf"].includes(DEPLOY_ENV);
+if (parsed.data.MCP_RUNNER_TOKEN === KNOWN_DEFAULT_RUNNER_TOKEN) {
+  if (IS_PROD_CLASS) {
+    console.error(`[mcp-sandbox-runner] FATAL: MCP_RUNNER_TOKEN is the known dev default in a ${DEPLOY_ENV} environment. Set a strong random MCP_RUNNER_TOKEN (16+ chars) and restart.`);
+    process.exit(1);
+  }
+  console.warn("[mcp-sandbox-runner] WARNING: using the known dev default MCP_RUNNER_TOKEN — set a strong token before any shared-network deployment.");
+}
+
 export const runnerConfig = {
   ...parsed.data,
   MCP_RUNNER_HOST_WORKSPACE_PATH: hostWorkspacePath,

@@ -74,7 +74,7 @@ services:
       POSTGRES_PASSWORD: singularity
       POSTGRES_DB: singularity_iam
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - iam_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -148,7 +148,7 @@ services:
       POSTGRES_PASSWORD: singularity
       POSTGRES_DB: singularity
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - at_postgres_data:/var/lib/postgresql/data
       - ./agent-and-tools/packages/db/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -952,7 +952,7 @@ services:
       PUBLIC_BASE_URL:    http://llm-gateway:8001
       PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     volumes:
       - ./.singularity:/etc/singularity:ro
     healthcheck:
@@ -981,7 +981,7 @@ services:
       POSTGRES_USER: workgraph
       POSTGRES_PASSWORD: workgraph_secret
     ports:
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"
     volumes:
       - wg_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -1027,8 +1027,8 @@ services:
       MINIO_ROOT_USER: workgraph
       MINIO_ROOT_PASSWORD: workgraph_secret
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - wg_minio_data:/data
     healthcheck:
@@ -1293,7 +1293,7 @@ services:
       # to revert to the per-invocation tmpfs. See docker-exec.ts.
       MCP_RUNNER_HOST_BUILD_CACHE_PATH: ${MCP_RUNNER_HOST_BUILD_CACHE_PATH-${PWD}/mcp-server/.docker-sandbox/.singularity/build-cache}
     ports:
-      - "7110:7110"
+      - "127.0.0.1:7110:7110"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${MCP_RUNNER_HOST_WORKSPACE_PATH:-${MCP_SANDBOX_HOST_PATH:-${PWD}/mcp-server/.docker-sandbox}}:${MCP_RUNNER_HOST_WORKSPACE_PATH:-${MCP_SANDBOX_HOST_PATH:-${PWD}/mcp-server/.docker-sandbox}}:rw

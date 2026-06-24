@@ -106,6 +106,26 @@ class Settings(BaseSettings):
             env.get("ALLOW_CALLER_PROVIDER_OVERRIDE", "false").lower() == "true"
         )
 
+        # Security gate: never serve provider-funded LLM calls without auth in a
+        # production-class env. When real provider credentials are present but
+        # LLM_GATEWAY_BEARER is empty, every request is unauthenticated (see
+        # router._check_auth). Fail closed in prod; warn in dev so local runs work.
+        _deploy_env = (
+            env.get("APP_ENV") or env.get("ENVIRONMENT") or env.get("SINGULARITY_ENV") or "development"
+        ).lower()
+        _has_real_creds = any([
+            self.openai_api_key, self.openrouter_api_key, self.anthropic_api_key, self.copilot_token,
+        ])
+        if _has_real_creds and not self.gateway_bearer:
+            _msg = (
+                "LLM gateway has real provider credentials but LLM_GATEWAY_BEARER is empty — "
+                "every request would be unauthenticated. Set LLM_GATEWAY_BEARER to a strong secret."
+            )
+            if _deploy_env in ("production", "prod", "staging", "perf"):
+                raise RuntimeError(f"FATAL ({_deploy_env}): {_msg}")
+            import sys as _sys
+            print(f"[llm-gateway] WARNING ({_deploy_env}): {_msg}", file=_sys.stderr)
+
     def credential_for(self, provider: str) -> Optional[str]:
         p = provider.lower()
         if p in ("openai",):
