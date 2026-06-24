@@ -148,11 +148,11 @@ for profile in "${profiles[@]}"; do
   esac
 done
 
-if ! laptop_direct_config="$(docker compose -f docker-compose.yml -f docker-compose.laptop-direct.yml config 2>&1)"; then
+if ! laptop_direct_config="$(COMPOSE_PROFILES=core docker compose -f docker-compose.yml -f docker-compose.laptop-direct.yml config 2>&1)"; then
   fail "laptop-direct compose overlay failed"
 else
   ok "laptop-direct compose overlay"
-  laptop_direct_services="$(printf '%s\n' "$laptop_direct_config" | docker compose -f docker-compose.yml -f docker-compose.laptop-direct.yml config --services 2>/dev/null || true)"
+  laptop_direct_services="$(printf '%s\n' "$laptop_direct_config" | COMPOSE_PROFILES=core docker compose -f docker-compose.yml -f docker-compose.laptop-direct.yml config --services 2>/dev/null || true)"
   expect_has "laptop-direct" "$laptop_direct_services" platform-web
   expect_not_has "laptop-direct" "$laptop_direct_services" portal
   if printf '%s\n' "$laptop_direct_config" | grep -q "host.docker.internal:7100" &&

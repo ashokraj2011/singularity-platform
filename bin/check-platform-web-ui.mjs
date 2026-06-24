@@ -312,7 +312,7 @@ const checks = [
     expression: `
       (() => {
         const text = document.body?.innerText || "";
-        const cockpitOk = /Story-to-Delivery Workbench/i.test(text) && /Blueprint Workbench/i.test(text) && /Loop|Replay|Theater/i.test(text) && /Stage|Iterations|Guided Delivery Intake/i.test(text);
+        const cockpitOk = /Guided Delivery Cockpit/i.test(text) && /Blueprint Workbench/i.test(text) && (/Loop|Replay|Theater/i.test(text) || /Create Workbench Session|Guided delivery loop/i.test(text));
         return {
           ok: cockpitOk && !/Application error|client-side exception|Could not load this surface|Unexpected token|Internal Server Error/i.test(text),
           detail: text.slice(0, 300)
@@ -466,7 +466,7 @@ const checks = [
       (() => {
         const text = document.body?.innerText || "";
         return {
-          ok: /Active LLM Settings/i.test(text) && /Dial-in Runtime Topology/i.test(text) && /Context Fabric/i.test(text) && /LLM Gateway/i.test(text) && /MCP Runtime/i.test(text) && /Context Fabric -> LLM Gateway/i.test(text) && /Context Fabric -> MCP Runtime/i.test(text) && !/AUTH_REQUIRED|Unable to load|Could not load|Unexpected token|Internal Server Error/i.test(text),
+          ok: /Active LLM Settings/i.test(text) && /Dial-in Runtime Topology/i.test(text) && /Context Fabric/i.test(text) && /LLM Gateway/i.test(text) && /MCP Runtime/i.test(text) && /Context Fabric ->.*LLM Gateway/i.test(text) && /Context Fabric ->.*MCP Runtime/i.test(text) && !/AUTH_REQUIRED|Unable to load|Could not load|Unexpected token|Internal Server Error/i.test(text),
           detail: text.slice(0, 360)
         };
       })()

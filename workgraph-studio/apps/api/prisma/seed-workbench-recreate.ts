@@ -143,11 +143,13 @@ async function main(): Promise<void> {
   //      cleans design rows + workbench tables). ────────────────────
   const priorWb = await prisma.workflow.findFirst({ where: { name: WORKBENCH_NAME } })
   if (priorWb) {
+    await prisma.workflowVersion.deleteMany({ where: { templateId: priorWb.id } })
     await prisma.workflow.delete({ where: { id: priorWb.id } })
     console.log(`✓ Removed prior "${WORKBENCH_NAME}" (${priorWb.id})`)
   }
   const priorMain = await prisma.workflow.findFirst({ where: { name: MAIN_NAME } })
   if (priorMain) {
+    await prisma.workflowVersion.deleteMany({ where: { templateId: priorMain.id } })
     await prisma.workflow.delete({ where: { id: priorMain.id } })
     console.log(`✓ Removed prior "${MAIN_NAME}" (${priorMain.id})`)
   }

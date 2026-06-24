@@ -89,6 +89,47 @@ except Exception:
 PY
   fi
 }
+http_get_auth(){
+  local url="$1" token="$2" timeout="${3:-6}"
+  if [ -z "$token" ]; then
+    http_get "$url" "$timeout"
+    return
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    curl -s --max-time "$timeout" -H "Authorization: Bearer $token" "$url" 2>/dev/null || true
+  else
+    python3 - "$url" "$timeout" "$token" <<'PY' 2>/dev/null || true
+import sys
+from urllib.request import Request, urlopen
+
+try:
+    req = Request(sys.argv[1], headers={"authorization": f"Bearer {sys.argv[3]}"})
+    with urlopen(req, timeout=float(sys.argv[2])) as res:
+        sys.stdout.write(res.read().decode("utf-8", "replace"))
+except Exception:
+    pass
+PY
+  fi
+}
+get_auth_token(){
+  local login_payload
+  login_payload=$(python3 - <<'PY'
+import json
+from pathlib import Path
+
+try:
+    identity = json.loads(Path(".singularity/config.local.json").read_text()).get("identity", {})
+except Exception:
+    identity = {}
+print(json.dumps({
+    "email": identity.get("bootstrapEmail") or "admin@singularity.local",
+    "password": identity.get("bootstrapPassword") or "Admin1234!",
+}))
+PY
+)
+  http_post_json http://localhost:8100/api/v1/auth/local/login "$login_payload" 6 \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("access_token",""))' 2>/dev/null
+}
 psql_q(){ psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$1" -tAc "$2" 2>/dev/null | tr -d '[:space:]'; }
 psql_rows(){ psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$1" -tAc "$2" 2>/dev/null | sed '/^[[:space:]]*$/d'; }
 db_up(){ psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$1" -tAc 'select 1' >/dev/null 2>&1; }
@@ -131,7 +172,8 @@ else
     else pass "$name up ($code)"; fi
   done
 fi
-runtime_status=$(http_get http://localhost:5180/api/runtime-infrastructure 6)
+local_tok=$(get_auth_token)
+runtime_status=$(http_get_auth http://localhost:5180/api/runtime-infrastructure "$local_tok" 6)
 runtime_summary=$(printf '%s' "$runtime_status" | python3 -c 'import json,sys
 try:
   data=json.load(sys.stdin)
@@ -288,8 +330,7 @@ print(json.dumps({
 PY
 )
 login_email=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["email"])' <<< "$login_payload")
-tok=$(http_post_json http://localhost:8100/api/v1/auth/local/login "$login_payload" 6 \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin).get("access_token",""))' 2>/dev/null)
+tok=$(get_auth_token)
 [ -n "$tok" ] && pass "IAM local login works ($login_email)" \
   || fail "IAM local login failed" "is IAM (:8100) up? check .singularity/config.local.json and logs/iam-service.log"
 

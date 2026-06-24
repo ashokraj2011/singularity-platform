@@ -54,6 +54,25 @@
         "type": "object"
       }
     },
+    "copilot_execute": {
+      "category": "mutate",
+      "input_schema": {
+        "properties": {
+          "task": {
+            "description": "The implementation task / prompt for the Copilot CLI to execute agentically in the workspace.",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "description": "Max milliseconds for the CLI run (default 900000, max 1800000).",
+            "type": "number"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "type": "object"
+      }
+    },
     "create_file": {
       "category": "mutate",
       "input_schema": {
@@ -358,6 +377,44 @@
             "type": "array"
           }
         },
+        "type": "object"
+      }
+    },
+    "run_python": {
+      "category": "run",
+      "input_schema": {
+        "properties": {
+          "allow_network": {
+            "description": "Opt into outbound network for this run.",
+            "type": "boolean"
+          },
+          "args": {
+            "description": "Optional argv passed after the script.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "code": {
+            "description": "Inline Python source to execute.",
+            "type": "string"
+          },
+          "env": {
+            "description": "Optional environment variables injected into the sandbox.",
+            "type": "object"
+          },
+          "max_output_chars": {
+            "description": "Maximum stdout/stderr excerpt chars.",
+            "type": "number"
+          },
+          "timeout_ms": {
+            "description": "Timeout in milliseconds.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "code"
+        ],
         "type": "object"
       }
     },

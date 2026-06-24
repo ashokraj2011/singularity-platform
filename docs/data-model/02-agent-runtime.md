@@ -7,7 +7,7 @@ ACTIVE ACTIVE
 INACTIVE INACTIVE
 ARCHIVED ARCHIVED
         }
-
+    
 
 
         AgentRoleType {
@@ -20,7 +20,7 @@ PRODUCT_OWNER PRODUCT_OWNER
 DEVOPS DEVOPS
 SECURITY SECURITY
         }
-
+    
 
 
         ToolRiskLevel {
@@ -29,7 +29,7 @@ MEDIUM MEDIUM
 HIGH HIGH
 CRITICAL CRITICAL
         }
-
+    
 
 
         ToolGrantScopeType {
@@ -41,7 +41,7 @@ WORKFLOW_PHASE WORKFLOW_PHASE
 TEAM TEAM
 USER USER
         }
-
+    
 
 
         ExecutionStatus {
@@ -54,7 +54,7 @@ COMPLETED COMPLETED
 FAILED FAILED
 CANCELLED CANCELLED
         }
-
+    
 
 
         MemoryPromotionStatus {
@@ -64,275 +64,275 @@ APPROVED APPROVED
 REJECTED REJECTED
 PROMOTED PROMOTED
         }
-
+    
   "AgentTemplate" {
     String id "🗝️"
-    String name
-    AgentRoleType roleType
+    String name 
+    AgentRoleType roleType 
     String description "❓"
     String instructions "❓"
     String basePromptProfileId "❓"
     String defaultToolPolicyId "❓"
-    Int version
-    EntityStatus status
+    Int version 
+    EntityStatus status 
     String createdBy "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     String capabilityId "❓"
     String lockedReason "❓"
     }
-
+  
 
   "AgentTemplateVersion" {
     String id "🗝️"
-    Int version
+    Int version 
     String changeSummary "❓"
-    Json snapshot
+    Json snapshot 
     String createdBy "❓"
-    DateTime createdAt
+    DateTime createdAt 
     String contractHash "❓"
     String contractId "❓"
     }
-
+  
 
   "AgentSkill" {
     String id "🗝️"
-    String name
-    String skillType
+    String name 
+    String skillType 
     String description "❓"
     String promptLayerId "❓"
-    Int version
-    EntityStatus status
-    DateTime createdAt
-    DateTime updatedAt
+    Int version 
+    EntityStatus status 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "AgentSkillSource" {
     String id "🗝️"
-    String sourceType
+    String sourceType 
     String sourceRef "❓"
     String capabilityId "❓"
-    Json permissions
-    Boolean readOnly
-    Boolean providerLocked
-    Json metadata
-    EntityStatus status
-    DateTime createdAt
-    DateTime updatedAt
+    Json permissions 
+    Boolean readOnly 
+    Boolean providerLocked 
+    Json metadata 
+    EntityStatus status 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "AgentTemplateSkill" {
     String id "🗝️"
-    Boolean isDefault
-    String sourceType
+    Boolean isDefault 
+    String sourceType 
     String sourceRef "❓"
     String capabilityId "❓"
-    Json permissions
-    Boolean readOnly
-    Boolean providerLocked
-    Json metadata
-    DateTime createdAt
+    Json permissions 
+    Boolean readOnly 
+    Boolean providerLocked 
+    Json metadata 
+    DateTime createdAt 
     }
-
+  
 
   "Capability" {
     String id "🗝️"
-    String name
+    String name 
     String appId "❓"
     String capabilityType "❓"
     String businessUnitId "❓"
     String ownerTeamId "❓"
     String criticality "❓"
     String description "❓"
-    EntityStatus status
-    DateTime createdAt
-    DateTime updatedAt
+    EntityStatus status 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "CapabilityWorldModel" {
     String id "🗝️"
     String repoFingerprint "❓"
     String primaryLanguage "❓"
     String buildSystem "❓"
-    Json testCommands
-    Json buildCommands
-    Json runCommands
-    Json agentRules
+    Json testCommands 
+    Json buildCommands 
+    Json runCommands 
+    Json agentRules 
     String readmeSummary "❓"
-    Json architectureSlice
+    Json architectureSlice 
     DateTime astIndexedAt "❓"
-    Int astIndexFiles
-    Json repoPatterns
-    Json entrypoints
-    Json knownFailures
-    Json skillFileSummaries
-    Json codeConventions
+    Int astIndexFiles 
+    Json repoPatterns 
+    Json entrypoints 
+    Json knownFailures 
+    Json skillFileSummaries 
+    Json codeConventions 
     DateTime lastAutoRefreshAt "❓"
-    DateTime generatedAt
-    DateTime refreshedAt
+    DateTime generatedAt 
+    DateTime refreshedAt 
     }
-
+  
 
   "AgentCapabilityBinding" {
     String id "🗝️"
-    String bindingName
+    String bindingName 
     String roleInCapability "❓"
     String promptProfileId "❓"
     String toolPolicyId "❓"
     String memoryScopePolicyId "❓"
-    EntityStatus status
+    EntityStatus status 
     String createdBy "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "ToolDefinition" {
     String id "🗝️"
-    String name
-    String namespace
+    String name 
+    String namespace 
     String description "❓"
     String toolType "❓"
-    Int version
-    EntityStatus status
-    DateTime createdAt
-    DateTime updatedAt
+    Int version 
+    EntityStatus status 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "ToolContract" {
     String id "🗝️"
-    Json inputSchema
+    Json inputSchema 
     Json outputSchema "❓"
     String allowedUsage "❓"
     String deniedUsage "❓"
-    ToolRiskLevel riskLevel
-    Boolean requiresApproval
-    Boolean auditRequired
-    Int timeoutMs
-    Int version
-    EntityStatus status
-    DateTime createdAt
+    ToolRiskLevel riskLevel 
+    Boolean requiresApproval 
+    Boolean auditRequired 
+    Int timeoutMs 
+    Int version 
+    EntityStatus status 
+    DateTime createdAt 
     }
-
+  
 
   "ToolPolicy" {
     String id "🗝️"
-    String name
+    String name 
     String description "❓"
     String scopeType "❓"
     String scopeId "❓"
-    EntityStatus status
-    DateTime createdAt
-    DateTime updatedAt
+    EntityStatus status 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "ToolGrant" {
     String id "🗝️"
-    ToolGrantScopeType grantScopeType
-    String grantScopeId
+    ToolGrantScopeType grantScopeType 
+    String grantScopeId 
     Json allowedActions "❓"
     Json deniedActions "❓"
     String environment "❓"
     String workflowPhase "❓"
     Boolean requiresApprovalOverride "❓"
-    EntityStatus status
-    DateTime createdAt
+    EntityStatus status 
+    DateTime createdAt 
     }
-
+  
 
   "CapabilityRepository" {
     String id "🗝️"
-    String repoName
-    String repoUrl
+    String repoName 
+    String repoUrl 
     String defaultBranch "❓"
     String repositoryType "❓"
-    EntityStatus status
+    EntityStatus status 
     Int pollIntervalSec "❓"
     DateTime lastPolledAt "❓"
     String lastPolledSha "❓"
     String lastPollError "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "CapabilityKnowledgeSource" {
     String id "🗝️"
-    String url
-    String artifactType
+    String url 
+    String artifactType 
     String title "❓"
     Int pollIntervalSec "❓"
     DateTime lastPolledAt "❓"
     String lastContentHash "❓"
     String lastPollError "❓"
-    EntityStatus status
-    DateTime createdAt
-    DateTime updatedAt
+    EntityStatus status 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "CapabilityKnowledgeArtifact" {
     String id "🗝️"
-    String artifactType
-    String title
-    String content
+    String artifactType 
+    String title 
+    String content 
     String sourceType "❓"
     String sourceRef "❓"
     Decimal confidence "❓"
-    Int version
-    EntityStatus status
+    Int version 
+    EntityStatus status 
     String contentHash "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "CapabilityBootstrapRun" {
     String id "🗝️"
-    String status
-    Json sourceSummary
-    Json generatedAgentIds
-    Json warnings
-    Json errors
+    String status 
+    Json sourceSummary 
+    Json generatedAgentIds 
+    Json warnings 
+    Json errors 
     String createdBy "❓"
     String currentPhase "❓"
-    Json phaseProgress
-    DateTime startedAt
+    Json phaseProgress 
+    DateTime startedAt 
     DateTime completedAt "❓"
     DateTime reviewedAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "CapabilityLearningCandidate" {
     String id "🗝️"
-    String groupKey
-    String groupTitle
-    String artifactType
-    String title
-    String content
+    String groupKey 
+    String groupTitle 
+    String artifactType 
+    String title 
+    String content 
     String sourceType "❓"
     String sourceRef "❓"
     Decimal confidence "❓"
-    String status
+    String status 
     String materializedArtifactId "❓"
     String reviewedBy "❓"
     DateTime reviewedAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "CapabilityCodeSymbol" {
     String id "🗝️"
-    String capabilityId
-    String filePath
+    String capabilityId 
+    String filePath 
     String language "❓"
     String symbolName "❓"
     String symbolType "❓"
@@ -341,48 +341,48 @@ PROMOTED PROMOTED
     Int endLine "❓"
     String summary "❓"
     String symbolHash "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "CapabilityCodeEmbedding" {
     String id "🗝️"
     String embeddingModel "❓"
     String vectorId "❓"
     String summary "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "AgentExecution" {
     String id "🗝️"
     String workflowExecutionId "❓"
     String userRequest "❓"
-    ExecutionStatus executionStatus
+    ExecutionStatus executionStatus 
     String modelProvider "❓"
     String modelName "❓"
     DateTime startedAt "❓"
     DateTime completedAt "❓"
     String createdBy "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "ToolExecutionReceipt" {
     String id "🗝️"
-    String toolName
+    String toolName 
     String inputHash "❓"
     String outputHash "❓"
     String approvalId "❓"
-    String status
+    String status 
     String errorMessage "❓"
     DateTime startedAt "❓"
     DateTime completedAt "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "AgentExecutionReceipt" {
     String id "🗝️"
@@ -394,83 +394,83 @@ PROMOTED PROMOTED
     Json memoryRefs "❓"
     Json approvalRefs "❓"
     String finalStatus "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "WorkflowExecutionMemory" {
     String id "🗝️"
-    String workflowExecutionId
+    String workflowExecutionId 
     String capabilityId "❓"
     String agentBindingId "❓"
-    String memoryType
+    String memoryType 
     String title "❓"
-    String content
+    String content 
     Json evidenceRefs "❓"
     Decimal confidence "❓"
-    MemoryPromotionStatus promotionStatus
-    DateTime createdAt
+    MemoryPromotionStatus promotionStatus 
+    DateTime createdAt 
     }
-
+  
 
   "DistilledMemory" {
     String id "🗝️"
-    String scopeType
-    String scopeId
-    String memoryType
-    String title
-    String content
+    String scopeType 
+    String scopeId 
+    String memoryType 
+    String title 
+    String content 
     Json sourceExecutionIds "❓"
     Json evidenceRefs "❓"
     String approvedBy "❓"
     Decimal confidence "❓"
-    Int version
-    EntityStatus status
-    DateTime createdAt
-    DateTime updatedAt
+    Int version 
+    EntityStatus status 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "event_outbox" {
     String id "🗝️"
-    String eventName
-    String sourceService
+    String eventName 
+    String sourceService 
     String traceId "❓"
-    String subjectKind
-    String subjectId
-    Json envelope
-    String status
-    Int attempts
-    DateTime emittedAt
+    String subjectKind 
+    String subjectId 
+    Json envelope 
+    String status 
+    Int attempts 
+    DateTime emittedAt 
     DateTime lastAttemptAt "❓"
     String lastError "❓"
     }
-
+  
 
   "event_subscriptions" {
     String id "🗝️"
-    String subscriberId
-    String eventPattern
-    String targetUrl
+    String subscriberId 
+    String eventPattern 
+    String targetUrl 
     String secret "❓"
-    Boolean isActive
+    Boolean isActive 
     Json metadata "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "event_deliveries" {
     String id "🗝️"
-    String status
-    Int attempts
+    String status 
+    Int attempts 
     DateTime lastAttemptAt "❓"
     String lastError "❓"
     DateTime deliveredAt "❓"
     Int responseStatus "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
     "AgentTemplate" |o--|| "AgentRoleType" : "enum:roleType"
     "AgentTemplate" |o--|| "EntityStatus" : "enum:status"
     "AgentTemplate" |o--|o "AgentTemplate" : "baseTemplate"

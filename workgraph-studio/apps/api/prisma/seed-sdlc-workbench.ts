@@ -115,7 +115,11 @@ const SDLC_STAGES: StageSpec[] = [
 async function main(): Promise<void> {
   console.log(`Seeding "${SDLC_NAME}" (proper SDLC workbench loop with catalog artifacts)…`)
   const prior = await prisma.workflow.findFirst({ where: { name: SDLC_NAME } })
-  if (prior) { await prisma.workflow.delete({ where: { id: prior.id } }); console.log(`✓ removed prior (${prior.id})`) }
+  if (prior) {
+    await prisma.workflowVersion.deleteMany({ where: { templateId: prior.id } })
+    await prisma.workflow.delete({ where: { id: prior.id } })
+    console.log(`✓ removed prior (${prior.id})`)
+  }
   const staleDefinitions = await prisma.$executeRaw`
     DELETE FROM workbench_definitions d
     WHERE d.name = ${SDLC_NAME}

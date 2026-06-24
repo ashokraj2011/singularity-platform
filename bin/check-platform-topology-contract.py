@@ -30,7 +30,8 @@ def ok(message: str) -> None:
 
 
 def compose_services(profile: str | None = None) -> set[str]:
-    env = None if profile is None else {**os.environ, "COMPOSE_PROFILES": profile}
+    p = profile or os.environ.get("COMPOSE_PROFILES") or "core"
+    env = {**os.environ, "COMPOSE_PROFILES": p}
     proc = subprocess.run(
         ["docker", "compose", "config", "--services"],
         cwd=ROOT,
