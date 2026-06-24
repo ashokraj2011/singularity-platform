@@ -4,6 +4,10 @@ import { logEvent, publishOutbox } from '../../lib/audit'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { cloneDesignToRun } from '../workflow/lib/cloneDesignToRun'
 import { normalizeMetadataKey, recordOf } from '../metadata/metadata.service'
+// Security (finding #3) — actor authorization for routing/starting. work-items.service
+// imports THIS module dynamically (await import), so this static import creates no cycle.
+import { assertCanClaimWorkItemTarget } from './work-items.service'
+import { assertTemplatePermission } from '../../lib/permissions/workflowTemplate'
 
 type RoutingMode = 'MANUAL' | 'AUTO_ATTACH' | 'AUTO_START' | 'SCHEDULED_START'
 
@@ -35,7 +39,10 @@ async function chooseWorkflow(args: {
 }) {
   if (args.workflowId) {
     return prisma.workflow.findFirst({
-      where: { id: args.workflowId, archivedAt: null },
+      // Security (finding #3): a caller-supplied workflowId MUST belong to the target
+      // capability — otherwise a work item could attach/start an unrelated capability's
+      // workflow. A foreign id now resolves to null → the ROUTE_FAILED path.
+      where: { id: args.workflowId, capabilityId: args.capabilityId, archivedAt: null },
       select: { id: true, name: true, workflowTypeKey: true, defaultRoutingMode: true },
     })
   }
@@ -168,6 +175,14 @@ export async function routeWorkItem(
     : workItem.targets[0]
   if (!target) throw new ValidationError('WorkItem has no target capability to route')
 
+  // Security (finding #3): a real user routing/attaching/starting must be authorized to
+  // act in the target capability. Internal automation (WORK_ITEM node, triggers,
+  // scheduler) calls with actorId=null and is exempt; the check also no-ops when
+  // AUTH_PROVIDER !== 'iam'.
+  if (actorId) {
+    await assertCanClaimWorkItemTarget(actorId, target.targetCapabilityId, target.id)
+  }
+
   const mode = options.routingMode ?? workItem.routingMode
   if (mode === 'SCHEDULED_START' && (!dateReady(workItem.scheduledAt) || !dateReady(workItem.notBefore))) {
     await prisma.workItem.update({ where: { id: workItemId }, data: { status: 'SCHEDULED' } })
@@ -229,6 +244,13 @@ export async function routeWorkItem(
       workflowTypeKey,
     })
     return failed
+  }
+
+  // Security (finding #3): the AUTO_START / startNow path must enforce the same 'start'
+  // template permission as the manual path (startWorkItemTarget); checked before attach
+  // so an unauthorized start does not even attach. Internal automation (actorId=null) exempt.
+  if ((options.startNow || mode === 'AUTO_START') && actorId) {
+    await assertTemplatePermission(actorId, workflow.id, 'start')
   }
 
   await prisma.$transaction(async tx => {

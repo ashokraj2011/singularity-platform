@@ -6,6 +6,7 @@ import { NotFoundError } from '../../lib/errors'
 import {
   answerWorkItemClarification,
   archiveWorkItem,
+  assertCanClaimWorkItemTarget,
   assertCanViewWorkItem,
   approveWorkItem,
   canViewWorkItem,
@@ -112,6 +113,13 @@ const detachSchema = z.object({
 workItemsRouter.post('/', validate(createSchema), async (req, res, next) => {
   try {
     const body = req.body as z.infer<typeof createSchema>
+    // Security (finding #3): a real user must be authorized to act in every target
+    // capability before creating/routing a work item there. No-ops when
+    // AUTH_PROVIDER !== 'iam'; admins bypass. Internal automation uses the service
+    // functions directly (no router), so it is unaffected.
+    for (const t of body.targets) {
+      await assertCanClaimWorkItemTarget(req.user!.userId, t.targetCapabilityId, `create:${t.targetCapabilityId}`)
+    }
     const created = await createWorkItem(body, req.user!.userId)
     if (body.routingMode && body.routingMode !== 'MANUAL') {
       const routed = await routeWorkItem(created.id, req.user!.userId, {
