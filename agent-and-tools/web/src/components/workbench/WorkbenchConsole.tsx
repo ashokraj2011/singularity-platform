@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { CSSProperties } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import {
   ArrowLeft,
@@ -22,7 +22,6 @@ import {
   TimerReset,
 } from "lucide-react";
 import { formatDate, shortId, unwrapWorkgraphItems, valueText, workgraphFetch, WorkgraphError } from "@/lib/workgraph";
-import styles from "./WorkbenchNeo.module.css";
 
 type WorkbenchMode = "cockpit" | "theater";
 type WorkbenchView = "cockpit" | "artifacts" | "code-review" | "stage-chat" | "milestones" | "export" | "audit" | "governance" | "loop-theater";
@@ -293,10 +292,18 @@ export function WorkbenchConsole({ mode = "cockpit", view }: { mode?: WorkbenchM
   const activeView = view ?? (mode === "theater" ? "loop-theater" : "cockpit");
   const copy = viewCopy[activeView];
   const explicitSessionId = search.get("sessionId") ?? undefined;
+  // A CALL_WORKFLOW node launches the workbench with the run's workflowInstanceId
+  // (and no sessionId). Bind to that run's blueprint session so the workbench
+  // opens scoped to the right run instead of the most-recent one.
+  const launchInstanceId = search.get("workflowInstanceId") ?? undefined;
   const { data: sessions = [], error: sessionsError, isLoading: loadingSessions, mutate: reloadSessions } = useSWR("blueprint-sessions", fetchSessions, { refreshInterval: 12000 });
-  const selectedId = explicitSessionId ?? sessions[0]?.id;
+  const matchedByInstance = launchInstanceId ? sessions.find((s) => s.workflowInstanceId === launchInstanceId)?.id : undefined;
+  const selectedId = explicitSessionId ?? matchedByInstance ?? sessions[0]?.id;
   const { data: session, error: sessionError, isLoading: loadingSession, mutate: reloadSession } = useSWR(selectedId ? ["blueprint-session", selectedId] : null, () => fetchSession(selectedId as string), { refreshInterval: 8000 });
-  const [selectedStageKey, setSelectedStageKey] = useState<string | null>(null);
+  const activeStage = currentStage(session);
+  const activeStageKey = session?.currentStageKey ?? activeStage?.key;
+  const { data: codeChanges = [], error: codeError, mutate: reloadCode } = useSWR(session?.id ? ["wb-code-changes", session.id, activeStageKey] : null, fetchCodeChanges, { refreshInterval: 15000 });
+  const { data: loopTrace, error: traceError, mutate: reloadTrace } = useSWR(session?.id && activeStageKey ? ["wb-loop-trace", session.id, activeStageKey] : null, fetchLoopTrace, { refreshInterval: mode === "theater" ? 5000 : 12000 });
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
@@ -312,18 +319,9 @@ export function WorkbenchConsole({ mode = "cockpit", view }: { mode?: WorkbenchM
   const [qaAgentTemplateId, setQaAgentTemplateId] = useState("");
 
   const stages = session?.loopDefinition?.stages ?? [];
-  const selectedStageExists = Boolean(selectedStageKey && stages.some((stage) => stage.key === selectedStageKey));
-  const activeStageKey = selectedStageExists ? selectedStageKey : session?.currentStageKey ?? currentStage(session)?.key ?? stages[0]?.key;
-  const activeStage = stages.find((stage) => stage.key === activeStageKey) ?? currentStage(session);
-  const { data: codeChanges = [], error: codeError, mutate: reloadCode } = useSWR(session?.id ? ["wb-code-changes", session.id, activeStageKey] : null, fetchCodeChanges, { refreshInterval: 15000 });
-  const { data: loopTrace, error: traceError, mutate: reloadTrace } = useSWR(session?.id && activeStageKey ? ["wb-loop-trace", session.id, activeStageKey] : null, fetchLoopTrace, { refreshInterval: mode === "theater" ? 5000 : 12000 });
   const attemptsByStage = useMemo(() => new Map(stages.map((stage) => [stage.key, latestAttemptFor(session, stage.key)])), [session, stages]);
   const artifacts = session?.artifacts ?? [];
   const activeMessages = activeStageKey ? session?.stageChats?.[activeStageKey] ?? [] : [];
-
-  useEffect(() => {
-    setSelectedStageKey(null);
-  }, [session?.id]);
 
   function selectSession(id: string) {
     const next = new URLSearchParams(search.toString());
@@ -389,47 +387,26 @@ export function WorkbenchConsole({ mode = "cockpit", view }: { mode?: WorkbenchM
   const topError = sessionsError ?? sessionError;
 
   return (
-    <div className={styles.neoRoot}>
-      <div className={styles.commandBar}>
-        <div className={styles.commandBrand}>
-          <Link href="/workflows/templates" className={styles.backLink}>
-            <ArrowLeft size={15} />
-            Workflows
-          </Link>
-          <div>
-            <span className={styles.kicker}>Blueprint Workbench</span>
-            <h1>{copy.title}</h1>
-          </div>
-        </div>
-        <div className={styles.commandControls}>
-          <label className={styles.sessionPicker}>
-            <span>Session</span>
-            <select
-              value={selectedId ?? ""}
-              disabled={loadingSessions || sessions.length === 0}
-              onChange={(event) => selectSession(event.target.value)}
-            >
-              {sessions.length === 0 ? <option value="">No sessions</option> : null}
-              {sessions.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {(item.goal || shortId(item.id)).slice(0, 70)}
-                </option>
-              ))}
-            </select>
-          </label>
+    <div style={{ maxWidth: 1440 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
+        <Link href="/workflows/templates" className="btn-secondary">
+          <ArrowLeft size={15} />
+          Back to workflows
+        </Link>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {session?.workflowInstanceId && (
-            <Link href={`/runs/${encodeURIComponent(session.workflowInstanceId)}`} className={styles.controlButton}>
+            <Link href={`/runs/${encodeURIComponent(session.workflowInstanceId)}`} className="btn-secondary">
               <GitBranch size={15} />
-              Run
+              Workflow run
             </Link>
           )}
-          <button type="button" className={styles.controlButton} onClick={() => void Promise.all([reloadSessions(), reloadSession(), reloadCode(), reloadTrace()])}>
+          <button type="button" style={actionButtonStyle()} onClick={() => void Promise.all([reloadSessions(), reloadSession(), reloadCode(), reloadTrace()])}>
             <RefreshCw size={15} />
             Refresh
           </button>
-          <button type="button" className={styles.primaryButton} onClick={() => setCreateOpen((open) => !open)}>
+          <button type="button" className="btn-primary" onClick={() => setCreateOpen((open) => !open)}>
             <Sparkles size={15} />
-            New session
+            Create session
           </button>
         </div>
       </div>
@@ -459,16 +436,24 @@ export function WorkbenchConsole({ mode = "cockpit", view }: { mode?: WorkbenchM
         />
       ) : null}
 
-      <section className={styles.neoSummary}>
-        <div>
-          <span className={styles.kicker}>Focused delivery cockpit</span>
-          <p>{copy.description}</p>
-        </div>
-        <div className={styles.summaryMetrics}>
-          <NeoMetric label="Sessions" value={sessions.length || (loadingSessions ? "..." : 0)} />
-          <NeoMetric label="Status" value={session?.status ?? "-"} tone={stageStatusTone[session?.status ?? ""]} />
-          <NeoMetric label="Stage" value={activeStage?.label ?? activeStageKey ?? "-"} />
-          <NeoMetric label="Artifacts" value={artifacts.length} />
+      <section className="card" style={{ padding: 22, marginBottom: 18 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 18, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--color-primary)", fontSize: 12, fontWeight: 850, textTransform: "uppercase", letterSpacing: 0, marginBottom: 10 }}>
+              <Sparkles size={15} />
+              Blueprint Workbench
+            </div>
+            <h1 className="page-header" style={{ margin: 0 }}>{copy.title}</h1>
+            <p style={{ maxWidth: 820, color: "var(--color-outline)", lineHeight: 1.55, fontSize: 14, margin: "10px 0 0" }}>
+              {copy.description}
+            </p>
+          </div>
+          <div style={{ minWidth: 240, display: "grid", gridTemplateColumns: "repeat(2, minmax(100px, 1fr))", gap: 8 }}>
+            <Metric label="Sessions" value={sessions.length || (loadingSessions ? "..." : 0)} />
+            <Metric label="Status" value={session?.status ?? "-"} tone={stageStatusTone[session?.status ?? ""]} />
+            <Metric label="Stage" value={activeStage?.label ?? activeStageKey ?? "-"} />
+            <Metric label="Artifacts" value={artifacts.length} />
+          </div>
         </div>
       </section>
 
@@ -481,586 +466,76 @@ export function WorkbenchConsole({ mode = "cockpit", view }: { mode?: WorkbenchM
 
       <WorkbenchNav activeView={activeView} />
 
-      {loadingSession && !session ? <LoadingCard /> : session ? (
-        activeView === "cockpit" ? (
-          <NeoCockpitSurface
-            session={session}
-            stages={stages}
-            attemptsByStage={attemptsByStage}
-            artifacts={artifacts}
-            codeChanges={codeChanges}
-            codeError={codeError}
-            trace={loopTrace}
-            traceError={traceError}
-            activeStage={activeStage}
-            activeStageKey={activeStageKey}
-            activeMessages={activeMessages}
-            chatDraft={chatDraft}
-            setChatDraft={setChatDraft}
-            busyAction={busyAction}
-            onStage={setSelectedStageKey}
-            onAction={runAction}
-          />
-        ) : (
-          <main className={styles.neoDetailStack}>
-            <SessionOverview session={session} activeStage={activeStage} />
-            <ActionStrip
-              session={session}
-              activeStageKey={activeStageKey}
-              busyAction={busyAction}
-              onAction={runAction}
-            />
-            <WorkbenchFocus
-              view={activeView}
-              session={session}
-              stages={stages}
-              attemptsByStage={attemptsByStage}
-              artifacts={artifacts}
-              codeChanges={codeChanges}
-              codeError={codeError}
-              trace={loopTrace}
-              traceError={traceError}
-              activeStageKey={activeStageKey}
-              activeMessages={activeMessages}
-              chatDraft={chatDraft}
-              setChatDraft={setChatDraft}
-              busyAction={busyAction}
-              onAction={runAction}
-            />
-          </main>
-        )
-      ) : (
-        <EmptyPanel label="Select a Workbench session to begin." />
-      )}
-    </div>
-  );
-}
-
-function NeoCockpitSurface({
-  session,
-  stages,
-  attemptsByStage,
-  artifacts,
-  codeChanges,
-  codeError,
-  trace,
-  traceError,
-  activeStage,
-  activeStageKey,
-  activeMessages,
-  chatDraft,
-  setChatDraft,
-  busyAction,
-  onStage,
-  onAction,
-}: {
-  session: BlueprintSession;
-  stages: LoopStage[];
-  attemptsByStage: Map<string, StageAttempt | undefined>;
-  artifacts: BlueprintArtifact[];
-  codeChanges: CodeChangeRecord[];
-  codeError?: unknown;
-  trace?: LoopTraceResponse | null;
-  traceError?: unknown;
-  activeStage?: LoopStage;
-  activeStageKey?: string | null;
-  activeMessages: StageChatMessage[];
-  chatDraft: string;
-  setChatDraft: (value: string) => void;
-  busyAction: string | null;
-  onStage: (stageKey: string) => void;
-  onAction: (label: string, fn: () => Promise<unknown>) => void;
-}) {
-  const latest = activeStageKey ? attemptsByStage.get(activeStageKey) : undefined;
-  const mode = stageMode(activeStage);
-  return (
-    <div className={`${styles.neoCockpitShell} ${styles[`mode${mode}`] ?? ""}`}>
-      <NeoLoopRail
-        session={session}
-        stages={stages}
-        attemptsByStage={attemptsByStage}
-        activeStageKey={activeStageKey}
-        onStage={onStage}
-      />
-      <main className={styles.neoCenterColumn}>
-        <NeoFocusPanel
-          session={session}
-          stage={activeStage}
-          latest={latest}
-          activeStageKey={activeStageKey}
-          busyAction={busyAction}
-          onAction={onAction}
-        />
-        <section className={styles.neoWorkspace}>
-          <header className={styles.workspaceHead}>
-            <div>
-              <strong>Stage workspace</strong>
-              <small>{activeStage?.label ?? activeStageKey ?? "No stage selected"}</small>
-            </div>
-            <span className={`${styles.modeChip} ${styles[`chip${mode}`] ?? ""}`}>{mode.toLowerCase()}</span>
-          </header>
-          <div className={styles.workspaceGrid}>
-            <NeoArtifactList artifacts={artifacts.filter((artifact) => !activeStageKey || artifact.stageKey === activeStageKey || artifact.stage === activeStageKey).slice(0, 4)} />
-            <NeoCodeList changes={codeChanges.slice(0, 4)} error={codeError} />
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(250px, 320px) minmax(0, 1fr)", gap: 16, alignItems: "start" }}>
+        <aside className="card" style={{ padding: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10 }}>
+            <h2 style={{ margin: 0, fontSize: 15 }}>Sessions</h2>
+            <span style={{ fontSize: 12, color: "var(--color-outline)" }}>{loadingSessions ? "Loading" : `${sessions.length} total`}</span>
           </div>
-          <div className={styles.workspaceGrid}>
-            <NeoStageChat
-              sessionId={session.id}
-              stageKey={activeStageKey}
-              messages={activeMessages}
-              draft={chatDraft}
-              setDraft={setChatDraft}
-              busy={busyAction === "stage-chat"}
-              onSend={(content) => onAction("stage-chat", () => workgraphFetch(`/blueprint/sessions/${encodeURIComponent(session.id)}/stages/${encodeURIComponent(activeStageKey ?? "")}/messages`, {
-                method: "POST",
-                body: JSON.stringify({ role: "operator", content }),
-              }))}
-            />
-            <NeoEventsList events={session.reviewEvents ?? []} milestone={session.milestone} finalPack={session.finalPack} />
-          </div>
-        </section>
-      </main>
-      <NeoLivePanel
-        session={session}
-        trace={trace}
-        traceError={traceError}
-        activeStageKey={activeStageKey}
-        codeChanges={codeChanges}
-      />
-    </div>
-  );
-}
-
-function NeoLoopRail({
-  session,
-  stages,
-  attemptsByStage,
-  activeStageKey,
-  onStage,
-}: {
-  session: BlueprintSession;
-  stages: LoopStage[];
-  attemptsByStage: Map<string, StageAttempt | undefined>;
-  activeStageKey?: string | null;
-  onStage: (stageKey: string) => void;
-}) {
-  return (
-    <aside className={styles.neoLoopRail} aria-label="Workbench loop stages">
-      <header>
-        <span className={styles.railTitle}>Loop</span>
-        <strong>{session.loopDefinition?.name ?? "Capability delivery"}</strong>
-        <small>{shortId(session.id)} · {session.status ?? "unknown"}</small>
-      </header>
-      <ol>
-        {stages.map((stage, index) => {
-          const latest = attemptsByStage.get(stage.key);
-          const status = deriveNeoStageStatus(latest);
-          const active = stage.key === activeStageKey;
-          const mode = stageMode(stage);
-          return (
-            <li key={stage.key} className={`${styles.railRow} ${styles[`status${status}`] ?? ""} ${active ? styles.activeRailRow : ""}`}>
-              <button type="button" onClick={() => onStage(stage.key)}>
-                <span className={styles.railPip}>{stageStatusGlyph(status)}</span>
-                <span className={styles.railLabel}>
-                  <strong>{stage.label ?? stage.key}</strong>
-                  <small>{stage.agentRole ?? "agent"}{latest?.attemptNumber ? ` · attempt ${latest.attemptNumber}` : ""}{stage.approvalRequired ? " · approval" : ""}</small>
-                </span>
-                <span className={`${styles.modeChip} ${styles[`chip${mode}`] ?? ""}`}>{mode.toLowerCase()}</span>
+          <div style={{ display: "grid", gap: 8, maxHeight: 620, overflow: "auto", paddingRight: 4 }}>
+            {sessions.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => selectSession(item.id)}
+                style={{
+                  textAlign: "left",
+                  border: item.id === selectedId ? "1px solid rgba(54,135,39,0.42)" : "1px solid var(--color-outline-variant)",
+                  background: item.id === selectedId ? "rgba(240,253,244,0.86)" : "#fff",
+                  borderRadius: 8,
+                  padding: 12,
+                  cursor: "pointer",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+                  <strong style={{ fontSize: 13, lineHeight: 1.3 }}>{item.goal || shortId(item.id)}</strong>
+                  <StatusPill value={item.status} />
+                </div>
+                <div style={{ fontSize: 12, color: "var(--color-outline)", lineHeight: 1.5 }}>
+                  <div>{item.currentStageKey ? `Stage ${item.currentStageKey}` : "No active stage"}</div>
+                  <div>{formatDate(item.updatedAt ?? item.createdAt)}</div>
+                </div>
               </button>
-              {index < stages.length - 1 ? <span className={styles.railConnector} /> : null}
-            </li>
-          );
-        })}
-      </ol>
-      {stages.length === 0 ? <p className={styles.neoEmpty}>No loop stages found for this session.</p> : null}
-    </aside>
-  );
-}
-
-function NeoFocusPanel({
-  session,
-  stage,
-  latest,
-  activeStageKey,
-  busyAction,
-  onAction,
-}: {
-  session: BlueprintSession;
-  stage?: LoopStage;
-  latest?: StageAttempt;
-  activeStageKey?: string | null;
-  busyAction: string | null;
-  onAction: (label: string, fn: () => Promise<unknown>) => void;
-}) {
-  const intent = focusIntent(latest, stage);
-  const mode = stageMode(stage);
-  const disabled = Boolean(busyAction);
-  if (!stage) {
-    return (
-      <section className={`${styles.neoFocus} ${styles.emptyFocus}`}>
-        <Sparkles size={34} />
-        <h2>Pick a stage on the left</h2>
-        <p>Workbench Neo focuses the operator on one delivery stage at a time.</p>
-      </section>
-    );
-  }
-
-  return (
-    <section className={`${styles.neoFocus} ${styles[`intent${intent}`] ?? ""}`}>
-      <header className={styles.focusHead}>
-        <span className={styles.stageKey}>{stage.key}</span>
-        <h2>{stage.label ?? stage.key}</h2>
-        <p>{stage.description || session.goal || "Focused stage workspace."}</p>
-        <div className={styles.focusBadges}>
-          <span className={`${styles.modeChip} ${styles[`chip${mode}`] ?? ""}`}>{mode.toLowerCase()}</span>
-          <span>{stage.agentRole ?? "agent"}</span>
-          <span>{latest ? `attempt ${latest.attemptNumber ?? "-"}` : "fresh"}</span>
-          {stage.approvalRequired ? <span className={styles.attentionBadge}>approval</span> : null}
-          {latest?.confidence != null ? <span>{Math.round(Number(latest.confidence) * 100)}% confidence</span> : null}
-        </div>
-      </header>
-      <div className={styles.focusBanner}>
-        <strong>{intentCopy(intent).title}</strong>
-        <span>{intentCopy(intent).body}</span>
-      </div>
-      <div className={styles.focusBody}>
-        <div className={styles.responsePanel}>
-          <header>
-            <strong>Latest attempt</strong>
-            <code>{latest?.status ?? "not started"}</code>
-          </header>
-          <p>{latest?.feedback || latest?.error || latest?.gateRecommendation?.reason || "No attempt output has been recorded for this stage yet."}</p>
-          <div className={styles.focusFacts}>
-            <Fact label="Verdict" value={latest?.verdict ?? "-"} />
-            <Fact label="Started" value={formatDate(latest?.startedAt)} />
-            <Fact label="Completed" value={formatDate(latest?.completedAt)} />
-            <Fact label="Artifacts" value={latest?.artifactIds?.length ?? 0} />
-          </div>
-        </div>
-        {stage.expectedArtifacts?.length ? (
-          <div className={styles.expectedArtifacts}>
-            {stage.expectedArtifacts.map((artifact) => (
-              <span key={`${stage.key}-${artifact.kind}`}>
-                {artifact.required ? "required" : "optional"} · {artifact.title ?? artifact.kind}
-              </span>
             ))}
+            {!loadingSessions && sessions.length === 0 && <EmptyPanel label="No Workbench sessions found." />}
           </div>
-        ) : null}
-      </div>
-      <footer className={styles.focusActions}>
-        <button
-          type="button"
-          className={styles.focusPrimary}
-          disabled={disabled || !activeStageKey}
-          onClick={() => onAction("run-stage", () => workgraphFetch(`/blueprint/sessions/${encodeURIComponent(session.id)}/stages/${encodeURIComponent(activeStageKey ?? "")}/run`, { method: "POST" }))}
-        >
-          <Play size={16} />
-          {busyAction === "run-stage" ? "Running..." : intent === "Rework" ? "Rerun stage" : intent === "Running" ? "Stage running" : "Run stage"}
-        </button>
-        <div className={styles.focusSecondary}>
-          <button type="button" disabled={disabled} onClick={() => onAction("snapshot", () => workgraphFetch(`/blueprint/sessions/${encodeURIComponent(session.id)}/snapshot`, { method: "POST" }))}>
-            <TimerReset size={15} />
-            Snapshot
-          </button>
-          <button type="button" disabled={disabled} onClick={() => onAction("approve", () => workgraphFetch(`/blueprint/sessions/${encodeURIComponent(session.id)}/approve`, { method: "POST" }))}>
-            <CheckCircle2 size={15} />
-            Approve
-          </button>
-          <button type="button" disabled={disabled} onClick={() => onAction("finalize", () => workgraphFetch(`/blueprint/sessions/${encodeURIComponent(session.id)}/finalize`, { method: "POST" }))}>
-            <FileCode2 size={15} />
-            Finalize
-          </button>
-        </div>
-      </footer>
-    </section>
-  );
-}
+        </aside>
 
-function NeoLivePanel({
-  session,
-  trace,
-  traceError,
-  activeStageKey,
-  codeChanges,
-}: {
-  session: BlueprintSession;
-  trace?: LoopTraceResponse | null;
-  traceError?: unknown;
-  activeStageKey?: string | null;
-  codeChanges: CodeChangeRecord[];
-}) {
-  const steps = trace?.steps ?? [];
-  const governance = trace?.governanceEvents ?? [];
-  const totals = trace?.summary;
-  const recentItems = [
-    ...governance.slice(0, 4).map((event, index) => ({
-      id: `gov-${index}`,
-      kind: "governance",
-      label: event.kind ?? "governance event",
-      detail: event.phase ? `${event.phase} · ${valueText(event.details)}` : valueText(event.details),
-      time: event.timestamp,
-    })),
-    ...steps.slice(0, 12).map((step, index) => ({
-      id: step.llmCallId ?? `step-${index}`,
-      kind: step.toolInvocations?.length ? "tool" : "llm",
-      label: `Step ${step.stepIndex ?? index + 1}${step.phase ? ` · ${step.phase}` : ""}`,
-      detail: step.finishReason ?? step.responseText?.slice(0, 120) ?? "LLM turn",
-      time: step.timestamp,
-    })),
-    ...codeChanges.slice(0, 5).map((change, index) => ({
-      id: change.id ?? change.commit_sha ?? `code-${index}`,
-      kind: "code",
-      label: change.commit_sha ? `Commit ${shortId(change.commit_sha)}` : change.tool_name ?? "Code change",
-      detail: (change.paths_touched ?? []).slice(0, 2).join(", ") || "No paths reported",
-      time: change.timestamp,
-    })),
-  ].slice(0, 20);
-
-  return (
-    <aside className={styles.neoLive} aria-label="Live Workbench activity">
-      <header className={styles.liveHead}>
-        <span>Live cockpit</span>
-        <strong>{trace ? "live" : traceError ? "error" : "waiting"}</strong>
-      </header>
-      <div className={styles.liveNow}>
-        <Bot size={18} />
-        <span>{activeStageKey ? `Watching ${activeStageKey}` : "No active stage"}</span>
-        <i />
+        <main style={{ display: "grid", gap: 16, minWidth: 0 }}>
+          {loadingSession && !session ? <LoadingCard /> : session ? (
+            <>
+              <SessionOverview session={session} activeStage={activeStage} />
+              <ActionStrip
+                session={session}
+                activeStageKey={activeStageKey}
+                busyAction={busyAction}
+                onAction={runAction}
+              />
+              <WorkbenchFocus
+                view={activeView}
+                session={session}
+                stages={stages}
+                attemptsByStage={attemptsByStage}
+                artifacts={artifacts}
+                codeChanges={codeChanges}
+                codeError={codeError}
+                trace={loopTrace}
+                traceError={traceError}
+                activeStageKey={activeStageKey}
+                activeMessages={activeMessages}
+                chatDraft={chatDraft}
+                setChatDraft={setChatDraft}
+                busyAction={busyAction}
+                onAction={runAction}
+              />
+            </>
+          ) : (
+            <EmptyPanel label="Select a Workbench session to begin." />
+          )}
+        </main>
       </div>
-      <div className={styles.liveMetrics}>
-        <NeoMetric label="LLM" value={totals?.totalLlmCalls ?? 0} />
-        <NeoMetric label="Tools" value={totals?.totalToolInvocations ?? 0} />
-        <NeoMetric label="Steps" value={totals?.totalSteps ?? steps.length} />
-        <NeoMetric label="Files" value={totals?.totalCodeChanges ?? codeChanges.length} />
-      </div>
-      {traceError ? <SmallError error={traceError} /> : null}
-      <div className={styles.liveStream}>
-        {recentItems.map((item) => (
-          <article key={item.id} className={`${styles.liveRow} ${styles[`live${item.kind}`] ?? ""}`}>
-            <span>{item.kind === "tool" ? "T" : item.kind === "code" ? "C" : item.kind === "governance" ? "G" : "L"}</span>
-            <div>
-              <strong>{item.label}</strong>
-              <small>{item.detail}</small>
-            </div>
-            <time>{formatDate(item.time)}</time>
-          </article>
-        ))}
-        {recentItems.length === 0 ? (
-          <p className={styles.neoEmpty}>
-            {session.workflowInstanceId ? "Waiting for trace activity..." : "This session is not linked to a live workflow run yet."}
-          </p>
-        ) : null}
-      </div>
-    </aside>
-  );
-}
-
-function NeoArtifactList({ artifacts }: { artifacts: BlueprintArtifact[] }) {
-  return (
-    <section className={styles.neoPanel}>
-      <header>
-        <strong>Artifacts</strong>
-        <span>{artifacts.length}</span>
-      </header>
-      <div className={styles.neoList}>
-        {artifacts.map((artifact) => (
-          <article key={artifact.id ?? `${artifact.kind}-${artifact.createdAt}`}>
-            <FileCode2 size={15} />
-            <div>
-              <strong>{artifact.title ?? artifact.kind ?? "Artifact"}</strong>
-              <small>{artifact.kind ?? "unknown"} · {artifact.stageKey ?? artifact.stage ?? "session"} · {formatDate(artifact.createdAt)}</small>
-              {artifact.content ? <p>{artifact.content.slice(0, 160)}</p> : null}
-            </div>
-          </article>
-        ))}
-        {artifacts.length === 0 ? <p className={styles.neoEmpty}>No artifacts for this stage yet.</p> : null}
-      </div>
-    </section>
-  );
-}
-
-function NeoCodeList({ changes, error }: { changes: CodeChangeRecord[]; error?: unknown }) {
-  return (
-    <section className={styles.neoPanel}>
-      <header>
-        <strong>Code changes</strong>
-        <span>{changes.length}</span>
-      </header>
-      {error ? <p className={styles.neoError}>{error instanceof Error ? error.message : String(error)}</p> : null}
-      <div className={styles.neoList}>
-        {changes.map((change) => (
-          <article key={change.id ?? change.commit_sha ?? change.timestamp}>
-            <GitPullRequest size={15} />
-            <div>
-              <strong>{change.commit_sha ? shortId(change.commit_sha) : change.tool_name ?? "Change"}</strong>
-              <small>{Number(change.lines_added ?? 0)} added · {Number(change.lines_removed ?? 0)} removed · {formatDate(change.timestamp)}</small>
-              <p>{(change.paths_touched ?? []).slice(0, 3).join(", ") || "No paths reported"}</p>
-            </div>
-          </article>
-        ))}
-        {changes.length === 0 && !error ? <p className={styles.neoEmpty}>No code changes reported for this stage.</p> : null}
-      </div>
-    </section>
-  );
-}
-
-function NeoStageChat({
-  sessionId,
-  stageKey,
-  messages,
-  draft,
-  setDraft,
-  busy,
-  onSend,
-}: {
-  sessionId: string;
-  stageKey?: string | null;
-  messages: StageChatMessage[];
-  draft: string;
-  setDraft: (value: string) => void;
-  busy: boolean;
-  onSend: (content: string) => void;
-}) {
-  return (
-    <section className={styles.neoPanel}>
-      <header>
-        <strong>Stage chat</strong>
-        <span>{stageKey ?? "no stage"}</span>
-      </header>
-      <div className={styles.chatStream}>
-        {messages.map((message, index) => (
-          <article key={message.id ?? index} className={message.role === "operator" ? styles.operatorMessage : undefined}>
-            <strong>{message.role ?? "message"}</strong>
-            <p>{message.content}</p>
-            <time>{formatDate(message.createdAt)}</time>
-          </article>
-        ))}
-        {messages.length === 0 ? <p className={styles.neoEmpty}>No messages in this stage thread.</p> : null}
-      </div>
-      <div className={styles.chatComposer}>
-        <input
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder={stageKey ? "Message this stage..." : "No active stage"}
-          disabled={!stageKey || busy}
-        />
-        <button
-          type="button"
-          disabled={!stageKey || busy || !draft.trim()}
-          onClick={() => {
-            const content = draft.trim();
-            if (!content) return;
-            setDraft("");
-            onSend(content);
-          }}
-          title={`Send message for ${sessionId}`}
-        >
-          <Send size={15} />
-        </button>
-      </div>
-    </section>
-  );
-}
-
-function NeoEventsList({ events, milestone, finalPack }: { events: ReviewEvent[]; milestone?: MilestoneState; finalPack?: BlueprintSession["finalPack"] }) {
-  return (
-    <section className={styles.neoPanel}>
-      <header>
-        <strong>Milestones & events</strong>
-        <span>{events.length}</span>
-      </header>
-      {milestone?.enabled ? (
-        <div className={styles.neoNotice}>
-          {milestone.plan?.find((item) => item.id === milestone.currentMilestoneId)?.title ?? milestone.currentMilestoneId ?? "No active milestone"}
-        </div>
-      ) : null}
-      {finalPack ? <div className={styles.neoNotice}>Final pack · {finalPack.status ?? "unknown"}</div> : null}
-      <div className={styles.neoList}>
-        {events.slice(0, 8).map((event, index) => (
-          <article key={event.id ?? index}>
-            <Milestone size={15} />
-            <div>
-              <strong>{event.type ?? "event"} {event.stageKey ? `· ${event.stageKey}` : ""}</strong>
-              <small>{formatDate(event.createdAt)}</small>
-              <p>{event.message}</p>
-            </div>
-          </article>
-        ))}
-        {events.length === 0 ? <p className={styles.neoEmpty}>No review events recorded yet.</p> : null}
-      </div>
-    </section>
-  );
-}
-
-function NeoMetric({ label, value, tone }: { label: string; value: unknown; tone?: string }) {
-  return (
-    <div className={styles.neoMetric}>
-      <span>{label}</span>
-      <strong style={tone ? { color: tone } : undefined}>{valueText(value)}</strong>
     </div>
   );
-}
-
-type NeoStageStatus = "pending" | "running" | "paused" | "awaiting" | "pass" | "risk" | "failed" | "sentBack";
-type StageMode = "STORY" | "PLAN" | "CODE" | "VERIFY" | "EVIDENCE";
-type FocusState = "Run" | "Running" | "Approve" | "Rework" | "Completed";
-
-function deriveNeoStageStatus(latest: StageAttempt | undefined): NeoStageStatus {
-  if (!latest) return "pending";
-  if (latest.status === "RUNNING") return "running";
-  if (latest.status === "PAUSED") return "paused";
-  if (latest.verdict === "PASS") return "pass";
-  if (latest.verdict === "ACCEPTED_WITH_RISK") return "risk";
-  if (latest.verdict === "NEEDS_REWORK") return "sentBack";
-  if (latest.verdict === "BLOCKED" || latest.status === "FAILED") return "failed";
-  if (latest.status === "COMPLETED" && !latest.verdict) return "awaiting";
-  return "pending";
-}
-
-function stageStatusGlyph(status: NeoStageStatus): string {
-  switch (status) {
-    case "running": return "↻";
-    case "paused": return "⏸";
-    case "awaiting": return "⌛";
-    case "pass": return "✓";
-    case "risk": return "◑";
-    case "sentBack": return "↩";
-    case "failed": return "✕";
-    default: return "○";
-  }
-}
-
-function stageMode(stage: LoopStage | undefined): StageMode {
-  const text = `${stage?.key ?? ""} ${stage?.label ?? ""} ${stage?.agentRole ?? ""} ${stage?.toolPolicy ?? ""} ${stage?.contextPolicy ?? ""}`.toLowerCase();
-  if (/(qa|verify|test|quality|security|gate)/.test(text)) return "VERIFY";
-  if (/(dev|code|implement|build|repo|git)/.test(text)) return "CODE";
-  if (/(plan|architect|design|analysis|analyst)/.test(text)) return "PLAN";
-  if (/(evidence|release|audit|handoff|pack|final)/.test(text)) return "EVIDENCE";
-  return "STORY";
-}
-
-function focusIntent(latest: StageAttempt | undefined, stage: LoopStage | undefined): FocusState {
-  if (!stage || !latest) return "Run";
-  if (latest.status === "RUNNING" || latest.status === "PAUSED") return "Running";
-  if (latest.status === "COMPLETED" && !latest.verdict) return "Approve";
-  if (latest.status === "FAILED" || latest.verdict === "NEEDS_REWORK" || latest.verdict === "BLOCKED") return "Rework";
-  if (latest.verdict === "PASS" || latest.verdict === "ACCEPTED_WITH_RISK") return "Completed";
-  return "Run";
-}
-
-function intentCopy(intent: FocusState): { title: string; body: string } {
-  switch (intent) {
-    case "Running":
-      return { title: "Agent is working.", body: "Use the live cockpit on the right to watch model turns, tool calls, governance events, and code changes." };
-    case "Approve":
-      return { title: "Awaiting verdict.", body: "Review the latest output and artifacts, then approve, finalize, or rerun the stage." };
-    case "Rework":
-      return { title: "Rework needed.", body: "The latest attempt did not pass. Rerun this stage after adjusting context or feedback." };
-    case "Completed":
-      return { title: "Stage closed.", body: "This stage has a passing verdict. You can still inspect artifacts, trace, and evidence." };
-    default:
-      return { title: "Ready to run.", body: "Kick off the focused stage when the scope, source, and capability context look right." };
-  }
 }
 
 function CreateSessionPanel({
@@ -1214,14 +689,23 @@ function CreateSessionPanel({
 
 function WorkbenchNav({ activeView }: { activeView: WorkbenchView }) {
   return (
-    <nav className={styles.neoTabs} aria-label="Workbench sections">
+    <nav className="card" style={{ padding: 8, marginBottom: 18, display: "flex", gap: 6, flexWrap: "wrap" }} aria-label="Workbench sections">
       {workbenchViews.map((item) => {
         const active = item.view === activeView;
         return (
           <Link
             key={item.view}
             href={item.href}
-            className={active ? styles.activeTab : undefined}
+            style={{
+              border: active ? "1px solid rgba(54,135,39,0.42)" : "1px solid transparent",
+              background: active ? "rgba(240,253,244,0.88)" : "transparent",
+              color: active ? "var(--color-primary)" : "var(--color-outline)",
+              borderRadius: 8,
+              padding: "8px 11px",
+              fontWeight: 850,
+              fontSize: 13,
+              textDecoration: "none",
+            }}
           >
             {item.label}
           </Link>

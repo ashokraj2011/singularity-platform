@@ -111,7 +111,6 @@ export function LegacyArtifactDesignerRoute() {
       <MemoryRouter initialEntries={["/artifacts"]}>
         <Routes>
           <Route path="/artifacts" element={<ArtifactDesignerPage />} />
-          <Route path="/artifacts/:id" element={<ArtifactEditorPage />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>
