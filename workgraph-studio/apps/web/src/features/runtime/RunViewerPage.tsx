@@ -77,6 +77,7 @@ export function RunViewerPage() {
     templateId?: string; templateVersion?: number | null;
     createdAt: string; startedAt?: string;
     context?: Record<string, unknown>;
+    usesCopilot?: boolean;
   }>({
     queryKey: ['run-instance', id],
     queryFn:  () => api.get(`/workflow-instances/${id}`).then(r => r.data),
@@ -217,6 +218,15 @@ export function RunViewerPage() {
                 border: '1px solid rgba(99,102,241,0.20)', fontFamily: 'monospace',
               }}>
                 v{instance.templateVersion}
+              </span>
+            )}
+            {instance.usesCopilot && (
+              <span title="This workflow's agents run on the Copilot gateway (COPILOT_SDLC routing)." style={{
+                fontSize: 9, fontWeight: 800, padding: '2px 7px', borderRadius: 4,
+                background: 'rgba(110,64,201,0.10)', color: '#6e40c9',
+                border: '1px solid rgba(110,64,201,0.28)', letterSpacing: '0.08em', textTransform: 'uppercase',
+              }}>
+                Copilot
               </span>
             )}
           </div>

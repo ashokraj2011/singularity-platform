@@ -254,8 +254,13 @@ export async function activateAgentTask(
   // the node nor the workflow set an explicit alias. Precedence: node > workflow >
   // routing > legacy > gateway default.
   const _nodeAliasExplicit = !!nodeModelAlias && nodeModelAlias !== '__workflow_default__'
+  // Copilot workflows route governed agents through the COPILOT_SDLC touch point
+  // (Copilot gateway); everything else uses GOVERNED_AGENT. Routing only fills when
+  // neither the node nor the workflow set an explicit alias.
+  const workflowUsesCopilot = await resolveWorkflowUsesCopilot(instance.templateId)
+  const routedTouchPoint = workflowUsesCopilot ? 'COPILOT_SDLC' : 'GOVERNED_AGENT'
   const routedModelAlias = (!_nodeAliasExplicit && !workflowDefaultModelAlias)
-    ? await resolveLlmRouting('GOVERNED_AGENT', { capabilityId, userId: instance.createdById })
+    ? await resolveLlmRouting(routedTouchPoint, { capabilityId, userId: instance.createdById })
     : null
   const modelOverrides: Record<string, unknown> = {
     maxOutputTokens: 1200,
@@ -944,6 +949,19 @@ async function resolveWorkflowDefaultModelAlias(templateId?: string | null): Pro
   if (!isRecord(policy)) return undefined
   const value = policy.defaultModelAlias
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+// Whole-workflow Copilot opt-in (workflow.metadata.usesCopilot). When set, governed
+// agents in this workflow route their LLM via the COPILOT_SDLC touch point (the
+// Copilot gateway) instead of GOVERNED_AGENT. Overridable in the routing canvas.
+async function resolveWorkflowUsesCopilot(templateId?: string | null): Promise<boolean> {
+  if (!templateId) return false
+  const workflow = await prisma.workflow.findUnique({
+    where: { id: templateId },
+    select: { metadata: true },
+  })
+  const metadata = isRecord(workflow?.metadata) ? workflow?.metadata : {}
+  return metadata.usesCopilot === true
 }
 
 async function resolveWorkflowGovernanceMode(templateId: string | null | undefined, node: WorkflowNode): Promise<GovernanceMode> {

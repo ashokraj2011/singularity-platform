@@ -259,7 +259,15 @@ workflowInstancesRouter.get('/:id', async (req, res, next) => {
       resolveTenantFromRequest(req),
     )
     if (!instance) throw new NotFoundError('WorkflowInstance', req.params.id)
-    res.json(instance)
+    // Surface the whole-workflow Copilot opt-in (workflow.metadata.usesCopilot) so the
+    // run viewer can show the COPILOT indicator without a second round-trip.
+    let usesCopilot = false
+    if (instance.templateId) {
+      const wf = await prisma.workflow.findUnique({ where: { id: instance.templateId }, select: { metadata: true } })
+      const md = wf?.metadata
+      usesCopilot = !!(md && typeof md === 'object' && !Array.isArray(md) && (md as Record<string, unknown>).usesCopilot === true)
+    }
+    res.json({ ...instance, usesCopilot })
   } catch (err) {
     next(err)
   }

@@ -653,8 +653,16 @@ function getWorkbenchStageSummary(stages: Record<string, unknown>[]) {
 
 function getNodeCardBadges(data: NodeData, showStatus: boolean) {
   const badges: Array<{ label: string; color: string }> = []
+  const config = data.config as Record<string, unknown> | undefined
+  const standard = config?.standard && typeof config.standard === 'object' && !Array.isArray(config.standard)
+    ? config.standard as Record<string, unknown>
+    : {}
   if (showStatus && data.status) {
     badges.push({ label: data.status.replaceAll('_', ' '), color: NODE_STATUS_COLOR[data.status] ?? '#64748b' })
+  }
+  // Copilot nodes (executor=copilot) run on the Copilot gateway — show the indicator.
+  if (config?.executor === 'copilot' || standard.executor === 'copilot') {
+    badges.push({ label: 'Copilot', color: '#6e40c9' })
   }
 
   if (data.nodeType === 'WORKBENCH_TASK') {
@@ -668,10 +676,6 @@ function getNodeCardBadges(data: NodeData, showStatus: boolean) {
     return badges.slice(0, 2)
   }
 
-  const config = data.config as Record<string, unknown> | undefined
-  const standard = config?.standard && typeof config.standard === 'object' && !Array.isArray(config.standard)
-    ? config.standard as Record<string, unknown>
-    : {}
   if (data.nodeType === 'START' && typeof standard.triggerType === 'string') {
     badges.push({ label: standard.triggerType.toLowerCase().replaceAll('_', ' '), color: '#2563eb' })
   }
@@ -2036,7 +2040,7 @@ function unwrapModelCatalog(payload: any): LlmModelCatalog {
 
 function WorkflowBudgetPanel({
   templateId, policy, isLight, glassPanel, panelText, panelMuted, panelBdr, saving,
-  onClose, onSave,
+  onClose, onSave, usesCopilot, onToggleUsesCopilot,
 }: {
   templateId?: string
   policy: Record<string, unknown> | null
@@ -2046,6 +2050,8 @@ function WorkflowBudgetPanel({
   saving: boolean
   onClose: () => void
   onSave: (policy: Record<string, unknown>) => void
+  usesCopilot: boolean
+  onToggleUsesCopilot: (v: boolean) => void
 }) {
   const [form, setForm] = useState<BudgetForm>(() => budgetFormFrom(policy))
   useEffect(() => { setForm(budgetFormFrom(policy)) }, [JSON.stringify(policy ?? {})])
@@ -2170,6 +2176,21 @@ function WorkflowBudgetPanel({
             Nodes can override this. Security/compliance nodes default to fail closed.
           </span>
         </label>
+      </div>
+
+      <div style={{ padding: '10px 14px', borderTop: `1px solid ${panelBdr}`, flexShrink: 0 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: templateId ? 'pointer' : 'not-allowed' }}>
+          <input
+            type="checkbox"
+            checked={usesCopilot}
+            disabled={!templateId}
+            onChange={e => onToggleUsesCopilot(e.target.checked)}
+          />
+          <span style={{ fontSize: 11, fontWeight: 800, color: usesCopilot ? '#6e40c9' : panelText }}>Uses Copilot gateway</span>
+        </label>
+        <span style={{ fontSize: 9, color: panelMuted, lineHeight: 1.4, display: 'block', marginTop: 3 }}>
+          Routes this workflow&apos;s governed agents through the Copilot gateway (COPILOT_SDLC). Saved immediately.
+        </span>
       </div>
 
       <div style={{ padding: '10px 14px', borderTop: `1px solid ${panelBdr}`, flexShrink: 0, display: 'flex', gap: 7 }}>
@@ -2390,7 +2411,7 @@ export function WorkflowStudioPage() {
   // it's the primary entity; in run mode it's the parent for capability /
   // permission / variable resolution.
   const workflowId = isDesignMode ? designWorkflowId : runInstance?.templateId
-  const { data: template } = useQuery<{ id: string; status?: string; name: string; teamId?: string; capabilityId?: string | null; variables?: TemplateVariableDef[]; budgetPolicy?: Record<string, unknown> | null; profile?: string }>({
+  const { data: template } = useQuery<{ id: string; status?: string; name: string; teamId?: string; capabilityId?: string | null; variables?: TemplateVariableDef[]; budgetPolicy?: Record<string, unknown> | null; metadata?: Record<string, unknown> | null; profile?: string }>({
     queryKey: ['workflow-templates', workflowId],
     queryFn: () => api.get(`/workflow-templates/${workflowId}`).then(r => r.data),
     enabled: !!workflowId,
@@ -2683,6 +2704,16 @@ export function WorkflowStudioPage() {
     mutationFn: (payload: { paramDefs?: ParamDef[]; paramValues?: Record<string, unknown> }) =>
       api.patch(`/workflow-instances/${instanceId}/params`, payload).then(r => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['workflow-instances', instanceId, 'params'] }),
+  })
+
+  // Whole-workflow Copilot opt-in (workflow.metadata.usesCopilot). Toggled from the
+  // Budget/settings panel; routes governed agents via the COPILOT_SDLC touch point.
+  const saveUsesCopilot = useMutation({
+    mutationFn: (usesCopilot: boolean) =>
+      api.patch(`/workflow-templates/${template?.id}`, {
+        metadata: { ...((template?.metadata as Record<string, unknown> | undefined) ?? {}), usesCopilot },
+      }).then(r => r.data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['workflow-templates', workflowId] }),
   })
 
   const saveBudgetPolicy = useMutation({
@@ -3772,6 +3803,8 @@ export function WorkflowStudioPage() {
               saving={saveBudgetPolicy.isPending}
               onClose={() => setBudgetOpen(false)}
               onSave={policy => saveBudgetPolicy.mutate(policy)}
+              usesCopilot={Boolean((template?.metadata as Record<string, unknown> | undefined)?.usesCopilot)}
+              onToggleUsesCopilot={v => saveUsesCopilot.mutate(v)}
             />
           )}
         </AnimatePresence>

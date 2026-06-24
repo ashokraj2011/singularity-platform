@@ -329,6 +329,41 @@ async function main() {
     console.warn(`  ⚠ feature-flag seed skipped (non-fatal): ${(e as Error).message}`)
   }
 
+  // LLM gateway routing defaults — two connections active (cloud + Copilot) and the
+  // touch-point rules: Blueprint Workbench → cloud gateway, Copilot workflows
+  // (COPILOT_SDLC) → Copilot gateway. DEFAULT scope only; admins can re-point in the
+  // LLM-routing canvas, and re-seed never clobbers those overrides.
+  try {
+    const connections = [
+      { alias: 'claude-sonnet-4-5', name: 'Cloud — Claude Sonnet 4.5', provider: 'anthropic', model: 'claude-sonnet-4-5' },
+      { alias: 'copilot',           name: 'Copilot CLI',               provider: 'copilot',   model: 'copilot' },
+    ]
+    for (const c of connections) {
+      await prisma.llmConnection.upsert({
+        where: { alias: c.alias },
+        update: { name: c.name, provider: c.provider, model: c.model, enabled: true },
+        create: { ...c, enabled: true },
+      })
+    }
+    const routingDefaults = [
+      { touchPoint: 'WORKBENCH',    modelAlias: 'claude-sonnet-4-5' },
+      { touchPoint: 'COPILOT_SDLC', modelAlias: 'copilot' },
+    ]
+    for (const r of routingDefaults) {
+      await prisma.llmRouting.upsert({
+        where: { touchPoint_scopeType_scopeId: { touchPoint: r.touchPoint, scopeType: 'DEFAULT', scopeId: '' } },
+        // Assert the policy DEFAULT (Workbench→cloud, Copilot→copilot). Admins still
+        // override per user/capability — scoped USER/CAPABILITY rules win at resolve
+        // time (USER > CAPABILITY > DEFAULT), and survive re-seed.
+        update: { modelAlias: r.modelAlias, enabled: true },
+        create: { touchPoint: r.touchPoint, scopeType: 'DEFAULT', scopeId: '', modelAlias: r.modelAlias, enabled: true },
+      })
+    }
+    console.log('  LLM routing seeded: WORKBENCH→claude-sonnet-4-5, COPILOT_SDLC→copilot (2 connections active)')
+  } catch (e) {
+    console.warn(`  ⚠ llm-routing seed skipped (non-fatal): ${(e as Error).message}`)
+  }
+
   console.log('Seed complete!')
   console.log('  Admin: admin@workgraph.local / admin123')
   console.log('  Demo:  demo@workgraph.local / demo123')

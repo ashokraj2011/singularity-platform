@@ -131,13 +131,16 @@ async function main(): Promise<void> {
 
   await (prisma as any).workflow.upsert({
     where: { id: WF_ID },
-    update: { name: WF_NAME, capabilityId: CAPABILITY_ID, teamId: TEAM_ID, profile: 'main', workflowTypeKey: 'SDLC' },
+    update: { name: WF_NAME, capabilityId: CAPABILITY_ID, teamId: TEAM_ID, profile: 'main', workflowTypeKey: 'SDLC', metadata: { usesCopilot: true } },
     create: {
       id: WF_ID, name: WF_NAME,
       description: 'SDLC delivered by the GitHub Copilot CLI: one AGENT_TASK (executor=copilot) per phase. ' +
         'context-fabric dispatches copilot_execute to the laptop mcp-server, which runs the Copilot CLI in the work-item workspace.',
       status: 'PUBLISHED', currentVersion: 1, profile: 'main', workflowTypeKey: 'SDLC',
       teamId: TEAM_ID, capabilityId: CAPABILITY_ID,
+      // Whole-workflow Copilot opt-in → governed agents route via the COPILOT_SDLC
+      // touch point, and the UI shows the COPILOT indicator.
+      metadata: { usesCopilot: true },
     },
   })
   await (prisma as any).workflowVersion.upsert({
