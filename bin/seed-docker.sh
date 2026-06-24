@@ -54,14 +54,14 @@ echo "── 5/6  workgraph: artifact templates (idempotent)"
 dc exec -T workgraph-api npx prisma db seed || true
 
 echo "── 6/6  workgraph: SDLC workflows (workbench → main → copilot → parent wrappers)"
-dc exec -T workgraph-api npx tsx prisma/seed-sdlc-workbench.ts || echo "   ⚠ workbench seed failed"
-dc exec -T workgraph-api npx tsx prisma/seed-sdlc-main.ts      || echo "   ⚠ main seed failed"
+dc exec -T workgraph-api npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts || echo "   ⚠ workbench seed failed"
+dc exec -T workgraph-api npx ts-node --transpile-only prisma/seed-sdlc-main.ts      || echo "   ⚠ main seed failed"
 dc exec -T \
   -e SEED_GOVERNANCE_MODE="$GOV" \
   -e SEED_PREFER_LAPTOP="$PREFER_LAPTOP" \
   ${SEED_COPILOT_REPO_URL:+-e SEED_COPILOT_REPO_URL="$SEED_COPILOT_REPO_URL"} \
-  workgraph-api npx tsx prisma/seed-sdlc-copilot.ts
-dc exec -T workgraph-api npx tsx prisma/seed-workbench-parents.ts || echo "   ⚠ workbench parent seed failed"
+  workgraph-api npx ts-node --transpile-only prisma/seed-sdlc-copilot.ts || echo "   ⚠ copilot seed failed"
+dc exec -T workgraph-api npx ts-node --transpile-only prisma/seed-workbench-parents.ts || echo "   ⚠ workbench parent seed failed"
 
 echo
 echo "✓ Seeded. Open  http://localhost:5180  and log in:"

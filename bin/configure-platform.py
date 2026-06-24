@@ -878,7 +878,7 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
             "DEFAULT_GOVERNANCE_MODE": values["DEFAULT_GOVERNANCE_MODE"],
             "CF_TOOL_GRANT_ENABLED": values["CF_TOOL_GRANT_ENABLED"],
             "TOOL_GRANT_SIGNING_SECRET": values["TOOL_GRANT_SIGNING_SECRET"],
-            "LLM_GATEWAY_URL": "http://llm-gateway-service:8001",
+            "LLM_GATEWAY_URL": "http://llm-gateway:8001",
             "CONTEXT_MEMORY_URL": "http://context-memory-service:8002",
             "METRICS_LEDGER_URL": "http://metrics-ledger-service:8003",
             "COMPOSER_URL": for_docker_host(values["PROMPT_COMPOSER_URL"]),
@@ -901,7 +901,7 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
             "COPILOT_DEFAULT_MODEL": values["COPILOT_DEFAULT_MODEL"],
             "OLLAMA_BASE_URL": values["OLLAMA_BASE_URL"],
             "SUMMARIZER_MODEL_ALIAS": values["SUMMARIZER_MODEL_ALIAS"],
-            "LLM_GATEWAY_INTERNAL_URL": "http://llm-gateway-service:8001",
+            "LLM_GATEWAY_INTERNAL_URL": "http://llm-gateway:8001",
         },
         ROOT / "mcp-server/.env": {
             "NODE_ENV": "development",
