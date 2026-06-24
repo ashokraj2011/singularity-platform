@@ -10,7 +10,7 @@
       "enabled": true,
       "baseUrl": "https://api.anthropic.com",
       "credentialEnv": "ANTHROPIC_API_KEY",
-      "defaultModel": "claude-haiku-4-5-20251001",
+      "defaultModel": "claude-sonnet-4-6",
       "supportsTools": true,
       "costTier": "medium",
       "description": "Anthropic Messages API provider for Singularity LLM Gateway."

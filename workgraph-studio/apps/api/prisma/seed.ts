@@ -334,9 +334,12 @@ async function main() {
   // (COPILOT_SDLC) → Copilot gateway. DEFAULT scope only; admins can re-point in the
   // LLM-routing canvas, and re-seed never clobbers those overrides.
   try {
+    // Both gateways run on Claude Sonnet 4.6 (the `copilot` alias resolves to Sonnet
+    // 4.6 in the model catalog; the actual code edit still runs on the GitHub Copilot
+    // CLI via executor=copilot).
     const connections = [
-      { alias: 'claude-sonnet-4-5', name: 'Cloud — Claude Sonnet 4.5', provider: 'anthropic', model: 'claude-sonnet-4-5' },
-      { alias: 'copilot',           name: 'Copilot CLI',               provider: 'copilot',   model: 'copilot' },
+      { alias: 'claude-sonnet-4-6', name: 'Cloud — Claude Sonnet 4.6',            provider: 'anthropic', model: 'claude-sonnet-4-6' },
+      { alias: 'copilot',           name: 'Copilot SDLC governed LLM (Sonnet 4.6)', provider: 'anthropic', model: 'claude-sonnet-4-6' },
     ]
     for (const c of connections) {
       await prisma.llmConnection.upsert({
@@ -346,20 +349,20 @@ async function main() {
       })
     }
     const routingDefaults = [
-      { touchPoint: 'WORKBENCH',    modelAlias: 'claude-sonnet-4-5' },
+      { touchPoint: 'WORKBENCH',    modelAlias: 'claude-sonnet-4-6' },
       { touchPoint: 'COPILOT_SDLC', modelAlias: 'copilot' },
     ]
     for (const r of routingDefaults) {
       await prisma.llmRouting.upsert({
         where: { touchPoint_scopeType_scopeId: { touchPoint: r.touchPoint, scopeType: 'DEFAULT', scopeId: '' } },
-        // Assert the policy DEFAULT (Workbench→cloud, Copilot→copilot). Admins still
-        // override per user/capability — scoped USER/CAPABILITY rules win at resolve
-        // time (USER > CAPABILITY > DEFAULT), and survive re-seed.
+        // Assert the policy DEFAULT (Workbench + Copilot both → Sonnet 4.6). Admins
+        // still override per user/capability — scoped USER/CAPABILITY rules win at
+        // resolve time (USER > CAPABILITY > DEFAULT), and survive re-seed.
         update: { modelAlias: r.modelAlias, enabled: true },
         create: { touchPoint: r.touchPoint, scopeType: 'DEFAULT', scopeId: '', modelAlias: r.modelAlias, enabled: true },
       })
     }
-    console.log('  LLM routing seeded: WORKBENCH→claude-sonnet-4-5, COPILOT_SDLC→copilot (2 connections active)')
+    console.log('  LLM routing seeded: WORKBENCH→claude-sonnet-4-6, COPILOT_SDLC→copilot(=Sonnet 4.6)')
   } catch (e) {
     console.warn(`  ⚠ llm-routing seed skipped (non-fatal): ${(e as Error).message}`)
   }
