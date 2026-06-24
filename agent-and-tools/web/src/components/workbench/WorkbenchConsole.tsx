@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { CSSProperties } from "react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import {
   ArrowLeft,
@@ -194,6 +194,13 @@ type CreateWorkbenchSessionPayload = {
   developerAgentTemplateId?: string;
   qaAgentTemplateId?: string;
   gateMode: WorkbenchGateMode;
+  // Carried from a CALL_WORKFLOW launch URL so the created session is scoped to
+  // its run and uses the launched SDLC loop (with its per-stage agent bindings).
+  workflowInstanceId?: string;
+  browserRunId?: string;
+  workflowNodeId?: string;
+  phaseId?: string;
+  loopDefinition?: unknown;
 };
 
 type LoopTraceResponse = {
@@ -286,19 +293,136 @@ async function createWorkbenchSession(payload: CreateWorkbenchSessionPayload): P
   });
 }
 
+type WorkbenchLaunchDefaults = {
+  workflowInstanceId?: string;
+  browserRunId?: string;
+  workflowNodeId?: string;
+  phaseId?: string;
+  goal?: string;
+  sourceType?: WorkbenchSourceType;
+  sourceUri?: string;
+  sourceRef?: string;
+  capabilityId?: string;
+  architectAgentTemplateId?: string;
+  developerAgentTemplateId?: string;
+  qaAgentTemplateId?: string;
+  gateMode?: WorkbenchGateMode;
+  loopDefinition?: unknown;
+};
+
+// Drop blanks and unresolved {{template}} placeholders (mirrors blueprint-workbench).
+function cleanLaunchParam(value: string | null): string | undefined {
+  const text = value?.trim();
+  if (!text || /\{\{[^}]+}}/.test(text)) return undefined;
+  return text;
+}
+
+// Parse a CALL_WORKFLOW launch URL into workbench intake defaults — the same
+// launch contract blueprint-workbench's readWorkflowDefaults honors (goal,
+// loopDefinition, agent bindings, run binding), so the native console can open
+// the right run's workbench instead of falling back to the most-recent session.
+function readLaunchDefaults(search: { get(name: string): string | null }): WorkbenchLaunchDefaults {
+  const gateModeRaw = search.get("gateMode");
+  const gateMode = gateModeRaw === "auto" ? "auto" : gateModeRaw === "manual" ? "manual" : undefined;
+  const sourceTypeRaw = search.get("sourceType");
+  const sourceType = sourceTypeRaw === "github" || sourceTypeRaw === "localdir" ? sourceTypeRaw : undefined;
+  let loopDefinition: unknown;
+  const encodedLoop = search.get("loopDefinition");
+  if (encodedLoop) {
+    try {
+      const json = encodedLoop.trim().startsWith("{")
+        ? encodedLoop
+        : typeof window !== "undefined" ? window.atob(encodedLoop) : "";
+      loopDefinition = json ? JSON.parse(json) : undefined;
+    } catch {
+      loopDefinition = undefined;
+    }
+  }
+  return {
+    workflowInstanceId: cleanLaunchParam(search.get("workflowInstanceId")),
+    browserRunId: cleanLaunchParam(search.get("browserRunId")),
+    workflowNodeId: cleanLaunchParam(search.get("workflowNodeId")),
+    phaseId: cleanLaunchParam(search.get("phaseId")),
+    goal: cleanLaunchParam(search.get("goal")),
+    sourceType,
+    sourceUri: cleanLaunchParam(search.get("sourceUri")),
+    sourceRef: cleanLaunchParam(search.get("sourceRef")),
+    capabilityId: cleanLaunchParam(search.get("capabilityId")),
+    architectAgentTemplateId: cleanLaunchParam(search.get("architectAgentTemplateId")),
+    developerAgentTemplateId: cleanLaunchParam(search.get("developerAgentTemplateId")),
+    qaAgentTemplateId: cleanLaunchParam(search.get("qaAgentTemplateId")),
+    gateMode,
+    loopDefinition,
+  };
+}
+
+// True when the session belongs to the run named in the launch URL.
+function sessionMatchesLaunch(session: BlueprintSession, launch: WorkbenchLaunchDefaults): boolean {
+  return Boolean(
+    launch.workflowInstanceId &&
+    launch.workflowNodeId &&
+    session.workflowInstanceId === launch.workflowInstanceId &&
+    session.workflowNodeId === launch.workflowNodeId,
+  );
+}
+
+type LookupCapability = {
+  id?: string;
+  capability_id?: string;
+  name?: string;
+  sourceType?: string;
+  sourceUri?: string;
+  repoUrl?: string;
+  defaultBranch?: string;
+  repositories?: Array<{ repoUrl?: string; status?: string; repositoryType?: string; defaultBranch?: string }>;
+  metadata?: Record<string, unknown> | null;
+};
+
+async function fetchLookupCapabilities(): Promise<LookupCapability[]> {
+  return unwrapWorkgraphItems<LookupCapability>(await workgraphFetch("/lookup/capabilities?size=200"), ["items", "capabilities"]);
+}
+
+function cleanText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+// The launching capability's default source repo — used to fill the intake's
+// source when the launch URL didn't carry one (mirrors blueprint-workbench).
+function capabilityDefaultSource(capability?: LookupCapability): { sourceType: WorkbenchSourceType; sourceUri: string; sourceRef?: string } | undefined {
+  if (!capability) return undefined;
+  const repos = Array.isArray(capability.repositories) ? capability.repositories : [];
+  const primary = repos.find((r) => String(r.status ?? "").toUpperCase() === "ACTIVE") ?? repos[0];
+  const meta = capability.metadata && typeof capability.metadata === "object" ? capability.metadata : {};
+  const sourceUri =
+    cleanText(primary?.repoUrl) ??
+    cleanText(capability.repoUrl) ??
+    cleanText(capability.sourceUri) ??
+    cleanText((meta as Record<string, unknown>).repoUrl) ??
+    cleanText((meta as Record<string, unknown>).githubUrl) ??
+    cleanText((meta as Record<string, unknown>).sourceUri);
+  if (!sourceUri) return undefined;
+  const repoType = cleanText(primary?.repositoryType) ?? cleanText(capability.sourceType);
+  const sourceType: WorkbenchSourceType = repoType?.toUpperCase() === "LOCAL" || sourceUri.startsWith("local://") ? "localdir" : "github";
+  return { sourceType, sourceUri, sourceRef: cleanText(primary?.defaultBranch) ?? cleanText(capability.defaultBranch) };
+}
+
 export function WorkbenchConsole({ mode = "cockpit", view }: { mode?: WorkbenchMode; view?: WorkbenchView }) {
   const router = useRouter();
   const search = useSearchParams();
   const activeView = view ?? (mode === "theater" ? "loop-theater" : "cockpit");
   const copy = viewCopy[activeView];
   const explicitSessionId = search.get("sessionId") ?? undefined;
-  // A CALL_WORKFLOW node launches the workbench with the run's workflowInstanceId
-  // (and no sessionId). Bind to that run's blueprint session so the workbench
-  // opens scoped to the right run instead of the most-recent one.
-  const launchInstanceId = search.get("workflowInstanceId") ?? undefined;
+  // A CALL_WORKFLOW node launches the workbench with the run's full launch payload
+  // (workflowInstanceId/workflowNodeId, goal, loopDefinition, agent bindings) and
+  // no sessionId. Parse it so we can bind to that run's session — or, if none has
+  // been created yet, pre-fill the intake form and create one scoped to the run.
+  const launch = useMemo(() => readLaunchDefaults(search), [search]);
+  const workflowScoped = Boolean((launch.workflowInstanceId || launch.browserRunId) && launch.workflowNodeId);
   const { data: sessions = [], error: sessionsError, isLoading: loadingSessions, mutate: reloadSessions } = useSWR("blueprint-sessions", fetchSessions, { refreshInterval: 12000 });
-  const matchedByInstance = launchInstanceId ? sessions.find((s) => s.workflowInstanceId === launchInstanceId)?.id : undefined;
-  const selectedId = explicitSessionId ?? matchedByInstance ?? sessions[0]?.id;
+  const matchedSession = workflowScoped ? sessions.find((s) => sessionMatchesLaunch(s, launch)) : undefined;
+  // When scoped to a run, never fall back to the most-recent session — show that
+  // run's session, or leave it unselected so the pre-filled intake can create it.
+  const selectedId = explicitSessionId ?? matchedSession?.id ?? (workflowScoped ? undefined : sessions[0]?.id);
   const { data: session, error: sessionError, isLoading: loadingSession, mutate: reloadSession } = useSWR(selectedId ? ["blueprint-session", selectedId] : null, () => fetchSession(selectedId as string), { refreshInterval: 8000 });
   const activeStage = currentStage(session);
   const activeStageKey = session?.currentStageKey ?? activeStage?.key;
@@ -307,21 +431,51 @@ export function WorkbenchConsole({ mode = "cockpit", view }: { mode?: WorkbenchM
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  // Intake fields seed from the launch URL (if present) so a CALL_WORKFLOW open
+  // lands on a pre-filled intake; the operator can still edit before creating.
   const [createOpen, setCreateOpen] = useState(false);
-  const [createGoal, setCreateGoal] = useState("");
-  const [createSourceType, setCreateSourceType] = useState<WorkbenchSourceType>("github");
-  const [createSourceUri, setCreateSourceUri] = useState("");
-  const [createSourceRef, setCreateSourceRef] = useState("");
-  const [createCapabilityId, setCreateCapabilityId] = useState("");
-  const [createGateMode, setCreateGateMode] = useState<WorkbenchGateMode>("manual");
-  const [architectAgentTemplateId, setArchitectAgentTemplateId] = useState("");
-  const [developerAgentTemplateId, setDeveloperAgentTemplateId] = useState("");
-  const [qaAgentTemplateId, setQaAgentTemplateId] = useState("");
+  const [createGoal, setCreateGoal] = useState(launch.goal ?? "");
+  const [createSourceType, setCreateSourceType] = useState<WorkbenchSourceType>(launch.sourceType ?? "github");
+  const [createSourceUri, setCreateSourceUri] = useState(launch.sourceUri ?? "");
+  const [createSourceRef, setCreateSourceRef] = useState(launch.sourceRef ?? "");
+  const [createCapabilityId, setCreateCapabilityId] = useState(launch.capabilityId ?? "");
+  const [createGateMode, setCreateGateMode] = useState<WorkbenchGateMode>(launch.gateMode ?? "manual");
+  const [architectAgentTemplateId, setArchitectAgentTemplateId] = useState(launch.architectAgentTemplateId ?? "");
+  const [developerAgentTemplateId, setDeveloperAgentTemplateId] = useState(launch.developerAgentTemplateId ?? "");
+  const [qaAgentTemplateId, setQaAgentTemplateId] = useState(launch.qaAgentTemplateId ?? "");
 
   const stages = session?.loopDefinition?.stages ?? [];
   const attemptsByStage = useMemo(() => new Map(stages.map((stage) => [stage.key, latestAttemptFor(session, stage.key)])), [session, stages]);
   const artifacts = session?.artifacts ?? [];
   const activeMessages = activeStageKey ? session?.stageChats?.[activeStageKey] ?? [] : [];
+
+  // CALL_WORKFLOW launched this for a run that has no blueprint session yet —
+  // open the pre-filled intake once so the operator can create it (bound to the
+  // run, with the launched loop) instead of seeing an empty/most-recent session.
+  const launchIntakeOpenedRef = useRef(false);
+  useEffect(() => {
+    if (launchIntakeOpenedRef.current) return;
+    if (!workflowScoped || loadingSessions || explicitSessionId) return;
+    if (matchedSession) return;
+    launchIntakeOpenedRef.current = true;
+    setCreateOpen(true);
+  }, [workflowScoped, loadingSessions, explicitSessionId, matchedSession]);
+
+  // Fill the intake source from the launching capability's default repo when the
+  // launch URL omitted it, so a CALL_WORKFLOW open needs no manual source entry.
+  const needsSourceHydration = workflowScoped && !launch.sourceUri && Boolean(createCapabilityId) && !matchedSession;
+  const { data: lookupCapabilities = [] } = useSWR(needsSourceHydration ? "wb-lookup-capabilities" : null, fetchLookupCapabilities, { revalidateOnFocus: false });
+  const sourceHydratedRef = useRef(false);
+  useEffect(() => {
+    if (sourceHydratedRef.current || !needsSourceHydration) return;
+    const capability = lookupCapabilities.find((c) => c.id === createCapabilityId || c.capability_id === createCapabilityId);
+    const src = capabilityDefaultSource(capability);
+    if (!src) return;
+    sourceHydratedRef.current = true;
+    setCreateSourceUri((curr) => curr || src.sourceUri);
+    setCreateSourceType(src.sourceType);
+    if (src.sourceRef) setCreateSourceRef((curr) => curr || src.sourceRef!);
+  }, [needsSourceHydration, lookupCapabilities, createCapabilityId]);
 
   function selectSession(id: string) {
     const next = new URLSearchParams(search.toString());
@@ -366,6 +520,17 @@ export function WorkbenchConsole({ mode = "cockpit", view }: { mode?: WorkbenchM
         developerAgentTemplateId: developerAgentTemplateId.trim() || undefined,
         qaAgentTemplateId: qaAgentTemplateId.trim() || undefined,
         gateMode: createGateMode,
+        // Bind the session to the launching run and run its launched SDLC loop
+        // (carries the per-stage product-owner/security/devops agent bindings).
+        ...(workflowScoped
+          ? {
+              workflowInstanceId: launch.workflowInstanceId,
+              browserRunId: launch.browserRunId,
+              workflowNodeId: launch.workflowNodeId,
+              phaseId: launch.phaseId,
+              loopDefinition: launch.loopDefinition,
+            }
+          : {}),
       });
       setCreateOpen(false);
       setCreateGoal("");
