@@ -639,6 +639,8 @@ type CopilotExportNode = {
   nodeType: string
   config: unknown
   createdAt: Date
+  status?: string
+  completedAt?: Date | null
 }
 
 type CopilotExportStage = {
@@ -648,6 +650,7 @@ type CopilotExportStage = {
   nodeType: string
   role: string
   prompt: string
+  status?: string
 }
 
 function yamlString(value: unknown): string {
@@ -916,16 +919,64 @@ PY
 `
 }
 
-function buildCopilotWorkflowExport(instance: { id: string; name: string; context: unknown }, nodes: CopilotExportNode[], edges: Array<{ sourceNodeId: string; targetNodeId: string }>) {
+type CompletedPhaseData = {
+  status?: string
+  artifacts: Array<{ name: string; type: string; status: string; content: string }>
+  outputs: Array<{ type: string; summary?: string; changedPaths?: string[]; commitSha?: string; diff?: string }>
+}
+
+// Compose the FULL Copilot prompt (agent role + repo world model + work-item
+// description + task) for one stage via context-fabric — the same prompt the
+// governed run feeds `copilot -p`. Best-effort: the export must never fail on a
+// compose error, so we fall back to the raw task.
+async function composeCopilotStagePrompt(input: {
+  task: string; stageKey?: string; agentRole?: string; capabilityId?: string | null
+  vars: Record<string, unknown>; runContext: Record<string, unknown>
+}): Promise<string> {
+  try {
+    const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/api/v1/compose-copilot-prompt`
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: contextFabricServiceHeaders({ 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        task: input.task,
+        stage_key: input.stageKey,
+        agent_role: input.agentRole,
+        capability_id: input.capabilityId ?? undefined,
+        vars: input.vars,
+        run_context: input.runContext,
+      }),
+    })
+    if (!resp.ok) return input.task
+    const body = (await resp.json()) as { prompt?: string }
+    return typeof body?.prompt === 'string' && body.prompt.trim() ? body.prompt : input.task
+  } catch {
+    return input.task
+  }
+}
+
+function consumableContent(formData: unknown): string {
+  const fd = (formData ?? {}) as Record<string, unknown>
+  if (typeof fd.content === 'string') return fd.content
+  return JSON.stringify(fd, null, 2)
+}
+
+// Ordered Copilot stages + the run-level header fields. Shared by the loader (to
+// know which stages to compose / mark done) and the YAML builder, so stage
+// selection happens exactly once.
+function copilotStagesFromNodes(
+  instance: { context: unknown },
+  nodes: CopilotExportNode[],
+  edges: Array<{ sourceNodeId: string; targetNodeId: string }>,
+): { stages: CopilotExportStage[]; repo: string; story: string; workCode: string; vars: Record<string, unknown> } {
   const vars = (((instance.context ?? {}) as Record<string, unknown>)._vars ?? {}) as Record<string, unknown>
   const cfgOf = (n: { config: unknown }) => (n.config ?? {}) as Record<string, unknown>
   const interpolate = (s: string) => s.replace(/\{\{\s*instance\.vars\.(\w+)\s*\}\}/g, (_m, k) => String(vars[k] ?? ''))
   const repo = String(vars.repoUrl ?? nodes.map(cfgOf).find(c => c.sourceUri)?.sourceUri ?? '')
   const story = String(vars.story ?? vars.workItemDescription ?? '')
   const workCode = String(vars.workCode ?? '')
-  const orderedNodes = topologicalCopilotNodes(nodes, edges)
-  const stages: CopilotExportStage[] = orderedNodes
-    .map(n => {
+  const stages: CopilotExportStage[] = topologicalCopilotNodes(nodes, edges)
+    .map((n): CopilotExportStage | null => {
       const c = cfgOf(n)
       const task = typeof c.task === 'string' ? interpolate(c.task) : ''
       if (!task.trim()) return null
@@ -939,9 +990,31 @@ function buildCopilotWorkflowExport(instance: { id: string; name: string; contex
         nodeType: n.nodeType,
         role: String(c.governedAgentRole ?? ''),
         prompt: task,
+        status: n.status,
       }
     })
     .filter((stage): stage is CopilotExportStage => Boolean(stage))
+  return { stages, repo, story, workCode, vars }
+}
+
+function buildCopilotWorkflowExport(
+  instance: { id: string; name: string; context: unknown },
+  computed: { stages: CopilotExportStage[]; repo: string; story: string; workCode: string },
+  extras: { fromPhase?: string; composedByNodeId?: Map<string, string>; completedByNodeId?: Map<string, CompletedPhaseData> } = {},
+) {
+  const { repo, story, workCode } = computed
+  const composed = extras.composedByNodeId ?? new Map<string, string>()
+  const completedData = extras.completedByNodeId ?? new Map<string, CompletedPhaseData>()
+  // Split: stages before `fromPhase` are DONE context; `fromPhase` onward is the
+  // runnable playbook. Absent/unknown fromPhase → the whole run is runnable.
+  const foundIdx = extras.fromPhase
+    ? computed.stages.findIndex(s => s.key === extras.fromPhase || s.nodeId === extras.fromPhase)
+    : 0
+  const startIdx = foundIdx < 0 ? 0 : foundIdx
+  const completedStages = computed.stages.slice(0, startIdx)
+  const stages = computed.stages
+    .slice(startIdx)
+    .map(s => ({ ...s, prompt: composed.get(s.nodeId) ?? s.prompt }))
   const exportedAt = new Date().toISOString()
   const filenameBase = `copilot-sdlc-${slugForFile(workCode || instance.name || instance.id.slice(0, 8))}`
   const workflow = {
@@ -951,6 +1024,7 @@ function buildCopilotWorkflowExport(instance: { id: string; name: string; contex
       runId: instance.id,
       name: instance.name,
       workItem: workCode || null,
+      startPhase: extras.fromPhase ?? (stages[0]?.key ?? null),
       exportedAt,
     },
     platform: {
@@ -965,9 +1039,12 @@ function buildCopilotWorkflowExport(instance: { id: string; name: string; contex
   }
   const script = buildCopilotRunnerScript(workflow)
   const yaml: string[] = [
-    '# Singularity -> Copilot workflow export',
+    '# Singularity -> Copilot handoff. Continue this SDLC on your own Copilot CLI:',
+    '#   `completed` = phases already done (full artifacts + diffs), for context.',
+    '#   `stages`    = phases to run, starting at the phase you exported from;',
+    '#                 run each:  copilot -p "<prompt>" --allow-all   (in order).',
     '#',
-    '# Run from a cloned repo with:',
+    '# Or drive it end-to-end from a cloned repo:',
     '#   export SINGULARITY_TOKEN="<platform bearer token>"',
     '#   export SINGULARITY_PLATFORM_URL="http://localhost:5180"',
     `#   curl -L "$SINGULARITY_PLATFORM_URL/api/workgraph/workflow-instances/${instance.id}/export/copilot-runner.sh" -H "Authorization: Bearer $SINGULARITY_TOKEN" | bash`,
@@ -979,6 +1056,7 @@ function buildCopilotWorkflowExport(instance: { id: string; name: string; contex
     `  name: ${yamlString(instance.name)}`,
     `  exportedAt: ${yamlString(exportedAt)}`,
   ]
+  if (extras.fromPhase) yaml.push(`  startPhase: ${yamlString(extras.fromPhase)}`)
   if (workCode) yaml.push(`  workItem: ${yamlString(workCode)}`)
   yaml.push(
     'platform:',
@@ -989,6 +1067,46 @@ function buildCopilotWorkflowExport(instance: { id: string; name: string; contex
   )
   if (story) {
     yaml.push('story: |', yamlBlock(story, 2))
+  }
+  // ── completed phases — context only (full artifacts + diffs) ─────────────
+  yaml.push('completed:')
+  if (!completedStages.length) {
+    yaml.push('  []')
+  } else {
+    for (const stage of completedStages) {
+      const data = completedData.get(stage.nodeId)
+      yaml.push(`  - key: ${yamlString(stage.key)}`)
+      yaml.push(`    label: ${yamlString(stage.label)}`)
+      if (stage.role) yaml.push(`    role: ${yamlString(stage.role)}`)
+      yaml.push(`    status: ${yamlString(data?.status ?? stage.status ?? 'COMPLETED')}`)
+      const artifacts = data?.artifacts ?? []
+      yaml.push('    artifacts:')
+      if (!artifacts.length) {
+        yaml.push('      []')
+      } else {
+        for (const a of artifacts) {
+          yaml.push(`      - name: ${yamlString(a.name)}`)
+          yaml.push(`        type: ${yamlString(a.type)}`)
+          yaml.push(`        status: ${yamlString(a.status)}`)
+          yaml.push('        content: |')
+          yaml.push(yamlBlock(a.content, 10))
+        }
+      }
+      const outputs = data?.outputs ?? []
+      if (outputs.length) {
+        yaml.push('    outputs:')
+        for (const o of outputs) {
+          yaml.push(`      - type: ${yamlString(o.type)}`)
+          if (o.summary) { yaml.push('        summary: |'); yaml.push(yamlBlock(o.summary, 10)) }
+          if (o.commitSha) yaml.push(`        commitSha: ${yamlString(o.commitSha)}`)
+          if (o.changedPaths?.length) {
+            yaml.push('        changedPaths:')
+            for (const p of o.changedPaths) yaml.push(`          - ${yamlString(p)}`)
+          }
+          if (o.diff) { yaml.push('        diff: |'); yaml.push(yamlBlock(o.diff, 10)) }
+        }
+      }
+    }
   }
   yaml.push('stages:')
   if (!stages.length) {
@@ -1017,13 +1135,13 @@ function buildCopilotWorkflowExport(instance: { id: string; name: string; contex
   return { yaml: `${yaml.join('\n')}\n`, script, filenameBase, stageCount: stages.length }
 }
 
-async function loadCopilotExportData(id: string) {
+async function loadCopilotExportData(id: string, opts: { fromPhase?: string } = {}) {
   const [instance, nodes, edges] = await Promise.all([
-    prisma.workflowInstance.findUnique({ where: { id }, select: { id: true, name: true, context: true } }),
+    prisma.workflowInstance.findUnique({ where: { id }, select: { id: true, name: true, context: true, templateId: true } }),
     prisma.workflowNode.findMany({
       where: { instanceId: id },
       orderBy: { createdAt: 'asc' },
-      select: { id: true, label: true, nodeType: true, config: true, createdAt: true },
+      select: { id: true, label: true, nodeType: true, config: true, createdAt: true, status: true, completedAt: true },
     }),
     prisma.workflowEdge.findMany({
       where: { instanceId: id },
@@ -1031,7 +1149,76 @@ async function loadCopilotExportData(id: string) {
     }),
   ])
   if (!instance) return null
-  return buildCopilotWorkflowExport(instance, nodes.map(n => ({ ...n, nodeType: String(n.nodeType) })), edges)
+
+  const exportNodes: CopilotExportNode[] = nodes.map(n => ({ ...n, nodeType: String(n.nodeType), status: String(n.status) }))
+  const computed = copilotStagesFromNodes(instance, exportNodes, edges)
+
+  // Split at fromPhase: before = done (artifacts + diffs); from there = runnable.
+  const foundIdx = opts.fromPhase
+    ? computed.stages.findIndex(s => s.key === opts.fromPhase || s.nodeId === opts.fromPhase)
+    : 0
+  const startIdx = foundIdx < 0 ? 0 : foundIdx
+  const completedStages = computed.stages.slice(0, startIdx)
+  const todoStages = computed.stages.slice(startIdx)
+
+  // Capability id grounds the composed prompt (repo world-model lookup).
+  const workflow = instance.templateId
+    ? await prisma.workflow.findUnique({ where: { id: instance.templateId }, select: { capabilityId: true } })
+    : null
+  const capabilityId = workflow?.capabilityId ?? null
+  const runContext: Record<string, unknown> = {
+    workflow_instance_id: instance.id,
+    capability_id: capabilityId ?? undefined,
+    work_item_code: computed.workCode || undefined,
+    source_type: 'github',
+    source_uri: computed.repo || undefined,
+  }
+
+  // Compose the FULL prompt for every runnable phase (parallel, best-effort).
+  const composedByNodeId = new Map<string, string>()
+  await Promise.all(todoStages.map(async s => {
+    composedByNodeId.set(s.nodeId, await composeCopilotStagePrompt({
+      task: s.prompt, stageKey: s.key, agentRole: s.role, capabilityId, vars: computed.vars, runContext,
+    }))
+  }))
+
+  // Completed phases: full artifacts (Consumables) + outputs (summary/diff/paths).
+  const completedByNodeId = new Map<string, CompletedPhaseData>()
+  if (completedStages.length) {
+    const completedNodeIds = completedStages.map(s => s.nodeId)
+    const [consumables, agentRuns] = await Promise.all([
+      prisma.consumable.findMany({
+        where: { instanceId: id, nodeId: { in: completedNodeIds } },
+        select: { name: true, type: true, status: true, nodeId: true, formData: true },
+      }),
+      prisma.agentRun.findMany({
+        where: { instanceId: id, nodeId: { in: completedNodeIds } },
+        select: { nodeId: true, outputs: { select: { outputType: true, rawContent: true, structuredPayload: true } } },
+      }),
+    ])
+    for (const stage of completedStages) {
+      const artifacts = consumables
+        .filter(c => c.nodeId === stage.nodeId)
+        .map(c => ({ name: c.name, type: String(c.type), status: String(c.status), content: consumableContent(c.formData) }))
+      const outputs: CompletedPhaseData['outputs'] = []
+      for (const run of agentRuns.filter(r => r.nodeId === stage.nodeId)) {
+        for (const o of run.outputs) {
+          const sp = (o.structuredPayload ?? {}) as Record<string, unknown>
+          outputs.push({
+            type: o.outputType,
+            summary: typeof sp.summary === 'string' ? sp.summary : (o.rawContent ?? undefined),
+            changedPaths: Array.isArray(sp.changedPaths) ? sp.changedPaths.map(String) : undefined,
+            commitSha: typeof sp.workspaceCommitSha === 'string' ? sp.workspaceCommitSha
+              : (typeof sp.commitSha === 'string' ? sp.commitSha : undefined),
+            diff: typeof sp.diff === 'string' ? sp.diff : undefined,
+          })
+        }
+      }
+      completedByNodeId.set(stage.nodeId, { status: stage.status, artifacts, outputs })
+    }
+  }
+
+  return buildCopilotWorkflowExport(instance, computed, { fromPhase: opts.fromPhase, composedByNodeId, completedByNodeId })
 }
 
 // Export the run as a portable Copilot workflow YAML. The YAML includes an
@@ -1040,8 +1227,9 @@ async function loadCopilotExportData(id: string) {
 workflowInstancesRouter.get('/:id/export/copilot-yaml', async (req, res, next) => {
   try {
     const id = req.params.id as string
+    const fromPhase = typeof req.query.fromPhase === 'string' && req.query.fromPhase.trim() ? req.query.fromPhase.trim() : undefined
     await assertInstancePermission(req.user!.userId, id, 'view')
-    const exported = await loadCopilotExportData(id)
+    const exported = await loadCopilotExportData(id, { fromPhase })
     if (!exported) return res.status(404).json({ error: 'run not found' })
     res.setHeader('Content-Type', 'application/x-yaml')
     res.setHeader('Content-Disposition', `attachment; filename="${exported.filenameBase}.yaml"`)
@@ -1054,8 +1242,9 @@ workflowInstancesRouter.get('/:id/export/copilot-yaml', async (req, res, next) =
 workflowInstancesRouter.get('/:id/export/copilot-runner.sh', async (req, res, next) => {
   try {
     const id = req.params.id as string
+    const fromPhase = typeof req.query.fromPhase === 'string' && req.query.fromPhase.trim() ? req.query.fromPhase.trim() : undefined
     await assertInstancePermission(req.user!.userId, id, 'view')
-    const exported = await loadCopilotExportData(id)
+    const exported = await loadCopilotExportData(id, { fromPhase })
     if (!exported) return res.status(404).json({ error: 'run not found' })
     res.setHeader('Content-Type', 'text/x-shellscript; charset=utf-8')
     res.setHeader('Content-Disposition', `attachment; filename="${exported.filenameBase}.sh"`)
