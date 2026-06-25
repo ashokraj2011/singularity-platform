@@ -312,7 +312,7 @@ async def runtime_connect(ws: WebSocket) -> None:
     except Exception as err:
         log.warning("runtime WS error user=%s runtime=%s err=%s", user_id, runtime_id, err)
     finally:
-        await REGISTRY.deregister(user_id, runtime_id)
+        await REGISTRY.deregister(user_id, runtime_id, conn)
 
 
 # ── Periodic stale-connection sweep (R3) ───────────────────────────────────

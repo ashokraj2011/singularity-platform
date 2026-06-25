@@ -1996,6 +1996,8 @@ async def compose_copilot_prompt_endpoint(
         run_context["tenant_id"] = eff_tenant
     from .governed.copilot_executor import compose_copilot_prompt, interpolate_task
     resolved = interpolate_task(req.task, req.vars)
+    degraded = False
+    warning: Optional[str] = None
     try:
         prompt = await compose_copilot_prompt(
             stage_key=req.stage_key,
@@ -2010,7 +2012,15 @@ async def compose_copilot_prompt_endpoint(
         import logging
         logging.getLogger("context_api.compose_copilot").warning("compose-copilot-prompt failed: %s", exc)
         prompt = resolved
-    return {"prompt": prompt or resolved, "resolved_task": resolved}
+        # Finding #11 — report the fallback instead of returning it as a clean success, so
+        # the caller can warn the user the handoff lacks composed context.
+        degraded = True
+        warning = f"prompt composition failed: {exc}"
+    if not prompt or not str(prompt).strip():
+        prompt = resolved
+        degraded = True
+        warning = warning or "composer produced an empty prompt; using raw task"
+    return {"prompt": prompt or resolved, "resolved_task": resolved, "degraded": degraded, "warning": warning}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

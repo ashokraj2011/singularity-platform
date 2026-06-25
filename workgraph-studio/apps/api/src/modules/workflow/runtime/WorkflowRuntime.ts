@@ -184,62 +184,74 @@ export async function advance(
   })
   await publishOutbox('WorkflowNode', completedNodeId, 'NodeCompleted', { instanceId, nodeId: completedNodeId })
 
-  // Fire on_complete attachments
-  await processAttachments(completedNode, instance, 'on_complete', actorId)
-
-  // 2. Merge output into instance context. Apply node's outputArtifacts bindingPath
-  // so well-known artifacts land at typed paths.
-  const currentContext = (instance.context ?? {}) as Record<string, unknown>
-  const mergedContext: Record<string, unknown> = { ...currentContext, ...output }
-  applyOutputBindings(mergedContext, completedNode, output)
-  applyGlobalAssignments(mergedContext, completedNode)
-
-  // Gate: if instance is not ACTIVE, queue this advance and stop.
-  // resume() will replay queued advances when the instance is reactivated.
-  if (instance.status !== 'ACTIVE') {
-    const pending = Array.isArray(mergedContext._pendingAdvance)
-      ? (mergedContext._pendingAdvance as PendingAdvance[])
-      : []
-    pending.push({ nodeId: completedNodeId })
-    mergedContext._pendingAdvance = pending
-    await prisma.workflowInstance.update({
+  // 2. Merge output into the instance context — atomically. Finding #1: lock the instance
+  // row, RE-READ the freshest context (not the stale snapshot from the top of advance()),
+  // merge, and persist inside one short transaction so two parallel branch completions
+  // can't clobber each other's output (lost update). Node execution stays OUTSIDE the lock.
+  const { mergedContext, queued } = await prisma.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<Array<{ context: unknown; status: string }>>`
+      SELECT "context", "status" FROM "workflow_instances" WHERE "id" = ${instanceId} FOR UPDATE`
+    const fresh = (rows[0]?.context ?? {}) as Record<string, unknown>
+    const status = rows[0]?.status ?? instance.status
+    const merged: Record<string, unknown> = { ...fresh, ...output }
+    applyOutputBindings(merged, completedNode, output)
+    applyGlobalAssignments(merged, completedNode)
+    // Gate: if the instance is not ACTIVE, queue this advance; resume() replays it.
+    const isQueued = status !== 'ACTIVE'
+    if (isQueued) {
+      const pending = Array.isArray(merged._pendingAdvance)
+        ? (merged._pendingAdvance as PendingAdvance[])
+        : []
+      pending.push({ nodeId: completedNodeId })
+      merged._pendingAdvance = pending
+    }
+    await tx.workflowInstance.update({
       where: { id: instanceId },
-      data: { context: mergedContext as unknown as Prisma.InputJsonValue },
+      data: { context: merged as unknown as Prisma.InputJsonValue },
     })
-    return
-  }
-
-  await prisma.workflowInstance.update({
-    where: { id: instanceId },
-    data: { context: mergedContext as unknown as Prisma.InputJsonValue },
+    return { mergedContext: merged, queued: isQueued }
   })
 
+  // Finding #6 — fire on_complete attachments AFTER the merged context is persisted, with
+  // the refreshed context, so attachments that read an output binding or a newly-produced
+  // variable (event emission, CALL_WORKFLOW, data sinks) see this node's output.
+  const mergedInstance = { ...instance, context: mergedContext as unknown as typeof instance.context }
+  await processAttachments(completedNode, mergedInstance, 'on_complete', actorId)
+
+  if (queued) return
+
   // 3 + 4. Resolve next nodes and activate them
-  await activateDownstream(instance, completedNode, mergedContext, actorId)
+  await activateDownstream(mergedInstance, completedNode, mergedContext, actorId)
 
   // 5. Check for instance completion
   if (await isComplete(instance)) {
     const completedAt = new Date()
-    await prisma.workflowInstance.update({
-      where: { id: instanceId },
+    // Finding #3 — atomically claim the terminal transition; only the caller whose update
+    // actually flips the status (count === 1) runs the completion side effects, so two
+    // converging terminal branches can't double-emit the receipt, outbox event, learning
+    // record, parent CALL_WORKFLOW advance, or WorkItem completion.
+    const claim = await prisma.workflowInstance.updateMany({
+      where: { id: instanceId, status: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } },
       data: { status: 'COMPLETED', completedAt },
     })
-    const eventId = await logEvent('WorkflowCompleted', 'WorkflowInstance', instanceId, actorId)
-    await createReceipt('WORKFLOW_COMPLETED', 'WorkflowInstance', instanceId, {
-      instanceId,
-      completedAt: completedAt.toISOString(),
-    }, eventId)
-    await publishOutbox('WorkflowInstance', instanceId, 'WorkflowCompleted', { instanceId })
-    void recordRunLearning(instanceId, 'COMPLETED')
-    const completedInstance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
-    await handleWorkItemChildCompletion(completedInstance, actorId)
+    if (claim.count === 1) {
+      const eventId = await logEvent('WorkflowCompleted', 'WorkflowInstance', instanceId, actorId)
+      await createReceipt('WORKFLOW_COMPLETED', 'WorkflowInstance', instanceId, {
+        instanceId,
+        completedAt: completedAt.toISOString(),
+      }, eventId)
+      await publishOutbox('WorkflowInstance', instanceId, 'WorkflowCompleted', { instanceId })
+      void recordRunLearning(instanceId, 'COMPLETED')
+      const completedInstance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
+      await handleWorkItemChildCompletion(completedInstance, actorId)
 
-    // If this instance is a child, advance the parent's CALL_WORKFLOW node.
-    if (instance.parentInstanceId && instance.parentNodeId) {
-      const parentCtx = (instance.context ?? {}) as Record<string, unknown>
-      await advance(instance.parentInstanceId, instance.parentNodeId, {
-        _childCompleted: { instanceId, context: parentCtx },
-      }, actorId)
+      // If this instance is a child, advance the parent's CALL_WORKFLOW node.
+      if (instance.parentInstanceId && instance.parentNodeId) {
+        const parentCtx = (instance.context ?? {}) as Record<string, unknown>
+        await advance(instance.parentInstanceId, instance.parentNodeId, {
+          _childCompleted: { instanceId, context: parentCtx },
+        }, actorId)
+      }
     }
   }
 }
@@ -257,14 +269,15 @@ async function activateDownstream(
   const nextNodes = await resolveNextNodes(instance, completedNode, outgoing, context)
 
   for (const nextNode of nextNodes) {
-    // Skip if already non-pending (race-safety)
-    const fresh = await prisma.workflowNode.findUnique({ where: { id: nextNode.id } })
-    if (!fresh || fresh.status !== 'PENDING') continue
-
-    await prisma.workflowNode.update({
-      where: { id: nextNode.id },
+    // Finding #2 — atomically claim PENDING→ACTIVE. Only the branch whose conditional
+    // update actually flips the row (count === 1) goes on to execute the node, so two
+    // converging branch completions can't both launch it (duplicate agent runs, approvals,
+    // tools, WorkItems, or consumables).
+    const claimed = await prisma.workflowNode.updateMany({
+      where: { id: nextNode.id, status: 'PENDING' },
       data: { status: 'ACTIVE', startedAt: new Date() },
     })
+    if (claimed.count !== 1) continue
 
     await prisma.workflowMutation.create({
       data: {
@@ -338,6 +351,11 @@ export async function startInstance(instanceId: string, actorId?: string): Promi
     // START nodes are pass-through: advance immediately so downstream activates.
     if (node.nodeType === 'START') {
       await advance(instanceId, node.id, (instance.context ?? {}) as Record<string, unknown>, actorId)
+    } else {
+      // Finding #4 — a non-START entry node (root AGENT_TASK / HUMAN_TASK / WORKBENCH_TASK,
+      // etc.) is executable; dispatch it via the same execution-location gate downstream
+      // activation uses, instead of leaving it ACTIVE but never run, which stalls the run.
+      await executeActivatedNode(node, instance, (instance.context ?? {}) as Record<string, unknown>, actorId)
     }
   }
 

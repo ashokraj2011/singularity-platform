@@ -975,10 +975,14 @@ type CompletedPhaseData = {
 // description + task) for one stage via context-fabric — the same prompt the
 // governed run feeds `copilot -p`. Best-effort: the export must never fail on a
 // compose error, so we fall back to the raw task.
+type ComposedStagePrompt = { prompt: string; degraded: boolean; warning?: string }
+
 async function composeCopilotStagePrompt(input: {
   task: string; stageKey?: string; agentRole?: string; capabilityId?: string | null
   vars: Record<string, unknown>; runContext: Record<string, unknown>
-}): Promise<string> {
+}): Promise<ComposedStagePrompt> {
+  // Finding #10 — bound the call so one stalled CF compose can't hang the whole export.
+  const timeoutMs = Number(process.env.COPILOT_COMPOSE_TIMEOUT_MS ?? 30000)
   try {
     const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/api/v1/compose-copilot-prompt`
     const resp = await fetch(url, {
@@ -992,13 +996,36 @@ async function composeCopilotStagePrompt(input: {
         vars: input.vars,
         run_context: input.runContext,
       }),
+      signal: AbortSignal.timeout(timeoutMs),
     })
-    if (!resp.ok) return input.task
-    const body = (await resp.json()) as { prompt?: string }
-    return typeof body?.prompt === 'string' && body.prompt.trim() ? body.prompt : input.task
-  } catch {
-    return input.task
+    if (!resp.ok) {
+      return { prompt: input.task, degraded: true, warning: `prompt composition failed (HTTP ${resp.status}); using raw task` }
+    }
+    const body = (await resp.json()) as { prompt?: string; degraded?: boolean; warning?: string }
+    // Finding #11 — distinguish a real composed prompt from a silent raw-task fallback,
+    // and propagate CF's own degraded signal (e.g. world-model lookup failed).
+    if (typeof body?.prompt !== 'string' || !body.prompt.trim()) {
+      return { prompt: input.task, degraded: true, warning: 'composer returned an empty prompt; using raw task' }
+    }
+    return { prompt: body.prompt, degraded: Boolean(body.degraded), warning: body.warning }
+  } catch (err) {
+    const warning = err instanceof Error && err.name === 'TimeoutError'
+      ? `prompt composition timed out after ${timeoutMs}ms; using raw task`
+      : `prompt composition error: ${(err as Error).message}; using raw task`
+    return { prompt: input.task, degraded: true, warning }
   }
+}
+
+// Finding #11 — surface degraded prompt composition on the file-download endpoints so the
+// Workbench can warn the user that the handoff fell back to raw tasks (missing agent-role
+// instructions / repo world model / governance) before they rely on it.
+function setComposeWarningHeaders(
+  res: { setHeader: (name: string, value: string) => void },
+  warnings: Array<{ stageKey: string; warning: string }>,
+): void {
+  if (!warnings.length) return
+  res.setHeader('X-Singularity-Compose-Degraded', 'true')
+  res.setHeader('X-Singularity-Compose-Warnings', encodeURIComponent(JSON.stringify(warnings)).slice(0, 3000))
 }
 
 function consumableContent(formData: unknown): string {
@@ -1230,7 +1257,15 @@ async function loadCopilotExportData(id: string, opts: { fromPhase?: string } = 
       task: s.prompt, stageKey: s.key, agentRole: s.role, capabilityId, vars: computed.vars, runContext,
     }),
   )
-  todoStages.forEach((s, i) => composedByNodeId.set(s.nodeId, composedPrompts[i]))
+  // Finding #11 — record which stages fell back to the raw task so the caller can warn the
+  // user instead of shipping a valid-looking handoff that silently lacks composed context.
+  const composeWarnings: Array<{ stageKey: string; warning: string }> = []
+  todoStages.forEach((s, i) => {
+    composedByNodeId.set(s.nodeId, composedPrompts[i].prompt)
+    if (composedPrompts[i].degraded) {
+      composeWarnings.push({ stageKey: s.key, warning: composedPrompts[i].warning ?? 'prompt composition degraded; using raw task' })
+    }
+  })
 
   // Completed phases: full artifacts (Consumables) + outputs (summary/diff/paths).
   const completedByNodeId = new Map<string, CompletedPhaseData>()
@@ -1268,7 +1303,7 @@ async function loadCopilotExportData(id: string, opts: { fromPhase?: string } = 
     }
   }
 
-  return buildCopilotWorkflowExport(instance, computed, { fromPhase: opts.fromPhase, composedByNodeId, completedByNodeId })
+  return { ...buildCopilotWorkflowExport(instance, computed, { fromPhase: opts.fromPhase, composedByNodeId, completedByNodeId }), composeWarnings }
 }
 
 // Export the run as a portable Copilot workflow YAML. The YAML includes an
@@ -1283,6 +1318,7 @@ workflowInstancesRouter.get('/:id/export/copilot-yaml', async (req, res, next) =
     if (!exported) return res.status(404).json({ error: 'run not found' })
     res.setHeader('Content-Type', 'application/x-yaml')
     res.setHeader('Content-Disposition', `attachment; filename="${exported.filenameBase}.yaml"`)
+    setComposeWarningHeaders(res, exported.composeWarnings)
     res.send(exported.yaml)
   } catch (err) {
     next(err)
@@ -1298,6 +1334,7 @@ workflowInstancesRouter.get('/:id/export/copilot-runner.sh', async (req, res, ne
     if (!exported) return res.status(404).json({ error: 'run not found' })
     res.setHeader('Content-Type', 'text/x-shellscript; charset=utf-8')
     res.setHeader('Content-Disposition', `attachment; filename="${exported.filenameBase}.sh"`)
+    setComposeWarningHeaders(res, exported.composeWarnings)
     res.send(exported.script)
   } catch (err) {
     next(err)

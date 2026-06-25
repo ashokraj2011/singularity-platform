@@ -75,16 +75,41 @@ class LaptopRegistry:
                     await existing.ws.close(code=1000, reason="replaced")
                 except Exception:
                     pass
+                # Finding #14 — fail the replaced connection's in-flight calls now.
+                self._fail_pending(existing, "runtime replaced by a new connection")
             by_device[conn.device_id] = conn
 
-    async def deregister(self, user_id: str, device_id: str) -> None:
+    async def deregister(self, user_id: str, device_id: str, conn: Optional[ActiveConnection] = None) -> None:
         async with self._lock:
             by_device = self._by_user.get(user_id)
             if not by_device:
                 return
+            current = by_device.get(device_id)
+            if current is None:
+                return
+            # Finding #13 — identity guard. A reconnect stores the NEW conn under the same
+            # (user_id, device_id) key and closes the OLD socket; the old socket's handler
+            # then runs its finally and calls deregister. Only remove the entry when it is
+            # the SAME connection object, so the old handler can't evict the new connection
+            # from routing (which would leave the runtime live but unreachable).
+            if conn is not None and current is not conn:
+                return
             by_device.pop(device_id, None)
             if not by_device:
                 self._by_user.pop(user_id, None)
+            # Finding #14 — fail this connection's in-flight calls immediately.
+            self._fail_pending(current, "runtime disconnected")
+
+    @staticmethod
+    def _fail_pending(conn: Optional[ActiveConnection], reason: str) -> None:
+        """Finding #14 — reject every pending invoke on a dying connection so callers get
+        an immediate LaptopDisconnected instead of waiting out the full invoke timeout."""
+        if conn is None:
+            return
+        pending, conn.pending = conn.pending, {}
+        for fut in pending.values():
+            if not fut.done():
+                fut.set_exception(LaptopDisconnected(reason))
 
     async def heartbeat(self, user_id: str, device_id: str) -> None:
         async with self._lock:
@@ -155,7 +180,10 @@ class LaptopRegistry:
         tenant_id: str | None,
         capability_tags: list[str] | None,
     ) -> bool:
-        if tenant_id and conn.tenant_id and conn.tenant_id != tenant_id:
+        # Finding #15 — a tenant-scoped request must match the connection's tenant
+        # exactly. A tenantless connection (conn.tenant_id == "") is NOT eligible for
+        # tenant-scoped work; it can only serve tenantless requests.
+        if tenant_id and conn.tenant_id != tenant_id:
             return False
         if frame_type and frame_type not in (conn.supported_frame_types or []):
             return False
@@ -460,11 +488,19 @@ class LaptopRegistry:
                         await conn.ws.close(code=1000, reason="stale heartbeat")
                     except Exception:
                         pass
+                    # Finding #14 — fail in-flight calls instead of letting them wait out
+                    # the full invoke timeout after the runtime has gone stale.
+                    self._fail_pending(conn, "runtime stale (heartbeat timeout)")
 
 
 # ── exceptions ─────────────────────────────────────────────────────────────
 class LaptopNotConnected(Exception):
     """Raised when /execute requires a laptop and none is connected."""
+
+
+class LaptopDisconnected(Exception):
+    """Raised into a pending invoke when its runtime disconnects, is replaced, or is
+    reaped, so the caller fails fast instead of waiting out the full timeout (finding #14)."""
 
 
 class LaptopSendFailed(Exception):
