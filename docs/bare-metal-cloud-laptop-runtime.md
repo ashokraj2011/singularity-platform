@@ -205,6 +205,61 @@ Use the returned user id or JWT `sub` as `<iam-user-id>`.
 
 Run this on the laptop/runtime host.
 
+### One-Command Setup
+
+The recommended laptop operator entrypoint is:
+
+```bash
+bin/mcp-runtime-setup.sh connect \
+  --context-fabric-url http://<cloud-host>:8000 \
+  --iam-user-id <iam-user-id> \
+  --jwt-secret '<same-generated-secret-as-cloud>' \
+  --github-token "$GITHUB_TOKEN" \
+  --anthropic-api-key "$ANTHROPIC_API_KEY"
+```
+
+The script:
+
+- writes GitHub/Copilot runtime settings to gitignored `.env.laptop`
+- writes provider keys to gitignored `.env.llm-secrets`
+- mints or stores `.singularity/laptop-device-token`
+- starts local `llm-gateway` on `:8001`
+- starts local `mcp-server` in Runtime Bridge dial-in mode
+- polls cloud Context Fabric until the runtime appears connected
+- prints the LLM providers and model aliases available from the laptop gateway
+
+For Copilot as an OpenAI-compatible LLM provider, first start the local bridge:
+
+```bash
+node bin/copilot-cli-server.js --port 4141
+```
+
+Then connect the runtime:
+
+```bash
+bin/mcp-runtime-setup.sh connect \
+  --context-fabric-url http://<cloud-host>:8000 \
+  --iam-user-id <iam-user-id> \
+  --jwt-secret '<same-generated-secret-as-cloud>' \
+  --github-token "$GITHUB_TOKEN" \
+  --copilot-token copilot-local \
+  --copilot-base-url http://localhost:4141/v1 \
+  --default-provider copilot \
+  --default-model gpt-4o
+```
+
+Useful follow-ups:
+
+```bash
+bin/mcp-runtime-setup.sh status
+bin/mcp-runtime-setup.sh logs mcp-server
+bin/mcp-runtime-setup.sh logs llm-gateway
+bin/mcp-runtime-setup.sh down
+```
+
+The lower-level manual flow remains below for debugging or for cases where the
+runtime JWT is minted by IAM outside the laptop.
+
 1. Export cloud connection details:
 
 ```bash
