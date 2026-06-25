@@ -26,8 +26,8 @@ Envelope shape (kept identical across services):
 """
 from __future__ import annotations
 
-from typing import Any
-from fastapi import APIRouter, Query
+from typing import Any, Optional
+from fastapi import APIRouter, Header, Query
 
 from . import call_log, events_store
 
@@ -174,11 +174,21 @@ def _envelope_from_event(row: dict[str, Any]) -> dict[str, Any]:
 def get_receipts(
     trace_id: str = Query(..., description="Required — joins events across services"),
     include_events: bool = Query(True, description="Include per-event receipts (LLM, tool, approval, artifact, run.event)"),
+    tenant_id: Optional[str] = Query(None, description="Tenant scope; forced/validated when the service token is tenant-scoped"),
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
 ):
-    call_rows = call_log.list_by_trace(trace_id, limit=200)
+    # Same gate as the /execute read endpoints (lazy import — receipts loads
+    # before execute in main.py): service-token auth + mandatory tenant scope
+    # when the token is tenant-scoped. A global token (default single-box
+    # deploy) is unchanged. Without this, /receipts read any trace's call_log +
+    # events cross-tenant, bypassing the read-endpoint hardening.
+    from .execute import check_execute_service_token, _resolve_read_tenant_scope
+    check_execute_service_token(x_service_token)
+    eff_tenant = _resolve_read_tenant_scope(tenant_id)
+    call_rows = call_log.list_by_trace(trace_id, limit=200, tenant_id=eff_tenant)
     receipts: list[dict[str, Any]] = [_envelope_from_call_log(r) for r in call_rows]
     if include_events:
-        ev_rows = events_store.list_by_trace(trace_id, limit=2000)
+        ev_rows = events_store.list_by_trace(trace_id, limit=2000, tenant_id=eff_tenant)
         receipts.extend(_envelope_from_event(e) for e in ev_rows)
 
     # Sort newest-last so a UI can render a chronological timeline.

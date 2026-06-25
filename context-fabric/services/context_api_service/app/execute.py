@@ -1985,6 +1985,15 @@ async def compose_copilot_prompt_endpoint(
     x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
 ):
     check_execute_service_token(x_service_token)
+    # Authorize the requested tenant against the token's tenant scope BEFORE
+    # grounding a prompt in (or dispatching a code-context build for) a
+    # capability's repo. Mirrors the /execute read-endpoint hardening: a global
+    # token (default deploy) is unchanged; a tenant-scoped token can only
+    # compose within its own tenant(s) — raises 403/400 otherwise.
+    run_context = dict(req.run_context or {})
+    eff_tenant = _resolve_read_tenant_scope(run_context.get("tenant_id") or run_context.get("tenantId"))
+    if eff_tenant:
+        run_context["tenant_id"] = eff_tenant
     from .governed.copilot_executor import compose_copilot_prompt, interpolate_task
     resolved = interpolate_task(req.task, req.vars)
     try:
@@ -1994,7 +2003,7 @@ async def compose_copilot_prompt_endpoint(
             capability_id=req.capability_id,
             resolved_task=resolved,
             vars=req.vars,
-            run_context=req.run_context,
+            run_context=run_context,
             bearer=None,
         )
     except Exception as exc:  # never fail the export — fall back to the raw task

@@ -18,6 +18,7 @@ import { Router } from 'express'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { config } from '../../config'
+import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
 import { requireTenantFromRequest, resolveTenantFromRequest, tenantIsolationStrict } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 
@@ -188,7 +189,10 @@ async function localReceipts(traceId: string, tenantId?: string): Promise<Receip
 async function cfReceipts(traceId: string): Promise<ReceiptEnvelope[]> {
   const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/receipts?trace_id=${encodeURIComponent(traceId)}`
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(5_000) })
+    // CF /receipts is now service-token gated (matches the /execute reads), so
+    // send the service-token header; tenant scope is enforced CF-side from the
+    // token's configured tenants.
+    const res = await fetch(url, { headers: contextFabricServiceHeaders(), signal: AbortSignal.timeout(5_000) })
     if (!res.ok) return []
     const body = await res.json() as { receipts?: ReceiptEnvelope[] }
     return body.receipts ?? []
