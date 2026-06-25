@@ -1027,9 +1027,15 @@ JSON
     || warn "prompt-composer runtime-reader generate had warnings"
 
   info "applying workgraph-api schema…"
+  # `prisma db push` syncs the DECLARATIVE schema (tables/columns/regular indexes). Any
+  # migration carrying RAW SQL db push can't model — partial indexes, RLS functions/policies
+  # — must be psql-applied here too (the Docker path gets these via `prisma migrate deploy`).
+  # These migration files are idempotent, so applying them after db push is safe. Add new
+  # raw-SQL migrations to this list.
   ( cd workgraph-studio/apps/api \
     && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma db push --skip-generate >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260619123000_tenant_rls_policy_scaffold/migration.sql >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260626120000_node_attempt_fence_and_blueprint_key/migration.sql >/dev/null 2>&1 \
     && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma generate >/dev/null 2>&1 ) \
     || warn "workgraph schema push had warnings"
 
