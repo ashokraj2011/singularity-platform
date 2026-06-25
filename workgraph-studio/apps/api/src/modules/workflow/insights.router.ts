@@ -19,6 +19,7 @@ import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
 import { assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { assertWorkflowInstanceTenant } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
+import { resolveRuntimeTenantId } from '../../lib/runtime-tenant'
 import {
   fetchEventsForInstance,
   fetchEventsForTrace,
@@ -75,12 +76,18 @@ insightsRouter.get('/:id/events/stream', async (req: Request, res: Response, nex
       await assertWorkflowInstanceTenant(req, instanceId)
       const found = await prisma.workflowInstance.findUnique({
         where: { id: instanceId },
-        select: { id: true, templateId: true },
+        select: { id: true, templateId: true, context: true },
       })
       if (found) await assertInstancePermission(req.user!.userId, found.id, 'view')
       return found
     })
     if (!instance) return res.status(404).json({ code: 'NOT_FOUND', message: 'Workflow instance not found' })
+
+    // Strict tenant isolation → scope CF reads to the instance's tenant (the
+    // value sent to CF at run time). 'off' mode → undefined → unfiltered.
+    const tenantId = config.TENANT_ISOLATION_MODE === 'strict'
+      ? resolveRuntimeTenantId({ instanceContext: instance.context })
+      : undefined
 
     res.writeHead(200, {
       'content-type': 'text/event-stream',
@@ -102,6 +109,7 @@ insightsRouter.get('/:id/events/stream', async (req: Request, res: Response, nex
         const url = new URL('/execute/events', config.CONTEXT_FABRIC_URL)
         url.searchParams.set('trace_id', traceId)
         url.searchParams.set('limit', '200')
+        if (tenantId) url.searchParams.set('tenant_id', tenantId)
         // M35.4 — log fetch failures and non-2xx responses instead of silently
         // swallowing them. SSE streams that show no events are otherwise
         // indistinguishable from CF being down.

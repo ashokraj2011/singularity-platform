@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
+import { resolveRuntimeTenantId } from '../../lib/runtime-tenant'
 import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
@@ -1687,12 +1688,28 @@ workflowInstancesRouter.post('/pending-executions/:execId/complete', async (req,
 // Same surface for poll (`?since_id=`) and live (SSE) consumers.
 // ─────────────────────────────────────────────────────────────────────
 
+// Under strict tenant isolation, scope CF reads to the instance's tenant — the
+// same value AgentTaskExecutor sends to CF at run time, so the read filter
+// matches stored rows (symmetric). In 'off' mode (default) tenant_id is unset
+// on both the write and read side, so this returns undefined and CF reads stay
+// unfiltered — no behaviour change.
+async function resolveInstanceTenantForCfRead(instanceId: string): Promise<string | undefined> {
+  if (config.TENANT_ISOLATION_MODE !== 'strict') return undefined
+  const inst = await prisma.workflowInstance.findUnique({
+    where: { id: instanceId },
+    select: { context: true },
+  })
+  return resolveRuntimeTenantId({ instanceContext: inst?.context })
+}
+
 // GET /api/workflow-instances/:id/events?since_id=&limit=
 workflowInstancesRouter.get('/:id/events', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'view')
     const url = new URL(`${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/execute/events`)
     url.searchParams.set('run_id', req.params.id)
+    const eventsTenantId = await resolveInstanceTenantForCfRead(req.params.id)
+    if (eventsTenantId) url.searchParams.set('tenant_id', eventsTenantId)
     if (typeof req.query.since_id === 'string') url.searchParams.set('since_id', req.query.since_id)
     if (typeof req.query.since_timestamp === 'string') url.searchParams.set('since_timestamp', req.query.since_timestamp)
     if (typeof req.query.limit === 'string') url.searchParams.set('limit', req.query.limit)
@@ -1719,9 +1736,11 @@ workflowInstancesRouter.get('/:id/events/stream', async (req, res, next) => {
     // We need a trace_id; context-fabric's stream is keyed by trace_id today
     // (whereas /events accepts run_id). Look up the most recent CallLog row
     // for this workflow instance, take its trace_id.
+    const streamTenantId = await resolveInstanceTenantForCfRead(req.params.id)
     const callsUrl = new URL(`${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/execute/calls`)
     callsUrl.searchParams.set('workflow_run_id', req.params.id)
     callsUrl.searchParams.set('limit', '1')
+    if (streamTenantId) callsUrl.searchParams.set('tenant_id', streamTenantId)
     const callsResp = await fetch(callsUrl, {
       headers: contextFabricServiceHeaders(),
       signal: AbortSignal.timeout(10_000),
@@ -1739,6 +1758,7 @@ workflowInstancesRouter.get('/:id/events/stream', async (req, res, next) => {
 
     const sseUrl = new URL(`${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/execute/events/stream`)
     sseUrl.searchParams.set('trace_id', traceId)
+    if (streamTenantId) sseUrl.searchParams.set('tenant_id', streamTenantId)
     if (typeof req.query.since_id === 'string') sseUrl.searchParams.set('since_id', req.query.since_id)
     if (typeof req.query.max_idle_seconds === 'string') sseUrl.searchParams.set('max_idle_seconds', req.query.max_idle_seconds)
     if (typeof req.query.poll_interval_ms === 'string') sseUrl.searchParams.set('poll_interval_ms', req.query.poll_interval_ms)
