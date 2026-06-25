@@ -12,7 +12,6 @@ function inferCurrentApp(pathname: string | null | undefined): string {
   if (pathname.startsWith("/workflows")) return "workflows";
   if (pathname.startsWith("/runs")) return "runs";
   if (pathname.startsWith("/work-items")) return "work-items";
-  if (pathname.startsWith("/workbench")) return "workbench";
   if (pathname.startsWith("/identity")) return "identity";
   if (pathname.startsWith("/operations")) return "operations";
   return "agent-studio";

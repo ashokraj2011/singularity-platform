@@ -67,9 +67,9 @@ const loop = [
   {
     label: "Verify",
     title: "Prove Changes",
-    href: "/workbench/cockpit",
+    href: "/runs",
     icon: FileCheck2,
-    detail: "Workbench runs, governance checks, artifacts, and review",
+    detail: "Run evidence, governance checks, artifacts, and review",
     tone: "#0f766e",
   },
   {

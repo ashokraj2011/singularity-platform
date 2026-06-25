@@ -84,22 +84,6 @@ const menuSections: NavSection[] = [
     ],
   },
   {
-    label: "Workbench Neo",
-    description: "Story-to-delivery workspace",
-    items: [
-      { label: "Workbench Home", href: "/workbench", icon: Wrench },
-      { label: "Cockpit", href: "/workbench/cockpit", icon: Wrench },
-      { label: "Stage Chat", href: "/workbench/stage-chat", icon: Brain },
-      { label: "Loop Theater", href: "/workbench/loop-theater", icon: Play },
-      { label: "Governance", href: "/workbench/governance", icon: ShieldCheck },
-      { label: "Code Review", href: "/workbench/code-review", icon: ClipboardCheck },
-      { label: "Milestones", href: "/workbench/milestones", icon: Route },
-      { label: "Artifacts", href: "/workbench/artifacts", icon: ScrollText },
-      { label: "Audit", href: "/workbench/audit", icon: FileText },
-      { label: "Export", href: "/workbench/export", icon: Package },
-    ],
-  },
-  {
     label: "Identity and Access",
     description: "Users, teams, roles, and capability access",
     items: [

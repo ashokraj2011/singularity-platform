@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Bot, ServerCog, ShieldCheck, Workflow, Wrench } from "lucide-react";
+import { Bot, ServerCog, ShieldCheck, Workflow } from "lucide-react";
 
 export type ControlPlaneApp = {
   id: string;
@@ -53,15 +53,6 @@ export function controlPlaneApps(): ControlPlaneApp[] {
       nativeHref: "/work-items",
       summary: "Capability-scoped work queue, parent delegation, attach workflow, and start.",
       icon: Workflow,
-    },
-    {
-      id: "workbench",
-      label: "Workbench",
-      group: "Delivery",
-      href: "/workbench",
-      nativeHref: "/workbench",
-      summary: "Story-to-delivery stages, artifacts, approvals, terminal, and code review.",
-      icon: Wrench,
     },
     {
       id: "identity",

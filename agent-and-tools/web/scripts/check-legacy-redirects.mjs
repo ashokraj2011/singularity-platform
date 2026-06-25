@@ -90,6 +90,8 @@ const appSwitcherSource = readFileSync(new URL("../src/components/AppSwitcher.ts
 const controlPlaneSource = readFileSync(new URL("../src/lib/controlPlaneApps.ts", import.meta.url), "utf8");
 assert.ok(!controlPlaneSource.includes('id: "foundry"'), "Foundry is temporarily hidden from the app switcher catalog");
 assert.ok(!appSwitcherSource.includes('pathname.startsWith("/foundry")'), "Foundry is temporarily hidden from current-app detection");
+assert.ok(!controlPlaneSource.includes('id: "workbench"'), "Workbench Neo is invoked from workflow and hidden from the app switcher catalog");
+assert.ok(!appSwitcherSource.includes('pathname.startsWith("/workbench")'), "Workbench Neo is invoked from workflow and hidden from current-app detection");
 
 for (const href of new Set([...quotedPathSet(sidebarSource), ...quotedPathSet(controlPlaneSource)])) {
   assert.ok(
