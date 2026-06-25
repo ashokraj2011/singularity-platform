@@ -303,12 +303,16 @@ def get_by_id(call_id: str) -> Optional[dict]:
         return _hydrate(row_to_dict(cur.fetchone()))
 
 
-def list_by_trace(trace_id: str, limit: int = 50) -> list[dict]:
+def list_by_trace(trace_id: str, limit: int = 50, tenant_id: Optional[str] = None) -> list[dict]:
+    sql = "SELECT * FROM call_log WHERE trace_id = ?"
+    params: list = [trace_id]
+    if tenant_id:
+        sql += " AND tenant_id = ?"
+        params.append(tenant_id)
+    sql += " ORDER BY started_at DESC LIMIT ?"
+    params.append(limit)
     with db_conn(DB_TARGET) as conn:
-        cur = conn.execute(
-            "SELECT * FROM call_log WHERE trace_id = ? ORDER BY started_at DESC LIMIT ?",
-            (trace_id, limit),
-        )
+        cur = conn.execute(sql, params)
         return [r for r in (_hydrate(d) for d in rows_to_dicts(cur.fetchall())) if r]
 
 
@@ -325,9 +329,14 @@ def list_by_workflow(workflow_run_id: str, limit: int = 50, tenant_id: Optional[
         return [r for r in (_hydrate(d) for d in rows_to_dicts(cur.fetchall())) if r]
 
 
-def list_recent(limit: int = 50) -> list[dict]:
+def list_recent(limit: int = 50, tenant_id: Optional[str] = None) -> list[dict]:
+    sql = "SELECT * FROM call_log"
+    params: list = []
+    if tenant_id:
+        sql += " WHERE tenant_id = ?"
+        params.append(tenant_id)
+    sql += " ORDER BY started_at DESC LIMIT ?"
+    params.append(limit)
     with db_conn(DB_TARGET) as conn:
-        cur = conn.execute(
-            "SELECT * FROM call_log ORDER BY started_at DESC LIMIT ?", (limit,)
-        )
+        cur = conn.execute(sql, params)
         return [r for r in (_hydrate(d) for d in rows_to_dicts(cur.fetchall())) if r]

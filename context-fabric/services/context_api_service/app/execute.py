@@ -34,7 +34,11 @@ from . import call_log, events_store
 from .audit_gov_emit import emit_audit_event
 from .config import is_production_class_env, settings
 from .governed import placement as _placement
-from .iam_service_token import get_iam_service_token, invalidate_iam_service_token
+from .iam_service_token import (
+    get_iam_service_token,
+    invalidate_iam_service_token,
+    configured_tenant_ids_for_service_token,
+)
 
 # M73 — refactor target modules. Helpers below are thin re-exports of the
 # canonical implementations in execute_modules/. See execute_modules/__init__.py
@@ -98,6 +102,46 @@ def check_execute_service_token(provided: Optional[str]) -> None:
 
 def _check_execute_read_service_token(provided: Optional[str]) -> None:
     check_execute_service_token(provided)
+
+
+def _resolve_read_tenant_scope(requested_tenant_id: Optional[str]) -> Optional[str]:
+    """Tenant filter a read query MUST apply, derived from this service token's
+    configured tenant scope (IAM_SERVICE_TOKEN_TENANT_IDS).
+
+    Safe by construction: a CF instance whose token is scoped to specific
+    tenants can never return another tenant's rows, regardless of what the
+    caller passes — or forgets to pass.
+
+      • token scoped to tenant(s): force-filter to them. A requested tenant_id
+        must be inside the set (else 403); a single configured tenant is
+        applied automatically; multiple configured tenants with no requested
+        tenant_id is ambiguous → 400 (caller must choose).
+      • global/unrestricted token (no configured tenant ids — the default
+        single-box deploy): unchanged — honour an explicit tenant_id when
+        given, else no tenant filter.
+    """
+    allowed = configured_tenant_ids_for_service_token()
+    if not allowed:
+        return requested_tenant_id
+    if requested_tenant_id:
+        if requested_tenant_id not in allowed:
+            raise HTTPException(status_code=403, detail="tenant_id is outside this service token's tenant scope")
+        return requested_tenant_id
+    if len(allowed) == 1:
+        return allowed[0]
+    raise HTTPException(status_code=400, detail="tenant_id is required (service token is scoped to multiple tenants)")
+
+
+def _assert_row_tenant_visible(rec: Optional[dict]) -> None:
+    """By-id reads: hide a row whose tenant is outside the token's scope. Raises
+    404 (not 403) so the existence of another tenant's row isn't revealed."""
+    if not rec:
+        return
+    allowed = configured_tenant_ids_for_service_token()
+    if not allowed:
+        return
+    if rec.get("tenant_id") not in allowed:
+        raise HTTPException(status_code=404, detail="not found")
 
 
 # ── Request/Response models ───────────────────────────────────────────────
@@ -1210,6 +1254,7 @@ async def get_call(call_id: str, x_service_token: Optional[str] = Header(default
     rec = call_log.get_by_id(call_id)
     if not rec:
         raise HTTPException(status_code=404, detail="call not found")
+    _assert_row_tenant_visible(rec)
     return rec
 
 
@@ -1220,11 +1265,12 @@ async def list_calls(trace_id: Optional[str] = None,
                      limit: int = 50,
                      x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")):
     _check_execute_read_service_token(x_service_token)
+    eff_tenant = _resolve_read_tenant_scope(tenant_id)
     if trace_id:
-        return {"items": call_log.list_by_trace(trace_id, limit)}
+        return {"items": call_log.list_by_trace(trace_id, limit, tenant_id=eff_tenant)}
     if workflow_run_id:
-        return {"items": call_log.list_by_workflow(workflow_run_id, limit, tenant_id=tenant_id)}
-    return {"items": call_log.list_recent(limit)}
+        return {"items": call_log.list_by_workflow(workflow_run_id, limit, tenant_id=eff_tenant)}
+    return {"items": call_log.list_recent(limit, tenant_id=eff_tenant)}
 
 
 # ── Persisted MCP events (M9.x) ────────────────────────────────────────────
@@ -1252,16 +1298,17 @@ async def list_events(
     """
     if not trace_id and not run_id:
         raise HTTPException(status_code=400, detail="trace_id or run_id is required")
+    eff_tenant = _resolve_read_tenant_scope(tenant_id)
     if trace_id:
         items = events_store.list_by_trace(trace_id, since_id=since_id,
                                            since_timestamp=since_timestamp, limit=limit,
-                                           tenant_id=tenant_id)
+                                           tenant_id=eff_tenant)
     else:
-        items = events_store.list_by_run(run_id, limit=limit, tenant_id=tenant_id)
+        items = events_store.list_by_run(run_id, limit=limit, tenant_id=eff_tenant)
     return {
         "trace_id": trace_id,
         "run_id": run_id,
-        "tenant_id": tenant_id,
+        "tenant_id": eff_tenant,
         "count": len(items),
         "events": items,
         "tail_id": items[-1]["id"] if items else None,
@@ -1290,13 +1337,16 @@ async def stream_events(
       - final `event: done` after `max_idle_seconds` of no new events
     """
     poll_interval = max(0.1, poll_interval_ms / 1000.0)
+    # Resolve (and authorize) the tenant scope up front so a 403/400 surfaces on
+    # the handshake rather than being swallowed inside the streaming generator.
+    eff_tenant = _resolve_read_tenant_scope(tenant_id)
 
     async def gen():
         cursor_id = since_id
         idle_since = time.time()
         # First flush: anything already there for this trace.
         try:
-            initial = events_store.list_by_trace(trace_id, since_id=cursor_id, limit=1000, tenant_id=tenant_id)
+            initial = events_store.list_by_trace(trace_id, since_id=cursor_id, limit=1000, tenant_id=eff_tenant)
         except Exception:
             initial = []
         for ev in initial:
@@ -1309,7 +1359,7 @@ async def stream_events(
             await asyncio.sleep(poll_interval)
             try:
                 new_rows = events_store.list_by_trace(
-                    trace_id, since_id=cursor_id, limit=200, tenant_id=tenant_id,
+                    trace_id, since_id=cursor_id, limit=200, tenant_id=eff_tenant,
                 )
             except Exception:
                 yield ": db-error\n\n"
@@ -1335,6 +1385,7 @@ async def get_event(event_id: str, x_service_token: Optional[str] = Header(defau
     rec = events_store.get_by_id(event_id)
     if not rec:
         raise HTTPException(status_code=404, detail="event not found")
+    _assert_row_tenant_visible(rec)
     return rec
 
 
@@ -1349,6 +1400,7 @@ async def refresh_events_for_call(call_id: str, x_service_token: Optional[str] =
     rec = call_log.get_by_id(call_id)
     if not rec:
         raise HTTPException(status_code=404, detail="call not found")
+    _assert_row_tenant_visible(rec)
     if not rec.get("mcp_server_id"):
         raise HTTPException(status_code=409, detail="call has no mcp_server_id (failed before MCP)")
     if not rec.get("trace_id"):
