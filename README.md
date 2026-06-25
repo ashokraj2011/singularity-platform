@@ -792,6 +792,10 @@ Normal workflow execution is WebSocket-first. MCP runtimes dial into Context Fab
 
 Direct `MCP_SERVER_URL` and direct `LLM_GATEWAY_URL` from Context Fabric are diagnostics/debug compatibility only. Enable them with `RUNTIME_HTTP_FALLBACK_ENABLED=true`. See [Runtime Dial-In Fabric](docs/runtime-dial-in-fabric.md).
 
+For the office/cloud split where the cloud server runs the platform apps as
+standard bare-metal processes and the laptop runs MCP plus LLM Gateway, use the
+[Bare-Metal Cloud With Laptop MCP and LLM runbook](docs/bare-metal-cloud-laptop-runtime.md).
+
 `context-fabric/services/llm_gateway_service` owns provider/model routing. MCP passes model aliases to its local/colocated gateway; only the gateway can hold provider credentials or open provider URLs. Raw provider/model caller overrides are disabled by default with `ALLOW_CALLER_PROVIDER_OVERRIDE=false`.
 
 The gateway reads two local JSON files:
