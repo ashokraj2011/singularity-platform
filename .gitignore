@@ -90,6 +90,10 @@ pgdata/
 *.log
 logs/
 
+# ── runtime pids (written by the local dev-stack launcher) ─────────────────
+/.pids
+/.pids.runtime
+
 # ── claude session detritus ───────────────────────────────────────────────
 .claude/projects/
 .claude/sessions/
