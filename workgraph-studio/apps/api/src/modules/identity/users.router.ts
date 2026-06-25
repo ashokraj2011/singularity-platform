@@ -89,8 +89,10 @@ usersRouter.post('/:id/roles', async (req, res, next) => {
     const { roleId } = z.object({ roleId: z.string().uuid() }).parse(req.body)
     await prisma.userRole.upsert({
       where: { userId_roleId: { userId: req.params.id, roleId } },
-      create: { userId: req.params.id, roleId },
-      update: {},
+      // Finding #8 — an explicit local grant claims local provenance, so IAM demotion
+      // never revokes it (reconcileAdminRole only removes source='IAM' bindings).
+      create: { userId: req.params.id, roleId, source: 'LOCAL' },
+      update: { source: 'LOCAL' },
     })
     res.status(204).end()
   } catch (err) {

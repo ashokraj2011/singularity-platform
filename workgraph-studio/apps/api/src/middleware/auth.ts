@@ -32,19 +32,30 @@ declare global {
  * Lazy mirroring keeps every existing FK working without touching IAM as the
  * source of truth.
  */
-async function ensureAdminRole(userId: string): Promise<void> {
-  // Mirror IAM's `is_super_admin=true` into a local ADMIN role binding so the
-  // legacy permission helpers (decideLegacy / canStartTemplate / …) recognise
-  // the user without us having to plumb the IAM flag through every check.
+async function reconcileAdminRole(userId: string, isSuperAdmin: boolean | undefined): Promise<void> {
+  // Finding #8 — keep the local ADMIN binding in sync with IAM's is_super_admin in BOTH
+  // directions. Granting mirrors the flag (so legacy permission helpers recognise the
+  // user); revoking removes the privilege when IAM demotes them. Provenance keeps this
+  // safe: we only ever create/remove bindings tagged source='IAM' and never touch a
+  // locally-granted ADMIN (source!='IAM'), so a demotion cannot strip a real local grant.
   const adminRole = await prisma.role.upsert({
     where:  { name: 'ADMIN' },
     update: {},
     create: { name: 'ADMIN', description: 'Mirrored from IAM is_super_admin', isSystemRole: true },
   })
-  await prisma.userRole.createMany({
-    data: [{ userId, roleId: adminRole.id }],
-    skipDuplicates: true,
-  })
+  if (isSuperAdmin) {
+    // Create an IAM-sourced binding only when none exists — a pre-existing binding
+    // (LOCAL or IAM) is left untouched so we never downgrade a genuine local grant.
+    await prisma.userRole.upsert({
+      where:  { userId_roleId: { userId, roleId: adminRole.id } },
+      update: {},
+      create: { userId, roleId: adminRole.id, source: 'IAM' },
+    })
+  } else {
+    await prisma.userRole.deleteMany({
+      where: { userId, roleId: adminRole.id, source: 'IAM' },
+    })
+  }
 }
 
 async function mirrorIamUser(iamUser: IamUser): Promise<{ id: string; email: string; displayName: string }> {
@@ -59,10 +70,10 @@ async function mirrorIamUser(iamUser: IamUser): Promise<{ id: string; email: str
         where: { id: existing.id },
         data:  { email: iamUser.email, displayName },
       })
-      if (iamUser.is_super_admin) await ensureAdminRole(updated.id)
+      await reconcileAdminRole(updated.id, iamUser.is_super_admin)
       return { id: updated.id, email: updated.email, displayName: updated.displayName }
     }
-    if (iamUser.is_super_admin) await ensureAdminRole(existing.id)
+    await reconcileAdminRole(existing.id, iamUser.is_super_admin)
     return { id: existing.id, email: existing.email, displayName: existing.displayName }
   }
 
@@ -75,7 +86,7 @@ async function mirrorIamUser(iamUser: IamUser): Promise<{ id: string; email: str
       where: { id: byEmail.id },
       data:  { iamUserId: iamUser.id, displayName },
     })
-    if (iamUser.is_super_admin) await ensureAdminRole(linked.id)
+    await reconcileAdminRole(linked.id, iamUser.is_super_admin)
     return { id: linked.id, email: linked.email, displayName: linked.displayName }
   }
 
@@ -89,7 +100,7 @@ async function mirrorIamUser(iamUser: IamUser): Promise<{ id: string; email: str
       isActive:     true,
     },
   })
-  if (iamUser.is_super_admin) await ensureAdminRole(created.id)
+  await reconcileAdminRole(created.id, iamUser.is_super_admin)
   return { id: created.id, email: created.email, displayName: created.displayName }
 }
 

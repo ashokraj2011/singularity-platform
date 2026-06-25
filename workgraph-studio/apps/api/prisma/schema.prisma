@@ -543,6 +543,11 @@ model UserRole {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
   grantedAt DateTime @default(now())
+  // Finding #8 — provenance for IAM↔local reconciliation. "IAM" bindings are
+  // mirrored from is_super_admin and are revoked when IAM demotes the user; any
+  // other value ("LOCAL", the default for every pre-existing and hand-granted row)
+  // is owned locally and is never auto-removed.
+  source    String   @default("LOCAL")
 
   @@id([userId, roleId])
   @@map("user_roles")
