@@ -121,6 +121,7 @@ export async function activateAgentTask(
       agentId,
       instanceId: instance.id,
       nodeId: node.id,
+      attempt: node.attempt, // Finding #7 — record which node attempt this run belongs to.
       status: 'RUNNING',
       startedAt: new Date(),
     },

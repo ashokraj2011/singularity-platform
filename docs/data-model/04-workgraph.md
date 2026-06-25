@@ -763,6 +763,7 @@ EVENT EVENT
     DateTime updatedAt 
     DateTime startedAt "❓"
     DateTime completedAt "❓"
+    Int attempt 
     }
   
 
@@ -1087,6 +1088,7 @@ EVENT EVENT
   "agent_runs" {
     String id "🗝️"
     String nodeId "❓"
+    Int attempt "❓"
     AgentRunStatus status 
     String initiatedById "❓"
     String origin 
@@ -1189,6 +1191,7 @@ EVENT EVENT
     String qaAgentTemplateId 
     BlueprintSessionStatus status 
     String workflowInstanceId "❓"
+    String multinodeInstanceKey "❓"
     String phaseId "❓"
     Json metadata 
     String createdById "❓"
@@ -1420,6 +1423,7 @@ EVENT EVENT
 
   "pending_executions" {
     String id "🗝️"
+    Int attempt 
     ExecutionLocation location 
     String claimToken 
     Json payload "❓"

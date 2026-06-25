@@ -1007,6 +1007,10 @@ model WorkflowNode {
   // createdAt/updatedAt in the insights view when these are null (older runs).
   startedAt          DateTime?
   completedAt        DateTime?
+  // Finding #7 — monotonic attempt counter, bumped on restartNode so a result from a
+  // SUPERSEDED attempt (stale client/subprocess result landing after a restart) can be
+  // fenced out in advance() before it completes the new run.
+  attempt            Int                @default(0)
 
   @@map("workflow_nodes")
 }
@@ -1506,6 +1510,8 @@ model AgentRun {
   agentId       String
   instanceId    String?
   nodeId        String?
+  // Finding #7 — the node attempt this run was dispatched under (null for standalone runs).
+  attempt       Int?
   status        AgentRunStatus    @default(REQUESTED)
   initiatedById String?
   origin        String            @default("workflow")
@@ -1649,6 +1655,11 @@ model BlueprintSession {
   qaAgentTemplateId         String
   status                   BlueprintSessionStatus @default(DRAFT)
   workflowInstanceId        String?
+  // Finding #12 — set to workflowInstanceId only for LIVE multinode sessions; a partial
+  // UNIQUE index (see migration) enforces at most one live multinode session per instance.
+  // Non-multinode sessions leave this null (nulls don't collide); the partial index drops
+  // the row once the session completes/abandons, so a re-run starts clean.
+  multinodeInstanceKey     String?
   phaseId                  String?
   metadata                 Json                   @default("{}")
   createdById              String?
@@ -1991,6 +2002,8 @@ model PendingExecution {
   id          String            @id @default(uuid())
   instanceId  String
   nodeId      String
+  // Finding #7 — the node attempt this pending execution was dispatched under.
+  attempt     Int               @default(0)
   location    ExecutionLocation
   claimToken  String            @unique @default(uuid())
   payload     Json?

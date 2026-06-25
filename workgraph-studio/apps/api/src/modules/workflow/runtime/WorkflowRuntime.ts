@@ -153,9 +153,23 @@ export async function advance(
   completedNodeId: string,
   output: Record<string, unknown>,
   actorId?: string,
+  expectedAttempt?: number,
 ): Promise<void> {
   const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
   const completedNode = await prisma.workflowNode.findUniqueOrThrow({ where: { id: completedNodeId } })
+
+  // Finding #7 — attempt fence. When a caller supplies the attempt its result was produced
+  // under (async re-entry paths), reject a result from a SUPERSEDED attempt — e.g. an old
+  // client/Copilot subprocess result landing after restartNode bumped the node's attempt —
+  // so it can't complete the new run. Internal synchronous callers omit expectedAttempt.
+  if (expectedAttempt != null && completedNode.attempt !== expectedAttempt) {
+    await logEvent('WorkflowNodeStaleResultRejected', 'WorkflowNode', completedNodeId, actorId, {
+      instanceId,
+      expectedAttempt,
+      currentAttempt: completedNode.attempt,
+    })
+    return
+  }
 
   const beforeStatus = completedNode.status
 
@@ -297,6 +311,7 @@ async function activateDownstream(
         data: {
           instanceId: instance.id,
           nodeId: nextNode.id,
+          attempt: nextNode.attempt, // Finding #7 — stamp the dispatching attempt.
           location: nextNode.executionLocation,
           payload: context as any,
           expiresAt,
@@ -631,6 +646,7 @@ async function executeActivatedNode(
       data: {
         instanceId: instance.id,
         nodeId: node.id,
+        attempt: node.attempt, // Finding #7 — stamp the dispatching attempt.
         location: node.executionLocation,
         payload: context as any,
         expiresAt,
@@ -677,7 +693,9 @@ export async function restartNode(
     }),
     prisma.workflowNode.update({
       where: { id: nodeId },
-      data: { status: 'ACTIVE', startedAt: new Date(), completedAt: null },
+      // Finding #7 — bump the attempt so any result from the prior attempt is fenced out
+      // by advance()'s attempt check before it can complete this fresh run.
+      data: { status: 'ACTIVE', startedAt: new Date(), completedAt: null, attempt: { increment: 1 } },
     }),
     // Cancel any in-flight / completed agent run for this node so the restart's
     // fresh run supersedes it. (Restart from ACTIVE = cancel + re-send: the old

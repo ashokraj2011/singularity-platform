@@ -1950,8 +1950,9 @@ workflowInstancesRouter.post('/pending-executions/:execId/complete', async (req,
       data: { completedAt: new Date(), result: result as any, error },
     })
     if (!error) {
-      // Advance the workflow from this node
-      await advance(exec.instanceId, exec.nodeId, result ?? {}, req.user?.userId)
+      // Advance the workflow from this node. Finding #7 — pass the attempt this pending
+      // execution was dispatched under so a result from a superseded attempt is rejected.
+      await advance(exec.instanceId, exec.nodeId, result ?? {}, req.user?.userId, exec.attempt)
     } else {
       await failNode(exec.instanceId, exec.nodeId, { message: error }, req.user?.userId)
     }

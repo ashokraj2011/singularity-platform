@@ -1105,29 +1105,66 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         ? { enabled: true, plan: [], currentMilestoneId: null, history: [] }
         : undefined,
     }
-    const session = await prisma.blueprintSession.create({
-      data: {
-        goal: body.goal,
-        sourceType: body.sourceType === 'github' ? BlueprintSourceType.GITHUB : BlueprintSourceType.LOCALDIR,
-        sourceUri: body.sourceUri,
-        sourceRef: body.sourceRef ?? null,
-        includeGlobs: body.includeGlobs as Prisma.InputJsonValue,
-        excludeGlobs: body.excludeGlobs as Prisma.InputJsonValue,
-        capabilityId: body.capabilityId,
-        architectAgentTemplateId: agentTemplateIds.architectAgentTemplateId,
-        developerAgentTemplateId: agentTemplateIds.developerAgentTemplateId,
-        qaAgentTemplateId: agentTemplateIds.qaAgentTemplateId,
-        workflowInstanceId: resolvedWorkflowInstanceId,
-        phaseId: body.phaseId ?? null,
-        metadata: {
-          ...(initialLoopState as Record<string, unknown>),
-          // Operator placement toggles → read back via readPreferLaptop[Llm]Flag.
-          ...(body.preferLaptop !== undefined ? { preferLaptop: body.preferLaptop } : {}),
-          ...(body.preferLaptopLlm !== undefined ? { preferLaptopLlm: body.preferLaptopLlm } : {}),
-        } as unknown as Prisma.InputJsonValue,
-        createdById: req.user!.userId,
-      },
-    })
+    let session!: Prisma.BlueprintSessionGetPayload<{}>
+    try {
+      session = await prisma.blueprintSession.create({
+        data: {
+          goal: body.goal,
+          sourceType: body.sourceType === 'github' ? BlueprintSourceType.GITHUB : BlueprintSourceType.LOCALDIR,
+          sourceUri: body.sourceUri,
+          sourceRef: body.sourceRef ?? null,
+          includeGlobs: body.includeGlobs as Prisma.InputJsonValue,
+          excludeGlobs: body.excludeGlobs as Prisma.InputJsonValue,
+          capabilityId: body.capabilityId,
+          architectAgentTemplateId: agentTemplateIds.architectAgentTemplateId,
+          developerAgentTemplateId: agentTemplateIds.developerAgentTemplateId,
+          qaAgentTemplateId: agentTemplateIds.qaAgentTemplateId,
+          workflowInstanceId: resolvedWorkflowInstanceId,
+          // Finding #12 — only live multinode sessions claim the per-instance key; the
+          // partial unique index then guarantees at most one live session per instance.
+          multinodeInstanceKey: multinodeEnabled ? resolvedWorkflowInstanceId : null,
+          phaseId: body.phaseId ?? null,
+          metadata: {
+            ...(initialLoopState as Record<string, unknown>),
+            // Operator placement toggles → read back via readPreferLaptop[Llm]Flag.
+            ...(body.preferLaptop !== undefined ? { preferLaptop: body.preferLaptop } : {}),
+            ...(body.preferLaptopLlm !== undefined ? { preferLaptopLlm: body.preferLaptopLlm } : {}),
+          } as unknown as Prisma.InputJsonValue,
+          createdById: req.user!.userId,
+        },
+      })
+    } catch (err) {
+      // Finding #12 — a concurrent multinode activation already created the live session for
+      // this instance (partial unique index violation). Resolve to it instead of forking a
+      // second session that would split loop state / artifacts / the shared branch.
+      if (
+        multinodeEnabled && resolvedWorkflowInstanceId &&
+        err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002'
+      ) {
+        const existing = await prisma.blueprintSession.findFirst({
+          where: {
+            workflowInstanceId: resolvedWorkflowInstanceId,
+            status: { notIn: [BlueprintSessionStatus.COMPLETED, BlueprintSessionStatus.ABANDONED] },
+          },
+          orderBy: { createdAt: 'asc' },
+          include: {
+            snapshots: { orderBy: { createdAt: 'desc' }, take: 1 },
+            stageRuns: { orderBy: { createdAt: 'desc' } },
+            artifacts: { orderBy: { createdAt: 'desc' } },
+          },
+        })
+        if (existing) {
+          await recordBlueprintAudit(existing.id, 'BlueprintSessionResumedForNode', req.user!.userId, {
+            workflowInstanceId: resolvedWorkflowInstanceId,
+            workflowNodeId: resolvedWorkflowNodeId,
+            reason: 'multinode-shared-session-raced',
+          })
+          res.json(shapeSession(existing))
+          return
+        }
+      }
+      throw err
+    }
     await recordBlueprintAudit(session.id, 'BlueprintSessionCreated', req.user!.userId, {
       capabilityId: session.capabilityId,
       sourceType: session.sourceType,
