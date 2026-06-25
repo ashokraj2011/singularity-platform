@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client'
 import type { WorkflowInstance, WorkflowNode } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
 import { logEvent, createReceipt, publishOutbox } from '../../../lib/audit'
+import { recordRunLearning } from '../../../lib/learning/record-run-learning'
 import { ValidationError } from '../../../lib/errors'
 import { resolveNextNodes, isComplete } from './GraphTraverser'
 import { activateHumanTask } from './executors/HumanTaskExecutor'
@@ -229,6 +230,7 @@ export async function advance(
       completedAt: completedAt.toISOString(),
     }, eventId)
     await publishOutbox('WorkflowInstance', instanceId, 'WorkflowCompleted', { instanceId })
+    void recordRunLearning(instanceId, 'COMPLETED')
     const completedInstance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
     await handleWorkItemChildCompletion(completedInstance, actorId)
 
@@ -1034,6 +1036,7 @@ export async function failNode(
     error: failure,
   }, eventId)
   await publishOutbox('WorkflowInstance', instanceId, 'WorkflowFailed', { instanceId, failedNodeId: nodeId })
+  void recordRunLearning(instanceId, 'FAILED')
 
   // Run SAGA compensations for any completed nodes that declared compensationConfig.
   await runCompensations(instanceId, actorId)
@@ -1123,6 +1126,7 @@ export async function resumeInstance(instanceId: string, actorId?: string): Prom
       completedAt: new Date().toISOString(),
     }, eventId)
     await publishOutbox('WorkflowInstance', instanceId, 'WorkflowCompleted', { instanceId })
+    void recordRunLearning(instanceId, 'COMPLETED')
   }
 }
 
@@ -1176,6 +1180,7 @@ export async function cancelInstance(
     skippedNodeIds: liveNodes.map(n => n.id),
   }, eventId)
   await publishOutbox('WorkflowInstance', instanceId, 'WorkflowCancelled', { instanceId, reason })
+  void recordRunLearning(instanceId, 'CANCELLED')
 }
 
 // ─── Attachment processing ─────────────────────────────────────────────────
