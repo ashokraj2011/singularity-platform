@@ -3944,6 +3944,13 @@ function FinalizeStrip({ session, onSession }: { session: BlueprintSession; onSe
           )}
         </div>
         <button
+          className="secondary-action"
+          title="Download a Copilot CLI handoff (from the current stage onward) to continue this session outside the platform"
+          onClick={() => { void api.downloadCopilotHandoff(session.id, session.currentStageKey ?? undefined).catch(() => {}) }}
+        >
+          <Download size={15} /> Copilot handoff
+        </button>
+        <button
           className="secondary-action approve"
           disabled={(!green && !canReSend) || finalizeMutation.isPending}
           onClick={() => finalizeMutation.mutate()}

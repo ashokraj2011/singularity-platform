@@ -730,6 +730,27 @@ export type GovernanceOverlay = {
 export const api = {
   listSessions: () => request<{ items: BlueprintSession[] }>('/blueprint/sessions'),
   getSession: (id: string) => request<BlueprintSession>(`/blueprint/sessions/${encodeURIComponent(id)}`),
+  // Download the Copilot-CLI handoff YAML for this session (optionally from a
+  // given stage onward) so a developer can continue outside the platform. Blob
+  // download — not a JSON request, so it bypasses request<T>.
+  downloadCopilotHandoff: async (id: string, fromPhase?: string): Promise<void> => {
+    const token = getToken()
+    const qs = fromPhase ? `?fromPhase=${encodeURIComponent(fromPhase)}` : ''
+    const res = await fetch(
+      `${API_BASE}/blueprint/sessions/${encodeURIComponent(id)}/export/copilot-yaml${qs}`,
+      { headers: token ? { authorization: `Bearer ${token}` } : {} },
+    )
+    if (!res.ok) throw new Error(`Copilot handoff export failed (${res.status})`)
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `workbench-copilot-${id.slice(0, 8)}.yaml`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  },
   // M98 P2 — cheap status poll backing the workbench live-status refresh.
   sessionStatus: (id: string) =>
     request<BlueprintSessionStatusLite>(`/blueprint/sessions/${encodeURIComponent(id)}/status`),
