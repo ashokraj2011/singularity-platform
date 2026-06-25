@@ -979,12 +979,35 @@ export async function startWorkItemTarget(
   if (tenantIsolationStrict() && !tenantId) {
     throw new ValidationError('TENANT_ISOLATION_MODE=strict requires tenantId/tenant_id in WorkItem input before starting a child workflow run')
   }
-  const result = await cloneDesignToRun({
-    templateId,
-    name: `${target.workItem.workCode} · ${target.workItem.title}`,
-    vars,
-    createdById: userId,
+
+  // Finding #10 — atomically reserve the target before cloning so concurrent starts
+  // can't both create a run (see startAttachedTarget). The loser throws rather than
+  // double-starting.
+  const reservation = await prisma.workItemTarget.updateMany({
+    where: { id: targetId, workItemId, childWorkflowInstanceId: null, startedAt: null },
+    data: { startedAt: new Date() },
   })
+  if (reservation.count === 0) {
+    throw new ValidationError('This WorkItem target is already started or being started')
+  }
+
+  const result = await (async () => {
+    try {
+      return await cloneDesignToRun({
+        templateId,
+        name: `${target.workItem.workCode} · ${target.workItem.title}`,
+        vars,
+        createdById: userId,
+      })
+    } catch (err) {
+      // Release the reservation so a later retry can start this target.
+      await prisma.workItemTarget.updateMany({
+        where: { id: targetId, childWorkflowInstanceId: null },
+        data: { startedAt: null },
+      })
+      throw err
+    }
+  })()
 
   const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: result.instance.id } })
   const context = asRecord(instance.context)

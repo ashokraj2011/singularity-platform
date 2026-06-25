@@ -73,6 +73,23 @@ async function startAttachedTarget(args: {
   if (!templateId) throw new ValidationError('WorkItem target is not attached to a workflow template')
   if (target.childWorkflowInstanceId) return { childWorkflowInstanceId: target.childWorkflowInstanceId }
 
+  // Finding #10 — atomically reserve the target before cloning so two concurrent starts
+  // can't both create a run. Postgres serialises the conditional UPDATE, so exactly one
+  // request flips startedAt while the link is still null; the loser returns the winner's
+  // link (or errors if the winner hasn't linked it yet).
+  const reservation = await prisma.workItemTarget.updateMany({
+    where: { id: args.targetId, workItemId: args.workItemId, childWorkflowInstanceId: null, startedAt: null },
+    data: { startedAt: new Date() },
+  })
+  if (reservation.count === 0) {
+    const current = await prisma.workItemTarget.findFirst({
+      where: { id: args.targetId, workItemId: args.workItemId },
+      select: { childWorkflowInstanceId: true },
+    })
+    if (current?.childWorkflowInstanceId) return { childWorkflowInstanceId: current.childWorkflowInstanceId }
+    throw new ValidationError('WorkItem target is already being started')
+  }
+
   const vars = {
     ...recordOf(target.workItem.input),
     workItemId: args.workItemId,
@@ -87,12 +104,23 @@ async function startAttachedTarget(args: {
     workItemDetails: target.workItem.details,
     workItemBudget: target.workItem.budget,
   }
-  const result = await cloneDesignToRun({
-    templateId,
-    name: `${target.workItem.workCode} · ${target.workItem.title}`,
-    vars,
-    createdById: args.actorId ?? undefined,
-  })
+  const result = await (async () => {
+    try {
+      return await cloneDesignToRun({
+        templateId,
+        name: `${target.workItem.workCode} · ${target.workItem.title}`,
+        vars,
+        createdById: args.actorId ?? undefined,
+      })
+    } catch (err) {
+      // Release the reservation so a later retry can start this target.
+      await prisma.workItemTarget.updateMany({
+        where: { id: args.targetId, childWorkflowInstanceId: null },
+        data: { startedAt: null },
+      })
+      throw err
+    }
+  })()
 
   const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: result.instance.id } })
   const context = recordOf(instance.context)
