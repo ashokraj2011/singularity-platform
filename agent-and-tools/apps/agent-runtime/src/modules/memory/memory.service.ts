@@ -1,6 +1,8 @@
 import { MemoryPromotionStatus, Prisma } from "../../../generated/prisma-client";
 import { prisma } from "../../config/prisma";
 import { NotFoundError } from "../../shared/errors";
+import type { AuthUser } from "../../middleware/auth.middleware";
+import { resolveMemoryReadScope, resolveCapabilityFilter } from "./memory.tenant-scope";
 
 export const memoryService = {
   async storeExecution(input: {
@@ -17,9 +19,23 @@ export const memoryService = {
     });
   },
 
-  async listExecution(filter?: { workflowExecutionId?: string; capabilityId?: string; promotionStatus?: MemoryPromotionStatus }) {
+  async listExecution(
+    filter?: { workflowExecutionId?: string; capabilityId?: string; promotionStatus?: MemoryPromotionStatus },
+    user?: AuthUser,
+  ) {
+    // Tenant scoping: no-op for the default single-box deploy, forced capability
+    // filter when this deployment is tenant-scoped (IAM_SERVICE_TOKEN_TENANT_IDS).
+    // See memory.tenant-scope.ts — mirrors context-fabric's execute.py read scope.
+    const scope = resolveMemoryReadScope(user);
+    const allowedCapabilityIds = resolveCapabilityFilter(scope, filter?.capabilityId);
+    const where: Prisma.WorkflowExecutionMemoryWhereInput = { ...(filter ?? {}) };
+    if (allowedCapabilityIds) {
+      where.capabilityId = allowedCapabilityIds.length === 1
+        ? allowedCapabilityIds[0]
+        : { in: allowedCapabilityIds };
+    }
     return prisma.workflowExecutionMemory.findMany({
-      where: filter ?? {},
+      where,
       orderBy: { createdAt: "desc" },
       take: 100,
     });
@@ -58,9 +74,21 @@ export const memoryService = {
     return distilled;
   },
 
-  async listDistilled(filter?: { scopeType?: string; scopeId?: string }) {
+  async listDistilled(filter?: { scopeType?: string; scopeId?: string }, user?: AuthUser) {
+    // Distilled memory is capability-scoped (scopeType="CAPABILITY", scopeId=capabilityId),
+    // so the same tenant gate constrains scopeId to the caller's capabilities. Non-capability
+    // scopes (if any) fall outside the allowed set and are hidden under strict isolation —
+    // the safe choice given there is no tenant column to match them against.
+    const scope = resolveMemoryReadScope(user);
+    const allowedCapabilityIds = resolveCapabilityFilter(scope, filter?.scopeId);
+    const where: Prisma.DistilledMemoryWhereInput = { ...(filter ?? {}) };
+    if (allowedCapabilityIds) {
+      where.scopeId = allowedCapabilityIds.length === 1
+        ? allowedCapabilityIds[0]
+        : { in: allowedCapabilityIds };
+    }
     return prisma.distilledMemory.findMany({
-      where: filter ?? {}, orderBy: { createdAt: "desc" }, take: 200,
+      where, orderBy: { createdAt: "desc" }, take: 200,
     });
   },
 };

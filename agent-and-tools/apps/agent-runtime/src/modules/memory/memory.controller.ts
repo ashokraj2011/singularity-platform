@@ -7,7 +7,7 @@ export const memoryController = {
     return ok(res, await memoryService.storeExecution(req.body), 201);
   },
   async listExecution(req: Request, res: Response) {
-    return ok(res, await memoryService.listExecution(req.query as never));
+    return ok(res, await memoryService.listExecution(req.query as never, req.user));
   },
   async review(req: Request, res: Response) {
     return ok(res, await memoryService.review(req.params.id, req.body.decision));
@@ -16,6 +16,6 @@ export const memoryController = {
     return ok(res, await memoryService.promote(req.body), 201);
   },
   async listDistilled(req: Request, res: Response) {
-    return ok(res, await memoryService.listDistilled(req.query as never));
+    return ok(res, await memoryService.listDistilled(req.query as never, req.user));
   },
 };
