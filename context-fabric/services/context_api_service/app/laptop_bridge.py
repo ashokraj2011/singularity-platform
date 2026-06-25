@@ -26,8 +26,11 @@ import os
 import time
 from typing import Any, Optional
 
+import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from .config import settings
+from .iam_service_token import get_iam_service_token, invalidate_iam_service_token
 from .laptop_registry import REGISTRY, ActiveConnection
 
 
@@ -81,6 +84,50 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "changeme_dev_only_min_32_chars_long!!
 JWT_ALGORITHM = "HS256"
 HEARTBEAT_SWEEP_SEC = 30
 
+# Finding #7 — device-revocation enforcement. A revoked device JWT must stop working
+# without waiting for its (up-to-365-day) natural expiry, so the bridge asks IAM whether
+# the device row is revoked: once at connect, then periodically for live connections.
+REVOCATION_RECHECK_SEC = int(os.environ.get("RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC", "300"))
+# When IAM can't be reached, fail OPEN by default so a transient IAM blip doesn't take
+# down all runtime dial-in; the periodic recheck still catches the device once IAM
+# recovers. Set RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN=false to fail closed (reject when
+# revocation can't be confirmed at connect).
+REVOCATION_FAIL_OPEN = os.environ.get("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", "true").lower() not in ("0", "false", "no")
+
+
+def _iam_api_base() -> Optional[str]:
+    raw = (getattr(settings, "iam_base_url", "") or "").rstrip("/")
+    if not raw:
+        return None
+    return raw if raw.endswith("/api/v1") else f"{raw}/api/v1"
+
+
+async def _device_revoked(user_id: str, device_id: str) -> Optional[bool]:
+    """Ask IAM whether (user_id, device_id) is revoked. Returns True/False, or None when
+    the check can't be performed (IAM not configured/unreachable) so callers can apply
+    their fail-open/closed policy."""
+    base = _iam_api_base()
+    if not base or not device_id:
+        return None
+    token = await get_iam_service_token()
+    if not token:
+        return None
+    url = f"{base}/internal/devices/status"
+    params = {"user_id": user_id, "device_id": device_id}
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            if resp.status_code == 401:
+                invalidate_iam_service_token()
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+        return bool(data.get("revoked"))
+    except Exception as err:  # network / parse failure — let the caller decide policy
+        log.warning("device revocation check failed user=%s device=%s err=%s", user_id, device_id, err)
+        return None
+
 
 def _verify_runtime_token(token: str) -> dict[str, Any]:
     """Decode + validate a runtime/device JWT. Raises JWTError on failure."""
@@ -117,6 +164,21 @@ async def runtime_connect(ws: WebSocket) -> None:
         log.warning("runtime token rejected: %s", err)
         await ws.close(code=4401, reason="invalid runtime token")
         return
+
+    # Finding #7 — reject a revoked device before accepting the socket. Uses the token's
+    # own identity (sub + device_id), not the client-supplied hello.
+    device_claim_id = str(claims.get("device_id") or "")
+    claim_user_id = str(claims.get("user_id") or claims.get("sub") or "")
+    if device_claim_id:
+        revoked = await _device_revoked(claim_user_id, device_claim_id)
+        if revoked is True:
+            log.warning("rejecting revoked device user=%s device=%s", claim_user_id, device_claim_id)
+            await ws.close(code=4403, reason="device revoked")
+            return
+        if revoked is None and not REVOCATION_FAIL_OPEN:
+            log.warning("revocation unconfirmed; failing closed user=%s device=%s", claim_user_id, device_claim_id)
+            await ws.close(code=4403, reason="device revocation check unavailable")
+            return
 
     await ws.accept()
 
@@ -215,6 +277,7 @@ async def runtime_connect(ws: WebSocket) -> None:
             "accepted_frame_types": supported_frame_types,
         }))
 
+        last_rev_check = time.monotonic()
         while True:
             raw = await ws.receive_text()
             try:
@@ -225,6 +288,15 @@ async def runtime_connect(ws: WebSocket) -> None:
             ftype = frame.get("type")
             if ftype == "heartbeat":
                 await REGISTRY.heartbeat(user_id, runtime_id)
+                # Finding #7 — re-check revocation for this live connection, throttled to
+                # REVOCATION_RECHECK_SEC. Only a confirmed revocation disconnects; an
+                # unreachable IAM (None) leaves the session up until it can be confirmed.
+                if device_claim_id and (time.monotonic() - last_rev_check) >= REVOCATION_RECHECK_SEC:
+                    last_rev_check = time.monotonic()
+                    if await _device_revoked(claim_user_id, device_claim_id) is True:
+                        log.warning("disconnecting revoked device mid-session user=%s device=%s", claim_user_id, device_claim_id)
+                        await ws.close(code=4403, reason="device revoked")
+                        break
             elif ftype == "response":
                 await REGISTRY.deliver_response(
                     user_id=user_id, device_id=runtime_id,

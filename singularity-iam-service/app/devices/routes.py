@@ -18,13 +18,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Path
+from fastapi import APIRouter, Depends, HTTPException, status, Path, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import record_event
 from app.audit_gov_emit import emit_audit_event
-from app.auth.deps import require_real_user
+from app.auth.deps import require_real_user, require_reference_read
 from app.auth.jwt import create_device_token
 from app.database import get_db
 from app.devices.schemas import DeviceList, DeviceOut, DeviceTokenRequest, DeviceTokenResponse
@@ -194,8 +194,10 @@ async def revoke_device(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_real_user),
 ):
-    """Mark a device as revoked. The laptop bridge sweeps every 60s and
-    drops live connections whose device row has `revoked_at` set (M26 A2)."""
+    """Mark a device as revoked. The runtime/laptop bridge enforces this by calling
+    GET /internal/devices/status at connection time and re-checking active connections
+    periodically (finding #7), so a revoked device stops working within the bridge's
+    recheck window instead of remaining usable until its JWT naturally expires."""
     q = await db.execute(select(UserDevice).where(UserDevice.id == device_pk))
     device = q.scalar_one_or_none()
     if device is None:
@@ -226,3 +228,30 @@ async def revoke_device(
             },
         )
     return {"ok": True, "device": _to_out(device).model_dump()}
+
+
+@router.get("/internal/devices/status")
+async def device_revocation_status(
+    user_id: str = Query(..., description="UserDevice.user_id (the device token's sub)"),
+    device_id: str = Query(..., description="UserDevice.device_id (client-generated)"),
+    db: AsyncSession = Depends(get_db),
+    _principal=Depends(require_reference_read),
+):
+    """Finding #7 — internal revocation lookup for the runtime/laptop bridge.
+
+    The bridge calls this at connection time and periodically for live connections, so a
+    revoked device token stops working within the recheck window instead of staying usable
+    until its (up-to-365-day) JWT expires. Service principals need the read:reference-data
+    scope (require_reference_read); real users may also call it. An unknown (user_id,
+    device_id) returns found=False/revoked=False so the bridge applies its own policy.
+    """
+    q = await db.execute(
+        select(UserDevice).where(
+            UserDevice.user_id == user_id,
+            UserDevice.device_id == device_id,
+        )
+    )
+    device = q.scalar_one_or_none()
+    if device is None:
+        return {"found": False, "revoked": False}
+    return {"found": True, "revoked": device.revoked_at is not None}
