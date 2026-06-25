@@ -251,10 +251,11 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
   })
 
   // Export the run as a portable Copilot workflow + executable local runner.
-  const downloadCopilotExport = useCallback(async (kind: 'yaml' | 'runner') => {
+  const downloadCopilotExport = useCallback(async (kind: 'yaml' | 'runner', fromPhase?: string) => {
     const path = kind === 'yaml' ? 'copilot-yaml' : 'copilot-runner.sh'
     const ext = kind === 'yaml' ? 'yaml' : 'sh'
-    const res = await api.get(`/workflow-instances/${instanceId}/export/${path}`, { responseType: 'blob' })
+    const qs = fromPhase ? `?fromPhase=${encodeURIComponent(fromPhase)}` : ''
+    const res = await api.get(`/workflow-instances/${instanceId}/export/${path}${qs}`, { responseType: 'blob' })
     const url = URL.createObjectURL(res.data as Blob)
     const a = document.createElement('a')
     a.href = url
@@ -319,6 +320,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
         <span style={{ fontSize: 11, fontWeight: 700, color: st(instanceStatus).color, padding: '3px 9px', borderRadius: 20, background: st(instanceStatus).bg, border: `1px solid ${st(instanceStatus).ring}` }}>{instanceStatus}</span>
         <button onClick={() => downloadCopilotExport('yaml')} style={topBtn} title="Download this run as a Copilot workflow YAML with artifact/metric pushback instructions"><Download size={13} /> Copilot YAML</button>
         <button onClick={() => downloadCopilotExport('runner')} style={topBtn} title="Download an executable script that runs Copilot CLI and posts artifacts/metrics back to the platform"><Download size={13} /> Runner</button>
+        <button disabled={!selected} onClick={() => selected && downloadCopilotExport('yaml', selected)} style={{ ...topBtn, opacity: selected ? 1 : 0.45, cursor: selected ? 'pointer' : 'not-allowed' }} title="Select a phase, then download a Copilot handoff YAML starting there: earlier phases inlined as context (full artifacts + diffs), this phase onward as runnable composed prompts to continue on your own Copilot CLI"><Download size={13} /> Handoff from phase</button>
         <button onClick={() => { setShowCatalog(c => !c); setSelected(null) }} style={{ ...topBtn, ...(showCatalog ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }}><Library size={13} /> Catalog</button>
         <button onClick={onTimeline} style={topBtn}><List size={13} /> Timeline</button>
       </div>
