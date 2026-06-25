@@ -1961,6 +1961,50 @@ async def execute_governed_turn(req: GovernedTurnRequest, x_service_token: Optio
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Compose a Copilot stage prompt WITHOUT executing it (copilot-handoff export).
+#
+# workgraph-api's copilot-handoff export calls this once per not-yet-run phase so
+# the exported YAML carries the SAME composed prompt (agent role + repo world
+# model + work-item description + task) the governed run would feed `copilot -p`.
+# A developer can then continue the SDLC on their own Copilot CLI, outside the
+# platform, with identical grounding. Best-effort: the world model is omitted if
+# the repo/MCP isn't reachable (mirrors run_stage_via_copilot).
+# ─────────────────────────────────────────────────────────────────────────────
+class ComposeCopilotPromptRequest(BaseModel):
+    task: str
+    stage_key: Optional[str] = None
+    agent_role: Optional[str] = None
+    capability_id: Optional[str] = None
+    vars: Optional[dict[str, Any]] = None
+    run_context: Optional[dict[str, Any]] = None
+
+
+@router.post("/api/v1/compose-copilot-prompt")
+async def compose_copilot_prompt_endpoint(
+    req: ComposeCopilotPromptRequest,
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+):
+    check_execute_service_token(x_service_token)
+    from .governed.copilot_executor import compose_copilot_prompt, interpolate_task
+    resolved = interpolate_task(req.task, req.vars)
+    try:
+        prompt = await compose_copilot_prompt(
+            stage_key=req.stage_key,
+            agent_role=req.agent_role,
+            capability_id=req.capability_id,
+            resolved_task=resolved,
+            vars=req.vars,
+            run_context=req.run_context,
+            bearer=None,
+        )
+    except Exception as exc:  # never fail the export — fall back to the raw task
+        import logging
+        logging.getLogger("context_api.compose_copilot").warning("compose-copilot-prompt failed: %s", exc)
+        prompt = resolved
+    return {"prompt": prompt or resolved, "resolved_task": resolved}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # M71 Slice F — Multi-turn governed stage endpoint.
 #
 # POST /api/v1/execute-governed-stage
