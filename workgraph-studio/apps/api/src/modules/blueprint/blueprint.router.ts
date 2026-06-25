@@ -10,6 +10,7 @@ import { BlueprintStage, BlueprintSessionStatus, BlueprintStageStatus, Blueprint
 import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
 import { resolveLlmRouting } from '../llm-routing/resolve'
+import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
 import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError, ForbiddenError } from '../../lib/errors'
 import { classifyFailures, type FailureClassification } from './inherited-failure-analyzer'
@@ -2595,6 +2596,174 @@ async function loadSession(id: string, actorId?: string) {
   if (actorId) assertBlueprintAccess(session, actorId)
   return shapeSession(session)
 }
+
+// ── Workbench → Copilot handoff export ───────────────────────────────────────
+// Mirror of the workflow copilot-handoff (instances.router) for BlueprintSession
+// runs: download a YAML so a developer can continue this workbench session on
+// their own Copilot CLI, from ANY stage, outside the platform.
+//   `completed` = stages already done (artifacts + responses), for context.
+//   `stages`    = the chosen stage onward, each as a runnable composed prompt.
+// NOTE: the workbench runs the GOVERNED gateway loop, not Copilot — this export
+// RE-COMPOSES each stage as a Copilot prompt (a deliberate governed→Copilot
+// continuation of the exported copy; gates/MCP-tool loop are not replicated).
+const wbYamlString = (value: unknown): string => JSON.stringify(value ?? '')
+const wbYamlBlock = (text: string, spaces: number): string => {
+  const indent = ' '.repeat(spaces)
+  return String(text).replace(/\r\n/g, '\n').split('\n').map(l => `${indent}${l}`).join('\n')
+}
+
+async function composeWorkbenchStagePrompt(input: {
+  task: string; stageKey: string; agentRole: string; capabilityId: string; goal: string; sourceUri: string; sessionId: string
+}): Promise<string> {
+  try {
+    const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/api/v1/compose-copilot-prompt`
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: contextFabricServiceHeaders({ 'content-type': 'application/json' }),
+      body: JSON.stringify({
+        task: input.task,
+        stage_key: input.stageKey,
+        agent_role: input.agentRole,
+        capability_id: input.capabilityId,
+        vars: { story: input.goal, workItemDescription: input.goal },
+        run_context: { capability_id: input.capabilityId, source_type: 'github', source_uri: input.sourceUri, blueprint_session_id: input.sessionId },
+      }),
+    })
+    if (!resp.ok) return input.task
+    const body = (await resp.json()) as { prompt?: string }
+    return typeof body?.prompt === 'string' && body.prompt.trim() ? body.prompt : input.task
+  } catch {
+    return input.task
+  }
+}
+
+type WbArtifact = { title: string; kind: string; content: string }
+
+async function buildWorkbenchCopilotHandoff(
+  sessionId: string,
+  actorId: string,
+  fromPhase?: string,
+): Promise<{ yaml: string; filenameBase: string } | null> {
+  const session = await prisma.blueprintSession.findUnique({
+    where: { id: sessionId },
+    include: { stageRuns: { orderBy: { createdAt: 'asc' } }, artifacts: { orderBy: { createdAt: 'asc' } } },
+  })
+  if (!session) return null
+  assertBlueprintAccess(session, actorId)
+
+  const loop = readLoopState(session as unknown as LoopSessionSeed)
+  const stageDefs = loop.loopDefinition?.stages ?? []
+  const phases = stageDefs.length
+    ? stageDefs.map(s => ({ key: s.key, label: s.label, role: String(s.agentRole), description: s.description ?? '', enumStage: legacyStage(s) }))
+    : [
+        { key: 'architect', label: 'Architect', role: 'ARCHITECT', description: '', enumStage: BlueprintStage.ARCHITECT },
+        { key: 'developer', label: 'Developer', role: 'DEVELOPER', description: '', enumStage: BlueprintStage.DEVELOPER },
+        { key: 'qa', label: 'QA', role: 'QA', description: '', enumStage: BlueprintStage.QA },
+      ]
+
+  // Latest stage run + artifacts per enum bucket (exact for the default 3-stage
+  // workbench; approximate if a milestone loop maps many stages to one bucket).
+  const runByStage = new Map<BlueprintStage, (typeof session.stageRuns)[number]>()
+  for (const r of session.stageRuns) runByStage.set(r.stage, r) // asc order → last wins
+  const artifactsByStage = new Map<BlueprintStage, WbArtifact[]>()
+  for (const a of session.artifacts) {
+    if (!a.stage) continue
+    const list = artifactsByStage.get(a.stage) ?? []
+    list.push({ title: a.title, kind: a.kind, content: a.content ?? (a.payload ? JSON.stringify(a.payload, null, 2) : '') })
+    artifactsByStage.set(a.stage, list)
+  }
+
+  const foundIdx = fromPhase ? phases.findIndex(p => p.key === fromPhase || slug(p.key) === slug(fromPhase)) : 0
+  const startIdx = foundIdx < 0 ? 0 : foundIdx
+  const completed = phases.slice(0, startIdx)
+  const todo = phases.slice(startIdx)
+
+  const composed = new Map<string, string>()
+  await Promise.all(todo.map(async p => {
+    const run = runByStage.get(p.enumStage)
+    const task = run?.task && run.task.trim() ? run.task : (p.description || session.goal)
+    composed.set(p.key, await composeWorkbenchStagePrompt({
+      task, stageKey: p.key, agentRole: p.role, capabilityId: session.capabilityId,
+      goal: session.goal, sourceUri: session.sourceUri, sessionId: session.id,
+    }))
+  }))
+
+  const exportedAt = new Date().toISOString()
+  const filenameBase = `workbench-copilot-${slug(session.goal || session.id.slice(0, 8)).slice(0, 60) || session.id.slice(0, 8)}`
+  const yaml: string[] = [
+    '# Singularity Workbench -> Copilot handoff.',
+    '# The workbench runs the governed gateway loop; this export re-composes each',
+    '# stage as a Copilot CLI task so you can continue OUTSIDE the platform:',
+    '#   clone the repo + checkout the ref, then run each stage in order:',
+    '#     copilot -p "<prompt>" --allow-all',
+    '#',
+    'apiVersion: "singularity.dev/v1alpha1"',
+    'kind: "WorkbenchCopilotHandoff"',
+    'metadata:',
+    `  sessionId: ${wbYamlString(session.id)}`,
+    `  startPhase: ${wbYamlString(fromPhase ?? todo[0]?.key ?? '')}`,
+    `  exportedAt: ${wbYamlString(exportedAt)}`,
+    'repository:',
+    `  url: ${session.sourceUri ? wbYamlString(session.sourceUri) : 'null'}`,
+    `  ref: ${session.sourceRef ? wbYamlString(session.sourceRef) : 'null'}`,
+    'goal: |',
+    wbYamlBlock(session.goal, 2),
+    'completed:',
+  ]
+  if (!completed.length) {
+    yaml.push('  []')
+  } else {
+    for (const p of completed) {
+      const run = runByStage.get(p.enumStage)
+      yaml.push(`  - key: ${wbYamlString(p.key)}`)
+      yaml.push(`    label: ${wbYamlString(p.label)}`)
+      yaml.push(`    role: ${wbYamlString(p.role)}`)
+      yaml.push(`    status: ${wbYamlString(run?.status ?? 'COMPLETED')}`)
+      if (run?.response) { yaml.push('    response: |'); yaml.push(wbYamlBlock(run.response, 6)) }
+      const arts = artifactsByStage.get(p.enumStage) ?? []
+      yaml.push('    artifacts:')
+      if (!arts.length) {
+        yaml.push('      []')
+      } else {
+        for (const a of arts) {
+          yaml.push(`      - title: ${wbYamlString(a.title)}`)
+          yaml.push(`        kind: ${wbYamlString(a.kind)}`)
+          yaml.push('        content: |')
+          yaml.push(wbYamlBlock(a.content, 10))
+        }
+      }
+    }
+  }
+  yaml.push('stages:')
+  if (!todo.length) {
+    yaml.push('  []')
+  } else {
+    for (const p of todo) {
+      const run = runByStage.get(p.enumStage)
+      yaml.push(`  - key: ${wbYamlString(p.key)}`)
+      yaml.push(`    label: ${wbYamlString(p.label)}`)
+      yaml.push(`    role: ${wbYamlString(p.role)}`)
+      yaml.push('    copilot:')
+      yaml.push('      command: "copilot"')
+      yaml.push('      args: ["-p", "<prompt>", "--allow-all"]')
+      yaml.push('    prompt: |')
+      yaml.push(wbYamlBlock(composed.get(p.key) ?? (run?.task || p.description || session.goal), 6))
+    }
+  }
+  return { yaml: `${yaml.join('\n')}\n`, filenameBase }
+}
+
+// GET /api/blueprint/sessions/:id/export/copilot-yaml?fromPhase=<stageKey>
+blueprintRouter.get('/sessions/:id/export/copilot-yaml', async (req, res, next) => {
+  try {
+    const fromPhase = typeof req.query.fromPhase === 'string' && req.query.fromPhase.trim() ? req.query.fromPhase.trim() : undefined
+    const exported = await buildWorkbenchCopilotHandoff(req.params.id, req.user!.userId, fromPhase)
+    if (!exported) return res.status(404).json({ error: 'session not found' })
+    res.setHeader('Content-Type', 'application/x-yaml')
+    res.setHeader('Content-Disposition', `attachment; filename="${exported.filenameBase}.yaml"`)
+    res.send(exported.yaml)
+  } catch (err) { next(err) }
+})
 
 function assertBlueprintAccess(session: { id: string; createdById?: string | null }, actorId: string) {
   // Deny-by-default for unowned sessions. Previously `!session.createdById`
