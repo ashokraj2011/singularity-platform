@@ -1,7 +1,9 @@
 import type { Request } from 'express'
+import type { Prisma } from '@prisma/client'
 import { config } from '../config'
 import { ForbiddenError, ValidationError } from './errors'
 import { prisma } from './prisma'
+import { withTenantDbTransaction } from './tenant-db-context'
 
 type JsonRecord = Record<string, unknown>
 
@@ -88,25 +90,49 @@ export async function backfillWorkflowInstanceTenantId(instanceId: string, tenan
   })
 }
 
+/**
+ * Finding #6 — run a tenant-sensitive read INSIDE a tenant-scoped transaction so
+ * `app.tenant_id` (SET LOCAL) is installed before the query executes. Under forced RLS
+ * that is what makes same-tenant rows visible; a cross-tenant (or unset-tenant) read
+ * fail-closes to "not found" instead of failing legitimate same-tenant requests.
+ * Pre-cutover (RLS not forced) it is behaviourally identical to a direct read. Only the
+ * strict-mode asserters call this, so a missing request tenant is a hard denial.
+ */
+async function tenantScopedRead<T>(
+  req: Request,
+  read: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  const tenantId = resolveTenantFromRequest(req)
+  if (!tenantId) {
+    throw new ForbiddenError('Tenant isolation is strict; include X-Tenant-Id or tenant_id')
+  }
+  return withTenantDbTransaction(prisma, read, tenantId)
+}
+
 export async function assertWorkflowInstanceTenant(req: Request, instanceId: string): Promise<void> {
   if (!tenantIsolationStrict()) return
 
-  const instance = await prisma.workflowInstance.findUnique({
-    where: { id: instanceId },
-    select: { id: true, tenantId: true, context: true },
-  })
+  const requestTenant = resolveTenantFromRequest(req)
+  if (!requestTenant) {
+    throw new ForbiddenError('Tenant isolation is strict; include X-Tenant-Id or tenant_id for workflow instance access')
+  }
+
+  const instance = await withTenantDbTransaction(
+    prisma,
+    (tx) => tx.workflowInstance.findUnique({
+      where: { id: instanceId },
+      select: { id: true, tenantId: true, context: true },
+    }),
+    requestTenant,
+  )
   if (!instance) {
     throw new ForbiddenError(`WorkflowInstance ${instanceId} not found or not accessible`)
   }
 
   const instanceTenant = instance.tenantId ?? resolveTenantFromContext(instance.context)
-  const requestTenant = resolveTenantFromRequest(req)
 
   if (!instanceTenant) {
     throw new ForbiddenError('Tenant isolation is strict but this workflow instance has no tenantId')
-  }
-  if (!requestTenant) {
-    throw new ForbiddenError('Tenant isolation is strict; include X-Tenant-Id or tenant_id for workflow instance access')
   }
   if (instanceTenant !== requestTenant) {
     throw new ForbiddenError('Tenant isolation denied workflow instance access')
@@ -119,10 +145,10 @@ export async function assertWorkflowInstanceTenant(req: Request, instanceId: str
 
 export async function assertPendingExecutionTenant(req: Request, executionId: string): Promise<void> {
   if (!tenantIsolationStrict()) return
-  const exec = await prisma.pendingExecution.findUnique({
+  const exec = await tenantScopedRead(req, (tx) => tx.pendingExecution.findUnique({
     where: { id: executionId },
     select: { instanceId: true },
-  })
+  }))
   if (!exec) throw new ForbiddenError(`PendingExecution ${executionId} not found or not accessible`)
   await assertWorkflowInstanceTenant(req, exec.instanceId)
 }
@@ -142,60 +168,60 @@ async function assertLinkedWorkflowInstanceTenant(
 
 export async function assertAgentRunTenant(req: Request, runId: string): Promise<void> {
   if (!tenantIsolationStrict()) return
-  const run = await prisma.agentRun.findUnique({
+  const run = await tenantScopedRead(req, (tx) => tx.agentRun.findUnique({
     where: { id: runId },
     select: { instanceId: true },
-  })
+  }))
   if (!run) throw new ForbiddenError(`AgentRun ${runId} not found or not accessible`)
   await assertLinkedWorkflowInstanceTenant(req, 'AgentRun', runId, run.instanceId)
 }
 
 export async function assertToolRunTenant(req: Request, runId: string): Promise<void> {
   if (!tenantIsolationStrict()) return
-  const run = await prisma.toolRun.findUnique({
+  const run = await tenantScopedRead(req, (tx) => tx.toolRun.findUnique({
     where: { id: runId },
     select: { instanceId: true },
-  })
+  }))
   if (!run) throw new ForbiddenError(`ToolRun ${runId} not found or not accessible`)
   await assertLinkedWorkflowInstanceTenant(req, 'ToolRun', runId, run.instanceId)
 }
 
 export async function assertApprovalRequestTenant(req: Request, approvalRequestId: string): Promise<void> {
   if (!tenantIsolationStrict()) return
-  const request = await prisma.approvalRequest.findUnique({
+  const request = await tenantScopedRead(req, (tx) => tx.approvalRequest.findUnique({
     where: { id: approvalRequestId },
     select: { instanceId: true },
-  })
+  }))
   if (!request) throw new ForbiddenError(`ApprovalRequest ${approvalRequestId} not found or not accessible`)
   await assertLinkedWorkflowInstanceTenant(req, 'ApprovalRequest', approvalRequestId, request.instanceId)
 }
 
 export async function assertConsumableTenant(req: Request, consumableId: string): Promise<void> {
   if (!tenantIsolationStrict()) return
-  const consumable = await prisma.consumable.findUnique({
+  const consumable = await tenantScopedRead(req, (tx) => tx.consumable.findUnique({
     where: { id: consumableId },
     select: { instanceId: true },
-  })
+  }))
   if (!consumable) throw new ForbiddenError(`Consumable ${consumableId} not found or not accessible`)
   await assertLinkedWorkflowInstanceTenant(req, 'Consumable', consumableId, consumable.instanceId)
 }
 
 export async function assertDocumentTenant(req: Request, documentId: string): Promise<void> {
   if (!tenantIsolationStrict()) return
-  const document = await prisma.document.findUnique({
+  const document = await tenantScopedRead(req, (tx) => tx.document.findUnique({
     where: { id: documentId },
     select: { instanceId: true },
-  })
+  }))
   if (!document) throw new ForbiddenError(`Document ${documentId} not found or not accessible`)
   await assertLinkedWorkflowInstanceTenant(req, 'Document', documentId, document.instanceId)
 }
 
 export async function assertWorkflowNodeTenant(req: Request, nodeId: string): Promise<void> {
   if (!tenantIsolationStrict()) return
-  const node = await prisma.workflowNode.findUnique({
+  const node = await tenantScopedRead(req, (tx) => tx.workflowNode.findUnique({
     where: { id: nodeId },
     select: { instanceId: true },
-  })
+  }))
   if (!node) throw new ForbiddenError(`WorkflowNode ${nodeId} not found or not accessible`)
   await assertLinkedWorkflowInstanceTenant(req, 'WorkflowNode', nodeId, node.instanceId)
 }
