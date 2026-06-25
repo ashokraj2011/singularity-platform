@@ -33,7 +33,7 @@ export function ControlPlaneConsole() {
             <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8 }}>Unified Control Plane</div>
             <h1 className="page-header" style={{ marginBottom: 8 }}>Singularity Command Center</h1>
             <p style={{ margin: 0, maxWidth: 800, color: "var(--color-outline)", fontSize: 14, lineHeight: 1.6 }}>
-              One native web app for agents, tools, workflows, WorkItems, Workbench, Foundry, identity, and operations. External-capable services such as LLM Gateway and MCP remain deployable outside this UI container.
+              One native web app for agents, tools, workflows, WorkItems, Workbench, identity, and operations. External-capable services such as LLM Gateway and MCP remain deployable outside this UI container.
             </p>
           </div>
           <button className="btn-secondary" type="button" onClick={() => void mutate()}><RefreshCw size={15} /> Refresh</button>

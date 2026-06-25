@@ -88,8 +88,8 @@ function quotedPathSet(source) {
 const sidebarSource = readFileSync(new URL("../src/components/ui/Sidebar.tsx", import.meta.url), "utf8");
 const appSwitcherSource = readFileSync(new URL("../src/components/AppSwitcher.tsx", import.meta.url), "utf8");
 const controlPlaneSource = readFileSync(new URL("../src/lib/controlPlaneApps.ts", import.meta.url), "utf8");
-assert.ok(controlPlaneSource.includes('id: "foundry"'), "App switcher must expose Foundry as a first-class unified app");
-assert.ok(appSwitcherSource.includes('pathname.startsWith("/foundry")'), "App switcher must detect Foundry routes as the current app");
+assert.ok(!controlPlaneSource.includes('id: "foundry"'), "Foundry is temporarily hidden from the app switcher catalog");
+assert.ok(!appSwitcherSource.includes('pathname.startsWith("/foundry")'), "Foundry is temporarily hidden from current-app detection");
 
 for (const href of new Set([...quotedPathSet(sidebarSource), ...quotedPathSet(controlPlaneSource)])) {
   assert.ok(

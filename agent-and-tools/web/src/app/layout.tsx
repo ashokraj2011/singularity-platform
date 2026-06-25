@@ -8,7 +8,7 @@ import { Bell, Settings } from "lucide-react";
 
 export const metadata: Metadata = {
   title: "Singularity Platform",
-  description: "Unified platform web app for operations, agents, workflows, workbench, foundry, and identity.",
+  description: "Unified platform web app for operations, agents, workflows, workbench, and identity.",
   icons: { icon: "/favicon.png" },
 };
 

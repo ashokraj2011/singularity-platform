@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Wrench, Play, Users,
   GitBranch, Layers, ScrollText, ShieldCheck, Activity, Brain,
   ChevronLeft, ChevronRight, DollarSign, Cpu, WandSparkles,
-  Bot, Hammer, Inbox, Network, Route, Workflow, Zap,
+  Bot, Inbox, Network, Route, Workflow, Zap,
   Database, FileText, Globe, Link2, Package, Puzzle, ClipboardCheck,
 } from "lucide-react";
 
@@ -97,22 +97,6 @@ const menuSections: NavSection[] = [
       { label: "Artifacts", href: "/workbench/artifacts", icon: ScrollText },
       { label: "Audit", href: "/workbench/audit", icon: FileText },
       { label: "Export", href: "/workbench/export", icon: Package },
-    ],
-  },
-  {
-    label: "Code Generation",
-    description: "Repos to patches and verification",
-    items: [
-      { label: "Run Cockpit", href: "/foundry", icon: Hammer },
-      { label: "Repositories", href: "/foundry/repos", icon: GitBranch },
-      { label: "Generation Runs", href: "/foundry/runs", icon: Play },
-      { label: "Run History", href: "/foundry/history", icon: Activity },
-      { label: "Generated Files", href: "/foundry/artifacts", icon: Package },
-      { label: "Gaps to Fix", href: "/foundry/gaps", icon: ShieldCheck },
-      { label: "Patch Tasks", href: "/foundry/llm-tasks", icon: Cpu },
-      { label: "Change Plans", href: "/foundry/change-plans", icon: Route },
-      { label: "Verify Output", href: "/foundry/verification", icon: ClipboardCheck },
-      { label: "Receipts", href: "/foundry/receipts", icon: FileText },
     ],
   },
   {

@@ -7,8 +7,6 @@ import {
   CheckCircle2,
   ClipboardList,
   FileCheck2,
-  GitBranch,
-  Hammer,
   Network,
   Play,
   ShieldCheck,
@@ -67,14 +65,6 @@ const loop = [
     tone: "#6d28d9",
   },
   {
-    label: "Build",
-    title: "Generate Code",
-    href: "/foundry",
-    icon: Hammer,
-    detail: "Specs, repos, gaps, patch tasks, and receipts",
-    tone: "#b45309",
-  },
-  {
     label: "Verify",
     title: "Prove Changes",
     href: "/workbench/cockpit",
@@ -111,7 +101,6 @@ const loop = [
 const commandActions = [
   { label: "Create Agent", href: "/agents/studio", icon: Bot, primary: true },
   { label: "Start Workflow", href: "/workflows/run", icon: Play },
-  { label: "Open Foundry", href: "/foundry", icon: Hammer },
   { label: "Review Receipts", href: "/runtime-executions", icon: Activity },
   { label: "Governance Engine", href: "/engine", icon: Zap },
   { label: "Tool Grants", href: "/tool-grants", icon: Wrench },
@@ -119,7 +108,6 @@ const commandActions = [
 
 const evidenceLinks = [
   { label: "Workflow Runs", href: "/runs", icon: Activity },
-  { label: "Foundry History", href: "/foundry/history", icon: GitBranch },
   { label: "Runtime Receipts", href: "/runtime-executions", icon: ShieldCheck },
   { label: "Trace Audit", href: "/audit", icon: FileCheck2 },
 ];
@@ -161,12 +149,11 @@ export default async function SdlcCommandCenterPage() {
   const runtimeBase = process.env.AGENT_RUNTIME_URL ?? "http://platform-core:3003";
   const workgraphBase = process.env.WORKGRAPH_API_URL ?? "http://workgraph-api:8080";
 
-  const [agents, tools, templates, runs, foundryRuns, receipts] = await Promise.all([
+  const [agents, tools, templates, runs, receipts] = await Promise.all([
     fetchCount(`${agentBase}/api/v1/agents`, ["agents", "items"]),
     fetchCount(`${toolBase}/api/v1/tools`, ["tools", "items"]),
     fetchCount(`${workgraphBase}/api/workflow-templates?size=1`, ["items", "content"]),
     fetchCount(`${workgraphBase}/api/workflow-instances?size=1`, ["items", "content"]),
-    fetchCount(`${workgraphBase}/health`, ["status"]),
     fetchCount(`${runtimeBase}/api/v1/executions?size=1`, ["items", "content", "executions"]),
   ]);
 
@@ -197,7 +184,6 @@ export default async function SdlcCommandCenterPage() {
             <Signal label="Tools" result={tools} />
             <Signal label="Templates" result={templates} />
             <Signal label="Runs" result={runs} />
-            <Signal label="Foundry" result={foundryRuns} />
             <Signal label="Receipts" result={receipts} />
           </div>
         </div>
