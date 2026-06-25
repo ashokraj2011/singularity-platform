@@ -704,7 +704,12 @@ function topologicalCopilotNodes(nodes: CopilotExportNode[], edges: Array<{ sour
 }
 
 function buildCopilotRunnerScript(workflow: Record<string, unknown>): string {
-  const workflowJson = JSON.stringify(workflow, null, 2)
+  // Finding #9 — embed the workflow as base64 and decode with json.loads at runtime.
+  // A raw `WORKFLOW = ${JSON.stringify(...)}` is invalid Python whenever the JSON
+  // contains null/true/false (workItem/startPhase/repository.url are commonly null),
+  // raising NameError before any stage runs. base64 carries the JSON verbatim with no
+  // Python-literal hazards.
+  const workflowB64 = Buffer.from(JSON.stringify(workflow), 'utf-8').toString('base64')
   return `#!/usr/bin/env bash
 set -euo pipefail
 
@@ -720,6 +725,12 @@ set -euo pipefail
 #   export COPILOT_ALLOW_ALL="1"
 #   export COPILOT_CONTINUE_ON_ERROR="0"
 #   export COPILOT_ARTIFACT_MAX_BYTES="262144"
+#   export SINGULARITY_PUSH_RESULTS="1"   # opt-in: upload results+artifacts to the platform (default OFF)
+#   export COPILOT_INCLUDE_UNTRACKED="1"  # opt-in: also upload NEW untracked files a stage created
+# Privacy (finding #5): only files a stage actually changes (git status delta) are
+# uploaded — never pre-existing dirty files. Paths matching secret patterns (.env,
+# *.pem/*.key, *credential*, *secret*, .npmrc, id_rsa, …) are always excluded, and
+# uploading is OFF unless SINGULARITY_PUSH_RESULTS is explicitly set.
 python3 - "$@" <<'PY'
 import base64
 import hashlib
@@ -735,7 +746,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-WORKFLOW = ${workflowJson}
+WORKFLOW = json.loads(base64.b64decode("${workflowB64}").decode("utf-8"))
 
 def now_iso():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -743,17 +754,36 @@ def now_iso():
 def run_git(args, cwd):
     return subprocess.run(["git", *args], cwd=str(cwd), text=True, capture_output=True)
 
-def status_paths(cwd):
+def status_entries(cwd):
     proc = run_git(["status", "--porcelain"], cwd)
-    paths = []
+    entries = []
     for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        code = line[:2]
         raw = line[3:] if len(line) > 3 else line
         if " -> " in raw:
             raw = raw.split(" -> ", 1)[1]
         raw = raw.strip().strip('"')
         if raw:
-            paths.append(raw)
-    return sorted(set(paths))
+            entries.append((code, raw))
+    return entries
+
+def status_paths(cwd):
+    return sorted({path for _, path in status_entries(cwd)})
+
+SECRET_SUBSTRINGS = ("secret", "credential", "password", "private_key", "privatekey")
+SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".pgp", ".asc")
+SECRET_BASENAMES = (".npmrc", ".netrc", ".pgpass", "id_rsa", "id_ed25519", ".git-credentials")
+
+def is_probably_secret(path):
+    p = path.replace("\\\\", "/").lower()
+    base = p.rsplit("/", 1)[-1]
+    if base in SECRET_BASENAMES or base.startswith(".env"):
+        return True
+    if any(base.endswith(suffix) for suffix in SECRET_SUFFIXES):
+        return True
+    return any(token in p for token in SECRET_SUBSTRINGS)
 
 def safe_name(value):
     value = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-").lower()
@@ -820,6 +850,7 @@ def main():
     continue_on_error = os.environ.get("COPILOT_CONTINUE_ON_ERROR", "0").lower() in ("1", "true", "yes")
     max_artifact_bytes = int(os.environ.get("COPILOT_ARTIFACT_MAX_BYTES", "262144"))
     max_artifacts = int(os.environ.get("COPILOT_ARTIFACT_MAX_FILES", "40"))
+    include_untracked = os.environ.get("COPILOT_INCLUDE_UNTRACKED", "0").lower() in ("1", "true", "yes")
     cwd = pathlib.Path(os.environ.get("WORK_DIR", os.getcwd())).resolve()
     out_dir = pathlib.Path(os.environ.get("COPILOT_OUTPUT_DIR", str(cwd / ".singularity" / "copilot-runs" / run_id))).resolve()
     prompt_dir = out_dir / "prompts"
@@ -854,8 +885,18 @@ def main():
             + "STDOUT\\n" + proc.stdout + "\\n\\nSTDERR\\n" + proc.stderr,
             encoding="utf-8",
         )
-        after = set(status_paths(cwd))
-        changed = sorted(after or before)
+        after_entries = status_entries(cwd)
+        after = {path for _, path in after_entries}
+        untracked = {path for code, path in after_entries if code.strip() == "??"}
+        # Finding #5 — upload ONLY files this stage newly changed (after - before);
+        # never pre-existing dirty files. Always drop secrets; drop untracked unless
+        # explicitly opted in via COPILOT_INCLUDE_UNTRACKED.
+        candidate = sorted(after - before)
+        changed = [
+            p for p in candidate
+            if not is_probably_secret(p) and (include_untracked or p not in untracked)
+        ]
+        skipped = [p for p in candidate if p not in changed]
         for path in changed[:max_artifacts]:
             add_artifact(artifacts, file_artifact(cwd, path, stage_key, node_id, max_artifact_bytes))
         try:
@@ -877,6 +918,7 @@ def main():
             "exitCode": proc.returncode,
             "logPath": rel_log_path,
             "changedFiles": changed,
+            "skippedFiles": skipped,
             "metrics": {
                 "promptChars": len(prompt),
                 "stdoutChars": len(proc.stdout),
@@ -895,7 +937,7 @@ def main():
         "workflow": metadata,
         "git": {
             "workDir": str(cwd),
-            "status": status_paths(cwd),
+            "status": [p for p in status_paths(cwd) if not is_probably_secret(p)],
         },
         "metrics": {
             "stageCount": len(stage_results),
@@ -908,7 +950,7 @@ def main():
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "copilot-results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    if os.environ.get("SINGULARITY_PUSH_RESULTS", "1").lower() not in ("0", "false", "no"):
+    if os.environ.get("SINGULARITY_PUSH_RESULTS", "0").lower() in ("1", "true", "yes"):
         code, body = post_results(platform_url, token, run_id, payload)
         (out_dir / "platform-response.json").write_text(body, encoding="utf-8")
         if code >= 300:
