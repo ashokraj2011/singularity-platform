@@ -64,6 +64,9 @@ async function runtimePost(path: string, body: unknown): Promise<{ id?: string }
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization },
     body: JSON.stringify(body),
+    // Bounded: this runs fire-and-forget off the run's terminal event; a hung
+    // agent-runtime must not pin a socket indefinitely.
+    signal: AbortSignal.timeout(10_000),
   })
   if (!res.ok) {
     console.warn(`[learning] POST ${path} → ${res.status}`)

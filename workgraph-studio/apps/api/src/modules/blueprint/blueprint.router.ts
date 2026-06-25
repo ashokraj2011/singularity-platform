@@ -13,6 +13,7 @@ import { resolveLlmRouting } from '../llm-routing/resolve'
 import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
 import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError, ForbiddenError } from '../../lib/errors'
+import { mapLimit } from '../../lib/map-limit'
 import { classifyFailures, type FailureClassification } from './inherited-failure-analyzer'
 import { synthesizeLoopTrace } from './loop-trace-synthesizer'
 import { createWorkItem } from '../work-items/work-items.service'
@@ -2609,7 +2610,8 @@ async function loadSession(id: string, actorId?: string) {
 const wbYamlString = (value: unknown): string => JSON.stringify(value ?? '')
 const wbYamlBlock = (text: string, spaces: number): string => {
   const indent = ' '.repeat(spaces)
-  return String(text).replace(/\r\n/g, '\n').split('\n').map(l => `${indent}${l}`).join('\n')
+  // Indent every line; strip trailing whitespace (literal-scalar round-trip hazard).
+  return String(text).replace(/\r\n/g, '\n').split('\n').map(l => `${indent}${l}`.replace(/[ \t]+$/, '')).join('\n')
 }
 
 async function composeWorkbenchStagePrompt(input: {
@@ -2661,10 +2663,21 @@ async function buildWorkbenchCopilotHandoff(
         { key: 'qa', label: 'QA', role: 'QA', description: '', enumStage: BlueprintStage.QA },
       ]
 
-  // Latest stage run + artifacts per enum bucket (exact for the default 3-stage
-  // workbench; approximate if a milestone loop maps many stages to one bucket).
+  // Done-context keyed EXACTLY by the loop stage key via loopState.stageAttempts
+  // (each attempt carries stageKey + response + artifactIds). Falls back to the
+  // enum-bucketed stageRuns/artifacts only for legacy sessions with no attempts
+  // (where the 3 stages map 1:1 to the enum). This avoids the old mis-bucketing:
+  // a milestone loop's >3 custom stages all collapsed to ARCHITECT/DEVELOPER/QA,
+  // so a "completed" phase inlined ANOTHER phase's response/artifacts.
+  const attempts: StageAttempt[] = loop.stageAttempts ?? []
+  const attemptByKey = new Map<string, StageAttempt>()
+  for (const a of attempts) attemptByKey.set(slug(a.stageKey), a) // chronological → latest wins
+  const artifactById = new Map<string, WbArtifact>()
+  for (const a of session.artifacts) {
+    artifactById.set(a.id, { title: a.title, kind: a.kind, content: a.content ?? (a.payload ? JSON.stringify(a.payload, null, 2) : '') })
+  }
   const runByStage = new Map<BlueprintStage, (typeof session.stageRuns)[number]>()
-  for (const r of session.stageRuns) runByStage.set(r.stage, r) // asc order → last wins
+  for (const r of session.stageRuns) runByStage.set(r.stage, r) // legacy fallback (asc → last wins)
   const artifactsByStage = new Map<BlueprintStage, WbArtifact[]>()
   for (const a of session.artifacts) {
     if (!a.stage) continue
@@ -2672,21 +2685,41 @@ async function buildWorkbenchCopilotHandoff(
     list.push({ title: a.title, kind: a.kind, content: a.content ?? (a.payload ? JSON.stringify(a.payload, null, 2) : '') })
     artifactsByStage.set(a.stage, list)
   }
+  const useAttempts = attempts.length > 0
+  const doneContextFor = (p: (typeof phases)[number]): { status?: string; response?: string; artifacts: WbArtifact[]; task: string } => {
+    if (useAttempts) {
+      const att = attemptByKey.get(slug(p.key))
+      return {
+        status: att?.status,
+        response: att?.response ?? undefined,
+        artifacts: (att?.artifactIds ?? []).map(id => artifactById.get(id)).filter((x): x is WbArtifact => Boolean(x)),
+        task: p.description?.trim() || session.goal,
+      }
+    }
+    const run = runByStage.get(p.enumStage)
+    return {
+      status: run?.status,
+      response: run?.response ?? undefined,
+      artifacts: artifactsByStage.get(p.enumStage) ?? [],
+      task: run?.task?.trim() || p.description?.trim() || session.goal,
+    }
+  }
 
   const foundIdx = fromPhase ? phases.findIndex(p => p.key === fromPhase || slug(p.key) === slug(fromPhase)) : 0
+  if (fromPhase && foundIdx < 0) throw new ValidationError(`Unknown workbench stage '${fromPhase}'`)
   const startIdx = foundIdx < 0 ? 0 : foundIdx
   const completed = phases.slice(0, startIdx)
   const todo = phases.slice(startIdx)
 
+  // Bounded fan-out: each compose triggers a CF repo world-model build.
   const composed = new Map<string, string>()
-  await Promise.all(todo.map(async p => {
-    const run = runByStage.get(p.enumStage)
-    const task = run?.task && run.task.trim() ? run.task : (p.description || session.goal)
-    composed.set(p.key, await composeWorkbenchStagePrompt({
-      task, stageKey: p.key, agentRole: p.role, capabilityId: session.capabilityId,
+  const composedPrompts = await mapLimit(todo, 4, p =>
+    composeWorkbenchStagePrompt({
+      task: doneContextFor(p).task, stageKey: p.key, agentRole: p.role, capabilityId: session.capabilityId,
       goal: session.goal, sourceUri: session.sourceUri, sessionId: session.id,
-    }))
-  }))
+    }),
+  )
+  todo.forEach((p, i) => composed.set(p.key, composedPrompts[i]))
 
   const exportedAt = new Date().toISOString()
   const filenameBase = `workbench-copilot-${slug(session.goal || session.id.slice(0, 8)).slice(0, 60) || session.id.slice(0, 8)}`
@@ -2714,13 +2747,13 @@ async function buildWorkbenchCopilotHandoff(
     yaml.push('  []')
   } else {
     for (const p of completed) {
-      const run = runByStage.get(p.enumStage)
+      const dc = doneContextFor(p)
       yaml.push(`  - key: ${wbYamlString(p.key)}`)
       yaml.push(`    label: ${wbYamlString(p.label)}`)
       yaml.push(`    role: ${wbYamlString(p.role)}`)
-      yaml.push(`    status: ${wbYamlString(run?.status ?? 'COMPLETED')}`)
-      if (run?.response) { yaml.push('    response: |'); yaml.push(wbYamlBlock(run.response, 6)) }
-      const arts = artifactsByStage.get(p.enumStage) ?? []
+      yaml.push(`    status: ${wbYamlString(dc.status ?? 'COMPLETED')}`)
+      if (dc.response) { yaml.push('    response: |'); yaml.push(wbYamlBlock(dc.response, 6)) }
+      const arts = dc.artifacts
       yaml.push('    artifacts:')
       if (!arts.length) {
         yaml.push('      []')
@@ -2739,7 +2772,6 @@ async function buildWorkbenchCopilotHandoff(
     yaml.push('  []')
   } else {
     for (const p of todo) {
-      const run = runByStage.get(p.enumStage)
       yaml.push(`  - key: ${wbYamlString(p.key)}`)
       yaml.push(`    label: ${wbYamlString(p.label)}`)
       yaml.push(`    role: ${wbYamlString(p.role)}`)
@@ -2747,7 +2779,7 @@ async function buildWorkbenchCopilotHandoff(
       yaml.push('      command: "copilot"')
       yaml.push('      args: ["-p", "<prompt>", "--allow-all"]')
       yaml.push('    prompt: |')
-      yaml.push(wbYamlBlock(composed.get(p.key) ?? (run?.task || p.description || session.goal), 6))
+      yaml.push(wbYamlBlock(composed.get(p.key) ?? doneContextFor(p).task, 6))
     }
   }
   return { yaml: `${yaml.join('\n')}\n`, filenameBase }

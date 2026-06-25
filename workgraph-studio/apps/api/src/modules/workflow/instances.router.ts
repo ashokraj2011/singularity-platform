@@ -8,6 +8,7 @@ import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
+import { mapLimit } from '../../lib/map-limit'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, restartNode, forceCompleteNode, startInstance } from './runtime/WorkflowRuntime'
 import { promoteWorkbenchToTables } from './lib/promote-workbench'
@@ -660,7 +661,10 @@ function yamlString(value: unknown): string {
 function yamlBlock(text: string, spaces: number): string {
   const indent = ' '.repeat(spaces)
   const lines = text.replace(/\r\n/g, '\n').split('\n')
-  return lines.length ? lines.map(line => `${indent}${line}`).join('\n') : `${indent}`
+  // Literal block scalar: indent every line (blank lines included, so they stay
+  // inside the block) and strip trailing whitespace per line — trailing spaces
+  // on a literal-scalar line are a known YAML round-trip corruptor.
+  return lines.length ? lines.map(line => `${indent}${line}`.replace(/[ \t]+$/, '')).join('\n') : `${indent}`
 }
 
 function slugForFile(value: string): string {
@@ -1010,6 +1014,7 @@ function buildCopilotWorkflowExport(
   const foundIdx = extras.fromPhase
     ? computed.stages.findIndex(s => s.key === extras.fromPhase || s.nodeId === extras.fromPhase)
     : 0
+  if (extras.fromPhase && foundIdx < 0) throw new ValidationError(`Unknown phase '${extras.fromPhase}'`)
   const startIdx = foundIdx < 0 ? 0 : foundIdx
   const completedStages = computed.stages.slice(0, startIdx)
   const stages = computed.stages
@@ -1157,6 +1162,7 @@ async function loadCopilotExportData(id: string, opts: { fromPhase?: string } = 
   const foundIdx = opts.fromPhase
     ? computed.stages.findIndex(s => s.key === opts.fromPhase || s.nodeId === opts.fromPhase)
     : 0
+  if (opts.fromPhase && foundIdx < 0) throw new ValidationError(`Unknown phase '${opts.fromPhase}'`)
   const startIdx = foundIdx < 0 ? 0 : foundIdx
   const completedStages = computed.stages.slice(0, startIdx)
   const todoStages = computed.stages.slice(startIdx)
@@ -1174,13 +1180,15 @@ async function loadCopilotExportData(id: string, opts: { fromPhase?: string } = 
     source_uri: computed.repo || undefined,
   }
 
-  // Compose the FULL prompt for every runnable phase (parallel, best-effort).
+  // Compose the FULL prompt for every runnable phase. Bounded fan-out: each
+  // compose triggers a CF repo world-model build, so cap concurrency.
   const composedByNodeId = new Map<string, string>()
-  await Promise.all(todoStages.map(async s => {
-    composedByNodeId.set(s.nodeId, await composeCopilotStagePrompt({
+  const composedPrompts = await mapLimit(todoStages, 4, s =>
+    composeCopilotStagePrompt({
       task: s.prompt, stageKey: s.key, agentRole: s.role, capabilityId, vars: computed.vars, runContext,
-    }))
-  }))
+    }),
+  )
+  todoStages.forEach((s, i) => composedByNodeId.set(s.nodeId, composedPrompts[i]))
 
   // Completed phases: full artifacts (Consumables) + outputs (summary/diff/paths).
   const completedByNodeId = new Map<string, CompletedPhaseData>()
