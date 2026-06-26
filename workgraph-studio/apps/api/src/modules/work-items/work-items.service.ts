@@ -984,7 +984,12 @@ export async function startWorkItemTarget(
   // can't both create a run (see startAttachedTarget). The loser throws rather than
   // double-starting.
   const reservation = await prisma.workItemTarget.updateMany({
-    where: { id: targetId, workItemId, childWorkflowInstanceId: null, startedAt: null },
+    where: {
+      id: targetId, workItemId, childWorkflowInstanceId: null,
+      // Finding #10 — also reclaim a STALE reservation (startedAt set but still unlinked after
+      // 10 min): a crash between reserving and linking would otherwise brick the target forever.
+      OR: [{ startedAt: null }, { startedAt: { lt: new Date(Date.now() - 10 * 60 * 1000) } }],
+    },
     data: { startedAt: new Date() },
   })
   if (reservation.count === 0) {

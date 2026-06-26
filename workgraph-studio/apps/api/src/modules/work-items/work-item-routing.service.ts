@@ -78,7 +78,13 @@ async function startAttachedTarget(args: {
   // request flips startedAt while the link is still null; the loser returns the winner's
   // link (or errors if the winner hasn't linked it yet).
   const reservation = await prisma.workItemTarget.updateMany({
-    where: { id: args.targetId, workItemId: args.workItemId, childWorkflowInstanceId: null, startedAt: null },
+    where: {
+      id: args.targetId, workItemId: args.workItemId, childWorkflowInstanceId: null,
+      // Finding #10 — also reclaim a STALE reservation (startedAt set but still unlinked after
+      // 10 min): a crash between reserving and linking would otherwise brick the target forever.
+      // cloneDesignToRun takes seconds, so a 10-min-old unlinked reservation definitely crashed.
+      OR: [{ startedAt: null }, { startedAt: { lt: new Date(Date.now() - 10 * 60 * 1000) } }],
+    },
     data: { startedAt: new Date() },
   })
   if (reservation.count === 0) {

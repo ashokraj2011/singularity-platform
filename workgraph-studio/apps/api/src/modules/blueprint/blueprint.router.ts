@@ -1030,6 +1030,10 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         },
       })
       if (existing) {
+        // Finding #12 (M2 twin) — the P2002 catch-path resume enforces ownership; this non-race
+        // resume must too, or a cross-user create for the same instance could be handed another
+        // user's live session.
+        assertBlueprintAccess(existing, req.user!.userId)
         // Resume the instance-shared session. Record which node triggered
         // the resume so the audit trail shows the cross-node hops.
         await recordBlueprintAudit(existing.id, 'BlueprintSessionResumedForNode', req.user!.userId, {

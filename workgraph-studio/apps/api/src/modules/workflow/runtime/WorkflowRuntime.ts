@@ -173,14 +173,20 @@ export async function advance(
 
   const beforeStatus = completedNode.status
 
-  // 1. Mark node COMPLETED + write mutation
-  // M24.5 — write completedAt for the insights Gantt
-  await prisma.$transaction([
-    prisma.workflowNode.update({
-      where: { id: completedNodeId },
+  // 1. Mark node COMPLETED + write mutation, atomically guarded on the attempt (finding #7
+  // TOCTOU). The fence above read completedNode.attempt; a restart could bump it between that
+  // read and this write. Gate the COMPLETED flip on attempt === expectedAttempt so a stale
+  // result that lost the race to a restart is rejected here instead of clobbering the new run.
+  // M24.5 — write completedAt for the insights Gantt.
+  const completedOk = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.workflowNode.updateMany({
+      where: expectedAttempt != null
+        ? { id: completedNodeId, attempt: expectedAttempt }
+        : { id: completedNodeId },
       data: { status: 'COMPLETED', completedAt: new Date() },
-    }),
-    prisma.workflowMutation.create({
+    })
+    if (claimed.count === 0) return false
+    await tx.workflowMutation.create({
       data: {
         instanceId,
         nodeId: completedNodeId,
@@ -189,8 +195,17 @@ export async function advance(
         afterState: { status: 'COMPLETED', output } as unknown as Prisma.InputJsonValue,
         performedById: actorId,
       },
-    }),
-  ])
+    })
+    return true
+  })
+  if (!completedOk) {
+    await logEvent('WorkflowNodeStaleResultRejected', 'WorkflowNode', completedNodeId, actorId, {
+      instanceId,
+      expectedAttempt,
+      reason: 'attempt changed before completion write (restart race)',
+    })
+    return
+  }
 
   await logEvent('WorkflowNodeCompleted', 'WorkflowNode', completedNodeId, actorId, {
     instanceId,
