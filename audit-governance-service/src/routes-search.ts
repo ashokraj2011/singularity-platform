@@ -34,8 +34,15 @@
 import { Router, Request, Response } from "express";
 import { z } from "zod";
 import { query } from "./db";
+import { requireServiceAuth } from "./routes-events";
 
 export const searchRouter = Router();
+
+// P0 part 2 — /audit/search is service-token gated. Every consumer already supplies the token:
+// backend services directly, agent-and-tools via its server proxy route, and the
+// blueprint-workbench cockpit + Loop Theater via their dev-Vite / prod-nginx /audit-gov proxy,
+// which injects AUDIT_GOV_TOKEN server-side (see blueprint-workbench vite.config.ts + Dockerfile).
+searchRouter.use(requireServiceAuth);
 
 const SearchRequestSchema = z.object({
   q: z.string().max(500).optional(),

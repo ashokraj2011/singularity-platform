@@ -24,6 +24,7 @@
  * a runaway UI bug.
  */
 import { Router, Request, Response } from "express";
+import { requireServiceAuth } from "./routes-events";
 
 const MAX_SUBSCRIBERS = Number(process.env.AUDIT_GOV_STREAM_MAX_SUBSCRIBERS ?? 50);
 const KEEPALIVE_INTERVAL_MS = Number(process.env.AUDIT_GOV_STREAM_KEEPALIVE_MS ?? 15_000);
@@ -143,6 +144,12 @@ export function broadcastAuditEvent(ev: AuditEventRow): void {
 // ── HTTP surface ────────────────────────────────────────────────────────────
 
 export const streamRouter = Router();
+
+// P0 part 2 — /audit/stream is service-token gated. The proxy layer supplies the token: the
+// blueprint-workbench cockpit + Loop Theater reach it via their dev-Vite / prod-nginx /audit-gov
+// proxy (which injects AUDIT_GOV_TOKEN), and agent-and-tools via its server proxy route. The
+// EventSource the browser opens carries no credential of its own — the proxy adds it.
+streamRouter.use(requireServiceAuth);
 
 function parseSet(raw: unknown): Set<string> | undefined {
   if (typeof raw !== "string" || raw.length === 0) return undefined;
