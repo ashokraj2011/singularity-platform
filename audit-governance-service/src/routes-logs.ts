@@ -15,6 +15,11 @@ import { getLogStorage, StoredLogInput } from "./log-storage";
 
 export const logsRouter = Router();
 
+// P0 — operator log lake (logs ingest + /logs/search + /traces/*). Service-token only for the
+// whole router; the per-route guards on the ingest endpoints below are now redundant but kept.
+// Browser consumers reach logs via the platform-web proxy (which injects the token).
+logsRouter.use(requireServiceAuth);
+
 const LogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "audit"]);
 
 const RawLogSchema = z.object({

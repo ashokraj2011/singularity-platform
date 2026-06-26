@@ -16,8 +16,13 @@
  */
 import { Router, Request, Response } from "express";
 import { query } from "./db";
+import { requireServiceAuth } from "./routes-events";
 
 export const savingsRouter = Router();
+
+// P0 — token-savings/cost reads. Service-token only; consumed by context-fabric +
+// metrics-ledger (services) and the platform-web proxy, never browser-direct.
+savingsRouter.use(requireServiceAuth);
 
 type SavingsRow = {
   id: string;

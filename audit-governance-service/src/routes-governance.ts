@@ -13,8 +13,14 @@ import {
   approvalCreateSchema, approvalDecideSchema,
   budgetUpsertSchema, rateLimitUpsertSchema, authzDecisionSchema,
 } from "./types";
+import { requireServiceAuth } from "./routes-events";
 
 export const governanceRouter = Router();
+
+// P0 — governance is control-plane: approvals create/decide/consume, budgets, rate-limits,
+// authz writes. Service-token only. Callers are services (cf/mcp/agent-runtime) and the
+// platform-web proxy, all of which inject AUDIT_GOV_SERVICE_TOKEN; no browser hits it directly.
+governanceRouter.use(requireServiceAuth);
 
 // ── Approvals ──────────────────────────────────────────────────────────────
 

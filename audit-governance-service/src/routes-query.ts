@@ -8,8 +8,14 @@
  */
 import { Router, Request, Response } from "express";
 import { query } from "./db";
+import { requireServiceAuth } from "./routes-events";
 
 export const queryRouter = Router();
+
+// P0 — audit timeline / event-by-id / cost rollups are operator data. Service-token only;
+// browser consumers reach these via the platform-web proxy (which injects the token).
+// The browser-direct /audit/search + /audit/stream live in their own routers (Part 2).
+queryRouter.use(requireServiceAuth);
 
 // ── Audit timeline ─────────────────────────────────────────────────────────
 
