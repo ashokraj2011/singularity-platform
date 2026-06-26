@@ -33,6 +33,7 @@ import {
 import { api } from '../../lib/api'
 import { MarkdownView } from './MarkdownView'
 import { ArtifactFullscreen } from './ArtifactFullscreen'
+import { buildWorkbenchLaunchUrl } from './workbenchLaunch'
 
 // Non-agentic node types that need their own real handler (form-fill, approval
 // decision, workbench, etc.). The graph shows status/log/artifacts/restart for
@@ -550,6 +551,20 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
           <button onClick={onApprove} disabled={busy} style={{ ...footBtn, background: '#22c55e', borderColor: '#16a34a', color: '#fff', opacity: busy ? 0.6 : 1 }}>
             <Check size={13} /> Approve &amp; advance
           </button>
+        )}
+        {isCopilotNode && isAgent && (
+          // Open this copilot stage in the full Workbench cockpit (review artifacts, evidence,
+          // and chat). Advancing the run stays here (Approve & advance); the cockpit is the
+          // review surface. Requires WORKBENCH_ALLOW_MAIN_PROFILE for non-workbench runs.
+          <a
+            href={buildWorkbenchLaunchUrl(instanceId, node.id, (node.config?.workbench ?? {}) as Record<string, unknown>, 'neo', runContext ?? {})}
+            target="_blank"
+            rel="noreferrer"
+            title="Open this copilot stage in the Workbench cockpit"
+            style={{ ...footBtn, flex: 'none', padding: '8px 11px', textDecoration: 'none', background: '#7c3aed', borderColor: '#6d28d9', color: '#fff' }}
+          >
+            <ExternalLink size={13} /> Open in Workbench
+          </a>
         )}
         {active && isInteractive && (
           <button onClick={onOpenTimeline} style={{ ...footBtn, background: '#0ea5e9', borderColor: '#0284c7', color: '#fff' }}>
