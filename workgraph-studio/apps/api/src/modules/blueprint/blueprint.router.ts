@@ -576,6 +576,10 @@ type StageAttempt = {
   metrics?: Record<string, unknown>
   pendingApproval?: Record<string, unknown> | null
   verificationReceipts?: Array<Record<string, unknown>>
+  // Finding #7 — the owning multinode WORKBENCH_TASK node's attempt when this run launched.
+  // advanceMultinodeStageNode passes it to advance() as expectedAttempt so a result from a
+  // superseded attempt (the node was restarted mid-run) is rejected instead of applied.
+  nodeAttempt?: number
 }
 
 type WorkbenchConsumableRef = {
@@ -4289,6 +4293,22 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
     return loadSession(session.id, actorId)
   }
 
+  // Finding #7 — capture the owning multinode node's current attempt so a result from THIS run
+  // can be fenced against a later restart (advanceMultinodeStageNode passes it to advance()).
+  let launchNodeAttempt: number | undefined
+  if (multinodeEnabled() && session.workflowInstanceId) {
+    const wfNodes = await prisma.workflowNode.findMany({
+      where: { instanceId: session.workflowInstanceId },
+      select: { config: true, attempt: true },
+    })
+    const pinned = wfNodes.find(n => {
+      const cfg = isRecord(n.config) ? n.config : {}
+      const wb = isRecord(cfg.workbench) ? cfg.workbench : {}
+      return typeof wb.stageKey === 'string' && wb.stageKey.toUpperCase() === stage.key.toUpperCase()
+    })
+    launchNodeAttempt = pinned?.attempt
+  }
+
   const attempt: StageAttempt = {
     id: crypto.randomUUID(),
     stageKey: stage.key,
@@ -4303,6 +4323,7 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
     status: 'RUNNING',
     startedAt: new Date().toISOString(),
     inputSignature,
+    nodeAttempt: launchNodeAttempt,
   }
   const startedState: LoopState = {
     ...state,
@@ -5086,6 +5107,7 @@ async function advanceMultinodeStageNode(
   workflowInstanceId: string,
   stageKey: string,
   actorId?: string,
+  expectedAttempt?: number,
 ): Promise<void> {
   const nodes = await prisma.workflowNode.findMany({
     where: { instanceId: workflowInstanceId },
@@ -5100,7 +5122,10 @@ async function advanceMultinodeStageNode(
   if (!target) return            // single-node mode: no per-stage node pin
   if (target.status === 'COMPLETED') return  // idempotent re-entry guard
   const { advance } = await import('../workflow/runtime/WorkflowRuntime')
-  await advance(workflowInstanceId, target.id, { _multinodeStageCompleted: stageKey }, actorId)
+  // Finding #7 — expectedAttempt is the node's attempt when this stage's run launched; advance()
+  // rejects the completion if the node was restarted since (attempt bumped), so a stale copilot
+  // result can't complete the new run.
+  await advance(workflowInstanceId, target.id, { _multinodeStageCompleted: stageKey }, actorId, expectedAttempt)
 }
 
 async function saveStageVerdict(
@@ -5432,7 +5457,7 @@ async function saveStageVerdict(
   // session-resume; (c) the terminal QA node advancing into the child END.
   if (accepted && multinodeEnabled() && session.workflowInstanceId) {
     try {
-      await advanceMultinodeStageNode(session.workflowInstanceId, stage.key, actorId)
+      await advanceMultinodeStageNode(session.workflowInstanceId, stage.key, actorId, latestAttempt.nodeAttempt)
     } catch (err) {
       // Best-effort — a failed node advance must not roll back the verdict
       // save. Surfaced in audit-gov so the stuck node is observable.
