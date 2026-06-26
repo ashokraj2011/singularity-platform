@@ -221,6 +221,27 @@ export function RunViewerPage() {
                 Copilot
               </span>
             )}
+            {instance.usesCopilot && ordered.length > 0 && (() => {
+              // Run-level "Open in Workbench" for the timeline view (parity with the graph view's
+              // per-node button). Anchors the cockpit to the first copilot node of the run.
+              const launchNode = ordered.find(n => asRecord(n.config).executor === 'copilot') ?? ordered[0]
+              return (
+                <a
+                  href={buildWorkbenchLaunchUrl(id!, launchNode.id, asRecord(asRecord(launchNode.config).workbench), 'neo', asRecord(instance.context))}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open this copilot run in the Workbench cockpit"
+                  style={{
+                    fontSize: 9, fontWeight: 800, padding: '2px 8px', borderRadius: 4,
+                    background: '#6e40c9', color: '#fff', border: '1px solid #5a32a3',
+                    letterSpacing: '0.06em', textTransform: 'uppercase', textDecoration: 'none',
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                  }}
+                >
+                  <ExternalLink size={10} /> Open in Workbench
+                </a>
+              )
+            })()}
           </div>
           <p style={{ fontSize: 11, color: 'var(--color-outline)', marginTop: 4 }}>
             Started {instance.startedAt ? new Date(instance.startedAt).toLocaleString() : '—'} ·{' '}

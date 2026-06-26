@@ -1202,6 +1202,18 @@ function WorkbenchNeo({
     session?.executionConfig?.modelAlias ||
     modelCatalogQuery.data?.default_model_alias ||
     undefined
+
+  // When the cockpit is opened for a copilot workflow run (not a native workbench-profile
+  // session), surface a banner: the run itself advances in the run viewer, while this cockpit
+  // is the review/work surface for its stages, artifacts, and chat.
+  const copilotInfoQuery = useQuery({
+    queryKey: ['cockpitWorkflowInfo', session?.workflowInstanceId],
+    queryFn: () => api.workflowInstance(session!.workflowInstanceId!),
+    enabled: Boolean(session?.workflowInstanceId),
+    staleTime: 60 * 1000,
+  })
+  const isCopilotWorkflow = Boolean((copilotInfoQuery.data as { usesCopilot?: boolean } | undefined)?.usesCopilot)
+  const [copilotBannerDismissed, setCopilotBannerDismissed] = useState(false)
   const refreshModels = () => {
     void queryClient.invalidateQueries({ queryKey: ['llm-providers'] })
     void queryClient.invalidateQueries({ queryKey: ['llm-models'] })
@@ -1290,6 +1302,27 @@ function WorkbenchNeo({
   return (
     <div className={lookClass(look)}>
       <NeoNotifier session={session} />
+      {isCopilotWorkflow && !copilotBannerDismissed && (
+        <div style={{
+          position: 'fixed', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 1200,
+          display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px 6px 14px', borderRadius: 999,
+          background: 'rgba(110,64,201,0.96)', color: '#fff', boxShadow: '0 8px 28px rgba(0,0,0,0.4)',
+          fontSize: 12, maxWidth: '92vw',
+        }}>
+          <strong style={{ letterSpacing: '0.05em', flexShrink: 0 }}>⚡ COPILOT WORKFLOW</strong>
+          <span style={{ opacity: 0.9, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            Run advances in the run viewer — use this cockpit to review stages, artifacts &amp; chat.
+          </span>
+          <button
+            type="button"
+            onClick={() => setCopilotBannerDismissed(true)}
+            aria-label="Dismiss"
+            style={{ background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer', fontSize: 15, lineHeight: 1, opacity: 0.85, padding: 2, flexShrink: 0 }}
+          >
+            ×
+          </button>
+        </div>
+      )}
       <section className={`neo-shell neo-cockpit-shell mode-${cockpitMode}`}>
         <LoopRail
           session={session}

@@ -66,6 +66,12 @@ export function CopilotActivityPanel({ instanceId }: { instanceId: string }) {
 
     async function poll() {
       if (stopped) return
+      // Don't poll while the tab is hidden — cheap reschedule; resume immediately on focus
+      // (visibilitychange below). Keeps background run-viewer tabs from hammering the feed.
+      if (typeof document !== 'undefined' && document.hidden) {
+        timer = setTimeout(poll, 2500)
+        return
+      }
       try {
         const url = new URL(workgraphApiPath(`/workflow-instances/${instanceId}/copilot-activity`), window.location.origin)
         const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
@@ -87,8 +93,19 @@ export function CopilotActivityPanel({ instanceId }: { instanceId: string }) {
       }
       if (!stopped) timer = setTimeout(poll, 2500)
     }
+    const onVisible = () => {
+      if (!stopped && typeof document !== 'undefined' && !document.hidden) {
+        if (timer) clearTimeout(timer)
+        poll()
+      }
+    }
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisible)
     poll()
-    return () => { stopped = true; if (timer) clearTimeout(timer) }
+    return () => {
+      stopped = true
+      if (timer) clearTimeout(timer)
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [instanceId, token])
 
   return (

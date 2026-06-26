@@ -963,16 +963,31 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
     if (workflowLink.workflowInstanceId) {
       const linkedInstance = await prisma.workflowInstance.findUnique({
         where: { id: workflowLink.workflowInstanceId },
-        select: { profile: true, name: true },
+        select: { profile: true, name: true, templateId: true },
       })
       const allowMain = (process.env.WORKBENCH_ALLOW_MAIN_PROFILE ?? '').toLowerCase() === 'true'
       if (linkedInstance && linkedInstance.profile !== 'workbench' && !allowMain) {
-        throw new ValidationError(
-          `Workflow run "${linkedInstance.name}" has profile='${linkedInstance.profile}'. ` +
-          `The workbench only opens workflows with profile='workbench'. ` +
-          `Either: (a) point the parent workflow's CALL_WORKFLOW node at a workbench-profile template ` +
-          `so its child run inherits the right profile, or (b) open this run in the standard workflow viewer instead.`,
-        )
+        // Copilot workflows (workflow.metadata.usesCopilot) are first-class cockpit citizens:
+        // the run viewer's "Open in Workbench" opens them here regardless of profile, so
+        // operators don't need the global WORKBENCH_ALLOW_MAIN_PROFILE escape hatch. Mirrors
+        // the usesCopilot derivation in workflow/instances.router.ts.
+        let usesCopilot = false
+        if (linkedInstance.templateId) {
+          const wf = await prisma.workflow.findUnique({
+            where: { id: linkedInstance.templateId },
+            select: { metadata: true },
+          })
+          const md = wf?.metadata
+          usesCopilot = !!(md && typeof md === 'object' && !Array.isArray(md) && (md as Record<string, unknown>).usesCopilot === true)
+        }
+        if (!usesCopilot) {
+          throw new ValidationError(
+            `Workflow run "${linkedInstance.name}" has profile='${linkedInstance.profile}'. ` +
+            `The workbench only opens workflows with profile='workbench' or copilot workflows. ` +
+            `Either: (a) point the parent workflow's CALL_WORKFLOW node at a workbench-profile template ` +
+            `so its child run inherits the right profile, or (b) open this run in the standard workflow viewer instead.`,
+          )
+        }
       }
     }
 
