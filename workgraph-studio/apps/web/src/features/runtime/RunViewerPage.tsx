@@ -126,6 +126,7 @@ export function RunViewerPage() {
         nodes={nodes}
         edges={edges}
         runContext={(instance.context ?? {}) as Record<string, unknown>}
+        usesCopilot={!!instance.usesCopilot}
         onTimeline={() => setViewMode('timeline')}
         onBack={() => navigate(-1)}
       />

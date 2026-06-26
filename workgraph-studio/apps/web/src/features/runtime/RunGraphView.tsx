@@ -28,10 +28,11 @@ import { unwrapList } from '../../lib/unwrap'
 import {
   ArrowLeft, List, AlertCircle,
   RotateCw, FileText, MessageSquare, X, Check, Ban, Send, ExternalLink,
-  ShieldCheck, CornerUpLeft, Library, Download,
+  ShieldCheck, CornerUpLeft, Library, Download, Maximize2,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { MarkdownView } from './MarkdownView'
+import { ArtifactFullscreen } from './ArtifactFullscreen'
 
 // Non-agentic node types that need their own real handler (form-fill, approval
 // decision, workbench, etc.). The graph shows status/log/artifacts/restart for
@@ -218,13 +219,14 @@ const fillKindFor = (nodeType: string): FillKind | null =>
   : nodeType === 'CONSUMABLE_CREATION' ? 'consumable'
   : null
 
-export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges, runContext, onTimeline, onBack }: {
+export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges, runContext, usesCopilot, onTimeline, onBack }: {
   instanceId: string
   instanceStatus: string
   runName: string
   nodes: RunGraphNodeData[]
   edges: RunGraphEdgeData[]
   runContext?: Record<string, unknown>
+  usesCopilot?: boolean
   onTimeline: () => void
   onBack: () => void
 }) {
@@ -346,6 +348,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
               runName={runName}
               node={selectedNode}
               runContext={runContext}
+              usesCopilot={usesCopilot}
               live={live}
               tab={tab} setTab={setTab}
               completedNodes={completedNodes}
@@ -367,11 +370,12 @@ const topBtn: CSSProperties = {
   border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', color: '#475569', fontSize: 12, fontWeight: 600,
 }
 
-function NodePanel({ instanceId, runName, node, runContext, live, tab, setTab, completedNodes, onClose, onRestart, onApprove, onRestartNode, onOpenTimeline, busy }: {
+function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, tab, setTab, completedNodes, onClose, onRestart, onApprove, onRestartNode, onOpenTimeline, busy }: {
   instanceId: string
   runName: string
   node: RunGraphNodeData
   runContext?: Record<string, unknown>
+  usesCopilot?: boolean
   live: boolean
   tab: PanelTab
   setTab: (t: PanelTab) => void
@@ -423,6 +427,30 @@ function NodePanel({ instanceId, runName, node, runContext, live, tab, setTab, c
     : (tab === 'questions' && questions.length === 0) ? 'log'
     : tab
 
+  // Artifact expand/download (parity with the workbench cockpit + the other run panels).
+  const [expandedConsumableId, setExpandedConsumableId] = useState<string | null>(null)
+  const expandedConsumable = visibleConsumables.find(c => c.id === expandedConsumableId)
+  const downloadConsumable = (c: typeof visibleConsumables[number]) => {
+    const text = c.formData?.content?.toString() ?? ''
+    if (!text) return
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const safe = (c.name ?? 'artifact').toString().replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 80) || 'artifact'
+    link.href = url
+    link.download = isCodeArtifact(c.name) ? safe : `${safe}.md`
+    document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url)
+  }
+
+  // Single-intent "what's next" for copilot nodes — mirrors the cockpit's FocusPane idea.
+  const isCopilotNode = !!usesCopilot || node.config?.executor === 'copilot'
+  const nextStep: { label: string; onClick?: () => void; tone: 'amber' | 'green' | 'muted' } | null =
+    !isCopilotNode ? null
+    : questions.length > 0 ? { label: `Answer ${questions.length} question${questions.length === 1 ? '' : 's'} to continue`, onClick: () => setTab('questions'), tone: 'amber' }
+    : (active && isAgent) ? (busy ? { label: 'Working…', tone: 'muted' } : { label: 'Review the output, then approve to advance', onClick: onApprove, tone: 'green' })
+    : active ? { label: 'Working…', tone: 'muted' }
+    : null
+
   return (
     <div style={{ width: 380, flexShrink: 0, background: '#fff', borderLeft: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid #e2e8f0' }}>
@@ -447,6 +475,14 @@ function NodePanel({ instanceId, runName, node, runContext, live, tab, setTab, c
           )
         })}
       </div>
+      {nextStep && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 14px 0', padding: '9px 11px', borderRadius: 9, ...nextStepTone(nextStep.tone) }}>
+          <div style={{ flex: 1, fontSize: 11.5, fontWeight: 600, lineHeight: 1.4 }}>{nextStep.label}</div>
+          {nextStep.onClick && (
+            <button onClick={nextStep.onClick} disabled={busy} style={{ ...footBtn, flex: 'none', padding: '5px 11px', fontSize: 11, opacity: busy ? 0.6 : 1 }}>Go</button>
+          )}
+        </div>
+      )}
       {active && isInteractive && !showForm && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 14px 0', padding: '9px 11px', borderRadius: 9, background: '#fffbeb', border: '1px solid #fde68a' }}>
           <AlertCircle size={14} color="#d97706" style={{ flexShrink: 0 }} />
@@ -476,7 +512,14 @@ function NodePanel({ instanceId, runName, node, runContext, live, tab, setTab, c
                 {visibleConsumables.map(c => (
                   <div key={c.id} style={{ border: '1px solid #e2e8f0', borderRadius: 9, overflow: 'hidden' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 10px', background: '#f8fafc', fontSize: 11.5, fontWeight: 700, color: '#334155' }}>
-                      <FileText size={12} /> {c.name ?? 'Artifact'} {c.status ? <span style={{ fontWeight: 600, color: '#94a3b8' }}>· {c.status}</span> : null}
+                      <FileText size={12} />
+                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name ?? 'Artifact'} {c.status ? <span style={{ fontWeight: 600, color: '#94a3b8' }}>· {c.status}</span> : null}</span>
+                      {c.formData?.content ? (
+                        <>
+                          <button onClick={() => downloadConsumable(c)} title="Download" style={artifactIconBtn}><Download size={12} /></button>
+                          <button onClick={() => setExpandedConsumableId(c.id)} title="Expand to full screen" style={artifactIconBtn}><Maximize2 size={12} /></button>
+                        </>
+                      ) : null}
                     </div>
                     {c.formData?.content && (
                       <div style={{ margin: 0, padding: 10, fontSize: 11.5, lineHeight: 1.5, color: '#334155', maxHeight: 320, overflow: 'auto' }}>
@@ -523,6 +566,16 @@ function NodePanel({ instanceId, runName, node, runContext, live, tab, setTab, c
           </button>
         )}
       </div>
+      {expandedConsumable && (
+        <ArtifactFullscreen
+          title={(expandedConsumable.name ?? 'Artifact').toString()}
+          content={isCodeArtifact(expandedConsumable.name) ? undefined : expandedConsumable.formData?.content?.toString()}
+          body={expandedConsumable.formData?.content?.toString() ?? ''}
+          canDownload={!!expandedConsumable.formData?.content}
+          onDownload={() => downloadConsumable(expandedConsumable)}
+          onClose={() => setExpandedConsumableId(null)}
+        />
+      )}
     </div>
   )
 }
@@ -531,6 +584,17 @@ const footBtn: CSSProperties = {
   flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
   padding: '8px 10px', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer',
   border: '1px solid #e2e8f0', background: '#fff', color: '#334155',
+}
+
+const artifactIconBtn: CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: 'none',
+  padding: 4, borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', color: '#64748b',
+}
+
+function nextStepTone(tone: 'amber' | 'green' | 'muted'): CSSProperties {
+  if (tone === 'amber') return { background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e' }
+  if (tone === 'green') return { background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534' }
+  return { background: '#f8fafc', border: '1px solid #e2e8f0', color: '#64748b' }
 }
 
 function ChatRefine({ instanceId, node, busy, onRestart }: {
