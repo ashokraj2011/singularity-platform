@@ -1145,10 +1145,13 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
       ) {
         const existing = await prisma.blueprintSession.findFirst({
           where: {
-            workflowInstanceId: resolvedWorkflowInstanceId,
-            // Finding #12 — all four terminal states free the instance for a clean re-run; a
-          // session that's COMPLETED/APPROVED/FAILED/ABANDONED must not be resumed.
-          status: { notIn: [BlueprintSessionStatus.COMPLETED, BlueprintSessionStatus.APPROVED, BlueprintSessionStatus.FAILED, BlueprintSessionStatus.ABANDONED] },
+            // Finding #12 (M3) — refetch by the index key that actually collided
+            // (multinodeInstanceKey), NOT workflowInstanceId, so we resolve to the live
+            // multinode session that caused the P2002 rather than an older non-multinode
+            // session for the same instance. The partial unique index guarantees at most one
+            // live (non-terminal) match.
+            multinodeInstanceKey: resolvedWorkflowInstanceId,
+            status: { notIn: [BlueprintSessionStatus.COMPLETED, BlueprintSessionStatus.APPROVED, BlueprintSessionStatus.FAILED, BlueprintSessionStatus.ABANDONED] },
           },
           orderBy: { createdAt: 'asc' },
           include: {
@@ -1158,6 +1161,12 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
           },
         })
         if (existing) {
+          // Finding #12 (M2) — apply the same ownership check the normal read paths enforce
+          // (loadSession → assertBlueprintAccess) so a create race can't hand back another
+          // user's session. NOTE: the non-race multinode resume path above returns the
+          // existing session without this check — it has the identical gap and should get the
+          // same treatment if cross-user disclosure is a concern there too.
+          assertBlueprintAccess(existing, req.user!.userId)
           await recordBlueprintAudit(existing.id, 'BlueprintSessionResumedForNode', req.user!.userId, {
             workflowInstanceId: resolvedWorkflowInstanceId,
             workflowNodeId: resolvedWorkflowNodeId,
