@@ -8,9 +8,10 @@
  */
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { FileText, Download, Package } from 'lucide-react'
+import { FileText, Download, Package, Maximize2 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { MarkdownView } from './MarkdownView'
+import { ArtifactFullscreen } from './ArtifactFullscreen'
 
 type WorkItemArtifact = {
   id: string
@@ -52,6 +53,7 @@ function download(a: WorkItemArtifact) {
 
 export function WorkItemArtifactsPanel({ workItemId, cardStyle }: { workItemId: string; cardStyle: React.CSSProperties }) {
   const [openId, setOpenId] = useState<string | null>(null)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const { data, isLoading, isError } = useQuery<Response>({
     queryKey: ['work-item-artifacts', workItemId],
@@ -60,6 +62,7 @@ export function WorkItemArtifactsPanel({ workItemId, cardStyle }: { workItemId: 
   })
 
   const items = useMemo(() => data?.items ?? [], [data])
+  const expandedArtifact = items.find(a => a.id === expandedId)
 
   // Don't render the panel at all when there's nothing to show (and we're not
   // mid-load / errored) — keeps the work-item page clean for items that never
@@ -110,6 +113,14 @@ export function WorkItemArtifactsPanel({ workItemId, cardStyle }: { workItemId: 
                 >
                   <Download size={11} /> Download
                 </button>
+                <button
+                  onClick={() => setExpandedId(a.id)}
+                  disabled={!body}
+                  title={body ? 'Expand to full screen' : 'Nothing to show'}
+                  style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600, padding: '4px 9px', borderRadius: 6, border: '1px solid var(--color-outline-variant)', background: 'transparent', cursor: body ? 'pointer' : 'not-allowed', color: 'var(--color-outline)', opacity: body ? 1 : 0.5 }}
+                >
+                  <Maximize2 size={11} /> Expand
+                </button>
               </div>
               {open && (
                 <div style={{ padding: '12px 14px', borderTop: '1px solid var(--color-outline-variant)', background: '#fafafa', maxHeight: 480, overflow: 'auto' }}>
@@ -126,6 +137,16 @@ export function WorkItemArtifactsPanel({ workItemId, cardStyle }: { workItemId: 
           )
         })}
       </div>
+      {expandedArtifact && (
+        <ArtifactFullscreen
+          title={expandedArtifact.title}
+          content={expandedArtifact.content}
+          body={artifactBody(expandedArtifact)}
+          canDownload={!!artifactBody(expandedArtifact)}
+          onDownload={() => download(expandedArtifact)}
+          onClose={() => setExpandedId(null)}
+        />
+      )}
     </section>
   )
 }

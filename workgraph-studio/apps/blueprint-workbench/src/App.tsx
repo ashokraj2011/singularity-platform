@@ -2568,6 +2568,21 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null)
   // Operator request — expand the active artifact reader to full screen.
   const [expanded, setExpanded] = useState(false)
+  // Esc collapses the expanded reader. Capture phase + stopImmediatePropagation so it runs
+  // before (and suppresses) NeoOverlayShell's own Esc-to-close while expanded; when not
+  // expanded the listener is detached, so Esc closes the overlay as usual.
+  useEffect(() => {
+    if (!expanded) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopImmediatePropagation()
+        e.preventDefault()
+        setExpanded(false)
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [expanded])
   // M82 S1 — operator artifact edits. `editingId` tracks which artifact's
   // body is currently in edit mode; `draft` is the in-flight buffer. We
   // keep them outside the active-artifact dependency so flipping tabs

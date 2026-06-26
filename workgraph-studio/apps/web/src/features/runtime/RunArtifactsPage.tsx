@@ -8,9 +8,10 @@
 import { useMemo, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, FileText, Download, Package } from 'lucide-react'
+import { ArrowLeft, FileText, Download, Package, Maximize2 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { MarkdownView } from './MarkdownView'
+import { ArtifactFullscreen } from './ArtifactFullscreen'
 
 type RunArtifact = {
   id: string
@@ -59,6 +60,7 @@ export function RunArtifactsPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [openId, setOpenId] = useState<string | null>(null)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const { data, isLoading, isError, error } = useQuery<ArtifactsResponse>({
     queryKey: ['run-artifacts', id],
@@ -67,6 +69,7 @@ export function RunArtifactsPage() {
   })
 
   const items = useMemo(() => data?.items ?? [], [data])
+  const expandedArtifact = items.find(a => a.id === expandedId)
 
   if (!id) return null
 
@@ -149,6 +152,14 @@ export function RunArtifactsPage() {
                 >
                   <Download size={11} /> Download
                 </button>
+                <button
+                  onClick={() => setExpandedId(a.id)}
+                  disabled={!body}
+                  title={body ? 'Expand to full screen' : 'Nothing to show'}
+                  style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600, padding: '4px 9px', borderRadius: 6, border: '1px solid var(--color-outline-variant)', background: 'transparent', cursor: body ? 'pointer' : 'not-allowed', color: 'var(--color-outline)', opacity: body ? 1 : 0.5 }}
+                >
+                  <Maximize2 size={11} /> Expand
+                </button>
               </div>
               {open && (
                 <div style={{
@@ -168,6 +179,16 @@ export function RunArtifactsPage() {
           )
         })}
       </div>
+      {expandedArtifact && (
+        <ArtifactFullscreen
+          title={expandedArtifact.title}
+          content={expandedArtifact.content}
+          body={artifactBody(expandedArtifact)}
+          canDownload={!!artifactBody(expandedArtifact)}
+          onDownload={() => download(expandedArtifact)}
+          onClose={() => setExpandedId(null)}
+        />
+      )}
     </div>
   )
 }
