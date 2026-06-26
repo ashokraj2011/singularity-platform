@@ -1657,8 +1657,9 @@ model BlueprintSession {
   workflowInstanceId        String?
   // Finding #12 — set to workflowInstanceId only for LIVE multinode sessions; a partial
   // UNIQUE index (see migration) enforces at most one live multinode session per instance.
-  // Non-multinode sessions leave this null (nulls don't collide); the partial index drops
-  // the row once the session completes/abandons, so a re-run starts clean.
+  // Non-multinode sessions leave this null (nulls don't collide); the partial index drops the
+  // row once the session reaches a terminal state (completed/approved/failed/abandoned), so a
+  // re-run starts clean.
   multinodeInstanceKey     String?
   phaseId                  String?
   metadata                 Json                   @default("{}")

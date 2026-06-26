@@ -169,6 +169,12 @@ class LaptopRegistry:
                     for conn in by_device.values():
                         if not self._is_shared_runtime(conn):
                             continue
+                        # Finding #15 — a shared runtime may serve a tenant-scoped request only
+                        # when it carries that exact tenant; a tenantless shared runtime is not
+                        # eligible for tenant work (the user-owned path above stays lenient so
+                        # personal tenantless laptops still serve their owner's tenant work).
+                        if conn.tenant_id != tenant_id:
+                            continue
                         if self._matches(conn, frame_type, tenant_id, capability_tags):
                             return conn
             return None
@@ -180,10 +186,12 @@ class LaptopRegistry:
         tenant_id: str | None,
         capability_tags: list[str] | None,
     ) -> bool:
-        # Finding #15 — a tenant-scoped request must match the connection's tenant
-        # exactly. A tenantless connection (conn.tenant_id == "") is NOT eligible for
-        # tenant-scoped work; it can only serve tenantless requests.
-        if tenant_id and conn.tenant_id != tenant_id:
+        # A request that carries a tenant must not be served by a connection bound to a
+        # DIFFERENT tenant. A tenantless connection (conn.tenant_id == "") is allowed here so a
+        # user's own personal laptop (kind=device tokens are tenantless) still serves their own
+        # tenant-scoped work; the shared-runtime path (select_runtime) applies the stricter
+        # exact match so a tenantless SHARED runtime can't pick up tenant work (finding #15).
+        if tenant_id and conn.tenant_id and conn.tenant_id != tenant_id:
             return False
         if frame_type and frame_type not in (conn.supported_frame_types or []):
             return False
@@ -498,9 +506,14 @@ class LaptopNotConnected(Exception):
     """Raised when /execute requires a laptop and none is connected."""
 
 
-class LaptopDisconnected(Exception):
-    """Raised into a pending invoke when its runtime disconnects, is replaced, or is
-    reaped, so the caller fails fast instead of waiting out the full timeout (finding #14)."""
+class LaptopDisconnected(LaptopNotConnected):
+    """Raised into a pending invoke when its runtime disconnects, is replaced, or is reaped,
+    so the caller fails fast instead of waiting out the full timeout (finding #14).
+
+    Subclasses LaptopNotConnected so the existing dispatch handlers (governed/dispatch.py,
+    llm_client.py, code_context.py) treat a mid-call disconnect exactly like a never-connected
+    runtime — fall back to HTTP/cloud — rather than letting it escape uncaught and crash the
+    whole governed turn (review finding)."""
 
 
 class LaptopSendFailed(Exception):

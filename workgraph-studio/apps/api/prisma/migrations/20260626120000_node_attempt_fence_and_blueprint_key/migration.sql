@@ -14,9 +14,10 @@ ALTER TABLE "blueprint_sessions" ADD COLUMN IF NOT EXISTS "multinodeInstanceKey"
 
 -- Partial UNIQUE index. Prisma can't express partial indexes in schema.prisma, so it lives
 -- here as raw SQL. Only multinode sessions set the key, and the predicate drops the row once
--- the session is COMPLETED/ABANDONED, so a re-run after completion starts clean. Non-multinode
--- sessions leave the key NULL and never collide.
+-- the session reaches ANY terminal state (COMPLETED/APPROVED/FAILED/ABANDONED), so a re-run
+-- after the session is done starts clean. Non-multinode sessions leave the key NULL and never
+-- collide.
 CREATE UNIQUE INDEX IF NOT EXISTS "blueprint_sessions_live_multinode_uniq"
   ON "blueprint_sessions" ("multinodeInstanceKey")
   WHERE "multinodeInstanceKey" IS NOT NULL
-    AND "status" NOT IN ('COMPLETED', 'ABANDONED');
+    AND "status" NOT IN ('COMPLETED', 'APPROVED', 'FAILED', 'ABANDONED');

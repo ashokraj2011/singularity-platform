@@ -1003,7 +1003,9 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
       const existing = await prisma.blueprintSession.findFirst({
         where: {
           workflowInstanceId: resolvedWorkflowInstanceId,
-          status: { notIn: [BlueprintSessionStatus.COMPLETED, BlueprintSessionStatus.ABANDONED] },
+          // Finding #12 — all four terminal states free the instance for a clean re-run; a
+          // session that's COMPLETED/APPROVED/FAILED/ABANDONED must not be resumed.
+          status: { notIn: [BlueprintSessionStatus.COMPLETED, BlueprintSessionStatus.APPROVED, BlueprintSessionStatus.FAILED, BlueprintSessionStatus.ABANDONED] },
         },
         orderBy: { createdAt: 'asc' },
         include: {
@@ -1144,7 +1146,9 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         const existing = await prisma.blueprintSession.findFirst({
           where: {
             workflowInstanceId: resolvedWorkflowInstanceId,
-            status: { notIn: [BlueprintSessionStatus.COMPLETED, BlueprintSessionStatus.ABANDONED] },
+            // Finding #12 — all four terminal states free the instance for a clean re-run; a
+          // session that's COMPLETED/APPROVED/FAILED/ABANDONED must not be resumed.
+          status: { notIn: [BlueprintSessionStatus.COMPLETED, BlueprintSessionStatus.APPROVED, BlueprintSessionStatus.FAILED, BlueprintSessionStatus.ABANDONED] },
           },
           orderBy: { createdAt: 'asc' },
           include: {
