@@ -28,12 +28,13 @@ import { unwrapList } from '../../lib/unwrap'
 import {
   ArrowLeft, List, AlertCircle,
   RotateCw, FileText, MessageSquare, X, Check, Ban, Send, ExternalLink,
-  ShieldCheck, CornerUpLeft, Library, Download, Maximize2,
+  ShieldCheck, CornerUpLeft, Library, Download, Maximize2, Activity,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { MarkdownView } from './MarkdownView'
 import { ArtifactFullscreen } from './ArtifactFullscreen'
 import { buildWorkbenchLaunchUrl } from './workbenchLaunch'
+import { CopilotActivityPanel } from './CopilotActivityPanel'
 
 // Non-agentic node types that need their own real handler (form-fill, approval
 // decision, workbench, etc.). The graph shows status/log/artifacts/restart for
@@ -235,6 +236,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
   const [selected, setSelected] = useState<string | null>(null)
   const [tab, setTab] = useState<PanelTab>('log')
   const [showCatalog, setShowCatalog] = useState(false)
+  const [showActivity, setShowActivity] = useState(false)
   const live = !['COMPLETED', 'CANCELLED', 'FAILED'].includes((instanceStatus ?? '').toUpperCase())
 
   const invalidate = useCallback(() => {
@@ -268,7 +270,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
   }, [instanceId])
 
   const onSelect = useCallback((id: string, t?: PanelTab) => {
-    setShowCatalog(false); setSelected(id)
+    setShowCatalog(false); setShowActivity(false); setSelected(id)
     if (t) { setTab(t); return }
     // Open straight to the form for an active human-task / approval / data-collection node.
     const n = nodes.find(x => x.id === id)
@@ -324,7 +326,10 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
         <button onClick={() => downloadCopilotExport('yaml')} style={topBtn} title="Download this run as a Copilot workflow YAML with artifact/metric pushback instructions"><Download size={13} /> Copilot YAML</button>
         <button onClick={() => downloadCopilotExport('runner')} style={topBtn} title="Download an executable script that runs Copilot CLI and posts artifacts/metrics back to the platform"><Download size={13} /> Runner</button>
         <button disabled={!selected} onClick={() => selected && downloadCopilotExport('yaml', selected)} style={{ ...topBtn, opacity: selected ? 1 : 0.45, cursor: selected ? 'pointer' : 'not-allowed' }} title="Select a phase, then download a Copilot handoff YAML starting there: earlier phases inlined as context (full artifacts + diffs), this phase onward as runnable composed prompts to continue on your own Copilot CLI"><Download size={13} /> Handoff from phase</button>
-        <button onClick={() => { setShowCatalog(c => !c); setSelected(null) }} style={{ ...topBtn, ...(showCatalog ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }}><Library size={13} /> Catalog</button>
+        <button onClick={() => { setShowCatalog(c => !c); setShowActivity(false); setSelected(null) }} style={{ ...topBtn, ...(showCatalog ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }}><Library size={13} /> Catalog</button>
+        {usesCopilot && (
+          <button onClick={() => { setShowActivity(a => !a); setShowCatalog(false); setSelected(null) }} style={{ ...topBtn, ...(showActivity ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }} title="Live governed activity for this copilot run (LLM calls, tools, phases, commits)"><Activity size={13} /> Live activity</button>
+        )}
         <button onClick={onTimeline} style={topBtn}><List size={13} /> Timeline</button>
       </div>
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
@@ -340,7 +345,9 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
             <Controls showInteractive={false} />
           </ReactFlow>
         </div>
-        {showCatalog
+        {showActivity
+          ? <CopilotActivityPanel instanceId={instanceId} />
+          : showCatalog
           ? <ArtifactCatalog instanceId={instanceId} live={live} phases={orderedPhases} onClose={() => setShowCatalog(false)} />
           : selectedNode && (
             <NodePanel

@@ -23,6 +23,7 @@ import { resolveRuntimeTenantId } from '../../lib/runtime-tenant'
 import {
   fetchEventsForInstance,
   fetchEventsForTrace,
+  searchByTracePrefix,
   postJson,
   rollupFromEvents,
   type AuditEvent,
@@ -146,6 +147,39 @@ insightsRouter.get('/:id/events/stream', async (req: Request, res: Response, nex
     }
     sseWrite(res, 'done', { reason: closed ? 'client_closed' : 'timeout' })
     res.end()
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Copilot activity feed — the run viewer's "live cockpit" for copilot workflows. Returns every
+// governed event under this run's trace prefix (wf-<instanceId>, the per-node-per-run traceIds
+// AgentTaskExecutor stamps), so the FE CopilotActivityPanel can show tools / LLM calls / phases
+// / commits as they happen. Poll-based (the FE polls ~2s) — robust and simple vs proxying
+// audit-gov's SSE; fail-soft (searchByTracePrefix returns [] when audit-gov is down). Handoff
+// runs return [] until results post back.
+insightsRouter.get('/:id/copilot-activity', async (req: Request, res: Response, next) => {
+  try {
+    const instanceId = String(req.params.id)
+    const instance = await withTenantDbTransaction(prisma, async () => {
+      await assertWorkflowInstanceTenant(req, instanceId)
+      const found = await prisma.workflowInstance.findUnique({ where: { id: instanceId }, select: { id: true } })
+      if (found) await assertInstancePermission(req.user!.userId, found.id, 'view')
+      return found
+    })
+    if (!instance) return res.status(404).json({ code: 'NOT_FOUND', message: 'Workflow instance not found' })
+    const limit = Math.min(Math.max(Number(req.query.limit ?? 300), 1), 1000)
+    const audit = await searchByTracePrefix(`wf-${instanceId}`, limit)
+    const events = audit.map(e => ({
+      id: e.id,
+      kind: e.kind,
+      timestamp: e.created_at,
+      severity: e.severity,
+      trace_id: e.trace_id,
+      capability_id: e.capability_id,
+      payload: e.payload ?? undefined,
+    }))
+    res.json({ events, tail_id: events.length ? events[events.length - 1].id : null })
   } catch (err) {
     next(err)
   }

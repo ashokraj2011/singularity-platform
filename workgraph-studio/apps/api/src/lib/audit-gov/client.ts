@@ -161,6 +161,16 @@ export async function fetchEventsForTrace(traceId: string, limit = 200): Promise
   return body?.items ?? []
 }
 
+// Copilot governed activity for a whole workflow run lives under per-node-per-run trace ids
+// `wf-<instanceId>-<nodeId>-<run8>` (AgentTaskExecutor). The exact-trace timeline can't span
+// them, so use the search endpoint's traceIdPrefix to gather the run's activity in one call.
+export async function searchByTracePrefix(prefix: string, limit = 300): Promise<AuditEvent[]> {
+  const body = await postJson<{ items: AuditEvent[] }>('api/v1/audit/search', { traceIdPrefix: prefix, limit })
+  const items = body?.items ?? []
+  // search returns newest-first; activity panels render oldest-first.
+  return [...items].sort((a, b) => a.created_at.localeCompare(b.created_at))
+}
+
 // M74 Phase 2B — closed-loop eval feedback. Fetches the most recent
 // FAILED eval-run for a workflow/session so the next-attempt prompt can
 // see "previous attempt scored 2/5 because <reason>". Fail-soft per the
