@@ -163,13 +163,18 @@ insightsRouter.get('/:id/copilot-activity', async (req: Request, res: Response, 
     const instanceId = String(req.params.id)
     const instance = await withTenantDbTransaction(prisma, async () => {
       await assertWorkflowInstanceTenant(req, instanceId)
-      const found = await prisma.workflowInstance.findUnique({ where: { id: instanceId }, select: { id: true } })
+      const found = await prisma.workflowInstance.findUnique({ where: { id: instanceId }, select: { id: true, context: true } })
       if (found) await assertInstancePermission(req.user!.userId, found.id, 'view')
       return found
     })
     if (!instance) return res.status(404).json({ code: 'NOT_FOUND', message: 'Workflow instance not found' })
     const limit = Math.min(Math.max(Number(req.query.limit ?? 300), 1), 1000)
-    const audit = await searchByTracePrefix(`wf-${instanceId}`, limit)
+    // P1 — in strict tenant mode, scope the audit search to the run's tenant (defence in depth
+    // alongside the per-instance trace prefix), matching the /events stream above.
+    const tenantId = config.TENANT_ISOLATION_MODE === 'strict'
+      ? resolveRuntimeTenantId({ instanceContext: instance.context })
+      : undefined
+    const audit = await searchByTracePrefix(`wf-${instanceId}`, limit, tenantId)
     const events = audit.map(e => ({
       id: e.id,
       kind: e.kind,

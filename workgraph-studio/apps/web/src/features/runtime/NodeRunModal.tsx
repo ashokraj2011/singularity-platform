@@ -28,6 +28,7 @@ import { RuntimeWidgetForm } from '../forms/widgets/RuntimeWidgetForm'
 import type { FormWidget } from '../forms/widgets/types'
 import { uploadAttachment, attachLink, type UploadedDocument } from '../../lib/uploadAttachment'
 import { api } from '../../lib/api'
+import { sharedAuthToken } from '../../lib/sharedAuth'
 
 const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
 
@@ -498,6 +499,10 @@ function BlueprintWorkbenchBody({
 }
 
 function readWorkgraphToken(): string {
+  // P2 — prefer the canonical portal token (singularity-portal.auth) so the Workbench auth
+  // handoff works in unified-platform sessions; fall back to the legacy workgraph-auth token.
+  const shared = sharedAuthToken()
+  if (shared) return shared
   try {
     const raw = window.localStorage.getItem('workgraph-auth')
     if (!raw) return ''

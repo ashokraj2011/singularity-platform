@@ -44,6 +44,8 @@ const SearchRequestSchema = z.object({
   riskLevels: z.array(z.enum(["low", "medium", "high", "critical"])).optional(),
   sources: z.array(z.string().max(80)).max(20).optional(),
   capabilityId: z.string().max(200).optional(),
+  // P1 — tenant-scoped audit search for strict-isolation callers.
+  tenantId: z.string().max(200).optional(),
   actorId: z.string().max(200).optional(),
   traceId: z.string().max(200).optional(),
   // M69 — prefix match support for the Loop Theater. Sessions span
@@ -124,6 +126,10 @@ searchRouter.post("/audit/search", async (req: Request, res: Response) => {
   if (input.capabilityId) {
     params.push(input.capabilityId);
     where.push(`capability_id = $${params.length}`);
+  }
+  if (input.tenantId) {
+    params.push(input.tenantId);
+    where.push(`tenant_id = $${params.length}`);
   }
   if (input.actorId) {
     params.push(input.actorId);

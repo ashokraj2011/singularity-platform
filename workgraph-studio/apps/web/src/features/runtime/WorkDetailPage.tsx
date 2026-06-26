@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { ArrowLeft, AlertCircle, Archive, CheckCircle2, XCircle, Workflow, Layers, ExternalLink, Route, Network, Play, Unlink } from 'lucide-react'
 import { api } from '../../lib/api'
+import { sharedAuthToken } from '../../lib/sharedAuth'
 import { RuntimeWidgetForm, type RuntimeFormSubmitTarget } from '../forms/widgets/RuntimeWidgetForm'
 import type { FormWidget } from '../forms/widgets/types'
 import type { UploadedDocument } from '../../lib/uploadAttachment'
@@ -1243,6 +1244,10 @@ function cleanLaunchString(value: unknown): string {
 }
 
 function readWorkgraphToken(): string {
+  // P2 — prefer the canonical portal token (singularity-portal.auth) so the Workbench auth
+  // handoff works in unified-platform sessions; fall back to the legacy workgraph-auth token.
+  const shared = sharedAuthToken()
+  if (shared) return shared
   try {
     const raw = window.localStorage.getItem('workgraph-auth')
     if (!raw) return ''

@@ -18,6 +18,7 @@ import { CapabilityPicker } from '../../components/lookup/EntityPickers'
 import { useCapabilityLabels } from './useCapabilityLabels'
 import { RunGraphView } from './RunGraphView'
 import { buildWorkbenchLaunchUrl, blueprintWorkbenchOrigin } from './workbenchLaunch'
+import { sharedAuthToken } from '../../lib/sharedAuth'
 
 // Terminal workflow-instance statuses — mirror of the runtime's own set in
 // WorkflowRuntime.ts (COMPLETED | CANCELLED | FAILED). Once a run reaches one
@@ -1672,6 +1673,10 @@ function blockingDetailsForNode(
 }
 
 function readWorkgraphToken(): string {
+  // P2 — prefer the canonical portal token (singularity-portal.auth) so the Workbench auth
+  // handoff works in unified-platform sessions; fall back to the legacy workgraph-auth token.
+  const shared = sharedAuthToken()
+  if (shared) return shared
   try {
     const raw = window.localStorage.getItem('workgraph-auth')
     if (!raw) return ''

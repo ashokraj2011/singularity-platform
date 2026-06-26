@@ -164,8 +164,10 @@ export async function fetchEventsForTrace(traceId: string, limit = 200): Promise
 // Copilot governed activity for a whole workflow run lives under per-node-per-run trace ids
 // `wf-<instanceId>-<nodeId>-<run8>` (AgentTaskExecutor). The exact-trace timeline can't span
 // them, so use the search endpoint's traceIdPrefix to gather the run's activity in one call.
-export async function searchByTracePrefix(prefix: string, limit = 300): Promise<AuditEvent[]> {
-  const body = await postJson<{ items: AuditEvent[] }>('api/v1/audit/search', { traceIdPrefix: prefix, limit })
+export async function searchByTracePrefix(prefix: string, limit = 300, tenantId?: string): Promise<AuditEvent[]> {
+  // P1 — pass tenantId so strict-tenant callers get a tenant-scoped audit search, not just the
+  // (already instance-unique) trace prefix. audit-gov filters on tenant_id when provided.
+  const body = await postJson<{ items: AuditEvent[] }>('api/v1/audit/search', { traceIdPrefix: prefix, limit, ...(tenantId ? { tenantId } : {}) })
   const items = body?.items ?? []
   // search returns newest-first; activity panels render oldest-first.
   return [...items].sort((a, b) => a.created_at.localeCompare(b.created_at))
