@@ -2604,6 +2604,18 @@ input:focus, textarea:focus, select:focus {
   min-width: 0;
 }
 
+/* Operator request — full-screen the active artifact reader (Expand button). Sits above the
+   .neo-overlay-scrim (z-index 1000) so it covers the Artifacts overlay; Collapse returns. */
+.artifact-reader.expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  margin: 0;
+  padding: 16px 20px;
+  overflow: auto;
+  background: var(--surface);
+}
+
 .artifact-reader h3 {
   margin: 0 0 8px;
 }

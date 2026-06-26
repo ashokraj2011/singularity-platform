@@ -2566,6 +2566,8 @@ function fallbackDiffBody(paths: string[], change: CodeChangeRecord) {
 
 function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintSession; activeStageKey?: string; onSession: (session: BlueprintSession) => void }) {
   const [activeArtifactId, setActiveArtifactId] = useState<string | null>(null)
+  // Operator request — expand the active artifact reader to full screen.
+  const [expanded, setExpanded] = useState(false)
   // M82 S1 — operator artifact edits. `editingId` tracks which artifact's
   // body is currently in edit mode; `draft` is the in-flight buffer. We
   // keep them outside the active-artifact dependency so flipping tabs
@@ -2683,23 +2685,48 @@ function AssetRail({ session, activeStageKey, onSession }: { session: BlueprintS
           <nav className="artifact-tabs">
             {visible.map(artifact => <ArtifactTab key={artifact.id} artifact={artifact} active={artifact.id === active?.id} onClick={() => setActiveArtifactId(artifact.id)} />)}
           </nav>
-          <article className="artifact-reader">
+          <article className={`artifact-reader${expanded ? ' expanded' : ''}`}>
             <div className="artifact-reader-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
               <h3 style={{ margin: 0 }}>{active?.title}</h3>
-              {/* M82 S1 — Edit affordance. Only shown when the workflow's
-                  loopDefinition declares this artifact kind editable.
-                  Read-only artifacts (security findings, qa receipts)
-                  don't get a button at all. */}
-              {active && isActiveEditable && editingId !== active.id && (
-                <button
-                  type="button"
-                  className="ghost-button"
-                  onClick={() => startEdit(active.id, active.content ?? '')}
-                  disabled={editArtifactMutation.isPending}
-                >
-                  Edit
-                </button>
-              )}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {/* Operator request — download this artifact, and expand the reader to full screen. */}
+                {active && (
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    title="Download this artifact"
+                    onClick={() => downloadArtifact(active)}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                  >
+                    <Download size={14} /> Download
+                  </button>
+                )}
+                {active && (
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    title={expanded ? 'Exit full screen' : 'Expand to full screen'}
+                    onClick={() => setExpanded(value => !value)}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                  >
+                    {expanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />} {expanded ? 'Collapse' : 'Expand'}
+                  </button>
+                )}
+                {/* M82 S1 — Edit affordance. Only shown when the workflow's
+                    loopDefinition declares this artifact kind editable.
+                    Read-only artifacts (security findings, qa receipts)
+                    don't get a button at all. */}
+                {active && isActiveEditable && editingId !== active.id && (
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => startEdit(active.id, active.content ?? '')}
+                    disabled={editArtifactMutation.isPending}
+                  >
+                    Edit
+                  </button>
+                )}
+              </div>
             </div>
             {active && editingId === active.id ? (
               <div className="artifact-editor" style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
@@ -4391,6 +4418,32 @@ function renderArtifact(artifact?: BlueprintArtifact) {
   if (!artifact) return ''
   if (artifact.content) return artifact.content
   return JSON.stringify(artifact.payload ?? {}, null, 2)
+}
+
+// Operator request — let artifacts be downloaded straight from the panel. Content is already
+// on the client (artifact.content, or the JSON payload), so no backend round-trip is needed.
+function artifactDownloadName(artifact: BlueprintArtifact): string {
+  const base = (artifact.title || artifact.kind || 'artifact')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-+|-+$)/g, '').slice(0, 80) || 'artifact'
+  const body = artifact.content ?? ''
+  const kind = (artifact.kind ?? '').toLowerCase()
+  let ext = 'md'
+  if (kind.includes('diff') || kind.includes('patch') || body.startsWith('diff --git')) ext = 'diff'
+  else if (!artifact.content && artifact.payload) ext = 'json'
+  else if (kind.includes('json')) ext = 'json'
+  return `${base}.${ext}`
+}
+
+function downloadArtifact(artifact: BlueprintArtifact): void {
+  const blob = new Blob([renderArtifact(artifact)], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = artifactDownloadName(artifact)
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
 }
 
 function sessionOptionLabel(session: BlueprintSession) {
