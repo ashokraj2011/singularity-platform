@@ -172,7 +172,6 @@ declare -a CHECKS=(
   "iam-service|http://localhost:8100/api/v1/health"
   "audit-gov|http://localhost:8500/health"
   "agent-runtime|http://localhost:3003/health"
-  "tool-service|http://localhost:3002/health"
   "agent-service|http://localhost:3001/health"
   "prompt-composer|http://localhost:3004/health"
   "mcp-server|http://localhost:7100/health"

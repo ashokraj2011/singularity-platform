@@ -49,7 +49,7 @@ is_running platform-core && platform_core=1
 
 split_running=0
 split_missing=""
-for service in agent-service tool-service agent-runtime prompt-composer; do
+for service in agent-service agent-runtime prompt-composer; do
   if is_running "$service"; then
     split_running=$((split_running + 1))
   else
@@ -61,17 +61,16 @@ if [ "$platform_core" -eq 1 ] && [ "$split_running" -gt 0 ]; then
   fail "platform-core and split backend services are running together"
 elif [ "$platform_core" -eq 1 ]; then
   ok "agent/tools topology: consolidated platform-core"
-elif [ "$split_running" -eq 4 ]; then
+elif [ "$split_running" -eq 3 ]; then
   ok "agent/tools topology: backend-split"
 elif [ "$split_running" -gt 0 ]; then
-  fail "partial backend-split topology: running $split_running/4; missing:${split_missing}"
+  fail "partial backend-split topology: running $split_running/3; missing:${split_missing}"
 else
   fail "no agent/tools backend topology is running"
 fi
 
 for item in \
   "3001 agent-service" \
-  "3002 tool-service" \
   "3003 agent-runtime" \
   "3004 prompt-composer"; do
   port="${item%% *}"

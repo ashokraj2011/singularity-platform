@@ -31,7 +31,6 @@ EXPECTED_EXPRESS_MAJOR=4
 # Singularity services — not transitive deps under node_modules.
 SERVICE_PACKAGES=(
   "agent-and-tools/apps/agent-service/package.json"
-  "agent-and-tools/apps/tool-service/package.json"
   "agent-and-tools/apps/agent-runtime/package.json"
   "agent-and-tools/apps/prompt-composer/package.json"
   "mcp-server/package.json"
