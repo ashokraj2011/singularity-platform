@@ -140,7 +140,7 @@ Platform Web exposes first-class routes under `localhost:5180` so operators can 
 | **2. Agent Studio** | `http://localhost:5180/agents/studio` → pick the seeded capability from the dropdown | Show the four **Locked** common baselines (Architect / Developer / QA / Governance), click **Derive →** on one, name it. Mention: "derived agents inherit prompt profile + tool policy, become editable by capability owners, audit-gov captures `agent.template.derived`" |
 | **3. Run a workflow** | `http://localhost:5180/workflows` → click **Run a Workflow** → pick "Business Initiative Delivery" → start | The new run lands in `/runs/<id>`. Open a HUMAN_TASK node, attach a file, click Complete. Workflow advances. |
 | **4. Run Insights** | Click the green **Insights →** pill at the top of the run viewer | The M24 dashboard — total duration, per-step Gantt with precise timing (`startedAt`/`completedAt` columns), artifacts list, cost-by-model, full audit timeline keyed to the run. Mention: "every step duration is authoritative, not inferred" |
-| **5. Governance & cost** | `./singularity.sh up --profile audit`, then `http://localhost:5180/audit` and `/cost` | Optional local audit-governance side stack. Show the recent `agent.template.derived`, `cf.execute.completed`, `tool.execution.success`, `llm.call.completed` rows. Then `/cost` for $$ + tokens, with model breakdown. Mention: "the runtime producers — Agent Execution Runtime (`mcp-server`), workgraph-api, tool-service, context-fabric, agent-runtime — fire fire-and-forget events here; pre-flight budget/rate-limit checks happen inline." |
+| **5. Governance & cost** | `./singularity.sh up --profile audit`, then `http://localhost:5180/audit` and `/cost` | Optional local audit-governance side stack. Show the recent `agent.template.derived`, `cf.execute.completed`, `tool.execution.success`, `llm.call.completed` rows. Then `/cost` for $$ + tokens, with model breakdown. Mention: "the runtime producers — Agent Execution Runtime (`mcp-server`), workgraph-api, agent-service (agents + tools), context-fabric, agent-runtime — fire fire-and-forget events here; pre-flight budget/rate-limit checks happen inline." |
 
 ### 6. Optional polish for the demo
 
@@ -184,7 +184,7 @@ Platform routes         http://localhost:5180/operations
 
 Workgraph API            http://localhost:8080
 Agent Runtime API        http://localhost:3003
-Tool Service API         http://localhost:3002
+Agent Service API        http://localhost:3001    agents + tools (tool-service merged in)
 Prompt Composer API      http://localhost:3004
 Context Fabric API       http://localhost:8000
 Agent Execution Runtime               http://localhost:7100
@@ -307,7 +307,7 @@ The launchers free only Singularity-owned app/runtime ports before boot. Storage
 
 ### Blue Workbench cockpit
 
-The `blueprint-workbench` cockpit now runs **in-process** as Platform Web's `/workbench` route — same origin (`:5180`), so the auth token carries and a CALL_WORKFLOW "Open Workbench" launch opens the blue cockpit directly. No separate `:5176` vite server and no `:8085` gateway are needed for bare-metal. Just open `http://localhost:5180/workbench`. (The `:8085` `edge-gateway` Docker service is unrelated — it is the M100 multi-app single-origin entry; see [`edge-gateway/README.md`](edge-gateway/README.md).)
+The blue Blueprint Workbench cockpit now runs **in-process** as Platform Web's `/workbench` route — same origin (`:5180`), so the auth token carries and a CALL_WORKFLOW "Open Workbench" launch opens the blue cockpit directly. `/workbench` *is* the blue cockpit and handles all views internally; the old `/workbench/<view>` native console was removed. The `blueprint-workbench` cockpit (and the `workgraph-web` pages) are now compiled into Platform Web as library source rather than standalone apps, so the standalone `:5176` vite server and the `:8085` `edge-gateway` are no longer needed for the workbench. Just open `http://localhost:5180/workbench`. (The `:8085` `edge-gateway` Docker service remains only as an optional legacy/debug multi-app gateway; see [`edge-gateway/README.md`](edge-gateway/README.md).)
 
 Runtime bridge and Platform Web proxy tokens are also bootstrapped for local bare-metal runs. `bin/bare-metal-runtime.sh up` and the compatibility all-in-one path first reuse `SINGULARITY_RUNTIME_TOKEN`, `SINGULARITY_DEVICE_TOKEN`, or `.singularity/laptop-device-token`; expired/invalid file tokens are discarded. When IAM is reachable, they auto-mint a 90-day `kind=runtime` MCP token through `/auth/device-token` using the configured local admin credentials and save it with `0600` permissions. The app launcher also mints a local `platform-web` service JWT and writes it to `WORKGRAPH_PROXY_SERVICE_TOKEN` plus `PROMPT_COMPOSER_SERVICE_TOKEN` in `.env.local`, so Workgraph and Prompt Composer server-side proxy calls do not show missing deployment-boundary secrets in Operations. Set `SINGULARITY_AUTO_MINT_RUNTIME_TOKEN=false` or `SINGULARITY_AUTO_MINT_PLATFORM_WEB_TOKEN=false` to disable either automatic mint.
 
@@ -374,7 +374,8 @@ export IAM_SERVICE_URL="http://localhost:8100"
 export AUDIT_GOV_URL="http://localhost:8500"
 export PROMPT_COMPOSER_URL="http://localhost:3004"
 export AGENT_RUNTIME_URL="http://localhost:3003"
-export TOOL_SERVICE_URL="http://localhost:3002"
+# tool-service was merged into agent-service; tools are served on :3001 too
+export TOOL_SERVICE_URL="http://localhost:3001"
 export AGENT_SERVICE_URL="http://localhost:3001"
 export CONTEXT_FABRIC_URL="http://localhost:8000"
 # Normal execution uses the Runtime Bridge. Direct MCP HTTP is debug fallback.
@@ -529,15 +530,14 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
  IAM Service                Agent & Tools              Workgraph API
   (:8100)        ┌─prompt-composer (:3004)─┐              (:8080)
                  │  agent-runtime  (:3003) │                 │
-                 │  tool-service   (:3002) │                 │
                  │  agent-service  (:3001) │                 │
+                 │   (agents + tools)      │                 │
                  └─────────────────────────┘                 │
                               │                              │
                               ▼                              │
                     Context Fabric (:8000)                   │
                     llm-gateway (:8001)                      │
                     memory      (:8002)                      │
-                    metrics     (:8003)                      │
                                                              │
               shared IAM JWT and platform policy gates ──────┘
 ```
@@ -575,8 +575,6 @@ The platform layer (M11) and supporting milestones landed as a cohesive set; eve
 | **mcp-server** | MCP runtime relay. Customer-deployed, owns local tools/AST/branches, dials into Context Fabric at `/api/runtime-bridge/connect`, and forwards `model-run` frames to its local/colocated LLM gateway. Direct HTTP `7100` is debug fallback. Ships with an opt-in [Phased Agent Reasoning Model](#phased-agent-reasoning-model-v4) behind `MCP_AGENT_PHASES_ENABLED`. | TypeScript · Express · WebSocket | `7100` debug; outbound runtime bridge |
 | **workgraph-studio** | Visual DAG designer + workflow runtime, Blueprint Workbench stage loop, federated `/api/lookup/*`, snapshot layer, unified `/api/receipts`, event bus + receiver, OTel | React + ReactFlow + Zustand · Express + Prisma · MinIO | `8080` API, postgres `5434`, minio `9000-9001`; UI routes live under Platform Web |
 | **platform-registry** | Service + Contract Registry: every service self-registers on startup with capabilities + OpenAPI/event/node contracts | TypeScript · Express · Postgres | `8090`, postgres `5435` |
-| **UserAndCapabillity** | Legacy/debug visual admin SPA for IAM | React 19 · Vite · Tailwind · Radix · Zustand | `5175` only with legacy/debug profile |
-| **singularity-portal** | Legacy wrapper SPA kept for reference/debug | React 19 · Vite · Tailwind · Radix | `5182` only with legacy/debug profile; default front door is Platform Web `:5180` |
 | **jaeger** (observability) | All-in-one OTel trace UI; receives spans from all instrumented services | docker image | `16686` (UI), `4317`/`4318` (OTLP) |
 
 11 production services. Each owns its database. `capability_id` is the join key across them; joins happen at the application layer, never in SQL.
@@ -686,7 +684,7 @@ It configures:
 
 - Database URLs for IAM, agent-and-tools, and Workgraph.
 - IAM endpoints, with pseudo-IAM kept only as an explicit development helper.
-- Service endpoints for Workgraph, prompt-composer, context-fabric, agent-runtime, tool-service, agent-service, and Agent Execution Runtime.
+- Service endpoints for Workgraph, prompt-composer, context-fabric, agent-runtime, agent-service (agents + merged tools), and Agent Execution Runtime.
 - LLM provider policy and model aliases for the central gateway. Provider policy lives in `.singularity/llm-providers.json`; secrets are passed only to the `llm-gateway` service.
 - Office-safe Copilot-only mode. `./singularity.sh config office-copilot-only` blanks OpenAI/OpenRouter/Anthropic/Ollama access in canonical config and generated env files, writes Copilot-only provider and model catalog files, and fences the gateway to the Copilot provider.
 - Default/local Agent Execution Runtime URL, bearer token, public URL, sandbox root, AST index path, and local work-branch defaults. The Agent Execution Runtime does **not** need to belong to a capability; capability-specific Agent Execution Runtime registration is advanced-only.
@@ -1012,17 +1010,15 @@ Platform Web's npm scripts honor `PORT`; bare-metal uses `PORT=5180`. If an old 
 | Service | URL | Auth | Notes |
 |---------|-----|------|-------|
 | **platform-web** | http://localhost:5180 | IAM JWT | unified UI for operations, agents, workflows, workbench, foundry, and identity |
-| **platform-core** | http://localhost:3001-3004 | optional JWT | one Docker container hosting agent-service, tool-service, agent-runtime, and prompt-composer |
+| **platform-core** | http://localhost:3001,3003,3004 | optional JWT | one Docker container hosting agent-service (agents + tools), agent-runtime, and prompt-composer |
 | **iam-service** | http://localhost:8100/api/v1 | bearer (login) | OpenAPI: `/docs` |
 | **workgraph-api** | http://localhost:8080/api | workgraph token | DAG runtime, Workbench, WorkItems, and `/api/codegen` |
 | **prompt-composer** | http://localhost:3004/api/v1 | optional JWT | `/compose-and-respond`, served by `platform-core` |
 | **agent-runtime** | http://localhost:3003/api/v1 | optional JWT | agent templates, memory, served by `platform-core` |
-| **tool-service** | http://localhost:3002/api/v1 | optional JWT | tool registry, `/tools/discover`, `/tools/invoke`, served by `platform-core` |
-| **agent-service** | http://localhost:3001/api/v1 | optional JWT | agent CRUD, served by `platform-core` |
+| **agent-service** | http://localhost:3001/api/v1 | optional JWT | agent CRUD plus the merged tool registry (`/api/v1/agents` and `/api/v1/tools`, including `/tools/discover` and `/tools/invoke`); served by `platform-core`. tool-service was merged here, so there is no separate `:3002` |
 | **context-api** | http://localhost:8000 | service token for internal routes | `/execute`, `/execute/events`, legacy `/chat/respond` |
 | **llm-gateway** | http://localhost:8001 | none | `/llm/respond`, `/llm/models`, `/docs` |
-| **context-memory** | http://localhost:8002 | none | `/memory/messages`, `/context/compile` |
-| **metrics-ledger** | http://localhost:8003 | none | `/metrics/dashboard` |
+| **context-memory** | http://localhost:8002 | none | `/memory/messages`, `/context/compile` (optional/profile) |
 | **at-postgres** | localhost:5432 | `postgres / singularity` | `singularity`, `singularity_iam`, `singularity_composer`, `singularity_context_fabric`; legacy `singularity_codegen` only for old Foundry imports |
 | **iam-postgres** | localhost:5433 | `singularity / singularity` | deprecated profile only; do not seed this for the default stack |
 | **wg-postgres** | localhost:5434 | `workgraph / workgraph_secret` | `workgraph` DB, including workflow and Foundry code-generation evidence |
@@ -1316,7 +1312,7 @@ non-preview composer call also delegates to `/execute`, not `/chat/respond`.
 2. Loads the template's base profile + binding overlay layers
 3. Adds capability context, knowledge artifacts, distilled memory layers
 4. Adds workflow-phase layers
-5. Builds a `TOOL_CONTRACT` layer from static grants + `tool-service /tools/discover`, with **both** JSON Schema and natural-language summary per tool
+5. Builds a `TOOL_CONTRACT` layer from static grants + agent-service `/tools/discover` (the merged tool registry), with **both** JSON Schema and natural-language summary per tool
 6. Renders artifacts as `ARTIFACT_CONTEXT` layers (priority 600) — supports inline `content`, pre-extracted `excerpt`, or `minioRef` (placeholder; full fetch is M4.1 work)
 7. Adds `TASK_CONTEXT` (priority 900)
 8. Appends node-level `EXECUTION_OVERRIDE` layers (priority 9999)
@@ -1707,10 +1703,9 @@ branding/
 
 # Output:
 #   ✓ synced → platform-web public assets
-#   ✓ synced → UserAndCapabillity/public/
 #   ✓ synced → agent-and-tools/web/public/
 #   ✓ synced → workgraph-studio/apps/web/public/
-#   ✓ 4 app(s) updated.
+#   ✓ 3 app(s) updated.
 ```
 
 Re-run any time the canonical files change. Each app loads `/singularity-mark.png` (with `/singularity-logo.png` as a graceful fallback) from its own `public/` root, so cross-domain CORS is never a concern.
@@ -1745,21 +1740,20 @@ SingularityNeoNew/
 ├── singularity-iam-service/    # Python FastAPI — identity
 ├── agent-and-tools/            # TS monorepo — agents/tools/composer/runtime
 │   ├── apps/
-│   │   ├── agent-service/
-│   │   ├── tool-service/
+│   │   ├── agent-service/      # agents + merged tool registry (tool-service folded in)
 │   │   ├── agent-runtime/
-│   │   └── prompt-composer/    # NEW (composition plane)
+│   │   └── prompt-composer/    # composition plane
 │   ├── packages/
-│   ├── web/                    # Next.js admin
+│   ├── web/                    # Next.js — the canonical platform-web (:5180)
 │   └── docker-compose.yml      # per-app compose (alternative to master)
 ├── context-fabric/             # Python — 4× FastAPI for LLM optimization
 ├── workgraph-studio/           # TS pnpm workspace — DAG designer + runtime
 │   ├── apps/api/               # Express + Prisma
-│   ├── apps/web/               # React + ReactFlow
+│   ├── apps/web/               # React + ReactFlow — now library source compiled into platform-web
+│   ├── apps/blueprint-workbench/ # blue cockpit — now library source compiled into platform-web
 │   ├── packages/{shared-types,engine}/
 │   └── infra/docker/docker-compose.yml
-├── UserAndCapabillity/         # React + Vite — IAM admin SPA
-└── singularity-portal/         # legacy wrapper SPA; default front door is agent-and-tools/web
+└── edge-gateway/               # optional legacy/debug multi-app gateway (frontend-legacy profile)
 ```
 
 ---
@@ -1768,5 +1762,5 @@ SingularityNeoNew/
 
 Internal Singularity Neo platform. See per-app READMEs for component-level details:
 
-- [UserAndCapabillity/README.md](./UserAndCapabillity/README.md)
+- [docs/README.md](./docs/README.md)
 - [context-fabric/README.md](./context-fabric/README.md)

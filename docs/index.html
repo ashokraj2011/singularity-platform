@@ -413,14 +413,13 @@ curl -s -X POST http://localhost:8500/api/v1/governance/budgets \
 <thead><tr><th>Service</th><th>URL</th><th>Plane</th><th>Notes</th></tr></thead>
 <tbody>
 <tr><td><strong>platform-web</strong></td><td><code>:5180</code></td><td>Control</td><td>Unified Next.js shell for operations, agents, workflows, workbench, foundry, identity, audit, and cost</td></tr>
-<tr><td><strong>portal / split web UIs</strong></td><td><code>:5182 / :5174 / :5175 / :5176 / :5181 / :8085</code></td><td>Debug</td><td>Legacy frontend profile only; not part of the normal stack</td></tr>
+<tr><td><strong>edge-gateway / blueprint-workbench</strong></td><td><code>:8085 / :5176</code></td><td>Debug</td><td>frontend-legacy debug profile only; portal, identity (UserAndCapability), and code-foundry-web split UIs were removed — those surfaces are native in platform-web</td></tr>
 <tr><td><strong>iam-service</strong></td><td><code>:8100/api/v1</code></td><td>Control</td><td>Real IAM with OpenAPI at <code>/docs</code></td></tr>
 <tr><td><strong>workgraph-api</strong></td><td><code>:8080/api</code></td><td>Orchestration</td><td>DAG runtime, executors, insights endpoint, and Foundry <code>/api/codegen</code></td></tr>
-<tr><td><strong>platform-core</strong></td><td><code>:3001-:3004</code></td><td>Data / composition</td><td>One Docker container hosting agent-service, tool-service, agent-runtime, and prompt-composer while preserving their existing API ports</td></tr>
+<tr><td><strong>platform-core</strong></td><td><code>:3001 / :3003 / :3004</code></td><td>Data / composition</td><td>One Docker container hosting agent-service (serves agents + tools), agent-runtime, and prompt-composer</td></tr>
 <tr><td><strong>prompt-composer</strong></td><td><code>:3004/api/v1</code></td><td>Composition</td><td><code>/compose-and-respond</code>; served by <code>platform-core</code> in Docker</td></tr>
 <tr><td><strong>agent-runtime</strong></td><td><code>:3003/api/v1</code></td><td>Data</td><td>Agent templates, memory, derivation; served by <code>platform-core</code> in Docker</td></tr>
-<tr><td><strong>tool-service</strong></td><td><code>:3002/api/v1</code></td><td>Data</td><td>Tool registry, discovery, invocation; served by <code>platform-core</code> in Docker</td></tr>
-<tr><td><strong>agent-service</strong></td><td><code>:3001/api/v1</code></td><td>Data</td><td>Agent CRUD; served by <code>platform-core</code> in Docker</td></tr>
+<tr><td><strong>agent-service</strong></td><td><code>:3001/api/v1</code></td><td>Data</td><td>Agent CRUD + tool registry, discovery, invocation (tool-service merged in); served by <code>platform-core</code> in Docker</td></tr>
 <tr><td><strong>context-api</strong></td><td><code>:8000</code></td><td>Optimization</td><td><code>/execute</code>, <code>/chat/respond</code></td></tr>
 <tr><td>at-postgres</td><td><code>:5432</code></td><td>—</td><td>Shared app/IAM Postgres: <code>singularity</code>, <code>singularity_iam</code>, Context Fabric, and composer</td></tr>
 <tr><td>wg-postgres</td><td><code>:5434</code></td><td>—</td><td><code>workgraph</code> DB, including Foundry run history, artifacts, and receipts</td></tr>
@@ -730,7 +729,7 @@ if (!budgetRes.allowed) {
 </tbody>
 </table>
 
-<h3>tool-service (<code>:3002/api/v1</code>)</h3>
+<h3>Tools — served by agent-service (<code>:3001/api/v1</code>, tool-service merged in)</h3>
 <table>
 <thead><tr><th>Endpoint</th><th>Purpose</th></tr></thead>
 <tbody>

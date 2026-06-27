@@ -17,9 +17,13 @@ Every patch passes a mechanical guard before it touches disk.
 singularity-code-foundry/
 ├── packages/
 │   └── feature-flags/      M42.0 — shared admin-gate client
-└── (apps/code-foundry-api  arrives in M42.1)
-└── (apps/code-foundry-web  arrives in M42.6)
+└── apps/
+    └── code-foundry-api    backend service
 ```
+
+The Foundry **frontend** is not a separate app — the Foundry UI is native
+in platform-web at `/foundry` (see `agent-and-tools/web/src/app/foundry/`).
+The former standalone `apps/code-foundry-web` has been removed.
 
 ## Admin gate
 

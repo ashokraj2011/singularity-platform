@@ -75,7 +75,7 @@ Optional local runtime infrastructure:
 For remote deployments, leave those profiles off and configure the service URLs/tokens instead.
 If a previous `--full` run left optional containers running, `./singularity.sh core-only` stops the optional/runtime containers without deleting volumes and brings the product core back up.
 The Operations readiness pages also expose `/api/runtime-infrastructure`, which separates required core service health from optional or remotely deployed runtime services such as MCP, LLM Gateway, Formal Verifier, and audit-governance.
-Foundry routes are part of the core UI and are backed by Workgraph's `/api/codegen` routes. The standalone `code-foundry-api` container is no longer part of the normal stack; the old standalone `code-foundry-web` dev server remains behind the shared `frontend-legacy` debug profile.
+Foundry routes are native to the core UI at `/foundry` and are backed by Workgraph's `/api/codegen` routes. The standalone `code-foundry-api` container is no longer part of the normal stack, and the old standalone `code-foundry-web` dev server has been removed (`singularity-code-foundry/apps/code-foundry-web` is deleted); foundry now lives entirely inside Platform Web.
 
 When upgrading an existing local or server deployment, run `bin/migrate-code-foundry-to-workgraph.sh` once after Workgraph migrations have applied. It imports legacy `singularity_codegen` runs, artifacts, gaps, LLM patch tasks, verification rows, and receipts into Workgraph, and hydrates artifact content when old workspace files are still present. Use `CODE_FOUNDRY_IMPORT_TENANT_ID=<tenant-id>` if imported rows must be assigned to a tenant immediately.
 
@@ -98,7 +98,7 @@ docker compose build platform-core platform-web
 docker compose up -d --no-deps platform-core platform-web
 ```
 
-Normal `docker compose config --services` should include `platform-web` and `platform-core`, and should not include the old split frontend services. The old UIs are retained only under the `frontend-legacy` profile for debugging/backward compatibility; the legacy portal is on `:5182` so it no longer competes with Platform Web on `:5180`.
+Normal `docker compose config --services` should include `platform-web` and `platform-core`, and should not include the old split frontend services. The standalone portal, UserAndCapability, and code-foundry-web apps have been deleted; `workgraph-web` and `blueprint-workbench` are now library source compiled into `platform-web`. The only legacy front-end artifact left is the optional `edge-gateway` multi-app gateway under the `frontend-legacy` profile, kept purely for debugging/backward compatibility and not needed for normal operation.
 The old split agent/tools backend containers remain available for debugging through `./singularity.sh backend-split` or `COMPOSE_PROFILES=backend-split docker compose up -d`. Do not combine `core` and `backend-split`; both layouts publish ports `3001-3004`. Return to the default consolidated layout with `./singularity.sh core-only`.
 
 To inspect the active shape after install or restart:
@@ -107,7 +107,7 @@ To inspect the active shape after install or restart:
 ./singularity.sh topology
 ```
 
-The default Docker topology should report `platform-core` as the active agent/tools plane and show `agent-service`, `tool-service`, `agent-runtime`, and `prompt-composer` as API ports served by that one container. In `backend-split`, those four services run as separate debug containers instead.
+The default Docker topology should report `platform-core` as the active agent/tools plane and show `agent-service` (now serving both agents and the merged tool registry), `agent-runtime`, and `prompt-composer` as API ports served by that one container. In `backend-split`, those services run as separate debug containers instead.
 
 The default core stack currently has 8 running containers: `platform-web`, `platform-core`, `iam-service`, `workgraph-api`, `context-api`, `at-postgres`, `wg-postgres`, and `wg-minio`. `llm-gateway`, `mcp-server`, verification, compression, audit-governance, and legacy split UIs are optional profiles or remote services. `./singularity.sh topology` is the authoritative local inventory; it also fails if legacy frontend containers are running next to `platform-web` or if split agent/tools containers are mixed with `platform-core`.
 
@@ -233,4 +233,4 @@ For the narrower agent/tools backend topology, run:
 bash bin/check-agent-tools-topology.sh
 ```
 
-That checker confirms the stack is running either one consolidated `platform-core` container or the full split debug backend set, then probes `agent-service`, `tool-service`, `agent-runtime`, and `prompt-composer` health.
+That checker confirms the stack is running either one consolidated `platform-core` container or the full split debug backend set, then probes `agent-service` (agents + merged tools), `agent-runtime`, and `prompt-composer` health.

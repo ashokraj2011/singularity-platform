@@ -72,7 +72,7 @@ flowchart LR
   Web --> IAM["IAM Service"]
   Web --> WGAPI["Workgraph API"]
   Web --> AgentRuntime["Agent Runtime"]
-  Web --> ToolService["Tool Service"]
+  Web --> AgentService["Agent Service (agents + tools)"]
   Web --> PromptComposer["Prompt Composer"]
   Web --> ContextAPI["Context Fabric API"]
 
@@ -83,21 +83,21 @@ flowchart LR
 
   AER --> LLMGateway["LLM Gateway"]
   AER --> Runner["Runtime Sandbox Runner"]
-  AER --> ToolService
+  AER --> AgentService
   AER --> FormalVerifier["Formal Verifier"]
 
   WGAPI --> MinIO["MinIO Artifacts"]
   WGAPI --> WGDB["Workgraph Postgres"]
   IAM --> IAMDB["IAM Postgres"]
   AgentRuntime --> ATDB["Agent Runtime Postgres"]
-  ToolService --> ATDB
+  AgentService --> ATDB
   PromptComposer --> ATDB
   ContextAPI --> CFDB["Context Fabric Stores"]
 
   WGAPI --> AuditGov["Audit Governance"]
   ContextAPI --> AuditGov
   AER --> AuditGov
-  ToolService --> AuditGov
+  AgentService --> AuditGov
   AgentRuntime --> AuditGov
   AuditGov --> AuditDB["Audit Postgres"]
   AuditGov --> Metrics["Metrics Ledger"]
@@ -127,8 +127,8 @@ Run `./singularity.sh urls` to print the current local endpoint map, and `./sing
 
 | Service | Local URL | Purpose |
 |---|---:|---|
-| `platform-web` | `http://localhost:5180` | Unified Next.js shell for operations, agents, workflows, workbench, foundry, identity, audit, and cost routes. |
-| Legacy split UIs | debug profile only | `portal`, `workgraph-web`, `blueprint-workbench`, `user-and-capability`, and `code-foundry-web` are no longer part of the normal UI stack. |
+| `platform-web` | `http://localhost:5180` | The single Next.js frontend for operations, agents, workflows (runs and work-items), workbench, foundry, identity, audit, and cost routes — all same-origin. The Blueprint Workbench cockpit runs in-process as the `/workbench` route; `workgraph-web` and `blueprint-workbench` are library source compiled into this image (workgraph-web uses native Next routing, react-router removed). |
+| `edge-gateway` | optional, `http://localhost:8085` | Optional legacy/debug gateway only; not used by the normal stack and not required for the in-process `/workbench` cockpit. |
 
 ### API and Runtime Services
 
@@ -136,10 +136,9 @@ Run `./singularity.sh urls` to print the current local endpoint map, and `./sing
 |---|---:|---|
 | `iam-service` | `http://localhost:8100/api/v1` | Authentication, JWTs, users, teams, roles, capabilities, memberships, and permissions. |
 | `workgraph-api` | `http://localhost:8080/api` | WorkItems, workflows, workflow instances, tasks, approvals, metadata, triggers, artifact orchestration, runs, and `/api/codegen`. |
-| `platform-core` | `http://localhost:3001-3004` | One Docker container hosting the agent-and-tools backend APIs while preserving their existing public ports and service DNS names. |
+| `platform-core` | `http://localhost:3001,3003,3004` | One Docker container hosting the three consolidated agent backends (agent-service with tools, agent-runtime, prompt-composer) while preserving their existing public ports and service DNS names. |
 | `agent-runtime` | `http://localhost:3003/api/v1` | Agent templates, tools metadata, capabilities, execution records, memory APIs, and event subscriptions; served by `platform-core` in Docker. |
-| `agent-service` | `http://localhost:3001/api/v1` | Agent application APIs and UI-facing agent service behavior; served by `platform-core` in Docker. |
-| `tool-service` | `http://localhost:3002/api/v1` | Tool registry, internal tools, connector tools, runner routes, and tool discovery; served by `platform-core` in Docker. |
+| `agent-service` | `http://localhost:3001/api/v1` | Agent application APIs plus the merged tool service: tool registry, internal tools, connector tools, runner routes, and tool discovery (former `tool-service`, now folded in; no `:3002`). Hybrid learning routes are also folded in here. Served by `platform-core` in Docker. |
 | `prompt-composer` | `http://localhost:3004/api/v1` | Prompt profiles, layers, assemblies, stage prompts, lessons, contracts, and compose/respond APIs; served by `platform-core` in Docker. |
 | `context-api` | `http://localhost:8000` | Context Fabric execution API, optimized context, Runtime Bridge, receipts, and Agent Execution Runtime orchestration. |
 | `llm-gateway` | `http://localhost:8001` | Optional/deployable provider abstraction colocated behind MCP runtime for `model-run`, model aliases, chat completions, embeddings, model/provider listing. |
@@ -192,23 +191,20 @@ closed if it can bypass row security.
 | `docker-compose.yml` | Main local stack definition. |
 | `seed/` | Baseline seed SQL for IAM, agent runtime, Workgraph, and audit governance. |
 | `workgraph-studio/apps/api` | Workgraph API. |
-| `workgraph-studio/apps/web` | Legacy/debug Workgraph web app; canonical routes live in `agent-and-tools/web`. |
-| `workgraph-studio/apps/blueprint-workbench` | Legacy/debug Workbench Neo UI; canonical route is `/workbench` in Platform Web. |
+| `workgraph-studio/apps/web` | `workgraph-web` library source compiled into `platform-web` (native Next routing, react-router removed); not a standalone app. |
+| `workgraph-studio/apps/blueprint-workbench` | Blueprint Workbench cockpit library source compiled into `platform-web` and served in-process at the `/workbench` route; not a standalone app. |
 | `workgraph-studio/apps/sgl-cli` | Laptop CLI for work, attach, questions, logs, doctor, and Copilot workflows. |
 | `workgraph-studio/apps/desktop` | Electron desktop app for laptop-driven Copilot execution. |
 | `workgraph-studio/packages/laptop-sdk` | Shared SDK used by CLI and desktop. |
 | `agent-and-tools/apps/agent-runtime` | Agent templates, capabilities, execution, and memory APIs. |
-| `agent-and-tools/apps/tool-service` | Tool registry and connector tool service. |
+| `agent-and-tools/apps/agent-service` | Agent application APIs plus the merged tool service (tool registry and connector tools) and folded-in hybrid learning routes. |
 | `agent-and-tools/apps/prompt-composer` | Prompt profiles, layers, assemblies, lessons, and contracts. |
-| `agent-and-tools/apps/learning-service` | Deprecated source marker; hybrid learning routes are folded into `agent-service`. |
 | `agent-and-tools/web` | Canonical Platform Web Next.js app and single frontend Docker image. |
 | `mcp-server` | Agent Execution Runtime implementation: code intelligence, editing tools, verification, discovery, code context, LLM invocation. |
 | `mcp-sandbox-runner` | Sandboxed command execution service. |
 | `context-fabric` | Context API, LLM gateway, memory, metrics, and formal verification services. |
-| `singularity-iam-service` | IAM Python service. |
-| `singularity-portal` | Legacy wrapper SPA retained for debug/backward compatibility. |
-| `UserAndCapabillity` | Legacy user and capability management UI retained for debug/backward compatibility. |
-| `singularity-code-foundry` | Legacy generator source/examples retained for migration reference; live `/foundry` APIs are Workgraph-owned. |
+| `singularity-iam-service` | IAM Python service. Identity administration is native in `platform-web` at `/identity` (the `UserAndCapability` app was deleted). |
+| `singularity-code-foundry` | Legacy generator source/examples retained for migration reference; Foundry is native in `platform-web` at `/foundry` and `/foundry` APIs are Workgraph-owned (the `code-foundry-web` app was deleted). |
 | `docs/` | Architecture, data model, discovery, trace, and platform documentation. |
 
 ## 7. Major Capabilities And Features
@@ -310,7 +306,7 @@ Common node families:
 
 ### 7.7 Blueprint Workbench Neo
 
-Workbench Neo is the staged story-to-delivery loop for agent-driven delivery.
+Workbench Neo is the staged story-to-delivery loop for agent-driven delivery. Its cockpit runs in-process as the `/workbench` route in Platform Web (compiled from `blueprint-workbench` library source); there is no standalone cockpit on `:5176`, no `:8085` gateway for it, and the old green native console at `/workbench/<view>` was removed.
 
 Common stages:
 
@@ -466,7 +462,7 @@ Core features:
 - Cost and token rollups.
 - Receipts.
 - Run and capability correlation.
-- Events for Agent Execution Runtime, Context Fabric, Workgraph, Tool Service, and Agent Runtime.
+- Events for Agent Execution Runtime, Context Fabric, Workgraph, Agent Service (agents and the merged tools subsystem), and Agent Runtime.
 
 ### 7.15 Learning Loop
 
@@ -706,7 +702,7 @@ Provider manifests can be signed with `X-Manifest-Key-Id` and `X-Manifest-Signat
 
 Source-backed skills also pass through an SSRF guard before Agent Runtime previews URL documents or fetches provider manifests during resolution. Source URLs must be absolute `http`/`https` URLs, cannot include embedded credentials, and cannot target localhost, private/link-local/reserved networks, or cloud metadata hostnames. `AGENT_SOURCE_ALLOW_PRIVATE_URLS=true` is available only for deliberate local development against a private test manifest; production-class doctor and deploy preflight require `AGENT_SOURCE_ALLOW_PRIVATE_URLS=false`.
 
-Tool-service requires a resolved profile capability set on governed discovery and invocation requests as `effective_capabilities` or `effectiveCapabilities`. That set is authoritative: `/api/v1/tools/discover` hides tools that do not have `invoke`, and `/api/v1/tools/invoke` blocks calls whose `requested_capability_id` / `requestedCapabilityId` is missing or lacks the requested permission. If the set is omitted, tool-service fails closed by default; set `TOOL_EFFECTIVE_CAPABILITY_REQUIRED=false` only for a deliberate legacy migration window.
+The tool subsystem (merged into `agent-service` on `:3001`, formerly `tool-service`) requires a resolved profile capability set on governed discovery and invocation requests as `effective_capabilities` or `effectiveCapabilities`. That set is authoritative: `/api/v1/tools/discover` hides tools that do not have `invoke`, and `/api/v1/tools/invoke` blocks calls whose `requested_capability_id` / `requestedCapabilityId` is missing or lacks the requested permission. If the set is omitted, tool-service fails closed by default; set `TOOL_EFFECTIVE_CAPABILITY_REQUIRED=false` only for a deliberate legacy migration window.
 
 Server-side tool invocation is also endpoint-scoped. Tool-service only fetches `runtime.endpoint_url` values that match `TOOL_SERVER_ENDPOINT_ALLOWLIST`; when unset, the allowlist is limited to the seeded internal `/api/v1/internal-tools` and `/api/v1/connector-tools` prefixes on tool-service. External/API skills that need `invoke` must add exact `https://...` provider invocation prefixes. Metadata hosts, Docker host aliases, loopback/private IP targets outside the baked internal tool-service routes, and URLs with embedded credentials are blocked even if an unsafe allowlist is configured.
 
@@ -716,9 +712,9 @@ Mutating and high-risk MCP tool calls are also grant-bound in production. Contex
 
 Prompt Composer renders the same effective capability metadata into the prompt stack. Tool blocks and agent skill-source layers include source type, source reference, read-only/provider-locked state, and the clamped effective permissions; provider-advertised `invoke`, `configure`, or `edit` permissions are not shown to the model when the profile/source is read-only or provider-locked.
 
-### 9.6 Tool Service API
+### 9.6 Tool API (Merged Into Agent Service)
 
-Mounted under `http://localhost:3002/api/v1`.
+The former `tool-service` is merged into `agent-service`; these routes are served under `http://localhost:3001/api/v1` (there is no `:3002`).
 
 Important endpoints:
 
@@ -744,7 +740,7 @@ Install:
 Keep these ports available:
 
 ```text
-3001, 3002, 3003, 3004
+3001 (agent-service, agents + merged tools), 3003, 3004
 5180
 7100 (optional MCP)
 8000, 8001 optional LLM gateway, 8010 optional verifier, 8011 optional compressor
@@ -863,10 +859,10 @@ Open `http://localhost:5180` for the unified Platform Web shell:
 
 - `/operations` for readiness, setup, and service health.
 - `/agents` and `/agents/studio` for Agent Studio.
-- `/workflows` for workflow manager routes.
-- `/workbench` for Blueprint Workbench routes.
-- `/foundry` for Code Foundry routes.
-- `/identity` for IAM administration.
+- `/workflows` for workflow manager routes, including runs and work-items.
+- `/workbench` for the Blueprint Workbench cockpit, which runs in-process in Platform Web (no `:5176` standalone, no `:8085` gateway; the old native console at `/workbench/<view>` was removed).
+- `/foundry` for Code Foundry routes (native in Platform Web).
+- `/identity` for IAM administration (native in Platform Web).
 
 If an older deployment has rows in the retired `singularity_codegen` database, run `bin/migrate-code-foundry-to-workgraph.sh` once after Workgraph migrations apply. The importer hydrates artifact file content when the old `/workspace` files still exist. Set `CODE_FOUNDRY_IMPORT_TENANT_ID=<tenant-id>` when importing into strict tenant-isolated environments.
 
@@ -880,6 +876,7 @@ Important local files:
 - `.singularity/llm-providers.json`
 - `.singularity/llm-models.json`
 - generated service env files created by `./singularity.sh config write`
+- `.env.local` — shared service secrets are auto-generated at boot and persisted here, so the cross-service tokens stay stable across restarts without manual minting.
 
 ### 11.2 Common Environment Areas
 
@@ -1303,7 +1300,7 @@ Before a platform release:
 - [Prompt Composer Runtime Reads](./data-model/03-prompt-composer-runtime-read.md)
 - [Workgraph Data Model](./data-model/04-workgraph.md)
 - [Audit Governance Data Model](./data-model/05-audit-gov.md)
-- [Tool Service Data Model](./data-model/06-tool-service.md)
+- [Tool Data Model](./data-model/06-tool-service.md)
 - [Runtime Discovery](./runtime-discovery.md)
 - [Trace Contract](./trace-contract.md)
 - [M35 Hybrid Learning ADR](./adr/0001-m35-hybrid-learning.md)

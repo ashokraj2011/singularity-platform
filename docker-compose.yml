@@ -3,7 +3,7 @@
 # Brings up the core Singularity product stack by default:
 #   - IAM (shared Postgres :5432 + iam-service :8100)
 #   - platform-core (one agent-and-tools backend container exposing
-#                    agent-service :3001 + tool-service :3002
+#                    agent-service :3001 (serves agents + tools)
 #                    + agent-runtime :3003 + prompt-composer :3004)
 #   - context-fabric API (:8000)
 #     [M65: metrics-ledger sunset — savings analytics moved to audit-gov :8500]
@@ -44,8 +44,7 @@
 #
 # Port map (host → container):
 #   5180 platform-web (unified Next.js platform UI)
-#   3001 agent-service             3002 tool-service           3003 agent-runtime
-#   3004 prompt-composer
+#   3001 agent-service (agents+tools)   3003 agent-runtime   3004 prompt-composer
 #   5182/5174/5175/5176/5181/8085 legacy frontend debug profile only
 #   5432 shared app/IAM postgres   5433 deprecated IAM postgres profile only
 #   5434 workgraph postgres
@@ -216,7 +215,7 @@ services:
       IAM_SERVICE_TOKEN_TENANT_IDS: ${IAM_SERVICE_TOKEN_TENANT_IDS:-}
       IAM_BOOTSTRAP_USERNAME: ${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
       IAM_BOOTSTRAP_PASSWORD: ${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
-      TOOL_SERVICE_URL: http://tool-service:3002
+      TOOL_SERVICE_URL: http://agent-service:3001
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       CONTEXT_FABRIC_URL: http://context-api:8000
       CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
@@ -241,7 +240,6 @@ services:
       EMBEDDING_MODEL_ALIAS: ${EMBEDDING_MODEL_ALIAS:-}
     ports:
       - "3001:3001"
-      - "3002:3002"
       - "3003:3003"
       - "3004:3004"
     depends_on:
@@ -308,47 +306,6 @@ services:
     # M35.3 — healthcheck so dependent services can use condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3001/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 15s
-    # M35.3 — resource limits (app services default: 2G memory / 1 CPU)
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: '1.0'
-
-  tool-service:
-    build:
-      context: ./agent-and-tools
-      dockerfile: apps/tool-service/Dockerfile
-    container_name: singularity-tool-service
-    # M65 Slice 2A — compose profiles.
-    profiles: [backend-split]
-    environment:
-      NODE_ENV: development
-      APP_ENV: ${APP_ENV:-${SINGULARITY_ENV:-development}}
-      ENVIRONMENT: ${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}
-      SINGULARITY_ENV: ${SINGULARITY_ENV:-${APP_ENV:-development}}
-      AUTH_OPTIONAL: ${AUTH_OPTIONAL:-true}
-      PORT: 3002
-      DATABASE_URL: postgresql://postgres:singularity@at-postgres:5432/singularity
-      IAM_SERVICE_URL: http://iam-service:8100
-      JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
-      MCP_SERVER_URL: ${MCP_SERVER_INTERNAL_URL:-http://mcp-server:7100}
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5180}
-    ports:
-      - "3002:3002"
-    depends_on:
-      at-postgres:
-        condition: service_healthy
-    volumes:
-      - ./agent-and-tools/apps/tool-service/src:/app/apps/tool-service/src
-    # M35.3 — healthcheck so dependent services can use condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:3002/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -461,7 +418,7 @@ services:
       DATABASE_URL_RUNTIME_READ: postgresql://postgres:singularity@at-postgres:5432/singularity
       JWT_SECRET: ${JWT_SECRET:-changeme_dev_only_min_32_chars_long!!}
       LOG_LEVEL: info
-      TOOL_SERVICE_URL: http://tool-service:3002
+      TOOL_SERVICE_URL: http://agent-service:3001
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       CONTEXT_FABRIC_URL: http://context-api:8000
       CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}
@@ -512,9 +469,8 @@ services:
   # M67 Slice 1A — learning-service was folded into agent-service. The routes
   # (/api/v1/failures, /patterns, /state, /similar-capabilities, /summarize)
   # are now served by singularity-agent-service on :3001 against the
-  # `learning.*` schema in the `singularity` DB. The standalone code lives
-  # under agent-and-tools/apps/learning-service/ as a deprecation marker
-  # for one operator cycle.
+  # `learning.*` schema in the `singularity` DB. The standalone learning-service
+  # code has been removed (deprecation cycle complete).
 
   platform-web:
     build:
@@ -531,12 +487,12 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}
       SINGULARITY_ENV: ${SINGULARITY_ENV:-${APP_ENV:-development}}
       NEXT_PUBLIC_AGENT_SERVICE_URL: http://localhost:3001
-      NEXT_PUBLIC_TOOL_SERVICE_URL: http://localhost:3002
+      NEXT_PUBLIC_TOOL_SERVICE_URL: http://localhost:3001
       NEXT_PUBLIC_AGENT_RUNTIME_URL: http://localhost:3003
       NEXT_PUBLIC_PROMPT_COMPOSER_URL: http://localhost:3004
       NEXT_PUBLIC_WORKGRAPH_WEB_URL: /workflows
       AGENT_SERVICE_URL: http://agent-service:3001
-      TOOL_SERVICE_URL: http://tool-service:3002
+      TOOL_SERVICE_URL: http://agent-service:3001
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       PROMPT_COMPOSER_URL: http://prompt-composer:3004
       WORKGRAPH_API_URL: http://workgraph-api:8080
@@ -1075,7 +1031,7 @@ services:
       IAM_BOOTSTRAP_USERNAME: ${IAM_BOOTSTRAP_USERNAME:-admin@singularity.local}
       IAM_BOOTSTRAP_PASSWORD: ${IAM_BOOTSTRAP_PASSWORD:-Admin1234!}
       AGENT_SERVICE_URL: http://agent-service:3001
-      TOOL_SERVICE_URL: http://tool-service:3002
+      TOOL_SERVICE_URL: http://agent-service:3001
       AGENT_RUNTIME_URL: http://agent-runtime:3003
       AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
       AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}

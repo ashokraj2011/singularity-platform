@@ -42,9 +42,9 @@ later inside a run with `spawn copilot ENOENT`.
  │  llm-gateway   :8001        │            │  context-api (Context Fabric) :8000   │
  │  mcp-server    :7100        │            │  workgraph-api  :8080                 │
  │  + Copilot CLI              │◀──────────▶│  iam-service / platform-core          │
- │  + git creds (GITHUB_TOKEN) │   bridge   │  (agent/tool/runtime/composer APIs)   │
- │  + BYOK provider key        │     or     │                                       │
- │                             │   direct   │  platform-web :5180                   │
+ │  + git creds (GITHUB_TOKEN) │   bridge   │  (agent-service=agents+tools,         │
+ │  + BYOK provider key        │     or     │   agent-runtime, composer APIs)       │
+ │                             │   direct   │  platform-web :5180 (single frontend) │
  │                             │   HTTP     │  Postgres (wg :5434, at :5432) / MinIO│
  └────────────────────────────┘            └─────────────────────────────────────┘
 ```
@@ -56,9 +56,9 @@ later inside a run with `spawn copilot ENOENT`.
 | Copilot CLI / local model | — | **Laptop** | external |
 | context-api (Context Fabric) | 8000 | Box | Docker |
 | workgraph-api | 8080 | Box | Docker |
-| iam / platform-core | 8100 / 3001-3004 | Box | Docker |
-| platform-web | 5180 | Box | Docker |
-| legacy split UIs / edge-gateway | 5174 / 5175 / 5176 / 5181 / 8085 | Box | Docker, debug profile only |
+| iam / platform-core (agent-service=agents+tools, agent-runtime, prompt-composer) | 8100 / 3001 · 3003 · 3004 | Box | Docker |
+| platform-web (single frontend — operations, agents, workflows, workbench, foundry, identity; cockpit in-process at /workbench) | 5180 | Box | Docker |
+| edge-gateway (optional legacy/debug only) | 8085 | Box | Docker, debug profile only |
 | Postgres (workgraph / app) + MinIO | 5434 / 5432 / 9000 | Box | Docker |
 
 **Why the laptop:** provider keys, `GITHUB_TOKEN`, the Copilot CLI, and the work-item code sandbox never leave the laptop. The box stores work-items, workflow state, audit, prompts, and approvals.
@@ -104,7 +104,7 @@ docker compose --profile compression up -d prompt-compressor
 export JWT_SECRET=<shared> MCP_BEARER_TOKEN=<shared> LAPTOP_HOST=<laptop-ip-or-tailscale>
 docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d
 ```
-`docker-compose.remote.yml` sets `MCP_SERVER_URL=http://<LAPTOP_HOST>:7100` on the MCP consumers, including `platform-core`; uncomment its `LLM_GATEWAY_URL` line where needed for "all AI on the laptop".
+`docker-compose.remote.yml` sets `MCP_SERVER_URL=http://<LAPTOP_HOST>:7100` on the MCP consumers, including `platform-core` (which bundles agent-service — agents **and** tools — agent-runtime, and prompt-composer; `TOOL_SERVICE_URL` resolves to `agent-service:3001`); uncomment its `LLM_GATEWAY_URL` line where needed for "all AI on the laptop".
 
 ---
 
@@ -249,7 +249,7 @@ The standards the verifier checks come from the run's `acceptanceCriteria` / `de
   ```
   Then bring the box up again. Don't run a full bare-metal stack **and** the Docker box — they double-bind every port.
 - **Web changes not showing** — the UI lives in the `platform-web` image. After a `git pull`, **rebuild** (`bin/laptop-bridge.sh rebuild`) and hard-refresh (Cmd-Shift-R); a running container serves the old bundle.
-- **Enter via Platform Web `http://localhost:5180`** — this is the single origin and the normal entry. The old per-app UIs and edge-gateway are debug-only under the `frontend-legacy` profile.
+- **Enter via Platform Web `http://localhost:5180`** — this is the single frontend and the normal entry (operations, agents, workflows, workbench, foundry, identity — all same-origin; the Blueprint Workbench cockpit runs in-process at `/workbench`, no standalone port). The optional edge-gateway (:8085) is debug-only under the `frontend-legacy` profile.
 - **Operations shows LLM / MCP "offline" (split)** — make sure the host gateway + mcp are running and that the direct/bridge overlay points backend health checks at the laptop path. Rebuild + recreate `platform-web` after pulling (`docker compose … build platform-web && … up -d --no-deps platform-web`).
 - **`invalid input value for enum NodeType: VERIFIER`** — run the §6 enum migration before the seed.
 - **Agent phase fails immediately under `fail_closed`** — audit-governance isn't reachable; re-seed with `SEED_GOVERNANCE_MODE=fail_open`.

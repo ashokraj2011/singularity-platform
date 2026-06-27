@@ -28,7 +28,7 @@ pnpm start
 By default the app connects to:
 
 - Singularity API: `http://localhost:8080`
-- Workbench Neo: `http://localhost:5176/?ui=neo`
+- Workbench Neo: `http://localhost:5180/workbench?ui=neo`
 - Copilot binary: `copilot`
 
 All of these can be changed in the app Settings screen.

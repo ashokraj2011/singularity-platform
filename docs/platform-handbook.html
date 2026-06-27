@@ -97,7 +97,7 @@ h1:hover .anchor, h2:hover .anchor, h3:hover .anchor { opacity:1; text-decoratio
 <a class="toc-l3" href="#93-context-fabric-api">9.3 Context Fabric API</a>
 <a class="toc-l3" href="#94-prompt-composer-api">9.4 Prompt Composer API</a>
 <a class="toc-l3" href="#95-agent-runtime-api">9.5 Agent Runtime API</a>
-<a class="toc-l3" href="#96-tool-service-api">9.6 Tool Service API</a>
+<a class="toc-l3" href="#96-tool-api-merged-into-agent-service">9.6 Tool API (Merged Into Agent Service)</a>
 <a class="toc-l2" href="#10-installation">10. Installation</a>
 <a class="toc-l3" href="#101-prerequisites">10.1 Prerequisites</a>
 <a class="toc-l3" href="#102-clone">10.2 Clone</a>
@@ -262,7 +262,7 @@ Audit and receipts make the whole path observable.</code></pre>
   Web --&gt; IAM[&quot;IAM Service&quot;]
   Web --&gt; WGAPI[&quot;Workgraph API&quot;]
   Web --&gt; AgentRuntime[&quot;Agent Runtime&quot;]
-  Web --&gt; ToolService[&quot;Tool Service&quot;]
+  Web --&gt; AgentService[&quot;Agent Service (agents + tools)&quot;]
   Web --&gt; PromptComposer[&quot;Prompt Composer&quot;]
   Web --&gt; ContextAPI[&quot;Context Fabric API&quot;]
 
@@ -273,21 +273,21 @@ Audit and receipts make the whole path observable.</code></pre>
 
   AER --&gt; LLMGateway[&quot;LLM Gateway&quot;]
   AER --&gt; Runner[&quot;Runtime Sandbox Runner&quot;]
-  AER --&gt; ToolService
+  AER --&gt; AgentService
   AER --&gt; FormalVerifier[&quot;Formal Verifier&quot;]
 
   WGAPI --&gt; MinIO[&quot;MinIO Artifacts&quot;]
   WGAPI --&gt; WGDB[&quot;Workgraph Postgres&quot;]
   IAM --&gt; IAMDB[&quot;IAM Postgres&quot;]
   AgentRuntime --&gt; ATDB[&quot;Agent Runtime Postgres&quot;]
-  ToolService --&gt; ATDB
+  AgentService --&gt; ATDB
   PromptComposer --&gt; ATDB
   ContextAPI --&gt; CFDB[&quot;Context Fabric Stores&quot;]
 
   WGAPI --&gt; AuditGov[&quot;Audit Governance&quot;]
   ContextAPI --&gt; AuditGov
   AER --&gt; AuditGov
-  ToolService --&gt; AuditGov
+  AgentService --&gt; AuditGov
   AgentRuntime --&gt; AuditGov
   AuditGov --&gt; AuditDB[&quot;Audit Postgres&quot;]
   AuditGov --&gt; Metrics[&quot;Metrics Ledger&quot;]
@@ -314,12 +314,12 @@ Audit and receipts make the whole path observable.</code></pre>
 <tbody><tr>
 <td><code>platform-web</code></td>
 <td align="right"><code>http://localhost:5180</code></td>
-<td>Unified Next.js shell for operations, agents, workflows, workbench, foundry, identity, audit, and cost routes.</td>
+<td>The single Next.js frontend for operations, agents, workflows (runs and work-items), workbench, foundry, identity, audit, and cost routes — all same-origin. The Blueprint Workbench cockpit runs in-process as the <code>/workbench</code> route; <code>workgraph-web</code> and <code>blueprint-workbench</code> are library source compiled into this image (workgraph-web uses native Next routing, react-router removed).</td>
 </tr>
 <tr>
-<td>Legacy split UIs</td>
-<td align="right">debug profile only</td>
-<td><code>portal</code>, <code>workgraph-web</code>, <code>blueprint-workbench</code>, <code>user-and-capability</code>, and <code>code-foundry-web</code> are no longer part of the normal UI stack.</td>
+<td><code>edge-gateway</code></td>
+<td align="right">optional, <code>http://localhost:8085</code></td>
+<td>Optional legacy/debug gateway only; not used by the normal stack and not required for the in-process <code>/workbench</code> cockpit.</td>
 </tr>
 </tbody></table>
 <h3 id="api-and-runtime-services">API and Runtime Services<a class="anchor" href="#api-and-runtime-services" aria-label="Link to API and Runtime Services">#</a></h3>
@@ -343,8 +343,8 @@ Audit and receipts make the whole path observable.</code></pre>
 </tr>
 <tr>
 <td><code>platform-core</code></td>
-<td align="right"><code>http://localhost:3001-3004</code></td>
-<td>One Docker container hosting the agent-and-tools backend APIs while preserving their existing public ports and service DNS names.</td>
+<td align="right"><code>http://localhost:3001,3003,3004</code></td>
+<td>One Docker container hosting the three consolidated agent backends (agent-service with tools, agent-runtime, prompt-composer) while preserving their existing public ports and service DNS names.</td>
 </tr>
 <tr>
 <td><code>agent-runtime</code></td>
@@ -354,12 +354,7 @@ Audit and receipts make the whole path observable.</code></pre>
 <tr>
 <td><code>agent-service</code></td>
 <td align="right"><code>http://localhost:3001/api/v1</code></td>
-<td>Agent application APIs and UI-facing agent service behavior; served by <code>platform-core</code> in Docker.</td>
-</tr>
-<tr>
-<td><code>tool-service</code></td>
-<td align="right"><code>http://localhost:3002/api/v1</code></td>
-<td>Tool registry, internal tools, connector tools, runner routes, and tool discovery; served by <code>platform-core</code> in Docker.</td>
+<td>Agent application APIs plus the merged tool service: tool registry, internal tools, connector tools, runner routes, and tool discovery (former <code>tool-service</code>, now folded in; no <code>:3002</code>). Hybrid learning routes are also folded in here. Served by <code>platform-core</code> in Docker.</td>
 </tr>
 <tr>
 <td><code>prompt-composer</code></td>
@@ -471,6 +466,10 @@ closed if it can bypass row security.</p>
 <td>Local operator wrapper for config, compose up/down, logs, doctor, urls, and status.</td>
 </tr>
 <tr>
+<td><code>bin/docker-core.sh</code></td>
+<td>Plain Docker launcher for the core platform apps without Docker Compose; excludes MCP and LLM Gateway.</td>
+</tr>
+<tr>
 <td><code>docker-compose.yml</code></td>
 <td>Main local stack definition.</td>
 </tr>
@@ -484,11 +483,11 @@ closed if it can bypass row security.</p>
 </tr>
 <tr>
 <td><code>workgraph-studio/apps/web</code></td>
-<td>Legacy/debug Workgraph web app; canonical routes live in <code>agent-and-tools/web</code>.</td>
+<td><code>workgraph-web</code> library source compiled into <code>platform-web</code> (native Next routing, react-router removed); not a standalone app.</td>
 </tr>
 <tr>
 <td><code>workgraph-studio/apps/blueprint-workbench</code></td>
-<td>Legacy/debug Workbench Neo UI; canonical route is <code>/workbench</code> in Platform Web.</td>
+<td>Blueprint Workbench cockpit library source compiled into <code>platform-web</code> and served in-process at the <code>/workbench</code> route; not a standalone app.</td>
 </tr>
 <tr>
 <td><code>workgraph-studio/apps/sgl-cli</code></td>
@@ -507,16 +506,12 @@ closed if it can bypass row security.</p>
 <td>Agent templates, capabilities, execution, and memory APIs.</td>
 </tr>
 <tr>
-<td><code>agent-and-tools/apps/tool-service</code></td>
-<td>Tool registry and connector tool service.</td>
+<td><code>agent-and-tools/apps/agent-service</code></td>
+<td>Agent application APIs plus the merged tool service (tool registry and connector tools) and folded-in hybrid learning routes.</td>
 </tr>
 <tr>
 <td><code>agent-and-tools/apps/prompt-composer</code></td>
 <td>Prompt profiles, layers, assemblies, lessons, and contracts.</td>
-</tr>
-<tr>
-<td><code>agent-and-tools/apps/learning-service</code></td>
-<td>Deprecated source marker; hybrid learning routes are folded into <code>agent-service</code>.</td>
 </tr>
 <tr>
 <td><code>agent-and-tools/web</code></td>
@@ -536,19 +531,11 @@ closed if it can bypass row security.</p>
 </tr>
 <tr>
 <td><code>singularity-iam-service</code></td>
-<td>IAM Python service.</td>
-</tr>
-<tr>
-<td><code>singularity-portal</code></td>
-<td>Legacy wrapper SPA retained for debug/backward compatibility.</td>
-</tr>
-<tr>
-<td><code>UserAndCapabillity</code></td>
-<td>Legacy user and capability management UI retained for debug/backward compatibility.</td>
+<td>IAM Python service. Identity administration is native in <code>platform-web</code> at <code>/identity</code> (the <code>UserAndCapability</code> app was deleted).</td>
 </tr>
 <tr>
 <td><code>singularity-code-foundry</code></td>
-<td>Legacy generator source/examples retained for migration reference; live <code>/foundry</code> APIs are Workgraph-owned.</td>
+<td>Legacy generator source/examples retained for migration reference; Foundry is native in <code>platform-web</code> at <code>/foundry</code> and <code>/foundry</code> APIs are Workgraph-owned (the <code>code-foundry-web</code> app was deleted).</td>
 </tr>
 <tr>
 <td><code>docs/</code></td>
@@ -639,7 +626,7 @@ and federated user mapping.</li>
 <li>Custom nodes mapped to runtime executor bases.</li>
 </ul>
 <h3 id="77-blueprint-workbench-neo">7.7 Blueprint Workbench Neo<a class="anchor" href="#77-blueprint-workbench-neo" aria-label="Link to 7.7 Blueprint Workbench Neo">#</a></h3>
-<p>Workbench Neo is the staged story-to-delivery loop for agent-driven delivery.</p>
+<p>Workbench Neo is the staged story-to-delivery loop for agent-driven delivery. Its cockpit runs in-process as the <code>/workbench</code> route in Platform Web (compiled from <code>blueprint-workbench</code> library source); there is no standalone cockpit on <code>:5176</code>, no <code>:8085</code> gateway for it, and the old green native console at <code>/workbench/&lt;view&gt;</code> was removed.</p>
 <p>Common stages:</p>
 <ul>
 <li>Story Intake.</li>
@@ -774,7 +761,7 @@ and federated user mapping.</li>
 <li>Cost and token rollups.</li>
 <li>Receipts.</li>
 <li>Run and capability correlation.</li>
-<li>Events for Agent Execution Runtime, Context Fabric, Workgraph, Tool Service, and Agent Runtime.</li>
+<li>Events for Agent Execution Runtime, Context Fabric, Workgraph, Agent Service (agents and the merged tools subsystem), and Agent Runtime.</li>
 </ul>
 <h3 id="715-learning-loop">7.15 Learning Loop<a class="anchor" href="#715-learning-loop" aria-label="Link to 7.15 Learning Loop">#</a></h3>
 <p>The learning architecture is hybrid:</p>
@@ -980,13 +967,13 @@ and federated user mapping.</li>
 <p>Agent profiles are stored as <code>AgentTemplate</code> rows internally, but the user-facing profile API accepts source-backed skill bindings. Bindings can point at local skills, provider manifests, URL documents, or uploaded documents. <code>GET /agents/profiles/:id/sources</code> returns the stored source-governance summary without live network calls: local vs external counts, read-only/provider-locked state, linked knowledge sources/artifacts, and warnings for incomplete bindings. Runtime execution should call <code>POST /agents/profiles/:id/resolve</code> before use; it fetches provider manifests live, filters provider capabilities through profile permissions, fails closed for unreachable providers, and returns a deterministic effective capability set with a snapshot hash. Successful provider resolutions include non-secret manifest evidence (<code>manifestDigest</code>, <code>signatureKeyId</code>, and <code>signedManifest</code>) so runtime receipts can prove exactly which live manifest body shaped the effective capability set.</p>
 <p>Provider manifests can be signed with <code>X-Manifest-Key-Id</code> and <code>X-Manifest-Signature: sha256=&lt;hex&gt;</code>, where the signature is HMAC-SHA256 over the raw manifest body. Configure trusted keys with <code>PROVIDER_MANIFEST_TRUSTED_KEYS</code> as JSON (<code>{&quot;github&quot;:&quot;32+ char secret&quot;}</code>) or comma-separated <code>keyId:secret</code> pairs; production startup, doctor, and deploy preflight fail weak trusted-key secrets shorter than 32 characters. <code>PROVIDER_MANIFEST_SIGNATURE_MODE=auto</code> allows unsigned manifests only in local development when no trusted keys are configured; production-class environments must set <code>PROVIDER_MANIFEST_SIGNATURE_MODE=required</code>. Signed/provider-trusted manifests must also include <code>version</code> or <code>manifest_version</code> and an <code>expiresAt</code>/<code>expires_at</code> timestamp. Agent Runtime rejects expired manifests, future <code>issuedAt</code> timestamps, duplicate capability IDs, excessive validity windows (<code>PROVIDER_MANIFEST_MAX_TTL_SECONDS</code>, default 30 days), and insecure <code>http://</code> invocation endpoints in signed manifests.</p>
 <p>Source-backed skills also pass through an SSRF guard before Agent Runtime previews URL documents or fetches provider manifests during resolution. Source URLs must be absolute <code>http</code>/<code>https</code> URLs, cannot include embedded credentials, and cannot target localhost, private/link-local/reserved networks, or cloud metadata hostnames. <code>AGENT_SOURCE_ALLOW_PRIVATE_URLS=true</code> is available only for deliberate local development against a private test manifest; production-class doctor and deploy preflight require <code>AGENT_SOURCE_ALLOW_PRIVATE_URLS=false</code>.</p>
-<p>Tool-service requires a resolved profile capability set on governed discovery and invocation requests as <code>effective_capabilities</code> or <code>effectiveCapabilities</code>. That set is authoritative: <code>/api/v1/tools/discover</code> hides tools that do not have <code>invoke</code>, and <code>/api/v1/tools/invoke</code> blocks calls whose <code>requested_capability_id</code> / <code>requestedCapabilityId</code> is missing or lacks the requested permission. If the set is omitted, tool-service fails closed by default; set <code>TOOL_EFFECTIVE_CAPABILITY_REQUIRED=false</code> only for a deliberate legacy migration window.</p>
+<p>The tool subsystem (merged into <code>agent-service</code> on <code>:3001</code>, formerly <code>tool-service</code>) requires a resolved profile capability set on governed discovery and invocation requests as <code>effective_capabilities</code> or <code>effectiveCapabilities</code>. That set is authoritative: <code>/api/v1/tools/discover</code> hides tools that do not have <code>invoke</code>, and <code>/api/v1/tools/invoke</code> blocks calls whose <code>requested_capability_id</code> / <code>requestedCapabilityId</code> is missing or lacks the requested permission. If the set is omitted, tool-service fails closed by default; set <code>TOOL_EFFECTIVE_CAPABILITY_REQUIRED=false</code> only for a deliberate legacy migration window.</p>
 <p>Server-side tool invocation is also endpoint-scoped. Tool-service only fetches <code>runtime.endpoint_url</code> values that match <code>TOOL_SERVER_ENDPOINT_ALLOWLIST</code>; when unset, the allowlist is limited to the seeded internal <code>/api/v1/internal-tools</code> and <code>/api/v1/connector-tools</code> prefixes on tool-service. External/API skills that need <code>invoke</code> must add exact <code>https://...</code> provider invocation prefixes. Metadata hosts, Docker host aliases, loopback/private IP targets outside the baked internal tool-service routes, and URLs with embedded credentials are blocked even if an unsafe allowlist is configured.</p>
 <p>Context Fabric resolves the agent profile snapshot at <code>/execute</code> time when <code>run_context.agent_template_id</code> is present, filters tool discovery with that effective set, and forwards it into MCP <code>runContext</code>. Profile-backed runs mark the effective set as required, so an empty or unavailable resolution hides/refuses tools instead of falling back to legacy-open behavior. MCP also treats any <code>profileSnapshotHash</code> as requiring the effective set and production-class deployments must set <code>MCP_REQUIRE_EFFECTIVE_CAPABILITIES=true</code>, so direct MCP dispatch cannot omit profile capability evidence and still invoke tools. The purpose-built <code>/mcp/work/finish-branch</code> endpoint uses the same effective-capability check before grant verification or any finalize/push side effect, so operational workflow hooks cannot bypass a read-only profile snapshot. MCP then forwards the same set to the Context Fabric SERVER-tool adapter, which passes it to tool-service. Context Fabric also persists <code>profileSnapshotHash</code>, non-secret <code>profileProviderResolutions</code>, and a compact <code>profileEffectiveCapabilities</code> receipt snapshot containing source/provenance, read-only/provider-locked state, manifest digest/signature evidence, and the clamped effective permission flags. Runtime-only schema bodies and invocation endpoints are intentionally omitted from the durable call log so audits can prove which provider manifest and permission set shaped the run without leaking operational endpoints into every receipt. Omitted <code>governance_mode</code> values use <code>DEFAULT_GOVERNANCE_MODE</code>; local development defaults to <code>fail_open</code>, but production-class startup, doctor, and deploy preflight require <code>DEFAULT_GOVERNANCE_MODE=fail_closed</code> so unannotated runs cannot skip the audit-governance precheck. Production deploy preflight also requires <code>AUDIT_GOV_URL</code> and verifies audit-governance <code>/health</code> before release, because fail-closed governance cannot honestly start if the ledger is unreachable. Workgraph also reads <code>DEFAULT_GOVERNANCE_MODE</code> for implicit workflow/workbench defaults, so low-risk or incomplete workflow policy does not force production calls back to fail-open. Non-blueprint workflow <code>AGENT_TASK</code> nodes default to Context Fabric&#39;s governed stage path via <code>WORKGRAPH_FORCE_GOVERNED_CODING=true</code>; explicit node opt-out or setting that env var to <code>false</code> is reserved for incident recovery and migration replay. Event Horizon chat defaults to Context Fabric&#39;s governed single-turn path via <code>CONTEXT_FABRIC_GOVERN_SIDE_CALLERS=true</code>; setting it to <code>false</code> is also an incident-recovery escape hatch. Direct MCP invokes and approval resumes use <code>MCP_DEFAULT_GOVERNANCE_MODE</code>; production-class MCP refuses to start unless it is <code>fail_closed</code>.</p>
 <p>Mutating and high-risk MCP tool calls are also grant-bound in production. Context Fabric must run with <code>CF_TOOL_GRANT_ENABLED=true</code> and mint per-call grants using <code>TOOL_GRANT_SIGNING_SECRET</code>; MCP must run with <code>MCP_TOOL_GRANT_MODE=enforce</code>, <code>MCP_REQUIRE_EFFECTIVE_CAPABILITIES=true</code>, and the same signing secret. The grant gate covers normal <code>/mcp/tool-run</code> calls and the purpose-built <code>/mcp/work/finish-branch</code> endpoint; executor-only tools such as <code>run_python</code> are classified as <code>run</code> so they cannot bypass the gate by being absent from the agent-facing manifest. Workgraph direct <code>RUN_PYTHON</code> and <code>GIT_PUSH</code> nodes request narrow operational grants from Context Fabric when grant mode is active; Context Fabric refuses <code>finish_work_branch</code> unless the workflow has an approved gate and refuses <code>run_python</code> network access unless the node explicitly allows it. <code>./singularity.sh config production-guardrails</code> writes the fail-closed/enforce/effective-capability posture, and <code>./singularity.sh config rotate-secrets</code> rotates the shared HMAC key. This keeps MCP independently deployable while preserving the same platform policy gate when it runs on another host.</p>
 <p>Prompt Composer renders the same effective capability metadata into the prompt stack. Tool blocks and agent skill-source layers include source type, source reference, read-only/provider-locked state, and the clamped effective permissions; provider-advertised <code>invoke</code>, <code>configure</code>, or <code>edit</code> permissions are not shown to the model when the profile/source is read-only or provider-locked.</p>
-<h3 id="96-tool-service-api">9.6 Tool Service API<a class="anchor" href="#96-tool-service-api" aria-label="Link to 9.6 Tool Service API">#</a></h3>
-<p>Mounted under <code>http://localhost:3002/api/v1</code>.</p>
+<h3 id="96-tool-api-merged-into-agent-service">9.6 Tool API (Merged Into Agent Service)<a class="anchor" href="#96-tool-api-merged-into-agent-service" aria-label="Link to 9.6 Tool API (Merged Into Agent Service)">#</a></h3>
+<p>The former <code>tool-service</code> is merged into <code>agent-service</code>; these routes are served under <code>http://localhost:3001/api/v1</code> (there is no <code>:3002</code>).</p>
 <p>Important endpoints:</p>
 <ul>
 <li><code>/tools</code></li>
@@ -1004,10 +991,10 @@ and federated user mapping.</li>
 <li>Curl.</li>
 <li>PostgreSQL client tools, optional but useful for seed and inspection.</li>
 <li>Node.js and pnpm for local package work.</li>
-<li>Python tooling for IAM and Context Fabric local development.</li>
+<li>Python 3.11+ tooling for IAM, Context Fabric, bare-metal launchers, and local Python smoke helpers.</li>
 </ul>
 <p>Keep these ports available:</p>
-<pre><code class="language-text">3001, 3002, 3003, 3004
+<pre><code class="language-text">3001 (agent-service, agents + merged tools), 3003, 3004
 5180
 7100 (optional MCP)
 8000, 8001 optional LLM gateway, 8010 optional verifier, 8011 optional compressor
@@ -1037,13 +1024,20 @@ cd singularity-platform</code></pre>
 <h3 id="104-start-the-stack">10.4 Start The Stack<a class="anchor" href="#104-start-the-stack" aria-label="Link to 10.4 Start The Stack">#</a></h3>
 <pre><code class="language-bash">./singularity.sh up</code></pre>
 <p>This starts the core Docker Compose stack. Local LLM Gateway, MCP, verification, compression, and audit-governance are optional profiles or remote services. <code>/foundry</code> is included in Platform Web and backed by Workgraph.</p>
+<p>Plain Docker without Compose uses the same core-app split:</p>
+<pre><code class="language-bash">bin/docker-core.sh up --build
+bin/docker-core.sh seed
+bin/docker-core.sh smoke</code></pre>
+<p>Add <code>--with-audit</code> when the local audit-governance app should run on the same host. <code>bin/docker-core.sh</code> does not start MCP or LLM Gateway; those remain dial-in runtimes and default to <code>host.docker.internal:7100</code> and <code>host.docker.internal:8001</code> for debug/direct URLs.</p>
 <p>Bare-metal deployments use split launchers:</p>
-<pre><code class="language-bash">bin/bare-metal-apps.sh up postgres postgres localhost 5432
+<pre><code class="language-bash">export SINGULARITY_PYTHON=/path/to/python3.11  # optional; only needed when python3 is older than 3.11
+bin/bare-metal-apps.sh up postgres postgres localhost 5432
 bin/bare-metal-runtime.sh up  # optional local LLM Gateway + MCP</code></pre>
-<p><code>bin/bare-metal-apps.sh</code> starts all platform applications except MCP and LLM Gateway. <code>bin/bare-metal-runtime.sh</code> has its own PID file and owns only ports <code>8001</code> and <code>7100</code>. Before boot, the app launcher frees named Singularity app ports, leaves storage ports alone, and clears stale repo-owned Next dev listeners on <code>:3000</code> left by older Platform Web scripts while leaving unrelated <code>:3000</code> processes alone. Smoke checks allow guarded <code>401/403</code> JSON responses on auth-protected Platform Web API proxies and give Next dev UI routes enough time for first-request compilation. The app launcher also mints a local <code>platform-web</code> service JWT into <code>WORKGRAPH_PROXY_SERVICE_TOKEN</code> and <code>PROMPT_COMPOSER_SERVICE_TOKEN</code> so Operations does not report missing Workgraph/Composer proxy boundary secrets.</p>
+<p><code>bin/bare-metal-apps.sh</code> starts all platform applications except MCP and LLM Gateway. <code>bin/bare-metal-runtime.sh</code> has its own PID file and owns only ports <code>8001</code> and <code>7100</code>. Both scripts require Python 3.11+ and prefer <code>SINGULARITY_PYTHON</code>, then <code>python3.12</code>, <code>python3.11</code>, and finally <code>python3</code> when it is new enough. If <code>.venv</code> was previously created with Python 3.9, the launchers recreate it before installing IAM or LLM Gateway dependencies.</p>
+<p>Before boot, the app launcher frees named Singularity app ports and leaves storage ports (<code>5432</code>, <code>5434</code>, <code>9000</code>, <code>9001</code>) alone. It also sweeps legacy split-frontend/debug ports by default so old local UIs cannot shadow Platform Web; set <code>SINGULARITY_FREE_LEGACY_PORTS=0</code> when another process intentionally owns one of those ports. Platform Web runs on <code>:5180</code>; the launcher clears stale repo-owned Next dev listeners on <code>:3000</code> left by older scripts, but leaves unrelated <code>:3000</code> processes alone. Smoke checks allow guarded <code>401/403</code> JSON responses on auth-protected Platform Web API proxies, and give Next dev UI routes enough time for first-request compilation. The runtime launcher frees only <code>8001</code> (<code>llm-gateway</code>) and <code>7100</code> (<code>mcp-server</code>). Runtime bridge tokens are loaded from env or <code>.singularity/laptop-device-token</code>; if absent or expired, local bare-metal can auto-mint a <code>kind=runtime</code> token through IAM and save it with owner-only permissions. The app launcher also mints a local <code>platform-web</code> service JWT into <code>WORKGRAPH_PROXY_SERVICE_TOKEN</code> and <code>PROMPT_COMPOSER_SERVICE_TOKEN</code> so Operations does not report missing Workgraph/Composer proxy boundary secrets. Disable those with <code>SINGULARITY_AUTO_MINT_RUNTIME_TOKEN=false</code> or <code>SINGULARITY_AUTO_MINT_PLATFORM_WEB_TOKEN=false</code>.</p>
 <h3 id="105-apply-seeds">10.5 Apply Seeds<a class="anchor" href="#105-apply-seeds" aria-label="Link to 10.5 Apply Seeds">#</a></h3>
 <pre><code class="language-bash">bin/seed-docker.sh</code></pre>
-<p>This applies the full Docker seed path in dependency order: IAM teams/users/capabilities, common agent baselines and capability bindings, prompt-composer profiles, Workgraph artifacts/demo workflows, and SDLC workflows. Seeds are designed to be safe to re-run. Use <code>seed/apply.sh &lt;db_user&gt; [db_password] [db_host] [db_port]</code> only for the SQL-only bare database seed path.</p>
+<p>This applies the full Docker seed path in dependency order: IAM teams/users/capabilities, common agent baselines and capability bindings, prompt-composer profiles, Workgraph artifacts/demo workflows, SDLC workflows, and main-profile parent wrappers for workbench workflows. Seeds are designed to be safe to re-run. Doctor verifies the expected workflow set, runnable routing policies, linked workbench definitions, parent entry points, and orphan-free workbench rows. Use <code>seed/apply.sh &lt;db_user&gt; [db_password] [db_host] [db_port]</code> only for the SQL-only bare database seed path.</p>
 <h3 id="106-verify-health">10.6 Verify Health<a class="anchor" href="#106-verify-health" aria-label="Link to 10.6 Verify Health">#</a></h3>
 <pre><code class="language-bash">./singularity.sh status
 ./singularity.sh urls
@@ -1071,10 +1065,10 @@ task-signature stability.</p>
 <ul>
 <li><code>/operations</code> for readiness, setup, and service health.</li>
 <li><code>/agents</code> and <code>/agents/studio</code> for Agent Studio.</li>
-<li><code>/workflows</code> for workflow manager routes.</li>
-<li><code>/workbench</code> for Blueprint Workbench routes.</li>
-<li><code>/foundry</code> for Code Foundry routes.</li>
-<li><code>/identity</code> for IAM administration.</li>
+<li><code>/workflows</code> for workflow manager routes, including runs and work-items.</li>
+<li><code>/workbench</code> for the Blueprint Workbench cockpit, which runs in-process in Platform Web (no <code>:5176</code> standalone, no <code>:8085</code> gateway; the old native console at <code>/workbench/&lt;view&gt;</code> was removed).</li>
+<li><code>/foundry</code> for Code Foundry routes (native in Platform Web).</li>
+<li><code>/identity</code> for IAM administration (native in Platform Web).</li>
 </ul>
 <p>If an older deployment has rows in the retired <code>singularity_codegen</code> database, run <code>bin/migrate-code-foundry-to-workgraph.sh</code> once after Workgraph migrations apply. The importer hydrates artifact file content when the old <code>/workspace</code> files still exist. Set <code>CODE_FOUNDRY_IMPORT_TENANT_ID=&lt;tenant-id&gt;</code> when importing into strict tenant-isolated environments.</p>
 <h2 id="11-configuration">11. Configuration<a class="anchor" href="#11-configuration" aria-label="Link to 11. Configuration">#</a></h2>
@@ -1085,6 +1079,7 @@ task-signature stability.</p>
 <li><code>.singularity/llm-providers.json</code></li>
 <li><code>.singularity/llm-models.json</code></li>
 <li>generated service env files created by <code>./singularity.sh config write</code></li>
+<li><code>.env.local</code> — shared service secrets are auto-generated at boot and persisted here, so the cross-service tokens stay stable across restarts without manual minting.</li>
 </ul>
 <h3 id="112-common-environment-areas">11.2 Common Environment Areas<a class="anchor" href="#112-common-environment-areas" aria-label="Link to 11.2 Common Environment Areas">#</a></h3>
 <table>
@@ -1425,7 +1420,7 @@ when <code>IAM_AUTH_MODE=oidc</code>.</li>
 <li><a href="./data-model/03-prompt-composer-runtime-read.md">Prompt Composer Runtime Reads</a></li>
 <li><a href="./data-model/04-workgraph.md">Workgraph Data Model</a></li>
 <li><a href="./data-model/05-audit-gov.md">Audit Governance Data Model</a></li>
-<li><a href="./data-model/06-tool-service.md">Tool Service Data Model</a></li>
+<li><a href="./data-model/06-tool-service.md">Tool Data Model</a></li>
 <li><a href="./runtime-discovery.md">Runtime Discovery</a></li>
 <li><a href="./trace-contract.md">Trace Contract</a></li>
 <li><a href="./adr/0001-m35-hybrid-learning.md">M35 Hybrid Learning ADR</a></li>

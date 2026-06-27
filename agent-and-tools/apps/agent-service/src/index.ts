@@ -7,6 +7,7 @@ import cors from "cors";
 import helmet from "helmet";
 import dotenv from "dotenv";
 import { assertProductionInvariant, assertProductionSecret } from "@agentandtools/shared";
+// ── Agent domain ──
 import { agentRoutes } from "./routes/agents";
 import { versionRoutes } from "./routes/versions";
 import { learningRoutes } from "./routes/learning";
@@ -17,6 +18,17 @@ import { optionalAuth, requireAuth } from "./middleware/auth";
 import { startSelfRegistration } from "./lib/platform-registry/register";
 import { startEventDispatcher } from "./lib/eventbus/dispatcher";
 import { eventSubscriptionsRouter } from "./lib/eventbus/routes";
+// ── Tool domain (Phase 4 — tool-service merged in as the ./tool subtree, which
+// keeps its OWN database/eventbus/middleware/libs so behavior is unchanged) ──
+import { toolRoutes } from "./tool/routes/tools";
+import { discoveryRoutes } from "./tool/routes/discovery";
+import { executionRoutes } from "./tool/routes/execution";
+import { runnerRoutes } from "./tool/routes/runners";
+import { internalToolsRoutes } from "./tool/routes/internal-tools";
+import { connectorToolsRoutes } from "./tool/routes/connector-tools";
+import { startEventDispatcher as startToolEventDispatcher } from "./tool/lib/eventbus/dispatcher";
+import { startSelfRegistration as startToolSelfRegistration } from "./tool/lib/platform-registry/register";
+import { seedCoreToolkit } from "./tool/lib/seed-core-tools";
 
 dotenv.config();
 
@@ -47,31 +59,60 @@ app.use(cors({
 app.use(express.json());
 
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "singularity-agent-service", timestamp: new Date().toISOString() });
+  res.json({ status: "ok", service: "singularity-agent-resource-service", timestamp: new Date().toISOString() });
+});
+
+// M28 boot-1 — strict invariants (tool domain). 200 only when DB reachable +
+// tool.tools exists + >= 10 core tools seeded. 503 + failing-check names otherwise.
+app.get("/healthz/strict", async (_req, res) => {
+  const { runInvariantChecks } = await import("./tool/healthz-strict");
+  const result = await runInvariantChecks();
+  res.status(result.ok ? 200 : 503).json({
+    ok: result.ok,
+    service: "singularity-agent-resource-service",
+    checks: result.checks,
+  });
 });
 
 app.use(authOptional() ? optionalAuth : requireAuth);
 
+// ── Agent domain routes ──
 app.use("/api/v1/agents", agentRoutes);
 app.use("/api/v1/agents", versionRoutes);
 app.use("/api/v1/agents", learningRoutes);
-// M67 Slice 1A — folded-in learning-service routes. Path prefixes
-// (/failures, /patterns, /state, /similar-capabilities, /summarize) do not
-// overlap with the agent-service learning routes mounted above (which are
-// scoped under /agents/:uid/learning-profiles), so they coexist cleanly.
+// M67 Slice 1A — folded-in learning-service routes.
 app.use("/api/v1", learningPatternsRoutes);
 app.use("/api/v1", runtimeRoutes);
-// M11.e — event-bus subscription registry
+
+// ── Tool domain routes (each tool router self-applies requireAuth) ──
+app.use("/api/v1/tools", toolRoutes);
+app.use("/api/v1/tools", discoveryRoutes);
+app.use("/api/v1/tools", executionRoutes);
+app.use("/api/v1", runnerRoutes);
+// M18 — internal endpoints that back the server-side core tools.
+app.use("/api/v1/internal-tools", internalToolsRoutes);
+// M19 — connector tool wrappers (proxy to workgraph /api/connectors/:id/invoke).
+app.use("/api/v1/connector-tools", connectorToolsRoutes);
+
+// M11.e — event-bus subscription registry. Agent-schema-backed; tool event
+// DELIVERY still works (the tool dispatcher reads tool.event_subscriptions
+// directly). Unifying the subscription-management API across both schemas is a
+// follow-up.
 app.use("/api/v1/events/subscriptions", eventSubscriptionsRouter);
 
 app.use(errorHandler);
 
-// M11.e — start dispatcher
+// M11.e — start BOTH dispatchers; they drain separate outboxes
+// (agent.event_outbox / tool.event_outbox), so there is no contention.
 void startEventDispatcher().catch((err) => {
-  console.warn(`[eventbus] dispatcher failed to start: ${(err as Error).message}`);
+  console.warn(`[eventbus] agent dispatcher failed to start: ${(err as Error).message}`);
+});
+void startToolEventDispatcher().catch((err) => {
+  console.warn(`[eventbus] tool dispatcher failed to start: ${(err as Error).message}`);
 });
 
-// M11.a — self-register with platform-registry (no-op if env unset)
+// M11.a — self-register both logical capability sets (no-op if env unset). Both
+// resolve to this one process/port now.
 startSelfRegistration({
   service_name: "agent-service",
   display_name: "Singularity Agent Service",
@@ -87,17 +128,35 @@ startSelfRegistration({
     { capability_key: "agent.learning", description: "Learning candidates + profiles pipeline" },
   ],
 });
+startToolSelfRegistration({
+  service_name: "tool-service",
+  display_name: "Singularity Tool Service",
+  version:      "0.1.0",
+  base_url:     process.env.PUBLIC_BASE_URL ?? `http://localhost:${PORT}`,
+  health_path:  "/health",
+  auth_mode:    "bearer-iam",
+  owner_team:   "agent-and-tools",
+  metadata:     { layer: "domain" },
+  capabilities: [
+    { capability_key: "tool.registry",   description: "Tool registration + versioning" },
+    { capability_key: "tool.discovery",  description: "Capability-scoped tool discovery + ranking" },
+    { capability_key: "tool.execution",  description: "Server-side tool execution + grants" },
+    { capability_key: "tool.runners",    description: "Client-runner heartbeat registry" },
+  ],
+});
 
-// M67 Slice 1A — Ensure the learning.* schema exists. Idempotent; safe to
-// run on every boot. Logged-and-tolerated on failure so a Postgres outage
-// at start doesn't block agent-service entirely — the learning routes
-// will surface the error on first query instead.
+// M67 Slice 1A — Ensure the learning.* schema exists (idempotent).
 void ensureLearningSchema().catch((err) => {
-  console.warn(`[agent-service] learning schema bootstrap failed: ${(err as Error).message}`);
+  console.warn(`[agent-resource-service] learning schema bootstrap failed: ${(err as Error).message}`);
+});
+
+// M18 — seed the core toolkit (idempotent — only inserts missing rows).
+void seedCoreToolkit().catch((err) => {
+  console.warn(`[agent-resource-service] core-toolkit seed failed: ${(err as Error).message}`);
 });
 
 app.listen(PORT, () => {
-  console.log(`[agent-service] listening on port ${PORT}`);
+  console.log(`[agent-resource-service] listening on port ${PORT} (agents + tools)`);
 });
 
 export default app;

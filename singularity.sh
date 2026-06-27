@@ -91,7 +91,6 @@ SINGULARITY_OPTIONAL_SERVICES=(
   prompt-compressor
   context-memory
   agent-service
-  tool-service
   agent-runtime
   prompt-composer
   blueprint-workbench

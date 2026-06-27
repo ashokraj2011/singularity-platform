@@ -18,12 +18,14 @@ Then run:
 ./bin/sync-branding.sh             # copies into each app's public/ directory
 ```
 
-That single command refreshes the asset in:
+That single command refreshes the asset in the two remaining frontends:
 
-- `singularity-portal/public/`
-- `UserAndCapabillity/public/`
-- `agent-and-tools/web/public/`
+- `agent-and-tools/web/public/` — platform-web, the unified platform UI (`:5180`)
 - `workgraph-studio/apps/web/public/`
+
+The old `singularity-portal/public/` and `UserAndCapability/public/` targets
+were dropped when those apps were deleted (identity is now native in
+platform-web at `/identity`).
 
 Re-run any time the source PNG changes.
 

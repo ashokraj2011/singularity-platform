@@ -53,8 +53,9 @@ stop_children() {
 
 trap stop_children INT TERM
 
+# Phase 4 — agent-service serves both /api/v1/agents and /api/v1/tools on :3001
+# (tool-service merged in). The tool-service network alias still points here.
 start_service "agent-service" sh -c 'cd /app/apps/agent-service && PORT=3001 DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" PUBLIC_BASE_URL=http://agent-service:3001 node dist/index.js'
-start_service "tool-service" sh -c 'cd /app/apps/tool-service && PORT=3002 DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" PUBLIC_BASE_URL=http://tool-service:3002 node dist/index.js'
 start_service "agent-runtime" sh -c 'cd /app/apps/agent-runtime && PORT=3003 DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" PUBLIC_BASE_URL=http://agent-runtime:3003 ./bin/startup.sh node dist/server.js'
 start_service "prompt-composer" sh -c 'cd /app/apps/prompt-composer && PORT=3004 DATABASE_URL="$DATABASE_URL_COMPOSER" DATABASE_URL_RUNTIME_READ="$DATABASE_URL_RUNTIME_READ" PUBLIC_BASE_URL=http://prompt-composer:3004 ./bin/startup.sh node dist/server.js'
 
