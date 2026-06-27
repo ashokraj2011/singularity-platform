@@ -117,7 +117,21 @@ const nextConfig = {
   },
   async rewrites() {
     const iamHealthDestination = healthDestination(process.env.IAM_HEALTH_URL, "http://iam-service:8100", "/api/v1/health");
-    return [
+    // Blue Blueprint Workbench cockpit, served SAME-ORIGIN on :5180 — replaces
+    // the separate :8085 nginx edge-gateway and the cross-origin auth problem.
+    // Mirrors edge-gateway/local.conf: cockpit API_BASE=/workbench/api → the
+    // platform-web workgraph proxy; the SPA itself → the cockpit dev server
+    // (Vite base /workbench/). In beforeFiles so it shadows the legacy native
+    // /workbench page.
+    const cockpitDevUrl = (process.env.BLUEPRINT_WORKBENCH_DEV_URL ?? "http://127.0.0.1:5176").replace(/\/+$/, "");
+    return {
+      beforeFiles: [
+        { source: "/workbench/api/:path*", destination: "/api/workgraph/:path*" },
+        { source: "/workbench/audit-gov/:path*", destination: "/api/audit-gov/:path*" },
+        { source: "/workbench", destination: `${cockpitDevUrl}/workbench/` },
+        { source: "/workbench/:path*", destination: `${cockpitDevUrl}/workbench/:path*` },
+      ],
+      afterFiles: [
       // Prompt Composer is proxied by src/app/api/composer/[...path]/route.ts
       // so Platform Web can attach server-side service auth when no browser
       // bearer is present.
@@ -170,7 +184,8 @@ const nextConfig = {
         source: "/ops-health/agent-service",
         destination: `${process.env.AGENT_SERVICE_URL ?? "http://agent-service:3001"}/health`,
       },
-    ];
+      ],
+    };
   },
 };
 
