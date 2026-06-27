@@ -757,8 +757,8 @@ PY
   # .env.local > generated. LEARNING_SERVICE_TOKEN follows AUDIT_GOV below.
   # NOT touched here: JWT_SECRET (root signing key — rotating it would invalidate
   # live sessions + the laptop device token), the IAM-minted platform-web
-  # WORKGRAPH_PROXY/PROMPT_COMPOSER tokens (minted via IAM separately), and
-  # WORKGRAPH_INCOMING_EVENT_SECRETS (JSON map; left on its existing default).
+  # WORKGRAPH_PROXY/PROMPT_COMPOSER tokens (minted via IAM separately).
+  # WORKGRAPH_INCOMING_EVENT_SECRETS (per-caller HMAC map) is generated below.
   _rand_secret() { openssl rand -hex "${1:-32}" 2>/dev/null || LC_ALL=C tr -dc 'a-f0-9' </dev/urandom | head -c "$(( ${1:-32} * 2 ))"; }
   _persisted_env() { [ -f "$ENV_FILE" ] && sed -n "s/^export $1=\"\\(.*\\)\"\$/\\1/p" "$ENV_FILE" | tail -1; }
   _is_weak_secret() { case "$1" in ""|dev-*|changeme*|demo-*) return 0 ;; *) return 1 ;; esac; }
@@ -775,6 +775,19 @@ PY
   provision_secret AUDIT_GOV_SERVICE_TOKEN       tokens.auditGovServiceToken        32
   provision_secret MCP_BEARER_TOKEN              mcpRuntime.bearerToken             24
   provision_secret TOOL_GRANT_SIGNING_SECRET     mcpRuntime.toolGrantSigningSecret  32
+  provision_secret WORKGRAPH_INCOMING_EVENT_SECRET tokens.workgraphIncomingEventSecret 32
+  # Per-caller HMAC map (verified by workgraph-api) shares the one generated
+  # secret above — an operator may pin a full JSON map via config instead. The
+  # plain secret persists double-quoted and the map single-quoted, so both
+  # round-trip .env.local cleanly (the old double-quoted map corrupted on source).
+  if [ -z "${WORKGRAPH_INCOMING_EVENT_SECRETS:-}" ]; then
+    _wg_map_cfg="$(config_value tokens.workgraphIncomingEventSecrets "")"
+    case "$_wg_map_cfg" in
+      *'"'*) export WORKGRAPH_INCOMING_EVENT_SECRETS="$_wg_map_cfg" ;;
+      *) _wg_s="$WORKGRAPH_INCOMING_EVENT_SECRET"
+         export WORKGRAPH_INCOMING_EVENT_SECRETS="{\"agent-runtime\":\"$_wg_s\",\"agent-service\":\"$_wg_s\",\"tool-service\":\"$_wg_s\",\"iam\":\"$_wg_s\"}" ;;
+    esac
+  fi
 
   # ── 2. Write env file ────────────────────────────────────────────────────
   cat > "$ENV_FILE" <<EOF
@@ -812,7 +825,8 @@ export JWT_SECRET="${JWT_SECRET:-$(config_value identity.jwtSecret changeme_dev_
 export LOCAL_SUPER_ADMIN_EMAIL="${LOCAL_SUPER_ADMIN_EMAIL:-$(config_value identity.bootstrapEmail admin@singularity.local)}"
 export LOCAL_SUPER_ADMIN_PASSWORD="${LOCAL_SUPER_ADMIN_PASSWORD:-$(config_value identity.bootstrapPassword Admin1234!)}"
 export WORKGRAPH_INTERNAL_TOKEN="${WORKGRAPH_INTERNAL_TOKEN:-$(config_value tokens.workgraphInternalToken dev-workgraph-internal-token)}"
-export WORKGRAPH_INCOMING_EVENT_SECRETS="${WORKGRAPH_INCOMING_EVENT_SECRETS:-$(config_value tokens.workgraphIncomingEventSecrets '{"agent-runtime":"dev-workgraph-incoming-event-secret-min-32-chars","agent-service":"dev-workgraph-incoming-event-secret-min-32-chars","tool-service":"dev-workgraph-incoming-event-secret-min-32-chars","iam":"dev-workgraph-incoming-event-secret-min-32-chars"}')}"
+export WORKGRAPH_INCOMING_EVENT_SECRET="${WORKGRAPH_INCOMING_EVENT_SECRET}"
+export WORKGRAPH_INCOMING_EVENT_SECRETS='${WORKGRAPH_INCOMING_EVENT_SECRETS}'
 export CONTEXT_FABRIC_SERVICE_TOKEN="${CONTEXT_FABRIC_SERVICE_TOKEN:-$(config_value tokens.contextFabricServiceToken dev-context-fabric-service-token)}"
 export IAM_SERVICE_TOKEN_TENANT_IDS="${IAM_SERVICE_TOKEN_TENANT_IDS:-$(config_value tokens.iamServiceTokenTenantIds "")}"
 export WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS="${WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS:-$(config_value tokens.workgraphInternalTokenTenantIds "")}"
