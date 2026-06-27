@@ -17,6 +17,9 @@
 import { z } from 'zod'
 import { contextFabricClient, type ExecuteResponse } from '../../lib/context-fabric/client'
 import { listCapabilityRelationships, getCapability } from '../../lib/iam/client'
+import { prisma } from '../../lib/prisma'
+import { getSdlcIntent } from '../adoption/sdlcCatalog'
+import { routeWorkItem } from '../work-items/work-item-routing.service'
 import { createWorkItem } from '../work-items/work-items.service'
 
 export const PRIORITIES = ['HIGH', 'MEDIUM', 'LOW'] as const
@@ -487,4 +490,188 @@ export async function commitRoadmap(input: CommitInput, actorId: string) {
     }
   })
   return { created, failed }
+}
+
+export interface LaunchInput {
+  capabilityId: string
+  intent?: string
+  story?: string
+  plan?: Milestone[]
+  milestones?: Milestone[]
+  workflowTemplateId?: string
+  modelAlias?: string
+  runtimePreference?: string
+  governancePreset?: string
+}
+
+type LaunchTarget = {
+  childWorkflowTemplateId?: string | null
+  childWorkflowInstanceId?: string | null
+}
+
+function compactText(value: string, max = 140): string {
+  const text = value.replace(/\s+/g, ' ').trim()
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text
+}
+
+function localLaunchMilestones(story: string, capabilityId: string): Milestone[] {
+  const base = compactText(story || 'Deliver the requested SDLC change.', 220)
+  const tasks: PlannerTask[] = [
+    {
+      title: 'Clarify acceptance criteria',
+      description: `Confirm the delivery outcome, constraints, and definition of done for: ${base}`,
+      category: 'INTAKE',
+      capabilityId,
+      priority: 'HIGH',
+      effortDays: 1,
+      aiSuggested: true,
+      rationale: 'Created as a deterministic fallback when no planner roadmap was supplied.',
+    },
+    {
+      title: 'Design governed workflow path',
+      description: 'Select the workflow template, required agents, runtime preference, and evidence gates for the story.',
+      category: 'DESIGN',
+      capabilityId,
+      priority: 'HIGH',
+      effortDays: 1,
+      aiSuggested: true,
+      rationale: 'Ensures the launch has a traceable workflow intent.',
+    },
+    {
+      title: 'Implement and verify the change',
+      description: 'Run the implementation workflow, capture code changes, tests, receipts, and runtime activity.',
+      category: 'BUILD',
+      capabilityId,
+      priority: 'MEDIUM',
+      effortDays: 2,
+      aiSuggested: true,
+      rationale: 'Covers the core SDLC execution path.',
+    },
+    {
+      title: 'Publish delivery evidence pack',
+      description: 'Collect decisions, artifacts, test results, approvals, cost/model summary, and Copilot handoff outputs.',
+      category: 'EVIDENCE',
+      capabilityId,
+      priority: 'MEDIUM',
+      effortDays: 1,
+      aiSuggested: true,
+      rationale: 'Makes the run adoption-ready for review.',
+    },
+  ]
+  return [{
+    id: 'M1',
+    title: 'Guided SDLC launch',
+    summary: 'Deterministic launch plan generated from the submitted story.',
+    tasks,
+  }]
+}
+
+function firstStartedTarget(value: unknown): LaunchTarget | null {
+  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  const targets = Array.isArray(record.targets) ? record.targets : []
+  for (const item of targets) {
+    const target = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+    const childWorkflowInstanceId = typeof target.childWorkflowInstanceId === 'string' ? target.childWorkflowInstanceId : null
+    const childWorkflowTemplateId = typeof target.childWorkflowTemplateId === 'string' ? target.childWorkflowTemplateId : null
+    if (childWorkflowInstanceId || childWorkflowTemplateId) return { childWorkflowInstanceId, childWorkflowTemplateId }
+  }
+  return null
+}
+
+async function summarizeWorkflowTemplate(id?: string | null) {
+  if (!id) return null
+  return prisma.workflow.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      capabilityId: true,
+      workflowTypeKey: true,
+      profile: true,
+      defaultRoutingMode: true,
+      metadata: true,
+    },
+  })
+}
+
+async function summarizeWorkflowInstance(id?: string | null) {
+  if (!id) return null
+  return prisma.workflowInstance.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      name: true,
+      status: true,
+      templateId: true,
+      createdAt: true,
+      startedAt: true,
+      completedAt: true,
+    },
+  })
+}
+
+export async function launchRoadmap(input: LaunchInput, actorId: string) {
+  const intent = getSdlcIntent(input.intent)
+  const milestones = input.plan?.length
+    ? input.plan
+    : input.milestones?.length
+      ? input.milestones
+      : localLaunchMilestones(input.story ?? '', input.capabilityId)
+  const commit = await commitRoadmap({ capabilityId: input.capabilityId, milestones }, actorId)
+  const warnings: string[] = []
+  let routedWorkItem: unknown = null
+  let launchTarget: LaunchTarget | null = null
+
+  if (commit.created.length === 0) {
+    warnings.push('No WorkItems were created, so workflow launch was skipped.')
+  } else {
+    for (const created of commit.created) {
+      try {
+        const routed = await routeWorkItem(created.id, actorId, {
+          workflowId: input.workflowTemplateId,
+          workflowTypeKey: intent.workflowTypeKeys[0],
+          routingMode: 'AUTO_START',
+          startNow: true,
+        })
+        const target = firstStartedTarget(routed)
+        if (target?.childWorkflowInstanceId) {
+          routedWorkItem = routed
+          launchTarget = target
+          break
+        }
+        if (!launchTarget && target) {
+          routedWorkItem = routed
+          launchTarget = target
+        }
+      } catch (err) {
+        warnings.push(`Launch attempt for ${created.workCode} failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    if (!launchTarget?.childWorkflowInstanceId) {
+      warnings.push('Created WorkItems, but no eligible workflow run was started. Attach/start a seeded workflow from the WorkItems inbox.')
+    }
+  }
+
+  const workflowTemplate = await summarizeWorkflowTemplate(
+    launchTarget?.childWorkflowTemplateId ?? input.workflowTemplateId ?? null,
+  )
+  const workflowInstance = await summarizeWorkflowInstance(launchTarget?.childWorkflowInstanceId ?? null)
+
+  return {
+    intent,
+    workItems: commit.created,
+    failedWorkItems: commit.failed,
+    workflowTemplate,
+    workflowInstance,
+    runUrl: workflowInstance?.id ? `/runs/${workflowInstance.id}` : null,
+    workItemsUrl: '/work-items',
+    routedWorkItem,
+    runtime: {
+      modelAlias: input.modelAlias ?? intent.defaultModelAlias,
+      runtimePreference: input.runtimePreference ?? intent.runtimePreference,
+      governancePreset: input.governancePreset ?? intent.governancePreset,
+    },
+    warnings,
+  }
 }

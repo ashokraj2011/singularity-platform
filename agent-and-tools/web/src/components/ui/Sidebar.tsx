@@ -18,6 +18,7 @@ const menuSections: NavSection[] = [
     label: "Start Here",
     description: "Overview and app catalog",
     items: [
+      { label: "Start SDLC Work", href: "/start", icon: Play },
       { label: "Command Center", href: "/", icon: LayoutDashboard },
       { label: "App Catalog", href: "/control-plane", icon: Network },
     ],
@@ -62,10 +63,11 @@ const menuSections: NavSection[] = [
     description: "Plan, route, start, and monitor work",
     items: [
       { label: "Workflow Home", href: "/workflows", icon: Workflow },
-      { label: "Planner", href: "/workflows/planner", icon: Route },
+      { label: "Story Planner", href: "/workflows/planner", icon: Route },
+      { label: "Guided Launch", href: "/workflows/start", icon: Play },
+      { label: "Template Gallery", href: "/workflows/templates/gallery", icon: GitBranch },
       { label: "Inbox", href: "/workflows/inbox", icon: Inbox },
       { label: "Work Hub", href: "/work-items", icon: Network },
-      { label: "Start Workflow", href: "/workflows/run", icon: Play },
       { label: "Runs", href: "/runs", icon: Activity },
       { label: "Run History", href: "/workflows/history", icon: FileText },
       { label: "Runtime", href: "/workflows/runtime", icon: Zap },

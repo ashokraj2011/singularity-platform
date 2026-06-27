@@ -14,6 +14,7 @@ import { normalizeBudgetPolicy } from './runtime/budget'
 import { resolveTeamIdForWorkflow, tokenFromAuthorizationHeader } from '../../lib/iam/teamMirror'
 import { analyzeWorkflowTemplate } from './formal-verification'
 import { normalizeMetadataKey, resolveMetadataSnapshot } from '../metadata/metadata.service'
+import { SDLC_INTENTS } from '../adoption/sdlcCatalog'
 
 export const workflowTemplatesRouter: Router = Router()
 
@@ -1218,6 +1219,64 @@ workflowTemplatesRouter.get('/', async (req, res, next) => {
       prisma.workflow.count({ where }),
     ])
     res.json(toPageResponse(templates, total, pg))
+  } catch (err) {
+    next(err)
+  }
+})
+
+workflowTemplatesRouter.get('/gallery', async (req, res, next) => {
+  try {
+    const capabilityId = typeof req.query.capabilityId === 'string' && req.query.capabilityId.trim()
+      ? req.query.capabilityId.trim()
+      : undefined
+    const templates = await prisma.workflow.findMany({
+      where: {
+        archivedAt: null,
+        profile: 'main',
+        ...(capabilityId ? { capabilityId } : {}),
+      },
+      select: {
+        id: true,
+        name: true,
+        description: true,
+        capabilityId: true,
+        workflowTypeKey: true,
+        defaultRoutingMode: true,
+        metadata: true,
+        variables: true,
+        profile: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy: [{ isDefaultForType: 'desc' }, { name: 'asc' }],
+    })
+
+    const items = SDLC_INTENTS.map(intent => {
+      const ranked = templates
+        .map(template => {
+          const workflowTypeKey = normalizeMetadataKey(template.workflowTypeKey)
+          const typeRank = intent.workflowTypeKeys.indexOf(workflowTypeKey)
+          const name = template.name.toLowerCase()
+          const labelWords = intent.label.toLowerCase().split(/\s+/)
+          const nameMatch = labelWords.filter(word => name.includes(word)).length
+          const score = (typeRank >= 0 ? 100 - typeRank : 0) + (nameMatch * 10)
+          return { template, score }
+        })
+        .filter(row => row.score > 0)
+        .sort((left, right) => right.score - left.score || left.template.name.localeCompare(right.template.name))
+        .map(row => row.template)
+      return {
+        ...intent,
+        templates: ranked.slice(0, 3),
+        workflowTemplate: ranked[0] ?? null,
+        templateCount: ranked.length,
+        runtimeRequirement: intent.runtimePreference === 'mock_ok'
+          ? 'Mock provider can validate the happy path; connected runtime preferred for real execution.'
+          : 'Connected MCP runtime with model-run/tool-run support is required for real execution.',
+      }
+    })
+
+    res.json({ generatedAt: new Date().toISOString(), capabilityId: capabilityId ?? null, items })
   } catch (err) {
     next(err)
   }

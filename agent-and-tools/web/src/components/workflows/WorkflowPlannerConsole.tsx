@@ -85,6 +85,18 @@ type CommitResult = {
   failed: Array<{ title: string; error: string }>;
 };
 
+type LaunchResult = {
+  intent?: { id?: string; label?: string };
+  workItems: CommitResult["created"];
+  failedWorkItems: CommitResult["failed"];
+  workflowTemplate?: { id?: string; name?: string; workflowTypeKey?: string } | null;
+  workflowInstance?: { id?: string; name?: string; status?: string } | null;
+  runUrl?: string | null;
+  workItemsUrl?: string | null;
+  warnings?: string[];
+  runtime?: { modelAlias?: string; runtimePreference?: string; governancePreset?: string };
+};
+
 const starterStory = [
   "As a product owner, I want a governed agentic SDLC flow that can:",
   "- ingest a story and split it into implementation workitems",
@@ -109,8 +121,10 @@ export function WorkflowPlannerConsole() {
   const [last, setLast] = useState<ConverseResult | null>(null);
   const [planning, setPlanning] = useState(false);
   const [committing, setCommitting] = useState(false);
+  const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [commitResult, setCommitResult] = useState<CommitResult | null>(null);
+  const [launchResult, setLaunchResult] = useState<LaunchResult | null>(null);
 
   useEffect(() => {
     if (!capabilityId && capabilities[0]?.id) setCapabilityId(capabilities[0].id);
@@ -126,6 +140,7 @@ export function WorkflowPlannerConsole() {
   );
   const canPlan = validCapability && story.trim().length >= 8 && !planning;
   const canCommit = validCapability && taskCount > 0 && !committing;
+  const canLaunch = validCapability && (taskCount > 0 || story.trim().length >= 8) && !launching;
 
   async function splitStory() {
     const text = story.trim();
@@ -141,6 +156,7 @@ export function WorkflowPlannerConsole() {
     setPlanning(true);
     setError(null);
     setCommitResult(null);
+    setLaunchResult(null);
     const nextMessages: ChatMessage[] = [...messages, { role: "user", content: text }];
     try {
       const result = await workgraphFetch<ConverseResult>("/planner/converse", {
@@ -189,6 +205,7 @@ export function WorkflowPlannerConsole() {
     });
     setMessages([{ role: "user", content: text }, { role: "assistant", content: "Created a local draft from the story." }]);
     setCommitResult(null);
+    setLaunchResult(null);
     setError(null);
   }
 
@@ -207,10 +224,43 @@ export function WorkflowPlannerConsole() {
         body: JSON.stringify({ capabilityId: capabilityId.trim(), milestones: prepared }),
       });
       setCommitResult({ created: result.created ?? [], failed: result.failed ?? [] });
+      setLaunchResult(null);
     } catch (err) {
       setError(`Create WorkItems failed: ${errorText(err)}`);
     } finally {
       setCommitting(false);
+    }
+  }
+
+  async function launchSdlc() {
+    const prepared = sanitizeForCommit(milestones, capabilityId.trim());
+    if (!validCapability || (prepared.length === 0 && story.trim().length < 8)) {
+      setError("Create a roadmap or provide a story before launching.");
+      return;
+    }
+    setLaunching(true);
+    setError(null);
+    setCommitResult(null);
+    setLaunchResult(null);
+    try {
+      const result = await workgraphFetch<LaunchResult>("/planner/launch", {
+        method: "POST",
+        body: JSON.stringify({
+          capabilityId: capabilityId.trim(),
+          intent: "build_feature",
+          story: story.trim() || messages.find((message) => message.role === "user")?.content || starterStory,
+          plan: prepared.length ? prepared : undefined,
+          modelAlias: "balanced",
+          runtimePreference: "user_runtime",
+          governancePreset: "standard",
+        }),
+      });
+      setLaunchResult(result);
+      setCommitResult({ created: result.workItems ?? [], failed: result.failedWorkItems ?? [] });
+    } catch (err) {
+      setError(`Launch failed: ${errorText(err)}`);
+    } finally {
+      setLaunching(false);
     }
   }
 
@@ -220,6 +270,7 @@ export function WorkflowPlannerConsole() {
     setMilestones([]);
     setLast(null);
     setCommitResult(null);
+    setLaunchResult(null);
     setError(null);
   }
 
@@ -236,6 +287,7 @@ export function WorkflowPlannerConsole() {
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Link href="/work-items" className="btn-secondary"><ClipboardList size={15} /> WorkItems</Link>
+            <Link href="/workflows/start" className="btn-secondary"><Rocket size={15} /> Guided launch</Link>
             <Link href="/workflows/templates" className="btn-secondary"><GitBranch size={15} /> Workflows</Link>
             <button className="btn-secondary" type="button" onClick={() => void reloadCapabilities()}><RefreshCw size={15} /> Capabilities</button>
           </div>
@@ -356,14 +408,38 @@ export function WorkflowPlannerConsole() {
                 <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 6 }}>Commit</div>
                 <h2 style={{ margin: 0, fontSize: 18, fontWeight: 850 }}>Create governed WorkItems</h2>
                 <p style={{ margin: "6px 0 0", color: "var(--color-outline)", fontSize: 13 }}>
-                  This writes the current roadmap to Workgraph as WorkItems. It does not start workflow execution automatically.
+                  Create WorkItems only, or launch the first eligible WorkItem through a seeded SDLC workflow.
                 </p>
               </div>
-              <button className="btn-primary" type="button" disabled={!canCommit} onClick={() => void commitPlan()}>
-                {committing ? <Loader2 size={15} className="animate-spin" /> : <Rocket size={15} />}
-                Create {taskCount || ""} WorkItems
-              </button>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button className="btn-secondary" type="button" disabled={!canCommit} onClick={() => void commitPlan()}>
+                  {committing ? <Loader2 size={15} className="animate-spin" /> : <ClipboardList size={15} />}
+                  Create {taskCount || ""} WorkItems
+                </button>
+                <button className="btn-primary" type="button" disabled={!canLaunch} onClick={() => void launchSdlc()}>
+                  {launching ? <Loader2 size={15} className="animate-spin" /> : <Rocket size={15} />}
+                  Create + Launch
+                </button>
+              </div>
             </div>
+
+            {launchResult && (
+              <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
+                <SuccessPanel text={launchResult.workflowInstance?.id ? `Launched ${launchResult.intent?.label ?? "SDLC workflow"} run ${shortId(launchResult.workflowInstance.id)}.` : `Created ${launchResult.workItems?.length ?? 0} WorkItems. Workflow launch needs manual routing.`} />
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {launchResult.runUrl && <Link href={launchResult.runUrl} className="btn-primary"><Rocket size={14} /> Open run cockpit</Link>}
+                  <Link href={launchResult.workItemsUrl ?? "/work-items"} className="btn-secondary"><ClipboardList size={14} /> WorkItems inbox</Link>
+                  <Link href="/llm-settings" className="btn-secondary"><Sparkles size={14} /> Runtime setup</Link>
+                </div>
+                {launchResult.workflowTemplate && (
+                  <div style={{ color: "var(--color-outline)", fontSize: 12 }}>
+                    Template: <strong style={{ color: "var(--color-on-surface)" }}>{launchResult.workflowTemplate.name ?? launchResult.workflowTemplate.id}</strong>
+                    {launchResult.runtime?.modelAlias ? ` · model ${launchResult.runtime.modelAlias}` : ""}
+                  </div>
+                )}
+                {(launchResult.warnings ?? []).length > 0 && <Warning text={(launchResult.warnings ?? []).join(" ")} />}
+              </div>
+            )}
 
             {commitResult && (
               <div style={{ marginTop: 14, display: "grid", gap: 10 }}>

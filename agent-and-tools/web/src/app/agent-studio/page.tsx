@@ -688,7 +688,7 @@ function CreateAgentProfileWizard({
     }
   }
 
-  const steps = ["Identity", "Instructions", "Skills", "Review"];
+  const steps = ["Identity", "Instructions", "Skill Sources", "Review"];
   const externalCount = bindings.filter((binding) => binding.sourceType !== "local").length;
 
   return (
@@ -697,7 +697,7 @@ function CreateAgentProfileWizard({
         <div className="flex items-start justify-between border-b border-slate-200 p-5">
           <div>
             <h2 className="text-lg font-semibold text-slate-950">Create Agent</h2>
-            <p className="mt-1 text-sm text-slate-500">Create a capability-scoped draft with source-backed skills and explicit permissions.</p>
+            <p className="mt-1 text-sm text-slate-500">Create a capability-scoped draft with Local Tool, Provider/API, URL Document, Uploaded Document, and read-only knowledge sources.</p>
           </div>
           <button onClick={onClose} className="rounded p-1 hover:bg-slate-100"><X size={16} /></button>
         </div>
@@ -918,7 +918,7 @@ function CreateAgentProfileWizard({
                 <div className="font-semibold text-slate-900">{name || "Unnamed agent"}</div>
                 <div className="mt-1 text-slate-500">{selectedCapability?.name ?? "No capability selected"} · {roleType.replace(/_/g, " ")}</div>
                 <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-                  <MetricPill label="Skills" value={bindings.length} />
+                <MetricPill label="Sources" value={bindings.length} />
                   <MetricPill label="External" value={externalCount} />
                   <MetricPill label="Files" value={files.length} />
                 </div>

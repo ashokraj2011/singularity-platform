@@ -7,13 +7,12 @@ import {
   CheckCircle2,
   ClipboardList,
   FileCheck2,
+  GitBranch,
   Network,
   Play,
   ShieldCheck,
   Sparkles,
   Workflow,
-  Wrench,
-  Zap,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -50,10 +49,10 @@ const loop = [
   },
   {
     label: "Plan",
-    title: "Design Flow",
-    href: "/workflows/planner",
+    title: "Guided Launch",
+    href: "/workflows/start",
     icon: Workflow,
-    detail: "Templates, designer, metadata, and run inputs",
+    detail: "Intent, template, runtime checks, and governed run kickoff",
     tone: "#368727",
   },
   {
@@ -99,11 +98,12 @@ const loop = [
 ] satisfies Array<{ label: string; title: string; href: string; icon: LucideIcon; detail: string; tone: string }>;
 
 const commandActions = [
-  { label: "Create Agent", href: "/agents/studio", icon: Bot, primary: true },
-  { label: "Start Workflow", href: "/workflows/run", icon: Play },
-  { label: "Review Receipts", href: "/runtime-executions", icon: Activity },
-  { label: "Governance Engine", href: "/engine", icon: Zap },
-  { label: "Tool Grants", href: "/tool-grants", icon: Wrench },
+  { label: "Start SDLC Work", href: "/start", icon: Play, primary: true },
+  { label: "Paste Story", href: "/workflows/planner", icon: ClipboardList },
+  { label: "Guided Launch", href: "/workflows/start", icon: Workflow },
+  { label: "Runs", href: "/runs", icon: Activity },
+  { label: "Runtime + LLM", href: "/llm-settings", icon: Network },
+  { label: "Create Agent", href: "/agents/studio", icon: Bot },
 ];
 
 const evidenceLinks = [
@@ -163,12 +163,25 @@ export default async function SdlcCommandCenterPage() {
         <div className="card" style={{ padding: 24, borderRadius: 8 }}>
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--color-primary)", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 10 }}>
             <Sparkles size={15} />
-            Agentic SDLC
+            Start SDLC Work
           </div>
-          <h1 className="page-header" style={{ margin: 0, fontSize: 34 }}>SDLC Command Center</h1>
+          <h1 className="page-header" style={{ margin: 0, fontSize: 34 }}>Paste Story. Launch Workflow. Export Evidence.</h1>
           <p style={{ margin: "10px 0 0", maxWidth: 900, color: "var(--color-outline)", fontSize: 14, lineHeight: 1.6 }}>
-            Govern intake, agent assignment, workflow execution, code generation, verification, receipts, operations, and learning from one delivery loop.
+            The primary path is simple: split a story into WorkItems, choose the SDLC intent, launch the seeded workflow, watch the run cockpit, and hand off evidence or Copilot YAML.
           </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 16 }}>
+            {[
+              ["1", "Story Planner"],
+              ["2", "Guided Launch"],
+              ["3", "Run Cockpit"],
+              ["4", "Evidence Pack"],
+            ].map(([step, label]) => (
+              <div key={step} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: "10px 12px", background: "var(--color-surface-container)" }}>
+                <strong style={{ color: "var(--color-primary)", marginRight: 7 }}>{step}</strong>
+                <span style={{ color: "var(--color-on-surface)", fontWeight: 800, fontSize: 13 }}>{label}</span>
+              </div>
+            ))}
+          </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 20 }}>
             {commandActions.map((action) => <ActionLink key={action.href} {...action} />)}
           </div>
@@ -198,6 +211,10 @@ export default async function SdlcCommandCenterPage() {
           <Link href="/operations/architecture" className="btn-secondary">
             <Network size={15} />
             Architecture
+          </Link>
+          <Link href="/workflows/templates/gallery" className="btn-secondary">
+            <GitBranch size={15} />
+            Template Gallery
           </Link>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>

@@ -70,6 +70,20 @@ type RuntimeService = {
   checkedAt: string;
 };
 
+type AdoptionHealth = {
+  score: number;
+  summary?: {
+    ready?: number;
+    warning?: number;
+    blocked?: number;
+    connectedRuntimeCount?: number;
+    readyProviderCount?: number;
+    seededIntentCount?: number;
+  };
+  blocked?: Array<{ id: string; label: string; summary: string; fixCommand?: string; fixRoute?: string }>;
+  warning?: Array<{ id: string; label: string; summary: string; fixCommand?: string; fixRoute?: string }>;
+};
+
 type Tone = {
   label: string;
   fg: string;
@@ -160,6 +174,14 @@ async function runtimeInfrastructure(): Promise<RuntimeInfrastructure> {
   return parsed as RuntimeInfrastructure;
 }
 
+async function adoptionHealth(): Promise<AdoptionHealth> {
+  const res = await fetch(apiPath("/api/adoption/health"), { cache: "no-store", headers: authHeaders() });
+  const { raw, parsed } = await readResponseBody(res);
+  if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+  if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 300) : "Empty adoption health response");
+  return parsed as AdoptionHealth;
+}
+
 function checkTone(result: CheckResult["result"], loading: boolean): Tone {
   if (!result && loading) return { label: "Checking", fg: "#475569", bg: "#f8fafc", border: "#cbd5e1", icon: Activity };
   if (result?.ok) return { label: "Live", fg: "#047857", bg: "#ecfdf5", border: "#a7f3d0", icon: CheckCircle2 };
@@ -237,6 +259,11 @@ export function OperationsStatusPage({
     runtimeInfrastructure,
     { refreshInterval: 10000 },
   );
+  const { data: adoption, error: adoptionError, isLoading: adoptionLoading, mutate: refreshAdoption } = useSWR(
+    "adoption-health",
+    adoptionHealth,
+    { refreshInterval: 15000 },
+  );
 
   const checkRows: CheckResult[] = data ?? checks.map((item) => ({ ...item, result: null }));
   const coreHealthy = checkRows.filter((item) => item.result?.ok).length;
@@ -250,6 +277,7 @@ export function OperationsStatusPage({
   const refreshAll = () => {
     void mutate();
     void refreshRuntime();
+    void refreshAdoption();
   };
 
   return (
@@ -277,7 +305,7 @@ export function OperationsStatusPage({
             );
           })}
         </div>
-        <button type="button" className="btn-secondary" onClick={refreshAll} disabled={isLoading || runtimeLoading}>
+        <button type="button" className="btn-secondary" onClick={refreshAll} disabled={isLoading || runtimeLoading || adoptionLoading}>
           <RefreshCw size={15} />
           Refresh
         </button>
@@ -290,6 +318,8 @@ export function OperationsStatusPage({
         requiredHealthy={allRequiredHealthy}
         checkedAt={generatedAt}
       />
+
+      <AdoptionHealthScore health={adoption} error={adoptionError} loading={adoptionLoading} />
 
       {(error || runtimeError) && (
         <section className="card" style={{ padding: 16, borderColor: "#fecaca", background: "#fef2f2", marginBottom: 18 }}>
@@ -321,6 +351,69 @@ export function OperationsStatusPage({
       {view === "trust" && (
         <TrustView checks={checkRows} runtime={runtime} loading={isLoading || runtimeLoading} />
       )}
+    </div>
+  );
+}
+
+function AdoptionHealthScore({
+  health,
+  error,
+  loading,
+}: {
+  health?: AdoptionHealth;
+  error?: Error;
+  loading: boolean;
+}) {
+  const score = health?.score ?? 0;
+  const tone = !health && loading ? "#64748b" : score >= 80 ? "#047857" : score >= 55 ? "#b45309" : "#991b1b";
+  const attention = [...(health?.blocked ?? []), ...(health?.warning ?? [])].slice(0, 3);
+  return (
+    <section className="card" style={{ padding: 18, marginBottom: 18, borderColor: `${tone}33`, background: `${tone}08` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 12, minWidth: 0 }}>
+          <span style={iconBox(tone, `${tone}12`)}>
+            <Gauge size={20} />
+          </span>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 17 }}>Adoption Health Score</h2>
+            <p style={{ margin: "5px 0 0", color: "var(--color-outline)", fontSize: 13, lineHeight: 1.5 }}>
+              Validates the first SDLC path: story planner, seeded workflow, Agent Studio seeds, Runtime Bridge, LLM provider, audit, and Copilot handoff.
+            </p>
+          </div>
+        </div>
+        <strong style={{ color: tone, fontSize: 26 }}>{health ? `${score}%` : loading ? "..." : "Check"}</strong>
+      </div>
+      {error && <p style={{ margin: "10px 0 0", color: "#991b1b", fontSize: 12 }}>{error.message}</p>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginTop: 14 }}>
+        <MiniStat label="Ready" value={health?.summary?.ready ?? 0} tone="#047857" />
+        <MiniStat label="Warnings" value={health?.summary?.warning ?? 0} tone="#b45309" />
+        <MiniStat label="Blocked" value={health?.summary?.blocked ?? 0} tone="#991b1b" />
+        <MiniStat label="Runtime clients" value={health?.summary?.connectedRuntimeCount ?? 0} tone="#2563eb" />
+        <MiniStat label="LLM providers" value={health?.summary?.readyProviderCount ?? 0} tone="#0f766e" />
+        <MiniStat label="Seeded intents" value={health?.summary?.seededIntentCount ?? 0} tone="#6d28d9" />
+      </div>
+      {attention.length > 0 && (
+        <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+          {attention.map((item) => (
+            <div key={item.id} style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 10, alignItems: "center", border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 10, background: "#fff" }}>
+              <div style={{ minWidth: 0 }}>
+                <strong style={{ fontSize: 13 }}>{item.label}</strong>
+                <span style={{ display: "block", color: "var(--color-outline)", fontSize: 12, marginTop: 2 }}>{item.summary}</span>
+              </div>
+              {item.fixRoute ? <Link href={item.fixRoute} className="btn-secondary text-xs">Fix</Link> : item.fixCommand ? <code style={{ fontSize: 11 }}>{item.fixCommand}</code> : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MiniStat({ label, value, tone }: { label: string; value: number; tone: string }) {
+  return (
+    <div style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 10, background: "#fff" }}>
+      <div className="label-xs" style={{ color: "var(--color-outline)" }}>{label}</div>
+      <div style={{ color: tone, fontSize: 18, fontWeight: 850, marginTop: 4 }}>{value}</div>
     </div>
   );
 }

@@ -258,6 +258,34 @@ export default function LlmSettingsPage() {
       <section className="card p-5 mb-6">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
+            <h2 className="text-lg font-semibold text-slate-900">Runtime Setup Commands</h2>
+            <p className="text-sm text-slate-500">Use this split when Platform runs on a server and MCP plus the local LLM Gateway run from a laptop or remote worker.</p>
+          </div>
+          <span className="badge badge-pending_approval">copy commands</span>
+        </div>
+        <div className="grid md:grid-cols-2 gap-3 text-sm">
+          <CommandBlock
+            label="Terminal 1: platform services"
+            command={"git pull --ff-only\nbin/setup.sh --yes\nbin/bare-metal-apps.sh smoke"}
+          />
+          <CommandBlock
+            label="Terminal 2: MCP + LLM runtime"
+            command={"bin/mcp-runtime-setup.sh\n# choose copilot, anthropic, openai-compatible, mock, or disabled\ncurl -s http://localhost:8000/api/runtime-bridge/status | jq"}
+          />
+          <CommandBlock
+            label="Copilot runtime mode"
+            command={"export LLM_PROVIDER=copilot\nexport GITHUB_TOKEN=<github_pat_or_copilot_ready_token>\nbin/bare-metal-runtime.sh up"}
+          />
+          <CommandBlock
+            label="OpenAI-compatible or Anthropic"
+            command={"export LLM_PROVIDER=openai\nexport OPENAI_API_KEY=<key>\nexport OPENAI_BASE_URL=https://api.openai.com/v1\n# or: export LLM_PROVIDER=anthropic && export ANTHROPIC_API_KEY=<key>\nbin/bare-metal-runtime.sh up"}
+          />
+        </div>
+      </section>
+
+      <section className="card p-5 mb-6">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
             <h2 className="text-lg font-semibold text-slate-900">Dial-in Runtime Topology</h2>
             <p className="text-sm text-slate-500">Context Fabric routes governed execution through connected MCP runtimes. Direct URLs below are diagnostic/debug fallback surfaces.</p>
           </div>
@@ -434,6 +462,15 @@ function Field({ label, value, mono = false }: { label: string; value: string; m
     <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
       <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1">{label}</div>
       <div className={`${mono ? "font-mono text-xs" : "text-sm"} text-slate-800 break-all`}>{value}</div>
+    </div>
+  );
+}
+
+function CommandBlock({ label, command }: { label: string; command: string }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-2">{label}</div>
+      <pre className="overflow-x-auto rounded-md border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-800"><code>{command}</code></pre>
     </div>
   );
 }

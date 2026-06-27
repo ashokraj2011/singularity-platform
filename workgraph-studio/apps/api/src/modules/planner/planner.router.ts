@@ -9,7 +9,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { validate } from '../../middleware/validate'
-import { converse, commitRoadmap, chatMessageSchema, milestoneSchema } from './planner.service'
+import { converse, commitRoadmap, launchRoadmap, chatMessageSchema, milestoneSchema } from './planner.service'
 
 export const plannerRouter: Router = Router()
 
@@ -35,5 +35,25 @@ const commitSchema = z.object({
 plannerRouter.post('/commit', validate(commitSchema), async (req, res) => {
   const body = req.body as z.infer<typeof commitSchema>
   const result = await commitRoadmap(body, req.user!.userId)
+  res.status(201).json(result)
+})
+
+const launchSchema = z.object({
+  capabilityId: z.string().uuid(),
+  intent: z.string().optional(),
+  story: z.string().max(12000).optional(),
+  plan: z.array(milestoneSchema).max(12).optional(),
+  milestones: z.array(milestoneSchema).max(12).optional(),
+  workflowTemplateId: z.string().uuid().optional(),
+  modelAlias: z.string().max(120).optional(),
+  runtimePreference: z.string().max(120).optional(),
+  governancePreset: z.string().max(120).optional(),
+}).refine(body => (body.plan?.length ?? 0) > 0 || (body.milestones?.length ?? 0) > 0 || (body.story?.trim().length ?? 0) >= 8, {
+  message: 'Provide a planner roadmap or a story with at least 8 characters.',
+})
+
+plannerRouter.post('/launch', validate(launchSchema), async (req, res) => {
+  const body = req.body as z.infer<typeof launchSchema>
+  const result = await launchRoadmap(body, req.user!.userId)
   res.status(201).json(result)
 })
