@@ -516,37 +516,6 @@ services:
   # under agent-and-tools/apps/learning-service/ as a deprecation marker
   # for one operator cycle.
 
-  # ─────────────────────────────────────────────────────────────────────
-  # M42.6 — Legacy Code Foundry approval UI. Platform Web serves the canonical
-  # /foundry routes; this dev server is retained only for direct debugging.
-  # ─────────────────────────────────────────────────────────────────────
-  code-foundry-web:
-    build:
-      context: ./singularity-code-foundry
-      dockerfile: apps/code-foundry-web/Dockerfile
-    container_name: singularity-code-foundry-web
-    # Legacy/debug UI only. The normal /foundry route is served by platform-web.
-    profiles: [frontend-legacy]
-    environment:
-      NODE_ENV: development
-      VITE_FOUNDRY_API_URL: http://workgraph-api:8080
-      # M100 P1 — served under /foundry/ by the edge gateway. This is a Vite DEV
-      # server, so the base path is read at runtime (not a build arg).
-      BASE_PATH: /foundry/
-    ports:
-      - "5181:5181"
-    volumes:
-      - ./singularity-code-foundry/apps/code-foundry-web/src:/app/apps/code-foundry-web/src
-      - ./singularity-code-foundry/apps/code-foundry-web/index.html:/app/apps/code-foundry-web/index.html
-      - ./singularity-code-foundry/apps/code-foundry-web/public:/app/apps/code-foundry-web/public
-    # Debug-only UI. Start the core stack separately when live API data is
-    # needed; avoiding depends_on keeps the legacy profile isolated.
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-          cpus: '0.5'
-
   platform-web:
     build:
       context: .
@@ -608,7 +577,6 @@ services:
   # ─────────────────────────────────────────────────────────────────────
   # context-fabric
   # ─────────────────────────────────────────────────────────────────────
-
 
   context-memory:
     build:
@@ -1175,27 +1143,6 @@ services:
           memory: 2G
           cpus: '1.0'
 
-  workgraph-web:
-    build:
-      context: ./workgraph-studio
-      dockerfile: apps/web/Dockerfile
-      # M100 P1 — served under /workflow/ by the edge gateway.
-      args:
-        BASE_PATH: /workflow/
-    container_name: singularity-workgraph-web
-    # M65 Slice 2A — compose profiles.
-    profiles: [frontend-legacy]
-    ports:
-      - "5174:80"
-    # Debug-only static UI. Start the core stack separately when live API data
-    # is needed; avoiding depends_on keeps the legacy profile isolated.
-    # M35.3 — resource limits (frontend SPA: 512M memory / 0.5 CPU)
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '0.5'
-
   blueprint-workbench:
     build:
       context: ./workgraph-studio
@@ -1209,30 +1156,6 @@ services:
     profiles: [frontend-legacy]
     ports:
       - "5176:80"
-    # Debug-only static UI. Start the core stack separately when live API data
-    # is needed; avoiding depends_on keeps the legacy profile isolated.
-    # M35.3 — resource limits (frontend SPA: 512M memory / 0.5 CPU)
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '0.5'
-
-  # ─────────────────────────────────────────────────────────────────────
-  # User and Capability admin SPA
-  # ─────────────────────────────────────────────────────────────────────
-  user-and-capability:
-    build:
-      context: ./UserAndCapabillity
-      dockerfile: Dockerfile
-      # M100 P1 — served under /iam/ by the edge gateway.
-      args:
-        BASE_PATH: /iam/
-    container_name: singularity-user-and-capability
-    # M65 Slice 2A — compose profiles.
-    profiles: [frontend-legacy]
-    ports:
-      - "5175:80"
     # Debug-only static UI. Start the core stack separately when live API data
     # is needed; avoiding depends_on keeps the legacy profile isolated.
     # M35.3 — resource limits (frontend SPA: 512M memory / 0.5 CPU)
@@ -1504,35 +1427,6 @@ services:
           cpus: '1.0'
 
   # ─────────────────────────────────────────────────────────────────────
-  # Legacy Singularity Portal (debug profile only; platform-web is canonical)
-  # ─────────────────────────────────────────────────────────────────────
-  portal:
-    build:
-      context: ./singularity-portal
-      dockerfile: Dockerfile
-    container_name: singularity-portal
-    # M65 Slice 2A — compose profiles.
-    profiles: [frontend-legacy]
-    ports:
-      - "5182:80"
-    environment:
-      # Legacy-only. Keep links pointed at the canonical Platform Web routes
-      # so enabling the debug profile does not reintroduce split-app navigation.
-      PORTAL_LINK_AGENT_ADMIN: ${PORTAL_LINK_AGENT_ADMIN:-http://localhost:5180/agents}
-      PORTAL_LINK_IAM_ADMIN: ${PORTAL_LINK_IAM_ADMIN:-http://localhost:5180/identity}
-      PORTAL_LINK_WORKGRAPH_DESIGNER: ${PORTAL_LINK_WORKGRAPH_DESIGNER:-http://localhost:5180/workflows}
-      PORTAL_LINK_BLUEPRINT_WORKBENCH: ${PORTAL_LINK_BLUEPRINT_WORKBENCH:-http://localhost:5180/workbench}
-      PORTAL_LINK_CODE_FOUNDRY: ${PORTAL_LINK_CODE_FOUNDRY:-http://localhost:5180/foundry}
-    # Debug-only wrapper. Start the core stack separately when live API data is
-    # needed; avoiding depends_on keeps the legacy profile isolated.
-    # M35.3 — resource limits (frontend SPA: 512M memory / 0.5 CPU)
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '0.5'
-
-  # ─────────────────────────────────────────────────────────────────────
   # Legacy edge gateway (debug profile only). The canonical operator origin is
   # platform-web on :5180.
   # ─────────────────────────────────────────────────────────────────────
@@ -1546,10 +1440,7 @@ services:
     ports:
       - "8085:80"
     depends_on:
-      - portal
-      - workgraph-web
       - blueprint-workbench
-      - user-and-capability
     deploy:
       resources:
         limits:

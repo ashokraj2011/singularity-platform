@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams } from 'next/navigation'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'motion/react'
 import {
@@ -39,7 +40,7 @@ function isTerminalRunStatus(status: string | undefined | null): boolean {
  */
 export function RunViewerPage() {
   const { id } = useParams<{ id: string }>()
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   // Default to the designer-style graph view; 'timeline' is the classic vertical
   // list. The choice persists across refreshes/runs (localStorage).
   const [viewMode, setViewModeState] = useState<'graph' | 'timeline'>(() => {
@@ -749,7 +750,7 @@ function WorkbenchTaskInlinePanel({
 // by CallWorkflowExecutor once the child is spawned. Before that (brief
 // window between activation and spawn) we show a spawning state.
 function CallWorkflowInlinePanel({ node }: { node: RunNode }) {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const childInstanceId = typeof node.config?._childInstanceId === 'string'
     ? node.config._childInstanceId
     : null
@@ -956,7 +957,7 @@ function WorkItemInlinePanel({
   instanceId: string
   compact?: boolean
 }) {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const standard = asRecord(node.config?.standard)
   const plannedTitle = String(standard.title ?? node.config?.title ?? node.label ?? 'Delegated work item')
   const plannedDescription = String(standard.description ?? node.config?.description ?? '')

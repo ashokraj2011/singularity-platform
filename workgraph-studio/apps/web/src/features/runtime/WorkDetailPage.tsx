@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'next/navigation'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { ArrowLeft, AlertCircle, Archive, CheckCircle2, XCircle, Workflow, Layers, ExternalLink, Route, Network, Play, Unlink } from 'lucide-react'
 import { api } from '../../lib/api'
@@ -26,7 +27,7 @@ type Kind = 'task' | 'approval' | 'consumable' | 'workitem'
 
 export function WorkDetailPage() {
   const { kind, id } = useParams<{ kind: Kind; id: string }>()
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
 
   if (!kind || !id || !['task', 'approval', 'consumable', 'workitem'].includes(kind)) {
     return <ErrorState message="Unknown work item" onBack={() => navigate('/runtime')} />
@@ -56,8 +57,8 @@ export function WorkDetailPage() {
 // ── WorkItem ──────────────────────────────────────────────────────────────────
 
 function WorkItemDetail({ id }: { id: string }) {
-  const navigate = useNavigate()
-  const [params] = useSearchParams()
+  const navigate = usePlatformNavigate()
+  const params = useSearchParams()
   const targetId = params.get('targetId')
   const [selectedWorkflowByTarget, setSelectedWorkflowByTarget] = useState<Record<string, string>>({})
   const [clarificationByTarget, setClarificationByTarget] = useState<Record<string, string>>({})
@@ -530,7 +531,7 @@ function StatusPill({ status }: { status: string }) {
 // ── Task ─────────────────────────────────────────────────────────────────────
 
 function TaskDetail({ id }: { id: string }) {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
 
   const { data: task, isLoading, refetch } = useQuery<TaskRow>({
     queryKey: ['runtime-task', id],
@@ -623,7 +624,7 @@ function TaskDetail({ id }: { id: string }) {
 // ── Approval ────────────────────────────────────────────────────────────────
 
 function ApprovalDetail({ id }: { id: string }) {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
 
   const { data: approval, isLoading } = useQuery<ApprovalRow>({
     queryKey: ['runtime-approval', id],
@@ -699,7 +700,7 @@ function ApprovalDetail({ id }: { id: string }) {
 // ── Consumable ──────────────────────────────────────────────────────────────
 
 function ConsumableDetail({ id }: { id: string }) {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
 
   const { data: consumable, isLoading } = useQuery<ConsumableRow>({
     queryKey: ['runtime-consumable', id],

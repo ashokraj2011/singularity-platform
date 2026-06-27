@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useQuery } from '@tanstack/react-query'
 import { History, Workflow, ArrowRight } from 'lucide-react'
 import { api } from '../../lib/api'
@@ -32,7 +32,7 @@ const KIND_LABEL: Record<InboxKind, string> = {
 }
 
 export function HistoryPage() {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const { data, isLoading } = useQuery<InboxResponse>({
     queryKey: ['runtime-inbox'],   // share cache with InboxPage
     queryFn:  () => api.get('/runtime/inbox').then(r => r.data),

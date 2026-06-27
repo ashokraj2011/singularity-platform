@@ -25,13 +25,9 @@ profiles=(
 )
 
 legacy_frontends=(
-  portal
   edge-gateway
   agent-web
-  workgraph-web
   blueprint-workbench
-  user-and-capability
-  code-foundry-web
 )
 
 failures=0
@@ -138,11 +134,7 @@ for profile in "${profiles[@]}"; do
       ;;
     frontend-legacy)
       expect_not_has "$profile" "$output" platform-web
-      expect_has "$profile" "$output" portal
-      expect_has "$profile" "$output" workgraph-web
       expect_has "$profile" "$output" blueprint-workbench
-      expect_has "$profile" "$output" user-and-capability
-      expect_has "$profile" "$output" code-foundry-web
       expect_has "$profile" "$output" edge-gateway
       ;;
   esac

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useSearchParams, useRouter, usePathname } from 'next/navigation'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'motion/react'
 import {
@@ -347,8 +348,10 @@ function TemplateMenu({
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export function WorkflowsListPage() {
-  const navigate = useNavigate()
-  const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = usePlatformNavigate()
+  const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
   const qc = useQueryClient()
   const [tab, setTab] = useState<'instances' | 'templates'>('templates')
   // M93.B — Workflow profile sub-toggle on the Workflows tab.
@@ -577,11 +580,12 @@ export function WorkflowsListPage() {
     if (tmpl) {
       setRunOpen(tmpl)
       // Clear the query so closing the modal doesn't reopen it.
-      const next = new URLSearchParams(searchParams)
+      const next = new URLSearchParams(searchParams.toString())
       next.delete('run')
-      setSearchParams(next, { replace: true })
+      const qs = next.toString()
+      router.replace(qs ? `${pathname}?${qs}` : pathname)
     }
-  }, [searchParams, templates, runOpen, setSearchParams])
+  }, [searchParams, templates, runOpen, router, pathname])
 
   const active = instances.filter(i => i.status === 'ACTIVE').length
   const draft  = instances.filter(i => i.status === 'DRAFT').length
@@ -1958,7 +1962,7 @@ function RunModal({
   onCancel:   () => void
   onSubmit:   (input: { workItemId: string; targetId: string; needsClaim: boolean }) => void
 }) {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const { labelForCapability } = useCapabilityLabels()
   const [selectedWorkItemTarget, setSelectedWorkItemTarget] = useState('')
   const workItemsQuery = useQuery<WorkItemRow[]>({

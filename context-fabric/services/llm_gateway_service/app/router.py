@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Body, Header, HTTPException
 
 from .config import settings
 from . import provider_config
@@ -142,6 +142,35 @@ def list_models(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
         "models": enriched,
         "warnings": provider_config.warnings(),
     }
+
+
+# ── Catalog writes (UI-managed) — persist to llm-models.json, live reload ────
+@router.post("/llm/models")
+def create_model(body: Dict[str, Any] = Body(...), authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+    _check_auth(authorization)
+    try:
+        return {"model": provider_config.add_model(body)}
+    except provider_config.ProviderConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.put("/llm/models/{model_id}")
+def edit_model(model_id: str, body: Dict[str, Any] = Body(...), authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+    _check_auth(authorization)
+    try:
+        return {"model": provider_config.update_model(model_id, body)}
+    except provider_config.ProviderConfigError as exc:
+        raise HTTPException(status_code=404 if str(exc).startswith("unknown model id") else 400, detail=str(exc))
+
+
+@router.delete("/llm/models/{model_id}")
+def remove_model(model_id: str, authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+    _check_auth(authorization)
+    try:
+        provider_config.delete_model(model_id)
+    except provider_config.ProviderConfigError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"deleted": model_id}
 
 
 @router.post("/v1/chat/completions", response_model=ChatCompletionResponse)

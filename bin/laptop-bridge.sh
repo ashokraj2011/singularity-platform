@@ -87,7 +87,7 @@ build_app_list() {
       --with-foundry|--foundry) ;; # retained for compatibility; Code Generation is Workgraph-owned now.
       --with-verifier|--verification) APPS="$APPS formal-verifier" ;;
       --with-compression|--compression) APPS="$APPS prompt-compressor" ;;
-      --with-legacy-ui|--legacy-ui) APPS="$APPS workgraph-web blueprint-workbench user-and-capability code-foundry-web portal edge-gateway" ;;
+      --with-legacy-ui|--legacy-ui) APPS="$APPS blueprint-workbench edge-gateway" ;;
       *) echo "unknown box option: $1" >&2; exit 1 ;;
     esac
     shift
@@ -145,7 +145,7 @@ entry_banner() {
 }
 
 cmd_box_down() {
-  dc stop $CORE_APPS formal-verifier prompt-compressor workgraph-web blueprint-workbench user-and-capability code-foundry-web portal edge-gateway $BOOTSTRAP $INFRA
+  dc stop $CORE_APPS formal-verifier prompt-compressor blueprint-workbench edge-gateway $BOOTSTRAP $INFRA
   echo "[box] stopped (data kept; 'dc down -v' to wipe)."
 }
 

@@ -5,9 +5,7 @@ const require = createRequire(import.meta.url);
 const webNodeModules = path.join(process.cwd(), "node_modules");
 const workgraphWebSource = new URL("../../workgraph-studio/apps/web/src", import.meta.url).pathname;
 const workgraphEngineSource = new URL("../../workgraph-studio/packages/engine/src/index.ts", import.meta.url).pathname;
-const codeFoundryWebSource = new URL("../../singularity-code-foundry/apps/code-foundry-web/src", import.meta.url).pathname;
 const blueprintWorkbenchSource = new URL("../../workgraph-studio/apps/blueprint-workbench/src", import.meta.url).pathname;
-const identityWebSource = new URL("../../UserAndCapabillity/src", import.meta.url).pathname;
 
 function healthDestination(value, defaultBase, path) {
   const raw = (value || defaultBase).replace(/\/+$/, "");
@@ -20,16 +18,17 @@ const nextConfig = {
   experimental: {
     externalDir: true,
   },
-  transpilePackages: ["workgraph-web"],
+  transpilePackages: ["workgraph-web", "blueprint-workbench"],
   webpack(config) {
     config.resolve.alias = {
       ...(config.resolve.alias ?? {}),
       "workgraph-web": workgraphWebSource,
       "@workgraph/engine$": workgraphEngineSource,
-      "code-foundry-web": codeFoundryWebSource,
       "blueprint-workbench": blueprintWorkbenchSource,
-      "identity-web": identityWebSource,
       "@tanstack/react-query$": require.resolve("@tanstack/react-query"),
+      // workgraph-web source (aliased in) imports next/navigation now that its
+      // pages are native Next routes — resolve it from platform-web's deps.
+      "next/navigation$": require.resolve("next/navigation"),
       "@monaco-editor/react$": require.resolve("@monaco-editor/react"),
       "react-diff-viewer-continued$": require.resolve("react-diff-viewer-continued"),
       "react-markdown$": require.resolve("react-markdown"),
@@ -113,11 +112,24 @@ const nextConfig = {
       { source: "/curation", destination: "/audit/curation", permanent: false },
       { source: "/team-variables", destination: "/identity/variables", permanent: false },
       { source: "/global-variables", destination: "/identity/variables", permanent: false },
+      // The green native workbench console (/workbench/<view>) was retired; the
+      // blue in-process cockpit at /workbench handles every view internally.
+      { source: "/workbench/:view(cockpit|artifacts|stage-chat|code-review|audit|loop-theater|milestones|governance|export)", destination: "/workbench", permanent: false },
     ];
   },
   async rewrites() {
     const iamHealthDestination = healthDestination(process.env.IAM_HEALTH_URL, "http://iam-service:8100", "/api/v1/health");
-    return [
+    // Blue Blueprint Workbench cockpit runs IN-PROCESS as the Next /workbench
+    // route (slice 2 — no separate :5176 dev server, no :8085 gateway). Only the
+    // cockpit's own API paths still need proxying to the backends, same as the
+    // old edge-gateway: API_BASE=/workbench/api → workgraph proxy; the live SSE
+    // stream /workbench/audit-gov → audit-gov.
+    return {
+      beforeFiles: [
+        { source: "/workbench/api/:path*", destination: "/api/workgraph/:path*" },
+        { source: "/workbench/audit-gov/:path*", destination: "/api/audit-gov/:path*" },
+      ],
+      afterFiles: [
       // Prompt Composer is proxied by src/app/api/composer/[...path]/route.ts
       // so Platform Web can attach server-side service auth when no browser
       // bearer is present.
@@ -170,7 +182,8 @@ const nextConfig = {
         source: "/ops-health/agent-service",
         destination: `${process.env.AGENT_SERVICE_URL ?? "http://agent-service:3001"}/health`,
       },
-    ];
+      ],
+    };
   },
 };
 

@@ -25,10 +25,8 @@ cd "$REPO_ROOT"
 # server-side production guardrails, not shipped to browser bundles.
 DIRS=(
   "agent-and-tools/web/src"
-  "singularity-portal/src"
   "workgraph-studio/apps/blueprint-workbench/src"
   "workgraph-studio/apps/web/src"
-  "singularity-code-foundry/apps/code-foundry-web/src"
 )
 
 RG_EXCLUDES=(

@@ -56,7 +56,12 @@ export function workbenchNeoUrl(input: WorkbenchLaunchInput, view: WorkbenchLaun
   }
   params.set("ui", "neo");
   const query = params.toString();
-  return `/workbench/${view}${query ? `?${query}` : ""}`;
+  // Always the same-origin blue in-process cockpit (/workbench). The old
+  // /workbench/<view> segment routed to the retired green native console; the
+  // blue cockpit handles every view internally. `view` is kept for signature
+  // compatibility but no longer affects the path.
+  void view;
+  return `/workbench${query ? `?${query}` : ""}`;
 }
 
 function setParam(params: URLSearchParams, key: string, value?: string | null) {

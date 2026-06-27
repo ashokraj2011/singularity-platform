@@ -52,39 +52,16 @@ node bin/check-platform-web-ui.mjs
 ./singularity.sh doctor
 ```
 
-## Local gateway for bare-metal dev (blue Workbench cockpit)
+## Blue Workbench cockpit (now in-process)
 
-Distinct from the legacy split-UI above: this is a bare-metal **dev convenience** that
-runs the genuine `blueprint-workbench` cockpit. On bare-metal, `:5180/workbench` is the
-native console; to drive the *real* cockpit — e.g. a CALL_WORKFLOW "Open Workbench"
-launch — run a local single-origin gateway that fronts Platform Web and the cockpit:
+The bare-metal `local-gateway.sh` + `:5176` + `:8085` setup that used to front the
+`blueprint-workbench` cockpit has been **retired**. The cockpit now runs **in-process**
+as Platform Web's `/workbench` route (same origin, `:5180`), so the auth token carries
+and a CALL_WORKFLOW "Open Workbench" launch opens the blue cockpit directly. Just open
+`http://localhost:5180/workbench` — no gateway, no separate vite server.
 
-```sh
-bin/local-gateway.sh up        # start cockpit (:5176) + nginx gateway (:8085)
-bin/local-gateway.sh status    # health
-bin/local-gateway.sh down      # stop both
-```
-
-| Port | Serves |
-| --- | --- |
-| `:8085` | gateway — **enter here** |
-| `:5180` | Platform Web (Next) |
-| `:5176` | `blueprint-workbench` cockpit (vite dev, base `/workbench/`) |
-
-The gateway (`edge-gateway/local.conf`) routes `/workbench/` → `:5176` (cockpit),
-`/workbench/api/*` → `:5180/api/workgraph/*` (reuses Platform Web's proxy), and `/` →
-`:5180`. Single origin means the `singularity-portal.auth` token is shared.
-
-- Requires Docker (nginx runs as an `nginx:alpine` container); the host needs no nginx.
-- Enter at `http://localhost:8085`, log in **there**, and view runs at `:8085` (change
-  `:5180` → `:8085` in the URL). The launch URL is origin-relative, so on `:5180`
-  "Open Workbench" opens the native console instead.
-- Run `bin/local-gateway.sh up` from your own terminal so the cockpit vite process
-  survives.
-- `bin/bare-metal-apps.sh` sweeps `:5176`/`:8085` by default — start the gateway *after*
-  the stack is up, and set `SINGULARITY_FREE_LEGACY_PORTS=0` if you restart bare-metal
-  while it runs.
-- Known gap: `/workbench/audit-gov` (the cockpit's governance tab) is not routed yet.
+The cockpit's API paths are proxied same-origin by Platform Web (`next.config.mjs`):
+`/workbench/api/*` → `/api/workgraph/*` and `/workbench/audit-gov/*` → `/api/audit-gov/*`.
 
 For a complete topology description, see:
 

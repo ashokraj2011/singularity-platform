@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Network, Play, Search, X, Workflow as WorkflowIcon } from 'lucide-react'
 import { api } from '../../lib/api'
@@ -27,7 +27,7 @@ type Workflow = {
 }
 
 export function RunWorkflowPage() {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const [search, setSearch] = useState('')
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null)
   const activeContext = useActiveContextStore(s => s.active)

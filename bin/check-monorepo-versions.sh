@@ -38,7 +38,6 @@ SERVICE_PACKAGES=(
   "audit-governance-service/package.json"
   "platform-registry/package.json"
   "workgraph-studio/apps/api/package.json"
-  "UserAndCapabillity/package.json"
 )
 
 EXIT_CODE=0

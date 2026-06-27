@@ -20,8 +20,6 @@ err()  { echo -e "${C_RED}✗${C_END} $*" >&2; }
 
 # Frontends that need the brand assets in their public/ root.
 TARGETS=(
-  "singularity-portal/public"
-  "UserAndCapabillity/public"
   "agent-and-tools/web/public"
   "workgraph-studio/apps/web/public"
 )

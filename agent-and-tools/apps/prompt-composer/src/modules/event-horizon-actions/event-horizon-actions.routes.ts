@@ -10,8 +10,6 @@
  * Surface values (seeded):
  *   workflow-manager   — workgraph-web (workgraph-studio/apps/web)
  *   capability-admin   — agent-and-tools/web
- *   uac                — UserAndCapabillity SPA
- *   portal             — singularity-portal
  */
 import { Router, Request, Response, NextFunction } from "express";
 import { prisma } from "../../config/prisma";

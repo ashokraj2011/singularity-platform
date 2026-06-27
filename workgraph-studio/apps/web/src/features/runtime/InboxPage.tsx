@@ -1,5 +1,5 @@
 import { useState, useMemo, type CSSProperties } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { motion } from 'motion/react'
 import {
@@ -75,7 +75,7 @@ const MODE_META: Record<string, { label: string; color: string; Icon: React.Elem
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export function InboxPage() {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const [tab, setTab] = useState<'mine' | 'available' | 'done'>('mine')
   const [kindFilter, setKindFilter] = useState<'all' | InboxKind>('all')
   const [search, setSearch] = useState('')

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'motion/react'
 import {
@@ -328,7 +328,7 @@ function CreateModal({ onClose, onCreate }: { onClose: () => void; onCreate: (da
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export function ArtifactDesignerPage() {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const qc = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
   const [filterType, setFilterType] = useState<string>('ALL')

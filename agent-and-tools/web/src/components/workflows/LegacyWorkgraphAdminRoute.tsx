@@ -2,7 +2,6 @@
 
 import { useMemo } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { ArtifactDesignerPage } from "workgraph-web/features/artifact/ArtifactDesignerPage";
 import { ArtifactEditorPage } from "workgraph-web/features/artifact/ArtifactEditorPage";
 import { CurationPage } from "workgraph-web/features/audit/CurationPage";
@@ -13,10 +12,6 @@ import { ArtifactsExplorerPage } from "workgraph-web/features/runtime/ArtifactsE
 import { HistoryPage } from "workgraph-web/features/runtime/HistoryPage";
 import { RunWorkflowPage } from "workgraph-web/features/runtime/RunWorkflowPage";
 import { RunsDashboardPage } from "workgraph-web/features/runtime/RunsDashboardPage";
-import { RunArtifactsPage } from "workgraph-web/features/runtime/RunArtifactsPage";
-import { RunInsightsPage } from "workgraph-web/features/runtime/RunInsightsPage";
-import { RunPlayerEntry, RunPlayerPage } from "workgraph-web/features/runtime/RunPlayerPage";
-import { RunViewerPage } from "workgraph-web/features/runtime/RunViewerPage";
 import { WorkItemsPage } from "workgraph-web/features/runtime/WorkItemsPage";
 import { WorkDetailPage } from "workgraph-web/features/runtime/WorkDetailPage";
 import { MetadataRegistryPage } from "workgraph-web/features/metadata/MetadataRegistryPage";
@@ -24,6 +19,13 @@ import { PlannerPage } from "workgraph-web/features/planner/PlannerPage";
 import { CustomNodeTypesPage } from "workgraph-web/features/workflow/CustomNodeTypesPage";
 import { WorkflowStudioPage } from "workgraph-web/features/workflow/WorkflowStudioPage";
 import { WorkflowsListPage } from "workgraph-web/features/workflow/WorkflowsListPage";
+
+// These workgraph-web feature pages now route natively on Next (next/navigation),
+// so the old MemoryRouter/Routes embedding is gone. Each Next route under
+// /app/{workflows,runs,work-items,audit,identity} renders the matching page
+// directly; route params (workflowId, kind/id, …) are read by the page via Next's
+// useParams, and search params via Next's useSearchParams. All these wrappers do
+// now is provide the react-query client the pages share.
 
 function createQueryClient() {
   return new QueryClient({
@@ -36,188 +38,80 @@ function createQueryClient() {
   });
 }
 
-function LegacyWorkgraphRouter({ initialEntry }: { initialEntry: string }) {
+function WgProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useMemo(createQueryClient, []);
-  return (
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[initialEntry]}>
-        <Routes>
-          <Route path="/" element={<WorkflowsListPage />} />
-          <Route path="/templates" element={<WorkflowsListPage />} />
-          <Route path="/workflows" element={<WorkflowsListPage />} />
-          <Route path="/design/:workflowId" element={<WorkflowStudioPage />} />
-          <Route path="/run" element={<RunWorkflowPage />} />
-          <Route path="/runs" element={<RunsDashboardPage />} />
-          <Route path="/runs/:id" element={<RunViewerPage />} />
-          <Route path="/runs/:id/artifacts" element={<RunArtifactsPage />} />
-          <Route path="/runs/:id/insights" element={<RunInsightsPage />} />
-          <Route path="/mission-control/:id" element={<RunInsightsPage />} />
-          <Route path="/play/new" element={<RunPlayerEntry />} />
-          <Route path="/play/:runId" element={<RunPlayerPage />} />
-          <Route path="/runtime" element={<InboxPage />} />
-          <Route path="/runtime/history" element={<HistoryPage />} />
-          <Route path="/runtime/work/:kind/:id" element={<WorkDetailPage />} />
-          <Route path="/work-items" element={<WorkItemsPage />} />
-          <Route path="/connectors" element={<ConnectorsPage />} />
-          <Route path="/metadata" element={<MetadataRegistryPage />} />
-          <Route path="/node-types" element={<CustomNodeTypesPage />} />
-          <Route path="/artifacts" element={<ArtifactDesignerPage />} />
-          <Route path="/artifacts/:id" element={<ArtifactEditorPage />} />
-          <Route path="/artifacts-explorer" element={<ArtifactsExplorerPage />} />
-          <Route path="/curation" element={<CurationPage />} />
-          <Route path="/team-variables" element={<TeamVariablesPage />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
-  );
+  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
 }
 
 export function LegacyWorkflowsRoute() {
-  return <LegacyWorkgraphRouter initialEntry="/templates" />;
+  return <WgProvider><WorkflowsListPage /></WgProvider>;
 }
 
-export function LegacyWorkflowDesignRoute({ workflowId }: { workflowId: string }) {
-  return <LegacyWorkgraphRouter initialEntry={`/design/${workflowId}`} />;
+// workflowId is now read from the Next route segment (/workflows/design/[workflowId])
+// by WorkflowStudioPage itself; the prop is kept for the caller's signature.
+export function LegacyWorkflowDesignRoute(_props: { workflowId: string }) {
+  return <WgProvider><WorkflowStudioPage /></WgProvider>;
 }
 
 export function LegacyRunsDashboardRoute() {
-  return <LegacyWorkgraphRouter initialEntry="/runs" />;
+  return <WgProvider><RunsDashboardPage /></WgProvider>;
 }
 
 export function LegacyRunWorkflowRoute() {
-  return <LegacyWorkgraphRouter initialEntry="/run" />;
+  return <WgProvider><RunWorkflowPage /></WgProvider>;
 }
 
 export function LegacyHistoryRoute() {
-  return <LegacyWorkgraphRouter initialEntry="/runtime/history" />;
+  return <WgProvider><HistoryPage /></WgProvider>;
 }
 
 export function LegacyWorkItemsRoute() {
-  return <LegacyWorkgraphRouter initialEntry="/work-items" />;
+  return <WgProvider><WorkItemsPage /></WgProvider>;
 }
 
 export function LegacyConnectorsRoute() {
-  return <LegacyWorkgraphRouter initialEntry="/connectors" />;
+  return <WgProvider><ConnectorsPage /></WgProvider>;
 }
 
 export function LegacyMetadataRoute() {
-  return <LegacyWorkgraphRouter initialEntry="/metadata" />;
+  return <WgProvider><MetadataRegistryPage /></WgProvider>;
 }
 
 export function LegacyArtifactDesignerRoute() {
-  const queryClient = useMemo(createQueryClient, []);
-  return (
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/artifacts"]}>
-        <Routes>
-          <Route path="/artifacts" element={<ArtifactDesignerPage />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
-  );
+  return <WgProvider><ArtifactDesignerPage /></WgProvider>;
 }
 
-export function LegacyArtifactEditorRoute({ artifactId }: { artifactId: string }) {
-  const queryClient = useMemo(createQueryClient, []);
-  return (
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/artifacts/${artifactId}`]}>
-        <Routes>
-          <Route path="/artifacts/:id" element={<ArtifactEditorPage />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
-  );
+// id is read from the Next route segment (/workflows/artifacts/[id]) by the page.
+export function LegacyArtifactEditorRoute(_props: { artifactId: string }) {
+  return <WgProvider><ArtifactEditorPage /></WgProvider>;
 }
 
 export function LegacyArtifactsExplorerRoute() {
-  const queryClient = useMemo(createQueryClient, []);
-  return (
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/artifacts-explorer"]}>
-        <Routes>
-          <Route path="/artifacts-explorer" element={<ArtifactsExplorerPage />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
-  );
+  return <WgProvider><ArtifactsExplorerPage /></WgProvider>;
 }
 
 export function LegacyNodeTypesRoute() {
-  const queryClient = useMemo(createQueryClient, []);
-  return (
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/node-types"]}>
-        <Routes>
-          <Route path="/node-types" element={<CustomNodeTypesPage />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
-  );
+  return <WgProvider><CustomNodeTypesPage /></WgProvider>;
 }
 
 export function LegacyPlannerRoute() {
-  const queryClient = useMemo(createQueryClient, []);
-  return (
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/planner"]}>
-        <Routes>
-          <Route path="/planner" element={<PlannerPage />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
-  );
+  return <WgProvider><PlannerPage /></WgProvider>;
 }
 
 export function LegacyInboxRoute() {
-  const queryClient = useMemo(createQueryClient, []);
-  return (
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/runtime"]}>
-        <Routes>
-          <Route path="/runtime" element={<InboxPage />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
-  );
+  return <WgProvider><InboxPage /></WgProvider>;
 }
 
-export function LegacyWorkDetailRoute({ kind, id, query = "" }: { kind: string; id: string; query?: string }) {
-  const queryClient = useMemo(createQueryClient, []);
-  const suffix = query ? `?${query.replace(/^\?/, "")}` : "";
-  return (
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[`/runtime/work/${kind}/${id}${suffix}`]}>
-        <Routes>
-          <Route path="/runtime/work/:kind/:id" element={<WorkDetailPage />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
-  );
+// kind/id are read from the Next route segment (/workflows/work/[kind]/[id]) and the
+// query from Next's useSearchParams by WorkDetailPage itself.
+export function LegacyWorkDetailRoute(_props: { kind: string; id: string; query?: string }) {
+  return <WgProvider><WorkDetailPage /></WgProvider>;
 }
 
 export function LegacyCurationRoute() {
-  const queryClient = useMemo(createQueryClient, []);
-  return (
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/curation"]}>
-        <Routes>
-          <Route path="/curation" element={<CurationPage />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
-  );
+  return <WgProvider><CurationPage /></WgProvider>;
 }
 
 export function LegacyTeamVariablesRoute() {
-  const queryClient = useMemo(createQueryClient, []);
-  return (
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={["/team-variables"]}>
-        <Routes>
-          <Route path="/team-variables" element={<TeamVariablesPage />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>
-  );
+  return <WgProvider><TeamVariablesPage /></WgProvider>;
 }

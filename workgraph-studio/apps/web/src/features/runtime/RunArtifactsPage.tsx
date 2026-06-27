@@ -6,7 +6,8 @@
  * link server-side. Read-only list with per-artifact view + download.
  */
 import { useMemo, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams } from 'next/navigation'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, FileText, Download, Package, Maximize2 } from 'lucide-react'
 import { api } from '../../lib/api'
@@ -58,7 +59,7 @@ function download(a: RunArtifact) {
 
 export function RunArtifactsPage() {
   const { id } = useParams<{ id: string }>()
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const [openId, setOpenId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
