@@ -26,7 +26,6 @@
 #
 # Service names match the docker-compose `services:` keys. Quick reference:
 #   platform-web           unified platform web app on :5180
-#   workgraph-web          legacy workflow SPA on :5174 (frontend-legacy profile)
 #   blueprint-workbench    legacy artifact workbench on :5176 (frontend-legacy profile)
 #   workgraph-api          DAG runtime on :8080
 #   platform-core          one container for agent-service/tool-service/agent-runtime/prompt-composer (:3001-:3004)
@@ -95,7 +94,6 @@ SINGULARITY_OPTIONAL_SERVICES=(
   tool-service
   agent-runtime
   prompt-composer
-  workgraph-web
   blueprint-workbench
   edge-gateway
   iam-postgres

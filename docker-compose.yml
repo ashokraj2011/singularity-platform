@@ -1143,27 +1143,6 @@ services:
           memory: 2G
           cpus: '1.0'
 
-  workgraph-web:
-    build:
-      context: ./workgraph-studio
-      dockerfile: apps/web/Dockerfile
-      # M100 P1 — served under /workflow/ by the edge gateway.
-      args:
-        BASE_PATH: /workflow/
-    container_name: singularity-workgraph-web
-    # M65 Slice 2A — compose profiles.
-    profiles: [frontend-legacy]
-    ports:
-      - "5174:80"
-    # Debug-only static UI. Start the core stack separately when live API data
-    # is needed; avoiding depends_on keeps the legacy profile isolated.
-    # M35.3 — resource limits (frontend SPA: 512M memory / 0.5 CPU)
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: '0.5'
-
   blueprint-workbench:
     build:
       context: ./workgraph-studio
@@ -1461,7 +1440,6 @@ services:
     ports:
       - "8085:80"
     depends_on:
-      - workgraph-web
       - blueprint-workbench
     deploy:
       resources:

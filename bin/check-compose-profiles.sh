@@ -27,7 +27,6 @@ profiles=(
 legacy_frontends=(
   edge-gateway
   agent-web
-  workgraph-web
   blueprint-workbench
 )
 
@@ -135,7 +134,6 @@ for profile in "${profiles[@]}"; do
       ;;
     frontend-legacy)
       expect_not_has "$profile" "$output" platform-web
-      expect_has "$profile" "$output" workgraph-web
       expect_has "$profile" "$output" blueprint-workbench
       expect_has "$profile" "$output" edge-gateway
       ;;
