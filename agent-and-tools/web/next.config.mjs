@@ -20,7 +20,7 @@ const nextConfig = {
   experimental: {
     externalDir: true,
   },
-  transpilePackages: ["workgraph-web"],
+  transpilePackages: ["workgraph-web", "blueprint-workbench"],
   webpack(config) {
     config.resolve.alias = {
       ...(config.resolve.alias ?? {}),
@@ -117,19 +117,15 @@ const nextConfig = {
   },
   async rewrites() {
     const iamHealthDestination = healthDestination(process.env.IAM_HEALTH_URL, "http://iam-service:8100", "/api/v1/health");
-    // Blue Blueprint Workbench cockpit, served SAME-ORIGIN on :5180 — replaces
-    // the separate :8085 nginx edge-gateway and the cross-origin auth problem.
-    // Mirrors edge-gateway/local.conf: cockpit API_BASE=/workbench/api → the
-    // platform-web workgraph proxy; the SPA itself → the cockpit dev server
-    // (Vite base /workbench/). In beforeFiles so it shadows the legacy native
-    // /workbench page.
-    const cockpitDevUrl = (process.env.BLUEPRINT_WORKBENCH_DEV_URL ?? "http://127.0.0.1:5176").replace(/\/+$/, "");
+    // Blue Blueprint Workbench cockpit runs IN-PROCESS as the Next /workbench
+    // route (slice 2 — no separate :5176 dev server, no :8085 gateway). Only the
+    // cockpit's own API paths still need proxying to the backends, same as the
+    // old edge-gateway: API_BASE=/workbench/api → workgraph proxy; the live SSE
+    // stream /workbench/audit-gov → audit-gov.
     return {
       beforeFiles: [
         { source: "/workbench/api/:path*", destination: "/api/workgraph/:path*" },
         { source: "/workbench/audit-gov/:path*", destination: "/api/audit-gov/:path*" },
-        { source: "/workbench", destination: `${cockpitDevUrl}/workbench/` },
-        { source: "/workbench/:path*", destination: `${cockpitDevUrl}/workbench/:path*` },
       ],
       afterFiles: [
       // Prompt Composer is proxied by src/app/api/composer/[...path]/route.ts
