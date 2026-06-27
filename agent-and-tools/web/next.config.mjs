@@ -26,6 +26,9 @@ const nextConfig = {
       "@workgraph/engine$": workgraphEngineSource,
       "blueprint-workbench": blueprintWorkbenchSource,
       "@tanstack/react-query$": require.resolve("@tanstack/react-query"),
+      // workgraph-web source (aliased in) imports next/navigation now that its
+      // pages are native Next routes — resolve it from platform-web's deps.
+      "next/navigation$": require.resolve("next/navigation"),
       "@monaco-editor/react$": require.resolve("@monaco-editor/react"),
       "react-diff-viewer-continued$": require.resolve("react-diff-viewer-continued"),
       "react-markdown$": require.resolve("react-markdown"),

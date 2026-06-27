@@ -11,7 +11,8 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'next/navigation'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import ReactFlow, {
   Background, BackgroundVariant, Controls, MiniMap,
   type Node, type Edge,
@@ -52,8 +53,8 @@ const INTERACTIVE_NODE_TYPES = new Set([
 // ─── Bootstrap entry: /play/new ─────────────────────────────────────────────
 
 export function RunPlayerEntry() {
-  const [searchParams] = useSearchParams()
-  const navigate = useNavigate()
+  const searchParams = useSearchParams()
+  const navigate = usePlatformNavigate()
   const user = useAuthStore(s => s.user)
   const [error, setError] = useState<string | null>(null)
   // One-shot guard: stops duplicate run creation under React StrictMode and
@@ -111,7 +112,7 @@ export function RunPlayerEntry() {
 
 export function RunPlayerPage() {
   const { runId } = useParams<{ runId: string }>()
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const user = useAuthStore(s => s.user)
   const { state, runtime, definition, isLoading, error } = useRunPlayer(runId)
   const [openNodeId, setOpenNodeId] = useState<string | null>(null)

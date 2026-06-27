@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useQuery } from '@tanstack/react-query'
 import { motion } from 'motion/react'
 import {
@@ -42,7 +42,7 @@ type Workflow = {
 const STATUS_VISUAL = RUN_STATUS
 
 export function RunsDashboardPage() {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const [search, setSearch]           = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [workflowFilter, setWorkflowFilter] = useState<string>('all')

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams } from 'next/navigation'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'motion/react'
 import {
@@ -147,7 +148,7 @@ function ArtifactPreview({ tmpl }: { tmpl: ArtifactTemplate }) {
 
 export function ArtifactEditorPage() {
   const { id } = useParams<{ id: string }>()
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const qc = useQueryClient()
 
   const [sections, setSections] = useState<FormSection[]>([])

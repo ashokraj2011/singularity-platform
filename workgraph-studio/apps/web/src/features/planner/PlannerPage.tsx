@@ -9,7 +9,7 @@
  * updated roadmap + critic; creates nothing) and POST /planner/commit.
  */
 import { useState, useRef, useEffect, type CSSProperties } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useMutation } from '@tanstack/react-query'
 import {
   Lightbulb, Sparkles, Send, Trash2, AlertTriangle, CheckCircle2, XCircle, Loader2, HelpCircle, Rocket, Plus, Clock,
@@ -92,7 +92,7 @@ const verdictStyle: Record<string, { bg: string; fg: string; Icon: typeof CheckC
 }
 
 export function PlannerPage() {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const active = useActiveContextStore((s) => s.active)
   const capabilityId = active?.capabilityId ?? ''
 

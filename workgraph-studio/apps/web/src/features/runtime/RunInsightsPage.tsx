@@ -8,7 +8,8 @@
  * decisions, doesn't mutate anything. Polls every 5s like /audit.
  */
 import { useMemo } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'next/navigation'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useQuery } from '@tanstack/react-query'
 import {
   ArrowLeft, Clock, Activity, Coins, AlertTriangle, FileText, Box, ShieldCheck, GitBranch,
@@ -352,7 +353,7 @@ const STATUS_COLOR: Record<string, string> = {
 
 export function RunInsightsPage() {
   const { id } = useParams<{ id: string }>()
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ['insights', id],

@@ -5,7 +5,7 @@
  * Per-run artifacts also live at /runs/:id/artifacts; this is the cross-run view.
  */
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useQuery } from '@tanstack/react-query'
 import { FileText, Download, Package, ExternalLink } from 'lucide-react'
 import { api } from '../../lib/api'
@@ -63,7 +63,7 @@ type Facets = {
 }
 
 export function ArtifactsExplorerPage() {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const [openId, setOpenId] = useState<string | null>(null)
   const [kind, setKind] = useState<string>('')
   // Server-side filters, now dropdown-selected (work-item id, instance id,

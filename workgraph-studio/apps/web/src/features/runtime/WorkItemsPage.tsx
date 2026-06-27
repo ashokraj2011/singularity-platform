@@ -1,5 +1,5 @@
 import { useMemo, useState, type CSSProperties, type ReactNode } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -29,7 +29,7 @@ import { useCapabilityLabels } from './useCapabilityLabels'
 const TARGET_STATUSES = ['ALL', 'QUEUED', 'CLAIMED', 'IN_PROGRESS', 'SUBMITTED', 'APPROVED', 'REWORK_REQUESTED', 'ARCHIVED'] as const
 
 export function WorkItemsPage() {
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const active = useActiveContextStore(s => s.active)
   const [capabilityId, setCapabilityId] = useState(active?.capabilityId ?? '')
   const [status, setStatus] = useState<(typeof TARGET_STATUSES)[number]>('ALL')

@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState, useEffect, useLayoutEffect, createContext, useContext } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams } from 'next/navigation'
+import { usePlatformNavigate } from '../../lib/usePlatformNavigate'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'motion/react'
 import ReactFlow, {
@@ -2288,7 +2289,7 @@ export function WorkflowStudioPage() {
   // Single discriminator the rest of the file branches on.
   const instanceId = isDesignMode ? designWorkflowId : runInstanceId
 
-  const navigate = useNavigate()
+  const navigate = usePlatformNavigate()
   const qc = useQueryClient()
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null)
