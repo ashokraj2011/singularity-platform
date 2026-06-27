@@ -13,7 +13,7 @@
 | 03b | `singularity` | `prompt-composer` (READ-only) | 12 | [composer-runtime-read](./03-prompt-composer-runtime-read.md) · [PNG](./03-prompt-composer-runtime-read.png) |
 | 04 | `workgraph` | `workgraph-studio/apps/api` | 76 | [workgraph](./04-workgraph.md) |
 | 05 | `audit_governance` | `audit-governance-service` | 11 | [audit-gov](./05-audit-gov.md) |
-| 06 | `singularity` (schema `tool.*`) | `tool-service` | 8 | [tool-service](./06-tool-service.md) |
+| 06 | `singularity` (schema `tool.*`) | `agent-service` (tool routes) | 8 | [tool data model](./06-tool-service.md) |
 
 **Total**: 158 models / tables across 5 Postgres databases.
 
@@ -28,7 +28,7 @@
 | 04 (workgraph) | `workgraph-studio/apps/api/prisma/schema.prisma` | **auto** (markdown only — 76 models would be illegible as PNG) |
 | 01 (IAM) | `singularity-iam-service/app/models.py` | hand — edit when SQLAlchemy models change |
 | 05 (audit-gov) | `audit-governance-service/db/init.sql` | hand |
-| 06 (tool-service) | `agent-and-tools/packages/db/init.sql` (schema `tool.*`) | hand |
+| 06 (tool data model) | `agent-and-tools/packages/db/init.sql` (schema `tool.*`) | hand |
 
 ## CI drift gate
 

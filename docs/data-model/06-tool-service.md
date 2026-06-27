@@ -1,10 +1,10 @@
-# Tool Service — `singularity.tool.*`
+# Tool Data Model — `singularity.tool.*`
 
 > **Hand-curated.** Source of truth: [`agent-and-tools/packages/db/init.sql`](../../agent-and-tools/packages/db/init.sql) (raw DDL, schema `tool.*` inside the shared `singularity` DB). 8 tables. Edit this file when the DDL changes.
 
-Owner: `agent-and-tools/apps/tool-service` (TypeScript · Express · `pg`).
+Owner (host): `agent-and-tools/apps/agent-service` (TypeScript · Express · `pg`). The tool routes + this `tool.*` schema were **merged into agent-service** — there is no standalone tool-service process. agent-service (`:3001`) serves both `/api/v1/agents` and `/api/v1/tools`; the tool-specific code lives under `agent-and-tools/apps/agent-service/src/tool/`. The data model below is unchanged by the merge — only the hosting service moved.
 
-The tool service registry shares the `singularity` Postgres with agent-runtime but lives in a separate **Postgres schema** (`tool.*` vs `public.*`). It's the tool catalog + execution + client-runner state.
+The tool registry shares the `singularity` Postgres with agent-runtime but lives in a separate **Postgres schema** (`tool.*` vs `public.*`). It's the tool catalog + execution + client-runner state.
 
 ## Registry + execution
 
@@ -91,9 +91,9 @@ erDiagram
   tools          ||--o{ client_execution_jobs : invokes
 ```
 
-## Event bus (tool-service → audit-gov + subscribers)
+## Event bus (tool routes → audit-gov + subscribers)
 
-Same shape as the IAM and agent-runtime event-outbox tables. Tool-service publishes its own bus and the audit-gov subscriber drains it.
+Same shape as the IAM and agent-runtime event-outbox tables. agent-service's tool routes publish this bus and the audit-gov subscriber drains it. The emitted `source_service` value is still the literal `"tool-service"` (the label survived the merge into agent-service), so existing subscribers and audit joins are unaffected.
 
 ```mermaid
 erDiagram
@@ -141,8 +141,8 @@ erDiagram
 
 ## Why this lives inside `singularity` and not its own DB
 
-The `tool.*` tables share a connection pool with agent-runtime's `public.*` tables. After M30 we split prompt-composer into its own DB but kept tool-service co-resident with agent-runtime because:
+The `tool.*` tables share a connection pool with agent-runtime's `public.*` tables. After M30 we split prompt-composer into its own DB but kept the tool schema co-resident with agent-runtime because:
 - agent-runtime's `ToolDefinition` model (in `public.ToolDefinition`) is the **typed catalog** used during prompt assembly; `tool.tools` is the **runtime + grants catalog** used during execution. They reference each other by `tool_name` (1:1).
 - Splitting `tool.*` to its own DB would require either an HTTP refactor of every grant-resolution call site or a 2nd Prisma client — neither has a forcing function today.
 
-If/when this changes (e.g. tool-service goes multi-tenant), the same `output = "../generated/..."` per-service-client pattern that prompt-composer uses today is the migration template.
+The tool routes are now hosted by agent-service rather than a standalone tool-service process, but the schema placement is unchanged. If/when this DB layout changes (e.g. the tool registry goes multi-tenant), the same `output = "../generated/..."` per-service-client pattern that prompt-composer uses today is the migration template.

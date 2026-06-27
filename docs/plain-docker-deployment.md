@@ -112,7 +112,9 @@ plain Docker data volumes.
 
 - The script reads `.env` and `.env.local` if present.
 - It uses the same public ports as the Compose core: `5180`, `8100`, `8000`,
-  `8080`, `3001-3004`, `5432`, `5434`, and `9000-9001`.
+  `8080`, `3001` (agent-service — agents **and** tools), `3003` (agent-runtime),
+  `3004` (prompt-composer), `5432`, `5434`, and `9000-9001`. There is no `:3002`
+  — the former tool-service is merged into agent-service.
 - It uses a Docker network named `singularity-core` by default. Override with
   `SINGULARITY_DOCKER_NETWORK=<name>`.
 - It uses the same major container names as Compose. Stop the Compose stack

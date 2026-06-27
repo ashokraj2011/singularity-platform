@@ -13,10 +13,11 @@ Run only these on the office laptop:
 
 Run everything else in AWS containers:
 
-- Workgraph API and web.
+- Workgraph API.
+- Platform Web (the single frontend — operations, agents, workflows, workbench, foundry, identity, all same-origin).
 - Context Fabric.
 - Prompt Composer.
-- Agent Runtime, Tool Service, and Agent Service.
+- Agent Runtime and Agent Service (Agent Service now serves both agents **and** tools — the former Tool Service is merged in).
 - IAM.
 - Audit and governance services.
 - Databases.
@@ -161,12 +162,11 @@ Apply these direct-HTTP values to:
 
 - `context-api`
 - `workgraph-api`
-- `agent-service`
-- `tool-service`
+- `agent-service` (now serves both agents **and** tools — the former `tool-service` is merged in; there is no separate `tool-service` or `:3002`)
 - `agent-runtime`
 - `prompt-composer`
 - `platform-web`
-- deprecated `context-memory`, only if it still runs
+- optional `context-memory`, only if it still runs
 
 Important: the current `docker-compose.yml` hardcodes several internal URLs, so root `.env` alone is not enough for direct HTTP. For AWS, use a compose override or ECS/Kubernetes environment injection to replace those values.
 
@@ -189,12 +189,9 @@ services:
       MCP_SERVER_URL: ${LAPTOP_MCP_URL}
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
 
+  # agent-service now serves both agents AND tools (the former tool-service is
+  # merged in — no separate tool-service / :3002; TOOL_SERVICE_URL -> agent-service:3001).
   agent-service:
-    environment:
-      MCP_SERVER_URL: ${LAPTOP_MCP_URL}
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}
-
-  tool-service:
     environment:
       MCP_SERVER_URL: ${LAPTOP_MCP_URL}
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN}

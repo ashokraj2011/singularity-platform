@@ -23,11 +23,11 @@ This guide has two halves you can mix:
 | context-api (Context Fabric) | `8000` | Python | Remote |
 | workgraph-api | `8080` | Node 22 | Remote |
 | iam-service | `8100` | Python | Remote |
-| platform-core | `3001-3004` | Node 20 | Remote |
-| agent-runtime / agent-service / tool-service / prompt-composer | `3003 / 3001 / 3002 / 3004` | Node 20 | Remote, served by `platform-core` in Docker |
+| platform-core | `3001 / 3003 / 3004` | Node 20 | Remote |
+| agent-service (agents **+** tools) / agent-runtime / prompt-composer | `3001 / 3003 / 3004` | Node 20 | Remote, bundled by `platform-core` in Docker |
 | formal-verifier / prompt-compressor | `8010 / 8011` | Python | Remote |
-| platform-web | `5180` | Next.js + nginx | Remote |
-| legacy split UIs / edge-gateway | `5182 / 5174 / 5176 / 5175 / 5181 / 8085` | static/nginx | Remote, debug profile only |
+| platform-web (single frontend: operations, agents, workflows, workbench, foundry, identity) | `5180` | Next.js + nginx | Remote |
+| edge-gateway (optional legacy/debug only) | `8085` | nginx | Remote, debug profile only |
 | Postgres `at-postgres` / `wg-postgres`, MinIO | `5432 / 5434 / 9000` | — | Remote |
 
 **Why the laptop:** provider keys (`.env.llm-secrets`), git credentials (`GITHUB_TOKEN`), local models, and the code sandbox all stay on the laptop. The cloud never sees them.
@@ -79,7 +79,7 @@ When services are split across hosts, these are the vars that change from their 
 
 | Env var | Default (single host) | Set to (split) | On which services |
 |---|---|---|---|
-| `MCP_SERVER_URL` · *Direct only* | `http://mcp-server:7100` | **Bridge:** leave default (unused). **Direct:** `http://<laptop>:7100` | context-api, workgraph-api, agent-service, tool-service, agent-runtime, prompt-composer, platform-web |
+| `MCP_SERVER_URL` · *Direct only* | `http://mcp-server:7100` | **Bridge:** leave default (unused). **Direct:** `http://<laptop>:7100` | context-api, workgraph-api, agent-service (agents+tools), agent-runtime, prompt-composer, platform-web |
 | `MCP_DEFAULT_BASE_URL` · *Direct only* | `http://mcp-server:7100` | same as above | context-api |
 | `MCP_BEARER_TOKEN` / `MCP_DEFAULT_BEARER_TOKEN` | `demo-bearer-token-…` | one strong shared token (≥16 chars, ≥32 in prod) | all of the above + laptop mcp-server |
 | `LLM_GATEWAY_URL` | `http://llm-gateway:8001` | laptop mcp-server: `http://localhost:8001`. Remote (option a): `http://<laptop>:8001` | mcp-server (+ remote LLM consumers if option a) |
@@ -163,7 +163,7 @@ docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d \
   formal-verifier prompt-compressor
 ```
 
-The override re-points `MCP_SERVER_URL`/`MCP_DEFAULT_BASE_URL` + `MCP_BEARER_TOKEN` on `context-api`, `workgraph-api`, and `platform-core` (which hosts agent-service, tool-service, agent-runtime, and prompt-composer). For **full-local LLM** (option a, §2.3), uncomment the `LLM_GATEWAY_URL` line in the file.
+The override re-points `MCP_SERVER_URL`/`MCP_DEFAULT_BASE_URL` + `MCP_BEARER_TOKEN` on `context-api`, `workgraph-api`, and `platform-core` (which bundles agent-service — agents **and** tools — agent-runtime, and prompt-composer; `TOOL_SERVICE_URL` points back at `agent-service:3001`). For **full-local LLM** (option a, §2.3), uncomment the `LLM_GATEWAY_URL` line in the file.
 
 > In **Bridge mode**, the remote `MCP_SERVER_URL` can stay at its default — it's only a fallback. The real routing happens over the WebSocket when `prefer_laptop=true`.
 
@@ -252,7 +252,9 @@ MCP_SERVER_URL=http://<laptop>:7100 MCP_BEARER_TOKEN=<token> \
 node dist/apps/api/src/index.js      # or: pnpm dev
 
 # platform-core equivalent, when running bare-metal instead of Docker (Node 20)
-# agent-runtime / agent-service / tool-service / prompt-composer remain separate local processes for hot reload
+# agent-service (agents + tools, :3001) / agent-runtime (:3003) / prompt-composer (:3004)
+#   remain separate local processes for hot reload (tool-service is merged into agent-service —
+#   there is no separate tool-service or :3002; set TOOL_SERVICE_URL=http://localhost:3001)
 #   cd agent-and-tools/apps/<svc> && npm install && npm run build
 #   set DATABASE_URL (singularity / singularity_composer), JWT_SECRET=<shared>,
 #       IAM_SERVICE_URL=http://<remote>:8100, MCP_SERVER_URL=http://<laptop>:7100, MCP_BEARER_TOKEN=<token>
@@ -262,8 +264,10 @@ node dist/apps/api/src/index.js      # or: pnpm dev
 #   uvicorn services.formal_verifier_service.app.main:app --port 8010
 #   uvicorn services.prompt_compressor_service.app.main:app --port 8011
 
-# UI: build/run `platform-web` from agent-and-tools/web and expose :5180.
-# Legacy Vite UIs / edge-gateway are debug-only and not needed for the normal path.
+# UI: build/run `platform-web` (the single frontend — operations, agents, workflows, workbench,
+#   foundry, identity, all same-origin; the Blueprint Workbench cockpit runs in-process at /workbench)
+#   from agent-and-tools/web and expose :5180.
+# edge-gateway (:8085) is optional legacy/debug only and is not needed for the normal path.
 ```
 
 ---

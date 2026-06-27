@@ -11,12 +11,15 @@ open http://localhost:5180/
 workflows, workbench, foundry, identity, runtime receipts, and migrated legacy
 routes from one Next.js application and one `platform-web` container.
 
-This `edge-gateway` directory is retained only for debugging the old split-UI
-topology. It is not part of the default Docker stack, installation guide, or
-operator path. The old standalone UI services (`portal`, `workgraph-web`,
-`blueprint-workbench`, `user-and-capability`, and `code-foundry-web`) should be
-started only with the legacy/debug profile when you intentionally need to
-compare migrated screens against their prior implementations.
+This `edge-gateway` directory is retained only as an optional legacy/debug
+multi-app gateway. It is not part of the default Docker stack, installation
+guide, or operator path, and it is not needed for normal operation. The platform
+consolidation has since collapsed the old split UIs: `singularity-portal`,
+`user-and-capability` (UserAndCapability), and `code-foundry-web` have been
+deleted, while `workgraph-web` and `blueprint-workbench` are now compiled into
+Platform Web as library source rather than standalone apps. Use the
+`frontend-legacy` debug profile only when you intentionally need the historical
+multi-app gateway shape.
 
 ## Current Routing
 
@@ -57,8 +60,10 @@ node bin/check-platform-web-ui.mjs
 The bare-metal `local-gateway.sh` + `:5176` + `:8085` setup that used to front the
 `blueprint-workbench` cockpit has been **retired**. The cockpit now runs **in-process**
 as Platform Web's `/workbench` route (same origin, `:5180`), so the auth token carries
-and a CALL_WORKFLOW "Open Workbench" launch opens the blue cockpit directly. Just open
-`http://localhost:5180/workbench` — no gateway, no separate vite server.
+and a CALL_WORKFLOW "Open Workbench" launch opens the blue cockpit directly. `/workbench`
+*is* the blue cockpit and handles all views internally; the old green native console at
+`/workbench/<view>` was removed. Just open `http://localhost:5180/workbench` — no gateway,
+no separate vite server.
 
 The cockpit's API paths are proxied same-origin by Platform Web (`next.config.mjs`):
 `/workbench/api/*` → `/api/workgraph/*` and `/workbench/audit-gov/*` → `/api/audit-gov/*`.

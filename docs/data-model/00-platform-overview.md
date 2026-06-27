@@ -9,7 +9,7 @@ After M30 the platform owns **five disjoint Postgres databases**. Each is owned 
 | DB | Owner service | Port | Authoritative for |
 |---|---|---|---|
 | `singularity_iam` | `singularity-iam-service` (Python/FastAPI/SQLAlchemy) | 5432 shared `at-postgres` | users, teams, BUs, capabilities, roles, permissions, Agent Execution Runtimes, user devices, audit events |
-| `singularity` | `agent-and-tools/apps/agent-runtime` + `tool-service` (Prisma + raw SQL) | 5432 | agent templates, capability runtime metadata, tool registry, code symbols, knowledge artifacts, distilled memory |
+| `singularity` | `agent-and-tools/apps/agent-runtime` + `agent-service` (Prisma + raw SQL) | 5432 | agent templates, capability runtime metadata, tool registry, code symbols, knowledge artifacts, distilled memory |
 | `singularity_composer` | `agent-and-tools/apps/prompt-composer` (Prisma) | 5432 | prompt profiles, prompt layers, prompt assemblies, compiled-context capsules |
 | `workgraph` | `workgraph-studio/apps/api` (Prisma) | 5434 | workflow designs, instances, nodes, edges, tasks, approvals, consumables, triggers, agent-runs, tool-runs |
 | `audit_governance` | `audit-governance-service` (raw SQL) | 5436 | audit events, LLM calls, budgets, rate limits, approvals (governance side), authz decisions, evaluator runs |
@@ -33,8 +33,8 @@ flowchart LR
   PC -. "runtimeReader<br/>(read-only Prisma)" .-> AT
   CF -- "/mcp/tool-run per call" --> AER{{mcp-server<br/>Agent Execution Runtime}}
 
-  AER -. "tool descriptors" .-> TS{{tool-service}}
-  TS --> AT
+  AER -. "tool descriptors" .-> AS{{agent-service<br/>agents + tools}}
+  AS --> AT
 
   AT -- "audit event<br/>fire-and-forget" --> AG
   PC -- "audit event" --> AG
@@ -45,7 +45,7 @@ flowchart LR
   classDef db fill:#1e293b,stroke:#3b82f6,color:#fff
   classDef svc fill:#0f172a,stroke:#fbbf24,color:#fff
   class IAM,AT,PC,WG,AG db
-  class CF,AER,TS svc
+  class CF,AER,AS svc
 ```
 
 **Read-only edge (dotted):** prompt-composer's `runtimeReader` Prisma client connects to `singularity` to read AgentTemplate / Capability / DistilledMemory / etc. It **never** runs `prisma db push` against that DB — agent-runtime owns the DDL.
@@ -60,7 +60,7 @@ These IDs are the only "joins" between databases. They flow as opaque UUIDs in J
 | **`user_id`** | `singularity_iam.users.id` | `audit_governance.audit_events.actor_id`, `singularity.AgentExecution.createdBy`, `workgraph.users.externalIamUserId`, `singularity_iam.user_devices.user_id` |
 | **`team_id`** | `singularity_iam.teams.id` | `workgraph.teams.externalIamTeamId`, `singularity_iam.team_memberships.team_id` |
 | **`agent_template_id`** | `singularity.AgentTemplate.id` | `singularity_composer.PromptAssembly.agentTemplateId`, `workgraph.agent_runs.agentTemplateId` (also `workgraph.agents.externalTemplateId` snapshot), Agent Execution Runtime invoke envelopes |
-| **`tool_definition_id`** | `singularity.ToolDefinition.id` | `singularity.ToolGrant.toolId`, `workgraph.tools.externalToolId` (snapshot), `tool.tools.id` (tool-service mirror in `singularity`) |
+| **`tool_definition_id`** | `singularity.ToolDefinition.id` | `singularity.ToolGrant.toolId`, `workgraph.tools.externalToolId` (snapshot), `tool.tools.id` (agent-service-hosted `tool.*` mirror in `singularity`) |
 | **`workflow_instance_id`** | `workgraph.workflow_instances.id` | `singularity_composer.PromptAssembly.workflowExecutionId`, `audit_governance.audit_events.subject_id` (when `subject_type='WorkflowInstance'`), Agent Execution Runtime invoke envelopes |
 | **`trace_id`** | minted at the edge (workgraph mints one per AgentRun; cf mints if absent) | `audit_governance.audit_events.trace_id`, `singularity_composer.PromptAssembly.traceId`, `mcp-server` in-memory ring buffers (`/mcp/resources/*?trace_id=…`), every `governance.precheck` event |
 | **`mcp_server_id`** | `singularity_iam.mcp_servers.id` | `audit_governance.audit_events.payload.mcpServerId`, cf `/execute` response correlation |
