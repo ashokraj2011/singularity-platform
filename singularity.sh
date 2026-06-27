@@ -26,11 +26,8 @@
 #
 # Service names match the docker-compose `services:` keys. Quick reference:
 #   platform-web           unified platform web app on :5180
-#   portal                 legacy wrapper SPA on :5182 (frontend-legacy profile)
-#   user-and-capability    legacy IAM admin SPA on :5175 (frontend-legacy profile)
 #   workgraph-web          legacy workflow SPA on :5174 (frontend-legacy profile)
 #   blueprint-workbench    legacy artifact workbench on :5176 (frontend-legacy profile)
-#   code-foundry-web       legacy Code Foundry SPA on :5181 (frontend-legacy profile)
 #   workgraph-api          DAG runtime on :8080
 #   platform-core          one container for agent-service/tool-service/agent-runtime/prompt-composer (:3001-:3004)
 #   context-api            LLM optimizer entry on :8000
@@ -100,9 +97,6 @@ SINGULARITY_OPTIONAL_SERVICES=(
   prompt-composer
   workgraph-web
   blueprint-workbench
-  user-and-capability
-  code-foundry-web
-  portal
   edge-gateway
   iam-postgres
 )

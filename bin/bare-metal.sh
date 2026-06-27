@@ -1200,7 +1200,7 @@ SQL
       printf '%s\n' "$kv" >> "$f"
     fi
   }
-  for _app in singularity-portal UserAndCapabillity workgraph-studio/apps/web workgraph-studio/apps/blueprint-workbench singularity-code-foundry/apps/code-foundry-web; do
+  for _app in workgraph-studio/apps/web workgraph-studio/apps/blueprint-workbench; do
     _f="$ROOT/$_app/.env.local"
     _ensure_kv "$_f" "VITE_IAM_BASE_URL=$IAM_BASE_URL"
     _ensure_kv "$_f" "VITE_LINK_OPERATIONS_PORTAL=http://localhost:5180/operations"

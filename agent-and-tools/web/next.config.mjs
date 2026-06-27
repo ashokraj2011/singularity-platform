@@ -5,9 +5,7 @@ const require = createRequire(import.meta.url);
 const webNodeModules = path.join(process.cwd(), "node_modules");
 const workgraphWebSource = new URL("../../workgraph-studio/apps/web/src", import.meta.url).pathname;
 const workgraphEngineSource = new URL("../../workgraph-studio/packages/engine/src/index.ts", import.meta.url).pathname;
-const codeFoundryWebSource = new URL("../../singularity-code-foundry/apps/code-foundry-web/src", import.meta.url).pathname;
 const blueprintWorkbenchSource = new URL("../../workgraph-studio/apps/blueprint-workbench/src", import.meta.url).pathname;
-const identityWebSource = new URL("../../UserAndCapabillity/src", import.meta.url).pathname;
 
 function healthDestination(value, defaultBase, path) {
   const raw = (value || defaultBase).replace(/\/+$/, "");
@@ -26,9 +24,7 @@ const nextConfig = {
       ...(config.resolve.alias ?? {}),
       "workgraph-web": workgraphWebSource,
       "@workgraph/engine$": workgraphEngineSource,
-      "code-foundry-web": codeFoundryWebSource,
       "blueprint-workbench": blueprintWorkbenchSource,
-      "identity-web": identityWebSource,
       "@tanstack/react-query$": require.resolve("@tanstack/react-query"),
       "@monaco-editor/react$": require.resolve("@monaco-editor/react"),
       "react-diff-viewer-continued$": require.resolve("react-diff-viewer-continued"),

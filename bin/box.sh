@@ -39,7 +39,7 @@ build_app_list() {
       --with-foundry|--foundry) ;; # retained for compatibility; Code Generation is Workgraph-owned now.
       --with-verifier|--verification) APPS="$APPS formal-verifier" ;;
       --with-compression|--compression) APPS="$APPS prompt-compressor" ;;
-      --with-legacy-ui|--legacy-ui) APPS="$APPS workgraph-web blueprint-workbench user-and-capability code-foundry-web portal edge-gateway" ;;
+      --with-legacy-ui|--legacy-ui) APPS="$APPS workgraph-web blueprint-workbench edge-gateway" ;;
       *) echo "unknown option for box up: $1" >&2; exit 1 ;;
     esac
     shift
