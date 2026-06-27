@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
 # Consolidated agent-and-tools backend container.
-# It runs agent-service, tool-service, agent-runtime, and prompt-composer
-# as separate processes while preserving their existing ports and service URLs.
+# It runs agent-service (which serves both /api/v1/agents and /api/v1/tools after
+# the Phase 4 merge), agent-runtime, and prompt-composer as separate processes.
 FROM node:20-alpine AS base
 WORKDIR /app
 ENV NPM_CONFIG_FETCH_RETRIES=5 \
@@ -17,7 +17,6 @@ COPY package.json package-lock.json* ./
 COPY packages ./packages
 COPY apps/agent-runtime/package.json   ./apps/agent-runtime/package.json
 COPY apps/agent-service/package.json   ./apps/agent-service/package.json
-COPY apps/tool-service/package.json    ./apps/tool-service/package.json
 COPY apps/prompt-composer/package.json ./apps/prompt-composer/package.json
 COPY apps/agent-runtime/prisma         ./apps/agent-runtime/prisma
 COPY apps/prompt-composer/prisma       ./apps/prompt-composer/prisma
@@ -40,7 +39,6 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/packages ./packages
 COPY package.json package-lock.json* ./
 COPY apps/agent-service ./apps/agent-service
-COPY apps/tool-service ./apps/tool-service
 COPY apps/agent-runtime ./apps/agent-runtime
 COPY apps/prompt-composer ./apps/prompt-composer
 RUN cd apps/agent-runtime && npx prisma generate --generator client
@@ -48,7 +46,6 @@ RUN cd apps/prompt-composer \
  && npx prisma generate --schema=prisma/schema.prisma --generator client \
  && npx prisma generate --schema=prisma/runtime-read.prisma --generator client
 RUN npm run build --workspace=apps/agent-service \
- && npm run build --workspace=apps/tool-service \
  && cd apps/agent-runtime && npx tsc -p tsconfig.json \
  && cd /app/apps/prompt-composer && npx tsc -p tsconfig.json
 
@@ -62,9 +59,6 @@ COPY --from=builder /app/package-lock.json* ./
 
 COPY --from=builder /app/apps/agent-service/dist ./apps/agent-service/dist
 COPY --from=builder /app/apps/agent-service/package.json ./apps/agent-service/package.json
-
-COPY --from=builder /app/apps/tool-service/dist ./apps/tool-service/dist
-COPY --from=builder /app/apps/tool-service/package.json ./apps/tool-service/package.json
 
 COPY --from=builder /app/apps/agent-runtime/dist ./apps/agent-runtime/dist
 COPY --from=builder /app/apps/agent-runtime/prisma ./apps/agent-runtime/prisma
@@ -82,5 +76,5 @@ COPY bin/start-platform-core.sh ./bin/start-platform-core.sh
 RUN chmod +x ./bin/start-platform-core.sh \
  && chmod +x ./apps/agent-runtime/bin/startup.sh \
  && chmod +x ./apps/prompt-composer/bin/startup.sh
-EXPOSE 3001 3002 3003 3004
+EXPOSE 3001 3003 3004
 CMD ["./bin/start-platform-core.sh"]

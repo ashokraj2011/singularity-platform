@@ -424,7 +424,6 @@ start_apps() {
     --network-alias prompt-composer \
     $(docker_add_host_args) \
     -p "${AGENT_SERVICE_PORT:-3001}:3001" \
-    -p "${TOOL_SERVICE_PORT:-3002}:3002" \
     -p "${AGENT_RUNTIME_PORT:-3003}:3003" \
     -p "${PROMPT_COMPOSER_PORT:-3004}:3004" \
     -e NODE_ENV=development \
@@ -444,7 +443,7 @@ start_apps() {
     -e IAM_SERVICE_TOKEN_TENANT_IDS="${IAM_SERVICE_TOKEN_TENANT_IDS:-}" \
     -e IAM_BOOTSTRAP_USERNAME="$IAM_BOOTSTRAP_USERNAME" \
     -e IAM_BOOTSTRAP_PASSWORD="$IAM_BOOTSTRAP_PASSWORD" \
-    -e TOOL_SERVICE_URL=http://tool-service:3002 \
+    -e TOOL_SERVICE_URL=http://agent-service:3001 \
     -e AGENT_RUNTIME_URL=http://agent-runtime:3003 \
     -e CONTEXT_FABRIC_URL=http://context-api:8000 \
     -e CONTEXT_FABRIC_SERVICE_TOKEN="$CONTEXT_FABRIC_SERVICE_TOKEN" \
@@ -467,7 +466,6 @@ start_apps() {
     -e EMBEDDING_MODEL_ALIAS="${EMBEDDING_MODEL_ALIAS:-}" \
     "$IMG_PLATFORM_CORE" >/dev/null
   wait_for_url "agent-service" "http://localhost:${AGENT_SERVICE_PORT:-3001}/health" 180
-  wait_for_url "tool-service" "http://localhost:${TOOL_SERVICE_PORT:-3002}/health" 180
   wait_for_url "agent-runtime" "http://localhost:${AGENT_RUNTIME_PORT:-3003}/health" 180
   wait_for_url "prompt-composer" "http://localhost:${PROMPT_COMPOSER_PORT:-3004}/health" 180
 
@@ -558,7 +556,7 @@ start_apps() {
     -e IAM_BOOTSTRAP_USERNAME="$IAM_BOOTSTRAP_USERNAME" \
     -e IAM_BOOTSTRAP_PASSWORD="$IAM_BOOTSTRAP_PASSWORD" \
     -e AGENT_SERVICE_URL=http://agent-service:3001 \
-    -e TOOL_SERVICE_URL=http://tool-service:3002 \
+    -e TOOL_SERVICE_URL=http://agent-service:3001 \
     -e AGENT_RUNTIME_URL=http://agent-runtime:3003 \
     -e AUDIT_GOV_URL="$DOCKER_CORE_AUDIT_URL" \
     -e AUDIT_GOV_SERVICE_TOKEN="$AUDIT_GOV_SERVICE_TOKEN" \
@@ -596,12 +594,12 @@ start_apps() {
     -e ENVIRONMENT="$ENVIRONMENT" \
     -e SINGULARITY_ENV="$SINGULARITY_ENV" \
     -e NEXT_PUBLIC_AGENT_SERVICE_URL=http://localhost:3001 \
-    -e NEXT_PUBLIC_TOOL_SERVICE_URL=http://localhost:3002 \
+    -e NEXT_PUBLIC_TOOL_SERVICE_URL=http://localhost:3001 \
     -e NEXT_PUBLIC_AGENT_RUNTIME_URL=http://localhost:3003 \
     -e NEXT_PUBLIC_PROMPT_COMPOSER_URL=http://localhost:3004 \
     -e NEXT_PUBLIC_WORKGRAPH_WEB_URL=/workflows \
     -e AGENT_SERVICE_URL=http://agent-service:3001 \
-    -e TOOL_SERVICE_URL=http://tool-service:3002 \
+    -e TOOL_SERVICE_URL=http://agent-service:3001 \
     -e AGENT_RUNTIME_URL=http://agent-runtime:3003 \
     -e PROMPT_COMPOSER_URL=http://prompt-composer:3004 \
     -e WORKGRAPH_API_URL=http://workgraph-api:8080 \
@@ -669,7 +667,6 @@ run_smoke() {
   check_url "Context Fabric" "http://localhost:${CONTEXT_API_PORT:-8000}/health" || fail=$((fail + 1))
   check_url "Workgraph" "http://localhost:${WORKGRAPH_API_PORT:-8080}/health" || fail=$((fail + 1))
   check_url "agent-service" "http://localhost:${AGENT_SERVICE_PORT:-3001}/health" || fail=$((fail + 1))
-  check_url "tool-service" "http://localhost:${TOOL_SERVICE_PORT:-3002}/health" || fail=$((fail + 1))
   check_url "agent-runtime" "http://localhost:${AGENT_RUNTIME_PORT:-3003}/health" || fail=$((fail + 1))
   check_url "prompt-composer" "http://localhost:${PROMPT_COMPOSER_PORT:-3004}/health" || fail=$((fail + 1))
   if [ "$WITH_AUDIT" = "1" ]; then

@@ -109,7 +109,6 @@ for profile in "${profiles[@]}"; do
       expect_single_platform_web "$profile" "$output"
       expect_not_has "$profile" "$output" platform-core
       expect_has "$profile" "$output" agent-service
-      expect_has "$profile" "$output" tool-service
       expect_has "$profile" "$output" agent-runtime
       expect_has "$profile" "$output" prompt-composer
       expect_has "$profile" "$output" wg-postgres-bootstrap
