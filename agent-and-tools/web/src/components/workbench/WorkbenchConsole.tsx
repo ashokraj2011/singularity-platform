@@ -293,6 +293,50 @@ async function createWorkbenchSession(payload: CreateWorkbenchSessionPayload): P
   });
 }
 
+type InstanceLaunchConfig = {
+  goal?: string;
+  sourceType?: WorkbenchSourceType;
+  sourceUri?: string;
+  sourceRef?: string;
+  capabilityId?: string;
+  architectAgentTemplateId?: string;
+  developerAgentTemplateId?: string;
+  qaAgentTemplateId?: string;
+  loopDefinition?: unknown;
+};
+
+// A minimal "Workbench Neo" link (e.g. the run-cockpit header button) carries
+// only the run id. Pull the workbench launch config off the run's WORKBENCH node
+// (config.workbench) so the neo intake pre-fills with the SDLC loop + agent
+// bindings instead of an empty form — the "open by run id alone" path.
+async function fetchInstanceLaunch(input: [string, string]): Promise<InstanceLaunchConfig | null> {
+  const [, instanceId] = input;
+  try {
+    const instance = (await workgraphFetch(`/workflow-instances/${encodeURIComponent(instanceId)}`)) as { nodes?: Array<{ config?: unknown }> };
+    const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : undefined);
+    for (const node of instance?.nodes ?? []) {
+      const wb = ((node?.config ?? {}) as Record<string, unknown>).workbench as Record<string, unknown> | undefined;
+      if (!wb || (!wb.loopDefinition && !wb.goal)) continue;
+      const agents = (wb.agentBindings ?? {}) as Record<string, unknown>;
+      const st = wb.sourceType;
+      return {
+        goal: str(wb.goal),
+        sourceType: st === "github" || st === "localdir" ? st : undefined,
+        sourceUri: str(wb.sourceUri),
+        sourceRef: str(wb.sourceRef),
+        capabilityId: str(wb.capabilityId),
+        architectAgentTemplateId: str(agents.architectAgentTemplateId),
+        developerAgentTemplateId: str(agents.developerAgentTemplateId),
+        qaAgentTemplateId: str(agents.qaAgentTemplateId),
+        loopDefinition: wb.loopDefinition,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 type WorkbenchLaunchDefaults = {
   workflowInstanceId?: string;
   browserRunId?: string;
@@ -477,6 +521,28 @@ export function WorkbenchConsole({ mode = "cockpit", view }: { mode?: WorkbenchM
     if (src.sourceRef) setCreateSourceRef((curr) => curr || src.sourceRef!);
   }, [needsSourceHydration, lookupCapabilities, createCapabilityId]);
 
+  // Hydrate the intake from the run's WORKBENCH node when opened by run id alone
+  // (no loopDefinition in the URL + no existing session) — turns the minimal
+  // "Workbench Neo" link into a fully pre-filled neo SDLC intake instead of a
+  // blank/native-looking form.
+  const needsLaunchHydration = workflowScoped && !launch.loopDefinition && !matchedSession && Boolean(launch.workflowInstanceId);
+  const { data: hydratedLaunch } = useSWR(needsLaunchHydration ? ["wb-instance-launch", launch.workflowInstanceId as string] : null, fetchInstanceLaunch, { revalidateOnFocus: false });
+  const [hydratedLoop, setHydratedLoop] = useState<unknown>(undefined);
+  const launchHydratedRef = useRef(false);
+  useEffect(() => {
+    if (launchHydratedRef.current || !hydratedLaunch) return;
+    launchHydratedRef.current = true;
+    if (hydratedLaunch.goal) setCreateGoal((curr) => curr || hydratedLaunch.goal!);
+    if (hydratedLaunch.sourceType) setCreateSourceType(hydratedLaunch.sourceType);
+    if (hydratedLaunch.sourceUri) setCreateSourceUri((curr) => curr || hydratedLaunch.sourceUri!);
+    if (hydratedLaunch.sourceRef) setCreateSourceRef((curr) => curr || hydratedLaunch.sourceRef!);
+    if (hydratedLaunch.capabilityId) setCreateCapabilityId((curr) => curr || hydratedLaunch.capabilityId!);
+    if (hydratedLaunch.architectAgentTemplateId) setArchitectAgentTemplateId((curr) => curr || hydratedLaunch.architectAgentTemplateId!);
+    if (hydratedLaunch.developerAgentTemplateId) setDeveloperAgentTemplateId((curr) => curr || hydratedLaunch.developerAgentTemplateId!);
+    if (hydratedLaunch.qaAgentTemplateId) setQaAgentTemplateId((curr) => curr || hydratedLaunch.qaAgentTemplateId!);
+    if (hydratedLaunch.loopDefinition) setHydratedLoop(hydratedLaunch.loopDefinition);
+  }, [hydratedLaunch]);
+
   function selectSession(id: string) {
     const next = new URLSearchParams(search.toString());
     next.set("sessionId", id);
@@ -528,7 +594,7 @@ export function WorkbenchConsole({ mode = "cockpit", view }: { mode?: WorkbenchM
               browserRunId: launch.browserRunId,
               workflowNodeId: launch.workflowNodeId,
               phaseId: launch.phaseId,
-              loopDefinition: launch.loopDefinition,
+              loopDefinition: launch.loopDefinition ?? hydratedLoop,
             }
           : {}),
       });
