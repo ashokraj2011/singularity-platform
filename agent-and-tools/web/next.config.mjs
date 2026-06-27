@@ -144,11 +144,11 @@ const nextConfig = {
       },
       {
         source: "/api/client-runners/:path*",
-        destination: `${process.env.TOOL_SERVICE_URL ?? "http://localhost:3002"}/api/v1/client-runners/:path*`,
+        destination: `${process.env.TOOL_SERVICE_URL ?? "http://localhost:3001"}/api/v1/client-runners/:path*`,
       },
       {
         source: "/api/tools/:path*",
-        destination: `${process.env.TOOL_SERVICE_URL ?? "http://localhost:3002"}/api/v1/tools/:path*`,
+        destination: `${process.env.TOOL_SERVICE_URL ?? "http://localhost:3001"}/api/v1/tools/:path*`,
       },
       {
         source: "/api/cf/:path*",
@@ -176,7 +176,7 @@ const nextConfig = {
       },
       {
         source: "/ops-health/tool-service",
-        destination: `${process.env.TOOL_SERVICE_URL ?? "http://tool-service:3002"}/health`,
+        destination: `${process.env.TOOL_SERVICE_URL ?? "http://agent-service:3001"}/health`,
       },
       {
         source: "/ops-health/agent-service",
