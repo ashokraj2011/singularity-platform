@@ -1223,12 +1223,26 @@ SQL
   _set_kv "$_AW" "NEXT_PUBLIC_LINK_IAM_ADMIN=/identity"
   _set_kv "$_AW" "NEXT_PUBLIC_LINK_OPERATIONS_PORTAL=/operations"
 
+  # Blue Blueprint Workbench cockpit (:5176, base /workbench/) + single-origin
+  # gateway (:8085). Single origin lets the auth token carry, so "Open Workbench"
+  # opens the real blue cockpit instead of platform-web's native /workbench page.
+  # Best-effort: the nginx gateway needs Docker; without it the green
+  # :5180/workbench still works.
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    ( "$ROOT/bin/local-gateway.sh" up >>"$LOG_DIR/blue-gateway.log" 2>&1 ) \
+      && ok "blue workbench gateway up → http://localhost:8085" \
+      || warn "blue cockpit gateway failed — see logs/blue-gateway.log; run 'bin/local-gateway.sh up' manually"
+  else
+    warn "docker not running — blue cockpit gateway skipped; run 'bin/local-gateway.sh up' once Docker is up"
+  fi
+
   echo
   ok "platform services booted — run '$0 smoke' in ~30s to verify, then open:"
   echo "    http://localhost:5180              (unified platform web)"
   echo "    http://localhost:5180/agents/studio (Agent Studio)"
   echo "    http://localhost:5180/workflows     (workflows and runs)"
-  echo "    http://localhost:5180/workbench     (Blueprint Workbench)"
+  echo "    http://localhost:5180/workbench     (Blueprint Workbench — native console)"
+  echo "    http://localhost:8085               (BLUE Workbench cockpit — log in HERE; 'Open Workbench' opens blue)"
   echo "    http://localhost:5180/foundry       (Code Foundry)"
   echo "    http://localhost:5180/identity      (IAM admin + governance authoring)"
   echo "    http://localhost:8100    (real IAM API; ${LOCAL_SUPER_ADMIN_EMAIL} / configured bootstrap password)"
@@ -1239,6 +1253,8 @@ SQL
 
 cmd_down() {
   normalize_runtime_mode
+  # Stop the blue cockpit (:5176) + gateway container (started by cmd_up).
+  ( "$ROOT/bin/local-gateway.sh" down >/dev/null 2>&1 ) || true
   if [ ! -f "$PID_FILE" ]; then
     warn "no $PID_FILE found — nothing to stop"
     return 0
