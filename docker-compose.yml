@@ -512,9 +512,8 @@ services:
   # M67 Slice 1A — learning-service was folded into agent-service. The routes
   # (/api/v1/failures, /patterns, /state, /similar-capabilities, /summarize)
   # are now served by singularity-agent-service on :3001 against the
-  # `learning.*` schema in the `singularity` DB. The standalone code lives
-  # under agent-and-tools/apps/learning-service/ as a deprecation marker
-  # for one operator cycle.
+  # `learning.*` schema in the `singularity` DB. The standalone learning-service
+  # code has been removed (deprecation cycle complete).
 
   platform-web:
     build:
