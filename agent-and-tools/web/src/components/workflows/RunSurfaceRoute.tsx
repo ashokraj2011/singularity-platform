@@ -1,11 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
+import { usePathname } from "next/navigation";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { RunArtifactsPage } from "workgraph-web/features/runtime/RunArtifactsPage";
 import { RunInsightsPage } from "workgraph-web/features/runtime/RunInsightsPage";
 import { RunViewerPage } from "workgraph-web/features/runtime/RunViewerPage";
+
+// Mounted at the Next routes /runs/[id], /runs/[id]/artifacts, /runs/[id]/insights.
+// Picks the page from the pathname (each page reads the run id via Next useParams).
+// The old /mission-control/:id and /play/:runId redirects are now handled by the
+// redirect table in next.config.mjs, so no react-router is needed here.
 
 function createQueryClient() {
   return new QueryClient({
@@ -18,42 +23,18 @@ function createQueryClient() {
   });
 }
 
-function RedirectToPlatform({ to }: { to: string }) {
-  const location = useLocation();
-  useEffect(() => {
-    const next = `${to}${location.search}${location.hash}`;
-    if (window.location.pathname !== to || window.location.search !== location.search || window.location.hash !== location.hash) {
-      window.location.assign(next);
-    }
-  }, [location.hash, location.search, to]);
-  return null;
-}
-
-function RedirectMissionControl() {
-  const { id } = useParams<{ id: string }>();
-  return <RedirectToPlatform to={`/runs/${id ?? ""}/insights`} />;
-}
-
-function RedirectPlay() {
-  const { runId } = useParams<{ runId: string }>();
-  return <RedirectToPlatform to={`/runs/${runId ?? ""}`} />;
-}
-
 export function RunSurfaceRoute() {
-  const [queryClient] = useState(createQueryClient);
+  const queryClient = useMemo(createQueryClient, []);
+  const pathname = usePathname() ?? "";
+  const Page = pathname.endsWith("/artifacts")
+    ? RunArtifactsPage
+    : pathname.endsWith("/insights")
+      ? RunInsightsPage
+      : RunViewerPage;
 
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/runs/:id" element={<RunViewerPage />} />
-          <Route path="/runs/:id/artifacts" element={<RunArtifactsPage />} />
-          <Route path="/runs/:id/insights" element={<RunInsightsPage />} />
-          <Route path="/mission-control/:id" element={<RedirectMissionControl />} />
-          <Route path="/play/:runId" element={<RedirectPlay />} />
-          <Route path="*" element={<RedirectToPlatform to="/runs" />} />
-        </Routes>
-      </BrowserRouter>
+      <Page />
     </QueryClientProvider>
   );
 }
