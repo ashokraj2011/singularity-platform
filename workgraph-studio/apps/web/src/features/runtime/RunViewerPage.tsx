@@ -740,14 +740,10 @@ function WorkbenchTaskInlinePanel({
 
 // M94.7 (2026-05-28) — Inline panel for an ACTIVE CALL_WORKFLOW node.
 //
-// When a workflow reaches a CALL_WORKFLOW stage (e.g. the agentic
-// starter's "Run agent loop"), the node spawns a child sub-workflow and
-// then waits for it to complete. Previously the run view showed only the
-// generic "Waiting for the runtime to advance" text with no way to reach
-// the child — so an operator couldn't open the agent workbench/sub-run
-// once it reached that stage. This panel surfaces a direct link to the
-// child sub-run (where the agent stages + their live events render, and
-// any WORKBENCH_TASK stage shows its own "Open WorkbenchNeo" button).
+// When a workflow reaches a CALL_WORKFLOW stage, the node spawns a child
+// workflow and then waits for it to complete. For SDLC delivery children the
+// right operator surface is Workbench Neo, so this panel puts the Neo cockpit
+// first while keeping the raw run timeline available for diagnostics.
 //
 // The child instance id is stamped on the node config as _childInstanceId
 // by CallWorkflowExecutor once the child is spawned. Before that (brief
@@ -758,13 +754,8 @@ function CallWorkflowInlinePanel({ node }: { node: RunNode }) {
     ? node.config._childInstanceId
     : null
 
-  // M94.8 (2026-05-28) — One-click into the workbench. Fetch the child
-  // instance's nodes; if a WORKBENCH_TASK exists, build the same
-  // blueprint-workbench (:5176) launch URL the WorkbenchTaskInlinePanel
-  // uses and offer "Open Workbench" directly — no intermediate
-  // Mission-Control hop. Falls back to "Open agent sub-run" (the child's
-  // run timeline) when the child has no workbench node (e.g. AGENT_TASK
-  // stages that run headless).
+  // Fetch the child nodes. If a WORKBENCH_TASK exists, use its workbench config
+  // for a stage-specific launch; otherwise open Neo scoped to the child run.
   const { data: childNodes = [] } = useQuery<RunNode[]>({
     queryKey: ['run-instance', childInstanceId, 'nodes'],
     queryFn: () => api.get(`/workflow-instances/${childInstanceId}/nodes`).then(r => r.data),
@@ -772,8 +763,8 @@ function CallWorkflowInlinePanel({ node }: { node: RunNode }) {
     refetchInterval: 5_000,
   })
   const workbenchNode = childNodes.find(n => n.nodeType === 'WORKBENCH_TASK')
-  const workbenchUrl = workbenchNode && childInstanceId
-    ? buildWorkbenchLaunchUrl(childInstanceId, workbenchNode.id, asRecord(workbenchNode.config?.workbench), 'neo')
+  const workbenchUrl = childInstanceId
+    ? buildWorkbenchLaunchUrl(childInstanceId, workbenchNode?.id, asRecord(workbenchNode?.config?.workbench), 'neo')
     : null
 
   return (
@@ -794,9 +785,9 @@ function CallWorkflowInlinePanel({ node }: { node: RunNode }) {
           </strong>
           <p style={{ margin: '3px 0 0', fontSize: 11, lineHeight: 1.45, color: '#5b21b6' }}>
             {childInstanceId
-              ? (workbenchUrl
-                  ? 'This stage runs the agent workbench (Story Intake → Design → Develop → QA). Open WorkbenchNeo to drive each stage with artifacts + approvals; this run advances automatically when the workbench finalizes.'
-                  : 'This stage dispatched the agent loop as a sub-workflow. Open it to watch or drive each agent stage; this run advances automatically when the sub-workflow completes.')
+              ? (workbenchNode
+                  ? 'This stage runs the agent workbench (Story Intake → Design → Develop → QA). Open Workbench Neo to drive each stage with artifacts and approvals; this run advances automatically when the workbench finalizes.'
+                  : 'This stage dispatched a child workflow. Open Workbench Neo to operate the delivery cockpit, or view the run timeline for raw workflow events.')
               : 'The agent sub-workflow is being spawned. Refresh in a moment to open it.'}
           </p>
         </div>
@@ -805,7 +796,7 @@ function CallWorkflowInlinePanel({ node }: { node: RunNode }) {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {workbenchUrl && (
             <a href={workbenchUrl} target="_blank" rel="opener" style={smallPrimaryButton}>
-              <ExternalLink size={13} /> Open Workbench
+              <ExternalLink size={13} /> Open Workbench Neo
             </a>
           )}
           <button
@@ -813,7 +804,7 @@ function CallWorkflowInlinePanel({ node }: { node: RunNode }) {
             style={workbenchUrl ? smallSecondaryButton : smallPrimaryButton}
             onClick={() => navigate(`/runs/${childInstanceId}`)}
           >
-            <ExternalLink size={13} /> {workbenchUrl ? 'View sub-run' : 'Open agent sub-run'}
+            <ExternalLink size={13} /> View sub-run
           </button>
         </div>
       )}

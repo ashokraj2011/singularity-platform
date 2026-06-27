@@ -3,7 +3,8 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Download, FileCheck2, GitBranch, Package, ShieldCheck } from "lucide-react";
+import { Download, FileCheck2, GitBranch, Package, ShieldCheck, Workflow } from "lucide-react";
+import { workbenchNeoUrl } from "@/lib/workbenchLaunch";
 
 const RunSurfaceRoute = dynamic(
   () => import("@/components/workflows/RunSurfaceRoute").then((module) => module.RunSurfaceRoute),
@@ -34,6 +35,9 @@ export default function RunDetailPage() {
           <a className="btn-secondary" href={`/api/workgraph/workflow-instances/${encoded}/delivery-receipt`}>
             <FileCheck2 size={14} /> Evidence pack
           </a>
+          <Link className="btn-primary" href={workbenchNeoUrl({ workflowInstanceId: id, browserRunId: id })}>
+            <Workflow size={14} /> Workbench Neo
+          </Link>
           <Link className="btn-secondary" href={`/runs/${encoded}/artifacts`}>
             <Package size={14} /> Artifacts
           </Link>

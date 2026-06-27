@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { runtimeApi } from "@/lib/api";
 import { shortId, valueText, workgraphFetch } from "@/lib/workgraph";
+import { isWorkbenchProfile, workbenchNeoUrl } from "@/lib/workbenchLaunch";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PRIORITIES = ["HIGH", "MEDIUM", "LOW"] as const;
@@ -89,7 +90,7 @@ type LaunchResult = {
   intent?: { id?: string; label?: string };
   workItems: CommitResult["created"];
   failedWorkItems: CommitResult["failed"];
-  workflowTemplate?: { id?: string; name?: string; workflowTypeKey?: string } | null;
+  workflowTemplate?: { id?: string; name?: string; workflowTypeKey?: string; profile?: string | null } | null;
   workflowInstance?: { id?: string; name?: string; status?: string } | null;
   runUrl?: string | null;
   workItemsUrl?: string | null;
@@ -134,6 +135,14 @@ export function WorkflowPlannerConsole() {
   const validCapability = UUID_RE.test(capabilityId.trim());
   const taskCount = milestones.reduce((count, milestone) => count + milestone.tasks.length, 0);
   const totalEffort = milestones.reduce((sum, milestone) => sum + milestone.tasks.reduce((inner, task) => inner + (Number(task.effortDays) || 0), 0), 0);
+  const launchWorkbenchUrl = launchResult?.workflowInstance?.id && isWorkbenchProfile(launchResult.workflowTemplate?.profile)
+    ? workbenchNeoUrl({
+        workflowInstanceId: launchResult.workflowInstance.id,
+        browserRunId: launchResult.workflowInstance.id,
+        goal: story.trim() || starterStory,
+        capabilityId: capabilityId.trim(),
+      })
+    : null;
   const assignableCapabilities = useMemo(
     () => normalizeAssignable(last?.assignableCapabilities, selectedCapability, capabilityId),
     [last?.assignableCapabilities, selectedCapability, capabilityId],
@@ -427,7 +436,8 @@ export function WorkflowPlannerConsole() {
               <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
                 <SuccessPanel text={launchResult.workflowInstance?.id ? `Launched ${launchResult.intent?.label ?? "SDLC workflow"} run ${shortId(launchResult.workflowInstance.id)}.` : `Created ${launchResult.workItems?.length ?? 0} WorkItems. Workflow launch needs manual routing.`} />
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {launchResult.runUrl && <Link href={launchResult.runUrl} className="btn-primary"><Rocket size={14} /> Open run cockpit</Link>}
+                  {launchWorkbenchUrl && <Link href={launchWorkbenchUrl} className="btn-primary"><Rocket size={14} /> Open Workbench Neo</Link>}
+                  {launchResult.runUrl && <Link href={launchResult.runUrl} className={launchWorkbenchUrl ? "btn-secondary" : "btn-primary"}><Rocket size={14} /> Open run cockpit</Link>}
                   <Link href={launchResult.workItemsUrl ?? "/work-items"} className="btn-secondary"><ClipboardList size={14} /> WorkItems inbox</Link>
                   <Link href="/llm-settings" className="btn-secondary"><Sparkles size={14} /> Runtime setup</Link>
                 </div>

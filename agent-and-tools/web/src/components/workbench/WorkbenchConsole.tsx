@@ -356,14 +356,14 @@ function readLaunchDefaults(search: { get(name: string): string | null }): Workb
   };
 }
 
-// True when the session belongs to the run named in the launch URL.
+// True when the session belongs to the run named in the launch URL. The node is
+// optional so CALL_WORKFLOW child runs can open Workbench Neo by run id alone.
 function sessionMatchesLaunch(session: BlueprintSession, launch: WorkbenchLaunchDefaults): boolean {
-  return Boolean(
-    launch.workflowInstanceId &&
-    launch.workflowNodeId &&
-    session.workflowInstanceId === launch.workflowInstanceId &&
-    session.workflowNodeId === launch.workflowNodeId,
-  );
+  const runMatches =
+    Boolean(launch.workflowInstanceId && session.workflowInstanceId === launch.workflowInstanceId) ||
+    Boolean(launch.browserRunId && session.browserRunId === launch.browserRunId);
+  const nodeMatches = !launch.workflowNodeId || session.workflowNodeId === launch.workflowNodeId;
+  return runMatches && nodeMatches;
 }
 
 type LookupCapability = {
@@ -413,11 +413,11 @@ export function WorkbenchConsole({ mode = "cockpit", view }: { mode?: WorkbenchM
   const copy = viewCopy[activeView];
   const explicitSessionId = search.get("sessionId") ?? undefined;
   // A CALL_WORKFLOW node launches the workbench with the run's full launch payload
-  // (workflowInstanceId/workflowNodeId, goal, loopDefinition, agent bindings) and
+  // (workflowInstanceId, optional workflowNodeId, goal, loopDefinition, agent bindings) and
   // no sessionId. Parse it so we can bind to that run's session — or, if none has
   // been created yet, pre-fill the intake form and create one scoped to the run.
   const launch = useMemo(() => readLaunchDefaults(search), [search]);
-  const workflowScoped = Boolean((launch.workflowInstanceId || launch.browserRunId) && launch.workflowNodeId);
+  const workflowScoped = Boolean(launch.workflowInstanceId || launch.browserRunId);
   const { data: sessions = [], error: sessionsError, isLoading: loadingSessions, mutate: reloadSessions } = useSWR("blueprint-sessions", fetchSessions, { refreshInterval: 12000 });
   const matchedSession = workflowScoped ? sessions.find((s) => sessionMatchesLaunch(s, launch)) : undefined;
   // When scoped to a run, never fall back to the most-recent session — show that

@@ -411,6 +411,17 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
   const isAgent = node.nodeType === 'AGENT_TASK'
   const sendBackTargets = completedNodes.filter(c => c.id !== node.id)
   const isInteractive = INTERACTIVE_TYPES.has(node.nodeType)
+  const callWorkflowChildId = typeof node.config?._childInstanceId === 'string' ? node.config._childInstanceId : ''
+  const { data: callWorkflowChildNodes = [] } = useQuery<RunGraphNodeData[]>({
+    queryKey: ['run-instance', callWorkflowChildId, 'nodes'],
+    queryFn: () => api.get(`/workflow-instances/${callWorkflowChildId}/nodes`).then(r => r.data),
+    enabled: Boolean(callWorkflowChildId),
+    refetchInterval: live ? 5_000 : false,
+  })
+  const callWorkflowWorkbenchNode = callWorkflowChildNodes.find(n => n.nodeType === 'WORKBENCH_TASK')
+  const callWorkflowWorkbenchUrl = callWorkflowChildId
+    ? buildWorkbenchLaunchUrl(callWorkflowChildId, callWorkflowWorkbenchNode?.id, asRecord(callWorkflowWorkbenchNode?.config?.workbench), 'neo', runContext ?? {})
+    : ''
   // Human-task / approval / data-collection: render the widget form inline when
   // the node is active and has a form, instead of pointing at the Timeline view.
   const fillKind = fillKindFor(node.nodeType)
@@ -573,6 +584,26 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
             <ExternalLink size={13} /> Open in Workbench
           </a>
         )}
+        {node.nodeType === 'CALL_WORKFLOW' && callWorkflowChildId && (
+          <>
+            <a
+              href={callWorkflowWorkbenchUrl}
+              target="_blank"
+              rel="noreferrer"
+              title="Open the spawned child workflow in Workbench Neo"
+              style={{ ...footBtn, flex: 'none', padding: '8px 11px', textDecoration: 'none', background: '#7c3aed', borderColor: '#6d28d9', color: '#fff' }}
+            >
+              <ExternalLink size={13} /> Open Workbench Neo
+            </a>
+            <a
+              href={`/runs/${callWorkflowChildId}`}
+              title="Open the raw child workflow timeline"
+              style={{ ...footBtn, flex: 'none', padding: '8px 11px', textDecoration: 'none' }}
+            >
+              <ExternalLink size={13} /> View sub-run
+            </a>
+          </>
+        )}
         {active && isInteractive && (
           <button onClick={onOpenTimeline} style={{ ...footBtn, background: '#0ea5e9', borderColor: '#0284c7', color: '#fff' }}>
             <ExternalLink size={13} /> Open in Timeline
@@ -606,6 +637,10 @@ const footBtn: CSSProperties = {
   flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
   padding: '8px 10px', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer',
   border: '1px solid #e2e8f0', background: '#fff', color: '#334155',
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
 const artifactIconBtn: CSSProperties = {

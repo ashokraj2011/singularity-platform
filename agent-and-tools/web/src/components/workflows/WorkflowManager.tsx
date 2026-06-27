@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { Archive, ArchiveRestore, Copy, Edit3, FileJson, GitBranch, Play, Plus, RefreshCw, Search, Upload, Workflow, X } from "lucide-react";
 import { formatDate, shortId, unwrapWorkgraphItems, valueText, workgraphFetch, WorkgraphError } from "@/lib/workgraph";
+import { isWorkbenchProfile, workbenchNeoUrl } from "@/lib/workbenchLaunch";
 
 type WorkflowTemplate = {
   id: string;
@@ -380,7 +381,15 @@ function StartWorkflowDialog({ workflow, onClose }: { workflow: WorkflowTemplate
         method: "POST",
         body: JSON.stringify({ childWorkflowTemplateId: workflow.id }),
       });
-      if (result.childWorkflowInstanceId) router.push(`/runs/${result.childWorkflowInstanceId}`);
+      if (result.childWorkflowInstanceId) {
+        router.push(isWorkbenchProfile(workflow.profile)
+          ? workbenchNeoUrl({
+              workflowInstanceId: result.childWorkflowInstanceId,
+              browserRunId: result.childWorkflowInstanceId,
+              capabilityId: workflow.capabilityId,
+            })
+          : `/runs/${result.childWorkflowInstanceId}`);
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {

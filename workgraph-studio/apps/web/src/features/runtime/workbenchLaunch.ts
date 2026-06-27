@@ -24,7 +24,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 export function buildWorkbenchLaunchUrl(
   workflowInstanceId: string,
-  workflowNodeId: string,
+  workflowNodeId: string | undefined,
   config: Record<string, unknown>,
   uiMode: 'neo',
   runtimeContext: Record<string, unknown> = {},
@@ -33,7 +33,8 @@ export function buildWorkbenchLaunchUrl(
   const renderedConfig = renderWorkbenchConfig(config, runtimeContext)
   const bindings = asRecord(renderedConfig.agentBindings)
   url.searchParams.set('workflowInstanceId', workflowInstanceId)
-  url.searchParams.set('workflowNodeId', workflowNodeId)
+  url.searchParams.set('browserRunId', workflowInstanceId)
+  if (workflowNodeId) url.searchParams.set('workflowNodeId', workflowNodeId)
   url.searchParams.set('ui', uiMode)
   const phaseId = cleanLaunchString(renderedConfig.phaseId)
   const goal = cleanLaunchString(renderedConfig.goal) || cleanLaunchString(renderedConfig.task)

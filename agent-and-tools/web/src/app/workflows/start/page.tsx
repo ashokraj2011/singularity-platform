@@ -20,6 +20,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { apiPath, authHeaders, readResponseBody, responseMessage, runtimeApi } from "@/lib/api";
 import { shortId } from "@/lib/workgraph";
+import { isWorkbenchProfile, workbenchNeoUrl } from "@/lib/workbenchLaunch";
 
 type Capability = { id: string; name?: string; capabilityType?: string | null; status?: string | null };
 type GalleryItem = {
@@ -34,7 +35,7 @@ type GalleryItem = {
   governancePreset?: string;
   runtimeRequirement?: string;
   templateCount?: number;
-  workflowTemplate?: { id?: string; name?: string; workflowTypeKey?: string } | null;
+  workflowTemplate?: { id?: string; name?: string; workflowTypeKey?: string; profile?: string | null } | null;
 };
 type GalleryResponse = { items?: GalleryItem[] };
 type AdoptionHealth = {
@@ -51,7 +52,7 @@ type LaunchResult = {
   runUrl?: string | null;
   workItems?: Array<{ id: string; workCode: string }>;
   failedWorkItems?: Array<{ title: string; error: string }>;
-  workflowTemplate?: { id?: string; name?: string } | null;
+  workflowTemplate?: { id?: string; name?: string; profile?: string | null } | null;
   workflowInstance?: { id?: string; status?: string } | null;
   warnings?: string[];
 };
@@ -94,6 +95,14 @@ export default function WorkflowStartPage() {
     requiresRuntime && !runtimeConnected ? "Connect an MCP runtime through Runtime Bridge." : null,
     !llmReady ? "Configure at least one ready LLM provider or mock mode." : null,
   ].filter(Boolean) as string[];
+  const resultWorkbenchUrl = result?.workflowInstance?.id && isWorkbenchProfile(result.workflowTemplate?.profile)
+    ? workbenchNeoUrl({
+        workflowInstanceId: result.workflowInstance.id,
+        browserRunId: result.workflowInstance.id,
+        goal: story.trim() || fallbackStory,
+        capabilityId,
+      })
+    : null;
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -273,7 +282,8 @@ export default function WorkflowStartPage() {
               body={result.workflowInstance?.id ? `Run ${shortId(result.workflowInstance.id)} is ready in the unified run cockpit.` : "No run was started automatically. Open WorkItems to attach/start a workflow."}
               actions={
                 <>
-                  {result.runUrl && <Link href={result.runUrl} className="btn-primary"><Rocket size={14} /> Open run</Link>}
+                  {resultWorkbenchUrl && <Link href={resultWorkbenchUrl} className="btn-primary"><Rocket size={14} /> Open Workbench Neo</Link>}
+                  {result.runUrl && <Link href={result.runUrl} className={resultWorkbenchUrl ? "btn-secondary" : "btn-primary"}><Rocket size={14} /> Open run</Link>}
                   <Link href="/work-items" className="btn-secondary"><ClipboardList size={14} /> WorkItems</Link>
                 </>
               }

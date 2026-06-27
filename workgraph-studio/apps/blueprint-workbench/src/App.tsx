@@ -199,7 +199,7 @@ export default function App() {
     enabled: hasToken,
   })
   const sessions = sessionsQuery.data?.items ?? []
-  const workflowScoped = Boolean((workflowDefaults.workflowInstanceId || workflowDefaults.browserRunId) && workflowDefaults.workflowNodeId)
+  const workflowScoped = Boolean(workflowDefaults.workflowInstanceId || workflowDefaults.browserRunId)
   const visibleSessions = useMemo(() => {
     if (!workflowScoped) return sessions
     return sessions.filter(session => sessionMatchesWorkflowDefaults(session, workflowDefaults))
@@ -637,7 +637,7 @@ function WorkbenchSetup({
   const workflowInstanceQuery = useQuery({
     queryKey: ['workflowInstanceDefaults', workflowDefaults.workflowInstanceId, workflowDefaults.workflowNodeId],
     queryFn: () => api.workflowInstance(workflowDefaults.workflowInstanceId!),
-    enabled: Boolean(workflowDefaults.workflowInstanceId && workflowDefaults.workflowNodeId),
+    enabled: Boolean(workflowDefaults.workflowInstanceId),
   })
   const workflowFallbackQuery = useQuery({
     queryKey: ['workflowWorkbenchFallbackDefaults', workflowDefaults.capabilityId],
@@ -4572,10 +4572,11 @@ async function loadWorkflowWorkbenchFallbackDefaults(capabilityId?: string): Pro
 }
 
 function hydrateDefaultsFromWorkflow(instance: WorkflowInstanceDetail | undefined, workflowNodeId: string | undefined): WorkbenchHydratedDefaults | null {
-  if (!instance || !workflowNodeId) return null
-  const node = instance.nodes?.find(node => node.id === workflowNodeId)
-  const workbench = asRecord(node?.config?.workbench)
-  if (!workbench) return null
+  if (!instance) return null
+  const node = workflowNodeId
+    ? instance.nodes?.find(node => node.id === workflowNodeId)
+    : instance.nodes?.find(node => asRecord(node.config?.workbench))
+  const workbench = asRecord(node?.config?.workbench) ?? {}
   const context = asRecord(instance.context) ?? {}
   const rendered = renderWorkflowValue(workbench, {
     context,
@@ -4744,14 +4745,14 @@ function readWorkflowDefaults() {
 
 function sessionMatchesWorkflowDefaults(session: BlueprintSession, defaults: ReturnType<typeof readWorkflowDefaults>) {
   const browserRunId = defaults.browserRunId ?? defaults.workflowInstanceId
-  if (browserRunId && defaults.workflowNodeId && session.metadata?.browserRunId === browserRunId && session.workflowNodeId === defaults.workflowNodeId) {
+  const nodeMatches = !defaults.workflowNodeId || session.workflowNodeId === defaults.workflowNodeId
+  if (browserRunId && session.metadata?.browserRunId === browserRunId && nodeMatches) {
     return true
   }
   return Boolean(
     defaults.workflowInstanceId
-    && defaults.workflowNodeId
     && session.workflowInstanceId === defaults.workflowInstanceId
-    && session.workflowNodeId === defaults.workflowNodeId,
+    && nodeMatches,
   )
 }
 
