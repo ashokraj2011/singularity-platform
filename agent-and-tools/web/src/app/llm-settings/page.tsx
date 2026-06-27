@@ -138,6 +138,61 @@ export default function LlmSettingsPage() {
     void load();
   }, []);
 
+  // ── Add / remove models (writes persist to .singularity/llm-models.json) ──
+  const blankForm = { id: "", provider: "anthropic", model: "", label: "", maxOutputTokens: "", costTier: "medium", supportsTools: true, isDefault: false, description: "", inputPricePerMtok: "", outputPricePerMtok: "" };
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({ ...blankForm });
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  async function submitModel() {
+    setSaveBusy(true);
+    setSaveError(null);
+    try {
+      const num = (v: string) => (v.trim() ? Number(v) : undefined);
+      const payload: Record<string, unknown> = {
+        id: form.id.trim(),
+        provider: form.provider,
+        model: form.model.trim(),
+        label: form.label.trim() || undefined,
+        maxOutputTokens: num(form.maxOutputTokens),
+        costTier: form.costTier || undefined,
+        supportsTools: form.supportsTools,
+        default: form.isDefault || undefined,
+        description: form.description.trim() || undefined,
+        inputPricePerMtok: num(form.inputPricePerMtok),
+        outputPricePerMtok: num(form.outputPricePerMtok),
+      };
+      const res = await fetch(apiPath("/api/llm-settings/models"), {
+        method: "POST",
+        headers: { "content-type": "application/json", ...authHeaders() },
+        body: JSON.stringify(payload),
+      });
+      const { raw, parsed } = await readResponseBody(res);
+      if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+      setForm({ ...blankForm, provider: form.provider });
+      setAdding(false);
+      await load();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Failed to add model");
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  async function deleteModel(id: string) {
+    if (!window.confirm(`Remove model "${id}" from the catalog?`)) return;
+    setSaveError(null);
+    try {
+      const res = await fetch(apiPath(`/api/llm-settings/models?id=${encodeURIComponent(id)}`), { method: "DELETE", headers: authHeaders() });
+      const { raw, parsed } = await readResponseBody(res);
+      if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+      await load();
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Failed to delete model");
+    }
+  }
+
   const providerData = asRecord(settings?.providers.data);
   const modelData = asRecord(settings?.models.data);
   const workspaceEnvelope = asRecord(settings?.workspaceStats?.data);
@@ -387,6 +442,44 @@ export default function LlmSettingsPage() {
           <h2 className="text-lg font-semibold text-slate-900">Approved Model Aliases</h2>
           <p className="text-sm text-slate-500">Workflows and agents should pass aliases. Raw provider/model overrides stay out of normal execution.</p>
         </div>
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <span className="text-xs text-slate-500">New models persist to <code className="font-mono">.singularity/llm-models.json</code> and reload live.</span>
+          <button className="btn-secondary" onClick={() => { setSaveError(null); setAdding(a => !a); }}>{adding ? "Cancel" : "+ Add model"}</button>
+        </div>
+        {adding && (
+          <div className="mb-4 rounded border border-slate-200 bg-slate-50 p-4">
+            <div className="grid md:grid-cols-3 gap-3 text-sm">
+              <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Alias (id) *</span>
+                <input className="border rounded px-2 py-1 font-mono" value={form.id} onChange={e => setForm(f => ({ ...f, id: e.target.value }))} placeholder="claude-sonnet-4-6" /></label>
+              <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Provider *</span>
+                <select className="border rounded px-2 py-1" value={form.provider} onChange={e => setForm(f => ({ ...f, provider: e.target.value }))}>
+                  {(providers.length ? providers.map(p => p.name) : ["anthropic", "openai", "openrouter", "copilot", "mock"]).map(n => <option key={n} value={n}>{n}</option>)}
+                </select></label>
+              <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Provider model id *</span>
+                <input className="border rounded px-2 py-1 font-mono" value={form.model} onChange={e => setForm(f => ({ ...f, model: e.target.value }))} placeholder="claude-sonnet-4-6-20250930" /></label>
+              <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Label</span>
+                <input className="border rounded px-2 py-1" value={form.label} onChange={e => setForm(f => ({ ...f, label: e.target.value }))} placeholder="Claude Sonnet 4.6" /></label>
+              <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Max output tokens</span>
+                <input className="border rounded px-2 py-1" type="number" value={form.maxOutputTokens} onChange={e => setForm(f => ({ ...f, maxOutputTokens: e.target.value }))} placeholder="8000" /></label>
+              <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Cost tier</span>
+                <select className="border rounded px-2 py-1" value={form.costTier} onChange={e => setForm(f => ({ ...f, costTier: e.target.value }))}>
+                  {["low", "medium", "high", "free"].map(t => <option key={t} value={t}>{t}</option>)}
+                </select></label>
+              <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Input $/Mtok</span>
+                <input className="border rounded px-2 py-1" type="number" step="0.01" value={form.inputPricePerMtok} onChange={e => setForm(f => ({ ...f, inputPricePerMtok: e.target.value }))} placeholder="3.0" /></label>
+              <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Output $/Mtok</span>
+                <input className="border rounded px-2 py-1" type="number" step="0.01" value={form.outputPricePerMtok} onChange={e => setForm(f => ({ ...f, outputPricePerMtok: e.target.value }))} placeholder="15.0" /></label>
+              <label className="flex flex-col gap-1 md:col-span-3"><span className="text-xs text-slate-500">Description</span>
+                <input className="border rounded px-2 py-1" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} /></label>
+            </div>
+            <div className="mt-3 flex items-center gap-4">
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.supportsTools} onChange={e => setForm(f => ({ ...f, supportsTools: e.target.checked }))} /> Supports tools</label>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isDefault} onChange={e => setForm(f => ({ ...f, isDefault: e.target.checked }))} /> Set as default</label>
+              <button className="btn-primary ml-auto" disabled={saveBusy || !form.id.trim() || !form.model.trim()} onClick={() => void submitModel()}>{saveBusy ? "Saving…" : "Add model"}</button>
+            </div>
+          </div>
+        )}
+        {saveError && <p className="mb-3 text-sm text-red-600">{saveError}</p>}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">
@@ -398,6 +491,7 @@ export default function LlmSettingsPage() {
                 <th className="px-4 py-2 text-left">Tools</th>
                 <th className="px-4 py-2 text-left">Cost tier</th>
                 <th className="px-4 py-2 text-left">Warnings</th>
+                <th className="px-4 py-2 text-left">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -413,10 +507,11 @@ export default function LlmSettingsPage() {
                   <td className="px-4 py-2">{model.supportsTools ? "Yes" : "No"}</td>
                   <td className="px-4 py-2">{model.costTier ?? "-"}</td>
                   <td className="px-4 py-2 text-xs text-slate-500">{(model.warnings ?? []).join("; ") || "-"}</td>
+                  <td className="px-4 py-2">{model.id && <button className="text-xs text-red-600 hover:underline" onClick={() => void deleteModel(model.id!)}>Remove</button>}</td>
                 </tr>
               ))}
               {models.length === 0 && (
-                <tr><td className="px-4 py-4 text-slate-400" colSpan={7}>No model aliases returned. Gateway will only allow mock fallback if configured that way.</td></tr>
+                <tr><td className="px-4 py-4 text-slate-400" colSpan={8}>No model aliases returned. Gateway will only allow mock fallback if configured that way.</td></tr>
               )}
             </tbody>
           </table>

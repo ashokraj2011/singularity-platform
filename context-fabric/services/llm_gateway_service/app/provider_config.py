@@ -228,6 +228,88 @@ def compute_estimated_cost(
     return round(cost, 6)
 
 
+# ── UI-managed catalog writes ───────────────────────────────────────────────
+# The /llm-settings UI adds/edits/removes models. We mutate the SAME
+# llm-models.json the gateway reads (the file IS the persistence), then drop the
+# in-memory cache so the change is live without a gateway restart.
+_MODEL_FIELDS = (
+    "id", "label", "provider", "model", "default", "maxOutputTokens",
+    "supportsTools", "costTier", "description", "inputPricePerMtok",
+    "outputPricePerMtok",
+)
+_MODEL_REQUIRED = ("id", "provider", "model")
+
+
+def _catalog_write_path() -> Path:
+    # Mirror _load_catalog()'s back-compat name resolution so we write the file
+    # the gateway actually reads.
+    path = Path(settings.model_catalog_path)
+    if not path.exists():
+        alt = path.with_name("llm-models.json" if path.name == "mcp-models.json" else "mcp-models.json")
+        if alt.exists():
+            return alt
+    return path
+
+
+def _persist_catalog(models: List[Dict[str, Any]]) -> None:
+    global _loaded_catalog
+    path = _catalog_write_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(models, indent=2) + "\n")
+    _loaded_catalog = None  # force re-read on next access → the change is live
+
+
+def _clean_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: entry[k] for k in _MODEL_FIELDS if entry.get(k) is not None}
+
+
+def add_model(entry: Dict[str, Any]) -> Dict[str, Any]:
+    clean = _clean_entry(entry)
+    for k in _MODEL_REQUIRED:
+        if not str(clean.get(k) or "").strip():
+            raise ProviderConfigError(f"missing required field: {k}")
+    provider = str(clean["provider"]).lower()
+    if provider not in SUPPORTED_PROVIDERS:
+        raise ProviderConfigError(f"unsupported provider: {provider} (one of {', '.join(SUPPORTED_PROVIDERS)})")
+    clean["provider"] = provider
+    models = list(_load_catalog())
+    if any(m.get("id") == clean["id"] for m in models):
+        raise ProviderConfigError(f"model id already exists: {clean['id']}")
+    if clean.get("default"):
+        for m in models:
+            m["default"] = False
+    models.append(clean)
+    _persist_catalog(models)
+    return clean
+
+
+def update_model(model_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
+    models = list(_load_catalog())
+    idx = next((i for i, m in enumerate(models) if m.get("id") == model_id), -1)
+    if idx < 0:
+        raise ProviderConfigError(f"unknown model id: {model_id}")
+    clean = _clean_entry(patch)
+    clean.pop("id", None)  # id is the immutable key
+    if "provider" in clean:
+        p = str(clean["provider"]).lower()
+        if p not in SUPPORTED_PROVIDERS:
+            raise ProviderConfigError(f"unsupported provider: {p}")
+        clean["provider"] = p
+    if clean.get("default"):
+        for m in models:
+            m["default"] = False
+    models[idx] = {**models[idx], **clean}
+    _persist_catalog(models)
+    return models[idx]
+
+
+def delete_model(model_id: str) -> None:
+    models = list(_load_catalog())
+    if not any(m.get("id") == model_id for m in models):
+        raise ProviderConfigError(f"unknown model id: {model_id}")
+    _persist_catalog([m for m in models if m.get("id") != model_id])
+
+
 def warnings() -> List[str]:
     return list(_warnings)
 
