@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client'
 import { prisma } from './prisma'
 import { publishEvent } from './eventbus/publisher'
 import { emitAuditEvent } from './audit-gov-emit'
+import { redactSecrets } from './redact'
 
 /**
  * M11.e — convert legacy PascalCase eventType strings (e.g. "AgentRunCompleted",
@@ -30,8 +31,11 @@ export async function logEvent(
   actorId?: string,
   payload?: Record<string, unknown>,
 ): Promise<string> {
+  // [P2] Redact secrets at the audit sink — defense-in-depth so nothing lands in
+  // the ledger with a token/key, regardless of whether the caller pre-redacted.
+  const safePayload = payload ? redactSecrets(payload) : payload
   const event = await prisma.eventLog.create({
-    data: { eventType, entityType, entityId, actorId, payload: payload as unknown as Prisma.InputJsonValue },
+    data: { eventType, entityType, entityId, actorId, payload: safePayload as unknown as Prisma.InputJsonValue },
   })
   return event.id
 }
@@ -43,8 +47,9 @@ export async function createReceipt(
   content: Record<string, unknown>,
   eventLogId?: string,
 ): Promise<void> {
+  const safeContent = redactSecrets(content)
   await prisma.receipt.create({
-    data: { receiptType, entityType, entityId, content: content as unknown as Prisma.InputJsonValue, eventLogId },
+    data: { receiptType, entityType, entityId, content: safeContent as unknown as Prisma.InputJsonValue, eventLogId },
   })
 }
 
@@ -54,9 +59,15 @@ export async function publishOutbox(
   eventType: string,
   payload: Record<string, unknown>,
 ): Promise<void> {
+  // [P2] Redact secrets ONCE at the audit sink, then use the safe copy for every
+  // persistence target (outbox + canonical event-bus + audit-gov ledger) so no
+  // secret reaches any of them regardless of the caller. Non-secret correlation
+  // fields (traceId/actorId/capabilityId) are unaffected by the patterns.
+  const safe = redactSecrets(payload)
+
   // Legacy outbox row (kept for back-compat with existing OutboxProcessor).
   await prisma.outboxEvent.create({
-    data: { aggregateType, aggregateId, eventType, payload: payload as unknown as Prisma.InputJsonValue },
+    data: { aggregateType, aggregateId, eventType, payload: safe as unknown as Prisma.InputJsonValue },
   })
 
   // M11.e — also emit a canonical event-bus row. Failures don't block the
@@ -67,13 +78,13 @@ export async function publishOutbox(
       eventName: toCanonicalEventName(eventType),
       envelope: {
         source_service: 'workgraph-api',
-        trace_id:       (payload.traceId as string | undefined) ?? null,
+        trace_id:       (safe.traceId as string | undefined) ?? null,
         subject:        { kind: aggregateToSubjectKind(aggregateType), id: aggregateId },
-        actor:          payload.actorId ? { kind: 'user', id: payload.actorId as string } : null,
+        actor:          safe.actorId ? { kind: 'user', id: safe.actorId as string } : null,
         status:         'emitted',
         started_at:     new Date().toISOString(),
-        correlation:    payload as Record<string, unknown>,
-        payload:        payload as Record<string, unknown>,
+        correlation:    safe as Record<string, unknown>,
+        payload:        safe as Record<string, unknown>,
       },
     })
   } catch (err) {
@@ -84,14 +95,14 @@ export async function publishOutbox(
   // M22 — central audit-governance ledger (fire-and-forget). Every workgraph
   // state transition that goes through publishOutbox lands in audit_events.
   emitAuditEvent({
-    trace_id:       (payload.traceId as string | undefined),
+    trace_id:       (safe.traceId as string | undefined),
     source_service: 'workgraph-api',
     kind:           toCanonicalEventName(eventType),
     subject_type:   aggregateType,
     subject_id:     aggregateId,
-    actor_id:       (payload.actorId as string | undefined),
-    capability_id:  (payload.capabilityId as string | undefined),
+    actor_id:       (safe.actorId as string | undefined),
+    capability_id:  (safe.capabilityId as string | undefined),
     severity:       'info',
-    payload,
+    payload:        safe,
   })
 }
