@@ -162,8 +162,13 @@ model PromptProfileLayer {
   isEnabled       Boolean  @default(true)
   createdAt       DateTime @default(now())
 
-  promptProfile PromptProfile @relation(fields: [promptProfileId], references: [id])
-  promptLayer   PromptLayer   @relation(fields: [promptLayerId], references: [id])
+  // [P0] Referential integrity. A profile OWNS its layer links: deleting a
+  // profile cascades its links (no orphan rows). A layer is a shared asset:
+  // RESTRICT blocks hard-deleting a layer still referenced by any profile, so
+  // instructions can't silently vanish from profiles that depend on it (the
+  // soft-delete/ARCHIVE path is surfaced as an excluded layer during assembly).
+  promptProfile PromptProfile @relation(fields: [promptProfileId], references: [id], onDelete: Cascade)
+  promptLayer   PromptLayer   @relation(fields: [promptLayerId], references: [id], onDelete: Restrict)
 
   @@unique([promptProfileId, promptLayerId])
 }
