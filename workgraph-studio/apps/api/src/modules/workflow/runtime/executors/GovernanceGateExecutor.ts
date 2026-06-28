@@ -4,6 +4,7 @@ import { logEvent, publishOutbox } from '../../../../lib/audit'
 import { resolveGovernance, type GovernanceResolveContext } from '../../../../lib/iam/client'
 import { activeWaiverControlKeys } from '../../../governance/governance.router'
 import { evaluateGovernanceBlock, type GovernanceBlock, type GovernanceOverlay } from './governance/evaluateBlock'
+import { resolveSatisfiedControls, makeEvidenceChecker, bindingsFromOverlay, type BindingMap, type ControlBinding } from './governance/resolveSatisfiedControls'
 
 /**
  * GOVERNANCE_GATE executor (Capability Governance Gate, v1).
@@ -87,6 +88,17 @@ function collectSatisfied(context: Record<string, unknown>, node: WorkflowNode):
     for (const k of asStringArray(context[key])) out.add(k)
   }
   for (const k of cfgStringArray(node, 'preSatisfiedControls')) out.add(k)
+  return out
+}
+
+/** v2 control→evidence bindings from node config (`controlBindings`); v3 moves these into the overlay. */
+function readBindingMap(node: WorkflowNode): BindingMap {
+  const raw = cfgValue(node, 'controlBindings')
+  if (!isRecord(raw)) return {}
+  const out: BindingMap = {}
+  for (const [k, v] of Object.entries(raw)) {
+    if (isRecord(v) && typeof v.type === 'string') out[k] = v as unknown as ControlBinding
+  }
   return out
 }
 
@@ -251,7 +263,11 @@ export async function activateGovernanceGate(
     overlay,
   })
 
-  const satisfied = collectSatisfied(context, node)
+  // v1 base (context-stamped) ∪ v2 evidence-bound controls (receipts/evaluators/formal/artifacts).
+  const base = collectSatisfied(context, node)
+  // Bindings: node config is the fallback; the IAM overlay (governing body) wins.
+  const bindings = { ...readBindingMap(node), ...bindingsFromOverlay(overlay) }
+  const satisfied = await resolveSatisfiedControls(overlay, bindings, base, makeEvidenceChecker(instance, node, actorId))
   const waivedKeys = [
     ...(workItemId ? await activeWaiverControlKeys(workItemId).catch(() => []) : []),
     ...(await nodeScopedWaiverKeys(node.id)),
