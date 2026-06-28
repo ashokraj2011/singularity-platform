@@ -61,11 +61,24 @@ export function bearerAuth(req: Request, _res: Response, next: NextFunction): vo
   }
 }
 
+/**
+ * SECURITY (review finding 4): whether the static bearer is allowed `scope`.
+ * Previously a static bearer bypassed every scope check; it is now bounded to
+ * the MCP_STATIC_BEARER_SCOPES allowlist ("*" grants all).
+ */
+export function staticBearerHasScope(scope: string): boolean {
+  const allow = config.MCP_STATIC_BEARER_SCOPE_SET;
+  return allow.has("*") || allow.has(scope);
+}
+
 export function requireMcpScope(scope: string) {
   return (req: Request, _res: Response, next: NextFunction): void => {
     if (req.mcpAuthKind === "static") {
-      next();
-      return;
+      if (staticBearerHasScope(scope)) {
+        next();
+        return;
+      }
+      throw new UnauthorizedError(`static MCP bearer not granted scope: ${scope}`);
     }
     if (req.mcpSession && hasMcpSessionScope(req.mcpSession, scope)) {
       next();
