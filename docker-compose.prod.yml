@@ -1,40 +1,43 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# docker-compose.prod.yml — production hardening overlay (review finding 6)
+# docker-compose.prod.yml — production hardening overlay (review finding 6 + full reconciliation)
 #
-#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml --profile core up -d
+#   (or --profile backend-split for the split-container topology)
 #
-# The base docker-compose.yml is dev-friendly: every secret has a `${VAR:-default}`
-# fallback and the env defaults to `development`. That is correct for a laptop but
-# unsafe on a shared host. This overlay changes two things the base file deliberately
-# does not:
+# The base docker-compose.yml is dev-friendly: every secret has a ${VAR:-default}
+# fallback and the env defaults to development. This overlay makes the stack
+# production-class:
 #
-#   1. Marks every service production-class (SINGULARITY_ENV / APP_ENV / ENVIRONMENT
-#      = production). That flips the in-code fail-closed guards
-#      (assertProductionSecret / is_production_class_env / REQUIRE_TENANT_ID) ON, so
-#      services REFUSE to boot with a known dev-default secret.
+#   1. Marks every service production (SINGULARITY_ENV/APP_ENV/ENVIRONMENT/NODE_ENV)
+#      → turns ON each service's in-code fail-closed boot guards.
+#   2. Supplies every value those guards REQUIRE in production — literals for the
+#      mandated modes (governance=fail_closed, grant=enforce, AUTH_PROVIDER=iam,
+#      TENANT_ISOLATION_MODE=strict, manifest signatures=required, …) and ${VAR:?}
+#      for the secrets, so `up` aborts with a clear message if any secret is missing.
 #
-#   2. Requires the critical auth secrets to be supplied externally. The `${VAR:?msg}`
-#      form makes `docker compose ... up` abort immediately, with the message, if a
-#      variable is unset or empty — instead of silently falling back to a dev default.
+# Reconciled against the production boot guards in every service's config/env
+# startup (iam, context-api, platform-core/agent-service/agent-runtime/prompt-composer,
+# workgraph-api, mcp-server, mcp-sandbox-runner, llm-gateway).
 #
-# Supply secrets via a root `.env` file (chmod 600, gitignored) or your secrets
-# manager. Generate strong random values, e.g.:
+# ⚠️ STILL NEEDS A REAL STACK BOOT to validate end-to-end. Some values are
+# operational, not just random strings:
+#   - IAM_BOOTSTRAP_* : agent-runtime / workgraph-api log into IAM with these to
+#     obtain a service token (or set IAM_SERVICE_TOKEN / AGENT_RUNTIME_IAM_SERVICE_TOKEN
+#     directly). They must be a real, working super-admin credential.
+#   - PROVIDER_MANIFEST_TRUSTED_KEYS : provider-manifest signing public keys.
+#   - WORKGRAPH_INCOMING_EVENT_SECRETS : JSON map {source_service: 32+char HMAC secret}.
+#   - IAM_SERVICE_TOKEN_TENANT_IDS : the tenant-id allowlist for CF's service token.
 #
-#       JWT_SECRET=$(openssl rand -hex 32)
-#       MCP_BEARER_TOKEN=$(openssl rand -hex 24)
-#       CONTEXT_FABRIC_SERVICE_TOKEN=$(openssl rand -hex 24)
-#       ...
+# Generate secrets, e.g.:  export JWT_SECRET=$(openssl rand -hex 32)
 #
-# NOTE — datastore credentials (POSTGRES_PASSWORD on iam-/at-/wg-postgres,
-# MINIO_ROOT_PASSWORD on wg-minio) are intentionally NOT forced here: changing them
-# server-side without matching every client DATABASE_URL / S3 credential would break
-# connectivity. Set strong values for those AND the matching client connection
-# strings together (see bin/bare-metal.sh / your secrets manager) as a separate step.
+# NOTE — datastore creds (POSTGRES_PASSWORD on iam-/at-/wg-postgres, MINIO_ROOT_PASSWORD
+# on wg-minio) are NOT forced here: changing them server-side without matching every
+# client DATABASE_URL / S3 cred would break connectivity. Set strong values for those
+# AND the matching client connection strings together as a separate step.
 #
-# NOTE — also restrict published ports: in production, bind non-UI service ports to
-# 127.0.0.1 (or drop the host `ports:` mapping entirely and reach services over the
-# compose network) so only the web origin is exposed. That is environment-specific
-# and left to the deployment's port policy.
+# NOTE — restrict published ports in prod: bind non-UI service ports to 127.0.0.1 or
+# drop host ports entirely (reach services over the compose network) so only the web
+# origin is exposed. Environment-specific; left to your deployment's port policy.
 # ─────────────────────────────────────────────────────────────────────────────
 
 x-prod-env: &prod-env
@@ -47,80 +50,99 @@ services:
   iam-service:
     environment:
       <<: *prod-env
-      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET to a strong 32+ char random value}
-      LOCAL_SUPER_ADMIN_PASSWORD: ${LOCAL_SUPER_ADMIN_PASSWORD:?set a strong LOCAL_SUPER_ADMIN_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (32+ random chars)}
+      LOCAL_SUPER_ADMIN_PASSWORD: ${LOCAL_SUPER_ADMIN_PASSWORD:?set a strong LOCAL_SUPER_ADMIN_PASSWORD (12+)}
       IAM_BOOTSTRAP_PASSWORD: ${IAM_BOOTSTRAP_PASSWORD:-${LOCAL_SUPER_ADMIN_PASSWORD}}
 
-  # platform-core bundles agent-service (agents+tools), agent-runtime and
-  # prompt-composer in the default/core profile.
+  # platform-core (profiles: core, full) runs agent-service + agent-runtime +
+  # prompt-composer as SEPARATE PROCESSES in one container, so it must satisfy
+  # all three services' prod guards (union below).
   platform-core:
     environment:
       <<: *prod-env
       AUTH_OPTIONAL: "false"
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
-      CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:?set CONTEXT_FABRIC_SERVICE_TOKEN}
-      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:?set AUDIT_GOV_SERVICE_TOKEN}
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?set MCP_BEARER_TOKEN (16+ chars)}
-      TOOL_GRANT_SIGNING_SECRET: ${TOOL_GRANT_SIGNING_SECRET:?set TOOL_GRANT_SIGNING_SECRET}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?set MCP_BEARER_TOKEN (32+)}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:?set AUDIT_GOV_SERVICE_TOKEN (32+)}
+      CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:?set CONTEXT_FABRIC_SERVICE_TOKEN (32+)}
+      WORKGRAPH_ARTIFACT_FETCH_TOKEN: ${WORKGRAPH_ARTIFACT_FETCH_TOKEN:?set WORKGRAPH_ARTIFACT_FETCH_TOKEN (32+)}
+      PROVIDER_MANIFEST_SIGNATURE_MODE: required
+      PROVIDER_MANIFEST_TRUSTED_KEYS: ${PROVIDER_MANIFEST_TRUSTED_KEYS:?set PROVIDER_MANIFEST_TRUSTED_KEYS (signing pubkeys)}
+      IAM_BOOTSTRAP_USERNAME: ${LOCAL_SUPER_ADMIN_EMAIL:-admin@singularity.local}
+      IAM_BOOTSTRAP_PASSWORD: ${LOCAL_SUPER_ADMIN_PASSWORD:?set LOCAL_SUPER_ADMIN_PASSWORD}
 
-  # backend-split profile: agent-service / agent-runtime / prompt-composer run
-  # as their own containers. Same secrets as the bundle so either profile is safe.
   agent-service:
     environment:
       <<: *prod-env
       AUTH_OPTIONAL: "false"
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
-      CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:?set CONTEXT_FABRIC_SERVICE_TOKEN}
-      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:?set AUDIT_GOV_SERVICE_TOKEN}
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?set MCP_BEARER_TOKEN (16+ chars)}
-      TOOL_GRANT_SIGNING_SECRET: ${TOOL_GRANT_SIGNING_SECRET:?set TOOL_GRANT_SIGNING_SECRET}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?set MCP_BEARER_TOKEN (32+)}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:?set AUDIT_GOV_SERVICE_TOKEN (32+)}
 
   agent-runtime:
     environment:
       <<: *prod-env
       AUTH_OPTIONAL: "false"
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      PROVIDER_MANIFEST_SIGNATURE_MODE: required
+      PROVIDER_MANIFEST_TRUSTED_KEYS: ${PROVIDER_MANIFEST_TRUSTED_KEYS:?set PROVIDER_MANIFEST_TRUSTED_KEYS}
+      IAM_BOOTSTRAP_USERNAME: ${LOCAL_SUPER_ADMIN_EMAIL:-admin@singularity.local}
+      IAM_BOOTSTRAP_PASSWORD: ${LOCAL_SUPER_ADMIN_PASSWORD:?set LOCAL_SUPER_ADMIN_PASSWORD}
 
   prompt-composer:
     environment:
       <<: *prod-env
       AUTH_OPTIONAL: "false"
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
-      PROMPT_COMPOSER_SERVICE_TOKEN: ${PROMPT_COMPOSER_SERVICE_TOKEN:?set PROMPT_COMPOSER_SERVICE_TOKEN}
+      CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:?set CONTEXT_FABRIC_SERVICE_TOKEN (32+)}
+      WORKGRAPH_ARTIFACT_FETCH_TOKEN: ${WORKGRAPH_ARTIFACT_FETCH_TOKEN:?set WORKGRAPH_ARTIFACT_FETCH_TOKEN (32+)}
 
   context-api:
     environment:
       <<: *prod-env
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       # context-fabric reads its inbound service token as IAM_SERVICE_TOKEN.
-      IAM_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:?set CONTEXT_FABRIC_SERVICE_TOKEN}
-      # Fail closed on missing tenant scope (also forces /execute auth — finding 7).
+      IAM_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:?set CONTEXT_FABRIC_SERVICE_TOKEN (32+)}
+      IAM_SERVICE_TOKEN_TENANT_IDS: ${IAM_SERVICE_TOKEN_TENANT_IDS:?set IAM_SERVICE_TOKEN_TENANT_IDS (tenant-id allowlist; required when REQUIRE_TENANT_ID=true)}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?set MCP_BEARER_TOKEN (32+)}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:?set AUDIT_GOV_SERVICE_TOKEN (32+)}
+      DEFAULT_GOVERNANCE_MODE: fail_closed
+      CF_TOOL_GRANT_ENABLED: "true"
+      TOOL_GRANT_SIGNING_SECRET: ${TOOL_GRANT_SIGNING_SECRET:?set TOOL_GRANT_SIGNING_SECRET (32+, must match mcp-server)}
       REQUIRE_TENANT_ID: "true"
 
   workgraph-api:
     environment:
       <<: *prod-env
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
-      WORKGRAPH_INCOMING_EVENT_SECRETS: ${WORKGRAPH_INCOMING_EVENT_SECRETS:?set WORKGRAPH_INCOMING_EVENT_SECRETS}
-      WORKGRAPH_INTERNAL_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:?set WORKGRAPH_INTERNAL_TOKEN}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?set MCP_BEARER_TOKEN (32+)}
+      WORKGRAPH_INTERNAL_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:?set WORKGRAPH_INTERNAL_TOKEN (32+)}
+      CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:?set CONTEXT_FABRIC_SERVICE_TOKEN (32+)}
+      WORKGRAPH_INCOMING_EVENT_SECRETS: ${WORKGRAPH_INCOMING_EVENT_SECRETS:?set WORKGRAPH_INCOMING_EVENT_SECRETS (JSON object mapping source to a 32+ char HMAC secret)}
+      AUTH_PROVIDER: iam
+      TENANT_ISOLATION_MODE: strict
+      DEFAULT_GOVERNANCE_MODE: fail_closed
+      IAM_BOOTSTRAP_USERNAME: ${LOCAL_SUPER_ADMIN_EMAIL:-admin@singularity.local}
+      IAM_BOOTSTRAP_PASSWORD: ${LOCAL_SUPER_ADMIN_PASSWORD:?set LOCAL_SUPER_ADMIN_PASSWORD}
 
   mcp-server:
     environment:
       <<: *prod-env
-      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?set MCP_BEARER_TOKEN (16+ chars)}
-      MCP_SESSION_JWT_SECRET: ${MCP_SESSION_JWT_SECRET:?set MCP_SESSION_JWT_SECRET}
-      MCP_RUNNER_TOKEN: ${MCP_RUNNER_TOKEN:?set MCP_RUNNER_TOKEN (16+ chars)}
-      # finding 4: bound the static bearer to least privilege. The code already
-      # defaults to every scope the server guards today; narrow this to only what
-      # your service-to-service callers (e.g. context-fabric) actually use, or set
-      # "*" to grant all (incl. future scopes).
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?set MCP_BEARER_TOKEN (16+)}
+      MCP_SESSION_JWT_SECRET: ${MCP_SESSION_JWT_SECRET:?set MCP_SESSION_JWT_SECRET (32+)}
+      MCP_RUNNER_TOKEN: ${MCP_RUNNER_TOKEN:?set MCP_RUNNER_TOKEN (16+)}
+      MCP_DEFAULT_GOVERNANCE_MODE: fail_closed
+      MCP_TOOL_GRANT_MODE: enforce
+      MCP_REQUIRE_EFFECTIVE_CAPABILITIES: "true"
+      TOOL_GRANT_SIGNING_SECRET: ${TOOL_GRANT_SIGNING_SECRET:?set TOOL_GRANT_SIGNING_SECRET (32+, must match context-api)}
+      # finding 4: narrow to what your service-to-service callers actually use,
+      # or "*" to grant all (incl. future scopes).
       MCP_STATIC_BEARER_SCOPES: ${MCP_STATIC_BEARER_SCOPES:-invoke,tools:list,tools:call,resources:read,events:read}
 
   mcp-sandbox-runner:
     environment:
       <<: *prod-env
-      # Shared with mcp-server above — same value on both ends.
-      MCP_RUNNER_TOKEN: ${MCP_RUNNER_TOKEN:?set MCP_RUNNER_TOKEN (16+ chars)}
+      MCP_RUNNER_TOKEN: ${MCP_RUNNER_TOKEN:?set MCP_RUNNER_TOKEN (16+)}
 
   llm-gateway:
     environment:
