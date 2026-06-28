@@ -19,7 +19,7 @@ import {
 } from "./retrieval";
 import { compileCapsuleViaLlm, compileMode } from "./llm-capsule-compiler";
 import {
-  tryAcquireCompileSlot, releaseCompileSlot, capsuleExpiry,
+  tryAcquireCompileSlot, releaseCompileSlot, capsuleExpiry, capsuleTooLarge,
   recordCompileAttempt, scheduleCompileRetry,
 } from "./capsule-gc";
 import { emitAuditEvent } from "../../lib/audit-gov-emit";
@@ -1746,6 +1746,9 @@ Input schema: ${JSON.stringify(t.input_schema ?? { type: "object" })}`;
       });
       if (!row) return null;
       if (row.status !== "READY") return null;
+      // Enforce the TTL at read time too — the GC sweep is periodic, so a capsule
+      // can sit past its expiresAt between sweeps; don't serve a stale one.
+      if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) return null;
       const mode = (row.compileMode === "LLM" ? "LLM" : "RAW") as "RAW" | "LLM";
       const chunks = (row.citations as unknown as RetrievedChunk[]) ?? [];
 
@@ -1837,6 +1840,19 @@ Input schema: ${JSON.stringify(t.input_schema ?? { type: "object" })}`;
             }).catch((err: Error) => logger.warn({ err: err.message }, "[capsule] retry UPDATE failed"));
           });
         }
+      }
+
+      // Size hardening — don't cache an oversized compiled body. A RAW capsule
+      // is JSON.stringify(layers) and can be huge; caching it bloats the table
+      // and injects a giant layer on every hit. The cold path already served raw
+      // chunks for this request, so skipping the write is safe (releaseCompileSlot
+      // still runs in finally).
+      if (capsuleTooLarge(compiledContent)) {
+        logger.info(
+          { capabilityId: opts.capabilityId, chars: compiledContent.length },
+          "[compose] storeCapsule skipped — compiled content exceeds size cap",
+        );
+        return;
       }
 
       // M25.5 C9 — stamp TTL on every write so the GC sweeper has a
