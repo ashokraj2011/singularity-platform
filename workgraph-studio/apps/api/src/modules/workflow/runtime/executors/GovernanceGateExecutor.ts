@@ -4,7 +4,7 @@ import { logEvent, publishOutbox } from '../../../../lib/audit'
 import { resolveGovernance, type GovernanceResolveContext } from '../../../../lib/iam/client'
 import { activeWaiverControlKeys } from '../../../governance/governance.router'
 import { evaluateGovernanceBlock, type GovernanceBlock, type GovernanceOverlay } from './governance/evaluateBlock'
-import { resolveSatisfiedControls, makeEvidenceChecker, type BindingMap, type ControlBinding } from './governance/resolveSatisfiedControls'
+import { resolveSatisfiedControls, makeEvidenceChecker, bindingsFromOverlay, type BindingMap, type ControlBinding } from './governance/resolveSatisfiedControls'
 
 /**
  * GOVERNANCE_GATE executor (Capability Governance Gate, v1).
@@ -265,7 +265,9 @@ export async function activateGovernanceGate(
 
   // v1 base (context-stamped) ∪ v2 evidence-bound controls (receipts/evaluators/formal/artifacts).
   const base = collectSatisfied(context, node)
-  const satisfied = await resolveSatisfiedControls(overlay, readBindingMap(node), base, makeEvidenceChecker(instance, node, actorId))
+  // Bindings: node config is the fallback; the IAM overlay (governing body) wins.
+  const bindings = { ...readBindingMap(node), ...bindingsFromOverlay(overlay) }
+  const satisfied = await resolveSatisfiedControls(overlay, bindings, base, makeEvidenceChecker(instance, node, actorId))
   const waivedKeys = [
     ...(workItemId ? await activeWaiverControlKeys(workItemId).catch(() => []) : []),
     ...(await nodeScopedWaiverKeys(node.id)),

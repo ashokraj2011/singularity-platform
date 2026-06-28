@@ -40,6 +40,18 @@ export function controlsReferenced(overlay: GovernanceOverlay | null | undefined
   return [...keys]
 }
 
+/** v3: bindings the governing body ships in the IAM overlay (`overlay.controlBindings`). */
+export function bindingsFromOverlay(overlay: GovernanceOverlay | null | undefined): BindingMap {
+  const raw =
+    overlay && isRecord((overlay as Record<string, unknown>).controlBindings)
+      ? ((overlay as Record<string, unknown>).controlBindings as Record<string, unknown>)
+      : null
+  if (!raw) return {}
+  const out: BindingMap = {}
+  for (const [k, v] of Object.entries(raw)) if (isRecord(v) && typeof v.type === 'string') out[k] = v as unknown as ControlBinding
+  return out
+}
+
 /**
  * Pure orchestration: for each referenced control NOT already in `base`, look up
  * its binding and run `check`. A throwing/false check leaves the control
