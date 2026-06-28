@@ -110,6 +110,11 @@ services:
       MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?set MCP_BEARER_TOKEN (16+ chars)}
       MCP_SESSION_JWT_SECRET: ${MCP_SESSION_JWT_SECRET:?set MCP_SESSION_JWT_SECRET}
       MCP_RUNNER_TOKEN: ${MCP_RUNNER_TOKEN:?set MCP_RUNNER_TOKEN (16+ chars)}
+      # finding 4: bound the static bearer to least privilege. The code already
+      # defaults to every scope the server guards today; narrow this to only what
+      # your service-to-service callers (e.g. context-fabric) actually use, or set
+      # "*" to grant all (incl. future scopes).
+      MCP_STATIC_BEARER_SCOPES: ${MCP_STATIC_BEARER_SCOPES:-invoke,tools:list,tools:call,resources:read,events:read}
 
   mcp-sandbox-runner:
     environment:

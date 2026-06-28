@@ -32,6 +32,13 @@ const schema = z.object({
   MCP_SESSION_JWT_SECRET: z.string().optional(),
   MCP_SESSION_TOKEN_TTL_SEC: z.coerce.number().int().positive().default(12 * 60 * 60),
   MCP_SESSION_TOKEN_ISSUER: z.string().default("singularity-mcp"),
+  // SECURITY (review finding 4): scopes the static MCP_BEARER_TOKEN may use.
+  // Previously a static bearer bypassed ALL requireMcpScope checks (an invisible
+  // grant of every scope). This bounds it to an explicit allowlist. Comma-sep;
+  // "*" grants all (incl. any future scope). Default = every scope the server
+  // guards today, so existing service-to-service callers keep working while the
+  // bearer is now enumerated and any newly-added scope is denied until granted.
+  MCP_STATIC_BEARER_SCOPES: z.string().default("invoke,tools:list,tools:call,resources:read,events:read"),
 
   // ── ToolInvocationGrant — defence-in-depth over the policy-dumb runner ───
   // /mcp/tool-run only checks the bearer scope; the bearer proves "a caller in
@@ -285,4 +292,8 @@ export const config = {
   ...parsed.data,
   MCP_COMMAND_EXECUTION_MODE: parsed.data.MCP_COMMAND_EXECUTION_MODE
     ?? (parsed.data.NODE_ENV === "test" ? "process" : "container"),
+  // SECURITY (finding 4): parsed allowlist for the static bearer (see schema).
+  MCP_STATIC_BEARER_SCOPE_SET: new Set(
+    parsed.data.MCP_STATIC_BEARER_SCOPES.split(",").map((s) => s.trim()).filter(Boolean),
+  ),
 };
