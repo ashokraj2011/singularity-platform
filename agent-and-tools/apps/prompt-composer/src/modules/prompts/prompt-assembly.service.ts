@@ -13,6 +13,19 @@ interface AssembledLayer {
   layerHash: string;
 }
 
+// [P0] A profile→layer link that was enabled but whose layer is no longer
+// ACTIVE. These used to be dropped silently in loadProfileLayers, so archiving
+// a layer quietly removed its instructions from every profile referencing it.
+// We now record them as excluded layers (audited + surfaced in the response).
+interface SkippedLayer {
+  promptLayerId: string;
+  layerType: string;
+  priority: number;
+  status: string;
+  inclusionReason: string;
+  layerHash: string;
+}
+
 export const promptAssemblyService = {
   /**
    * Assembles a final prompt per spec §16.2:
@@ -24,6 +37,7 @@ export const promptAssemblyService = {
    */
   async assemble(input: AssembleInput, executionId?: string) {
     const layers: AssembledLayer[] = [];
+    const skippedLayers: SkippedLayer[] = [];
 
     // 1. Agent template + base prompt profile
     const template = await runtimeReader.agentTemplate.findUnique({ where: { id: input.agentTemplateId } });
@@ -31,7 +45,8 @@ export const promptAssemblyService = {
 
     if (template.basePromptProfileId) {
       const baseLayers = await loadProfileLayers(template.basePromptProfileId, "agent template base profile");
-      layers.push(...baseLayers);
+      layers.push(...baseLayers.included);
+      skippedLayers.push(...baseLayers.skipped);
     }
 
     // 2. Binding overlay
@@ -43,7 +58,8 @@ export const promptAssemblyService = {
       });
       if (binding?.promptProfileId) {
         const overlay = await loadProfileLayers(binding.promptProfileId, "agent binding overlay");
-        layers.push(...overlay);
+        layers.push(...overlay.included);
+        skippedLayers.push(...overlay.skipped);
       }
     }
 
@@ -144,7 +160,14 @@ export const promptAssemblyService = {
     const finalPrompt = layers.map(l => `# ${humanLayer(l.layerType)}\n${l.contentSnapshot}`).join("\n\n");
     const finalPromptHash = sha256(finalPrompt);
 
-    // 10. Persist
+    if (skippedLayers.length > 0) {
+      console.warn(
+        `[prompt-assembly] ${skippedLayers.length} profile-referenced layer(s) excluded (not ACTIVE) ` +
+        `for template ${input.agentTemplateId}: ${skippedLayers.map(s => `${s.promptLayerId}[${s.status}]`).join(", ")}`,
+      );
+    }
+
+    // 10. Persist (included layers drive the prompt; excluded layers are kept as audit rows)
     const assembly = await prisma.promptAssembly.create({
       data: {
         executionId: executionId ?? null,
@@ -159,15 +182,26 @@ export const promptAssemblyService = {
         finalPromptPreview: finalPrompt.slice(0, 4000),
         estimatedInputTokens: estimateTokens(finalPrompt),
         layers: {
-          create: layers.map(l => ({
-            promptLayerId: l.promptLayerId ?? null,
-            layerType: l.layerType,
-            layerHash: l.layerHash,
-            priority: l.priority,
-            included: true,
-            inclusionReason: l.inclusionReason,
-            contentSnapshot: l.contentSnapshot,
-          })),
+          create: [
+            ...layers.map(l => ({
+              promptLayerId: l.promptLayerId ?? null,
+              layerType: l.layerType,
+              layerHash: l.layerHash,
+              priority: l.priority,
+              included: true,
+              inclusionReason: l.inclusionReason,
+              contentSnapshot: l.contentSnapshot,
+            })),
+            ...skippedLayers.map(s => ({
+              promptLayerId: s.promptLayerId,
+              layerType: s.layerType,
+              layerHash: s.layerHash,
+              priority: s.priority,
+              included: false,
+              inclusionReason: s.inclusionReason,
+              contentSnapshot: "",
+            })),
+          ],
         },
       },
       include: { layers: true },
@@ -179,26 +213,49 @@ export const promptAssemblyService = {
       finalPromptPreview: assembly.finalPromptPreview,
       estimatedInputTokens: assembly.estimatedInputTokens,
       includedLayers: layers.map(l => ({ layerType: l.layerType, priority: l.priority, layerHash: l.layerHash })),
+      excludedLayers: skippedLayers.map(s => ({ promptLayerId: s.promptLayerId, layerType: s.layerType, status: s.status, reason: s.inclusionReason })),
+      warnings: skippedLayers.map(
+        s => `Layer ${s.promptLayerId} (${s.layerType}) is referenced by a profile but was excluded: status is ${s.status}, not ACTIVE.`,
+      ),
     };
   },
 };
 
-async function loadProfileLayers(profileId: string, reason: string): Promise<AssembledLayer[]> {
+async function loadProfileLayers(
+  profileId: string,
+  reason: string,
+): Promise<{ included: AssembledLayer[]; skipped: SkippedLayer[] }> {
   const links = await prisma.promptProfileLayer.findMany({
     where: { promptProfileId: profileId, isEnabled: true },
     include: { promptLayer: true },
     orderBy: { priority: "asc" },
   });
-  return links
-    .filter(l => l.promptLayer.status === "ACTIVE")
-    .map(l => ({
-      promptLayerId: l.promptLayer.id,
-      layerType: l.promptLayer.layerType,
-      priority: l.priority,
-      inclusionReason: reason,
-      contentSnapshot: l.promptLayer.content,
-      layerHash: l.promptLayer.contentHash ?? sha256(l.promptLayer.content),
-    }));
+  const included: AssembledLayer[] = [];
+  const skipped: SkippedLayer[] = [];
+  for (const l of links) {
+    const layerHash = l.promptLayer.contentHash ?? sha256(l.promptLayer.content);
+    if (l.promptLayer.status === "ACTIVE") {
+      included.push({
+        promptLayerId: l.promptLayer.id,
+        layerType: l.promptLayer.layerType,
+        priority: l.priority,
+        inclusionReason: reason,
+        contentSnapshot: l.promptLayer.content,
+        layerHash,
+      });
+    } else {
+      // Enabled link, but the layer is no longer ACTIVE — do NOT drop silently.
+      skipped.push({
+        promptLayerId: l.promptLayer.id,
+        layerType: l.promptLayer.layerType,
+        priority: l.priority,
+        status: l.promptLayer.status,
+        inclusionReason: `${reason}: excluded — layer status is ${l.promptLayer.status}, not ACTIVE`,
+        layerHash,
+      });
+    }
+  }
+  return { included, skipped };
 }
 
 async function resolveAllowedToolsSection(ctx: {
