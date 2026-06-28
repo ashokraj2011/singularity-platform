@@ -12,6 +12,10 @@ const schema = z.object({
   MCP_RUNNER_DEFAULT_IMAGE: z.string().default("node:20-alpine"),
   MCP_RUNNER_IMAGE_MAP_JSON: z.string().optional(),
   MCP_RUNNER_NETWORK_MODE: z.string().default("none"),
+  // SECURITY: per-request `network:"bridge"` is honored ONLY when this policy
+  // opt-in is truthy; otherwise a per-request widen falls back to the global
+  // MCP_RUNNER_NETWORK_MODE so an upstream caller can't enable egress per-run.
+  MCP_RUNNER_ALLOW_REQUEST_NETWORK: z.string().default(""),
   MCP_RUNNER_CPU_LIMIT: z.string().default("1"),
   MCP_RUNNER_MEMORY_LIMIT: z.string().default("1g"),
   MCP_RUNNER_PIDS_LIMIT: z.coerce.number().int().positive().default(256),
@@ -59,4 +63,5 @@ if (parsed.data.MCP_RUNNER_TOKEN === KNOWN_DEFAULT_RUNNER_TOKEN) {
 export const runnerConfig = {
   ...parsed.data,
   MCP_RUNNER_HOST_WORKSPACE_PATH: hostWorkspacePath,
+  MCP_RUNNER_ALLOW_REQUEST_NETWORK: ["1", "true", "yes"].includes(parsed.data.MCP_RUNNER_ALLOW_REQUEST_NETWORK.trim().toLowerCase()),
 };

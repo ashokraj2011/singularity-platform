@@ -112,6 +112,21 @@ function envFlags(env?: Record<string, string>): string[] {
   return flags;
 }
 
+// SECURITY: a per-request network may NARROW ("none") freely, but WIDENING to
+// "bridge" requires the server-side policy opt-in (MCP_RUNNER_ALLOW_REQUEST_NETWORK)
+// — otherwise an upstream model/user/compromised caller could enable container
+// egress per-request. Falls back to the global mode when the widen isn't allowed.
+function resolveNetwork(requested?: "none" | "bridge"): string {
+  if (requested === "none") return "none";
+  if (requested === "bridge" && !runnerConfig.MCP_RUNNER_ALLOW_REQUEST_NETWORK) {
+    console.warn("[mcp-sandbox-runner] ignoring per-request network=bridge (MCP_RUNNER_ALLOW_REQUEST_NETWORK not set); using global mode");
+    return runnerConfig.MCP_RUNNER_NETWORK_MODE;
+  }
+  const net = requested ?? runnerConfig.MCP_RUNNER_NETWORK_MODE;
+  if (net !== "none") console.info(`[mcp-sandbox-runner] container network=${net} (egress enabled)`);
+  return net;
+}
+
 function dockerRunArgs(req: ExecuteRequest, receiptId: string, containerName: string): string[] {
   validateRunnerCommand(req.command);
   const relCwd = safeRelativeCwd(req.cwd);
@@ -121,9 +136,9 @@ function dockerRunArgs(req: ExecuteRequest, receiptId: string, containerName: st
     "run",
     "--rm",
     "--name", containerName,
-    // Per-request network override (run_python opt-in); falls back to the
-    // global default so all other callers keep the locked-down posture.
-    "--network", req.network ?? runnerConfig.MCP_RUNNER_NETWORK_MODE,
+    // Per-request network is policy-gated (see resolveNetwork): "none" narrows
+    // freely; "bridge" needs MCP_RUNNER_ALLOW_REQUEST_NETWORK, else global mode.
+    "--network", resolveNetwork(req.network),
     "--read-only",
     "--cap-drop", "ALL",
     "--security-opt", "no-new-privileges",

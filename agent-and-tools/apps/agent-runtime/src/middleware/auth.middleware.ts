@@ -55,16 +55,29 @@ async function verifyWithIam(token: string): Promise<AuthUser | null> {
   }
 }
 
+// SECURITY: device/runtime tokens are valid ONLY on the runtime bridge / device
+// surfaces — never as a user identity on this REST API. is_super_admin is honored
+// ONLY from real user tokens; service tokens are authorized by scope, not by an
+// admin flag (prevents confused-deputy escalation via shared-secret JWTs).
+function principalFromDecoded(decoded: AuthUser & { sub?: string; kind?: string }): AuthUser | null {
+  const kind = typeof decoded.kind === "string" ? decoded.kind.toLowerCase() : "user";
+  if (kind === "device" || kind === "runtime") return null;
+  const isUser = kind === "user";
+  return {
+    ...decoded,
+    user_id: decoded.user_id ?? decoded.sub ?? "",
+    is_super_admin: isUser ? decoded.is_super_admin === true : false,
+    is_platform_admin: isUser ? decoded.is_platform_admin === true : false,
+  };
+}
+
 export async function optionalAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
   if (header?.startsWith("Bearer ")) {
     const token = header.slice(7);
     try {
-      const decoded = jwt.verify(token, env.JWT_SECRET) as AuthUser & { sub?: string };
-      req.user = {
-        ...decoded,
-        user_id: decoded.user_id ?? decoded.sub ?? "",
-      };
+      const decoded = jwt.verify(token, env.JWT_SECRET) as AuthUser & { sub?: string; kind?: string };
+      req.user = principalFromDecoded(decoded) ?? undefined;
     } catch {
       req.user = await verifyWithIam(token) ?? undefined;
     }
