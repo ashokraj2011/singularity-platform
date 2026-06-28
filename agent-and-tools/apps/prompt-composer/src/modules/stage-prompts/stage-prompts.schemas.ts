@@ -35,6 +35,11 @@ export const resolveStageSchema = z.object({
   // (stageKey, agentRole, NULL) binding if no phase-specific row exists.
   phase:     z.enum(PROMPT_PHASES).optional(),
   promptProfileKey: z.string().min(1).optional(),
+  // #25 — capability scope. When set, the resolver appends the capability's
+  // promoted long-term memory to extraContext so the governed turn is grounded
+  // in prior distilled lessons (read-only; the promotion WRITE lifecycle —
+  // CANDIDATE→APPROVED→PROMOTED — is a separate, deferred feature).
+  capabilityId: z.string().min(1).optional(),
   // Free-form context for Mustache substitution. Values are coerced to
   // strings before injection; objects/arrays are JSON-stringified.
   vars:      z.record(z.unknown()).optional(),
