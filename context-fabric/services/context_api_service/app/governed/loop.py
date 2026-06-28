@@ -178,6 +178,12 @@ class GovernedStepResult:
     # so it surfaces to the human-confirmation gate instead of forcing
     # fabricated ACT work. None on normal turns.
     not_actionable: dict[str, Any] | None = None
+    # [#20] Set when the LLM requested a tool whose governance toolPolicy marks
+    # it approvalRequired and there is no active waiver for it. Carries
+    # {tool_name, control_key}. stage_driver halts the stage GOVERNANCE_BLOCKED so
+    # the governing body can grant the waiver; the resumed run then dispatches the
+    # tool. None on normal turns.
+    tool_approval_required: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -190,6 +196,7 @@ class GovernedStepResult:
             "validation_error": self.validation_error,
             "synthetic_verifier": self.synthetic_verifier,
             "not_actionable": self.not_actionable,
+            "tool_approval_required": self.tool_approval_required,
         }
 
 
@@ -408,6 +415,11 @@ async def governed_step(
     bearer: str | None = None,
     policy: StagePolicy | None = None,
     blocked_tools: set[str] | None = None,
+    # [#20] Tools whose governance toolPolicy marks them approvalRequired AND for
+    # which no active waiver exists. Requesting one halts the stage for approval
+    # (a waiver grant) rather than dispatching. Already-waived tools are filtered
+    # out by the caller, so anything in this set genuinely needs approval.
+    approval_required_tools: set[str] | None = None,
 ) -> GovernedStepResult:
     """Run one governed turn.
 
@@ -524,6 +536,42 @@ async def governed_step(
                 policy=policy,
                 run_context=run_context,
                 payload={"tool_name": tool_name, "reason": "governance_blocked", "allowed_tools": []},
+                severity="warn",
+            )
+            continue
+
+        # [#20] approvalRequired enforcement — same hard-refuse choke point as
+        # `blocked`, but instead of a permanent refusal it signals the stage to
+        # HALT for a governance waiver. Anything still in approval_required_tools
+        # has no active waiver (the caller already filtered waived tools out), so
+        # the governing body grants a waiver for the control key below and the
+        # resumed run dispatches the tool.
+        if approval_required_tools and tool_name in approval_required_tools:
+            control_key = f"TOOL_APPROVAL:{tool_name}"
+            log.info(
+                "tool requires approval (no active waiver) tool=%s phase=%s",
+                tool_name, state.current_phase.value,
+            )
+            result.tool_outcomes.append(
+                ToolCallOutcome(
+                    tool_name=tool_name,
+                    phase=state.current_phase.value,
+                    allowed=False,
+                    args=args,
+                    refusal_reason=(
+                        f"tool '{tool_name}' requires governance approval; grant a waiver "
+                        f"for control '{control_key}' to proceed"
+                    ),
+                    submission_index=sub_idx,
+                )
+            )
+            result.tool_approval_required = {"tool_name": tool_name, "control_key": control_key}
+            await emit_governed_event(
+                kind="governed.tool_approval_required",
+                state=state,
+                policy=policy,
+                run_context=run_context,
+                payload={"tool_name": tool_name, "control_key": control_key, "reason": "approval_required_no_waiver"},
                 severity="warn",
             )
             continue

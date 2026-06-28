@@ -71,6 +71,15 @@ _CAPTURE_FULL_PROMPT = os.environ.get("CF_CAPTURE_FULL_PROMPT", "true").lower() 
 # CF_PROMPT_CAPTURE_MAX_CHARS.
 _PROMPT_CAPTURE_MAX_CHARS = int(os.environ.get("CF_PROMPT_CAPTURE_MAX_CHARS", "200000"))
 
+# [#20] Enforce governance toolPolicy.approvalRequired. Default OFF → legacy
+# advisory behavior (zero risk). When ON, a tool marked approvalRequired with no
+# active governance waiver (control key TOOL_APPROVAL:<tool>) halts the stage
+# GOVERNANCE_BLOCKED so the governing body can grant a waiver; the resumed run
+# then dispatches the tool. See loop.governed_step + stage_driver.
+_ENFORCE_TOOL_APPROVAL = os.environ.get("CF_ENFORCE_TOOL_APPROVAL", "").lower() in (
+    "1", "true", "yes", "on",
+)
+
 # (pattern, replacement) secret masks. Conservative — target high-signal token
 # shapes, NOT broad base64 (which would clobber legitimate code in slices).
 _SECRET_MASKS = [
@@ -619,6 +628,30 @@ def _summarize_governance_overlay(overlay: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _unwaived_approval_tools(
+    overlay: dict[str, Any] | None,
+    waivers: list[str] | None,
+    *,
+    enabled: bool,
+) -> set[str]:
+    """[#20] Tools from governance toolPolicy.approvalRequired that still need
+    approval — i.e. have no active TOOL_APPROVAL:<tool> waiver. Returns empty when
+    enforcement is off or the overlay carries no approvalRequired list, so the
+    default is the legacy advisory behavior."""
+    if not enabled or not isinstance(overlay, dict):
+        return set()
+    tp = overlay.get("toolPolicy")
+    if not isinstance(tp, dict):
+        return set()
+    waived = {str(w) for w in (waivers or [])}
+    out: set[str] = set()
+    for t in (tp.get("approvalRequired") or []):
+        name = str(t)
+        if name and f"TOOL_APPROVAL:{name}" not in waived:
+            out.add(name)
+    return out
+
+
 def _estimate_input_tokens(
     messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None
 ) -> dict[str, int]:
@@ -694,6 +727,9 @@ async def run_turn(
     # threaded by the caller). When present, its advisory guidance is rendered
     # into `{{governance_facts}}`. None preserves legacy behavior exactly.
     governance_overlay: dict[str, Any] | None = None,
+    # [#20] Active governance waiver control keys for this run. A tool marked
+    # approvalRequired is allowed to dispatch when TOOL_APPROVAL:<tool> is waived.
+    governance_waivers: list[str] | None = None,
 ) -> TurnResult:
     """Run one LLM turn end-to-end:
 
@@ -970,14 +1006,19 @@ async def run_turn(
     # G4 governance overlay — tools the governing entity blocks (or requires
     # approval for) are enforced, not just rendered as advisory text: excluded
     # from the LLM's tool list here and hard-refused at dispatch (governed_step).
-    # Enforce the unambiguous `blocked` list (hard refuse). `approvalRequired`
-    # stays advisory for now — a per-tool approval gate in the governed loop is a
-    # separate feature; blocking those outright would break the intended
-    # run-after-approval flow.
+    # Enforce the unambiguous `blocked` list (hard refuse, excluded from the LLM's
+    # tool list below). `approvalRequired` is gated separately at dispatch (#20):
+    # those tools STAY offered to the LLM so the run-after-approval flow works —
+    # requesting one with no active waiver halts the stage for a waiver grant.
     _gov_tp = (governance_overlay or {}).get("toolPolicy") if isinstance(governance_overlay, dict) else None
     _blocked_tools: set[str] = set()
     if isinstance(_gov_tp, dict):
         _blocked_tools.update(str(t) for t in (_gov_tp.get("blocked") or []) if t)
+    # [#20] approvalRequired → require a TOOL_APPROVAL:<tool> waiver. Flag-gated;
+    # default off keeps the legacy advisory behavior.
+    _approval_required_tools = _unwaived_approval_tools(
+        governance_overlay, governance_waivers, enabled=_ENFORCE_TOOL_APPROVAL,
+    )
     effective_capabilities = effective_capabilities_from_context(run_context)
     if effective_capabilities_required_but_empty(run_context):
         await emit_governed_event(
@@ -1296,6 +1337,7 @@ async def run_turn(
         bearer=bearer,
         policy=policy,
         blocked_tools=_blocked_tools or None,
+        approval_required_tools=_approval_required_tools or None,
     )
 
     return TurnResult(

@@ -1939,6 +1939,7 @@ async def run_stage(
                     exec_policy=exec_policy,
                     code_context_cache=code_context_cache,
                     governance_overlay=governance_overlay,
+                    governance_waivers=governance_waivers,
                 )
                 last_llm_error = None
                 break
@@ -2069,6 +2070,21 @@ async def run_stage(
         if turn.step.not_actionable:
             result.not_actionable = turn.step.not_actionable
             result.stop_reason = "NOT_ACTIONABLE"
+            return result
+
+        # [#20] approvalRequired tool requested with no active waiver — halt the
+        # stage GOVERNANCE_BLOCKED so the governing body can grant a
+        # TOOL_APPROVAL:<tool> waiver. On re-attempt the waiver is active, the gate
+        # lets the tool through, and the run proceeds (run-after-approval flow).
+        if turn.step.tool_approval_required:
+            _tar = turn.step.tool_approval_required
+            result.governance_block = {
+                "reason": "tool_approval_required",
+                "tool_name": _tar.get("tool_name"),
+                "controls": [_tar.get("control_key")],
+                "allowedActions": ["request_waiver"],
+            }
+            result.stop_reason = "GOVERNANCE_BLOCKED"
             return result
 
         # Capability Governance Model (G4) — enforcement gate. At the moment the
