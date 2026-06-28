@@ -267,21 +267,24 @@ export async function seedDemoWorkflows(prisma: AnyPrisma) {
     const phaseId = '31000000-0000-0000-0000-000000000010'
     const nStart = '32000000-0000-0000-0000-000000000010'
     const nWb = '32000000-0000-0000-0000-000000000011'
+    const nGate = '32000000-0000-0000-0000-000000000013'
     const nEnd = '32000000-0000-0000-0000-000000000012'
     const wbConfig = workbenchConfig('Implement a capability end-to-end through the SDLC loop.', SDLC_LOOP)
     await upsertWorkflowShell(prisma, {
       id: wfId, name: 'SDLC — Capability Implementation (Workbench)',
       description: 'Staged agent SDLC loop: intake → design → develop → qa, with operator gates and artifacts.',
       profile: 'workbench', workflowTypeKey: 'SDLC',
-      graphSnapshot: { nodes: [{ id: nStart, type: 'START' }, { id: nWb, type: 'WORKBENCH_TASK' }, { id: nEnd, type: 'END' }], edges: [{ from: nStart, to: nWb }, { from: nWb, to: nEnd }] },
+      graphSnapshot: { nodes: [{ id: nStart, type: 'START' }, { id: nWb, type: 'WORKBENCH_TASK' }, { id: nGate, type: 'GOVERNANCE_GATE' }, { id: nEnd, type: 'END' }], edges: [{ from: nStart, to: nWb }, { from: nWb, to: nGate }, { from: nGate, to: nEnd }] },
       phaseId, phaseName: 'Workbench',
     })
     await upsertNode(prisma, { id: nStart, workflowId: wfId, phaseId, nodeType: 'START', label: 'Start', positionX: 80, positionY: 160 })
     await upsertNode(prisma, { id: nWb, workflowId: wfId, phaseId, nodeType: 'WORKBENCH_TASK', label: 'SDLC Workbench', config: wbConfig, positionX: 320, positionY: 160 })
-    await upsertNode(prisma, { id: nEnd, workflowId: wfId, phaseId, nodeType: 'END', label: 'End', positionX: 600, positionY: 160 })
+    await upsertNode(prisma, { id: nGate, workflowId: wfId, phaseId, nodeType: 'GOVERNANCE_GATE', label: 'Governance Gate', config: { mode: 'HARD_BLOCK', governingCapabilityId: '', standard: { mode: 'HARD_BLOCK', governingCapabilityId: '' } }, positionX: 460, positionY: 160 })
+    await upsertNode(prisma, { id: nEnd, workflowId: wfId, phaseId, nodeType: 'END', label: 'End', positionX: 620, positionY: 160 })
     await promoteWorkbenchToTables(prisma, nWb, wbConfig)
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000010', workflowId: wfId, sourceNodeId: nStart, targetNodeId: nWb })
-    await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000011', workflowId: wfId, sourceNodeId: nWb, targetNodeId: nEnd })
+    await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000011', workflowId: wfId, sourceNodeId: nWb, targetNodeId: nGate })
+    await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000012', workflowId: wfId, sourceNodeId: nGate, targetNodeId: nEnd })
   }
 
   // 3. Bug-fix workbench workflow (profile=workbench, type=BUGFIX).
@@ -290,21 +293,24 @@ export async function seedDemoWorkflows(prisma: AnyPrisma) {
     const phaseId = '31000000-0000-0000-0000-000000000011'
     const nStart = '32000000-0000-0000-0000-000000000020'
     const nWb = '32000000-0000-0000-0000-000000000021'
+    const nGate = '32000000-0000-0000-0000-000000000023'
     const nEnd = '32000000-0000-0000-0000-000000000022'
     const wbConfig = workbenchConfig('Reproduce, fix, and verify a reported defect.', BUGFIX_LOOP)
     await upsertWorkflowShell(prisma, {
       id: wfId, name: 'Bug Fix (Workbench)',
       description: 'Leaner staged loop for defects: repro → fix → verify.',
       profile: 'workbench', workflowTypeKey: 'BUGFIX',
-      graphSnapshot: { nodes: [{ id: nStart, type: 'START' }, { id: nWb, type: 'WORKBENCH_TASK' }, { id: nEnd, type: 'END' }], edges: [{ from: nStart, to: nWb }, { from: nWb, to: nEnd }] },
+      graphSnapshot: { nodes: [{ id: nStart, type: 'START' }, { id: nWb, type: 'WORKBENCH_TASK' }, { id: nGate, type: 'GOVERNANCE_GATE' }, { id: nEnd, type: 'END' }], edges: [{ from: nStart, to: nWb }, { from: nWb, to: nGate }, { from: nGate, to: nEnd }] },
       phaseId, phaseName: 'Workbench',
     })
     await upsertNode(prisma, { id: nStart, workflowId: wfId, phaseId, nodeType: 'START', label: 'Start', positionX: 80, positionY: 160 })
     await upsertNode(prisma, { id: nWb, workflowId: wfId, phaseId, nodeType: 'WORKBENCH_TASK', label: 'Bug-fix Workbench', config: wbConfig, positionX: 320, positionY: 160 })
-    await upsertNode(prisma, { id: nEnd, workflowId: wfId, phaseId, nodeType: 'END', label: 'End', positionX: 600, positionY: 160 })
+    await upsertNode(prisma, { id: nGate, workflowId: wfId, phaseId, nodeType: 'GOVERNANCE_GATE', label: 'Governance Gate', config: { mode: 'HARD_BLOCK', governingCapabilityId: '', standard: { mode: 'HARD_BLOCK', governingCapabilityId: '' } }, positionX: 460, positionY: 160 })
+    await upsertNode(prisma, { id: nEnd, workflowId: wfId, phaseId, nodeType: 'END', label: 'End', positionX: 620, positionY: 160 })
     await promoteWorkbenchToTables(prisma, nWb, wbConfig)
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000020', workflowId: wfId, sourceNodeId: nStart, targetNodeId: nWb })
-    await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000021', workflowId: wfId, sourceNodeId: nWb, targetNodeId: nEnd })
+    await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000021', workflowId: wfId, sourceNodeId: nWb, targetNodeId: nGate })
+    await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000024', workflowId: wfId, sourceNodeId: nGate, targetNodeId: nEnd })
   }
 
   // 4. Sample plain workflows (profile=main) — node-type variety.

@@ -111,10 +111,16 @@ VALUES
    'HUMAN_TASK', 'Human Review',
    '{"description":"Review the inputs and mark this complete to advance.","assignmentMode":"TEAM_QUEUE","teamId":"e5baadba-d9a0-4b4f-8cca-dbff34f72d76","widgets":[]}'::jsonb,
    'CLIENT', 400, 200, now(), now()),
+  ('41000000-0000-0000-0000-000000000004',
+   '30000000-0000-0000-0000-000000000001',
+   '40000000-0000-0000-0000-000000000001',
+   'GOVERNANCE_GATE', 'Governance Gate',
+   '{"mode":"HARD_BLOCK","governingCapabilityId":"","standard":{"mode":"HARD_BLOCK","governingCapabilityId":""}}'::jsonb,
+   'SERVER', 550, 200, now(), now()),
   ('41000000-0000-0000-0000-000000000003',
    '30000000-0000-0000-0000-000000000001',
    '40000000-0000-0000-0000-000000000001',
-   'END', 'End', '{}'::jsonb, 'SERVER', 700, 200, now(), now())
+   'END', 'End', '{}'::jsonb, 'SERVER', 850, 200, now(), now())
 ON CONFLICT (id) DO UPDATE SET label = EXCLUDED.label, config = EXCLUDED.config, "updatedAt" = now();
 
 -- ── Design edges ──────────────────────────────────────────────────────────
@@ -129,6 +135,11 @@ VALUES
   ('42000000-0000-0000-0000-000000000002',
    '30000000-0000-0000-0000-000000000001',
    '41000000-0000-0000-0000-000000000002',
+   '41000000-0000-0000-0000-000000000004',
+   'SEQUENTIAL', now()),
+  ('42000000-0000-0000-0000-000000000003',
+   '30000000-0000-0000-0000-000000000001',
+   '41000000-0000-0000-0000-000000000004',
    '41000000-0000-0000-0000-000000000003',
    'SEQUENTIAL', now())
 ON CONFLICT (id) DO NOTHING;
