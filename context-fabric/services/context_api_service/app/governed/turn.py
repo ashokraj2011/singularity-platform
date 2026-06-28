@@ -579,6 +579,41 @@ def _render_governance_facts(overlay: dict[str, Any]) -> str:
     return "## Governance for this stage\n" + "\n".join(lines)
 
 
+def _estimate_input_tokens(
+    messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None
+) -> dict[str, int]:
+    """Heuristic pre-flight estimate of the assembled input size.
+
+    Uses the same chars//4 heuristic llm_client applies to its mock usage
+    counts — not exact, but enough to catch a budget blowout (a giant
+    repo-context prompt, runaway history) BEFORE we pay for the gateway round
+    trip. Counts message content + tool_calls payloads + the tool schema list,
+    since all three go on the wire.
+    """
+
+    def _chars(obj: Any) -> int:
+        if obj is None:
+            return 0
+        if isinstance(obj, str):
+            return len(obj)
+        try:
+            return len(json.dumps(obj, ensure_ascii=False))
+        except (TypeError, ValueError):
+            return len(str(obj))
+
+    msg_chars = 0
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        msg_chars += _chars(m.get("content")) + _chars(m.get("tool_calls"))
+    tool_chars = _chars(tools) if tools else 0
+    return {
+        "messages": msg_chars // 4,
+        "tools": tool_chars // 4,
+        "total": (msg_chars + tool_chars) // 4,
+    }
+
+
 async def run_turn(
     *,
     state: PhaseState,
@@ -917,6 +952,34 @@ async def run_turn(
         effective_capabilities_required(run_context),
     )
 
+    # M100 — resolve the effective model alias for THIS phase (a per-phase
+    # override wins over the stage-level alias, then the gateway default).
+    # Resolved here, ahead of the call, so the token pre-flight can fall back to
+    # the model's context window when no explicit phase cap is set.
+    effective_model_alias = (
+        (phase_model_aliases or {}).get(state.current_phase.value) or model_alias
+    )
+
+    # Token-budget pre-flight (P1) — estimate the assembled input size and check
+    # it against a cap before paying for the gateway round trip. Cap = THIS
+    # phase's max_input_tokens when governance sets one, else the model's context
+    # window (so the check still fires in the common case where no explicit input
+    # budget is configured). We record the estimate on every request (cost
+    # accounting) and warn below when it blows the cap.
+    _token_estimate = _estimate_input_tokens(messages, tools)
+    _phase_pol = (
+        policy.phases.get(state.current_phase)
+        if policy is not None and isinstance(getattr(policy, "phases", None), dict)
+        else None
+    )
+    _input_token_cap = getattr(_phase_pol, "max_input_tokens", None) if _phase_pol else None
+    _cap_source = "phase_max_input_tokens" if _input_token_cap else None
+    if not _input_token_cap:
+        # Best-effort; context_window_for returns None on a cold cache miss.
+        _input_token_cap = await context_window_for(effective_model_alias)
+        if _input_token_cap:
+            _cap_source = "model_context_window"
+
     # Audit the LLM call now — useful for cost accounting even when the
     # call fails. The completion event lands after the response below.
     request_payload: dict[str, Any] = {
@@ -924,6 +987,9 @@ async def run_turn(
         "prompt_profile_id": prompt.prompt_profile_id,
         "tool_count": len(tools),
         "history_messages": len(history),
+        "estimated_input_tokens": _token_estimate["total"],
+        "input_token_cap": _input_token_cap,
+        "input_token_cap_source": _cap_source,
     }
     if _CAPTURE_FULL_PROMPT:
         # Composed prompt for the Workbench "Full prompt sent" panel — CAPPED +
@@ -945,14 +1011,31 @@ async def run_turn(
         payload=request_payload,
     )
 
-    # 4. LLM call.
-    # M100 — resolve the effective model alias for THIS phase. A per-phase
-    # override (e.g. a cheaper model for EXPLORE, a stronger one for ACT)
-    # wins over the stage-level alias; an unset/unknown phase falls back to
-    # `model_alias`, then to the gateway default.
-    effective_model_alias = (
-        (phase_model_aliases or {}).get(state.current_phase.value) or model_alias
-    )
+    if _input_token_cap and _token_estimate["total"] > _input_token_cap:
+        # Pre-flight tripped: the assembled input is over this phase's cap. Surface
+        # it before the call so the budget machinery / operators see it (the
+        # workgraph budgetPolicy owns the hard PAUSE_FOR_APPROVAL response).
+        await emit_governed_event(
+            kind="governed.token_budget_exceeded",
+            state=state,
+            policy=policy,
+            run_context=run_context,
+            payload={
+                "phase": state.current_phase.value,
+                "estimated_input_tokens": _token_estimate["total"],
+                "input_token_cap": _input_token_cap,
+                "input_token_cap_source": _cap_source,
+                "overage_tokens": _token_estimate["total"] - _input_token_cap,
+                "breakdown": {
+                    "messages": _token_estimate["messages"],
+                    "tools": _token_estimate["tools"],
+                    "history_messages": len(history),
+                },
+            },
+            severity="warn",
+        )
+
+    # 4. LLM call. (effective_model_alias was resolved above for the pre-flight.)
     response: ChatResponse = await call_gateway_chat(
         messages=messages,
         tools=tools,
