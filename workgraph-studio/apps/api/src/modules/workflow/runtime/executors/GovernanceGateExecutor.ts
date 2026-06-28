@@ -5,6 +5,7 @@ import { resolveGovernance, type GovernanceResolveContext } from '../../../../li
 import { activeWaiverControlKeys } from '../../../governance/governance.router'
 import { evaluateGovernanceBlock, decideGateStatus, type GovernanceBlock, type GovernanceOverlay } from './governance/evaluateBlock'
 import { resolveSatisfiedControls, makeEvidenceChecker, bindingsFromOverlay, type BindingMap, type ControlBinding } from './governance/resolveSatisfiedControls'
+import { materializeRunEvidence } from './governance/materializeEvidencePack'
 
 /**
  * GOVERNANCE_GATE executor (Capability Governance Gate, v1).
@@ -326,6 +327,18 @@ export async function activateGovernanceGate(
     governedCapabilityId: capabilityId,
     overlay,
   })
+
+  // Optional: mirror the run's evidence (DB source-of-truth) to the work-item git
+  // branch before evaluating, so the EVIDENCE_PACK_* controls verify a freshly
+  // materialized pack. This is the "at-gate" materialization option (per-stage,
+  // while each sandbox is live, is the richer alternative). Opt-in per node.
+  if (cfgBool(node, 'materializeEvidence', false)) {
+    const manifest = await materializeRunEvidence(instance).catch(() => null)
+    if (manifest) {
+      context._evidenceManifest = manifest
+      ;(instance as { context: unknown }).context = context
+    }
+  }
 
   // v1 base (context-stamped) ∪ v2 evidence-bound controls (receipts/evaluators/formal/artifacts).
   const base = collectSatisfied(context, node)

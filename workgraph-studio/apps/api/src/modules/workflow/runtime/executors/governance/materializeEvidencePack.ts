@@ -1,4 +1,6 @@
+import { Prisma, type WorkflowInstance } from '@prisma/client'
 import { config } from '../../../../../config'
+import { prisma } from '../../../../../lib/prisma'
 import { computeSha256, buildEvidenceManifest, type EvidenceItem, type EvidenceManifest } from './evidencePack'
 
 /**
@@ -53,5 +55,54 @@ export async function materializeEvidencePack(workItemCode: string, items: RawEv
   }
   const manifest = buildEvidenceManifest(manifestItems)
   await mcpPutFile(workItemCode, `${baseDir}/manifest.json`, JSON.stringify(manifest, null, 2), 'governance: evidence manifest')
+  return manifest
+}
+
+function isRec(v: unknown): v is Record<string, unknown> {
+  return Boolean(v && typeof v === 'object' && !Array.isArray(v))
+}
+
+function slug(s: string): string {
+  return s.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80) || 'item'
+}
+
+/**
+ * Gather the run's APPROVED/PUBLISHED consumables (the DB source-of-truth) and
+ * mirror them into the work-item git branch as an evidence pack, stamping the
+ * manifest into the instance context (`_evidenceManifest`) for the EVIDENCE_PACK_*
+ * controls. Returns the manifest, or null when there's no work-item branch or no
+ * evidence. Cross-service I/O (mcp worktree) — runtime-verified on a stack.
+ */
+export async function materializeRunEvidence(instance: WorkflowInstance): Promise<EvidenceManifest | null> {
+  const ctx = isRec(instance.context) ? instance.context : {}
+  const workItemCode =
+    typeof ctx.workItemCode === 'string' ? ctx.workItemCode
+    : typeof ctx.work_item_code === 'string' ? ctx.work_item_code
+    : typeof ctx.workItemId === 'string' ? ctx.workItemId
+    : undefined
+  if (!workItemCode) return null
+
+  const consumables = await prisma.consumable
+    .findMany({
+      where: { instanceId: instance.id, status: { in: ['APPROVED', 'PUBLISHED'] } },
+      include: { versions: { orderBy: { version: 'desc' }, take: 1 } },
+    })
+    .catch(() => [] as Array<{ id: string; name: string; versions: Array<{ payload: unknown }> }>)
+
+  const items: RawEvidence[] = []
+  for (const c of consumables) {
+    const payload = c.versions[0]?.payload
+    if (payload === undefined) continue
+    items.push({ key: c.name, relPath: `artifacts/${slug(c.name)}.json`, content: JSON.stringify(payload, null, 2), dbId: c.id })
+  }
+  if (items.length === 0) return null
+
+  const manifest = await materializeEvidencePack(workItemCode, items)
+  await prisma.workflowInstance
+    .update({
+      where: { id: instance.id },
+      data: { context: { ...ctx, _evidenceManifest: manifest } as unknown as Prisma.InputJsonValue },
+    })
+    .catch(() => undefined)
   return manifest
 }
