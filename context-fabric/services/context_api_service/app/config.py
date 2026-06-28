@@ -74,6 +74,11 @@ class Settings(BaseSettings):
     tool_service_url: str = "http://localhost:3002"
     call_log_db: str = "./data/call_log.db"
     require_tenant_id: bool = False
+    # SECURITY (review finding 7): deliberate escape hatch to skip /execute
+    # service-token enforcement for purely-local single-tenant demos. Off by
+    # default and only RELAXES non-production envs — a production-class env
+    # always enforces regardless of this flag (see check_execute_service_token).
+    allow_unauthenticated_dev_execute: bool = False
 
     # MCP execution runtime. Capabilities still scope prompts, memory, and
     # governance; the MCP server itself can be a local/default workspace

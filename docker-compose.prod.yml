@@ -1,0 +1,123 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# docker-compose.prod.yml — production hardening overlay (review finding 6)
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# The base docker-compose.yml is dev-friendly: every secret has a `${VAR:-default}`
+# fallback and the env defaults to `development`. That is correct for a laptop but
+# unsafe on a shared host. This overlay changes two things the base file deliberately
+# does not:
+#
+#   1. Marks every service production-class (SINGULARITY_ENV / APP_ENV / ENVIRONMENT
+#      = production). That flips the in-code fail-closed guards
+#      (assertProductionSecret / is_production_class_env / REQUIRE_TENANT_ID) ON, so
+#      services REFUSE to boot with a known dev-default secret.
+#
+#   2. Requires the critical auth secrets to be supplied externally. The `${VAR:?msg}`
+#      form makes `docker compose ... up` abort immediately, with the message, if a
+#      variable is unset or empty — instead of silently falling back to a dev default.
+#
+# Supply secrets via a root `.env` file (chmod 600, gitignored) or your secrets
+# manager. Generate strong random values, e.g.:
+#
+#       JWT_SECRET=$(openssl rand -hex 32)
+#       MCP_BEARER_TOKEN=$(openssl rand -hex 24)
+#       CONTEXT_FABRIC_SERVICE_TOKEN=$(openssl rand -hex 24)
+#       ...
+#
+# NOTE — datastore credentials (POSTGRES_PASSWORD on iam-/at-/wg-postgres,
+# MINIO_ROOT_PASSWORD on wg-minio) are intentionally NOT forced here: changing them
+# server-side without matching every client DATABASE_URL / S3 credential would break
+# connectivity. Set strong values for those AND the matching client connection
+# strings together (see bin/bare-metal.sh / your secrets manager) as a separate step.
+#
+# NOTE — also restrict published ports: in production, bind non-UI service ports to
+# 127.0.0.1 (or drop the host `ports:` mapping entirely and reach services over the
+# compose network) so only the web origin is exposed. That is environment-specific
+# and left to the deployment's port policy.
+# ─────────────────────────────────────────────────────────────────────────────
+
+x-prod-env: &prod-env
+  SINGULARITY_ENV: production
+  APP_ENV: production
+  ENVIRONMENT: production
+  NODE_ENV: production
+
+services:
+  iam-service:
+    environment:
+      <<: *prod-env
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET to a strong 32+ char random value}
+      LOCAL_SUPER_ADMIN_PASSWORD: ${LOCAL_SUPER_ADMIN_PASSWORD:?set a strong LOCAL_SUPER_ADMIN_PASSWORD}
+      IAM_BOOTSTRAP_PASSWORD: ${IAM_BOOTSTRAP_PASSWORD:-${LOCAL_SUPER_ADMIN_PASSWORD}}
+
+  # platform-core bundles agent-service (agents+tools), agent-runtime and
+  # prompt-composer in the default/core profile.
+  platform-core:
+    environment:
+      <<: *prod-env
+      AUTH_OPTIONAL: "false"
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:?set CONTEXT_FABRIC_SERVICE_TOKEN}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:?set AUDIT_GOV_SERVICE_TOKEN}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?set MCP_BEARER_TOKEN (16+ chars)}
+      TOOL_GRANT_SIGNING_SECRET: ${TOOL_GRANT_SIGNING_SECRET:?set TOOL_GRANT_SIGNING_SECRET}
+
+  # backend-split profile: agent-service / agent-runtime / prompt-composer run
+  # as their own containers. Same secrets as the bundle so either profile is safe.
+  agent-service:
+    environment:
+      <<: *prod-env
+      AUTH_OPTIONAL: "false"
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      CONTEXT_FABRIC_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:?set CONTEXT_FABRIC_SERVICE_TOKEN}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:?set AUDIT_GOV_SERVICE_TOKEN}
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?set MCP_BEARER_TOKEN (16+ chars)}
+      TOOL_GRANT_SIGNING_SECRET: ${TOOL_GRANT_SIGNING_SECRET:?set TOOL_GRANT_SIGNING_SECRET}
+
+  agent-runtime:
+    environment:
+      <<: *prod-env
+      AUTH_OPTIONAL: "false"
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+
+  prompt-composer:
+    environment:
+      <<: *prod-env
+      AUTH_OPTIONAL: "false"
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      PROMPT_COMPOSER_SERVICE_TOKEN: ${PROMPT_COMPOSER_SERVICE_TOKEN:?set PROMPT_COMPOSER_SERVICE_TOKEN}
+
+  context-api:
+    environment:
+      <<: *prod-env
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      # context-fabric reads its inbound service token as IAM_SERVICE_TOKEN.
+      IAM_SERVICE_TOKEN: ${CONTEXT_FABRIC_SERVICE_TOKEN:?set CONTEXT_FABRIC_SERVICE_TOKEN}
+      # Fail closed on missing tenant scope (also forces /execute auth — finding 7).
+      REQUIRE_TENANT_ID: "true"
+
+  workgraph-api:
+    environment:
+      <<: *prod-env
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      WORKGRAPH_INCOMING_EVENT_SECRETS: ${WORKGRAPH_INCOMING_EVENT_SECRETS:?set WORKGRAPH_INCOMING_EVENT_SECRETS}
+      WORKGRAPH_INTERNAL_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:?set WORKGRAPH_INTERNAL_TOKEN}
+
+  mcp-server:
+    environment:
+      <<: *prod-env
+      MCP_BEARER_TOKEN: ${MCP_BEARER_TOKEN:?set MCP_BEARER_TOKEN (16+ chars)}
+      MCP_SESSION_JWT_SECRET: ${MCP_SESSION_JWT_SECRET:?set MCP_SESSION_JWT_SECRET}
+      MCP_RUNNER_TOKEN: ${MCP_RUNNER_TOKEN:?set MCP_RUNNER_TOKEN (16+ chars)}
+
+  mcp-sandbox-runner:
+    environment:
+      <<: *prod-env
+      # Shared with mcp-server above — same value on both ends.
+      MCP_RUNNER_TOKEN: ${MCP_RUNNER_TOKEN:?set MCP_RUNNER_TOKEN (16+ chars)}
+
+  llm-gateway:
+    environment:
+      <<: *prod-env
+      LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:?set LLM_GATEWAY_BEARER}
