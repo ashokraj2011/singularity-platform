@@ -139,6 +139,23 @@ function localSourcePath(raw: string): string | null {
   return null;
 }
 
+// #23 — gate `local`/filesystem sources to an allowlist of root prefixes. A local
+// source can be any absolute path on this mcp-server host; on a shared cloud
+// mcp-server that's a local-FS-read risk. Operators set MCP_ALLOWED_LOCAL_SOURCE_ROOTS
+// to lock it down. UNSET ⇒ allow any (preserves the laptop/dev flow). The check
+// uses the RESOLVED path so `..` traversal can't escape an allowed root.
+// Exported for the allowlist unit test.
+export function localSourceRootAllowed(resolvedPath: string): boolean {
+  const raw = config.MCP_ALLOWED_LOCAL_SOURCE_ROOTS?.trim();
+  if (!raw) return true;
+  const roots = raw
+    .split(",")
+    .map((r) => r.trim())
+    .filter(Boolean)
+    .map((r) => path.resolve(r.replace(/^~/, process.env.HOME ?? "~")));
+  return roots.some((root) => resolvedPath === root || resolvedPath.startsWith(root + path.sep));
+}
+
 function normalizeRemote(raw?: string): string {
   if (!raw) return "";
   return raw
@@ -574,7 +591,20 @@ async function ensureWorkspaceSourceImpl(
         message: "Local source URI must be an absolute path or file:// URL.",
       };
     }
-    const stat = await fs.promises.stat(localPath).catch(() => null);
+    // #23 — resolve (defeats `..` traversal) + enforce the local-source allowlist
+    // before touching the filesystem.
+    const resolvedLocal = path.resolve(localPath);
+    if (!localSourceRootAllowed(resolvedLocal)) {
+      return {
+        checkedOut: false,
+        sourceType,
+        sourceUri,
+        sourceRef: req.sourceRef,
+        workspaceRoot: sandboxRoot(),
+        message: `Local source path is not within an allowed root (set MCP_ALLOWED_LOCAL_SOURCE_ROOTS): ${resolvedLocal}`,
+      };
+    }
+    const stat = await fs.promises.stat(resolvedLocal).catch(() => null);
     if (!stat?.isDirectory()) {
       return {
         checkedOut: false,
@@ -582,14 +612,14 @@ async function ensureWorkspaceSourceImpl(
         sourceUri,
         sourceRef: req.sourceRef,
         workspaceRoot: sandboxRoot(),
-        message: `Local source path was not found or is not a directory: ${localPath}`,
+        message: `Local source path was not found or is not a directory: ${resolvedLocal}`,
       };
     }
     let message = "local workspace source materialized";
-    if (fs.existsSync(path.join(localPath, ".git"))) {
-      message = await materializeGitSource(localPath, req.sourceRef);
+    if (fs.existsSync(path.join(resolvedLocal, ".git"))) {
+      message = await materializeGitSource(resolvedLocal, req.sourceRef);
     } else {
-      await copyLocalDirectoryIntoWorkspace(localPath);
+      await copyLocalDirectoryIntoWorkspace(resolvedLocal);
     }
     await configureGitIdentity();
     const status: WorkspaceSourceStatus = {
