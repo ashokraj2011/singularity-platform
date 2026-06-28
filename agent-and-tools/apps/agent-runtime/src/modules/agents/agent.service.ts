@@ -1,7 +1,7 @@
 import { prisma } from "../../config/prisma";
 import type { AgentRoleType, EntityStatus, Prisma } from "../../../generated/prisma-client";
 import { isProductionClassEnv } from "@agentandtools/shared";
-import { AppError, ForbiddenError, NotFoundError } from "../../shared/errors";
+import { AppError, ConflictError, ForbiddenError, NotFoundError } from "../../shared/errors";
 import type { AuthUser } from "../../middleware/auth.middleware";
 import {
   CreateAgentProfileInput, CreateAgentTemplateInput, DeriveAgentTemplateInput, PreviewSkillSourceInput, RestoreAgentTemplateVersionInput, UpdateAgentTemplateInput,
@@ -387,6 +387,19 @@ export const agentService = {
     const cap = await prisma.capability.findUnique({ where: { id: input.capabilityId }, select: { id: true, status: true } });
     if (!cap) throw new NotFoundError("Capability not found");
     if (cap.status === "ARCHIVED") throw new ForbiddenError("Cannot create an agent profile for an archived capability");
+
+    // [P0] No silent duplicates: a profile name is unique within its capability
+    // (backed by AgentTemplate @@unique([capabilityId, name])). Common-library
+    // templates (null capabilityId) are exempt. Re-creating after ARCHIVE is allowed.
+    const existingByName = await prisma.agentTemplate.findFirst({
+      where: { capabilityId: input.capabilityId, name: input.name, status: { not: "ARCHIVED" } },
+      select: { id: true },
+    });
+    if (existingByName) {
+      throw new ConflictError(
+        `An agent profile named "${input.name}" already exists for this capability (id ${existingByName.id}).`,
+      );
+    }
 
     const uploaded: Array<{ file: UploadedKnowledgeFile; content: string }> = [];
     for (const file of files) {
