@@ -34,6 +34,26 @@ assert.match(
   /data: \{ status: existing\.status \}/,
   "failed production-class activation must compensate by restoring the previous template status",
 );
+
+// [P1] mint vs pin-record separation — a transient DB error recording the
+// contract pin must NOT be reported as a mint failure (that would revert the
+// activation and re-mint a duplicate contract on retry).
+assert.match(
+  source,
+  /async function recordContractPin\([\s\S]*?\): Promise<void>/,
+  "a dedicated recordContractPin helper must own the version-row pin write",
+);
+assert.match(
+  source,
+  /await recordContractPin\(template, body\.data\.id, body\.data\.bundleHash\)/,
+  "maybeMintContract must record the pin via the helper after a successful mint, not inline in the mint try",
+);
+assert.match(
+  source,
+  /function recordContractPin\([\s\S]*?agentTemplateVersion\.update[\s\S]*?console\.error/,
+  "recordContractPin must perform the version-row update and, on permanent failure, log loudly rather than throw",
+);
+
 assert.match(
   pkg,
   /agent-contract-mint-required\.contract\.test\.ts/,
