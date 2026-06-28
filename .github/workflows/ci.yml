@@ -1,0 +1,122 @@
+name: CI
+
+# Repo CI gate (security-review finding 11). Runs the checks that catch the
+# regression classes we keep hand-finding: lockfile drift, type errors, the
+# Next prerender/Suspense break, compose breakage, and topology/version drift.
+# Each job is independent so one failure doesn't mask the others.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  agent-and-tools:
+    name: agent-and-tools — build + typecheck (+ Next build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent-and-tools
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: agent-and-tools/package-lock.json
+      # `npm ci` fails if package-lock.json is out of sync (catches stale-workspace drift).
+      - run: npm ci
+      - name: Build shared package
+        run: npm run build --workspace=packages/shared
+      - name: Prisma generate (agent-runtime + prompt-composer)
+        run: |
+          ( cd apps/agent-runtime && npx prisma generate )
+          ( cd apps/prompt-composer && npx prisma generate --schema=prisma/schema.prisma && npx prisma generate --schema=prisma/runtime-read.prisma )
+      - name: Typecheck backend (agent-service serves agents + tools)
+        run: |
+          ( cd apps/agent-service && npx tsc --noEmit )
+          ( cd apps/agent-runtime && npx tsc --noEmit )
+          ( cd apps/prompt-composer && npx tsc --noEmit )
+      # Workgraph-web + blueprint-workbench source is compiled into platform-web,
+      # so their workspace deps must be present for the Next build.
+      - name: Install workgraph-studio (compiled into platform-web)
+        working-directory: workgraph-studio
+        run: npm install --no-audit --no-fund
+      # `next build` runs static prerender — this is what catches the
+      # useSearchParams()-without-Suspense class of breakage.
+      - name: Build platform-web (Next)
+        run: npm run build --workspace=web
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  mcp-server:
+    name: mcp-server — typecheck + tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcp-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+  workgraph-api:
+    name: workgraph-api — typecheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workgraph-studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # workgraph-studio has no committed lockfile yet → npm install.
+      # TODO (finding 11 follow-up): commit a lockfile so this can be npm ci.
+      - run: npm install --no-audit --no-fund
+      - run: cd apps/api && npx prisma generate
+      - run: cd apps/api && npx tsc --noEmit
+
+  python:
+    name: python services — byte-compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Byte-compile catches syntax errors without DBs. TODO: add pytest with a
+      # postgres service for IAM + context-fabric (finding 11 follow-up).
+      - name: Byte-compile IAM + context-fabric
+        run: |
+          python -m compileall -q singularity-iam-service/app
+          python -m compileall -q context-fabric/services/context_api_service/app
+
+  topology-and-guards:
+    name: compose config + repo guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker compose config (root — catches compose breakage)
+        run: docker compose config >/dev/null
+      - name: Monorepo dependency-version guard
+        run: bash bin/check-monorepo-versions.sh
+      - name: Compose profile matrix
+        run: bash bin/check-compose-profiles.sh
+      # Secret guardrail — informational for now (flip to blocking once a first
+      # green run confirms it behaves in CI).
+      - name: Secret guardrails
+        continue-on-error: true
+        run: bash bin/check-secret-guardrails.sh
