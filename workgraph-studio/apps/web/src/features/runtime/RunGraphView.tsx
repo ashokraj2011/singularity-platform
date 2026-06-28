@@ -786,6 +786,28 @@ function BlockReasonBody({ info }: { info: unknown }) {
   if (Array.isArray(o?.missingEvidence) && o.missingEvidence.length > 0) { // EVAL_GATE
     return <ul style={{ margin: 0, paddingLeft: 16 }}>{(o.missingEvidence as string[]).map((m, i) => <li key={i}>{m}</li>)}</ul>
   }
+  if (Array.isArray(o?.blocked) && typeof o?.effectiveMode === 'string') { // GOVERNANCE_GATE
+    const blocked = o.blocked as Array<{ controlKey?: string; reason?: string; mode?: string }>
+    const satisfied = Array.isArray(o.satisfied) ? (o.satisfied as string[]) : []
+    const waived = Array.isArray(o.waived) ? (o.waived as string[]) : []
+    return (
+      <div>
+        {o.note ? <div style={{ marginBottom: 4 }}>{String(o.note)}</div> : null}
+        {blocked.length > 0 && (
+          <ul style={{ margin: 0, paddingLeft: 16 }}>
+            {blocked.map((b, i) => (
+              <li key={i}><strong>{b.controlKey}</strong>{b.mode ? ` (${b.mode})` : ''}{b.reason ? ` — ${b.reason}` : ''}</li>
+            ))}
+          </ul>
+        )}
+        {(satisfied.length > 0 || waived.length > 0) && (
+          <div style={{ marginTop: 4, opacity: 0.7, fontSize: '0.85em' }}>
+            satisfied: {satisfied.join(', ') || '—'} · waived: {waived.join(', ') || '—'}
+          </div>
+        )}
+      </div>
+    )
+  }
   return <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit' }}>{JSON.stringify(info, null, 1).slice(0, 600)}</pre>
 }
 
