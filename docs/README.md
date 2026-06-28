@@ -4,6 +4,7 @@ This directory is the starting point for operating, extending, and explaining th
 
 ## Start Here
 
+- [Architecture Overview](./architecture-overview.md) - service architecture + connections, data model, and the API call flow (Mermaid diagrams + tables).
 - [Platform Handbook](./platform-handbook.md) - detailed architecture, capabilities, components, installation, configuration, runtime flows, operations, and troubleshooting.
 - [Platform Handbook HTML](./platform-handbook.html) - browser-friendly standalone version of the handbook.
 - [Unified Platform Web](./unified-platform-web.md) - one frontend container, canonical routes, redirects, and bare-metal notes.
