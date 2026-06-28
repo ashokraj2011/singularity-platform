@@ -147,3 +147,75 @@ The **two LLM paths are mutually exclusive per stage**: workbench + agent runs g
 | audit-gov | `:8500` | `/events`, `/llm-calls`, `/budgets` | all services (fire-and-forget) |
 
 > Storage: `at-postgres` :5432 (shared app/IAM/composer/context-fabric), `wg-postgres` :5434 (workgraph), audit-gov :5436, `wg-minio` :9000/:9001 (artifacts). In Docker the `platform-core` container bundles agent-service + agent-runtime + prompt-composer.
+
+---
+
+## 5. Ports & storage map
+
+| Service | Port | Profile |
+|---|---|---|
+| platform-web | 5180 | core |
+| iam-service | 8100 | core |
+| agent-service (agents + tools) | 3001 | core |
+| agent-runtime | 3003 | core |
+| prompt-composer | 3004 | core |
+| context-api | 8000 | core |
+| workgraph-api | 8080 | core |
+| audit-governance | 8500 | core (`--with-audit`) |
+| mcp-server | 7100 | optional / runtime |
+| llm-gateway | 8001 | optional / runtime |
+| context-memory | 8002 | optional |
+| formal-verifier | 8010 | optional |
+| prompt-compressor | 8011 | compression |
+
+| Storage backend | Port | Holds |
+|---|---|---|
+| `at-postgres` | 5432 | `singularity`, `singularity_iam`, `singularity_composer`, `singularity_context_fabric` |
+| `wg-postgres` | 5434 | `workgraph` |
+| audit-gov postgres | 5436 | `audit_governance` |
+| `wg-minio` | 9000 / 9001 | artifact blobs (object store) |
+
+```mermaid
+flowchart TD
+  ATPG[(at-postgres :5432)]
+  WGPG[(wg-postgres :5434)]
+  AGPG[(audit-gov pg :5436)]
+  MINIO[(wg-minio :9000/9001)]
+  ATPG --> S[singularity]
+  ATPG --> SIAM[singularity_iam]
+  ATPG --> SC[singularity_composer]
+  ATPG --> SCF[singularity_context_fabric]
+  WGPG --> WG[workgraph]
+  AGPG --> AG[audit_governance]
+  MINIO --> BLOB[artifact blobs]
+```
+
+---
+
+## 6. Laptop + cloud hybrid (Copilot + Anthropic)
+
+The platform supports a **hybrid** where the shared services run in the cloud, but the **`llm-gateway` and `mcp-server` run on your laptop** — `mcp-server` with the **GitHub Copilot CLI**, `llm-gateway` with a local **`ANTHROPIC_API_KEY`**. The laptop **dials into** the cloud `context-api` over the **runtime bridge** (WebSocket). `context-api` dispatches tool-run / model-run frames to the laptop (userId-routed); results return over the same bridge. This keeps API keys + the Copilot CLI local while orchestration and data stay cloud-side. See [`hybrid-laptop-deployment.md`](./hybrid-laptop-deployment.md) and [`testing-copilot-and-anthropic.md`](./testing-copilot-and-anthropic.md).
+
+```mermaid
+flowchart TB
+  subgraph Cloud["Cloud — shared platform"]
+    PW[platform-web :5180]
+    WG[workgraph-api :8080]
+    CF[context-api :8000 · dispatcher]
+    IAM[iam :8100]
+    AG[audit-gov :8500]
+    DATA[(Postgres + MinIO)]
+  end
+  subgraph Laptop["Laptop — local runtimes + keys"]
+    MCP[mcp-server :7100 + Copilot CLI]
+    LLM[llm-gateway :8001 + ANTHROPIC_API_KEY]
+    COP[(GitHub Copilot CLI)]
+    ANT[(Anthropic API)]
+  end
+  CF <== "runtime bridge · WebSocket (laptop dials in)" ==> MCP
+  CF <== "runtime bridge · WebSocket" ==> LLM
+  MCP --> COP
+  LLM --> ANT
+```
+
+**Invariant:** workbench + agent runs use the LLM gateway (Anthropic); copilot-mode SDLC stages use the Copilot CLI via `mcp-server`. The two paths never share a stage.
