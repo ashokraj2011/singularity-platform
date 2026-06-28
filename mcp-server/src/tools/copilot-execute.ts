@@ -77,6 +77,8 @@ export const copilotExecuteTool: ToolHandler = {
         summary: { type: "string" },
         changedPaths: { type: "array", items: { type: "string" } },
         diff: { type: "string" },
+        diffTruncated: { type: "boolean" },
+        diffFullChars: { type: "number" },
       },
     },
     // Mutating + command-executing — the CLI edits files and runs commands.
@@ -169,6 +171,13 @@ export const copilotExecuteTool: ToolHandler = {
       },
       "copilot_execute ← completed",
     );
+    // [P1] Make diff truncation explicit in the receipt. The diff is clipped to
+    // MAX_DIFF_CHARS with an in-body marker, but a consumer that reads the diff
+    // structurally (governance evidence, DIFF_VS_DESIGN, the evidence pack) must
+    // be able to tell a clipped diff from a complete one — not silently trust a
+    // partial body. Surface a structured flag + the full length.
+    const diffFullChars = diff.length;
+    const diffTruncated = diffFullChars > MAX_DIFF_CHARS;
     return {
       success: true,
       output: {
@@ -179,6 +188,8 @@ export const copilotExecuteTool: ToolHandler = {
         changedPaths,
         artifacts,
         diff: truncate(diff, MAX_DIFF_CHARS),
+        diffTruncated,
+        diffFullChars,
         commitSha,
         timed_out: res.timedOut,
         exit_code: res.code,
