@@ -158,6 +158,13 @@ const schema = z.object({
   MCP_GIT_SSH_KEY_PATH: z.string().optional(),
   MCP_AUTO_CHECKOUT_SOURCE: envBool(true),
   MCP_SOURCE_CACHE_ROOT: z.string().optional(),
+  // #23 — allowlist for `local`/filesystem source URIs. A local source is any
+  // absolute path / file:// URL on THIS mcp-server host. On the laptop that's the
+  // user's own machine (fine). On a SHARED CLOUD mcp-server it's a local-FS-read
+  // risk, so an operator sets this to a comma-separated list of permitted root
+  // prefixes; a resolved local path must sit under one of them. UNSET = allow any
+  // (preserves the laptop/dev flow), matching agent-runtime's allowPrivateUrls gate.
+  MCP_ALLOWED_LOCAL_SOURCE_ROOTS: z.string().optional(),
   MCP_WORKSPACE_LOCK_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
   MCP_WORKSPACE_LOCK_STALE_MS: z.coerce.number().int().positive().default(30 * 60_000),
   MCP_WORKSPACE_GC_ENABLED: envBool(true),
