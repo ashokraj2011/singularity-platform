@@ -3,6 +3,7 @@ import { prisma } from '../../../../../lib/prisma'
 import { postJson } from '../../../../../lib/audit-gov/client'
 import { analyzeWorkflowInstance, shouldBlockFormalResult } from '../../../formal-verification'
 import type { GovernanceOverlay } from './evaluateBlock'
+import { evaluateDiffVsDesign, type DiffValidation } from './diffVsDesign'
 
 /**
  * v2 control → evidence resolution for GOVERNANCE_GATE. A control is "satisfied"
@@ -16,11 +17,12 @@ import type { GovernanceOverlay } from './evaluateBlock'
  */
 
 export interface ControlBinding {
-  type: 'context' | 'receipt' | 'evaluator' | 'artifact' | 'formal'
+  type: 'context' | 'receipt' | 'evaluator' | 'artifact' | 'formal' | 'diff'
   evaluatorIds?: string[]
   minPassRate?: number
   artifactName?: string
   evidenceKey?: string
+  diffValidation?: DiffValidation
 }
 export type BindingMap = Record<string, ControlBinding>
 export type BindingChecker = (controlKey: string, binding: ControlBinding) => Promise<boolean>
@@ -144,6 +146,13 @@ export function makeEvidenceChecker(instance: WorkflowInstance, node: WorkflowNo
         const rec = out as Record<string, unknown>
         const res = isRecord(rec.result) ? (rec.result as Record<string, unknown>) : rec
         return !shouldBlockFormalResult(res, {})
+      }
+      case 'diff': {
+        const ctx = isRecord(instance.context) ? instance.context : {}
+        const cap = isRecord(ctx._codeChangeDiff) ? ctx._codeChangeDiff : isRecord(ctx.codeChangeDiff) ? (ctx.codeChangeDiff as Record<string, unknown>) : null
+        const rawPaths = cap ? (Array.isArray(cap.pathsTouched) ? cap.pathsTouched : Array.isArray(cap.paths_touched) ? cap.paths_touched : []) : []
+        const diff = { pathsTouched: rawPaths.map(String) }
+        return evaluateDiffVsDesign(diff, binding.diffValidation ?? null).length === 0
       }
       case 'context':
       default:
