@@ -145,7 +145,7 @@ function ActionLink({ label, href, icon: Icon, primary }: { label: string; href:
 
 export default async function SdlcCommandCenterPage() {
   const agentBase = process.env.AGENT_SERVICE_URL ?? "http://platform-core:3001";
-  const toolBase = process.env.TOOL_SERVICE_URL ?? "http://platform-core:3002";
+  const toolBase = process.env.TOOL_SERVICE_URL ?? "http://platform-core:3001";
   const runtimeBase = process.env.AGENT_RUNTIME_URL ?? "http://platform-core:3003";
   const workgraphBase = process.env.WORKGRAPH_API_URL ?? "http://workgraph-api:8080";
 

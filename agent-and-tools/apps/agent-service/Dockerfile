@@ -16,7 +16,6 @@ COPY package.json package-lock.json* ./
 COPY packages ./packages
 COPY apps/agent-runtime/package.json   ./apps/agent-runtime/package.json
 COPY apps/agent-service/package.json   ./apps/agent-service/package.json
-COPY apps/tool-service/package.json    ./apps/tool-service/package.json
 COPY apps/prompt-composer/package.json ./apps/prompt-composer/package.json
 RUN if [ -n "$ARTIFACTORY_NPM_REGISTRY" ]; then \
       printf 'registry=%s\n//%s:_authToken=%s\naudit=false\nfund=false\n' \

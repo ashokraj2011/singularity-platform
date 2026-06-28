@@ -25,7 +25,7 @@
 #   - mcp-server/src/mcp/invoke.ts (hasTool helper)                  (governance detection, not prompt content)
 #   - mcp-server/src/mcp/tools.ts                                    (deprecated sync tool-call endpoint, env-gated in prod)
 #   - mcp-server/src/mcp/work.ts                                     (M37.1 purpose-built work-branch endpoint)
-#   - agent-and-tools/apps/tool-service/src/lib/seed-core-tools.ts   (tool catalog seed)
+#   - agent-and-tools/apps/agent-service/src/tool/lib/seed-core-tools.ts   (tool catalog seed)
 #   - **/*.test.ts / **/*.contract.test.ts                           (tests)
 #   - bin/                                                            (scripts, incl. this guard)
 #   - docs/                                                           (docs)

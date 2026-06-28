@@ -86,7 +86,7 @@ services:
       - METRICS_LEDGER_URL=http://metrics-ledger-service:8003
       # M8 — orchestrator dependencies
       - COMPOSER_URL=http://host.docker.internal:3004
-      - TOOL_SERVICE_URL=http://host.docker.internal:3002
+      - TOOL_SERVICE_URL=http://host.docker.internal:3001
       - IAM_BASE_URL=${IAM_BASE_URL:-http://host.docker.internal:8100/api/v1}
       # M9.x — persisted MCP events (drained at end of /execute)
       - CONTEXT_FABRIC_DATABASE_URL=${CONTEXT_FABRIC_DATABASE_URL:-postgresql://postgres:singularity@context-fabric-postgres:5432/singularity_context_fabric}

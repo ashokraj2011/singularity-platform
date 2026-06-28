@@ -33,7 +33,7 @@ const requestRunSchema = z.object({
 })
 
 // M10 — local Tool CRUD removed. Tools are snapshots of tool-service entries.
-// Author tools via tool-service (POST :3002/api/v1/tools) and pick with
+// Author tools via agent-service (POST :3001/api/v1/tools) and pick with
 // /api/lookup/tools.
 toolsRouter.post('/', (_req, res) => {
   res.status(410).json({

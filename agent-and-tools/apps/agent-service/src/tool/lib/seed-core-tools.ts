@@ -16,8 +16,8 @@ import { query } from "../database";
 import { capabilityMetadataForTool } from "./capability-metadata";
 
 const VERSION = "1.0.0";
-const INTERNAL_BASE   = process.env.INTERNAL_TOOLS_BASE_URL    ?? "http://tool-service:3002/api/v1/internal-tools";
-const CONNECTOR_BASE  = process.env.CONNECTOR_TOOLS_BASE_URL   ?? "http://tool-service:3002/api/v1/connector-tools";
+const INTERNAL_BASE   = process.env.INTERNAL_TOOLS_BASE_URL    ?? "http://agent-service:3001/api/v1/internal-tools";
+const CONNECTOR_BASE  = process.env.CONNECTOR_TOOLS_BASE_URL   ?? "http://agent-service:3001/api/v1/connector-tools";
 
 interface SeedTool {
   name: string;

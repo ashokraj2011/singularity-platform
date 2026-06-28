@@ -14,7 +14,6 @@ COPY package.json package-lock.json* ./
 COPY packages ./packages
 COPY apps/agent-runtime/package.json   ./apps/agent-runtime/package.json
 COPY apps/agent-service/package.json   ./apps/agent-service/package.json
-COPY apps/tool-service/package.json    ./apps/tool-service/package.json
 COPY apps/prompt-composer/package.json ./apps/prompt-composer/package.json
 COPY apps/prompt-composer/prisma       ./apps/prompt-composer/prisma
 # Artifactory support (docs/artifactory-npm.md): no-op unless build args set.

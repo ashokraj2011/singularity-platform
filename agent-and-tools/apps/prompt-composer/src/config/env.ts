@@ -14,7 +14,7 @@ const schema = z.object({
     z.boolean(),
   ).default(process.env.NODE_ENV !== "production"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
-  TOOL_SERVICE_URL: z.string().url().default("http://localhost:3002"),
+  TOOL_SERVICE_URL: z.string().url().default("http://localhost:3001"),
   AGENT_RUNTIME_URL: z.string().url().default("http://localhost:3003"),
   CONTEXT_FABRIC_URL: z.string().url().default("http://localhost:8000"),
   CONTEXT_FABRIC_SERVICE_TOKEN: z.string().optional(),

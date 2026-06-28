@@ -381,7 +381,6 @@ ${C_BLUE}Singularity Platform URLs${C_END}
     workgraph-api       http://localhost:8080/api
     prompt-composer     http://localhost:3004/api/v1 (served by platform-core in Docker)
     agent-runtime       http://localhost:3003/api/v1 (served by platform-core in Docker)
-    tool-service        http://localhost:3002/api/v1 (served by platform-core in Docker)
     agent-service       http://localhost:3001/api/v1 (served by platform-core in Docker)
     context-api         http://localhost:8000      (core orchestration/context API)
     code generation     http://localhost:8080/api/codegen (served by workgraph-api for /foundry)
