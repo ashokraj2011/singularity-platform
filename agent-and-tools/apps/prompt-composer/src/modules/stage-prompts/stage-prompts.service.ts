@@ -11,11 +11,45 @@
  *   `loopStageTask`, `loopStageSystemPrompt`
  * and instead POST {stageKey, agentRole, vars} here.
  */
-import { prisma } from "../../config/prisma";
+import { prisma, runtimeReader } from "../../config/prisma";
 import { logger } from "../../config/logger";
 import { NotFoundError } from "../../shared/errors";
 import { render as renderMustache } from "../../shared/mustache";
 import type { ResolveStageInput, ResolveStageResult } from "./stage-prompts.schemas";
+
+// #25 — read-only long-term-memory grounding for the governed turn. The composer
+// already surfaces distilled memory on /compose-and-respond; the governed loop
+// resolves prompts via /stage-prompts/resolve instead, which previously carried
+// no memory. When a capabilityId is supplied we append the capability's promoted
+// (distilled, status ACTIVE) memory to extraContext so it reaches the turn's
+// user message. Best-effort + capped; the promotion WRITE lifecycle is separate.
+const LONG_TERM_MEMORY_TOP_K = Math.max(0, Number(process.env.STAGE_PROMPT_MEMORY_TOP_K ?? 5));
+const LONG_TERM_MEMORY_MAX_CHARS = Math.max(80, Number(process.env.STAGE_PROMPT_MEMORY_MAX_CHARS ?? 500));
+
+async function renderLongTermMemory(capabilityId: string): Promise<string> {
+  if (LONG_TERM_MEMORY_TOP_K === 0) return "";
+  try {
+    const rows = await runtimeReader.distilledMemory.findMany({
+      where: { scopeType: "CAPABILITY", scopeId: capabilityId, status: "ACTIVE" },
+      orderBy: { createdAt: "desc" },
+      take: LONG_TERM_MEMORY_TOP_K,
+    });
+    if (rows.length === 0) return "";
+    const lines = rows.map((m) => {
+      const body = m.content.length > LONG_TERM_MEMORY_MAX_CHARS
+        ? `${m.content.slice(0, LONG_TERM_MEMORY_MAX_CHARS)}…`
+        : m.content;
+      return `- [${m.memoryType}] ${m.title}: ${body}`;
+    });
+    return `## Long-term memory (prior distilled lessons for this capability)\n${lines.join("\n")}`;
+  } catch (err) {
+    logger.warn(
+      { err: (err as Error).message, capabilityId },
+      "[stage-prompts] long-term memory fetch failed (continuing without it)",
+    );
+    return "";
+  }
+}
 
 interface BindingRow {
   id: string;
@@ -143,9 +177,14 @@ export const stagePromptsService = {
         const taskRendered = profile.taskTemplate?.trim()
           ? renderMustache(profile.taskTemplate, ctx).rendered
           : "";
-        const extraRendered = profile.extraContextTemplate?.trim()
+        let extraRendered = profile.extraContextTemplate?.trim()
           ? renderMustache(profile.extraContextTemplate, ctx).rendered
           : "";
+        // #25 — same long-term-memory grounding on the pinned-profile path.
+        if (input.capabilityId) {
+          const memoryBlock = await renderLongTermMemory(input.capabilityId);
+          if (memoryBlock) extraRendered = extraRendered ? `${extraRendered}\n\n${memoryBlock}` : memoryBlock;
+        }
         return {
           task: taskRendered,
           systemPromptAppend: await loadSystemPromptFragment(profile.id),
@@ -206,6 +245,15 @@ export const stagePromptsService = {
         );
       }
       extraContext = rendered.rendered;
+    }
+
+    // 2b. #25 — append the capability's promoted long-term memory (read-only) so
+    // the governed turn is grounded in prior distilled lessons.
+    if (input.capabilityId) {
+      const memoryBlock = await renderLongTermMemory(input.capabilityId);
+      if (memoryBlock) {
+        extraContext = extraContext ? `${extraContext}\n\n${memoryBlock}` : memoryBlock;
+      }
     }
 
     // 3. Assemble the system-prompt fragment.

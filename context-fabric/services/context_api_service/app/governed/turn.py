@@ -947,6 +947,14 @@ async def run_turn(
     # (stage_key, agent_role) resolver ladder). Pre-M93.F this field
     # on the Pydantic model was documented but not consumed — runtime
     # prompts ignored the workflow's pinned profile.
+    # #25 — capability id for read-only long-term-memory grounding (the composer
+    # appends the capability's promoted distilled memory to extraContext).
+    # Resolved independently of the code-context block above, which may not run.
+    _resolve_capability_id = None
+    if isinstance(run_context, dict):
+        _resolve_capability_id = (
+            run_context.get("capability_id") or run_context.get("capabilityId") or None
+        )
     prompt = await resolve_phase_prompt(
         stage_key=stage_key,
         agent_role=agent_role,
@@ -954,6 +962,7 @@ async def run_turn(
         vars=vars,
         bearer=bearer,
         prompt_profile_key=(exec_policy.prompt_profile_key if exec_policy is not None else None),
+        capability_id=_resolve_capability_id,
     )
 
     # 3. Messages + tool descriptors.

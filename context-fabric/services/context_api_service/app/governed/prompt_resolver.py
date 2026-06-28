@@ -76,6 +76,7 @@ async def resolve_phase_prompt(
     vars: dict[str, Any] | None = None,
     bearer: str | None = None,
     prompt_profile_key: str | None = None,
+    capability_id: str | None = None,
 ) -> ResolvedPrompt:
     """Fetch the rendered prompt for (stage_key, agent_role, phase).
 
@@ -107,8 +108,9 @@ async def resolve_phase_prompt(
     if not profile_key:
         profile_key = None
 
+    cap_id = capability_id.strip() if isinstance(capability_id, str) and capability_id.strip() else None
     if not vars:
-        cache_key = (stage_key, agent_role, phase_str, profile_key)
+        cache_key = (stage_key, agent_role, phase_str, profile_key, cap_id)
         now = time.time()
         hit = _cache.get(cache_key)
         if hit and hit[0] > now:
@@ -133,6 +135,10 @@ async def resolve_phase_prompt(
         body["vars"] = vars
     if profile_key:
         body["promptProfileKey"] = profile_key
+    if cap_id:
+        # #25 — let the composer append this capability's promoted long-term
+        # memory to extraContext (read-only grounding for the governed turn).
+        body["capabilityId"] = cap_id
 
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
