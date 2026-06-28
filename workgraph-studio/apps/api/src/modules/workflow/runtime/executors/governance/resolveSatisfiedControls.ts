@@ -6,6 +6,7 @@ import type { GovernanceOverlay } from './evaluateBlock'
 import { evaluateDiffVsDesign, type DiffValidation } from './diffVsDesign'
 import { verifyEvidencePack, type EvidenceManifest } from './evidencePack'
 import { evaluatePredicate, type Predicate } from './evalPredicate'
+import { evaluateStandardConformance } from './evalStandard'
 
 /**
  * v2 control → evidence resolution for GOVERNANCE_GATE. A control is "satisfied"
@@ -19,7 +20,7 @@ import { evaluatePredicate, type Predicate } from './evalPredicate'
  */
 
 export interface ControlBinding {
-  type: 'context' | 'receipt' | 'evaluator' | 'artifact' | 'formal' | 'diff' | 'evidencePack' | 'predicate'
+  type: 'context' | 'receipt' | 'evaluator' | 'artifact' | 'formal' | 'diff' | 'evidencePack' | 'predicate' | 'standard'
   evaluatorIds?: string[]
   minPassRate?: number
   artifactName?: string
@@ -31,6 +32,11 @@ export interface ControlBinding {
   required?: string[]
   /** predicate (CUSTOM_EXPRESSION): a safe condition over the run context. */
   predicate?: Predicate
+  /** standard (LLM STANDARD_CONFORMANCE): the standard + where the document lives. */
+  standardName?: string
+  standardText?: string
+  /** run-context key holding the document text to judge (else `_standardDocument`). */
+  documentKey?: string
 }
 export type BindingMap = Record<string, ControlBinding>
 export type BindingChecker = (controlKey: string, binding: ControlBinding) => Promise<boolean>
@@ -189,6 +195,21 @@ export function makeEvidenceChecker(instance: WorkflowInstance, node: WorkflowNo
       case 'predicate': {
         const ctx = isRecord(instance.context) ? instance.context : {}
         return binding.predicate ? evaluatePredicate(ctx, binding.predicate) : false
+      }
+      case 'standard': {
+        const ctx = isRecord(instance.context) ? instance.context : {}
+        const documentText =
+          binding.documentKey && typeof ctx[binding.documentKey] === 'string'
+            ? (ctx[binding.documentKey] as string)
+            : typeof ctx._standardDocument === 'string'
+              ? (ctx._standardDocument as string)
+              : ''
+        const verdict = await evaluateStandardConformance({
+          standardName: binding.standardName ?? controlKey,
+          standardText: binding.standardText,
+          documentText,
+        })
+        return verdict.conformant
       }
       case 'context':
       default:
