@@ -48,6 +48,7 @@ enum NodeType {
   RUN_PYTHON
   EVENT_EMIT
   VERIFIER
+  GOVERNANCE_GATE
 }
 
 enum ExecutionLocation {

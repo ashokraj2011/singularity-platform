@@ -406,6 +406,16 @@ const NODE_META: Record<string, {
       { key: 'governanceMode', label: 'Governance mode', placeholder: 'fail_open' },
     ],
   },
+  GOVERNANCE_GATE: {
+    label: 'Governance Gate', color: '#9333ea', Icon: Shield,
+    description: 'Resolves the governing controls (IAM overlay) for a capability, checks them against run evidence + active waivers, then passes / warns / blocks. Instructions are managed centrally by the governing body; the node only references a governing capability.',
+    standardFields: [
+      { key: 'governingCapabilityId', label: 'Governing capability', placeholder: 'IAM capability uuid (the governing body)' },
+      { key: 'mode', label: 'Mode', placeholder: 'HARD_BLOCK | SOFT_WARN | AUTOMATIC' },
+      { key: 'failClosedOnResolveError', label: 'Fail closed if unresolved', placeholder: 'true' },
+      { key: 'preSatisfiedControls', label: 'Pre-satisfied controls', placeholder: 'comma-separated controlKeys (optional)' },
+    ],
+  },
   WORK_ITEM: {
     label: 'Work Item', color: '#7c3aed', Icon: Network,
     description: 'Creates a cross-capability work contract. Child capability owners claim it, run a child workflow, then the parent reviews the returned artifacts.',

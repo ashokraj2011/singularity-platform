@@ -25,6 +25,7 @@ export type NodeType =
   | 'CUSTOM'
   | 'RUN_PYTHON'
   | 'EVENT_EMIT'
+  | 'GOVERNANCE_GATE'
 
 export type EdgeType =
   | 'SEQUENTIAL'
