@@ -151,6 +151,14 @@ def validate_contributions(contributions: Any, mode: str) -> None:
             v = tp.get(k)
             if v is not None and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
                 raise HTTPException(422, f"contributions.toolPolicy.{k} must be a list of strings")
+    # controlBindings: map controlKey -> { type, ... } (how the gate evidences each control).
+    cb = contributions.get("controlBindings")
+    if cb is not None:
+        if not isinstance(cb, dict):
+            raise HTTPException(422, "contributions.controlBindings must be an object (controlKey -> binding)")
+        for ck, b in cb.items():
+            if not isinstance(b, dict) or not b.get("type"):
+                raise HTTPException(422, f"contributions.controlBindings.{ck} must be an object with a 'type'")
     for ev in contributions.get("requiredEvidence") or []:
         m = ev.get("mode")
         if m is not None and str(m).strip().upper() not in MODE_RANK:

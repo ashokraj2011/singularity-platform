@@ -117,6 +117,7 @@ def resolve_overlay(ctx: dict, attachments: list[dict], now: datetime) -> dict:
     seen_waiver: set = set()
     blocking_controls: list[dict] = []
     seen_control: set = set()
+    control_bindings: dict = {}
     tool = {"blocked": set(), "approvalRequired": set(), "allowed": set()}
     version_pins: dict[str, int] = {}
     effective_rank = 0
@@ -163,6 +164,12 @@ def resolve_overlay(ctx: dict, attachments: list[dict], now: datetime) -> dict:
                 if c.get("controlKey") not in seen_control:
                     seen_control.add(c.get("controlKey"))
                     blocking_controls.append({**c, "sourceCapabilityId": gid})
+        # Control → evidence bindings (map controlKey → {type, ...}); first
+        # (highest-authority) attachment wins per control. Lets the governing body
+        # own HOW each control is evidenced (consumed by the gate's resolver).
+        for ck, binding in (contrib.get("controlBindings") or {}).items():
+            if isinstance(ck, str) and ck and ck not in control_bindings and isinstance(binding, dict):
+                control_bindings[ck] = binding
 
     # tool precedence: a blocked tool can't also be approval/allowed; approval beats allow.
     blocked = sorted(tool["blocked"])
@@ -184,6 +191,7 @@ def resolve_overlay(ctx: dict, attachments: list[dict], now: datetime) -> dict:
         "approvalGates": approval_gates,
         "waiverRules": waiver_rules,
         "blockingControls": blocking_controls,
+        "controlBindings": control_bindings,
         "versionPins": version_pins,
     }
     overlay_core["overlayHash"] = _overlay_hash(overlay_core)
