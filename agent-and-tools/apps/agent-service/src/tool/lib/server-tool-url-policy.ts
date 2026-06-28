@@ -3,12 +3,12 @@ export type ServerToolUrlDecision =
   | { allowed: false; reason: string };
 
 const DEFAULT_ALLOWLIST = [
-  "http://tool-service:3002/api/v1/internal-tools",
-  "http://tool-service:3002/api/v1/connector-tools",
-  "http://localhost:3002/api/v1/internal-tools",
-  "http://localhost:3002/api/v1/connector-tools",
-  "http://127.0.0.1:3002/api/v1/internal-tools",
-  "http://127.0.0.1:3002/api/v1/connector-tools",
+  "http://agent-service:3001/api/v1/internal-tools",
+  "http://agent-service:3001/api/v1/connector-tools",
+  "http://localhost:3001/api/v1/internal-tools",
+  "http://localhost:3001/api/v1/connector-tools",
+  "http://127.0.0.1:3001/api/v1/internal-tools",
+  "http://127.0.0.1:3001/api/v1/connector-tools",
 ];
 
 const BLOCKED_HOSTS = new Set([
@@ -54,8 +54,8 @@ function matchesUrlPrefix(target: URL, rule: string): boolean {
 function isInternalToolServiceEndpoint(target: URL): boolean {
   const host = target.hostname.toLowerCase();
   const trustedHost = (
-    (host === "tool-service" && target.port === "3002") ||
-    ((host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1") && target.port === "3002")
+    (host === "agent-service" && target.port === "3001") ||
+    ((host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1") && target.port === "3001")
   );
   if (!trustedHost) return false;
   const path = normalizePathPrefix(target.pathname);
@@ -99,7 +99,7 @@ export function serverToolUrlPolicy(endpointUrl: unknown, allowlistRaw = process
     return { allowed: false, reason: "server tool endpoint_url cannot target metadata hosts" };
   }
   if (isPrivateOrLocalhost(target.hostname) && !isInternalToolServiceEndpoint(target)) {
-    return { allowed: false, reason: "server tool endpoint_url cannot target private or loopback hosts outside internal tool-service endpoints" };
+    return { allowed: false, reason: "server tool endpoint_url cannot target private or loopback hosts outside internal agent-service endpoints" };
   }
 
   for (const rule of parseAllowlist(allowlistRaw)) {

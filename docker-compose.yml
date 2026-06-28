@@ -262,7 +262,7 @@ services:
           - agent-runtime
           - prompt-composer
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"const http=require('http');const ports=[3001,3002,3003,3004];let done=0,ok=0;for(const port of ports){const req=http.get({host:'127.0.0.1',port,path:'/health'},r=>{if(r.statusCode===200)ok++;r.resume();r.on('end',()=>{done++;if(done===ports.length)process.exit(ok===ports.length?0:1);});});req.on('error',()=>process.exit(1));}setTimeout(()=>process.exit(1),5000);\""]
+      test: ["CMD-SHELL", "node -e \"const http=require('http');const ports=[3001,3003,3004];let done=0,ok=0;for(const port of ports){const req=http.get({host:'127.0.0.1',port,path:'/health'},r=>{if(r.statusCode===200)ok++;r.resume();r.on('end',()=>{done++;if(done===ports.length)process.exit(ok===ports.length?0:1);});});req.on('error',()=>process.exit(1));}setTimeout(()=>process.exit(1),5000);\""]
       interval: 10s
       timeout: 6s
       retries: 18

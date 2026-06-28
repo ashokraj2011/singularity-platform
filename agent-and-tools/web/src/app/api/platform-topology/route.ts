@@ -230,7 +230,7 @@ export async function GET(request: NextRequest) {
       kind: "api",
       group: "agent",
       envKey: "TOOL_SERVICE_URL",
-      url: cleanUrl(process.env.TOOL_SERVICE_URL ?? "http://tool-service:3002"),
+      url: cleanUrl(process.env.TOOL_SERVICE_URL ?? "http://agent-service:3001"),
       required: true,
       remoteCapable: false,
       position: { x: 46, y: 62 },

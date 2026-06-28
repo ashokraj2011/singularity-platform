@@ -56,7 +56,7 @@ const envSchema = z.object({
 
   // ── M10 — agent-and-tools upstream URLs for federated lookups ──
   AGENT_SERVICE_URL: z.string().default('http://localhost:3001'),
-  TOOL_SERVICE_URL:  z.string().default('http://localhost:3002'),
+  TOOL_SERVICE_URL:  z.string().default('http://localhost:3001'),
   AGENT_RUNTIME_URL: z.string().default('http://localhost:3003'),
   // Snapshot-time token used by the workflow runtime when no user context is
   // available (AgentTaskExecutor writing the agent snapshot row). User-facing

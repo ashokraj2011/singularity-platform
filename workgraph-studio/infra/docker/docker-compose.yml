@@ -74,7 +74,7 @@ services:
       # Real IAM is the source of truth. Override to :8101 for pseudo-IAM dev smoke tests.
       IAM_BASE_URL:      ${IAM_BASE_URL:-http://host.docker.internal:8100/api/v1}
       AGENT_SERVICE_URL: ${AGENT_SERVICE_URL:-http://host.docker.internal:3001}
-      TOOL_SERVICE_URL:  ${TOOL_SERVICE_URL:-http://host.docker.internal:3002}
+      TOOL_SERVICE_URL:  ${TOOL_SERVICE_URL:-http://host.docker.internal:3001}
       AGENT_RUNTIME_URL: ${AGENT_RUNTIME_URL:-http://host.docker.internal:3003}
       # M11.a — self-register with platform-registry on startup
       PLATFORM_REGISTRY_URL: ${PLATFORM_REGISTRY_URL:-http://host.docker.internal:8090}

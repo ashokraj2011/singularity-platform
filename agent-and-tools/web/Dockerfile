@@ -50,7 +50,7 @@ RUN npm run build
 FROM base AS next-builder
 WORKDIR /app/agent-and-tools/web
 ARG AGENT_SERVICE_URL=http://agent-service:3001
-ARG TOOL_SERVICE_URL=http://tool-service:3002
+ARG TOOL_SERVICE_URL=http://agent-service:3001
 ARG AGENT_RUNTIME_URL=http://agent-runtime:3003
 ARG PROMPT_COMPOSER_URL=http://prompt-composer:3004
 ENV AGENT_SERVICE_URL=$AGENT_SERVICE_URL
@@ -63,8 +63,6 @@ COPY agent-and-tools/web ./
 COPY workgraph-studio/apps/web/src /app/workgraph-studio/apps/web/src
 COPY workgraph-studio/packages/engine/src /app/workgraph-studio/packages/engine/src
 COPY workgraph-studio/apps/blueprint-workbench/src /app/workgraph-studio/apps/blueprint-workbench/src
-COPY singularity-code-foundry/apps/code-foundry-web/src /app/singularity-code-foundry/apps/code-foundry-web/src
-COPY UserAndCapabillity/src /app/UserAndCapabillity/src
 RUN npm run build
 
 FROM base AS runner
