@@ -37,6 +37,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { config } from "../config";
 import { categoryForTool } from "../tools/tool-registry-loader";
+import { getNonceStore, __resetNonceStoreForTest } from "./nonce-store";
 
 export const GRANT_VERSION = 1;
 export const GRANT_ALG = "HMAC-SHA256";
@@ -173,45 +174,39 @@ function constantTimeHexEqual(a: string, b: string): boolean {
   return timingSafeEqual(aBuf, bBuf);
 }
 
-// ── Replay protection: in-process nonce store ────────────────────────────────
+// ── Replay protection ────────────────────────────────────────────────────────
 //
-// A grant is single-use: its 128-bit nonce is recorded when the grant is
-// honored, and any later request carrying the same nonce is rejected as a
-// replay. Entries self-expire at the grant's expiresAt (a replay of an expired
-// grant is already rejected by the expiry check, so we never need to keep a
-// nonce past its grant's lifetime). A periodic sweep bounds memory.
-//
-// Scope note: this Map is per-process. The compose stack runs a single
-// mcp-server instance, so that's sufficient here. A multi-replica deployment
-// would need a shared store (e.g. Redis SETNX on the nonce with the grant TTL);
-// called out so it isn't mistaken for horizontal-scale-safe as written.
-const _nonceStore = new Map<string, number>(); // nonce -> expiresAtMs
-let _nextSweepAtMs = 0;
-const SWEEP_INTERVAL_MS = 60_000;
+// A grant is single-use: its 128-bit nonce is recorded when honored, and any
+// later request carrying the same nonce is a replay. The check+record lives in a
+// pluggable, ASYNC store (see nonce-store.ts: in-process by default, Postgres for
+// a multi-replica cloud mcp-server). Because the store is async, replay is
+// verified by `consumeGrantNonce` AFTER a successful (synchronous)
+// verifyToolGrant — callers MUST call it before they dispatch. Keeping it out of
+// verifyToolGrant lets the crypto verification stay synchronous, so its
+// cross-language golden vectors are unchanged.
 
-function sweepNonces(nowMs: number): void {
-  if (nowMs < _nextSweepAtMs) return;
-  for (const [nonce, expMs] of _nonceStore) {
-    if (expMs <= nowMs) _nonceStore.delete(nonce);
+/**
+ * Atomically consume a verified grant's single-use nonce. Call this IMMEDIATELY
+ * after a successful verifyToolGrant() and BEFORE dispatching the tool. Returns
+ * ok:false with TOOL_GRANT_REPLAY when the grant was already honored. The nonce
+ * is retained until the grant's expiresAt (a replay of an expired grant is
+ * already caught by verifyToolGrant's expiry check).
+ */
+export async function consumeGrantNonce(
+  grant: ToolGrant,
+  nowMs?: number,
+): Promise<{ ok: true } | { ok: false; code: "TOOL_GRANT_REPLAY"; message: string }> {
+  const now = nowMs ?? Date.now();
+  const fresh = await getNonceStore().consume(grant.nonce, grant.expiresAt * 1000, now);
+  if (!fresh) {
+    return { ok: false, code: "TOOL_GRANT_REPLAY", message: "grant nonce has already been used" };
   }
-  _nextSweepAtMs = nowMs + SWEEP_INTERVAL_MS;
-}
-
-/** True if this nonce was already consumed by an honored grant. */
-export function nonceSeen(nonce: string): boolean {
-  return _nonceStore.has(nonce);
-}
-
-/** Record a nonce as consumed until `expiresAtMs`. */
-export function recordNonce(nonce: string, expiresAtMs: number, nowMs: number): void {
-  sweepNonces(nowMs);
-  _nonceStore.set(nonce, expiresAtMs);
+  return { ok: true };
 }
 
 /** Test seam — wipe the replay store between cases. */
-export function __resetNonceStore(): void {
-  _nonceStore.clear();
-  _nextSweepAtMs = 0;
+export async function __resetNonceStore(): Promise<void> {
+  await __resetNonceStoreForTest();
 }
 
 // ── Category gating ──────────────────────────────────────────────────────────
@@ -264,7 +259,8 @@ export function grantMode(): GrantMode {
  *                        rejected in BOTH grace and enforce (the caller decides
  *                        only what to do with a MISSING grant).
  *
- * On success the nonce is recorded (single-use) and { ok:true } is returned.
+ * On success { ok:true, grant } is returned. Replay protection is a SEPARATE
+ * async step: the caller MUST call consumeGrantNonce(grant) before dispatching.
  */
 export function verifyToolGrant(
   rawGrant: unknown,
@@ -370,12 +366,8 @@ export function verifyToolGrant(
     };
   }
 
-  // Replay: reject if this exact grant was already honored. Checked last so a
-  // nonce is only ever consumed by an otherwise-valid grant.
-  if (nonceSeen(grant.nonce)) {
-    return { ok: false, code: "TOOL_GRANT_REPLAY", message: "grant nonce has already been used" };
-  }
-  recordNonce(grant.nonce, grant.expiresAt * 1000, nowMs);
-
+  // Replay protection is a SEPARATE async step — the caller must invoke
+  // consumeGrantNonce(grant) right after this returns ok and before it
+  // dispatches. (Keeps this function synchronous + golden-vector stable.)
   return { ok: true, grant };
 }
