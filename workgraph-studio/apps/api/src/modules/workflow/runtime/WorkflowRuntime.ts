@@ -29,6 +29,7 @@ import { activateParallelJoin } from './executors/ParallelJoinExecutor'
 import { activateSignalEmit } from './executors/SignalEmitExecutor'
 import { activateEventEmit } from './executors/EventEmitExecutor'
 import { activateVerifier } from './executors/VerifierExecutor'
+import { activateGovernanceGate } from './executors/GovernanceGateExecutor'
 import { activateSetContext } from './executors/SetContextExecutor'
 import { activateErrorCatch } from './executors/ErrorCatchExecutor'
 
@@ -434,13 +435,14 @@ function reachableDownstreamNodeIds(startNodeId: string, edges: { sourceNodeId: 
 
 function clearBlockedContext(context: Record<string, unknown>, nodeType?: string): Record<string, unknown> {
   const next = { ...context }
-  const knownKeys = ['_blockedByGitPush', '_blockedByPolicyCheck', '_blockedByEvalGate']
+  const knownKeys = ['_blockedByGitPush', '_blockedByPolicyCheck', '_blockedByEvalGate', '_blockedByGovernanceGate']
   for (const key of knownKeys) {
     if (
       !nodeType ||
       (nodeType === 'GIT_PUSH' && key === '_blockedByGitPush') ||
       (nodeType === 'POLICY_CHECK' && key === '_blockedByPolicyCheck') ||
-      (nodeType === 'EVAL_GATE' && key === '_blockedByEvalGate')
+      (nodeType === 'EVAL_GATE' && key === '_blockedByEvalGate') ||
+      (nodeType === 'GOVERNANCE_GATE' && key === '_blockedByGovernanceGate')
     ) {
       delete next[key]
     }
@@ -563,6 +565,15 @@ async function executeServerNode(
     }
     case 'EVAL_GATE': {
       const result = await activateEvalGate(node, instance, actorId)
+      if (result.passed) await advance(instance.id, node.id, result.output, actorId)
+      break
+    }
+    case 'GOVERNANCE_GATE': {
+      // Capability Governance Gate — resolves the IAM-managed overlay, evaluates the
+      // unsatisfied REQUIRED/BLOCKING controls (parity with CF's in-stage gate), then
+      // passes/warns/blocks. On block the executor already set node BLOCKED + instance
+      // PAUSED (reason in _blockedByGovernanceGate).
+      const result = await activateGovernanceGate(node, instance, actorId)
       if (result.passed) await advance(instance.id, node.id, result.output, actorId)
       break
     }
