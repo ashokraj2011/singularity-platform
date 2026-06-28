@@ -43,6 +43,9 @@ LOG_DIR="$ROOT/logs"
 PID_FILE="$ROOT/.pids"
 ENV_FILE="$ROOT/.env.local"
 DEVICE_TOKEN_FILE="${DEVICE_TOKEN_FILE:-$ROOT/.singularity/laptop-device-token}"
+# Per-checkout runtime id (see ensure_runtime_id). A FIXED shared id makes every
+# stack register to the same CF-bridge slot (user, id) and evict each other.
+RUNTIME_ID_FILE="${RUNTIME_ID_FILE:-$ROOT/.singularity/runtime-id}"
 
 # Laptop secrets (.env.laptop — Copilot BYOK key/model, GITHUB_TOKEN, git push
 # flags). Same file bin/laptop.sh and the desktop app read, so a bare-metal `up`
@@ -506,6 +509,31 @@ load_runtime_token() {
     unset SINGULARITY_RUNTIME_TOKEN SINGULARITY_DEVICE_TOKEN
   fi
   return 1
+}
+
+# Resolve a STABLE, UNIQUE-per-stack runtime id and export it before the token is
+# minted + the runtime is booted. The old fixed default ("baremetal-mcp-runtime")
+# made every concurrent stack/checkout register to the same CF-bridge slot
+# (user, id), so they evicted each other in a "replaced" loop and tool/model
+# dispatch broke. An explicit SINGULARITY_RUNTIME_ID still wins; otherwise we
+# persist a per-checkout id in .singularity/runtime-id (stable across restarts).
+ensure_runtime_id() {
+  if [ -n "${SINGULARITY_RUNTIME_ID:-}" ]; then
+    export SINGULARITY_RUNTIME_ID
+    return 0
+  fi
+  if [ -s "$RUNTIME_ID_FILE" ]; then
+    SINGULARITY_RUNTIME_ID="$(tr -d '\n' < "$RUNTIME_ID_FILE")"
+  else
+    local gen
+    gen="$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+    [ -n "$gen" ] || gen="$(printf '%s' "$ROOT" | shasum -a 256 2>/dev/null | cut -c1-12)"
+    SINGULARITY_RUNTIME_ID="bm-mcp-${gen:-$$}"
+    mkdir -p "$(dirname "$RUNTIME_ID_FILE")"
+    printf '%s' "$SINGULARITY_RUNTIME_ID" > "$RUNTIME_ID_FILE"
+    info "minted unique runtime id $SINGULARITY_RUNTIME_ID (persisted to $RUNTIME_ID_FILE)"
+  fi
+  export SINGULARITY_RUNTIME_ID
 }
 
 mint_runtime_token_via_iam() {
@@ -1198,6 +1226,7 @@ SQL
   # instead of the GitHub Copilot quota. Export COPILOT_PROVIDER_TYPE=anthropic,
   # COPILOT_PROVIDER_BASE_URL, COPILOT_PROVIDER_API_KEY, COPILOT_MODEL then re-run up.
   if [ "${SKIP_LOCAL_RUNTIME:-0}" != "1" ]; then
+    ensure_runtime_id
     ensure_runtime_token || true
     MCP_COMMON="cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" MCP_DEFAULT_GOVERNANCE_MODE=\"$MCP_DEFAULT_GOVERNANCE_MODE\" MCP_TOOL_GRANT_MODE=\"$MCP_TOOL_GRANT_MODE\" MCP_REQUIRE_EFFECTIVE_CAPABILITIES=\"$MCP_REQUIRE_EFFECTIVE_CAPABILITIES\" TOOL_GRANT_SIGNING_SECRET=\"$TOOL_GRANT_SIGNING_SECRET\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_SANDBOX_ROOT=\"$MCP_WS\" MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" LEARNING_SERVICE_TOKEN=\"$LEARNING_SERVICE_TOKEN\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" ${COPILOT_PROVIDER_TYPE:+COPILOT_PROVIDER_TYPE=\"$COPILOT_PROVIDER_TYPE\" }${COPILOT_PROVIDER_BASE_URL:+COPILOT_PROVIDER_BASE_URL=\"$COPILOT_PROVIDER_BASE_URL\" }${COPILOT_PROVIDER_API_KEY:+COPILOT_PROVIDER_API_KEY=\"$COPILOT_PROVIDER_API_KEY\" }${COPILOT_MODEL:+COPILOT_MODEL=\"$COPILOT_MODEL\" }${MCP_GIT_PUSH_ENABLED:+MCP_GIT_PUSH_ENABLED=\"$MCP_GIT_PUSH_ENABLED\" }${MCP_GIT_AUTH_MODE:+MCP_GIT_AUTH_MODE=\"$MCP_GIT_AUTH_MODE\" }${GITHUB_TOKEN:+GITHUB_TOKEN=\"$GITHUB_TOKEN\" }${GH_TOKEN:+GH_TOKEN=\"$GH_TOKEN\" }"
     if [ -n "${SINGULARITY_RUNTIME_TOKEN:-}" ]; then
