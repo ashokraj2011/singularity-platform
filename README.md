@@ -67,7 +67,7 @@ bin/clone-and-test-deployments.sh \
   --reset-target
 ```
 
-See [Deployment Test Matrix](./docs/deployment-test-matrix.md) for pushed-clone, dirty-working-tree, bare-metal, and runtime-bridge variants.
+See [Deployment Test Matrix](./docs/deployment-test-matrix.md) for pushed-clone, dirty-working-tree, bare-metal, and runtime-bridge variants. To test the two LLM execution paths (Anthropic gateway + Copilot CLI), see [Testing Copilot + Anthropic Gateways](./docs/testing-copilot-and-anthropic.md).
 
 In production or hybrid development, point services at remote `llm-gateway` and MCP endpoints instead of starting those profiles locally.
 Operations readiness in `platform-web` separates required core services from optional runtime infrastructure. Open `/operations/readiness` to see core backend health, and the MCP/LLM Gateway/Formal Verifier/audit endpoints as local, remote, unavailable, or not configured without treating every optional runtime as a platform outage. `/foundry` is a first-class route backed by Workgraph, not a separate Code Foundry API container.
