@@ -190,7 +190,6 @@ wait_http() {
 
 BARE_METAL_APP_PORT_SPECS=(
   "3001:agent-service"
-  "3002:tool-service"
   "3003:agent-runtime"
   "3004:prompt-composer"
   "5180:platform-web"
