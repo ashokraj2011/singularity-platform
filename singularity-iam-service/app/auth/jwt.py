@@ -38,9 +38,10 @@ def create_service_token(
         "tenant_ids":     sorted({tenant_id.strip() for tenant_id in (tenant_ids or []) if tenant_id.strip()}),
         "issued_by":      issued_by_user_id,
         "exp":            expire,
-        # Mark super-admin so existing deps that gate on it keep working until
-        # we add proper scope enforcement.
-        "is_super_admin": True,
+        # SECURITY: service tokens carry NO is_super_admin — authorization is by
+        # explicit `scopes` only (IAM's require_super_admin already rejects
+        # service principals). Removed the compat bridge; consuming services must
+        # gate on scopes, never on a service token's admin flag.
     }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
@@ -81,9 +82,9 @@ def create_device_token(
         "device_name":  device_name,
         "scopes":       list(scopes),
         "exp":          expire,
-        # Devices are tied to a real user — they inherit the user's super-admin
-        # status, but downstream consumers should prefer `scopes` for gating.
-        "is_super_admin": True,
+        # SECURITY: device/runtime tokens carry NO is_super_admin — gating is by
+        # `scopes` only, and these tokens are valid only on runtime-bridge /
+        # device surfaces (user-facing service APIs reject kind=device|runtime).
     }
     if kind == "runtime":
         payload.update({

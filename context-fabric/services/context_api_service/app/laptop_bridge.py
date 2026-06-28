@@ -197,18 +197,21 @@ async def runtime_connect(ws: WebSocket) -> None:
         await ws.close(code=4400, reason=f"expected hello, got {hello.get('type')}")
         return
 
-    user_id = str(hello.get("user_id") or claims.get("user_id") or claims.get("sub") or "")
+    # SECURITY: identity + routing fields come from the VERIFIED JWT claims ONLY.
+    # The client-supplied hello frame is advisory metadata (device_name,
+    # runtime_type, supported_frame_types, health) and must NOT be able to set
+    # user_id / tenant_id / runtime_id / shared / capability_tags — otherwise a
+    # holder of any valid runtime token could register as another user, tenant,
+    # or shared runtime and have tool/model/code work misrouted to them.
+    user_id = str(claims.get("user_id") or claims.get("sub") or "")
     tenant_id = str(
-        hello.get("tenant_id")
-        or claims.get("tenant_id")
+        claims.get("tenant_id")
         or claims.get("tenant")
         or claims.get("org_id")
         or ""
     )
     runtime_id = str(
-        hello.get("runtime_id")
-        or claims.get("runtime_id")
-        or hello.get("device_id")
+        claims.get("runtime_id")
         or claims.get("device_id")
         or claims.get("sub")
         or ""
@@ -216,6 +219,11 @@ async def runtime_connect(ws: WebSocket) -> None:
     if not user_id or not runtime_id:
         await ws.close(code=4401, reason="missing runtime identity")
         return
+    # Log (never trust) hello fields that conflict with the verified identity.
+    for _field, _claimed in (("user_id", user_id), ("tenant_id", tenant_id), ("runtime_id", runtime_id)):
+        _h = hello.get(_field) if _field != "runtime_id" else (hello.get("runtime_id") or hello.get("device_id"))
+        if _h is not None and str(_h) != _claimed:
+            log.warning("ignoring hello.%s=%r conflicting with verified claim %r", _field, _h, _claimed)
 
     runtime_type = str(hello.get("runtime_type") or claims.get("runtime_type") or "mcp")
     device_name = str(hello.get("device_name") or claims.get("device_name") or runtime_id)
@@ -230,17 +238,16 @@ async def runtime_connect(ws: WebSocket) -> None:
     if not supported_frame_types:
         await ws.close(code=4401, reason="no allowed frame types")
         return
-    tags_raw = hello.get("capability_tags") or claims.get("capability_tags") or claims.get("capabilities")
+    # capability_tags + shared are routing-relevant → verified claims ONLY.
+    tags_raw = claims.get("capability_tags") or claims.get("capabilities")
     capability_tags = (
         [str(s) for s in tags_raw] if isinstance(tags_raw, list) else []
     )
     health_raw = hello.get("health")
     health = health_raw if isinstance(health_raw, dict) else {}
     shared = bool(
-        hello.get("shared")
-        or claims.get("shared")
-        or str(hello.get("runtime_scope") or claims.get("runtime_scope") or "").lower()
-        in {"tenant", "shared"}
+        claims.get("shared")
+        or str(claims.get("runtime_scope") or "").lower() in {"tenant", "shared"}
     )
 
     conn = ActiveConnection(

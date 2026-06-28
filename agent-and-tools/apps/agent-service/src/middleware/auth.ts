@@ -34,10 +34,18 @@ function iamApiBase(): string | null {
   return trimmed.endsWith("/api/v1") ? trimmed : `${trimmed}/api/v1`;
 }
 
-function userFromDecoded(decoded: AuthUser & { sub?: string }): AuthUser {
+// SECURITY: device/runtime tokens are valid ONLY on runtime-bridge/device
+// surfaces — reject them here (returns null). is_super_admin is honored ONLY from
+// real user tokens; service tokens are authorized by scope, not by an admin flag
+// (prevents confused-deputy escalation via shared-secret JWTs).
+function principalFromDecoded(decoded: AuthUser & { sub?: string; kind?: string }): AuthUser | null {
+  const kind = typeof decoded.kind === "string" ? decoded.kind.toLowerCase() : "user";
+  if (kind === "device" || kind === "runtime") return null;
+  const isUser = kind === "user";
   return {
     ...decoded,
     user_id: decoded.user_id ?? decoded.sub ?? "",
+    is_super_admin: isUser ? decoded.is_super_admin === true : false,
   };
 }
 
@@ -71,7 +79,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   const token = header.slice(7);
   try {
     const secret = process.env.JWT_SECRET ?? "dev-secret-change-in-prod";
-    req.user = userFromDecoded(jwt.verify(token, secret) as AuthUser & { sub?: string });
+    req.user = principalFromDecoded(jwt.verify(token, secret) as AuthUser & { sub?: string; kind?: string }) ?? undefined;
   } catch {
     req.user = await verifyWithIam(token) ?? undefined;
   }
@@ -88,7 +96,7 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
     const token = header.slice(7);
     try {
       const secret = process.env.JWT_SECRET ?? "dev-secret-change-in-prod";
-      req.user = userFromDecoded(jwt.verify(token, secret) as AuthUser & { sub?: string });
+      req.user = principalFromDecoded(jwt.verify(token, secret) as AuthUser & { sub?: string; kind?: string }) ?? undefined;
     } catch {
       req.user = await verifyWithIam(token) ?? undefined;
     }
