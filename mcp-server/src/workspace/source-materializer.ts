@@ -68,6 +68,34 @@ async function git(args: string[], opts?: { cwd?: string; allowFail?: boolean; m
   }
 }
 
+// [P1] Repo-grounding resilience — a `git fetch` is a network round trip and
+// the single most failure-prone step in materialization. Retry transient
+// failures with backoff before giving up. Returns whether the fetch ultimately
+// succeeded (stdout is empty on success, so the boolean — not the output — is
+// how callers know). Never throws; callers decide what an exhausted fetch means
+// (fall back to a cached base WITH a warning, or fail the stage).
+async function gitFetchWithRetry(
+  args: string[],
+  opts?: { cwd?: string; maxBuffer?: number; attempts?: number },
+): Promise<boolean> {
+  const attempts = Math.max(1, opts?.attempts ?? 3);
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      await git(args, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer ?? 20 * 1024 * 1024 });
+      return true;
+    } catch (err) {
+      if (i === attempts - 1) {
+        console.warn(
+          `[source-materializer] git ${args.join(" ")} failed after ${attempts} attempt(s): ${(err as Error).message}`,
+        );
+        return false;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** i));
+    }
+  }
+  return false;
+}
+
 // M-fix (cwd race) — initialize a git repo at an EXPLICIT target directory,
 // run from the stable parent dir, never from `root` itself.
 //
@@ -146,14 +174,32 @@ async function currentHead(): Promise<string | undefined> {
 async function checkoutRef(sourceRef?: string): Promise<void> {
   const ref = sourceRef?.trim();
   if (!ref) return;
-  await git(["fetch", "--depth=1", "origin", ref], { allowFail: true });
+  const fetchOk = await gitFetchWithRetry(["fetch", "--depth=1", "origin", ref]);
   const remoteRef = await git(["rev-parse", "--verify", `origin/${ref}`], { allowFail: true });
   if (remoteRef) {
+    if (!fetchOk) {
+      // The fetch failed but a cached origin/<ref> exists from a prior run. We
+      // ground on it rather than failing the stage — but NOT silently: the base
+      // may be stale, so code context might not reflect the latest remote.
+      console.warn(
+        `[source-materializer] fetch of origin/${ref} failed; grounding on a CACHED, possibly STALE base ` +
+        `${remoteRef.slice(0, 12)} — code context may not reflect the latest remote.`,
+      );
+    }
     await git(["checkout", "-B", ref.replace(/[^a-zA-Z0-9._/-]+/g, "-"), `origin/${ref}`]);
     return;
   }
   const fetched = await git(["rev-parse", "--verify", "FETCH_HEAD"], { allowFail: true });
-  if (fetched) await git(["checkout", "--detach", "FETCH_HEAD"]);
+  if (fetched) {
+    await git(["checkout", "--detach", "FETCH_HEAD"]);
+    return;
+  }
+  // No cached ref AND nothing fetched. If the fetch failed, fail loudly rather
+  // than leaving the workspace on whatever happened to be checked out — a silent
+  // stale/empty base is the exact failure mode this guards against.
+  if (!fetchOk) {
+    throw new Error(`unable to fetch ref '${ref}' from origin and no cached copy is available`);
+  }
 }
 
 async function cloneIntoWorkspace(cloneUrl: string, sourceRef?: string): Promise<void> {
@@ -173,17 +219,23 @@ async function cloneIntoWorkspace(cloneUrl: string, sourceRef?: string): Promise
   const ref = sourceRef?.trim();
   if (ref) {
     try {
-      await git(["fetch", "--depth=1", "origin", ref], { cwd: root, maxBuffer: 20 * 1024 * 1024 });
+      if (!(await gitFetchWithRetry(["fetch", "--depth=1", "origin", ref], { cwd: root }))) {
+        throw new Error(`fetch of ref '${ref}' from origin failed after retries`);
+      }
       await checkoutRef(ref);
     } catch {
       await removeWorkspaceContents(root);
       await initRepoAtRoot(root);
       await git(["remote", "add", "origin", cloneUrl], { cwd: root });
-      await git(["fetch", "--depth=1", "origin"], { cwd: root, maxBuffer: 20 * 1024 * 1024 });
+      if (!(await gitFetchWithRetry(["fetch", "--depth=1", "origin"], { cwd: root }))) {
+        throw new Error("failed to fetch default branch from origin after retries");
+      }
       await git(["checkout", "-B", "main", "FETCH_HEAD"], { cwd: root });
     }
   } else {
-    await git(["fetch", "--depth=1", "origin"], { cwd: root, maxBuffer: 20 * 1024 * 1024 });
+    if (!(await gitFetchWithRetry(["fetch", "--depth=1", "origin"], { cwd: root }))) {
+      throw new Error("failed to fetch default branch from origin after retries");
+    }
     await git(["checkout", "-B", "main", "FETCH_HEAD"], { cwd: root });
   }
 }
