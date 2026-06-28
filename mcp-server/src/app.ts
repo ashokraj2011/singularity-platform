@@ -35,7 +35,13 @@ import { config } from "./config";
 export const app = express();
 
 app.use(helmet());
-app.use(cors());
+// SECURITY: restrict CORS to a configured allowlist instead of reflecting any
+// origin. MCP is an internal bearer-auth runtime (no browser cookies); set
+// MCP_CORS_ORIGINS (comma-separated) for any browser UI that must call it,
+// otherwise cross-origin requests are refused.
+const mcpCorsOrigins = (process.env.MCP_CORS_ORIGINS ?? "http://localhost:5173,http://localhost:5180,http://localhost:3000")
+  .split(",").map((o) => o.trim()).filter(Boolean);
+app.use(cors({ origin: mcpCorsOrigins.length ? mcpCorsOrigins : false }));
 app.use(express.json({ limit: "5mb" }));
 app.use(requestIdMiddleware);
 

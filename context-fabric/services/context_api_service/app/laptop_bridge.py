@@ -29,7 +29,7 @@ from typing import Any, Optional
 import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from .config import settings
+from .config import settings, is_production_class_env
 from .iam_service_token import get_iam_service_token, invalidate_iam_service_token
 from .laptop_registry import REGISTRY, ActiveConnection
 
@@ -88,11 +88,13 @@ HEARTBEAT_SWEEP_SEC = 30
 # without waiting for its (up-to-365-day) natural expiry, so the bridge asks IAM whether
 # the device row is revoked: once at connect, then periodically for live connections.
 REVOCATION_RECHECK_SEC = int(os.environ.get("RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC", "300"))
-# When IAM can't be reached, fail OPEN by default so a transient IAM blip doesn't take
-# down all runtime dial-in; the periodic recheck still catches the device once IAM
-# recovers. Set RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN=false to fail closed (reject when
-# revocation can't be confirmed at connect).
-REVOCATION_FAIL_OPEN = os.environ.get("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", "true").lower() not in ("0", "false", "no")
+# SECURITY: when IAM can't be reached at connect, fail CLOSED by default in
+# production-class envs (a revoked device must not slip in during an IAM blip),
+# and fail OPEN only in dev so a local IAM blip doesn't take down dial-in. The
+# periodic recheck still catches the device once IAM recovers. Override
+# explicitly with RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN={true,false}.
+_rev_fail_open_default = "false" if is_production_class_env() else "true"
+REVOCATION_FAIL_OPEN = os.environ.get("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", _rev_fail_open_default).lower() not in ("0", "false", "no")
 
 
 def _iam_api_base() -> Optional[str]:
