@@ -261,6 +261,43 @@ function contractMintRequiredForActiveTemplate(): boolean {
 }
 
 /**
+ * Record a freshly-minted contract's pin on the template version row.
+ *
+ * The contract ALREADY exists in composer by the time this runs, so this step
+ * is best-effort + idempotent: a transient DB blip must NOT be reported as a
+ * mint failure (that would make the caller revert an activation whose contract
+ * was already minted, and re-mint a duplicate on retry). Retries once, then
+ * logs loudly and returns — the pin is recoverable (re-mint is an upsert, and
+ * the contract is queryable from composer by templateId+version). Never throws.
+ */
+async function recordContractPin(
+  template: TemplateSnapshotSource,
+  contractId: string,
+  contractHash: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await prisma.agentTemplateVersion.update({
+        where: { agentTemplateId_version: { agentTemplateId: template.id, version: template.version } },
+        data: { contractHash, contractId },
+      });
+      return;
+    } catch (err) {
+      if (attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        continue;
+      }
+      // eslint-disable-next-line no-console
+      console.error(
+        `[agent-service] contract ${contractId} minted for ${template.id}@v${template.version} ` +
+        `but recording its pin failed: ${(err as Error).message}. The contract exists in composer; ` +
+        `the version-row pin is unset and should be reconciled.`,
+      );
+    }
+  }
+}
+
+/**
  * M40 — Mint an ImmutableContract when a template transitions to ACTIVE.
  *
  * Local/dev runs can keep publishing during composer outages, but
@@ -303,11 +340,10 @@ async function maybeMintContract(template: TemplateSnapshotSource, actor?: AuthU
     }
     const body = await res.json() as { success: boolean; data: { id: string; bundleHash: string } };
     if (!body.success) return { minted: false, reason: "prompt-composer returned success=false" };
-    // Record the contract on the version row (best-effort — UPDATE outside tx).
-    await prisma.agentTemplateVersion.update({
-      where: { agentTemplateId_version: { agentTemplateId: template.id, version: template.version } },
-      data: { contractHash: body.data.bundleHash, contractId: body.data.id },
-    });
+    // The contract now EXISTS in composer. Recording its pin on the version row
+    // is a SEPARATE, recoverable step — it must not flip a successful mint to
+    // "failed" (that would revert the activation and re-mint a duplicate).
+    await recordContractPin(template, body.data.id, body.data.bundleHash);
     return { minted: true };
   } catch (err) {
     const reason = (err as Error).message;
