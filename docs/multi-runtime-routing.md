@@ -1,0 +1,179 @@
+# Multi-Runtime Registration & Routing (mcp + llm · laptop + cloud)
+
+> **Scope.** This complements two existing docs — [`deployment-topology.md`](deployment-topology.md)
+> (placement *modes*) and [`bare-metal-cloud-laptop-runtime.md`](bare-metal-cloud-laptop-runtime.md)
+> (setup, secrets, JWT keying). It focuses on the part those don't cover: how the
+> Context Fabric **runtime-bridge registry** connects to and routes across
+> **multiple** mcp/llm runtimes, the **one-token-per-runtime** identity rule, and the
+> duplicate-id failure mode that motivated this doc.
+
+## TL;DR
+
+- The bridge is a **registry, not a single connection** — multiple mcp *and* llm
+  runtimes, across multiple users/tenants, are a first-class capability.
+- A frame is routed by **(user / tenant) → capability tags → frame type**, and the
+  **first** eligible runtime wins (no load-balancing — see §6).
+- **Hard rule:** every runtime needs a **unique `runtime_id`, carried in its own
+  IAM-minted token.** Identity is *token-authoritative* — the client hello is
+  advisory. Two runtimes sharing an id evict each other in a loop (§5).
+
+---
+
+## 1. The registry and the routing decision
+
+Runtimes connect to CF over a WebSocket (`/api/runtime-bridge/connect`) and are
+held in an in-memory registry keyed **`user_id → device_id → connection`**
+([`laptop_registry.py`](../context-fabric/services/context_api_service/app/laptop_registry.py)).
+
+`select_runtime()` picks the connection for each outbound frame:
+
+1. **user-owned** runtime for the run's user, else
+2. a **tenant/shared** runtime for the run's tenant.
+
+It never falls back to another user's runtime. Eligibility (`_matches`) requires:
+
+- `frame_type ∈ conn.supported_frame_types`, **and**
+- requested `capability_tags ⊆ conn.capability_tags`, **and**
+- tenant compatible (a tenant-bound request won't go to a different tenant's runtime).
+
+### Frame type ↔ what serves it
+
+| Frame | Purpose | Served by a runtime advertising |
+|-------|---------|--------------------------------|
+| `tool-run` | execute one governed tool (apply_patch, run_command, copilot_execute, …) | `tools` / `mcp` |
+| `model-run` | place an LLM call on the runtime (calls its local gateway/provider) | `llm` |
+| `code-context` | build the repo code-context package | `mcp` |
+| `invoke` | legacy whole-loop drive | `mcp` |
+
+So **tools and models are routed independently** — by frame type + capability tag —
+even though they often live on the same runtime.
+
+---
+
+## 2. Identity: one token per runtime (token-authoritative)
+
+CF derives **all** identity/routing fields — `user_id`, `tenant_id`, `runtime_id`,
+`capability_tags`, `shared` — from the **verified JWT claims only**. The client
+hello is advisory metadata (device_name, health, supported_frame_types) and any
+hello field that conflicts with a claim is **logged and ignored**
+([`laptop_bridge.py` security note](../context-fabric/services/context_api_service/app/laptop_bridge.py)).
+This is deliberate: otherwise any holder of a valid runtime token could register
+as another user/tenant and have work misrouted to them.
+
+Consequence: **uniqueness and capabilities must live in the token**, not in an env
+var the runtime echoes in its hello.
+
+```
+kind=runtime · sub=<iam-user-id> · runtime_id=<UNIQUE per runtime>
+runtime_type=mcp · capability_tags=[…] · (optional) tenant_id, allowed_frame_types, shared
+```
+
+`runtime_id` resolves as `claims.runtime_id || claims.device_id || claims.sub`. If
+you leave it unset it falls all the way back to the **user id**, so *every* runtime
+for that user collides on one slot. **Always mint a distinct `runtime_id`.**
+
+---
+
+## 3. Supported shapes
+
+**(a) One combined laptop runtime (recommended for "mcp+llm on laptop").**
+`capability_tags=[mcp,tools,llm]`, `supported_frame_types=[tool-run,model-run,code-context,invoke]`.
+The cloud routes both tool execution and LLM calls to the same connection.
+
+**(b) Split mcp-only + llm-only runtimes.**
+mcp runtime: `tags=[mcp,tools]`, `frames=[tool-run,code-context]`. llm runtime:
+`tags=[llm]`, `frames=[model-run]`. Each with its **own** `runtime_id` + token.
+`select_runtime` sends tool-runs to the first, model-runs to the second.
+
+**(c) Multi-user fan-out.** Each developer's laptop registers under *their* IAM
+`user_id`; the cloud routes each user's run to their own laptop. N laptops, one
+cloud control plane.
+
+**(d) Shared tenant runtime.** A runtime minted with `shared=true` + a `tenant_id`
+serves any user in that tenant (used after the user-owned lookup). Lets you blend
+per-user laptops with a shared cloud runtime for the same tenant.
+
+---
+
+## 4. Placement: who decides laptop vs cloud
+
+The governed loop always runs in the **cloud**; CF decides **per call** whether to
+place the LLM call / tool call on a laptop runtime via the placement layer
+(`governed/placement.py` → `llm_laptop_target`, `runtime_tenant_target`,
+`runtime_capability_tags`; consumed in `governed/turn.py`). When a laptop serves
+`model-run`, `call_gateway_chat` dispatches the model call over the bridge instead
+of the cloud gateway. See [`deployment-topology.md` §5–6](deployment-topology.md)
+for the placement policy and the model-run path.
+
+---
+
+## 5. Failure mode: duplicate `runtime_id` → the "replaced" storm
+
+**What happened (incident, 2026-06-28).** `bin/bare-metal.sh` mints the runtime
+token against a hardcoded `SINGULARITY_RUNTIME_ID=baremetal-mcp-runtime`. Three
+checkouts (`adoptionRun`, `julyRun`, `testAgain`) were running at once, all minting
+for the **same user + same `baremetal-mcp-runtime`** → all mapping to one registry
+slot `(user, baremetal-mcp-runtime)`.
+
+`register()` closes any existing connection for that slot with `reason="replaced"`
+and **fails its in-flight calls**:
+
+```python
+existing = by_device.get(conn.device_id)
+if existing is not None and existing.ws is not conn.ws:
+    await existing.ws.close(code=1000, reason="replaced")
+    self._fail_pending(existing, "runtime replaced by a new connection")
+by_device[conn.device_id] = conn
+```
+
+With ~38 mcp processes thrashing one slot (~2,400 disconnects), CF could never
+hold a stable connection → tool/model dispatch failed → the SDLC workbench loop
+500'd. **mcp also never bound `:7100`** because it was in dial-in mode, which is
+expected (it talks to CF over the bridge, not HTTP).
+
+**Detection.** In `logs/mcp-server.log`: a healthy runtime shows **one**
+`registered with bridge`; a collision shows a repeating
+`WS closed … reason: "replaced"` loop.
+
+**Fix.** One unique `runtime_id` per runtime (and don't run overlapping stacks
+against one CF). The bare-metal hardcoded default should become unique-per-stack
+(e.g. a UUID persisted in `.singularity/runtime-id`, used to mint the token) — a
+small, recommended change.
+
+---
+
+## 6. Known limitation: first-match, not load-balanced
+
+`select_runtime` returns the **first** eligible runtime for a user — it does not
+round-robin or load-balance. So running **two identical** runtimes for one user
+does not split load; one effectively wins. To steer work deliberately, **give
+runtimes distinct `capability_tags`** (e.g. `tools` on one, `llm` on another)
+rather than two identical ones. Capability-weighted / round-robin selection across
+identical runtimes is a future enhancement, not current behavior.
+
+---
+
+## 7. Recommended setup for "mcp + llm on laptop, rest in the cloud"
+
+1. **One combined laptop runtime** advertising `[mcp,tools,llm]` (simplest; the
+   cloud routes both tools and models to it).
+2. **Unique `runtime_id`**, minted into the runtime's **own** IAM token (via the
+   Portal "register runtime" flow, or `bin/mcp-runtime-setup.sh`). Never reuse one
+   token / id across machines.
+3. **Provider keys + `GITHUB_TOKEN` stay on the laptop** (`.env.llm-secrets`);
+   never copied to the cloud — see [`bare-metal-cloud-laptop-runtime.md`](bare-metal-cloud-laptop-runtime.md).
+4. **Cloud** runs CF / workgraph / IAM / composer / audit / DBs; **placement**
+   routes model + tools to your laptop.
+5. Adding more runtimes later → each gets a **distinct id + token + capability tags**.
+
+---
+
+## 8. Code map
+
+| Concern | File |
+|---|---|
+| Registry + routing (`select_runtime`, `_matches`, `register`) | `context-fabric/.../app/laptop_registry.py` |
+| Bridge auth + token-authoritative identity | `context-fabric/.../app/laptop_bridge.py` |
+| Runtime client (hello, `ensureDeviceId`, mode branch) | `mcp-server/src/laptop/relay-client.ts`, `mcp-server/src/index.ts` |
+| Placement (laptop vs cloud, per call) | `context-fabric/.../app/governed/placement.py`, `governed/turn.py` |
+| Launch scripts | `bin/bare-metal-runtime.sh`, `bin/laptop-bridge.sh`, `bin/mcp-runtime-setup.sh` |
