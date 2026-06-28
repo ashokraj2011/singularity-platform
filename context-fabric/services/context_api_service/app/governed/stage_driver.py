@@ -31,6 +31,7 @@ from .audit_emit import emit_governed_event
 from .history_compression import DEFAULT_RECENT_TURNS, compress_history
 from .llm_client import LLMGatewayError
 from .loop import GovernedStepResult, ToolCallOutcome
+from .memory_capture import capture_run_outcome_memory
 from .phase_state import Phase, PhaseState, advance_phase
 from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
 from .stage_execution_policy import StageExecutionPolicy, StageExecutionPolicyError, apply_execution_policy
@@ -2096,6 +2097,12 @@ async def run_stage(
 
         if _is_terminal_state(state):
             result.stop_reason = "FINALIZED"
+            # [#25 write] Capture the run outcome as a long-term-memory candidate
+            # (flag-gated CF_CAPTURE_RUN_MEMORY; best-effort, never blocks).
+            await capture_run_outcome_memory(
+                stage_key=stage_key, agent_role=agent_role, state=state,
+                result=result, run_context=run_context, bearer=bearer,
+            )
             return result
 
         if turn.step.validation_error and not turn.step.phase_advanced:
