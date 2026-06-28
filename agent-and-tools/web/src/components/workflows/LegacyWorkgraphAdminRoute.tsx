@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { Suspense, useMemo } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ArtifactDesignerPage } from "workgraph-web/features/artifact/ArtifactDesignerPage";
 import { ArtifactEditorPage } from "workgraph-web/features/artifact/ArtifactEditorPage";
@@ -40,7 +40,16 @@ function createQueryClient() {
 
 function WgProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useMemo(createQueryClient, []);
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  // Suspense boundary so the embedded workgraph-web pages can call
+  // next/navigation useSearchParams() without breaking `next build` static
+  // prerender (covers every Legacy*Route, which all render through WgProvider).
+  return (
+    <QueryClientProvider client={queryClient}>
+      <Suspense fallback={<div style={{ padding: 24, color: "var(--color-outline)" }}>Loading…</div>}>
+        {children}
+      </Suspense>
+    </QueryClientProvider>
+  );
 }
 
 export function LegacyWorkflowsRoute() {
