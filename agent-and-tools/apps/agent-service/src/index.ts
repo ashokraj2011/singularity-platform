@@ -74,6 +74,45 @@ app.get("/healthz/strict", async (_req, res) => {
   });
 });
 
+// ── finding 10 — liveness vs readiness ──
+// /health (above) is LIVENESS: 200 whenever the process is up.
+// /ready is READINESS: 200 only once the DB + tool-schema invariants pass AND
+// the async bootstrap (learning-schema ensure, core-toolkit seed, event
+// dispatchers) has not hard-failed — so an orchestrator doesn't route traffic
+// to a half-initialized instance. It reuses /healthz/strict's invariants and
+// adds the bootstrap view that those invariants don't cover (dispatchers).
+type BootStep = "pending" | "ok" | "failed";
+const bootstrapState: Record<
+  "agentDispatcher" | "toolDispatcher" | "learningSchema" | "coreToolkit",
+  BootStep
+> = {
+  agentDispatcher: "pending",
+  toolDispatcher: "pending",
+  learningSchema: "pending",
+  coreToolkit: "pending",
+};
+
+app.get("/ready", async (_req, res) => {
+  const { runInvariantChecks } = await import("./tool/healthz-strict");
+  const invariants = await runInvariantChecks();
+  const b = bootstrapState;
+  // A dispatcher still "pending" does NOT block readiness — its start promise
+  // may stay unresolved while the drain loop runs. Only a hard "failed" blocks.
+  // learningSchema must reach "ok" (not covered by the invariants); the seed is
+  // also covered by the invariants' >=10-core-tools check.
+  const failed = Object.entries(b)
+    .filter(([, v]) => v === "failed")
+    .map(([k]) => k);
+  const ok = invariants.ok && failed.length === 0 && b.learningSchema === "ok";
+  res.status(ok ? 200 : 503).json({
+    ok,
+    service: "singularity-agent-resource-service",
+    invariants: invariants.checks,
+    bootstrap: b,
+    ...(failed.length ? { failed } : {}),
+  });
+});
+
 app.use(authOptional() ? optionalAuth : requireAuth);
 
 // ── Agent domain routes ──
@@ -104,12 +143,22 @@ app.use(errorHandler);
 
 // M11.e — start BOTH dispatchers; they drain separate outboxes
 // (agent.event_outbox / tool.event_outbox), so there is no contention.
-void startEventDispatcher().catch((err) => {
-  console.warn(`[eventbus] agent dispatcher failed to start: ${(err as Error).message}`);
-});
-void startToolEventDispatcher().catch((err) => {
-  console.warn(`[eventbus] tool dispatcher failed to start: ${(err as Error).message}`);
-});
+void startEventDispatcher()
+  .then(() => {
+    bootstrapState.agentDispatcher = "ok";
+  })
+  .catch((err) => {
+    bootstrapState.agentDispatcher = "failed";
+    console.warn(`[eventbus] agent dispatcher failed to start: ${(err as Error).message}`);
+  });
+void startToolEventDispatcher()
+  .then(() => {
+    bootstrapState.toolDispatcher = "ok";
+  })
+  .catch((err) => {
+    bootstrapState.toolDispatcher = "failed";
+    console.warn(`[eventbus] tool dispatcher failed to start: ${(err as Error).message}`);
+  });
 
 // M11.a — self-register both logical capability sets (no-op if env unset). Both
 // resolve to this one process/port now.
@@ -146,14 +195,24 @@ startToolSelfRegistration({
 });
 
 // M67 Slice 1A — Ensure the learning.* schema exists (idempotent).
-void ensureLearningSchema().catch((err) => {
-  console.warn(`[agent-resource-service] learning schema bootstrap failed: ${(err as Error).message}`);
-});
+void ensureLearningSchema()
+  .then(() => {
+    bootstrapState.learningSchema = "ok";
+  })
+  .catch((err) => {
+    bootstrapState.learningSchema = "failed";
+    console.warn(`[agent-resource-service] learning schema bootstrap failed: ${(err as Error).message}`);
+  });
 
 // M18 — seed the core toolkit (idempotent — only inserts missing rows).
-void seedCoreToolkit().catch((err) => {
-  console.warn(`[agent-resource-service] core-toolkit seed failed: ${(err as Error).message}`);
-});
+void seedCoreToolkit()
+  .then(() => {
+    bootstrapState.coreToolkit = "ok";
+  })
+  .catch((err) => {
+    bootstrapState.coreToolkit = "failed";
+    console.warn(`[agent-resource-service] core-toolkit seed failed: ${(err as Error).message}`);
+  });
 
 app.listen(PORT, () => {
   console.log(`[agent-resource-service] listening on port ${PORT} (agents + tools)`);

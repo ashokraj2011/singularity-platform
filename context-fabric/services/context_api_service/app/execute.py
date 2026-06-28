@@ -91,7 +91,16 @@ router = APIRouter()
 
 
 def check_execute_service_token(provided: Optional[str]) -> None:
-    if not is_production_class_env():
+    # SECURITY (review finding 7): enforce a service token whenever this is a
+    # production-class env OR tenant isolation is on (REQUIRE_TENANT_ID=true).
+    # "Dev" stacks frequently run tenant-isolated on shared hosts, where an
+    # unauthenticated /execute lets any reachable caller run context code across
+    # tenants. The ALLOW_UNAUTHENTICATED_DEV_EXECUTE escape hatch only relaxes
+    # NON-production envs (local single-tenant demos); prod always enforces.
+    enforce = is_production_class_env() or settings.require_tenant_id
+    if not enforce:
+        return
+    if settings.allow_unauthenticated_dev_execute and not is_production_class_env():
         return
     expected = settings.iam_service_token
     if not expected:
