@@ -28,6 +28,10 @@ const MAX_COMPILE_CONCURRENCY = Math.max(1, Number(process.env.CAPSULE_COMPILE_M
 const TTL_DAYS                = Math.max(1, Number(process.env.CAPSULE_TTL_DAYS ?? 30));
 const COLD_DAYS               = Math.max(1, Number(process.env.CAPSULE_COLD_DAYS ?? 30));
 const GC_INTERVAL_MS          = Math.max(60_000, Number(process.env.CAPSULE_GC_INTERVAL_MS ?? 15 * 60_000));
+// Size hardening — cap the cached compiled body. A RAW capsule is
+// JSON.stringify(layers), which is unbounded; an oversized row bloats the table
+// AND injects a huge layer on every cache hit. Over this, we skip the write.
+const MAX_CAPSULE_CHARS       = Math.max(1_000, Number(process.env.CAPSULE_MAX_CHARS ?? 200_000));
 
 const inflight = new Map<string, number>();
 
@@ -54,6 +58,13 @@ export function compileSlotSnapshot(): Record<string, number> {
  *  the GC sweep stay in sync if the env value changes. */
 export function capsuleExpiry(now: Date = new Date()): Date {
   return new Date(now.getTime() + TTL_DAYS * 24 * 60 * 60 * 1000);
+}
+
+/** True when a compiled capsule body is too large to cache. Caching it would
+ *  bloat the table AND inject an oversized layer on every hit — the cold path
+ *  already served raw chunks, so the caller skips the write instead. */
+export function capsuleTooLarge(compiledContent: string): boolean {
+  return compiledContent.length > MAX_CAPSULE_CHARS;
 }
 
 /** Delete expired-or-cold capsules. Cold = `hitCount=0 AND createdAt < now()-COLD_DAYS`.
