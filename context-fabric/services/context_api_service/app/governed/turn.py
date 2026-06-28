@@ -579,6 +579,46 @@ def _render_governance_facts(overlay: dict[str, Any]) -> str:
     return "## Governance for this stage\n" + "\n".join(lines)
 
 
+def _summarize_governance_overlay(overlay: dict[str, Any]) -> dict[str, Any]:
+    """[P1] Audit summary of WHAT a governance overlay enforced this turn — the
+    concrete tools / evidence / controls / layers, not just its hash — so replay
+    and audit can reconstruct the governance contribution without re-parsing the
+    rendered prompt text. Defensive on shape: every field degrades to empty."""
+    tp = overlay.get("toolPolicy")
+    tp = tp if isinstance(tp, dict) else {}
+    prompt_layers = overlay.get("promptLayers") or []
+    layer_keys = [
+        str(layer.get("layerKey"))
+        for layer in prompt_layers
+        if isinstance(layer, dict) and layer.get("layerKey")
+    ]
+    evidence_keys = [
+        str(e.get("evidenceKey"))
+        for e in (overlay.get("requiredEvidence") or [])
+        if isinstance(e, dict) and e.get("evidenceKey")
+    ]
+    blocking_controls = [
+        str(c.get("controlKey")) if isinstance(c, dict) and c.get("controlKey") else str(c)
+        for c in (overlay.get("blockingControls") or [])
+        if c
+    ]
+    return {
+        "overlayHash": overlay.get("overlayHash"),
+        "effectiveMode": overlay.get("effectiveMode"),
+        "governingEntities": [
+            g.get("capabilityId")
+            for g in (overlay.get("governingEntities") or [])
+            if isinstance(g, dict)
+        ],
+        "blockedTools": [str(t) for t in (tp.get("blocked") or []) if t],
+        "approvalRequiredTools": [str(t) for t in (tp.get("approvalRequired") or []) if t],
+        "requiredEvidence": evidence_keys,
+        "blockingControls": blocking_controls,
+        "promptLayerKeys": layer_keys,
+        "promptLayerCount": len(prompt_layers) if isinstance(prompt_layers, list) else 0,
+    }
+
+
 async def run_turn(
     *,
     state: PhaseState,
@@ -710,13 +750,13 @@ async def run_turn(
             policy=policy,
             run_context=run_context,
             payload={
-                "overlayHash": governance_overlay.get("overlayHash"),
-                "effectiveMode": governance_overlay.get("effectiveMode"),
-                "governingEntities": [
-                    g.get("capabilityId")
-                    for g in (governance_overlay.get("governingEntities") or [])
-                    if isinstance(g, dict)
-                ],
+                # [P1] Record WHAT governance contributed this turn (blocked /
+                # approval tools, required evidence, blocking controls, prompt
+                # layers) — not just the overlay hash — so the audit is complete
+                # without re-parsing the rendered prompt.
+                **_summarize_governance_overlay(governance_overlay),
+                "governanceFactsInjected": bool(gov_facts),
+                "governanceFactsChars": len(gov_facts) if gov_facts else 0,
             },
         )
 
