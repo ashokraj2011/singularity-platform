@@ -73,3 +73,17 @@ export function evaluateGovernanceBlock(
 
   return blocked
 }
+
+export type GateOutcome = 'PASSED' | 'WARNED' | 'BLOCKED' | 'APPROVAL_REQUESTED'
+
+/**
+ * Pure decision: given the unsatisfied blocking controls and the node's mode,
+ * what should the gate do? AUTOMATIC opens an approval/waiver route only when
+ * every blocking control is waivable; otherwise it falls back to BLOCKED.
+ */
+export function decideGateStatus(blocked: GovernanceBlock[], mode: string): GateOutcome {
+  if (blocked.length === 0) return 'PASSED'
+  if (mode === 'SOFT_WARN') return 'WARNED'
+  if (mode === 'AUTOMATIC' && blocked.every(b => b.waivable)) return 'APPROVAL_REQUESTED'
+  return 'BLOCKED'
+}
