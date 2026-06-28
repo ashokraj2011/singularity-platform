@@ -4,6 +4,8 @@ import { postJson } from '../../../../../lib/audit-gov/client'
 import { analyzeWorkflowInstance, shouldBlockFormalResult } from '../../../formal-verification'
 import type { GovernanceOverlay } from './evaluateBlock'
 import { evaluateDiffVsDesign, type DiffValidation } from './diffVsDesign'
+import { verifyEvidencePack, type EvidenceManifest } from './evidencePack'
+import { evaluatePredicate, type Predicate } from './evalPredicate'
 
 /**
  * v2 control → evidence resolution for GOVERNANCE_GATE. A control is "satisfied"
@@ -17,12 +19,18 @@ import { evaluateDiffVsDesign, type DiffValidation } from './diffVsDesign'
  */
 
 export interface ControlBinding {
-  type: 'context' | 'receipt' | 'evaluator' | 'artifact' | 'formal' | 'diff'
+  type: 'context' | 'receipt' | 'evaluator' | 'artifact' | 'formal' | 'diff' | 'evidencePack' | 'predicate'
   evaluatorIds?: string[]
   minPassRate?: number
   artifactName?: string
   evidenceKey?: string
   diffValidation?: DiffValidation
+  /** evidencePack: which property of the pack verdict satisfies the control. */
+  pack?: 'complete' | 'consistent'
+  /** evidencePack: required item keys for the completeness check. */
+  required?: string[]
+  /** predicate (CUSTOM_EXPRESSION): a safe condition over the run context. */
+  predicate?: Predicate
 }
 export type BindingMap = Record<string, ControlBinding>
 export type BindingChecker = (controlKey: string, binding: ControlBinding) => Promise<boolean>
@@ -165,6 +173,22 @@ export function makeEvidenceChecker(instance: WorkflowInstance, node: WorkflowNo
         const rawPaths = cap ? (Array.isArray(cap.pathsTouched) ? cap.pathsTouched : Array.isArray(cap.paths_touched) ? cap.paths_touched : []) : []
         const diff = { pathsTouched: rawPaths.map(String) }
         return evaluateDiffVsDesign(diff, binding.diffValidation ?? null).length === 0
+      }
+      case 'evidencePack': {
+        const ctx = isRecord(instance.context) ? instance.context : {}
+        const raw = isRecord(ctx._evidenceManifest)
+          ? ctx._evidenceManifest
+          : isRecord(ctx.evidenceManifest) ? (ctx.evidenceManifest as Record<string, unknown>) : null
+        const verdict = verifyEvidencePack(raw as unknown as EvidenceManifest | null, binding.required ?? [])
+        return binding.pack === 'complete'
+          ? verdict.complete
+          : binding.pack === 'consistent'
+            ? verdict.consistent
+            : verdict.complete && verdict.consistent
+      }
+      case 'predicate': {
+        const ctx = isRecord(instance.context) ? instance.context : {}
+        return binding.predicate ? evaluatePredicate(ctx, binding.predicate) : false
       }
       case 'context':
       default:
