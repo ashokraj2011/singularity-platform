@@ -155,8 +155,8 @@ describe("toolRequiresGrant", () => {
 // ── verifyToolGrant unit checks ──────────────────────────────────────────────
 
 describe("verifyToolGrant", () => {
-  beforeEach(() => {
-    G.__resetNonceStore();
+  beforeEach(async () => {
+    await G.__resetNonceStore();
   });
 
   const ctx = (over: Partial<Parameters<GrantModule["verifyToolGrant"]>[1]> = {}) => ({
@@ -272,27 +272,29 @@ describe("verifyToolGrant", () => {
     expect(r.ok).toBe(true);
   });
 
-  it("rejects a replayed nonce on the second use", () => {
+  it("rejects a replayed nonce on the second consume", async () => {
     const grant = mintGrant(G, { nonce: "fixed-nonce", args: { path: "a.py", content: "x" } });
-    const first = G.verifyToolGrant(grant, ctx());
+    // Replay is enforced by consumeGrantNonce (async store), not verifyToolGrant.
+    expect(G.verifyToolGrant(grant, ctx()).ok).toBe(true);
+    const first = await G.consumeGrantNonce(grant, nowSec() * 1000);
     expect(first.ok).toBe(true);
-    const second = G.verifyToolGrant(grant, ctx());
+    const second = await G.consumeGrantNonce(grant, nowSec() * 1000);
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.code).toBe("TOOL_GRANT_REPLAY");
   });
 
-  it("does not consume the nonce when an earlier check fails", () => {
-    // An args-mismatch should NOT burn the nonce — a later legitimate use of
-    // the same grant (correct args) must still succeed.
+  it("does not consume the nonce when verification fails", async () => {
+    // A failed verifyToolGrant never reaches consumeGrantNonce, so the nonce is
+    // not burned — a later legitimate use of the same grant still succeeds.
     const grant = mintGrant(G, {
       nonce: "reusable-after-reject",
       toolName: "write_file",
       args: { path: "a.py", content: "x" },
     });
-    const bad = G.verifyToolGrant(grant, ctx({ args: { path: "z.py" } }));
-    expect(bad.ok).toBe(false);
-    const good = G.verifyToolGrant(grant, ctx());
-    expect(good.ok).toBe(true);
+    expect(G.verifyToolGrant(grant, ctx({ args: { path: "z.py" } })).ok).toBe(false);
+    expect(G.verifyToolGrant(grant, ctx()).ok).toBe(true);
+    const consumed = await G.consumeGrantNonce(grant, nowSec() * 1000);
+    expect(consumed.ok).toBe(true);
   });
 });
 

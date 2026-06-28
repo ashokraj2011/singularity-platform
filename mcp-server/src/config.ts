@@ -80,6 +80,18 @@ const schema = z.object({
   // allowed to invoke the specific tool at all.
   MCP_REQUIRE_EFFECTIVE_CAPABILITIES: envBool(false),
 
+  // ── #21 — ToolInvocationGrant replay-store backend ──────────────────────
+  // "memory" (default): in-process Map — correct + sufficient for a SINGLE
+  // mcp-server instance (the bare-metal all-in-one + laptop deployments). Each
+  // process protects its own dispatch; the laptop mcp-server has no cloud-DB
+  // reach, so it must stay "memory".
+  // "postgres": shared, multi-replica-safe store — set ONLY for a multi-REPLICA
+  // CLOUD mcp-server, where a replay routed to a sibling replica would slip past
+  // per-process memory. Requires MCP_NONCE_DATABASE_URL. Fails open to in-memory
+  // (per-process) on a DB hiccup so a dispatch is never blocked by infra.
+  MCP_NONCE_STORE: z.enum(["memory", "postgres"]).default("memory"),
+  MCP_NONCE_DATABASE_URL: z.string().optional(),
+
   // ── M33 — Central LLM Gateway ───────────────────────────────────────────
   // Every LLM call from mcp-server routes through the central
   // `llm-gateway-service` (context-fabric, port 8001). Provider keys live

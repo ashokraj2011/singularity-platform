@@ -28,7 +28,7 @@ import { recordToolInvocation } from "../audit/store";
 import { applyPatchToCleanWorkspace, branchNameForWork, currentHeadSha, prepareWorkBranch } from "../workspace/git-workspace";
 import { withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbox";
 import { redactSecrets } from "../security/redact";
-import { grantMode, toolRequiresGrant, verifyToolGrant } from "../security/tool-grant";
+import { grantMode, toolRequiresGrant, verifyToolGrant, consumeGrantNonce } from "../security/tool-grant";
 import { log } from "../shared/log";
 import { assertEffectiveCapabilityAllowsTool } from "./effective-capability";
 
@@ -85,7 +85,20 @@ workRouter.post("/work/finish-branch", async (req, res) => {
       args: toolArgs,
       runContext: body.runContext,
     });
-    if (!verdict.ok) {
+    if (verdict.ok) {
+      // Single-use nonce: consume it before dispatch; reject a replay.
+      const replay = await consumeGrantNonce(verdict.grant);
+      if (!replay.ok) {
+        log.warn(
+          { tool: "finish_work_branch", mode, code: replay.code },
+          "[work/finish-branch] refusing finalize dispatch: grant nonce already used (replay)",
+        );
+        throw new AppError(replay.message, 403, replay.code, {
+          tool_name: "finish_work_branch",
+          mode,
+        });
+      }
+    } else {
       const missing = verdict.code === "TOOL_GRANT_REQUIRED";
       if (mode === "grace" && missing) {
         log.warn(

@@ -90,7 +90,7 @@ const _WORKSPACE_INDEPENDENT_TOOLS = workspaceIndependentTools();
 // policy-dumb but verifies the grant before executing mutating / high-risk
 // tools so a leaked/over-scoped bearer can't dispatch them directly. No-op
 // unless MCP_TOOL_GRANT_MODE is grace/enforce.
-import { grantMode, toolRequiresGrant, verifyToolGrant } from "../security/tool-grant";
+import { grantMode, toolRequiresGrant, verifyToolGrant, consumeGrantNonce } from "../security/tool-grant";
 import { log } from "../shared/log";
 import { assertEffectiveCapabilityAllowsTool } from "./effective-capability";
 
@@ -266,7 +266,7 @@ export interface ToolRunOutcome {
   toolError: string | null;
 }
 
-export function enforceToolGrantForDispatch(body: z.infer<typeof ToolRunSchema>): void {
+export async function enforceToolGrantForDispatch(body: z.infer<typeof ToolRunSchema>): Promise<void> {
   const mode = grantMode();
   if (mode === "off" || !toolRequiresGrant(body.tool_name)) return;
 
@@ -275,7 +275,16 @@ export function enforceToolGrantForDispatch(body: z.infer<typeof ToolRunSchema>)
     args: body.args,
     runContext: body.run_context,
   });
-  if (verdict.ok) return;
+  if (verdict.ok) {
+    // Single-use nonce: consume it before dispatch; reject a replay.
+    const replay = await consumeGrantNonce(verdict.grant);
+    if (replay.ok) return;
+    log.warn(
+      { tool: body.tool_name, mode, code: replay.code },
+      "[tool-run] refusing tool dispatch: grant nonce already used (replay)",
+    );
+    throw new AppError(replay.message, 403, replay.code, { tool_name: body.tool_name, mode });
+  }
 
   const missing = verdict.code === "TOOL_GRANT_REQUIRED";
   if (mode === "grace" && missing) {
@@ -324,7 +333,7 @@ export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promis
   // workspace materialization and before alias normalization: Context Fabric
   // signs the raw args it sends, and every transport (HTTP, laptop bridge, or a
   // future runner) must verify the same raw request before any side effect.
-  enforceToolGrantForDispatch(body);
+  await enforceToolGrantForDispatch(body);
 
   const workItemId = body.work_item_id ?? body.workspace_id ?? undefined;
   const correlation = {
