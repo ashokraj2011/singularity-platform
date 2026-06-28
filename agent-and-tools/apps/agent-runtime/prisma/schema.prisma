@@ -116,6 +116,7 @@ model AgentTemplate {
   executions AgentExecution[]
   versions   AgentTemplateVersion[]
 
+  @@unique([capabilityId, name])
   @@index([capabilityId])
   @@index([baseTemplateId])
 }
