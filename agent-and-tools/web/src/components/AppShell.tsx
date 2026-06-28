@@ -5,6 +5,7 @@ import { Sidebar } from "@/components/ui/Sidebar";
 import { EventHorizonChat } from "@/components/EventHorizonChat";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { LogoutButton } from "@/components/LogoutButton";
+import { RequireSession } from "@/components/RequireSession";
 import { Bell, Settings } from "lucide-react";
 
 // Routes that render their own full-viewport UX (the blue Blueprint Workbench
@@ -21,10 +22,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   if (fullBleed) {
-    return <div style={{ height: "100vh", overflow: "hidden" }}>{children}</div>;
+    return (
+      <RequireSession pathname={pathname}>
+        <div style={{ height: "100vh", overflow: "hidden" }}>{children}</div>
+      </RequireSession>
+    );
   }
 
   return (
+    <RequireSession pathname={pathname}>
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
 
       {/* Sidebar — sticky, participates in flex flow */}
@@ -120,5 +126,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
       <EventHorizonChat />
     </div>
+    </RequireSession>
   );
 }
