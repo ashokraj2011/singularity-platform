@@ -6,23 +6,23 @@ import { prisma } from "../../config/prisma";
 
 export const promptController = {
   async createProfile(req: Request, res: Response) {
-    return ok(res, await promptService.createProfile(req.body), 201);
+    return ok(res, await promptService.createProfile(req.body, req.user), 201);
   },
-  async listProfiles(_req: Request, res: Response) {
-    return ok(res, await promptService.listProfiles());
+  async listProfiles(req: Request, res: Response) {
+    return ok(res, await promptService.listProfiles(req.user));
   },
   async getProfile(req: Request, res: Response) {
-    return ok(res, await promptService.getProfile(req.params.id));
+    return ok(res, await promptService.getProfile(req.params.id, req.user));
   },
 
   async createLayer(req: Request, res: Response) {
-    return ok(res, await promptService.createLayer(req.body), 201);
+    return ok(res, await promptService.createLayer(req.body, req.user), 201);
   },
   async updateLayer(req: Request, res: Response) {
-    return ok(res, await promptService.updateLayer(req.params.id, req.body));
+    return ok(res, await promptService.updateLayer(req.params.id, req.body, req.user));
   },
   async listLayers(req: Request, res: Response) {
-    return ok(res, await promptService.listLayers(req.query as never));
+    return ok(res, await promptService.listLayers(req.query as never, req.user));
   },
 
   async attachLayer(req: Request, res: Response) {
@@ -31,6 +31,7 @@ export const promptController = {
       req.body.promptLayerId,
       req.body.priority,
       req.body.isEnabled,
+      req.user,
     );
     return ok(res, link, 201);
   },
