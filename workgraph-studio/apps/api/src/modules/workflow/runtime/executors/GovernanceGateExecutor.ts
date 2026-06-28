@@ -3,7 +3,7 @@ import { prisma } from '../../../../lib/prisma'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import { resolveGovernance, type GovernanceResolveContext } from '../../../../lib/iam/client'
 import { activeWaiverControlKeys } from '../../../governance/governance.router'
-import { evaluateGovernanceBlock, type GovernanceBlock, type GovernanceOverlay } from './governance/evaluateBlock'
+import { evaluateGovernanceBlock, decideGateStatus, type GovernanceBlock, type GovernanceOverlay } from './governance/evaluateBlock'
 import { resolveSatisfiedControls, makeEvidenceChecker, bindingsFromOverlay, type BindingMap, type ControlBinding } from './governance/resolveSatisfiedControls'
 
 /**
@@ -23,7 +23,7 @@ import { resolveSatisfiedControls, makeEvidenceChecker, bindingsFromOverlay, typ
  */
 
 type GateMode = 'HARD_BLOCK' | 'SOFT_WARN' | 'AUTOMATIC'
-type GateStatus = 'PASSED' | 'WARNED' | 'BLOCKED' | 'SKIPPED'
+type GateStatus = 'PASSED' | 'WARNED' | 'BLOCKED' | 'APPROVAL_REQUESTED' | 'SKIPPED'
 
 type GovernanceGateOutput = {
   governanceGate: {
@@ -38,6 +38,8 @@ type GovernanceGateOutput = {
     findings: GovernanceBlock[]
     evidenceRefs: string[]
     note?: string
+    waiverRequestIds?: string[]
+    approvalRequestId?: string
   }
 }
 
@@ -148,6 +150,8 @@ async function blockNode(
   output: GovernanceGateOutput,
   actorId?: string,
 ): Promise<void> {
+  const isApproval = output.governanceGate.status === 'APPROVAL_REQUESTED'
+  const eventType = isApproval ? 'GovernanceGateApprovalRequested' : 'GovernanceGateBlocked'
   await prisma.$transaction([
     prisma.workflowNode.update({
       where: { id: node.id },
@@ -167,15 +171,15 @@ async function blockNode(
       data: {
         instanceId: instance.id,
         nodeId: node.id,
-        mutationType: 'GOVERNANCE_GATE_BLOCKED',
+        mutationType: isApproval ? 'GOVERNANCE_GATE_APPROVAL_REQUESTED' : 'GOVERNANCE_GATE_BLOCKED',
         beforeState: { status: node.status } as Prisma.InputJsonValue,
         afterState: output as unknown as Prisma.InputJsonValue,
         performedById: actorId,
       },
     }),
   ])
-  await logEvent('GovernanceGateBlocked', 'WorkflowNode', node.id, actorId, { instanceId: instance.id, output })
-  await publishOutbox('WorkflowNode', node.id, 'GovernanceGateBlocked', { instanceId: instance.id, nodeId: node.id, output })
+  await logEvent(eventType, 'WorkflowNode', node.id, actorId, { instanceId: instance.id, output })
+  await publishOutbox('WorkflowNode', node.id, eventType, { instanceId: instance.id, nodeId: node.id, output })
 }
 
 async function emitNonBlock(
@@ -188,6 +192,66 @@ async function emitNonBlock(
   const eventType = status === 'WARNED' ? 'GovernanceGateWarned' : 'GovernanceGatePassed'
   await logEvent(eventType, 'WorkflowNode', node.id, actorId, { instanceId: instance.id, output })
   await publishOutbox('WorkflowNode', node.id, eventType, { instanceId: instance.id, nodeId: node.id, output })
+}
+
+/**
+ * AUTOMATIC route — open a REQUESTED waiver per blocking control + one approval
+ * routed to the governing capability. Idempotent on re-runs (dedupe by node).
+ * The node is then paused as BLOCKED; approving a waiver calls restartNode, which
+ * re-evaluates this gate with the control now waived.
+ */
+async function openWaiverApproval(
+  instance: WorkflowInstance,
+  node: WorkflowNode,
+  governingCapabilityId: string,
+  blocked: GovernanceBlock[],
+  workItemId?: string,
+  actorId?: string,
+): Promise<{ waiverIds: string[]; approvalId?: string }> {
+  const waiverIds: string[] = []
+  for (const b of blocked) {
+    const existing = await prisma.governanceWaiver
+      .findFirst({ where: { workflowNodeId: node.id, controlKey: b.controlKey, status: 'REQUESTED' }, select: { id: true } })
+      .catch(() => null)
+    if (existing) {
+      waiverIds.push(existing.id)
+      continue
+    }
+    const w = await prisma.governanceWaiver
+      .create({
+        data: {
+          workflowInstanceId: instance.id,
+          workflowNodeId: node.id,
+          workItemId: workItemId ?? null,
+          controlKey: b.controlKey,
+          reason: b.reason,
+          status: 'REQUESTED',
+          requestedBy: actorId ?? null,
+        },
+      })
+      .catch(() => null)
+    if (w) waiverIds.push(w.id)
+  }
+  const existingAppr = await prisma.approvalRequest
+    .findFirst({ where: { instanceId: instance.id, nodeId: node.id, subjectType: 'WorkflowNode', subjectId: node.id, status: 'PENDING' }, select: { id: true } })
+    .catch(() => null)
+  if (existingAppr) return { waiverIds, approvalId: existingAppr.id }
+  const appr = await prisma.approvalRequest
+    .create({
+      data: {
+        instanceId: instance.id,
+        nodeId: node.id,
+        subjectType: 'WorkflowNode',
+        subjectId: node.id,
+        requestedById: actorId ?? instance.createdById ?? 'system',
+        assignmentMode: 'ROLE_BASED',
+        roleKey: 'governance',
+        capabilityId: governingCapabilityId,
+        formData: { blocked } as unknown as Prisma.InputJsonValue,
+      },
+    })
+    .catch(() => null)
+  return { waiverIds, approvalId: appr?.id ?? undefined }
 }
 
 export async function activateGovernanceGate(
@@ -277,39 +341,35 @@ export async function activateGovernanceGate(
   const blocked = evaluateGovernanceBlock(overlay, satisfied, waived)
   const effectiveMode = String(overlay.effectiveMode ?? 'ADVISORY').toUpperCase()
 
-  let status: GateStatus
-  let passed: boolean
-  if (blocked.length === 0) {
-    status = 'PASSED'
-    passed = true
-  } else if (mode === 'SOFT_WARN') {
-    status = 'WARNED'
-    passed = true
-  } else {
-    // HARD_BLOCK (default); AUTOMATIC falls through to block in v1 (v2 = approval/waiver route).
-    status = 'BLOCKED'
-    passed = false
+  const status = decideGateStatus(blocked, mode) as GateStatus
+
+  const gate: GovernanceGateOutput['governanceGate'] = {
+    status,
+    mode,
+    effectiveMode,
+    governingCapabilityId: capabilityId,
+    overlaySnapshotId,
+    satisfied: [...satisfied],
+    waived: [...waived],
+    blocked,
+    findings: blocked,
+    evidenceRefs: [],
   }
 
-  const output: GovernanceGateOutput = {
-    governanceGate: {
-      status,
-      mode,
-      effectiveMode,
-      governingCapabilityId: capabilityId,
-      overlaySnapshotId,
-      satisfied: [...satisfied],
-      waived: [...waived],
-      blocked,
-      findings: blocked,
-      evidenceRefs: [],
-    },
+  if (status === 'APPROVAL_REQUESTED') {
+    const opened = await openWaiverApproval(instance, node, capabilityId, blocked, workItemId, actorId)
+    gate.waiverRequestIds = opened.waiverIds
+    gate.approvalRequestId = opened.approvalId
   }
+  const output: GovernanceGateOutput = { governanceGate: gate }
 
-  if (status === 'BLOCKED') {
+  // BLOCKED and APPROVAL_REQUESTED both pause the node (BLOCKED state, restartable).
+  // For AUTOMATIC, approving a waiver calls restartNode → this gate re-evaluates
+  // with the control now waived, so the node is never stuck.
+  if (status === 'BLOCKED' || status === 'APPROVAL_REQUESTED') {
     await blockNode(instance, node, output, actorId)
-  } else {
-    await emitNonBlock(status === 'WARNED' ? 'WARNED' : 'PASSED', instance, node, output, actorId)
+    return { passed: false, output }
   }
-  return { passed, output }
+  await emitNonBlock(status === 'WARNED' ? 'WARNED' : 'PASSED', instance, node, output, actorId)
+  return { passed: true, output }
 }

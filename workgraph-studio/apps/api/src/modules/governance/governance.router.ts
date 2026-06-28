@@ -166,10 +166,24 @@ governanceRouter.post('/waivers', async (req, res, next) => {
 // that role check is a follow-up; this records the approver id.
 governanceRouter.post('/waivers/:id/approve', async (req, res, next) => {
   try {
+    const actorId = (req as { user?: { id?: string } }).user?.id
     const waiver = await prisma.governanceWaiver.update({
       where: { id: req.params.id },
-      data: { status: 'APPROVED', approvedBy: (req as { user?: { id?: string } }).user?.id ?? null },
+      data: { status: 'APPROVED', approvedBy: actorId ?? null },
     })
+    // Auto-resume the GOVERNANCE_GATE that opened this waiver: restartNode re-runs
+    // the gate, which now sees the control as waived and proceeds. Best-effort +
+    // dynamic import to avoid a runtime↔governance import cycle. If it fails, the
+    // node stays BLOCKED (manually restartable) — never stuck.
+    if (waiver.workflowInstanceId && waiver.workflowNodeId) {
+      try {
+        const { restartNode } = await import('../workflow/runtime/WorkflowRuntime')
+        await restartNode(waiver.workflowInstanceId, waiver.workflowNodeId, actorId)
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn(`[governance] waiver-approve auto-resume failed (node stays restartable): ${(e as Error).message}`)
+      }
+    }
     res.json(waiver)
   } catch (err) { next(err) }
 })
