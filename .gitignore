@@ -29,6 +29,10 @@
 .singularity/workitems/
 .singularity/downloads/
 .singularity/source-cache/
+# mcp-server writes its own local .singularity/ (audit log + per-workitem state)
+# when run as a standalone service — same local state, nested path the patterns
+# above (root-relative) don't catch.
+mcp-server/.singularity/
 singularity-portal/public/ops-doctor.json
 agent-and-tools/web/public/ops-doctor.json
 *.pem
