@@ -125,16 +125,22 @@ export default function CapabilityDetailPage() {
       // re-embed (repopulates the inferred stack). It returns warnings/nextActions
       // when sources still need human approval — ingestion is governance-gated.
       const worker = await runtimeApi.runLearningWorker(id, {});
-      // Best-effort re-ground: re-distill the world model from whatever is now
-      // materialized. Non-fatal if the capability has no world model yet.
-      try { await runtimeApi.redistillWorldModel(id); } catch { /* not grounded yet */ }
+      // Best-effort re-ground. The redistill endpoint returns 409 ("nothing to
+      // distill — no README candidate or indexed symbols") when no repo content
+      // has been ingested yet — expected until sources are approved + ingested,
+      // so treat it as "not grounded yet", not a failure.
+      let grounded = true;
+      try {
+        await runtimeApi.redistillWorldModel(id);
+      } catch {
+        grounded = false;
+      }
       await mutateCap();
       const notes = [...(worker?.warnings ?? []), ...(worker?.nextActions ?? [])];
-      setRefreshMsg(
-        notes.length
-          ? `Learning refreshed. Action needed: ${notes.join(" ")}`
-          : "Learning refreshed — sources re-ingested and world-model re-grounded.",
-      );
+      const head = grounded
+        ? "Learning refreshed — sources re-ingested and world-model re-grounded."
+        : "Learning refreshed — but the world model can't be grounded yet: no repo content/symbols are ingested.";
+      setRefreshMsg(notes.length ? `${head} Action needed: ${notes.join(" ")}` : head);
     } catch (err) {
       setRefreshError(err instanceof Error ? err.message : "Refresh learning failed");
     } finally {
