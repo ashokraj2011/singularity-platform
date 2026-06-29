@@ -29,6 +29,7 @@ import { connectorToolsRoutes } from "./tool/routes/connector-tools";
 import { startEventDispatcher as startToolEventDispatcher } from "./tool/lib/eventbus/dispatcher";
 import { startSelfRegistration as startToolSelfRegistration } from "./tool/lib/platform-registry/register";
 import { seedCoreToolkit } from "./tool/lib/seed-core-tools";
+import { ensureToolSchema } from "./tool/lib/ensure-tool-schema";
 
 dotenv.config();
 
@@ -204,14 +205,18 @@ void ensureLearningSchema()
     console.warn(`[agent-resource-service] learning schema bootstrap failed: ${(err as Error).message}`);
   });
 
-// M18 — seed the core toolkit (idempotent — only inserts missing rows).
-void seedCoreToolkit()
+// M18 — ensure the raw `tool` schema exists (idempotent self-heal), THEN seed
+// the core toolkit. Bare-metal's Prisma db push only creates the public.* models
+// and init.sql runs only under Docker, so without this the schema is missing →
+// seedCoreToolkit inserts into a nonexistent table and the Tools page is empty.
+void ensureToolSchema()
+  .then(() => seedCoreToolkit())
   .then(() => {
     bootstrapState.coreToolkit = "ok";
   })
   .catch((err) => {
     bootstrapState.coreToolkit = "failed";
-    console.warn(`[agent-resource-service] core-toolkit seed failed: ${(err as Error).message}`);
+    console.warn(`[agent-resource-service] tool schema/core-toolkit bootstrap failed: ${(err as Error).message}`);
   });
 
 app.listen(PORT, () => {
