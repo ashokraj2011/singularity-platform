@@ -1070,6 +1070,17 @@ JSON
     && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate >/dev/null 2>&1 ) \
     || warn "agent-runtime schema push had warnings"
 
+  # The folded-in tool-service routes (agent-service /api/v1/tools, executions,
+  # discovery, runners) + seedCoreToolkit use a RAW `tool` schema that Prisma db
+  # push does NOT create (it only covers the public.* models). Under Docker this
+  # comes from packages/db/init.sql via the postgres entrypoint; on bare-metal we
+  # apply it here, or tool.tools never exists and the Tools page is empty.
+  # Idempotent (CREATE ... IF NOT EXISTS). agent-service also self-heals this at
+  # boot (ensureToolSchema), so this is belt-and-suspenders.
+  info "applying tool schema (packages/db/tool-schema.sql)…"
+  psql "$DATABASE_URL_AGENT_TOOLS" -q -f agent-and-tools/packages/db/tool-schema.sql >/dev/null 2>&1 \
+    || warn "tool schema may already exist — continuing"
+
   # Seed the common platform-baseline agent templates (one ACTIVE template per
   # role, capabilityId=NULL). Capability onboarding clones each role's agent from
   # these; without them onboarding warns "No common <ROLE> base template found"
