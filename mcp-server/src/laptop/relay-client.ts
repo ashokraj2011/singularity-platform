@@ -27,6 +27,11 @@ import { runToolByName } from "../mcp/tool-run";
 // platform's HTTP /mcp/code-context/build route calls, run against the laptop's
 // LOCAL worktree so the world model reflects the repo that lives here.
 import { buildCodeContextPackage, type BuildCodeContextRequest } from "../mcp/code-context";
+// Repo source discovery over the bridge — the same GitHub fetch the platform's
+// HTTP /mcp/source/tree + /mcp/source/file routes use, run with the laptop's
+// LOCAL GITHUB_TOKEN so cloud-side capability bootstrap can discover a repo
+// through the user's laptop runtime.
+import { fetchGitHubTree, fetchGitHubFile } from "../mcp/source-discover";
 import {
   decodeInbound,
   type HelloFrame, type HeartbeatFrame, type ResponseFrame,
@@ -156,7 +161,7 @@ export class LaptopRelayClient {
       // graduates to tool-run as the platform-side dispatch lands
       // (Slice 3). Old bridges that don't know about supported_frame_types
       // just ignore it and keep sending invoke — which still works.
-      supported_frame_types: ["invoke", "tool-run", "model-run", "code-context"],
+      supported_frame_types: ["invoke", "tool-run", "model-run", "code-context", "source-tree", "source-file"],
     };
     this.send(hello);
   }
@@ -376,6 +381,72 @@ export class LaptopRelayClient {
           request_id: frame.request_id,
           payload: null,
           error: { code: "CODE_CONTEXT_FAILED", message: e.message ?? "code-context build failed" },
+        });
+      } finally {
+        this.inflight--;
+      }
+      return;
+    }
+
+    // Repo source discovery over the bridge (cloud control plane → laptop). Fetch
+    // the repo tree / a file with the laptop's LOCAL GITHUB_TOKEN and return the
+    // SAME { tree } / { content } shape mcp's HTTP /mcp/source/* routes return.
+    // Same inflight gate as tool-run.
+    if (frame.type === "source-tree") {
+      if (this.inflight >= this.maxConcurrent) {
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: { code: "BUSY", message: `laptop at max ${this.maxConcurrent} concurrent dispatches` },
+        });
+        return;
+      }
+      this.inflight++;
+      try {
+        const { repoUrl, branch } = frame.payload;
+        log.info({ request_id: frame.request_id, repoUrl }, "[laptop-relay] running source-tree");
+        const tree = await fetchGitHubTree(repoUrl, branch);
+        this.send({ type: "response", request_id: frame.request_id, payload: { tree } });
+      } catch (err) {
+        const e = err as { message?: string };
+        log.warn({ err: e.message, request_id: frame.request_id }, "[laptop-relay] source-tree failed");
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: { code: "SOURCE_TREE_FAILED", message: e.message ?? "source-tree failed" },
+        });
+      } finally {
+        this.inflight--;
+      }
+      return;
+    }
+
+    if (frame.type === "source-file") {
+      if (this.inflight >= this.maxConcurrent) {
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: { code: "BUSY", message: `laptop at max ${this.maxConcurrent} concurrent dispatches` },
+        });
+        return;
+      }
+      this.inflight++;
+      try {
+        const { repoUrl, branch, path } = frame.payload;
+        log.info({ request_id: frame.request_id, repoUrl, path }, "[laptop-relay] running source-file");
+        const content = await fetchGitHubFile(repoUrl, branch, path);
+        this.send({ type: "response", request_id: frame.request_id, payload: { content } });
+      } catch (err) {
+        const e = err as { message?: string };
+        log.warn({ err: e.message, request_id: frame.request_id }, "[laptop-relay] source-file failed");
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: { code: "SOURCE_FILE_FAILED", message: e.message ?? "source-file failed" },
         });
       } finally {
         this.inflight--;

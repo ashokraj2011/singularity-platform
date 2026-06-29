@@ -35,7 +35,7 @@ import { z } from "zod";
 // Bridge inspects hello.supported_frame_types to choose between sending
 // legacy "invoke" frames and new "tool-run" frames. Old laptops omit
 // the field; .default(["invoke"]) maintains backward compat.
-export const SUPPORTED_FRAME_TYPES = ["invoke", "tool-run", "model-run", "code-context"] as const;
+export const SUPPORTED_FRAME_TYPES = ["invoke", "tool-run", "model-run", "code-context", "source-tree", "source-file"] as const;
 export type SupportedFrameType = (typeof SUPPORTED_FRAME_TYPES)[number];
 
 export const HelloFrame = z.object({
@@ -196,6 +196,28 @@ export const CodeContextFrame = z.object({
 });
 export type CodeContextFrame = z.infer<typeof CodeContextFrame>;
 
+// Repo source discovery over the bridge. Mirrors mcp's HTTP /mcp/source/tree and
+// /mcp/source/file 1:1: the laptop runs the GitHub fetch with its LOCAL
+// GITHUB_TOKEN and returns the same { tree } / { content } payload, so a cloud
+// control plane (agent-runtime capability bootstrap) can discover a repo via the
+// user's laptop runtime instead of needing its own GitHub egress / a reachable
+// mcp HTTP endpoint.
+export const SourceTreeFrame = z.object({
+  type:        z.literal("source-tree"),
+  request_id:  z.string(),
+  payload:     z.object({ repoUrl: z.string(), branch: z.string().default("main") }),
+  deadline_ms: z.number().int().positive().optional(),
+});
+export type SourceTreeFrame = z.infer<typeof SourceTreeFrame>;
+
+export const SourceFileFrame = z.object({
+  type:        z.literal("source-file"),
+  request_id:  z.string(),
+  payload:     z.object({ repoUrl: z.string(), branch: z.string().default("main"), path: z.string() }),
+  deadline_ms: z.number().int().positive().optional(),
+});
+export type SourceFileFrame = z.infer<typeof SourceFileFrame>;
+
 // ── decoded inbound ─────────────────────────────────────────────────────────
 
 export type InboundFrame =
@@ -204,6 +226,8 @@ export type InboundFrame =
   | ToolRunFrame      // M75 Slice 1
   | ModelRunFrame     // LLM-on-laptop
   | CodeContextFrame  // world-model-on-laptop
+  | SourceTreeFrame   // repo discovery over the bridge
+  | SourceFileFrame   // repo discovery over the bridge
   | PingFrame
   | DisconnectFrame;
 
@@ -216,6 +240,8 @@ export function decodeInbound(raw: unknown): InboundFrame | null {
   if (type === "tool-run")     return ToolRunFrame.parse(raw);     // M75 Slice 1
   if (type === "model-run")    return ModelRunFrame.parse(raw);    // LLM-on-laptop
   if (type === "code-context") return CodeContextFrame.parse(raw); // world-model-on-laptop
+  if (type === "source-tree")  return SourceTreeFrame.parse(raw);  // repo discovery over the bridge
+  if (type === "source-file")  return SourceFileFrame.parse(raw);  // repo discovery over the bridge
   if (type === "ping")         return PingFrame.parse(raw);
   if (type === "disconnect")   return DisconnectFrame.parse(raw);
   return null;
