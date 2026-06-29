@@ -18,6 +18,13 @@ import { refreshGatewayProviderStatus } from "./llm/client";
 // debug compatibility.
 const LAPTOP_MODE = String(process.env.LAPTOP_MODE ?? "false").toLowerCase() === "true";
 const RUNTIME_DIAL_IN_MODE = String(process.env.RUNTIME_DIAL_IN_MODE ?? "false").toLowerCase() === "true";
+// Hybrid: when dialed into the CF bridge, ALSO expose the local HTTP server
+// (:7100) so co-located services that call mcp over MCP_SERVER_URL — capability
+// repo discovery (/mcp/source/*), and other HTTP consumers — keep working. The
+// bridge only carries CF-routed frames (tool-run/model-run/…), not these calls.
+// Off by default so a pure laptop stays relay-only and binds no local port; the
+// bare-metal all-in-one turns it on.
+const RUNTIME_DIAL_IN_SERVE_HTTP = String(process.env.RUNTIME_DIAL_IN_SERVE_HTTP ?? "false").toLowerCase() === "true";
 
 if (LAPTOP_MODE || RUNTIME_DIAL_IN_MODE) {
   bootLaptopMode();
@@ -60,6 +67,13 @@ function bootLaptopMode(): void {
   // M101 — redacted git-auth boot diagnostic (laptop runs the loop locally and
   // may push). Token value never logged — only source/length/class.
   log.info(gitAuthDiagnostic(), "[runtime-dial-in] git-auth (redacted — token value never logged)");
+
+  // Hybrid: also serve the HTTP API (same Express app + bearer auth) so
+  // co-located services can reach mcp over MCP_SERVER_URL. See the flag note above.
+  if (RUNTIME_DIAL_IN_SERVE_HTTP) {
+    startHttpServer();
+    log.info({ port: config.PORT }, "[runtime-dial-in] hybrid — also serving HTTP for co-located services");
+  }
 
   // Keep node alive (the relay-client uses internal timers + WS, but if the
   // WS fails permanently and backoff exits, we still want the process to
@@ -106,6 +120,10 @@ function gitAuthDiagnostic(): Record<string, unknown> {
 
 function bootServerMode(): void {
   warmAstIndex();
+  startHttpServer();
+}
+
+function startHttpServer(): void {
   const server = http.createServer(app);
 
   // WebSocket bridge (PLAN_mcp.md §4) on the SAME http server, path-mounted at
