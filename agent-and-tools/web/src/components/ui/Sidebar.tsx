@@ -38,8 +38,7 @@ const menuSections: NavSection[] = [
     label: "Agent Studio",
     description: "Create, govern, and run agents",
     items: [
-      { label: "Create Agents", href: "/agents/studio", icon: Bot },
-      { label: "Agent Profiles", href: "/agents", icon: Layers },
+      { label: "Agents", href: "/agents/studio", icon: Bot },
       { label: "Capabilities", href: "/capabilities", icon: GitBranch },
       { label: "Tools", href: "/tools", icon: Wrench },
       { label: "Tool Grants", href: "/tool-grants", icon: ShieldCheck },
