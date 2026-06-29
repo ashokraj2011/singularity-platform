@@ -884,6 +884,11 @@ export IAM_SERVICE_URL="http://localhost:8100"
 export AUDIT_GOV_URL="http://localhost:8500"
 export PROMPT_COMPOSER_URL="http://localhost:3004"
 export AGENT_RUNTIME_URL="http://localhost:3003"
+# No OTEL collector on a bare-metal dev stack. The node services' otel.ts defaults
+# the exporter endpoint to host.docker.internal:4318 and the OTLP/DNS export error
+# is UNCAUGHT — which crashes agent-service on ts-node-dev respawn (so code changes
+# silently don't take effect). Disable OTEL here unless the operator opts in.
+export OTEL_DISABLED="${OTEL_DISABLED:-1}"
 # Phase 4 — tool-service merged into agent-service; both resolve to :3001.
 export TOOL_SERVICE_URL="http://localhost:3001"
 export AGENT_SERVICE_URL="http://localhost:3001"

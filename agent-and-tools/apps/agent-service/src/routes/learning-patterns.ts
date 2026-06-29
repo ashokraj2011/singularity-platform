@@ -43,9 +43,15 @@ function requireServiceAuth(req: Request, res: Response, next: NextFunction): vo
 
 export const learningPatternsRoutes = Router();
 
-learningPatternsRoutes.use(requireServiceAuth);
-
-learningPatternsRoutes.get("/failures/:capabilityId/summary", async (req: Request, res: Response) => {
+// requireServiceAuth is applied PER-ROUTE below — NOT via router.use(). This
+// router is mounted at the broad "/api/v1" in index.ts, BEFORE the tool routers
+// (/api/v1/tools, internal-tools, connector-tools, events, runner). A
+// router.use() guard here runs for EVERY /api/v1/* request that reaches this
+// router and rejects non-service tokens with 401 "invalid service token" —
+// shadowing those sibling routes (e.g. the Tools page's GET /api/v1/tools, which
+// uses a USER token) before their handlers are ever found. Per-route guards only
+// fire on these learning paths; everything else falls through to next().
+learningPatternsRoutes.get("/failures/:capabilityId/summary", requireServiceAuth, async (req: Request, res: Response) => {
   const rows = await query(
     `SELECT * FROM learning.capability_failure_summary
       WHERE capability_id = $1
@@ -56,7 +62,7 @@ learningPatternsRoutes.get("/failures/:capabilityId/summary", async (req: Reques
   res.json({ summary: rows[0] ?? null });
 });
 
-learningPatternsRoutes.get("/patterns", async (req: Request, res: Response) => {
+learningPatternsRoutes.get("/patterns", requireServiceAuth, async (req: Request, res: Response) => {
   const capabilityType = typeof req.query.capability_type === "string" ? req.query.capability_type : null;
   const capabilityId = typeof req.query.capability_id === "string" ? req.query.capability_id : null;
   const patternKind = typeof req.query.kind === "string" ? req.query.kind : null;
@@ -84,7 +90,7 @@ const patternSchema = z.object({
   successRate: z.number().min(0).max(1).optional(),
 });
 
-learningPatternsRoutes.post("/patterns", async (req: Request, res: Response) => {
+learningPatternsRoutes.post("/patterns", requireServiceAuth, async (req: Request, res: Response) => {
   try {
     const input = patternSchema.parse(req.body ?? {});
     const rows = await query<{ id: string }>(
@@ -119,7 +125,7 @@ const refreshSchema = z.object({
   lastFailureAt: z.string().optional(),
 });
 
-learningPatternsRoutes.post("/summarize/refresh", async (req: Request, res: Response) => {
+learningPatternsRoutes.post("/summarize/refresh", requireServiceAuth, async (req: Request, res: Response) => {
   try {
     const input = refreshSchema.parse(req.body ?? {});
     const rows = await query<{ id: string }>(
@@ -145,7 +151,7 @@ learningPatternsRoutes.post("/summarize/refresh", async (req: Request, res: Resp
   }
 });
 
-learningPatternsRoutes.get("/state", async (req: Request, res: Response) => {
+learningPatternsRoutes.get("/state", requireServiceAuth, async (req: Request, res: Response) => {
   const capabilityId = typeof req.query.capabilityId === "string" ? req.query.capabilityId : null;
   const capabilityType = typeof req.query.capabilityType === "string" ? req.query.capabilityType : null;
   const failures = capabilityId
@@ -172,7 +178,7 @@ learningPatternsRoutes.get("/state", async (req: Request, res: Response) => {
   });
 });
 
-learningPatternsRoutes.get("/similar-capabilities/:capabilityId", async (req: Request, res: Response) => {
+learningPatternsRoutes.get("/similar-capabilities/:capabilityId", requireServiceAuth, async (req: Request, res: Response) => {
   const limit = Math.min(Math.max(Number(req.query.limit ?? 5) || 5, 1), 20);
   const patterns = await query(
     `SELECT * FROM learning.capability_type_pattern
