@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { LogOut } from "lucide-react";
-import { clearAgentToolsToken } from "@/lib/api";
+import { clearAgentToolsToken, notifyAuthChanged } from "@/lib/api";
 
 /** Top-bar logout: clears the stored token(s) and returns to the unified home. */
 export function LogoutButton() {
@@ -16,6 +16,9 @@ export function LogoutButton() {
     } catch {
       /* ignore storage errors */
     }
+    // Flip the front-door gate immediately — covers logging out while already on
+    // "/", where router.push won't change the path and re-trigger a re-check.
+    notifyAuthChanged();
     router.push("/");
     router.refresh();
   }

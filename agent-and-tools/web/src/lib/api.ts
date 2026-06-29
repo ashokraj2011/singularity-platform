@@ -59,6 +59,20 @@ function tokenFromPersistedStore(key: string): string | null {
   }
 }
 
+// Fired whenever the stored session token changes so the front-door gate
+// (RequireSession) re-evaluates immediately — same-tab. Cross-tab is covered by
+// the native `storage` event.
+export const AUTH_CHANGED_EVENT = "singularity-auth-changed";
+
+export function notifyAuthChanged(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
+  } catch {
+    /* ignore — event dispatch is best-effort */
+  }
+}
+
 export function hasAgentToolsToken(): boolean {
   if (typeof window === "undefined") return false;
   return Boolean(authHeaders().Authorization);
@@ -71,6 +85,7 @@ export function saveAgentToolsToken(token: string, user?: Row): void {
     state: { token, user: user ?? null },
     version: 0,
   }));
+  notifyAuthChanged();
 }
 
 export function clearAgentToolsToken(): void {
@@ -79,6 +94,7 @@ export function clearAgentToolsToken(): void {
   localStorage.removeItem("singularity-portal.auth");
   localStorage.removeItem("workgraph-auth");
   localStorage.removeItem("iam-auth");
+  notifyAuthChanged();
 }
 
 export function authHeaders(): Record<string, string> {
