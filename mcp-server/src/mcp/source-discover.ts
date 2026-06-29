@@ -47,6 +47,41 @@ function githubHeaders(extra?: Record<string, string>): Record<string, string> {
   };
 }
 
+export type SourceTreeEntry = { path: string; type: string; size: number };
+
+// Reusable repo-tree fetch — used by BOTH the HTTP /source/tree route and the
+// laptop relay-client's `source-tree` bridge frame, so capability repo discovery
+// behaves identically whether the caller reaches mcp over HTTP (co-located) or
+// over the CF bridge (cloud control plane → laptop runtime). GitHub egress uses
+// this process's GITHUB_TOKEN — which, on the laptop, never leaves the laptop.
+export async function fetchGitHubTree(repoUrl: string, branch: string): Promise<SourceTreeEntry[]> {
+  const { owner, repo } = parseGitHubRepo(repoUrl);
+  const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
+  const resp = await fetch(url, { headers: githubHeaders({ accept: "application/vnd.github+json" }) });
+  if (!resp.ok) {
+    throw new AppError(`GitHub tree lookup failed (${resp.status})`, 502, "UPSTREAM_ERROR");
+  }
+  const body = (await resp.json()) as { tree?: Array<{ path?: string; type?: string; size?: number }> };
+  return (body.tree ?? []).map(item => ({
+    path: item.path ?? "",
+    type: item.type ?? "",
+    size: item.size ?? 0,
+  }));
+}
+
+// Reusable single-file fetch (see fetchGitHubTree). A missing/forbidden file is
+// non-fatal for discovery — returns "" rather than throwing.
+export async function fetchGitHubFile(repoUrl: string, branch: string, path: string): Promise<string> {
+  const { owner, repo } = parseGitHubRepo(repoUrl);
+  const raw = `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(branch)}/${path
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/")}`;
+  const resp = await fetch(raw, { headers: githubHeaders() });
+  if (!resp.ok) return "";
+  return resp.text();
+}
+
 const treeSchema = z.object({
   repoUrl: z.string().min(1),
   branch: z.string().min(1).default("main"),
@@ -59,18 +94,7 @@ sourceDiscoverRouter.post("/source/tree", async (req, res, next) => {
       throw new AppError("invalid /source/tree payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
     }
     const { repoUrl, branch } = parsed.data;
-    const { owner, repo } = parseGitHubRepo(repoUrl);
-    const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
-    const resp = await fetch(url, { headers: githubHeaders({ accept: "application/vnd.github+json" }) });
-    if (!resp.ok) {
-      throw new AppError(`GitHub tree lookup failed (${resp.status})`, 502, "UPSTREAM_ERROR");
-    }
-    const body = (await resp.json()) as { tree?: Array<{ path?: string; type?: string; size?: number }> };
-    const tree = (body.tree ?? []).map(item => ({
-      path: item.path ?? "",
-      type: item.type ?? "",
-      size: item.size ?? 0,
-    }));
+    const tree = await fetchGitHubTree(repoUrl, branch);
     res.json({ tree });
   } catch (err) {
     next(err);
@@ -90,19 +114,7 @@ sourceDiscoverRouter.post("/source/file", async (req, res, next) => {
       throw new AppError("invalid /source/file payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
     }
     const { repoUrl, branch, path } = parsed.data;
-    const { owner, repo } = parseGitHubRepo(repoUrl);
-    const raw = `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(branch)}/${path
-      .split("/")
-      .map(encodeURIComponent)
-      .join("/")}`;
-    const resp = await fetch(raw, { headers: githubHeaders() });
-    if (!resp.ok) {
-      // A missing/forbidden file is non-fatal for discovery — mirror the prior
-      // agent-runtime fetchGitHubRaw behaviour and return empty content.
-      res.json({ content: "" });
-      return;
-    }
-    const content = await resp.text();
+    const content = await fetchGitHubFile(repoUrl, branch, path);
     res.json({ content });
   } catch (err) {
     next(err);

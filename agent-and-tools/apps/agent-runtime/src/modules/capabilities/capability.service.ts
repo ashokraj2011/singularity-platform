@@ -449,7 +449,7 @@ export const capabilityService = {
           },
         });
         try {
-          const discovery = await discoverGitHubRepoWithProfile(repo.repoUrl, repo.defaultBranch ?? "main");
+          const discovery = await discoverGitHubRepoWithProfile(repo.repoUrl, repo.defaultBranch ?? "main", userId);
           discovered.push(...discovery.docs);
           repositoryProfiles.push(discovery.profile);
         } catch (err) {
@@ -708,7 +708,7 @@ export const capabilityService = {
           },
         });
         try {
-          const discovery = await discoverGitHubRepoWithProfile(repo.repoUrl, repo.defaultBranch ?? "main");
+          const discovery = await discoverGitHubRepoWithProfile(repo.repoUrl, repo.defaultBranch ?? "main", userId);
           discovered.push(...discovery.docs);
           repositoryProfiles.push(discovery.profile);
         } catch (err) {
@@ -1997,7 +1997,35 @@ function parseGitHub(url: string): { owner: string; repo: string } {
  * are the single GitHub egress point) instead of hitting api.github.com /
  * raw.githubusercontent.com directly.
  */
-async function mcpSourcePost(path: string, body: Record<string, unknown>): Promise<unknown> {
+async function mcpSourcePost(path: string, body: Record<string, unknown>, routeUserId?: string): Promise<unknown> {
+  // Prefer routing repo discovery through the CF bridge to the requesting user's
+  // laptop runtime. In the cloud+laptop split the control plane has no
+  // co-located mcp HTTP (mcp is on the laptop, dial-in), so the bridge is the
+  // only way to reach a GitHub-capable runtime. Falls back to direct mcp HTTP
+  // (all-in-one / co-located) when CF isn't configured, the user is unknown, or
+  // no laptop runtime is online — so existing single-box deployments are
+  // unchanged.
+  const cfUrl = (process.env.CONTEXT_FABRIC_URL ?? "").replace(/\/+$/, "");
+  const cfToken = process.env.CONTEXT_FABRIC_SERVICE_TOKEN ?? "";
+  if (cfUrl && cfToken && routeUserId) {
+    const op = path.endsWith("/file") ? "file" : "tree";
+    try {
+      const res = await fetch(`${cfUrl}/api/runtime-bridge/source/${op}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "X-Service-Token": cfToken },
+        body: JSON.stringify({ user_id: routeUserId, ...body }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (res.ok) return await res.json();
+      // 503 = no laptop runtime online for this user → fall back to HTTP below.
+      // Other statuses fall through too, so a transient bridge error doesn't
+      // become a hard discovery failure when a co-located mcp is reachable.
+      console.warn(`[capability] CF bridge source-${op} returned ${res.status}; falling back to MCP_SERVER_URL`);
+    } catch (err) {
+      console.warn(`[capability] CF bridge source-${op} failed (${(err as Error).message}); falling back to MCP_SERVER_URL`);
+    }
+  }
+
   const base = (process.env.MCP_SERVER_URL ?? "").replace(/\/+$/, "");
   if (!base) {
     throw new Error("MCP_SERVER_URL is not configured; GitHub access must go through the MCP server.");
@@ -2016,14 +2044,14 @@ async function mcpSourcePost(path: string, body: Record<string, unknown>): Promi
   return res.json();
 }
 
-async function fetchRepoTreeViaMcp(repoUrl: string, branch: string): Promise<Array<{ path?: string; type?: string; size?: number }>> {
-  const data = await mcpSourcePost("/mcp/source/tree", { repoUrl, branch }) as { tree?: Array<{ path?: string; type?: string; size?: number }> };
+async function fetchRepoTreeViaMcp(repoUrl: string, branch: string, routeUserId?: string): Promise<Array<{ path?: string; type?: string; size?: number }>> {
+  const data = await mcpSourcePost("/mcp/source/tree", { repoUrl, branch }, routeUserId) as { tree?: Array<{ path?: string; type?: string; size?: number }> };
   return data.tree ?? [];
 }
 
-async function discoverGitHubRepoWithProfile(repoUrl: string, branch: string): Promise<{ docs: DiscoveryDoc[]; profile: RepositoryProfile }> {
+async function discoverGitHubRepoWithProfile(repoUrl: string, branch: string, routeUserId?: string): Promise<{ docs: DiscoveryDoc[]; profile: RepositoryProfile }> {
   const { owner, repo } = parseGitHub(repoUrl);
-  const blobs = (await fetchRepoTreeViaMcp(repoUrl, branch))
+  const blobs = (await fetchRepoTreeViaMcp(repoUrl, branch, routeUserId))
     .filter(item => item.type === "blob" && item.path);
   const candidates = blobs
     .filter(item => item.type === "blob" && item.path && isDiscoveryPath(item.path) && (item.size ?? 0) <= 250_000)
@@ -2033,7 +2061,7 @@ async function discoverGitHubRepoWithProfile(repoUrl: string, branch: string): P
   const sourceByPath = new Map<string, string>();
   for (const item of candidates) {
     const itemPath = item.path!;
-    const content = (await fetchRepoFileViaMcp(repoUrl, branch, itemPath)).slice(0, DISCOVERY_SOURCE_CHAR_CAP);
+    const content = (await fetchRepoFileViaMcp(repoUrl, branch, itemPath, routeUserId)).slice(0, DISCOVERY_SOURCE_CHAR_CAP);
     if (!content) continue;
     sourceByPath.set(itemPath, content);
     total += content.length;
@@ -2047,12 +2075,13 @@ async function discoverGitHubRepoWithProfile(repoUrl: string, branch: string): P
     branch,
     blobs,
     sourceByPath,
+    routeUserId,
   });
   return { docs, profile };
 }
 
-async function fetchRepoFileViaMcp(repoUrl: string, branch: string, itemPath: string): Promise<string> {
-  const data = await mcpSourcePost("/mcp/source/file", { repoUrl, branch, path: itemPath }) as { content?: string };
+async function fetchRepoFileViaMcp(repoUrl: string, branch: string, itemPath: string, routeUserId?: string): Promise<string> {
+  const data = await mcpSourcePost("/mcp/source/file", { repoUrl, branch, path: itemPath }, routeUserId) as { content?: string };
   return data.content ?? "";
 }
 
@@ -2063,6 +2092,7 @@ async function buildRepositoryProfileFromTree(input: {
   branch: string;
   blobs: Array<{ path?: string; type?: string; size?: number }>;
   sourceByPath: Map<string, string>;
+  routeUserId?: string;
 }): Promise<RepositoryProfile> {
   const languageCounts = new Map<string, number>();
   let totalBytes = 0;
@@ -2087,7 +2117,7 @@ async function buildRepositoryProfileFromTree(input: {
     if (sourceByPath.has(path)) continue;
     const blob = input.blobs.find(item => item.path === path);
     if ((blob?.size ?? 0) > 250_000) continue;
-    const content = await fetchRepoFileViaMcp(input.repoUrl, input.branch, path);
+    const content = await fetchRepoFileViaMcp(input.repoUrl, input.branch, path, input.routeUserId);
     if (content) sourceByPath.set(path, content.slice(0, DISCOVERY_SOURCE_CHAR_CAP));
   }
 

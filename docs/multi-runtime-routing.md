@@ -43,10 +43,20 @@ It never falls back to another user's runtime. Eligibility (`_matches`) requires
 | `tool-run` | execute one governed tool (apply_patch, run_command, copilot_execute, …) | `tools` / `mcp` |
 | `model-run` | place an LLM call on the runtime (calls its local gateway/provider) | `llm` |
 | `code-context` | build the repo code-context package | `mcp` |
+| `source-tree` / `source-file` | repo discovery for capability bootstrap — list a repo's tree / fetch a file via the runtime's GitHub egress | `mcp` |
 | `invoke` | legacy whole-loop drive | `mcp` |
 
 So **tools and models are routed independently** — by frame type + capability tag —
 even though they often live on the same runtime.
+
+`source-tree`/`source-file` let a **cloud control-plane** service (agent-runtime
+capability bootstrap) discover a repo through the requesting user's laptop runtime
+— so repo ingestion works in the cloud+laptop split, where the cloud has no
+co-located mcp HTTP. agent-runtime POSTs `/api/runtime-bridge/source/{tree,file}`
+on CF (service-token auth, `user_id` in the body); CF relays the frame to that
+user's runtime, which fetches from GitHub with its **local** token. agent-runtime
+falls back to the direct `MCP_SERVER_URL` HTTP path when CF is unset or no laptop
+runtime is online (the all-in-one box).
 
 ---
 

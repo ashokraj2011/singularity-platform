@@ -27,11 +27,19 @@ import time
 from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Header, HTTPException, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
 from .config import settings, is_production_class_env
 from .iam_service_token import get_iam_service_token, invalidate_iam_service_token
-from .laptop_registry import REGISTRY, ActiveConnection
+from .laptop_registry import (
+    REGISTRY,
+    ActiveConnection,
+    LaptopInvokeError,
+    LaptopInvokeTimeout,
+    LaptopNotConnected,
+    LaptopSendFailed,
+)
 
 
 class JWTError(Exception):
@@ -363,6 +371,81 @@ async def runtime_status() -> dict[str, Any]:
 @router.get("/api/laptop-bridge/status")
 async def status() -> dict[str, Any]:
     return await REGISTRY.status_snapshot()
+
+
+# ── Repo source discovery over the bridge ──────────────────────────────────
+# Lets a cloud control-plane service (agent-runtime capability bootstrap) read a
+# repo's tree / files through the requesting USER's laptop runtime, instead of
+# needing its own GitHub egress or a reachable mcp HTTP endpoint. The laptop runs
+# the fetch with its LOCAL GITHUB_TOKEN; CF only relays. Routing is by user_id
+# (token-authoritative on the bridge side) — the same model as code-context.
+class _SourceTreeReq(BaseModel):
+    user_id: str
+    tenant_id: Optional[str] = None
+    repoUrl: str
+    branch: str = "main"
+
+
+class _SourceFileReq(BaseModel):
+    user_id: str
+    tenant_id: Optional[str] = None
+    repoUrl: str
+    branch: str = "main"
+    path: str
+
+
+async def _dispatch_source(
+    *, op: str, user_id: str, tenant_id: Optional[str], request_body: dict[str, Any]
+) -> dict[str, Any]:
+    try:
+        return await REGISTRY.dispatch_source_via_laptop(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            capability_tags=["mcp"],
+            op=op,
+            request_body=request_body,
+        )
+    except LaptopNotConnected as err:
+        # No laptop advertising the source frame is online — the caller should
+        # fall back to its static MCP_SERVER_URL HTTP path (co-located mcp).
+        raise HTTPException(status_code=503, detail=f"no runtime for source-{op}: {err}") from err
+    except LaptopInvokeTimeout as err:
+        raise HTTPException(status_code=504, detail=str(err)) from err
+    except (LaptopSendFailed, LaptopInvokeError) as err:
+        raise HTTPException(status_code=502, detail=str(err)) from err
+
+
+@router.post("/api/runtime-bridge/source/tree")
+async def runtime_source_tree(
+    req: _SourceTreeReq,
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+) -> dict[str, Any]:
+    # Lazy import avoids any import cycle with execute.py at module load.
+    from .execute import check_execute_service_token
+
+    check_execute_service_token(x_service_token)
+    return await _dispatch_source(
+        op="tree",
+        user_id=req.user_id,
+        tenant_id=req.tenant_id,
+        request_body={"repoUrl": req.repoUrl, "branch": req.branch},
+    )
+
+
+@router.post("/api/runtime-bridge/source/file")
+async def runtime_source_file(
+    req: _SourceFileReq,
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+) -> dict[str, Any]:
+    from .execute import check_execute_service_token
+
+    check_execute_service_token(x_service_token)
+    return await _dispatch_source(
+        op="file",
+        user_id=req.user_id,
+        tenant_id=req.tenant_id,
+        request_body={"repoUrl": req.repoUrl, "branch": req.branch, "path": req.path},
+    )
 
 
 def _now_iso() -> str:

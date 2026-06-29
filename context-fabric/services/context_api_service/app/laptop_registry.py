@@ -405,6 +405,40 @@ class LaptopRegistry:
         )
         return body
 
+    async def dispatch_source_via_laptop(
+        self,
+        *,
+        user_id: str,
+        tenant_id: str | None = None,
+        capability_tags: list[str] | None = None,
+        op: str,
+        request_body: dict[str, Any],
+        timeout: float = INVOKE_TIMEOUT_SEC,
+    ) -> dict[str, Any]:
+        """Send a repo source-discovery request to the user's laptop over a
+        ``source-tree`` / ``source-file`` frame and await the response. The laptop
+        runs the GitHub fetch with its LOCAL GITHUB_TOKEN and returns the SAME
+        ``{tree}`` / ``{content}`` payload mcp-server's HTTP ``/mcp/source/*``
+        routes return — so a cloud control plane (agent-runtime capability
+        bootstrap) can discover a repo through the user's laptop runtime instead
+        of needing its own GitHub egress / a reachable mcp HTTP endpoint.
+
+        ``op`` is "tree" or "file"; ``request_body`` is {repoUrl, branch[, path]}.
+        Raises LaptopNotConnected when no laptop advertising the frame is online.
+        """
+        frame_type = f"source-{op}"
+        body, _conn = await self._send_frame_await_response(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            capability_tags=capability_tags,
+            frame_type=frame_type,
+            payload=request_body,
+            timeout=timeout,
+            request_label=frame_type,
+            require_frame_type=frame_type,
+        )
+        return body
+
     async def _send_frame_await_response(
         self,
         *,
