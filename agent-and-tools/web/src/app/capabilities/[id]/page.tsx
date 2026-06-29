@@ -121,10 +121,20 @@ export default function CapabilityDetailPage() {
     setRefreshError(null);
     setRefreshMsg(null);
     try {
-      await runtimeApi.syncCapability(id, {});
-      await runtimeApi.redistillWorldModel(id);
+      // Re-run the learning worker: re-sync APPROVED repos/knowledge sources +
+      // re-embed (repopulates the inferred stack). It returns warnings/nextActions
+      // when sources still need human approval — ingestion is governance-gated.
+      const worker = await runtimeApi.runLearningWorker(id, {});
+      // Best-effort re-ground: re-distill the world model from whatever is now
+      // materialized. Non-fatal if the capability has no world model yet.
+      try { await runtimeApi.redistillWorldModel(id); } catch { /* not grounded yet */ }
       await mutateCap();
-      setRefreshMsg("Learning refreshed — repository re-ingested and world-model re-grounded.");
+      const notes = [...(worker?.warnings ?? []), ...(worker?.nextActions ?? [])];
+      setRefreshMsg(
+        notes.length
+          ? `Learning refreshed. Action needed: ${notes.join(" ")}`
+          : "Learning refreshed — sources re-ingested and world-model re-grounded.",
+      );
     } catch (err) {
       setRefreshError(err instanceof Error ? err.message : "Refresh learning failed");
     } finally {

@@ -490,6 +490,13 @@ export const runtimeApi = {
       code: { scanned: number; embedded: number; failed: number };
     }>(`${RUNTIME_BASE}/capabilities/${capabilityId}/embeddings/reembed`,
       { method: "POST", body: JSON.stringify({ kinds }) }),
+  // Learning worker — re-syncs APPROVED repos/knowledge sources (auto-discovers
+  // all active ones), re-embeds, and returns warnings + nextActions (e.g. pending
+  // bootstrap candidates that still need human approval before they can ingest).
+  runLearningWorker: (capabilityId: string, body: Row = {}) =>
+    reqEnv<{ warnings?: string[]; nextActions?: string[]; [k: string]: unknown }>(
+      `${RUNTIME_BASE}/capabilities/${capabilityId}/learning-worker/run`,
+      { method: "POST", body: JSON.stringify(body) }),
   // On-demand world-model re-distillation — re-grounds the capability's agents
   // (LLM enrichment + architecture slice) without re-onboarding.
   redistillWorldModel: (capabilityId: string) =>
