@@ -511,6 +511,21 @@ load_runtime_token() {
   return 1
 }
 
+# Decode a runtime JWT's runtime_id claim (read-only; no signature check). Token
+# is passed via env (not argv) to keep it out of `ps`. Empty on parse failure.
+_runtime_token_claim_id() {
+  RT_TOK="$1" python3 -c '
+import base64, json, os
+tok = os.environ.get("RT_TOK", "")
+try:
+    p = tok.split(".")[1]; p += "=" * (-len(p) % 4)
+    c = json.loads(base64.urlsafe_b64decode(p))
+    print(c.get("runtime_id") or c.get("device_id") or "")
+except Exception:
+    pass
+' 2>/dev/null
+}
+
 # Resolve a STABLE, UNIQUE-per-stack runtime id and export it before the token is
 # minted + the runtime is booted. The old fixed default ("baremetal-mcp-runtime")
 # made every concurrent stack/checkout register to the same CF-bridge slot
@@ -518,22 +533,35 @@ load_runtime_token() {
 # dispatch broke. An explicit SINGULARITY_RUNTIME_ID still wins; otherwise we
 # persist a per-checkout id in .singularity/runtime-id (stable across restarts).
 ensure_runtime_id() {
-  if [ -n "${SINGULARITY_RUNTIME_ID:-}" ]; then
-    export SINGULARITY_RUNTIME_ID
-    return 0
-  fi
-  if [ -s "$RUNTIME_ID_FILE" ]; then
-    SINGULARITY_RUNTIME_ID="$(tr -d '\n' < "$RUNTIME_ID_FILE")"
-  else
-    local gen
-    gen="$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]')"
-    [ -n "$gen" ] || gen="$(printf '%s' "$ROOT" | shasum -a 256 2>/dev/null | cut -c1-12)"
-    SINGULARITY_RUNTIME_ID="bm-mcp-${gen:-$$}"
-    mkdir -p "$(dirname "$RUNTIME_ID_FILE")"
-    printf '%s' "$SINGULARITY_RUNTIME_ID" > "$RUNTIME_ID_FILE"
-    info "minted unique runtime id $SINGULARITY_RUNTIME_ID (persisted to $RUNTIME_ID_FILE)"
+  if [ -z "${SINGULARITY_RUNTIME_ID:-}" ]; then
+    if [ -s "$RUNTIME_ID_FILE" ]; then
+      SINGULARITY_RUNTIME_ID="$(tr -d '\n' < "$RUNTIME_ID_FILE")"
+    else
+      local gen
+      gen="$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+      [ -n "$gen" ] || gen="$(printf '%s' "$ROOT" | shasum -a 256 2>/dev/null | cut -c1-12)"
+      SINGULARITY_RUNTIME_ID="bm-mcp-${gen:-$$}"
+      mkdir -p "$(dirname "$RUNTIME_ID_FILE")"
+      printf '%s' "$SINGULARITY_RUNTIME_ID" > "$RUNTIME_ID_FILE"
+      info "minted unique runtime id $SINGULARITY_RUNTIME_ID (persisted to $RUNTIME_ID_FILE)"
+    fi
   fi
   export SINGULARITY_RUNTIME_ID
+
+  # CF-bridge identity is TOKEN-authoritative. A cached token minted for a
+  # DIFFERENT runtime_id (e.g. the old shared "baremetal-mcp-runtime") would make
+  # this stack register under THAT id and collide ("replaced" storm) regardless
+  # of the id above — load_runtime_token only checks freshness, not the claim.
+  # Drop a mismatched cached token so ensure_runtime_token re-mints with our id.
+  if [ -s "$DEVICE_TOKEN_FILE" ]; then
+    local claimed
+    claimed="$(_runtime_token_claim_id "$(tr -d '\n' < "$DEVICE_TOKEN_FILE")")"
+    if [ -n "$claimed" ] && [ "$claimed" != "$SINGULARITY_RUNTIME_ID" ]; then
+      warn "cached runtime token is for runtime_id '$claimed' but this stack is '$SINGULARITY_RUNTIME_ID' — re-minting"
+      rm -f "$DEVICE_TOKEN_FILE"
+      unset SINGULARITY_RUNTIME_TOKEN SINGULARITY_DEVICE_TOKEN
+    fi
+  fi
 }
 
 mint_runtime_token_via_iam() {
