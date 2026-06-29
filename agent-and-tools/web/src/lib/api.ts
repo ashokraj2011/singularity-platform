@@ -490,6 +490,10 @@ export const runtimeApi = {
       code: { scanned: number; embedded: number; failed: number };
     }>(`${RUNTIME_BASE}/capabilities/${capabilityId}/embeddings/reembed`,
       { method: "POST", body: JSON.stringify({ kinds }) }),
+  // On-demand world-model re-distillation — re-grounds the capability's agents
+  // (LLM enrichment + architecture slice) without re-onboarding.
+  redistillWorldModel: (capabilityId: string) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/world-model/redistill`, { method: "POST" }),
 
   // Executions
   listExecutions: (params?: Record<string, string>) => {

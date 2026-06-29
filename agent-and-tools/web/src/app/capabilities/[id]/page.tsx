@@ -44,6 +44,9 @@ export default function CapabilityDetailPage() {
   const [know, setKnow] = useState({ artifactType: "ARCHITECTURE_SUMMARY", title: "", content: "", confidence: 0.8 });
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
@@ -109,6 +112,26 @@ export default function CapabilityDetailPage() {
     }
   }
 
+  // Refresh learning — re-ingest the repo/knowledge (which repopulates the
+  // inferred "Primary stack" + embeddings) and re-distill the world model (which
+  // re-grounds this capability's agents). Use after a failed/empty discovery,
+  // or to pull the latest repo state into agent grounding.
+  async function refreshLearning() {
+    setRefreshing(true);
+    setRefreshError(null);
+    setRefreshMsg(null);
+    try {
+      await runtimeApi.syncCapability(id, {});
+      await runtimeApi.redistillWorldModel(id);
+      await mutateCap();
+      setRefreshMsg("Learning refreshed — repository re-ingested and world-model re-grounded.");
+    } catch (err) {
+      setRefreshError(err instanceof Error ? err.message : "Refresh learning failed");
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   function beginEdit() {
     setEditError(null);
     setEditForm({
@@ -169,6 +192,14 @@ export default function CapabilityDetailPage() {
           </div>
           {!isArchived && (
             <div className="flex flex-wrap items-center gap-2">
+              <button
+                className="btn-secondary text-xs"
+                disabled={refreshing}
+                onClick={refreshLearning}
+                title="Re-ingest the repository + knowledge (repopulates the inferred stack) and re-distill the world model to re-ground this capability's agents"
+              >
+                <RefreshCw size={14} className={refreshing ? "animate-spin" : undefined} /> {refreshing ? "Refreshing..." : "Refresh learning"}
+              </button>
               <button className="btn-secondary text-xs" onClick={beginEdit}>
                 <Pencil size={14} /> Edit details
               </button>
@@ -180,6 +211,8 @@ export default function CapabilityDetailPage() {
         </div>
         {archiveError && <div className="mt-3 text-sm text-red-600">{archiveError}</div>}
         {editError && <div className="mt-3 text-sm text-red-600">{editError}</div>}
+        {refreshError && <div className="mt-3 text-sm text-red-600">{refreshError}</div>}
+        {refreshMsg && <div className="mt-3 text-sm text-emerald-700">{refreshMsg}</div>}
         {isArchived && (
           <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
             This capability is archived. Bindings and capability-scoped agents are disabled, polling is stopped, and active learning artifacts are removed from runtime retrieval.
