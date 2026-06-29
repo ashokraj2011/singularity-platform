@@ -3021,11 +3021,18 @@ async function ensureDefaultGovernanceLimits(capabilityId: string): Promise<stri
   const tokensMax = Number(process.env.CAPABILITY_DEFAULT_DAILY_TOKENS ?? 200_000);
   const costMaxUsd = Number(process.env.CAPABILITY_DEFAULT_DAILY_COST_USD ?? 2);
   const maxCalls = Number(process.env.CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE ?? 30);
+  // audit-gov requires the service bearer on writes — without it these POSTs 401.
+  // Mirrors src/lib/audit-gov-emit.ts. (The token must also be passed to this
+  // service at boot; see bin/bare-metal.sh agent-runtime.)
+  const serviceToken = process.env.AUDIT_GOV_SERVICE_TOKEN ?? "";
+  const headers: Record<string, string> = serviceToken
+    ? { "content-type": "application/json", authorization: `Bearer ${serviceToken}` }
+    : { "content-type": "application/json" };
   try {
     const [budgetRes, rateRes] = await Promise.all([
       fetch(`${baseUrl}/api/v1/governance/budgets`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers,
         body: JSON.stringify({
           scope_type: "capability",
           scope_id: capabilityId,
@@ -3037,7 +3044,7 @@ async function ensureDefaultGovernanceLimits(capabilityId: string): Promise<stri
       }),
       fetch(`${baseUrl}/api/v1/governance/rate-limits`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers,
         body: JSON.stringify({
           scope_type: "capability",
           scope_id: capabilityId,
