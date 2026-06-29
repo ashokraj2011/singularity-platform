@@ -1,10 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
 import useSWR from "swr";
-import { ArrowLeft, ExternalLink, RefreshCw, ShieldCheck } from "lucide-react";
-import { apiPath, authHeaders, identityApi, saveAgentToolsToken } from "@/lib/api";
+import { ArrowLeft, ExternalLink, RefreshCw } from "lucide-react";
+import { apiPath, authHeaders } from "@/lib/api";
 
 type Column = {
   label: string;
@@ -135,8 +134,6 @@ export function ResourceListPage({
         </p>
       </section>
 
-      {isUnauthorized && <InlineSignInPanel onAuthenticated={() => void mutate()} />}
-
       {isFeatureDisabled && (
         <section className="card" style={{ padding: 18, marginBottom: 18, borderColor: "rgba(217,119,6,0.28)", background: "rgba(255,251,235,0.82)" }}>
           <div style={{ fontWeight: 800, color: "#92400e", marginBottom: 4 }}>Feature disabled</div>
@@ -214,57 +211,3 @@ export function ResourceListPage({
   );
 }
 
-function InlineSignInPanel({ onAuthenticated }: { onAuthenticated: () => void }) {
-  const [email, setEmail] = useState("admin@singularity.local");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit() {
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await identityApi.login({ email, password });
-      saveAgentToolsToken(res.access_token, res.user);
-      onAuthenticated();
-    } catch (err) {
-      setError((err as Error).message || "Sign in failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="card" style={{ padding: 18, marginBottom: 18, borderColor: "rgba(54,135,39,0.24)", background: "rgba(240,253,244,0.75)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 800, marginBottom: 6 }}>
-        <ShieldCheck size={16} color="var(--color-primary)" />
-        Sign in to load this surface
-      </div>
-      <p style={{ margin: "0 0 12px", color: "var(--color-outline)", fontSize: 13 }}>
-        Workflows, workbench, identity, and governance APIs require an IAM bearer. Use the bootstrap IAM credentials from your local Singularity config.
-      </p>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, alignItems: "center" }}>
-        <input
-          value={email}
-          onChange={(event) => setEmail(event.target.value)}
-          placeholder="email"
-          autoComplete="username"
-          style={{ minWidth: 0, border: "1px solid var(--color-outline-variant)", borderRadius: 10, padding: "9px 11px", fontSize: 13 }}
-        />
-        <input
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          placeholder="password"
-          type="password"
-          autoComplete="current-password"
-          onKeyDown={(event) => { if (event.key === "Enter") void submit(); }}
-          style={{ minWidth: 0, border: "1px solid var(--color-outline-variant)", borderRadius: 10, padding: "9px 11px", fontSize: 13 }}
-        />
-        <button type="button" className="btn-primary" onClick={() => void submit()} disabled={busy || !email || !password}>
-          {busy ? "Signing in..." : "Sign in"}
-        </button>
-      </div>
-      {error && <div style={{ marginTop: 10, color: "#991b1b", fontSize: 12 }}>{error}</div>}
-    </section>
-  );
-}

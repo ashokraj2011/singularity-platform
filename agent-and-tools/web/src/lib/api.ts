@@ -97,6 +97,17 @@ export function clearAgentToolsToken(): void {
   notifyAuthChanged();
 }
 
+// A 401 from the API proxy means our stored bearer is missing/expired/invalid.
+// Clear it so the single front-door gate (RequireSession) re-engages, instead of
+// leaving a stale token that silently 401s every call (which previously surfaced
+// as "homepage loads, but the page shows its own inline re-login"). No-op when no
+// token is stored — so the sign-in POST itself (no bearer) is unaffected.
+function handleAuthFailure(status: number): void {
+  if (status === 401 && typeof window !== "undefined" && authHeaders().Authorization) {
+    clearAgentToolsToken(); // fires AUTH_CHANGED_EVENT → RequireSession shows sign-in
+  }
+}
+
 export function authHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {};
   for (const key of ["agent-tools-token", "auth-token", "token"]) {
@@ -119,6 +130,7 @@ async function req<T>(url: string, opts?: RequestInit): Promise<T> {
   } catch (err) {
     throw new ApiError((err as Error).message || "Network request failed");
   }
+  handleAuthFailure(res.status);
   const { raw, parsed } = await readResponseBody(res);
   if (!res.ok) {
     const obj = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
@@ -222,6 +234,7 @@ async function reqEnv<T>(url: string, opts?: RequestInit): Promise<T> {
   } catch (err) {
     throw new ApiError((err as Error).message || "Network request failed");
   }
+  handleAuthFailure(res.status);
 
   const { raw, parsed } = await readResponseBody(res);
   if (!parsed || typeof parsed !== "object") {
@@ -255,6 +268,7 @@ async function reqEnvForm<T>(url: string, form: FormData): Promise<T> {
   } catch (err) {
     throw new ApiError((err as Error).message || "Network request failed");
   }
+  handleAuthFailure(res.status);
 
   const { raw, parsed } = await readResponseBody(res);
   if (!parsed || typeof parsed !== "object") {
