@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
-import { ApiError, hasAgentToolsToken, identityApi, runtimeApi, saveAgentToolsToken } from "@/lib/api";
+import { ApiError, runtimeApi } from "@/lib/api";
 import {
   AlertCircle,
   Bot,
@@ -201,7 +201,6 @@ export default function AgentStudioPage() {
   const [capabilityId, setCapabilityId] = useState("");
   const [selected, setSelected] = useState<Agent | null>(null);
   const [deriveTarget, setDeriveTarget] = useState<Agent | null>(null);
-  const [signedIn, setSignedIn] = useState(false);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "editable" | "locked" | "missing-profile">("all");
   const [showCreateProfile, setShowCreateProfile] = useState(false);
@@ -241,12 +240,6 @@ export default function AgentStudioPage() {
     return { editable, missingProfiles, locked };
   }, [items]);
 
-  useEffect(() => {
-    setSignedIn(hasAgentToolsToken());
-  }, []);
-
-  const authNeeded = !signedIn || isUnauthorized(error) || isUnauthorized(capabilitiesError);
-
   return (
     <div className="space-y-6">
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -276,15 +269,6 @@ export default function AgentStudioPage() {
           </button>
         </div>
       </div>
-
-      {authNeeded && (
-        <AgentStudioAuthCard
-          onAuthenticated={() => {
-            setSignedIn(true);
-            mutate();
-          }}
-        />
-      )}
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="grid gap-3 xl:grid-cols-[minmax(260px,1fr)_minmax(280px,0.9fr)_auto] xl:items-end">
@@ -430,7 +414,7 @@ export default function AgentStudioPage() {
         <DeriveDialog
           base={deriveTarget}
           capabilityId={capabilityId}
-          onAuthRequired={() => setSignedIn(false)}
+          onAuthRequired={() => { /* 401 handled globally: api.ts clears the token → front-door gate */ }}
           onClose={() => setDeriveTarget(null)}
           onDone={() => { setDeriveTarget(null); mutate(); }}
         />
@@ -440,7 +424,7 @@ export default function AgentStudioPage() {
         <CreateAgentProfileWizard
           capabilities={capabilities}
           initialCapabilityId={capabilityId}
-          onAuthRequired={() => setSignedIn(false)}
+          onAuthRequired={() => { /* 401 handled globally: api.ts clears the token → front-door gate */ }}
           onClose={() => setShowCreateProfile(false)}
           onDone={(agent) => {
             setShowCreateProfile(false);
@@ -1024,70 +1008,6 @@ function MetricCard({
     <div className={`rounded-xl border px-3 py-2 ${palette[tone]}`}>
       <div className="text-[10px] font-bold uppercase tracking-[0.16em] opacity-70">{label}</div>
       <div className="mt-1 text-2xl font-bold leading-none">{value}</div>
-    </div>
-  );
-}
-
-function AgentStudioAuthCard({ onAuthenticated }: { onAuthenticated: () => void }) {
-  const [email, setEmail] = useState("admin@singularity.local");
-  const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit() {
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await identityApi.login({ email, password });
-      saveAgentToolsToken(res.access_token, res.user);
-      onAuthenticated();
-    } catch (e) {
-      setError((e as Error).message ?? "Sign in failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="card p-4 mb-6 border-emerald-200 bg-emerald-50/50">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
-            <ShieldCheck size={16} className="text-emerald-700" />
-            Sign in for governed agent changes
-          </div>
-          <p className="mt-1 text-xs text-slate-600">
-            Platform Web uses your IAM session for governed template changes across agents, tools, workflows, and identity.
-          </p>
-        </div>
-        <div className="grid min-w-0 flex-1 grid-cols-1 gap-2 sm:grid-cols-[1fr_180px_auto]">
-          <input
-            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="email"
-            autoComplete="username"
-          />
-          <input
-            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="password"
-            type="password"
-            autoComplete="current-password"
-            onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}
-          />
-          <button
-            type="button"
-            onClick={() => void submit()}
-            disabled={busy || !email || !password}
-            className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {busy ? "Signing in..." : "Sign in"}
-          </button>
-        </div>
-      </div>
-      {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
     </div>
   );
 }
