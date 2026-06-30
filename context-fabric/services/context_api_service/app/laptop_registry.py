@@ -281,6 +281,7 @@ class LaptopRegistry:
         work_item_id: str | None = None,
         workspace_id: str | None = None,
         grant: dict[str, Any] | None = None,
+        clone_credential: dict[str, Any] | None = None,
         timeout: float = INVOKE_TIMEOUT_SEC,
     ) -> tuple[dict[str, Any], dict[str, str]]:
         """Send a single tool-run frame to the user's laptop and await
@@ -328,6 +329,8 @@ class LaptopRegistry:
             timeout=timeout,
             request_label=f"tool-run({tool_name})",
             require_frame_type="tool-run",
+            # P0 #2 — clone (READ) credential rides to a SHARED runtime only.
+            shared_only_run_context_extra={"gitCloneCredential": clone_credential} if clone_credential else None,
         )
         return body, {"device_id": conn.device_id, "device_name": conn.device_name}
 
@@ -376,6 +379,7 @@ class LaptopRegistry:
         tenant_id: str | None = None,
         capability_tags: list[str] | None = None,
         request_body: dict[str, Any],
+        clone_credential: dict[str, Any] | None = None,
         timeout: float = INVOKE_TIMEOUT_SEC,
     ) -> dict[str, Any]:
         """Send a code-context build request to the user's laptop over a
@@ -402,6 +406,8 @@ class LaptopRegistry:
             timeout=timeout,
             request_label="code-context",
             require_frame_type="code-context",
+            # P0 #2 — clone (READ) credential rides to a SHARED runtime only.
+            shared_only_run_context_extra={"gitCloneCredential": clone_credential} if clone_credential else None,
         )
         return body
 
@@ -513,6 +519,7 @@ class LaptopRegistry:
         request_label: str,
         require_frame_type: str | None = None,
         shared_only_extra: dict[str, Any] | None = None,
+        shared_only_run_context_extra: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], ActiveConnection]:
         """Common request/response plumbing shared by ``invoke`` and
         ``dispatch_tool_via_laptop``. Extracted so the per-frame logic
@@ -548,7 +555,16 @@ class LaptopRegistry:
         # minted token.
         send_payload = payload
         if shared_only_extra and self._is_shared_runtime(conn):
-            send_payload = {**payload, **shared_only_extra}
+            send_payload = {**send_payload, **shared_only_extra}
+        # Same shared-only gate, but for fields nested under run_context (e.g. the
+        # brokered clone credential the mcp consumer reads at run_context.
+        # gitCloneCredential). Merged onto a COPY so the caller's payload is never
+        # mutated; a personal laptop never receives it.
+        if shared_only_run_context_extra and self._is_shared_runtime(conn):
+            send_payload = {
+                **send_payload,
+                "run_context": {**(send_payload.get("run_context") or {}), **shared_only_run_context_extra},
+            }
 
         frame = {"type": frame_type, "request_id": request_id, "payload": send_payload}
         try:

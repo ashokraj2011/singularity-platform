@@ -20,6 +20,9 @@ from typing import Any, Literal
 import httpx
 
 from . import placement as _placement
+# git_broker depends only on app.config + app.iam_service_token (never governed.*),
+# so a top-level import here is cycle-free.
+from ..git_broker import _git_broker_enabled, clone_credential_for_run
 
 log = logging.getLogger(__name__)
 
@@ -170,6 +173,16 @@ async def dispatch_tool(
     runtime_tenant_id = _placement.runtime_tenant_target(run_context)
     capability_tags = _placement.runtime_capability_tags(run_context)
 
+    # P0 #2 — clone (READ) credential for private-repo materialization. Brokered
+    # once per run (memoized, shared with the code-context path). Threaded to the
+    # laptop dispatch as clone_credential (registry injects it into run_context for
+    # a SHARED runtime only — never a personal laptop, Decision #3) and attached to
+    # the HTTP payload below (co-located shared mcp). The mcp consumes it for the
+    # clone and strips it before audit. Off / no source / no cred ⇒ static token.
+    clone_cred: dict[str, Any] | None = None
+    if _git_broker_enabled() and isinstance(run_context, dict) and (run_context.get("sourceUri") or run_context.get("source_uri")):
+        clone_cred = await clone_credential_for_run(run_context)
+
     if not legacy_active and (runtime_user_id or runtime_tenant_id):
         try:
             return await _dispatch_via_laptop(
@@ -182,6 +195,7 @@ async def dispatch_tool(
                 work_item_id=work_item_id,
                 run_context=run_context,
                 grant=grant,
+                clone_credential=clone_cred,
             )
         except _LaptopUnavailable as exc:
             if not _http_fallback_enabled():
@@ -213,7 +227,12 @@ async def dispatch_tool(
     if workspace_id:
         payload["workspace_id"] = workspace_id
     if run_context:
-        payload["run_context"] = run_context
+        # HTTP path targets the co-located/shared mcp-server, so attach the clone
+        # credential directly (no personal laptop here). Built on a copy so the
+        # caller's run_context is never mutated.
+        payload["run_context"] = (
+            {**run_context, "gitCloneCredential": clone_cred} if clone_cred else run_context
+        )
     if grant:
         # Defence-in-depth: signed proof that CF's governed loop authorized
         # THIS (tool, args, stage/phase/policy). mcp-server verifies it before
@@ -289,6 +308,7 @@ async def _dispatch_via_laptop(
     work_item_id: str | None,
     run_context: dict[str, Any] | None,
     grant: dict[str, Any] | None = None,
+    clone_credential: dict[str, Any] | None = None,
 ) -> ToolDispatchResult:
     """Bridge-side counterpart to the HTTP dispatch_tool body. Sends a
     tool-run frame via the laptop_registry and normalises the response
@@ -327,6 +347,7 @@ async def _dispatch_via_laptop(
             work_item_id=work_item_id,
             workspace_id=workspace_id,
             grant=grant,
+            clone_credential=clone_credential,
             timeout=_timeout_for(tool_name),
         )
     except LaptopNotConnected as exc:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Optional
 
 import httpx
@@ -83,3 +84,58 @@ async def broker_git_credential(
         log.warning("git broker: IAM issue failed (%s) for op=%s: %s", resp.status_code, operation, resp.text[:200])
         return None
     return resp.json()
+
+
+# Per-run memo for the clone (READ) credential. A run materializes its repo at
+# most a couple of times (code-context build + maybe a tool-run-first clone), so
+# without memoization every governed tool dispatch in a no-code-context workflow
+# would mint a fresh IAM credential. Keyed by (run id, repo); shared across the
+# code-context AND tool-run dispatch paths so a run issues ONE clone credential
+# regardless of which path triggers first. Holds short-lived tokens in memory
+# only, bounded by eviction of expired entries on write. TTL is a fixed, safely
+# conservative window (well inside GitHub's ~1h installation-token lifetime); a
+# longer run simply re-mints.
+_CLONE_CRED_TTL_SEC = 300.0
+_clone_cred_cache: dict[tuple[str, str], tuple[dict[str, Any], float]] = {}
+
+
+def _clone_run_key(run_context: dict[str, Any]) -> Optional[tuple[str, str]]:
+    rc = run_context or {}
+    run_id = (
+        rc.get("runId")
+        or rc.get("run_id")
+        or rc.get("workflow_instance_id")
+        or rc.get("workflowInstanceId")
+        or rc.get("traceId")
+        or rc.get("trace_id")
+    )
+    repo = (
+        rc.get("repo")
+        or rc.get("repoUrl")
+        or rc.get("repository")
+        or rc.get("sourceUri")
+        or rc.get("source_uri")
+    )
+    if not run_id or not repo:
+        return None
+    return (str(run_id), str(repo))
+
+
+async def clone_credential_for_run(run_context: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Broker a clone (READ) credential ONCE per (run, repo), reused across the
+    code-context and tool-run dispatch paths. Returns None when the broker is off,
+    the repo/tenant is absent, or IAM declines. Never logs the token.
+    """
+    key = _clone_run_key(run_context)
+    now = time.time()
+    if key is not None:
+        cached = _clone_cred_cache.get(key)
+        if cached and cached[1] > now:
+            return cached[0]
+    cred = await broker_git_credential(run_context, "clone")
+    if cred and key is not None:
+        # Bounded growth: drop expired entries before inserting.
+        for k in [k for k, (_, exp) in _clone_cred_cache.items() if exp <= now]:
+            _clone_cred_cache.pop(k, None)
+        _clone_cred_cache[key] = (cred, now + _CLONE_CRED_TTL_SEC)
+    return cred
