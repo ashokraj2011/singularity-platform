@@ -9,6 +9,7 @@ import { render as renderMustache } from "../../shared/mustache";
 import { toolServiceClient, DiscoveredTool } from "../../clients/tool-service.client";
 import { contextFabricClient } from "../../clients/context-fabric.client";
 import { ComposeInput, ArtifactInput } from "./compose.schemas";
+import { buildAgentSkillSourceLayer, effectiveCapabilityPermissions } from "./skill-source-layer";
 import {
   getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral,
 } from "@agentandtools/shared";
@@ -53,29 +54,6 @@ function noMeaningfulHits<S extends { cosineSimilarity: number; fts_score?: numb
     (r.cosineSimilarity ?? 0) < EMPTY_FALLBACK_COSINE_MIN &&
     ((r.fts_score ?? 0) <= 0)
   );
-}
-
-const CAPABILITY_PERMISSION_ORDER = ["read", "invoke", "configure", "edit"] as const;
-
-function effectiveCapabilityPermissions(
-  permissions: unknown,
-  opts: { readOnly?: boolean | null; providerLocked?: boolean | null; fallback?: string[] } = {},
-): string[] {
-  const normalized = Array.isArray(permissions)
-    ? permissions.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-    : [];
-  let unique = Array.from(new Set(normalized));
-  if (unique.length === 0) unique = opts.fallback?.length ? opts.fallback : ["read"];
-  if (opts.readOnly || opts.providerLocked) unique = unique.filter((permission) => permission === "read");
-  if (!unique.includes("read")) unique.unshift("read");
-  return unique.sort((a, b) => {
-    const ai = CAPABILITY_PERMISSION_ORDER.indexOf(a as typeof CAPABILITY_PERMISSION_ORDER[number]);
-    const bi = CAPABILITY_PERMISSION_ORDER.indexOf(b as typeof CAPABILITY_PERMISSION_ORDER[number]);
-    if (ai === -1 && bi === -1) return a.localeCompare(b);
-    if (ai === -1) return 1;
-    if (bi === -1) return -1;
-    return ai - bi;
-  });
 }
 
 interface SemanticHit {
@@ -911,7 +889,7 @@ export const composeService = {
       layers.push({ layerType: "TOOL_CONTRACT", priority: PRIORITY.TOOL_CONTRACT, inclusionReason: "tool grants + dynamic discovery", contentSnapshot: r.rendered, layerHash: sha256(r.rendered) });
     }
 
-    const skillSourceLayer = await this.buildAgentSkillSourceLayer(template.id);
+    const skillSourceLayer = await buildAgentSkillSourceLayer(template.id);
     if (skillSourceLayer) {
       const r = renderMustache(trimText(skillSourceLayer, budget.maxLayerChars), ctx); warnings.push(...r.warnings);
       if (skillSourceLayer.length > budget.maxLayerChars) retrievalStats.trimmedLayers += 1;
@@ -1236,33 +1214,6 @@ export const composeService = {
           isRequired: l.promptLayer.isRequired,
         };
       });
-  },
-
-  async buildAgentSkillSourceLayer(agentTemplateId: string): Promise<string | null> {
-    const rows = await runtimeReader.agentTemplateSkill.findMany({
-      where: { agentTemplateId },
-      orderBy: { createdAt: "asc" },
-      include: { skill: true },
-    });
-    if (rows.length === 0) return null;
-    const lines = ["Agent profile skill sources:"];
-    for (const row of rows) {
-      const permissions = effectiveCapabilityPermissions(row.permissions, {
-        readOnly: row.readOnly,
-        providerLocked: row.providerLocked,
-        fallback: ["read"],
-      });
-      const access = [
-        permissions.join(","),
-        row.readOnly ? "read-only" : null,
-        row.providerLocked ? "provider-locked" : null,
-      ].filter(Boolean).join("; ");
-      lines.push(`- ${row.skill.name} [${row.sourceType}] permissions=${access}`);
-      if (row.sourceRef) lines.push(`  Source: ${row.sourceRef}`);
-      if (row.skill.description) lines.push(`  Purpose: ${row.skill.description}`);
-    }
-    lines.push("Use read-only sources only as reference context. Invoke or edit only when the capability permissions explicitly allow it.");
-    return lines.join("\n");
   },
 
   async buildToolContractLayer(input: ComposeInput, capabilityId: string | null, agentTemplateId: string, retrievalStats?: { toolContractsIncluded: number }): Promise<string | null> {

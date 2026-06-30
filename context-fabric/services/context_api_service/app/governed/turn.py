@@ -987,9 +987,17 @@ async def run_turn(
     # appends the capability's promoted distilled memory to extraContext).
     # Resolved independently of the code-context block above, which may not run.
     _resolve_capability_id = None
+    _resolve_agent_template_id = None
     if isinstance(run_context, dict):
         _resolve_capability_id = (
             run_context.get("capability_id") or run_context.get("capabilityId") or None
+        )
+        # C — the workgraph AgentTaskExecutor ships run_context.agent_template_id;
+        # thread it so the composer appends this agent's AGENT_SKILL_SOURCES to the
+        # governed stage prompt (which sources are read-only knowledge vs invokable
+        # tools, with their permissions). None ⇒ no skill-source layer (back-compat).
+        _resolve_agent_template_id = (
+            run_context.get("agent_template_id") or run_context.get("agentTemplateId") or None
         )
     prompt = await resolve_phase_prompt(
         stage_key=stage_key,
@@ -999,6 +1007,7 @@ async def run_turn(
         bearer=bearer,
         prompt_profile_key=(exec_policy.prompt_profile_key if exec_policy is not None else None),
         capability_id=_resolve_capability_id,
+        agent_template_id=_resolve_agent_template_id,
     )
 
     # 3. Messages + tool descriptors.

@@ -57,10 +57,14 @@ class ResolvedPrompt:
     phase: str | None
 
 
-# M93.F — Cache key is now (stage_key, agent_role, phase, profile_key)
-# so workflows targeting different prompt profiles don't share cached
-# prompts. profile_key=None matches the pre-M93.F resolver-ladder path.
-_cache: dict[tuple[str, str | None, str | None, str | None], tuple[float, ResolvedPrompt]] = {}
+# Cache key is (stage_key, agent_role, phase, profile_key, capability_id,
+# agent_template_id) so workflows targeting different profiles / capabilities /
+# agent templates don't share cached prompts. Any trailing slot may be None
+# (the pre-M93.F resolver-ladder path).
+_cache: dict[
+    tuple[str, str | None, str | None, str | None, str | None, str | None],
+    tuple[float, ResolvedPrompt],
+] = {}
 
 
 def clear_cache() -> None:
@@ -77,6 +81,7 @@ async def resolve_phase_prompt(
     bearer: str | None = None,
     prompt_profile_key: str | None = None,
     capability_id: str | None = None,
+    agent_template_id: str | None = None,
 ) -> ResolvedPrompt:
     """Fetch the rendered prompt for (stage_key, agent_role, phase).
 
@@ -109,8 +114,9 @@ async def resolve_phase_prompt(
         profile_key = None
 
     cap_id = capability_id.strip() if isinstance(capability_id, str) and capability_id.strip() else None
+    tmpl_id = agent_template_id.strip() if isinstance(agent_template_id, str) and agent_template_id.strip() else None
     if not vars:
-        cache_key = (stage_key, agent_role, phase_str, profile_key, cap_id)
+        cache_key = (stage_key, agent_role, phase_str, profile_key, cap_id, tmpl_id)
         now = time.time()
         hit = _cache.get(cache_key)
         if hit and hit[0] > now:
@@ -139,6 +145,10 @@ async def resolve_phase_prompt(
         # #25 — let the composer append this capability's promoted long-term
         # memory to extraContext (read-only grounding for the governed turn).
         body["capabilityId"] = cap_id
+    if tmpl_id:
+        # C — let the composer append this agent template's AGENT_SKILL_SOURCES
+        # (source type + permissions) to the governed stage's systemPromptAppend.
+        body["agentTemplateId"] = tmpl_id
 
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
@@ -178,6 +188,6 @@ async def resolve_phase_prompt(
         # cap_id must match the read key (above) too — otherwise two capabilities
         # with the same stage/role/phase/profile collide within the TTL and the
         # second turn reads the first capability's prompt.
-        _cache[(stage_key, agent_role, phase_str, profile_key, cap_id)] = (time.time() + _CACHE_TTL_SEC, resolved)
+        _cache[(stage_key, agent_role, phase_str, profile_key, cap_id, tmpl_id)] = (time.time() + _CACHE_TTL_SEC, resolved)
 
     return resolved

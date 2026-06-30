@@ -15,6 +15,7 @@ import { prisma, runtimeReader } from "../../config/prisma";
 import { logger } from "../../config/logger";
 import { NotFoundError } from "../../shared/errors";
 import { render as renderMustache } from "../../shared/mustache";
+import { buildAgentSkillSourceLayer } from "../compose/skill-source-layer";
 import type { ResolveStageInput, ResolveStageResult } from "./stage-prompts.schemas";
 
 // #25 — read-only long-term-memory grounding for the governed turn. The composer
@@ -158,6 +159,20 @@ async function loadSystemPromptFragment(profileId: string): Promise<string> {
   return parts.join("\n\n").trim();
 }
 
+/**
+ * C — append the agent template's AGENT_SKILL_SOURCES layer (source type +
+ * effective permissions + read-only / provider-locked) to a base system fragment,
+ * reusing the same builder the full composer uses. No-op when no agentTemplateId
+ * is supplied or the template has no bound skills, so callers that don't pass one
+ * are unchanged.
+ */
+async function withSkillSources(base: string, agentTemplateId: string | undefined): Promise<string> {
+  if (!agentTemplateId) return base;
+  const layer = await buildAgentSkillSourceLayer(agentTemplateId);
+  if (!layer) return base;
+  return base ? `${base}\n\n${layer}` : layer;
+}
+
 export const stagePromptsService = {
   async resolve(input: ResolveStageInput): Promise<ResolveStageResult> {
     if (input.promptProfileKey) {
@@ -187,7 +202,7 @@ export const stagePromptsService = {
         }
         return {
           task: taskRendered,
-          systemPromptAppend: await loadSystemPromptFragment(profile.id),
+          systemPromptAppend: await withSkillSources(await loadSystemPromptFragment(profile.id), input.agentTemplateId),
           extraContext: extraRendered,
           promptProfileId: profile.id,
           bindingId: `direct:${profile.id}`,
@@ -257,7 +272,7 @@ export const stagePromptsService = {
     }
 
     // 3. Assemble the system-prompt fragment.
-    const systemPromptAppend = await loadSystemPromptFragment(binding.promptProfileId);
+    const systemPromptAppend = await withSkillSources(await loadSystemPromptFragment(binding.promptProfileId), input.agentTemplateId);
 
     return {
       task,

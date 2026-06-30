@@ -40,6 +40,11 @@ export const resolveStageSchema = z.object({
   // in prior distilled lessons (read-only; the promotion WRITE lifecycle —
   // CANDIDATE→APPROVED→PROMOTED — is a separate, deferred feature).
   capabilityId: z.string().min(1).optional(),
+  // C — agent template whose bound skill sources (source type + permissions +
+  // read-only / provider-locked) get appended to systemPromptAppend, so governed
+  // SDLC stages see the same AGENT_SKILL_SOURCES context the full composer emits.
+  // Optional — omitted (legacy callers) ⇒ no skill-source layer (back-compat).
+  agentTemplateId: z.string().min(1).optional(),
   // Free-form context for Mustache substitution. Values are coerced to
   // strings before injection; objects/arrays are JSON-stringified.
   vars:      z.record(z.unknown()).optional(),
