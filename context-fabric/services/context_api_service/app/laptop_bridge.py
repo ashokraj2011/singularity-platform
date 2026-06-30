@@ -511,6 +511,10 @@ class _WorkFinishReq(BaseModel):
     expectedCommitSha: Optional[str] = None
     patch: Optional[str] = None
     tool_grant: Optional[dict[str, Any]] = None
+    # P0 #2 — brokered, short-lived, repo-scoped git credential minted by IAM and
+    # bundled with the tool-grant. Forwarded to the shared/co-located mcp-server
+    # only (a dialed-in personal laptop uses its own local creds — Decision #3).
+    gitCredential: Optional[dict[str, Any]] = None
     runContext: dict[str, Any] = {}
 
 
@@ -555,11 +559,16 @@ async def runtime_work_finish_branch(
     user_id = req.user_id or rc.get("user_id") or rc.get("userId")
     if user_id:
         try:
+            # P0 #2 — forward the brokered credential to the chosen runtime ONLY if
+            # it is SHARED (gated inside dispatch_work_finish_via_laptop): a shared
+            # runtime must push as the right user, while a personal laptop keeps its
+            # own local creds and is never handed a minted token (Decision #3).
             return await REGISTRY.dispatch_work_finish_via_laptop(
                 user_id=user_id,
                 tenant_id=req.tenant_id,
                 capability_tags=["mcp"],
                 request_body=payload,
+                git_credential=req.gitCredential,
             )
         except LaptopNotConnected:
             pass  # fall through to the co-located/shared mcp HTTP path
@@ -567,6 +576,12 @@ async def runtime_work_finish_branch(
             raise HTTPException(status_code=504, detail=str(err)) from err
         except (LaptopSendFailed, LaptopInvokeError) as err:
             raise HTTPException(status_code=502, detail=str(err)) from err
+    # P0 #2 — co-located/shared mcp-server (HTTP fallback, never a personal
+    # laptop): attach the brokered, short-lived, repo-scoped git credential (when
+    # CF minted one) so the push authenticates as the requesting user instead of a
+    # process-global static token.
+    if req.gitCredential:
+        payload = {**payload, "gitCredential": req.gitCredential}
     return await _http_finish_branch(payload)
 
 

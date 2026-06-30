@@ -446,13 +446,20 @@ class LaptopRegistry:
         tenant_id: str | None = None,
         capability_tags: list[str] | None = None,
         request_body: dict[str, Any],
+        git_credential: dict[str, Any] | None = None,
         timeout: float = INVOKE_TIMEOUT_SEC,
     ) -> dict[str, Any]:
-        """Send a work-branch finalize to the user's laptop over a
-        ``work-finish-branch`` frame and await the response. The laptop runs
-        runFinishWorkBranch (commit + push) with its LOCAL git credentials and
-        returns ``{tool_invocation, output}``. Raises LaptopNotConnected when no
-        laptop advertising the frame is online (the caller falls back to mcp HTTP).
+        """Send a work-branch finalize to a connected runtime over a
+        ``work-finish-branch`` frame and await the response. The runtime runs
+        runFinishWorkBranch (commit + push) and returns ``{tool_invocation,
+        output}``. Raises LaptopNotConnected when no runtime advertising the frame
+        is online (the caller falls back to mcp HTTP).
+
+        P0 #2 — a personal laptop pushes with its OWN local git creds, so the
+        brokered ``git_credential`` is forwarded ONLY when the selected runtime is
+        SHARED (a shared runtime has no per-user creds and must push as the right
+        identity). The shared-vs-laptop decision is made after runtime selection,
+        inside _send_frame_await_response (shared_only_extra).
         """
         body, _conn = await self._send_frame_await_response(
             user_id=user_id,
@@ -463,6 +470,7 @@ class LaptopRegistry:
             timeout=timeout,
             request_label="work-finish-branch",
             require_frame_type="work-finish-branch",
+            shared_only_extra={"gitCredential": git_credential} if git_credential else None,
         )
         return body
 
@@ -504,6 +512,7 @@ class LaptopRegistry:
         timeout: float,
         request_label: str,
         require_frame_type: str | None = None,
+        shared_only_extra: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], ActiveConnection]:
         """Common request/response plumbing shared by ``invoke`` and
         ``dispatch_tool_via_laptop``. Extracted so the per-frame logic
@@ -531,7 +540,17 @@ class LaptopRegistry:
         fut: asyncio.Future = loop.create_future()
         conn.pending[request_id] = fut
 
-        frame = {"type": frame_type, "request_id": request_id, "payload": payload}
+        # P0 #2 — fields that may cross the bridge ONLY to a SHARED runtime, never
+        # a personal laptop (Decision #3). A brokered per-user git credential is
+        # the sole user today: a shared runtime has no per-user creds of its own
+        # and must receive one to push as the right identity; a personal laptop
+        # already holds the user's local creds and is deliberately not handed a
+        # minted token.
+        send_payload = payload
+        if shared_only_extra and self._is_shared_runtime(conn):
+            send_payload = {**payload, **shared_only_extra}
+
+        frame = {"type": frame_type, "request_id": request_id, "payload": send_payload}
         try:
             await conn.ws.send_text(_dump_json(frame))
         except Exception as err:
