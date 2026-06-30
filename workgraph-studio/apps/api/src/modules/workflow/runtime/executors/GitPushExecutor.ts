@@ -40,6 +40,10 @@ type GitPushOutput = {
     message: string
     pushError?: string
     evidenceSource?: string
+    // P0 #2 — provenance only (issuanceId/provider/expiresAt/repo/operation/actor),
+    // NEVER the token. Present only when the broker minted a credential for this
+    // push; absent means the legacy static token was used.
+    gitCredentialMetadata?: Record<string, unknown>
   }
 }
 
@@ -725,6 +729,14 @@ export async function activateGitPush(
 
   const data = isRecord(body.data) ? body.data : {}
   const toolInvocation = isRecord(data.tool_invocation) ? data.tool_invocation : {}
+  // P0 #2 — mcp-server already returns this on the tool_invocation record
+  // (provenance only: issuanceId/provider/expiresAt/repo/operation/actor — NEVER
+  // the token). Surfacing it here makes "was this push brokered or static" visible
+  // on the node output/receipt instead of only living in mcp-server's local audit
+  // journal.
+  const gitCredentialMetadata = isRecord(toolInvocation.gitCredentialMetadata)
+    ? toolInvocation.gitCredentialMetadata
+    : undefined
   const mcpOutput = isRecord(data.output) ? data.output : {}
   const pushed = mcpOutput.pushed === true
   const pushError = typeof mcpOutput.push_error === 'string' && mcpOutput.push_error.trim()
@@ -759,6 +771,7 @@ export async function activateGitPush(
       message: typeof mcpOutput.message === 'string' ? redactSecrets(mcpOutput.message) : message,
       pushError,
       evidenceSource: evidence.source,
+      gitCredentialMetadata,
     },
   }
 
@@ -768,6 +781,20 @@ export async function activateGitPush(
   }
 
   const safeOutput = redactSecrets(output)
+  // Mirrors blockNode's `_blockedByGitPush` context write, but for a SUCCESSFUL
+  // push: GitPushExecutor otherwise leaves no trace of a completed push in
+  // instance.context (only the receipt below), so the run cockpit has nothing to
+  // read credential provenance from for the common case. Best-effort: a failure
+  // here must not fail the push that already succeeded.
+  await prisma.workflowInstance.update({
+    where: { id: instance.id },
+    data: {
+      context: {
+        ...((instance.context ?? {}) as JsonObject),
+        _lastGitPush: safeOutput.gitPush,
+      } as Prisma.InputJsonValue,
+    },
+  }).catch(() => {})
   const eventId = await logEvent('GitBranchPushed', 'WorkflowNode', node.id, actorId, {
     instanceId: instance.id,
     output: safeOutput,

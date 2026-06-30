@@ -304,6 +304,7 @@ function StepCard({
   const isFailed    = node.status === 'FAILED'
   const isBlocked   = node.status === 'BLOCKED'
   const blockDetails = blockingDetailsForNode(node, instanceContext)
+  const completedPushDetails = completedGitPushDetailsForNode(node, instanceContext)
   const queryClient = useQueryClient()
   const restartMut = useMutation({
     mutationFn: () => api.post(`/workflow-instances/${instanceId}/nodes/${node.id}/restart`).then(r => r.data),
@@ -625,6 +626,32 @@ function StepCard({
                 </p>
               )}
             </div>
+          )}
+
+          {completedPushDetails && (
+            <details style={{
+              marginTop: 10,
+              padding: 10,
+              borderRadius: 8,
+              background: 'rgba(5,150,105,0.06)',
+              border: '1px solid rgba(5,150,105,0.22)',
+            }}>
+              <summary style={{ fontSize: 10, fontWeight: 800, color: '#047857', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+                Push details
+              </summary>
+              <dl style={{
+                margin: '6px 0 0',
+                display: 'grid',
+                gridTemplateColumns: 'max-content minmax(0, 1fr)',
+                gap: '4px 10px',
+                fontSize: 10,
+                color: '#065f46',
+              }}>
+                {completedPushDetails.details.map(item => (
+                  <FragmentRow key={item.label} label={item.label} value={item.value} />
+                ))}
+              </dl>
+            </details>
           )}
 
           {!blockDetails && restartMut.isError && (
@@ -1662,6 +1689,39 @@ function blockingDetailsForNode(
     fixCommands,
     retryable: source.retryable === true,
   }
+}
+
+/**
+ * P0 #2 — completed Git Push details, including credential provenance (was the
+ * push brokered via a short-lived, repo-scoped credential, or the legacy static
+ * token). GitPushExecutor writes `_lastGitPush` on the instance context only on
+ * a SUCCESSFUL push (mirrors `_blockedByGitPush` for the blocked case), so this
+ * is a no-op until that node has actually completed.
+ */
+function completedGitPushDetailsForNode(
+  node: RunNode,
+  context: Record<string, unknown>,
+): { details: { label: string; value: string }[] } | null {
+  if (node.nodeType !== 'GIT_PUSH' || node.status !== 'COMPLETED') return null
+  const source = asRecord(context._lastGitPush)
+  if (Object.keys(source).length === 0) return null
+
+  const credential = asRecord(source.gitCredentialMetadata)
+  const credentialSummary = Object.keys(credential).length > 0
+    ? ['brokered', stringField(credential, 'provider'), stringField(credential, 'repo')].filter(Boolean).join(' · ')
+    : 'static token'
+
+  const detailKeys = ['branch', 'commitSha', 'remote', 'toolInvocationId']
+  const details = detailKeys
+    .map(key => {
+      const value = source[key]
+      if (value === undefined || value === null || value === '') return null
+      return { label: key, value: redactDisplayValue(String(value)) }
+    })
+    .filter((item): item is { label: string; value: string } => Boolean(item))
+  details.push({ label: 'credential', value: redactDisplayValue(credentialSummary) })
+
+  return { details }
 }
 
 function readWorkgraphToken(): string {
