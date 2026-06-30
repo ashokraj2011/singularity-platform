@@ -11,6 +11,7 @@ import { configuredDefaultModel, configuredDefaultProvider } from "./llm/provide
 // Bug-fix (M-fix) — warm the gateway-provider cache on boot so the first
 // Operations Portal page-load after restart shows accurate readiness.
 import { refreshGatewayProviderStatus } from "./llm/client";
+import { isSharedRuntime, staticGitTokenPresent, gitBrokerEnforce } from "./lib/runtime-claims";
 
 // Runtime dial-in mode. When LAPTOP_MODE/RUNTIME_DIAL_IN_MODE=true, skip the
 // inbound HTTP server and open an outbound WS to Context Fabric's runtime
@@ -41,6 +42,18 @@ function bootLaptopMode(): void {
   if (!deviceToken) {
     log.error({}, "[runtime-dial-in] SINGULARITY_RUNTIME_TOKEN/SINGULARITY_DEVICE_TOKEN unset — mint a runtime token and set the env. Exiting.");
     process.exit(1);
+  }
+  // P0 #2 — shared-runtime git-credential guard. A SHARED runtime must not carry a
+  // process-global git token (GITHUB_TOKEN/GH_TOKEN/MCP_GIT_TOKEN): every user's
+  // push/clone would run as one identity. `shared` is read token-authoritatively
+  // from the runtime JWT. Brokered per-user credentials (IAM via CF) replace it.
+  // Opt-in enforcement (MCP_GIT_BROKER_ENFORCE) makes this fatal; otherwise warn.
+  if (isSharedRuntime() && (staticGitTokenPresent() || Boolean(config.MCP_GIT_TOKEN))) {
+    if (gitBrokerEnforce()) {
+      log.error({}, "[runtime-dial-in] SHARED runtime carries a process-global git token AND MCP_GIT_BROKER_ENFORCE=true — refusing to start. Remove GITHUB_TOKEN/GH_TOKEN/MCP_GIT_TOKEN and use brokered per-user credentials. Exiting.");
+      process.exit(1);
+    }
+    log.warn({}, "[runtime-dial-in] SHARED runtime carries a process-global git token — every user would push as ONE identity. Move to brokered per-user credentials (set MCP_GIT_BROKER_ENFORCE=true to make this fatal).");
   }
   const deviceName = process.env.SINGULARITY_RUNTIME_NAME
     ?? process.env.SINGULARITY_DEVICE_NAME
