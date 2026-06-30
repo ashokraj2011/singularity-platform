@@ -183,7 +183,9 @@ export async function activateRunPython(
 
   let receipt: Record<string, unknown>
   try {
-    const toolGrant = await requestOperationalMcpToolGrant({
+    // run_python is not a git operation, so only the grant is used here; the
+    // broker never mints a gitCredential for it (see _GIT_TOOL_OPERATIONS in CF).
+    const { grant: toolGrant } = await requestOperationalMcpToolGrant({
       toolName: 'run_python',
       args: toolArgs,
       runContext,

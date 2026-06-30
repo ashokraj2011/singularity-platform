@@ -285,6 +285,68 @@ def test_registry_selects_user_runtime_before_tenant_shared_runtime():
     assert selected_shared.runtime_id == "shared-runtime"
 
 
+def test_work_finish_frame_carries_git_credential_only_to_shared_runtime():
+    """P0 #2 — the brokered, short-lived git credential must reach a SHARED
+    runtime over the work-finish-branch frame (it has no per-user creds and must
+    push as the right identity), but must NEVER cross to a personal laptop, which
+    keeps its own local creds (Decision #3). Pins the shared_only_extra gate in
+    _send_frame_await_response end-to-end through dispatch_work_finish_via_laptop.
+    """
+    import json
+
+    from context_api_service.app.laptop_registry import ActiveConnection, LaptopRegistry
+
+    async def scenario(*, shared: bool, conn_user: str, dispatch_user: str) -> dict[str, Any]:
+        registry = LaptopRegistry()
+        captured: dict[str, Any] = {}
+
+        class FakeWS:
+            async def send_text(self, text: str) -> None:
+                frame = json.loads(text)
+                captured["payload"] = frame["payload"]
+                fut = conn.pending.get(frame["request_id"])
+                if fut is not None and not fut.done():
+                    fut.set_result({"tool_invocation": {"id": "ti"}, "output": {"pushed": True}})
+
+            async def close(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover
+                pass
+
+        now = 1.0
+        conn = ActiveConnection(
+            user_id=conn_user,
+            device_id="rt-1",
+            device_name="runtime",
+            ws=FakeWS(),  # type: ignore[arg-type]
+            connected_at=now,
+            last_seen_at=now,
+            supported_frame_types=["work-finish-branch"],
+            runtime_id="rt-1",
+            runtime_type="mcp",
+            tenant_id="tenant-a",
+            shared=shared,
+            capability_tags=["mcp"],
+        )
+        await registry.register(conn)
+        await registry.dispatch_work_finish_via_laptop(
+            user_id=dispatch_user,
+            tenant_id="tenant-a",
+            capability_tags=["mcp"],
+            request_body={"message": "m", "remote": "origin", "push": True, "runContext": {"traceId": "t"}},
+            git_credential={"token": "ghs_secret", "repo": "o/r", "issuanceId": "iss-1"},
+        )
+        return captured["payload"]
+
+    # Shared runtime selected for a different end-user via the tenant/shared
+    # fallback → credential rides the frame.
+    shared_payload = _run(scenario(shared=True, conn_user="__shared__", dispatch_user="user-b"))
+    assert "gitCredential" in shared_payload
+    assert shared_payload["gitCredential"]["token"] == "ghs_secret"
+
+    # Personal laptop selected by exact user match → credential withheld.
+    laptop_payload = _run(scenario(shared=False, conn_user="user-a", dispatch_user="user-a"))
+    assert "gitCredential" not in laptop_payload
+
+
 def test_dispatch_bridge_tool_soft_failure_passes_through():
     """A tool that ran on the laptop but reported success=false
     surfaces as tool_success=False on the result, NOT as a throw —
