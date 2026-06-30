@@ -1,3 +1,5 @@
+import { SESSION_LAST_ACTIVITY_KEY } from "@/lib/api";
+
 export type LoginUser = {
   id: string;
   email: string;
@@ -38,4 +40,5 @@ export function saveIdentitySession(body: LoginResponse): void {
   localStorage.setItem("singularity-portal.auth", persisted);
   localStorage.setItem("workgraph-auth", persisted);
   localStorage.setItem("agent-tools-token", body.access_token);
+  localStorage.setItem(SESSION_LAST_ACTIVITY_KEY, String(Date.now())); // fresh idle deadline on sign-in
 }
