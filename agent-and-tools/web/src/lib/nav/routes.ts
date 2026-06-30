@@ -37,6 +37,10 @@ export type RouteMeta = {
   description?: string;
   /** Demote behind the sidebar's "Advanced" disclosure (still in the palette). */
   advanced?: boolean;
+  /** Reachable via ⌘K + help + an in-page console, but NOT a standalone sidebar
+   *  item — the section's console (e.g. IdentityConsole) owns sub-navigation, so
+   *  listing these in the sidebar too would just duplicate that column. */
+  inConsole?: boolean;
   /** Extra search terms for the command palette. */
   keywords?: string[];
 };
@@ -100,18 +104,22 @@ export const ROUTES: RouteMeta[] = [
   { id: "workflows-connectors", label: "Connectors", href: "/workflows/connectors", group: "Workflows", icon: Link2, advanced: true },
 
   // Identity and Access
-  { id: "identity-dashboard", label: "Identity Dashboard", href: "/identity/dashboard", group: "Identity and Access", icon: LayoutDashboard },
-  { id: "identity-users", label: "Users", href: "/identity/users", group: "Identity and Access", icon: Users },
-  { id: "identity-teams", label: "Teams", href: "/identity/teams", group: "Identity and Access", icon: Network },
-  { id: "identity-roles", label: "Roles", href: "/identity/roles", group: "Identity and Access", icon: ShieldCheck },
-  { id: "identity-permissions", label: "Permissions", href: "/identity/permissions", group: "Identity and Access", icon: ShieldCheck },
-  { id: "identity-capabilities", label: "Capabilities", href: "/identity/capabilities", group: "Identity and Access", icon: GitBranch },
-  { id: "identity-audit", label: "Identity Audit", href: "/identity/audit", group: "Identity and Access", icon: FileText },
-  { id: "identity-business-units", label: "Business Units", href: "/identity/business-units", group: "Identity and Access", icon: Layers, advanced: true },
-  { id: "identity-capability-graph", label: "Capability Graph", href: "/identity/capability-graph", group: "Identity and Access", icon: Route, advanced: true },
-  { id: "identity-variables", label: "Variables", href: "/identity/variables", group: "Identity and Access", icon: Globe, advanced: true },
-  { id: "identity-authz-check", label: "Authz Check", href: "/identity/authz-check", group: "Identity and Access", icon: ClipboardCheck, advanced: true },
-  { id: "identity-sharing-grants", label: "Sharing Grants", href: "/identity/sharing-grants", group: "Identity and Access", icon: Link2, advanced: true },
+  // Single sidebar entry → the Identity console; it owns its own sub-nav column,
+  // so the per-view routes below are `inConsole` (kept in ⌘K + help, hidden from
+  // the sidebar to avoid duplicating the console's column). `/identity` prefix-
+  // matches every sub-page so this stays highlighted across the whole section.
+  { id: "identity-dashboard", label: "Identity", href: "/identity", group: "Identity and Access", icon: LayoutDashboard, keywords: ["iam", "dashboard", "access"] },
+  { id: "identity-users", label: "Users", href: "/identity/users", group: "Identity and Access", icon: Users, inConsole: true },
+  { id: "identity-teams", label: "Teams", href: "/identity/teams", group: "Identity and Access", icon: Network, inConsole: true },
+  { id: "identity-roles", label: "Roles", href: "/identity/roles", group: "Identity and Access", icon: ShieldCheck, inConsole: true },
+  { id: "identity-permissions", label: "Permissions", href: "/identity/permissions", group: "Identity and Access", icon: ShieldCheck, inConsole: true },
+  { id: "identity-capabilities", label: "Capabilities", href: "/identity/capabilities", group: "Identity and Access", icon: GitBranch, inConsole: true },
+  { id: "identity-audit", label: "Identity Audit", href: "/identity/audit", group: "Identity and Access", icon: FileText, inConsole: true },
+  { id: "identity-business-units", label: "Business Units", href: "/identity/business-units", group: "Identity and Access", icon: Layers, inConsole: true },
+  { id: "identity-capability-graph", label: "Capability Graph", href: "/identity/capability-graph", group: "Identity and Access", icon: Route, inConsole: true },
+  { id: "identity-variables", label: "Variables", href: "/identity/variables", group: "Identity and Access", icon: Globe, inConsole: true },
+  { id: "identity-authz-check", label: "Authz Check", href: "/identity/authz-check", group: "Identity and Access", icon: ClipboardCheck, inConsole: true },
+  { id: "identity-sharing-grants", label: "Sharing Grants", href: "/identity/sharing-grants", group: "Identity and Access", icon: Link2, inConsole: true },
 
   // Governance and FinOps
   { id: "engine", label: "Engine", href: "/engine", group: "Governance and FinOps", icon: Zap },
@@ -123,16 +131,18 @@ export const ROUTES: RouteMeta[] = [
 
 export type SidebarSection = { label: NavGroup; description: string; items: RouteMeta[] };
 
-/** Group ROUTES into ordered sidebar sections (all items; sidebar splits primary vs advanced). */
+/** Group ROUTES into ordered sidebar sections. `inConsole` routes are excluded —
+ *  their section's in-page console owns sub-navigation (sidebar still splits the
+ *  rest into primary vs advanced). */
 export function sidebarSections(): SidebarSection[] {
   return NAV_GROUPS.map((g) => ({
     label: g.label,
     description: g.description,
-    items: ROUTES.filter((r) => r.group === g.label),
+    items: ROUTES.filter((r) => r.group === g.label && !r.inConsole),
   }));
 }
 
 /** Routes demoted behind the sidebar's "Advanced" disclosure (still in the palette). */
 export function advancedRoutes(): RouteMeta[] {
-  return ROUTES.filter((r) => r.advanced);
+  return ROUTES.filter((r) => r.advanced && !r.inConsole);
 }
