@@ -20,6 +20,7 @@ import {
 import { runtimeApi } from "@/lib/api";
 import { shortId, valueText, workgraphFetch } from "@/lib/workgraph";
 import { isWorkbenchProfile, workbenchNeoUrl } from "@/lib/workbenchLaunch";
+import { Stepper, type Step } from "@/components/ui/primitives";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PRIORITIES = ["HIGH", "MEDIUM", "LOW"] as const;
@@ -150,6 +151,16 @@ export function WorkflowPlannerConsole() {
   const canPlan = validCapability && story.trim().length >= 8 && !planning;
   const canCommit = validCapability && taskCount > 0 && !committing;
   const canLaunch = validCapability && (taskCount > 0 || story.trim().length >= 8) && !launching;
+  const committedCount = commitResult?.created?.length ?? 0;
+  const launched = Boolean(launchResult?.workflowInstance?.id);
+  // Happy-path stage completion → drives the Stepper. The first incomplete
+  // stage is "current", everything after it is "todo".
+  const stageDone = [validCapability, taskCount > 0, committedCount > 0, launched];
+  const firstIncomplete = stageDone.findIndex((done) => !done);
+  const plannerSteps: Step[] = ["Capability", "Plan roadmap", "Create WorkItems", "Launch"].map((label, index) => ({
+    label,
+    status: stageDone[index] ? "done" : index === firstIncomplete ? "current" : "todo",
+  }));
 
   async function splitStory() {
     const text = story.trim();
@@ -301,6 +312,11 @@ export function WorkflowPlannerConsole() {
             <button className="btn-secondary" type="button" onClick={() => void reloadCapabilities()}><RefreshCw size={15} /> Capabilities</button>
           </div>
         </div>
+      </section>
+
+      <section className="card" style={{ padding: "13px 18px", marginBottom: 16 }}>
+        <div className="label-xs" style={{ color: "var(--color-outline)", marginBottom: 9 }}>Happy path</div>
+        <Stepper steps={plannerSteps} />
       </section>
 
       <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, marginBottom: 16 }}>
