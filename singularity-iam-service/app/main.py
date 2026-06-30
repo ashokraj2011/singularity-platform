@@ -27,6 +27,7 @@ from app.eventbus.routes import router as eventbus_router  # M11.e
 from app.skills.routes import router as skills_router
 from app.devices.routes import router as devices_router  # M26
 from app.governance.routes import router as governance_router  # Capability Governance Model
+from app.git.routes import router as git_router  # Git credential broker (P0 #2)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -143,6 +144,8 @@ app.include_router(devices_router, prefix=PREFIX)
 app.include_router(eventbus_router)
 # Capability Governance Model — governed-by attachments + /governance/resolve.
 app.include_router(governance_router, prefix=PREFIX)
+# Git credential broker (P0 #2) — /internal/git/credentials/issue + /git/* admin.
+app.include_router(git_router, prefix=PREFIX)
 
 
 @app.get("/api/v1/health")

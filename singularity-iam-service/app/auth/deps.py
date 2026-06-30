@@ -104,6 +104,18 @@ async def require_reference_read(current_user: User = Depends(get_current_user))
     return current_user
 
 
+async def require_git_credential_issue(current_user: User = Depends(get_current_user)) -> User:
+    # SERVICE-ONLY (stricter than the reference deps): the Git broker mints + returns
+    # live GitHub tokens, so only a service principal carrying the explicit scope may
+    # call it — a logged-in real user must NOT be able to issue credentials directly.
+    if not has_service_scope(current_user, "git:issue-credentials"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Service token with scope 'git:issue-credentials' required",
+        )
+    return current_user
+
+
 async def require_mcp_server_read(current_user: User = Depends(get_current_user)) -> User:
     assert_real_user_or_service_scope(current_user, "read:mcp-servers")
     return current_user
