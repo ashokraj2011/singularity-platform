@@ -1,5 +1,6 @@
 import type { WorkflowInstance, WorkflowNode, WorkflowEdge } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { evaluateEdge } from './EdgeEvaluator'
 import { logEvent } from '../../../lib/audit'
 
@@ -98,6 +99,9 @@ export async function resolveNextNodes(
   outgoing: WorkflowEdge[],
   context: Record<string, unknown>,
 ): Promise<WorkflowNode[]> {
+  // RLS prep — instance is always in scope for callers (activateDownstream),
+  // so derive tenantId here rather than adding a parameter.
+  const tenantId = instance.tenantId ?? undefined
   // ── Step 1: split PARALLEL_JOIN edges out and route them through the join counter
   const joinEdges  = outgoing.filter(e => e.edgeType === 'PARALLEL_JOIN')
   const otherEdges = outgoing.filter(e => e.edgeType !== 'PARALLEL_JOIN' && e.edgeType !== 'ERROR_BOUNDARY')
@@ -136,9 +140,11 @@ export async function resolveNextNodes(
 
   // ── Step 3: hydrate WorkflowNodes for the chosen edges
   for (const m of chosen) {
-    const targetNode = await prisma.workflowNode.findUnique({
-      where: { id: m.edge.targetNodeId },
-    })
+    const targetNode = await withTenantDbTransaction(
+      prisma,
+      (tx) => tx.workflowNode.findUnique({ where: { id: m.edge.targetNodeId } }),
+      tenantId,
+    )
     if (!targetNode) continue
     out.push(targetNode)
   }
@@ -146,19 +152,29 @@ export async function resolveNextNodes(
   // ── Step 4: handle PARALLEL_JOIN with the same atomic increment as before
   for (const edge of joinEdges) {
     if (!evaluateEdge(edge, context)) continue
-    const targetNode = await prisma.workflowNode.findUnique({ where: { id: edge.targetNodeId } })
+    const targetNode = await withTenantDbTransaction(
+      prisma,
+      (tx) => tx.workflowNode.findUnique({ where: { id: edge.targetNodeId } }),
+      tenantId,
+    )
     if (!targetNode) continue
 
-    await prisma.$executeRaw`
-      UPDATE workflow_nodes
-      SET config = jsonb_set(
-        config,
-        '{completed_joins}',
-        (COALESCE((config->>'completed_joins')::int, 0) + 1)::text::jsonb
-      )
-      WHERE id = ${targetNode.id}::uuid
-    `
-    const refreshed = await prisma.workflowNode.findUnique({ where: { id: targetNode.id } })
+    // Read-modify-write + re-fetch grouped into one transaction (was 2 separate
+    // statements under Postgres's default READ COMMITTED — the re-fetch already
+    // saw its own prior write either way, so grouping only adds tenant scope,
+    // not new atomicity).
+    const refreshed = await withTenantDbTransaction(prisma, async (tx) => {
+      await tx.$executeRaw`
+        UPDATE workflow_nodes
+        SET config = jsonb_set(
+          config,
+          '{completed_joins}',
+          (COALESCE((config->>'completed_joins')::int, 0) + 1)::text::jsonb
+        )
+        WHERE id = ${targetNode.id}::uuid
+      `
+      return tx.workflowNode.findUnique({ where: { id: targetNode.id } })
+    }, tenantId)
     if (!refreshed) continue
     const cfg = refreshed.config as Record<string, unknown>
     const expected  = expectedJoinCount(cfg, context)
@@ -170,11 +186,15 @@ export async function resolveNextNodes(
 }
 
 export async function isComplete(instance: WorkflowInstance): Promise<boolean> {
-  const activeOrPending = await prisma.workflowNode.count({
-    where: {
-      instanceId: instance.id,
-      status: { in: ['PENDING', 'ACTIVE'] },
-    },
-  })
+  const activeOrPending = await withTenantDbTransaction(
+    prisma,
+    (tx) => tx.workflowNode.count({
+      where: {
+        instanceId: instance.id,
+        status: { in: ['PENDING', 'ACTIVE'] },
+      },
+    }),
+    instance.tenantId ?? undefined,
+  )
   return activeOrPending === 0
 }
