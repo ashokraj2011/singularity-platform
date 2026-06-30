@@ -79,6 +79,10 @@ export interface ToolInvocationRecord {
   error_code?: string;
   latency_ms: number;
   timestamp: string;
+  // P0 #2 — brokered git credential provenance (issuanceId/provider/expiry/repo/
+  // operation/actor). NEVER the token itself; the sha256 fingerprint lives on the
+  // IAM issuance record (linked by issuanceId).
+  gitCredentialMetadata?: Record<string, unknown>;
 }
 
 export interface ArtifactRecord {

@@ -329,7 +329,29 @@ async function ensureAskPassScript(): Promise<string> {
   return script;
 }
 
-async function gitAuthEnv(): Promise<NodeJS.ProcessEnv | PushResult> {
+async function gitAuthEnv(explicitToken?: string): Promise<NodeJS.ProcessEnv | PushResult> {
+  // P0 #2 — a per-call brokered credential is preferred over any static config:
+  // inject it as the token-mode credential (works even when no static token is
+  // configured — the shared-runtime case), honoring only the hard
+  // MCP_GIT_PUSH_ENABLED=false admin policy. Used in-memory; caller discards it.
+  if (explicitToken) {
+    if (!config.MCP_GIT_PUSH_ENABLED) {
+      return {
+        pushed: false,
+        remote: config.MCP_GIT_PUSH_REMOTE,
+        pushError: "Git push is administratively disabled (MCP_GIT_PUSH_ENABLED=false).",
+        blockedCode: "GIT_AUTH_MISSING",
+        fixCommands: fixCommandsForPushBlock("GIT_AUTH_MISSING", config.MCP_GIT_PUSH_REMOTE),
+        retryable: true,
+      };
+    }
+    return {
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_ASKPASS: await ensureAskPassScript(),
+      SINGULARITY_GIT_USERNAME: config.MCP_GIT_USERNAME,
+      SINGULARITY_GIT_TOKEN: explicitToken,
+    };
+  }
   if (!config.MCP_GIT_PUSH_ENABLED || config.MCP_GIT_AUTH_MODE === "disabled") {
     return {
       pushed: false,
@@ -392,9 +414,9 @@ async function gitAuthEnv(): Promise<NodeJS.ProcessEnv | PushResult> {
   return env;
 }
 
-async function pushBranch(branch: string, remote?: string): Promise<PushResult> {
+async function pushBranch(branch: string, remote?: string, gitToken?: string): Promise<PushResult> {
   const resolvedRemote = remote?.trim() || config.MCP_GIT_PUSH_REMOTE || "origin";
-  const auth = await gitAuthEnv();
+  const auth = await gitAuthEnv(gitToken);
   if (isPushResult(auth)) {
     return { ...auth, remote: resolvedRemote, fixCommands: auth.fixCommands ?? fixCommandsForPushBlock(auth.blockedCode ?? "GIT_AUTH_MISSING", resolvedRemote) };
   }
@@ -462,7 +484,7 @@ async function pushExistingBranch(branch: string, options?: FinishBranchOptions)
       pushRemote: options.remote ?? config.MCP_GIT_PUSH_REMOTE ?? "origin",
     };
   }
-  return noCommitPushResult(await pushBranch(branch, options.remote));
+  return noCommitPushResult(await pushBranch(branch, options.remote, options.gitToken));
 }
 
 function pushMessage(push: Partial<FinishBranchResult> | undefined, pushedText: string, failedText: string): string {
@@ -640,6 +662,9 @@ export interface FinishBranchOptions {
   push?: boolean;
   remote?: string;
   verificationReceipts?: Array<Record<string, unknown>>;
+  // P0 #2 — per-call brokered git token (short-lived, repo-scoped). When present
+  // it's preferred over any static config and used in-memory for the push only.
+  gitToken?: string;
 }
 
 export async function finishWorkBranch(
@@ -694,7 +719,7 @@ export async function finishWorkBranch(
     : patch;
 
   const push = options?.push && commitSha
-    ? await pushBranch(branch, options.remote)
+    ? await pushBranch(branch, options.remote, options.gitToken)
     : undefined;
 
   try {

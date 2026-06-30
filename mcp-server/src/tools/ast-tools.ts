@@ -282,12 +282,15 @@ export const finishWorkBranchTool: ToolHandler = {
       }
     }
     const remote = typeof args.remote === "string" ? args.remote : undefined;
+    // P0 #2 — per-call brokered git token, injected operationally (not an LLM arg,
+    // so it's absent from the tool input_schema). Used in-memory for the push only.
+    const gitToken = typeof args.gitToken === "string" ? args.gitToken : undefined;
     const verificationReceipts = Array.isArray(args.verificationReceipts)
       ? args.verificationReceipts.filter((receipt): receipt is Record<string, unknown> => Boolean(receipt && typeof receipt === "object" && !Array.isArray(receipt)))
       : [];
     const result = await finishWorkBranch(
       typeof args.message === "string" ? args.message : undefined,
-      { push, remote, verificationReceipts },
+      { push, remote, verificationReceipts, gitToken },
     );
     const after = await indexWorkspace("finish");
     // (2026-05-26) Local commit is the binding success signal — if
