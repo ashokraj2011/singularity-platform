@@ -21,6 +21,7 @@ import type { LucideIcon } from "lucide-react";
 import { apiPath, authHeaders, readResponseBody, responseMessage, runtimeApi } from "@/lib/api";
 import { shortId } from "@/lib/workgraph";
 import { isWorkbenchProfile, workbenchNeoUrl } from "@/lib/workbenchLaunch";
+import { Stepper, StatusChip, type Step } from "@/components/ui/primitives";
 
 type Capability = { id: string; name?: string; capabilityType?: string | null; status?: string | null };
 type GalleryItem = {
@@ -57,6 +58,8 @@ type LaunchResult = {
   warnings?: string[];
 };
 
+type PrereqCheck = { label: string; ok: boolean; optional?: boolean };
+
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(apiPath(url), { cache: "no-store", headers: { "Content-Type": "application/json", ...authHeaders() } });
   const { raw, parsed } = await readResponseBody(res);
@@ -89,12 +92,32 @@ export default function WorkflowStartPage() {
   const requiresRuntime = selectedIntent?.runtimePreference !== "mock_ok";
   const hasTemplate = Boolean(selectedIntent?.workflowTemplate?.id);
   const canLaunch = Boolean(capabilityId && story.trim().length >= 8 && hasTemplate && (!requiresRuntime || runtimeConnected) && llmReady && !launching);
-  const blockers = [
-    !capabilityId ? "Choose a capability." : null,
-    !hasTemplate ? "Seed or select a matching workflow template." : null,
-    requiresRuntime && !runtimeConnected ? "Connect an MCP runtime through Runtime Bridge." : null,
-    !llmReady ? "Configure at least one ready LLM provider or mock mode." : null,
-  ].filter(Boolean) as string[];
+  const prereqChecks: PrereqCheck[] = [
+    { label: "Capability selected", ok: Boolean(capabilityId) },
+    { label: "Story written", ok: story.trim().length >= 8 },
+    { label: "Workflow template seeded", ok: hasTemplate },
+    {
+      label: requiresRuntime ? "Runtime connected" : "Runtime (mock OK)",
+      ok: !requiresRuntime || runtimeConnected,
+      optional: !requiresRuntime,
+    },
+    { label: "LLM provider ready", ok: llmReady },
+  ];
+  const launched = Boolean(result?.workflowInstance?.id);
+  // Happy-path stage completion → drives the Stepper. The first incomplete
+  // stage is "current"; everything after it is "todo".
+  const stageDone = [
+    Boolean(selectedIntent),
+    Boolean(capabilityId),
+    story.trim().length >= 8,
+    prereqChecks.every((check) => check.ok || check.optional),
+    launched,
+  ];
+  const firstIncomplete = stageDone.findIndex((done) => !done);
+  const sdlcSteps: Step[] = ["Pick intent", "Choose capability", "Write story", "Prerequisites", "Launch"].map((label, index) => ({
+    label,
+    status: stageDone[index] ? "done" : index === firstIncomplete ? "current" : "todo",
+  }));
   const resultWorkbenchUrl = result?.workflowInstance?.id && isWorkbenchProfile(result.workflowTemplate?.profile)
     ? workbenchNeoUrl({
         workflowInstanceId: result.workflowInstance.id,
@@ -167,6 +190,11 @@ export default function WorkflowStartPage() {
             <Link href="/operations/readiness" className="btn-secondary"><ShieldCheck size={15} /> Health</Link>
           </div>
         </div>
+      </section>
+
+      <section className="card" style={{ padding: "13px 18px", marginBottom: 16 }}>
+        <div className="label-xs" style={{ color: "var(--color-outline)", marginBottom: 9 }}>Happy path</div>
+        <Stepper steps={sdlcSteps} />
       </section>
 
       <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(185px, 1fr))", gap: 10, marginBottom: 16 }}>
@@ -262,7 +290,7 @@ export default function WorkflowStartPage() {
             </Field>
           </div>
 
-          <Prerequisites blockers={blockers} warnings={health?.warning ?? []} />
+          <Prerequisites checks={prereqChecks} warnings={health?.warning ?? []} />
           {error && <Panel tone="#b91c1c" icon={AlertTriangle} title="Launch failed" body={error} />}
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -327,29 +355,42 @@ function Metric({ icon: Icon, label, value, tone }: { icon: LucideIcon; label: s
 }
 
 function Prerequisites({
-  blockers,
+  checks,
   warnings,
 }: {
-  blockers: string[];
+  checks: PrereqCheck[];
   warnings: Array<{ id: string; label: string; summary: string; fixCommand?: string; fixRoute?: string }>;
 }) {
-  if (blockers.length === 0) {
-    return <Panel tone="#047857" icon={CheckCircle2} title="Prerequisites ready" body="Capability, workflow seed, runtime, and LLM provider checks are sufficient to launch." />;
-  }
+  const allReady = checks.every((check) => check.ok || check.optional);
   return (
-    <Panel
-      tone="#b45309"
-      icon={AlertTriangle}
-      title="Prerequisites need attention"
-      body={blockers.join(" ")}
-      actions={
-        <>
-          <Link href="/llm-settings" className="btn-secondary"><Wrench size={14} /> Runtime setup</Link>
-          <Link href="/operations/readiness" className="btn-secondary"><ShieldCheck size={14} /> Readiness</Link>
-        </>
-      }
-      footnote={warnings.slice(0, 2).map((warning) => warning.summary).join(" ")}
-    />
+    <div style={{ display: "grid", gap: 10 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {checks.map((check) => (
+          <StatusChip
+            key={check.label}
+            state={check.ok ? "ready" : check.optional ? "optional" : "blocked"}
+            label={check.label}
+          />
+        ))}
+      </div>
+      {allReady ? (
+        <Panel tone="#047857" icon={CheckCircle2} title="Prerequisites ready" body="Capability, workflow seed, runtime, and LLM provider checks are sufficient to launch." />
+      ) : (
+        <Panel
+          tone="#b45309"
+          icon={AlertTriangle}
+          title="Prerequisites need attention"
+          body="Resolve the blocked checks above before launching."
+          actions={
+            <>
+              <Link href="/llm-settings" className="btn-secondary"><Wrench size={14} /> Runtime setup</Link>
+              <Link href="/operations/readiness" className="btn-secondary"><ShieldCheck size={14} /> Readiness</Link>
+            </>
+          }
+          footnote={warnings.slice(0, 2).map((warning) => warning.summary).join(" ")}
+        />
+      )}
+    </div>
   );
 }
 
