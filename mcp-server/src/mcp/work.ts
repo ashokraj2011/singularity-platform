@@ -41,6 +41,18 @@ export const FinishBranchSchema = z.object({
   expectedCommitSha: z.string().optional(),
   patch: z.string().optional(),
   tool_grant: z.unknown().optional(),
+  // P0 #2 — brokered, short-lived, repo-scoped git credential. `token` is used
+  // in-memory for the push then discarded; the rest is audit metadata.
+  gitCredential: z
+    .object({
+      token: z.string(),
+      issuanceId: z.string().optional(),
+      provider: z.string().optional(),
+      expiresAt: z.string().optional(),
+      repo: z.string().optional(),
+      allowedOperation: z.string().optional(),
+    })
+    .optional(),
   runContext: z
     .object({
       traceId: z.string().optional(),
@@ -80,6 +92,18 @@ export async function runFinishWorkBranch(
   body: FinishBranchInput,
 ): Promise<{ tool_invocation: ReturnType<typeof recordToolInvocation>; output: unknown }> {
   const toolArgs = { message: body.message, push: body.push, remote: body.remote };
+  // P0 #2 — audit metadata for the brokered credential (NEVER the token). The
+  // sha256 fingerprint lives on the IAM issuance record (linked by issuanceId).
+  const gitCredentialMetadata = body.gitCredential
+    ? {
+        issuanceId: body.gitCredential.issuanceId,
+        provider: body.gitCredential.provider,
+        expiresAt: body.gitCredential.expiresAt,
+        repo: body.gitCredential.repo,
+        operation: body.gitCredential.allowedOperation,
+        actor: body.runContext.agentId,
+      }
+    : undefined;
   assertEffectiveCapabilityAllowsTool("finish_work_branch", body.runContext);
   const mode = grantMode();
   if (mode !== "off" && toolRequiresGrant("finish_work_branch")) {
@@ -162,6 +186,8 @@ export async function runFinishWorkBranch(
         message: toolArgs.message,
         push: toolArgs.push,
         remote: toolArgs.remote,
+        // P0 #2 — brokered token; in-memory for the push only, never persisted.
+        gitToken: body.gitCredential?.token,
       });
       if (patchRestore && result.output && typeof result.output === "object") {
         Object.assign(result.output as Record<string, unknown>, {
@@ -179,6 +205,7 @@ export async function runFinishWorkBranch(
       success: r.success,
       error: r.error ? redactSecrets(r.error) : undefined,
       latency_ms: Date.now() - start,
+      gitCredentialMetadata,
     });
     return { tool_invocation: rec, output: redactSecrets(r.output) };
   } catch (err) {
@@ -191,6 +218,7 @@ export async function runFinishWorkBranch(
       success: false,
       error: message,
       latency_ms: Date.now() - start,
+      gitCredentialMetadata,
     });
     throw new AppError(
       message,
