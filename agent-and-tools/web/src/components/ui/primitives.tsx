@@ -53,11 +53,14 @@ const METRIC_TONES = {
 } as const;
 
 export function MetricTile({
-  label, value, tone = "slate",
-}: { label: string; value: React.ReactNode; tone?: keyof typeof METRIC_TONES }) {
+  label, value, tone = "slate", icon: Icon,
+}: { label: string; value: React.ReactNode; tone?: keyof typeof METRIC_TONES; icon?: LucideIcon }) {
   return (
     <div className={`rounded-xl border px-3 py-2 ${METRIC_TONES[tone]}`}>
-      <div className="text-[10px] font-bold uppercase tracking-[0.16em] opacity-70">{label}</div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[10px] font-bold uppercase tracking-[0.16em] opacity-70">{label}</div>
+        {Icon && <Icon size={15} className="opacity-70" />}
+      </div>
       <div className="mt-1 text-2xl font-bold leading-none">{value}</div>
     </div>
   );
