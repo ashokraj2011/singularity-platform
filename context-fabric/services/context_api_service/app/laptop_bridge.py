@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import time
+from urllib.parse import quote
 from typing import Any, Optional
 
 import httpx
@@ -567,6 +568,74 @@ async def runtime_work_finish_branch(
         except (LaptopSendFailed, LaptopInvokeError) as err:
             raise HTTPException(status_code=502, detail=str(err)) from err
     return await _http_finish_branch(payload)
+
+
+# ── Worktree file write dispatch over the bridge ───────────────────────────
+# Routes evidence materialization's worktree writes through CF: prefer the user's
+# dialed-in runtime (writes into its LOCAL worktree), else fall back to the
+# co-located/shared mcp-server over HTTP. Mirrors the work-finish endpoint.
+class _WorktreeWriteReq(BaseModel):
+    user_id: Optional[str] = None
+    tenant_id: Optional[str] = None
+    workItemCode: str
+    path: str
+    content: str
+    message: Optional[str] = None
+    expectedSha: Optional[str] = None
+    authorEmail: Optional[str] = None
+    authorName: Optional[str] = None
+
+
+async def _http_worktree_write(work_item_code: str, rel_path: str, body: dict[str, Any]) -> dict[str, Any]:
+    mcp_url = os.environ.get("MCP_SERVER_URL", "http://mcp-server:7100").rstrip("/")
+    bearer = os.environ.get("MCP_BEARER_TOKEN", "")
+    url = f"{mcp_url}/mcp/worktree/{quote(work_item_code, safe='')}/file"
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            resp = await client.put(
+                url,
+                params={"path": rel_path},
+                headers={"content-type": "application/json", "authorization": f"Bearer {bearer}"},
+                json=body,
+            )
+    except httpx.HTTPError as err:
+        raise HTTPException(status_code=502, detail=f"mcp worktree write unreachable: {err}") from err
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text[:300])
+    data = resp.json()
+    return data.get("data", data) if isinstance(data, dict) else data
+
+
+@router.post("/api/runtime-bridge/worktree/file")
+async def runtime_worktree_write_file(
+    req: _WorktreeWriteReq,
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+) -> dict[str, Any]:
+    from .execute import check_execute_service_token
+
+    check_execute_service_token(x_service_token)
+    body_fields: dict[str, Any] = {
+        "content": req.content,
+        "message": req.message,
+        "expectedSha": req.expectedSha,
+        "authorEmail": req.authorEmail,
+        "authorName": req.authorName,
+    }
+    if req.user_id:
+        try:
+            return await REGISTRY.dispatch_worktree_write_via_laptop(
+                user_id=req.user_id,
+                tenant_id=req.tenant_id,
+                capability_tags=["mcp"],
+                request_body={"workItemCode": req.workItemCode, "path": req.path, **body_fields},
+            )
+        except LaptopNotConnected:
+            pass  # fall through to the co-located/shared mcp HTTP path
+        except LaptopInvokeTimeout as err:
+            raise HTTPException(status_code=504, detail=str(err)) from err
+        except (LaptopSendFailed, LaptopInvokeError) as err:
+            raise HTTPException(status_code=502, detail=str(err)) from err
+    return await _http_worktree_write(req.workItemCode, req.path, body_fields)
 
 
 def _now_iso() -> str:

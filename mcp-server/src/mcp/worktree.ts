@@ -160,7 +160,7 @@ worktreeRouter.get("/:workItemCode/tree", async (req, res, next) => {
 // optional `expectedSha` enables optimistic concurrency — if the file's
 // current SHA on disk doesn't match, the write is refused so the
 // operator can re-fetch and re-apply.
-const writeFileSchema = z.object({
+export const writeFileSchema = z.object({
   content: z.string().max(2_000_000),
   message: z.string().min(1).max(500).optional(),
   expectedSha: z.string().min(7).max(64).optional(),
@@ -267,115 +267,118 @@ function gitInWorktree(workItemRoot: string, args: string[], env: NodeJS.Process
  * semantics as the agent's finish_work_branch. Push failure is logged
  * but NOT a stage failure (matches f47efd2 / e4e2d2b).
  */
+export type WorktreeWriteInput = z.infer<typeof writeFileSchema> & {
+  workItemCode: string;
+  path: string;
+};
+
+/**
+ * Core worktree file-write logic, shared by the HTTP route below and the
+ * `worktree-write-file` runtime-bridge frame (laptop/relay-client) so evidence
+ * materialization can write into a dial-in runtime's worktree. Writes + stages +
+ * commits the file (author = the operator's IAM identity) and returns the
+ * { workItemCode, path, edited, ... } payload. Throws AppError on failure.
+ */
+export function runWorktreeWriteFile(input: WorktreeWriteInput): Record<string, unknown> {
+  if (!input.path) {
+    throw new AppError("path query parameter is required for file writes", 400);
+  }
+  const root = resolveWorkItemRoot(input.workItemCode);
+  const target = safeResolve(root, input.path);
+
+  // Refuse if target is a directory. New-file creation is allowed —
+  // we'll mkdir -p the parent and write fresh.
+  if (fs.existsSync(target) && fs.statSync(target).isDirectory()) {
+    throw new AppError(`Path '${input.path}' is a directory; cannot write file content over it`, 400);
+  }
+
+  // Optimistic concurrency: ask git for the file's current blob sha. If the
+  // file is untracked, skip the check.
+  if (input.expectedSha) {
+    const blob = gitInWorktree(root, ["hash-object", target]);
+    const currentSha = blob.stdout.trim();
+    if (currentSha && !currentSha.startsWith(input.expectedSha) && !input.expectedSha.startsWith(currentSha)) {
+      throw new AppError(
+        `Stale edit: file's current sha is ${currentSha}, you sent expectedSha=${input.expectedSha}. ` +
+          `Re-fetch the file and re-apply your changes — likely an agent attempt landed a commit while you were editing.`,
+        409,
+      );
+    }
+  }
+
+  // Make sure parent dir exists, then atomically write (temp file → rename).
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, input.content, { encoding: "utf8" });
+  fs.renameSync(tmp, target);
+
+  // Git: add + commit. Author env vars set per-invocation so this is attributed
+  // to the operator's IAM identity, not the mcp-server process identity.
+  const relTarget = path.relative(root, target);
+  const addProc = gitInWorktree(root, ["add", "--", relTarget]);
+  if (addProc.status !== 0) {
+    throw new AppError(`git add failed: ${addProc.stderr || "unknown error"}`, 500);
+  }
+
+  const numstatProc = gitInWorktree(root, ["diff", "--cached", "--numstat", "--", relTarget]);
+  const numstatLine = numstatProc.stdout.split("\n").find((l) => l.trim()) ?? "";
+  const numstatParts = numstatLine.split("\t");
+  const linesAdded = parseInt(numstatParts[0] ?? "0", 10) || 0;
+  const linesRemoved = parseInt(numstatParts[1] ?? "0", 10) || 0;
+  if (linesAdded === 0 && linesRemoved === 0) {
+    // Roll back the empty stage; no commit minted.
+    gitInWorktree(root, ["reset", "HEAD", "--", relTarget]);
+    const headSha = gitInWorktree(root, ["rev-parse", "HEAD"]).stdout.trim();
+    return {
+      workItemCode: input.workItemCode,
+      path: input.path,
+      edited: false,
+      reason: "no-op: file content matched HEAD",
+      headSha,
+    };
+  }
+
+  const authorName = input.authorName || "Singularity Operator";
+  const authorEmail = input.authorEmail || "operator@singularity.local";
+  const message = input.message || `Human edit by ${authorEmail}: ${relTarget}`;
+  const commitProc = gitInWorktree(
+    root,
+    ["commit", "-m", message, "--", relTarget],
+    {
+      GIT_AUTHOR_NAME: authorName,
+      GIT_AUTHOR_EMAIL: authorEmail,
+      GIT_COMMITTER_NAME: authorName,
+      GIT_COMMITTER_EMAIL: authorEmail,
+    },
+  );
+  if (commitProc.status !== 0) {
+    throw new AppError(`git commit failed: ${commitProc.stderr || commitProc.stdout || "unknown error"}`, 500);
+  }
+  const commitSha = gitInWorktree(root, ["rev-parse", "HEAD"]).stdout.trim();
+  const branch = gitInWorktree(root, ["rev-parse", "--abbrev-ref", "HEAD"]).stdout.trim();
+  const newBlobSha = gitInWorktree(root, ["hash-object", target]).stdout.trim();
+
+  return {
+    workItemCode: input.workItemCode,
+    path: input.path,
+    edited: true,
+    commitSha,
+    branch,
+    blobSha: newBlobSha,
+    linesAdded,
+    linesRemoved,
+    author: { name: authorName, email: authorEmail },
+    message,
+  };
+}
+
 worktreeRouter.put("/:workItemCode/file", async (req, res, next) => {
   try {
     const params = workItemParamSchema.parse(req.params);
     const query = pathQuerySchema.parse(req.query);
     const body = writeFileSchema.parse(req.body ?? {});
-    if (!query.path) {
-      throw new AppError("path query parameter is required for file writes", 400);
-    }
-    const root = resolveWorkItemRoot(params.workItemCode);
-    const target = safeResolve(root, query.path);
-
-    // Refuse if target is a directory. New-file creation is allowed —
-    // we'll mkdir -p the parent and write fresh.
-    if (fs.existsSync(target) && fs.statSync(target).isDirectory()) {
-      throw new AppError(`Path '${query.path}' is a directory; cannot write file content over it`, 400);
-    }
-
-    // Optimistic concurrency: ask git for the file's current blob sha
-    // (relative path inside the worktree, with --short for stable
-    // 7-40 char comparison). If the file is untracked, skip the check.
-    if (body.expectedSha) {
-      const blob = gitInWorktree(root, ["hash-object", target]);
-      const currentSha = blob.stdout.trim();
-      if (currentSha && !currentSha.startsWith(body.expectedSha) && !body.expectedSha.startsWith(currentSha)) {
-        throw new AppError(
-          `Stale edit: file's current sha is ${currentSha}, you sent expectedSha=${body.expectedSha}. ` +
-            `Re-fetch the file and re-apply your changes — likely an agent attempt landed a commit while you were editing.`,
-          409,
-        );
-      }
-    }
-
-    // Make sure parent dir exists, then atomically write.
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    // Atomic write via temp file → rename, so a crash mid-write
-    // doesn't leave a half-edited source file on disk.
-    const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmp, body.content, { encoding: "utf8" });
-    fs.renameSync(tmp, target);
-
-    // Git: add + commit. Author env vars set per-invocation so this
-    // is attributed to the operator's IAM identity, not the mcp-server
-    // process identity. GIT_COMMITTER_* mirrors AUTHOR by default.
-    const relTarget = path.relative(root, target);
-    const addProc = gitInWorktree(root, ["add", "--", relTarget]);
-    if (addProc.status !== 0) {
-      throw new AppError(`git add failed: ${addProc.stderr || "unknown error"}`, 500);
-    }
-
-    // `git diff --cached --numstat <path>` returns "<added>\t<removed>\t<path>".
-    // If empty, the operator hit Save without changes — return early
-    // with no commit rather than minting an empty one.
-    const numstatProc = gitInWorktree(root, ["diff", "--cached", "--numstat", "--", relTarget]);
-    const numstatLine = numstatProc.stdout.split("\n").find((l) => l.trim()) ?? "";
-    const numstatParts = numstatLine.split("\t");
-    const linesAdded = parseInt(numstatParts[0] ?? "0", 10) || 0;
-    const linesRemoved = parseInt(numstatParts[1] ?? "0", 10) || 0;
-    if (linesAdded === 0 && linesRemoved === 0) {
-      // Roll back the empty stage.
-      gitInWorktree(root, ["reset", "HEAD", "--", relTarget]);
-      const headSha = gitInWorktree(root, ["rev-parse", "HEAD"]).stdout.trim();
-      res.json({
-        success: true,
-        data: {
-          workItemCode: params.workItemCode,
-          path: query.path,
-          edited: false,
-          reason: "no-op: file content matched HEAD",
-          headSha,
-        },
-      });
-      return;
-    }
-
-    const authorName = body.authorName || "Singularity Operator";
-    const authorEmail = body.authorEmail || "operator@singularity.local";
-    const message = body.message || `Human edit by ${authorEmail}: ${relTarget}`;
-    const commitProc = gitInWorktree(
-      root,
-      ["commit", "-m", message, "--", relTarget],
-      {
-        GIT_AUTHOR_NAME: authorName,
-        GIT_AUTHOR_EMAIL: authorEmail,
-        GIT_COMMITTER_NAME: authorName,
-        GIT_COMMITTER_EMAIL: authorEmail,
-      },
-    );
-    if (commitProc.status !== 0) {
-      throw new AppError(`git commit failed: ${commitProc.stderr || commitProc.stdout || "unknown error"}`, 500);
-    }
-    const commitSha = gitInWorktree(root, ["rev-parse", "HEAD"]).stdout.trim();
-    const branch = gitInWorktree(root, ["rev-parse", "--abbrev-ref", "HEAD"]).stdout.trim();
-    const newBlobSha = gitInWorktree(root, ["hash-object", target]).stdout.trim();
-
-    res.json({
-      success: true,
-      data: {
-        workItemCode: params.workItemCode,
-        path: query.path,
-        edited: true,
-        commitSha,
-        branch,
-        blobSha: newBlobSha,
-        linesAdded,
-        linesRemoved,
-        author: { name: authorName, email: authorEmail },
-        message,
-      },
-    });
+    const data = runWorktreeWriteFile({ workItemCode: params.workItemCode, path: query.path ?? "", ...body });
+    res.json({ success: true, data });
   } catch (err) {
     next(err);
   }

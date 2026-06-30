@@ -27,12 +27,30 @@ export interface RawEvidence {
 }
 
 async function mcpPutFile(workItemCode: string, relPath: string, content: string, message: string): Promise<void> {
+  const writeBody = { content, message, authorEmail: 'governance@singularity.local', authorName: 'Singularity Governance' }
+  // Route the worktree write through Context Fabric (dial-in aware: the laptop
+  // writes into its LOCAL worktree, else CF falls back to the shared mcp). Fall
+  // back to direct mcp HTTP here only when CF is unconfigured / unreachable / errors.
+  const cfUrl = config.CONTEXT_FABRIC_URL?.replace(/\/$/, '')
+  if (cfUrl) {
+    try {
+      const cfResp = await fetch(`${cfUrl}/api/runtime-bridge/worktree/file`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-Service-Token': config.CONTEXT_FABRIC_SERVICE_TOKEN ?? '' },
+        body: JSON.stringify({ workItemCode, path: relPath, ...writeBody }),
+      })
+      if (cfResp.ok) return
+      // CF reachable but errored — fall through to direct mcp HTTP.
+    } catch {
+      // CF unreachable — fall through to direct mcp HTTP.
+    }
+  }
   const base = config.MCP_SERVER_URL.replace(/\/$/, '')
   const url = `${base}/mcp/worktree/${encodeURIComponent(workItemCode)}/file?path=${encodeURIComponent(relPath)}`
   const res = await fetch(url, {
     method: 'PUT',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${config.MCP_BEARER_TOKEN}` },
-    body: JSON.stringify({ content, message, authorEmail: 'governance@singularity.local', authorName: 'Singularity Governance' }),
+    body: JSON.stringify(writeBody),
   })
   if (!res.ok) throw new Error(`mcp worktree write failed (${res.status}) for ${relPath}`)
 }

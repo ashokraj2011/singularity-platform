@@ -466,6 +466,33 @@ class LaptopRegistry:
         )
         return body
 
+    async def dispatch_worktree_write_via_laptop(
+        self,
+        *,
+        user_id: str,
+        tenant_id: str | None = None,
+        capability_tags: list[str] | None = None,
+        request_body: dict[str, Any],
+        timeout: float = INVOKE_TIMEOUT_SEC,
+    ) -> dict[str, Any]:
+        """Send a worktree file write+commit to the user's laptop over a
+        ``worktree-write-file`` frame and await the response. The laptop runs
+        runWorktreeWriteFile against its LOCAL worktree and returns the
+        ``{workItemCode, path, edited, ...}`` payload. Raises LaptopNotConnected
+        when no laptop advertising the frame is online (caller falls back to HTTP).
+        """
+        body, _conn = await self._send_frame_await_response(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            capability_tags=capability_tags,
+            frame_type="worktree-write-file",
+            payload=request_body,
+            timeout=timeout,
+            request_label="worktree-write-file",
+            require_frame_type="worktree-write-file",
+        )
+        return body
+
     async def _send_frame_await_response(
         self,
         *,
