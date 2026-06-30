@@ -637,7 +637,7 @@ payload = {
     "token_kind": "runtime",
     "runtime_type": "mcp",
     "runtime_scope": os.environ.get("RUNTIME_SCOPE") or "user",
-    "allowed_frame_types": ["tool-run", "model-run", "code-context", "invoke"],
+    "allowed_frame_types": ["tool-run", "model-run", "code-context", "source-tree", "source-file", "invoke"],
     "capability_tags": capability_tags or ["mcp", "tools", "llm"],
     "ttl_days": 90,
 }

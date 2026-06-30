@@ -110,7 +110,7 @@ async function cmdLogin(flags: Record<string, string>): Promise<void> {
       token_kind: "runtime",
       runtime_type: "mcp",
       runtime_scope: "user",
-      allowed_frame_types: ["tool-run", "model-run", "code-context", "invoke"],
+      allowed_frame_types: ["tool-run", "model-run", "code-context", "source-tree", "source-file", "invoke"],
       capability_tags: ["mcp", "tools", "llm"],
     }),
   });

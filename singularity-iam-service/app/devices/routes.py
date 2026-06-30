@@ -45,7 +45,7 @@ _VALID_DEVICE_SCOPES = {
     "fs:write",        # write inside allowed_paths
 }
 
-_VALID_RUNTIME_FRAMES = {"tool-run", "model-run", "code-context", "invoke"}
+_VALID_RUNTIME_FRAMES = {"tool-run", "model-run", "code-context", "source-tree", "source-file", "invoke"}
 
 
 def _to_out(device: UserDevice) -> DeviceOut:
