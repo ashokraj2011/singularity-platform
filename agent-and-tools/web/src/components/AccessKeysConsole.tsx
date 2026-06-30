@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 import useSWR from "swr";
 import {
   AlertTriangle,
@@ -9,7 +9,6 @@ import {
   CheckCircle2,
   Clipboard,
   CloudCog,
-  Copy,
   EyeOff,
   Fingerprint,
   Globe2,
@@ -21,7 +20,17 @@ import {
   ShieldCheck,
   TerminalSquare,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import {
+  CommandBlock,
+  EmptyState,
+  ErrorState,
+  MetricTile,
+  PageHeader,
+  StatusChip,
+  type UiState,
+} from "@/components/ui/primitives";
 
 type AccessKeyStatus = "ready" | "missing" | "default" | "weak" | "optional" | "not_visible";
 type AccessKeySeverity = "ok" | "warn" | "error" | "info";
@@ -75,26 +84,30 @@ type AccessKeysResponse = {
 };
 
 const groupOrder: AccessKeyGroup[] = ["identity", "platform", "runtime", "providers"];
-const groupMeta: Record<AccessKeyGroup, { title: string; description: string; icon: typeof ShieldCheck }> = {
+const groupMeta: Record<AccessKeyGroup, { title: string; description: string; icon: LucideIcon; state: UiState }> = {
   identity: {
     title: "Identity and Session Boundary",
     description: "Bootstrap credentials, token signing, and tenant scoping that protect the platform entry points.",
     icon: Fingerprint,
+    state: "ready",
   },
   platform: {
     title: "Platform Service Credentials",
     description: "Server-side tokens used by the unified web app and internal services to call backend APIs.",
     icon: ServerCog,
+    state: "ready",
   },
   runtime: {
     title: "Runtime Dial-In",
     description: "Credentials for MCP and LLM Gateway services that may run outside the main platform stack.",
     icon: CloudCog,
+    state: "guarded",
   },
   providers: {
     title: "External Provider Credentials",
     description: "Provider keys for GitHub, Copilot, and BYOK model execution. These should live at the runtime boundary.",
     icon: Globe2,
+    state: "guarded",
   },
 };
 
@@ -104,6 +117,24 @@ const commands = [
   { label: "Prepare production config", command: "./singularity.sh config prepare-prod" },
   { label: "Restart unified web", command: "./singularity.sh up platform-web" },
 ];
+
+// Tailwind tints keyed by the shared UiState (icon badges + the per-key message box).
+const TINT: Record<UiState, string> = {
+  ready: "bg-emerald-50 text-emerald-700",
+  waiting: "bg-amber-50 text-amber-700",
+  blocked: "bg-red-50 text-red-700",
+  offline: "bg-slate-100 text-slate-500",
+  guarded: "bg-blue-50 text-blue-700",
+  optional: "bg-slate-50 text-slate-500",
+};
+const BOX: Record<UiState, string> = {
+  ready: "border-emerald-200 bg-emerald-50 text-emerald-800",
+  waiting: "border-amber-200 bg-amber-50 text-amber-800",
+  blocked: "border-red-200 bg-red-50 text-red-800",
+  offline: "border-slate-200 bg-slate-50 text-slate-600",
+  guarded: "border-blue-200 bg-blue-50 text-blue-800",
+  optional: "border-slate-200 bg-slate-50 text-slate-500",
+};
 
 async function fetchAccessKeys(): Promise<AccessKeysResponse> {
   const res = await fetch(apiPath("/api/platform-access-keys"), {
@@ -115,17 +146,21 @@ async function fetchAccessKeys(): Promise<AccessKeysResponse> {
   return parsed as AccessKeysResponse;
 }
 
-function statusTone(status: AccessKeyStatus, severity: AccessKeySeverity) {
+// Maps the key's status/severity onto the shared StatusChip vocabulary.
+function statusUiTone(status: AccessKeyStatus, severity: AccessKeySeverity): { state: UiState; label: string; icon: LucideIcon } {
   if (severity === "error" || status === "missing") {
-    return { label: status === "missing" ? "Missing" : statusLabel(status), fg: "#991b1b", bg: "#fef2f2", border: "#fecaca", icon: ShieldAlert };
+    return { state: "blocked", label: status === "missing" ? "Missing" : statusLabel(status), icon: ShieldAlert };
   }
   if (severity === "warn" || status === "default" || status === "weak") {
-    return { label: statusLabel(status), fg: "#92400e", bg: "#fffbeb", border: "#fde68a", icon: AlertTriangle };
+    return { state: "waiting", label: statusLabel(status), icon: AlertTriangle };
   }
   if (status === "ready") {
-    return { label: "Ready", fg: "#047857", bg: "#ecfdf5", border: "#a7f3d0", icon: CheckCircle2 };
+    return { state: "ready", label: "Ready", icon: CheckCircle2 };
   }
-  return { label: statusLabel(status), fg: "#475569", bg: "#f8fafc", border: "#cbd5e1", icon: EyeOff };
+  if (status === "optional") {
+    return { state: "optional", label: statusLabel(status), icon: EyeOff };
+  }
+  return { state: "offline", label: statusLabel(status), icon: EyeOff };
 }
 
 function statusLabel(status: AccessKeyStatus): string {
@@ -155,9 +190,9 @@ export function AccessKeysConsole() {
   const visibleRows = data?.summary.configuredVisibleToPlatformWeb ?? 0;
 
   return (
-    <div style={{ maxWidth: 1180 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, marginBottom: 18 }}>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+    <div className="max-w-[1180px]">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-2.5">
           <Link href="/operations" className="btn-secondary">
             <ArrowLeft size={15} />
             Back to operations
@@ -173,41 +208,34 @@ export function AccessKeysConsole() {
         </button>
       </div>
 
-      <section className="card" style={{ padding: 24, marginBottom: 18 }}>
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
-          <span style={iconBox("#047857", "#ecfdf5")}>
-            <LockKeyhole size={24} />
-          </span>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8 }}>Operations</div>
-            <h1 className="page-header" style={{ marginBottom: 8 }}>Access Keys and Tokens</h1>
-            <p style={{ color: "var(--color-outline)", fontSize: 14, lineHeight: 1.6, margin: 0, maxWidth: 860 }}>
-              Review credential readiness by boundary: identity, platform services, dial-in runtimes, and external providers.
-              Raw secret values are never sent to the browser.
-            </p>
-          </div>
-        </div>
+      <div className="mb-4">
+        <PageHeader
+          eyebrow="Operations"
+          icon={LockKeyhole}
+          title="Access Keys and Tokens"
+          description="Review credential readiness by boundary: identity, platform services, dial-in runtimes, and external providers. Raw secret values are never sent to the browser."
+        />
+      </div>
+
+      <section className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(210px,1fr))] gap-3">
+        <MetricTile label="Configured" value={data ? `${data.summary.configured}/${data.summary.total}` : "..."} tone="emerald" />
+        <MetricTile label="Visible to Platform Web" value={data ? visibleRows : "..."} tone="blue" />
+        <MetricTile label="Needs rotation" value={data ? needsRotation : "..."} tone={needsRotation ? "amber" : "emerald"} />
+        <MetricTile label="Missing required" value={data ? data.summary.missingRequired : "..."} tone={data?.summary.missingRequired ? "red" : "emerald"} />
+        <MetricTile label="Production blockers" value={data ? data.summary.productionBlockers : "..."} tone={data?.summary.productionBlockers ? "red" : "emerald"} />
       </section>
 
-      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 18 }}>
-        <Metric label="Configured" value={data ? `${data.summary.configured}/${data.summary.total}` : "..."} tone="#047857" />
-        <Metric label="Visible to Platform Web" value={data ? visibleRows : "..."} tone="#2563eb" />
-        <Metric label="Needs rotation" value={data ? needsRotation : "..."} tone={needsRotation ? "#b45309" : "#047857"} />
-        <Metric label="Missing required" value={data ? data.summary.missingRequired : "..."} tone={data?.summary.missingRequired ? "#b91c1c" : "#047857"} />
-        <Metric label="Production blockers" value={data ? data.summary.productionBlockers : "..."} tone={data?.summary.productionBlockers ? "#b91c1c" : "#047857"} />
-      </section>
-
-      <section className="card" style={{ padding: 18, boxShadow: "none", marginBottom: 18, borderColor: data?.environment.productionClass ? "#fde68a" : undefined }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+      <section className={`mb-4 rounded-xl border bg-white p-4 shadow-sm ${data?.environment.productionClass ? "border-amber-200" : "border-slate-200"}`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div style={{ fontWeight: 850 }}>Environment guard</div>
-            <p style={{ color: "var(--color-outline)", fontSize: 13, lineHeight: 1.5, margin: "5px 0 0" }}>
+            <div className="font-bold text-slate-900">Environment guard</div>
+            <p className="mt-1 text-[13px] leading-5 text-slate-500">
               {data?.environment.productionClass
                 ? `Production-class checks are active through ${data.environment.productionSignal}.`
                 : "Local/development checks are active. Development defaults are warnings here and blockers in production-class deployments."}
             </p>
           </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div className="flex flex-wrap gap-2">
             <Pill>{data?.environment.appEnv ? `APP_ENV=${data.environment.appEnv}` : "APP_ENV unset"}</Pill>
             <Pill>{data?.environment.rawSecretsReturned === false ? "No raw secrets" : "Secret payload blocked"}</Pill>
             <Pill>{data ? `Checked ${formatTime(data.generatedAt)}` : "Waiting for check"}</Pill>
@@ -216,19 +244,13 @@ export function AccessKeysConsole() {
       </section>
 
       {error && (
-        <section className="card" style={{ padding: 16, borderColor: "#fecaca", background: "#fef2f2", marginBottom: 18 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#991b1b", fontWeight: 800 }}>
-            <ShieldAlert size={17} />
-            Could not load access key classifications
-          </div>
-          <p style={{ margin: "8px 0 0", color: "#7f1d1d", fontSize: 13, lineHeight: 1.5 }}>
-            {error.message}. Sign in through Identity, then refresh this page.
-          </p>
-        </section>
+        <div className="mb-4">
+          <ErrorState error={`Could not load access key classifications: ${error.message}. Sign in through Identity, then refresh this page.`} />
+        </div>
       )}
 
       {isLoading && !data && !error && (
-        <section className="card" style={{ padding: 16, marginBottom: 18, color: "var(--color-outline)" }}>
+        <section className="mb-4 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500 shadow-sm">
           Loading access key classifications...
         </section>
       )}
@@ -238,43 +260,43 @@ export function AccessKeysConsole() {
         const meta = groupMeta[group];
         const Icon = meta.icon;
         return (
-          <section key={group} style={{ marginBottom: 18 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, marginBottom: 12 }}>
-              <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-                <span style={iconBox(group === "providers" ? "#2563eb" : group === "runtime" ? "#7c3aed" : "#047857", "#f8fafc")}>
-                  <Icon size={19} />
-                </span>
+          <section key={group} className="mb-4">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <IconBadge icon={Icon} state={meta.state} size={19} />
                 <div>
-                  <h2 style={{ fontSize: 16, fontWeight: 850, margin: 0 }}>{meta.title}</h2>
-                  <p style={{ color: "var(--color-outline)", fontSize: 13, lineHeight: 1.5, margin: "4px 0 0" }}>{meta.description}</p>
+                  <h2 className="text-base font-bold text-slate-900">{meta.title}</h2>
+                  <p className="mt-1 text-[13px] leading-5 text-slate-500">{meta.description}</p>
                 </div>
               </div>
-              <span className="badge">{rows.length || (data ? 0 : "...")} keys</span>
+              <Pill>{rows.length || (data ? 0 : "...")} keys</Pill>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 12 }}>
+            <div className="grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-3">
               {rows.map((row) => <AccessKeyCard key={row.id} row={row} />)}
               {!rows.length && (
-                <article className="card" style={{ padding: 16, boxShadow: "none", color: "var(--color-outline)" }}>
-                  {data ? "No access key rows in this group." : "Waiting for access key metadata..."}
-                </article>
+                <EmptyState
+                  icon={KeyRound}
+                  title={data ? "No access keys in this group" : "Loading…"}
+                  hint={data ? "No access key rows are classified in this boundary." : "Waiting for access key metadata."}
+                />
               )}
             </div>
           </section>
         );
       })}
 
-      <section className="card" style={{ padding: 18, boxShadow: "none" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-          <TerminalSquare size={18} color="#047857" />
+      <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="mb-3 flex items-center gap-2.5">
+          <TerminalSquare size={18} className="text-emerald-600" />
           <div>
-            <div style={{ fontWeight: 850 }}>Operator Commands</div>
-            <p style={{ color: "var(--color-outline)", fontSize: 13, lineHeight: 1.5, margin: "3px 0 0" }}>
+            <div className="font-bold text-slate-900">Operator Commands</div>
+            <p className="mt-1 text-[13px] leading-5 text-slate-500">
               Use host-side config commands for full-stack secret audits and rotation. This browser page only shows safe classifications.
             </p>
           </div>
         </div>
-        <div style={{ display: "grid", gap: 10 }}>
-          {commands.map((item) => <CommandRow key={item.command} label={item.label} command={item.command} />)}
+        <div className="grid gap-2.5">
+          {commands.map((item) => <CommandBlock key={item.command} label={item.label} command={item.command} />)}
         </div>
       </section>
     </div>
@@ -282,38 +304,32 @@ export function AccessKeysConsole() {
 }
 
 function AccessKeyCard({ row }: { row: AccessKeyRow }) {
-  const tone = statusTone(row.status, row.severity);
+  const tone = statusUiTone(row.status, row.severity);
   const Icon = row.kind === "scope" ? Clipboard : row.group === "providers" ? Globe2 : row.kind === "password" ? KeyRound : ShieldCheck;
-  const StatusIcon = tone.icon;
 
   return (
-    <article className="card" style={{ padding: 16, boxShadow: "none", borderColor: tone.border }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", marginBottom: 10 }}>
-        <div style={{ display: "flex", gap: 10, minWidth: 0 }}>
-          <span style={iconBox(tone.fg, tone.bg)}>
-            <Icon size={17} />
-          </span>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 850, overflowWrap: "anywhere" }}>{row.label}</div>
-            <div style={{ color: "var(--color-outline)", fontSize: 12, marginTop: 3 }}>{row.owner}</div>
+    <article className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-2.5 flex items-start justify-between gap-3">
+        <div className="flex min-w-0 gap-2.5">
+          <IconBadge icon={Icon} state={tone.state} />
+          <div className="min-w-0">
+            <div className="font-bold text-slate-900 [overflow-wrap:anywhere]">{row.label}</div>
+            <div className="mt-0.5 text-xs text-slate-500">{row.owner}</div>
           </div>
         </div>
-        <span style={{ ...pillStyle(tone.fg, tone.bg, tone.border), whiteSpace: "nowrap" }}>
-          <StatusIcon size={12} />
-          {tone.label}
-        </span>
+        <StatusChip state={tone.state} label={tone.label} />
       </div>
 
-      <p style={{ color: "var(--color-outline)", fontSize: 13, lineHeight: 1.5, margin: "0 0 12px" }}>{row.description}</p>
+      <p className="mb-3 text-[13px] leading-5 text-slate-500">{row.description}</p>
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+      <div className="mb-3 flex flex-wrap gap-1.5">
         <Pill>{row.requiredNow ? "required now" : row.required ? "required" : "optional"}</Pill>
         <Pill>{kindLabel(row.kind)}</Pill>
         {row.remoteCapable && <Pill>remote capable</Pill>}
         {!row.visibleToPlatformWeb && <Pill>runtime-owned</Pill>}
       </div>
 
-      <div style={{ display: "grid", gap: 10 }}>
+      <div className="grid gap-2.5">
         <Fact label="Env keys" value={row.envKeys.join(", ")} />
         <Fact label="Configured via" value={row.configuredEnvKey ?? (row.visibleToPlatformWeb ? "not configured" : "not injected into Platform Web")} />
         <Fact label="Scope" value={row.scope} />
@@ -321,18 +337,9 @@ function AccessKeyCard({ row }: { row: AccessKeyRow }) {
         <Fact label="Rotation" value={row.rotation} />
       </div>
 
-      <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 8, border: `1px solid ${tone.border}`, background: tone.bg, color: tone.fg, fontSize: 12, lineHeight: 1.45, fontWeight: 750 }}>
+      <div className={`mt-3 rounded-lg border px-3 py-2.5 text-xs font-semibold leading-5 ${BOX[tone.state]}`}>
         {row.message}
       </div>
-    </article>
-  );
-}
-
-function Metric({ label, value, tone }: { label: string; value: unknown; tone?: string }) {
-  return (
-    <article className="card" style={{ padding: 16, boxShadow: "none" }}>
-      <div className="label-xs" style={{ color: "var(--color-outline)" }}>{label}</div>
-      <div style={{ marginTop: 5, fontWeight: 850, color: tone ?? "var(--color-text)", fontSize: 20 }}>{valueText(value)}</div>
     </article>
   );
 }
@@ -340,60 +347,24 @@ function Metric({ label, value, tone }: { label: string; value: unknown; tone?: 
 function Fact({ label, value }: { label: string; value: unknown }) {
   return (
     <div>
-      <div className="label-xs" style={{ color: "var(--color-outline)", marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 12, lineHeight: 1.45, fontWeight: 700, overflowWrap: "anywhere" }}>{valueText(value)}</div>
+      <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">{label}</div>
+      <div className="text-xs font-semibold leading-5 text-slate-800 [overflow-wrap:anywhere]">{valueText(value)}</div>
     </div>
   );
 }
 
 function Pill({ children }: { children: ReactNode }) {
-  return <span className="badge" style={{ textTransform: "none" }}>{children}</span>;
-}
-
-function CommandRow({ label, command }: { label: string; command: string }) {
-  const copy = () => {
-    if (typeof navigator !== "undefined" && navigator.clipboard) {
-      void navigator.clipboard.writeText(command);
-    }
-  };
-
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(140px, 210px) 1fr auto", gap: 10, alignItems: "center", padding: 10, border: "1px solid var(--color-border)", borderRadius: 8, background: "#fff" }}>
-      <div style={{ fontSize: 12, fontWeight: 800, color: "var(--color-outline)" }}>{label}</div>
-      <code style={{ fontSize: 12, overflowWrap: "anywhere" }}>{command}</code>
-      <button type="button" className="btn-secondary text-xs" onClick={copy} aria-label={`Copy ${label}`}>
-        <Copy size={13} />
-      </button>
-    </div>
+    <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-0.5 text-[11px] font-medium text-slate-600">
+      {children}
+    </span>
   );
 }
 
-function iconBox(color: string, background: string): CSSProperties {
-  return {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 44,
-    height: 44,
-    borderRadius: 8,
-    color,
-    background,
-    flex: "0 0 auto",
-  };
-}
-
-function pillStyle(color: string, background: string, border: string): CSSProperties {
-  return {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 5,
-    border: `1px solid ${border}`,
-    color,
-    background,
-    borderRadius: 999,
-    padding: "4px 9px",
-    fontSize: 11,
-    fontWeight: 850,
-    textTransform: "uppercase",
-  };
+function IconBadge({ icon: Icon, state, size = 17 }: { icon: LucideIcon; state: UiState; size?: number }) {
+  return (
+    <span className={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg ${TINT[state]}`}>
+      <Icon size={size} />
+    </span>
+  );
 }
