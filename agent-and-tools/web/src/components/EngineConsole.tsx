@@ -6,7 +6,11 @@ import {
   AlertTriangle, BarChart3, CheckCircle2, Eye, RefreshCw, Search,
   ShieldCheck, XCircle, Zap,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { ApiError, auditGovApi } from "@/lib/api";
+import {
+  EmptyState, ErrorState, JsonPreview, MetricTile, PageHeader, StatusChip, type UiState,
+} from "@/components/ui/primitives";
 
 type EngineIssue = {
   id: string;
@@ -47,6 +51,16 @@ const STAT_LABELS: Array<[string, string]> = [
 
 const FILTERS = ["open", "fix_proposed", "resolved", "dismissed", "all"];
 
+// Tailwind tints for icon badges, keyed by the shared UiState.
+const TINT: Record<UiState, string> = {
+  ready: "bg-emerald-50 text-emerald-700",
+  waiting: "bg-amber-50 text-amber-700",
+  blocked: "bg-red-50 text-red-700",
+  offline: "bg-slate-100 text-slate-500",
+  guarded: "bg-blue-50 text-blue-700",
+  optional: "bg-slate-50 text-slate-500",
+};
+
 function asIssue(value: Record<string, unknown>): EngineIssue {
   return value as EngineIssue;
 }
@@ -62,18 +76,18 @@ function fmtTime(value?: string | null): string {
   return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
-function statusIcon(status?: string | null) {
+function statusIcon(status?: string | null): LucideIcon {
   if (status === "resolved") return CheckCircle2;
   if (status === "dismissed") return XCircle;
   if (status === "fix_proposed") return Zap;
   return AlertTriangle;
 }
 
-function severityTone(severity?: string | null) {
-  if (severity === "critical") return { bg: "#fef2f2", fg: "#991b1b", border: "#fecaca" };
-  if (severity === "high") return { bg: "#fff7ed", fg: "#9a3412", border: "#fed7aa" };
-  if (severity === "medium") return { bg: "#fffbeb", fg: "#92400e", border: "#fde68a" };
-  return { bg: "rgba(70,80,99,0.08)", fg: "var(--color-outline)", border: "var(--color-outline-variant)" };
+// Maps issue severity onto the shared StatusChip vocabulary.
+function severityState(severity?: string | null): UiState {
+  if (severity === "critical") return "blocked";
+  if (severity === "high" || severity === "medium") return "waiting";
+  return "offline";
 }
 
 function engineErrorMessage(error: unknown): string | null {
@@ -94,24 +108,9 @@ function engineErrorMessage(error: unknown): string | null {
 
 function JsonBlock({ value }: { value: unknown }) {
   if (!value || (typeof value === "object" && Object.keys(value as Record<string, unknown>).length === 0)) {
-    return <p style={{ color: "var(--color-outline)", fontSize: 13 }}>No details recorded.</p>;
+    return <p className="text-[13px] text-slate-500">No details recorded.</p>;
   }
-  return (
-    <pre style={{
-      whiteSpace: "pre-wrap",
-      wordBreak: "break-word",
-      background: "var(--color-surface-container)",
-      border: "1px solid var(--color-outline-variant)",
-      borderRadius: 8,
-      padding: 12,
-      fontSize: 12,
-      color: "var(--color-on-surface)",
-      maxHeight: 260,
-      overflow: "auto",
-    }}>
-      {JSON.stringify(value, null, 2)}
-    </pre>
-  );
+  return <JsonPreview value={value} maxHeight={260} />;
 }
 
 export function EngineConsole() {
@@ -150,61 +149,51 @@ export function EngineConsole() {
   }
 
   return (
-    <div style={{ maxWidth: 1320 }}>
-      <section style={{ marginBottom: 20 }}>
-        <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 10 }}>Governance</div>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-          <div>
-            <h1 className="page-header" style={{ fontSize: "2rem", marginBottom: 8 }}>Singularity Engine</h1>
-            <p style={{ maxWidth: 760, color: "var(--color-outline)", lineHeight: 1.6, fontSize: 14 }}>
-              Failure triage, root-cause diagnosis, evaluator creation, and sweep control from the legacy Portal surface.
-            </p>
-          </div>
-          <button
-            className="btn-primary"
-            type="button"
-            disabled={busy !== null}
-            onClick={() => void runAction("sweep", () => auditGovApi.engineSweep())}
-          >
-            <RefreshCw size={15} />
-            {busy === "sweep" ? "Scanning..." : "Run Sweep"}
-          </button>
-        </div>
-      </section>
+    <div className="max-w-[1320px]">
+      <div className="mb-5">
+        <PageHeader
+          eyebrow="Governance"
+          icon={Zap}
+          title="Singularity Engine"
+          description="Failure triage, root-cause diagnosis, evaluator creation, and sweep control from the legacy Portal surface."
+          actions={
+            <button
+              className="btn-primary"
+              type="button"
+              disabled={busy !== null}
+              onClick={() => void runAction("sweep", () => auditGovApi.engineSweep())}
+            >
+              <RefreshCw size={15} />
+              {busy === "sweep" ? "Scanning..." : "Run Sweep"}
+            </button>
+          }
+        />
+      </div>
 
-      {actionError && (
-        <div className="card" style={{ padding: 14, borderColor: "#fecaca", background: "#fef2f2", color: "#991b1b", marginBottom: 16 }}>
-          {actionError}
-        </div>
-      )}
+      {actionError && <div className="mb-4"><ErrorState error={actionError} /></div>}
 
       {engineError && (
-        <div className="card" style={{ padding: 14, borderColor: "#fed7aa", background: "#fff7ed", color: "#9a3412", marginBottom: 16, fontSize: 13, lineHeight: 1.5 }}>
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] leading-5 text-amber-800">
           {engineError}
         </div>
       )}
 
-      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 18 }}>
+      <section className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-3">
         {STAT_LABELS.map(([key, label]) => (
-          <div className="card" key={key} style={{ padding: 16 }}>
-            <div className="label-xs" style={{ color: "var(--color-outline)", marginBottom: 8 }}>{label}</div>
-            <div style={{ fontSize: 24, fontWeight: 850, color: "var(--color-on-surface)" }}>
-              {stats.isLoading ? "..." : String(stats.data?.[key] ?? 0)}
-            </div>
-          </div>
+          <MetricTile key={key} label={label} value={stats.isLoading ? "..." : String(stats.data?.[key] ?? 0)} tone="slate" />
         ))}
       </section>
 
-      <section style={{ display: "grid", gridTemplateColumns: "minmax(320px, 0.95fr) minmax(420px, 1.35fr)", gap: 16, alignItems: "start" }}>
-        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          <div style={{ padding: 16, borderBottom: "1px solid var(--color-outline-variant)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+      <section className="grid grid-cols-1 items-start gap-4 xl:grid-cols-[minmax(320px,0.95fr)_minmax(420px,1.35fr)]">
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between gap-3 border-b border-slate-200 p-4">
             <div>
-              <h2 style={{ margin: 0, fontSize: 16, fontWeight: 850, color: "var(--color-on-surface)" }}>Issues</h2>
-              <p style={{ margin: "4px 0 0", color: "var(--color-outline)", fontSize: 12 }}>Clustered runtime failures and evaluator findings.</p>
+              <h2 className="text-base font-bold text-slate-900">Issues</h2>
+              <p className="mt-1 text-xs text-slate-500">Clustered runtime failures and evaluator findings.</p>
             </div>
-            <Search size={17} style={{ color: "var(--color-outline)" }} />
+            <Search size={17} className="text-slate-400" />
           </div>
-          <div style={{ padding: 12, display: "flex", gap: 8, flexWrap: "wrap", borderBottom: "1px solid var(--color-outline-variant)" }}>
+          <div className="flex flex-wrap gap-2 border-b border-slate-200 p-3">
             {FILTERS.map((item) => (
               <button
                 key={item}
@@ -217,77 +206,57 @@ export function EngineConsole() {
               </button>
             ))}
           </div>
-          <div style={{ maxHeight: 620, overflow: "auto" }}>
-            {issues.error && <div style={{ padding: 16, color: "#991b1b" }}>{engineErrorMessage(issues.error)}</div>}
-            {issues.isLoading && <div style={{ padding: 16, color: "var(--color-outline)" }}>Loading issues...</div>}
+          <div className="max-h-[620px] overflow-auto">
+            {issues.error && <div className="p-4 text-sm text-red-700">{engineErrorMessage(issues.error)}</div>}
+            {issues.isLoading && <div className="p-4 text-sm text-slate-500">Loading issues...</div>}
             {!issues.isLoading && issueItems.length === 0 && (
-              <div style={{ padding: 18, color: "var(--color-outline)" }}>No issues found for this filter.</div>
+              <div className="p-4"><EmptyState icon={Search} title="No issues" hint="No issues found for this filter." /></div>
             )}
             {issueItems.map((issue) => {
               const Icon = statusIcon(issue.status);
-              const tone = severityTone(issue.severity);
+              const sevState = severityState(issue.severity);
               const active = selectedId === issue.id;
               return (
                 <button
                   key={issue.id}
                   type="button"
                   onClick={() => setSelectedId(issue.id)}
-                  style={{
-                    width: "100%",
-                    textAlign: "left",
-                    border: "none",
-                    borderBottom: "1px solid var(--color-outline-variant)",
-                    background: active ? "rgba(54,135,39,0.08)" : "transparent",
-                    padding: 14,
-                    cursor: "pointer",
-                  }}
+                  className={`flex w-full items-start gap-2.5 border-b border-slate-200 p-3.5 text-left transition ${active ? "bg-emerald-50" : "hover:bg-slate-50"}`}
                 >
-                  <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                    <span style={{ width: 34, height: 34, borderRadius: 8, display: "grid", placeItems: "center", background: tone.bg, color: tone.fg, border: `1px solid ${tone.border}` }}>
-                      <Icon size={16} />
+                  <IconBadge icon={Icon} state={sevState} size={16} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[13px] font-bold text-slate-900">{issue.title ?? issue.error_pattern ?? issue.id}</span>
+                    <span className="mt-1 block text-xs text-slate-500">
+                      {issue.severity ?? "unknown"} · {issue.status ?? "open"} · {issue.trace_count ?? 0} traces · {fmtTime(issue.last_seen_at)}
                     </span>
-                    <span style={{ flex: 1, minWidth: 0 }}>
-                      <span style={{ display: "block", color: "var(--color-on-surface)", fontWeight: 800, fontSize: 13 }}>
-                        {issue.title ?? issue.error_pattern ?? issue.id}
-                      </span>
-                      <span style={{ display: "block", marginTop: 4, color: "var(--color-outline)", fontSize: 12 }}>
-                        {issue.severity ?? "unknown"} · {issue.status ?? "open"} · {issue.trace_count ?? 0} traces · {fmtTime(issue.last_seen_at)}
-                      </span>
-                    </span>
-                  </div>
+                  </span>
                 </button>
               );
             })}
           </div>
         </div>
 
-        <div style={{ display: "grid", gap: 16 }}>
-          <div className="card" style={{ padding: 18 }}>
+        <div className="grid gap-4">
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             {!selectedId && (
-              <div style={{ color: "var(--color-outline)", minHeight: 220, display: "grid", placeItems: "center", textAlign: "center" }}>
-                Select an issue to inspect root cause, proposed fix, traces, and actions.
+              <div className="grid min-h-[220px] place-items-center">
+                <EmptyState icon={Eye} title="No issue selected" hint="Select an issue to inspect root cause, proposed fix, traces, and actions." />
               </div>
             )}
-            {selectedId && detail.isLoading && <div style={{ color: "var(--color-outline)" }}>Loading issue...</div>}
-            {selectedId && detail.error && <div style={{ color: "#991b1b" }}>{engineErrorMessage(detail.error)}</div>}
+            {selectedId && detail.isLoading && <div className="text-sm text-slate-500">Loading issue...</div>}
+            {selectedId && detail.error && <ErrorState error={engineErrorMessage(detail.error) ?? "Failed to load issue"} compact />}
             {selected && (
               <div>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", marginBottom: 14 }}>
+                <div className="mb-3.5 flex items-start justify-between gap-3">
                   <div>
-                    <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8 }}>{selected.category ?? "issue"}</div>
-                    <h2 style={{ margin: 0, color: "var(--color-on-surface)", fontSize: 20, fontWeight: 850 }}>
-                      {selected.title ?? selected.error_pattern ?? selected.id}
-                    </h2>
-                    <p style={{ marginTop: 8, color: "var(--color-outline)", fontSize: 13, lineHeight: 1.5 }}>
-                      {selected.description ?? selected.error_pattern ?? "No description recorded."}
-                    </p>
+                    <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-emerald-700">{selected.category ?? "issue"}</div>
+                    <h2 className="text-xl font-bold text-slate-900">{selected.title ?? selected.error_pattern ?? selected.id}</h2>
+                    <p className="mt-2 text-[13px] leading-5 text-slate-500">{selected.description ?? selected.error_pattern ?? "No description recorded."}</p>
                   </div>
-                  <span className="badge" style={{ background: severityTone(selected.severity).bg, color: severityTone(selected.severity).fg, borderColor: severityTone(selected.severity).border }}>
-                    {selected.severity ?? "unknown"}
-                  </span>
+                  <StatusChip state={severityState(selected.severity)} label={selected.severity ?? "unknown"} />
                 </div>
 
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
+                <div className="mb-4 flex flex-wrap gap-2">
                   <button className="btn-secondary" disabled={busy !== null} type="button" onClick={() => void runAction("diagnose", () => auditGovApi.engineDiagnose(selected.id))}>
                     <Eye size={14} />
                     {busy === "diagnose" ? "Analyzing..." : "Diagnose"}
@@ -306,39 +275,39 @@ export function EngineConsole() {
                   )}
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 18 }}>
+                <div className="mb-4 grid grid-cols-[repeat(auto-fit,minmax(130px,1fr))] gap-2.5">
                   <MiniStat icon={BarChart3} label="Trace count" value={String(selected.trace_count ?? 0)} />
                   <MiniStat icon={ShieldCheck} label="Capability" value={selected.capability_id ?? "none"} />
                   <MiniStat icon={RefreshCw} label="Last seen" value={fmtTime(selected.last_seen_at)} />
                 </div>
 
-                <h3 style={{ fontSize: 14, fontWeight: 850, color: "var(--color-on-surface)", marginBottom: 8 }}>Root Cause</h3>
+                <h3 className="mb-2 text-sm font-bold text-slate-900">Root Cause</h3>
                 <JsonBlock value={selected.root_cause} />
-                <h3 style={{ fontSize: 14, fontWeight: 850, color: "var(--color-on-surface)", margin: "16px 0 8px" }}>Proposed Fix</h3>
+                <h3 className="mb-2 mt-4 text-sm font-bold text-slate-900">Proposed Fix</h3>
                 <JsonBlock value={selected.proposed_fix} />
               </div>
             )}
           </div>
 
-          <div className="card" style={{ padding: 18 }}>
-            <h2 style={{ margin: 0, fontSize: 16, fontWeight: 850, color: "var(--color-on-surface)" }}>Active Evaluators</h2>
-            <p style={{ margin: "5px 0 14px", color: "var(--color-outline)", fontSize: 12 }}>Auto-created and built-in evaluators available to catch regressions.</p>
-            {evaluators.error && <div style={{ color: "#991b1b", fontSize: 13 }}>{engineErrorMessage(evaluators.error)}</div>}
-            <div style={{ display: "grid", gap: 10 }}>
+          <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+            <h2 className="text-base font-bold text-slate-900">Active Evaluators</h2>
+            <p className="mb-3.5 mt-1 text-xs text-slate-500">Auto-created and built-in evaluators available to catch regressions.</p>
+            {evaluators.error && <ErrorState error={engineErrorMessage(evaluators.error) ?? "Failed to load evaluators"} compact />}
+            <div className="grid gap-2.5">
               {((evaluators.data?.items ?? []) as Evaluator[]).slice(0, 8).map((ev) => (
-                <div key={ev.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 12 }}>
+                <div key={ev.id} className="flex justify-between gap-3 rounded-lg border border-slate-200 p-3">
                   <div>
-                    <div style={{ fontWeight: 800, color: "var(--color-on-surface)", fontSize: 13 }}>{ev.name ?? ev.id}</div>
-                    <div style={{ color: "var(--color-outline)", fontSize: 12, marginTop: 3 }}>{ev.evaluator_type ?? "evaluator"}</div>
+                    <div className="text-[13px] font-bold text-slate-900">{ev.name ?? ev.id}</div>
+                    <div className="mt-0.5 text-xs text-slate-500">{ev.evaluator_type ?? "evaluator"}</div>
                   </div>
-                  <div style={{ textAlign: "right", color: "var(--color-outline)", fontSize: 12 }}>
+                  <div className="text-right text-xs text-slate-500">
                     <div>{ev.fire_count ?? 0} runs</div>
                     <div>{ev.fail_count ?? 0} failures</div>
                   </div>
                 </div>
               ))}
               {!evaluators.isLoading && (evaluators.data?.items ?? []).length === 0 && (
-                <div style={{ color: "var(--color-outline)", fontSize: 13 }}>No active evaluators yet.</div>
+                <div className="text-[13px] text-slate-500">No active evaluators yet.</div>
               )}
             </div>
           </div>
@@ -348,16 +317,24 @@ export function EngineConsole() {
   );
 }
 
-function MiniStat({ icon: Icon, label, value }: { icon: typeof BarChart3; label: string; value: string }) {
+function MiniStat({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
   return (
-    <div style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 12, background: "var(--color-surface-container)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 7, color: "var(--color-outline)", fontSize: 11, fontWeight: 750, textTransform: "uppercase" }}>
+    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase text-slate-500">
         <Icon size={13} />
         {label}
       </div>
-      <div style={{ marginTop: 8, color: "var(--color-on-surface)", fontSize: 13, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={value}>
+      <div className="mt-2 truncate text-[13px] font-bold text-slate-800" title={value}>
         {value}
       </div>
     </div>
+  );
+}
+
+function IconBadge({ icon: Icon, state, size = 17 }: { icon: LucideIcon; state: UiState; size?: number }) {
+  return (
+    <span className={`inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-lg ${TINT[state]}`}>
+      <Icon size={size} />
+    </span>
   );
 }
