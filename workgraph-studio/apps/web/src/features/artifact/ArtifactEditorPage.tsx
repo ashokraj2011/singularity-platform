@@ -28,7 +28,7 @@ const ARTIFACT_TYPES: ArtifactType[] = ['CONTRACT', 'DELIVERABLE', 'SPECIFICATIO
 
 // ─── Artifact Preview ─────────────────────────────────────────────────────────
 
-function ArtifactPreview({ tmpl }: { tmpl: ArtifactTemplate }) {
+export function ArtifactPreview({ tmpl }: { tmpl: ArtifactTemplate }) {
   const typeColor = ARTIFACT_TYPE_COLOR[tmpl.type] ?? '#64748b'
   return (
     <div style={{ padding: '24px', background: '#f8fafc', borderRadius: 12, border: '1px solid var(--color-outline-variant)', fontFamily: "'Mulish', sans-serif", maxHeight: '70vh', overflowY: 'auto' }}>

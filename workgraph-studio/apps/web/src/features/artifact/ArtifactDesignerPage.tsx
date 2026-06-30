@@ -4,9 +4,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'motion/react'
 import {
   FileText, Plus, MoreHorizontal, ExternalLink, Archive, Trash2,
-  Copy, Clock, Users, Bot, User, Layers, X,
+  Copy, Clock, Users, Bot, User, Layers, X, Eye,
 } from 'lucide-react'
 import { api } from '../../lib/api'
+import { ArtifactPreview } from './ArtifactEditorPage'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -108,9 +109,10 @@ function PartyBadge({ role }: { role: PartyRole }) {
 
 // ─── Template card ────────────────────────────────────────────────────────────
 
-function TemplateCard({ tmpl, onOpen, onArchive, onDuplicate, onDelete }: {
+function TemplateCard({ tmpl, onOpen, onPreview, onArchive, onDuplicate, onDelete }: {
   tmpl: ArtifactTemplate
   onOpen: () => void
+  onPreview: () => void
   onArchive: () => void
   onDuplicate: () => void
   onDelete: () => void
@@ -155,7 +157,10 @@ function TemplateCard({ tmpl, onOpen, onArchive, onDuplicate, onDelete }: {
         </div>
         {/* Actions */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
-          <button onClick={onOpen} style={{ padding: 5, borderRadius: 7, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--color-outline)' }}>
+          <button onClick={onPreview} title="Preview" style={{ padding: 5, borderRadius: 7, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--color-outline)' }}>
+            <Eye size={13} />
+          </button>
+          <button onClick={onOpen} title="Open editor" style={{ padding: 5, borderRadius: 7, border: 'none', background: 'none', cursor: 'pointer', color: 'var(--color-outline)' }}>
             <ExternalLink size={13} />
           </button>
           <div style={{ position: 'relative' }}>
@@ -325,6 +330,53 @@ function CreateModal({ onClose, onCreate }: { onClose: () => void; onCreate: (da
   )
 }
 
+// ─── Preview modal ──────────────────────────────────────────────────────────
+
+function ArtifactPreviewModal({ id, onClose }: { id: string; onClose: () => void }) {
+  const navigate = usePlatformNavigate()
+  // Fetch the full template (the list payload may be a summary) — same query key
+  // as the editor, so it's shared/cached if the editor was already opened.
+  const { data: tmpl, isLoading } = useQuery<ArtifactTemplate>({
+    queryKey: ['artifact-templates', id],
+    queryFn: () => api.get(`/artifact-templates/${id}`).then(r => r.data),
+  })
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, backdropFilter: 'blur(4px)', padding: 24 }}
+    >
+      <div onClick={e => e.stopPropagation()} style={{ background: '#fff', borderRadius: 18, width: '100%', maxWidth: 820, maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxShadow: '0 24px 64px rgba(0,0,0,0.18)' }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '16px 22px', borderBottom: '1px solid var(--color-outline-variant)' }}>
+          <div style={{ width: 34, height: 34, borderRadius: 9, background: 'rgba(99,102,241,0.10)', border: '1px solid rgba(99,102,241,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Eye size={15} style={{ color: '#6366f1' }} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tmpl?.name ?? 'Artifact preview'}</p>
+            <p style={{ fontSize: 11, color: '#64748b' }}>Read-only preview</p>
+          </div>
+          <button onClick={() => navigate(`/artifacts/${id}`)} className="btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+            <ExternalLink size={13} /> Open editor
+          </button>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8' }}><X size={16} /></button>
+        </div>
+        {/* Body */}
+        <div style={{ overflow: 'auto', padding: 22, background: '#f8fafc' }}>
+          {isLoading || !tmpl ? (
+            <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--color-outline)' }}>
+              <Clock size={22} style={{ margin: '0 auto 8px', opacity: 0.3 }} />
+              <p style={{ fontSize: 13 }}>Loading preview…</p>
+            </div>
+          ) : (
+            <ArtifactPreview tmpl={tmpl} />
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export function ArtifactDesignerPage() {
@@ -333,6 +385,7 @@ export function ArtifactDesignerPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [filterType, setFilterType] = useState<string>('ALL')
   const [showArchived, setShowArchived] = useState(false)
+  const [previewId, setPreviewId] = useState<string | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['artifact-templates', showArchived],
@@ -457,6 +510,7 @@ export function ArtifactDesignerPage() {
               key={tmpl.id}
               tmpl={tmpl}
               onOpen={() => navigate(`/artifacts/${tmpl.id}`)}
+              onPreview={() => setPreviewId(tmpl.id)}
               onArchive={() => archiveMut.mutate(tmpl.id)}
               onDuplicate={() => duplicateMut.mutate(tmpl.id)}
               onDelete={() => { if (confirm(`Delete "${tmpl.name}"?`)) deleteMut.mutate(tmpl.id) }}
@@ -470,6 +524,10 @@ export function ArtifactDesignerPage() {
           onClose={() => setCreateOpen(false)}
           onCreate={data => createMut.mutate(data)}
         />
+      )}
+
+      {previewId && (
+        <ArtifactPreviewModal id={previewId} onClose={() => setPreviewId(null)} />
       )}
     </div>
   )
