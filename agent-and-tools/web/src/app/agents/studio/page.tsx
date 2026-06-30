@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { ApiError, runtimeApi } from "@/lib/api";
-import { PermissionChip } from "@/components/ui/primitives";
+import { MetricTile, PermissionChip } from "@/components/ui/primitives";
 import {
   AlertCircle,
   Bot,
@@ -257,10 +257,10 @@ export default function AgentStudioPage() {
           </div>
 
           <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-4 xl:min-w-[520px]">
-            <MetricCard label="Capability" value={capability.length} tone="emerald" />
-            <MetricCard label="Common" value={common.length} tone="blue" />
-            <MetricCard label="Editable" value={stats.editable} tone="slate" />
-            <MetricCard label="Needs profile" value={stats.missingProfiles} tone={stats.missingProfiles ? "amber" : "slate"} />
+            <MetricTile label="Capability" value={capability.length} tone="emerald" />
+            <MetricTile label="Common" value={common.length} tone="blue" />
+            <MetricTile label="Editable" value={stats.editable} tone="slate" />
+            <MetricTile label="Needs profile" value={stats.missingProfiles} tone={stats.missingProfiles ? "amber" : "slate"} />
           </div>
         </div>
         <div className="mt-5 flex flex-wrap gap-2">
@@ -993,25 +993,6 @@ function filterAgents(
       agent.capabilityId,
     ].filter(Boolean).some((value) => String(value).toLowerCase().includes(q));
   });
-}
-
-function MetricCard({
-  label,
-  value,
-  tone,
-}: { label: string; value: number; tone: "emerald" | "blue" | "amber" | "slate" }) {
-  const palette: Record<typeof tone, string> = {
-    emerald: "border-emerald-200 bg-emerald-50 text-emerald-900",
-    blue: "border-blue-200 bg-blue-50 text-blue-900",
-    amber: "border-amber-200 bg-amber-50 text-amber-900",
-    slate: "border-slate-200 bg-slate-50 text-slate-900",
-  };
-  return (
-    <div className={`rounded-xl border px-3 py-2 ${palette[tone]}`}>
-      <div className="text-[10px] font-bold uppercase tracking-[0.16em] opacity-70">{label}</div>
-      <div className="mt-1 text-2xl font-bold leading-none">{value}</div>
-    </div>
-  );
 }
 
 function ErrorBanner({ error, compact = false }: { error: unknown; compact?: boolean }) {
