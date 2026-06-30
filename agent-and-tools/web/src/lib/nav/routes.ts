@@ -112,6 +112,8 @@ export const ROUTES: RouteMeta[] = [
   { id: "identity-variables", label: "Variables", href: "/identity/variables", group: "Identity and Access", icon: Globe, advanced: true },
   { id: "identity-authz-check", label: "Authz Check", href: "/identity/authz-check", group: "Identity and Access", icon: ClipboardCheck, advanced: true },
   { id: "identity-sharing-grants", label: "Sharing Grants", href: "/identity/sharing-grants", group: "Identity and Access", icon: Link2, advanced: true },
+  { id: "identity-git-connections", label: "GitHub Connections", href: "/identity/git-connections", group: "Identity and Access", icon: GitBranch, advanced: true, description: "Per-tenant GitHub App installations for the git credential broker.", keywords: ["git", "github", "app", "credential", "broker", "token"] },
+  { id: "identity-repository-grants", label: "Repository Grants", href: "/identity/repository-grants", group: "Identity and Access", icon: ShieldCheck, advanced: true, description: "Authorize subjects to run git operations on repositories via the broker.", keywords: ["git", "repo", "grant", "push", "clone", "credential", "broker"] },
 
   // Governance and FinOps
   { id: "engine", label: "Engine", href: "/engine", group: "Governance and FinOps", icon: Zap },

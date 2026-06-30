@@ -31,6 +31,26 @@ export function safeNextPath(value: string | null): string {
   return value;
 }
 
+/**
+ * Read the signed-in IAM user from localStorage (the shape persisted by
+ * saveIdentitySession / saveAgentToolsToken under `iam-auth`). Returns null when
+ * unauthenticated or the store is malformed. Client-only — call after mount to
+ * avoid hydration mismatch. Used by RequireSuperAdmin to gate admin pages; real
+ * enforcement is server-side (`require_super_admin`).
+ */
+export function getIdentityUser(): LoginUser | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem("iam-auth");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { state?: { user?: LoginUser } };
+    const user = parsed?.state?.user;
+    return user && typeof user.id === "string" ? user : null;
+  } catch {
+    return null;
+  }
+}
+
 export function saveIdentitySession(body: LoginResponse): void {
   const persisted = JSON.stringify({
     state: { token: body.access_token, user: body.user },
