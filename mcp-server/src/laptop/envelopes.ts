@@ -35,7 +35,7 @@ import { z } from "zod";
 // Bridge inspects hello.supported_frame_types to choose between sending
 // legacy "invoke" frames and new "tool-run" frames. Old laptops omit
 // the field; .default(["invoke"]) maintains backward compat.
-export const SUPPORTED_FRAME_TYPES = ["invoke", "tool-run", "model-run", "code-context", "source-tree", "source-file", "work-finish-branch"] as const;
+export const SUPPORTED_FRAME_TYPES = ["invoke", "tool-run", "model-run", "code-context", "source-tree", "source-file", "work-finish-branch", "worktree-write-file"] as const;
 export type SupportedFrameType = (typeof SUPPORTED_FRAME_TYPES)[number];
 
 export const HelloFrame = z.object({
@@ -230,6 +230,17 @@ export const WorkFinishBranchFrame = z.object({
 });
 export type WorkFinishBranchFrame = z.infer<typeof WorkFinishBranchFrame>;
 
+// Write+commit a file into a work-item worktree over the bridge (CF → laptop).
+// Payload = {workItemCode, path, content, message?, expectedSha?, authorEmail?,
+// authorName?}; runWorktreeWriteFile validates it, so keep the envelope loose.
+export const WorktreeWriteFileFrame = z.object({
+  type:        z.literal("worktree-write-file"),
+  request_id:  z.string(),
+  payload:     z.record(z.unknown()),
+  deadline_ms: z.number().int().positive().optional(),
+});
+export type WorktreeWriteFileFrame = z.infer<typeof WorktreeWriteFileFrame>;
+
 // ── decoded inbound ─────────────────────────────────────────────────────────
 
 export type InboundFrame =
@@ -241,6 +252,7 @@ export type InboundFrame =
   | SourceTreeFrame   // repo discovery over the bridge
   | SourceFileFrame   // repo discovery over the bridge
   | WorkFinishBranchFrame  // git work-branch finalize over the bridge
+  | WorktreeWriteFileFrame  // worktree file write+commit over the bridge
   | PingFrame
   | DisconnectFrame;
 
@@ -256,6 +268,7 @@ export function decodeInbound(raw: unknown): InboundFrame | null {
   if (type === "source-tree")  return SourceTreeFrame.parse(raw);  // repo discovery over the bridge
   if (type === "source-file")  return SourceFileFrame.parse(raw);  // repo discovery over the bridge
   if (type === "work-finish-branch") return WorkFinishBranchFrame.parse(raw); // git finalize over the bridge
+  if (type === "worktree-write-file") return WorktreeWriteFileFrame.parse(raw); // worktree write over the bridge
   if (type === "ping")         return PingFrame.parse(raw);
   if (type === "disconnect")   return DisconnectFrame.parse(raw);
   return null;

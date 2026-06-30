@@ -36,6 +36,10 @@ import { fetchGitHubTree, fetchGitHubFile } from "../mcp/source-discover";
 // platform's HTTP /mcp/work/finish-branch route calls, run against the laptop's
 // LOCAL worktree so CF can finalize/push from a dial-in runtime.
 import { runFinishWorkBranch, FinishBranchSchema } from "../mcp/work";
+// Write+commit a file into a work-item worktree over the bridge — the same
+// runWorktreeWriteFile the platform's HTTP PUT /mcp/worktree/:code/file route
+// uses, so CF can materialize evidence into a dial-in runtime's worktree.
+import { runWorktreeWriteFile, writeFileSchema } from "../mcp/worktree";
 import {
   decodeInbound,
   type HelloFrame, type HeartbeatFrame, type ResponseFrame,
@@ -494,6 +498,51 @@ export class LaptopRelayClient {
           request_id: frame.request_id,
           payload: null,
           error: { code: e.code ?? "WORK_FINISH_BRANCH_FAILED", message: e.message ?? "work-finish-branch failed" },
+        });
+      } finally {
+        this.inflight--;
+      }
+      return;
+    }
+
+    // Write+commit a file into a work-item worktree over the bridge (CF → laptop;
+    // evidence materialization). Same runWorktreeWriteFile the HTTP route uses.
+    if (frame.type === "worktree-write-file") {
+      if (this.inflight >= this.maxConcurrent) {
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: { code: "BUSY", message: `laptop at max ${this.maxConcurrent} concurrent dispatches` },
+        });
+        return;
+      }
+      this.inflight++;
+      try {
+        const payload = (frame.payload ?? {}) as Record<string, unknown>;
+        const workItemCode = typeof payload.workItemCode === "string" ? payload.workItemCode : "";
+        const filePath = typeof payload.path === "string" ? payload.path : "";
+        const parsedBody = writeFileSchema.safeParse(payload);
+        if (!workItemCode || !filePath || !parsedBody.success) {
+          this.send({
+            type: "response",
+            request_id: frame.request_id,
+            payload: null,
+            error: { code: "VALIDATION_ERROR", message: "invalid worktree-write-file payload" },
+          });
+          return;
+        }
+        log.info({ request_id: frame.request_id, workItemCode, path: filePath }, "[laptop-relay] running worktree-write-file");
+        const data = runWorktreeWriteFile({ workItemCode, path: filePath, ...parsedBody.data });
+        this.send({ type: "response", request_id: frame.request_id, payload: data });
+      } catch (err) {
+        const e = err as { message?: string; code?: string };
+        log.warn({ err: e.message, request_id: frame.request_id }, "[laptop-relay] worktree-write-file failed");
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: { code: e.code ?? "WORKTREE_WRITE_FAILED", message: e.message ?? "worktree-write-file failed" },
         });
       } finally {
         this.inflight--;
