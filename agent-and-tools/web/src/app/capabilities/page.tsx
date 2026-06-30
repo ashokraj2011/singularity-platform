@@ -18,6 +18,7 @@ import {
 import { identityApi, runtimeApi, type IamBusinessUnit, type IamTeam } from "@/lib/api";
 import { CAPABILITY_ROLE_OPTIONS } from "@/lib/capabilityRoles";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { PageHeader, EmptyState, ErrorState } from "@/components/ui/primitives";
 
 type LocalBootstrapFile = { path: string; content: string };
 type BootstrapCatalogAgent = {
@@ -258,14 +259,18 @@ export default function CapabilitiesPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Capabilities</h1>
-          <p className="text-slate-500 mt-1">Onboard an application, learn from approved sources, and generate its starter agent set.</p>
-        </div>
-        <button className="btn-primary" onClick={() => setShowCreate(true)}>
-          <Sparkles size={16} /> Bootstrap Capability
-        </button>
+      <div className="mb-6">
+        <PageHeader
+          eyebrow="Agent Studio"
+          icon={GitBranch}
+          title="Capabilities"
+          description="Onboard an application, learn from approved sources, and generate its starter agent set."
+          actions={
+            <button className="btn-primary" onClick={() => setShowCreate(true)}>
+              <Sparkles size={16} /> Bootstrap Capability
+            </button>
+          }
+        />
       </div>
 
       {showCreate && (
@@ -575,7 +580,7 @@ export default function CapabilitiesPage() {
             </div>
           )}
 
-          {error && <div className="mt-4 text-sm text-red-600">{error}</div>}
+          {error && <div className="mt-4"><ErrorState error={error} compact /></div>}
 
           <div className="mt-6 flex items-center justify-between">
             <button type="button" className="btn-secondary" disabled={step === 1}
@@ -617,10 +622,7 @@ export default function CapabilitiesPage() {
           </Link>
         ))}
         {!isLoading && items.length === 0 && (
-          <div className="card p-12 text-center text-slate-400">
-            <GitBranch size={40} className="mx-auto mb-3 opacity-40" />
-            <p>No capabilities yet. Bootstrap your first one above.</p>
-          </div>
+          <EmptyState icon={GitBranch} title="No capabilities yet" hint="Bootstrap your first one above." />
         )}
       </div>
     </div>
