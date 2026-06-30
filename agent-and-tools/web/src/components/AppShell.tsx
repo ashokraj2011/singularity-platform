@@ -6,7 +6,9 @@ import { EventHorizonChat } from "@/components/EventHorizonChat";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { LogoutButton } from "@/components/LogoutButton";
 import { RequireSession } from "@/components/RequireSession";
-import { Bell, Settings } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Bell, Search, Settings } from "lucide-react";
+import { CommandPalette } from "@/components/CommandPalette";
 
 // Routes that render their own full-viewport UX (the blue Blueprint Workbench
 // cockpit, now served in-process) and must NOT be boxed inside the platform-web
@@ -21,10 +23,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
 
+  // ⌘K / Ctrl-K toggles the command palette (sourced from the route registry).
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   if (fullBleed) {
     return (
       <RequireSession pathname={pathname}>
         <div style={{ height: "100vh", overflow: "hidden" }}>{children}</div>
+        <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
       </RequireSession>
     );
   }
@@ -83,6 +99,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
           {/* Actions */}
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <button
+              type="button"
+              onClick={() => setPaletteOpen(true)}
+              aria-label="Search pages (Command/Ctrl + K)"
+              title="Search pages (⌘K)"
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                height: 32, padding: "0 10px", borderRadius: 10,
+                border: "1px solid var(--color-outline-variant)",
+                background: "transparent", cursor: "pointer",
+                color: "var(--color-outline)", fontSize: 12, transition: "all 0.15s",
+              }}
+            >
+              <Search size={15} />
+              <span style={{ fontWeight: 600 }}>Search</span>
+              <kbd style={{
+                fontSize: 10, fontWeight: 700, padding: "1px 5px", borderRadius: 5,
+                border: "1px solid var(--color-outline-variant)", color: "var(--color-outline)",
+              }}>⌘K</kbd>
+            </button>
             <AppSwitcher />
             <button
               style={{
@@ -125,6 +161,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </main>
       </div>
       <EventHorizonChat />
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
     </div>
     </RequireSession>
   );
