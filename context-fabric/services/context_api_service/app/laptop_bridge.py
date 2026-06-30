@@ -448,6 +448,55 @@ async def runtime_source_file(
     )
 
 
+# ── Generic tool-run dispatch over the bridge ──────────────────────────────
+# Lets Workgraph executors (e.g. RUN_PYTHON) dispatch a single tool through CF
+# instead of POSTing mcp-server directly, so a laptop/remote MCP that only dials
+# in still runs the tool. Reuses governed.dispatch.dispatch_tool, which prefers
+# the requesting user's bridge (laptop_user_id) and falls back to mcp HTTP
+# transparently when no bridge is connected.
+class _ToolRunReq(BaseModel):
+    tool_name: str
+    args: dict[str, Any] = {}
+    run_context: Optional[dict[str, Any]] = None
+    workspace_id: Optional[str] = None
+    work_item_id: Optional[str] = None
+    grant: Optional[dict[str, Any]] = None
+    laptop_user_id: Optional[str] = None
+
+
+@router.post("/api/runtime-bridge/tool-run")
+async def runtime_tool_run(
+    req: _ToolRunReq,
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+) -> dict[str, Any]:
+    from .execute import check_execute_service_token
+    from .governed.dispatch import dispatch_tool, ToolDispatchError
+
+    check_execute_service_token(x_service_token)
+    rc = req.run_context or {}
+    laptop_user_id = req.laptop_user_id or rc.get("user_id") or rc.get("userId")
+    try:
+        result = await dispatch_tool(
+            req.tool_name,
+            req.args,
+            workspace_id=req.workspace_id,
+            work_item_id=req.work_item_id,
+            run_context=req.run_context,
+            laptop_user_id=laptop_user_id,
+            grant=req.grant,
+        )
+    except ToolDispatchError as err:
+        raise HTTPException(status_code=502, detail=f"tool-run dispatch failed: {err}") from err
+    return {
+        "result": result.result,
+        "tool_success": result.tool_success,
+        "tool_error": result.tool_error,
+        "tool_invocation_id": result.tool_invocation_id,
+        "duration_ms": result.duration_ms,
+        "served_by": result.served_by,
+    }
+
+
 def _now_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
