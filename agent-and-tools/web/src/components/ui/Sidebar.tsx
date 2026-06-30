@@ -2,125 +2,20 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
-import {
-  LayoutDashboard, Wrench, Play, Users,
-  GitBranch, Layers, ScrollText, ShieldCheck, Activity, Brain,
-  ChevronLeft, ChevronRight, DollarSign, Cpu, WandSparkles,
-  Bot, Inbox, Network, Route, Workflow, Zap,
-  Database, FileText, Globe, Link2, Package, Puzzle, ClipboardCheck, BookOpen,
-} from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { sidebarSections, type RouteMeta, type SidebarSection } from "@/lib/nav/routes";
 
-type ItemDef = { label: string; href: string; icon: typeof LayoutDashboard };
-type NavSection = { label: string; description: string; items: ItemDef[] };
-
-const menuSections: NavSection[] = [
-  {
-    label: "Start Here",
-    description: "Overview and app catalog",
-    items: [
-      { label: "Start SDLC Work", href: "/start", icon: Play },
-      { label: "Command Center", href: "/", icon: LayoutDashboard },
-      { label: "App Catalog", href: "/control-plane", icon: Network },
-      { label: "User Guide", href: "/help", icon: BookOpen },
-    ],
-  },
-  {
-    label: "Operations Center",
-    description: "Health, topology, setup, and trust",
-    items: [
-      { label: "Readiness", href: "/operations/readiness", icon: Activity },
-      { label: "Live App Map", href: "/operations/architecture", icon: Network },
-      { label: "Access Keys", href: "/operations/access-keys", icon: ShieldCheck },
-      { label: "Setup Center", href: "/operations/setup", icon: Wrench },
-      { label: "Trust Evidence", href: "/operations/trust", icon: ClipboardCheck },
-    ],
-  },
-  {
-    label: "Agent Studio",
-    description: "Create, govern, and run agents",
-    items: [
-      { label: "Agents", href: "/agents/studio", icon: Bot },
-      { label: "Capabilities", href: "/capabilities", icon: GitBranch },
-      { label: "Tools", href: "/tools", icon: Wrench },
-      { label: "Tool Grants", href: "/tool-grants", icon: ShieldCheck },
-      { label: "Executions", href: "/executions", icon: Play },
-    ],
-  },
-  {
-    label: "Prompts and Knowledge",
-    description: "Behavior, prompts, learning, and memory",
-    items: [
-      { label: "Prompt Workbench", href: "/prompt-workbench", icon: WandSparkles },
-      { label: "Behavior Profiles", href: "/prompt-profiles", icon: Layers },
-      { label: "Instruction Blocks", href: "/prompt-layers", icon: ScrollText },
-      { label: "Runtime Receipts", href: "/runtime-executions", icon: Activity },
-      { label: "Learning", href: "/learning", icon: Brain },
-      { label: "Memory", href: "/memory", icon: Database },
-    ],
-  },
-  {
-    label: "Workflow Operations",
-    description: "Plan, route, start, and monitor work",
-    items: [
-      { label: "Workflow Home", href: "/workflows", icon: Workflow },
-      { label: "Story Planner", href: "/workflows/planner", icon: Route },
-      { label: "Guided Launch", href: "/workflows/start", icon: Play },
-      { label: "Template Gallery", href: "/workflows/templates/gallery", icon: GitBranch },
-      { label: "Inbox", href: "/workflows/inbox", icon: Inbox },
-      { label: "Work Hub", href: "/work-items", icon: Network },
-      { label: "Runs", href: "/runs", icon: Activity },
-      { label: "Run History", href: "/workflows/history", icon: FileText },
-      { label: "Runtime", href: "/workflows/runtime", icon: Zap },
-    ],
-  },
-  {
-    label: "Workflow Authoring",
-    description: "Design workflow assets and integrations",
-    items: [
-      { label: "Workflow Manager", href: "/workflows/templates", icon: Workflow },
-      { label: "Metadata", href: "/workflows/metadata", icon: Database },
-      { label: "Artifact Studio", href: "/workflows/artifacts", icon: ScrollText },
-      { label: "Artifact Explorer", href: "/workflows/artifacts/explorer", icon: Package },
-      { label: "Node Types", href: "/workflows/node-types", icon: Puzzle },
-      { label: "Connectors", href: "/workflows/connectors", icon: Link2 },
-    ],
-  },
-  {
-    label: "Identity and Access",
-    description: "Users, teams, roles, and capability access",
-    items: [
-      { label: "Identity Dashboard", href: "/identity/dashboard", icon: LayoutDashboard },
-      { label: "Users", href: "/identity/users", icon: Users },
-      { label: "Teams", href: "/identity/teams", icon: Network },
-      { label: "Business Units", href: "/identity/business-units", icon: Layers },
-      { label: "Roles", href: "/identity/roles", icon: ShieldCheck },
-      { label: "Permissions", href: "/identity/permissions", icon: ShieldCheck },
-      { label: "Capabilities", href: "/identity/capabilities", icon: GitBranch },
-      { label: "Capability Graph", href: "/identity/capability-graph", icon: Route },
-      { label: "Variables", href: "/identity/variables", icon: Globe },
-      { label: "Authz Check", href: "/identity/authz-check", icon: ClipboardCheck },
-      { label: "Sharing Grants", href: "/identity/sharing-grants", icon: Link2 },
-      { label: "Identity Audit", href: "/identity/audit", icon: FileText },
-    ],
-  },
-  {
-    label: "Governance and FinOps",
-    description: "Policies, evidence, model routing, and cost",
-    items: [
-      { label: "Engine", href: "/engine", icon: Zap },
-      { label: "LLM Routing", href: "/llm-settings", icon: Cpu },
-      { label: "Audit", href: "/audit", icon: ShieldCheck },
-      { label: "Eval Curation", href: "/audit/curation", icon: ClipboardCheck },
-      { label: "Cost", href: "/cost", icon: DollarSign },
-    ],
-  },
-];
+// Sidebar groups + items now come from the shared route registry
+// (src/lib/nav/routes.ts) — the single source of truth shared with the app
+// switcher, help, and (soon) the command palette + breadcrumbs. This renders the
+// same groups/order/icons as the previous hardcoded list.
+const menuSections = sidebarSections();
 
 const allMenuItems = menuSections.flatMap((section) => section.items);
 
 function NavItem({
   label, href, icon: Icon, active, collapsed,
-}: ItemDef & { active: boolean; collapsed: boolean }) {
+}: RouteMeta & { active: boolean; collapsed: boolean }) {
   return (
     <Link href={href} className="block" aria-current={active ? "page" : undefined}>
       <div
@@ -191,7 +86,7 @@ export function Sidebar() {
 
   const sidebarWidth = effectiveCollapsed ? 64 : 246;
 
-  function renderSection(section: NavSection, index: number) {
+  function renderSection(section: SidebarSection, index: number) {
     return !effectiveCollapsed ? (
       <section key={section.label} style={{ marginTop: index === 0 ? 0 : 16 }}>
         <div style={{ padding: "0 12px", marginBottom: 6 }}>
