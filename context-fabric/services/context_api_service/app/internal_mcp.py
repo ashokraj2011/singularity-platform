@@ -16,6 +16,8 @@ Auth:
 """
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any, Optional
 
 import httpx
@@ -27,6 +29,8 @@ from .governed.grant import grant_enabled, mint_tool_grant
 from .governed.phase_state import Phase
 from .governed.policy_loader import PhasePolicy, StagePolicy
 from .iam_service_token import get_iam_service_token, invalidate_iam_service_token
+
+log = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/internal/mcp", tags=["internal-mcp"])
@@ -72,6 +76,66 @@ _OPERATIONAL_TOOL_PHASES: dict[str, Phase] = {
     "finish_work_branch": Phase.FINALIZE,
     "run_python": Phase.ACT,
 }
+
+# Git tools that also get a brokered, repo-scoped credential alongside the grant
+# (P0 #2, slice B). toolName → git operation.
+_GIT_TOOL_OPERATIONS: dict[str, str] = {
+    "finish_work_branch": "push",
+}
+
+
+def _git_broker_enabled() -> bool:
+    return os.environ.get("GIT_CREDENTIAL_BROKER_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+async def _maybe_broker_git_credential(
+    body: "OperationalToolGrantRequest", grant: Optional[dict[str, Any]]
+) -> Optional[dict[str, Any]]:
+    """When the Git broker is enabled and this is a git op with a resolvable repo,
+    ask IAM to mint a short-lived, repo-scoped credential bound to the grant nonce.
+
+    Best-effort during rollout: returns None (and logs) on any miss — the grant
+    still flows. Slice C makes a SHARED mcp REQUIRE this credential for git ops;
+    the repo/tenant/user come from run_context (Slice D wires Workgraph to supply
+    them), so until then this stays dormant even with the flag on.
+    """
+    if not _git_broker_enabled():
+        return None
+    operation = _GIT_TOOL_OPERATIONS.get(body.toolName)
+    if not operation:
+        return None
+    rc = body.runContext or {}
+    repo = rc.get("repo") or rc.get("repoUrl") or rc.get("repository")
+    tenant_id = rc.get("tenant_id") or rc.get("tenantId")
+    if not repo or not tenant_id:
+        log.info("git broker: repo/tenant missing in run_context for %s — skipping credential", body.toolName)
+        return None
+    service_jwt = await get_iam_service_token()
+    if not service_jwt:
+        log.warning("git broker: no IAM service token — skipping credential for %s", body.toolName)
+        return None
+    payload = {
+        "tenantId": tenant_id,
+        "userId": rc.get("user_id") or rc.get("userId"),
+        "repo": repo,
+        "operation": operation,
+        "runId": rc.get("run_id") or rc.get("runId"),
+        "nodeId": rc.get("node_id") or rc.get("nodeId"),
+        "workflowInstanceId": rc.get("workflow_instance_id") or rc.get("workflowInstanceId"),
+        "capabilityId": rc.get("capability_id") or rc.get("capabilityId"),
+        "grantNonce": (grant or {}).get("nonce"),
+    }
+    url = f"{settings.iam_base_url.rstrip('/')}/internal/git/credentials/issue"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(url, json=payload, headers={"Authorization": f"Bearer {service_jwt}"})
+    except httpx.HTTPError as exc:
+        log.warning("git broker: IAM issue unreachable for %s: %s", body.toolName, exc)
+        return None
+    if resp.status_code >= 300:
+        log.warning("git broker: IAM issue failed (%s) for %s: %s", resp.status_code, body.toolName, resp.text[:200])
+        return None
+    return resp.json()
 
 
 def _require_nonempty_string(value: Any, field: str) -> str:
@@ -196,12 +260,14 @@ async def mint_operational_tool_grant(
     )
     if grant is None:
         raise HTTPException(status_code=503, detail="tool grant minting is enabled but no grant could be minted")
+    git_credential = await _maybe_broker_git_credential(body, grant)
     return {
         "grant": grant,
         "grantEnabled": True,
         "toolName": body.toolName,
         "policyId": policy.policy_id,
         "phase": phase.value,
+        "gitCredential": git_credential,
     }
 
 
