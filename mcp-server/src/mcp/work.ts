@@ -34,7 +34,7 @@ import { assertEffectiveCapabilityAllowsTool } from "./effective-capability";
 
 export const workRouter = Router();
 
-const FinishBranchSchema = z.object({
+export const FinishBranchSchema = z.object({
   message: z.string().optional(),
   remote: z.string().default("origin"),
   push: z.boolean().default(true),
@@ -65,17 +65,20 @@ const FinishBranchSchema = z.object({
     .default({}),
 });
 
-workRouter.post("/work/finish-branch", async (req, res) => {
-  const parsed = FinishBranchSchema.safeParse(req.body);
-  if (!parsed.success) {
-    throw new AppError(
-      "invalid /mcp/work/finish-branch payload",
-      400,
-      "VALIDATION_ERROR",
-      parsed.error.flatten(),
-    );
-  }
-  const body = parsed.data;
+export type FinishBranchInput = z.infer<typeof FinishBranchSchema>;
+
+/**
+ * Core finish-work-branch logic, shared by the HTTP route below and the
+ * `work-finish-branch` runtime-bridge frame (laptop/relay-client) so a laptop/
+ * remote MCP that only dials into Context Fabric can finalize a work branch.
+ * Verifies the grant, re-establishes the branch, restores the approved patch if
+ * HEAD drifted, runs finishWorkBranchTool, records the audit invocation. Returns
+ * { tool_invocation, output } on success; throws AppError on failure (after
+ * recording the failed invocation).
+ */
+export async function runFinishWorkBranch(
+  body: FinishBranchInput,
+): Promise<{ tool_invocation: ReturnType<typeof recordToolInvocation>; output: unknown }> {
   const toolArgs = { message: body.message, push: body.push, remote: body.remote };
   assertEffectiveCapabilityAllowsTool("finish_work_branch", body.runContext);
   const mode = grantMode();
@@ -177,11 +180,7 @@ workRouter.post("/work/finish-branch", async (req, res) => {
       error: r.error ? redactSecrets(r.error) : undefined,
       latency_ms: Date.now() - start,
     });
-    res.json({
-      success: true,
-      data: { tool_invocation: rec, output: redactSecrets(r.output) },
-      requestId: res.locals.requestId,
-    });
+    return { tool_invocation: rec, output: redactSecrets(r.output) };
   } catch (err) {
     const message = redactSecrets((err as Error).message);
     const rec = recordToolInvocation({
@@ -200,4 +199,22 @@ workRouter.post("/work/finish-branch", async (req, res) => {
       { tool_invocation: rec },
     );
   }
+}
+
+workRouter.post("/work/finish-branch", async (req, res) => {
+  const parsed = FinishBranchSchema.safeParse(req.body);
+  if (!parsed.success) {
+    throw new AppError(
+      "invalid /mcp/work/finish-branch payload",
+      400,
+      "VALIDATION_ERROR",
+      parsed.error.flatten(),
+    );
+  }
+  const { tool_invocation, output } = await runFinishWorkBranch(parsed.data);
+  res.json({
+    success: true,
+    data: { tool_invocation, output },
+    requestId: res.locals.requestId,
+  });
 });
