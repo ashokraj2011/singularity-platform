@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import (
-    String, Boolean, Integer, ForeignKey, UniqueConstraint,
+    String, Text, Boolean, Integer, ForeignKey, UniqueConstraint,
     CheckConstraint, Index, text,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
@@ -496,6 +496,75 @@ class UserDevice(Base):
     # the laptop has been quiet. Not used for revocation by itself.
     last_seen_at: Mapped[Optional[datetime]] = mapped_column(_tstz())
     revoked_at: Mapped[Optional[datetime]] = mapped_column(_tstz())
+
+
+# ---------------------------------------------------------------------------
+# Git credential broker (P0 #2) — per-user/tenant short-lived GitHub App tokens
+# for shared/cloud MCP runtimes. v0: GitHub App only; the App private key is
+# stored PLAINTEXT (hard pre-prod gate — see app/git/github_app.py).
+# ---------------------------------------------------------------------------
+
+class GitProviderConnection(Base):
+    __tablename__ = "git_provider_connections"
+    __table_args__ = (
+        Index("idx_git_provider_connections_tenant", "tenant_id"),
+        {"schema": "iam"},
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False)
+    provider: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'github_app'"))
+    app_id: Mapped[str] = mapped_column(String, nullable=False)
+    installation_id: Mapped[str] = mapped_column(String, nullable=False)
+    account_login: Mapped[Optional[str]] = mapped_column(String)
+    # WARNING: plaintext v0 — KMS/Vault is the blocking pre-prod item.
+    private_key: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'active'"))
+    created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
+
+
+class GitRepositoryGrant(Base):
+    __tablename__ = "git_repository_grants"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "subject_type", "subject_id", "repo", name="uq_git_repo_grants_subject_repo"),
+        Index("idx_git_repo_grants_tenant_repo", "tenant_id", "repo"),
+        {"schema": "iam"},
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False)
+    subject_type: Mapped[str] = mapped_column(String, nullable=False)  # user | team | capability
+    subject_id: Mapped[str] = mapped_column(String, nullable=False)
+    repo: Mapped[str] = mapped_column(String, nullable=False)          # normalized owner/name
+    operations: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))  # read/clone/push/pr/comment
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'active'"))
+    approved_by: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False))
+    approved_at: Mapped[Optional[datetime]] = mapped_column(_tstz())
+    created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
+
+
+class GitCredentialIssuance(Base):
+    __tablename__ = "git_credential_issuances"
+    __table_args__ = (
+        Index("idx_git_cred_issuances_tenant_repo", "tenant_id", "repo"),
+        Index("idx_git_cred_issuances_user", "user_id"),
+        {"schema": "iam"},
+    )
+
+    # id IS the issuanceId. The token is NEVER stored — only a fingerprint + expiry.
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String, nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(String)
+    repo: Mapped[str] = mapped_column(String, nullable=False)
+    operation: Mapped[str] = mapped_column(String, nullable=False)
+    run_id: Mapped[Optional[str]] = mapped_column(String)
+    node_id: Mapped[Optional[str]] = mapped_column(String)
+    workflow_instance_id: Mapped[Optional[str]] = mapped_column(String)
+    grant_nonce: Mapped[Optional[str]] = mapped_column(String)
+    provider: Mapped[str] = mapped_column(String, nullable=False, server_default=text("'github_app'"))
+    token_fingerprint: Mapped[Optional[str]] = mapped_column(String)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(_tstz())
+    issued_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
 
 
 # ---------------------------------------------------------------------------

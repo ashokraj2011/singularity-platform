@@ -189,6 +189,7 @@ _VALID_SCOPES = {
     "publish:events",        # /api/v1/events/* (subscribe + emit)
     "governance:author",     # advisory governance attachment writes
     "governance:enforce",    # REQUIRED/BLOCKING governance writes
+    "git:issue-credentials", # /internal/git/credentials/issue (Git broker, P0 #2)
 }
 
 
