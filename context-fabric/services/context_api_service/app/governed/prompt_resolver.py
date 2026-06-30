@@ -175,6 +175,9 @@ async def resolve_phase_prompt(
     if not vars:
         # M93.F — profile_key participates in the cache key so workflows
         # targeting different profile keys don't share cached prompts.
-        _cache[(stage_key, agent_role, phase_str, profile_key)] = (time.time() + _CACHE_TTL_SEC, resolved)
+        # cap_id must match the read key (above) too — otherwise two capabilities
+        # with the same stage/role/phase/profile collide within the TTL and the
+        # second turn reads the first capability's prompt.
+        _cache[(stage_key, agent_role, phase_str, profile_key, cap_id)] = (time.time() + _CACHE_TTL_SEC, resolved)
 
     return resolved
