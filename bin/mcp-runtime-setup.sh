@@ -202,7 +202,7 @@ const body = {
   device_id: process.env.RUNTIME_ID,
   device_name: process.env.RUNTIME_NAME,
   runtime_scope: "user",
-  allowed_frame_types: ["tool-run", "model-run", "code-context", "invoke"],
+  allowed_frame_types: ["tool-run", "model-run", "code-context", "source-tree", "source-file", "invoke"],
   capability_tags: ["mcp", "tools", "llm"],
   iat: now,
   exp: now + 90 * 24 * 3600,

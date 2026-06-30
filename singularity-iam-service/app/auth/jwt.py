@@ -91,7 +91,7 @@ def create_device_token(
             "runtime_id": device_id,
             "runtime_type": runtime_type or "mcp",
             "runtime_scope": runtime_scope or "user",
-            "allowed_frame_types": list(allowed_frame_types or ["tool-run", "model-run", "code-context", "invoke"]),
+            "allowed_frame_types": list(allowed_frame_types or ["tool-run", "model-run", "code-context", "source-tree", "source-file", "invoke"]),
             "capability_tags": list(capability_tags or ["mcp", "tools", "llm"]),
         })
         if tenant_id:
