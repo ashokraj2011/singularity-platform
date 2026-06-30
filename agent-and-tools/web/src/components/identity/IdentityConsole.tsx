@@ -1,9 +1,8 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import useSWR from "swr";
-import { Activity, Building2, CircleAlert, GitBranch, KeyRound, Network, ShieldCheck, ShieldX, Users, UserRoundCog } from "lucide-react";
+import { CircleAlert, GitBranch, ShieldCheck, ShieldX, Users } from "lucide-react";
 import {
   checkAuthorization,
   listCapabilityRelationships,
@@ -15,20 +14,6 @@ import {
   type IdentityView,
 } from "@/lib/identity/api";
 import { formatDate, valueText } from "@/lib/workgraph";
-
-const views: Array<{ id: IdentityView; label: string; icon: typeof Users }> = [
-  { id: "dashboard", label: "Dashboard", icon: ShieldCheck },
-  { id: "users", label: "Users", icon: Users },
-  { id: "teams", label: "Teams", icon: UserRoundCog },
-  { id: "business-units", label: "Business Units", icon: Building2 },
-  { id: "capabilities", label: "Capabilities", icon: GitBranch },
-  { id: "capability-graph", label: "Capability Graph", icon: Network },
-  { id: "roles", label: "Roles", icon: KeyRound },
-  { id: "permissions", label: "Permissions", icon: ShieldCheck },
-  { id: "sharing-grants", label: "Sharing Grants", icon: Network },
-  { id: "audit", label: "Audit", icon: Activity },
-  { id: "authz-check", label: "Authz Check", icon: ShieldCheck },
-];
 
 const viewCopy: Record<IdentityView, { title: string; description: string }> = {
   dashboard: {
@@ -137,9 +122,9 @@ const columns: Record<IdentityView, Array<{ label: string; keys: string[] }>> = 
 };
 
 export function IdentityConsole({ view = "dashboard" }: { view?: IdentityView }) {
-  const router = useRouter();
-  const [activeView, setActiveView] = useState<IdentityView>(view);
-  useEffect(() => setActiveView(view), [view]);
+  // The sub-view comes straight from the route — the global sidebar is the only
+  // Identity nav now (no in-page column), so there's no local active-view state.
+  const activeView = view;
   const copy = viewCopy[activeView];
 
   const { data: users, error: usersError } = useSWR("identity-users-count", () => listIdentity("users", 25));
@@ -149,11 +134,6 @@ export function IdentityConsole({ view = "dashboard" }: { view?: IdentityView })
   const listView = activeView === "dashboard" ? null : activeView;
   const { data: rows, error: rowsError, isLoading } = useSWR(listView ? ["identity-list", listView] : null, () => listIdentity(listView as IdentityView, 100));
   const error = usersError ?? rowsError;
-
-  function selectView(nextView: IdentityView) {
-    setActiveView(nextView);
-    router.push(identityHref(nextView));
-  }
 
   return (
     <div style={{ maxWidth: 1440 }}>
@@ -180,52 +160,17 @@ export function IdentityConsole({ view = "dashboard" }: { view?: IdentityView })
 
       {error ? <ErrorBanner error={error} /> : null}
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(240px, 300px) minmax(0, 1fr)", gap: 16, alignItems: "start" }}>
-        <aside className="card" style={{ padding: 12 }}>
-          <div style={{ display: "grid", gap: 6 }}>
-            {views.map((item) => {
-              const Icon = item.icon;
-              const active = activeView === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => selectView(item.id)}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    minHeight: 42,
-                    border: active ? "1px solid rgba(54,135,39,0.42)" : "1px solid transparent",
-                    background: active ? "rgba(240,253,244,0.86)" : "transparent",
-                    color: active ? "var(--color-primary)" : "var(--color-text)",
-                    borderRadius: 8,
-                    padding: "9px 11px",
-                    fontWeight: 800,
-                    cursor: "pointer",
-                    textAlign: "left",
-                  }}
-                >
-                  <Icon size={16} />
-                  {item.label}
-                </button>
-              );
-            })}
-          </div>
-        </aside>
-
-        <main style={{ display: "grid", gap: 16, minWidth: 0 }}>
-          {activeView === "dashboard" ? (
-            <DashboardPanel users={users?.items ?? []} audit={audit?.items ?? []} />
-          ) : activeView === "capability-graph" ? (
-            <CapabilityGraphPanel capabilities={rows?.items ?? []} loading={isLoading} />
-          ) : activeView === "authz-check" ? (
-            <AuthzPanel permissions={rows?.items ?? []} />
-          ) : (
-            <EntityTable title={titleFor(activeView)} view={activeView} rows={rows?.items ?? []} loading={isLoading} />
-          )}
-        </main>
-      </div>
+      <main style={{ display: "grid", gap: 16, minWidth: 0 }}>
+        {activeView === "dashboard" ? (
+          <DashboardPanel users={users?.items ?? []} audit={audit?.items ?? []} />
+        ) : activeView === "capability-graph" ? (
+          <CapabilityGraphPanel capabilities={rows?.items ?? []} loading={isLoading} />
+        ) : activeView === "authz-check" ? (
+          <AuthzPanel permissions={rows?.items ?? []} />
+        ) : (
+          <EntityTable title={titleFor(activeView)} view={activeView} rows={rows?.items ?? []} loading={isLoading} />
+        )}
+      </main>
     </div>
   );
 }
@@ -528,9 +473,5 @@ function formatCell(value: unknown) {
 }
 
 function titleFor(view: IdentityView) {
-  return views.find((item) => item.id === view)?.label ?? "Identity";
-}
-
-function identityHref(view: IdentityView) {
-  return view === "dashboard" ? "/identity" : `/identity/${view}`;
+  return viewCopy[view]?.title ?? "Identity";
 }
