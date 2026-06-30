@@ -4,6 +4,7 @@ import {
   BookOpen, Rocket, Bot, GitBranch, Wrench, Workflow, Users,
   ShieldCheck, Activity, Network, LifeBuoy, Lightbulb,
 } from "lucide-react";
+import { PageHeader } from "@/components/ui/primitives";
 
 export const metadata: Metadata = {
   title: "User Guide & Help · Singularity Platform",
@@ -49,19 +50,19 @@ const linkCls = "font-medium text-emerald-700 underline decoration-emerald-200 u
 export default function HelpPage() {
   return (
     <div className="mx-auto max-w-4xl space-y-6">
-      {/* Hero */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-800">
-          <BookOpen size={13} />
-          User Guide
-        </div>
-        <h1 className="mt-3 text-3xl font-bold tracking-tight text-slate-950">Platform Web — User Guide & Help</h1>
-        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-          Singularity Platform is one portal to <strong>design, govern, and run AI agents</strong> against
-          your capabilities — with end-to-end grounding, tool governance, and audit. This guide explains the
-          core concepts, the most common flows, and how to get unstuck.
-        </p>
-      </div>
+      {/* Hero — uses the shared PageHeader primitive */}
+      <PageHeader
+        eyebrow="User Guide"
+        icon={BookOpen}
+        title="Platform Web — User Guide & Help"
+        description={
+          <>
+            Singularity Platform is one portal to <strong>design, govern, and run AI agents</strong> against
+            your capabilities — with end-to-end grounding, tool governance, and audit. This guide explains the
+            core concepts, the most common flows, and how to get unstuck.
+          </>
+        }
+      />
 
       {/* TOC */}
       <nav className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
