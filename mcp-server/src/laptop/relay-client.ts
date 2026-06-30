@@ -32,6 +32,10 @@ import { buildCodeContextPackage, type BuildCodeContextRequest } from "../mcp/co
 // LOCAL GITHUB_TOKEN so cloud-side capability bootstrap can discover a repo
 // through the user's laptop runtime.
 import { fetchGitHubTree, fetchGitHubFile } from "../mcp/source-discover";
+// Finish a work branch over the bridge — the same runFinishWorkBranch the
+// platform's HTTP /mcp/work/finish-branch route calls, run against the laptop's
+// LOCAL worktree so CF can finalize/push from a dial-in runtime.
+import { runFinishWorkBranch, FinishBranchSchema } from "../mcp/work";
 import {
   decodeInbound,
   type HelloFrame, type HeartbeatFrame, type ResponseFrame,
@@ -447,6 +451,49 @@ export class LaptopRelayClient {
           request_id: frame.request_id,
           payload: null,
           error: { code: "SOURCE_FILE_FAILED", message: e.message ?? "source-file failed" },
+        });
+      } finally {
+        this.inflight--;
+      }
+      return;
+    }
+
+    // Finalize a work branch over the bridge (CF → laptop). Same runFinishWorkBranch
+    // the HTTP /mcp/work/finish-branch route uses; the laptop pushes with its LOCAL
+    // git credentials. Same inflight gate as tool-run.
+    if (frame.type === "work-finish-branch") {
+      if (this.inflight >= this.maxConcurrent) {
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: { code: "BUSY", message: `laptop at max ${this.maxConcurrent} concurrent dispatches` },
+        });
+        return;
+      }
+      this.inflight++;
+      try {
+        const parsed = FinishBranchSchema.safeParse(frame.payload);
+        if (!parsed.success) {
+          this.send({
+            type: "response",
+            request_id: frame.request_id,
+            payload: null,
+            error: { code: "VALIDATION_ERROR", message: "invalid work-finish-branch payload" },
+          });
+          return;
+        }
+        log.info({ request_id: frame.request_id }, "[laptop-relay] running work-finish-branch");
+        const result = await runFinishWorkBranch(parsed.data);
+        this.send({ type: "response", request_id: frame.request_id, payload: result });
+      } catch (err) {
+        const e = err as { message?: string; code?: string };
+        log.warn({ err: e.message, request_id: frame.request_id }, "[laptop-relay] work-finish-branch failed");
+        this.send({
+          type: "response",
+          request_id: frame.request_id,
+          payload: null,
+          error: { code: e.code ?? "WORK_FINISH_BRANCH_FAILED", message: e.message ?? "work-finish-branch failed" },
         });
       } finally {
         this.inflight--;
