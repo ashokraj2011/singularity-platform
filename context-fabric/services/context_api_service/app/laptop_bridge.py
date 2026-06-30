@@ -497,6 +497,78 @@ async def runtime_tool_run(
     }
 
 
+# ── Work-branch finalize dispatch over the bridge ──────────────────────────
+# Routes GitPushExecutor's finish-branch through CF: prefer the requesting user's
+# dialed-in runtime (it pushes with its LOCAL git creds), else fall back to the
+# co-located/shared mcp-server over HTTP. Mirrors the tool-run endpoint above.
+class _WorkFinishReq(BaseModel):
+    user_id: Optional[str] = None
+    tenant_id: Optional[str] = None
+    message: Optional[str] = None
+    remote: str = "origin"
+    push: bool = True
+    expectedCommitSha: Optional[str] = None
+    patch: Optional[str] = None
+    tool_grant: Optional[dict[str, Any]] = None
+    runContext: dict[str, Any] = {}
+
+
+async def _http_finish_branch(payload: dict[str, Any]) -> dict[str, Any]:
+    mcp_url = os.environ.get("MCP_SERVER_URL", "http://mcp-server:7100").rstrip("/")
+    bearer = os.environ.get("MCP_BEARER_TOKEN", "")
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            resp = await client.post(
+                f"{mcp_url}/mcp/work/finish-branch",
+                headers={"content-type": "application/json", "authorization": f"Bearer {bearer}"},
+                json=payload,
+            )
+    except httpx.HTTPError as err:
+        raise HTTPException(status_code=502, detail=f"mcp /work/finish-branch unreachable: {err}") from err
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text[:300])
+    data = resp.json()
+    # mcp returns {success, data:{tool_invocation, output}}; the laptop frame
+    # returns {tool_invocation, output}. Normalize to the latter.
+    return data.get("data", data) if isinstance(data, dict) else data
+
+
+@router.post("/api/runtime-bridge/work/finish-branch")
+async def runtime_work_finish_branch(
+    req: _WorkFinishReq,
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+) -> dict[str, Any]:
+    from .execute import check_execute_service_token
+
+    check_execute_service_token(x_service_token)
+    payload: dict[str, Any] = {
+        "message": req.message,
+        "remote": req.remote,
+        "push": req.push,
+        "expectedCommitSha": req.expectedCommitSha,
+        "patch": req.patch,
+        "tool_grant": req.tool_grant,
+        "runContext": req.runContext,
+    }
+    rc = req.runContext or {}
+    user_id = req.user_id or rc.get("user_id") or rc.get("userId")
+    if user_id:
+        try:
+            return await REGISTRY.dispatch_work_finish_via_laptop(
+                user_id=user_id,
+                tenant_id=req.tenant_id,
+                capability_tags=["mcp"],
+                request_body=payload,
+            )
+        except LaptopNotConnected:
+            pass  # fall through to the co-located/shared mcp HTTP path
+        except LaptopInvokeTimeout as err:
+            raise HTTPException(status_code=504, detail=str(err)) from err
+        except (LaptopSendFailed, LaptopInvokeError) as err:
+            raise HTTPException(status_code=502, detail=str(err)) from err
+    return await _http_finish_branch(payload)
+
+
 def _now_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()

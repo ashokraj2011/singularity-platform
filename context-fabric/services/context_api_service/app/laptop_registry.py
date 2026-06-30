@@ -439,6 +439,33 @@ class LaptopRegistry:
         )
         return body
 
+    async def dispatch_work_finish_via_laptop(
+        self,
+        *,
+        user_id: str,
+        tenant_id: str | None = None,
+        capability_tags: list[str] | None = None,
+        request_body: dict[str, Any],
+        timeout: float = INVOKE_TIMEOUT_SEC,
+    ) -> dict[str, Any]:
+        """Send a work-branch finalize to the user's laptop over a
+        ``work-finish-branch`` frame and await the response. The laptop runs
+        runFinishWorkBranch (commit + push) with its LOCAL git credentials and
+        returns ``{tool_invocation, output}``. Raises LaptopNotConnected when no
+        laptop advertising the frame is online (the caller falls back to mcp HTTP).
+        """
+        body, _conn = await self._send_frame_await_response(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            capability_tags=capability_tags,
+            frame_type="work-finish-branch",
+            payload=request_body,
+            timeout=timeout,
+            request_label="work-finish-branch",
+            require_frame_type="work-finish-branch",
+        )
+        return body
+
     async def _send_frame_await_response(
         self,
         *,
