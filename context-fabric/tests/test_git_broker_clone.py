@@ -87,6 +87,45 @@ def test_broker_issues_credential_resolving_repo_from_source_uri(monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer svc-jwt"
 
 
+def test_clone_credential_memoized_once_per_run(monkeypatch):
+    """clone_credential_for_run brokers ONCE per (run, repo) — the second call in
+    the same run (e.g. code-context then a tool-run) reuses the memo instead of
+    minting a fresh IAM credential."""
+    monkeypatch.setenv("GIT_CREDENTIAL_BROKER_ENABLED", "true")
+    git_broker._clone_cred_cache.clear()
+    calls = {"n": 0}
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"token": "ghs_secret", "allowedOperation": "clone"}
+
+    class FakeClient:
+        def __init__(self, *a, **k): ...
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def post(self, *a, **k):
+            calls["n"] += 1
+            return FakeResp()
+
+    async def fake_token():
+        return "svc-jwt"
+
+    rc = {"sourceUri": "https://github.com/o/r", "tenant_id": "t-1", "runId": "run-1"}
+    try:
+        with patch.object(git_broker.httpx, "AsyncClient", FakeClient), patch.object(git_broker, "get_iam_service_token", fake_token):
+            c1 = _run(git_broker.clone_credential_for_run(rc))
+            c2 = _run(git_broker.clone_credential_for_run(rc))
+        assert c1 is not None and c2 is not None
+        assert c1["token"] == "ghs_secret"
+        assert calls["n"] == 1  # second call served from the per-run memo
+    finally:
+        git_broker._clone_cred_cache.clear()
+
+
 def test_broker_iam_failure_returns_none(monkeypatch):
     monkeypatch.setenv("GIT_CREDENTIAL_BROKER_ENABLED", "true")
 

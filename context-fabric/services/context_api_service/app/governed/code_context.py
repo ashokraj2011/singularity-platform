@@ -36,7 +36,7 @@ import httpx
 # importing internal_mcp here would pull governed.__init__ → governed.turn →
 # governed.code_context (this module) back in mid-import. git_broker only depends
 # on app.config + app.iam_service_token, so it imports cleanly from here.
-from ..git_broker import _git_broker_enabled, broker_git_credential
+from ..git_broker import _git_broker_enabled, clone_credential_for_run
 
 
 _DEFAULT_TIMEOUT_SEC = 45.0  # AST indexing of medium repos lands under this
@@ -109,25 +109,24 @@ async def build_code_context_for_governed_turn(
     # branch / source_*), instead of indexing the base sandbox. The build
     # route reuses ToolRunSchema's run_context shape and ignores unknown
     # keys, so forwarding the dict verbatim is safe.
+    clone_cred: Optional[dict[str, Any]] = None
     if isinstance(run_context, dict):
-        # P0 #2 — private-repo clone credential injection. This is the PRIMARY,
-        # first clone trigger per turn. When the broker is enabled and the
-        # run_context names a github source, broker a short-lived, repo-scoped
-        # READ credential from IAM and attach it to a SHALLOW COPY of run_context
-        # used ONLY for the outgoing frame payload. The mcp-server consumes it for
-        # the clone and strips it before any audit/correlation/persistence. The
-        # original run_context is left untouched (it may be persisted/logged
-        # elsewhere). Off (default) or no credential ⇒ unchanged behavior (the
-        # MCP clone falls back to the static GITHUB_TOKEN). The token is never logged.
+        # P0 #2 — private-repo clone credential injection. The base run_context
+        # forwarded here stays CLEAN (no token); the brokered, short-lived,
+        # repo-scoped READ credential is attached SHARED-ONLY: passed to the
+        # code-context FRAME dispatch as clone_credential (the registry injects it
+        # into run_context for a SHARED runtime only, NEVER a personal laptop —
+        # Decision #3) and attached to the HTTP-fallback payload (the co-located
+        # shared mcp). The mcp consumes it for the clone and strips it before any
+        # audit/correlation. Brokered ONCE per run (memoized, shared with the
+        # tool-run path). Off (default) or no credential ⇒ static GITHUB_TOKEN.
         rc_out = dict(run_context)
-        if _git_broker_enabled() and (rc_out.get("sourceUri") or rc_out.get("source_uri")):
-            cred = await broker_git_credential(rc_out, "clone")
-            if cred:
-                rc_out = {**rc_out, "gitCloneCredential": cred}
         payload["run_context"] = rc_out
         work_item_id = rc_out.get("work_item_id") or rc_out.get("workItemId")
         if work_item_id:
             payload["work_item_id"] = work_item_id
+        if _git_broker_enabled() and (rc_out.get("sourceUri") or rc_out.get("source_uri")):
+            clone_cred = await clone_credential_for_run(rc_out)
 
     # Laptop bridge first: when the run is placed on the user's laptop the
     # repo/worktree lives THERE, not in the box's shared mcp-server sandbox.
@@ -144,6 +143,7 @@ async def build_code_context_for_governed_turn(
             timeout_sec,
             tenant_id=runtime_tenant_id,
             capability_tags=runtime_capability_tags,
+            clone_credential=clone_cred,
         )
         if body is not None:
             return _parse_code_context_body(body)
@@ -160,9 +160,15 @@ async def build_code_context_for_governed_turn(
     if token:
         headers["authorization"] = f"Bearer {token}"
 
+    # HTTP fallback targets the co-located/shared mcp-server, so attach the clone
+    # credential directly (no laptop on this path). Built on a copy; the base
+    # payload stays clean.
+    http_payload = payload
+    if clone_cred and isinstance(payload.get("run_context"), dict):
+        http_payload = {**payload, "run_context": {**payload["run_context"], "gitCloneCredential": clone_cred}}
     poster = _http_post or _default_post
     try:
-        body = await poster(url, payload, headers, timeout_sec)
+        body = await poster(url, http_payload, headers, timeout_sec)
     except Exception as exc:  # noqa: BLE001 — best-effort telemetry
         return None, f"code_context.skipped: transport error {exc!s}"
 
@@ -196,6 +202,7 @@ async def _try_laptop_code_context(
     *,
     tenant_id: str | None = None,
     capability_tags: list[str] | None = None,
+    clone_credential: dict[str, Any] | None = None,
 ) -> Optional[dict[str, Any]]:
     """Dispatch the code-context build over the laptop bridge. Returns the
     response envelope dict on success, or None to signal the caller should
@@ -221,6 +228,7 @@ async def _try_laptop_code_context(
             tenant_id=tenant_id,
             capability_tags=capability_tags,
             request_body=payload,
+            clone_credential=clone_credential,
             timeout=timeout_sec,
         )
     except (LaptopNotConnected, LaptopSendFailed, LaptopInvokeTimeout, LaptopInvokeError):

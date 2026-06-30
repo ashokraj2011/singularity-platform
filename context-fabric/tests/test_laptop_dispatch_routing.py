@@ -347,6 +347,69 @@ def test_work_finish_frame_carries_git_credential_only_to_shared_runtime():
     assert "gitCredential" not in laptop_payload
 
 
+def test_code_context_frame_carries_clone_credential_only_to_shared_runtime():
+    """P0 #2 — the brokered clone (READ) credential must reach a SHARED runtime
+    over the code-context frame (nested in run_context.gitCloneCredential), but
+    NEVER a personal laptop, which keeps its own local creds (Decision #3). Pins
+    the shared_only_run_context_extra gate through dispatch_code_context_via_laptop.
+    """
+    import json
+
+    from context_api_service.app.laptop_registry import ActiveConnection, LaptopRegistry
+
+    async def scenario(*, shared: bool, conn_user: str, dispatch_user: str) -> dict[str, Any]:
+        registry = LaptopRegistry()
+        captured: dict[str, Any] = {}
+
+        class FakeWS:
+            async def send_text(self, text: str) -> None:
+                frame = json.loads(text)
+                captured["run_context"] = frame["payload"].get("run_context") or {}
+                fut = conn.pending.get(frame["request_id"])
+                if fut is not None and not fut.done():
+                    fut.set_result({"success": True, "data": {}})
+
+            async def close(self, *a: Any, **k: Any) -> None:  # pragma: no cover
+                pass
+
+        now = 1.0
+        conn = ActiveConnection(
+            user_id=conn_user,
+            device_id="rt-1",
+            device_name="runtime",
+            ws=FakeWS(),  # type: ignore[arg-type]
+            connected_at=now,
+            last_seen_at=now,
+            supported_frame_types=["code-context"],
+            runtime_id="rt-1",
+            runtime_type="mcp",
+            tenant_id="tenant-a",
+            shared=shared,
+            capability_tags=["mcp"],
+        )
+        await registry.register(conn)
+        await registry.dispatch_code_context_via_laptop(
+            user_id=dispatch_user,
+            tenant_id="tenant-a",
+            capability_tags=["mcp"],
+            request_body={"task_text": "t", "run_context": {"sourceUri": "https://github.com/o/r"}},
+            clone_credential={"token": "ghs_secret", "repo": "o/r"},
+        )
+        return captured["run_context"]
+
+    # Shared runtime selected for a different end-user via the tenant/shared
+    # fallback → clone credential rides the frame's run_context.
+    shared_rc = _run(scenario(shared=True, conn_user="__shared__", dispatch_user="user-b"))
+    assert shared_rc.get("gitCloneCredential", {}).get("token") == "ghs_secret"
+    # the un-gated base field still flows
+    assert shared_rc.get("sourceUri") == "https://github.com/o/r"
+
+    # Personal laptop selected by exact user match → clone credential withheld.
+    laptop_rc = _run(scenario(shared=False, conn_user="user-a", dispatch_user="user-a"))
+    assert "gitCloneCredential" not in laptop_rc
+    assert laptop_rc.get("sourceUri") == "https://github.com/o/r"
+
+
 def test_dispatch_bridge_tool_soft_failure_passes_through():
     """A tool that ran on the laptop but reported success=false
     surfaces as tool_success=False on the result, NOT as a throw —
