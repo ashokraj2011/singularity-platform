@@ -98,6 +98,11 @@ export function isWorkspaceIndependentTool(name: string): boolean {
   return _WORKSPACE_INDEPENDENT_TOOLS.has(name);
 }
 
+// P0 #2 — narrow type guard for run_context credential extraction.
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 export const toolRunRouter = Router();
 
 export const ToolRunSchema = z.object({
@@ -178,6 +183,13 @@ export const ToolRunSchema = z.object({
       // WORKSPACE_DISABLED_BY_POLICY (defence-in-depth).
       repo_access: z.boolean().optional(),
       repoAccess: z.boolean().optional(),
+      // P0 #2 — brokered, short-lived, repo-scoped READ credential that Context
+      // Fabric attaches to the OUTGOING run_context (code-context bridge frame /
+      // tool-run) when GIT_CREDENTIAL_BROKER_ENABLED. Declared here so Zod's
+      // object schema does NOT strip it before runToolByName can consume it for
+      // the clone. It is extracted + DELETED from run_context before correlation/
+      // grant/audit ever see it (see below), so the token never persists.
+      gitCloneCredential: z.record(z.unknown()).optional(),
     })
     .default({}),
   // Signed ToolInvocationGrant minted by context-fabric's governed loop (see
@@ -329,6 +341,18 @@ export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promis
     throw new NotFoundError(`tool '${body.tool_name}' not in local registry`);
   }
   assertEffectiveCapabilityAllowsTool(body.tool_name, body.run_context);
+
+  // P0 #2 — brokered READ credential for private-repo clone. Consumed in-memory for
+  // materialization, then stripped from run_context so the token never reaches
+  // correlation/audit/grant verification. Done up front (before grant verify +
+  // correlation build) because correlation is spread from run_context below and the
+  // grant verifier reads run_context — neither must ever see the raw token.
+  const gitCloneCredential = isRecord(body.run_context) ? (body.run_context as Record<string, unknown>).gitCloneCredential : undefined;
+  if (isRecord(body.run_context) && "gitCloneCredential" in body.run_context) {
+    delete (body.run_context as Record<string, unknown>).gitCloneCredential;
+  }
+  const gitCloneToken = isRecord(gitCloneCredential) && typeof gitCloneCredential.token === "string" ? gitCloneCredential.token : undefined;
+
   // Transport-neutral ToolInvocationGrant enforcement. Keep this before
   // workspace materialization and before alias normalization: Context Fabric
   // signs the raw args it sends, and every transport (HTTP, laptop bridge, or a
@@ -422,7 +446,7 @@ export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promis
       if (sourceUri && !repoAccessDisabled) {
         try {
           await ensureWorkspaceSource(
-            { sourceType, sourceUri, sourceRef, workitemBranch },
+            { sourceType, sourceUri, sourceRef, workitemBranch, gitToken: gitCloneToken },
             correlation,
           );
         } catch (err) {

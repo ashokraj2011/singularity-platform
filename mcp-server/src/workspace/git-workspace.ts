@@ -329,6 +329,21 @@ async function ensureAskPassScript(): Promise<string> {
   return script;
 }
 
+// P0 #2 — shared askpass-env builder. Produces the token-mode git auth env that
+// drives the askpass script over GIT_ASKPASS, given a single token. Reused by
+// gitAuthEnv (push path) and by the source-materializer's clone path, which
+// injects a short-lived, repo-scoped, brokered READ credential for the clone and
+// discards it afterward. Used in-memory only — the caller must never persist or
+// log the token.
+export async function gitAskpassEnv(token: string): Promise<NodeJS.ProcessEnv> {
+  return {
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_ASKPASS: await ensureAskPassScript(),
+    SINGULARITY_GIT_USERNAME: config.MCP_GIT_USERNAME,
+    SINGULARITY_GIT_TOKEN: token,
+  };
+}
+
 async function gitAuthEnv(explicitToken?: string): Promise<NodeJS.ProcessEnv | PushResult> {
   // P0 #2 — a per-call brokered credential is preferred over any static config:
   // inject it as the token-mode credential (works even when no static token is
@@ -345,12 +360,7 @@ async function gitAuthEnv(explicitToken?: string): Promise<NodeJS.ProcessEnv | P
         retryable: true,
       };
     }
-    return {
-      GIT_TERMINAL_PROMPT: "0",
-      GIT_ASKPASS: await ensureAskPassScript(),
-      SINGULARITY_GIT_USERNAME: config.MCP_GIT_USERNAME,
-      SINGULARITY_GIT_TOKEN: explicitToken,
-    };
+    return gitAskpassEnv(explicitToken);
   }
   if (!config.MCP_GIT_PUSH_ENABLED || config.MCP_GIT_AUTH_MODE === "disabled") {
     return {
@@ -375,12 +385,7 @@ async function gitAuthEnv(explicitToken?: string): Promise<NodeJS.ProcessEnv | P
         retryable: true,
       };
     }
-    return {
-      GIT_TERMINAL_PROMPT: "0",
-      GIT_ASKPASS: await ensureAskPassScript(),
-      SINGULARITY_GIT_USERNAME: config.MCP_GIT_USERNAME,
-      SINGULARITY_GIT_TOKEN: token,
-    };
+    return gitAskpassEnv(token);
   }
 
   const env: NodeJS.ProcessEnv = {
