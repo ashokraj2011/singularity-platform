@@ -7,7 +7,7 @@ import {
   GitBranch, Layers, ScrollText, ShieldCheck, Activity, Brain,
   ChevronLeft, ChevronRight, DollarSign, Cpu, WandSparkles,
   Bot, Inbox, Network, Route, Workflow, Zap,
-  Database, FileText, Globe, Link2, Package, Puzzle, ClipboardCheck,
+  Database, FileText, Globe, Link2, Package, Puzzle, ClipboardCheck, BookOpen,
 } from "lucide-react";
 
 type ItemDef = { label: string; href: string; icon: typeof LayoutDashboard };
@@ -21,6 +21,7 @@ const menuSections: NavSection[] = [
       { label: "Start SDLC Work", href: "/start", icon: Play },
       { label: "Command Center", href: "/", icon: LayoutDashboard },
       { label: "App Catalog", href: "/control-plane", icon: Network },
+      { label: "User Guide", href: "/help", icon: BookOpen },
     ],
   },
   {
