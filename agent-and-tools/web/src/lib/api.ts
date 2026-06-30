@@ -64,6 +64,12 @@ function tokenFromPersistedStore(key: string): string | null {
 // the native `storage` event.
 export const AUTH_CHANGED_EVENT = "singularity-auth-changed";
 
+// localStorage key for the idle-timeout deadline (see lib/identity/idleSession.ts).
+// Shared here so save/clear keep it in lockstep with the token without a circular
+// import. The IAM JWT is long-lived (12h); the idle guard expires the *client*
+// session sooner after inactivity.
+export const SESSION_LAST_ACTIVITY_KEY = "session-last-activity";
+
 export function notifyAuthChanged(): void {
   if (typeof window === "undefined") return;
   try {
@@ -85,6 +91,7 @@ export function saveAgentToolsToken(token: string, user?: Row): void {
     state: { token, user: user ?? null },
     version: 0,
   }));
+  localStorage.setItem(SESSION_LAST_ACTIVITY_KEY, String(Date.now())); // fresh idle deadline on sign-in
   notifyAuthChanged();
 }
 
@@ -94,6 +101,7 @@ export function clearAgentToolsToken(): void {
   localStorage.removeItem("singularity-portal.auth");
   localStorage.removeItem("workgraph-auth");
   localStorage.removeItem("iam-auth");
+  localStorage.removeItem(SESSION_LAST_ACTIVITY_KEY);
   notifyAuthChanged();
 }
 

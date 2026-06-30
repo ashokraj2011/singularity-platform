@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { ShieldCheck } from "lucide-react";
-import { AUTH_CHANGED_EVENT, hasAgentToolsToken, identityApi, saveAgentToolsToken } from "@/lib/api";
+import { AUTH_CHANGED_EVENT, clearAgentToolsToken, hasAgentToolsToken, identityApi, saveAgentToolsToken } from "@/lib/api";
+import { ACTIVITY_EVENTS, isIdleExpired, markActivity } from "@/lib/identity/idleSession";
 
 // Paths that must render WITHOUT a session — otherwise the gate would lock out
 // the very pages used to obtain one (the IAM login + OIDC return) and the health
@@ -24,20 +25,51 @@ function isPublicPath(pathname: string): boolean {
 export function RequireSession({ pathname, children }: { pathname: string; children: React.ReactNode }) {
   const [mounted, setMounted] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
+  const [idleSignout, setIdleSignout] = useState(false);
 
   useEffect(() => setMounted(true), []);
 
   useEffect(() => {
     if (!mounted) return;
-    const sync = () => setSignedIn(hasAgentToolsToken());
+    const sync = () => {
+      // Idle-expired sessions are torn down here so a reload after the deadline —
+      // or the tab simply sitting open past it — lands on sign-in, not the app.
+      if (isIdleExpired()) {
+        setIdleSignout(true);
+        clearAgentToolsToken(); // fires AUTH_CHANGED_EVENT → re-sync; token now gone
+        setSignedIn(false);
+        return;
+      }
+      setSignedIn(hasAgentToolsToken());
+    };
     sync();
     window.addEventListener("storage", sync);
     window.addEventListener(AUTH_CHANGED_EVENT, sync);
+    window.addEventListener("visibilitychange", sync); // re-check the deadline on tab focus
+    const idleInterval = window.setInterval(sync, 30_000); // catch idle-out while the tab sits open
     return () => {
       window.removeEventListener("storage", sync);
       window.removeEventListener(AUTH_CHANGED_EVENT, sync);
+      window.removeEventListener("visibilitychange", sync);
+      window.clearInterval(idleInterval);
     };
   }, [mounted, pathname]);
+
+  // Push the idle deadline forward on real interaction while signed in (throttled).
+  useEffect(() => {
+    if (!mounted || !signedIn) return;
+    markActivity();
+    let lastWrite = 0;
+    const onActivity = () => {
+      const now = Date.now();
+      if (now - lastWrite > 15_000) {
+        lastWrite = now;
+        markActivity(now);
+      }
+    };
+    ACTIVITY_EVENTS.forEach((event) => window.addEventListener(event, onActivity, { passive: true }));
+    return () => ACTIVITY_EVENTS.forEach((event) => window.removeEventListener(event, onActivity));
+  }, [mounted, signedIn]);
 
   const publicPath = isPublicPath(pathname);
 
@@ -45,7 +77,7 @@ export function RequireSession({ pathname, children }: { pathname: string; child
   // mismatch. The token check (localStorage) only runs in the effect above.
   if (!mounted) return publicPath ? <>{children}</> : <SessionSplash />;
   if (publicPath || signedIn) return <>{children}</>;
-  return <SessionLoginPage onSignedIn={() => setSignedIn(true)} />;
+  return <SessionLoginPage idleSignout={idleSignout} onSignedIn={() => { setIdleSignout(false); setSignedIn(true); }} />;
 }
 
 /** Neutral full-screen placeholder shown for the one frame before the token check. */
@@ -67,7 +99,7 @@ function SessionSplash() {
   );
 }
 
-function SessionLoginPage({ onSignedIn }: { onSignedIn: () => void }) {
+function SessionLoginPage({ idleSignout = false, onSignedIn }: { idleSignout?: boolean; onSignedIn: () => void }) {
   const [email, setEmail] = useState("admin@singularity.local");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -107,6 +139,12 @@ function SessionLoginPage({ onSignedIn }: { onSignedIn: () => void }) {
         <p className="mt-1 text-sm text-slate-600">
           Use your IAM session. The same sign-in governs agents, tools, workflows, and identity.
         </p>
+
+        {idleSignout && (
+          <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            You were signed out after a period of inactivity. Please sign in again.
+          </p>
+        )}
 
         <div className="mt-6 flex flex-col gap-3">
           <label className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
