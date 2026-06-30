@@ -31,6 +31,13 @@ from typing import Any, Optional
 
 import httpx
 
+# P0 #2 — clone-credential injection. broker_git_credential + _git_broker_enabled
+# live in app.git_broker (NOT internal_mcp) specifically to avoid an import cycle:
+# importing internal_mcp here would pull governed.__init__ → governed.turn →
+# governed.code_context (this module) back in mid-import. git_broker only depends
+# on app.config + app.iam_service_token, so it imports cleanly from here.
+from ..git_broker import _git_broker_enabled, broker_git_credential
+
 
 _DEFAULT_TIMEOUT_SEC = 45.0  # AST indexing of medium repos lands under this
 _DEFAULT_TOKEN_BUDGET = 7000  # matches the legacy default
@@ -103,8 +110,22 @@ async def build_code_context_for_governed_turn(
     # route reuses ToolRunSchema's run_context shape and ignores unknown
     # keys, so forwarding the dict verbatim is safe.
     if isinstance(run_context, dict):
-        payload["run_context"] = run_context
-        work_item_id = run_context.get("work_item_id") or run_context.get("workItemId")
+        # P0 #2 — private-repo clone credential injection. This is the PRIMARY,
+        # first clone trigger per turn. When the broker is enabled and the
+        # run_context names a github source, broker a short-lived, repo-scoped
+        # READ credential from IAM and attach it to a SHALLOW COPY of run_context
+        # used ONLY for the outgoing frame payload. The mcp-server consumes it for
+        # the clone and strips it before any audit/correlation/persistence. The
+        # original run_context is left untouched (it may be persisted/logged
+        # elsewhere). Off (default) or no credential ⇒ unchanged behavior (the
+        # MCP clone falls back to the static GITHUB_TOKEN). The token is never logged.
+        rc_out = dict(run_context)
+        if _git_broker_enabled() and (rc_out.get("sourceUri") or rc_out.get("source_uri")):
+            cred = await broker_git_credential(rc_out, "clone")
+            if cred:
+                rc_out = {**rc_out, "gitCloneCredential": cred}
+        payload["run_context"] = rc_out
+        work_item_id = rc_out.get("work_item_id") or rc_out.get("workItemId")
         if work_item_id:
             payload["work_item_id"] = work_item_id
 

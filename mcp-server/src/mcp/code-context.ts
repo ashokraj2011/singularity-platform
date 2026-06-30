@@ -62,6 +62,11 @@ export interface BuildCodeContextRunContext {
   repoAccess?: boolean;         repo_access?: boolean;
   traceId?: string;
   capabilityId?: string;
+  // P0 #2 — brokered, short-lived, repo-scoped READ credential Context Fabric
+  // attaches to the OUTGOING code-context frame run_context when the broker is
+  // enabled. Consumed in-memory for the clone, then stripped before audit (see
+  // buildCodeContextPackage). Never persisted or logged.
+  gitCloneCredential?: { token?: string } & Record<string, unknown>;
 }
 
 export interface BuildCodeContextRequest {
@@ -329,6 +334,16 @@ export async function buildCodeContextPackage(
   const sourceUri = rc?.sourceUri ?? rc?.source_uri;
   const sourceRef = rc?.sourceRef ?? rc?.source_ref;
   const repoAccessDisabled = rc?.repo_access === false || rc?.repoAccess === false;
+
+  // P0 #2 — brokered READ credential for private-repo clone. Consumed in-memory for
+  // materialization, then stripped from run_context so the token never reaches the
+  // correlation/audit payload (rc is spread into the correlation below).
+  const gitCloneCredential = rc?.gitCloneCredential;
+  if (rc && "gitCloneCredential" in rc) {
+    delete (rc as Record<string, unknown>).gitCloneCredential;
+  }
+  const gitCloneToken = typeof gitCloneCredential?.token === "string" ? gitCloneCredential.token : undefined;
+
   return withSandboxRoot(workspaceRoot, async () => {
     // Materialize the repo into this worktree (idempotent; no-op on the warm
     // path). Best-effort: on failure we still build against whatever is on disk
@@ -336,7 +351,7 @@ export async function buildCodeContextPackage(
     if (sourceUri && !repoAccessDisabled) {
       try {
         await ensureWorkspaceSource(
-          { sourceType, sourceUri, sourceRef, workitemBranch },
+          { sourceType, sourceUri, sourceRef, workitemBranch, gitToken: gitCloneToken },
           { ...rc, workItemId, mcpInvocationId: uuidv4() },
         );
       } catch (err) {

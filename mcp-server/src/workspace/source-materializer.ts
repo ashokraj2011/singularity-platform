@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { CorrelationIds } from "../audit/store";
 import { config } from "../config";
 import { events } from "../events/bus";
+import { gitAskpassEnv } from "./git-workspace";
 import { baseSandboxRoot, sandboxRoot, SKIP_DIRS } from "./sandbox";
 
 const execFileP = promisify(execFile);
@@ -28,6 +29,11 @@ export interface WorkspaceSourceRequest {
   // when attemptId is omitted) and the no-parallel-attempts guard in
   // workgraph-api to eliminate the worktree-split failure mode.
   workitemBranch?: string;
+  // P0 #2 — brokered, short-lived, repo-scoped READ credential for the private-repo
+  // clone/fetch. Held in-memory only for the materialization network calls below,
+  // then discarded. Absent ⇒ fall back to the static GITHUB_TOKEN (current
+  // behavior). Never persisted or logged.
+  gitToken?: string;
 }
 
 export interface WorkspaceSourceStatus {
@@ -47,13 +53,17 @@ export interface WorkspaceSourceStatus {
   workitemBranchOrigin?: "remote" | "local-cache" | "created-from-source-ref";
 }
 
-async function git(args: string[], opts?: { cwd?: string; allowFail?: boolean; maxBuffer?: number }): Promise<string> {
+async function git(args: string[], opts?: { cwd?: string; allowFail?: boolean; maxBuffer?: number; authEnv?: NodeJS.ProcessEnv }): Promise<string> {
   const cwd = opts?.cwd ?? sandboxRoot();
   try {
     const { stdout } = await execFileP("git", args, {
       cwd,
       env: {
         ...process.env,
+        // P0 #2 — brokered clone credential (askpass env). Spread before the
+        // ceiling so it wins over inherited GIT_* but never clobbers the safety
+        // ceiling below.
+        ...(opts?.authEnv ?? {}),
         // Work-item workspaces live underneath the main sandbox. Without a
         // ceiling, git commands in an uninitialized work-item folder can walk
         // upward and accidentally operate on the parent sandbox repository.
@@ -76,12 +86,12 @@ async function git(args: string[], opts?: { cwd?: string; allowFail?: boolean; m
 // (fall back to a cached base WITH a warning, or fail the stage).
 async function gitFetchWithRetry(
   args: string[],
-  opts?: { cwd?: string; maxBuffer?: number; attempts?: number },
+  opts?: { cwd?: string; maxBuffer?: number; attempts?: number; authEnv?: NodeJS.ProcessEnv },
 ): Promise<boolean> {
   const attempts = Math.max(1, opts?.attempts ?? 3);
   for (let i = 0; i < attempts; i += 1) {
     try {
-      await git(args, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer ?? 20 * 1024 * 1024 });
+      await git(args, { cwd: opts?.cwd, maxBuffer: opts?.maxBuffer ?? 20 * 1024 * 1024, authEnv: opts?.authEnv });
       return true;
     } catch (err) {
       if (i === attempts - 1) {
@@ -188,10 +198,10 @@ async function currentHead(): Promise<string | undefined> {
   return await git(["rev-parse", "HEAD"], { allowFail: true }) || undefined;
 }
 
-async function checkoutRef(sourceRef?: string): Promise<void> {
+async function checkoutRef(sourceRef?: string, authEnv?: NodeJS.ProcessEnv): Promise<void> {
   const ref = sourceRef?.trim();
   if (!ref) return;
-  const fetchOk = await gitFetchWithRetry(["fetch", "--depth=1", "origin", ref]);
+  const fetchOk = await gitFetchWithRetry(["fetch", "--depth=1", "origin", ref], { authEnv });
   const remoteRef = await git(["rev-parse", "--verify", `origin/${ref}`], { allowFail: true });
   if (remoteRef) {
     if (!fetchOk) {
@@ -219,7 +229,7 @@ async function checkoutRef(sourceRef?: string): Promise<void> {
   }
 }
 
-async function cloneIntoWorkspace(cloneUrl: string, sourceRef?: string): Promise<void> {
+async function cloneIntoWorkspace(cloneUrl: string, sourceRef?: string, authEnv?: NodeJS.ProcessEnv): Promise<void> {
   const root = sandboxRoot();
   await removeWorkspaceContents(root);
   // `--template=` (empty) disables git's template-copy step. Without it,
@@ -236,21 +246,21 @@ async function cloneIntoWorkspace(cloneUrl: string, sourceRef?: string): Promise
   const ref = sourceRef?.trim();
   if (ref) {
     try {
-      if (!(await gitFetchWithRetry(["fetch", "--depth=1", "origin", ref], { cwd: root }))) {
+      if (!(await gitFetchWithRetry(["fetch", "--depth=1", "origin", ref], { cwd: root, authEnv }))) {
         throw new Error(`fetch of ref '${ref}' from origin failed after retries`);
       }
-      await checkoutRef(ref);
+      await checkoutRef(ref, authEnv);
     } catch {
       await removeWorkspaceContents(root);
       await initRepoAtRoot(root);
       await git(["remote", "add", "origin", cloneUrl], { cwd: root });
-      if (!(await gitFetchWithRetry(["fetch", "--depth=1", "origin"], { cwd: root }))) {
+      if (!(await gitFetchWithRetry(["fetch", "--depth=1", "origin"], { cwd: root, authEnv }))) {
         throw new Error("failed to fetch default branch from origin after retries");
       }
       await git(["checkout", "-B", "main", "FETCH_HEAD"], { cwd: root });
     }
   } else {
-    if (!(await gitFetchWithRetry(["fetch", "--depth=1", "origin"], { cwd: root }))) {
+    if (!(await gitFetchWithRetry(["fetch", "--depth=1", "origin"], { cwd: root, authEnv }))) {
       throw new Error("failed to fetch default branch from origin after retries");
     }
     await git(["checkout", "-B", "main", "FETCH_HEAD"], { cwd: root });
@@ -260,13 +270,14 @@ async function cloneIntoWorkspace(cloneUrl: string, sourceRef?: string): Promise
 async function gitBare(
   gitDir: string,
   args: string[],
-  opts?: { allowFail?: boolean; maxBuffer?: number },
+  opts?: { allowFail?: boolean; maxBuffer?: number; authEnv?: NodeJS.ProcessEnv },
 ): Promise<string> {
   try {
     const { stdout } = await execFileP("git", ["--git-dir", gitDir, ...args], {
       cwd: path.dirname(gitDir),
       env: {
         ...process.env,
+        ...(opts?.authEnv ?? {}),
         GIT_TERMINAL_PROMPT: "0",
       },
       maxBuffer: opts?.maxBuffer ?? 20 * 1024 * 1024,
@@ -280,13 +291,14 @@ async function gitBare(
 
 async function gitRaw(
   args: string[],
-  opts?: { cwd?: string; allowFail?: boolean; maxBuffer?: number },
+  opts?: { cwd?: string; allowFail?: boolean; maxBuffer?: number; authEnv?: NodeJS.ProcessEnv },
 ): Promise<string> {
   try {
     const { stdout } = await execFileP("git", args, {
       cwd: opts?.cwd ?? baseSandboxRoot(),
       env: {
         ...process.env,
+        ...(opts?.authEnv ?? {}),
         GIT_TERMINAL_PROMPT: "0",
       },
       maxBuffer: opts?.maxBuffer ?? 20 * 1024 * 1024,
@@ -314,14 +326,14 @@ function sourceCachePath(rawRemote: string): string {
   return path.join(sourceCacheRoot(), `${key}.git`);
 }
 
-async function ensureMirror(cloneUrl: string): Promise<string> {
+async function ensureMirror(cloneUrl: string, authEnv?: NodeJS.ProcessEnv): Promise<string> {
   const cacheRoot = sourceCacheRoot();
   const mirror = sourceCachePath(cloneUrl);
   await fs.promises.mkdir(cacheRoot, { recursive: true });
   const hasHead = Boolean(await fs.promises.stat(path.join(mirror, "HEAD")).catch(() => null));
   if (!hasHead) {
     await fs.promises.rm(mirror, { recursive: true, force: true });
-    await gitRaw(["clone", "--mirror", cloneUrl, mirror], { cwd: cacheRoot, maxBuffer: 60 * 1024 * 1024 });
+    await gitRaw(["clone", "--mirror", cloneUrl, mirror], { cwd: cacheRoot, maxBuffer: 60 * 1024 * 1024, authEnv });
     // M70.6 — `git clone --mirror` sets `remote.origin.mirror = true`,
     // which is fine for fetching but BREAKS every subsequent
     // `git push origin <refspec>` from any worktree of this repo:
@@ -372,14 +384,14 @@ async function ensureMirror(cloneUrl: string): Promise<string> {
     "config", "--replace-all", "remote.origin.fetch",
     "+refs/heads/*:refs/remotes/origin/*",
   ], { allowFail: true });
-  await gitBare(mirror, ["fetch", "--prune", "origin"], { allowFail: true, maxBuffer: 60 * 1024 * 1024 });
+  await gitBare(mirror, ["fetch", "--prune", "origin"], { allowFail: true, maxBuffer: 60 * 1024 * 1024, authEnv });
   return mirror;
 }
 
-async function resolveMirrorCommit(mirror: string, sourceRef?: string): Promise<string> {
+async function resolveMirrorCommit(mirror: string, sourceRef?: string, authEnv?: NodeJS.ProcessEnv): Promise<string> {
   const ref = sourceRef?.trim();
   if (ref) {
-    await gitBare(mirror, ["fetch", "--prune", "origin", ref], { allowFail: true, maxBuffer: 60 * 1024 * 1024 });
+    await gitBare(mirror, ["fetch", "--prune", "origin", ref], { allowFail: true, maxBuffer: 60 * 1024 * 1024, authEnv });
     const candidates = [
       `refs/remotes/origin/${ref}`,
       `refs/heads/${ref}`,
@@ -401,13 +413,13 @@ async function resolveMirrorCommit(mirror: string, sourceRef?: string): Promise<
   throw new Error("Unable to resolve a commit from the shared source cache.");
 }
 
-async function materializeGitWorktreeFromCache(cloneUrl: string, sourceRef?: string): Promise<void> {
+async function materializeGitWorktreeFromCache(cloneUrl: string, sourceRef?: string, authEnv?: NodeJS.ProcessEnv): Promise<void> {
   const root = sandboxRoot();
   if (path.resolve(root) === baseSandboxRoot()) {
     throw new Error("Shared git cache worktrees require a per-run workspace root.");
   }
-  const mirror = await ensureMirror(cloneUrl);
-  const commit = await resolveMirrorCommit(mirror, sourceRef);
+  const mirror = await ensureMirror(cloneUrl, authEnv);
+  const commit = await resolveMirrorCommit(mirror, sourceRef, authEnv);
   await gitBare(mirror, ["worktree", "prune"], { allowFail: true });
   await fs.promises.rm(root, { recursive: true, force: true });
   await fs.promises.mkdir(path.dirname(root), { recursive: true });
@@ -503,7 +515,7 @@ async function alignWorkitemBranch(
   return "created-from-source-ref";
 }
 
-async function materializeGitSource(cloneUrl: string, sourceRef?: string): Promise<string> {
+async function materializeGitSource(cloneUrl: string, sourceRef?: string, authEnv?: NodeJS.ProcessEnv): Promise<string> {
   const expected = normalizeRemote(cloneUrl);
   const workspaceHasGit = fs.existsSync(path.join(sandboxRoot(), ".git"));
   const existingRemote = workspaceHasGit ? normalizeRemote(await currentRemote()) : "";
@@ -515,10 +527,10 @@ async function materializeGitSource(cloneUrl: string, sourceRef?: string): Promi
     return "workspace source retained with local changes";
   }
   try {
-    await materializeGitWorktreeFromCache(cloneUrl, sourceRef);
+    await materializeGitWorktreeFromCache(cloneUrl, sourceRef, authEnv);
     return "workspace source materialized from shared git cache";
   } catch {
-    await cloneIntoWorkspace(cloneUrl, sourceRef);
+    await cloneIntoWorkspace(cloneUrl, sourceRef, authEnv);
     return existingRemote === expected ? "workspace source refreshed" : "workspace source cloned";
   }
 }
@@ -579,6 +591,13 @@ async function ensureWorkspaceSourceImpl(
   const sourceUri = req.sourceUri?.trim();
   if (!sourceUri) return null;
 
+  // P0 #2 — when a brokered clone credential is present, build the askpass env
+  // ONCE here and thread it (as a parameter only — never module state) into every
+  // network git call below so concurrent materializations of different repos
+  // never share a token. Absent ⇒ undefined ⇒ git falls back to the static
+  // GITHUB_TOKEN (current behavior). Used in-memory; discarded when this returns.
+  const authEnv = req.gitToken ? await gitAskpassEnv(req.gitToken) : undefined;
+
   if (sourceType && ["local", "local_dir", "local-directory", "filesystem", "dir"].includes(sourceType)) {
     const localPath = localSourcePath(sourceUri);
     if (!localPath) {
@@ -617,7 +636,7 @@ async function ensureWorkspaceSourceImpl(
     }
     let message = "local workspace source materialized";
     if (fs.existsSync(path.join(resolvedLocal, ".git"))) {
-      message = await materializeGitSource(resolvedLocal, req.sourceRef);
+      message = await materializeGitSource(resolvedLocal, req.sourceRef, authEnv);
     } else {
       await copyLocalDirectoryIntoWorkspace(resolvedLocal);
     }
@@ -654,7 +673,7 @@ async function ensureWorkspaceSourceImpl(
     };
   }
 
-  const message = await materializeGitSource(cloneUrl, req.sourceRef);
+  const message = await materializeGitSource(cloneUrl, req.sourceRef, authEnv);
   await configureGitIdentity();
 
   // (M81 P1) — when a workitemBranch is requested, align HEAD with it so
