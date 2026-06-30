@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { ApiError, runtimeApi } from "@/lib/api";
+import { PermissionChip } from "@/components/ui/primitives";
 import {
   AlertCircle,
   Bot,
@@ -489,7 +490,7 @@ function CreateAgentProfileWizard({
     addBinding({
       sourceType: "local",
       skillId: String(skill.id),
-      name: String(skill.name ?? "Local skill"),
+      name: String(skill.name ?? "Local tool"),
       description: typeof skill.description === "string" ? skill.description : undefined,
       permissions: ["read", "invoke"],
       readOnly: false,
@@ -502,7 +503,7 @@ function CreateAgentProfileWizard({
   async function createAndAddLocalSkill() {
     const trimmedName = localSkillName.trim();
     if (!trimmedName) {
-      setErr("Local skill name is required.");
+      setErr("Local tool name is required.");
       return;
     }
     setLocalSkillBusy(true);
@@ -579,7 +580,7 @@ function CreateAgentProfileWizard({
     const hasWritePermission = selectedPermissions.some((permission) => permission !== "read");
     addBinding({
       sourceType: "provider_manifest",
-      name: String(providerPreview.title ?? "Provider skill"),
+      name: String(providerPreview.title ?? "Provider source"),
       description: typeof providerPreview.description === "string" ? providerPreview.description : undefined,
       skillType: "PROVIDER_MANIFEST",
       providerManifestUrl: url,
@@ -674,7 +675,7 @@ function CreateAgentProfileWizard({
     }
   }
 
-  const steps = ["Identity", "Instructions", "Skill Sources", "Review"];
+  const steps = ["Identity", "Instructions", "Sources & Actions", "Review"];
   const externalCount = bindings.filter((binding) => binding.sourceType !== "local").length;
 
   return (
@@ -750,9 +751,9 @@ function CreateAgentProfileWizard({
                 <div className="flex items-start gap-3">
                   <ShieldCheck size={18} className="mt-0.5 shrink-0 text-emerald-700" />
                   <div>
-                    <div className="text-sm font-semibold text-emerald-950">Skills are capability sources for this agent</div>
+                    <div className="text-sm font-semibold text-emerald-950">Sources &amp; actions available to this agent</div>
                     <p className="mt-1 text-xs leading-5 text-emerald-800">
-                      A skill can be an invokable local tool, an external provider/API manifest, or read-only knowledge from a URL or uploaded file.
+                      A source can be an invokable local tool, an external provider/API manifest, or read-only knowledge from a URL or uploaded file.
                       Document and API sources default to read-only unless permissions are explicitly granted.
                     </p>
                   </div>
@@ -762,15 +763,15 @@ function CreateAgentProfileWizard({
               <div className="rounded-lg border border-slate-200 p-4">
                 <div className="mb-3 flex items-start justify-between gap-3">
                   <div>
-                    <div className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Sparkles size={15} /> Local platform skill</div>
+                    <div className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Sparkles size={15} /> Local tool</div>
                     <p className="mt-1 text-xs leading-5 text-slate-500">
-                      Create a reusable platform-owned skill here, or select an existing one. Local skills are stored in Agent Runtime and can be invoked by agents.
+                      Create a reusable platform-owned tool here, or select an existing one. Local tools are stored in Agent Runtime and can be invoked by agents.
                     </p>
                   </div>
                   <a href="/tools" className="btn-secondary text-xs">Tool catalog</a>
                 </div>
                 <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Create local skill</div>
+                  <div className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">Create local tool</div>
                   <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_150px_auto]">
                     <input
                       className="h-10 rounded-lg border border-slate-200 px-3 text-sm"
@@ -799,15 +800,15 @@ function CreateAgentProfileWizard({
                     className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
                     value={localSkillDescription}
                     onChange={(e) => setLocalSkillDescription(e.target.value)}
-                    placeholder="What this skill lets the agent do, and any important boundary."
+                    placeholder="What this source lets the agent do, and any important boundary."
                   />
                   <p className="mt-2 text-[11px] leading-4 text-slate-500">
-                    Creating a local skill requires platform-admin permission. For existing MCP/API tools, create or register the tool in the tool catalog, then bind it here as a local skill or provider manifest.
+                    Creating a local tool requires platform-admin permission. For existing MCP/API tools, create or register the tool in the tool catalog, then bind it here as a local tool or provider manifest.
                   </p>
                 </div>
                 <div className="flex gap-2">
                   <select className="h-10 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm" value={localSkillId} onChange={(e) => setLocalSkillId(e.target.value)}>
-                    <option value="">Select existing local skill...</option>
+                    <option value="">Select existing local tool...</option>
                     {localSkills.map((skill) => <option key={skill.id as string} value={skill.id as string}>{String(skill.name ?? skill.id)}</option>)}
                   </select>
                   <button type="button" className="btn-secondary text-xs" onClick={addLocalSkill} disabled={!localSkillId}>Add</button>
@@ -835,7 +836,7 @@ function CreateAgentProfileWizard({
                   </button>
                   {providerPreview && (
                     <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                      <div className="text-sm font-semibold text-slate-900">{providerPreview.title ?? "Provider skill"}</div>
+                      <div className="text-sm font-semibold text-slate-900">{providerPreview.title ?? "Provider source"}</div>
                       {providerPreview.description && <p className="mt-1 line-clamp-2 text-xs text-slate-500">{providerPreview.description}</p>}
                       <div className="mt-3 grid grid-cols-2 gap-2">
                         {CAPABILITY_PERMISSION_OPTIONS.map((permission) => {
@@ -859,18 +860,18 @@ function CreateAgentProfileWizard({
                           <div key={capability.id ?? capability.name} className="rounded border border-slate-200 bg-white p-2">
                             <div className="flex items-center justify-between gap-2">
                               <span className="truncate text-xs font-semibold text-slate-800">{capability.name ?? capability.id}</span>
-                              {(capability.providerLocked || capability.readOnly) && (
-                                <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase text-amber-700">
-                                  {capability.providerLocked ? "locked" : "read-only"}
-                                </span>
-                              )}
+                              {capability.providerLocked ? (
+                                <PermissionChip kind="provider-locked" />
+                              ) : capability.readOnly ? (
+                                <PermissionChip kind="read" />
+                              ) : null}
                             </div>
                             <div className="mt-1 text-[11px] text-slate-500">{(capability.permissions ?? ["read"]).join(", ")}</div>
                           </div>
                         ))}
                       </div>
                       <button type="button" className="btn-secondary mt-3 text-xs" onClick={addProviderManifest}>
-                        Add provider skill
+                        Add provider source
                       </button>
                     </div>
                   )}
@@ -943,7 +944,7 @@ function MetricPill({ label, value }: { label: string; value: number }) {
 }
 
 function SkillBindingList({ bindings, onRemove }: { bindings: ProfileSkillBinding[]; onRemove: (index: number) => void }) {
-  if (!bindings.length) return <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">No skills added yet.</div>;
+  if (!bindings.length) return <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">No sources or actions added yet.</div>;
   return (
     <div className="space-y-2">
       {bindings.map((binding, index) => (
@@ -952,11 +953,12 @@ function SkillBindingList({ bindings, onRemove }: { bindings: ProfileSkillBindin
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-slate-900">{binding.name ?? binding.sourceRef ?? binding.skillId}</span>
               <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-600">{binding.sourceType.replace(/_/g, " ")}</span>
-              {binding.readOnly && <span className="rounded bg-emerald-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-emerald-700">read-only</span>}
-              {binding.providerLocked && <span className="rounded bg-amber-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-700">provider-locked</span>}
+              {(binding.permissions ?? ["read"]).map((permission) => (
+                <PermissionChip key={permission} kind={permission} />
+              ))}
+              {binding.providerLocked && <PermissionChip kind="provider-locked" />}
             </div>
             {binding.sourceRef && <div className="mt-1 truncate font-mono text-xs text-slate-400">{binding.sourceRef}</div>}
-            <div className="mt-1 text-xs text-slate-500">Permissions: {(binding.permissions ?? ["read"]).join(", ")}</div>
           </div>
           <button type="button" onClick={() => onRemove(index)} className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
             <X size={14} />
@@ -1272,7 +1274,7 @@ function DetailPanel({ agent, onChanged }: { agent: Agent | null; onChanged: (ag
           )}
         </DetailBlock>
 
-        <DetailBlock title="Skill Sources" icon={Library}>
+        <DetailBlock title="Sources & Actions" icon={Library}>
         {sourceGovernanceLoading ? (
           <div className="space-y-2">
             <div className="h-8 rounded bg-slate-100" />
@@ -1281,7 +1283,7 @@ function DetailPanel({ agent, onChanged }: { agent: Agent | null; onChanged: (ag
         ) : sourceGovernanceError ? (
           <div className="text-xs text-red-700">{apiErrorSummary(sourceGovernanceError).message}</div>
         ) : (sourceGovernance?.sources ?? []).length === 0 ? (
-          <p className="text-xs text-slate-500">No skill sources are bound to this profile yet.</p>
+          <p className="text-xs text-slate-500">No sources or actions are bound to this profile yet.</p>
         ) : (
           <div className="space-y-2">
             <div className="grid grid-cols-3 gap-2">
