@@ -2,8 +2,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useEffect } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
-import { sidebarSections, type RouteMeta, type SidebarSection } from "@/lib/nav/routes";
+import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
+import { advancedRoutes, sidebarSections, type RouteMeta, type SidebarSection } from "@/lib/nav/routes";
 
 // Sidebar groups + items now come from the shared route registry
 // (src/lib/nav/routes.ts) — the single source of truth shared with the app
@@ -75,6 +75,19 @@ export function Sidebar() {
     });
   }
 
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  useEffect(() => {
+    const stored = localStorage.getItem("sidebar-advanced-open");
+    if (stored !== null) setAdvancedOpen(stored === "true");
+  }, []);
+  function toggleAdvanced() {
+    setAdvancedOpen(o => {
+      const next = !o;
+      localStorage.setItem("sidebar-advanced-open", String(next));
+      return next;
+    });
+  }
+
   const matchesHref = (href: string) =>
     href === "/" ? path === "/" : path === href || path.startsWith(`${href}/`);
   const activeHref = allMenuItems
@@ -87,6 +100,10 @@ export function Sidebar() {
   const sidebarWidth = effectiveCollapsed ? 64 : 246;
 
   function renderSection(section: SidebarSection, index: number) {
+    // Primary items render in their group; `advanced` items move to the
+    // collapsible "Advanced" section at the bottom (renderAdvanced).
+    const items = section.items.filter((item) => !item.advanced);
+    if (items.length === 0) return null;
     return !effectiveCollapsed ? (
       <section key={section.label} style={{ marginTop: index === 0 ? 0 : 16 }}>
         <div style={{ padding: "0 12px", marginBottom: 6 }}>
@@ -104,7 +121,7 @@ export function Sidebar() {
           </p>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {section.items.map(item => (
+          {items.map(item => (
             <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={false} />
           ))}
         </div>
@@ -122,9 +139,64 @@ export function Sidebar() {
           borderTop: index === 0 ? "none" : "1px solid rgba(106,116,134,0.22)",
         }}
       >
-        {section.items.map(item => (
+        {items.map(item => (
           <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={true} />
         ))}
+      </section>
+    );
+  }
+
+  // Advanced/expert/debug routes (registry `advanced: true`) live in one
+  // collapsible section at the bottom — keeps the default sidebar lean while
+  // staying reachable here + via the ⌘K palette. Auto-opens when the active
+  // route is an advanced one.
+  function renderAdvanced() {
+    const items = advancedRoutes();
+    if (items.length === 0) return null;
+    const anyActive = items.some((item) => isActive(item.href));
+    if (effectiveCollapsed) {
+      return (
+        <section
+          title="Advanced"
+          style={{
+            display: "flex", flexDirection: "column", gap: 2,
+            marginTop: 8, paddingTop: 8,
+            borderTop: "1px solid rgba(106,116,134,0.22)",
+          }}
+        >
+          {items.map(item => (
+            <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={true} />
+          ))}
+        </section>
+      );
+    }
+    const open = advancedOpen || anyActive;
+    return (
+      <section style={{ marginTop: 16 }}>
+        <button
+          type="button"
+          onClick={toggleAdvanced}
+          aria-expanded={open}
+          style={{
+            display: "flex", alignItems: "center", gap: 6, width: "100%",
+            padding: "4px 12px", marginBottom: 6, background: "transparent",
+            border: "none", cursor: "pointer", color: "var(--color-outline)",
+          }}
+        >
+          <ChevronDown
+            size={13}
+            style={{ transform: open ? "none" : "rotate(-90deg)", transition: "transform 0.15s", flexShrink: 0 }}
+          />
+          <span className="label-xs" style={{ margin: 0 }}>Advanced</span>
+          <span style={{ marginLeft: "auto", fontSize: "0.625rem", fontWeight: 700 }}>{items.length}</span>
+        </button>
+        {open && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {items.map(item => (
+              <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={false} />
+            ))}
+          </div>
+        )}
       </section>
     );
   }
@@ -243,6 +315,7 @@ export function Sidebar() {
       <nav style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "12px 8px" }}>
 
         {menuSections.map(renderSection)}
+        {renderAdvanced()}
       </nav>
 
       {/* ── Footer ── */}
