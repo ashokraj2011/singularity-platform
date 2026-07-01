@@ -1152,6 +1152,7 @@ JSON
     && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma db push --skip-generate >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260619123000_tenant_rls_policy_scaffold/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260626120000_node_attempt_fence_and_blueprint_key/migration.sql >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260701120000_add_tenant_id_to_standalone_tables/migration.sql >/dev/null 2>&1 \
     && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma generate >/dev/null 2>&1 ) \
     || warn "workgraph schema push had warnings"
 

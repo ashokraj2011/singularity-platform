@@ -1259,6 +1259,9 @@ model WorkItemTrigger {
 model Task {
   id             String              @id @default(uuid())
   instanceId     String?
+  // RLS: direct tenant column so standalone (null-instanceId) rows are representable
+  // under the revised policy `tenantId = current_tenant OR instance-visible`.
+  tenantId       String?
   nodeId         String?
   title          String
   description    String?
@@ -1357,6 +1360,7 @@ model TaskStatusHistory {
 model ApprovalRequest {
   id             String             @id @default(uuid())
   instanceId     String?
+  tenantId       String?  // RLS standalone-row tenant (see Task.tenantId)
   nodeId         String?
   subjectType    String
   subjectId      String
@@ -1420,6 +1424,7 @@ model Consumable {
   id             String              @id @default(uuid())
   typeId         String
   instanceId     String?
+  tenantId       String?  // RLS standalone-row tenant (see Task.tenantId)
   nodeId         String?
   name           String
   status         ConsumableStatus    @default(DRAFT)
@@ -1510,6 +1515,7 @@ model AgentRun {
   id            String            @id @default(uuid())
   agentId       String
   instanceId    String?
+  tenantId      String?  // RLS standalone-row tenant (see Task.tenantId)
   nodeId        String?
   // Finding #7 — the node attempt this run was dispatched under (null for standalone runs).
   attempt       Int?
@@ -1794,6 +1800,7 @@ model ToolRun {
   toolId         String
   actionId       String?
   instanceId     String?
+  tenantId       String?  // RLS standalone-row tenant (see Task.tenantId)
   runnerId       String?
   status         ToolRunStatus     @default(REQUESTED)
   inputPayload   Json              @default("{}")
@@ -1925,6 +1932,7 @@ model Document {
   taskId     String?
   nodeId     String?
   instanceId String?
+  tenantId   String?  // RLS standalone-row tenant (see Task.tenantId)
 
   task     Task?             @relation(fields: [taskId], references: [id], onDelete: SetNull)
   node     WorkflowNode?     @relation(fields: [nodeId], references: [id], onDelete: SetNull)
