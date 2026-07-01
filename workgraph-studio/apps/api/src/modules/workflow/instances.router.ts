@@ -32,7 +32,7 @@ workflowInstancesRouter.post('/:id/formal-analysis', async (req, res, next) => {
   try {
     await assertWorkflowInstanceTenant(req, req.params.id)
     await assertInstancePermission(req.user!.userId, req.params.id, 'view')
-    const analysis = await analyzeWorkflowInstance(req.params.id, req.user!.userId)
+    const analysis = await analyzeWorkflowInstance(req.params.id, req.user!.userId, undefined, resolveTenantFromRequest(req))
     res.json({ data: analysis })
   } catch (err) {
     next(err)

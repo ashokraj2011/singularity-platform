@@ -1,5 +1,6 @@
 import { Prisma, type WorkflowInstance, type WorkflowNode } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import { resolveGovernance, type GovernanceResolveContext } from '../../../../lib/iam/client'
 import { activeWaiverControlKeys } from '../../../governance/governance.router'
@@ -153,12 +154,13 @@ async function blockNode(
 ): Promise<void> {
   const isApproval = output.governanceGate.status === 'APPROVAL_REQUESTED'
   const eventType = isApproval ? 'GovernanceGateApprovalRequested' : 'GovernanceGateBlocked'
-  await prisma.$transaction([
-    prisma.workflowNode.update({
+  const tenantId = instance.tenantId ?? undefined
+  await withTenantDbTransaction(prisma, (tx) => Promise.all([
+    tx.workflowNode.update({
       where: { id: node.id },
       data: { status: 'BLOCKED', completedAt: new Date() },
     }),
-    prisma.workflowInstance.update({
+    tx.workflowInstance.update({
       where: { id: instance.id },
       data: {
         status: 'PAUSED',
@@ -168,7 +170,7 @@ async function blockNode(
         } as unknown as Prisma.InputJsonValue,
       },
     }),
-    prisma.workflowMutation.create({
+    tx.workflowMutation.create({
       data: {
         instanceId: instance.id,
         nodeId: node.id,
@@ -178,7 +180,7 @@ async function blockNode(
         performedById: actorId,
       },
     }),
-  ])
+  ]), tenantId)
   await logEvent(eventType, 'WorkflowNode', node.id, actorId, { instanceId: instance.id, output })
   await publishOutbox('WorkflowNode', node.id, eventType, { instanceId: instance.id, nodeId: node.id, output })
 }
@@ -209,6 +211,7 @@ async function openWaiverApproval(
   workItemId?: string,
   actorId?: string,
 ): Promise<{ waiverIds: string[]; approvalId?: string }> {
+  const tenantId = instance.tenantId ?? undefined
   const waiverIds: string[] = []
   for (const b of blocked) {
     const existing = await prisma.governanceWaiver
@@ -233,11 +236,11 @@ async function openWaiverApproval(
       .catch(() => null)
     if (w) waiverIds.push(w.id)
   }
-  const existingAppr = await prisma.approvalRequest
-    .findFirst({ where: { instanceId: instance.id, nodeId: node.id, subjectType: 'WorkflowNode', subjectId: node.id, status: 'PENDING' }, select: { id: true } })
+  const existingAppr = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest
+    .findFirst({ where: { instanceId: instance.id, nodeId: node.id, subjectType: 'WorkflowNode', subjectId: node.id, status: 'PENDING' }, select: { id: true } }), tenantId)
     .catch(() => null)
   if (existingAppr) return { waiverIds, approvalId: existingAppr.id }
-  const appr = await prisma.approvalRequest
+  const appr = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest
     .create({
       data: {
         instanceId: instance.id,
@@ -250,7 +253,7 @@ async function openWaiverApproval(
         capabilityId: governingCapabilityId,
         formData: { blocked } as unknown as Prisma.InputJsonValue,
       },
-    })
+    }), tenantId)
     .catch(() => null)
   return { waiverIds, approvalId: appr?.id ?? undefined }
 }

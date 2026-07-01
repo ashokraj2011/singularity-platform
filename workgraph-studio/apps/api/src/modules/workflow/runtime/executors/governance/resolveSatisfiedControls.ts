@@ -1,5 +1,6 @@
 import type { WorkflowInstance, WorkflowNode } from '@prisma/client'
 import { prisma } from '../../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../../lib/tenant-db-context'
 import { postJson } from '../../../../../lib/audit-gov/client'
 import { analyzeWorkflowInstance, shouldBlockFormalResult } from '../../../formal-verification'
 import type { GovernanceOverlay } from './evaluateBlock'
@@ -92,8 +93,8 @@ export async function resolveSatisfiedControls(
   return satisfied
 }
 
-async function traceIdsForInstance(instanceId: string): Promise<string[]> {
-  const runs = await prisma.agentRun
+async function traceIdsForInstance(instanceId: string, tenantId?: string): Promise<string[]> {
+  const runs = await withTenantDbTransaction(prisma, (tx) => tx.agentRun
     .findMany({
       where: { instanceId },
       select: {
@@ -102,7 +103,7 @@ async function traceIdsForInstance(instanceId: string): Promise<string[]> {
           select: { rawContent: true, structuredPayload: true },
         },
       },
-    })
+    }), tenantId)
     .catch(() => [] as Array<{ outputs: Array<{ rawContent: string | null; structuredPayload: unknown }> }>)
   const ids = new Set<string>()
   for (const run of runs)
@@ -120,20 +121,21 @@ async function traceIdsForInstance(instanceId: string): Promise<string[]> {
 
 /** Real evidence checker (I/O) — reuses existing engines; runtime-verified on a stack. */
 export function makeEvidenceChecker(instance: WorkflowInstance, node: WorkflowNode, actorId?: string): BindingChecker {
+  const tenantId = instance.tenantId ?? undefined
   return async (controlKey, binding) => {
     switch (binding.type) {
       case 'artifact': {
         const name = binding.artifactName ?? controlKey
-        const found = await prisma.consumable
+        const found = await withTenantDbTransaction(prisma, (tx) => tx.consumable
           .findFirst({
             where: { instanceId: instance.id, name: { contains: name, mode: 'insensitive' }, status: { in: ['APPROVED', 'PUBLISHED'] } },
             select: { id: true },
-          })
+          }), tenantId)
           .catch(() => null)
         return Boolean(found)
       }
       case 'evaluator': {
-        const traceIds = await traceIdsForInstance(instance.id)
+        const traceIds = await traceIdsForInstance(instance.id, tenantId)
         if (traceIds.length === 0) return false
         const minPassRate = typeof binding.minPassRate === 'number' ? binding.minPassRate : 1
         let pass = 0
@@ -153,8 +155,8 @@ export function makeEvidenceChecker(instance: WorkflowInstance, node: WorkflowNo
       }
       case 'receipt': {
         const wantKey = binding.evidenceKey ?? controlKey
-        const runs = await prisma.agentRun
-          .findMany({ where: { instanceId: instance.id }, select: { outputs: { select: { structuredPayload: true } } } })
+        const runs = await withTenantDbTransaction(prisma, (tx) => tx.agentRun
+          .findMany({ where: { instanceId: instance.id }, select: { outputs: { select: { structuredPayload: true } } } }), tenantId)
           .catch(() => [] as Array<{ outputs: Array<{ structuredPayload: unknown }> }>)
         for (const run of runs)
           for (const o of run.outputs) {
@@ -167,7 +169,7 @@ export function makeEvidenceChecker(instance: WorkflowInstance, node: WorkflowNo
         return false
       }
       case 'formal': {
-        const out = await analyzeWorkflowInstance(instance.id, actorId, node.id).catch(() => null)
+        const out = await analyzeWorkflowInstance(instance.id, actorId, node.id, tenantId).catch(() => null)
         if (!out) return false
         const rec = out as Record<string, unknown>
         const res = isRecord(rec.result) ? (rec.result as Record<string, unknown>) : rec
