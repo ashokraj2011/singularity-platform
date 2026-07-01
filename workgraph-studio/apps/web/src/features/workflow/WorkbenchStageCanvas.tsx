@@ -47,7 +47,10 @@ type StageView = {
   expectedArtifacts: ArtifactView[]
   questions: QuestionView[]
 }
-type ArtifactView = { id: string; kind: string; title: string; description: string | null; format: string; required: boolean }
+type ArtifactView = { id: string; kind: string; title: string; description: string | null; format: string; required: boolean; templateId: string | null }
+// M102 — minimal shape of a catalog ArtifactTemplate as returned by
+// GET /artifact-templates?status=PUBLISHED, used only to populate the picker.
+type ArtifactTemplateOption = { id: string; name: string; description: string | null; type: string; status: string }
 type QuestionView = { id: string; questionId: string; text: string; required: boolean; freeform: boolean }
 type EdgeView = { id: string; fromStageId: string; toStageId: string; kind: 'FORWARD' | 'SEND_BACK'; label: string | null }
 type DefinitionView = {
@@ -173,6 +176,16 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
     queryKey: ['workbench-agents', data?.capabilityId ?? null],
     queryFn: () => fetchAgents(data?.capabilityId ?? undefined),
     enabled: !!data,
+    staleTime: 60_000,
+  })
+
+  // M102 — published artifact templates power the inspector's artifact picker:
+  // "add from template" creates an expected artifact linked to a catalog
+  // template (templateId), whose section skeleton the runtime injects into the
+  // stage's agent prompt. Adding a blank artifact stays available as a fallback.
+  const { data: artifactTemplates } = useQuery<ArtifactTemplateOption[]>({
+    queryKey: ['artifact-templates', 'published'],
+    queryFn: () => api.get('/artifact-templates?status=PUBLISHED').then(r => (Array.isArray(r.data) ? r.data : (r.data?.content ?? []))),
     staleTime: 60_000,
   })
 
@@ -355,6 +368,7 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
           key={selectedStage.id}
           stage={selectedStage}
           agents={agents ?? []}
+          templates={artifactTemplates ?? []}
           busy={mPatchStage.isPending}
           artifactBusy={mCreateArtifact.isPending || mPatchArtifact.isPending || mDeleteArtifact.isPending}
           questionBusy={mCreateQuestion.isPending || mPatchQuestion.isPending || mDeleteQuestion.isPending}
@@ -389,8 +403,8 @@ function draftFromStage(s: StageView): StageDraft {
 const fieldLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#64748b', display: 'block', marginBottom: 3 }
 const fieldInput: React.CSSProperties = { width: '100%', boxSizing: 'border-box', padding: '6px 8px', borderRadius: 7, border: '1px solid #cbd5e1', fontSize: 12 }
 
-function StageInspector({ stage, agents, busy, artifactBusy, questionBusy, onSave, onArtifactAdd, onArtifactPatch, onArtifactDelete, onQuestionAdd, onQuestionPatch, onQuestionDelete, onClose }: {
-  stage: StageView; agents: RegistryAgent[]; busy: boolean; artifactBusy: boolean; questionBusy: boolean
+function StageInspector({ stage, agents, templates, busy, artifactBusy, questionBusy, onSave, onArtifactAdd, onArtifactPatch, onArtifactDelete, onQuestionAdd, onQuestionPatch, onQuestionDelete, onClose }: {
+  stage: StageView; agents: RegistryAgent[]; templates: ArtifactTemplateOption[]; busy: boolean; artifactBusy: boolean; questionBusy: boolean
   onSave: (body: Record<string, unknown>) => void
   onArtifactAdd: (stageId: string, body: Record<string, unknown>) => void
   onArtifactPatch: (id: string, body: Record<string, unknown>) => void
@@ -531,18 +545,43 @@ function StageInspector({ stage, agents, busy, artifactBusy, questionBusy, onSav
       <div style={{ marginTop: 16, borderTop: '1px solid #e5e7eb', paddingTop: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <span style={fieldLabel}>Expected artifacts ({stage.expectedArtifacts.length})</span>
-          <button type="button" disabled={artifactBusy}
-            onClick={() => onArtifactAdd(stage.id, { kind: uniqueArtifactKind(stage), title: 'New artifact', format: 'MARKDOWN', required: true })}
-            style={{ fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 7, border: '1px solid #0ea5e9', background: '#fff', color: '#0ea5e9', cursor: artifactBusy ? 'default' : 'pointer' }}>
-            ＋ Artifact
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {templates.length > 0 && (
+              <select
+                value=""
+                disabled={artifactBusy}
+                title="Add an expected artifact from a published catalog template"
+                onChange={e => {
+                  const t = templates.find(t => t.id === e.target.value)
+                  e.currentTarget.value = ''
+                  if (!t) return
+                  onArtifactAdd(stage.id, {
+                    kind: uniqueArtifactKind(stage, t.name),
+                    title: t.name,
+                    description: t.description ?? undefined,
+                    format: 'MARKDOWN',
+                    required: true,
+                    templateId: t.id,
+                  })
+                }}
+                style={{ fontSize: 11, fontWeight: 800, padding: '4px 8px', borderRadius: 7, border: '1px solid #0ea5e9', background: '#fff', color: '#0ea5e9', cursor: artifactBusy ? 'default' : 'pointer', maxWidth: 190 }}>
+                <option value="">＋ From template…</option>
+                {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+              </select>
+            )}
+            <button type="button" disabled={artifactBusy}
+              onClick={() => onArtifactAdd(stage.id, { kind: uniqueArtifactKind(stage), title: 'New artifact', format: 'MARKDOWN', required: true })}
+              style={{ fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 7, border: '1px solid #0ea5e9', background: '#fff', color: '#0ea5e9', cursor: artifactBusy ? 'default' : 'pointer' }}>
+              ＋ Blank
+            </button>
+          </div>
         </div>
         {stage.expectedArtifacts.length === 0 ? (
           <p style={{ fontSize: 11, color: '#94a3b8', margin: '2px 0 0' }}>No artifacts yet — this stage emits no expected output.</p>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {stage.expectedArtifacts.map(a => (
-              <ArtifactRow key={a.id} artifact={a} busy={artifactBusy}
+              <ArtifactRow key={a.id} artifact={a} busy={artifactBusy} templates={templates}
                 onPatch={body => onArtifactPatch(a.id, body)} onDelete={() => onArtifactDelete(a.id)} />
             ))}
           </div>
@@ -574,16 +613,25 @@ function StageInspector({ stage, agents, busy, artifactBusy, questionBusy, onSav
   )
 }
 
-function uniqueArtifactKind(stage: StageView): string {
+function uniqueArtifactKind(stage: StageView, preferred?: string): string {
   const existing = new Set(stage.expectedArtifacts.map(a => a.kind))
+  // Derive a kind_key from a template name when one is given, honoring the
+  // backend's ^[a-z0-9_]+$ constraint; fall back to artifact_N on collision.
+  const base = preferred?.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60)
+  if (base) {
+    if (!existing.has(base)) return base
+    let n = 2
+    while (existing.has(`${base}_${n}`)) n++
+    return `${base}_${n}`
+  }
   let i = stage.expectedArtifacts.length + 1
   let k = `artifact_${i}`
   while (existing.has(k)) { i++; k = `artifact_${i}` }
   return k
 }
 
-function ArtifactRow({ artifact, busy, onPatch, onDelete }: {
-  artifact: ArtifactView; busy: boolean
+function ArtifactRow({ artifact, busy, templates, onPatch, onDelete }: {
+  artifact: ArtifactView; busy: boolean; templates: ArtifactTemplateOption[]
   onPatch: (body: Record<string, unknown>) => void; onDelete: () => void
 }) {
   const [title, setTitle] = useState(artifact.title)
@@ -605,6 +653,17 @@ function ArtifactRow({ artifact, busy, onPatch, onDelete }: {
         </select>
         <label style={{ fontSize: 11, color: '#334155', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
           <input type="checkbox" checked={artifact.required} onChange={e => onPatch({ required: e.target.checked })} /> required
+        </label>
+        <label style={{ fontSize: 11, color: '#334155', display: 'inline-flex', alignItems: 'center', gap: 4 }} title="Link this artifact to a catalog template; the runtime injects its section skeleton into the agent prompt">
+          template
+          <select value={artifact.templateId ?? ''} disabled={busy} onChange={e => onPatch({ templateId: e.target.value || null })}
+            style={{ ...fieldInput, width: 'auto', fontSize: 11, padding: '3px 6px' }}>
+            <option value="">none</option>
+            {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+            {artifact.templateId && !templates.some(t => t.id === artifact.templateId) && (
+              <option value={artifact.templateId}>(unpublished template)</option>
+            )}
+          </select>
         </label>
       </div>
     </div>
