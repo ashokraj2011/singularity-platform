@@ -9,7 +9,7 @@ import { precheckTargetUrl, isBlockedAddress } from '../../lib/ssrf-guard'
 import { BlueprintStage, BlueprintSessionStatus, BlueprintStageStatus, BlueprintSourceType, Prisma, type ConsumableStatus, type InstanceStatus } from '@prisma/client'
 import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
-import { withTenantDbTransaction } from '../../lib/tenant-db-context'
+import { withTenantDbTransaction, currentTenantIdForDb } from '../../lib/tenant-db-context'
 import { resolveLlmRouting } from '../llm-routing/resolve'
 import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
 import { validate } from '../../middleware/validate'
@@ -840,11 +840,11 @@ blueprintRouter.get('/artifacts', async (req, res, next) => {
         res.json({ count: 0, items: [] })
         return
       }
-      const instances = await prisma.workflowInstance.findMany({
+      const instances = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findMany({
         where: { status: workflowStatus as InstanceStatus },
         select: { id: true },
         take: 2000,
-      })
+      }))
       intersect(instances.map(i => i.id))
     }
 
@@ -872,10 +872,10 @@ blueprintRouter.get('/artifacts', async (req, res, next) => {
     const instanceIds = uniqueStrings(rows.map(r => r.session?.workflowInstanceId))
     const instanceById = new Map<string, { status: string; name: string }>()
     if (instanceIds.length > 0) {
-      const instances = await prisma.workflowInstance.findMany({
+      const instances = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findMany({
         where: { id: { in: instanceIds } },
         select: { id: true, status: true, name: true },
-      })
+      }))
       for (const i of instances) instanceById.set(i.id, { status: i.status, name: i.name })
     }
 
@@ -910,11 +910,11 @@ blueprintRouter.get('/artifacts/facets', async (req, res, next) => {
     const instanceIds = uniqueStrings(sessions.map(s => s.workflowInstanceId))
 
     const instances = instanceIds.length
-      ? await prisma.workflowInstance.findMany({
+      ? await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findMany({
           where: { id: { in: instanceIds } },
           select: { id: true, name: true, status: true },
           orderBy: { startedAt: 'desc' },
-        })
+        }))
       : []
 
     // Work items linked to those instances, via the source instance OR a
@@ -966,10 +966,10 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
     //   • If the env flag WORKBENCH_ALLOW_MAIN_PROFILE=true is set —
     //     escape hatch for migration / debugging.
     if (workflowLink.workflowInstanceId) {
-      const linkedInstance = await prisma.workflowInstance.findUnique({
+      const linkedInstance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
         where: { id: workflowLink.workflowInstanceId },
         select: { profile: true, name: true, templateId: true },
-      })
+      }))
       const allowMain = (process.env.WORKBENCH_ALLOW_MAIN_PROFILE ?? '').toLowerCase() === 'true'
       if (linkedInstance && linkedInstance.profile !== 'workbench' && !allowMain) {
         // Copilot workflows (workflow.metadata.usesCopilot) are first-class cockpit citizens:
@@ -1661,10 +1661,12 @@ blueprintRouter.post(
         throw new NotFoundError('WorkItem', body.workItemId ?? body.workItemCode!)
       }
 
-      const instance = await prisma.workflowInstance.findUnique({
-        where: { id: session.workflowInstanceId },
+      // Pin to a const so the guard's non-null narrowing survives into the closure.
+      const boundWorkflowInstanceId = session.workflowInstanceId
+      const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
+        where: { id: boundWorkflowInstanceId },
         select: { id: true, context: true },
-      })
+      }))
       if (!instance) {
         throw new NotFoundError('WorkflowInstance', session.workflowInstanceId)
       }
@@ -1693,10 +1695,10 @@ blueprintRouter.post(
         } as Prisma.InputJsonValue,
       }
 
-      await prisma.workflowInstance.update({
+      await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
         where: { id: instance.id },
         data: { context: nextContext },
-      })
+      }))
 
       await recordBlueprintAudit(
         session.id,
@@ -3040,17 +3042,17 @@ async function resolveWorkflowLink(
     : undefined
   if (!instanceId) return { workflowNodeId: nodeId }
 
-  const instance = await prisma.workflowInstance.findUnique({
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
     where: { id: instanceId },
     select: nodeId
       ? { id: true, nodes: { where: { id: nodeId }, select: { id: true }, take: 1 } }
       : { id: true },
-  })
+  }))
   if (!instance) {
-    const browserRun = await prisma.runSnapshot.findUnique({
+    const browserRun = await withTenantDbTransaction(prisma, (tx) => tx.runSnapshot.findUnique({
       where: { runId: instanceId },
       select: { runId: true },
-    })
+    }))
     if (browserRun) {
       return {
         browserRunId: browserRun.runId,
@@ -3065,10 +3067,10 @@ async function resolveWorkflowLink(
       }
     }
     if (nodeId) {
-      const node = await prisma.workflowNode.findUnique({
+      const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findUnique({
         where: { id: nodeId },
         select: { id: true, instanceId: true },
-      })
+      }))
       if (node) {
         return {
           workflowInstanceId: node.instanceId,
@@ -3122,7 +3124,7 @@ async function resolveWorkbenchGovernanceMode(workflowInstanceId?: string | null
     : undefined
   if (!instanceId) return config.DEFAULT_GOVERNANCE_MODE as GovernanceMode
 
-  const instance = await prisma.workflowInstance.findUnique({
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
     where: { id: instanceId },
     select: {
       template: {
@@ -3133,7 +3135,7 @@ async function resolveWorkbenchGovernanceMode(workflowInstanceId?: string | null
         },
       },
     },
-  })
+  }))
   const template = instance?.template
   const policy = isRecord(template?.budgetPolicy) ? template.budgetPolicy : {}
   const policyMode = policy.governanceMode
@@ -4298,10 +4300,12 @@ async function runLoopStage(sessionId: string, stageKey: string, actorId: string
   // can be fenced against a later restart (advanceMultinodeStageNode passes it to advance()).
   let launchNodeAttempt: number | undefined
   if (multinodeEnabled() && session.workflowInstanceId) {
-    const wfNodes = await prisma.workflowNode.findMany({
-      where: { instanceId: session.workflowInstanceId },
+    // Pin to a const so the guard's non-null narrowing survives into the closure.
+    const wfInstanceId = session.workflowInstanceId
+    const wfNodes = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findMany({
+      where: { instanceId: wfInstanceId },
       select: { config: true, attempt: true },
-    })
+    }))
     const pinned = wfNodes.find(n => {
       const cfg = isRecord(n.config) ? n.config : {}
       const wb = isRecord(cfg.workbench) ? cfg.workbench : {}
@@ -5459,16 +5463,7 @@ async function saveStageVerdict(
   // session-resume; (c) the terminal QA node advancing into the child END.
   if (accepted && multinodeEnabled() && session.workflowInstanceId) {
     try {
-      // RLS prep — BlueprintSession has no tenantId column of its own (only a bare
-      // workflowInstanceId FK), so this is a best-effort lookup: same bootstrap shape
-      // as advance()'s own first read. Inert today; only load-bearing once slice 6's
-      // FORCE RLS is live — this file's broader RLS-scoped surface stays out of scope
-      // here (flagged since slice 3, unchanged).
-      const instanceForTenant = await prisma.workflowInstance.findUnique({
-        where: { id: session.workflowInstanceId },
-        select: { tenantId: true },
-      }).catch(() => null)
-      await advanceMultinodeStageNode(session.workflowInstanceId, stage.key, actorId, latestAttempt.nodeAttempt, instanceForTenant?.tenantId ?? undefined)
+      await advanceMultinodeStageNode(session.workflowInstanceId, stage.key, actorId, latestAttempt.nodeAttempt, currentTenantIdForDb())
     } catch (err) {
       // Best-effort — a failed node advance must not roll back the verdict
       // save. Surfaced in audit-gov so the stuck node is observable.
@@ -6308,10 +6303,10 @@ async function workflowWorkItemContext(workflowInstanceId?: string | null): Prom
     ? workflowInstanceId.trim()
     : undefined
   if (!instanceId) return {}
-  const instance = await prisma.workflowInstance.findUnique({
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
     where: { id: instanceId },
     select: { context: true },
-  })
+  }))
   const context = isRecord(instance?.context) ? instance.context : {}
   const workItem = isRecord(context._workItem)
     ? context._workItem
@@ -8453,10 +8448,10 @@ async function evaluateAndWarnStageBudget(
   const cfg = readStageBudget(execCfg.stageBudget)
   if (!cfg) return
 
-  const events = await prisma.workflowRunBudgetEvent.findMany({
+  const events = await withTenantDbTransaction(prisma, (tx) => tx.workflowRunBudgetEvent.findMany({
     where: { instanceId, metadata: { path: ['stageKey'], equals: stageKey } },
     select: { totalTokensDelta: true, estimatedCostDelta: true },
-  })
+  }))
   if (events.length === 0) return
 
   let postTokens = 0
@@ -8714,10 +8709,10 @@ async function publishBlueprintArtifactAsConsumable(args: {
     ...(args.extraPayload ?? {}),
   }
 
-  const existing = await prisma.consumable.findFirst({
+  const existing = await withTenantDbTransaction(prisma, (tx) => tx.consumable.findFirst({
     where: { typeId: type.id, instanceId: workflowInstanceId, nodeId: workflowNodeId, name },
     select: { id: true, currentVersion: true },
-  })
+  }))
 
   let consumableId: string
   let version: number
@@ -8732,7 +8727,7 @@ async function publishBlueprintArtifactAsConsumable(args: {
         createdById: args.actorId ?? args.session.createdById ?? undefined,
       },
     })
-    await prisma.consumable.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.consumable.update({
       where: { id: consumableId },
       data: {
         status: args.status,
@@ -8740,9 +8735,9 @@ async function publishBlueprintArtifactAsConsumable(args: {
         formData: payload as Prisma.InputJsonValue,
         capabilityId: args.session.capabilityId ?? undefined,
       },
-    })
+    }))
   } else {
-    const created = await prisma.consumable.create({
+    const created = await withTenantDbTransaction(prisma, (tx) => tx.consumable.create({
       data: {
         typeId: type.id,
         instanceId: workflowInstanceId,
@@ -8761,7 +8756,7 @@ async function publishBlueprintArtifactAsConsumable(args: {
           },
         },
       },
-    })
+    }))
     consumableId = created.id
     version = 1
   }
@@ -8859,13 +8854,13 @@ async function transitionAttemptConsumables(
   for (const artifact of artifacts) {
     const ref = readConsumableRefFromPayload(artifact)
     if (!ref) continue
-    const consumable = await prisma.consumable.findUnique({
+    const consumable = await withTenantDbTransaction(prisma, (tx) => tx.consumable.findUnique({
       where: { id: ref.consumableId },
       select: { formData: true },
-    })
+    }))
     const formData = isRecord(consumable?.formData) ? consumable.formData : {}
     const approval = isRecord(formData.approval) ? formData.approval : {}
-    await prisma.consumable.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.consumable.update({
       where: { id: ref.consumableId },
       data: {
         status,
@@ -8874,7 +8869,7 @@ async function transitionAttemptConsumables(
           approval: { ...approval, status },
         } as Prisma.InputJsonValue,
       },
-    })
+    }))
     const payload = isRecord(artifact.payload) ? artifact.payload : {}
     await prisma.blueprintArtifact.update({
       where: { id: artifact.id },
