@@ -295,11 +295,11 @@ workflowInstancesRouter.get('/:id/artifacts', async (req, res, next) => {
   try {
     const instanceId = req.params.id
     await assertInstancePermission(req.user!.userId, instanceId, 'view')
-    const instance = await prisma.workflowInstance.findUnique({ where: { id: instanceId }, select: { id: true } })
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({ where: { id: instanceId }, select: { id: true } }), resolveTenantFromRequest(req))
     if (!instance) throw new NotFoundError('WorkflowInstance', instanceId)
 
     const consumableSelect = { id: true, name: true, status: true, currentVersion: true, nodeId: true, instanceId: true } as const
-    const own = await prisma.consumable.findMany({ where: { instanceId }, select: consumableSelect, orderBy: { updatedAt: 'desc' } })
+    const own = await withTenantDbTransaction(prisma, (tx) => tx.consumable.findMany({ where: { instanceId }, select: consumableSelect, orderBy: { updatedAt: 'desc' } }), resolveTenantFromRequest(req))
 
     const includeChildren = req.query.include === 'children' || req.query.children === 'true' || req.query.children === '1'
     const children: Array<Record<string, unknown>> = []
@@ -313,7 +313,7 @@ workflowInstancesRouter.get('/:id/artifacts', async (req, res, next) => {
       })
       const childInstanceIds = workItems.flatMap(w => w.targets.map(t => t.childWorkflowInstanceId).filter((x): x is string => Boolean(x)))
       const childConsumables = childInstanceIds.length
-        ? await prisma.consumable.findMany({ where: { instanceId: { in: childInstanceIds } }, select: consumableSelect, orderBy: { updatedAt: 'desc' } })
+        ? await withTenantDbTransaction(prisma, (tx) => tx.consumable.findMany({ where: { instanceId: { in: childInstanceIds } }, select: consumableSelect, orderBy: { updatedAt: 'desc' } }), resolveTenantFromRequest(req))
         : []
       for (const w of workItems) {
         for (const t of w.targets) {
@@ -340,18 +340,18 @@ workflowInstancesRouter.get('/:id/artifacts', async (req, res, next) => {
 workflowInstancesRouter.post('/:id/phases', validate(createPhaseSchema), async (req, res, next) => {
   try {
     const id = req.params.id as string
-    const phase = await prisma.workflowPhase.create({
+    const phase = await withTenantDbTransaction(prisma, (tx) => tx.workflowPhase.create({
       data: { instanceId: id, ...req.body },
-    })
+    }), resolveTenantFromRequest(req))
     await logEvent('PhaseAdded', 'WorkflowPhase', phase.id, req.user!.userId, { instanceId: id })
-    await prisma.workflowMutation.create({
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowMutation.create({
       data: {
         instanceId: id,
         mutationType: 'PHASE_ADDED',
         afterState: { phaseId: phase.id, name: phase.name },
         performedById: req.user!.userId,
       },
-    })
+    }), resolveTenantFromRequest(req))
     await publishOutbox('WorkflowInstance', id, 'PhaseAdded', { phaseId: phase.id })
     res.status(201).json(phase)
   } catch (err) {
@@ -361,10 +361,10 @@ workflowInstancesRouter.post('/:id/phases', validate(createPhaseSchema), async (
 
 workflowInstancesRouter.get('/:id/nodes', async (req, res, next) => {
   try {
-    const nodes = await prisma.workflowNode.findMany({
+    const nodes = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findMany({
       where: { instanceId: req.params.id },
       orderBy: { createdAt: 'asc' },
-    })
+    }), resolveTenantFromRequest(req))
     res.json(nodes)
   } catch (err) {
     next(err)
@@ -375,9 +375,9 @@ workflowInstancesRouter.get('/:id/nodes', async (req, res, next) => {
 // without re-downloading the whole graph.
 workflowInstancesRouter.get('/:id/nodes/:nodeId', async (req, res, next) => {
   try {
-    const node = await prisma.workflowNode.findFirst({
+    const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findFirst({
       where: { id: req.params.nodeId as string, instanceId: req.params.id as string },
-    })
+    }), resolveTenantFromRequest(req))
     if (!node) {
       res.status(404).json({ error: 'Node not found' })
       return
@@ -389,11 +389,11 @@ workflowInstancesRouter.get('/:id/nodes/:nodeId', async (req, res, next) => {
 workflowInstancesRouter.post('/:id/nodes', validate(createNodeSchema), async (req, res, next) => {
   try {
     const id = req.params.id as string
-    const node = await prisma.workflowNode.create({
+    const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.create({
       data: { instanceId: id, ...req.body },
-    })
+    }), resolveTenantFromRequest(req))
     await logEvent('NodeAdded', 'WorkflowNode', node.id, req.user!.userId, { instanceId: id })
-    await prisma.workflowMutation.create({
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowMutation.create({
       data: {
         instanceId: id,
         nodeId: node.id,
@@ -401,7 +401,7 @@ workflowInstancesRouter.post('/:id/nodes', validate(createNodeSchema), async (re
         afterState: { nodeType: node.nodeType, label: node.label },
         performedById: req.user!.userId,
       },
-    })
+    }), resolveTenantFromRequest(req))
     res.status(201).json(node)
   } catch (err) {
     next(err)
@@ -412,21 +412,24 @@ workflowInstancesRouter.patch('/:id/nodes/:nodeId', validate(updateNodeSchema), 
   try {
     const id = req.params.id as string
     const nodeId = req.params.nodeId as string
-    const before = await prisma.workflowNode.findUnique({ where: { id: nodeId } })
-    const node = await prisma.workflowNode.update({
-      where: { id: nodeId },
-      data: req.body,
-    })
-    await prisma.workflowMutation.create({
-      data: {
-        instanceId: id,
-        nodeId: node.id,
-        mutationType: 'NODE_UPDATED',
-        beforeState: before ? { config: before.config, positionX: before.positionX, positionY: before.positionY } : undefined,
-        afterState: { config: node.config, positionX: node.positionX, positionY: node.positionY },
-        performedById: req.user!.userId,
-      },
-    })
+    const node = await withTenantDbTransaction(prisma, async (tx) => {
+      const before = await tx.workflowNode.findUnique({ where: { id: nodeId } })
+      const updated = await tx.workflowNode.update({
+        where: { id: nodeId },
+        data: req.body,
+      })
+      await tx.workflowMutation.create({
+        data: {
+          instanceId: id,
+          nodeId: updated.id,
+          mutationType: 'NODE_UPDATED',
+          beforeState: before ? { config: before.config, positionX: before.positionX, positionY: before.positionY } : undefined,
+          afterState: { config: updated.config, positionX: updated.positionX, positionY: updated.positionY },
+          performedById: req.user!.userId,
+        },
+      })
+      return updated
+    }, resolveTenantFromRequest(req))
     // M84.s4 follow-up — when a WORKBENCH_TASK node's config changes,
     // re-promote the legacy loopDefinition JSON into the first-class
     // tables so the canvas + new API readers see the edits immediately
@@ -457,15 +460,17 @@ workflowInstancesRouter.patch('/:id/nodes/:nodeId', validate(updateNodeSchema), 
 
 workflowInstancesRouter.delete('/:id/nodes/:nodeId', async (req, res, next) => {
   try {
-    await prisma.workflowNode.delete({ where: { id: req.params.nodeId } })
-    await prisma.workflowMutation.create({
-      data: {
-        instanceId: req.params.id,
-        nodeId: req.params.nodeId,
-        mutationType: 'NODE_REMOVED',
-        performedById: req.user!.userId,
-      },
-    })
+    await withTenantDbTransaction(prisma, async (tx) => {
+      await tx.workflowNode.delete({ where: { id: req.params.nodeId } })
+      await tx.workflowMutation.create({
+        data: {
+          instanceId: req.params.id,
+          nodeId: req.params.nodeId,
+          mutationType: 'NODE_REMOVED',
+          performedById: req.user!.userId,
+        },
+      })
+    }, resolveTenantFromRequest(req))
     res.status(204).end()
   } catch (err) {
     next(err)
@@ -474,7 +479,7 @@ workflowInstancesRouter.delete('/:id/nodes/:nodeId', async (req, res, next) => {
 
 workflowInstancesRouter.get('/:id/edges', async (req, res, next) => {
   try {
-    const edges = await prisma.workflowEdge.findMany({ where: { instanceId: req.params.id } })
+    const edges = await withTenantDbTransaction(prisma, (tx) => tx.workflowEdge.findMany({ where: { instanceId: req.params.id } }), resolveTenantFromRequest(req))
     res.json(edges)
   } catch (err) {
     next(err)
@@ -483,9 +488,9 @@ workflowInstancesRouter.get('/:id/edges', async (req, res, next) => {
 
 workflowInstancesRouter.post('/:id/edges', validate(createEdgeSchema), async (req, res, next) => {
   try {
-    const edge = await prisma.workflowEdge.create({
+    const edge = await withTenantDbTransaction(prisma, (tx) => tx.workflowEdge.create({
       data: { instanceId: req.params.id, ...req.body },
-    })
+    }), resolveTenantFromRequest(req))
     res.status(201).json(edge)
   } catch (err) {
     next(err)
@@ -500,10 +505,10 @@ const updateEdgeSchema = z.object({
 
 workflowInstancesRouter.patch('/:id/edges/:edgeId', validate(updateEdgeSchema), async (req, res, next) => {
   try {
-    const edge = await prisma.workflowEdge.update({
+    const edge = await withTenantDbTransaction(prisma, (tx) => tx.workflowEdge.update({
       where: { id: req.params.edgeId as string },
       data: req.body,
-    })
+    }), resolveTenantFromRequest(req))
     res.json(edge)
   } catch (err) {
     next(err)
@@ -512,7 +517,7 @@ workflowInstancesRouter.patch('/:id/edges/:edgeId', validate(updateEdgeSchema), 
 
 workflowInstancesRouter.delete('/:id/edges/:edgeId', async (req, res, next) => {
   try {
-    await prisma.workflowEdge.delete({ where: { id: req.params.edgeId } })
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowEdge.delete({ where: { id: req.params.edgeId } }), resolveTenantFromRequest(req))
     res.status(204).end()
   } catch (err) {
     next(err)
@@ -530,9 +535,9 @@ workflowInstancesRouter.post('/:id/signals/:name', validate(signalSchema), async
     const signalName = req.params.name as string
     const { payload, correlationKey } = req.body as z.infer<typeof signalSchema>
 
-    const candidates = await prisma.workflowNode.findMany({
+    const candidates = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findMany({
       where: { instanceId: id, nodeType: 'SIGNAL_WAIT', status: 'ACTIVE' },
-    })
+    }), resolveTenantFromRequest(req))
     const matched = candidates.filter(n => {
       const cfg = (n.config ?? {}) as Record<string, unknown>
       const std = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard)
@@ -560,7 +565,7 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/fail', validate(failNodeSchema)
     const nodeId = req.params.nodeId as string
     const failure = req.body as z.infer<typeof failNodeSchema>
     const result = await failNode(id, nodeId, failure, req.user!.userId, resolveTenantFromRequest(req))
-    const node = await prisma.workflowNode.findUnique({ where: { id: nodeId } })
+    const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findUnique({ where: { id: nodeId } }), resolveTenantFromRequest(req))
     res.json({ ...result, node })
   } catch (err) {
     next(err)
@@ -573,10 +578,10 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/restart', async (req, res, next
     const nodeId = req.params.nodeId as string
     await assertInstancePermission(req.user!.userId, id, 'edit')
     const result = await restartNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
-    const [instance, node] = await Promise.all([
-      prisma.workflowInstance.findUnique({ where: { id } }),
-      prisma.workflowNode.findUnique({ where: { id: nodeId } }),
-    ])
+    const [instance, node] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+      tx.workflowInstance.findUnique({ where: { id } }),
+      tx.workflowNode.findUnique({ where: { id: nodeId } }),
+    ]), resolveTenantFromRequest(req))
     res.json({ ...result, instance, node })
   } catch (err) {
     next(err)
@@ -593,10 +598,10 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/refine', async (req, res, next)
     const feedback = typeof req.body?.feedback === 'string' ? req.body.feedback.trim() : ''
     if (!feedback) return res.status(400).json({ error: 'feedback is required' })
     await assertInstancePermission(req.user!.userId, id, 'edit')
-    const node = await prisma.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } })
+    const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } }), resolveTenantFromRequest(req))
     if (!node) return res.status(404).json({ error: 'node not found in this run' })
     const config = { ...((node.config ?? {}) as Record<string, unknown>), _refineFeedback: feedback }
-    await prisma.workflowNode.update({ where: { id: nodeId }, data: { config: config as Prisma.InputJsonValue } })
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({ where: { id: nodeId }, data: { config: config as Prisma.InputJsonValue } }), resolveTenantFromRequest(req))
     const result = await restartNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
     res.json({ ...result, refined: true })
   } catch (err) {
@@ -623,10 +628,10 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/answer-questions', async (req, 
       .join('\n')
     if (!formatted) return res.status(400).json({ error: 'at least one answer is required' })
     await assertInstancePermission(req.user!.userId, id, 'edit')
-    const node = await prisma.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } })
+    const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } }), resolveTenantFromRequest(req))
     if (!node) return res.status(404).json({ error: 'node not found in this run' })
     const config = { ...((node.config ?? {}) as Record<string, unknown>), _copilotAnswers: formatted }
-    await prisma.workflowNode.update({ where: { id: nodeId }, data: { config: config as Prisma.InputJsonValue } })
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({ where: { id: nodeId }, data: { config: config as Prisma.InputJsonValue } }), resolveTenantFromRequest(req))
     const result = await restartNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
     res.json({ ...result, answered: true })
   } catch (err) {
@@ -1209,19 +1214,19 @@ function buildCopilotWorkflowExport(
   return { yaml: `${yaml.join('\n')}\n`, script, filenameBase, stageCount: stages.length }
 }
 
-async function loadCopilotExportData(id: string, opts: { fromPhase?: string } = {}) {
-  const [instance, nodes, edges] = await Promise.all([
-    prisma.workflowInstance.findUnique({ where: { id }, select: { id: true, name: true, context: true, templateId: true } }),
-    prisma.workflowNode.findMany({
+async function loadCopilotExportData(id: string, opts: { fromPhase?: string } = {}, tenantId?: string) {
+  const [instance, nodes, edges] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+    tx.workflowInstance.findUnique({ where: { id }, select: { id: true, name: true, context: true, templateId: true } }),
+    tx.workflowNode.findMany({
       where: { instanceId: id },
       orderBy: { createdAt: 'asc' },
       select: { id: true, label: true, nodeType: true, config: true, createdAt: true, status: true, completedAt: true },
     }),
-    prisma.workflowEdge.findMany({
+    tx.workflowEdge.findMany({
       where: { instanceId: id },
       select: { sourceNodeId: true, targetNodeId: true },
     }),
-  ])
+  ]), tenantId)
   if (!instance) return null
 
   const exportNodes: CopilotExportNode[] = nodes.map(n => ({ ...n, nodeType: String(n.nodeType), status: String(n.status) }))
@@ -1271,16 +1276,16 @@ async function loadCopilotExportData(id: string, opts: { fromPhase?: string } = 
   const completedByNodeId = new Map<string, CompletedPhaseData>()
   if (completedStages.length) {
     const completedNodeIds = completedStages.map(s => s.nodeId)
-    const [consumables, agentRuns] = await Promise.all([
-      prisma.consumable.findMany({
+    const [consumables, agentRuns] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+      tx.consumable.findMany({
         where: { instanceId: id, nodeId: { in: completedNodeIds } },
         select: { name: true, type: true, status: true, nodeId: true, formData: true },
       }),
-      prisma.agentRun.findMany({
+      tx.agentRun.findMany({
         where: { instanceId: id, nodeId: { in: completedNodeIds } },
         select: { nodeId: true, outputs: { select: { outputType: true, rawContent: true, structuredPayload: true } } },
       }),
-    ])
+    ]), tenantId)
     for (const stage of completedStages) {
       const artifacts = consumables
         .filter(c => c.nodeId === stage.nodeId)
@@ -1314,7 +1319,7 @@ workflowInstancesRouter.get('/:id/export/copilot-yaml', async (req, res, next) =
     const id = req.params.id as string
     const fromPhase = typeof req.query.fromPhase === 'string' && req.query.fromPhase.trim() ? req.query.fromPhase.trim() : undefined
     await assertInstancePermission(req.user!.userId, id, 'view')
-    const exported = await loadCopilotExportData(id, { fromPhase })
+    const exported = await loadCopilotExportData(id, { fromPhase }, resolveTenantFromRequest(req))
     if (!exported) return res.status(404).json({ error: 'run not found' })
     res.setHeader('Content-Type', 'application/x-yaml')
     res.setHeader('Content-Disposition', `attachment; filename="${exported.filenameBase}.yaml"`)
@@ -1330,7 +1335,7 @@ workflowInstancesRouter.get('/:id/export/copilot-runner.sh', async (req, res, ne
     const id = req.params.id as string
     const fromPhase = typeof req.query.fromPhase === 'string' && req.query.fromPhase.trim() ? req.query.fromPhase.trim() : undefined
     await assertInstancePermission(req.user!.userId, id, 'view')
-    const exported = await loadCopilotExportData(id, { fromPhase })
+    const exported = await loadCopilotExportData(id, { fromPhase }, resolveTenantFromRequest(req))
     if (!exported) return res.status(404).json({ error: 'run not found' })
     res.setHeader('Content-Type', 'text/x-shellscript; charset=utf-8')
     res.setHeader('Content-Disposition', `attachment; filename="${exported.filenameBase}.sh"`)
@@ -1347,21 +1352,21 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
     await assertInstancePermission(req.user!.userId, id, 'edit')
     const parsed = copilotResultsSchema.safeParse(req.body)
     if (!parsed.success) return res.status(400).json({ error: 'invalid copilot results payload', issues: parsed.error.flatten() })
-    const instance = await prisma.workflowInstance.findUnique({
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
       where: { id },
       select: { id: true, nodes: { select: { id: true } } },
-    })
+    }), resolveTenantFromRequest(req))
     if (!instance) return res.status(404).json({ error: 'run not found' })
     const validNodeIds = new Set(instance.nodes.map(n => n.id))
     const payload = parsed.data
-    const eventId = await prisma.workflowEvent.create({
+    const eventId = await withTenantDbTransaction(prisma, (tx) => tx.workflowEvent.create({
       data: {
         instanceId: id,
         eventType: 'CopilotWorkflowResultsImported',
         payload: payload as unknown as Prisma.InputJsonValue,
       },
       select: { id: true },
-    })
+    }), resolveTenantFromRequest(req))
     const eventLogId = await logEvent('CopilotWorkflowResultsImported', 'WorkflowInstance', id, req.user!.userId, {
       status: payload.status,
       metrics: payload.metrics,
@@ -1406,7 +1411,7 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
     if (type) {
       for (const artifact of payload.artifacts) {
         const nodeId = artifact.nodeId && validNodeIds.has(artifact.nodeId) ? artifact.nodeId : undefined
-        const consumable = await prisma.consumable.create({
+        const consumable = await withTenantDbTransaction(prisma, (tx) => tx.consumable.create({
           data: {
             typeId: type.id,
             instanceId: id,
@@ -1426,7 +1431,7 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
             createdById: req.user!.userId,
           },
           select: { id: true },
-        })
+        }), resolveTenantFromRequest(req))
         await prisma.consumableVersion.create({
           data: {
             consumableId: consumable.id,
@@ -1471,10 +1476,10 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/force-complete', validate(force
     await assertInstancePermission(req.user!.userId, id, 'edit')
     const { comment, output } = req.body as z.infer<typeof forceCompleteSchema>
     await forceCompleteNode(id, nodeId, comment, output ?? {}, req.user!.userId, resolveTenantFromRequest(req))
-    const [instance, node] = await Promise.all([
-      prisma.workflowInstance.findUnique({ where: { id }, include: { nodes: true, edges: true } }),
-      prisma.workflowNode.findUnique({ where: { id: nodeId } }),
-    ])
+    const [instance, node] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+      tx.workflowInstance.findUnique({ where: { id }, include: { nodes: true, edges: true } }),
+      tx.workflowNode.findUnique({ where: { id: nodeId } }),
+    ]), resolveTenantFromRequest(req))
     res.json({ instance, node })
   } catch (err) {
     next(err)
@@ -1486,10 +1491,10 @@ workflowInstancesRouter.post('/:id/advance', validate(advanceSchema), async (req
     const id = req.params.id as string
     const { completedNodeId, output } = req.body as z.infer<typeof advanceSchema>
     await advance(id, completedNodeId, output, req.user!.userId, undefined, resolveTenantFromRequest(req))
-    const instance = await prisma.workflowInstance.findUnique({
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
       where: { id },
       include: { nodes: true, edges: true },
-    })
+    }), resolveTenantFromRequest(req))
     res.json(instance)
   } catch (err) {
     next(err)
@@ -1501,7 +1506,7 @@ workflowInstancesRouter.post('/:id/start', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'start')
     const started = await startInstance(req.params.id, req.user!.userId, resolveTenantFromRequest(req))
-    const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: req.params.id } })
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: req.params.id } }), resolveTenantFromRequest(req))
     res.json({ ...instance, startNodes: started.startNodes })
   } catch (err) {
     next(err)
@@ -1512,7 +1517,7 @@ workflowInstancesRouter.post('/:id/pause', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'edit')
     await pauseInstance(req.params.id, req.user!.userId, resolveTenantFromRequest(req))
-    const instance = await prisma.workflowInstance.findUnique({ where: { id: req.params.id } })
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({ where: { id: req.params.id } }), resolveTenantFromRequest(req))
     res.json(instance)
   } catch (err) {
     next(err)
@@ -1523,7 +1528,7 @@ workflowInstancesRouter.post('/:id/resume', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'edit')
     await resumeInstance(req.params.id, req.user!.userId, resolveTenantFromRequest(req))
-    const instance = await prisma.workflowInstance.findUnique({ where: { id: req.params.id } })
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({ where: { id: req.params.id } }), resolveTenantFromRequest(req))
     res.json(instance)
   } catch (err) {
     next(err)
@@ -1536,7 +1541,7 @@ workflowInstancesRouter.post('/:id/cancel', validate(cancelSchema), async (req, 
     await assertInstancePermission(req.user!.userId, id, 'edit')
     const { reason } = req.body as z.infer<typeof cancelSchema>
     await cancelInstance(id, reason, req.user!.userId, resolveTenantFromRequest(req))
-    const instance = await prisma.workflowInstance.findUnique({ where: { id } })
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({ where: { id } }), resolveTenantFromRequest(req))
     res.json(instance)
   } catch (err) {
     next(err)
@@ -1546,14 +1551,14 @@ workflowInstancesRouter.post('/:id/cancel', validate(cancelSchema), async (req, 
 workflowInstancesRouter.get('/:id/mutations', async (req, res, next) => {
   try {
     const pg = parsePagination(req.query as Record<string, unknown>)
-    const [mutations, total] = await Promise.all([
-      prisma.workflowMutation.findMany({
+    const [mutations, total] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+      tx.workflowMutation.findMany({
         where: { instanceId: req.params.id },
         skip: pg.skip, take: pg.take,
         orderBy: { performedAt: 'desc' },
       }),
-      prisma.workflowMutation.count({ where: { instanceId: req.params.id } }),
-    ])
+      tx.workflowMutation.count({ where: { instanceId: req.params.id } }),
+    ]), resolveTenantFromRequest(req))
     res.json(toPageResponse(mutations, total, pg))
   } catch (err) {
     next(err)
@@ -1562,10 +1567,10 @@ workflowInstancesRouter.get('/:id/mutations', async (req, res, next) => {
 
 workflowInstancesRouter.get('/:id/history', async (req, res, next) => {
   try {
-    const events = await prisma.workflowEvent.findMany({
+    const events = await withTenantDbTransaction(prisma, (tx) => tx.workflowEvent.findMany({
       where: { instanceId: req.params.id },
       orderBy: { occurredAt: 'desc' },
-    })
+    }), resolveTenantFromRequest(req))
     res.json(events)
   } catch (err) {
     next(err)
@@ -1604,7 +1609,7 @@ const updateParamsSchema = z.object({
 
 workflowInstancesRouter.get('/:id/params', async (req, res, next) => {
   try {
-    const instance = await prisma.workflowInstance.findUnique({ where: { id: req.params.id } })
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({ where: { id: req.params.id } }), resolveTenantFromRequest(req))
     if (!instance) throw new NotFoundError('WorkflowInstance', req.params.id)
     const ctx = (instance.context ?? {}) as Record<string, unknown>
     res.json({
@@ -1621,16 +1626,16 @@ workflowInstancesRouter.get('/:id/params', async (req, res, next) => {
 workflowInstancesRouter.patch('/:id/params', validate(updateParamsSchema), async (req, res, next) => {
   try {
     const id = req.params.id as string
-    const instance = await prisma.workflowInstance.findUnique({ where: { id } })
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({ where: { id } }), resolveTenantFromRequest(req))
     if (!instance) throw new NotFoundError('WorkflowInstance', id)
     const ctx = (instance.context ?? {}) as Record<string, unknown>
     const { paramDefs, paramValues } = req.body as z.infer<typeof updateParamsSchema>
     if (paramDefs !== undefined) ctx._paramDefs = paramDefs
     if (paramValues !== undefined) ctx._params = { ...(ctx._params as object ?? {}), ...paramValues }
-    await prisma.workflowInstance.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
       where: { id },
       data: { context: ctx as never },
-    })
+    }), resolveTenantFromRequest(req))
     res.json({ paramDefs: ctx._paramDefs ?? [], paramValues: ctx._params ?? {} })
   } catch (err) {
     next(err)
@@ -1651,10 +1656,10 @@ const updateGlobalsSchema = z.object({
 workflowInstancesRouter.get('/:id/globals', async (req, res, next) => {
   try {
     const id = req.params.id as string
-    const instance = await prisma.workflowInstance.findUnique({
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
       where: { id },
       select: { id: true, context: true, templateId: true },
-    })
+    }), resolveTenantFromRequest(req))
     if (!instance) throw new NotFoundError('WorkflowInstance', id)
 
     let teamId: string | null = null
@@ -1712,7 +1717,7 @@ workflowInstancesRouter.patch('/:id/globals', validate(updateGlobalsSchema), asy
     const id = req.params.id as string
     await assertInstancePermission(req.user!.userId, id, 'edit')
 
-    const instance = await prisma.workflowInstance.findUnique({ where: { id } })
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({ where: { id } }), resolveTenantFromRequest(req))
     if (!instance) throw new NotFoundError('WorkflowInstance', id)
 
     // Resolve the team to know which keys are INSTANCE-scoped (overrideable).
@@ -1755,10 +1760,10 @@ workflowInstancesRouter.patch('/:id/globals', validate(updateGlobalsSchema), asy
     }
 
     ctx._globals = globals
-    await prisma.workflowInstance.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
       where: { id },
       data: { context: ctx as never },
-    })
+    }), resolveTenantFromRequest(req))
 
     await logEvent('InstanceGlobalsUpdated', 'WorkflowInstance', id, req.user!.userId, {
       appliedKeys: Object.keys(applied),
@@ -1774,10 +1779,10 @@ workflowInstancesRouter.patch('/:id/globals', validate(updateGlobalsSchema), asy
 workflowInstancesRouter.post('/:id/archive', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'edit')
-    const instance = await prisma.workflowInstance.update({
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
       where: { id: req.params.id },
       data: { archivedAt: new Date() },
-    })
+    }), resolveTenantFromRequest(req))
     await logEvent('InstanceArchived', 'WorkflowInstance', instance.id, req.user!.userId)
     res.json(instance)
   } catch (err) { next(err) }
@@ -1786,10 +1791,10 @@ workflowInstancesRouter.post('/:id/archive', async (req, res, next) => {
 workflowInstancesRouter.post('/:id/restore', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'edit')
-    const instance = await prisma.workflowInstance.update({
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
       where: { id: req.params.id },
       data: { archivedAt: null },
-    })
+    }), resolveTenantFromRequest(req))
     await logEvent('InstanceRestored', 'WorkflowInstance', instance.id, req.user!.userId)
     res.json(instance)
   } catch (err) { next(err) }
@@ -1813,17 +1818,17 @@ workflowInstancesRouter.post('/:id/test-branches', validate(testBranchesSchema),
     const instanceId = req.params.id as string
     const { sourceNodeId, sampleContext } = req.body as z.infer<typeof testBranchesSchema>
 
-    const sourceNode = await prisma.workflowNode.findUnique({
+    const sourceNode = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findUnique({
       where: { id: sourceNodeId },
       select: { id: true, nodeType: true, instanceId: true },
-    })
+    }), resolveTenantFromRequest(req))
     if (!sourceNode || sourceNode.instanceId !== instanceId) {
       throw new NotFoundError('WorkflowNode', sourceNodeId)
     }
 
-    const edges = await prisma.workflowEdge.findMany({
+    const edges = await withTenantDbTransaction(prisma, (tx) => tx.workflowEdge.findMany({
       where: { sourceNodeId, NOT: { edgeType: 'ERROR_BOUNDARY' } },
-    })
+    }), resolveTenantFromRequest(req))
 
     type EdgeReport = {
       edgeId:        string
@@ -1884,7 +1889,7 @@ workflowInstancesRouter.post('/:id/test-branches', validate(testBranchesSchema),
 workflowInstancesRouter.get('/:id/pending-executions', async (req, res, next) => {
   try {
     const location = (req.query.location as string | undefined)?.toUpperCase()
-    const pending = await prisma.pendingExecution.findMany({
+    const pending = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.findMany({
       where: {
         instanceId: req.params.id,
         completedAt: null,
@@ -1893,7 +1898,7 @@ workflowInstancesRouter.get('/:id/pending-executions', async (req, res, next) =>
       },
       include: { node: { select: { nodeType: true, label: true, config: true } } },
       orderBy: { createdAt: 'asc' },
-    })
+    }), resolveTenantFromRequest(req))
     res.json(pending)
   } catch (err) { next(err) }
 })
@@ -1906,7 +1911,12 @@ workflowInstancesRouter.get('/pending-executions/poll', async (req, res, next) =
     if (tenantIsolationStrict() && !requestTenant) {
       throw new ValidationError('TENANT_ISOLATION_MODE=strict requires X-Tenant-Id or tenant_id when polling pending executions')
     }
-    const pendingRaw = await prisma.pendingExecution.findMany({
+    // Poll is per-tenant, not a cross-tenant system worker (strict mode requires a
+    // request tenant above), so scoping the read to requestTenant is correct and,
+    // under FORCE RLS, returns exactly the same same-tenant set the manual filter
+    // below computes. Under non-strict/pre-cutover, requestTenant may be undefined →
+    // no GUC set → all rows, identical to prior behavior.
+    const pendingRaw = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.findMany({
       where: { location: location as any, completedAt: null, expiresAt: { gt: new Date() } },
       include: {
         node: { select: { nodeType: true, label: true, config: true } },
@@ -1914,7 +1924,7 @@ workflowInstancesRouter.get('/pending-executions/poll', async (req, res, next) =
       },
       orderBy: { createdAt: 'asc' },
       take: tenantIsolationStrict() ? 200 : 50,
-    })
+    }), requestTenant)
     const pending = tenantIsolationStrict()
       ? pendingRaw
           .filter(exec => (exec.instance.tenantId ?? resolveTenantFromContext(exec.instance.context)) === requestTenant)
@@ -1932,10 +1942,10 @@ workflowInstancesRouter.get('/pending-executions/poll', async (req, res, next) =
 workflowInstancesRouter.post('/pending-executions/:execId/claim', async (req, res, next) => {
   try {
     await assertPendingExecutionTenant(req, req.params.execId)
-    const exec = await prisma.pendingExecution.update({
+    const exec = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.update({
       where: { id: req.params.execId, completedAt: null },
       data: { claimedAt: new Date(), claimedBy: req.user?.userId },
-    })
+    }), resolveTenantFromRequest(req))
     res.json(exec)
   } catch (err) { next(err) }
 })
@@ -1945,10 +1955,10 @@ workflowInstancesRouter.post('/pending-executions/:execId/complete', async (req,
   try {
     await assertPendingExecutionTenant(req, req.params.execId)
     const { result, error } = req.body as { result?: Record<string, unknown>; error?: string }
-    const exec = await prisma.pendingExecution.update({
+    const exec = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.update({
       where: { id: req.params.execId },
       data: { completedAt: new Date(), result: result as any, error },
-    })
+    }), resolveTenantFromRequest(req))
     if (!error) {
       // Advance the workflow from this node. Finding #7 — pass the attempt this pending
       // execution was dispatched under so a result from a superseded attempt is rejected.
@@ -1970,12 +1980,12 @@ workflowInstancesRouter.post('/pending-executions/:execId/complete', async (req,
 // matches stored rows (symmetric). In 'off' mode (default) tenant_id is unset
 // on both the write and read side, so this returns undefined and CF reads stay
 // unfiltered — no behaviour change.
-async function resolveInstanceTenantForCfRead(instanceId: string): Promise<string | undefined> {
+async function resolveInstanceTenantForCfRead(instanceId: string, tenantId?: string): Promise<string | undefined> {
   if (config.TENANT_ISOLATION_MODE !== 'strict') return undefined
-  const inst = await prisma.workflowInstance.findUnique({
+  const inst = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
     where: { id: instanceId },
     select: { context: true },
-  })
+  }), tenantId)
   return resolveRuntimeTenantId({ instanceContext: inst?.context })
 }
 
@@ -1985,7 +1995,7 @@ workflowInstancesRouter.get('/:id/events', async (req, res, next) => {
     await assertInstancePermission(req.user!.userId, req.params.id, 'view')
     const url = new URL(`${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/execute/events`)
     url.searchParams.set('run_id', req.params.id)
-    const eventsTenantId = await resolveInstanceTenantForCfRead(req.params.id)
+    const eventsTenantId = await resolveInstanceTenantForCfRead(req.params.id, resolveTenantFromRequest(req))
     if (eventsTenantId) url.searchParams.set('tenant_id', eventsTenantId)
     if (typeof req.query.since_id === 'string') url.searchParams.set('since_id', req.query.since_id)
     if (typeof req.query.since_timestamp === 'string') url.searchParams.set('since_timestamp', req.query.since_timestamp)
@@ -2013,7 +2023,7 @@ workflowInstancesRouter.get('/:id/events/stream', async (req, res, next) => {
     // We need a trace_id; context-fabric's stream is keyed by trace_id today
     // (whereas /events accepts run_id). Look up the most recent CallLog row
     // for this workflow instance, take its trace_id.
-    const streamTenantId = await resolveInstanceTenantForCfRead(req.params.id)
+    const streamTenantId = await resolveInstanceTenantForCfRead(req.params.id, resolveTenantFromRequest(req))
     const callsUrl = new URL(`${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/execute/calls`)
     callsUrl.searchParams.set('workflow_run_id', req.params.id)
     callsUrl.searchParams.set('limit', '1')
