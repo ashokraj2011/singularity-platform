@@ -1,5 +1,6 @@
 import type { WorkflowNode, WorkflowInstance, Prisma } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 
 /**
  * TimerExecutor sets the node into ACTIVE status with a `_fireAt` ISO timestamp
@@ -12,7 +13,7 @@ import { prisma } from '../../../../lib/prisma'
  */
 export async function activateTimer(
   node: WorkflowNode,
-  _instance: WorkflowInstance,
+  instance: WorkflowInstance,
 ): Promise<void> {
   const cfg = (node.config ?? {}) as Record<string, unknown>
   const std = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard)
@@ -44,8 +45,8 @@ export async function activateTimer(
   if (!fireAt) fireAt = new Date()
 
   const updated = { ...cfg, _fireAt: fireAt.toISOString() }
-  await prisma.workflowNode.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
     where: { id: node.id },
     data: { config: updated as Prisma.InputJsonValue },
-  })
+  }), instance.tenantId ?? undefined)
 }

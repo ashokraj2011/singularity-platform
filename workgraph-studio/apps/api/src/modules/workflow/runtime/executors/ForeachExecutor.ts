@@ -1,5 +1,6 @@
 import type { WorkflowNode, WorkflowInstance, Prisma } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 
 /**
  * ForeachExecutor records the iteration plan on the node config.
@@ -69,20 +70,21 @@ export async function activateForeach(
   }
   const maxConcurrency = resolveNumber(std.maxConcurrency ?? cfg.maxConcurrency, ctx, 1)
   const parallel = String(std.parallel ?? cfg.parallel ?? '').toLowerCase() === 'true'
+  const tenantId = instance.tenantId ?? undefined
 
-  await prisma.workflowNode.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
     where: { id: node.id },
     data: {
       config: { ...cfg, _items: collection.length, _completed: 0, _parallel: parallel, _maxConcurrency: maxConcurrency } as Prisma.InputJsonValue,
     },
-  })
+  }), tenantId)
 
   // For MVP, mark COMPLETED if collection is empty; otherwise leave ACTIVE for
   // an external orchestrator to fan out and signal back.
   if (collection.length === 0) {
-    await prisma.workflowNode.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
       where: { id: node.id },
       data: { status: 'COMPLETED', completedAt: new Date() },
-    })
+    }), tenantId)
   }
 }

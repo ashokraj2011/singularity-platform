@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client'
 import type { WorkflowInstance, WorkflowNode } from '@prisma/client'
 import { randomBytes } from 'node:crypto'
 import { prisma } from '../../lib/prisma'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { ForbiddenError, NotFoundError, ValidationError } from '../../lib/errors'
 import { config } from '../../config'
@@ -1064,11 +1065,7 @@ export async function startWorkItemTarget(
   })
 
   const { startInstance } = await import('../workflow/runtime/WorkflowRuntime')
-  // RLS prep — cloneDesignToRun's returned `instance` is a narrow select (id/name/
-  // status/templateVersion) that doesn't include tenantId; it's Slice 3's file, so
-  // deliberately not reached into here (out of scope for this slice's diff).
-  // Byte-for-byte today's behavior; revisit once Slice 3 extends the select.
-  await startInstance(result.instance.id, userId)
+  await startInstance(result.instance.id, userId, result.instance.tenantId ?? undefined)
   return { target: updated, childWorkflowInstanceId: result.instance.id }
 }
 
@@ -1382,16 +1379,20 @@ export async function approveWorkItem(workItemId: string, userId: string, approv
   await publishOutbox('WorkItem', workItemId, 'WorkItemApproved', { workItemId })
 
   if (workItem.sourceWorkflowInstanceId && workItem.sourceWorkflowNodeId) {
-    const sourceNode = await prisma.workflowNode.findUnique({
-      where: { id: workItem.sourceWorkflowNodeId },
-      select: { config: true },
-    })
+    // RLS prep — WorkItem has no tenantId column of its own (only a bare
+    // sourceWorkflowInstanceId FK); pull the owning instance's tenantId in the same
+    // query as this pre-existing lookup rather than adding a second round trip.
+    const sourceNode = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findUnique({
+      where: { id: workItem.sourceWorkflowNodeId! },
+      select: { config: true, instance: { select: { tenantId: true } } },
+    }), undefined)
+    const tenantId = sourceNode?.instance.tenantId ?? undefined
     const cfg = asRecord(sourceNode?.config)
     const outputPath = String(asRecord(cfg.standard).outputPath ?? cfg.outputPath ?? 'workItem').trim() || 'workItem'
     const advanceOutput: Record<string, unknown> = {}
     setPath(advanceOutput, outputPath, finalOutput)
     const { advance } = await import('../workflow/runtime/WorkflowRuntime')
-    await advance(workItem.sourceWorkflowInstanceId, workItem.sourceWorkflowNodeId, advanceOutput, userId)
+    await advance(workItem.sourceWorkflowInstanceId, workItem.sourceWorkflowNodeId, advanceOutput, userId, undefined, tenantId)
   }
   return finalOutput
 }

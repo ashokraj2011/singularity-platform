@@ -1,6 +1,7 @@
 import type { WorkflowNode, WorkflowInstance } from '@prisma/client'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 
 // PARALLEL_JOIN (AND-join) sets expected_joins from config so GraphTraverser's
 // atomic counter knows when all branches have arrived.
@@ -38,12 +39,12 @@ export async function activateParallelJoin(
   const cfg = (node.config ?? {}) as Record<string, unknown>
   const expected = expectedBranches(cfg, (instance.context ?? {}) as Record<string, unknown>)
 
-  await prisma.workflowNode.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
     where: { id: node.id },
     data: {
       status: 'ACTIVE',
       startedAt: new Date(),
       config: { ...cfg, expected_joins: expected, completed_joins: 0 } as Prisma.InputJsonValue,
     },
-  })
+  }), instance.tenantId ?? undefined)
 }

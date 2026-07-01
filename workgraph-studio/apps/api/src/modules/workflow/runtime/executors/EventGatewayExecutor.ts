@@ -1,5 +1,6 @@
 import type { WorkflowNode, WorkflowInstance } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent } from '../../../../lib/audit'
 
 /**
@@ -19,9 +20,9 @@ export async function activateEventGateway(
   node: WorkflowNode,
   instance: WorkflowInstance,
 ): Promise<void> {
-  const outgoing = await prisma.workflowEdge.findMany({
+  const outgoing = await withTenantDbTransaction(prisma, (tx) => tx.workflowEdge.findMany({
     where: { sourceNodeId: node.id },
-  })
+  }), instance.tenantId ?? undefined)
 
   await logEvent('EventGatewayActivated', 'WorkflowNode', node.id, undefined, {
     instanceId: instance.id,

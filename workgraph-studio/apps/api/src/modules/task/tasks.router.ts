@@ -5,6 +5,7 @@ import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
+import { resolveTenantFromRequest } from '../../lib/tenant-isolation'
 
 export const tasksRouter: Router = Router()
 
@@ -197,7 +198,11 @@ tasksRouter.post('/:id/complete', async (req, res, next) => {
       const output = (req.body as Record<string, unknown>).output as Record<string, unknown> | undefined
       try {
         const { advance } = await import('../workflow/runtime/WorkflowRuntime')
-        await advance(task.instanceId, task.nodeId, output ?? {}, userId)
+        // RLS prep — best-effort only. Unlike instances.router.ts/approvals.router.ts,
+        // this route has no assertTaskTenant-style guard today (no such helper exists
+        // in lib/tenant-isolation.ts); resolveTenantFromRequest here is DB-scoping
+        // plumbing for the eventual RLS cutover, not an authorization claim.
+        await advance(task.instanceId, task.nodeId, output ?? {}, userId, undefined, resolveTenantFromRequest(req))
       } catch (advanceErr) {
         console.error('Workflow advance failed after task completion:', advanceErr)
       }
@@ -315,11 +320,15 @@ tasksRouter.post('/:id/form-submission', validate(formSubmissionSchema), async (
       if (task.nodeId && task.instanceId) {
         try {
           const { advance } = await import('../workflow/runtime/WorkflowRuntime')
+          // RLS prep — best-effort only; see the /:id/complete route above for why
+          // this route has no tenant-authorization guard to ride on today.
           await advance(
             task.instanceId,
             task.nodeId,
             { form: data, attachments: attachmentIds ?? [] },
             req.user!.userId,
+            undefined,
+            resolveTenantFromRequest(req),
           )
         } catch (advanceErr) {
           console.error('Workflow advance failed after form submission:', advanceErr)

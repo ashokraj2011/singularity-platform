@@ -1,6 +1,7 @@
 import type { WorkflowNode, WorkflowInstance } from '@prisma/client'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 
 // ERROR_CATCH is activated by failNode() via an ERROR_BOUNDARY edge.
 // It writes the captured error into the workflow context and auto-advances
@@ -12,6 +13,7 @@ export async function activateErrorCatch(
   const cfg = (node.config ?? {}) as Record<string, unknown>
   const std = (cfg.standard ?? {}) as Record<string, string>
   const contextPath = std.contextPath || '_error'
+  const tenantId = instance.tenantId ?? undefined
 
   // _lastError was already written into context by failNode(); re-surface under the configured path.
   const ctx = (instance.context ?? {}) as Record<string, unknown>
@@ -19,14 +21,14 @@ export async function activateErrorCatch(
 
   if (lastError && contextPath !== '_lastError') {
     const updated = { ...ctx, [contextPath]: lastError }
-    await prisma.workflowInstance.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
       where: { id: instance.id },
       data: { context: updated as unknown as Prisma.InputJsonValue },
-    })
+    }), tenantId)
   }
 
-  await prisma.workflowNode.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
     where: { id: node.id },
     data: { status: 'ACTIVE', startedAt: new Date() },
-  })
+  }), tenantId)
 }
