@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -56,6 +57,15 @@ log = logging.getLogger(__name__)
 # but is checked per-call inside run_turn. This one is the worst-case
 # escape hatch in case of a runaway repair loop.
 DEFAULT_MAX_TURNS = 25
+# Wall-clock safety deadline for a whole governed stage. max_turns bounds the
+# turn COUNT, but a stage of slow turns can still run far past any HTTP client's
+# patience. The workgraph→CF client aborts a governed stage at 900s
+# (client.ts executeGovernedStage default envelope); we self-terminate at 780s
+# — comfortably BELOW that — so CF returns a clean terminal result (stop_reason
+# STAGE_DEADLINE, which workgraph maps to FAILED/restartable) instead of being
+# orphaned by the client abort and then duplicated by the retry. 0 disables.
+# Keep this < the client envelope if you tune either side.
+STAGE_WALL_CLOCK_SEC = max(0.0, float(os.environ.get("GOVERNED_STAGE_WALL_CLOCK_SEC", "780")))
 LLM_RETRY_ATTEMPTS = max(0, int(os.environ.get("GOVERNED_LLM_RETRY_ATTEMPTS", "2")))
 LLM_RETRY_BASE_DELAY_SEC = max(0.1, float(os.environ.get("GOVERNED_LLM_RETRY_BASE_DELAY_SEC", "1.0")))
 _TRANSIENT_LLM_ERROR_CODES = {
@@ -1901,7 +1911,21 @@ async def run_stage(
         result.stop_reason = "APPROVAL_PENDING"
         return result
 
+    _stage_started = time.monotonic()
     for turn_idx in range(max_turns):
+        # Wall-clock safety deadline — bail cleanly BEFORE the HTTP client aborts
+        # (see STAGE_WALL_CLOCK_SEC) so a slow stage returns a terminal result
+        # rather than being orphaned server-side + duplicated by the client retry.
+        if STAGE_WALL_CLOCK_SEC > 0 and not _is_terminal_state(state):
+            _elapsed = time.monotonic() - _stage_started
+            if _elapsed > STAGE_WALL_CLOCK_SEC:
+                log.warning(
+                    "governed stage wall-clock deadline hit: %.0fs > %ds (phase=%s turn=%d) — returning STAGE_DEADLINE",
+                    _elapsed, int(STAGE_WALL_CLOCK_SEC), state.current_phase.value, turn_idx,
+                )
+                result.stop_reason = "STAGE_DEADLINE"
+                result.final_state = state
+                return result
         # E1 — fire once, the first time we enter ACT, before this iteration's
         # run_turn dispatches any mutating tool.
         if not _act_automation_done and state.current_phase is Phase.ACT:

@@ -102,6 +102,10 @@ export function executeReqToGovernedStageReq(req: ExecuteRequest, opts: {
     run_context: (req.run_context ?? {}) as unknown as Record<string, unknown>,
     bearer: undefined,
     max_turns: opts.maxTurns ?? 25,
+    // Thread the idempotency key (AgentTaskExecutor sets it to the AgentRun id) so
+    // CF can collapse a duplicate retry onto the in-flight run instead of starting
+    // a second governed loop. Previously dropped on this path.
+    idempotency_key: req.idempotency_key,
     model_alias: req.model_overrides?.modelAlias,
     ...(stageExecPolicy ? { stage_execution_policy: stageExecPolicy } : {}),
   }

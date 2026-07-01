@@ -2118,8 +2118,43 @@ class GovernedStageRequest(BaseModel):
     args_override: Optional[dict[str, Any]] = None
 
 
+# In-process idempotency guard for governed stages. A duplicate request carrying
+# the same idempotency_key (e.g. a workgraph retry after a transient client
+# disconnect) awaits the in-flight run and returns its result instead of
+# launching a SECOND governed loop — which would duplicate LLM cost and tool
+# side effects. In-memory / single-instance by design (the POC runs one CF
+# replica); a cross-replica guard (call_log lookup keyed on idempotency_key) is
+# the multi-instance follow-up.
+_inflight_governed_stages: dict[str, "asyncio.Future[dict[str, Any]]"] = {}
+
+
 @router.post("/api/v1/execute-governed-stage")
 async def execute_governed_stage(req: GovernedStageRequest, x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")) -> dict[str, Any]:
+    key = (req.idempotency_key or "").strip()
+    if not key:
+        return await _execute_governed_stage_impl(req, x_service_token)
+    existing = _inflight_governed_stages.get(key)
+    if existing is not None:
+        logging.getLogger("context_api.governed").warning(
+            "execute-governed-stage idempotency hit; awaiting in-flight run for key=%s", key,
+        )
+        return await existing
+    fut: "asyncio.Future[dict[str, Any]]" = asyncio.get_event_loop().create_future()
+    _inflight_governed_stages[key] = fut
+    try:
+        res = await _execute_governed_stage_impl(req, x_service_token)
+        if not fut.done():
+            fut.set_result(res)
+        return res
+    except BaseException as exc:
+        if not fut.done():
+            fut.set_exception(exc)
+        raise
+    finally:
+        _inflight_governed_stages.pop(key, None)
+
+
+async def _execute_governed_stage_impl(req: GovernedStageRequest, x_service_token: Optional[str] = None) -> dict[str, Any]:
     """Run a governed stage end-to-end (multi-turn)."""
     check_execute_service_token(x_service_token)
     # Laptop preflight — when the caller requires the user's laptop bridge but no
