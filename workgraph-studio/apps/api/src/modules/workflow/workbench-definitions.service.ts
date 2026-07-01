@@ -19,6 +19,7 @@
  */
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { assertInstancePermission, assertTemplatePermission } from '../../lib/permissions/workflowTemplate'
 import { logEvent, createReceipt } from '../../lib/audit'
@@ -139,10 +140,11 @@ type ResolvedWorkbenchNode = {
 }
 
 async function resolveWorkbenchNode(nodeId: string): Promise<ResolvedWorkbenchNode | null> {
-  const rt = await prisma.workflowNode.findUnique({
+  // Request-only (workbench router) — tenantId defaults to the request tenant via ALS.
+  const rt = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findUnique({
     where: { id: nodeId },
     select: { id: true, instanceId: true, config: true, nodeType: true },
-  })
+  }))
   if (rt) return { id: rt.id, config: rt.config, nodeType: String(rt.nodeType), kind: 'runtime', instanceId: rt.instanceId, workflowId: null }
   const dn = await prisma.workflowDesignNode.findUnique({
     where: { id: nodeId },
@@ -158,7 +160,7 @@ async function assertWorkbenchNodeAccess(node: ResolvedWorkbenchNode, userId: st
 }
 
 async function persistWorkbenchNodeConfig(node: ResolvedWorkbenchNode, config: Prisma.InputJsonValue): Promise<void> {
-  if (node.kind === 'runtime') await prisma.workflowNode.update({ where: { id: node.id }, data: { config } })
+  if (node.kind === 'runtime') await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({ where: { id: node.id }, data: { config } }))
   else await prisma.workflowDesignNode.update({ where: { id: node.id }, data: { config } })
 }
 
