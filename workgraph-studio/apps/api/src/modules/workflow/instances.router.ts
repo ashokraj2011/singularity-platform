@@ -559,7 +559,7 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/fail', validate(failNodeSchema)
     const id = req.params.id as string
     const nodeId = req.params.nodeId as string
     const failure = req.body as z.infer<typeof failNodeSchema>
-    const result = await failNode(id, nodeId, failure, req.user!.userId)
+    const result = await failNode(id, nodeId, failure, req.user!.userId, resolveTenantFromRequest(req))
     const node = await prisma.workflowNode.findUnique({ where: { id: nodeId } })
     res.json({ ...result, node })
   } catch (err) {
@@ -572,7 +572,7 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/restart', async (req, res, next
     const id = req.params.id as string
     const nodeId = req.params.nodeId as string
     await assertInstancePermission(req.user!.userId, id, 'edit')
-    const result = await restartNode(id, nodeId, req.user!.userId)
+    const result = await restartNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
     const [instance, node] = await Promise.all([
       prisma.workflowInstance.findUnique({ where: { id } }),
       prisma.workflowNode.findUnique({ where: { id: nodeId } }),
@@ -597,7 +597,7 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/refine', async (req, res, next)
     if (!node) return res.status(404).json({ error: 'node not found in this run' })
     const config = { ...((node.config ?? {}) as Record<string, unknown>), _refineFeedback: feedback }
     await prisma.workflowNode.update({ where: { id: nodeId }, data: { config: config as Prisma.InputJsonValue } })
-    const result = await restartNode(id, nodeId, req.user!.userId)
+    const result = await restartNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
     res.json({ ...result, refined: true })
   } catch (err) {
     next(err)
@@ -627,7 +627,7 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/answer-questions', async (req, 
     if (!node) return res.status(404).json({ error: 'node not found in this run' })
     const config = { ...((node.config ?? {}) as Record<string, unknown>), _copilotAnswers: formatted }
     await prisma.workflowNode.update({ where: { id: nodeId }, data: { config: config as Prisma.InputJsonValue } })
-    const result = await restartNode(id, nodeId, req.user!.userId)
+    const result = await restartNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
     res.json({ ...result, answered: true })
   } catch (err) {
     next(err)
@@ -1470,7 +1470,7 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/force-complete', validate(force
     const nodeId = req.params.nodeId as string
     await assertInstancePermission(req.user!.userId, id, 'edit')
     const { comment, output } = req.body as z.infer<typeof forceCompleteSchema>
-    await forceCompleteNode(id, nodeId, comment, output ?? {}, req.user!.userId)
+    await forceCompleteNode(id, nodeId, comment, output ?? {}, req.user!.userId, resolveTenantFromRequest(req))
     const [instance, node] = await Promise.all([
       prisma.workflowInstance.findUnique({ where: { id }, include: { nodes: true, edges: true } }),
       prisma.workflowNode.findUnique({ where: { id: nodeId } }),
@@ -1485,7 +1485,7 @@ workflowInstancesRouter.post('/:id/advance', validate(advanceSchema), async (req
   try {
     const id = req.params.id as string
     const { completedNodeId, output } = req.body as z.infer<typeof advanceSchema>
-    await advance(id, completedNodeId, output, req.user!.userId)
+    await advance(id, completedNodeId, output, req.user!.userId, undefined, resolveTenantFromRequest(req))
     const instance = await prisma.workflowInstance.findUnique({
       where: { id },
       include: { nodes: true, edges: true },
@@ -1500,7 +1500,7 @@ workflowInstancesRouter.post('/:id/advance', validate(advanceSchema), async (req
 workflowInstancesRouter.post('/:id/start', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'start')
-    const started = await startInstance(req.params.id, req.user!.userId)
+    const started = await startInstance(req.params.id, req.user!.userId, resolveTenantFromRequest(req))
     const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: req.params.id } })
     res.json({ ...instance, startNodes: started.startNodes })
   } catch (err) {
@@ -1511,7 +1511,7 @@ workflowInstancesRouter.post('/:id/start', async (req, res, next) => {
 workflowInstancesRouter.post('/:id/pause', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'edit')
-    await pauseInstance(req.params.id, req.user!.userId)
+    await pauseInstance(req.params.id, req.user!.userId, resolveTenantFromRequest(req))
     const instance = await prisma.workflowInstance.findUnique({ where: { id: req.params.id } })
     res.json(instance)
   } catch (err) {
@@ -1522,7 +1522,7 @@ workflowInstancesRouter.post('/:id/pause', async (req, res, next) => {
 workflowInstancesRouter.post('/:id/resume', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'edit')
-    await resumeInstance(req.params.id, req.user!.userId)
+    await resumeInstance(req.params.id, req.user!.userId, resolveTenantFromRequest(req))
     const instance = await prisma.workflowInstance.findUnique({ where: { id: req.params.id } })
     res.json(instance)
   } catch (err) {
@@ -1535,7 +1535,7 @@ workflowInstancesRouter.post('/:id/cancel', validate(cancelSchema), async (req, 
     const id = req.params.id as string
     await assertInstancePermission(req.user!.userId, id, 'edit')
     const { reason } = req.body as z.infer<typeof cancelSchema>
-    await cancelInstance(id, reason, req.user!.userId)
+    await cancelInstance(id, reason, req.user!.userId, resolveTenantFromRequest(req))
     const instance = await prisma.workflowInstance.findUnique({ where: { id } })
     res.json(instance)
   } catch (err) {
@@ -1952,9 +1952,9 @@ workflowInstancesRouter.post('/pending-executions/:execId/complete', async (req,
     if (!error) {
       // Advance the workflow from this node. Finding #7 — pass the attempt this pending
       // execution was dispatched under so a result from a superseded attempt is rejected.
-      await advance(exec.instanceId, exec.nodeId, result ?? {}, req.user?.userId, exec.attempt)
+      await advance(exec.instanceId, exec.nodeId, result ?? {}, req.user?.userId, exec.attempt, resolveTenantFromRequest(req))
     } else {
-      await failNode(exec.instanceId, exec.nodeId, { message: error }, req.user?.userId)
+      await failNode(exec.instanceId, exec.nodeId, { message: error }, req.user?.userId, resolveTenantFromRequest(req))
     }
     res.json(exec)
   } catch (err) { next(err) }

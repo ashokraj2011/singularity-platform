@@ -59,7 +59,7 @@ export async function activateCallWorkflow(
       // kick it now; otherwise leave it be.
       if (existing.status === 'DRAFT') {
         const { startInstance } = await import('../WorkflowRuntime')
-        await startInstance(existing.id, parent.createdById ?? undefined)
+        await startInstance(existing.id, parent.createdById ?? undefined, parent.tenantId ?? undefined)
       }
       return
     }
@@ -128,5 +128,5 @@ export async function activateCallWorkflow(
   // ── Actually run the child ────────────────────────────────────────────────
   // Dynamic import avoids the WorkflowRuntime ↔ CallWorkflowExecutor cycle.
   const { startInstance } = await import('../WorkflowRuntime')
-  await startInstance(childId, parent.createdById ?? undefined)
+  await startInstance(childId, parent.createdById ?? undefined, parent.tenantId ?? undefined)
 }
