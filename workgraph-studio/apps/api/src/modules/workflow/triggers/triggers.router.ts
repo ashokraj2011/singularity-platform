@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import crypto from 'node:crypto'
 import { prisma } from '../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { validate } from '../../../middleware/validate'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 import { createWorkItem } from '../../work-items/work-items.service'
@@ -107,7 +108,11 @@ webhookRouter.post('/:secret', async (req, res, next) => {
       _webhookPayload: req.body,
       _triggeredAt: new Date().toISOString(),
     }
-    const instance = await prisma.workflowInstance.create({
+    // Public webhook — no request tenant; scope to the tenant derived from the
+    // payload (Decision C: NULL when the payload carries none, same as
+    // TriggerScheduler.spawnInstance — such instances need the trigger-tenant gap
+    // resolved before FORCE RLS, per the cutover readiness audit).
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.create({
       data: {
         templateId: match.templateId,
         name: `${match.template.name} (webhook)`,
@@ -115,7 +120,7 @@ webhookRouter.post('/:secret', async (req, res, next) => {
         tenantId: tenantIdForCreate(context),
         context: context as object,
       },
-    })
+    }), tenantIdForCreate(context))
     await prisma.workflowTrigger.update({
       where: { id: match.id },
       data: { lastFiredAt: new Date() },

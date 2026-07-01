@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
@@ -834,7 +835,7 @@ workflowTemplatesRouter.get('/:id/runs', async (req, res, next) => {
   try {
     const id = req.params.id as string
     await assertTemplatePermission(req.user!.userId, id, 'view')
-    const runs = await prisma.workflowInstance.findMany({
+    const runs = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findMany({
       where:   { templateId: id },
       orderBy: { createdAt: 'desc' },
       select:  {
@@ -842,7 +843,7 @@ workflowTemplatesRouter.get('/:id/runs', async (req, res, next) => {
         templateVersion: true,
         createdAt: true, startedAt: true, completedAt: true,
       },
-    })
+    }))
     res.json(runs)
   } catch (err) { next(err) }
 })
