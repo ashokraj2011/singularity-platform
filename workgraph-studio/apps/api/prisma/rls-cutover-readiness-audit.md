@@ -1,5 +1,22 @@
 # Tenant RLS cutover — readiness audit (2026-07-01)
 
+> **UPDATE 2026-07-02 — the gaps below are RESOLVED in code.** This document is the
+> original point-in-time audit; keep it for the reasoning. Since it was written, the
+> Phase-2 work landed (PRs #305–#311): the router/service layer is fully tenant-scoped
+> (instances/tasks/blueprint routers, all services, `assertInstancePermission`, the
+> remaining routers), the engine attachment/deadline gap is closed, and the six
+> standalone-capable tables (`tasks`, `approval_requests`, `consumables`, `agent_runs`,
+> `tool_runs`, `documents`) got a direct `tenantId` column + a
+> `tenantId = current_tenant OR instance-visible` policy (migration
+> `20260701120000_...`) with their standalone write paths stamping `tenantId`. Two
+> deliberate scope decisions stand: Event Horizon `platformSnapshot` is now per-tenant
+> (not global), and `SignalEmit` delivers same-tenant only. **What still gates the
+> actual cutover:** (a) Decision C — trigger-spawned instances still get
+> `tenantId: NULL` (cutover Guard C hard-stops on these); (b) any PRE-EXISTING
+> standalone rows with both `instanceId` and `tenantId` NULL (Guard D); (c) the
+> adminPrisma role must be SUPERUSER/BYPASSRLS on the target (Guard B). The cutover
+> remains a manual, human-run step.
+
 Companion to `rls-cutover-manual-apply-only.sql`. This is the evidence behind that
 file's BLOCKERS section: a full inventory of every code path that still touches the
 16 RLS-scoped tables **without** tenant scoping, and therefore what breaks the moment
