@@ -1,5 +1,6 @@
 import cron from 'node-cron'
 import { prisma } from '../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 import { createWorkItem } from '../../work-items/work-items.service'
 import { routeWorkItem } from '../../work-items/work-item-routing.service'
@@ -406,15 +407,26 @@ async function spawnInstance(
   templateName: string,
   context: Record<string, unknown>,
 ): Promise<void> {
-  const instance = await prisma.workflowInstance.create({
+  // RLS prep — tenantIdForCreate(context) resolves to undefined here today:
+  // the SCHEDULE/EVENT trigger contexts built above (_triggeredAt/_trigger/
+  // _triggerEvent) never carry a tenantId, because WorkflowTrigger/Workflow
+  // have no tenant column to source one from (a separate, deferred product
+  // decision — see the RLS cutover plan's Decision C). Wrapping the write
+  // anyway keeps the mechanism consistent with every other instance-creating
+  // path and makes the gap LOUD (a ValidationError under
+  // TENANT_ISOLATION_MODE=strict) instead of a silent bypass; behavior is
+  // otherwise unchanged (tenantId: undefined here is exactly what the bare
+  // `prisma.workflowInstance.create` call already did).
+  const tenantId = tenantIdForCreate(context)
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.create({
     data: {
       templateId,
       name: `${templateName} (auto-triggered)`,
       status: 'DRAFT',
-      tenantId: tenantIdForCreate(context),
+      tenantId,
       context: context as object,
     },
-  })
+  }), tenantId)
   await logEvent('WorkflowTriggered', 'WorkflowInstance', instance.id, undefined, {
     triggerId, templateId,
   })

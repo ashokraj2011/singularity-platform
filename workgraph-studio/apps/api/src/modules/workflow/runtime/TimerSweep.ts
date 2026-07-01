@@ -1,7 +1,19 @@
 import cron from 'node-cron'
 import { prisma } from '../../../lib/prisma'
+import { adminPrisma } from '../../../lib/admin-prisma'
 import { advance } from './WorkflowRuntime'
 import { logEvent, publishOutbox } from '../../../lib/audit'
+
+// RLS prep — TimerSweep's discovery queries below scan ACROSS EVERY TENANT in
+// one shot (that's what a sweep is); no single tenant's transaction can
+// produce a cross-tenant result set. adminPrisma (the workgraph owner/admin
+// connection, NOSUPERUSER-exempt from RLS) is used ONLY for these read-only
+// discovery reads, falling back to the regular tenant-scoped `prisma` client
+// when WORKGRAPH_DATABASE_URL_ADMIN isn't configured — today's exact
+// behavior. Every per-item WRITE downstream (advance()) still goes through
+// the normal tenant-scoped path, using the tenantId the discovery query
+// already has in hand (via the eager-loaded instance relation / a join).
+const sweepReader = adminPrisma ?? prisma
 
 /**
  * Polls every 5 seconds for ACTIVE TIMER nodes whose `_fireAt` has passed,
@@ -13,7 +25,7 @@ export function startTimerSweep(): void {
 
     // ─── Timer node fire ───────────────────────────────────────────────
     try {
-      const activeTimers = await prisma.workflowNode.findMany({
+      const activeTimers = await sweepReader.workflowNode.findMany({
         where: { nodeType: 'TIMER', status: 'ACTIVE' },
         include: { instance: true },
       })
@@ -26,7 +38,7 @@ export function startTimerSweep(): void {
         if (!node.instance || node.instance.status !== 'ACTIVE') continue
 
         try {
-          await advance(node.instanceId, node.id, { _firedAt: now.toISOString() })
+          await advance(node.instanceId, node.id, { _firedAt: now.toISOString() }, undefined, undefined, node.instance.tenantId ?? undefined)
         } catch (err) {
           console.error('Timer advance failed:', err)
         }
@@ -37,7 +49,7 @@ export function startTimerSweep(): void {
 
     // ─── Task SLA breach ───────────────────────────────────────────────
     try {
-      const overdue = await prisma.task.findMany({
+      const overdue = await sweepReader.task.findMany({
         where: {
           dueAt: { not: null, lte: now },
           status: { in: ['OPEN', 'IN_PROGRESS'] },
@@ -75,13 +87,17 @@ export function startTimerSweep(): void {
     // ─── Deadline attachment fire ──────────────────────────────────────
     try {
       // Find ACTIVE nodes that have _deadlineFireAt stored in config and the time has passed.
-      // Using raw SQL because Prisma can't efficiently filter by JSON sub-fields.
-      const overdue = await prisma.$queryRaw<Array<{ id: string; instanceId: string; config: unknown }>>`
-        SELECT id, "instanceId", config
-        FROM "workflow_nodes"
-        WHERE status = 'ACTIVE'
-          AND config->>'_deadlineFireAt' IS NOT NULL
-          AND (config->>'_deadlineFireAt')::timestamptz <= ${now}::timestamptz
+      // Using raw SQL because Prisma can't efficiently filter by JSON sub-fields. Joins
+      // workflow_instances to pull the owning instance's tenantId in the SAME cross-tenant
+      // discovery query (RLS prep — see sweepReader comment above), so the per-row advance()
+      // below can be tenant-scoped without a second round trip.
+      const overdue = await sweepReader.$queryRaw<Array<{ id: string; instanceId: string; config: unknown; instanceTenantId: string | null }>>`
+        SELECT wn.id, wn."instanceId", wn.config, wi."tenantId" AS "instanceTenantId"
+        FROM "workflow_nodes" wn
+        JOIN "workflow_instances" wi ON wi.id = wn."instanceId"
+        WHERE wn.status = 'ACTIVE'
+          AND wn.config->>'_deadlineFireAt' IS NOT NULL
+          AND (wn.config->>'_deadlineFireAt')::timestamptz <= ${now}::timestamptz
       `
 
       for (const row of overdue) {
@@ -92,7 +108,7 @@ export function startTimerSweep(): void {
             _deadlineTriggered: true,
             _deadlineAt: now.toISOString(),
             _deadlineEdge: edgeLabel,
-          })
+          }, undefined, undefined, row.instanceTenantId ?? undefined)
           await logEvent('NodeDeadlineFired', 'WorkflowNode', row.id, undefined, {
             instanceId: row.instanceId,
             edgeLabel,

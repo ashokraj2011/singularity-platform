@@ -18,6 +18,14 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(8080),
   DATABASE_URL: z.string(),
+  // RLS prep — the owner/admin DB connection (bootstrap-app-role.sh creates it
+  // specifically "for Prisma migrations and RLS cutovers"). The app's normal
+  // DATABASE_URL connects as workgraph_app (NOSUPERUSER NOBYPASSRLS — genuinely
+  // RLS-bound), so it can't see across tenants. Optional: only needed for
+  // TimerSweep's cross-tenant discovery sweep (lib/admin-prisma.ts); most
+  // dev/test setups won't set it and the sweep falls back to the regular
+  // tenant-scoped client (today's exact behavior).
+  WORKGRAPH_DATABASE_URL_ADMIN: z.string().optional(),
   JWT_SECRET: z.string().min(32),
   MINIO_ENDPOINT: z.string().default('localhost'),
   MINIO_PORT: z.coerce.number().default(9000),
