@@ -1,5 +1,6 @@
 import { Prisma, type WorkflowNode, type WorkflowInstance } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import {
   analyzeWorkflowInstance,
@@ -34,12 +35,13 @@ function cfgString(node: WorkflowNode, key: string): string | undefined {
 }
 
 async function blockNode(instance: WorkflowInstance, node: WorkflowNode, output: PolicyCheckOutput, actorId?: string): Promise<void> {
-  await prisma.$transaction([
-    prisma.workflowNode.update({
+  const tenantId = instance.tenantId ?? undefined
+  await withTenantDbTransaction(prisma, (tx) => Promise.all([
+    tx.workflowNode.update({
       where: { id: node.id },
       data: { status: 'BLOCKED', completedAt: new Date() },
     }),
-    prisma.workflowInstance.update({
+    tx.workflowInstance.update({
       where: { id: instance.id },
       data: {
         status: 'PAUSED',
@@ -49,7 +51,7 @@ async function blockNode(instance: WorkflowInstance, node: WorkflowNode, output:
         } as Prisma.InputJsonValue,
       },
     }),
-    prisma.workflowMutation.create({
+    tx.workflowMutation.create({
       data: {
         instanceId: instance.id,
         nodeId: node.id,
@@ -59,7 +61,7 @@ async function blockNode(instance: WorkflowInstance, node: WorkflowNode, output:
         performedById: actorId,
       },
     }),
-  ])
+  ]), tenantId)
   await logEvent('PolicyCheckBlocked', 'WorkflowNode', node.id, actorId, { instanceId: instance.id, output })
   await publishOutbox('WorkflowNode', node.id, 'PolicyCheckBlocked', { instanceId: instance.id, nodeId: node.id, output })
 }
@@ -70,6 +72,7 @@ export async function activatePolicyCheck(
   actorId?: string,
 ): Promise<{ passed: boolean; output: PolicyCheckOutput }> {
   const engine = (cfgString(node, 'engine') ?? cfgString(node, 'policyEngine') ?? 'local_allow').toLowerCase()
+  const tenantId = instance.tenantId ?? undefined
 
   if (engine === 'formal_verifier' || engine === 'formal-verifier') {
     if (!formalVerificationEnabled()) {
@@ -78,14 +81,14 @@ export async function activatePolicyCheck(
         policyCheck: { engine: 'formal_verifier', status: 'SKIPPED', skipReason },
       }
       const now = new Date()
-      await prisma.workflowNode.update({
+      await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
         where: { id: node.id },
         data: { status: 'COMPLETED', startedAt: node.startedAt ?? now, completedAt: now },
-      })
+      }), tenantId)
       return { passed: true, output }
     }
 
-    const analysis = await analyzeWorkflowInstance(instance.id, actorId, node.id)
+    const analysis = await analyzeWorkflowInstance(instance.id, actorId, node.id, tenantId)
     const output: PolicyCheckOutput = {
       policyCheck: {
         engine: 'formal_verifier',
@@ -98,18 +101,18 @@ export async function activatePolicyCheck(
       return { passed: false, output }
     }
     const now = new Date()
-    await prisma.workflowNode.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
       where: { id: node.id },
       data: { status: 'COMPLETED', startedAt: node.startedAt ?? now, completedAt: now },
-    })
+    }), tenantId)
     return { passed: true, output }
   }
 
   const now = new Date()
-  await prisma.workflowNode.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
     where: { id: node.id },
     data: { status: 'COMPLETED', startedAt: now, completedAt: now },
-  })
+  }), tenantId)
   return {
     passed: true,
     output: { policyCheck: { engine, status: 'PASSED' } },

@@ -1,5 +1,6 @@
 import { Prisma, type WorkflowInstance, type WorkflowNode } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import { postJson } from '../../../../lib/audit-gov/client'
 
@@ -72,8 +73,8 @@ function cfgStringArray(node: WorkflowNode, key: string): string[] {
   return []
 }
 
-async function traceIdsForInstance(instanceId: string): Promise<string[]> {
-  const runs = await prisma.agentRun.findMany({
+async function traceIdsForInstance(instanceId: string, tenantId?: string): Promise<string[]> {
+  const runs = await withTenantDbTransaction(prisma, (tx) => tx.agentRun.findMany({
     where: { instanceId },
     select: {
       outputs: {
@@ -81,7 +82,7 @@ async function traceIdsForInstance(instanceId: string): Promise<string[]> {
         select: { rawContent: true, structuredPayload: true },
       },
     },
-  })
+  }), tenantId)
   const ids = new Set<string>()
   for (const run of runs) {
     for (const output of run.outputs) {
@@ -108,12 +109,13 @@ function summarizeRuns(results: EvalRunResponse[]): Pick<EvalGateOutput['evalGat
 }
 
 async function blockNode(instance: WorkflowInstance, node: WorkflowNode, output: EvalGateOutput, actorId?: string): Promise<void> {
-  await prisma.$transaction([
-    prisma.workflowNode.update({
+  const tenantId = instance.tenantId ?? undefined
+  await withTenantDbTransaction(prisma, (tx) => Promise.all([
+    tx.workflowNode.update({
       where: { id: node.id },
       data: { status: 'BLOCKED', completedAt: new Date() },
     }),
-    prisma.workflowInstance.update({
+    tx.workflowInstance.update({
       where: { id: instance.id },
       data: {
         status: 'PAUSED',
@@ -123,7 +125,7 @@ async function blockNode(instance: WorkflowInstance, node: WorkflowNode, output:
         } as Prisma.InputJsonValue,
       },
     }),
-    prisma.workflowMutation.create({
+    tx.workflowMutation.create({
       data: {
         instanceId: instance.id,
         nodeId: node.id,
@@ -133,7 +135,7 @@ async function blockNode(instance: WorkflowInstance, node: WorkflowNode, output:
         performedById: actorId,
       },
     }),
-  ])
+  ]), tenantId)
   await logEvent('EvalGateBlocked', 'WorkflowNode', node.id, actorId, {
     instanceId: instance.id,
     output,
@@ -172,7 +174,7 @@ export async function activateEvalGate(
   } else {
     traceIds = scope === 'TRACE'
       ? [cfgString(node, 'traceId') ?? cfgString(node, 'trace_id')].filter((value): value is string => Boolean(value))
-      : await traceIdsForInstance(instance.id)
+      : await traceIdsForInstance(instance.id, instance.tenantId ?? undefined)
     if (traceIds.length === 0) missingEvidence.push('No trace ids were found for this workflow run')
     for (const traceId of traceIds) {
       const run = await postJson<EvalRunResponse>('api/v1/engine/evaluators/run-trace', {

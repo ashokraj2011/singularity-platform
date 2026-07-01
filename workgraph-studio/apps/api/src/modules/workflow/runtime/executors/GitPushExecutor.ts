@@ -1,6 +1,7 @@
 import { BlueprintStage, Prisma, type ApprovalRequest, type WorkflowInstance, type WorkflowNode } from '@prisma/client'
 import { config } from '../../../../config'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { createReceipt, logEvent, publishOutbox } from '../../../../lib/audit'
 import { redactSecrets } from '../../../../lib/redact'
 import { requestOperationalMcpToolGrant } from './mcpToolGrant'
@@ -324,23 +325,24 @@ async function approvedGateForRun(
   instance: WorkflowInstance,
   node: WorkflowNode,
 ): Promise<ApprovalRequest | null> {
+  const tenantId = instance.tenantId ?? undefined
   const approvalRequestId = cfgString(node, 'approvalRequestId')
   if (approvalRequestId) {
-    return prisma.approvalRequest.findFirst({
+    return withTenantDbTransaction(prisma, (tx) => tx.approvalRequest.findFirst({
       where: {
         id: approvalRequestId,
         instanceId: instance.id,
         status: { in: ['APPROVED', 'APPROVED_WITH_CONDITIONS'] },
       },
-    })
+    }), tenantId)
   }
-  return prisma.approvalRequest.findFirst({
+  return withTenantDbTransaction(prisma, (tx) => tx.approvalRequest.findFirst({
     where: {
       instanceId: instance.id,
       status: { in: ['APPROVED', 'APPROVED_WITH_CONDITIONS'] },
     },
     orderBy: { updatedAt: 'desc' },
-  })
+  }), tenantId)
 }
 
 async function blockNode(
@@ -350,12 +352,13 @@ async function blockNode(
   actorId?: string,
 ): Promise<void> {
   const safeOutput = redactSecrets(output)
-  await prisma.$transaction([
-    prisma.workflowNode.update({
+  const tenantId = instance.tenantId ?? undefined
+  await withTenantDbTransaction(prisma, (tx) => Promise.all([
+    tx.workflowNode.update({
       where: { id: node.id },
       data: { status: 'BLOCKED', completedAt: new Date() },
     }),
-    prisma.workflowInstance.update({
+    tx.workflowInstance.update({
       where: { id: instance.id },
       data: {
         status: 'PAUSED',
@@ -365,7 +368,7 @@ async function blockNode(
         } as Prisma.InputJsonValue,
       },
     }),
-    prisma.workflowMutation.create({
+    tx.workflowMutation.create({
       data: {
         instanceId: instance.id,
         nodeId: node.id,
@@ -375,7 +378,7 @@ async function blockNode(
         performedById: actorId,
       },
     }),
-  ])
+  ]), tenantId)
   await logEvent('GitPushBlocked', 'WorkflowNode', node.id, actorId, {
     instanceId: instance.id,
     output: safeOutput,
@@ -786,7 +789,7 @@ export async function activateGitPush(
   // instance.context (only the receipt below), so the run cockpit has nothing to
   // read credential provenance from for the common case. Best-effort: a failure
   // here must not fail the push that already succeeded.
-  await prisma.workflowInstance.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
     where: { id: instance.id },
     data: {
       context: {
@@ -794,7 +797,7 @@ export async function activateGitPush(
         _lastGitPush: safeOutput.gitPush,
       } as Prisma.InputJsonValue,
     },
-  }).catch(() => {})
+  }), instance.tenantId ?? undefined).catch(() => {})
   const eventId = await logEvent('GitBranchPushed', 'WorkflowNode', node.id, actorId, {
     instanceId: instance.id,
     output: safeOutput,

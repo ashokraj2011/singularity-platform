@@ -1,6 +1,7 @@
 import { Prisma, type Workflow, type WorkflowDesignEdge, type WorkflowDesignNode, type WorkflowEdge, type WorkflowInstance, type WorkflowNode } from '@prisma/client'
 import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { AppError, NotFoundError } from '../../lib/errors'
 import { createReceipt, logEvent, publishOutbox } from '../../lib/audit'
 
@@ -238,12 +239,12 @@ export async function analyzeWorkflowTemplate(templateId: string, actorId?: stri
   return { payload, result }
 }
 
-export async function analyzeWorkflowInstance(instanceId: string, actorId?: string, nodeId?: string) {
+export async function analyzeWorkflowInstance(instanceId: string, actorId?: string, nodeId?: string, tenantId?: string) {
   assertFormalEnabled('workflow_run', instanceId)
-  const instance = await prisma.workflowInstance.findUnique({
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
     where: { id: instanceId },
     include: { template: true, nodes: true, edges: true },
-  })
+  }), tenantId)
   if (!instance) throw new NotFoundError('Workflow run', instanceId)
   const payload = buildPayload({
     scope: 'workflow_instance',

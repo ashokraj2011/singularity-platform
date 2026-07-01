@@ -1,6 +1,7 @@
 import { Prisma, type WorkflowInstance } from '@prisma/client'
 import { config } from '../../../../../config'
 import { prisma } from '../../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../../lib/tenant-db-context'
 import { computeSha256, buildEvidenceManifest, type EvidenceItem, type EvidenceManifest } from './evidencePack'
 
 /**
@@ -99,12 +100,13 @@ export async function materializeRunEvidence(instance: WorkflowInstance): Promis
     : typeof ctx.workItemId === 'string' ? ctx.workItemId
     : undefined
   if (!workItemCode) return null
+  const tenantId = instance.tenantId ?? undefined
 
-  const consumables = await prisma.consumable
+  const consumables = await withTenantDbTransaction(prisma, (tx) => tx.consumable
     .findMany({
       where: { instanceId: instance.id, status: { in: ['APPROVED', 'PUBLISHED'] } },
       include: { versions: { orderBy: { version: 'desc' }, take: 1 } },
-    })
+    }), tenantId)
     .catch(() => [] as Array<{ id: string; name: string; versions: Array<{ payload: unknown }> }>)
 
   const items: RawEvidence[] = []
@@ -116,11 +118,11 @@ export async function materializeRunEvidence(instance: WorkflowInstance): Promis
   if (items.length === 0) return null
 
   const manifest = await materializeEvidencePack(workItemCode, items)
-  await prisma.workflowInstance
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance
     .update({
       where: { id: instance.id },
       data: { context: { ...ctx, _evidenceManifest: manifest } as unknown as Prisma.InputJsonValue },
-    })
+    }), tenantId)
     .catch(() => undefined)
   return manifest
 }
