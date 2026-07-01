@@ -8365,6 +8365,11 @@ async function recordBlueprintBudgetUsage(
   if (!session.workflowInstanceId) return
   const estCost = result.modelUsage?.estimatedCost ?? result.usage?.estimatedCost ?? result.tokensUsed?.estimatedCost ?? result.tokensUsed?.estimated_cost
   try {
+    // RLS prep — deliberately NOT threading a tenantId here: `session` only
+    // carries a bare workflowInstanceId string (no full WorkflowInstance /
+    // tenantId available without a new DB lookup), and blueprint.router.ts's
+    // own direct RLS-scoped writes are Slice 5's scope, not this slice's.
+    // Byte-for-byte today's behavior.
     await recordWorkflowLlmUsage(session.workflowInstanceId, {
       nodeId: workflowNodeId ?? session.workflowNodeId ?? session.phaseId ?? null,
       cfCallId: result.correlation.cfCallId,

@@ -591,7 +591,7 @@ export async function activateAgentTask(
         tokensSaved: result.usage?.tokensSaved,
         promptCache: result.modelUsage?.promptCache ?? result.usage?.promptCache ?? result.promptCache ?? result.tokensUsed?.promptCache,
       },
-    })
+    }, instance.tenantId ?? undefined)
   } catch (err) {
     await logEvent('WorkflowBudgetUsageRecordFailed', 'WorkflowInstance', instance.id, undefined, {
       nodeId: node.id,

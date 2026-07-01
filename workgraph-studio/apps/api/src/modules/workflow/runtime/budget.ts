@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client'
 import type { WorkflowInstance, WorkflowNode } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 import { ValidationError } from '../../../lib/errors'
 import { config } from '../../../config'
@@ -148,32 +149,40 @@ export async function createWorkflowRunBudgetSnapshot(
   return created
 }
 
-export async function ensureWorkflowRunBudget(instanceId: string) {
-  const existing = await prisma.workflowRunBudget.findUnique({
+export async function ensureWorkflowRunBudget(
+  instanceId: string,
+  // RLS prep — optional + appended last (mirrors advance()'s param, slice 1);
+  // callers that already have the instance/tenant in scope pass it through
+  // (prepareLlmBudget below), others default to undefined — byte-for-byte
+  // today's behavior.
+  tenantId?: string,
+) {
+  const existing = await withTenantDbTransaction(prisma, (tx) => tx.workflowRunBudget.findUnique({
     where: { instanceId },
     include: { events: { orderBy: { createdAt: 'desc' }, take: 200 } },
-  })
+  }), tenantId)
   if (existing) return existing
 
-  const instance = await prisma.workflowInstance.findUnique({
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
     where: { id: instanceId },
     include: { template: { select: { id: true, budgetPolicy: true } } },
-  })
+  }), tenantId)
   if (!instance) throw new ValidationError(`WorkflowInstance ${instanceId} not found`)
 
-  await createWorkflowRunBudgetSnapshot(prisma as unknown as Prisma.TransactionClient, {
+  await withTenantDbTransaction(prisma, (tx) => createWorkflowRunBudgetSnapshot(tx, {
     instanceId,
     templateId: instance.templateId,
     templatePolicy: instance.template?.budgetPolicy,
-  })
-  return prisma.workflowRunBudget.findUniqueOrThrow({
+  }), tenantId)
+  return withTenantDbTransaction(prisma, (tx) => tx.workflowRunBudget.findUniqueOrThrow({
     where: { instanceId },
     include: { events: { orderBy: { createdAt: 'desc' }, take: 200 } },
-  })
+  }), tenantId)
 }
 
 export async function prepareLlmBudget(input: LlmBudgetInput): Promise<LlmBudgetDecision> {
-  const budget = await ensureWorkflowRunBudget(input.instance.id)
+  const tenantId = input.instance.tenantId ?? undefined
+  const budget = await ensureWorkflowRunBudget(input.instance.id, tenantId)
   const remaining = remainingBudget(budget)
   const warnings: string[] = []
   const policy = normalizeBudgetPolicy(budget.policy)
@@ -187,7 +196,7 @@ export async function prepareLlmBudget(input: LlmBudgetInput): Promise<LlmBudget
         nodeId: input.node.id,
         agentRunId: input.agentRunId,
         metadata: { reason, remaining },
-      })
+      }, tenantId)
       return { action: 'FAIL', reason }
     }
     if (budget.enforcementMode === 'WARN_ONLY') {
@@ -196,7 +205,7 @@ export async function prepareLlmBudget(input: LlmBudgetInput): Promise<LlmBudget
         nodeId: input.node.id,
         agentRunId: input.agentRunId,
         metadata: { reason, remaining, enforcementMode: 'WARN_ONLY' },
-      })
+      }, tenantId)
       warnings.push(reason)
     } else {
       await blockForBudgetApproval(input.instance, input.node, budget.id, input.agentRunId, reason, remaining)
@@ -239,21 +248,26 @@ export async function prepareLlmBudget(input: LlmBudgetInput): Promise<LlmBudget
       nodeId: input.node.id,
       agentRunId: input.agentRunId,
       metadata: { requestedInput, requestedOutput, clampedInput, clampedOutput, remaining },
-    })
+    }, tenantId)
   }
 
   return { action: 'ALLOW', contextPolicy, limits, modelOverrides, warnings }
 }
 
-export async function recordWorkflowLlmUsage(instanceId: string, usage: UsageDelta) {
-  const budget = await ensureWorkflowRunBudget(instanceId)
+export async function recordWorkflowLlmUsage(
+  instanceId: string,
+  usage: UsageDelta,
+  // RLS prep — optional + appended last (mirrors advance()'s param, slice 1).
+  tenantId?: string,
+) {
+  const budget = await ensureWorkflowRunBudget(instanceId, tenantId)
   const input = positiveInt(usage.inputTokens)
   const output = positiveInt(usage.outputTokens)
   const total = positiveInt(usage.totalTokens) ?? input + output
   const estimatedCost = positiveNumber(usage.estimatedCost)
   const pricingStatus = estimatedCost === null ? 'UNPRICED' : 'PRICED'
 
-  const updated = await prisma.$transaction(async tx => {
+  const updated = await withTenantDbTransaction(prisma, async tx => {
     const current = await tx.workflowRunBudget.findUniqueOrThrow({ where: { id: budget.id } })
     const consumedInputTokens = current.consumedInputTokens + input
     const consumedOutputTokens = current.consumedOutputTokens + output
@@ -345,7 +359,7 @@ export async function recordWorkflowLlmUsage(instanceId: string, usage: UsageDel
       })
     }
     return row
-  })
+  }, tenantId)
 
   await logEvent('WorkflowBudgetUsageRecorded', 'WorkflowRunBudget', updated.id, undefined, {
     instanceId,
@@ -367,13 +381,17 @@ export async function recordWorkflowLlmUsage(instanceId: string, usage: UsageDel
   return updated
 }
 
-export async function getWorkflowBudgetOverview(instanceId: string) {
-  const budget = await ensureWorkflowRunBudget(instanceId)
-  const events = await prisma.workflowRunBudgetEvent.findMany({
+export async function getWorkflowBudgetOverview(
+  instanceId: string,
+  // RLS prep — optional + appended last (mirrors advance()'s param, slice 1).
+  tenantId?: string,
+) {
+  const budget = await ensureWorkflowRunBudget(instanceId, tenantId)
+  const events = await withTenantDbTransaction(prisma, (tx) => tx.workflowRunBudgetEvent.findMany({
     where: { budgetId: budget.id },
     orderBy: { createdAt: 'desc' },
     take: 200,
-  })
+  }), tenantId)
   const remaining = remainingBudget(budget)
   return {
     ...budget,
@@ -389,12 +407,18 @@ export async function getWorkflowBudgetOverview(instanceId: string) {
   }
 }
 
-export async function approveBudgetIncreaseFromApproval(requestId: string, actorId: string) {
-  const request = await prisma.approvalRequest.findUnique({ where: { id: requestId } })
+export async function approveBudgetIncreaseFromApproval(
+  requestId: string,
+  actorId: string,
+  // RLS prep — optional + appended last (mirrors advance()'s param, slice 1);
+  // the calling router passes resolveTenantFromRequest(req).
+  tenantId?: string,
+) {
+  const request = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest.findUnique({ where: { id: requestId } }), tenantId)
   if (!request || request.subjectType !== 'WorkflowRunBudget') return false
   const payload = isRecord(request.formData) ? request.formData : {}
   const budgetId = request.subjectId
-  const budget = await prisma.workflowRunBudget.findUnique({ where: { id: budgetId } })
+  const budget = await withTenantDbTransaction(prisma, (tx) => tx.workflowRunBudget.findUnique({ where: { id: budgetId } }), tenantId)
   if (!budget) return false
 
   const addInput = positiveInt(payload.requestedInputTokens)
@@ -402,7 +426,7 @@ export async function approveBudgetIncreaseFromApproval(requestId: string, actor
   const addTotal = positiveInt(payload.requestedTotalTokens)
   const addCost = positiveNumber(payload.requestedEstimatedCost)
 
-  await prisma.$transaction(async tx => {
+  await withTenantDbTransaction(prisma, async tx => {
     await tx.workflowRunBudget.update({
       where: { id: budgetId },
       data: {
@@ -442,7 +466,7 @@ export async function approveBudgetIncreaseFromApproval(requestId: string, actor
         data: { status: 'ACTIVE' as any },
       })
     }
-  })
+  }, tenantId)
 
   await logEvent('WorkflowBudgetIncreaseApproved', 'WorkflowRunBudget', budgetId, actorId, {
     requestId,
@@ -490,7 +514,10 @@ async function blockForBudgetApproval(
 ) {
   const requestedInputTokens = 10_000
   const requestedOutputTokens = 2_000
-  await prisma.$transaction(async tx => {
+  // RLS prep — instance is already in scope (mirrors GitPushExecutor/etc from
+  // slices 1/1b: no new param needed, derive locally).
+  const tenantId = instance.tenantId ?? undefined
+  await withTenantDbTransaction(prisma, async tx => {
     await tx.workflowRunBudget.update({
       where: { id: budgetId },
       data: { status: 'PAUSED' as any, pausedAt: new Date() },
@@ -539,7 +566,7 @@ async function blockForBudgetApproval(
         } as Prisma.InputJsonValue,
       },
     })
-  })
+  }, tenantId)
   await logEvent('WorkflowBudgetApprovalRequested', 'WorkflowRunBudget', budgetId, instance.createdById ?? undefined, {
     instanceId: instance.id,
     nodeId: node.id,
@@ -561,8 +588,11 @@ async function recordBudgetEvent(
     agentRunId?: string
     metadata?: Record<string, unknown>
   },
+  // RLS prep — optional + appended last; prepareLlmBudget (the only caller)
+  // already has the instance in scope and passes its tenantId through.
+  tenantId?: string,
 ) {
-  await prisma.workflowRunBudgetEvent.create({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowRunBudgetEvent.create({
     data: {
       budgetId,
       instanceId,
@@ -571,7 +601,7 @@ async function recordBudgetEvent(
       eventType: input.eventType as any,
       metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
     },
-  })
+  }), tenantId)
 }
 
 function computeStatus(

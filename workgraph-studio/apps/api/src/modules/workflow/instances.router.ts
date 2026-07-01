@@ -278,7 +278,7 @@ workflowInstancesRouter.get('/:id', async (req, res, next) => {
 workflowInstancesRouter.get('/:id/budget', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'view')
-    const budget = await getWorkflowBudgetOverview(req.params.id)
+    const budget = await getWorkflowBudgetOverview(req.params.id, resolveTenantFromRequest(req))
     res.json(budget)
   } catch (err) {
     next(err)
