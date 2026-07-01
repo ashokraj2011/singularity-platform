@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client'
 import type { WorkflowInstance, WorkflowNode } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { logEvent, createReceipt, publishOutbox } from '../../../lib/audit'
 import { recordRunLearning } from '../../../lib/learning/record-run-learning'
 import { ValidationError } from '../../../lib/errors'
@@ -155,9 +156,24 @@ export async function advance(
   output: Record<string, unknown>,
   actorId?: string,
   expectedAttempt?: number,
+  // RLS prep — best-effort tenant scoping for this step. Optional + appended
+  // last so every existing caller (most don't have a tenantId handy yet —
+  // see the engine-wide RLS-prep slicing plan) is untouched; omitting it is
+  // BYTE-FOR-BYTE today's behavior (withTenantDbTransaction no-ops without
+  // FORCE ROW LEVEL SECURITY). Callers that already hold the instance
+  // (executeServerNode, the cron sweeps) pass instance.tenantId.
+  tenantId?: string,
 ): Promise<void> {
-  const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
-  const completedNode = await prisma.workflowNode.findUniqueOrThrow({ where: { id: completedNodeId } })
+  const instance = await withTenantDbTransaction(
+    prisma,
+    (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }),
+    tenantId,
+  )
+  const completedNode = await withTenantDbTransaction(
+    prisma,
+    (tx) => tx.workflowNode.findUniqueOrThrow({ where: { id: completedNodeId } }),
+    tenantId,
+  )
 
   // Finding #7 — attempt fence. When a caller supplies the attempt its result was produced
   // under (async re-entry paths), reject a result from a SUPERSEDED attempt — e.g. an old
@@ -179,7 +195,7 @@ export async function advance(
   // read and this write. Gate the COMPLETED flip on attempt === expectedAttempt so a stale
   // result that lost the race to a restart is rejected here instead of clobbering the new run.
   // M24.5 — write completedAt for the insights Gantt.
-  const completedOk = await prisma.$transaction(async (tx) => {
+  const completedOk = await withTenantDbTransaction(prisma, async (tx) => {
     const claimed = await tx.workflowNode.updateMany({
       where: expectedAttempt != null
         ? { id: completedNodeId, attempt: expectedAttempt }
@@ -198,7 +214,7 @@ export async function advance(
       },
     })
     return true
-  })
+  }, tenantId)
   if (!completedOk) {
     await logEvent('WorkflowNodeStaleResultRejected', 'WorkflowNode', completedNodeId, actorId, {
       instanceId,
@@ -218,7 +234,7 @@ export async function advance(
   // row, RE-READ the freshest context (not the stale snapshot from the top of advance()),
   // merge, and persist inside one short transaction so two parallel branch completions
   // can't clobber each other's output (lost update). Node execution stays OUTSIDE the lock.
-  const { mergedContext, queued } = await prisma.$transaction(async (tx) => {
+  const { mergedContext, queued } = await withTenantDbTransaction(prisma, async (tx) => {
     const rows = await tx.$queryRaw<Array<{ context: unknown; status: string }>>`
       SELECT "context", "status" FROM "workflow_instances" WHERE "id" = ${instanceId} FOR UPDATE`
     const fresh = (rows[0]?.context ?? {}) as Record<string, unknown>
@@ -240,7 +256,7 @@ export async function advance(
       data: { context: merged as unknown as Prisma.InputJsonValue },
     })
     return { mergedContext: merged, queued: isQueued }
-  })
+  }, tenantId)
 
   // Finding #6 — fire on_complete attachments AFTER the merged context is persisted, with
   // the refreshed context, so attachments that read an output binding or a newly-produced
@@ -260,10 +276,14 @@ export async function advance(
     // actually flips the status (count === 1) runs the completion side effects, so two
     // converging terminal branches can't double-emit the receipt, outbox event, learning
     // record, parent CALL_WORKFLOW advance, or WorkItem completion.
-    const claim = await prisma.workflowInstance.updateMany({
-      where: { id: instanceId, status: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } },
-      data: { status: 'COMPLETED', completedAt },
-    })
+    const claim = await withTenantDbTransaction(
+      prisma,
+      (tx) => tx.workflowInstance.updateMany({
+        where: { id: instanceId, status: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } },
+        data: { status: 'COMPLETED', completedAt },
+      }),
+      tenantId,
+    )
     if (claim.count === 1) {
       const eventId = await logEvent('WorkflowCompleted', 'WorkflowInstance', instanceId, actorId)
       await createReceipt('WORKFLOW_COMPLETED', 'WorkflowInstance', instanceId, {
@@ -272,15 +292,23 @@ export async function advance(
       }, eventId)
       await publishOutbox('WorkflowInstance', instanceId, 'WorkflowCompleted', { instanceId })
       void recordRunLearning(instanceId, 'COMPLETED')
-      const completedInstance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
+      const completedInstance = await withTenantDbTransaction(
+        prisma,
+        (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }),
+        tenantId,
+      )
       await handleWorkItemChildCompletion(completedInstance, actorId)
 
-      // If this instance is a child, advance the parent's CALL_WORKFLOW node.
+      // If this instance is a child, advance the parent's CALL_WORKFLOW node. A
+      // child/parent pair are always the same tenant in practice (cloneDesignToRun
+      // propagates tenantId from the spawning context), so reusing this step's
+      // tenantId is correct; if they ever genuinely differ, RLS/withTenantDbTransaction
+      // fail closed (no rows / a clear error) rather than leaking across tenants.
       if (instance.parentInstanceId && instance.parentNodeId) {
         const parentCtx = (instance.context ?? {}) as Record<string, unknown>
         await advance(instance.parentInstanceId, instance.parentNodeId, {
           _childCompleted: { instanceId, context: parentCtx },
-        }, actorId)
+        }, actorId, undefined, tenantId)
       }
     }
   }
@@ -292,9 +320,15 @@ async function activateDownstream(
   context: Record<string, unknown>,
   actorId?: string,
 ): Promise<void> {
-  const outgoing = await prisma.workflowEdge.findMany({
-    where: { sourceNodeId: completedNode.id },
-  })
+  // RLS prep — every caller of activateDownstream already holds the instance
+  // (advance(), resumeInstance()'s drain loop), so no new param is needed here;
+  // derive tenantId locally and thread it into this function's own DB work.
+  const tenantId = instance.tenantId ?? undefined
+  const outgoing = await withTenantDbTransaction(
+    prisma,
+    (tx) => tx.workflowEdge.findMany({ where: { sourceNodeId: completedNode.id } }),
+    tenantId,
+  )
 
   const nextNodes = await resolveNextNodes(instance, completedNode, outgoing, context)
 
@@ -302,28 +336,33 @@ async function activateDownstream(
     // Finding #2 — atomically claim PENDING→ACTIVE. Only the branch whose conditional
     // update actually flips the row (count === 1) goes on to execute the node, so two
     // converging branch completions can't both launch it (duplicate agent runs, approvals,
-    // tools, WorkItems, or consumables).
-    const claimed = await prisma.workflowNode.updateMany({
-      where: { id: nextNode.id, status: 'PENDING' },
-      data: { status: 'ACTIVE', startedAt: new Date() },
-    })
-    if (claimed.count !== 1) continue
-
-    await prisma.workflowMutation.create({
-      data: {
-        instanceId: instance.id,
-        nodeId: nextNode.id,
-        mutationType: 'NODE_STATUS_CHANGE',
-        beforeState: { status: 'PENDING' },
-        afterState: { status: 'ACTIVE' },
-        performedById: actorId,
-      },
-    })
+    // tools, WorkItems, or consumables). Grouped into one transaction with the mutation
+    // log write below — the existing code already conditions that write on the claim
+    // succeeding, so this preserves the exact same behavior while adding tenant scope.
+    const claimed = await withTenantDbTransaction(prisma, async (tx) => {
+      const result = await tx.workflowNode.updateMany({
+        where: { id: nextNode.id, status: 'PENDING' },
+        data: { status: 'ACTIVE', startedAt: new Date() },
+      })
+      if (result.count !== 1) return false
+      await tx.workflowMutation.create({
+        data: {
+          instanceId: instance.id,
+          nodeId: nextNode.id,
+          mutationType: 'NODE_STATUS_CHANGE',
+          beforeState: { status: 'PENDING' },
+          afterState: { status: 'ACTIVE' },
+          performedById: actorId,
+        },
+      })
+      return true
+    }, tenantId)
+    if (!claimed) continue
 
     // ── Execution location gate ─────────────────────────────────────────
     if (nextNode.executionLocation !== 'SERVER') {
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h default
-      await prisma.pendingExecution.create({
+      await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.create({
         data: {
           instanceId: instance.id,
           nodeId: nextNode.id,
@@ -332,7 +371,7 @@ async function activateDownstream(
           payload: context as any,
           expiresAt,
         },
-      })
+      }), tenantId)
       await logEvent('NodePendingExecution', 'WorkflowNode', nextNode.id, undefined, { instanceId: instance.id, location: nextNode.executionLocation } as any)
       continue
     }
@@ -475,16 +514,16 @@ async function degradeNodeToBlocked(
   actorId?: string,
 ): Promise<void> {
   const reason = err instanceof Error ? err.message : String(err)
-  await prisma.$transaction([
-    prisma.workflowNode.update({
+  await withTenantDbTransaction(prisma, async (tx) => {
+    await tx.workflowNode.update({
       where: { id: node.id },
       data: { status: 'BLOCKED', completedAt: new Date() },
-    }),
-    prisma.workflowInstance.update({
+    })
+    await tx.workflowInstance.update({
       where: { id: instance.id },
       data: { status: 'PAUSED' },
-    }),
-    prisma.workflowMutation.create({
+    })
+    await tx.workflowMutation.create({
       data: {
         instanceId: instance.id,
         nodeId: node.id,
@@ -493,8 +532,8 @@ async function degradeNodeToBlocked(
         afterState: { status: 'BLOCKED', reason } as Prisma.InputJsonValue,
         performedById: actorId,
       },
-    }),
-  ])
+    })
+  }, instance.tenantId ?? undefined)
   await logEvent('WorkflowNodeSoftBlocked', 'WorkflowNode', node.id, actorId, {
     instanceId: instance.id,
     nodeType: node.nodeType,
@@ -516,10 +555,14 @@ async function executeServerNode(
   context: Record<string, unknown>,
   actorId?: string,
 ): Promise<void> {
+  // RLS prep — every advance() call below is for THIS instance, so thread its
+  // tenantId through (advance() takes it as an optional trailing param; see
+  // the engine-wide RLS-prep slicing plan).
+  const tenantId = instance.tenantId ?? undefined
   switch (executableNodeType(node)) {
     case 'START':
     case 'END':
-      await advance(instance.id, node.id, context, actorId)
+      await advance(instance.id, node.id, context, actorId, undefined, tenantId)
       break
     case 'HUMAN_TASK':
       await activateHumanTask(node, instance)
@@ -535,7 +578,7 @@ async function executeServerNode(
       break
     case 'DECISION_GATE':
       await activateDecisionGate(node, instance)
-      await advance(instance.id, node.id, context, actorId)
+      await advance(instance.id, node.id, context, actorId, undefined, tenantId)
       break
     case 'CONSUMABLE_CREATION':
       await activateConsumableCreation(node, instance)
@@ -555,17 +598,17 @@ async function executeServerNode(
       } catch (err) {
         await degradeNodeToBlocked(instance, node, err, actorId)
       }
-      if (pushResult?.pushed) await advance(instance.id, node.id, pushResult.output, actorId)
+      if (pushResult?.pushed) await advance(instance.id, node.id, pushResult.output, actorId, undefined, tenantId)
       break
     }
     case 'POLICY_CHECK': {
       const result = await activatePolicyCheck(node, instance, actorId)
-      if (result.passed) await advance(instance.id, node.id, result.output, actorId)
+      if (result.passed) await advance(instance.id, node.id, result.output, actorId, undefined, tenantId)
       break
     }
     case 'EVAL_GATE': {
       const result = await activateEvalGate(node, instance, actorId)
-      if (result.passed) await advance(instance.id, node.id, result.output, actorId)
+      if (result.passed) await advance(instance.id, node.id, result.output, actorId, undefined, tenantId)
       break
     }
     case 'GOVERNANCE_GATE': {
@@ -574,7 +617,7 @@ async function executeServerNode(
       // passes/warns/blocks. On block the executor already set node BLOCKED + instance
       // PAUSED (reason in _blockedByGovernanceGate).
       const result = await activateGovernanceGate(node, instance, actorId)
-      if (result.passed) await advance(instance.id, node.id, result.output, actorId)
+      if (result.passed) await advance(instance.id, node.id, result.output, actorId, undefined, tenantId)
       break
     }
     case 'VERIFIER': {
@@ -582,12 +625,12 @@ async function executeServerNode(
       // advances only when they meet the standards. On a fail the executor already
       // set the node BLOCKED + instance PAUSED (reason in _blockedByVerifier).
       const result = await activateVerifier(node, instance, actorId)
-      if (result.passed) await advance(instance.id, node.id, { ...context, ...result.output }, actorId)
+      if (result.passed) await advance(instance.id, node.id, { ...context, ...result.output }, actorId, undefined, tenantId)
       break
     }
     case 'RUN_PYTHON': {
       const result = await activateRunPython(node, instance, actorId)
-      if (result.passed) await advance(instance.id, node.id, result.output, actorId)
+      if (result.passed) await advance(instance.id, node.id, result.output, actorId, undefined, tenantId)
       else await failNode(instance.id, node.id, {
         message: 'RUN_PYTHON node failed',
         code: 'RUN_PYTHON_FAILED',
@@ -612,25 +655,25 @@ async function executeServerNode(
       break
     case 'INCLUSIVE_GATEWAY':
       await activateInclusiveGateway(node, instance)
-      await advance(instance.id, node.id, context, actorId)
+      await advance(instance.id, node.id, context, actorId, undefined, tenantId)
       break
     case 'EVENT_GATEWAY':
       await activateEventGateway(node, instance)
       break
     case 'DATA_SINK':
       await activateDataSink(node, instance)
-      await advance(instance.id, node.id, context, actorId)
+      await advance(instance.id, node.id, context, actorId, undefined, tenantId)
       break
     case 'PARALLEL_FORK':
       await activateParallelFork(node, instance)
-      await advance(instance.id, node.id, context, actorId)
+      await advance(instance.id, node.id, context, actorId, undefined, tenantId)
       break
     case 'PARALLEL_JOIN':
       await activateParallelJoin(node, instance)
       break
     case 'SIGNAL_EMIT':
       await activateSignalEmit(node, instance)
-      await advance(instance.id, node.id, context, actorId)
+      await advance(instance.id, node.id, context, actorId, undefined, tenantId)
       break
     case 'EVENT_EMIT': {
       // Publish to the configured sink (eventbus/Kafka/SQS/SNS/AMQP). On a
@@ -638,7 +681,7 @@ async function executeServerNode(
       // the node; passed=true (failOnError off) → advance best-effort with the
       // error recorded in the node output.
       const result = await activateEventEmit(node, instance, actorId)
-      if (result.passed) await advance(instance.id, node.id, { ...context, ...result.output }, actorId)
+      if (result.passed) await advance(instance.id, node.id, { ...context, ...result.output }, actorId, undefined, tenantId)
       else await failNode(instance.id, node.id, {
         message: 'EVENT_EMIT node failed',
         code: result.output.eventEmit.code ?? 'EVENT_EMIT_FAILED',
@@ -648,11 +691,11 @@ async function executeServerNode(
     }
     case 'SET_CONTEXT':
       await activateSetContext(node, instance)
-      await advance(instance.id, node.id, context, actorId)
+      await advance(instance.id, node.id, context, actorId, undefined, tenantId)
       break
     case 'ERROR_CATCH':
       await activateErrorCatch(node, instance)
-      await advance(instance.id, node.id, context, actorId)
+      await advance(instance.id, node.id, context, actorId, undefined, tenantId)
       break
     default:
       await activateHumanTask(node, instance)
@@ -668,7 +711,7 @@ async function executeActivatedNode(
 ): Promise<void> {
   if (node.executionLocation !== 'SERVER') {
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
-    await prisma.pendingExecution.create({
+    await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.create({
       data: {
         instanceId: instance.id,
         nodeId: node.id,
@@ -677,7 +720,7 @@ async function executeActivatedNode(
         payload: context as any,
         expiresAt,
       },
-    })
+    }), instance.tenantId ?? undefined)
     await logEvent('NodePendingExecution', 'WorkflowNode', node.id, actorId, {
       instanceId: instance.id,
       location: node.executionLocation,
