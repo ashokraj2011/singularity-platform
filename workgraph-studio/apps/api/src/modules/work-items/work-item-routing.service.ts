@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { cloneDesignToRun } from '../workflow/lib/cloneDesignToRun'
@@ -128,7 +129,10 @@ async function startAttachedTarget(args: {
     }
   })()
 
-  const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: result.instance.id } })
+  // Reached from both request (planner/router) and cron (TriggerScheduler), so scope to
+  // the cloned child's OWN tenant (from CloneResult) rather than relying on the request ALS.
+  const tenantId = result.instance.tenantId ?? undefined
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: result.instance.id } }), tenantId)
   const context = recordOf(instance.context)
   context._workItem = {
     id: args.workItemId,
@@ -148,10 +152,10 @@ async function startAttachedTarget(args: {
     requiredBy: target.workItem.requiredBy?.toISOString(),
     detailsLocked: target.workItem.detailsLocked,
   }
-  await prisma.workflowInstance.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
     where: { id: result.instance.id },
     data: { context: context as Prisma.InputJsonValue },
-  })
+  }), tenantId)
   await prisma.workItemTarget.update({
     where: { id: args.targetId },
     data: {

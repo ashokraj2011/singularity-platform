@@ -18,6 +18,7 @@
  * must never fail or slow a workflow.
  */
 import { prisma } from '../prisma'
+import { withTenantDbTransaction } from '../tenant-db-context'
 import { config } from '../../config'
 import { getIamServiceToken } from '../iam/service-token'
 
@@ -148,9 +149,11 @@ export function buildRunSummary(args: {
  * capability (e.g. an ad-hoc template) is skipped — capability memory must be
  * anchored to a capability to be read back.
  */
-export async function recordRunLearning(instanceId: string, terminalStatus: string): Promise<void> {
+export async function recordRunLearning(instanceId: string, terminalStatus: string, tenantId?: string): Promise<void> {
   try {
-    const instance = await prisma.workflowInstance.findUnique({
+    // Engine-invoked (fire-and-forget from WorkflowRuntime), so it may run under
+    // cron with no request ALS — tenantId is threaded explicitly from the caller.
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
       where: { id: instanceId },
       select: {
         name: true,
@@ -159,7 +162,7 @@ export async function recordRunLearning(instanceId: string, terminalStatus: stri
         mutations: { select: { mutationType: true } },
         consumables: { select: { name: true, status: true } },
       },
-    })
+    }), tenantId)
     if (!instance?.templateId) return
 
     const workflow = await prisma.workflow.findUnique({
