@@ -1,5 +1,6 @@
 import type { WorkflowNode, WorkflowInstance } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import {
   resolveAssignmentRouting,
@@ -29,7 +30,7 @@ export async function activateHumanTask(
 
   const inputs = buildTaskAssignmentInputs(routing)
 
-  const task = await prisma.task.create({
+  const task = await withTenantDbTransaction(prisma, (tx) => tx.task.create({
     data: {
       instanceId:     instance.id,
       nodeId:         node.id,
@@ -38,7 +39,7 @@ export async function activateHumanTask(
       ...(inputs.assignments ? { assignments: inputs.assignments } : {}),
       ...(inputs.queueItems  ? { queueItems:  inputs.queueItems  } : {}),
     },
-  })
+  }), instance.tenantId ?? undefined)
 
   const eventId = await logEvent('TaskCreated', 'Task', task.id, undefined, {
     nodeId:         node.id,

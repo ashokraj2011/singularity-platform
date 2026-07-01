@@ -1,5 +1,6 @@
 import type { WorkflowNode, WorkflowInstance } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import {
   resolveAssignmentRouting,
@@ -31,7 +32,7 @@ export async function activateConsumableCreation(
 
   const fields = buildEntityRoutingFields(routing)
 
-  const consumable = await prisma.consumable.create({
+  const consumable = await withTenantDbTransaction(prisma, (tx) => tx.consumable.create({
     data: {
       typeId,
       instanceId:     instance.id,
@@ -45,7 +46,7 @@ export async function activateConsumableCreation(
       skillKey:       fields.skillKey,
       capabilityId:   fields.capabilityId,
     },
-  })
+  }), instance.tenantId ?? undefined)
 
   await logEvent('ConsumableCreated', 'Consumable', consumable.id, undefined, {
     nodeId:         node.id,

@@ -1,5 +1,6 @@
 import type { WorkflowNode, WorkflowInstance, Prisma } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import { cloneDesignToRun } from '../../lib/cloneDesignToRun'
 
@@ -32,6 +33,7 @@ export async function activateCallWorkflow(
   parent: WorkflowInstance,
 ): Promise<void> {
   const cfg = (node.config ?? {}) as Record<string, unknown>
+  const tenantId = parent.tenantId ?? undefined
   const std = (cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard))
     ? cfg.standard as Record<string, string>
     : {} as Record<string, string>
@@ -50,10 +52,10 @@ export async function activateCallWorkflow(
   // If a child is already linked and still running, don't spawn another.
   const existingChildId = typeof cfg._childInstanceId === 'string' ? cfg._childInstanceId : null
   if (existingChildId) {
-    const existing = await prisma.workflowInstance.findUnique({
+    const existing = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
       where: { id: existingChildId },
       select: { id: true, status: true },
-    })
+    }), tenantId)
     if (existing && NON_TERMINAL_CHILD_STATUSES.has(existing.status)) {
       // Already have a live child. If it never started (stuck DRAFT),
       // kick it now; otherwise leave it be.
@@ -101,10 +103,10 @@ export async function activateCallWorkflow(
   const childId = result.instance.id
 
   // Link parent ↔ child so child completion can advance this node.
-  await prisma.workflowInstance.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
     where: { id: childId },
     data: { parentInstanceId: parent.id, parentNodeId: node.id },
-  })
+  }), tenantId)
 
   await logEvent('SubworkflowSpawned', 'WorkflowInstance', childId, undefined, {
     parentInstanceId: parent.id,
@@ -120,10 +122,10 @@ export async function activateCallWorkflow(
 
   // Track the child link in the parent node config so completion of the child
   // can advance the parent node.
-  await prisma.workflowNode.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
     where: { id: node.id },
     data: { config: { ...cfg, _childInstanceId: childId } as Prisma.InputJsonValue },
-  })
+  }), tenantId)
 
   // ── Actually run the child ────────────────────────────────────────────────
   // Dynamic import avoids the WorkflowRuntime ↔ CallWorkflowExecutor cycle.
