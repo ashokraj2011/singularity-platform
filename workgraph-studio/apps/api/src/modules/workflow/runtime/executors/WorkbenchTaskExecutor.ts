@@ -1,5 +1,6 @@
 import { Prisma, type WorkflowInstance, type WorkflowNode } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import { listRuntimeCapabilities, type RuntimeCapability } from '../../../../lib/agent-and-tools/client'
 import { activateHumanTask } from './HumanTaskExecutor'
@@ -54,12 +55,12 @@ export async function activateWorkbenchTask(
     workbench: nextWorkbench,
   }
 
-  await prisma.workflowNode.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
     where: { id: node.id },
     data: {
       config: nextConfig as Prisma.InputJsonValue,
     },
-  })
+  }), instance.tenantId ?? undefined)
 
   // M84.s3 — mirror the legacy loopDefinition JSON into the
   // first-class workbench tables so the new inspector / canvas

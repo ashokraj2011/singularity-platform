@@ -1,5 +1,6 @@
 import type { WorkflowNode, WorkflowInstance } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { buildAdapter } from '../../../connectors/connector.service'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 
@@ -66,7 +67,7 @@ export async function activateDataSink(node: WorkflowNode, instance: WorkflowIns
     if (sink.kind === 'ARTIFACT') {
       const body = sink.bodyPath ? resolvePath(context, sink.bodyPath) : context
       const name = sink.namePath ? String(resolvePath(context, sink.namePath) ?? node.label) : node.label
-      await prisma.consumable.create({
+      await withTenantDbTransaction(prisma, (tx) => tx.consumable.create({
         data: {
           typeId: sink.artifactType ?? 'generic',
           instanceId: instance.id,
@@ -75,7 +76,7 @@ export async function activateDataSink(node: WorkflowNode, instance: WorkflowIns
           content: { body } as any,
           createdById: instance.createdById ?? undefined,
         } as any,
-      })
+      }), instance.tenantId ?? undefined)
       await logEvent('DataSinkWritten', 'WorkflowInstance', instance.id, undefined, { nodeId: node.id, kind: 'ARTIFACT', name })
       return
     }

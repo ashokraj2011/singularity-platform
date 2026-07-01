@@ -1,5 +1,6 @@
 import type { WorkflowNode, WorkflowInstance, ApprovalRequest } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import {
   resolveAssignmentRouting,
@@ -13,7 +14,8 @@ export async function activateApproval(
   instance: WorkflowInstance,
   actorId?: string,
 ): Promise<ApprovalRequest> {
-  const existing = await prisma.approvalRequest.findFirst({
+  const tenantId = instance.tenantId ?? undefined
+  const existing = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest.findFirst({
     where: {
       instanceId: instance.id,
       nodeId: node.id,
@@ -22,7 +24,7 @@ export async function activateApproval(
       status: 'PENDING',
     },
     orderBy: { createdAt: 'desc' },
-  })
+  }), tenantId)
   if (existing) return existing
 
   const cfg = (node.config ?? {}) as Record<string, unknown>
@@ -45,7 +47,7 @@ export async function activateApproval(
 
   const fields = buildEntityRoutingFields(routing)
 
-  const request = await prisma.approvalRequest.create({
+  const request = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest.create({
     data: {
       instanceId:     instance.id,
       nodeId:         node.id,
@@ -59,7 +61,7 @@ export async function activateApproval(
       skillKey:       fields.skillKey,
       capabilityId:   fields.capabilityId,
     },
-  })
+  }), tenantId)
 
   await logEvent('ApprovalRequested', 'ApprovalRequest', request.id, actorId, {
     nodeId:         node.id,

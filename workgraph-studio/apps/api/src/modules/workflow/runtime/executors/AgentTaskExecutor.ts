@@ -1,5 +1,6 @@
 import { Prisma, type WorkflowNode, type WorkflowInstance } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { resolveCapabilityRepo } from '../../../../lib/agent-and-tools/capability-repo'
 import { resolveLlmRouting } from '../../../llm-routing/resolve'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
@@ -59,6 +60,9 @@ export async function activateAgentTask(
   instance: WorkflowInstance,
 ): Promise<void> {
   const cfg = (node.config ?? {}) as Record<string, unknown>
+  // RLS/DB scoping only — distinct from the `tenantId` resolved below via
+  // resolveRuntimeTenantId(), which is the business-logic tenant CF routes on.
+  const dbTenantId = instance.tenantId ?? undefined
   const standard = isRecord(cfg.standard) ? cfg.standard : {}
   const configString = (...keys: string[]) => {
     for (const key of keys) {
@@ -96,7 +100,7 @@ export async function activateAgentTask(
   }
 
   // 1. Always create an AgentRun for audit.
-  const run = await prisma.agentRun.create({
+  const run = await withTenantDbTransaction(prisma, (tx) => tx.agentRun.create({
     data: {
       agentId,
       instanceId: instance.id,
@@ -105,7 +109,7 @@ export async function activateAgentTask(
       status: 'RUNNING',
       startedAt: new Date(),
     },
-  })
+  }), dbTenantId)
 
   await logEvent('AgentRunStarted', 'AgentRun', run.id, undefined, {
     nodeId: node.id,
@@ -165,6 +169,7 @@ export async function activateAgentTask(
         `(got agentTemplateId=${agentTemplateId ?? 'null'}, ` +
         `capabilityId=${capabilityId ?? 'null'}, ` +
         `task=${task ? '<present>' : 'null'})`,
+      dbTenantId,
     )
     return
   }
@@ -181,6 +186,7 @@ export async function activateAgentTask(
       run.id,
       'tenant-id-required',
       'TENANT_ISOLATION_MODE=strict requires a tenantId/tenant_id on the node config, workflow context, vars/globals, or WorkItem input before AGENT_TASK can call Context Fabric.',
+      dbTenantId,
     )
     return
   }
@@ -211,10 +217,10 @@ export async function activateAgentTask(
       },
     },
   })
-  await prisma.agentRun.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.agentRun.update({
     where: { id: run.id },
     data: { traceId },
-  })
+  }), dbTenantId)
   const workflowDefaultModelAlias = await resolveWorkflowDefaultModelAlias(instance.templateId)
   const workflowDefaultGovernanceMode = await resolveWorkflowGovernanceMode(instance.templateId, node)
   const explicitGovernanceMode = configString('governanceMode')
@@ -294,10 +300,10 @@ export async function activateAgentTask(
         structuredPayload: { reason: budgetDecision.reason },
       },
     })
-    await prisma.agentRun.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.agentRun.update({
       where: { id: run.id },
       data: { status: 'PAUSED' },
-    })
+    }), dbTenantId)
     await logEvent('AgentRunPaused', 'AgentRun', run.id, undefined, {
       reason: budgetDecision.reason,
       nodeId: node.id,
@@ -310,7 +316,7 @@ export async function activateAgentTask(
     return
   }
   if (budgetDecision.action === 'FAIL') {
-    await failRun(run.id, 'workflow-budget-exhausted', budgetDecision.reason)
+    await failRun(run.id, 'workflow-budget-exhausted', budgetDecision.reason, dbTenantId)
     return
   }
 
@@ -358,7 +364,7 @@ export async function activateAgentTask(
     task,
     vars,
     globals,
-    prior_outputs: await collectPriorOutputs(instance.id, node.id),
+    prior_outputs: await collectPriorOutputs(instance.id, node.id, dbTenantId),
     artifacts: (cfg.artifacts as unknown[] | undefined) ?? [],
     overrides: (cfg.overrides as Record<string, unknown> | undefined) ?? {},
     model_overrides: budgetDecision.modelOverrides,
@@ -442,12 +448,12 @@ export async function activateAgentTask(
       const detail = err.detail as { code?: string; message?: string } | undefined
       if (detail?.code === 'MCP_NOT_CONNECTED') {
         await failRun(run.id, 'mcp-not-connected',
-          `${detail.message ?? 'Your laptop mcp-server is not connected.'} Run \`singularity-mcp start\` and retry this node.`)
+          `${detail.message ?? 'Your laptop mcp-server is not connected.'} Run \`singularity-mcp start\` and retry this node.`, dbTenantId)
         return
       }
       if (detail?.code === 'MCP_LAPTOP_TIMEOUT') {
         await failRun(run.id, 'mcp-laptop-timeout',
-          `${detail.message ?? 'The laptop mcp-server did not respond in time.'} Re-run the node, or check \`singularity-mcp status\`.`)
+          `${detail.message ?? 'The laptop mcp-server did not respond in time.'} Re-run the node, or check \`singularity-mcp status\`.`, dbTenantId)
         return
       }
       // M28 governance-1 — fail_closed denial: audit-gov was unreachable so
@@ -455,21 +461,21 @@ export async function activateAgentTask(
       // restore audit-gov, or relax this node's governanceMode to fail_open.
       if (detail?.code === 'GOVERNANCE_UNAVAILABLE') {
         await failRun(run.id, 'governance-unavailable',
-          `${detail.message ?? 'audit-governance is unreachable.'} This node has governanceMode=fail_closed; relax it or restore audit-gov and re-run.`)
+          `${detail.message ?? 'audit-governance is unreachable.'} This node has governanceMode=fail_closed; relax it or restore audit-gov and re-run.`, dbTenantId)
         return
       }
       if (detail?.code === 'CONTEXT_PLAN_INVALID') {
         const missing = (detail as { requiredContextStatus?: { missingRequired?: Array<{ layerType?: string }> } })
           .requiredContextStatus?.missingRequired?.map(m => m.layerType).filter(Boolean).join(', ')
         await failRun(run.id, 'context-plan-invalid',
-          `${detail.message ?? 'Required prompt context is missing.'}${missing ? ` Missing: ${missing}.` : ''} Fix the prompt profile/layers or change governance mode and re-run.`)
+          `${detail.message ?? 'Required prompt context is missing.'}${missing ? ` Missing: ${missing}.` : ''} Fix the prompt profile/layers or change governance mode and re-run.`, dbTenantId)
         return
       }
       await failRun(run.id, 'context-fabric-error',
-        `context-fabric error (${err.status}): ${err.message}`)
+        `context-fabric error (${err.status}): ${err.message}`, dbTenantId)
       return
     }
-    await failRun(run.id, 'context-fabric-error', (err as Error).message)
+    await failRun(run.id, 'context-fabric-error', (err as Error).message, dbTenantId)
     return
   }
 
@@ -511,10 +517,10 @@ export async function activateAgentTask(
     contextPlan: result.prompt?.contextPlan,
     contextFabricUrl: config.CONTEXT_FABRIC_URL,
   }
-  await prisma.agentRun.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.agentRun.update({
     where: { id: run.id },
     data: agentRunCorrelationUpdate(correlation),
-  })
+  }), dbTenantId)
 
   await prisma.agentRunOutput.create({
     data: {
@@ -602,10 +608,10 @@ export async function activateAgentTask(
   }
 
   if (result.status === 'FAILED') {
-    await prisma.agentRun.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.agentRun.update({
       where: { id: run.id },
       data: mergeAgentRunCorrelation({ status: 'FAILED', completedAt: new Date() }, correlation),
-    })
+    }), dbTenantId)
     await logEvent('AgentRunFailed', 'AgentRun', run.id, undefined, {
       cfCallId: result.correlation.cfCallId,
       finishReason: result.finishReason,
@@ -644,7 +650,7 @@ export async function activateAgentTask(
         } as unknown as Prisma.InputJsonValue,
       },
     })
-    await prisma.agentRun.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.agentRun.update({
       where: { id: run.id },
       data: mergeAgentRunCorrelation({ status: 'PAUSED' }, {
         ...correlation,
@@ -652,7 +658,7 @@ export async function activateAgentTask(
         traceId: result.correlation.traceId,
         mcpInvocationId: result.correlation.mcpInvocationId,
       }),
-    })
+    }), dbTenantId)
     await logEvent('AgentRunPaused', 'AgentRun', run.id, undefined, {
       cfCallId: result.correlation.cfCallId,
       mcpInvocationId: result.correlation.mcpInvocationId,
@@ -666,10 +672,10 @@ export async function activateAgentTask(
     return
   }
 
-  await prisma.agentRun.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.agentRun.update({
     where: { id: run.id },
     data: mergeAgentRunCorrelation({ status: 'AWAITING_REVIEW', completedAt: new Date() }, correlation),
-  })
+  }), dbTenantId)
 
   await logEvent('AgentRunCompleted', 'AgentRun', run.id, undefined, {
     cfCallId: result.correlation.cfCallId,
@@ -684,7 +690,7 @@ export async function activateAgentTask(
   })
 }
 
-async function failRun(runId: string, code: string, message: string) {
+async function failRun(runId: string, code: string, message: string, tenantId?: string) {
   await prisma.agentRunOutput.create({
     data: {
       runId,
@@ -693,10 +699,10 @@ async function failRun(runId: string, code: string, message: string) {
       structuredPayload: { errorCode: code },
     },
   })
-  await prisma.agentRun.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.agentRun.update({
     where: { id: runId },
     data: { status: 'FAILED', completedAt: new Date() },
-  })
+  }), tenantId)
   await logEvent('AgentRunFailed', 'AgentRun', runId, undefined, { errorCode: code, message })
   await publishOutbox('AgentRun', runId, 'AgentRunFailed', { runId, errorCode: code })
 }
@@ -709,8 +715,9 @@ async function failRun(runId: string, code: string, message: string) {
 async function collectPriorOutputs(
   instanceId: string,
   currentNodeId: string,
+  tenantId?: string,
 ): Promise<Record<string, unknown>> {
-  const priorRuns = await prisma.agentRun.findMany({
+  const priorRuns = await withTenantDbTransaction(prisma, (tx) => tx.agentRun.findMany({
     where: {
       instanceId,
       nodeId: { not: currentNodeId },
@@ -723,7 +730,7 @@ async function collectPriorOutputs(
         take: 1,
       },
     },
-  })
+  }), tenantId)
   const out: Record<string, unknown> = {}
   for (const r of priorRuns) {
     if (!r.nodeId) continue
@@ -799,6 +806,7 @@ async function createAgentOutputArtifact(args: {
 }): Promise<string | undefined> {
   const content = args.content.trim()
   if (!content) return undefined
+  const tenantId = args.instance.tenantId ?? undefined
 
   const type = await prisma.consumableType.upsert({
     where: { name: 'AGENT_OUTPUT' },
@@ -812,7 +820,7 @@ async function createAgentOutputArtifact(args: {
     },
   })
   const name = args.name ?? `${args.node.label || args.node.id} output`
-  const existing = await prisma.consumable.findFirst({
+  const existing = await withTenantDbTransaction(prisma, (tx) => tx.consumable.findFirst({
     where: {
       typeId: type.id,
       instanceId: args.instance.id,
@@ -820,7 +828,7 @@ async function createAgentOutputArtifact(args: {
       name,
     },
     select: { id: true, currentVersion: true },
-  })
+  }), tenantId)
   const payload = {
     artifactType: 'agent_output',
     approvalRequired: true,
@@ -852,14 +860,14 @@ async function createAgentOutputArtifact(args: {
         createdById: args.instance.createdById ?? undefined,
       },
     })
-    await prisma.consumable.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.consumable.update({
       where: { id: existing.id },
       data: {
         status: 'UNDER_REVIEW',
         currentVersion: nextVersion,
         formData: payload as Prisma.InputJsonValue,
       },
-    })
+    }), tenantId)
     await logEvent('AgentOutputArtifactVersioned', 'Consumable', existing.id, args.instance.createdById ?? undefined, {
       runId: args.runId,
       nodeId: args.node.id,
@@ -873,7 +881,7 @@ async function createAgentOutputArtifact(args: {
     return existing.id
   }
 
-  const created = await prisma.consumable.create({
+  const created = await withTenantDbTransaction(prisma, (tx) => tx.consumable.create({
     data: {
       typeId: type.id,
       instanceId: args.instance.id,
@@ -891,7 +899,7 @@ async function createAgentOutputArtifact(args: {
         },
       },
     },
-  })
+  }), tenantId)
   await logEvent('AgentOutputArtifactCreated', 'Consumable', created.id, args.instance.createdById ?? undefined, {
     runId: args.runId,
     nodeId: args.node.id,

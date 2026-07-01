@@ -1,6 +1,7 @@
 import type { WorkflowNode, WorkflowInstance } from '@prisma/client'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 
 export async function activateToolRequest(
@@ -10,6 +11,7 @@ export async function activateToolRequest(
   const cfg = node.config as Record<string, unknown>
   const toolId = cfg.toolId as string | undefined
   if (!toolId) return
+  const tenantId = instance.tenantId ?? undefined
 
   // Idempotency key: deterministic per (instance, node, attempt). Retries reuse the key
   // so a re-execution returns the existing run instead of creating a duplicate.
@@ -17,7 +19,7 @@ export async function activateToolRequest(
   const idempotencyKey = `${instance.id}:${node.id}:${attempt}`
 
   // Dedupe: if a run with this key already exists, skip creation.
-  const existing = await prisma.toolRun.findFirst({ where: { toolId, idempotencyKey } })
+  const existing = await withTenantDbTransaction(prisma, (tx) => tx.toolRun.findFirst({ where: { toolId, idempotencyKey } }), tenantId)
   if (existing) {
     await logEvent('ToolRequestDeduplicated', 'ToolRun', existing.id, undefined, {
       nodeId: node.id, instanceId: instance.id, idempotencyKey,
@@ -25,7 +27,7 @@ export async function activateToolRequest(
     return
   }
 
-  const run = await prisma.toolRun.create({
+  const run = await withTenantDbTransaction(prisma, (tx) => tx.toolRun.create({
     data: {
       toolId,
       actionId: cfg.actionId as string | undefined,
@@ -34,7 +36,7 @@ export async function activateToolRequest(
       requestedById: instance.createdById ?? undefined,
       idempotencyKey,
     },
-  })
+  }), tenantId)
 
   await logEvent('ToolRequested', 'ToolRun', run.id, undefined, {
     nodeId: node.id,
