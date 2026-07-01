@@ -25,16 +25,20 @@ const createTaskSchema = z.object({
 tasksRouter.post('/', validate(createTaskSchema), async (req, res, next) => {
   try {
     const { assignedToId, teamId, ...taskData } = req.body as z.infer<typeof createTaskSchema>
+    // RLS 5b — a task created here may be standalone (no instanceId); stamp the
+    // request tenant so the row is visible under the tenantId-OR-instance policy.
+    const tenantId = resolveTenantFromRequest(req)
     const task = await withTenantDbTransaction(prisma, (tx) => tx.task.create({
       data: {
         ...taskData,
+        tenantId,
         createdById: req.user!.userId,
         dueAt: taskData.dueAt ? new Date(taskData.dueAt) : undefined,
         ...(assignedToId && { assignments: { create: { assignedToId } } }),
         ...(teamId && { queueItems: { create: { teamId } } }),
       },
       include: { assignments: true, queueItems: true },
-    }), resolveTenantFromRequest(req))
+    }), tenantId)
     await logEvent('TaskCreated', 'Task', task.id, req.user!.userId)
     res.status(201).json(task)
   } catch (err) {
