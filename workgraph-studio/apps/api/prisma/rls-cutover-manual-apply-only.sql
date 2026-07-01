@@ -21,90 +21,206 @@
 -- tenant-scoped tables the 20260619123000 migration scaffolded policies for
 -- but deliberately left inert. Every slice in the "thread tenant-scoped
 -- transactions through the workflow engine" initiative (PRs #297, #298, #299,
--- #300, #301, #302, #303) exists solely to make running this file safe.
+-- #300, #301, #302, #303) exists solely to make running this file safe FOR
+-- THE ENGINE'S OWN QUERY PATHS. It does NOT, on its own, make every API
+-- surface safe — see BLOCKERS below.
+--
+-- SAFE BY CONSTRUCTION, NOT JUST BY CHECKLIST: the whole file runs inside one
+-- transaction (BEGIN/COMMIT), and a preflight DO-block RAISEs — aborting the
+-- entire transaction with zero changes applied — if any of the known hard
+-- preconditions below are not met. A human can still comment out an individual
+-- guard if they have genuinely resolved that item another way, but the default
+-- is fail-closed: unmet precondition ⇒ nothing happens.
 --
 -- ----------------------------------------------------------------------------
--- PRE-FLIGHT CHECKLIST — do not run this file until every item is checked.
+-- BLOCKERS — verified 2026-07-01 against the code on `main` at cutover-authoring
+-- time. Each is ALSO enforced by a preflight guard below where it can be
+-- expressed in SQL; the ones that are code-shape problems (not data-at-rest)
+-- can only be carried here, so read this list even though the guards exist.
 -- ----------------------------------------------------------------------------
 --
--- [ ] 1. PRs #297-#303 have been live in production long enough to be
---        trusted. (Scope: WorkflowRuntime's cron/dispatch path + all
---        router-invoked lifecycle ops; TimerSweep + TriggerScheduler;
---        budget.ts + cloneDesignToRun.ts; the 5 blocking gate executors; all
---        20 node executors. Full detail in
---        ~/.claude/plans/lexical-brewing-sky.md and this repo's PR history.)
+-- [ ] B1. NON-ENGINE API SURFACES ARE NOT TENANT-SCOPED. This initiative
+--        threaded withTenantDbTransaction through the ENGINE (scheduler +
+--        WorkflowRuntime + all 20 executors + budget/clone). It did NOT touch
+--        several MOUNTED HTTP routes / services that read and write the same
+--        16 RLS tables with bare `prisma.*` (no withTenantDbTransaction, so no
+--        SET LOCAL app.tenant_id — the global tenantDbContextMiddleware only
+--        populates AsyncLocalStorage, it does not open a tenant-scoped tx).
+--        Confirmed offenders (non-exhaustive — re-audit before applying):
+--          - src/modules/task/tasks.router.ts  (/api/tasks): create, list,
+--            my-work, team-queue, get, claim, complete, form-submit — every
+--            task CRUD op. After cutover: create/claim/complete are REJECTED
+--            by the tasks WITH CHECK; list/get return EMPTY.
+--          - src/modules/agent/agents.router.ts (/api/agents/:id/runs):
+--            creates agent_runs with an OPTIONAL instanceId.
+--          - src/modules/laptop/laptop.service.ts: creates agent_runs with NO
+--            instanceId at all (origin='laptop').
+--          - src/modules/tool/gateway/ToolGatewayService.ts: creates tool_runs
+--            with an OPTIONAL instanceId.
+--        RESOLVE BEFORE APPLYING: either (a) finish tenant-scoping these
+--        surfaces (wrap their reads/writes in withTenantDbTransaction and give
+--        them a tenant source), or (b) hold the affected tables OUT of this
+--        cutover (see B2 for which tables) until they are.
 --
--- [ ] 2. GAP 1 — Trigger-spawned instances have tenantId: NULL. `Workflow`
---        and `WorkflowTrigger` have no tenant column, so
+-- [ ] B2. SIX TABLES HAVE A LEGITIMATE "STANDALONE" (NULL instanceId) ROW MODE
+--        THE SCAFFOLDED POLICY CANNOT REPRESENT. Of the 16 tables, these six
+--        have a NULLABLE instanceId and are created as non-workflow rows by the
+--        B1 paths (and possibly others):
+--            tasks, approval_requests, consumables,
+--            agent_runs, tool_runs, documents
+--        Their scaffolded policy is workgraph_instance_visible("instanceId").
+--        A row with instanceId IS NULL can NEVER satisfy it (the sub-select
+--        finds no parent instance), so under FORCE RLS such a row is invisible
+--        to every reader and new ones are rejected — regardless of tenant
+--        context. The other ten tables have a NON-NULL instanceId (or, for
+--        workflow_instances / run_snapshots, a direct tenantId column) and are
+--        engine-written only, so they do not have this problem.
+--        RESOLVE BEFORE APPLYING: decide, per table, either
+--          - revise the policy so owner/tenant-scoped standalone rows are
+--            representable (e.g. add a tenantId column to these tables and OR
+--            it into the predicate), OR
+--          - eliminate the standalone-row code paths (B1), OR
+--          - hold these six tables out of the first cutover and force RLS only
+--            on the ten engine-bound tables.
+--        Guard D below HARD-STOPS if any NULL-instanceId rows already exist in
+--        these six tables, but it cannot see the B1 code paths that keep
+--        creating them — so B1 must be resolved regardless of Guard D passing.
+--
+-- [ ] B3. TRIGGER-SPAWNED INSTANCES HAVE tenantId: NULL (Decision C). Workflow
+--        and WorkflowTrigger have no tenant column, so
 --        TriggerScheduler.spawnInstance() creates every scheduled/
---        event-triggered WorkflowInstance with tenantId = NULL. The
---        fail-closed RLS policy (workgraph_current_tenant_id() is NULL when
---        app.tenant_id is unset, and NULL "tenantId" never satisfies
---        "tenantId" = <anything>, even another NULL) makes these instances
---        INVISIBLE to every reader — including the engine itself — the
---        moment this file is applied.
---        CONSEQUENCE IF UNRESOLVED: all scheduled/event-triggered workflow
---        automation silently stops advancing (looks like the scheduler died;
---        it didn't — its rows just vanished from every RLS-filtered query).
---        RESOLVE BEFORE APPLYING if any production workflow template uses a
---        WorkflowTrigger: either add a tenant column to
---        Workflow/WorkflowTrigger and backfill it, or add an IAM
---        capability→tenant resolution call to TriggerScheduler.
---        Confirmed not addressed as of PR #303 (2026-07-01) — an explicit,
---        deliberate deferral (Decision C in the plan), not an oversight.
+--        event-triggered WorkflowInstance with tenantId = NULL. Fail-closed
+--        RLS makes those instances (and, transitively, all their child rows)
+--        invisible to every reader at cutover — scheduled/event automation
+--        silently stops advancing. Guard C below HARD-STOPS if any NULL-tenant
+--        instance exists. Confirmed unresolved as of PR #303.
 --
--- [ ] 3. GAP 2 — lib/admin-prisma.ts's adminPrisma (used only by
---        TimerSweep's cross-tenant TIMER/SLA discovery reads) connects via
---        WORKGRAPH_DATABASE_URL_ADMIN — the OWNER/admin DB role
---        (bootstrap-app-role.sh's ADMIN_USER, default `workgraph`), chosen
---        specifically so that role can see rows across every tenant.
---        FORCE ROW LEVEL SECURITY (below) makes RLS apply even to the table
---        OWNER — UNLESS that role is a genuine Postgres superuser, in which
---        case Postgres exempts it unconditionally regardless of FORCE.
---          - Local Docker dev (role provisioned via POSTGRES_USER in the
---            official postgres image) is typically a real superuser — FORCE
---            is a no-op for it there, adminPrisma keeps working unchanged.
---          - Many MANAGED Postgres services (AWS RDS, GCP Cloud SQL, etc.)
---            do NOT grant true SUPERUSER to their "admin" role — only
---            elevated-but-not-superuser privileges.
---        CONSEQUENCE IF THE PRODUCTION ADMIN ROLE IS NOT A REAL SUPERUSER:
---        TimerSweep's cross-tenant discovery queries silently become
---        tenant-filtered (that connection never sets app.tenant_id, so the
---        fail-closed policy returns zero rows) — TIMER nodes and Task SLA
---        sweeps silently stop firing, platform-wide, for every tenant.
---        BEFORE APPLYING in any non-local-Docker environment, run this
---        against the WORKGRAPH_DATABASE_URL_ADMIN connection:
---            SELECT rolname, rolsuper FROM pg_roles WHERE rolname = current_user;
---        If rolsuper is false: either run
---            ALTER ROLE <that_role> BYPASSRLS;
---        first, or do not apply this file until that's resolved.
+-- [ ] B4. adminPrisma's OWNER-ROLE CROSS-TENANT BYPASS BREAKS UNDER FORCE RLS
+--        UNLESS THAT ROLE IS SUPERUSER OR BYPASSRLS. lib/admin-prisma.ts
+--        (TimerSweep's cross-tenant TIMER/SLA discovery, slice 2) connects via
+--        WORKGRAPH_DATABASE_URL_ADMIN — the owner/admin role — specifically to
+--        see rows across every tenant. FORCE ROW LEVEL SECURITY applies RLS
+--        even to the table owner, UNLESS the role is a real superuser (Postgres
+--        exempts those unconditionally) or has BYPASSRLS. Local Docker's admin
+--        is usually a real superuser (FORCE is a no-op for it there); many
+--        MANAGED services (RDS, Cloud SQL) do NOT grant true superuser. If the
+--        prod admin role is neither, TimerSweep's cross-tenant sweeps silently
+--        return zero rows — TIMER nodes and Task SLAs stop firing platform-wide.
+--        Guard B below HARD-STOPS if the APPLYING role (current_user, which by
+--        the documented apply command IS this admin role) lacks both. Note it
+--        can only check the applying role; also confirm adminPrisma is actually
+--        wired to a bypass-capable role in the target env (if
+--        WORKGRAPH_DATABASE_URL_ADMIN is unset, adminPrisma falls back to the
+--        NOBYPASSRLS app role and TimerSweep breaks anyway).
 --
--- [ ] 4. GAP 3 — SignalEmitExecutor's cross-instance signal broadcast
---        (PR #303) was deliberately narrowed to same-tenant delivery only —
---        a cross-tenant broadcast was judged to be a data-isolation gap, not
---        a feature worth preserving via adminPrisma. If any production
---        workflow relies on SIGNAL_EMIT waking a SIGNAL_WAIT node in a
---        DIFFERENT tenant's instance, that stops working at this cutover.
---        Confirmed not the case as of PR #303 — re-verify if new workflow
---        templates have shipped since.
+-- [ ] B5. CHILD/DETAIL TABLES ARE NOT DB-RLS PROTECTED. This cutover (and the
+--        scaffold it forces) covers parent tables only. Related child tables —
+--        task_assignments, team_queue_items, task_comments, task_status_history,
+--        approval_decisions, agent_run_outputs, agent_run_inputs,
+--        tool_run_approvals, consumable_versions, and others — have NO tenant
+--        policy, so DB-level isolation for them is nonexistent; isolation there
+--        rests entirely on application-layer scoping and on not exposing
+--        cross-tenant queries (e.g. tasks.router team-queue reads teamQueueItem
+--        by teamId with no tenant guard). This is a known limitation of the
+--        current RLS design, not something this file changes. If a complete
+--        DB-level boundary is required, those child tables need their own
+--        policies (a new scaffold migration) before this is considered "done".
 --
--- [ ] 5. TENANT_ISOLATION_MODE and every other deploy-env flag are what you
---        expect in the target environment (bin/check-deploy-env.sh enforces
---        `strict` as the production expectation; confirm this migration's
---        target matches).
+-- [ ] B6. Standard pre-cutover hygiene: PRs #297-#303 have soaked in prod long
+--        enough to trust; TENANT_ISOLATION_MODE and other deploy-env flags
+--        match the target (bin/check-deploy-env.sh expects `strict` in prod);
+--        a fresh backup/snapshot was taken immediately before; and the rollback
+--        block at the bottom of this file has been read and is ready to run.
 --
--- [ ] 6. A fresh backup/snapshot has been taken immediately before running
---        this file.
+-- [ ] B7. SignalEmitExecutor's cross-instance signal broadcast was narrowed to
+--        same-tenant delivery in PR #303. If any workflow relies on SIGNAL_EMIT
+--        waking a SIGNAL_WAIT in a DIFFERENT tenant, that stops at cutover.
+--        Confirmed not the case as of #303 — re-verify if templates changed.
 --
--- [ ] 7. The rollback block at the bottom of this file has been read and is
---        ready to run immediately if anything looks wrong after applying.
---
--- HOW TO APPLY (only after every box above is checked):
+-- HOW TO APPLY (only after every box above is checked and, for B1/B2, actually
+-- resolved — the guards catch data-at-rest, not the code paths):
 --     psql "$WORKGRAPH_DATABASE_URL_ADMIN" -v ON_ERROR_STOP=1 \
 --       -f prisma/rls-cutover-manual-apply-only.sql
+--   The file wraps itself in a single transaction, so do NOT also pass
+--   --single-transaction. ON_ERROR_STOP=1 makes any guard RAISE abort psql,
+--   rolling the whole transaction back with nothing applied.
 --
 -- ============================================================================
 
+BEGIN;
+
+-- ----------------------------------------------------------------------------
+-- PREFLIGHT GUARDS — abort the whole transaction (nothing applied) if any
+-- known hard precondition is unmet. Comment out an individual guard ONLY if you
+-- have deliberately, verifiably resolved that specific item another way.
+-- ----------------------------------------------------------------------------
+DO $preflight$
+DECLARE
+  v_tables text[] := ARRAY[
+    'workflow_instances','run_snapshots','workflow_run_budgets','workflow_run_budget_events',
+    'workflow_phases','workflow_nodes','workflow_edges','workflow_mutations','workflow_events',
+    'tasks','approval_requests','consumables','agent_runs','tool_runs','documents','pending_executions'
+  ];
+  -- The six tables with a NULLABLE instanceId (B2) — standalone rows here are
+  -- unrepresentable under the instance-visibility policy.
+  v_nullable_instance_tables text[] := ARRAY[
+    'tasks','approval_requests','consumables','agent_runs','tool_runs','documents'
+  ];
+  v_missing_policies text;
+  v_can_bypass boolean;
+  v_null_tenant_instances bigint;
+  v_orphan_report text := '';
+  v_tbl text;
+  v_cnt bigint;
+BEGIN
+  -- Guard A — every target table must already carry the scaffolded policy.
+  -- Forcing RLS on a policy-less table denies ALL access to it.
+  SELECT string_agg(t, ', ')
+    INTO v_missing_policies
+    FROM unnest(v_tables) AS t
+   WHERE NOT EXISTS (
+     SELECT 1 FROM pg_policies
+      WHERE schemaname = 'public' AND tablename = t AND policyname = 'tenant_isolation_policy'
+   );
+  IF v_missing_policies IS NOT NULL THEN
+    RAISE EXCEPTION 'RLS cutover aborted [Guard A]: tenant_isolation_policy missing on: %. Apply the 20260619123000_tenant_rls_policy_scaffold migration first.', v_missing_policies;
+  END IF;
+
+  -- Guard B (B4) — the applying role must survive FORCE RLS for cross-tenant
+  -- reads. adminPrisma/TimerSweep connect as this same admin role.
+  SELECT rolsuper OR rolbypassrls INTO v_can_bypass FROM pg_roles WHERE rolname = current_user;
+  IF NOT COALESCE(v_can_bypass, false) THEN
+    RAISE EXCEPTION 'RLS cutover aborted [Guard B / B4]: role "%" is neither SUPERUSER nor BYPASSRLS. Under FORCE RLS, TimerSweep''s cross-tenant discovery (adminPrisma, same role) would silently stop firing platform-wide. Fix: ALTER ROLE "%" BYPASSRLS; then re-run. Only comment out this guard if adminPrisma is separately wired to a verified bypass-capable role.', current_user, current_user;
+  END IF;
+
+  -- Guard C (B3 / Decision C) — tenant-less instances vanish at cutover.
+  SELECT count(*) INTO v_null_tenant_instances
+    FROM public.workflow_instances WHERE "tenantId" IS NULL;
+  IF v_null_tenant_instances > 0 THEN
+    RAISE EXCEPTION 'RLS cutover aborted [Guard C / B3]: % workflow_instances row(s) have tenantId IS NULL (trigger-spawned). They and all their child rows become invisible to every reader at cutover. Backfill tenantId or resolve the trigger-tenant gap first.', v_null_tenant_instances;
+  END IF;
+
+  -- Guard D (B1 / B2) — standalone rows with NULL instanceId can never satisfy
+  -- workgraph_instance_visible("instanceId"); they would be frozen/invisible.
+  -- NOTE: this catches data-at-rest only. The B1 code paths that KEEP creating
+  -- such rows are not visible to SQL and must be resolved separately.
+  FOREACH v_tbl IN ARRAY v_nullable_instance_tables LOOP
+    EXECUTE format('SELECT count(*) FROM public.%I WHERE "instanceId" IS NULL', v_tbl) INTO v_cnt;
+    IF v_cnt > 0 THEN
+      v_orphan_report := v_orphan_report || format('%s=%s ', v_tbl, v_cnt);
+    END IF;
+  END LOOP;
+  IF length(v_orphan_report) > 0 THEN
+    RAISE EXCEPTION 'RLS cutover aborted [Guard D / B1+B2]: standalone rows with NULL instanceId exist (%). The scaffolded instance-visibility policy cannot represent them — they would be frozen/invisible and new ones rejected. Resolve the standalone-row API paths (tasks CRUD, agents.router :id/runs, laptop.service, ToolGatewayService) or hold these tables out of the cutover.', trim(v_orphan_report);
+  END IF;
+
+  RAISE NOTICE 'RLS cutover preflight passed (policies present; applying role can bypass; no NULL-tenant instances; no NULL-instance standalone rows). Proceeding with ENABLE/FORCE on % tables.', array_length(v_tables, 1);
+END
+$preflight$;
+
+-- ----------------------------------------------------------------------------
+-- ENABLE + FORCE ROW LEVEL SECURITY on the 16 scaffolded tables.
+-- ----------------------------------------------------------------------------
 ALTER TABLE public.workflow_instances         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.run_snapshots              ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.workflow_run_budgets       ENABLE ROW LEVEL SECURITY;
@@ -139,14 +255,18 @@ ALTER TABLE public.tool_runs                  FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.documents                  FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.pending_executions         FORCE ROW LEVEL SECURITY;
 
+COMMIT;
+
 -- ============================================================================
 -- ROLLBACK — if anything looks wrong after applying, run the block below
--- immediately via the same admin connection. `NO FORCE` alone is enough if
--- the symptom is adminPrisma/TimerSweep losing cross-tenant visibility (GAP
--- 2); use the full `DISABLE` block if workgraph_app's own reads/writes are
--- failing (e.g. a tenant-less row exists and legitimately needs to be seen).
+-- immediately via the same admin connection. `NO FORCE` alone is enough if the
+-- symptom is adminPrisma/TimerSweep losing cross-tenant visibility (B4); use
+-- the full `DISABLE` block if the app role's own reads/writes are failing
+-- (e.g. a tenant-less or NULL-instance row legitimately needs to be seen).
+-- Wrapped in its own transaction so rollback is also all-or-nothing.
 -- ============================================================================
 
+-- BEGIN;
 -- ALTER TABLE public.workflow_instances         NO FORCE ROW LEVEL SECURITY;
 -- ALTER TABLE public.run_snapshots              NO FORCE ROW LEVEL SECURITY;
 -- ALTER TABLE public.workflow_run_budgets       NO FORCE ROW LEVEL SECURITY;
@@ -163,7 +283,9 @@ ALTER TABLE public.pending_executions         FORCE ROW LEVEL SECURITY;
 -- ALTER TABLE public.tool_runs                  NO FORCE ROW LEVEL SECURITY;
 -- ALTER TABLE public.documents                  NO FORCE ROW LEVEL SECURITY;
 -- ALTER TABLE public.pending_executions         NO FORCE ROW LEVEL SECURITY;
+-- COMMIT;
 
+-- BEGIN;
 -- ALTER TABLE public.workflow_instances         DISABLE ROW LEVEL SECURITY;
 -- ALTER TABLE public.run_snapshots              DISABLE ROW LEVEL SECURITY;
 -- ALTER TABLE public.workflow_run_budgets       DISABLE ROW LEVEL SECURITY;
@@ -180,3 +302,4 @@ ALTER TABLE public.pending_executions         FORCE ROW LEVEL SECURITY;
 -- ALTER TABLE public.tool_runs                  DISABLE ROW LEVEL SECURITY;
 -- ALTER TABLE public.documents                  DISABLE ROW LEVEL SECURITY;
 -- ALTER TABLE public.pending_executions         DISABLE ROW LEVEL SECURITY;
+-- COMMIT;
