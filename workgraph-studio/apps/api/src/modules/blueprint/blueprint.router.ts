@@ -9,6 +9,7 @@ import { precheckTargetUrl, isBlockedAddress } from '../../lib/ssrf-guard'
 import { BlueprintStage, BlueprintSessionStatus, BlueprintStageStatus, BlueprintSourceType, Prisma, type ConsumableStatus, type InstanceStatus } from '@prisma/client'
 import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { resolveLlmRouting } from '../llm-routing/resolve'
 import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
 import { validate } from '../../middleware/validate'
@@ -5108,11 +5109,12 @@ async function advanceMultinodeStageNode(
   stageKey: string,
   actorId?: string,
   expectedAttempt?: number,
+  tenantId?: string,
 ): Promise<void> {
-  const nodes = await prisma.workflowNode.findMany({
+  const nodes = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findMany({
     where: { instanceId: workflowInstanceId },
     select: { id: true, status: true, config: true },
-  })
+  }), tenantId)
   const target = nodes.find(n => {
     const cfg = isRecord(n.config) ? n.config : {}
     const wb = isRecord(cfg.workbench) ? cfg.workbench : {}
@@ -5125,7 +5127,7 @@ async function advanceMultinodeStageNode(
   // Finding #7 — expectedAttempt is the node's attempt when this stage's run launched; advance()
   // rejects the completion if the node was restarted since (attempt bumped), so a stale copilot
   // result can't complete the new run.
-  await advance(workflowInstanceId, target.id, { _multinodeStageCompleted: stageKey }, actorId, expectedAttempt)
+  await advance(workflowInstanceId, target.id, { _multinodeStageCompleted: stageKey }, actorId, expectedAttempt, tenantId)
 }
 
 async function saveStageVerdict(
@@ -5457,7 +5459,16 @@ async function saveStageVerdict(
   // session-resume; (c) the terminal QA node advancing into the child END.
   if (accepted && multinodeEnabled() && session.workflowInstanceId) {
     try {
-      await advanceMultinodeStageNode(session.workflowInstanceId, stage.key, actorId, latestAttempt.nodeAttempt)
+      // RLS prep — BlueprintSession has no tenantId column of its own (only a bare
+      // workflowInstanceId FK), so this is a best-effort lookup: same bootstrap shape
+      // as advance()'s own first read. Inert today; only load-bearing once slice 6's
+      // FORCE RLS is live — this file's broader RLS-scoped surface stays out of scope
+      // here (flagged since slice 3, unchanged).
+      const instanceForTenant = await prisma.workflowInstance.findUnique({
+        where: { id: session.workflowInstanceId },
+        select: { tenantId: true },
+      }).catch(() => null)
+      await advanceMultinodeStageNode(session.workflowInstanceId, stage.key, actorId, latestAttempt.nodeAttempt, instanceForTenant?.tenantId ?? undefined)
     } catch (err) {
       // Best-effort — a failed node advance must not roll back the verdict
       // save. Surfaced in audit-gov so the stuck node is observable.
@@ -8148,11 +8159,19 @@ async function attachFinalPackToWorkflowNode(
 ) {
   const state = readLoopState(session as LoopSessionSeed)
   if (!session.workflowInstanceId || !state.workflowNodeId) return
-  const node = await prisma.workflowNode.findFirst({
-    where: { id: state.workflowNodeId, instanceId: session.workflowInstanceId },
-    select: { id: true, config: true, instanceId: true },
-  })
+  // Narrowing from the guard above doesn't survive crossing into the closure
+  // below, so pin these to locals first (same fix as slice 1b's toolId issue).
+  const workflowNodeId = state.workflowNodeId
+  const workflowInstanceId = session.workflowInstanceId
+  // RLS prep — bootstrap read (no tenant context yet, same shape as advance()'s own
+  // first statement); pulls the owning instance's tenantId in the same query so the
+  // rest of this function's writes and completeLinkedWorkbenchTask can be scoped.
+  const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findFirst({
+    where: { id: workflowNodeId, instanceId: workflowInstanceId },
+    select: { id: true, config: true, instanceId: true, instance: { select: { tenantId: true } } },
+  }), undefined)
   if (!node) return
+  const tenantId = node.instance.tenantId ?? undefined
   const config = isRecord(node.config) ? node.config : {}
   const workbench = isRecord(config.workbench) ? config.workbench : {}
   const outputs = isRecord(workbench.outputs) ? workbench.outputs : {}
@@ -8200,12 +8219,12 @@ async function attachFinalPackToWorkflowNode(
       finalizedAt: finalPack.generatedAt,
     },
   }
-  await prisma.$transaction([
-    prisma.workflowNode.update({
+  await withTenantDbTransaction(prisma, (tx) => Promise.all([
+    tx.workflowNode.update({
       where: { id: node.id },
       data: { config: nextConfig as Prisma.InputJsonValue },
     }),
-    prisma.workflowMutation.create({
+    tx.workflowMutation.create({
       data: {
         instanceId: node.instanceId,
         nodeId: node.id,
@@ -8215,7 +8234,7 @@ async function attachFinalPackToWorkflowNode(
         performedById: actorId,
       },
     }),
-  ])
+  ]), tenantId)
   await logEvent('BlueprintFinalPackAttachedToWorkflowNode', 'WorkflowNode', node.id, actorId, {
     sessionId: session.id,
     finalPackId: finalPack.id,
@@ -8238,6 +8257,7 @@ async function attachFinalPackToWorkflowNode(
     finalPackId: finalPack.id,
     output: workflowOutput,
     actorId,
+    tenantId,
   })
 }
 
@@ -8248,6 +8268,7 @@ async function completeLinkedWorkbenchTask({
   finalPackId,
   output,
   actorId,
+  tenantId,
 }: {
   instanceId: string
   nodeId: string
@@ -8255,11 +8276,12 @@ async function completeLinkedWorkbenchTask({
   finalPackId: string
   output: Record<string, unknown>
   actorId: string
+  tenantId?: string
 }) {
-  const node = await prisma.workflowNode.findFirst({
+  const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findFirst({
     where: { id: nodeId, instanceId },
     select: { id: true, status: true },
-  })
+  }), tenantId)
   if (!node || node.status === 'COMPLETED') return
   if (node.status !== 'ACTIVE') {
     await logEvent('BlueprintWorkflowAutoAdvanceSkipped', 'WorkflowNode', nodeId, actorId, {
@@ -8272,20 +8294,20 @@ async function completeLinkedWorkbenchTask({
     return
   }
 
-  const task = await prisma.task.findFirst({
+  const task = await withTenantDbTransaction(prisma, (tx) => tx.task.findFirst({
     where: {
       instanceId,
       nodeId,
       status: { not: 'COMPLETED' },
     },
     orderBy: { createdAt: 'desc' },
-  })
+  }), tenantId)
 
   if (task) {
-    await prisma.task.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.task.update({
       where: { id: task.id },
       data: { status: 'COMPLETED' },
-    })
+    }), tenantId)
     await prisma.taskStatusHistory.create({
       data: {
         taskId: task.id,
@@ -8339,7 +8361,7 @@ async function completeLinkedWorkbenchTask({
 
   try {
     const { advance } = await import('../workflow/runtime/WorkflowRuntime')
-    await advance(instanceId, nodeId, output, actorId)
+    await advance(instanceId, nodeId, output, actorId, undefined, tenantId)
     await logEvent('BlueprintWorkflowAutoAdvanced', 'WorkflowNode', nodeId, actorId, {
       instanceId,
       sessionId,

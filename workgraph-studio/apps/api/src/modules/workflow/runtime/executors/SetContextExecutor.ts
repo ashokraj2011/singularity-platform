@@ -1,6 +1,7 @@
 import type { WorkflowNode, WorkflowInstance } from '@prisma/client'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 
 // KVPair from the UI stores path in `key` field
 type Assignment = { path?: string; key?: string; value: string }
@@ -97,8 +98,8 @@ export async function activateSetContext(
     setNestedPath(ctx, physicalPath(path), resolveValue(entry.value, ctx))
   }
 
-  await prisma.workflowInstance.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
     where: { id: instance.id },
     data: { context: ctx as unknown as Prisma.InputJsonValue },
-  })
+  }), instance.tenantId ?? undefined)
 }

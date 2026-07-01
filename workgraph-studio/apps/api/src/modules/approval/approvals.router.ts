@@ -348,7 +348,7 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
       approvalRequest.instanceId
     ) {
       try {
-        await advance(approvalRequest.instanceId, approvalRequest.nodeId, { approvalDecision: decision }, userId)
+        await advance(approvalRequest.instanceId, approvalRequest.nodeId, { approvalDecision: decision }, userId, undefined, resolveTenantFromRequest(req))
       } catch (advanceErr) {
         console.error('Workflow advance failed after approval:', advanceErr)
       }

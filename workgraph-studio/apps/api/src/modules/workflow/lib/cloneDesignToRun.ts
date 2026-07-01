@@ -34,7 +34,7 @@ export type CloneOpts = {
 }
 
 export type CloneResult = {
-  instance: { id: string; name: string; status: string; templateVersion: number | null }
+  instance: { id: string; name: string; status: string; templateVersion: number | null; tenantId: string | null }
   cloned:   { phases: number; nodes: number; edges: number }
   /** Version this run was pinned to (the snapshot it cloned from). */
   pinnedToVersion: number | null
@@ -340,6 +340,7 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
         name:            run.name,
         status:          run.status,
         templateVersion: run.templateVersion ?? null,
+        tenantId:        run.tenantId ?? null,
       },
       cloned:           { phases: phaseIdMap.size, nodes: nodeIdMap.size, edges: edgeCount },
       pinnedToVersion:  versionResult.version,
