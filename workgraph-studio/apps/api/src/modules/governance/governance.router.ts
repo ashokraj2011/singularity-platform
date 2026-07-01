@@ -15,6 +15,7 @@ import { z } from 'zod'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { resolveGovernance, type GovernanceResolveContext } from '../../lib/iam/client'
+import { resolveTenantFromRequest } from '../../lib/tenant-isolation'
 
 export const governanceRouter: Router = Router()
 
@@ -178,7 +179,7 @@ governanceRouter.post('/waivers/:id/approve', async (req, res, next) => {
     if (waiver.workflowInstanceId && waiver.workflowNodeId) {
       try {
         const { restartNode } = await import('../workflow/runtime/WorkflowRuntime')
-        await restartNode(waiver.workflowInstanceId, waiver.workflowNodeId, actorId)
+        await restartNode(waiver.workflowInstanceId, waiver.workflowNodeId, actorId, resolveTenantFromRequest(req))
       } catch (e) {
         // eslint-disable-next-line no-console
         console.warn(`[governance] waiver-approve auto-resume failed (node stays restartable): ${(e as Error).message}`)

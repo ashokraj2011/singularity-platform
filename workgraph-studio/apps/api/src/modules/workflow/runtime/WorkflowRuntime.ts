@@ -384,10 +384,21 @@ async function activateDownstream(
   }
 }
 
-export async function startInstance(instanceId: string, actorId?: string): Promise<{ id: string; startNodes: string[] }> {
+export async function startInstance(
+  instanceId: string,
+  actorId?: string,
+  // RLS prep — optional + appended last so every existing caller (routers,
+  // CallWorkflowExecutor, the WorkItem-start services) is untouched; omitting
+  // it is byte-for-byte today's behavior. Router callers pass
+  // resolveTenantFromRequest(req); CallWorkflowExecutor/WorkItem services pass
+  // the parent/just-created instance's own tenantId (already in scope there).
+  tenantId?: string,
+): Promise<{ id: string; startNodes: string[] }> {
   // Find nodes with no incoming edges → activate them.
-  const allNodes = await prisma.workflowNode.findMany({ where: { instanceId } })
-  const allEdges = await prisma.workflowEdge.findMany({ where: { instanceId } })
+  const [allNodes, allEdges] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+    tx.workflowNode.findMany({ where: { instanceId } }),
+    tx.workflowEdge.findMany({ where: { instanceId } }),
+  ]), tenantId)
   if (allNodes.length === 0) {
     throw new ValidationError('Cannot start workflow run because the design has no nodes')
   }
@@ -397,30 +408,32 @@ export async function startInstance(instanceId: string, actorId?: string): Promi
     throw new ValidationError('Cannot start workflow run because the graph has no entry node')
   }
 
-  const instance = await prisma.workflowInstance.update({
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
     where: { id: instanceId },
     data: { status: 'ACTIVE', startedAt: new Date() },
-  })
+  }), tenantId)
 
   for (const node of startNodes) {
-    await prisma.workflowNode.update({
-      where: { id: node.id },
-      data: { status: 'ACTIVE', startedAt: new Date() },
-    })
-    await prisma.workflowMutation.create({
-      data: {
-        instanceId,
-        nodeId: node.id,
-        mutationType: 'NODE_STATUS_CHANGE',
-        beforeState: { status: 'PENDING' },
-        afterState: { status: 'ACTIVE' },
-        performedById: actorId,
-      },
-    })
+    await withTenantDbTransaction(prisma, async (tx) => {
+      await tx.workflowNode.update({
+        where: { id: node.id },
+        data: { status: 'ACTIVE', startedAt: new Date() },
+      })
+      await tx.workflowMutation.create({
+        data: {
+          instanceId,
+          nodeId: node.id,
+          mutationType: 'NODE_STATUS_CHANGE',
+          beforeState: { status: 'PENDING' },
+          afterState: { status: 'ACTIVE' },
+          performedById: actorId,
+        },
+      })
+    }, tenantId)
     await processStartNodeAttachments(node, instance, actorId)
     // START nodes are pass-through: advance immediately so downstream activates.
     if (node.nodeType === 'START') {
-      await advance(instanceId, node.id, (instance.context ?? {}) as Record<string, unknown>, actorId)
+      await advance(instanceId, node.id, (instance.context ?? {}) as Record<string, unknown>, actorId, undefined, tenantId)
     } else {
       // Finding #4 — a non-START entry node (root AGENT_TASK / HUMAN_TASK / WORKBENCH_TASK,
       // etc.) is executable; dispatch it via the same execution-location gate downstream
@@ -735,50 +748,55 @@ export async function restartNode(
   instanceId: string,
   nodeId: string,
   actorId?: string,
+  // RLS prep — see startInstance's tenantId param comment; router callers pass
+  // resolveTenantFromRequest(req).
+  tenantId?: string,
 ): Promise<{ restartedNodeId: string; resetNodeIds: string[] }> {
-  const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
-  const node = await prisma.workflowNode.findFirst({ where: { id: nodeId, instanceId } })
+  const [instance, node] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+    tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }),
+    tx.workflowNode.findFirst({ where: { id: nodeId, instanceId } }),
+  ]), tenantId)
   if (!node) throw new ValidationError('Workflow node was not found in this run')
   if (!RESTARTABLE_NODE_STATUSES.has(node.status)) {
     throw new ValidationError('Only active, completed, failed, or blocked workflow nodes can be restarted')
   }
 
-  const edges = await prisma.workflowEdge.findMany({
+  const edges = await withTenantDbTransaction(prisma, (tx) => tx.workflowEdge.findMany({
     where: { instanceId },
     select: { sourceNodeId: true, targetNodeId: true },
-  })
+  }), tenantId)
   const downstreamIds = reachableDownstreamNodeIds(nodeId, edges)
   const resetNodeIds = [nodeId, ...downstreamIds]
   const context = clearBlockedContext((instance.context ?? {}) as Record<string, unknown>)
   filterPendingAdvances(context, resetNodeIds)
 
-  await prisma.$transaction([
-    prisma.pendingExecution.deleteMany({
+  await withTenantDbTransaction(prisma, async (tx) => {
+    await tx.pendingExecution.deleteMany({
       where: { instanceId, nodeId: { in: resetNodeIds } },
-    }),
-    prisma.workflowNode.updateMany({
+    })
+    await tx.workflowNode.updateMany({
       where: { instanceId, id: { in: downstreamIds } },
       data: { status: 'PENDING', startedAt: null, completedAt: null },
-    }),
-    prisma.workflowNode.update({
+    })
+    await tx.workflowNode.update({
       where: { id: nodeId },
       // Finding #7 — bump the attempt so any result from the prior attempt is fenced out
       // by advance()'s attempt check before it can complete this fresh run.
       data: { status: 'ACTIVE', startedAt: new Date(), completedAt: null, attempt: { increment: 1 } },
-    }),
+    })
     // Cancel any in-flight / completed agent run for this node so the restart's
     // fresh run supersedes it. (Restart from ACTIVE = cancel + re-send: the old
     // copilot subprocess finishes in the background, but its run is FAILED so the
     // node flow ignores it and uses the new run.)
-    prisma.agentRun.updateMany({
+    await tx.agentRun.updateMany({
       where: { instanceId, nodeId, status: { in: ['RUNNING', 'AWAITING_REVIEW', 'PAUSED'] } },
       data: { status: 'FAILED', completedAt: new Date() },
-    }),
-    prisma.workflowInstance.update({
+    })
+    await tx.workflowInstance.update({
       where: { id: instanceId },
       data: { status: 'ACTIVE', completedAt: null, context: context as unknown as Prisma.InputJsonValue },
-    }),
-    prisma.workflowMutation.create({
+    })
+    await tx.workflowMutation.create({
       data: {
         instanceId,
         nodeId,
@@ -787,8 +805,8 @@ export async function restartNode(
         afterState: { status: 'ACTIVE', resetNodeIds } as Prisma.InputJsonValue,
         performedById: actorId,
       },
-    }),
-  ])
+    })
+  }, tenantId)
 
   await logEvent('WorkflowNodeRestarted', 'WorkflowNode', nodeId, actorId, {
     instanceId,
@@ -797,8 +815,10 @@ export async function restartNode(
   })
   await publishOutbox('WorkflowNode', nodeId, 'NodeRestarted', { instanceId, nodeId, resetNodeIds })
 
-  const refreshedInstance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
-  const refreshedNode = await prisma.workflowNode.findUniqueOrThrow({ where: { id: nodeId } })
+  const [refreshedInstance, refreshedNode] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+    tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }),
+    tx.workflowNode.findUniqueOrThrow({ where: { id: nodeId } }),
+  ]), tenantId)
   await executeActivatedNode(refreshedNode, refreshedInstance, context, actorId)
   await processAttachments(refreshedNode, refreshedInstance, 'on_activate', actorId)
   await scheduleDeadlines(refreshedNode)
@@ -831,9 +851,13 @@ export async function forceCompleteNode(
   comment: string,
   output: Record<string, unknown> = {},
   actorId?: string,
+  // RLS prep — see startInstance's tenantId param comment.
+  tenantId?: string,
 ): Promise<void> {
-  const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
-  const node = await prisma.workflowNode.findFirst({ where: { id: nodeId, instanceId } })
+  const [instance, node] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+    tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }),
+    tx.workflowNode.findFirst({ where: { id: nodeId, instanceId } }),
+  ]), tenantId)
   if (!node) throw new ValidationError('Workflow node was not found in this run')
   if (node.status === 'COMPLETED') {
     throw new ValidationError('This node is already completed')
@@ -861,19 +885,19 @@ export async function forceCompleteNode(
     _manualCompletions: [...priorCompletions, manualEntry],
   }
 
-  await prisma.$transaction([
+  await withTenantDbTransaction(prisma, async (tx) => {
     // Drop any in-flight client/desktop execution claim so a stale runner
     // can't later report status for a node we're closing out manually.
-    prisma.pendingExecution.deleteMany({ where: { instanceId, nodeId } }),
-    prisma.workflowInstance.update({
+    await tx.pendingExecution.deleteMany({ where: { instanceId, nodeId } })
+    await tx.workflowInstance.update({
       where: { id: instanceId },
       data: {
         status: 'ACTIVE',
         completedAt: null,
         context: nextContext as unknown as Prisma.InputJsonValue,
       },
-    }),
-    prisma.workflowMutation.create({
+    })
+    await tx.workflowMutation.create({
       data: {
         instanceId,
         nodeId,
@@ -882,8 +906,8 @@ export async function forceCompleteNode(
         afterState: { status: 'COMPLETED', comment: note } as Prisma.InputJsonValue,
         performedById: actorId,
       },
-    }),
-  ])
+    })
+  }, tenantId)
 
   await logEvent('WorkflowNodeManuallyCompleted', 'WorkflowNode', nodeId, actorId, {
     instanceId,
@@ -896,7 +920,7 @@ export async function forceCompleteNode(
   // advance() reads the instance fresh — now ACTIVE — so it runs inline:
   // marks the node COMPLETED, merges output, fires on_complete attachments,
   // activates downstream nodes, and completes the instance if this was terminal.
-  await advance(instanceId, nodeId, { ...output, _manualCompletion: manualEntry }, actorId)
+  await advance(instanceId, nodeId, { ...output, _manualCompletion: manualEntry }, actorId, undefined, tenantId)
 }
 
 /**
@@ -910,9 +934,13 @@ export async function failNode(
   nodeId: string,
   failure: FailureInfo,
   actorId?: string,
+  // RLS prep — see startInstance's tenantId param comment.
+  tenantId?: string,
 ): Promise<{ retried: boolean; recovered: boolean; instanceFailed: boolean }> {
-  const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
-  const node = await prisma.workflowNode.findUniqueOrThrow({ where: { id: nodeId } })
+  const [instance, node] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+    tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }),
+    tx.workflowNode.findUniqueOrThrow({ where: { id: nodeId } }),
+  ]), tenantId)
   const cfg = (node.config ?? {}) as Record<string, unknown>
   const policy = (cfg.retryPolicy ?? {}) as RetryPolicy
   const attemptsSoFar = Number(cfg._attempts ?? 0)
@@ -926,20 +954,22 @@ export async function failNode(
   if (canRetry) {
     // Increment attempt count, mark ACTIVE (re-activated)
     const updatedCfg = { ...cfg, _attempts: attemptsSoFar + 1, _lastError: failure }
-    await prisma.workflowNode.update({
-      where: { id: nodeId },
-      data: { status: 'ACTIVE', config: updatedCfg as Prisma.InputJsonValue },
-    })
-    await prisma.workflowMutation.create({
-      data: {
-        instanceId,
-        nodeId,
-        mutationType: 'NODE_RETRY',
-        beforeState: { status: 'ACTIVE', attempts: attemptsSoFar } as Prisma.InputJsonValue,
-        afterState: { status: 'ACTIVE', attempts: attemptsSoFar + 1, error: failure } as unknown as Prisma.InputJsonValue,
-        performedById: actorId,
-      },
-    })
+    await withTenantDbTransaction(prisma, async (tx) => {
+      await tx.workflowNode.update({
+        where: { id: nodeId },
+        data: { status: 'ACTIVE', config: updatedCfg as Prisma.InputJsonValue },
+      })
+      await tx.workflowMutation.create({
+        data: {
+          instanceId,
+          nodeId,
+          mutationType: 'NODE_RETRY',
+          beforeState: { status: 'ACTIVE', attempts: attemptsSoFar } as Prisma.InputJsonValue,
+          afterState: { status: 'ACTIVE', attempts: attemptsSoFar + 1, error: failure } as unknown as Prisma.InputJsonValue,
+          performedById: actorId,
+        },
+      })
+    }, tenantId)
     await logEvent('WorkflowNodeRetried', 'WorkflowNode', nodeId, actorId, {
       instanceId,
       attempt: attemptsSoFar + 1,
@@ -951,20 +981,22 @@ export async function failNode(
   }
 
   // Retries exhausted (or non-retryable). Mark FAILED first.
-  await prisma.workflowNode.update({
-    where: { id: nodeId },
-    data: { status: 'FAILED', completedAt: new Date() },
-  })
-  await prisma.workflowMutation.create({
-    data: {
-      instanceId,
-      nodeId,
-      mutationType: 'NODE_STATUS_CHANGE',
-      beforeState: { status: node.status, attempts: attemptsSoFar } as Prisma.InputJsonValue,
-      afterState: { status: 'FAILED', error: failure } as unknown as Prisma.InputJsonValue,
-      performedById: actorId,
-    },
-  })
+  await withTenantDbTransaction(prisma, async (tx) => {
+    await tx.workflowNode.update({
+      where: { id: nodeId },
+      data: { status: 'FAILED', completedAt: new Date() },
+    })
+    await tx.workflowMutation.create({
+      data: {
+        instanceId,
+        nodeId,
+        mutationType: 'NODE_STATUS_CHANGE',
+        beforeState: { status: node.status, attempts: attemptsSoFar } as Prisma.InputJsonValue,
+        afterState: { status: 'FAILED', error: failure } as unknown as Prisma.InputJsonValue,
+        performedById: actorId,
+      },
+    })
+  }, tenantId)
   await logEvent('WorkflowNodeFailed', 'WorkflowNode', nodeId, actorId, { instanceId, error: failure })
   await publishOutbox('WorkflowNode', nodeId, 'NodeFailed', { instanceId, nodeId, error: failure })
 
@@ -972,38 +1004,40 @@ export async function failNode(
   await processAttachments(node, instance, 'on_fail', actorId)
 
   // Look for ERROR_BOUNDARY outgoing edges
-  const errorEdges = await prisma.workflowEdge.findMany({
+  const errorEdges = await withTenantDbTransaction(prisma, (tx) => tx.workflowEdge.findMany({
     where: { sourceNodeId: nodeId, edgeType: 'ERROR_BOUNDARY' },
-  })
+  }), tenantId)
 
   if (errorEdges.length > 0) {
     // Follow error-boundary edges to recovery handler
     const ctx = (instance.context ?? {}) as Record<string, unknown>
     const errorContext = { ...ctx, _lastError: failure }
-    await prisma.workflowInstance.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
       where: { id: instanceId },
       data: { context: errorContext as unknown as Prisma.InputJsonValue },
-    })
+    }), tenantId)
 
     for (const edge of errorEdges) {
-      const target = await prisma.workflowNode.findUnique({ where: { id: edge.targetNodeId } })
+      const target = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findUnique({ where: { id: edge.targetNodeId } }), tenantId)
       if (!target || target.status !== 'PENDING') continue
       // Treat the failed node as if it had completed (with error context) for routing purposes.
       // We bypass evaluateEdge filter and call activateDownstream's body directly for these edges.
-      await prisma.workflowNode.update({
-        where: { id: target.id },
-        data: { status: 'ACTIVE', startedAt: new Date() },
-      })
-      await prisma.workflowMutation.create({
-        data: {
-          instanceId,
-          nodeId: target.id,
-          mutationType: 'NODE_STATUS_CHANGE',
-          beforeState: { status: 'PENDING' } as Prisma.InputJsonValue,
-          afterState: { status: 'ACTIVE', via: 'ERROR_BOUNDARY' } as Prisma.InputJsonValue,
-          performedById: actorId,
-        },
-      })
+      await withTenantDbTransaction(prisma, async (tx) => {
+        await tx.workflowNode.update({
+          where: { id: target.id },
+          data: { status: 'ACTIVE', startedAt: new Date() },
+        })
+        await tx.workflowMutation.create({
+          data: {
+            instanceId,
+            nodeId: target.id,
+            mutationType: 'NODE_STATUS_CHANGE',
+            beforeState: { status: 'PENDING' } as Prisma.InputJsonValue,
+            afterState: { status: 'ACTIVE', via: 'ERROR_BOUNDARY' } as Prisma.InputJsonValue,
+            performedById: actorId,
+          },
+        })
+      }, tenantId)
       switch (target.nodeType) {
         case 'HUMAN_TASK':
           await activateHumanTask(target, instance)
@@ -1019,7 +1053,7 @@ export async function failNode(
           break
         case 'DECISION_GATE':
           await activateDecisionGate(target, instance)
-          await advance(instanceId, target.id, errorContext, actorId)
+          await advance(instanceId, target.id, errorContext, actorId, undefined, tenantId)
           break
         case 'CONSUMABLE_CREATION':
           await activateConsumableCreation(target, instance)
@@ -1029,17 +1063,17 @@ export async function failNode(
           break
         case 'GIT_PUSH': {
           const result = await activateGitPush(target, instance, actorId)
-          if (result.pushed) await advance(instanceId, target.id, result.output, actorId)
+          if (result.pushed) await advance(instanceId, target.id, result.output, actorId, undefined, tenantId)
           break
         }
         case 'POLICY_CHECK': {
           const result = await activatePolicyCheck(target, instance, actorId)
-          if (result.passed) await advance(instanceId, target.id, { ...errorContext, ...result.output }, actorId)
+          if (result.passed) await advance(instanceId, target.id, { ...errorContext, ...result.output }, actorId, undefined, tenantId)
           break
         }
         case 'EVAL_GATE': {
           const result = await activateEvalGate(target, instance, actorId)
-          if (result.passed) await advance(instanceId, target.id, result.output, actorId)
+          if (result.passed) await advance(instanceId, target.id, result.output, actorId, undefined, tenantId)
           break
         }
         case 'TIMER':
@@ -1059,25 +1093,25 @@ export async function failNode(
           break
         case 'INCLUSIVE_GATEWAY':
           await activateInclusiveGateway(target, instance)
-          await advance(instanceId, target.id, errorContext, actorId)
+          await advance(instanceId, target.id, errorContext, actorId, undefined, tenantId)
           break
         case 'EVENT_GATEWAY':
           await activateEventGateway(target, instance)
           break
         case 'ERROR_CATCH':
           await activateErrorCatch(target, instance)
-          await advance(instanceId, target.id, errorContext, actorId)
+          await advance(instanceId, target.id, errorContext, actorId, undefined, tenantId)
           break
         case 'SET_CONTEXT':
           await activateSetContext(target, instance)
-          await advance(instanceId, target.id, errorContext, actorId)
+          await advance(instanceId, target.id, errorContext, actorId, undefined, tenantId)
           break
         case 'EVENT_EMIT': {
           // "Emit an alert event on failure" — a natural error-boundary handler.
           // The failing node's error is already in errorContext._lastError, so a
           // payloadPath of `_lastError` surfaces it to the sink.
           const result = await activateEventEmit(target, instance, actorId)
-          if (result.passed) await advance(instanceId, target.id, { ...errorContext, ...result.output }, actorId)
+          if (result.passed) await advance(instanceId, target.id, { ...errorContext, ...result.output }, actorId, undefined, tenantId)
           break
         }
         case 'CUSTOM': {
@@ -1088,7 +1122,7 @@ export async function failNode(
             case 'TOOL_REQUEST': await activateToolRequest(target, instance); break
             case 'GIT_PUSH': {
               const result = await activateGitPush(target, instance, actorId)
-              if (result.pushed) await advance(instanceId, target.id, result.output, actorId)
+              if (result.pushed) await advance(instanceId, target.id, result.output, actorId, undefined, tenantId)
               break
             }
             default: await activateHumanTask(target, instance); break
@@ -1113,10 +1147,10 @@ export async function failNode(
   // the legacy cascade behavior with config.failurePolicy = 'CASCADE'.
   const failurePolicy = String(cfg.failurePolicy ?? '').toUpperCase()
   if (failurePolicy !== 'CASCADE') {
-    await prisma.workflowInstance.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
       where: { id: instanceId },
       data: { status: 'PAUSED' },
-    })
+    }), tenantId)
     await logEvent('WorkflowNodeFailureIsolated', 'WorkflowNode', nodeId, actorId, {
       instanceId,
       nodeType: executableNodeType(node),
@@ -1129,10 +1163,10 @@ export async function failNode(
 
   // failurePolicy = CASCADE (opt-in) — legacy fail-fast: mark the instance FAILED
   // and run SAGA compensations for completed nodes that declared compensationConfig.
-  await prisma.workflowInstance.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
     where: { id: instanceId },
     data: { status: 'FAILED', completedAt: new Date() },
-  })
+  }), tenantId)
   const eventId = await logEvent('WorkflowFailed', 'WorkflowInstance', instanceId, actorId, { failedNodeId: nodeId, error: failure })
   await createReceipt('WORKFLOW_FAILED', 'WorkflowInstance', instanceId, {
     instanceId,
@@ -1144,57 +1178,71 @@ export async function failNode(
   void recordRunLearning(instanceId, 'FAILED')
 
   // Run SAGA compensations for any completed nodes that declared compensationConfig.
-  await runCompensations(instanceId, actorId)
+  await runCompensations(instanceId, actorId, tenantId)
 
   return { retried: false, recovered: false, instanceFailed: true }
 }
 
 // ─── Lifecycle ops ────────────────────────────────────────────────────────────
 
-export async function pauseInstance(instanceId: string, actorId?: string): Promise<void> {
-  const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
+export async function pauseInstance(
+  instanceId: string,
+  actorId?: string,
+  // RLS prep — see startInstance's tenantId param comment.
+  tenantId?: string,
+): Promise<void> {
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }), tenantId)
   if (instance.status !== 'ACTIVE') return
 
-  await prisma.workflowInstance.update({
-    where: { id: instanceId },
-    data: { status: 'PAUSED' },
-  })
-  await prisma.workflowMutation.create({
-    data: {
-      instanceId,
-      mutationType: 'INSTANCE_STATUS_CHANGE',
-      beforeState: { status: 'ACTIVE' },
-      afterState: { status: 'PAUSED' },
-      performedById: actorId,
-    },
-  })
+  await withTenantDbTransaction(prisma, async (tx) => {
+    await tx.workflowInstance.update({
+      where: { id: instanceId },
+      data: { status: 'PAUSED' },
+    })
+    await tx.workflowMutation.create({
+      data: {
+        instanceId,
+        mutationType: 'INSTANCE_STATUS_CHANGE',
+        beforeState: { status: 'ACTIVE' },
+        afterState: { status: 'PAUSED' },
+        performedById: actorId,
+      },
+    })
+  }, tenantId)
   await logEvent('WorkflowPaused', 'WorkflowInstance', instanceId, actorId)
   await publishOutbox('WorkflowInstance', instanceId, 'WorkflowPaused', { instanceId })
 }
 
-export async function resumeInstance(instanceId: string, actorId?: string): Promise<void> {
-  const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
+export async function resumeInstance(
+  instanceId: string,
+  actorId?: string,
+  // RLS prep — see startInstance's tenantId param comment.
+  tenantId?: string,
+): Promise<void> {
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }), tenantId)
   if (instance.status !== 'PAUSED') return
 
   // Reactivate first so queued advances can proceed
-  await prisma.workflowInstance.update({
-    where: { id: instanceId },
-    data: { status: 'ACTIVE' },
-  })
-  await prisma.workflowMutation.create({
-    data: {
-      instanceId,
-      mutationType: 'INSTANCE_STATUS_CHANGE',
-      beforeState: { status: 'PAUSED' },
-      afterState: { status: 'ACTIVE' },
-      performedById: actorId,
-    },
-  })
+  await withTenantDbTransaction(prisma, async (tx) => {
+    await tx.workflowInstance.update({
+      where: { id: instanceId },
+      data: { status: 'ACTIVE' },
+    })
+    await tx.workflowMutation.create({
+      data: {
+        instanceId,
+        mutationType: 'INSTANCE_STATUS_CHANGE',
+        beforeState: { status: 'PAUSED' },
+        afterState: { status: 'ACTIVE' },
+        performedById: actorId,
+      },
+    })
+  }, tenantId)
   await logEvent('WorkflowResumed', 'WorkflowInstance', instanceId, actorId)
   await publishOutbox('WorkflowInstance', instanceId, 'WorkflowResumed', { instanceId })
 
   // Drain queued advances
-  const refreshed = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
+  const refreshed = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }), tenantId)
   const context = (refreshed.context ?? {}) as Record<string, unknown>
   const pending = Array.isArray(context._pendingAdvance)
     ? (context._pendingAdvance as PendingAdvance[])
@@ -1204,27 +1252,27 @@ export async function resumeInstance(instanceId: string, actorId?: string): Prom
 
   // Clear queue first to avoid re-processing on partial failure
   delete context._pendingAdvance
-  await prisma.workflowInstance.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
     where: { id: instanceId },
     data: { context: context as unknown as Prisma.InputJsonValue },
-  })
+  }), tenantId)
 
   for (const { nodeId } of pending) {
-    const completedNode = await prisma.workflowNode.findUnique({ where: { id: nodeId } })
+    const completedNode = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findUnique({ where: { id: nodeId } }), tenantId)
     if (!completedNode || completedNode.status !== 'COMPLETED') continue
-    const currentInstance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
+    const currentInstance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }), tenantId)
     if (currentInstance.status !== 'ACTIVE') break
     const ctx = (currentInstance.context ?? {}) as Record<string, unknown>
     await activateDownstream(currentInstance, completedNode, ctx, actorId)
   }
 
   // Re-check completion
-  const finalInstance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
+  const finalInstance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }), tenantId)
   if (finalInstance.status === 'ACTIVE' && (await isComplete(finalInstance))) {
-    await prisma.workflowInstance.update({
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
       where: { id: instanceId },
       data: { status: 'COMPLETED', completedAt: new Date() },
-    })
+    }), tenantId)
     const eventId = await logEvent('WorkflowCompleted', 'WorkflowInstance', instanceId, actorId)
     await createReceipt('WORKFLOW_COMPLETED', 'WorkflowInstance', instanceId, {
       instanceId,
@@ -1239,44 +1287,50 @@ export async function cancelInstance(
   instanceId: string,
   reason: string | undefined,
   actorId?: string,
+  // RLS prep — see startInstance's tenantId param comment.
+  tenantId?: string,
 ): Promise<void> {
-  const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }), tenantId)
   if (instance.status === 'COMPLETED' || instance.status === 'CANCELLED' || instance.status === 'FAILED') return
 
   // Skip all PENDING / ACTIVE nodes
-  const liveNodes = await prisma.workflowNode.findMany({
+  const liveNodes = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findMany({
     where: { instanceId, status: { in: ['PENDING', 'ACTIVE'] } },
-  })
+  }), tenantId)
   for (const node of liveNodes) {
-    await prisma.workflowNode.update({
-      where: { id: node.id },
-      data: { status: 'SKIPPED', completedAt: new Date() },
+    await withTenantDbTransaction(prisma, async (tx) => {
+      await tx.workflowNode.update({
+        where: { id: node.id },
+        data: { status: 'SKIPPED', completedAt: new Date() },
+      })
+      await tx.workflowMutation.create({
+        data: {
+          instanceId,
+          nodeId: node.id,
+          mutationType: 'NODE_STATUS_CHANGE',
+          beforeState: { status: node.status },
+          afterState: { status: 'SKIPPED', reason: 'instance_cancelled' },
+          performedById: actorId,
+        },
+      })
+    }, tenantId)
+  }
+
+  await withTenantDbTransaction(prisma, async (tx) => {
+    await tx.workflowInstance.update({
+      where: { id: instanceId },
+      data: { status: 'CANCELLED', completedAt: new Date() },
     })
-    await prisma.workflowMutation.create({
+    await tx.workflowMutation.create({
       data: {
         instanceId,
-        nodeId: node.id,
-        mutationType: 'NODE_STATUS_CHANGE',
-        beforeState: { status: node.status },
-        afterState: { status: 'SKIPPED', reason: 'instance_cancelled' },
+        mutationType: 'INSTANCE_STATUS_CHANGE',
+        beforeState: { status: instance.status },
+        afterState: { status: 'CANCELLED', reason },
         performedById: actorId,
       },
     })
-  }
-
-  await prisma.workflowInstance.update({
-    where: { id: instanceId },
-    data: { status: 'CANCELLED', completedAt: new Date() },
-  })
-  await prisma.workflowMutation.create({
-    data: {
-      instanceId,
-      mutationType: 'INSTANCE_STATUS_CHANGE',
-      beforeState: { status: instance.status },
-      afterState: { status: 'CANCELLED', reason },
-      performedById: actorId,
-    },
-  })
+  }, tenantId)
   const eventId = await logEvent('WorkflowCancelled', 'WorkflowInstance', instanceId, actorId, { reason })
   await createReceipt('WORKFLOW_CANCELLED', 'WorkflowInstance', instanceId, {
     instanceId,
@@ -1423,15 +1477,20 @@ type CompensationConfig = {
  * their compensationConfig actions, producing an audit trail for each.
  * Called after instance failure (or optionally on explicit cancel if configured).
  */
-export async function runCompensations(instanceId: string, actorId?: string): Promise<void> {
-  const completedNodes = await prisma.workflowNode.findMany({
+export async function runCompensations(
+  instanceId: string,
+  actorId?: string,
+  // RLS prep — see startInstance's tenantId param comment.
+  tenantId?: string,
+): Promise<void> {
+  const completedNodes = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findMany({
     where: { instanceId, status: 'COMPLETED', compensationConfig: { not: Prisma.JsonNull } },
     orderBy: { createdAt: 'desc' }, // reverse order
-  })
+  }), tenantId)
 
   if (completedNodes.length === 0) return
 
-  const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } })
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }), tenantId)
 
   await logEvent('CompensationStarted', 'WorkflowInstance', instanceId, actorId, {
     nodeCount: completedNodes.length,
@@ -1440,7 +1499,7 @@ export async function runCompensations(instanceId: string, actorId?: string): Pr
   for (const node of completedNodes) {
     const cfg = (node.compensationConfig ?? {}) as CompensationConfig
 
-    await prisma.workflowMutation.create({
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowMutation.create({
       data: {
         instanceId,
         nodeId: node.id,
@@ -1449,27 +1508,31 @@ export async function runCompensations(instanceId: string, actorId?: string): Pr
         afterState: { compensationType: cfg.type } as Prisma.InputJsonValue,
         performedById: actorId,
       },
-    })
+    }), tenantId)
 
     if (cfg.type === 'tool_request' && cfg.toolId) {
       // Spawn a ToolRun as the compensation action
-      const run = await prisma.toolRun.create({
+      // Narrowing `cfg.toolId` from the `if` above doesn't survive crossing into
+      // the withTenantDbTransaction callback (a property access, unlike a local
+      // const, isn't narrowed across a function boundary) — capture it first.
+      const toolId = cfg.toolId
+      const run = await withTenantDbTransaction(prisma, (tx) => tx.toolRun.create({
         data: {
-          toolId: cfg.toolId,
+          toolId,
           actionId: cfg.actionId,
           instanceId,
           inputPayload: ((cfg.inputPayload ?? {}) as unknown as Prisma.InputJsonValue),
           requestedById: actorId,
           idempotencyKey: `compensation:${instanceId}:${node.id}`,
         },
-      })
+      }), tenantId)
       await logEvent('CompensationToolRequested', 'ToolRun', run.id, actorId, {
         instanceId, nodeId: node.id,
       })
       await publishOutbox('ToolRun', run.id, 'ToolRequested', { runId: run.id, isCompensation: true })
     } else if (cfg.type === 'human_task') {
       // Spawn a Task as the compensation action
-      const task = await prisma.task.create({
+      const task = await withTenantDbTransaction(prisma, (tx) => tx.task.create({
         data: {
           instanceId,
           nodeId: node.id,
@@ -1478,7 +1541,7 @@ export async function runCompensations(instanceId: string, actorId?: string): Pr
           status: 'OPEN',
           createdById: actorId,
         },
-      })
+      }), tenantId)
       await logEvent('CompensationTaskCreated', 'Task', task.id, actorId, {
         instanceId, nodeId: node.id,
       })

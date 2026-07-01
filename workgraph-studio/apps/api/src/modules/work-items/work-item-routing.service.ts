@@ -181,6 +181,10 @@ async function startAttachedTarget(args: {
     childWorkflowTemplateId: templateId,
   })
   const { startInstance } = await import('../workflow/runtime/WorkflowRuntime')
+  // RLS prep — cloneDesignToRun's returned `instance` is a narrow select (id/name/
+  // status/templateVersion) that doesn't include tenantId; it's Slice 3's file, so
+  // deliberately not reached into here (out of scope for this slice's diff).
+  // Byte-for-byte today's behavior; revisit once Slice 3 extends the select.
   await startInstance(result.instance.id, args.actorId ?? undefined)
   return { childWorkflowInstanceId: result.instance.id }
 }
