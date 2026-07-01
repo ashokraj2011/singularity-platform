@@ -62,29 +62,26 @@
 --        them a tenant source), or (b) hold the affected tables OUT of this
 --        cutover (see B2 for which tables) until they are.
 --
--- [ ] B2. SIX TABLES HAVE A LEGITIMATE "STANDALONE" (NULL instanceId) ROW MODE
---        THE SCAFFOLDED POLICY CANNOT REPRESENT. Of the 16 tables, these six
---        have a NULLABLE instanceId and are created as non-workflow rows by the
---        B1 paths (and possibly others):
+-- [x] B2. SIX TABLES HAVE A STANDALONE (NULL instanceId) ROW MODE — RESOLVED.
+--        Of the 16 tables, these six have a NULLABLE instanceId and can hold
+--        non-workflow rows:
 --            tasks, approval_requests, consumables,
 --            agent_runs, tool_runs, documents
---        Their scaffolded policy is workgraph_instance_visible("instanceId").
---        A row with instanceId IS NULL can NEVER satisfy it (the sub-select
---        finds no parent instance), so under FORCE RLS such a row is invisible
---        to every reader and new ones are rejected — regardless of tenant
---        context. The other ten tables have a NON-NULL instanceId (or, for
---        workflow_instances / run_snapshots, a direct tenantId column) and are
---        engine-written only, so they do not have this problem.
---        RESOLVE BEFORE APPLYING: decide, per table, either
---          - revise the policy so owner/tenant-scoped standalone rows are
---            representable (e.g. add a tenantId column to these tables and OR
---            it into the predicate), OR
---          - eliminate the standalone-row code paths (B1), OR
---          - hold these six tables out of the first cutover and force RLS only
---            on the ten engine-bound tables.
---        Guard D below HARD-STOPS if any NULL-instanceId rows already exist in
---        these six tables, but it cannot see the B1 code paths that keep
---        creating them — so B1 must be resolved regardless of Guard D passing.
+--        This WAS unrepresentable under the scaffolded
+--        workgraph_instance_visible("instanceId") policy (a NULL instanceId
+--        satisfies nothing). RESOLVED by migration
+--        20260701120000_add_tenant_id_to_standalone_tables, which adds a direct
+--        tenantId column to these six and revises their policy to
+--            "tenantId" = workgraph_current_tenant_id() OR workgraph_instance_visible("instanceId")
+--        so standalone rows are visible via their direct tenant and
+--        instance-linked rows via their instance (unchanged). The standalone
+--        WRITE PATHS (tasks.router direct create, agents.router /:id/runs,
+--        laptop.service, ToolGatewayService) now stamp tenantId on new rows.
+--        REMAINING CHECK: pre-existing standalone rows created BEFORE that work
+--        may have both instanceId AND tenantId NULL — Guard D below hard-stops on
+--        those; backfill their tenantId first. (B1's other unscoped-surface
+--        concern is likewise closed: the router/service layer was tenant-scoped
+--        in Phase 2, PRs #305-#311.)
 --
 -- [ ] B3. TRIGGER-SPAWNED INSTANCES HAVE tenantId: NULL (Decision C). Workflow
 --        and WorkflowTrigger have no tenant column, so
@@ -200,18 +197,22 @@ BEGIN
     RAISE EXCEPTION 'RLS cutover aborted [Guard C / B3]: % workflow_instances row(s) have tenantId IS NULL (trigger-spawned). They and all their child rows become invisible to every reader at cutover. Backfill tenantId or resolve the trigger-tenant gap first.', v_null_tenant_instances;
   END IF;
 
-  -- Guard D (B1 / B2) — standalone rows with NULL instanceId can never satisfy
-  -- workgraph_instance_visible("instanceId"); they would be frozen/invisible.
-  -- NOTE: this catches data-at-rest only. The B1 code paths that KEEP creating
-  -- such rows are not visible to SQL and must be resolved separately.
+  -- Guard D (B2) — as of the tenantId-column work (migration
+  -- 20260701120000_add_tenant_id_to_standalone_tables + the tenantId-OR-instance
+  -- policy), a standalone row is representable AS LONG AS it carries a direct
+  -- tenantId. So the hazard is now only rows with BOTH instanceId AND tenantId
+  -- NULL — those satisfy neither branch of the policy and would be frozen. The
+  -- write paths (tasks/agents/laptop/ToolGateway) now stamp tenantId on new
+  -- standalone rows; this guard catches any PRE-EXISTING un-tenanted standalone
+  -- data at rest. (Data-at-rest only — it can't see code paths.)
   FOREACH v_tbl IN ARRAY v_nullable_instance_tables LOOP
-    EXECUTE format('SELECT count(*) FROM public.%I WHERE "instanceId" IS NULL', v_tbl) INTO v_cnt;
+    EXECUTE format('SELECT count(*) FROM public.%I WHERE "instanceId" IS NULL AND "tenantId" IS NULL', v_tbl) INTO v_cnt;
     IF v_cnt > 0 THEN
       v_orphan_report := v_orphan_report || format('%s=%s ', v_tbl, v_cnt);
     END IF;
   END LOOP;
   IF length(v_orphan_report) > 0 THEN
-    RAISE EXCEPTION 'RLS cutover aborted [Guard D / B1+B2]: standalone rows with NULL instanceId exist (%). The scaffolded instance-visibility policy cannot represent them — they would be frozen/invisible and new ones rejected. Resolve the standalone-row API paths (tasks CRUD, agents.router :id/runs, laptop.service, ToolGatewayService) or hold these tables out of the cutover.', trim(v_orphan_report);
+    RAISE EXCEPTION 'RLS cutover aborted [Guard D / B2]: rows with BOTH instanceId AND tenantId NULL exist (%). These satisfy neither branch of the tenantId-OR-instance policy and would be frozen/invisible. Backfill tenantId on these pre-existing standalone rows (from their originating actor/capability) before cutover.', trim(v_orphan_report);
   END IF;
 
   RAISE NOTICE 'RLS cutover preflight passed (policies present; applying role can bypass; no NULL-tenant instances; no NULL-instance standalone rows). Proceeding with ENABLE/FORCE on % tables.', array_length(v_tables, 1);
