@@ -18,6 +18,7 @@ import { z } from 'zod'
 import { contextFabricClient, type ExecuteResponse } from '../../lib/context-fabric/client'
 import { listCapabilityRelationships, getCapability } from '../../lib/iam/client'
 import { prisma } from '../../lib/prisma'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { getSdlcIntent } from '../adoption/sdlcCatalog'
 import { routeWorkItem } from '../work-items/work-item-routing.service'
 import { createWorkItem } from '../work-items/work-items.service'
@@ -597,7 +598,8 @@ async function summarizeWorkflowTemplate(id?: string | null) {
 
 async function summarizeWorkflowInstance(id?: string | null) {
   if (!id) return null
-  return prisma.workflowInstance.findUnique({
+  // Request-scoped (planner.router) — tenantId defaults to the request tenant via ALS.
+  return withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
     where: { id },
     select: {
       id: true,
@@ -608,7 +610,7 @@ async function summarizeWorkflowInstance(id?: string | null) {
       startedAt: true,
       completedAt: true,
     },
-  })
+  }))
 }
 
 export async function launchRoadmap(input: LaunchInput, actorId: string) {

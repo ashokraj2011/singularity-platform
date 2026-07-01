@@ -5,6 +5,7 @@ import { contextFabricClient, type ExecuteRequest } from '../../lib/context-fabr
 // M36.4 — system_prompt now resolved from prompt-composer SystemPrompt table
 import { promptComposerAuthHeaders, promptComposerClient } from '../../lib/prompt-composer/client'
 import { prisma } from '../../lib/prisma'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { resolveLlmRouting } from '../llm-routing/resolve'
 
 export const eventHorizonRouter: ExpressRouter = Router()
@@ -60,12 +61,21 @@ function eventHorizonModelAlias() {
 
 async function platformSnapshot() {
   try {
+    // RLS Phase 2 — DELIBERATE SEMANTIC CHANGE: the three RLS-scoped counts
+    // (active runs, pending approvals, consumables) are now scoped to the request
+    // tenant via the ALS default (this runs inside the /chat request context).
+    // Rationale: under FORCE RLS a bare cross-tenant count would fail-closed to 0,
+    // and surfacing platform-wide totals into a single tenant's chat is a
+    // cross-tenant leak — so a tenant user's "platform overview" becomes THEIR
+    // tenant's overview. If Event Horizon is meant to be a global ops view, this
+    // is the spot to switch these three to adminPrisma (a deliberate bypass).
+    // workflow/workItem counts are non-RLS tables and stay platform-wide.
     const [workflowTemplates, activeRuns, pendingApprovals, workItems, consumables] = await Promise.all([
       prisma.workflow.count(),
-      prisma.workflowInstance.count({ where: { status: { in: ['ACTIVE', 'PAUSED'] } } }),
-      prisma.approvalRequest.count({ where: { status: 'PENDING' } }),
+      withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.count({ where: { status: { in: ['ACTIVE', 'PAUSED'] } } })),
+      withTenantDbTransaction(prisma, (tx) => tx.approvalRequest.count({ where: { status: 'PENDING' } })),
       prisma.workItem.count({ where: { status: { in: ['QUEUED', 'IN_PROGRESS', 'AWAITING_PARENT_APPROVAL'] } } }),
-      prisma.consumable.count(),
+      withTenantDbTransaction(prisma, (tx) => tx.consumable.count()),
     ])
     return {
       ok: true,

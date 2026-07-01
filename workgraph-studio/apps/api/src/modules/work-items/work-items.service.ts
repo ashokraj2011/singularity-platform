@@ -352,10 +352,10 @@ export async function activateWorkItem(node: WorkflowNode, instance: WorkflowIns
     targets,
   }, actorId ?? instance.createdById ?? null)
 
-  await prisma.workflowNode.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
     where: { id: node.id },
     data: { config: { ...cfg, _workItemId: workItem.id } as Prisma.InputJsonValue },
-  })
+  }), instance.tenantId ?? undefined)
 
   // M101 (Epic→child) — route the freshly-created WorkItem so AUTO_START /
   // AUTO_ATTACH children actually spawn. The HTTP create path (work-items
@@ -1015,7 +1015,7 @@ export async function startWorkItemTarget(
     }
   })()
 
-  const instance = await prisma.workflowInstance.findUniqueOrThrow({ where: { id: result.instance.id } })
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: result.instance.id } }), result.instance.tenantId ?? undefined)
   const context = asRecord(instance.context)
   context._workItem = {
     id: workItemId,
@@ -1036,10 +1036,10 @@ export async function startWorkItemTarget(
     requiredBy: target.workItem.requiredBy?.toISOString(),
     detailsLocked: target.workItem.detailsLocked,
   }
-  await prisma.workflowInstance.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
     where: { id: result.instance.id },
     data: { context: context as Prisma.InputJsonValue },
-  })
+  }), result.instance.tenantId ?? undefined)
 
   const updated = await prisma.workItemTarget.update({
     where: { id: target.id },
@@ -1166,11 +1166,11 @@ export async function answerWorkItemClarification(
 
 async function buildChildOutput(instance: WorkflowInstance): Promise<Record<string, unknown>> {
   const [consumables, budget] = await Promise.all([
-    prisma.consumable.findMany({
+    withTenantDbTransaction(prisma, (tx) => tx.consumable.findMany({
       where: { instanceId: instance.id },
       select: { id: true, name: true, status: true, currentVersion: true, nodeId: true, formData: true },
       orderBy: { updatedAt: 'desc' },
-    }),
+    }), instance.tenantId ?? undefined),
     getWorkflowBudgetOverview(instance.id, instance.tenantId ?? undefined).catch(() => null),
   ])
   const ctx = asRecord(instance.context)
@@ -1250,10 +1250,10 @@ export async function handleWorkItemChildCompletion(instance: WorkflowInstance, 
     total,
     waitingOn: Math.max(0, total - submitted),
   })
-  await maybeRequestParentApproval(target.workItemId, actorId)
+  await maybeRequestParentApproval(target.workItemId, actorId, instance.tenantId ?? undefined)
 }
 
-async function maybeRequestParentApproval(workItemId: string, actorId?: string): Promise<void> {
+async function maybeRequestParentApproval(workItemId: string, actorId?: string, tenantId?: string): Promise<void> {
   const workItem = await prisma.workItem.findUnique({
     where: { id: workItemId },
     include: { targets: true },
@@ -1273,7 +1273,7 @@ async function maybeRequestParentApproval(workItemId: string, actorId?: string):
   if (tenantIsolationStrict() && !approvalInstanceId) {
     throw new ValidationError('TENANT_ISOLATION_MODE=strict requires WorkItem approval requests to be linked to a workflow instance')
   }
-  const approval = await prisma.approvalRequest.create({
+  const approval = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest.create({
     data: {
       instanceId: approvalInstanceId,
       nodeId: workItem.sourceWorkflowNodeId ?? undefined,
@@ -1286,7 +1286,7 @@ async function maybeRequestParentApproval(workItemId: string, actorId?: string):
       roleKey: workItem.createdById ? undefined : 'owner',
       formData: { workItemId: workItem.id, targets: submittedTargets } as Prisma.InputJsonValue,
     },
-  })
+  }), tenantId)
   await prisma.workItem.update({
     where: { id: workItem.id },
     data: { status: 'AWAITING_PARENT_APPROVAL', parentApprovalRequestId: approval.id },

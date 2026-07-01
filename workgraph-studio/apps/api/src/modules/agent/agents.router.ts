@@ -1,6 +1,8 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { prisma } from '../../lib/prisma'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
+import { resolveTenantFromRequest } from '../../lib/tenant-isolation'
 import { validate } from '../../middleware/validate'
 import { GatewayProvider } from './llm/GatewayProvider'
 import { NotFoundError } from '../../lib/errors'
@@ -62,7 +64,10 @@ agentsRouter.post('/:id/runs', validate(createRunSchema), async (req, res, next)
 
     const { instructions, inputPayload, instanceId, nodeId } = req.body as z.infer<typeof createRunSchema>
 
-    const run = await prisma.agentRun.create({
+    // Capture the request tenant up front — the .then/.catch callbacks below run
+    // AFTER the response is sent, when the request's AsyncLocalStorage tenant is gone.
+    const tenantId = resolveTenantFromRequest(req)
+    const run = await withTenantDbTransaction(prisma, (tx) => tx.agentRun.create({
       data: {
         agentId: id,
         instanceId,
@@ -74,7 +79,7 @@ agentsRouter.post('/:id/runs', validate(createRunSchema), async (req, res, next)
           create: { inputType: 'INSTRUCTIONS', payload: { instructions, ...inputPayload } },
         },
       },
-    })
+    }), tenantId)
 
     await logEvent('AgentRunStarted', 'AgentRun', run.id, req.user!.userId)
 
@@ -82,8 +87,8 @@ agentsRouter.post('/:id/runs', validate(createRunSchema), async (req, res, next)
     const messages = [{ role: 'user' as const, content: instructions }]
     llmProvider.complete({ model: agent.model, systemPrompt: agent.systemPrompt ?? undefined, messages })
       .then(async (llmResponse) => {
-        await prisma.$transaction([
-          prisma.agentRunOutput.create({
+        await withTenantDbTransaction(prisma, (tx) => Promise.all([
+          tx.agentRunOutput.create({
             data: {
               runId: run.id,
               outputType: 'DRAFT',
@@ -93,19 +98,19 @@ agentsRouter.post('/:id/runs', validate(createRunSchema), async (req, res, next)
             },
           }),
           // CRITICAL: always AWAITING_REVIEW — never auto-approve
-          prisma.agentRun.update({
+          tx.agentRun.update({
             where: { id: run.id },
             data: { status: 'AWAITING_REVIEW', completedAt: new Date() },
           }),
-        ])
+        ]), tenantId)
         await logEvent('AgentRunCompleted', 'AgentRun', run.id, undefined)
         await publishOutbox('AgentRun', run.id, 'AgentRunCompleted', { runId: run.id, status: 'AWAITING_REVIEW' })
       })
       .catch(async (err) => {
-        await prisma.agentRun.update({
+        await withTenantDbTransaction(prisma, (tx) => tx.agentRun.update({
           where: { id: run.id },
           data: { status: 'FAILED' },
-        })
+        }), tenantId)
         console.error('Agent run failed:', err)
       })
 

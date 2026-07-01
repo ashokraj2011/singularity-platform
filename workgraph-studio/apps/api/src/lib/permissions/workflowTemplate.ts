@@ -1,4 +1,5 @@
 import { prisma } from '../prisma'
+import { withTenantDbTransaction } from '../tenant-db-context'
 import { ForbiddenError } from '../errors'
 import { logEvent } from '../audit'
 import { authzCheck, IamUnavailableError } from '../iam/client'
@@ -146,10 +147,11 @@ export async function assertInstancePermission(
   instanceId: string,
   action: 'view' | 'edit' | 'start',
 ): Promise<void> {
-  const instance = await prisma.workflowInstance.findUnique({
+  // Request-only permission guardrail — tenantId defaults to the request tenant via ALS.
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
     where: { id: instanceId },
     select: { id: true, templateId: true, createdById: true },
-  })
+  }))
   if (!instance) throw new ForbiddenError(`WorkflowInstance ${instanceId} not found or not accessible`)
 
   if (instance.templateId) {

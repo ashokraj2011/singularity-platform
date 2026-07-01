@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { config } from '../../config'
 import { mergeAgentRunCorrelation } from '../../lib/agent-run-correlation'
@@ -193,7 +194,8 @@ export async function startLaptopInvocation(workItemId: string, actorId: string,
   })
 
   const traceId = `laptop-${invocationId}`
-  const run = await prisma.agentRun.create({
+  // Request-scoped (laptop.router) — tenantId defaults to the request tenant via ALS.
+  const run = await withTenantDbTransaction(prisma, (tx) => tx.agentRun.create({
     data: {
       agentId: agent.id,
       status: 'RUNNING',
@@ -218,7 +220,7 @@ export async function startLaptopInvocation(workItemId: string, actorId: string,
         }],
       },
     },
-  })
+  }))
 
   const token = await mintMcpSessionToken({
     invocationId,
@@ -341,7 +343,7 @@ export async function completeLaptopInvocation(invocationId: string, actorId: st
       data: { ...asRecord(loaded.data), ...payload } as Prisma.InputJsonValue,
     },
   })
-  await prisma.agentRun.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.agentRun.update({
     where: { id: loaded.agentRunId },
     data: {
       ...mergeAgentRunCorrelation({}, payload),
@@ -358,7 +360,7 @@ export async function completeLaptopInvocation(invocationId: string, actorId: st
         }],
       },
     },
-  })
+  }))
   await logEvent('LaptopInvocationCompleted', 'LaptopInvocation', invocationId, actorId, {
     workItemId: loaded.workItemId,
     agentRunId: loaded.agentRunId,

@@ -6,6 +6,7 @@ import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 import { resolveTenantFromRequest } from '../../lib/tenant-isolation'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 
 export const tasksRouter: Router = Router()
 
@@ -24,7 +25,7 @@ const createTaskSchema = z.object({
 tasksRouter.post('/', validate(createTaskSchema), async (req, res, next) => {
   try {
     const { assignedToId, teamId, ...taskData } = req.body as z.infer<typeof createTaskSchema>
-    const task = await prisma.task.create({
+    const task = await withTenantDbTransaction(prisma, (tx) => tx.task.create({
       data: {
         ...taskData,
         createdById: req.user!.userId,
@@ -33,7 +34,7 @@ tasksRouter.post('/', validate(createTaskSchema), async (req, res, next) => {
         ...(teamId && { queueItems: { create: { teamId } } }),
       },
       include: { assignments: true, queueItems: true },
-    })
+    }), resolveTenantFromRequest(req))
     await logEvent('TaskCreated', 'Task', task.id, req.user!.userId)
     res.status(201).json(task)
   } catch (err) {
@@ -50,14 +51,14 @@ tasksRouter.get('/', async (req, res, next) => {
     if (instanceId) where.instanceId = instanceId
     if (nodeId)     where.nodeId     = nodeId
 
-    const [tasks, total] = await Promise.all([
-      prisma.task.findMany({
+    const [tasks, total] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+      tx.task.findMany({
         where, skip: pg.skip, take: pg.take,
         include: { assignments: true, queueItems: true, attachments: true },
         orderBy: { createdAt: 'desc' },
       }),
-      prisma.task.count({ where }),
-    ])
+      tx.task.count({ where }),
+    ]), resolveTenantFromRequest(req))
     res.json(toPageResponse(tasks, total, pg))
   } catch (err) {
     next(err)
@@ -69,8 +70,8 @@ tasksRouter.get('/my-work', async (req, res, next) => {
     const pg = parsePagination(req.query as Record<string, unknown>)
     const userId = req.user!.userId
 
-    const [tasks, total] = await Promise.all([
-      prisma.task.findMany({
+    const [tasks, total] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+      tx.task.findMany({
         where: {
           status: { in: ['OPEN', 'IN_PROGRESS', 'PENDING_REVIEW'] },
           assignments: { some: { assignedToId: userId } },
@@ -79,13 +80,13 @@ tasksRouter.get('/my-work', async (req, res, next) => {
         include: { assignments: true },
         orderBy: { priority: 'desc' },
       }),
-      prisma.task.count({
+      tx.task.count({
         where: {
           status: { in: ['OPEN', 'IN_PROGRESS', 'PENDING_REVIEW'] },
           assignments: { some: { assignedToId: userId } },
         },
       }),
-    ])
+    ]), resolveTenantFromRequest(req))
     res.json(toPageResponse(tasks, total, pg))
   } catch (err) {
     next(err)
@@ -112,10 +113,10 @@ tasksRouter.get('/team-queue/:teamId', async (req, res, next) => {
 
 tasksRouter.get('/:id', async (req, res, next) => {
   try {
-    const task = await prisma.task.findUnique({
+    const task = await withTenantDbTransaction(prisma, (tx) => tx.task.findUnique({
       where: { id: req.params.id },
       include: { assignments: true, queueItems: true, comments: true, statusHistory: true },
-    })
+    }), resolveTenantFromRequest(req))
     if (!task) throw new NotFoundError('Task', req.params.id)
     res.json(task)
   } catch (err) {
@@ -133,17 +134,17 @@ tasksRouter.post('/:id/claim', async (req, res, next) => {
       throw new ValidationError('Task is not available to claim or already claimed')
     }
 
-    const [updatedItem, task] = await prisma.$transaction([
-      prisma.teamQueueItem.update({
+    const [updatedItem, task] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+      tx.teamQueueItem.update({
         where: { id: queueItem.id },
         data: { claimedById: userId, claimedAt: new Date() },
       }),
-      prisma.task.update({
+      tx.task.update({
         where: { id: req.params.id },
         data: { status: 'IN_PROGRESS' },
         include: { assignments: true, queueItems: true },
       }),
-    ])
+    ]), resolveTenantFromRequest(req))
 
     await prisma.taskStatusHistory.create({
       data: { taskId: req.params.id, previousStatus: 'OPEN', newStatus: 'IN_PROGRESS', changedById: userId },
@@ -160,22 +161,22 @@ tasksRouter.post('/:id/claim', async (req, res, next) => {
 tasksRouter.post('/:id/complete', async (req, res, next) => {
   try {
     const userId = req.user!.userId
-    const task = await prisma.task.findUnique({ where: { id: req.params.id } })
+    const task = await withTenantDbTransaction(prisma, (tx) => tx.task.findUnique({ where: { id: req.params.id } }), resolveTenantFromRequest(req))
     if (!task) throw new NotFoundError('Task', req.params.id)
     if (task.status === 'COMPLETED') {
-      const existing = await prisma.task.findUnique({
+      const existing = await withTenantDbTransaction(prisma, (tx) => tx.task.findUnique({
         where: { id: req.params.id },
         include: { assignments: true },
-      })
+      }), resolveTenantFromRequest(req))
       res.json(existing)
       return
     }
 
-    const updated = await prisma.task.update({
+    const updated = await withTenantDbTransaction(prisma, (tx) => tx.task.update({
       where: { id: req.params.id },
       data: { status: 'COMPLETED' },
       include: { assignments: true },
-    })
+    }), resolveTenantFromRequest(req))
     await prisma.taskStatusHistory.create({
       data: {
         taskId: req.params.id,
@@ -228,10 +229,10 @@ tasksRouter.post('/:id/assign', async (req, res, next) => {
       await prisma.teamQueueItem.create({ data: { taskId: req.params.id, teamId } })
     }
 
-    const task = await prisma.task.findUnique({
+    const task = await withTenantDbTransaction(prisma, (tx) => tx.task.findUnique({
       where: { id: req.params.id },
       include: { assignments: true, queueItems: true },
-    })
+    }), resolveTenantFromRequest(req))
     res.json(task)
   } catch (err) {
     next(err)
@@ -266,29 +267,29 @@ tasksRouter.post('/:id/form-submission', validate(formSubmissionSchema), async (
     const id = req.params.id as string
     const { data, attachmentIds, complete } = req.body as z.infer<typeof formSubmissionSchema>
 
-    const task = await prisma.task.findUnique({ where: { id } })
+    const task = await withTenantDbTransaction(prisma, (tx) => tx.task.findUnique({ where: { id } }), resolveTenantFromRequest(req))
     if (!task) {
       res.status(404).json({ error: 'Task not found' })
       return
     }
 
     // Persist form data
-    const updated = await prisma.task.update({
+    const updated = await withTenantDbTransaction(prisma, (tx) => tx.task.update({
       where: { id },
       data: { formData: data as unknown as import('@prisma/client').Prisma.InputJsonValue },
-    })
+    }), resolveTenantFromRequest(req))
 
     // Finalize attachment links (caller may have uploaded with taskId already set;
     // this guarantees linkage for any docs uploaded before the task existed).
     if (attachmentIds && attachmentIds.length > 0) {
-      await prisma.document.updateMany({
+      await withTenantDbTransaction(prisma, (tx) => tx.document.updateMany({
         where: { id: { in: attachmentIds } },
         data: {
           taskId:     id,
           nodeId:     task.nodeId,
           instanceId: task.instanceId,
         },
-      })
+      }), resolveTenantFromRequest(req))
     }
 
     await logEvent('TaskFormSubmitted', 'Task', id, req.user!.userId, {
@@ -300,7 +301,7 @@ tasksRouter.post('/:id/form-submission', validate(formSubmissionSchema), async (
 
     if (complete) {
       // Reuse the complete flow: mark IN_PROGRESS → COMPLETED and advance workflow
-      await prisma.task.update({
+      await withTenantDbTransaction(prisma, (tx) => tx.task.update({
         where: { id },
         data: {
           status: 'COMPLETED',
@@ -313,7 +314,7 @@ tasksRouter.post('/:id/form-submission', validate(formSubmissionSchema), async (
             },
           },
         },
-      })
+      }), resolveTenantFromRequest(req))
 
       await publishOutbox('Task', id, 'TaskCompleted', { taskId: id })
 
