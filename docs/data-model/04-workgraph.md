@@ -926,6 +926,7 @@ EVENT EVENT
 
   "tasks" {
     String id "🗝️"
+    String tenantId "❓"
     String nodeId "❓"
     String title 
     String description "❓"
@@ -986,6 +987,7 @@ EVENT EVENT
   "approval_requests" {
     String id "🗝️"
     String instanceId "❓"
+    String tenantId "❓"
     String nodeId "❓"
     String subjectType 
     String subjectId 
@@ -1029,6 +1031,7 @@ EVENT EVENT
 
   "consumables" {
     String id "🗝️"
+    String tenantId "❓"
     String nodeId "❓"
     String name 
     ConsumableStatus status 
@@ -1088,6 +1091,7 @@ EVENT EVENT
 
   "agent_runs" {
     String id "🗝️"
+    String tenantId "❓"
     String nodeId "❓"
     Int attempt "❓"
     AgentRunStatus status 
@@ -1291,6 +1295,7 @@ EVENT EVENT
   "tool_runs" {
     String id "🗝️"
     String actionId "❓"
+    String tenantId "❓"
     String runnerId "❓"
     ToolRunStatus status 
     Json inputPayload 
@@ -1375,6 +1380,7 @@ EVENT EVENT
     String provider "❓"
     String uploadedById "❓"
     DateTime uploadedAt 
+    String tenantId "❓"
     }
   
 
