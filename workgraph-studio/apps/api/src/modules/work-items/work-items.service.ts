@@ -1174,7 +1174,7 @@ async function buildChildOutput(instance: WorkflowInstance): Promise<Record<stri
       select: { id: true, name: true, status: true, currentVersion: true, nodeId: true, formData: true },
       orderBy: { updatedAt: 'desc' },
     }),
-    getWorkflowBudgetOverview(instance.id).catch(() => null),
+    getWorkflowBudgetOverview(instance.id, instance.tenantId ?? undefined).catch(() => null),
   ])
   const ctx = asRecord(instance.context)
   const finalSummary = ctx.finalSummary ?? walk(ctx, 'workbench.finalPack') ?? ctx.summary ?? ctx.result ?? null

@@ -18,6 +18,7 @@ import {
   assertWorkflowInstanceTenant,
   assertWorkflowNodeTenant,
   requireTenantFromRequest,
+  resolveTenantFromRequest,
   tenantIsolationStrict,
 } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
@@ -299,7 +300,7 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
       approvalRequest.subjectType === 'WorkflowRunBudget' &&
       (decision === 'APPROVED' || decision === 'APPROVED_WITH_CONDITIONS')
     ) {
-      const handled = await approveBudgetIncreaseFromApproval(id, userId)
+      const handled = await approveBudgetIncreaseFromApproval(id, userId, resolveTenantFromRequest(req))
       if (handled && approvalRequest.instanceId && approvalRequest.nodeId) {
         const [node, instance] = await Promise.all([
           prisma.workflowNode.findUnique({ where: { id: approvalRequest.nodeId } }),

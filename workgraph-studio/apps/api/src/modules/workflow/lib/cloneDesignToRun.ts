@@ -18,6 +18,7 @@
 import { createHash } from 'crypto'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
+import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { ValidationError } from '../../../lib/errors'
 import { createWorkflowRunBudgetSnapshot } from '../runtime/budget'
 import { tenantIdForCreate } from '../../../lib/tenant-isolation'
@@ -229,10 +230,16 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
   if (Object.keys(globals).length > 0) initialContext._globals = globals
   if (Object.keys(vars).length    > 0) initialContext._vars    = vars
 
+  // RLS prep — resolved once, used both for the pre-transaction count read below
+  // and the run-creation transaction (Slice 3). Was previously computed inline
+  // at instance-create time only; hoisted so the SAME value scopes every
+  // RLS-scoped touch in this function.
+  const tenantId = tenantIdForCreate(initialContext)
+
   // ── 3. Compute the next run number for naming ─────────────────────────────
-  const runCount = await prisma.workflowInstance.count({
+  const runCount = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.count({
     where: { templateId },
-  })
+  }), tenantId)
   const runName = opts.name ?? `${template.name} · Run #${runCount + 1}`
 
   // ── 3b. Snapshot the design graph and pin a version (deduped by content) ──
@@ -242,7 +249,7 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
   const versionResult = await ensureVersionForDesign(templateId, design, 'auto')
 
   // ── 4. Clone everything in a single transaction ───────────────────────────
-  return await prisma.$transaction<CloneResult>(async (tx) => {
+  return await withTenantDbTransaction<CloneResult>(prisma, async (tx) => {
     // 4a. Create the run instance row, pinned to the design version we just snapshotted
     const run = await tx.workflowInstance.create({
       data: {
@@ -250,7 +257,7 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
         templateVersion: versionResult.version,
         name:        runName,
         status:      'DRAFT',
-        tenantId:    tenantIdForCreate(initialContext),
+        tenantId,
         context:     initialContext as Prisma.InputJsonValue,
         createdById: opts.createdById,
         initiativeId: opts.initiativeId,
@@ -338,7 +345,7 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
       pinnedToVersion:  versionResult.version,
       newVersionCreated: versionResult.created,
     }
-  })
+  }, tenantId)
 }
 
 /**
