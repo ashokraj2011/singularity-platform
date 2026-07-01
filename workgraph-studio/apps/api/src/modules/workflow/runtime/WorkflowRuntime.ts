@@ -291,7 +291,7 @@ export async function advance(
         completedAt: completedAt.toISOString(),
       }, eventId)
       await publishOutbox('WorkflowInstance', instanceId, 'WorkflowCompleted', { instanceId })
-      void recordRunLearning(instanceId, 'COMPLETED')
+      void recordRunLearning(instanceId, 'COMPLETED', tenantId)
       const completedInstance = await withTenantDbTransaction(
         prisma,
         (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }),
@@ -1175,7 +1175,7 @@ export async function failNode(
     error: failure,
   }, eventId)
   await publishOutbox('WorkflowInstance', instanceId, 'WorkflowFailed', { instanceId, failedNodeId: nodeId })
-  void recordRunLearning(instanceId, 'FAILED')
+  void recordRunLearning(instanceId, 'FAILED', tenantId)
 
   // Run SAGA compensations for any completed nodes that declared compensationConfig.
   await runCompensations(instanceId, actorId, tenantId)
@@ -1279,7 +1279,7 @@ export async function resumeInstance(
       completedAt: new Date().toISOString(),
     }, eventId)
     await publishOutbox('WorkflowInstance', instanceId, 'WorkflowCompleted', { instanceId })
-    void recordRunLearning(instanceId, 'COMPLETED')
+    void recordRunLearning(instanceId, 'COMPLETED', tenantId)
   }
 }
 
@@ -1339,7 +1339,7 @@ export async function cancelInstance(
     skippedNodeIds: liveNodes.map(n => n.id),
   }, eventId)
   await publishOutbox('WorkflowInstance', instanceId, 'WorkflowCancelled', { instanceId, reason })
-  void recordRunLearning(instanceId, 'CANCELLED')
+  void recordRunLearning(instanceId, 'CANCELLED', tenantId)
 }
 
 // ─── Attachment processing ─────────────────────────────────────────────────
