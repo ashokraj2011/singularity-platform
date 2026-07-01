@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
-import { withTenantDbTransaction } from '../../lib/tenant-db-context'
+import { withTenantDbTransaction, currentTenantIdForDb } from '../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { config } from '../../config'
 import { mergeAgentRunCorrelation } from '../../lib/agent-run-correlation'
@@ -198,6 +198,9 @@ export async function startLaptopInvocation(workItemId: string, actorId: string,
   const run = await withTenantDbTransaction(prisma, (tx) => tx.agentRun.create({
     data: {
       agentId: agent.id,
+      // RLS 5b — laptop runs have no instanceId; stamp the request tenant so the
+      // standalone row is visible under the tenantId-OR-instance policy.
+      tenantId: currentTenantIdForDb(),
       status: 'RUNNING',
       initiatedById: actorId,
       origin: 'laptop',

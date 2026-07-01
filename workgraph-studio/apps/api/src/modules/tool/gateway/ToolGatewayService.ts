@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
+import { currentTenantIdForDb } from '../../../lib/tenant-db-context'
 import { evaluateToolPolicy } from './PolicyEngine'
 import { mockExecute } from './runners/MockExecutionRunner'
 import { logEvent, createReceipt, publishOutbox } from '../../../lib/audit'
@@ -31,7 +32,7 @@ export async function requestToolRun(
   const policyDecision = await evaluateToolPolicy(toolId, requestedById, inputPayload)
   if (policyDecision === 'DENY') {
     const run = await prisma.toolRun.create({
-      data: { toolId, actionId, instanceId, inputPayload: inputPayload as unknown as Prisma.InputJsonValue, requestedById, idempotencyKey, status: 'REJECTED' },
+      data: { toolId, actionId, instanceId, tenantId: currentTenantIdForDb(), inputPayload: inputPayload as unknown as Prisma.InputJsonValue, requestedById, idempotencyKey, status: 'REJECTED' },
     })
     await logEvent('ToolRunDenied', 'ToolRun', run.id, requestedById, { reason: 'PolicyDenied' })
     return run.id
@@ -41,7 +42,7 @@ export async function requestToolRun(
   const needsApproval = policyDecision === 'REQUIRES_APPROVAL' || tool.requiresApproval
   if (needsApproval) {
     const run = await prisma.toolRun.create({
-      data: { toolId, actionId, instanceId, inputPayload: inputPayload as unknown as Prisma.InputJsonValue, requestedById, idempotencyKey, status: 'PENDING_APPROVAL' },
+      data: { toolId, actionId, instanceId, tenantId: currentTenantIdForDb(), inputPayload: inputPayload as unknown as Prisma.InputJsonValue, requestedById, idempotencyKey, status: 'PENDING_APPROVAL' },
     })
     await logEvent('ToolRequested', 'ToolRun', run.id, requestedById)
     await publishOutbox('ToolRun', run.id, 'ToolRequested', { runId: run.id, needsApproval: true })
@@ -66,7 +67,7 @@ export async function executeToolRun(
 
   const run = await prisma.toolRun.create({
     data: {
-      toolId, actionId, instanceId, inputPayload: inputPayload as unknown as Prisma.InputJsonValue, requestedById,
+      toolId, actionId, instanceId, tenantId: currentTenantIdForDb(), inputPayload: inputPayload as unknown as Prisma.InputJsonValue, requestedById,
       idempotencyKey,
       status: 'RUNNING', startedAt: new Date(),
     },

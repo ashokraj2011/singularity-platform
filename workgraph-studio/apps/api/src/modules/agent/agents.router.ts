@@ -71,6 +71,8 @@ agentsRouter.post('/:id/runs', validate(createRunSchema), async (req, res, next)
       data: {
         agentId: id,
         instanceId,
+        // RLS 5b — standalone runs (no instanceId) need a direct tenant to be visible.
+        tenantId,
         nodeId,
         status: 'RUNNING',
         initiatedById: req.user!.userId,
