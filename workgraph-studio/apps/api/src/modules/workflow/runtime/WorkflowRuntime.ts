@@ -380,7 +380,7 @@ async function activateDownstream(
 
     // Fire on_activate attachments and schedule any deadlines
     await processAttachments(nextNode, instance, 'on_activate', actorId)
-    await scheduleDeadlines(nextNode)
+    await scheduleDeadlines(nextNode, instance.tenantId ?? undefined)
   }
 }
 
@@ -821,7 +821,7 @@ export async function restartNode(
   ]), tenantId)
   await executeActivatedNode(refreshedNode, refreshedInstance, context, actorId)
   await processAttachments(refreshedNode, refreshedInstance, 'on_activate', actorId)
-  await scheduleDeadlines(refreshedNode)
+  await scheduleDeadlines(refreshedNode, refreshedInstance.tenantId ?? undefined)
 
   return { restartedNodeId: nodeId, resetNodeIds }
 }
@@ -1369,14 +1369,14 @@ export async function processStartNodeAttachments(
   actorId?: string,
 ): Promise<void> {
   await processAttachments(node, instance, 'on_activate', actorId)
-  await scheduleDeadlines(node)
+  await scheduleDeadlines(node, instance.tenantId ?? undefined)
 }
 
 /**
  * For any `deadline` attachments on the node, record `_deadlineFireAt` and
  * `_deadlineEdge` in the node config so TimerSweep can fire them.
  */
-async function scheduleDeadlines(node: WorkflowNode): Promise<void> {
+async function scheduleDeadlines(node: WorkflowNode, tenantId?: string): Promise<void> {
   const cfg = (node.config ?? {}) as Record<string, unknown>
   const attachments = Array.isArray(cfg.attachments) ? cfg.attachments as AttachmentRaw[] : []
   const deadlines = attachments.filter(a => a.enabled !== false && a.trigger === 'deadline' && a.durationMs && a.durationMs > 0)
@@ -1386,7 +1386,7 @@ async function scheduleDeadlines(node: WorkflowNode): Promise<void> {
   const earliest = deadlines.reduce((min, a) => (a.durationMs! < min.durationMs!) ? a : min)
   const fireAt = new Date(Date.now() + earliest.durationMs!)
 
-  await prisma.workflowNode.update({
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
     where: { id: node.id },
     data: {
       config: {
@@ -1396,7 +1396,7 @@ async function scheduleDeadlines(node: WorkflowNode): Promise<void> {
         _deadlineAttachmentId: earliest.id ?? '',
       } as unknown as Prisma.InputJsonValue,
     },
-  })
+  }), tenantId)
 }
 
 /**
@@ -1427,7 +1427,7 @@ async function processAttachments(
         }
         let payload: Record<string, unknown> = {}
         try { if (att.inputPayload) payload = JSON.parse(att.inputPayload) } catch { /* bad JSON — use empty */ }
-        await prisma.toolRun.create({
+        await withTenantDbTransaction(prisma, (tx) => tx.toolRun.create({
           data: {
             toolId: tool.id,
             instanceId: instance.id,
@@ -1435,7 +1435,7 @@ async function processAttachments(
             requestedById: actorId,
             idempotencyKey: `att:${instance.id}:${node.id}:${att.id ?? att.toolName}:${trigger}`,
           },
-        })
+        }), instance.tenantId ?? undefined)
         await logEvent('AttachmentToolTriggered', 'WorkflowNode', node.id, actorId, {
           instanceId: instance.id, trigger, toolName: att.toolName, attachmentId: att.id,
         })
