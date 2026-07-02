@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { Prisma } from '@prisma/client'
+import { Prisma, NodeType } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { validate } from '../../middleware/validate'
@@ -920,7 +920,7 @@ workflowTemplatesRouter.get('/:id/design', async (req, res, next) => {
 
 const designNodeBodySchema = z.object({
   phaseId:           z.string().uuid().nullable().optional(),
-  nodeType:          z.string(),
+  nodeType:          z.nativeEnum(NodeType),
   nodeTypeKey:       z.string().optional(),
   label:             z.string().min(1),
   config:            z.record(z.unknown()).optional(),
@@ -973,6 +973,10 @@ workflowTemplatesRouter.patch('/:id/design/phases/:phaseId', validate(designPhas
     const id      = req.params.id as string
     const phaseId = req.params.phaseId as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
+    // Ownership: the phase must belong to THIS workflow — edit perm on :id must
+    // not let a caller mutate another workflow's phase by bare id.
+    const owned = await prisma.workflowDesignPhase.findFirst({ where: { id: phaseId, workflowId: id }, select: { id: true } })
+    if (!owned) throw new NotFoundError('WorkflowDesignPhase', phaseId)
     const updated = await prisma.workflowDesignPhase.update({ where: { id: phaseId }, data: req.body })
     res.json(updated)
   } catch (err) { next(err) }
@@ -982,7 +986,9 @@ workflowTemplatesRouter.delete('/:id/design/phases/:phaseId', async (req, res, n
     const id      = req.params.id as string
     const phaseId = req.params.phaseId as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
-    await prisma.workflowDesignPhase.delete({ where: { id: phaseId } })
+    // Ownership: scope the delete to THIS workflow (see PATCH above).
+    const { count } = await prisma.workflowDesignPhase.deleteMany({ where: { id: phaseId, workflowId: id } })
+    if (count === 0) throw new NotFoundError('WorkflowDesignPhase', phaseId)
     res.status(204).end()
   } catch (err) { next(err) }
 })
@@ -1033,6 +1039,10 @@ workflowTemplatesRouter.patch('/:id/design/nodes/:nodeId', validate(designNodeBo
     const id     = req.params.id as string
     const nodeId = req.params.nodeId as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
+    // Ownership: the node must belong to THIS workflow. Guards every path below
+    // (including position-only patches that skip the config/metadata re-fetch).
+    const ownedNode = await prisma.workflowDesignNode.findFirst({ where: { id: nodeId, workflowId: id }, select: { id: true } })
+    if (!ownedNode) throw new NotFoundError('WorkflowDesignNode', nodeId)
     const body = req.body as Partial<z.infer<typeof designNodeBodySchema>>
 
     // M11.b — re-validate when config or nodeType changes.
@@ -1088,7 +1098,9 @@ workflowTemplatesRouter.delete('/:id/design/nodes/:nodeId', async (req, res, nex
     const id     = req.params.id as string
     const nodeId = req.params.nodeId as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
-    await prisma.workflowDesignNode.delete({ where: { id: nodeId } })
+    // Ownership: scope the delete to THIS workflow.
+    const { count } = await prisma.workflowDesignNode.deleteMany({ where: { id: nodeId, workflowId: id } })
+    if (count === 0) throw new NotFoundError('WorkflowDesignNode', nodeId)
     res.status(204).end()
   } catch (err) { next(err) }
 })
@@ -1099,6 +1111,16 @@ workflowTemplatesRouter.post('/:id/design/edges', validate(designEdgeBodySchema)
     const id = req.params.id as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
     const body = req.body as z.infer<typeof designEdgeBodySchema>
+    // Ownership: both endpoints must be nodes of THIS workflow — otherwise a
+    // caller could wire an edge into another workflow's node by bare id.
+    const endpoints = await prisma.workflowDesignNode.findMany({
+      where: { workflowId: id, id: { in: [body.sourceNodeId, body.targetNodeId] } },
+      select: { id: true },
+    })
+    const endpointIds = new Set(endpoints.map(n => n.id))
+    if (!endpointIds.has(body.sourceNodeId) || !endpointIds.has(body.targetNodeId)) {
+      throw new ValidationError('Edge source and target must both be nodes of this workflow')
+    }
     const created = await prisma.workflowDesignEdge.create({
       data: {
         workflowId:   id,
@@ -1117,6 +1139,9 @@ workflowTemplatesRouter.patch('/:id/design/edges/:edgeId', validate(designEdgeBo
     const id     = req.params.id as string
     const edgeId = req.params.edgeId as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
+    // Ownership: the edge must belong to THIS workflow.
+    const ownedEdge = await prisma.workflowDesignEdge.findFirst({ where: { id: edgeId, workflowId: id }, select: { id: true } })
+    if (!ownedEdge) throw new NotFoundError('WorkflowDesignEdge', edgeId)
     const body = req.body as Partial<z.infer<typeof designEdgeBodySchema>>
     const updated = await prisma.workflowDesignEdge.update({
       where: { id: edgeId },
@@ -1134,7 +1159,9 @@ workflowTemplatesRouter.delete('/:id/design/edges/:edgeId', async (req, res, nex
     const id     = req.params.id as string
     const edgeId = req.params.edgeId as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
-    await prisma.workflowDesignEdge.delete({ where: { id: edgeId } })
+    // Ownership: scope the delete to THIS workflow.
+    const { count } = await prisma.workflowDesignEdge.deleteMany({ where: { id: edgeId, workflowId: id } })
+    if (count === 0) throw new NotFoundError('WorkflowDesignEdge', edgeId)
     res.status(204).end()
   } catch (err) { next(err) }
 })
