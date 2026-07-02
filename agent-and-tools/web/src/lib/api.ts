@@ -323,11 +323,45 @@ export const identityApi = {
 export const workgraphApi = {
   createWorkflowTemplate: (body: Row) =>
     req<Row>(`${WORKGRAPH_BASE}/workflow-templates`, { method: "POST", body: JSON.stringify(body) }),
-  startWorkflowRun: (workflowId: string, body: Row) =>
-    req<Row>(`${WORKGRAPH_BASE}/workflow-templates/${encodeURIComponent(workflowId)}/runs`, {
+  // Runs must launch from a WorkItem — the direct template-start endpoint
+  // (POST /workflow-templates/:id/runs) is rejected by the API with
+  // "Workflow runs must start from a WorkItem". So: create a WorkItem whose
+  // target points at the template (its `input` becomes the run's vars), then
+  // start it. Returns the started run's instance id, dug out of the routed
+  // WorkItem's target so callers still get `run.id` = the workflow run.
+  launchWorkflowRun: async (
+    workflowId: string,
+    opts: { capabilityId: string; title: string; input?: Row; details?: Row; roleKey?: string },
+  ): Promise<{ id: string; workItem: Row }> => {
+    const workItem = await req<Row>(`${WORKGRAPH_BASE}/work-items`, {
       method: "POST",
-      body: JSON.stringify(body),
-    }),
+      body: JSON.stringify({
+        title: opts.title,
+        input: opts.input ?? {},
+        details: opts.details ?? {},
+        targets: [{
+          targetCapabilityId: opts.capabilityId,
+          childWorkflowTemplateId: workflowId,
+          ...(opts.roleKey ? { roleKey: opts.roleKey } : {}),
+        }],
+      }),
+    });
+    const workItemId = typeof workItem.id === "string" ? workItem.id : undefined;
+    if (!workItemId) throw new Error("WorkItem was created without an id.");
+    const routed = await req<Row>(`${WORKGRAPH_BASE}/work-items/${encodeURIComponent(workItemId)}/start`, {
+      method: "POST",
+      body: JSON.stringify({ childWorkflowTemplateId: workflowId }),
+    });
+    const targets = Array.isArray(routed.targets)
+      ? (routed.targets as Array<{ childWorkflowInstanceId?: unknown }>)
+      : [];
+    const fromTarget = targets
+      .map((t) => t.childWorkflowInstanceId)
+      .find((x): x is string => typeof x === "string");
+    const runId = fromTarget ?? (typeof routed.childWorkflowInstanceId === "string" ? routed.childWorkflowInstanceId : undefined);
+    if (!runId) throw new Error("WorkItem started but no child workflow run id was returned.");
+    return { id: runId, workItem: routed };
+  },
 };
 
 export const runtimeApi = {
