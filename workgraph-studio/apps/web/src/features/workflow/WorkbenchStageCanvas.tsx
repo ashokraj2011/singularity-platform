@@ -17,7 +17,7 @@
  * POST/PATCH/DELETE artifacts). Questions + definition-level fields (goal,
  * source, agent bindings) still live in the legacy accordion until a follow-up.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import ReactFlow, {
   Background, Controls, Handle, Position, MarkerType,
@@ -405,6 +405,34 @@ function StageInspector({ stage, agents, busy, artifactBusy, questionBusy, onSav
   const set = <K extends keyof StageDraft>(k: K, v: StageDraft[K]) => setDraft(d => ({ ...d, [k]: v }))
   const dirty = JSON.stringify(draft) !== JSON.stringify(draftFromStage(stage))
 
+  // Draggable + resizable floating panel. Rendered `position: fixed` so it
+  // escapes the canvas container's `overflow: hidden` (which was clipping the
+  // lower fields with no scrollbar); `overflow: auto` gives it its own scrollbar
+  // and `resize: both` a corner grip. Default anchor = bottom-right until the
+  // user drags it, after which we honor the explicit left/top.
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const startDrag = (e: React.PointerEvent) => {
+    const rect = panelRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const offX = e.clientX - rect.left
+    const offY = e.clientY - rect.top
+    const onMove = (ev: PointerEvent) => {
+      const maxX = window.innerWidth - 80
+      const maxY = window.innerHeight - 40
+      setPos({
+        x: Math.min(Math.max(0, ev.clientX - offX), maxX),
+        y: Math.min(Math.max(0, ev.clientY - offY), maxY),
+      })
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
   // Keep the current template id selectable even if it's not in the fetched list.
   const agentOptions = useMemo(() => {
     const opts = agents.map(a => ({ id: a.id, name: a.name }))
@@ -424,10 +452,35 @@ function StageInspector({ stage, agents, busy, artifactBusy, questionBusy, onSav
   })
 
   return (
-    <div style={{ borderTop: '1px solid #e5e7eb', background: '#f8fafc', padding: '12px 14px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <strong style={{ fontSize: 13, color: '#0f172a' }}>Edit stage · <span style={{ fontFamily: 'ui-monospace, monospace', color: '#475569' }}>{stage.stageKey}</span></strong>
-        <button type="button" onClick={onClose} style={{ fontSize: 11, border: 'none', background: 'none', cursor: 'pointer', color: '#64748b', fontWeight: 700 }}>✕ close</button>
+    <div
+      ref={panelRef}
+      style={{
+        position: 'fixed',
+        ...(pos ? { left: pos.x, top: pos.y } : { left: 16, bottom: 16 }),
+        width: 'min(760px, 92vw)',
+        maxHeight: '82vh',
+        overflow: 'auto',
+        resize: 'both',
+        zIndex: 50,
+        border: '1px solid #e5e7eb',
+        background: '#f8fafc',
+        padding: '12px 14px',
+        borderRadius: 12,
+        boxShadow: '0 12px 32px rgba(15,23,42,0.22)',
+      }}
+    >
+      <div
+        onPointerDown={startDrag}
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          cursor: 'move', userSelect: 'none',
+          position: 'sticky', top: 0, zIndex: 2, background: '#f8fafc',
+          margin: '-12px -14px 10px', padding: '12px 14px 8px',
+          borderBottom: '1px solid #eef2f7',
+        }}
+      >
+        <strong style={{ fontSize: 13, color: '#0f172a' }}>⠿ Edit stage · <span style={{ fontFamily: 'ui-monospace, monospace', color: '#475569' }}>{stage.stageKey}</span></strong>
+        <button type="button" onClick={onClose} onPointerDown={e => e.stopPropagation()} style={{ fontSize: 11, border: 'none', background: 'none', cursor: 'pointer', color: '#64748b', fontWeight: 700 }}>✕ close</button>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
