@@ -365,6 +365,49 @@
         "type": "object"
       }
     },
+    "git_history_explain": {
+      "category": "read",
+      "input_schema": {
+        "properties": {
+          "since": {
+            "description": "Start date/time, for example 2026-06-20.",
+            "type": "string"
+          },
+          "until": {
+            "description": "End date/time, for example 2026-07-02.",
+            "type": "string"
+          },
+          "paths": {
+            "description": "Optional repository paths to scope the explanation.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "author": {
+            "description": "Optional git author filter.",
+            "type": "string"
+          },
+          "no_merges": {
+            "description": "Exclude merge commits.",
+            "type": "boolean"
+          },
+          "max_commits": {
+            "description": "Maximum commits to explain. Default 250, max 500.",
+            "type": "number"
+          },
+          "format": {
+            "description": "Report format: markdown or json.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "since",
+          "until"
+        ],
+        "type": "object"
+      }
+    },
     "review_diff": {
       "category": "finalize",
       "input_schema": {

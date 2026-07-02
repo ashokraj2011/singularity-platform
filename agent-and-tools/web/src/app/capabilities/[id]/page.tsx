@@ -904,8 +904,8 @@ function CapabilityArchitecturePanel({
               </div>
               <div className="bg-slate-50 px-3 py-3">
                 <div className="flex flex-wrap gap-2">
-                  {asStringArray(layer.items).map(item => (
-                    <span key={item} className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700">
+                  {asStringArray(layer.items).map((item, itemIndex) => (
+                    <span key={`${String(layer.key ?? index)}-${itemIndex}-${item}`} className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700">
                       {item}
                     </span>
                   ))}
@@ -920,8 +920,8 @@ function CapabilityArchitecturePanel({
             <div key={String(layer.key ?? index)} className="rounded-xl border border-slate-200 bg-slate-50 p-3 min-h-[132px]">
               <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-2">{String(layer.label ?? `Layer ${index + 1}`)}</div>
               <div className="space-y-1.5">
-                {asStringArray(layer.items).slice(0, 7).map(item => (
-                  <div key={item} className="rounded-md bg-white border border-slate-200 px-2 py-1 text-xs text-slate-700">
+                {asStringArray(layer.items).slice(0, 7).map((item, itemIndex) => (
+                  <div key={`${String(layer.key ?? index)}-${itemIndex}-${item}`} className="rounded-md bg-white border border-slate-200 px-2 py-1 text-xs text-slate-700">
                     {item}
                   </div>
                 ))}
@@ -1254,16 +1254,16 @@ function BootstrapTab({
             <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
               <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Approval gates</div>
               <div className="flex flex-wrap gap-1.5">
-                {asStringArray(operatingModel.approvalGates).map(item => (
-                  <span key={item} className="rounded-full bg-white px-2 py-1 text-[11px] text-slate-700 border border-slate-200">{item}</span>
+                {asStringArray(operatingModel.approvalGates).map((item, index) => (
+                  <span key={`approval-gate-${index}-${item}`} className="rounded-full bg-white px-2 py-1 text-[11px] text-slate-700 border border-slate-200">{item}</span>
                 ))}
               </div>
             </div>
             <div className="rounded-xl border border-slate-100 bg-slate-50 p-3">
               <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Artifact contracts</div>
               <div className="flex flex-wrap gap-1.5">
-                {asStringArray(operatingModel.artifactContracts).map(item => (
-                  <span key={item} className="rounded-full bg-white px-2 py-1 text-[11px] text-slate-700 border border-slate-200">{item.replace(/_/g, " ")}</span>
+                {asStringArray(operatingModel.artifactContracts).map((item, index) => (
+                  <span key={`artifact-contract-${index}-${item}`} className="rounded-full bg-white px-2 py-1 text-[11px] text-slate-700 border border-slate-200">{item.replace(/_/g, " ")}</span>
                 ))}
               </div>
             </div>

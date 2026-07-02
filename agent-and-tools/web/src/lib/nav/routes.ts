@@ -72,6 +72,7 @@ export const ROUTES: RouteMeta[] = [
   { id: "ops-access-keys", label: "Access Keys", href: "/operations/access-keys", group: "Operations Center", icon: ShieldCheck, priority: "secondary", surfaceType: "operation" },
   { id: "ops-setup", label: "Setup Center", href: "/operations/setup", group: "Operations Center", icon: Wrench, priority: "primary", surfaceType: "operation" },
   { id: "ops-trust", label: "Trust Evidence", href: "/operations/trust", group: "Operations Center", icon: ClipboardCheck, priority: "secondary", surfaceType: "operation" },
+  { id: "ops-git-history", label: "Git Change Explainer", href: "/operations/git-history", group: "Operations Center", icon: GitBranch, priority: "secondary", surfaceType: "operation", description: "Explain code changes between dates from git history.", keywords: ["git", "history", "release", "evidence", "changelog", "diff"] },
 
   // Agent Studio
   { id: "agents", label: "Agents", href: "/agents/studio", group: "Agent Studio", icon: Bot, priority: "primary", surfaceType: "agent" },

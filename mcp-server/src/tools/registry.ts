@@ -220,6 +220,7 @@ import { runCommandTool, runTestTool, verificationUnavailableTool, captureTestBa
 import { runPythonTool } from "./python";
 import { formalVerifyTool } from "./formal-verify";
 import { repoMapTool, recommendedVerificationTool, reviewDiffTool } from "./workflow-tools";
+import { gitHistoryExplainTool } from "./git-history";
 // M99 S1.2 — localize / structured-edit / git-preflight tools (ship dark).
 import { M99_TOOLS } from "./m99-tools";
 import {
@@ -277,6 +278,7 @@ const REGISTRY = new Map<string, ToolHandler>([
   [repoMapTool.descriptor.name, repoMapTool],
   [recommendedVerificationTool.descriptor.name, recommendedVerificationTool],
   [reviewDiffTool.descriptor.name, reviewDiffTool],
+  [gitHistoryExplainTool.descriptor.name, gitHistoryExplainTool],
 ]);
 
 // M99 S1.2 — six new AER tools (localize/structured-edit/git-preflight).
