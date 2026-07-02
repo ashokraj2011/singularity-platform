@@ -683,14 +683,17 @@ function UltraModePanel({
       const workflowId = capabilityString(workflow.id);
       if (!workflowId) throw new Error("Ultra Mode created a workflow without an id.");
 
-      const run = await workgraphApi.startWorkflowRun(workflowId, {
-        name: `Ultra delivery - ${shortGoal}`,
-        vars: {
+      // Launch via a WorkItem (direct template start is rejected by the API).
+      // `input` becomes the run's vars; `details` carries the Ultra metadata.
+      const run = await workgraphApi.launchWorkflowRun(workflowId, {
+        capabilityId,
+        title: `Ultra delivery - ${shortGoal}`,
+        input: {
           story: goal,
           acceptanceCriteria: form.acceptanceCriteria.trim(),
           repoUrl,
         },
-        globals: {
+        details: {
           ultraMode: true,
           capabilityId,
           capabilityName,
