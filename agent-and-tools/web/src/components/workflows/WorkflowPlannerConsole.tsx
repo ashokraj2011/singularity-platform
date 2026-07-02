@@ -296,11 +296,14 @@ export function WorkflowPlannerConsole() {
 
   return (
     <div style={{ maxWidth: 1380 }}>
-      <section className="card" style={{ padding: 22, marginBottom: 16 }}>
+      <section className="page-hero" style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
           <div>
-            <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8 }}>Workgraph Planner</div>
-            <h1 className="page-header" style={{ marginBottom: 8 }}>Story to WorkItems</h1>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--color-primary)", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 10 }}>
+              <Sparkles size={15} />
+              Workgraph Planner
+            </div>
+            <h1 className="page-header" style={{ marginBottom: 8, fontSize: 34 }}>Story to WorkItems</h1>
             <p style={{ margin: 0, maxWidth: 820, color: "var(--color-outline)", fontSize: 14, lineHeight: 1.55 }}>
               Paste a story or product goal, split it into milestone-grouped tasks, then create governed WorkItems for the selected capability.
             </p>
@@ -314,7 +317,7 @@ export function WorkflowPlannerConsole() {
         </div>
       </section>
 
-      <section className="card" style={{ padding: "13px 18px", marginBottom: 16 }}>
+      <section className="data-panel" style={{ padding: "13px 18px", marginBottom: 16 }}>
         <div className="label-xs" style={{ color: "var(--color-outline)", marginBottom: 9 }}>Happy path</div>
         <Stepper steps={plannerSteps} />
       </section>
@@ -327,7 +330,7 @@ export function WorkflowPlannerConsole() {
       </section>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(420px, 100%), 1fr))", gap: 16, alignItems: "start" }}>
-        <section className="card" style={{ padding: 18, display: "grid", gap: 14 }}>
+        <section className="data-panel" style={{ display: "grid", gap: 14 }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 850, color: "var(--color-on-surface)" }}>Plan input</h2>
             <p style={{ margin: "6px 0 0", color: "var(--color-outline)", fontSize: 13, lineHeight: 1.5 }}>
@@ -427,7 +430,7 @@ export function WorkflowPlannerConsole() {
             onMilestoneDelete={(milestoneIndex) => setMilestones((current) => current.filter((_, i) => i !== milestoneIndex))}
           />
 
-          <section className="card" style={{ padding: 18 }}>
+          <section className="data-panel">
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
               <div>
                 <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 6 }}>Commit</div>

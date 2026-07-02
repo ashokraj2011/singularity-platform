@@ -119,15 +119,16 @@ function valueTone(state: CountResult["state"]) {
 }
 
 function Signal({ label, result }: { label: string; result: CountResult }) {
+  const statusLabel = result.state === "guarded" ? "needs auth" : result.state;
   return (
-    <div className="card" style={{ padding: 14, borderRadius: 8, boxShadow: "none" }}>
+    <div className="metric-card" style={{ boxShadow: "none" }}>
       <div className="label-xs" style={{ color: "var(--color-outline)", marginBottom: 8 }}>
         {label}
       </div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
         <strong style={{ fontSize: 22, color: valueTone(result.state) }}>{result.value}</strong>
         <span className={result.state === "live" ? "badge badge-active" : "badge badge-pending_approval"}>
-          {result.state}
+          {statusLabel}
         </span>
       </div>
     </div>
@@ -158,27 +159,31 @@ export default async function SdlcCommandCenterPage() {
   ]);
 
   return (
-    <div style={{ maxWidth: 1440 }}>
-      <section style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.35fr) minmax(320px, 0.65fr)", gap: 18, alignItems: "stretch", marginBottom: 18 }}>
-        <div className="card" style={{ padding: 24, borderRadius: 8 }}>
+    <div style={{ maxWidth: 1440, display: "grid", gap: 18 }}>
+      <section style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.35fr) minmax(320px, 0.65fr)", gap: 18, alignItems: "stretch" }}>
+        <div className="page-hero">
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--color-primary)", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 10 }}>
             <Sparkles size={15} />
-            Start SDLC Work
+            Agentic SDLC Command Center
           </div>
-          <h1 className="page-header" style={{ margin: 0, fontSize: 34 }}>Paste Story. Launch Workflow. Export Evidence.</h1>
+          <h1 className="page-header" style={{ margin: 0, fontSize: 40, lineHeight: 1.05, letterSpacing: "-0.01em" }}>Paste Story. Launch Workflow. Export Evidence.</h1>
           <p style={{ margin: "10px 0 0", maxWidth: 900, color: "var(--color-outline)", fontSize: 14, lineHeight: 1.6 }}>
             The primary path is simple: split a story into WorkItems, choose the SDLC intent, launch the seeded workflow, watch the run cockpit, and hand off evidence or Copilot YAML.
           </p>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 16 }}>
+          <div className="evidence-rail" style={{ marginTop: 18 }}>
             {[
-              ["1", "Story Planner"],
-              ["2", "Guided Launch"],
-              ["3", "Run Cockpit"],
-              ["4", "Evidence Pack"],
-            ].map(([step, label]) => (
-              <div key={step} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: "10px 12px", background: "var(--color-surface-container)" }}>
-                <strong style={{ color: "var(--color-primary)", marginRight: 7 }}>{step}</strong>
-                <span style={{ color: "var(--color-on-surface)", fontWeight: 800, fontSize: 13 }}>{label}</span>
+              ["01", "Story", "Capture the request"],
+              ["02", "WorkItems", "Split and route"],
+              ["03", "Workflow", "Launch with gates"],
+              ["04", "Run", "Watch execution"],
+              ["05", "Evidence", "Export proof"],
+            ].map(([step, label, detail]) => (
+              <div key={step} className="evidence-step">
+                <span style={{ width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", background: "rgba(54,135,39,0.11)", color: "var(--color-primary)", fontWeight: 900, fontSize: 11 }}>{step}</span>
+                <span>
+                  <strong style={{ display: "block", color: "var(--color-on-surface)", fontSize: 13 }}>{label}</strong>
+                  <span style={{ display: "block", color: "var(--color-outline)", fontSize: 11, marginTop: 1 }}>{detail}</span>
+                </span>
               </div>
             ))}
           </div>
@@ -187,9 +192,12 @@ export default async function SdlcCommandCenterPage() {
           </div>
         </div>
 
-        <div className="card" style={{ padding: 18, borderRadius: 8 }}>
+        <div className="data-panel">
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12 }}>
-            <h2 style={{ margin: 0, fontSize: 16 }}>Live Signals</h2>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 17, fontWeight: 900 }}>Live Signals</h2>
+              <p style={{ margin: "3px 0 0", color: "var(--color-outline)", fontSize: 12 }}>Counts update from the running platform APIs.</p>
+            </div>
             <CheckCircle2 size={16} color="var(--color-primary)" />
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
@@ -202,7 +210,7 @@ export default async function SdlcCommandCenterPage() {
         </div>
       </section>
 
-      <section className="card" style={{ padding: 18, borderRadius: 8, marginBottom: 18 }}>
+      <section className="data-panel">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 18 }}>Delivery Loop</h2>
@@ -243,7 +251,7 @@ export default async function SdlcCommandCenterPage() {
       </section>
 
       <section style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(300px, 0.45fr)", gap: 18, alignItems: "start" }}>
-        <div className="card" style={{ padding: 18, borderRadius: 8 }}>
+        <div className="data-panel">
           <h2 style={{ margin: "0 0 12px", fontSize: 18 }}>Evidence Rail</h2>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
             {evidenceLinks.map((item) => {
@@ -261,7 +269,7 @@ export default async function SdlcCommandCenterPage() {
           </div>
         </div>
 
-        <div className="card" style={{ padding: 18, borderRadius: 8 }}>
+        <div className="data-panel">
           <h2 style={{ margin: "0 0 10px", fontSize: 18 }}>Operating Standard</h2>
           <div style={{ display: "grid", gap: 9, fontSize: 13, color: "var(--color-on-surface-variant)" }}>
             <div><strong>1.</strong> Work is capability-scoped.</div>

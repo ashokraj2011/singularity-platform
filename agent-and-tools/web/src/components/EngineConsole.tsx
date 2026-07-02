@@ -59,6 +59,9 @@ const TINT: Record<UiState, string> = {
   offline: "bg-slate-100 text-slate-500",
   guarded: "bg-blue-50 text-blue-700",
   optional: "bg-slate-50 text-slate-500",
+  "needs-auth": "bg-blue-50 text-blue-700",
+  "needs-runtime": "bg-violet-50 text-violet-700",
+  degraded: "bg-amber-50 text-amber-700",
 };
 
 function asIssue(value: Record<string, unknown>): EngineIssue {

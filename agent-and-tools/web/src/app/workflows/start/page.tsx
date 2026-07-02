@@ -175,11 +175,14 @@ export default function WorkflowStartPage() {
 
   return (
     <div style={{ maxWidth: 1320 }}>
-      <section className="card" style={{ padding: 22, marginBottom: 16 }}>
+      <section className="page-hero" style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
           <div>
-            <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8 }}>Guided SDLC Launcher</div>
-            <h1 className="page-header" style={{ marginBottom: 8 }}>Start Governed SDLC Work</h1>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--color-primary)", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 10 }}>
+              <Rocket size={15} />
+              Guided SDLC Launcher
+            </div>
+            <h1 className="page-header" style={{ marginBottom: 8, fontSize: 34 }}>Start Governed SDLC Work</h1>
             <p style={{ margin: 0, maxWidth: 850, color: "var(--color-outline)", fontSize: 14, lineHeight: 1.6 }}>
               Choose the delivery intent, paste a story, validate runtime prerequisites, then create WorkItems and launch the matching workflow.
             </p>
@@ -192,7 +195,7 @@ export default function WorkflowStartPage() {
         </div>
       </section>
 
-      <section className="card" style={{ padding: "13px 18px", marginBottom: 16 }}>
+      <section className="data-panel" style={{ padding: "13px 18px", marginBottom: 16 }}>
         <div className="label-xs" style={{ color: "var(--color-outline)", marginBottom: 9 }}>Happy path</div>
         <Stepper steps={sdlcSteps} />
       </section>
@@ -205,19 +208,20 @@ export default function WorkflowStartPage() {
       </section>
 
       {(capabilitiesError || galleryError || healthError) && (
-        <section className="card" style={{ padding: 14, borderColor: "#fde68a", background: "#fffbeb", color: "#92400e", marginBottom: 16 }}>
+        <section className="data-panel" style={{ padding: 14, borderColor: "#fde68a", background: "#fffbeb", color: "#92400e", marginBottom: 16 }}>
           {String(capabilitiesError?.message ?? galleryError?.message ?? healthError?.message)}
         </section>
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(280px, 0.85fr) minmax(0, 1.15fr)", gap: 16, alignItems: "start" }}>
-        <section className="card" style={{ padding: 18, display: "grid", gap: 12 }}>
+        <section className="data-panel" style={{ display: "grid", gap: 12 }}>
           <h2 style={{ margin: 0, fontSize: 18 }}>Intent</h2>
           {intents.map((item) => (
             <button
               key={item.id}
               type="button"
               onClick={() => applyIntent(item)}
+              className="card-hover"
               style={{
                 textAlign: "left",
                 border: item.id === intentId ? "1px solid rgba(54,135,39,0.45)" : "1px solid var(--color-outline-variant)",
@@ -239,7 +243,7 @@ export default function WorkflowStartPage() {
           {intents.length === 0 && <Empty text="Template gallery has not loaded yet." />}
         </section>
 
-        <section className="card" style={{ padding: 18, display: "grid", gap: 14 }}>
+        <section className="data-panel" style={{ display: "grid", gap: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
             <div>
               <h2 style={{ margin: 0, fontSize: 18 }}>{selectedIntent?.label ?? "Launch details"}</h2>

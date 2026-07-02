@@ -226,9 +226,14 @@ export default function LlmSettingsPage() {
 
   return (
     <div style={{ maxWidth: 1240 }}>
-      <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
+      <section className="page-hero mb-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="page-header">Active LLM Settings</h1>
+          <div className="mb-3 inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
+            <RadioTower size={15} className="text-emerald-700" />
+            Runtime + LLM Switchboard
+          </div>
+          <h1 className="page-header text-3xl font-black text-slate-950">Runtime Bridge and Model Routing</h1>
           <p className="text-sm text-slate-500 mt-1">
             MCP runtimes dial into Context Fabric over the Runtime Bridge. Model calls run as `model-run` frames through MCP, which forwards to its local or colocated LLM Gateway.
           </p>
@@ -244,6 +249,24 @@ export default function LlmSettingsPage() {
           </button>
         </div>
       </div>
+      <div className="evidence-rail mt-5">
+        {[
+          ["Context Fabric", settings?.contextFabricHealth?.ok ? "Online" : "Check"],
+          ["Runtime Bridge", runtimeConnected ? `${connectedRuntimes.length} connected` : "No runtime"],
+          ["MCP Runtime", "Tool + model relay"],
+          ["LLM Gateway", `${readyProviders}/${providers.length || 0} providers`],
+          ["Workflows", "model-run frames"],
+        ].map(([label, detail]) => (
+          <div key={label} className="evidence-step">
+            <span className="grid h-8 w-8 place-items-center rounded-lg bg-emerald-50 text-emerald-700"><RadioTower size={15} /></span>
+            <span>
+              <strong className="block text-[13px] text-slate-900">{label}</strong>
+              <span className="text-[11px] text-slate-500">{detail}</span>
+            </span>
+          </div>
+        ))}
+      </div>
+      </section>
 
       {error && (
         <div className="card border-red-200 bg-red-50 p-4 mb-6 text-sm text-red-700">

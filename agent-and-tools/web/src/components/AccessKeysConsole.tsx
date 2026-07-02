@@ -126,6 +126,9 @@ const TINT: Record<UiState, string> = {
   offline: "bg-slate-100 text-slate-500",
   guarded: "bg-blue-50 text-blue-700",
   optional: "bg-slate-50 text-slate-500",
+  "needs-auth": "bg-blue-50 text-blue-700",
+  "needs-runtime": "bg-violet-50 text-violet-700",
+  degraded: "bg-amber-50 text-amber-700",
 };
 const BOX: Record<UiState, string> = {
   ready: "border-emerald-200 bg-emerald-50 text-emerald-800",
@@ -134,6 +137,9 @@ const BOX: Record<UiState, string> = {
   offline: "border-slate-200 bg-slate-50 text-slate-600",
   guarded: "border-blue-200 bg-blue-50 text-blue-800",
   optional: "border-slate-200 bg-slate-50 text-slate-500",
+  "needs-auth": "border-blue-200 bg-blue-50 text-blue-800",
+  "needs-runtime": "border-violet-200 bg-violet-50 text-violet-800",
+  degraded: "border-amber-200 bg-amber-50 text-amber-800",
 };
 
 async function fetchAccessKeys(): Promise<AccessKeysResponse> {

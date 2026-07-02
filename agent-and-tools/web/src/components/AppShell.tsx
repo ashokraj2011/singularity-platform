@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Sidebar } from "@/components/ui/Sidebar";
 import { EventHorizonChat } from "@/components/EventHorizonChat";
@@ -7,8 +8,10 @@ import { AppSwitcher } from "@/components/AppSwitcher";
 import { LogoutButton } from "@/components/LogoutButton";
 import { RequireSession } from "@/components/RequireSession";
 import { useEffect, useState } from "react";
-import { Bell, Search, Settings } from "lucide-react";
+import { Bell, Play, RadioTower, Search, Settings } from "lucide-react";
 import { CommandPalette } from "@/components/CommandPalette";
+import { apiPath, authHeaders } from "@/lib/api";
+import { StatusPill, type UiState } from "@/components/ui/primitives";
 
 // Routes that render their own full-viewport UX (the blue Blueprint Workbench
 // cockpit, now served in-process) and must NOT be boxed inside the platform-web
@@ -25,6 +28,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // ⌘K / Ctrl-K toggles the command palette (sourced from the route registry).
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [runtimeState, setRuntimeState] = useState<{ state: UiState; label: string }>({ state: "waiting", label: "Checking runtime" });
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -34,6 +38,42 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRuntimeState() {
+      try {
+        const res = await fetch(apiPath("/api/runtime-infrastructure"), { cache: "no-store", headers: authHeaders() });
+        if (cancelled) return;
+        if (res.status === 401 || res.status === 403) {
+          setRuntimeState({ state: "needs-auth", label: "Sign in required" });
+          return;
+        }
+        if (!res.ok) {
+          setRuntimeState({ state: "degraded", label: "Runtime check failed" });
+          return;
+        }
+        const data = await res.json() as { summary?: { requiredHealthy?: boolean; optionalHealthy?: number; optionalConfigured?: number } };
+        const optionalHealthy = data.summary?.optionalHealthy ?? 0;
+        const optionalConfigured = data.summary?.optionalConfigured ?? 0;
+        if (data.summary?.requiredHealthy && optionalHealthy > 0) {
+          setRuntimeState({ state: "ready", label: `${optionalHealthy} runtime online` });
+        } else if (data.summary?.requiredHealthy) {
+          setRuntimeState({ state: "needs-runtime", label: "Runtime not connected" });
+        } else {
+          setRuntimeState({ state: "degraded", label: optionalConfigured ? "Runtime degraded" : "Runtime setup needed" });
+        }
+      } catch {
+        if (!cancelled) setRuntimeState({ state: "offline", label: "Runtime unknown" });
+      }
+    }
+    void loadRuntimeState();
+    const timer = window.setInterval(loadRuntimeState, 30000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, []);
 
   if (fullBleed) {
@@ -66,8 +106,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             padding: "0 20px",
           }}
         >
-          {/* Workspace badge */}
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
             <span
               style={{
                 display: "inline-flex",
@@ -93,12 +132,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   flexShrink: 0,
                 }}
               />
-              Platform Web
+              Unified Platform
             </span>
+            <Link href="/llm-settings" style={{ textDecoration: "none" }}>
+              <StatusPill state={runtimeState.state} label={runtimeState.label} icon={RadioTower} />
+            </Link>
           </div>
 
-          {/* Actions */}
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <Link className="btn-primary" href="/workflows/start" style={{ height: 32, padding: "0 10px", fontSize: 12 }}>
+              <Play size={14} />
+              Launch
+            </Link>
             <button
               type="button"
               onClick={() => setPaletteOpen(true)}

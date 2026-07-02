@@ -24,6 +24,7 @@ import {
   ShieldCheck,
   Sparkles,
   Upload,
+  Wrench,
   X,
 } from "lucide-react";
 
@@ -243,14 +244,14 @@ export default function AgentStudioPage() {
 
   return (
     <div className="space-y-6">
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="page-hero">
         <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
           <div className="min-w-0">
             <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-800">
               <ShieldCheck size={13} />
               Governed templates
             </div>
-            <h1 className="mt-3 text-3xl font-bold tracking-tight text-slate-950">Agent Studio</h1>
+            <h1 className="mt-3 text-3xl font-black tracking-tight text-slate-950">Agent Studio</h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
               Manage common locked baselines, capability-derived agents, prompt bindings, and version history from one place.
             </p>
@@ -270,6 +271,8 @@ export default function AgentStudioPage() {
           </button>
         </div>
       </div>
+
+      <SkillSourceModel />
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="grid gap-3 xl:grid-cols-[minmax(260px,1fr)_minmax(280px,0.9fr)_auto] xl:items-end">
@@ -436,6 +439,91 @@ export default function AgentStudioPage() {
         />
       )}
     </div>
+  );
+}
+
+function SkillSourceModel() {
+  const sources = [
+    {
+      title: "Local Tool",
+      detail: "An internal skill from the platform tool catalog. It can be read-only or invokable based on grants.",
+      icon: Wrench,
+      chips: ["Read", "Invoke"],
+      tone: "emerald",
+    },
+    {
+      title: "Provider/API",
+      detail: "A live signed manifest such as GitHub or another API. Provider-locked permissions cannot be loosened.",
+      icon: LinkIcon,
+      chips: ["Live", "Locked"],
+      tone: "blue",
+    },
+    {
+      title: "URL Document",
+      detail: "A link that becomes read-only knowledge with polling and source provenance.",
+      icon: FileText,
+      chips: ["Read-only"],
+      tone: "slate",
+    },
+    {
+      title: "Uploaded File",
+      detail: "PDF, Markdown, Word, Excel, or PowerPoint extracted into a knowledge artifact.",
+      icon: Upload,
+      chips: ["Read-only"],
+      tone: "amber",
+    },
+    {
+      title: "Knowledge Library",
+      detail: "Reusable documents and prompt profiles that inform the agent without granting tool execution.",
+      icon: Library,
+      chips: ["Read", "Profile"],
+      tone: "violet",
+    },
+  ] as const;
+  const toneClass = {
+    emerald: "bg-emerald-50 text-emerald-700 border-emerald-100",
+    blue: "bg-blue-50 text-blue-700 border-blue-100",
+    slate: "bg-slate-50 text-slate-600 border-slate-200",
+    amber: "bg-amber-50 text-amber-700 border-amber-100",
+    violet: "bg-violet-50 text-violet-700 border-violet-100",
+  } as const;
+  return (
+    <section className="data-panel">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="label-xs mb-1 text-slate-500">Skill source model</div>
+          <h2 className="text-lg font-black text-slate-950">Skills are sources plus capability-level permissions.</h2>
+          <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500">
+            Agent profiles bind local tools, provider manifests, and read-only documents directly. Each binding carries explicit permissions: read, invoke, configure, edit, and provider locked.
+          </p>
+        </div>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-600">
+          <Lock size={13} />
+          Read-only by default
+        </span>
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
+        {sources.map((source) => {
+          const Icon = source.icon;
+          return (
+            <article key={source.title} className="card-hover rounded-lg border border-slate-200 bg-white p-3">
+              <span className={`mb-3 inline-grid h-9 w-9 place-items-center rounded-lg border ${toneClass[source.tone]}`}>
+                <Icon size={17} />
+              </span>
+              <h3 className="text-sm font-black text-slate-950">{source.title}</h3>
+              <p className="mt-1 text-xs leading-5 text-slate-500">{source.detail}</p>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {source.chips.map((chip) => (
+                  <span key={chip} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">
+                    {chip}
+                  </span>
+                ))}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 

@@ -39,6 +39,12 @@ export type RouteMeta = {
   advanced?: boolean;
   /** Extra search terms for the command palette. */
   keywords?: string[];
+  /** Primary journey routes render above domain drawers in the sidebar. */
+  priority?: "journey" | "primary" | "secondary" | "admin";
+  /** Route family for shell/app switcher styling. */
+  surfaceType?: "launch" | "workflow" | "agent" | "operation" | "identity" | "governance" | "knowledge";
+  /** Optional concise status/lifecycle label for palette and app surfaces. */
+  statusLabel?: string;
 };
 
 /** Group order + description (drives sidebar section headers). */
@@ -55,41 +61,41 @@ export const NAV_GROUPS: { label: NavGroup; description: string }[] = [
 /** Every nav-visible route, in display order within its group. */
 export const ROUTES: RouteMeta[] = [
   // Start Here
-  { id: "start", label: "Start SDLC Work", href: "/start", group: "Start Here", icon: Play },
-  { id: "home", label: "Command Center", href: "/", group: "Start Here", icon: LayoutDashboard },
-  { id: "control-plane", label: "App Catalog", href: "/control-plane", group: "Start Here", icon: Network },
-  { id: "help", label: "User Guide", href: "/help", group: "Start Here", icon: BookOpen },
+  { id: "start", label: "Start SDLC Work", href: "/start", group: "Start Here", icon: Play, priority: "journey", surfaceType: "launch", statusLabel: "Start" },
+  { id: "home", label: "Command Center", href: "/", group: "Start Here", icon: LayoutDashboard, priority: "primary", surfaceType: "launch" },
+  { id: "control-plane", label: "App Catalog", href: "/control-plane", group: "Start Here", icon: Network, priority: "secondary", surfaceType: "operation" },
+  { id: "help", label: "User Guide", href: "/help", group: "Start Here", icon: BookOpen, priority: "secondary", surfaceType: "launch" },
 
   // Operations Center
-  { id: "ops-readiness", label: "Readiness", href: "/operations/readiness", group: "Operations Center", icon: Activity },
-  { id: "ops-architecture", label: "Live App Map", href: "/operations/architecture", group: "Operations Center", icon: Network },
-  { id: "ops-access-keys", label: "Access Keys", href: "/operations/access-keys", group: "Operations Center", icon: ShieldCheck },
-  { id: "ops-setup", label: "Setup Center", href: "/operations/setup", group: "Operations Center", icon: Wrench },
-  { id: "ops-trust", label: "Trust Evidence", href: "/operations/trust", group: "Operations Center", icon: ClipboardCheck },
+  { id: "ops-readiness", label: "Readiness", href: "/operations/readiness", group: "Operations Center", icon: Activity, priority: "primary", surfaceType: "operation" },
+  { id: "ops-architecture", label: "Live App Map", href: "/operations/architecture", group: "Operations Center", icon: Network, priority: "primary", surfaceType: "operation" },
+  { id: "ops-access-keys", label: "Access Keys", href: "/operations/access-keys", group: "Operations Center", icon: ShieldCheck, priority: "secondary", surfaceType: "operation" },
+  { id: "ops-setup", label: "Setup Center", href: "/operations/setup", group: "Operations Center", icon: Wrench, priority: "primary", surfaceType: "operation" },
+  { id: "ops-trust", label: "Trust Evidence", href: "/operations/trust", group: "Operations Center", icon: ClipboardCheck, priority: "secondary", surfaceType: "operation" },
 
   // Agent Studio
-  { id: "agents", label: "Agents", href: "/agents/studio", group: "Agent Studio", icon: Bot },
-  { id: "capabilities", label: "Capabilities", href: "/capabilities", group: "Agent Studio", icon: GitBranch },
-  { id: "tools", label: "Tools", href: "/tools", group: "Agent Studio", icon: Wrench },
-  { id: "tool-grants", label: "Tool Grants", href: "/tool-grants", group: "Agent Studio", icon: ShieldCheck, advanced: true },
-  { id: "executions", label: "Executions", href: "/executions", group: "Agent Studio", icon: Play, advanced: true },
+  { id: "agents", label: "Agents", href: "/agents/studio", group: "Agent Studio", icon: Bot, priority: "primary", surfaceType: "agent" },
+  { id: "capabilities", label: "Capabilities", href: "/capabilities", group: "Agent Studio", icon: GitBranch, priority: "primary", surfaceType: "agent" },
+  { id: "tools", label: "Tools", href: "/tools", group: "Agent Studio", icon: Wrench, priority: "primary", surfaceType: "agent" },
+  { id: "tool-grants", label: "Tool Grants", href: "/tool-grants", group: "Agent Studio", icon: ShieldCheck, advanced: true, priority: "admin", surfaceType: "agent" },
+  { id: "executions", label: "Executions", href: "/executions", group: "Agent Studio", icon: Play, advanced: true, priority: "admin", surfaceType: "agent" },
 
   // Prompts and Knowledge
-  { id: "prompt-workbench", label: "Prompt Workbench", href: "/prompt-workbench", group: "Prompts and Knowledge", icon: WandSparkles },
-  { id: "prompt-profiles", label: "Behavior Profiles", href: "/prompt-profiles", group: "Prompts and Knowledge", icon: Layers },
-  { id: "prompt-layers", label: "Instruction Blocks", href: "/prompt-layers", group: "Prompts and Knowledge", icon: ScrollText, advanced: true },
-  { id: "runtime-executions", label: "Runtime Receipts", href: "/runtime-executions", group: "Prompts and Knowledge", icon: Activity, advanced: true },
-  { id: "learning", label: "Learning", href: "/learning", group: "Prompts and Knowledge", icon: Brain },
-  { id: "memory", label: "Memory", href: "/memory", group: "Prompts and Knowledge", icon: Database },
+  { id: "prompt-workbench", label: "Prompt Workbench", href: "/prompt-workbench", group: "Prompts and Knowledge", icon: WandSparkles, priority: "primary", surfaceType: "knowledge" },
+  { id: "prompt-profiles", label: "Behavior Profiles", href: "/prompt-profiles", group: "Prompts and Knowledge", icon: Layers, priority: "secondary", surfaceType: "knowledge" },
+  { id: "prompt-layers", label: "Instruction Blocks", href: "/prompt-layers", group: "Prompts and Knowledge", icon: ScrollText, advanced: true, priority: "admin", surfaceType: "knowledge" },
+  { id: "runtime-executions", label: "Runtime Receipts", href: "/runtime-executions", group: "Prompts and Knowledge", icon: Activity, advanced: true, priority: "admin", surfaceType: "knowledge" },
+  { id: "learning", label: "Learning", href: "/learning", group: "Prompts and Knowledge", icon: Brain, priority: "secondary", surfaceType: "knowledge" },
+  { id: "memory", label: "Memory", href: "/memory", group: "Prompts and Knowledge", icon: Database, priority: "secondary", surfaceType: "knowledge" },
 
   // Workflows (merged: operations + authoring)
-  { id: "workflows", label: "Workflow Home", href: "/workflows", group: "Workflows", icon: Workflow },
-  { id: "workflows-planner", label: "Story Planner", href: "/workflows/planner", group: "Workflows", icon: Route },
-  { id: "workflows-start", label: "Guided Launch", href: "/workflows/start", group: "Workflows", icon: Play },
-  { id: "workflows-inbox", label: "Inbox", href: "/workflows/inbox", group: "Workflows", icon: Inbox },
-  { id: "runs", label: "Runs", href: "/runs", group: "Workflows", icon: Activity },
-  { id: "workflows-templates", label: "Workflow Manager", href: "/workflows/templates", group: "Workflows", icon: Workflow },
-  { id: "workflows-artifacts", label: "Artifact Studio", href: "/workflows/artifacts", group: "Workflows", icon: ScrollText },
+  { id: "workflows", label: "Workflow Home", href: "/workflows", group: "Workflows", icon: Workflow, priority: "primary", surfaceType: "workflow" },
+  { id: "workflows-planner", label: "Story Planner", href: "/workflows/planner", group: "Workflows", icon: Route, priority: "journey", surfaceType: "workflow", statusLabel: "Plan" },
+  { id: "workflows-start", label: "Guided Launch", href: "/workflows/start", group: "Workflows", icon: Play, priority: "journey", surfaceType: "workflow", statusLabel: "Launch" },
+  { id: "workflows-inbox", label: "Inbox", href: "/workflows/inbox", group: "Workflows", icon: Inbox, priority: "secondary", surfaceType: "workflow" },
+  { id: "runs", label: "Runs", href: "/runs", group: "Workflows", icon: Activity, priority: "journey", surfaceType: "workflow", statusLabel: "Run" },
+  { id: "workflows-templates", label: "Workflow Manager", href: "/workflows/templates", group: "Workflows", icon: Workflow, priority: "primary", surfaceType: "workflow" },
+  { id: "workflows-artifacts", label: "Artifact Studio", href: "/workflows/artifacts", group: "Workflows", icon: ScrollText, priority: "primary", surfaceType: "workflow" },
   { id: "workflows-templates-gallery", label: "Template Gallery", href: "/workflows/templates/gallery", group: "Workflows", icon: GitBranch, advanced: true },
   { id: "work-items", label: "Work Hub", href: "/work-items", group: "Workflows", icon: Network, advanced: true },
   { id: "workflows-history", label: "Run History", href: "/workflows/history", group: "Workflows", icon: FileText, advanced: true },
@@ -100,13 +106,13 @@ export const ROUTES: RouteMeta[] = [
   { id: "workflows-connectors", label: "Connectors", href: "/workflows/connectors", group: "Workflows", icon: Link2, advanced: true },
 
   // Identity and Access
-  { id: "identity-dashboard", label: "Identity Dashboard", href: "/identity/dashboard", group: "Identity and Access", icon: LayoutDashboard },
-  { id: "identity-users", label: "Users", href: "/identity/users", group: "Identity and Access", icon: Users },
-  { id: "identity-teams", label: "Teams", href: "/identity/teams", group: "Identity and Access", icon: Network },
-  { id: "identity-roles", label: "Roles", href: "/identity/roles", group: "Identity and Access", icon: ShieldCheck },
-  { id: "identity-permissions", label: "Permissions", href: "/identity/permissions", group: "Identity and Access", icon: ShieldCheck },
-  { id: "identity-capabilities", label: "Capabilities", href: "/identity/capabilities", group: "Identity and Access", icon: GitBranch },
-  { id: "identity-audit", label: "Identity Audit", href: "/identity/audit", group: "Identity and Access", icon: FileText },
+  { id: "identity-dashboard", label: "Identity Dashboard", href: "/identity/dashboard", group: "Identity and Access", icon: LayoutDashboard, priority: "primary", surfaceType: "identity" },
+  { id: "identity-users", label: "Users", href: "/identity/users", group: "Identity and Access", icon: Users, priority: "primary", surfaceType: "identity" },
+  { id: "identity-teams", label: "Teams", href: "/identity/teams", group: "Identity and Access", icon: Network, priority: "primary", surfaceType: "identity" },
+  { id: "identity-roles", label: "Roles", href: "/identity/roles", group: "Identity and Access", icon: ShieldCheck, priority: "primary", surfaceType: "identity" },
+  { id: "identity-permissions", label: "Permissions", href: "/identity/permissions", group: "Identity and Access", icon: ShieldCheck, priority: "secondary", surfaceType: "identity" },
+  { id: "identity-capabilities", label: "Capabilities", href: "/identity/capabilities", group: "Identity and Access", icon: GitBranch, priority: "secondary", surfaceType: "identity" },
+  { id: "identity-audit", label: "Identity Audit", href: "/identity/audit", group: "Identity and Access", icon: FileText, priority: "secondary", surfaceType: "identity" },
   { id: "identity-business-units", label: "Business Units", href: "/identity/business-units", group: "Identity and Access", icon: Layers, advanced: true },
   { id: "identity-capability-graph", label: "Capability Graph", href: "/identity/capability-graph", group: "Identity and Access", icon: Route, advanced: true },
   { id: "identity-variables", label: "Variables", href: "/identity/variables", group: "Identity and Access", icon: Globe, advanced: true },
@@ -116,11 +122,11 @@ export const ROUTES: RouteMeta[] = [
   { id: "identity-repository-grants", label: "Repository Grants", href: "/identity/repository-grants", group: "Identity and Access", icon: ShieldCheck, advanced: true, description: "Authorize subjects to run git operations on repositories via the broker.", keywords: ["git", "repo", "grant", "push", "clone", "credential", "broker"] },
 
   // Governance and FinOps
-  { id: "engine", label: "Engine", href: "/engine", group: "Governance and FinOps", icon: Zap },
-  { id: "llm-settings", label: "LLM Routing", href: "/llm-settings", group: "Governance and FinOps", icon: Cpu },
-  { id: "audit", label: "Audit", href: "/audit", group: "Governance and FinOps", icon: ShieldCheck },
-  { id: "cost", label: "Cost", href: "/cost", group: "Governance and FinOps", icon: DollarSign },
-  { id: "audit-curation", label: "Eval Curation", href: "/audit/curation", group: "Governance and FinOps", icon: ClipboardCheck, advanced: true },
+  { id: "engine", label: "Engine", href: "/engine", group: "Governance and FinOps", icon: Zap, priority: "primary", surfaceType: "governance" },
+  { id: "llm-settings", label: "Runtime + LLM", href: "/llm-settings", group: "Governance and FinOps", icon: Cpu, priority: "journey", surfaceType: "governance", statusLabel: "Runtime" },
+  { id: "audit", label: "Audit", href: "/audit", group: "Governance and FinOps", icon: ShieldCheck, priority: "primary", surfaceType: "governance" },
+  { id: "cost", label: "Cost", href: "/cost", group: "Governance and FinOps", icon: DollarSign, priority: "primary", surfaceType: "governance" },
+  { id: "audit-curation", label: "Eval Curation", href: "/audit/curation", group: "Governance and FinOps", icon: ClipboardCheck, advanced: true, priority: "admin", surfaceType: "governance" },
 ];
 
 export type SidebarSection = { label: NavGroup; description: string; items: RouteMeta[] };
@@ -137,4 +143,8 @@ export function sidebarSections(): SidebarSection[] {
 /** Routes demoted behind the sidebar's "Advanced" disclosure (still in the palette). */
 export function advancedRoutes(): RouteMeta[] {
   return ROUTES.filter((r) => r.advanced);
+}
+
+export function journeyRoutes(): RouteMeta[] {
+  return ROUTES.filter((r) => r.priority === "journey");
 }

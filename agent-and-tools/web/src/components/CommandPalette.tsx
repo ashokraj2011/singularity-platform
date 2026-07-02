@@ -32,7 +32,12 @@ export function CommandPalette({
       <Command.List>
         <Command.Empty>No matching page.</Command.Empty>
         {NAV_GROUPS.map((group) => {
-          const items = ROUTES.filter((r) => r.group === group.label);
+          const items = ROUTES
+            .filter((r) => r.group === group.label)
+            .sort((a, b) => {
+              const rank = { journey: 0, primary: 1, secondary: 2, admin: 3 } as const;
+              return (rank[a.priority ?? "secondary"] ?? 2) - (rank[b.priority ?? "secondary"] ?? 2);
+            });
           if (items.length === 0) return null;
           return (
             <Command.Group key={group.label} heading={group.label}>
@@ -48,6 +53,7 @@ export function CommandPalette({
                   >
                     <Icon size={15} aria-hidden />
                     <span>{route.label}</span>
+                    {route.statusLabel && <span className="cmdk-item-href">{route.statusLabel}</span>}
                     <span className="cmdk-item-href">{route.href}</span>
                   </Command.Item>
                 );
