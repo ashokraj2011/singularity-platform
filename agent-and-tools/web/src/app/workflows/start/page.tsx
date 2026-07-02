@@ -89,9 +89,10 @@ export default function WorkflowStartPage() {
   const selectedCapability = capabilities.find((capability) => capability.id === capabilityId) ?? null;
   const runtimeConnected = (health?.summary?.connectedRuntimeCount ?? 0) > 0;
   const llmReady = (health?.summary?.readyProviderCount ?? 0) > 0;
-  const requiresRuntime = selectedIntent?.runtimePreference !== "mock_ok";
+  const requiresRuntime = runtimePreference !== "mock_ok" && selectedIntent?.runtimePreference !== "mock_ok";
+  const requiresRealModel = modelAlias !== "mock";
   const hasTemplate = Boolean(selectedIntent?.workflowTemplate?.id);
-  const canLaunch = Boolean(capabilityId && story.trim().length >= 8 && hasTemplate && (!requiresRuntime || runtimeConnected) && llmReady && !launching);
+  const canLaunch = Boolean(capabilityId && story.trim().length >= 8 && hasTemplate && (!requiresRuntime || runtimeConnected) && (!requiresRealModel || llmReady) && !launching);
   const prereqChecks: PrereqCheck[] = [
     { label: "Capability selected", ok: Boolean(capabilityId) },
     { label: "Story written", ok: story.trim().length >= 8 },
@@ -101,7 +102,7 @@ export default function WorkflowStartPage() {
       ok: !requiresRuntime || runtimeConnected,
       optional: !requiresRuntime,
     },
-    { label: "LLM provider ready", ok: llmReady },
+    { label: requiresRealModel ? "LLM provider ready" : "LLM provider (mock OK)", ok: !requiresRealModel || llmReady, optional: !requiresRealModel },
   ];
   const launched = Boolean(result?.workflowInstance?.id);
   // Happy-path stage completion → drives the Stepper. The first incomplete
@@ -149,7 +150,7 @@ export default function WorkflowStartPage() {
     setError(null);
     setResult(null);
     try {
-      const res = await fetch(apiPath("/api/planner/launch"), {
+      const res = await fetch(apiPath("/api/start/launch"), {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({

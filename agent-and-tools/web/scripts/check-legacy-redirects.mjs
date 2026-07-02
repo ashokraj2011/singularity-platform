@@ -100,7 +100,7 @@ for (const href of new Set([...quotedPathSet(sidebarSource), ...quotedPathSet(co
   );
 }
 
-const workflowDesignPage = readFileSync(new URL("../src/app/workflows/design/[id]/page.tsx", import.meta.url), "utf8");
+const workflowDesignPage = readFileSync(new URL("../src/app/workflows/design/[workflowId]/page.tsx", import.meta.url), "utf8");
 assert.ok(
   workflowDesignPage.includes("LegacyWorkflowDesignRoute"),
   "Workflow design route must use the full legacy Workgraph router so in-designer navigation keeps working",
@@ -108,30 +108,28 @@ assert.ok(
 
 const workgraphRouter = readFileSync(new URL("../src/components/workflows/LegacyWorkgraphAdminRoute.tsx", import.meta.url), "utf8");
 for (const expectedLegacyRoute of [
-  'path="/workflows"',
-  'path="/design/:workflowId"',
-  'path="/run"',
-  'path="/runs"',
-  'path="/runs/:id"',
-  'path="/runs/:id/artifacts"',
-  'path="/runs/:id/insights"',
+  "export function LegacyWorkflowsRoute",
+  "export function LegacyWorkflowDesignRoute",
+  "export function LegacyRunWorkflowRoute",
+  "export function LegacyRunsDashboardRoute",
+  "export function LegacyArtifactDesignerRoute",
+  "export function LegacyNodeTypesRoute",
+  "WorkflowStudioPage",
+  "RunsDashboardPage",
 ]) {
   assert.ok(
     workgraphRouter.includes(expectedLegacyRoute),
-    `Legacy Workgraph router must preserve ${expectedLegacyRoute}`,
+    `Legacy Workgraph bridge must preserve ${expectedLegacyRoute}`,
   );
 }
 
-const workbenchConsole = readFileSync(new URL("../src/components/workbench/WorkbenchConsole.tsx", import.meta.url), "utf8");
+const workbenchConsole = readFileSync(new URL("../src/components/workbench/WorkbenchCockpit.tsx", import.meta.url), "utf8");
 for (const expectedWorkbenchSurface of [
-  "Create Workbench Session",
-  "Create session",
-  "createWorkbenchSession",
-  'workgraphFetch("/blueprint/sessions", {',
-  'method: "POST"',
-  "Capability ID",
-  "Gate Mode",
-  "Source URI",
+  "blueprint-workbench/App",
+  "LoopTheater",
+  "QueryClientProvider",
+  "client-only",
+  "?theater",
 ]) {
   assert.ok(
     workbenchConsole.includes(expectedWorkbenchSurface),

@@ -10,7 +10,9 @@ type AdoptionCheck = {
   group: "core" | "sdlc" | "runtime" | "governance";
   status: CheckStatus;
   summary: string;
+  message: string;
   detail?: string;
+  details?: string;
   fixCommand?: string;
   fixRoute?: string;
 };
@@ -68,18 +70,20 @@ function check(
   summary: string,
   opts: Pick<AdoptionCheck, "detail" | "fixCommand" | "fixRoute"> = {},
 ): AdoptionCheck {
-  return { id, label, group, status, summary, ...opts };
+  return { id, label, group, status, summary, message: summary, details: opts.detail, ...opts };
 }
 
 export async function GET(req: NextRequest) {
   const origin = req.nextUrl.origin;
-  const [runtime, gallery, llm, workgraphHealth, auditHealth, agentTemplates] = await Promise.all([
+  const [runtime, gallery, llm, workgraphHealth, auditHealth, agentTemplates, iamHealth, promptComposerHealth] = await Promise.all([
     getJson(origin, "/api/runtime-infrastructure", req),
     getJson(origin, "/api/workflow-templates/gallery", req),
     getJson(origin, "/api/llm-settings", req),
     getJson(origin, "/api/workgraph/health", req),
     getJson(origin, "/api/audit-gov/health", req),
     getJson(origin, "/api/runtime/agents/templates?scope=common&limit=3", req),
+    getJson(origin, "/ops-health/iam", req),
+    getJson(origin, "/ops-health/prompt-composer", req),
   ]);
 
   const runtimeBody = record(runtime.data);
@@ -102,6 +106,18 @@ export async function GET(req: NextRequest) {
 
   const checks: AdoptionCheck[] = [
     check(
+      "iam",
+      "Identity / IAM",
+      "core",
+      iamHealth.ok ? "ready" : "blocked",
+      iamHealth.ok ? "IAM health is reachable for login and runtime token minting." : "IAM is required for login, service tokens, and runtime JWT minting.",
+      {
+        detail: iamHealth.ok ? undefined : iamHealth.text,
+        fixCommand: "bin/bare-metal-apps.sh up",
+        fixRoute: "/identity/login",
+      },
+    ),
+    check(
       "workgraph-api",
       "Workgraph API",
       "core",
@@ -123,6 +139,18 @@ export async function GET(req: NextRequest) {
         detail: textFrom(contextFabric?.message ?? runtime.text),
         fixCommand: "bin/bare-metal-apps.sh up",
         fixRoute: "/operations/readiness",
+      },
+    ),
+    check(
+      "prompt-composer",
+      "Prompt Composer",
+      "core",
+      promptComposerHealth.ok ? "ready" : "blocked",
+      promptComposerHealth.ok ? "Prompt Composer health is reachable." : "Prompt Composer is required to assemble agent instructions and skill metadata.",
+      {
+        detail: promptComposerHealth.ok ? undefined : promptComposerHealth.text,
+        fixCommand: "bin/bare-metal-apps.sh up",
+        fixRoute: "/prompt-workbench",
       },
     ),
     check(
@@ -230,4 +258,3 @@ export async function GET(req: NextRequest) {
     checks,
   });
 }
-

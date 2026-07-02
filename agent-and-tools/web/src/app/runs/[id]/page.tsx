@@ -73,7 +73,65 @@ export default function RunDetailPage() {
           ))}
         </div>
       </section>
+      <section className="data-panel" style={{ padding: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10 }}>
+          <ActionCard
+            icon={Activity}
+            label="Current action"
+            value="Review active stage"
+            detail="Use the graph below to see the running node, blocker, or next approval."
+          />
+          <ActionCard
+            icon={ShieldCheck}
+            label="Governance"
+            value="Check approvals"
+            detail="Open Insights when the run pauses for evidence, risk, or human approval."
+            href={`/runs/${encoded}/insights`}
+          />
+          <ActionCard
+            icon={Package}
+            label="Artifacts"
+            value="Inspect outputs"
+            detail="Generated documents, code artifacts, and receipts stay attached to this run."
+            href={`/runs/${encoded}/artifacts`}
+          />
+          <ActionCard
+            icon={FileCheck2}
+            label="Evidence"
+            value="Export handoff"
+            detail="Download delivery evidence, Copilot YAML, and runner script when ready."
+          />
+        </div>
+      </section>
       <RunSurfaceRoute />
     </div>
   );
+}
+
+function ActionCard({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  href,
+}: {
+  icon: typeof Activity;
+  label: string;
+  value: string;
+  detail: string;
+  href?: string;
+}) {
+  const body = (
+    <article className="card-hover" style={{ minHeight: 126, border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 13, background: "#fff" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 10 }}>
+        <span style={{ width: 34, height: 34, borderRadius: 8, display: "grid", placeItems: "center", background: "rgba(54,135,39,0.11)", color: "var(--color-primary)" }}>
+          <Icon size={16} />
+        </span>
+        <span className="label-xs" style={{ color: "var(--color-outline)" }}>{label}</span>
+      </div>
+      <strong style={{ display: "block", color: "var(--color-on-surface)", fontSize: 14 }}>{value}</strong>
+      <p style={{ margin: "6px 0 0", color: "var(--color-outline)", fontSize: 12, lineHeight: 1.5 }}>{detail}</p>
+    </article>
+  );
+  return href ? <Link href={href} style={{ textDecoration: "none" }}>{body}</Link> : body;
 }

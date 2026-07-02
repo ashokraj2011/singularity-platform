@@ -1,6 +1,6 @@
 import { LegacyWorkflowsRoute } from "@/components/workflows/LegacyWorkgraphAdminRoute";
 import Link from "next/link";
-import { Activity, ClipboardList, Play, Route, ScrollText, Workflow } from "lucide-react";
+import { Activity, ClipboardList, Code2, FileCheck2, GitCompare, Play, Route, ScrollText, ShieldCheck, TestTube2, Workflow } from "lucide-react";
 
 export default function WorkflowsDomainPage() {
   return (
@@ -46,7 +46,65 @@ export default function WorkflowsDomainPage() {
           })}
         </div>
       </section>
+      <section className="data-panel">
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 14 }}>
+          <div>
+            <div className="label-xs" style={{ color: "var(--color-outline)", marginBottom: 5 }}>Creation modes</div>
+            <h2 style={{ margin: 0, fontSize: 18, fontWeight: 900 }}>Start simple, go deep when needed.</h2>
+            <p style={{ margin: "5px 0 0", color: "var(--color-outline)", fontSize: 13, lineHeight: 1.5 }}>
+              Beginner mode launches tested SDLC templates. Advanced mode keeps the full React Flow designer and node palette.
+            </p>
+          </div>
+          <Link className="btn-secondary" href="/workflows/templates/gallery"><Workflow size={15} /> Template gallery</Link>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 12 }}>
+          <ModeCard icon={Play} title="Beginner: Guided SDLC Launch" detail="Choose Build Feature, Fix Bug, Refactor, Add Tests, Security Review, or Release Evidence. The launcher validates runtime, LLM, agents, and templates before starting." href="/start" primary />
+          <ModeCard icon={Workflow} title="Advanced: Workflow Designer" detail="Open the full workflow manager and React Flow designer for node-level orchestration, custom gates, branches, and manual execution controls." href="/workflows/templates" />
+          <ModeCard icon={ShieldCheck} title="Governance Gates" detail="Use reusable hard, soft, or automatic gates for design documents, standards, git diffs, tests, approvals, and release evidence." href="/workflows/node-types" />
+        </div>
+      </section>
+      <section className="data-panel">
+        <div style={{ marginBottom: 14 }}>
+          <div className="label-xs" style={{ color: "var(--color-outline)", marginBottom: 5 }}>Gate presets</div>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 900 }}>Reusable SDLC governance checks</h2>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
+          <GateCard icon={FileCheck2} title="Design Review" detail="Compare implementation plan with architecture/design docs." />
+          <GateCard icon={GitCompare} title="Git Diff Check" detail="Validate changed files against the previous design artifact." />
+          <GateCard icon={ShieldCheck} title="Standards Check" detail="Enforce coding, security, API, and tenant-boundary standards." />
+          <GateCard icon={TestTube2} title="Test Evidence" detail="Require test output, coverage, and regression proof." />
+          <GateCard icon={Code2} title="Release Approval" detail="Emit evidence and block release until required receipts exist." />
+        </div>
+      </section>
       <LegacyWorkflowsRoute />
     </div>
+  );
+}
+
+function ModeCard({ icon: Icon, title, detail, href, primary = false }: { icon: typeof Play; title: string; detail: string; href: string; primary?: boolean }) {
+  return (
+    <Link href={href} style={{ textDecoration: "none" }}>
+      <article className="card card-hover" style={{ minHeight: 170, padding: 16, borderRadius: 8, boxShadow: "none", borderColor: primary ? "rgba(54,135,39,0.35)" : "var(--color-outline-variant)" }}>
+        <span style={{ width: 38, height: 38, borderRadius: 8, display: "grid", placeItems: "center", color: primary ? "var(--color-primary)" : "#475569", background: primary ? "rgba(54,135,39,0.11)" : "#f1f5f9", marginBottom: 12 }}>
+          <Icon size={18} />
+        </span>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 900, color: "var(--color-on-surface)" }}>{title}</h3>
+        <p style={{ margin: "7px 0 0", color: "var(--color-outline)", fontSize: 12, lineHeight: 1.5 }}>{detail}</p>
+      </article>
+    </Link>
+  );
+}
+
+function GateCard({ icon: Icon, title, detail }: { icon: typeof Play; title: string; detail: string }) {
+  return (
+    <article style={{ border: "1px solid var(--color-outline-variant)", background: "#fff", borderRadius: 8, padding: 13 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 9 }}>
+        <span style={{ width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", color: "var(--color-primary)", background: "rgba(54,135,39,0.1)" }}>
+          <Icon size={16} />
+        </span>
+        <strong style={{ color: "var(--color-on-surface)", fontSize: 13 }}>{title}</strong>
+      </div>
+      <p style={{ margin: 0, color: "var(--color-outline)", fontSize: 12, lineHeight: 1.45 }}>{detail}</p>
+    </article>
   );
 }

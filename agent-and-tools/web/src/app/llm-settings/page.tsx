@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Cpu, RadioTower, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
 import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { CopyButton } from "@/components/ui/CopyButton";
 
 type GatewayResult = {
   ok: boolean;
@@ -588,7 +589,12 @@ function CommandBlock({ label, command }: { label: string; command: string }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
       <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-2">{label}</div>
-      <pre className="overflow-x-auto rounded-md border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-800"><code>{command}</code></pre>
+      <div className="rounded-md border border-slate-800 bg-slate-950 p-2 text-slate-50">
+        <div className="flex items-start justify-between gap-2">
+          <pre className="overflow-x-auto whitespace-pre-wrap text-xs leading-5"><code>{command}</code></pre>
+          <CopyButton text={command} label={`Copy ${label}`} />
+        </div>
+      </div>
     </div>
   );
 }
