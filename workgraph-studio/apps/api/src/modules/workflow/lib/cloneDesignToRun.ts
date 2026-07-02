@@ -318,8 +318,12 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
       const newSource = nodeIdMap.get(e.sourceNodeId)
       const newTarget = nodeIdMap.get(e.targetNodeId)
       if (!newSource || !newTarget) {
-        // Skip orphaned edges — shouldn't happen, but defend against bad data
-        continue
+        // Every design node was mapped above, so an unmapped endpoint means the
+        // design graph is corrupt. Fail the run start loudly instead of silently
+        // dropping the transition — a skipped edge would let a broken graph
+        // appear to launch while missing a path the author intended.
+        const missing = !newSource ? `source node ${e.sourceNodeId}` : `target node ${e.targetNodeId}`
+        throw new ValidationError(`Cannot start workflow run: an edge references a ${missing} that is not part of this design. Fix the design graph before starting.`)
       }
       await tx.workflowEdge.create({
         data: {

@@ -1038,98 +1038,15 @@ export async function failNode(
           },
         })
       }, tenantId)
-      switch (target.nodeType) {
-        case 'HUMAN_TASK':
-          await activateHumanTask(target, instance)
-          break
-        case 'WORKBENCH_TASK':
-          await activateWorkbenchTask(target, instance)
-          break
-        case 'AGENT_TASK':
-          await activateAgentTask(target, instance)
-          break
-        case 'APPROVAL':
-          await activateApproval(target, instance, actorId)
-          break
-        case 'DECISION_GATE':
-          await activateDecisionGate(target, instance)
-          await advance(instanceId, target.id, errorContext, actorId, undefined, tenantId)
-          break
-        case 'CONSUMABLE_CREATION':
-          await activateConsumableCreation(target, instance)
-          break
-        case 'TOOL_REQUEST':
-          await activateToolRequest(target, instance)
-          break
-        case 'GIT_PUSH': {
-          const result = await activateGitPush(target, instance, actorId)
-          if (result.pushed) await advance(instanceId, target.id, result.output, actorId, undefined, tenantId)
-          break
-        }
-        case 'POLICY_CHECK': {
-          const result = await activatePolicyCheck(target, instance, actorId)
-          if (result.passed) await advance(instanceId, target.id, { ...errorContext, ...result.output }, actorId, undefined, tenantId)
-          break
-        }
-        case 'EVAL_GATE': {
-          const result = await activateEvalGate(target, instance, actorId)
-          if (result.passed) await advance(instanceId, target.id, result.output, actorId, undefined, tenantId)
-          break
-        }
-        case 'TIMER':
-          await activateTimer(target, instance)
-          break
-        case 'SIGNAL_WAIT':
-          await activateSignalWait(target, instance)
-          break
-        case 'CALL_WORKFLOW':
-          await activateCallWorkflow(target, instance)
-          break
-        case 'WORK_ITEM':
-          await activateWorkItem(target, instance, actorId)
-          break
-        case 'FOREACH':
-          await activateForeach(target, instance)
-          break
-        case 'INCLUSIVE_GATEWAY':
-          await activateInclusiveGateway(target, instance)
-          await advance(instanceId, target.id, errorContext, actorId, undefined, tenantId)
-          break
-        case 'EVENT_GATEWAY':
-          await activateEventGateway(target, instance)
-          break
-        case 'ERROR_CATCH':
-          await activateErrorCatch(target, instance)
-          await advance(instanceId, target.id, errorContext, actorId, undefined, tenantId)
-          break
-        case 'SET_CONTEXT':
-          await activateSetContext(target, instance)
-          await advance(instanceId, target.id, errorContext, actorId, undefined, tenantId)
-          break
-        case 'EVENT_EMIT': {
-          // "Emit an alert event on failure" — a natural error-boundary handler.
-          // The failing node's error is already in errorContext._lastError, so a
-          // payloadPath of `_lastError` surfaces it to the sink.
-          const result = await activateEventEmit(target, instance, actorId)
-          if (result.passed) await advance(instanceId, target.id, { ...errorContext, ...result.output }, actorId, undefined, tenantId)
-          break
-        }
-        case 'CUSTOM': {
-          const cfg = (target.config ?? {}) as Record<string, unknown>
-          const bt = cfg._baseType as string | undefined
-          switch (bt) {
-            case 'HUMAN_TASK': await activateHumanTask(target, instance); break
-            case 'TOOL_REQUEST': await activateToolRequest(target, instance); break
-            case 'GIT_PUSH': {
-              const result = await activateGitPush(target, instance, actorId)
-              if (result.pushed) await advance(instanceId, target.id, result.output, actorId, undefined, tenantId)
-              break
-            }
-            default: await activateHumanTask(target, instance); break
-          }
-          break
-        }
-      }
+      // Route the recovery target through the SAME activation path as normal
+      // execution (executeActivatedNode → executeServerNode's full switch). The
+      // old bespoke switch here only covered a subset, so an ERROR_BOUNDARY edge
+      // into a newer type (GOVERNANCE_GATE, VERIFIER, RUN_PYTHON, DATA_SINK,
+      // PARALLEL_FORK/JOIN, SIGNAL_EMIT, …) would go ACTIVE and then do nothing.
+      // Unifying also means non-SERVER targets get a pendingExecution instead of
+      // silently stranding. The failing node's error is already persisted to the
+      // instance context above as _lastError, so downstream reads still see it.
+      await executeActivatedNode(target, instance, errorContext, actorId)
     }
     return { retried: false, recovered: true, instanceFailed: false }
   }
