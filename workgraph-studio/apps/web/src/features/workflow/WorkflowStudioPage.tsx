@@ -1113,7 +1113,7 @@ const NODE_HELP_SECTIONS = [
   },
   {
     title: 'Task & Execution',
-    types: ['FOREACH', 'WORK_ITEM', 'CALL_WORKFLOW', 'TOOL_REQUEST', 'RUN_PYTHON', 'GIT_PUSH', 'POLICY_CHECK', 'EVAL_GATE', 'VERIFIER', 'CREATE_ARTIFACT'],
+    types: ['FOREACH', 'WORK_ITEM', 'CALL_WORKFLOW', 'TOOL_REQUEST', 'RUN_PYTHON', 'GIT_PUSH', 'POLICY_CHECK', 'EVAL_GATE', 'VERIFIER', 'CONSUMABLE_CREATION'],
   },
 ]
 
@@ -1142,7 +1142,7 @@ const NODE_USAGE_TIPS: Record<string, string> = {
   POLICY_CHECK:      'Use WARN mode during testing — it logs failures without blocking the workflow.',
   EVAL_GATE:         'Default is strict: current run traces must pass all selected evaluators.',
   VERIFIER:          'Place AFTER a stage that produces documents. It verifies them against the standards and pauses the run (BLOCKED) if any fail.',
-  CREATE_ARTIFACT:   'If Requires Approval is true, workflow pauses until a human reviews and approves.',
+  CONSUMABLE_CREATION: 'Produces a reviewed artifact (consumable) that downstream steps can consume.',
 }
 
 function NodeHelpPanel({ isLight, panelText, panelMuted, panelBdr, onClose }: {
