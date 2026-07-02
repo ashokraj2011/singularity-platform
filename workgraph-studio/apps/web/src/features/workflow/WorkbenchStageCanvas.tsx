@@ -53,12 +53,18 @@ type ArtifactView = { id: string; kind: string; title: string; description: stri
 type ArtifactTemplateOption = { id: string; name: string; description: string | null; type: string; status: string }
 type QuestionView = { id: string; questionId: string; text: string; required: boolean; freeform: boolean }
 type EdgeView = { id: string; fromStageId: string; toStageId: string; kind: 'FORWARD' | 'SEND_BACK'; label: string | null }
+// A handoff binding: consumerStage REQUIRES the artifact produced upstream at
+// producerArtifactId. `inferred` = auto name-matched (not operator-pinned).
+type ConsumesView = { id: string; consumerStageId: string; producerArtifactId: string; required: boolean; inferred: boolean }
+// A produced artifact anywhere in the definition — populates the consumes (IN)
+// picker and resolves a binding to a human-readable "title (kind) from stage".
+type ProducedArtifactRef = { artifactId: string; kind: string; title: string; stageId: string; stageLabel: string }
 type DefinitionView = {
   id: string; name: string; capabilityId: string | null
   goal: string | null; sourceType: string | null; sourceUri: string | null; sourceRef: string | null
   architectAgentTemplateId: string | null; developerAgentTemplateId: string | null; qaAgentTemplateId: string | null
   maxLoopsPerStage: number; maxTotalSendBacks: number; gateMode: string; finalPackKey: string | null
-  stages: StageView[]; edges: EdgeView[]
+  stages: StageView[]; edges: EdgeView[]; consumes: ConsumesView[]
 }
 
 const CONTEXT_POLICIES = ['NONE', 'STORY_ONLY', 'REPO_READ_ONLY', 'CODE_EDIT', 'VERIFY_ONLY', 'EVIDENCE_REVIEW'] as const
@@ -159,6 +165,11 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
   const mCreateArtifact = useMutation({ mutationFn: (v: { stageId: string; body: Record<string, unknown> }) => api.post(`${base}/stages/${v.stageId}/artifacts`, v.body), onSuccess: refresh, onError: onErr })
   const mPatchArtifact = useMutation({ mutationFn: (v: { id: string; body: Record<string, unknown> }) => api.patch(`${base}/artifacts/${v.id}`, v.body), onSuccess: refresh, onError: onErr })
   const mDeleteArtifact = useMutation({ mutationFn: (id: string) => api.delete(`${base}/artifacts/${id}`), onSuccess: refresh, onError: onErr })
+  // Consumes (IN) — a stage's input bindings to upstream produced artifacts.
+  const mAddConsumes = useMutation({ mutationFn: (v: { consumerStageId: string; producerArtifactId: string }) => api.post(`${base}/consumes`, { ...v, required: true }), onSuccess: refresh, onError: onErr })
+  const mDeleteConsumes = useMutation({ mutationFn: (id: string) => api.delete(`${base}/consumes/${id}`), onSuccess: refresh, onError: onErr })
+  // No PATCH /consumes — toggle `required` by re-pinning the same binding.
+  const mToggleConsumesRequired = useMutation({ mutationFn: async (c: ConsumesView) => { await api.delete(`${base}/consumes/${c.id}`); return api.post(`${base}/consumes`, { consumerStageId: c.consumerStageId, producerArtifactId: c.producerArtifactId, required: !c.required }) }, onSuccess: refresh, onError: onErr })
   const mCreateQuestion = useMutation({ mutationFn: (v: { stageId: string; body: Record<string, unknown> }) => api.post(`${base}/stages/${v.stageId}/questions`, v.body), onSuccess: refresh, onError: onErr })
   const mPatchQuestion = useMutation({ mutationFn: (v: { id: string; body: Record<string, unknown> }) => api.patch(`${base}/questions/${v.id}`, v.body), onSuccess: refresh, onError: onErr })
   const mDeleteQuestion = useMutation({ mutationFn: (id: string) => api.delete(`${base}/questions/${id}`), onSuccess: refresh, onError: onErr })
@@ -230,6 +241,12 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
     if (selectedStageId && data && !data.stages.some(s => s.id === selectedStageId)) setSelectedStageId(null)
   }, [data, selectedStageId])
   const selectedStage = useMemo(() => data?.stages.find(s => s.id === selectedStageId) ?? null, [data, selectedStageId])
+  // Every produced artifact across the definition — the pool a stage's IN tab
+  // draws from (minus its own, filtered in the inspector).
+  const allProduced = useMemo<ProducedArtifactRef[]>(
+    () => (data?.stages ?? []).flatMap(s => s.expectedArtifacts.map(a => ({ artifactId: a.id, kind: a.kind, title: a.title, stageId: s.id, stageLabel: s.label }))),
+    [data],
+  )
 
   // Add a stage with sensible defaults (no native prompt) and immediately open
   // the inspector on it so the operator renames/configures inline.
@@ -376,6 +393,12 @@ function Canvas({ nodeId, onSelectStage, fullSize }: { nodeId: string; onSelectS
           onArtifactAdd={(stageId, body) => mCreateArtifact.mutate({ stageId, body })}
           onArtifactPatch={(id, body) => mPatchArtifact.mutate({ id, body })}
           onArtifactDelete={id => mDeleteArtifact.mutate(id)}
+          consumes={(data?.consumes ?? []).filter(c => c.consumerStageId === selectedStage.id)}
+          allProduced={allProduced}
+          consumeBusy={mAddConsumes.isPending || mDeleteConsumes.isPending || mToggleConsumesRequired.isPending}
+          onConsumeAdd={producerArtifactId => mAddConsumes.mutate({ consumerStageId: selectedStage.id, producerArtifactId })}
+          onConsumeDelete={id => mDeleteConsumes.mutate(id)}
+          onConsumeToggleRequired={c => mToggleConsumesRequired.mutate(c)}
           onQuestionAdd={(stageId, body) => mCreateQuestion.mutate({ stageId, body })}
           onQuestionPatch={(id, body) => mPatchQuestion.mutate({ id, body })}
           onQuestionDelete={id => mDeleteQuestion.mutate(id)}
@@ -403,8 +426,10 @@ function draftFromStage(s: StageView): StageDraft {
 const fieldLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#64748b', display: 'block', marginBottom: 3 }
 const fieldInput: React.CSSProperties = { width: '100%', boxSizing: 'border-box', padding: '6px 8px', borderRadius: 7, border: '1px solid #cbd5e1', fontSize: 12 }
 
-function StageInspector({ stage, agents, templates, busy, artifactBusy, questionBusy, onSave, onArtifactAdd, onArtifactPatch, onArtifactDelete, onQuestionAdd, onQuestionPatch, onQuestionDelete, onClose }: {
-  stage: StageView; agents: RegistryAgent[]; templates: ArtifactTemplateOption[]; busy: boolean; artifactBusy: boolean; questionBusy: boolean
+function StageInspector({ stage, agents, templates, consumes, allProduced, busy, artifactBusy, questionBusy, consumeBusy, onSave, onArtifactAdd, onArtifactPatch, onArtifactDelete, onQuestionAdd, onQuestionPatch, onQuestionDelete, onConsumeAdd, onConsumeDelete, onConsumeToggleRequired, onClose }: {
+  stage: StageView; agents: RegistryAgent[]; templates: ArtifactTemplateOption[]
+  consumes: ConsumesView[]; allProduced: ProducedArtifactRef[]
+  busy: boolean; artifactBusy: boolean; questionBusy: boolean; consumeBusy: boolean
   onSave: (body: Record<string, unknown>) => void
   onArtifactAdd: (stageId: string, body: Record<string, unknown>) => void
   onArtifactPatch: (id: string, body: Record<string, unknown>) => void
@@ -412,12 +437,21 @@ function StageInspector({ stage, agents, templates, busy, artifactBusy, question
   onQuestionAdd: (stageId: string, body: Record<string, unknown>) => void
   onQuestionPatch: (id: string, body: Record<string, unknown>) => void
   onQuestionDelete: (id: string) => void
+  onConsumeAdd: (producerArtifactId: string) => void
+  onConsumeDelete: (id: string) => void
+  onConsumeToggleRequired: (c: ConsumesView) => void
   onClose: () => void
 }) {
   const [draft, setDraft] = useState<StageDraft>(() => draftFromStage(stage))
   useEffect(() => { setDraft(draftFromStage(stage)) }, [stage])
   const set = <K extends keyof StageDraft>(k: K, v: StageDraft[K]) => setDraft(d => ({ ...d, [k]: v }))
   const dirty = JSON.stringify(draft) !== JSON.stringify(draftFromStage(stage))
+
+  // Artifacts panel splits into OUT (what this stage produces) and IN (what it
+  // consumes — bindings to artifacts produced by other stages).
+  const [artifactTab, setArtifactTab] = useState<'out' | 'in'>('out')
+  const consumableCatalog = useMemo(() => allProduced.filter(p => p.stageId !== stage.id), [allProduced, stage.id])
+  const producedRef = (id: string) => allProduced.find(p => p.artifactId === id)
 
   // Draggable + resizable floating panel. Rendered `position: fixed` so it
   // escapes the canvas container's `overflow: hidden` (which was clipping the
@@ -541,50 +575,98 @@ function StageInspector({ stage, agents, templates, busy, artifactBusy, question
         <span style={{ fontSize: 10, color: '#94a3b8' }}>Changing the stage key rewires its edges by key.</span>
       </div>
 
-      {/* Expected artifacts (P3) */}
+      {/* Artifacts — OUT (produces) / IN (consumes) */}
       <div style={{ marginTop: 16, borderTop: '1px solid #e5e7eb', paddingTop: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <span style={fieldLabel}>Expected artifacts ({stage.expectedArtifacts.length})</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            {templates.length > 0 && (
-              <select
-                value=""
-                disabled={artifactBusy}
-                title="Add an expected artifact from a published catalog template"
-                onChange={e => {
-                  const t = templates.find(t => t.id === e.target.value)
-                  e.currentTarget.value = ''
-                  if (!t) return
-                  onArtifactAdd(stage.id, {
-                    kind: uniqueArtifactKind(stage, t.name),
-                    title: t.name,
-                    description: t.description ?? undefined,
-                    format: 'MARKDOWN',
-                    required: true,
-                    templateId: t.id,
-                  })
-                }}
-                style={{ fontSize: 11, fontWeight: 800, padding: '4px 8px', borderRadius: 7, border: '1px solid #0ea5e9', background: '#fff', color: '#0ea5e9', cursor: artifactBusy ? 'default' : 'pointer', maxWidth: 190 }}>
-                <option value="">＋ From template…</option>
-                {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
-            )}
-            <button type="button" disabled={artifactBusy}
-              onClick={() => onArtifactAdd(stage.id, { kind: uniqueArtifactKind(stage), title: 'New artifact', format: 'MARKDOWN', required: true })}
-              style={{ fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 7, border: '1px solid #0ea5e9', background: '#fff', color: '#0ea5e9', cursor: artifactBusy ? 'default' : 'pointer' }}>
-              ＋ Blank
-            </button>
-          </div>
-        </div>
-        {stage.expectedArtifacts.length === 0 ? (
-          <p style={{ fontSize: 11, color: '#94a3b8', margin: '2px 0 0' }}>No artifacts yet — this stage emits no expected output.</p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {stage.expectedArtifacts.map(a => (
-              <ArtifactRow key={a.id} artifact={a} busy={artifactBusy} templates={templates}
-                onPatch={body => onArtifactPatch(a.id, body)} onDelete={() => onArtifactDelete(a.id)} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <span style={fieldLabel}>Artifacts</span>
+          <div style={{ display: 'inline-flex', border: '1px solid #cbd5e1', borderRadius: 8, overflow: 'hidden' }}>
+            {([['out', `OUT · produces (${stage.expectedArtifacts.length})`, '#368727'], ['in', `IN · consumes (${consumes.length})`, '#0ea5e9']] as const).map(([key, label, accent]) => (
+              <button key={key} type="button" onClick={() => setArtifactTab(key)}
+                style={{ fontSize: 11, fontWeight: 800, padding: '4px 12px', border: 'none', borderRight: key === 'out' ? '1px solid #cbd5e1' : 'none', cursor: 'pointer', background: artifactTab === key ? accent : '#fff', color: artifactTab === key ? '#fff' : '#64748b' }}>
+                {label}
+              </button>
             ))}
           </div>
+        </div>
+
+        {/* OUT — what this stage produces */}
+        {artifactTab === 'out' && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, marginBottom: 8 }}>
+              {templates.length > 0 && (
+                <select value="" disabled={artifactBusy} title="Add an expected artifact from a published catalog template"
+                  onChange={e => {
+                    const t = templates.find(t => t.id === e.target.value)
+                    e.currentTarget.value = ''
+                    if (!t) return
+                    onArtifactAdd(stage.id, { kind: uniqueArtifactKind(stage, t.name), title: t.name, description: t.description ?? undefined, format: 'MARKDOWN', required: true, templateId: t.id })
+                  }}
+                  style={{ fontSize: 11, fontWeight: 800, padding: '4px 8px', borderRadius: 7, border: '1px solid #0ea5e9', background: '#fff', color: '#0ea5e9', cursor: artifactBusy ? 'default' : 'pointer', maxWidth: 190 }}>
+                  <option value="">＋ From template…</option>
+                  {templates.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              )}
+              <button type="button" disabled={artifactBusy}
+                onClick={() => onArtifactAdd(stage.id, { kind: uniqueArtifactKind(stage), title: 'New artifact', format: 'MARKDOWN', required: true })}
+                style={{ fontSize: 11, fontWeight: 800, padding: '4px 10px', borderRadius: 7, border: '1px solid #0ea5e9', background: '#fff', color: '#0ea5e9', cursor: artifactBusy ? 'default' : 'pointer' }}>
+                ＋ Blank
+              </button>
+            </div>
+            {stage.expectedArtifacts.length === 0 ? (
+              <p style={{ fontSize: 11, color: '#94a3b8', margin: '2px 0 0' }}>No outputs — this stage produces no expected artifacts.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {stage.expectedArtifacts.map(a => (
+                  <ArtifactRow key={a.id} artifact={a} busy={artifactBusy} templates={templates}
+                    onPatch={body => onArtifactPatch(a.id, body)} onDelete={() => onArtifactDelete(a.id)} />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* IN — what this stage consumes (bindings to upstream produced artifacts) */}
+        {artifactTab === 'in' && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginBottom: 8 }}>
+              {consumableCatalog.length > 0 ? (
+                <select value="" disabled={consumeBusy} title="Consume an artifact produced by another stage"
+                  onChange={e => { const id = e.target.value; e.currentTarget.value = ''; if (id) onConsumeAdd(id) }}
+                  style={{ fontSize: 11, fontWeight: 800, padding: '4px 8px', borderRadius: 7, border: '1px solid #0ea5e9', background: '#fff', color: '#0ea5e9', cursor: consumeBusy ? 'default' : 'pointer', maxWidth: 260 }}>
+                  <option value="">＋ Consume artifact…</option>
+                  {consumableCatalog.map(p => <option key={p.artifactId} value={p.artifactId}>{p.stageLabel} › {p.title} ({p.kind})</option>)}
+                </select>
+              ) : (
+                <span style={{ fontSize: 10, color: '#94a3b8' }}>No upstream artifacts to consume yet.</span>
+              )}
+            </div>
+            {consumes.length === 0 ? (
+              <p style={{ fontSize: 11, color: '#94a3b8', margin: '2px 0 0' }}>No inputs — this stage works from workflow context only.</p>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {consumes.map(c => {
+                  const ref = producedRef(c.producerArtifactId)
+                  return (
+                    <div key={c.id} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', background: '#fff' }}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <span style={{ flex: 1, fontSize: 12, color: '#0f172a' }}>
+                          {ref ? (<><strong>{ref.title}</strong> <span style={{ fontFamily: 'ui-monospace, monospace', color: '#64748b' }}>({ref.kind})</span> <span style={{ color: '#94a3b8' }}>from {ref.stageLabel}</span></>) : (<em style={{ color: '#b45309' }}>missing artifact ({c.producerArtifactId.slice(0, 8)}…)</em>)}
+                        </span>
+                        {c.inferred && <span title="Auto-inferred by name-matching; not yet pinned by an operator" style={{ fontSize: 9, fontWeight: 800, color: '#a855f7', background: 'rgba(168,85,247,0.12)', padding: '1px 6px', borderRadius: 4 }}>✦ inferred</span>}
+                        <button type="button" onClick={() => onConsumeDelete(c.id)} disabled={consumeBusy} title="Remove input"
+                          style={{ border: 'none', background: 'none', color: '#ef4444', cursor: consumeBusy ? 'default' : 'pointer', fontSize: 16, fontWeight: 800, lineHeight: 1, padding: '0 4px' }}>×</button>
+                      </div>
+                      <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginTop: 6 }}>
+                        <label style={{ fontSize: 11, color: '#334155', display: 'inline-flex', alignItems: 'center', gap: 4, cursor: consumeBusy ? 'default' : 'pointer' }}>
+                          <input type="checkbox" checked={c.required} disabled={consumeBusy} onChange={() => onConsumeToggleRequired(c)} /> required
+                        </label>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </>
         )}
       </div>
 
