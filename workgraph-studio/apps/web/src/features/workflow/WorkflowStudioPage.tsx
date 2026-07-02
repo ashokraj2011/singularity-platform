@@ -21,9 +21,10 @@ import {
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import {
-  NodeInspector,
+  NodeInspector, normalizeConfig, uid,
   type NodeData, type NodeConfig, type CustomNodeTypeDef,
   type ParamDef, type Branch, type OutgoingEdgeBranch,
+  type ArtifactDef, type UpstreamOutput,
 } from './NodeInspector'
 import { WorkflowVariablesPanel } from '../variables/WorkflowVariablesPanel'
 import type { TemplateVariableDef, TeamVariable } from '../variables/types'
@@ -2836,8 +2837,26 @@ export function WorkflowStudioPage() {
         targetNodeId: connection.target,
         edgeType: isDecision ? 'CONDITIONAL' : 'SEQUENTIAL',
       })
+      // Auto-inherit: seed the target's inputs from the source's outputs, but
+      // only when the target has none yet (non-destructive; each stays editable
+      // and carries the source's bindingPath so the context wiring is real).
+      const targetNode = rfNodes.find(n => n.id === connection.target)
+      if (sourceNode && targetNode) {
+        const targetCfg = normalizeConfig(targetNode.data.config)
+        const srcOutputs = normalizeConfig(sourceNode.data.config).outputArtifacts
+        if (targetCfg.inputArtifacts.length === 0 && srcOutputs.length > 0) {
+          const inherited: ArtifactDef[] = srcOutputs.map(o => ({ ...o, id: uid(), direction: 'INPUT', required: false }))
+          const newCfg: NodeConfig = { ...targetCfg, inputArtifacts: inherited }
+          patchNode.mutate({ nodeId: targetNode.id, config: newCfg }, {
+            onSuccess: () => {
+              setRfNodes(nds => nds.map(n => n.id === targetNode.id ? { ...n, data: { ...n.data, config: newCfg } } : n))
+              setSelectedNode(prev => prev?.id === targetNode.id ? { ...prev, data: { ...prev.data, config: newCfg } } : prev)
+            },
+          })
+        }
+      }
     }
-  }, [setRfEdges, addEdgeMutation, edgeStroke, rfNodes])
+  }, [setRfEdges, addEdgeMutation, edgeStroke, rfNodes, patchNode, setRfNodes])
 
   const onNodeDragStop = useCallback((_: React.MouseEvent, node: Node) => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
@@ -2975,6 +2994,22 @@ export function WorkflowStudioPage() {
           targetNodeId: e.target,
           targetLabel: rfNodes.find(n => n.id === e.target)?.data?.label,
         }))
+    : []
+
+  // OUTPUT artifacts of the selected node's upstream (incoming-edge) neighbors —
+  // fed to the inspector so its Inputs tab can inherit what a prior node writes.
+  const selectedNodeUpstreamOutputs: UpstreamOutput[] = selectedNode
+    ? rfEdges
+        .filter(e => e.target === selectedNode.id)
+        .flatMap(e => {
+          const src = rfNodes.find(n => n.id === e.source)
+          if (!src) return []
+          return normalizeConfig(src.data.config).outputArtifacts.map(a => ({
+            sourceNodeId: src.id,
+            sourceLabel: src.data.label,
+            artifact: a,
+          }))
+        })
     : []
 
   // ── Loading ───────────────────────────────────────────────────────────────
@@ -3873,6 +3908,7 @@ export function WorkflowStudioPage() {
                   saving={patchNode.isPending}
                   customNodeTypes={customNodeTypes}
                   outgoingEdges={selectedNodeOutgoingEdges}
+                  upstreamOutputs={selectedNodeUpstreamOutputs}
                   workflowParams={workflowParams}
                   templateVariables={template?.variables ?? []}
                   teamGlobals={teamGlobals}

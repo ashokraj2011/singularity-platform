@@ -46,6 +46,14 @@ export type ArtifactDef = {
   bindingPath?: string
 }
 
+// M102 — minimal shape of a catalog ArtifactTemplate (GET /artifact-templates
+// ?status=PUBLISHED), used to power the Artifact-type typeahead.
+type ArtifactTemplateOption = { id: string; name: string; description: string | null; type: string; status: string }
+
+// An OUTPUT artifact produced by an upstream (incoming-edge) node — lets a node's
+// Inputs tab inherit what a previous node writes, carrying the same bindingPath.
+export type UpstreamOutput = { sourceNodeId: string; sourceLabel: string; artifact: ArtifactDef }
+
 export type KVPair = {
   id: string
   key: string
@@ -665,7 +673,7 @@ const CONDITION_OPS: { value: ConditionOp; label: string }[] = [
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-function uid() { return Math.random().toString(36).slice(2, 9) }
+export function uid() { return Math.random().toString(36).slice(2, 9) }
 
 function normalizeAgentRoleInput(value: string) {
   return value.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'AGENT'
@@ -893,7 +901,7 @@ function normalizeWorkbenchConfig(raw: unknown): WorkbenchConfig {
   }
 }
 
-function normalizeConfig(raw: unknown): NodeConfig {
+export function normalizeConfig(raw: unknown): NodeConfig {
   const empty = emptyConfig()
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return empty
   const r = raw as Record<string, unknown>
@@ -1004,8 +1012,8 @@ function FieldLabel({ children }: { children: React.ReactNode }) {
   )
 }
 
-function NeoInput({ value, onChange, placeholder, multiline = false }: {
-  value: string; onChange: (v: string) => void; placeholder?: string; multiline?: boolean
+function NeoInput({ value, onChange, placeholder, multiline = false, list }: {
+  value: string; onChange: (v: string) => void; placeholder?: string; multiline?: boolean; list?: string
 }) {
   const base: React.CSSProperties = {
     width: '100%', boxSizing: 'border-box',
@@ -1025,7 +1033,7 @@ function NeoInput({ value, onChange, placeholder, multiline = false }: {
   )
   return (
     <input
-      value={value} placeholder={placeholder}
+      value={value} placeholder={placeholder} list={list}
       onChange={e => onChange(e.target.value)}
       style={base}
       onFocus={e => (e.target.style.borderColor = 'rgba(34,197,94,0.4)')}
@@ -1128,11 +1136,12 @@ function NeoSelect({ value, onChange, options }: { value: string; onChange: (v: 
 // ─── Artifact Editor ──────────────────────────────────────────────────────
 
 function ArtifactCard({
-  artifact, onChange, onDelete,
+  artifact, onChange, onDelete, templates,
 }: {
   artifact: ArtifactDef
   onChange: (a: ArtifactDef) => void
   onDelete: () => void
+  templates: ArtifactTemplateOption[]
 }) {
   const [open, setOpen] = useState(false)
   const isInput = artifact.direction === 'INPUT'
@@ -1201,7 +1210,24 @@ function ArtifactCard({
                 </div>
                 <div>
                   <FieldLabel>Artifact type</FieldLabel>
-                  <NeoInput value={artifact.artifactType} onChange={v => onChange({ ...artifact, artifactType: v })} placeholder="CustomerSegment" />
+                  <NeoInput
+                    value={artifact.artifactType}
+                    list={`atype-${artifact.id}`}
+                    onChange={v => {
+                      const t = templates.find(tpl => tpl.name === v)
+                      onChange({
+                        ...artifact,
+                        artifactType: v,
+                        // Picking a catalog artifact fills blanks; never clobbers edits.
+                        ...(t && !artifact.name.trim() ? { name: t.name } : {}),
+                        ...(t && !artifact.description.trim() && t.description ? { description: t.description } : {}),
+                      })
+                    }}
+                    placeholder="CustomerSegment"
+                  />
+                  <datalist id={`atype-${artifact.id}`}>
+                    {templates.map(t => <option key={t.id} value={t.name}>{t.type}</option>)}
+                  </datalist>
                 </div>
               </div>
 
@@ -1245,8 +1271,15 @@ function ArtifactCard({
 }
 
 function ArtifactsTab({
-  config, onChange,
-}: { config: NodeConfig; onChange: (c: NodeConfig) => void }) {
+  config, onChange, upstreamOutputs,
+}: { config: NodeConfig; onChange: (c: NodeConfig) => void; upstreamOutputs: UpstreamOutput[] }) {
+  // Catalog artifacts (Artifact Studio) power the Artifact-type typeahead.
+  const { data: templates = [] } = useQuery<ArtifactTemplateOption[]>({
+    queryKey: ['artifact-templates', 'published'],
+    queryFn: () => api.get('/artifact-templates?status=PUBLISHED').then(r => (Array.isArray(r.data) ? r.data : (r.data?.content ?? []))),
+    staleTime: 60_000,
+  })
+
   const addArtifact = (dir: 'INPUT' | 'OUTPUT') => {
     const key = dir === 'INPUT' ? 'inputArtifacts' : 'outputArtifacts'
     onChange({ ...config, [key]: [...config[key], emptyArtifact(dir)] })
@@ -1261,6 +1294,15 @@ function ArtifactsTab({
     const key = dir === 'INPUT' ? 'inputArtifacts' : 'outputArtifacts'
     onChange({ ...config, [key]: config[key].filter(x => x.id !== id) })
   }
+
+  // Upstream outputs not yet mirrored as inputs (dedupe by context path, else name+type).
+  const inputKey = (a: { bindingPath?: string; name: string; artifactType: string }) =>
+    (a.bindingPath?.trim() || `${a.name}|${a.artifactType}`).toLowerCase()
+  const existingInputKeys = new Set(config.inputArtifacts.map(inputKey))
+  const availableUpstream = upstreamOutputs.filter(u => !existingInputKeys.has(inputKey(u.artifact)))
+  const asInput = (a: ArtifactDef): ArtifactDef => ({ ...a, id: uid(), direction: 'INPUT', required: false })
+  const inheritOne = (u: UpstreamOutput) => onChange({ ...config, inputArtifacts: [...config.inputArtifacts, asInput(u.artifact)] })
+  const inheritAll = () => onChange({ ...config, inputArtifacts: [...config.inputArtifacts, ...availableUpstream.map(u => asInput(u.artifact))] })
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1293,6 +1335,27 @@ function ArtifactsTab({
             <Plus size={9} /> Add
           </button>
         </div>
+        {availableUpstream.length > 0 && (
+          <div style={{ marginBottom: 8, padding: '8px 10px', borderRadius: 8, border: '1px dashed rgba(56,189,248,0.35)', background: 'rgba(56,189,248,0.05)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+              <span style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#0284c7' }}>Available from upstream</span>
+              <button onClick={inheritAll} style={{ fontSize: 9, fontWeight: 700, color: '#0284c7', background: 'none', border: 'none', cursor: 'pointer' }}>
+                Inherit all ({availableUpstream.length})
+              </button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {availableUpstream.map((u, i) => (
+                <button key={`${u.sourceNodeId}-${u.artifact.id}-${i}`} onClick={() => inheritOne(u)} title={`Add as input — reads ${u.artifact.bindingPath || 'context'}`}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left', padding: '5px 7px', borderRadius: 6, border: '1px solid rgba(56,189,248,0.2)', background: '#fff', cursor: 'pointer', fontSize: 10, color: '#0f172a' }}>
+                  <Plus size={9} style={{ color: '#0284c7', flexShrink: 0 }} />
+                  <span style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{u.artifact.name || u.artifact.artifactType || 'output'}</span>
+                  {u.artifact.bindingPath && <span style={{ fontFamily: 'ui-monospace, monospace', color: '#64748b', whiteSpace: 'nowrap' }}>{u.artifact.bindingPath}</span>}
+                  <span style={{ color: '#94a3b8', marginLeft: 'auto', whiteSpace: 'nowrap' }}>from {u.sourceLabel}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {config.inputArtifacts.length === 0 ? (
           <div style={{
             padding: '10px', borderRadius: 8, textAlign: 'center',
@@ -1302,7 +1365,7 @@ function ArtifactsTab({
           </div>
         ) : config.inputArtifacts.map(a => (
           <ArtifactCard
-            key={a.id} artifact={a}
+            key={a.id} artifact={a} templates={templates}
             onChange={updated => updateArtifact('INPUT', a.id, updated)}
             onDelete={() => deleteArtifact('INPUT', a.id)}
           />
@@ -1349,7 +1412,7 @@ function ArtifactsTab({
           </div>
         ) : config.outputArtifacts.map(a => (
           <ArtifactCard
-            key={a.id} artifact={a}
+            key={a.id} artifact={a} templates={templates}
             onChange={updated => updateArtifact('OUTPUT', a.id, updated)}
             onDelete={() => deleteArtifact('OUTPUT', a.id)}
           />
@@ -3244,6 +3307,9 @@ type Props = {
   saving: boolean
   customNodeTypes?: CustomNodeTypeDef[]
   outgoingEdges?: OutgoingEdgeBranch[]
+  /** OUTPUT artifacts of nodes feeding this one (incoming edges) — powers the
+   *  Inputs tab's "Available from upstream" inherit list. */
+  upstreamOutputs?: UpstreamOutput[]
   workflowParams?: ParamDef[]
   /** Workflow-scoped variables (vars.*) — used by the Assignment variable picker. */
   templateVariables?: Array<{ key: string; label?: string; type?: string; description?: string }>
@@ -3256,7 +3322,7 @@ type Props = {
 
 export function NodeInspector({
   node, instanceId, templateCapabilityId, onClose, onSave, saving, customNodeTypes = [],
-  outgoingEdges = [], workflowParams = [],
+  outgoingEdges = [], upstreamOutputs = [], workflowParams = [],
   templateVariables = [], teamGlobals = [],
   onUpdateBranch, onDeleteBranch, onTestBranch,
 }: Props) {
@@ -3849,7 +3915,7 @@ export function NodeInspector({
 
             {/* ARTIFACTS */}
             {tab === 'Artifacts' && (
-              <ArtifactsTab config={config} onChange={setConfig} />
+              <ArtifactsTab config={config} onChange={setConfig} upstreamOutputs={upstreamOutputs} />
             )}
 
             {/* RUNTIME */}
