@@ -138,6 +138,9 @@ string, or already-expired expiries so runtime tokens cannot become unbounded
 bridge credentials.
 Runtime JWTs are capped at `16 KiB`, and both the decoded JWT header and payload
 must be JSON objects before claims are trusted.
+MCP applies the same bounded/object-only parsing to its local runtime-token
+diagnostics before logging redacted identity fields, so malformed huge tokens do
+not flood runtime logs or appear as valid registrations.
 `allowed_frame_types` is also mandatory for `kind=runtime` tokens and must include
 recognized frame names; it is the token-side upper bound for what
 `hello.supported_frame_types` may advertise.

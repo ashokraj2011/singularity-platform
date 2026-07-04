@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const relayClientSource = fs.readFileSync(path.join(process.cwd(), "src/laptop/relay-client.ts"), "utf8");
+const diagnosticSource = fs.readFileSync(path.join(process.cwd(), "src/laptop/runtime-token-diagnostic.ts"), "utf8");
 
 assert.match(
   relayClientSource,
@@ -42,8 +43,14 @@ assert.match(
 
 assert.match(
   relayClientSource,
-  /function runtimeTokenDiagnostic\(token: string\): RuntimeTokenDiagnostic[\s\S]*?Buffer\.from\(parts\[1\] \?\? "", "base64url"\)[\s\S]*?kind: stringClaim\(payload\.kind\)[\s\S]*?expires_at: expiresAt/,
-  "runtime token diagnostics should decode JWT claims without logging the token value",
+  /import \{ runtimeTokenDiagnostic \} from "\.\/runtime-token-diagnostic";/,
+  "relay client should use the bounded runtime-token diagnostic parser",
+);
+
+assert.match(
+  diagnosticSource,
+  /RUNTIME_TOKEN_MAX_BYTES = 16 \* 1024[\s\S]*?decodeJwtObject\(parts\[0\][\s\S]*?decodeJwtObject\(parts\[1\][\s\S]*?stringClaim\(payload\.runtime_id, 128\)/,
+  "runtime token diagnostics should bound token size and decode object claims without logging the token value",
 );
 
 console.log("mcp runtime bridge auth diagnostics contract passed");

@@ -44,6 +44,7 @@ import { ensureFreshGatewayStatus, listConfiguredProviders } from "../llm/client
 import { modelCatalogResponse } from "../llm/model-catalog";
 import { configuredDefaultModel, configuredDefaultProvider } from "../llm/provider-config";
 import { readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
+import { runtimeTokenDiagnostic } from "./runtime-token-diagnostic";
 import {
   decodeInboundRaw,
   encodeOutboundFrame,
@@ -692,55 +693,6 @@ export function ensureDeviceId(): string {
   if (CACHED_DEVICE_ID) return CACHED_DEVICE_ID;
   CACHED_DEVICE_ID = process.env.SINGULARITY_RUNTIME_ID ?? process.env.SINGULARITY_DEVICE_ID ?? randomUUID();
   return CACHED_DEVICE_ID;
-}
-
-type RuntimeTokenDiagnostic =
-  | {
-      valid: true;
-      kind?: string;
-      sub?: string;
-      runtime_id?: string;
-      device_id?: string;
-      tenant_id?: string;
-      shared?: boolean;
-      exp?: number;
-      expires_at?: string;
-      expired: boolean;
-    }
-  | {
-      valid: false;
-      error: string;
-      expired: false;
-    };
-
-function runtimeTokenDiagnostic(token: string): RuntimeTokenDiagnostic {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return { valid: false, error: "malformed JWT", expired: false };
-    const payload = JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8")) as Record<string, unknown>;
-    const exp = typeof payload.exp === "number" ? payload.exp : Number(payload.exp);
-    const expiresAt = Number.isFinite(exp) ? new Date(exp * 1000).toISOString() : undefined;
-    const expired = Number.isFinite(exp) ? Date.now() > exp * 1000 : false;
-    return {
-      valid: true,
-      kind: stringClaim(payload.kind),
-      sub: stringClaim(payload.sub),
-      runtime_id: stringClaim(payload.runtime_id),
-      device_id: stringClaim(payload.device_id),
-      tenant_id: stringClaim(payload.tenant_id),
-      shared: payload.shared === true,
-      exp: Number.isFinite(exp) ? exp : undefined,
-      expires_at: expiresAt,
-      expired,
-    };
-  } catch (err) {
-    return { valid: false, error: (err as Error).message || "bad JWT payload", expired: false };
-  }
-}
-
-function stringClaim(value: unknown): string | undefined {
-  const text = typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
-  return text || undefined;
 }
 
 function redactUrl(raw: string): string {
