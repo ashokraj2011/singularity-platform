@@ -13,13 +13,17 @@ import {
   tenantIsolationStrict,
 } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
+import { boundedByteLimit } from '../../lib/env-limits'
 
 export const documentsRouter: Router = Router()
 
 // Server-side cap for *uploaded* files.  Anything larger should be attached as
 // a LINK (OneDrive / SharePoint / Drive / S3 link) — the link endpoint has no
 // size limit.  Default 1 GB, override via env.
-const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES ?? 1024 * 1024 * 1024)
+export const MAX_UPLOAD_BYTES = boundedByteLimit(
+  process.env.MAX_UPLOAD_BYTES,
+  { defaultBytes: 1024 * 1024 * 1024, minBytes: 1, maxBytes: 2 * 1024 * 1024 * 1024 },
+)
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_UPLOAD_BYTES } })
 
 // Auto-detect the link provider from a URL host so the UI can render the

@@ -10,10 +10,14 @@ import {
   tenantIsolationStrict,
 } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
+import { boundedByteLimit } from '../../lib/env-limits'
 
 export const internalArtifactFetchRouter: Router = Router()
 
-const MAX_BYTES = Number(process.env.INTERNAL_ARTIFACT_FETCH_MAX_BYTES ?? 64_000)
+export const INTERNAL_ARTIFACT_FETCH_MAX_BYTES = boundedByteLimit(
+  process.env.INTERNAL_ARTIFACT_FETCH_MAX_BYTES,
+  { defaultBytes: 64_000, minBytes: 1, maxBytes: 256_000 },
+)
 
 const fetchSchema = z.object({
   minioRef: z.string().optional(),
@@ -93,7 +97,10 @@ internalArtifactFetchRouter.post('/fetch', async (req, res, next) => {
     }
     requireTenantScopedInternalToken(req, 'internal artifact fetch')
     const body = fetchSchema.parse(req.body ?? {})
-    const maxBytes = Math.min(body.maxBytes ?? MAX_BYTES, MAX_BYTES)
+    const maxBytes = Math.min(
+      body.maxBytes ?? INTERNAL_ARTIFACT_FETCH_MAX_BYTES,
+      INTERNAL_ARTIFACT_FETCH_MAX_BYTES,
+    )
     let bucket = config.MINIO_BUCKET
     let key = ''
     let mediaType: string | null | undefined

@@ -717,6 +717,13 @@ default `30000`, minimum `1000`, and maximum `120000`. Invalid values fall
 back to `30000`; if composition still times out or returns malformed JSON, the
 download continues with raw stage tasks plus degraded-composition headers.
 
+Workgraph file and artifact byte limits are also bounded at startup.
+`MAX_UPLOAD_BYTES` defaults to `1073741824` and caps at `2147483648` for
+multipart uploads; larger files should be attached as external links.
+`INTERNAL_ARTIFACT_FETCH_MAX_BYTES` defaults to `64000` and caps at `256000`
+for internal MinIO text fetches. Invalid values fall back to the defaults
+instead of disabling limits or making artifact reads unusable.
+
 ### 9.5 Agent Runtime API
 
 Mounted under `http://localhost:3003/api/v1`.
