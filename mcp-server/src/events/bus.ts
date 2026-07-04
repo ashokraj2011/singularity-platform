@@ -17,6 +17,7 @@ import {
 import { config } from "../config";
 
 const RING_CAP = 5_000;
+const EVENT_STORE_TIMEOUT_MS = config.MCP_EVENT_STORE_TIMEOUT_MS;
 
 class EventBus {
   private ring: McpEventEnvelope[] = [];
@@ -57,6 +58,7 @@ class EventBus {
         method: "POST",
         headers,
         body: JSON.stringify(ev),
+        signal: AbortSignal.timeout(EVENT_STORE_TIMEOUT_MS),
       }).then(res => {
         if (!res.ok) {
           console.warn(`[mcp-server] Failed to push event to durable store: ${res.status} ${res.statusText}`);

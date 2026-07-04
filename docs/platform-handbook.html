@@ -826,6 +826,11 @@ Workbench-triggered worktree tests are bounded with
 <li>Run and capability correlation.</li>
 <li>Events for Agent Execution Runtime, Context Fabric, Workgraph, Agent Service (agents and the merged tools subsystem), and Agent Runtime.</li>
 </ul>
+<p>MCP can mirror its in-process event ring to a durable event store with
+<code>MCP_EVENT_STORE_URL</code> and <code>MCP_EVENT_STORE_TOKEN</code>. Those best-effort POSTs are
+bounded by <code>MCP_EVENT_STORE_TIMEOUT_MS</code>, default <code>5000</code> and bounded
+<code>1..300000</code>, so an unavailable event store cannot leave unbounded outbound
+requests behind while local event publishing continues.</p>
 <h3 id="715-learning-loop">7.15 Learning Loop<a class="anchor" href="#715-learning-loop" aria-label="Link to 7.15 Learning Loop">#</a></h3>
 <p>The learning architecture is hybrid:</p>
 <ul>

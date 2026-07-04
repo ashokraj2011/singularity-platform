@@ -22,6 +22,7 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
         "config.MCP_LOOP_REPETITION_THRESHOLD,",
         "config.MCP_LOOP_REPETITION_WINDOW,",
         "config.SYSTEM_PROMPT_CACHE_TTL_SEC,",
+        "config.MCP_EVENT_STORE_TIMEOUT_MS,",
         "config.MCP_PROMPT_COMPOSER_TIMEOUT_SEC,",
         "config.MCP_AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_SEC,",
         "config.MCP_LEARNING_SERVICE_TIMEOUT_SEC,",
@@ -70,12 +71,13 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
 
 const defaults = runConfig({});
 assert.equal(defaults.status, 0, defaults.stderr);
-assert.match(defaults.stdout, /3:5:300:5:5:8:2000:5000:120000:600000:120000:600000:1500:2000:1500:2000:3000:5000:5000:30000:10000:1000:60000:5000:30000:300000:600000:20000:120000:10000:30000:60000:2000:30000:900000:1800000:4096:0\.7/);
+assert.match(defaults.stdout, /3:5:300:5000:5:5:8:2000:5000:120000:600000:120000:600000:1500:2000:1500:2000:3000:5000:5000:30000:10000:1000:60000:5000:30000:300000:600000:20000:120000:10000:30000:60000:2000:30000:900000:1800000:4096:0\.7/);
 
 const custom = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "4",
   MCP_LOOP_REPETITION_WINDOW: "9",
   SYSTEM_PROMPT_CACHE_TTL_SEC: "120",
+  MCP_EVENT_STORE_TIMEOUT_MS: "7000",
   MCP_PROMPT_COMPOSER_TIMEOUT_SEC: "9",
   MCP_AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_SEC: "12",
   MCP_LEARNING_SERVICE_TIMEOUT_SEC: "11",
@@ -113,7 +115,7 @@ const custom = runConfig({
   MCP_PII_NER_CONFIDENCE_FLOOR: "0.85",
 });
 assert.equal(custom.status, 0, custom.stderr);
-assert.match(custom.stdout, /4:9:120:9:12:11:2500:6000:180000:900000:150000:700000:2500:3000:3500:4500:4000:4500:5500:45000:15000:2000:90000:6500:35000:240000:480000:25000:180000:17000:33000:65000:3500:45000:1200000:2400000:8192:0\.85/);
+assert.match(custom.stdout, /4:9:120:7000:9:12:11:2500:6000:180000:900000:150000:700000:2500:3000:3500:4500:4000:4500:5500:45000:15000:2000:90000:6500:35000:240000:480000:25000:180000:17000:33000:65000:3500:45000:1200000:2400000:8192:0\.85/);
 
 const impossibleLoopDetector = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "10",
@@ -161,6 +163,7 @@ for (const [name, value] of [
   ["MCP_LOOP_REPETITION_THRESHOLD", "0"],
   ["MCP_LOOP_REPETITION_WINDOW", "101"],
   ["SYSTEM_PROMPT_CACHE_TTL_SEC", "999999"],
+  ["MCP_EVENT_STORE_TIMEOUT_MS", "0"],
   ["MCP_PROMPT_COMPOSER_TIMEOUT_SEC", "0"],
   ["MCP_AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_SEC", "0"],
   ["MCP_LEARNING_SERVICE_TIMEOUT_SEC", "0"],
@@ -206,6 +209,7 @@ const configSource = readFileSync("src/config.ts", "utf8");
 assert.match(configSource, /MCP_LOOP_REPETITION_THRESHOLD: boundedPositiveInt\(3, MCP_LIMITS\.LOOP_REPETITION_THRESHOLD\)/);
 assert.match(configSource, /MCP_LOOP_REPETITION_WINDOW: boundedPositiveInt\(5, MCP_LIMITS\.LOOP_REPETITION_WINDOW\)/);
 assert.match(configSource, /SYSTEM_PROMPT_CACHE_TTL_SEC: boundedPositiveInt\(300, MCP_LIMITS\.SYSTEM_PROMPT_CACHE_TTL_SEC\)/);
+assert.match(configSource, /MCP_EVENT_STORE_TIMEOUT_MS: boundedPositiveInt\(5_000, MCP_LIMITS\.EVENT_STORE_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_PROMPT_COMPOSER_TIMEOUT_SEC: boundedPositiveInt\(5, MCP_LIMITS\.PROMPT_COMPOSER_TIMEOUT_SEC\)/);
 assert.match(configSource, /MCP_AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_SEC: boundedPositiveInt\([\s\S]*?5,[\s\S]*?MCP_LIMITS\.AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_SEC/);
 assert.match(configSource, /MCP_LEARNING_SERVICE_TIMEOUT_SEC: boundedPositiveInt\(8, MCP_LIMITS\.LEARNING_SERVICE_TIMEOUT_SEC\)/);
@@ -258,6 +262,10 @@ assert.doesNotMatch(invokeSource, /Number\(process\.env\.MCP_LOOP_REPETITION_WIN
 assert.doesNotMatch(invokeSource, /Number\(process\.env\.SYSTEM_PROMPT_CACHE_TTL_SEC/);
 assert.doesNotMatch(invokeSource, /AbortSignal\.timeout\(5_000\)/);
 assert.doesNotMatch(invokeSource, /Number\(process\.env\.MCP_MUTATION_FINALIZATION_MAX_TOKENS/);
+
+const eventBusSource = readFileSync("src/events/bus.ts", "utf8");
+assert.match(eventBusSource, /const EVENT_STORE_TIMEOUT_MS = config\.MCP_EVENT_STORE_TIMEOUT_MS;/);
+assert.match(eventBusSource, /signal: AbortSignal\.timeout\(EVENT_STORE_TIMEOUT_MS\)/);
 
 const piiSource = readFileSync("src/security/pii-ner.ts", "utf8");
 assert.match(piiSource, /const NER_CONFIDENCE_FLOOR = config\.MCP_PII_NER_CONFIDENCE_FLOOR;/);

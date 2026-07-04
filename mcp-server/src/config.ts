@@ -75,6 +75,7 @@ const MCP_LIMITS = {
   LOOP_REPETITION_THRESHOLD: 20,
   LOOP_REPETITION_WINDOW: 100,
   SYSTEM_PROMPT_CACHE_TTL_SEC: 86_400,
+  EVENT_STORE_TIMEOUT_MS: 300_000,
   PROMPT_COMPOSER_TIMEOUT_SEC: 300,
   AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_SEC: 300,
   LEARNING_SERVICE_TIMEOUT_SEC: 300,
@@ -314,6 +315,7 @@ const schema = z.object({
   // Workstream 1: Durable Event Store
   MCP_EVENT_STORE_URL: z.string().optional(),
   MCP_EVENT_STORE_TOKEN: z.string().optional(),
+  MCP_EVENT_STORE_TIMEOUT_MS: boundedPositiveInt(5_000, MCP_LIMITS.EVENT_STORE_TIMEOUT_MS),
   // M67 Slice 1A — learning-service was folded into agent-service. Default
   // now points at agent-service; the route paths are identical so callers
   // don't have to change anything else.

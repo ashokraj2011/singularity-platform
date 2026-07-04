@@ -529,6 +529,12 @@ Core features:
 - Run and capability correlation.
 - Events for Agent Execution Runtime, Context Fabric, Workgraph, Agent Service (agents and the merged tools subsystem), and Agent Runtime.
 
+MCP can mirror its in-process event ring to a durable event store with
+`MCP_EVENT_STORE_URL` and `MCP_EVENT_STORE_TOKEN`. Those best-effort POSTs are
+bounded by `MCP_EVENT_STORE_TIMEOUT_MS`, default `5000` and bounded
+`1..300000`, so an unavailable event store cannot leave unbounded outbound
+requests behind while local event publishing continues.
+
 ### 7.15 Learning Loop
 
 The learning architecture is hybrid:
