@@ -1,6 +1,6 @@
 "use client";
 
-import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, authHeaders, invalidApiResponseMessage, readResponseBody, responseMessage } from "@/lib/api";
 
 export type IdentityView =
   | "dashboard"
@@ -52,24 +52,38 @@ export type AuthzCheckResponse = {
 };
 
 export class IdentityError extends Error {
-  constructor(message: string, public status?: number) {
+  constructor(message: string, public status?: number, public code?: string) {
     super(message);
     this.name = "IdentityError";
   }
 }
 
 async function identityRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(apiPath(`/api/iam${path.startsWith("/") ? path : `/${path}`}`), {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-      ...(init?.headers ?? {}),
-    },
-  });
-  const { raw, parsed } = await readResponseBody(res);
+  const url = `/api/iam${path.startsWith("/") ? path : `/${path}`}`;
+  let res: Response;
+  try {
+    res = await fetch(apiPath(url), {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(),
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (err) {
+    throw new IdentityError(err instanceof Error ? err.message : "Identity network request failed");
+  }
+  const { raw, parsed, parseError } = await readResponseBody(res);
   if (!res.ok) {
-    throw new IdentityError(responseMessage(parsed, raw, res.statusText), res.status);
+    const obj = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
+    throw new IdentityError(
+      responseMessage(parsed, raw, res.statusText),
+      res.status,
+      typeof obj.code === "string" ? obj.code : undefined,
+    );
+  }
+  if (parseError) {
+    throw new IdentityError(invalidApiResponseMessage(url, raw, parseError), res.status, "INVALID_API_RESPONSE");
   }
   return parsed as T;
 }

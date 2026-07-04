@@ -36,6 +36,14 @@ export async function readResponseBody(res: Response): Promise<{ raw: string; pa
   }
 }
 
+export function invalidApiResponseMessage(url: string, raw: string, parseError?: string): string {
+  return `Invalid API response from ${url}: ${raw.slice(0, 500) || parseError || "empty body"}`;
+}
+
+export function invalidApiResponseDetails(raw: string, parseError?: string): { parseError?: string; body: string } {
+  return { ...(parseError ? { parseError } : {}), body: raw.slice(0, 500) };
+}
+
 export function responseMessage(parsed: unknown, raw: string, fallback: string): string {
   if (parsed && typeof parsed === "object") {
     const obj = parsed as Record<string, unknown>;
@@ -192,10 +200,10 @@ async function req<T>(url: string, opts?: RequestInit): Promise<T> {
   }
   if (parseError) {
     throw new ApiError(
-      `Invalid API response from ${url}: ${raw.slice(0, 500) || parseError}`,
+      invalidApiResponseMessage(url, raw, parseError),
       res.status,
       "INVALID_API_RESPONSE",
-      { parseError, body: raw.slice(0, 500) },
+      invalidApiResponseDetails(raw, parseError),
     );
   }
   return parsed as T;
@@ -295,10 +303,10 @@ async function reqEnv<T>(url: string, opts?: RequestInit): Promise<T> {
   const { raw, parsed, parseError } = await readResponseBody(res);
   if (parseError) {
     throw new ApiError(
-      `Invalid API response from ${url}: ${raw.slice(0, 500) || parseError}`,
+      invalidApiResponseMessage(url, raw, parseError),
       res.status,
       "INVALID_API_RESPONSE",
-      { parseError, body: raw.slice(0, 500) },
+      invalidApiResponseDetails(raw, parseError),
     );
   }
   if (!parsed || typeof parsed !== "object") {
@@ -337,10 +345,10 @@ async function reqEnvForm<T>(url: string, form: FormData): Promise<T> {
   const { raw, parsed, parseError } = await readResponseBody(res);
   if (parseError) {
     throw new ApiError(
-      `Invalid API response from ${url}: ${raw.slice(0, 500) || parseError}`,
+      invalidApiResponseMessage(url, raw, parseError),
       res.status,
       "INVALID_API_RESPONSE",
-      { parseError, body: raw.slice(0, 500) },
+      invalidApiResponseDetails(raw, parseError),
     );
   }
   if (!parsed || typeof parsed !== "object") {

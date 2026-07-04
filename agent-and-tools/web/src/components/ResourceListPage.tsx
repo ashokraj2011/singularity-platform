@@ -3,7 +3,7 @@
 import Link from "next/link";
 import useSWR from "swr";
 import { ArrowLeft, ExternalLink, RefreshCw } from "lucide-react";
-import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, authHeaders, invalidApiResponseMessage, readResponseBody, responseMessage } from "@/lib/api";
 
 type Column = {
   label: string;
@@ -81,12 +81,15 @@ async function fetchResource(endpoint: string): Promise<unknown> {
   const res = await fetch(apiPath(endpoint), {
     headers: { "Content-Type": "application/json", ...authHeaders() },
   });
-  const { raw, parsed } = await readResponseBody(res);
+  const { raw, parsed, parseError } = await readResponseBody(res);
   if (!res.ok) {
     const obj = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
     const message = responseMessage(parsed, raw, res.statusText);
     const code = typeof obj.code === "string" ? `${obj.code}: ` : "";
     throw new Error(`${res.status} ${code}${message}`);
+  }
+  if (parseError) {
+    throw new Error(invalidApiResponseMessage(endpoint, raw, parseError));
   }
   return parsed;
 }

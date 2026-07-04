@@ -12,6 +12,10 @@ const oidc = read("src/components/identity/IdentityOidcCallbackPage.tsx");
 const launchpad = read("src/app/page.tsx");
 const resourceList = read("src/components/ResourceListPage.tsx");
 const workgraph = read("src/lib/workgraph.ts");
+const foundry = read("src/lib/foundry/api.ts");
+const git = read("src/lib/git/api.ts");
+const identity = read("src/lib/identity/api.ts");
+const controlPlane = read("src/components/ControlPlaneConsole.tsx");
 const api = read("src/lib/api.ts");
 
 for (const [label, source] of [
@@ -21,6 +25,10 @@ for (const [label, source] of [
   ["launchpad", launchpad],
   ["resource list", resourceList],
   ["workgraph fetch helper", workgraph],
+  ["foundry fetch helper", foundry],
+  ["git broker fetch helper", git],
+  ["identity fetch helper", identity],
+  ["control plane fetch helper", controlPlane],
 ] as const) {
   assert.match(source, /readResponseBody/, `${label} should use the shared safe response reader`);
   assert.doesNotMatch(source, /response\.json\(\)|res\.json\(\)/, `${label} should not call response.json() directly`);
@@ -46,6 +54,24 @@ assert.doesNotMatch(
 
 assert.match(
   workgraph,
+  /if \(parseError\) \{[\s\S]*?new WorkgraphError\(invalidApiResponseMessage\(url, raw, parseError\), res\.status, "INVALID_API_RESPONSE"\)/,
+  "workgraph helper should reject malformed successful API bodies",
+);
+
+for (const [label, source] of [
+  ["foundry", foundry],
+  ["git broker", git],
+  ["identity", identity],
+] as const) {
+  assert.match(
+    source,
+    /if \(parseError\) \{[\s\S]*?invalidApiResponseMessage\([\s\S]*?"INVALID_API_RESPONSE"/,
+    `${label} helper should reject malformed successful API bodies`,
+  );
+}
+
+assert.match(
+  workgraph,
   /throw new WorkgraphError\(responseMessage\(parsed, raw, res\.statusText\), res\.status, code\)/,
   "workgraph helper should preserve normalized non-JSON upstream error messages",
 );
@@ -58,7 +84,13 @@ assert.match(
 
 assert.match(
   api,
-  /if \(parseError\) \{[\s\S]*?"INVALID_API_RESPONSE"[\s\S]*?\{ parseError, body: raw\.slice\(0, 500\) \}/,
+  /export function invalidApiResponseMessage\(url: string, raw: string, parseError\?: string\): string/,
+  "shared API helpers should centralize malformed successful response messages",
+);
+
+assert.match(
+  api,
+  /if \(parseError\) \{[\s\S]*?"INVALID_API_RESPONSE"[\s\S]*?invalidApiResponseDetails\(raw, parseError\)/,
   "shared API helpers should reject successful malformed JSON responses with a structured ApiError",
 );
 

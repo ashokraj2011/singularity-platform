@@ -1,6 +1,6 @@
 "use client";
 
-import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, authHeaders, invalidApiResponseMessage, readResponseBody, responseMessage } from "@/lib/api";
 
 export type FoundryMode = "ALL" | "GREENFIELD" | "BROWNFIELD";
 
@@ -107,15 +107,20 @@ export class FoundryError extends Error {
 }
 
 async function foundryRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(apiPath(path), {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-      ...(init?.headers ?? {}),
-    },
-  });
-  const { raw, parsed } = await readResponseBody(res);
+  let res: Response;
+  try {
+    res = await fetch(apiPath(path), {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(),
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (err) {
+    throw new FoundryError(err instanceof Error ? err.message : "Foundry network request failed");
+  }
+  const { raw, parsed, parseError } = await readResponseBody(res);
   if (!res.ok) {
     const obj = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
     throw new FoundryError(
@@ -123,6 +128,9 @@ async function foundryRequest<T>(path: string, init?: RequestInit): Promise<T> {
       res.status,
       typeof obj.code === "string" ? obj.code : undefined,
     );
+  }
+  if (parseError) {
+    throw new FoundryError(invalidApiResponseMessage(path, raw, parseError), res.status, "INVALID_API_RESPONSE");
   }
   return parsed as T;
 }

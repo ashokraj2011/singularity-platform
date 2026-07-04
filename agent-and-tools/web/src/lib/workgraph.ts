@@ -1,6 +1,6 @@
 "use client";
 
-import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, authHeaders, invalidApiResponseMessage, readResponseBody, responseMessage } from "@/lib/api";
 
 export class WorkgraphError extends Error {
   constructor(message: string, public status?: number, public code?: string) {
@@ -21,8 +21,9 @@ export function unwrapWorkgraphItems<T = Record<string, unknown>>(data: unknown,
 
 export async function workgraphFetch<T = unknown>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
+  const url = `/api/workgraph${path.startsWith("/") ? path : `/${path}`}`;
   try {
-    res = await fetch(apiPath(`/api/workgraph${path.startsWith("/") ? path : `/${path}`}`), {
+    res = await fetch(apiPath(url), {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -33,11 +34,14 @@ export async function workgraphFetch<T = unknown>(path: string, init?: RequestIn
   } catch (err) {
     throw new WorkgraphError(err instanceof Error ? err.message : "Workgraph network request failed");
   }
-  const { raw, parsed } = await readResponseBody(res);
+  const { raw, parsed, parseError } = await readResponseBody(res);
   if (!res.ok) {
     const obj = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
     const code = typeof obj.code === "string" ? obj.code : undefined;
     throw new WorkgraphError(responseMessage(parsed, raw, res.statusText), res.status, code);
+  }
+  if (parseError) {
+    throw new WorkgraphError(invalidApiResponseMessage(url, raw, parseError), res.status, "INVALID_API_RESPONSE");
   }
   return parsed as T;
 }
