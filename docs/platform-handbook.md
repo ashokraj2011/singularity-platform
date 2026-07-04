@@ -729,6 +729,11 @@ multipart uploads; larger files should be attached as external links.
 for internal MinIO text fetches. Invalid values fall back to the defaults
 instead of disabling limits or making artifact reads unusable.
 
+Workgraph also bounds the formal verification request timeout before sending
+workflow/governance payloads to the verifier service. `FORMAL_VERIFICATION_TIMEOUT_MS`
+defaults to `3000`, has a minimum of `1`, and caps at `10000`, matching the
+formal-verifier service default maximum. Invalid values fall back to `3000`.
+
 ### 9.5 Agent Runtime API
 
 Mounted under `http://localhost:3003/api/v1`.

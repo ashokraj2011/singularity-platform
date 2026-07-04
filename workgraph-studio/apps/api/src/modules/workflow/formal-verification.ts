@@ -5,8 +5,13 @@ import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { AppError, NotFoundError } from '../../lib/errors'
 import { createReceipt, logEvent, publishOutbox } from '../../lib/audit'
 import { readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
+import { boundedIntLimit } from '../../lib/env-limits'
 
 export const FORMAL_DISABLED_CODE = 'FORMAL_VERIFICATION_DISABLED'
+export const FORMAL_VERIFICATION_TIMEOUT_MS = boundedIntLimit(
+  process.env.FORMAL_VERIFICATION_TIMEOUT_MS,
+  { defaultValue: 3000, minValue: 1, maxValue: 10000 },
+)
 
 type FormalGraphNode = Pick<WorkflowDesignNode | WorkflowNode, 'id' | 'label' | 'nodeType' | 'config'>
 type FormalGraphEdge = Pick<WorkflowDesignEdge | WorkflowEdge, 'id' | 'sourceNodeId' | 'targetNodeId' | 'edgeType' | 'label' | 'condition'>
@@ -226,7 +231,7 @@ function buildPayload(input: {
     facts,
     constraints: baseConstraints(),
     query: unsafeQuery(),
-    options: { timeoutMs: Number(process.env.FORMAL_VERIFICATION_TIMEOUT_MS ?? 3000) },
+    options: { timeoutMs: FORMAL_VERIFICATION_TIMEOUT_MS },
     artifactRefs: [],
     metadata: {
       requestedBy: input.actorId,
