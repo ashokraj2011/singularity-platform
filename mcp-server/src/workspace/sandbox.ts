@@ -19,6 +19,7 @@ export const SKIP_DIRS = new Set([
 ]);
 
 const sandboxContext = new AsyncLocalStorage<string>();
+const WORKSPACE_BRANCH_PROBE_TIMEOUT_MS = config.MCP_WORKSPACE_BRANCH_PROBE_TIMEOUT_MS;
 
 export interface WorkspaceRootRequest {
   workItemId?: string;
@@ -156,7 +157,7 @@ function isOnBranch(dir: string, expectedBranch: string): boolean {
     const proc = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
       cwd: dir,
       encoding: "utf8",
-      timeout: 2_000,
+      timeout: WORKSPACE_BRANCH_PROBE_TIMEOUT_MS,
     });
     if (proc.status !== 0) return false;
     return (proc.stdout ?? "").trim() === expectedBranch;

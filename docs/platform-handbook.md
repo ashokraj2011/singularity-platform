@@ -465,6 +465,10 @@ The operator worktree file API also bounds local git helpers:
 `MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS` defaults to `30000` for add/diff/commit
 helpers. Both are bounded `1..300000`, keeping slow worktree filesystems
 tunable without making browser-initiated edits wait forever.
+Workspace root resolution bounds legacy sibling-branch probes separately:
+`MCP_WORKSPACE_BRANCH_PROBE_TIMEOUT_MS` defaults to `2000` and is bounded
+`1..60000` for the quick `git rev-parse --abbrev-ref HEAD` checks used while
+finding a workitem's `wi/<code>` worktree.
 
 ### 7.13 LLM Gateway
 
