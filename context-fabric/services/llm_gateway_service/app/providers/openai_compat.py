@@ -16,17 +16,11 @@ import httpx
 from ..config import settings
 from ..provider_config import provider_base_url
 from ..types import ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ToolCall, ToolDescriptor
+from ..upstream_json import response_json_object
 
 
 def _response_json_object(res: httpx.Response, *, provider: str, operation: str) -> Dict[str, Any]:
-    try:
-        data = res.json()
-    except Exception as exc:
-        snippet = res.text[:400] if isinstance(res.text, str) else ""
-        raise RuntimeError(f"{provider} {operation} returned invalid JSON: {snippet}") from exc
-    if not isinstance(data, dict):
-        raise RuntimeError(f"{provider} {operation} returned invalid JSON object")
-    return data
+    return response_json_object(res, f"{provider} {operation}")
 
 
 def _to_openai_tools(tools: Optional[List[ToolDescriptor]]) -> Optional[List[Dict[str, Any]]]:

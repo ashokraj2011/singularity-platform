@@ -17,6 +17,7 @@ import httpx
 from ..config import settings
 from ..provider_config import provider_base_url
 from ..types import ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ToolCall, ToolDescriptor
+from ..upstream_json import UpstreamJsonError, response_json_object
 
 
 class AnthropicUpstreamError(RuntimeError):
@@ -27,13 +28,9 @@ class AnthropicUpstreamError(RuntimeError):
 
 def _response_json_object(res: httpx.Response) -> Dict[str, Any]:
     try:
-        data = res.json()
-    except Exception as exc:
-        snippet = res.text[:400] if isinstance(res.text, str) else ""
-        raise AnthropicUpstreamError(502, f"anthropic returned invalid JSON: {snippet}") from exc
-    if not isinstance(data, dict):
-        raise AnthropicUpstreamError(502, "anthropic returned invalid JSON object")
-    return data
+        return response_json_object(res, "anthropic")
+    except UpstreamJsonError as exc:
+        raise AnthropicUpstreamError(502, str(exc)) from exc
 
 
 def _retry_after_seconds(res: httpx.Response) -> float:

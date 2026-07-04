@@ -216,12 +216,12 @@ def test_anthropic_retries_once_on_rate_limit(monkeypatch: pytest.MonkeyPatch, t
     class FakeResponse:
         def __init__(self, status_code: int, text: str = "", data: dict | None = None, headers: dict | None = None):
             self.status_code = status_code
-            self.text = text
+            self.text = text or (json.dumps(data) if data is not None else "")
             self._data = data or {}
             self.headers = headers or {}
 
         def json(self) -> dict:
-            return self._data
+            raise AssertionError("provider adapters must parse upstream response text, not call response.json()")
 
     class FakeClient:
         def __init__(self, timeout: int):

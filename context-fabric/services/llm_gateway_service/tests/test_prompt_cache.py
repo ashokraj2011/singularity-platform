@@ -56,14 +56,14 @@ def _install_capturing_client(monkeypatch, anthropic, *, usage: dict | None = No
 
     class FakeResponse:
         status_code = 200
-        text = ""
+        text = json.dumps({
+            "content": [{"type": "text", "text": "ok"}],
+            "stop_reason": "end_turn",
+            "usage": usage or {"input_tokens": 5, "output_tokens": 2},
+        })
 
         def json(self) -> dict:
-            return {
-                "content": [{"type": "text", "text": "ok"}],
-                "stop_reason": "end_turn",
-                "usage": usage or {"input_tokens": 5, "output_tokens": 2},
-            }
+            raise AssertionError("anthropic provider must parse upstream response text, not call response.json()")
 
     class FakeClient:
         def __init__(self, timeout):

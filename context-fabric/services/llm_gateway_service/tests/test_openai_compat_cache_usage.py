@@ -10,6 +10,7 @@ shapes and assert the read-back is correct and defensive.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -21,13 +22,13 @@ def _install_fake_client(monkeypatch, *, usage: dict):
     chat-completion carrying the given usage block."""
     class FakeResp:
         status_code = 200
-        text = ""
+        text = json.dumps({
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": usage,
+        })
 
         def json(self):
-            return {
-                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
-                "usage": usage,
-            }
+            raise AssertionError("openai_compat must parse upstream response text, not call response.json()")
 
     class FakeClient:
         def __init__(self, *a, **k):
