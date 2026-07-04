@@ -42,6 +42,8 @@ import { capabilityIsArchivedOrMissing } from "./capability-lifecycle";
 const execFileP = promisify(execFile);
 
 const TICK_SEC          = env.POLL_WORKER_TICK_SEC;
+const GIT_NETWORK_TIMEOUT_MS = env.POLL_WORKER_GIT_NETWORK_TIMEOUT_SEC * 1000;
+const GIT_LOCAL_TIMEOUT_MS = env.POLL_WORKER_GIT_LOCAL_TIMEOUT_SEC * 1000;
 const ENABLED           = (process.env.POLL_WORKER_ENABLED ?? "1") !== "0";
 const SOURCE_EXT        = /\.(py|ts|tsx|js|jsx|mjs|cjs)$/i;
 const SKIP_DIRS         = new Set([
@@ -244,21 +246,21 @@ async function pollOneRepo(r: {
   if (!fs.existsSync(path.join(repoDir, ".git"))) {
     // Fresh shallow clone
     await execFileP("git", ["clone", "--depth", "1", "--branch", branch, r.repoUrl, repoDir], {
-      timeout: 60_000,
+      timeout: GIT_NETWORK_TIMEOUT_MS,
     }).catch(async () => {
       // Some repos default to `master`; retry without --branch.
       await fs.promises.rm(repoDir, { recursive: true, force: true });
-      await execFileP("git", ["clone", "--depth", "1", r.repoUrl, repoDir], { timeout: 60_000 });
+      await execFileP("git", ["clone", "--depth", "1", r.repoUrl, repoDir], { timeout: GIT_NETWORK_TIMEOUT_MS });
     });
   } else {
     await execFileP("git", ["-C", repoDir, "fetch", "--depth", "1", "origin", branch], {
-      timeout: 60_000,
-    }).catch(() => execFileP("git", ["-C", repoDir, "fetch", "--depth", "1"], { timeout: 60_000 }));
+      timeout: GIT_NETWORK_TIMEOUT_MS,
+    }).catch(() => execFileP("git", ["-C", repoDir, "fetch", "--depth", "1"], { timeout: GIT_NETWORK_TIMEOUT_MS }));
     await execFileP("git", ["-C", repoDir, "reset", "--hard", `origin/${branch}`], {
-      timeout: 30_000,
+      timeout: GIT_LOCAL_TIMEOUT_MS,
     }).catch(async () => {
       // Fall back to whatever HEAD origin points at.
-      await execFileP("git", ["-C", repoDir, "reset", "--hard", "FETCH_HEAD"], { timeout: 30_000 });
+      await execFileP("git", ["-C", repoDir, "reset", "--hard", "FETCH_HEAD"], { timeout: GIT_LOCAL_TIMEOUT_MS });
     });
   }
 

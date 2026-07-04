@@ -771,6 +771,11 @@ typo cannot create an effectively unbounded browser session.
 
 Agent Runtime capability/polling knobs are schema-validated at startup.
 `POLL_WORKER_TICK_SEC` defaults to `30` and is bounded `5..3600`.
+When the legacy repository polling loop is enabled,
+`POLL_WORKER_GIT_NETWORK_TIMEOUT_SEC` defaults to `60` and is bounded
+`1..900` for Git clone/fetch operations, while
+`POLL_WORKER_GIT_LOCAL_TIMEOUT_SEC` defaults to `30` and is bounded `1..300`
+for local Git reset operations.
 `CAPABILITY_LEARNING_RUN_STALE_MS` defaults to `900000` and is bounded
 `60000..86400000`, so learning-worker leases cannot spin too quickly or stay
 stale forever because of a typo. Default governance limit seeds are bounded as

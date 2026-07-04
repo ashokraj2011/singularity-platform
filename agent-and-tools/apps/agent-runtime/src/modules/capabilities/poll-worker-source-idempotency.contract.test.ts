@@ -3,6 +3,33 @@ import fs from "node:fs";
 import path from "node:path";
 
 const pollWorker = fs.readFileSync(path.join(process.cwd(), "src/modules/capabilities/poll-worker.ts"), "utf8");
+const envSource = fs.readFileSync(path.join(process.cwd(), "src/config/env.ts"), "utf8");
+
+assert.match(
+  envSource,
+  /POLL_WORKER_GIT_NETWORK_TIMEOUT_SEC: boundedInt\([\s\S]*?60,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.POLL_WORKER_GIT_NETWORK_TIMEOUT_SEC/,
+  "poll worker Git network timeout should be bounded in agent-runtime env config",
+);
+assert.match(
+  envSource,
+  /POLL_WORKER_GIT_LOCAL_TIMEOUT_SEC: boundedInt\([\s\S]*?30,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.POLL_WORKER_GIT_LOCAL_TIMEOUT_SEC/,
+  "poll worker Git local timeout should be bounded in agent-runtime env config",
+);
+assert.match(
+  pollWorker,
+  /const GIT_NETWORK_TIMEOUT_MS = env\.POLL_WORKER_GIT_NETWORK_TIMEOUT_SEC \* 1000;/,
+  "poll worker Git clone/fetch timeout must come from bounded env config",
+);
+assert.match(
+  pollWorker,
+  /const GIT_LOCAL_TIMEOUT_MS = env\.POLL_WORKER_GIT_LOCAL_TIMEOUT_SEC \* 1000;/,
+  "poll worker Git reset timeout must come from bounded env config",
+);
+assert.doesNotMatch(
+  pollWorker,
+  /timeout: (?:60_000|30_000)/,
+  "poll worker Git commands must not hardcode timeout milliseconds",
+);
 
 assert.match(
   pollWorker,
