@@ -1027,6 +1027,9 @@ Invalid, non-finite, or sub-minute values fall back to <code>30</code>, so a pub
 typo cannot create an effectively unbounded browser session.</p>
 <p>Agent Runtime capability/polling knobs are schema-validated at startup.
 <code>POLL_WORKER_TICK_SEC</code> defaults to <code>30</code> and is bounded <code>5..3600</code>.
+<code>POLL_WORKER_INITIAL_DELAY_SEC</code> defaults to <code>5</code> and is bounded <code>1..300</code>,
+controlling the first background poll after process startup so fresh installs
+can wait for dependent services without a hardcoded delay.
 When the legacy repository polling loop is enabled,
 <code>POLL_WORKER_GIT_NETWORK_TIMEOUT_SEC</code> defaults to <code>60</code> and is bounded
 <code>1..900</code> for Git clone/fetch operations, while

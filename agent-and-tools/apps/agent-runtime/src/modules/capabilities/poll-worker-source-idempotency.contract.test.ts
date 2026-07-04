@@ -7,6 +7,22 @@ const envSource = fs.readFileSync(path.join(process.cwd(), "src/config/env.ts"),
 
 assert.match(
   envSource,
+  /POLL_WORKER_INITIAL_DELAY_SEC: boundedInt\(5, 1, AGENT_RUNTIME_LIMITS\.POLL_WORKER_INITIAL_DELAY_SEC\)/,
+  "poll worker initial delay should be bounded in agent-runtime env config",
+);
+assert.match(
+  pollWorker,
+  /const INITIAL_DELAY_MS = env\.POLL_WORKER_INITIAL_DELAY_SEC \* 1000;/,
+  "poll worker startup delay must come from bounded env config",
+);
+assert.doesNotMatch(
+  pollWorker,
+  /setTimeout\(\(\) => \{ void tick\(\); \}, 5_000\)/,
+  "poll worker first tick delay must not hardcode milliseconds",
+);
+
+assert.match(
+  envSource,
   /POLL_WORKER_GIT_NETWORK_TIMEOUT_SEC: boundedInt\([\s\S]*?60,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.POLL_WORKER_GIT_NETWORK_TIMEOUT_SEC/,
   "poll worker Git network timeout should be bounded in agent-runtime env config",
 );

@@ -771,6 +771,9 @@ typo cannot create an effectively unbounded browser session.
 
 Agent Runtime capability/polling knobs are schema-validated at startup.
 `POLL_WORKER_TICK_SEC` defaults to `30` and is bounded `5..3600`.
+`POLL_WORKER_INITIAL_DELAY_SEC` defaults to `5` and is bounded `1..300`,
+controlling the first background poll after process startup so fresh installs
+can wait for dependent services without a hardcoded delay.
 When the legacy repository polling loop is enabled,
 `POLL_WORKER_GIT_NETWORK_TIMEOUT_SEC` defaults to `60` and is bounded
 `1..900` for Git clone/fetch operations, while

@@ -42,6 +42,7 @@ import { capabilityIsArchivedOrMissing } from "./capability-lifecycle";
 const execFileP = promisify(execFile);
 
 const TICK_SEC          = env.POLL_WORKER_TICK_SEC;
+const INITIAL_DELAY_MS = env.POLL_WORKER_INITIAL_DELAY_SEC * 1000;
 const GIT_NETWORK_TIMEOUT_MS = env.POLL_WORKER_GIT_NETWORK_TIMEOUT_SEC * 1000;
 const GIT_LOCAL_TIMEOUT_MS = env.POLL_WORKER_GIT_LOCAL_TIMEOUT_SEC * 1000;
 const ENABLED           = (process.env.POLL_WORKER_ENABLED ?? "1") !== "0";
@@ -75,10 +76,10 @@ export function startPollWorker(): void {
     return;
   }
   if (timer) return;
-  log(`starting; tick=${TICK_SEC}s`);
+  log(`starting; tick=${TICK_SEC}s initialDelay=${env.POLL_WORKER_INITIAL_DELAY_SEC}s`);
   timer = setInterval(() => { void tick(); }, TICK_SEC * 1000);
   // First tick after a short delay so the server is fully up.
-  setTimeout(() => { void tick(); }, 5_000);
+  setTimeout(() => { void tick(); }, INITIAL_DELAY_MS);
 }
 
 export function stopPollWorker(): void {
