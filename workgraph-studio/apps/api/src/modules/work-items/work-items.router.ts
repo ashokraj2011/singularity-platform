@@ -43,6 +43,94 @@ const WORK_ITEM_STATUSES = [
   'ARCHIVED',
 ] as const
 
+type WorkItemTargetForDiagnostics = {
+  targetCapabilityId: string
+  childWorkflowTemplateId?: string | null
+}
+
+type WorkItemForDiagnostics = {
+  targets: WorkItemTargetForDiagnostics[]
+}
+
+type WorkflowTemplateForDiagnostics = {
+  id: string
+  name: string
+  capabilityId: string | null
+  archivedAt: Date | null
+  status: string
+  profile: string
+  workflowTypeKey: string
+}
+
+function targetTemplateStatus(target: WorkItemTargetForDiagnostics, template?: WorkflowTemplateForDiagnostics) {
+  if (!target.childWorkflowTemplateId) return undefined
+  if (!template) {
+    return {
+      state: 'invalid',
+      reason: 'MISSING_TEMPLATE',
+      message: `Workflow template ${target.childWorkflowTemplateId} no longer exists.`,
+      template: null,
+    }
+  }
+  if (template.archivedAt || String(template.status ?? '').trim().toUpperCase() === 'ARCHIVED') {
+    return {
+      state: 'invalid',
+      reason: 'ARCHIVED_TEMPLATE',
+      message: `Workflow template ${template.name} is archived.`,
+      template,
+    }
+  }
+  if (String(template.profile ?? 'main').trim().toLowerCase() === 'workbench') {
+    return {
+      state: 'invalid',
+      reason: 'WORKBENCH_PROFILE_TEMPLATE',
+      message: `Workflow template ${template.name} is workbench-profile and must be invoked through a main workflow CALL_WORKFLOW node.`,
+      template,
+    }
+  }
+  if (!template.capabilityId || template.capabilityId !== target.targetCapabilityId) {
+    return {
+      state: 'invalid',
+      reason: 'CAPABILITY_MISMATCH',
+      message: `Workflow template ${template.name} belongs to capability ${template.capabilityId ?? 'none'}, not ${target.targetCapabilityId}.`,
+      template,
+    }
+  }
+  return {
+    state: 'valid',
+    reason: null,
+    message: `Workflow template ${template.name} is startable for this target capability.`,
+    template,
+  }
+}
+
+async function withTargetTemplateDiagnostics<T extends WorkItemForDiagnostics>(items: T[]): Promise<T[]> {
+  const ids = [...new Set(items.flatMap(item => item.targets.map(target => target.childWorkflowTemplateId).filter((id): id is string => Boolean(id))))];
+  if (ids.length === 0) return items
+  const templates = await prisma.workflow.findMany({
+    where: { id: { in: ids } },
+    select: {
+      id: true,
+      name: true,
+      capabilityId: true,
+      archivedAt: true,
+      status: true,
+      profile: true,
+      workflowTypeKey: true,
+    },
+  })
+  const byId = new Map(templates.map(template => [template.id, template]))
+  return items.map(item => ({
+    ...item,
+    targets: item.targets.map(target => ({
+      ...target,
+      ...(target.childWorkflowTemplateId
+        ? { workflowTemplateStatus: targetTemplateStatus(target, byId.get(target.childWorkflowTemplateId)) }
+        : {}),
+    })),
+  }))
+}
+
 const targetSchema = z.object({
   targetCapabilityId: z.string().min(1),
   childWorkflowTemplateId: z.string().uuid().optional(),
@@ -199,7 +287,8 @@ workItemsRouter.get('/', async (req, res, next) => {
       }
       if (items.length < Math.min(100, Math.max(limit * 2, 25))) exhausted = true
     }
-    res.json({ items: visible, nextCursor: exhausted ? null : nextCursor })
+    const items = await withTargetTemplateDiagnostics(visible)
+    res.json({ items, nextCursor: exhausted ? null : nextCursor })
   } catch (err) {
     next(err)
   }
@@ -218,7 +307,8 @@ workItemsRouter.get('/:id', async (req, res, next) => {
     })
     if (!workItem) throw new NotFoundError('WorkItem', id)
     await assertCanViewWorkItem(req.user!.userId, workItem)
-    res.json(workItem)
+    const [diagnosed] = await withTargetTemplateDiagnostics([workItem])
+    res.json(diagnosed ?? workItem)
   } catch (err) {
     next(err)
   }

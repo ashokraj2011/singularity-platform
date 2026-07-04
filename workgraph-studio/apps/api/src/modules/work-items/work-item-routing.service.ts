@@ -42,8 +42,17 @@ async function chooseWorkflow(args: {
     return prisma.workflow.findFirst({
       // Security (finding #3): a caller-supplied workflowId MUST belong to the target
       // capability — otherwise a work item could attach/start an unrelated capability's
-      // workflow. A foreign id now resolves to null → the ROUTE_FAILED path.
-      where: { id: args.workflowId, capabilityId: args.capabilityId, archivedAt: null },
+      // workflow. It also must be a main/top-level template. Workbench-profile templates
+      // run only behind a main workflow's CALL_WORKFLOW node; direct WorkItem routing would
+      // create runs that the normal run cockpit/workbench handoff cannot open coherently.
+      // Invalid ids resolve to null → the ROUTE_FAILED path without creating a child run.
+      where: {
+        id: args.workflowId,
+        capabilityId: args.capabilityId,
+        archivedAt: null,
+        status: { not: 'ARCHIVED' },
+        profile: { not: 'workbench' },
+      },
       select: { id: true, name: true, workflowTypeKey: true, defaultRoutingMode: true },
     })
   }
@@ -53,6 +62,7 @@ async function chooseWorkflow(args: {
       capabilityId: args.capabilityId,
       archivedAt: null,
       status: { not: 'ARCHIVED' },
+      profile: { not: 'workbench' },
       workflowTypeKey: { in: [workflowTypeKey, 'GENERAL'] },
     },
     orderBy: [{ isDefaultForType: 'desc' }, { updatedAt: 'desc' }],

@@ -22,6 +22,7 @@ import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { getSdlcIntent } from '../adoption/sdlcCatalog'
 import { routeWorkItem } from '../work-items/work-item-routing.service'
 import { createWorkItem } from '../work-items/work-items.service'
+import { ValidationError } from '../../lib/errors'
 
 export const PRIORITIES = ['HIGH', 'MEDIUM', 'LOW'] as const
 export type Priority = (typeof PRIORITIES)[number]
@@ -301,17 +302,79 @@ function criticTask(goal: string, milestones: Milestone[], caps: AssignableCapab
 
 const CHILD_RELATIONSHIP = 'decomposes_to'
 
+function capabilityStatus(capability: Awaited<ReturnType<typeof getCapability>>): string {
+  return String(capability?.status ?? 'ACTIVE').trim().toUpperCase()
+}
+
+async function assertPlannerCapabilityActive(capabilityId: string): Promise<AssignableCapability> {
+  const capability = await getCapability(capabilityId)
+  if (!capability) throw new ValidationError(`Capability ${capabilityId} is not available to the planner.`)
+  const status = capabilityStatus(capability)
+  if (status !== 'ACTIVE') {
+    throw new ValidationError(`Capability ${capabilityId} is ${status}; planner converse, commit, and launch require an ACTIVE capability.`)
+  }
+  return { id: capabilityId, name: capability.name ?? 'Home capability' }
+}
+
+async function assertPlannerAssignmentsActive(homeId: string, milestones: Milestone[]): Promise<void> {
+  const caps = await resolveAssignableCapabilities(homeId, true)
+  const allowed = new Set(caps.map((capability) => capability.id))
+  const invalid = flattenTasks(milestones).filter((task) => !allowed.has(task.capabilityId))
+  if (invalid.length > 0) {
+    const labels = invalid.slice(0, 5).map((task) => `${task.title} → ${task.capabilityId}`).join('; ')
+    throw new ValidationError(`Planner roadmap includes task assignments outside the active capability scope: ${labels}`)
+  }
+}
+
+async function assertPlannerWorkflowTemplateLaunchable(
+  homeId: string,
+  milestones: Milestone[],
+  workflowTemplateId?: string | null,
+): Promise<void> {
+  if (!workflowTemplateId) return
+  const workflow = await prisma.workflow.findUnique({
+    where: { id: workflowTemplateId },
+    select: {
+      id: true,
+      name: true,
+      capabilityId: true,
+      archivedAt: true,
+      status: true,
+      profile: true,
+    },
+  })
+  if (!workflow || workflow.archivedAt || String(workflow.status ?? '').trim().toUpperCase() === 'ARCHIVED') {
+    throw new ValidationError(`Workflow template ${workflowTemplateId} is not available for planner launch.`)
+  }
+  if (String(workflow.profile ?? 'main').trim().toLowerCase() === 'workbench') {
+    throw new ValidationError(
+      `"${workflow.name}" is a workbench-profile template; planner launch requires a main workflow template. ` +
+      `Use a main workflow with a CALL_WORKFLOW node to invoke this workbench.`,
+    )
+  }
+
+  await assertPlannerAssignmentsActive(homeId, milestones)
+  const targetCapabilityIds = new Set(flattenTasks(milestones).map((task) => task.capabilityId))
+  if (!workflow.capabilityId || !targetCapabilityIds.has(workflow.capabilityId)) {
+    const targets = [...targetCapabilityIds].join(', ')
+    throw new ValidationError(
+      `Workflow template ${workflowTemplateId} belongs to capability ${workflow.capabilityId ?? 'none'}, ` +
+      `but this planner launch targets ${targets || homeId}.`,
+    )
+  }
+}
+
 export async function resolveAssignableCapabilities(homeId: string, allowChildren: boolean): Promise<AssignableCapability[]> {
-  const home = await getCapability(homeId).catch(() => null)
-  const list: AssignableCapability[] = [{ id: homeId, name: home?.name ?? 'Home capability' }]
+  const home = await assertPlannerCapabilityActive(homeId)
+  const list: AssignableCapability[] = [home]
   if (!allowChildren) return list
   const rels = await listCapabilityRelationships(homeId).catch(() => [])
   const childIds = [...new Set(rels.filter((r) => r.relationship_type === CHILD_RELATIONSHIP).map((r) => r.target_capability_id))]
   for (const id of childIds) {
     if (id === homeId) continue
     const cap = await getCapability(id).catch(() => null)
-    if (cap?.isGoverning) continue
-    list.push({ id, name: cap?.name ?? id })
+    if (!cap || cap.isGoverning || capabilityStatus(cap) !== 'ACTIVE') continue
+    list.push({ id, name: cap.name ?? id })
   }
   return list
 }
@@ -452,6 +515,7 @@ export interface CommitInput {
 
 export async function commitRoadmap(input: CommitInput, actorId: string) {
   const home = input.capabilityId
+  await assertPlannerAssignmentsActive(home, input.milestones)
   const tasks = flattenTasks(input.milestones)
   const results = await Promise.allSettled(
     tasks.map((t) => {
@@ -620,6 +684,7 @@ export async function launchRoadmap(input: LaunchInput, actorId: string) {
     : input.milestones?.length
       ? input.milestones
       : localLaunchMilestones(input.story ?? '', input.capabilityId)
+  await assertPlannerWorkflowTemplateLaunchable(input.capabilityId, milestones, input.workflowTemplateId)
   const commit = await commitRoadmap({ capabilityId: input.capabilityId, milestones }, actorId)
   const warnings: string[] = []
   let routedWorkItem: unknown = null

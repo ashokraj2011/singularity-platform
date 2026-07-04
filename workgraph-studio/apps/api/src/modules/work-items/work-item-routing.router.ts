@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
+import { ValidationError } from '../../lib/errors'
 import { validate } from '../../middleware/validate'
 import { normalizeMetadataKey } from '../metadata/metadata.service'
 
@@ -38,6 +39,91 @@ const workItemTriggerSchema = z.object({
 
 const workItemTriggerPatchSchema = workItemTriggerSchema.partial()
 
+async function assertRoutingPolicyWorkflowStartable(capabilityId: string, workflowId?: string | null): Promise<void> {
+  if (!workflowId) return
+  const workflow = await prisma.workflow.findUnique({
+    where: { id: workflowId },
+    select: {
+      id: true,
+      name: true,
+      capabilityId: true,
+      archivedAt: true,
+      status: true,
+      profile: true,
+    },
+  })
+  if (!workflow || workflow.archivedAt || String(workflow.status ?? '').trim().toUpperCase() === 'ARCHIVED') {
+    throw new ValidationError(`Workflow ${workflowId} is not available for WorkItem routing policies.`)
+  }
+  if (String(workflow.profile ?? 'main').trim().toLowerCase() === 'workbench') {
+    throw new ValidationError(
+      `Workflow ${workflow.name} is a workbench-profile template; routing policies must target a main workflow. ` +
+      `Use a main workflow with a CALL_WORKFLOW node to invoke this workbench.`,
+    )
+  }
+  if (!workflow.capabilityId || workflow.capabilityId !== capabilityId) {
+    throw new ValidationError(
+      `Workflow ${workflowId} belongs to capability ${workflow.capabilityId ?? 'none'}, ` +
+      `but this routing policy belongs to capability ${capabilityId}.`,
+    )
+  }
+}
+
+function routingPolicyWorkflowStatus(policy: {
+  capabilityId: string
+  workflowId?: string | null
+  workflow?: {
+    id: string
+    name: string
+    capabilityId: string | null
+    archivedAt: Date | null
+    status: string
+    profile: string
+    workflowTypeKey: string
+  } | null
+}) {
+  if (!policy.workflowId) return undefined
+  const workflow = policy.workflow
+  if (!workflow) {
+    return {
+      state: 'invalid',
+      reason: 'MISSING_TEMPLATE',
+      message: `Workflow ${policy.workflowId} no longer exists.`,
+      template: null,
+    }
+  }
+  if (workflow.archivedAt || String(workflow.status ?? '').trim().toUpperCase() === 'ARCHIVED') {
+    return {
+      state: 'invalid',
+      reason: 'ARCHIVED_TEMPLATE',
+      message: `Workflow ${workflow.name} is archived.`,
+      template: workflow,
+    }
+  }
+  if (String(workflow.profile ?? 'main').trim().toLowerCase() === 'workbench') {
+    return {
+      state: 'invalid',
+      reason: 'WORKBENCH_PROFILE_TEMPLATE',
+      message: `Workflow ${workflow.name} is workbench-profile and must be invoked through a main workflow CALL_WORKFLOW node.`,
+      template: workflow,
+    }
+  }
+  if (!workflow.capabilityId || workflow.capabilityId !== policy.capabilityId) {
+    return {
+      state: 'invalid',
+      reason: 'CAPABILITY_MISMATCH',
+      message: `Workflow ${workflow.name} belongs to capability ${workflow.capabilityId ?? 'none'}, not ${policy.capabilityId}.`,
+      template: workflow,
+    }
+  }
+  return {
+    state: 'valid',
+    reason: null,
+    message: `Workflow ${workflow.name} is startable for this routing policy.`,
+    template: workflow,
+  }
+}
+
 workItemRoutingPoliciesRouter.get('/', async (req, res, next) => {
   try {
     const { capabilityId, workItemTypeKey, workflowTypeKey, isActive } = req.query as Record<string, string | undefined>
@@ -49,10 +135,27 @@ workItemRoutingPoliciesRouter.get('/', async (req, res, next) => {
     if (isActive === 'false' || isActive === '0') where.isActive = false
     const items = await prisma.workItemRoutingPolicy.findMany({
       where,
-      include: { workflow: { select: { id: true, name: true, workflowTypeKey: true } } },
+      include: {
+        workflow: {
+          select: {
+            id: true,
+            name: true,
+            capabilityId: true,
+            archivedAt: true,
+            status: true,
+            profile: true,
+            workflowTypeKey: true,
+          },
+        },
+      },
       orderBy: [{ capabilityId: 'asc' }, { priority: 'desc' }, { updatedAt: 'desc' }],
     })
-    res.json({ items })
+    res.json({
+      items: items.map(item => ({
+        ...item,
+        ...(item.workflowId ? { workflowTemplateStatus: routingPolicyWorkflowStatus(item) } : {}),
+      })),
+    })
   } catch (err) {
     next(err)
   }
@@ -61,6 +164,7 @@ workItemRoutingPoliciesRouter.get('/', async (req, res, next) => {
 workItemRoutingPoliciesRouter.post('/', validate(routingPolicySchema), async (req, res, next) => {
   try {
     const body = req.body as z.infer<typeof routingPolicySchema>
+    await assertRoutingPolicyWorkflowStartable(body.capabilityId, body.workflowId)
     const policy = await prisma.workItemRoutingPolicy.create({
       data: {
         capabilityId: body.capabilityId,
@@ -82,6 +186,15 @@ workItemRoutingPoliciesRouter.post('/', validate(routingPolicySchema), async (re
 workItemRoutingPoliciesRouter.patch('/:id', validate(routingPolicyPatchSchema), async (req, res, next) => {
   try {
     const body = req.body as z.infer<typeof routingPolicyPatchSchema>
+    const current = await prisma.workItemRoutingPolicy.findUnique({
+      where: { id: req.params.id },
+      select: { capabilityId: true, workflowId: true },
+    })
+    const effectiveCapabilityId = body.capabilityId ?? current?.capabilityId
+    const effectiveWorkflowId = body.workflowId !== undefined ? body.workflowId : current?.workflowId
+    if (effectiveCapabilityId) {
+      await assertRoutingPolicyWorkflowStartable(effectiveCapabilityId, effectiveWorkflowId)
+    }
     const policy = await prisma.workItemRoutingPolicy.update({
       where: { id: req.params.id },
       data: {

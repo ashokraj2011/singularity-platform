@@ -148,8 +148,27 @@ function normalizeTargets(cfg: Record<string, unknown>): WorkItemTargetInput[] {
 }
 
 export async function createWorkItem(input: CreateWorkItemInput, actorId?: string | null) {
-  const targets = Array.isArray(input.targets) ? input.targets : []
+  const targets: WorkItemTargetInput[] = Array.isArray(input.targets)
+    ? input.targets.map((target) => {
+      const row = asRecord(target)
+      return {
+        targetCapabilityId: String(row.targetCapabilityId ?? '').trim(),
+        childWorkflowTemplateId: String(row.childWorkflowTemplateId ?? '').trim() || undefined,
+        roleKey: String(row.roleKey ?? '').trim() || undefined,
+      }
+    })
+    : []
   if (targets.length === 0) throw new ValidationError('WorkItem requires at least one child capability target')
+  if (targets.some((target) => !target.targetCapabilityId)) {
+    throw new ValidationError('WorkItem target capability id is required for every target')
+  }
+  for (const target of targets) {
+    if (!target.childWorkflowTemplateId) continue
+    await assertStartableWorkItemTemplate({
+      templateId: target.childWorkflowTemplateId,
+      targetCapabilityId: target.targetCapabilityId,
+    })
+  }
   const dueAt = input.dueAt ? new Date(input.dueAt) : undefined
   const requiredBy = input.requiredBy ? new Date(input.requiredBy) : dueAt
   const originType = input.originType ?? (input.sourceWorkflowInstanceId || input.parentCapabilityId ? 'PARENT_DELEGATED' : 'CAPABILITY_LOCAL')
@@ -916,6 +935,48 @@ export async function detachWorkItemTargetFromWorkflow(
   return detached
 }
 
+async function assertStartableWorkItemTemplate(args: {
+  templateId: string
+  targetCapabilityId: string
+}) {
+  const template = await prisma.workflow.findUnique({
+    where: { id: args.templateId },
+    select: {
+      capabilityId: true,
+      archivedAt: true,
+      status: true,
+      profile: true,
+      name: true,
+    },
+  })
+  if (!template || template.archivedAt || String(template.status ?? '').trim().toUpperCase() === 'ARCHIVED') {
+    throw new ValidationError(`Workflow template ${args.templateId} is not available for this WorkItem target`)
+  }
+  if (!template.capabilityId || template.capabilityId !== args.targetCapabilityId) {
+    throw new ValidationError(
+      `Workflow template ${args.templateId} belongs to capability ${template.capabilityId ?? 'none'}, ` +
+      `but this WorkItem target belongs to capability ${args.targetCapabilityId}`,
+    )
+  }
+
+  // M93.C — Refuse workbench-profile templates at the API boundary. Even
+  // though M93.C filters them out of the UI dropdown, an older client or
+  // a direct API caller could still POST a workbench template id here.
+  // Starting one as a WorkItem's child produces a workbench-profile
+  // WorkflowInstance that no surface knows how to open: blueprint-
+  // workbench refuses non-bound sessions (M85.s5) and RunViewerPage
+  // isn't designed for the loop-stage view. Workbench templates run
+  // nested via a parent main workflow's CALL_WORKFLOW node, whose
+  // executor copies template.profile to the child instance (M85.s4).
+  if (template.profile === 'workbench') {
+    throw new ValidationError(
+      `"${template.name}" is a workbench-profile template — it can only run as a sub-workflow ` +
+      `inside a main workflow's CALL_WORKFLOW node. Pick a main-profile template, or create a main ` +
+      `workflow whose CALL_WORKFLOW node points at this workbench template.`,
+    )
+  }
+}
+
 export async function startWorkItemTarget(
   workItemId: string,
   targetId: string,
@@ -933,27 +994,7 @@ export async function startWorkItemTarget(
   if (target.childWorkflowInstanceId) throw new ValidationError('This WorkItem target already has a child workflow run')
 
   await assertTemplatePermission(userId, templateId, 'start')
-
-  // M93.C — Refuse workbench-profile templates at the API boundary. Even
-  // though M93.C filters them out of the UI dropdown, an older client or
-  // a direct API caller could still POST a workbench template id here.
-  // Starting one as a WorkItem's child produces a workbench-profile
-  // WorkflowInstance that no surface knows how to open: blueprint-
-  // workbench refuses non-bound sessions (M85.s5) and RunViewerPage
-  // isn't designed for the loop-stage view. Workbench templates run
-  // nested via a parent main workflow's CALL_WORKFLOW node, whose
-  // executor copies template.profile to the child instance (M85.s4).
-  const startedTemplate = await prisma.workflow.findUnique({
-    where: { id: templateId },
-    select: { profile: true, name: true },
-  })
-  if (startedTemplate?.profile === 'workbench') {
-    throw new ValidationError(
-      `"${startedTemplate.name}" is a workbench-profile template — it can only run as a sub-workflow ` +
-      `inside a main workflow's CALL_WORKFLOW node. Pick a main-profile template, or create a main ` +
-      `workflow whose CALL_WORKFLOW node points at this workbench template.`,
-    )
-  }
+  await assertStartableWorkItemTemplate({ templateId, targetCapabilityId: target.targetCapabilityId })
   const vars = {
     ...asRecord(target.workItem.input),
     workItemId,
