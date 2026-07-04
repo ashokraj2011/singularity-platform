@@ -965,11 +965,12 @@ Rotate development defaults before any shared/staging/production deployment:
 Agent Service, including the folded-in Tool Service routes, refuses production-class startup unless `JWT_SECRET`, `MCP_BEARER_TOKEN`, `AUDIT_GOV_SERVICE_TOKEN`, and `CONTEXT_FABRIC_SERVICE_TOKEN` are strong non-default values. This keeps internal tool synthesis and distillation calls from silently running without the Context Fabric service boundary.
 
 Platform-registry self-registration is best-effort startup plumbing for Agent
-Runtime, Agent Service, folded Tool Service, and Prompt Composer. Registration
-POSTs use `PLATFORM_REGISTRY_REGISTER_TIMEOUT_SEC`, default `5` and bounded
-`1..300`; heartbeat POSTs use `PLATFORM_REGISTRY_HEARTBEAT_TIMEOUT_SEC`,
-default `3` and bounded `1..300`. Invalid, too-small, or oversized values fall
-back or clamp so an optional registry cannot stall service startup.
+Runtime, Agent Service, folded Tool Service, Prompt Composer, and MCP Server.
+Registration POSTs use `PLATFORM_REGISTRY_REGISTER_TIMEOUT_SEC`, default `5`
+and bounded `1..300`; heartbeat POSTs use
+`PLATFORM_REGISTRY_HEARTBEAT_TIMEOUT_SEC`, default `3` and bounded `1..300`.
+Invalid, too-small, or oversized values fall back or clamp so an optional
+registry cannot stall service startup.
 
 Agent Service and folded Tool Service synthesis calls to Context Fabric use
 `CONTEXT_FABRIC_SINGLE_TURN_TIMEOUT_SEC`, default `70`, bounded `1..300`.

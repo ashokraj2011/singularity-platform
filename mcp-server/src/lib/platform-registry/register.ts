@@ -37,6 +37,19 @@ export interface RegisterOptions {
 
 let heartbeatTimer: NodeJS.Timeout | null = null
 
+function boundedSeconds(raw: unknown, defaultValue: number, min: number, max: number): number {
+  const value = typeof raw === 'number'
+    ? raw
+    : typeof raw === 'string' && raw.trim() !== ''
+      ? Number(raw.trim())
+      : Number.NaN
+  if (!Number.isFinite(value) || value < min) return defaultValue
+  return Math.min(max, Math.trunc(value))
+}
+
+const REGISTER_TIMEOUT_MS = boundedSeconds(process.env.PLATFORM_REGISTRY_REGISTER_TIMEOUT_SEC, 5, 1, 300) * 1000
+const HEARTBEAT_TIMEOUT_MS = boundedSeconds(process.env.PLATFORM_REGISTRY_HEARTBEAT_TIMEOUT_SEC, 3, 1, 300) * 1000
+
 export function startSelfRegistration(payload: RegisterPayload, opts: RegisterOptions = {}): void {
   const url   = (opts.registryUrl   ?? process.env.PLATFORM_REGISTRY_URL ?? '').replace(/\/+$/, '')
   const token = opts.registerToken ?? process.env.PLATFORM_REGISTER_TOKEN
@@ -54,7 +67,7 @@ export function startSelfRegistration(payload: RegisterPayload, opts: RegisterOp
         method:  'POST',
         headers,
         body:    JSON.stringify(payload),
-        signal:  AbortSignal.timeout(5000),
+        signal:  AbortSignal.timeout(REGISTER_TIMEOUT_MS),
       })
       if (!res.ok) {
         log(`register POST failed (${res.status}): ${(await res.text()).slice(0, 200)}`)
@@ -69,7 +82,7 @@ export function startSelfRegistration(payload: RegisterPayload, opts: RegisterOp
       await fetch(`${url}/api/v1/services/${encodeURIComponent(payload.service_name)}/heartbeat`, {
         method:  'POST',
         headers,
-        signal:  AbortSignal.timeout(3000),
+        signal:  AbortSignal.timeout(HEARTBEAT_TIMEOUT_MS),
       })
     } catch {
       // heartbeat failures are silent — registry liveness is not on the hot path
