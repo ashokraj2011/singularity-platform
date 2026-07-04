@@ -117,6 +117,7 @@ _MAX_RUNTIME_ID_LEN = 128
 _MAX_RUNTIME_TENANT_ID_LEN = 128
 _MAX_RUNTIME_TYPE_LEN = 64
 _MAX_RUNTIME_DEVICE_NAME_LEN = 200
+_MAX_RUNTIME_REQUEST_ID_LEN = 128
 
 # Finding #7 — device-revocation enforcement. A revoked device JWT must stop working
 # without waiting for its (up-to-365-day) natural expiry, so the bridge asks IAM whether
@@ -372,6 +373,23 @@ def _runtime_revocation_identity(claims: dict[str, Any]) -> tuple[str, str]:
     )
 
 
+def _runtime_frame_size(raw: str) -> int:
+    return len(raw.encode("utf-8"))
+
+
+def _runtime_frame_too_large(raw: str) -> bool:
+    return _runtime_frame_size(raw) > MAX_PAYLOAD_BYTES
+
+
+def _runtime_response_request_id(frame: dict[str, Any]) -> str | None:
+    value = frame.get("request_id")
+    if not isinstance(value, str):
+        return None
+    if not value.strip() or len(value) > _MAX_RUNTIME_REQUEST_ID_LEN:
+        return None
+    return value
+
+
 @router.websocket("/api/runtime-bridge/connect")
 @router.websocket("/api/laptop-bridge/connect")
 async def runtime_connect(ws: WebSocket) -> None:
@@ -419,6 +437,9 @@ async def runtime_connect(ws: WebSocket) -> None:
         hello_raw = await asyncio.wait_for(ws.receive_text(), timeout=10)
     except asyncio.TimeoutError:
         await ws.close(code=4400, reason="hello timeout")
+        return
+    if _runtime_frame_too_large(hello_raw):
+        await ws.close(code=1009, reason="runtime hello too large")
         return
     try:
         hello = json.loads(hello_raw)
@@ -510,7 +531,7 @@ async def runtime_connect(ws: WebSocket) -> None:
         last_rev_check = time.monotonic()
         while True:
             raw = await ws.receive_text()
-            raw_size = len(raw.encode("utf-8"))
+            raw_size = _runtime_frame_size(raw)
             if raw_size > MAX_PAYLOAD_BYTES:
                 log.warning(
                     "closing oversized runtime frame user=%s runtime=%s bytes=%s",
@@ -539,9 +560,17 @@ async def runtime_connect(ws: WebSocket) -> None:
                         await ws.close(code=4403, reason="device revoked")
                         break
             elif ftype == "response":
+                request_id = _runtime_response_request_id(frame)
+                if request_id is None:
+                    log.warning(
+                        "dropping runtime response with invalid request_id user=%s runtime=%s",
+                        user_id,
+                        runtime_id,
+                    )
+                    continue
                 await REGISTRY.deliver_response(
                     user_id=user_id, device_id=runtime_id,
-                    request_id=str(frame.get("request_id", "")),
+                    request_id=request_id,
                     payload=frame.get("payload"),
                     error=frame.get("error"),
                 )

@@ -308,6 +308,25 @@ def test_runtime_metadata_bounds_legacy_hello_display_fallbacks():
     assert metadata["device_name"] == "d" * 200
 
 
+def test_runtime_frame_size_guard_counts_utf8_bytes(monkeypatch):
+    monkeypatch.setattr(laptop_bridge, "MAX_PAYLOAD_BYTES", 4)
+
+    assert laptop_bridge._runtime_frame_size("abcd") == 4
+    assert laptop_bridge._runtime_frame_too_large("abcd") is False
+    assert laptop_bridge._runtime_frame_size("🙂") == 4
+    assert laptop_bridge._runtime_frame_too_large("🙂x") is True
+
+
+def test_runtime_response_request_id_bounds_and_normalizes():
+    assert laptop_bridge._runtime_response_request_id({"request_id": "req-123"}) == "req-123"
+    assert laptop_bridge._runtime_response_request_id({"request_id": ""}) is None
+    assert laptop_bridge._runtime_response_request_id({"request_id": "   "}) is None
+    assert laptop_bridge._runtime_response_request_id({"request_id": "r" * 128}) == "r" * 128
+    assert laptop_bridge._runtime_response_request_id({"request_id": "r" * 129}) is None
+    assert laptop_bridge._runtime_response_request_id({"request_id": 123}) is None
+    assert laptop_bridge._runtime_response_request_id({}) is None
+
+
 def test_runtime_revocation_identity_prefers_device_id_then_runtime_id():
     assert laptop_bridge._runtime_revocation_identity({
         "kind": "device",

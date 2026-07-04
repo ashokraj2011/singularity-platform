@@ -80,11 +80,13 @@ routes such as branch finalization and worktree writes still require
 `RUNTIME_HTTP_FALLBACK_ENABLED=true` before they will call `MCP_SERVER_URL`.
 
 Runtime frames and response parts are bounded by the bridge payload ceiling
-(`16 MiB` today). Context Fabric closes oversized raw WebSocket frames with a
-WebSocket `1009` close and rejects oversized `response.payload` or
-`response.error` bodies with `RUNTIME_RESPONSE_TOO_LARGE`. Malformed
-non-object `response.error` frames are normalized to `INVALID_RUNTIME_ERROR` so
-callers fail deterministically instead of timing out on a popped pending future.
+(`16 MiB` today). Context Fabric rejects oversized `hello` frames before JSON
+parsing, closes oversized post-registration WebSocket frames with a WebSocket
+`1009` close, and rejects oversized `response.payload` or `response.error`
+bodies with `RUNTIME_RESPONSE_TOO_LARGE`. Runtime `response.request_id` values
+must be nonblank strings of at most `128` characters. Malformed non-object
+`response.error` frames are normalized to `INVALID_RUNTIME_ERROR` so callers
+fail deterministically instead of timing out on a popped pending future.
 On the runtime side, MCP bounds bridge request ids to `1..128` characters and
 decodes bridge-to-runtime frames with safe parsing; malformed known frame types
 are ignored as invalid frames instead of throwing into the WebSocket message
