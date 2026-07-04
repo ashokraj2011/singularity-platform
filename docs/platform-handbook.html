@@ -1124,6 +1124,11 @@ indefinitely.</p>
 <code>PROMPT_WORKBENCH_COMPOSER_TIMEOUT_SEC</code>, default <code>240</code>, bounded <code>1..900</code>. This
 keeps interactive prompt experiments from waiting forever while still allowing
 longer governed model calls than readiness probes.</p>
+<p>Platform Web&#39;s <code>/api/composer/*</code> Prompt Composer proxy uses
+<code>PLATFORM_WEB_COMPOSER_PROXY_TIMEOUT_SEC</code>, default <code>60</code>, bounded <code>1..900</code>.
+This keeps prompt profile, layer, instruction, and admin calls from waiting
+indefinitely behind a stalled Composer service while preserving the dedicated
+longer Prompt Workbench compose timeout above.</p>
 <p>Agent Runtime capability/polling knobs are schema-validated at startup.
 <code>POLL_WORKER_TICK_SEC</code> defaults to <code>30</code> and is bounded <code>5..3600</code>.
 <code>POLL_WORKER_INITIAL_DELAY_SEC</code> defaults to <code>5</code> and is bounded <code>1..300</code>,

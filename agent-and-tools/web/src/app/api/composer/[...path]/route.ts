@@ -2,8 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { composerAuthFailure, composerAuthHeaders } from "../../prompt-workbench/_shared/composer";
 import { platformServiceUrl } from "@/lib/platformServices";
 import { readJsonish } from "../../_json";
+import { boundedSecondsEnv } from "@/lib/serverEnvBounds";
 
 export const dynamic = "force-dynamic";
+
+const COMPOSER_PROXY_TIMEOUT_MS = boundedSecondsEnv("PLATFORM_WEB_COMPOSER_PROXY_TIMEOUT_SEC", 60, 1, 900) * 1000;
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -45,6 +48,7 @@ async function proxyComposer(request: NextRequest, context: { params: Promise<{ 
     headers,
     redirect: "manual",
     cache: "no-store",
+    signal: AbortSignal.timeout(COMPOSER_PROXY_TIMEOUT_MS),
   };
   if (!["GET", "HEAD"].includes(request.method)) {
     init.body = await request.arrayBuffer();

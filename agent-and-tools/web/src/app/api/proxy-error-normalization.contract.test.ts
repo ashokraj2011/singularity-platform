@@ -92,6 +92,24 @@ assert.match(
 
 assert.match(
   composerRoute,
+  /import \{ boundedSecondsEnv \} from "@\/lib\/serverEnvBounds";/,
+  "composer proxy should use the central server env bounds helper",
+);
+
+assert.match(
+  composerRoute,
+  /const COMPOSER_PROXY_TIMEOUT_MS = boundedSecondsEnv\("PLATFORM_WEB_COMPOSER_PROXY_TIMEOUT_SEC", 60, 1, 900\) \* 1000;/,
+  "composer proxy should expose a bounded upstream timeout knob",
+);
+
+assert.match(
+  composerRoute,
+  /const init: RequestInit = \{[\s\S]*?signal: AbortSignal\.timeout\(COMPOSER_PROXY_TIMEOUT_MS\)[\s\S]*?\};[\s\S]*?fetch\(upstream, init\)/,
+  "composer proxy should bound upstream Prompt Composer calls",
+);
+
+assert.match(
+  composerRoute,
   /if \(!res\.ok\) \{[\s\S]*?const body = await readJsonish\(res\);[\s\S]*?if \(!body\.parseError\) \{[\s\S]*?return new NextResponse\(body\.raw/,
   "composer proxy should preserve valid JSON upstream errors through readJsonish",
 );

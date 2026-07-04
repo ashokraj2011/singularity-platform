@@ -876,6 +876,12 @@ Platform Web's Prompt Workbench `compose-and-respond` calls use
 keeps interactive prompt experiments from waiting forever while still allowing
 longer governed model calls than readiness probes.
 
+Platform Web's `/api/composer/*` Prompt Composer proxy uses
+`PLATFORM_WEB_COMPOSER_PROXY_TIMEOUT_SEC`, default `60`, bounded `1..900`.
+This keeps prompt profile, layer, instruction, and admin calls from waiting
+indefinitely behind a stalled Composer service while preserving the dedicated
+longer Prompt Workbench compose timeout above.
+
 Agent Runtime capability/polling knobs are schema-validated at startup.
 `POLL_WORKER_TICK_SEC` defaults to `30` and is bounded `5..3600`.
 `POLL_WORKER_INITIAL_DELAY_SEC` defaults to `5` and is bounded `1..300`,
