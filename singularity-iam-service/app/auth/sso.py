@@ -6,6 +6,7 @@ import httpx
 import jwt
 
 from app.config import settings
+from app.upstream_json import response_error_message, response_json_object
 
 
 def _csv(raw: str) -> list[str]:
@@ -68,16 +69,9 @@ async def exchange_oidc_authorization_code(code: str) -> str:
         raise ValueError(f"OIDC token exchange failed: {exc}") from exc
 
     if response.status_code >= 400:
-        try:
-            body = response.json()
-        except ValueError:
-            body = response.text
-        raise ValueError(f"OIDC token exchange failed: {body}")
+        raise ValueError(response_error_message(response, "OIDC token exchange"))
 
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise ValueError("OIDC token endpoint returned invalid JSON") from exc
+    payload = response_json_object(response, "OIDC token endpoint")
 
     id_token = payload.get("id_token")
     if not isinstance(id_token, str) or not id_token.strip():

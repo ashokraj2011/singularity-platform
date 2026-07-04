@@ -23,6 +23,7 @@ import httpx
 import jwt
 
 from app.config import _is_prod_env
+from app.upstream_json import response_json_object
 
 log = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ async def mint_installation_token(
         raise RuntimeError(
             f"GitHub installation-token mint failed ({resp.status_code}): {resp.text[:200]}"
         )
-    data = resp.json()
+    data = response_json_object(resp, "GitHub installation-token mint")
     token = data.get("token")
     if not token:
         raise RuntimeError("GitHub installation-token response had no token")

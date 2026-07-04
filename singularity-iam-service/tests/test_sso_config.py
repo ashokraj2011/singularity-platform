@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from app.auth import sso
 
 
@@ -112,7 +114,7 @@ def test_exchange_oidc_authorization_code_posts_to_token_endpoint(monkeypatch):
 
     class FakeResponse:
         status_code = 200
-        text = ""
+        text = '{"id_token": "header.payload.signature"}'
 
         def json(self):
             return {"id_token": "header.payload.signature"}
@@ -147,3 +149,61 @@ def test_exchange_oidc_authorization_code_posts_to_token_endpoint(monkeypatch):
         },
         "headers": {"accept": "application/json"},
     }]
+
+
+def test_exchange_oidc_authorization_code_rejects_invalid_json(monkeypatch):
+    monkeypatch.setattr(sso.settings, "OIDC_ISSUER_URL", "https://idp.example.com")
+    monkeypatch.setattr(sso.settings, "OIDC_CLIENT_ID", "singularity")
+    monkeypatch.setattr(sso.settings, "OIDC_CLIENT_SECRET", "client-secret")
+    monkeypatch.setattr(sso.settings, "OIDC_REDIRECT_URI", "https://platform.example.com/callback")
+
+    class FakeResponse:
+        status_code = 200
+        text = "Internal Server Error"
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, data, headers):
+            return FakeResponse()
+
+    monkeypatch.setattr(sso.httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(ValueError, match=r"OIDC token endpoint returned invalid JSON .*Internal Server Error"):
+        asyncio.run(sso.exchange_oidc_authorization_code("auth-code"))
+
+
+def test_exchange_oidc_authorization_code_reports_provider_error(monkeypatch):
+    monkeypatch.setattr(sso.settings, "OIDC_ISSUER_URL", "https://idp.example.com")
+    monkeypatch.setattr(sso.settings, "OIDC_CLIENT_ID", "singularity")
+    monkeypatch.setattr(sso.settings, "OIDC_CLIENT_SECRET", "client-secret")
+    monkeypatch.setattr(sso.settings, "OIDC_REDIRECT_URI", "https://platform.example.com/callback")
+
+    class FakeResponse:
+        status_code = 400
+        text = '{"error_description": "authorization code expired"}'
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, data, headers):
+            return FakeResponse()
+
+    monkeypatch.setattr(sso.httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(ValueError, match=r"OIDC token exchange failed \(400\): authorization code expired"):
+        asyncio.run(sso.exchange_oidc_authorization_code("auth-code"))
