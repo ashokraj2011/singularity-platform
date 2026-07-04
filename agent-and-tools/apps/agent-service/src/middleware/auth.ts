@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import { readUpstreamJsonObject } from "../shared/upstream-json";
 
 export interface AuthUser {
   user_id: string;
@@ -55,7 +56,7 @@ async function verifyWithIam(token: string): Promise<AuthUser | null> {
   try {
     const res = await fetch(`${base}/me`, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) return null;
-    const me = await res.json() as IamMeResponse;
+    const me = await readUpstreamJsonObject(res, "IAM /me") as IamMeResponse;
     const userId = me.user_id ?? me.id ?? me.sub;
     if (!userId) return null;
     return {

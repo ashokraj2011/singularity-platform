@@ -3,6 +3,7 @@ import { createHash } from "crypto";
 import { query, queryOne } from "../database";
 import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
+import { readUpstreamJsonObject } from "../shared/upstream-json";
 import {
   getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral,
 } from "@agentandtools/shared";
@@ -196,7 +197,7 @@ async function synthesiseCandidates(args: {
     const detail = (await res.text()).slice(0, 400);
     throw new AppError(`Distillation CONTEXT_FABRIC_UPSTREAM (${res.status}): ${detail}`, 502);
   }
-  const data = (await res.json()) as { finalResponse?: string; data?: { finalResponse?: string } };
+  const data = await readUpstreamJsonObject(res, "Context Fabric distillation") as { finalResponse?: string; data?: { finalResponse?: string } };
   const raw = data.finalResponse ?? data.data?.finalResponse ?? "";
 
   // Synthetic fallback used when the LLM returns no parseable JSON (mock

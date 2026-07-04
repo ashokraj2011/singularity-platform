@@ -22,6 +22,7 @@ import { Router, Request, Response } from "express";
 import { query } from "../database";
 import { requireAuth } from "../middleware/auth";
 import { getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral } from "@agentandtools/shared";
+import { readUpstreamJsonObject } from "../../shared/upstream-json";
 
 const RECENCY_BOOST_DAYS = Number(process.env.EMBEDDING_RECENCY_DAYS ?? 30);
 const RECENCY_BOOST_MAX  = Number(process.env.EMBEDDING_RECENCY_BOOST ?? 0.2);
@@ -206,7 +207,7 @@ async function callContextFabricSingleTurn(opts: { systemPrompt: string; message
     signal: AbortSignal.timeout(70_000),
   });
   if (!res.ok) throw new Error(`CONTEXT_FABRIC_UPSTREAM ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const data = (await res.json()) as { finalResponse?: string; data?: { finalResponse?: string } };
+  const data = await readUpstreamJsonObject(res, "Context Fabric governed single-turn") as { finalResponse?: string; data?: { finalResponse?: string } };
   return (data.finalResponse ?? data.data?.finalResponse ?? "").trim();
 }
 

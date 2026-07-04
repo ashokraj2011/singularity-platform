@@ -23,6 +23,7 @@
  */
 import { Router, Request, Response } from "express";
 import { requireAuth } from "../middleware/auth";
+import { readUpstreamJson } from "../../shared/upstream-json";
 
 const WORKGRAPH_API_URL    = process.env.WORKGRAPH_API_URL ?? "http://host.docker.internal:8080";
 const WORKGRAPH_API_BEARER = process.env.WORKGRAPH_API_BEARER ?? "";
@@ -41,7 +42,9 @@ async function findConnectorByName(name: string, expectedType?: string): Promise
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) throw new Error(`workgraph /api/connectors ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const all = (await res.json()) as ConnectorRow[];
+  const parsed = await readUpstreamJson(res, "workgraph /api/connectors");
+  if (!Array.isArray(parsed)) throw new Error("workgraph /api/connectors returned invalid connector list");
+  const all = parsed as ConnectorRow[];
   const match = all.find((c) => !c.archivedAt && c.name === name && (!expectedType || c.type === expectedType));
   if (!match) {
     const expected = expectedType ? ` of type ${expectedType}` : "";

@@ -26,7 +26,11 @@ function main() {
   assertRouterAuth("src/routes/runtime.ts", "runtimeRoutes");
 
   const learningPatterns = source("src/routes/learning-patterns.ts");
-  assert.match(learningPatterns, /learningPatternsRoutes\.use\(requireServiceAuth\)/);
+  assert.doesNotMatch(learningPatterns, /learningPatternsRoutes\.use\(requireServiceAuth\)/);
+  assert.match(learningPatterns, /learningPatternsRoutes\.get\("\/failures\/:capabilityId\/summary", requireServiceAuth/);
+  assert.match(learningPatterns, /learningPatternsRoutes\.get\("\/patterns", requireServiceAuth/);
+  assert.match(learningPatterns, /learningPatternsRoutes\.post\("\/patterns", requireServiceAuth/);
+  assert.match(learningPatterns, /learningPatternsRoutes\.get\("\/state", requireServiceAuth/);
   assert.match(learningPatterns, /res\.status\(503\)\.json\(\{ error: "learning service token not configured" \}\)/);
   assert.doesNotMatch(learningPatterns, /AUTH_OPTIONAL/);
   assert.doesNotMatch(learningPatterns, /!SERVICE_TOKEN &&/);

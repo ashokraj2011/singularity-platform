@@ -6,6 +6,7 @@ import { emitAuditEvent } from "../lib/audit-gov-emit";
 import { effectiveCapabilityGate } from "../lib/effective-capability-gate";
 import { capabilityMetadataForTool } from "../lib/capability-metadata";
 import { serverToolUrlPolicy } from "../lib/server-tool-url-policy";
+import { parseUpstreamJson, readUpstreamText } from "../../shared/upstream-json";
 
 export const executionRoutes = Router();
 // M35.1 — tool execution is an action; every route here mutates state and
@@ -206,7 +207,19 @@ executionRoutes.post("/invoke", async (req: Request, res: Response) => {
         body: JSON.stringify(args),
         signal: AbortSignal.timeout(Number(process.env.TOOL_SERVER_ENDPOINT_TIMEOUT_MS ?? "30000")),
       });
-      const output = await response.json() as Record<string, unknown>;
+      const text = await readUpstreamText(response);
+      if (!response.ok) {
+        throw new Error(`server tool endpoint ${response.status}: ${text.slice(0, 300)}`);
+      }
+      let output: Record<string, unknown>;
+      try {
+        const parsed = parseUpstreamJson(text || "{}", "server tool endpoint", response.status);
+        output = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? parsed as Record<string, unknown>
+          : { result: parsed };
+      } catch {
+        output = { result: text };
+      }
 
       await query(
         "UPDATE tool.tool_executions SET status='success', output_json=$1, completed_at=now() WHERE id=$2",

@@ -7,7 +7,7 @@ function source(relativePath: string): string {
 }
 
 function main() {
-  const internalTools = source("src/routes/internal-tools.ts");
+  const internalTools = source("src/tool/routes/internal-tools.ts");
 
   assert.match(internalTools, /CONTEXT_FABRIC_URL/);
   assert.match(internalTools, /CONTEXT_FABRIC_SERVICE_TOKEN/);

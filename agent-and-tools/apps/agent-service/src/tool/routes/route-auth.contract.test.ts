@@ -14,20 +14,20 @@ function assertRouterAuth(relativePath: string, routerName: string): void {
 }
 
 function main() {
-  const auth = source("src/middleware/auth.ts");
+  const auth = source("src/tool/middleware/auth.ts");
   assert.match(auth, /async function verifyWithIam\(token: string\): Promise<AuthUser \| null>/);
   assert.match(auth, /process\.env\.IAM_SERVICE_URL \?\? process\.env\.IAM_BASE_URL/);
   assert.match(auth, /fetch\(`\$\{base\}\/me`, \{ headers: \{ Authorization: `Bearer \$\{token\}` \} \}\)/);
   assert.match(auth, /req\.user = await verifyWithIam\(token\) \?\? undefined/);
 
-  assertRouterAuth("src/routes/tools.ts", "toolRoutes");
-  assertRouterAuth("src/routes/discovery.ts", "discoveryRoutes");
-  assertRouterAuth("src/routes/execution.ts", "executionRoutes");
-  assertRouterAuth("src/routes/runners.ts", "runnerRoutes");
-  assertRouterAuth("src/routes/internal-tools.ts", "internalToolsRoutes");
-  assertRouterAuth("src/routes/connector-tools.ts", "connectorToolsRoutes");
+  assertRouterAuth("src/tool/routes/tools.ts", "toolRoutes");
+  assertRouterAuth("src/tool/routes/discovery.ts", "discoveryRoutes");
+  assertRouterAuth("src/tool/routes/execution.ts", "executionRoutes");
+  assertRouterAuth("src/tool/routes/runners.ts", "runnerRoutes");
+  assertRouterAuth("src/tool/routes/internal-tools.ts", "internalToolsRoutes");
+  assertRouterAuth("src/tool/routes/connector-tools.ts", "connectorToolsRoutes");
 
-  const events = source("src/lib/eventbus/routes.ts");
+  const events = source("src/tool/lib/eventbus/routes.ts");
   assert.match(events, /eventSubscriptionsRouter\.use\(requireAuth\)/);
 
   console.log("tool-service route auth contracts passed");
