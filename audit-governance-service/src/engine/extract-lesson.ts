@@ -18,20 +18,37 @@
  */
 import { query, queryOne } from "../db";
 import { readUpstreamJsonObject } from "./upstream-json";
+import { boundedEnvInteger } from "../env";
 
-const LESSON_CONFIRM_WINDOW_SEC = Number(process.env.LESSON_CONFIRM_WINDOW_SEC ?? 3600);
-const RETRY_LOOKBACK_HOURS      = Number(process.env.LESSON_RETRY_LOOKBACK_HOURS ?? 2);
+const LESSON_CONFIRM_WINDOW_SEC = boundedEnvInteger("LESSON_CONFIRM_WINDOW_SEC", {
+  defaultValue: 3_600,
+  min: 60,
+  max: 604_800,
+});
+const RETRY_LOOKBACK_HOURS      = boundedEnvInteger("LESSON_RETRY_LOOKBACK_HOURS", {
+  defaultValue: 2,
+  min: 1,
+  max: 168,
+});
 const PROMPT_COMPOSER_URL       = (process.env.PROMPT_COMPOSER_URL ?? "http://prompt-composer:3004").replace(/\/$/, "");
 const MCP_SERVER_URL            = (process.env.MCP_SERVER_URL ?? "http://mcp-server:7100").replace(/\/$/, "");
 const MCP_BEARER_TOKEN          = process.env.MCP_BEARER_TOKEN ?? "";
 const ENGINE_MODEL_ALIAS        = process.env.ENGINE_MODEL_ALIAS ?? "";
-const EXTRACT_TIMEOUT_MS        = Number(process.env.LESSON_EXTRACT_TIMEOUT_MS ?? 30_000);
+const EXTRACT_TIMEOUT_MS        = boundedEnvInteger("LESSON_EXTRACT_TIMEOUT_MS", {
+  defaultValue: 30_000,
+  min: 1_000,
+  max: 300_000,
+});
 
 // SystemPrompt cache (same pattern as audit-gov/src/engine/diagnose.ts).
 const LESSON_PROMPT_KEY = "audit-gov.lesson-extract";
 let cachedLessonSystemPrompt: string | null = null;
 let cachedLessonSystemPromptAt = 0;
-const LESSON_PROMPT_TTL_MS = Number(process.env.SYSTEM_PROMPT_CACHE_TTL_SEC ?? 300) * 1000;
+const LESSON_PROMPT_TTL_MS = boundedEnvInteger("SYSTEM_PROMPT_CACHE_TTL_SEC", {
+  defaultValue: 300,
+  min: 1,
+  max: 86_400,
+}) * 1000;
 
 async function getLessonSystemPrompt(): Promise<string> {
   if (cachedLessonSystemPrompt && Date.now() - cachedLessonSystemPromptAt < LESSON_PROMPT_TTL_MS) {

@@ -751,6 +751,16 @@ Invalid or below-minimum values fall back to defaults, while oversized values
 clamp to caps, so ingest cannot accidentally run with disabled rate limits or
 huge per-request batches after an env typo.
 
+Audit Governance engine workers use the same bounded env helper. Judge and
+lesson extraction LLM timeouts default to `30000` ms and cap at `300000`; the
+diagnosis timeout defaults to `120000` ms and caps at `600000`. The shared
+system-prompt cache TTL defaults to `300` seconds and caps at `86400`.
+Lesson extraction windows are bounded as well: confirmation wait defaults to
+`3600` seconds with a `60..604800` envelope, and retry lookback defaults to
+`2` hours with a `1..168` envelope. Engine sweeps default to every `300000` ms
+with a `30000..86400000` envelope, scanning the last `10` minutes with a
+`1..1440` envelope.
+
 Workgraph's Copilot handoff export keeps prompt composition fail-soft. The
 best-effort Context Fabric compose call uses `COPILOT_COMPOSE_TIMEOUT_MS`,
 default `30000`, minimum `1000`, and maximum `120000`. Invalid values fall

@@ -20,10 +20,15 @@
  */
 import { query, queryOne } from "../db";
 import { readUpstreamJsonObject } from "./upstream-json";
+import { boundedEnvInteger } from "../env";
 
 const LLM_GATEWAY_URL    = (process.env.LLM_GATEWAY_URL ?? "http://host.docker.internal:8001").replace(/\/$/, "");
 const ENGINE_MODEL_ALIAS = process.env.ENGINE_MODEL_ALIAS?.trim();
-const ENGINE_TIMEOUT_MS  = Number(process.env.ENGINE_TIMEOUT_MS ?? 120_000);
+const ENGINE_TIMEOUT_MS  = boundedEnvInteger("ENGINE_TIMEOUT_MS", {
+  defaultValue: 120_000,
+  min: 1_000,
+  max: 600_000,
+});
 
 // ── Trace loading ──────────────────────────────────────────────────────
 
@@ -86,7 +91,11 @@ const PROMPT_COMPOSER_URL = process.env.PROMPT_COMPOSER_URL?.trim() ?? "http://p
 const DIAGNOSIS_PROMPT_KEY = "audit-gov.diagnose";
 let cachedDiagnosisPrompt: string | null = null;
 let cachedDiagnosisPromptAt = 0;
-const DIAGNOSIS_PROMPT_TTL_MS = Number(process.env.SYSTEM_PROMPT_CACHE_TTL_SEC ?? 300) * 1000;
+const DIAGNOSIS_PROMPT_TTL_MS = boundedEnvInteger("SYSTEM_PROMPT_CACHE_TTL_SEC", {
+  defaultValue: 300,
+  min: 1,
+  max: 86_400,
+}) * 1000;
 
 async function getDiagnosisSystemPrompt(): Promise<string> {
   if (cachedDiagnosisPrompt && Date.now() - cachedDiagnosisPromptAt < DIAGNOSIS_PROMPT_TTL_MS) {

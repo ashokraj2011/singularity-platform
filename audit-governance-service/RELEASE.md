@@ -38,6 +38,14 @@ operator surface for "what is happening across services."
 | `AUDIT_GOV_STREAM_MAX_SUBSCRIBERS`   | `50`                                                 | Concurrent SSE clients per instance. Bounded `1..1000`.         |
 | `AUDIT_GOV_STREAM_KEEPALIVE_MS`      | `15000`                                              | Heartbeat interval on SSE streams. Bounded `1000..300000`.      |
 | `AUDIT_GOV_STREAM_QUEUE_MAX`         | `500`                                                | Per-client SSE event queue before oldest events are dropped. Bounded `1..10000`. |
+| `JUDGE_TIMEOUT_MS`                   | `30000`                                              | LLM-as-judge gateway timeout. Bounded `1000..300000`.           |
+| `ENGINE_TIMEOUT_MS`                  | `120000`                                             | Diagnosis gateway timeout. Bounded `1000..600000`.              |
+| `SYSTEM_PROMPT_CACHE_TTL_SEC`        | `300`                                                | Diagnosis/lesson system prompt cache TTL. Bounded `1..86400`.   |
+| `LESSON_CONFIRM_WINDOW_SEC`          | `3600`                                               | Stable-resolution wait before lesson extraction. Bounded `60..604800`. |
+| `LESSON_RETRY_LOOKBACK_HOURS`        | `2`                                                  | Retry trace lookback for lesson extraction. Bounded `1..168`.   |
+| `LESSON_EXTRACT_TIMEOUT_MS`          | `30000`                                              | Lesson extraction LLM timeout. Bounded `1000..300000`.          |
+| `ENGINE_SWEEP_INTERVAL_MS`           | `300000`                                             | Engine sweep cadence. Bounded `30000..86400000`.                |
+| `ENGINE_SWEEP_WINDOW_MIN`            | `10`                                                 | Engine failure scan window. Bounded `1..1440`.                  |
 
 ## Dependencies
 

@@ -22,10 +22,15 @@
 
 import { getRubricForStageType, type RubricSpec } from "./rubrics";
 import { readUpstreamJsonObject } from "./upstream-json";
+import { boundedEnvInteger } from "../env";
 
 const LLM_GATEWAY_URL = (process.env.LLM_GATEWAY_URL ?? "http://host.docker.internal:8001").replace(/\/$/, "");
 const DEFAULT_JUDGE_MODEL_ALIAS = process.env.JUDGE_MODEL_ALIAS ?? process.env.ENGINE_MODEL_ALIAS ?? "";
-const DEFAULT_JUDGE_TIMEOUT_MS = parseInt(process.env.JUDGE_TIMEOUT_MS ?? "30000", 10);
+const DEFAULT_JUDGE_TIMEOUT_MS = boundedEnvInteger("JUDGE_TIMEOUT_MS", {
+  defaultValue: 30_000,
+  min: 1_000,
+  max: 300_000,
+});
 const DEFAULT_JUDGE_THRESHOLD = 3; // pass when judge scores >= 3 on a 1-5 scale
 
 export interface JudgeInput {

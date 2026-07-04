@@ -21,9 +21,18 @@ import {
 } from "./cluster";
 // M38 — confirmed-resolved issues drive the lesson extraction tail of each sweep.
 import { confirmStableResolutions, extractPendingLessons } from "./extract-lesson";
+import { boundedEnvInteger } from "../env";
 
-const SWEEP_INTERVAL_MS = Number(process.env.ENGINE_SWEEP_INTERVAL_MS ?? 5 * 60_000);
-const SWEEP_WINDOW_MIN  = Number(process.env.ENGINE_SWEEP_WINDOW_MIN ?? 10);
+const SWEEP_INTERVAL_MS = boundedEnvInteger("ENGINE_SWEEP_INTERVAL_MS", {
+  defaultValue: 5 * 60_000,
+  min: 30_000,
+  max: 86_400_000,
+});
+const SWEEP_WINDOW_MIN  = boundedEnvInteger("ENGINE_SWEEP_WINDOW_MIN", {
+  defaultValue: 10,
+  min: 1,
+  max: 1_440,
+});
 
 let sweepTimer: NodeJS.Timeout | null = null;
 let lastSweepAt: string | null = null;
