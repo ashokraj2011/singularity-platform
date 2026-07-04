@@ -18,6 +18,7 @@ import {
   Wand2,
 } from "lucide-react";
 import { runtimeApi } from "@/lib/api";
+import { asBoolean, asRow, asRowArray, asString, asStringArray } from "@/lib/row";
 import { shortId, valueText, workgraphFetch } from "@/lib/workgraph";
 import { isWorkbenchProfile, workbenchNeoUrl } from "@/lib/workbenchLaunch";
 import { Stepper, type Step } from "@/components/ui/primitives";
@@ -108,9 +109,9 @@ const starterStory = [
 ].join("\n");
 
 export function WorkflowPlannerConsole() {
-  const { data: capabilityRows = [], error: capabilityError, isLoading: capabilitiesLoading, mutate: reloadCapabilities } = useSWR(
+  const { data: capabilityRows, error: capabilityError, isLoading: capabilitiesLoading, mutate: reloadCapabilities } = useSWR<unknown>(
     "workflow-planner-capabilities",
-    () => runtimeApi.listCapabilities() as Promise<Record<string, unknown>[]>,
+    () => runtimeApi.listCapabilities(),
   );
   const capabilities = useMemo(() => normalizeCapabilities(capabilityRows), [capabilityRows]);
 
@@ -179,7 +180,7 @@ export function WorkflowPlannerConsole() {
     setLaunchResult(null);
     const nextMessages: ChatMessage[] = [...messages, { role: "user", content: text }];
     try {
-      const result = await workgraphFetch<ConverseResult>("/planner/converse", {
+      const result = normalizeConverseResult(await workgraphFetch<unknown>("/planner/converse", {
         method: "POST",
         body: JSON.stringify({
           capabilityId: capabilityId.trim(),
@@ -188,10 +189,10 @@ export function WorkflowPlannerConsole() {
           allowChildren,
           maxItems,
         }),
-      });
+      }), capabilityId.trim());
       setLast(result);
       setMessages([...nextMessages, { role: "assistant", content: result.reply || "Plan updated." }]);
-      if (result.milestones?.length) setMilestones(normalizeMilestones(result.milestones, capabilityId));
+      if (result.milestones.length) setMilestones(result.milestones);
       setStory("");
     } catch (err) {
       setError(`Planner API failed: ${errorText(err)}. You can still create a local draft from the story and commit it as WorkItems.`);
@@ -239,11 +240,11 @@ export function WorkflowPlannerConsole() {
     setCommitting(true);
     setError(null);
     try {
-      const result = await workgraphFetch<CommitResult>("/planner/commit", {
+      const result = normalizeCommitResult(await workgraphFetch<unknown>("/planner/commit", {
         method: "POST",
         body: JSON.stringify({ capabilityId: capabilityId.trim(), milestones: prepared }),
-      });
-      setCommitResult({ created: result.created ?? [], failed: result.failed ?? [] });
+      }));
+      setCommitResult(result);
       setLaunchResult(null);
     } catch (err) {
       setError(`Create WorkItems failed: ${errorText(err)}`);
@@ -263,7 +264,7 @@ export function WorkflowPlannerConsole() {
     setCommitResult(null);
     setLaunchResult(null);
     try {
-      const result = await workgraphFetch<LaunchResult>("/planner/launch", {
+      const result = normalizeLaunchResult(await workgraphFetch<unknown>("/planner/launch", {
         method: "POST",
         body: JSON.stringify({
           capabilityId: capabilityId.trim(),
@@ -274,9 +275,9 @@ export function WorkflowPlannerConsole() {
           runtimePreference: "user_runtime",
           governancePreset: "standard",
         }),
-      });
+      }));
       setLaunchResult(result);
-      setCommitResult({ created: result.workItems ?? [], failed: result.failedWorkItems ?? [] });
+      setCommitResult({ created: result.workItems, failed: result.failedWorkItems });
     } catch (err) {
       setError(`Launch failed: ${errorText(err)}`);
     } finally {
@@ -475,8 +476,8 @@ export function WorkflowPlannerConsole() {
                 <SuccessPanel text={`Created ${commitResult.created.length} WorkItem${commitResult.created.length === 1 ? "" : "s"}.`} />
                 {commitResult.created.length > 0 && (
                   <div style={{ display: "grid", gap: 7 }}>
-                    {commitResult.created.map((created) => (
-                      <Link key={created.id} href="/work-items" className="card card-hover" style={{ padding: 11, textDecoration: "none", boxShadow: "none" }}>
+                    {commitResult.created.map((created, index) => (
+                      <Link key={`${created.id}-${created.workCode}-${index}`} href="/work-items" className="card card-hover" style={{ padding: 11, textDecoration: "none", boxShadow: "none" }}>
                         <strong style={{ fontSize: 13, color: "var(--color-on-surface)" }}>{created.workCode}</strong>
                         <span style={{ marginLeft: 8, color: "var(--color-outline)", fontSize: 12 }}>{created.milestone} · {shortId(created.capabilityId)}</span>
                       </Link>
@@ -739,16 +740,16 @@ function iconBox(color: string): CSSProperties {
   };
 }
 
-function normalizeCapabilities(rows: Record<string, unknown>[]): Capability[] {
-  const mapped = rows
+function normalizeCapabilities(value: unknown): Capability[] {
+  const mapped = rowsFrom(value, ["capabilities"])
     .map<Capability | null>((row) => {
-      const id = stringValue(row.id ?? row.capabilityId ?? row.capability_id);
+      const id = asString(row.id ?? row.capabilityId ?? row.capability_id);
       if (!id) return null;
       return {
         id,
-        name: stringValue(row.name ?? row.displayName ?? row.display_name) || id,
-        capabilityType: stringValue(row.capabilityType ?? row.capability_type),
-        status: stringValue(row.status),
+        name: asString(row.name ?? row.displayName ?? row.display_name, id),
+        capabilityType: asString(row.capabilityType ?? row.capability_type) || null,
+        status: asString(row.status) || null,
       };
     });
   return mapped
@@ -757,35 +758,201 @@ function normalizeCapabilities(rows: Record<string, unknown>[]): Capability[] {
 }
 
 function normalizeAssignable(
-  rows: Array<{ id: string; name: string }> | undefined,
+  value: unknown,
   selectedCapability: Capability | null,
   capabilityId: string,
 ): Array<{ id: string; name: string }> {
   const out = new Map<string, string>();
   if (selectedCapability) out.set(selectedCapability.id, selectedCapability.name);
   if (capabilityId.trim()) out.set(capabilityId.trim(), selectedCapability?.name ?? "Home capability");
-  for (const row of rows ?? []) {
-    if (row.id) out.set(row.id, row.name || row.id);
+  for (const row of rowsFrom(value, ["assignableCapabilities", "assignable_capabilities", "capabilities"])) {
+    const id = asString(row.id ?? row.capabilityId ?? row.capability_id);
+    if (id) out.set(id, asString(row.name ?? row.displayName ?? row.display_name, id));
   }
   return Array.from(out.entries()).map(([id, name]) => ({ id, name }));
 }
 
-function normalizeMilestones(input: Milestone[], homeCapabilityId: string): Milestone[] {
-  return input.map((milestone, index) => ({
-    id: milestone.id || `M${index + 1}`,
-    title: milestone.title || `Milestone ${index + 1}`,
-    summary: milestone.summary || "",
-    tasks: (milestone.tasks ?? []).map((task) => ({
-      title: task.title || "Untitled task",
-      description: task.description || "Define acceptance criteria and complete the work.",
-      category: task.category || "GENERAL",
-      capabilityId: task.capabilityId || homeCapabilityId,
-      priority: PRIORITIES.includes(task.priority) ? task.priority : "MEDIUM",
-      effortDays: Number(task.effortDays) || 1,
-      aiSuggested: Boolean(task.aiSuggested),
-      rationale: task.rationale,
-    })),
+function normalizeConverseResult(value: unknown, homeCapabilityId: string): ConverseResult {
+  const row = asRow(value);
+  const questions = asStringArray(row.questions, 12, 240);
+  const milestones = normalizeMilestones(row.milestones ?? row.plan, homeCapabilityId);
+  const parseError = asString(row.parseError ?? row.parse_error);
+  const raw = asString(row.raw);
+  return {
+    reply: asString(row.reply ?? row.message ?? row.content, milestones.length ? "Plan updated." : "Planner returned a partial response. Review the story and create a local draft if needed."),
+    needsClarification: asBoolean(row.needsClarification ?? row.needs_clarification) || questions.length > 0,
+    questions,
+    milestones,
+    assignableCapabilities: normalizeAssignable(row.assignableCapabilities ?? row.assignable_capabilities, null, homeCapabilityId),
+    homeCapabilityId: asString(row.homeCapabilityId ?? row.home_capability_id, homeCapabilityId),
+    deterministic: normalizeDeterministic(row.deterministic),
+    critic: normalizeCritic(row.critic),
+    usage: normalizeUsage(row.usage),
+    ...(parseError ? { parseError } : {}),
+    ...(raw ? { raw } : {}),
+  };
+}
+
+function normalizeCommitResult(value: unknown): CommitResult {
+  const row = asRow(value);
+  return {
+    created: rowsFrom(row.created ?? row.workItems ?? row.work_items, ["created", "workItems", "work_items"]).map(normalizeCreatedWorkItem),
+    failed: rowsFrom(row.failed ?? row.failedWorkItems ?? row.failed_work_items ?? row.errors, ["failed", "errors"]).map(normalizeFailedWorkItem),
+  };
+}
+
+function normalizeLaunchResult(value: unknown): LaunchResult {
+  const row = asRow(value);
+  const runtime = asRow(row.runtime);
+  return {
+    intent: normalizeIntent(row.intent),
+    workItems: rowsFrom(row.workItems ?? row.work_items ?? row.created, ["workItems", "work_items", "created"]).map(normalizeCreatedWorkItem),
+    failedWorkItems: rowsFrom(row.failedWorkItems ?? row.failed_work_items ?? row.failed, ["failedWorkItems", "failed_work_items", "failed"]).map(normalizeFailedWorkItem),
+    workflowTemplate: normalizeWorkflowTemplate(row.workflowTemplate ?? row.workflow_template),
+    workflowInstance: normalizeWorkflowInstance(row.workflowInstance ?? row.workflow_instance ?? row.instance),
+    runUrl: asString(row.runUrl ?? row.run_url) || null,
+    workItemsUrl: asString(row.workItemsUrl ?? row.work_items_url) || null,
+    warnings: asStringArray(row.warnings, 20, 300),
+    runtime: {
+      modelAlias: asString(runtime.modelAlias ?? runtime.model_alias) || undefined,
+      runtimePreference: asString(runtime.runtimePreference ?? runtime.runtime_preference) || undefined,
+      governancePreset: asString(runtime.governancePreset ?? runtime.governance_preset) || undefined,
+    },
+  };
+}
+
+function normalizeMilestones(input: unknown, homeCapabilityId: string): Milestone[] {
+  return rowsFrom(input, ["milestones", "plan"]).map((milestone, index) => ({
+    id: asString(milestone.id, `M${index + 1}`),
+    title: asString(milestone.title, `Milestone ${index + 1}`),
+    summary: asString(milestone.summary),
+    tasks: rowsFrom(milestone.tasks, ["tasks"]).map((task) => normalizeTask(task, homeCapabilityId)),
   }));
+}
+
+function normalizeTask(value: unknown, homeCapabilityId: string): PlannerTask {
+  const row = asRow(value);
+  return {
+    title: asString(row.title ?? row.name, "Untitled task"),
+    description: asString(row.description ?? row.acceptanceCriteria ?? row.acceptance_criteria, "Define acceptance criteria and complete the work."),
+    category: asString(row.category, "GENERAL").toUpperCase().slice(0, 40),
+    capabilityId: asString(row.capabilityId ?? row.capability_id, homeCapabilityId),
+    priority: normalizePriority(row.priority),
+    effortDays: normalizeNumber(row.effortDays ?? row.effort_days, 1, 0, 90),
+    aiSuggested: asBoolean(row.aiSuggested ?? row.ai_suggested),
+    rationale: asString(row.rationale) || undefined,
+  };
+}
+
+function normalizeDeterministic(value: unknown): ConverseResult["deterministic"] {
+  const row = asRow(value);
+  return {
+    repairedAssignments: Math.round(normalizeNumber(row.repairedAssignments ?? row.repaired_assignments, 0, 0, 999)),
+    duplicatePairs: rowsFrom(row.duplicatePairs ?? row.duplicate_pairs, ["duplicatePairs", "duplicate_pairs"]).map((item) => ({
+      a: Math.round(normalizeNumber(item.a, 0, 0, 9999)),
+      b: Math.round(normalizeNumber(item.b, 0, 0, 9999)),
+      score: normalizeNumber(item.score, 0, 0, 1),
+    })),
+    coverageGaps: asStringArray(row.coverageGaps ?? row.coverage_gaps, 30, 180),
+  };
+}
+
+function normalizeCritic(value: unknown): ConverseResult["critic"] {
+  const row = asRow(value);
+  const verdict = asString(row.verdict).toLowerCase();
+  if (!verdict && rowsFrom(row.issues, ["issues"]).length === 0) return null;
+  return {
+    verdict: verdict === "pass" || verdict === "fail" || verdict === "warn" ? verdict : "warn",
+    issues: rowsFrom(row.issues, ["issues"]).map((issue) => ({
+      dimension: asString(issue.dimension, "planner"),
+      itemRef: asString(issue.itemRef ?? issue.item_ref, "plan"),
+      message: asString(issue.message, "Planner returned a partial quality note."),
+      fix: asString(issue.fix) || undefined,
+    })),
+  };
+}
+
+function normalizeUsage(value: unknown): ConverseResult["usage"] {
+  const row = asRow(value);
+  return {
+    inputTokens: Math.round(normalizeNumber(row.inputTokens ?? row.input_tokens, 0, 0, 10_000_000)),
+    outputTokens: Math.round(normalizeNumber(row.outputTokens ?? row.output_tokens, 0, 0, 10_000_000)),
+    estimatedCostUsd: normalizeNumber(row.estimatedCostUsd ?? row.estimated_cost_usd, 0, 0, 1_000_000),
+    calls: Math.round(normalizeNumber(row.calls, 0, 0, 10_000)),
+  };
+}
+
+function normalizeCreatedWorkItem(value: unknown): CommitResult["created"][number] {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.workItemId ?? row.work_item_id);
+  return {
+    id: id || asString(row.workCode ?? row.work_code, "created-work-item"),
+    workCode: asString(row.workCode ?? row.work_code ?? row.code, id || "WorkItem"),
+    capabilityId: asString(row.capabilityId ?? row.capability_id),
+    milestone: asString(row.milestone ?? row.milestoneTitle ?? row.milestone_title, "Milestone"),
+  };
+}
+
+function normalizeFailedWorkItem(value: unknown): CommitResult["failed"][number] {
+  const row = asRow(value);
+  return {
+    title: asString(row.title ?? row.name, "Untitled task"),
+    error: asString(row.error ?? row.message, "Unknown failure"),
+  };
+}
+
+function normalizeIntent(value: unknown): LaunchResult["intent"] {
+  const row = asRow(value);
+  const id = asString(row.id);
+  const label = asString(row.label ?? row.name);
+  return id || label ? { id: id || undefined, label: label || undefined } : undefined;
+}
+
+function normalizeWorkflowTemplate(value: unknown): NonNullable<LaunchResult["workflowTemplate"]> | null {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.templateId ?? row.template_id);
+  const name = asString(row.name ?? row.displayName ?? row.display_name);
+  if (!id && !name) return null;
+  return {
+    id: id || undefined,
+    name: name || undefined,
+    workflowTypeKey: asString(row.workflowTypeKey ?? row.workflow_type_key) || undefined,
+    profile: asString(row.profile) || null,
+  };
+}
+
+function normalizeWorkflowInstance(value: unknown): NonNullable<LaunchResult["workflowInstance"]> | null {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.instanceId ?? row.instance_id);
+  const name = asString(row.name);
+  const status = asString(row.status);
+  if (!id && !name && !status) return null;
+  return {
+    id: id || undefined,
+    name: name || undefined,
+    status: status || undefined,
+  };
+}
+
+function rowsFrom(value: unknown, keys: string[] = []): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) return asRowArray(value);
+  const row = asRow(value);
+  for (const key of keys) {
+    const nested = row[key];
+    if (Array.isArray(nested)) return asRowArray(nested);
+  }
+  return [];
+}
+
+function normalizePriority(value: unknown): Priority {
+  const priority = asString(value).toUpperCase();
+  return PRIORITIES.includes(priority as Priority) ? priority as Priority : "MEDIUM";
+}
+
+function normalizeNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = typeof value === "number" ? value : Number(asString(value));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
 }
 
 function sanitizeForCommit(input: Milestone[], homeCapabilityId: string): Milestone[] {
@@ -917,10 +1084,6 @@ function compactText(value: string, max: number): string {
 function sentenceCase(value: string): string {
   if (!value) return value;
   return `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
-}
-
-function stringValue(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
 }
 
 function clampNumber(value: string, min: number, max: number): number {

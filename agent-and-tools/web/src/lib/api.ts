@@ -22,13 +22,17 @@ export class ApiError extends Error {
   }
 }
 
-export async function readResponseBody(res: Response): Promise<{ raw: string; parsed: unknown }> {
+export async function readResponseBody(res: Response): Promise<{ raw: string; parsed: unknown; parseError?: string }> {
   const raw = await res.text();
   if (!raw) return { raw, parsed: null };
   try {
     return { raw, parsed: JSON.parse(raw) as unknown };
-  } catch {
-    return { raw, parsed: raw };
+  } catch (err) {
+    return {
+      raw,
+      parsed: raw,
+      parseError: err instanceof Error ? err.message : "Response body is not valid JSON",
+    };
   }
 }
 
@@ -48,12 +52,42 @@ function bearerHeader(token?: string | null): Record<string, string> | null {
   return { Authorization: trimmed.startsWith("Bearer ") ? trimmed : `Bearer ${trimmed}` };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function normalizedStoredToken(value: unknown): string | null {
+  const token = typeof value === "string" ? value.trim() : "";
+  return token || null;
+}
+
+function normalizedPersistedUser(value: unknown): Row | null {
+  if (!isRecord(value)) return null;
+  const id = typeof value.id === "string" ? value.id.trim() : "";
+  const email = typeof value.email === "string" ? value.email.trim() : "";
+  if (!id || !email) return null;
+  return {
+    id,
+    email,
+    display_name: typeof value.display_name === "string" && value.display_name.trim()
+      ? value.display_name.trim()
+      : null,
+    is_super_admin: value.is_super_admin === true,
+  };
+}
+
+function tokenFromPersistedJson(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const state = isRecord(value.state) ? value.state : null;
+  return normalizedStoredToken(state?.token) ?? normalizedStoredToken(value.token);
+}
+
 function tokenFromPersistedStore(key: string): string | null {
   const raw = localStorage.getItem(key);
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as { state?: { token?: string | null }; token?: string | null };
-    return parsed.state?.token ?? parsed.token ?? null;
+    const parsed = JSON.parse(raw) as unknown;
+    return tokenFromPersistedJson(parsed);
   } catch {
     return null;
   }
@@ -86,11 +120,17 @@ export function hasAgentToolsToken(): boolean {
 
 export function saveAgentToolsToken(token: string, user?: Row): void {
   if (typeof window === "undefined") return;
-  localStorage.setItem("agent-tools-token", token);
-  localStorage.setItem("singularity-portal.auth", JSON.stringify({
-    state: { token, user: user ?? null },
+  const normalizedToken = normalizedStoredToken(token);
+  if (!normalizedToken) throw new Error("IAM login returned an empty session token.");
+  const normalizedUser = normalizedPersistedUser(user);
+  const persisted = JSON.stringify({
+    state: { token: normalizedToken, user: normalizedUser },
     version: 0,
-  }));
+  });
+  localStorage.setItem("agent-tools-token", normalizedToken);
+  localStorage.setItem("iam-auth", persisted);
+  localStorage.setItem("singularity-portal.auth", persisted);
+  localStorage.setItem("workgraph-auth", persisted);
   localStorage.setItem(SESSION_LAST_ACTIVITY_KEY, String(Date.now())); // fresh idle deadline on sign-in
   notifyAuthChanged();
 }
@@ -139,7 +179,7 @@ async function req<T>(url: string, opts?: RequestInit): Promise<T> {
     throw new ApiError((err as Error).message || "Network request failed");
   }
   handleAuthFailure(res.status);
-  const { raw, parsed } = await readResponseBody(res);
+  const { raw, parsed, parseError } = await readResponseBody(res);
   if (!res.ok) {
     const obj = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
     throw new ApiError(
@@ -148,6 +188,14 @@ async function req<T>(url: string, opts?: RequestInit): Promise<T> {
       typeof obj.code === "string" ? obj.code : undefined,
       obj.details,
       typeof obj.requestId === "string" ? obj.requestId : null,
+    );
+  }
+  if (parseError) {
+    throw new ApiError(
+      `Invalid API response from ${url}: ${raw.slice(0, 500) || parseError}`,
+      res.status,
+      "INVALID_API_RESPONSE",
+      { parseError, body: raw.slice(0, 500) },
     );
   }
   return parsed as T;
@@ -244,7 +292,15 @@ async function reqEnv<T>(url: string, opts?: RequestInit): Promise<T> {
   }
   handleAuthFailure(res.status);
 
-  const { raw, parsed } = await readResponseBody(res);
+  const { raw, parsed, parseError } = await readResponseBody(res);
+  if (parseError) {
+    throw new ApiError(
+      `Invalid API response from ${url}: ${raw.slice(0, 500) || parseError}`,
+      res.status,
+      "INVALID_API_RESPONSE",
+      { parseError, body: raw.slice(0, 500) },
+    );
+  }
   if (!parsed || typeof parsed !== "object") {
     const message = raw
       ? `${res.status} ${res.statusText}: ${raw.slice(0, 500)}`
@@ -278,7 +334,15 @@ async function reqEnvForm<T>(url: string, form: FormData): Promise<T> {
   }
   handleAuthFailure(res.status);
 
-  const { raw, parsed } = await readResponseBody(res);
+  const { raw, parsed, parseError } = await readResponseBody(res);
+  if (parseError) {
+    throw new ApiError(
+      `Invalid API response from ${url}: ${raw.slice(0, 500) || parseError}`,
+      res.status,
+      "INVALID_API_RESPONSE",
+      { parseError, body: raw.slice(0, 500) },
+    );
+  }
   if (!parsed || typeof parsed !== "object") {
     throw new ApiError(raw ? `${res.status} ${res.statusText}: ${raw.slice(0, 500)}` : res.statusText, res.status);
   }
@@ -471,8 +535,13 @@ export const runtimeApi = {
     reqEnv<Row>(`${RUNTIME_BASE}/tools/validate-call`, { method: "POST", body: JSON.stringify(body) }),
 
   // Capabilities
-  listCapabilities: () => reqEnv<Row[]>(`${RUNTIME_BASE}/capabilities`),
+  listCapabilities: (opts?: { includeArchived?: boolean }) => {
+    const qs = opts?.includeArchived ? "?includeArchived=true" : "";
+    return reqEnv<Row[]>(`${RUNTIME_BASE}/capabilities${qs}`);
+  },
   getCapability: (id: string) => reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${id}`),
+  getCapabilityGroundingStatus: (id: string) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${id}/grounding-status`),
   createCapability: (body: Row) =>
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities`, { method: "POST", body: JSON.stringify(body) }),
   updateCapability: (id: string, body: Row) =>

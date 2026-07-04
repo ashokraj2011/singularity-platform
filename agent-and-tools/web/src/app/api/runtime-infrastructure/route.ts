@@ -1,5 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireVerifiedCallerBearer } from "../_proxy";
+import { readJsonish } from "../_json";
+import { serverEnv } from "@/lib/serverRootEnv";
+import {
+  cleanUrl,
+  configuredPlatformServiceUrl,
+  flagEnabled,
+  localDevAllowsAnonymousRead,
+  platformService,
+  platformServiceToken,
+  platformServiceUrl,
+} from "@/lib/platformServices";
+import { healthProbeMessage } from "../_health-message";
 
 export const dynamic = "force-dynamic";
 
@@ -21,29 +33,53 @@ type RuntimeEntry = Omit<RuntimeEntryConfig, "authToken"> & {
   ok: boolean | null;
   httpStatus: number | null;
   message: string;
+  details?: Record<string, unknown>;
   checkedAt: string;
 };
 
 const HEALTH_TIMEOUT_MS = 2500;
 
-function cleanUrl(value: string | null | undefined): string | null {
-  const trimmed = value?.trim();
-  if (!trimmed) return null;
-  return trimmed.replace(/\/+$/, "");
-}
-
-function flagEnabled(value: string | null | undefined): boolean {
-  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
-}
-
 function authHeader(token: string | null | undefined): HeadersInit {
   const trimmed = token?.trim();
   if (!trimmed) return {};
-  return { Authorization: trimmed.startsWith("Bearer ") ? trimmed : `Bearer ${trimmed}` };
+  return {
+    Authorization: trimmed.startsWith("Bearer ") ? trimmed : `Bearer ${trimmed}`,
+    "X-Service-Token": trimmed,
+  };
 }
 
 function endpoint(baseUrl: string, path: string): string {
   return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function strictHealthDetails(value: unknown): Record<string, unknown> | undefined {
+  const root = record(value);
+  const data = record(root?.data) ?? root;
+  const checks = Array.isArray(data?.checks) ? data.checks.map(record).filter((item): item is Record<string, unknown> => Boolean(item)) : [];
+  if (checks.length === 0) return undefined;
+
+  const normalizedChecks = checks.slice(0, 20).map((check) => {
+    const details = record(check.details);
+    return {
+      name: stringValue(check.name) ?? "unknown",
+      ok: check.ok === true,
+      reason: stringValue(check.reason),
+      details: details ? Object.fromEntries(Object.entries(details).slice(0, 12)) : undefined,
+    };
+  });
+  return {
+    ok: data?.ok === true,
+    failingChecks: normalizedChecks.filter((check) => !check.ok).map((check) => check.name),
+    checks: normalizedChecks,
+  };
 }
 
 async function probe(config: RuntimeEntryConfig): Promise<RuntimeEntry> {
@@ -72,13 +108,14 @@ async function probe(config: RuntimeEntryConfig): Promise<RuntimeEntry> {
       headers: authHeader(authToken),
       signal: controller.signal,
     });
-    const text = await res.text();
+    const body = await readJsonish(res, 1200);
     return {
       ...publicConfig,
       status: res.ok ? "healthy" : "unhealthy",
       ok: res.ok,
       httpStatus: res.status,
-      message: text.slice(0, 220) || res.statusText || (res.ok ? "Healthy" : "Unhealthy"),
+      message: healthProbeMessage(body.raw, res.statusText, res.ok, 220),
+      details: config.id === "agent-runtime-strict" ? strictHealthDetails(body.data) : undefined,
       checkedAt,
     };
   } catch (err) {
@@ -96,36 +133,51 @@ async function probe(config: RuntimeEntryConfig): Promise<RuntimeEntry> {
 }
 
 export async function GET(request: NextRequest) {
-  const authFailure = await requireVerifiedCallerBearer(request, "Runtime infrastructure");
-  if (authFailure) return authFailure;
+  if (!localDevAllowsAnonymousRead()) {
+    const authFailure = await requireVerifiedCallerBearer(request, "Runtime infrastructure");
+    if (authFailure) return authFailure;
+  }
 
   const mcpHttpDebugEnabled =
-    flagEnabled(process.env.RUNTIME_HTTP_FALLBACK_ENABLED) ||
-    flagEnabled(process.env.MCP_HTTP_DEBUG_PROBE_ENABLED);
+    flagEnabled(serverEnv("RUNTIME_HTTP_FALLBACK_ENABLED")) ||
+    flagEnabled(serverEnv("MCP_HTTP_DEBUG_PROBE_ENABLED"));
+  const contextFabricUrl = platformServiceUrl("context-fabric");
   const entries: RuntimeEntryConfig[] = [
+    {
+      id: "agent-runtime-strict",
+      label: "Agent Runtime Strict Health",
+      description: "Agent Runtime schema and runtime invariants required before capability sync, profile resolution, and governed runs.",
+      category: "core",
+      envKey: platformService("agent-runtime").envKey,
+      url: cleanUrl(platformServiceUrl("agent-runtime")),
+      healthPath: "/healthz/strict",
+      required: true,
+      remoteCapable: true,
+      authToken: null,
+    },
     {
       id: "context-api",
       label: "Context Fabric",
       description: "Context, memory, knowledge sources, receipts, runtime bridge, and fabric APIs.",
       category: "core",
-      envKey: "CONTEXT_FABRIC_URL",
-      url: cleanUrl(process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000"),
+      envKey: platformService("context-fabric").envKey,
+      url: cleanUrl(contextFabricUrl),
       healthPath: "/health",
       required: true,
       remoteCapable: true,
-      authToken: process.env.CONTEXT_FABRIC_SERVICE_TOKEN ?? null,
+      authToken: platformServiceToken("context-fabric"),
     },
     {
       id: "runtime-bridge",
       label: "Runtime Bridge",
       description: "WebSocket dial-in registry for MCP runtimes that relay tool-run, model-run, and code-context frames.",
       category: "runtime",
-      envKey: "CONTEXT_FABRIC_URL",
-      url: cleanUrl(process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000"),
+      envKey: platformService("context-fabric").envKey,
+      url: cleanUrl(contextFabricUrl),
       healthPath: "/api/runtime-bridge/status",
       required: true,
       remoteCapable: true,
-      authToken: null,
+      authToken: platformServiceToken("context-fabric"),
     },
     {
       id: "mcp",
@@ -134,8 +186,8 @@ export async function GET(request: NextRequest) {
         ? "Direct MCP HTTP endpoint. Used only when RUNTIME_HTTP_FALLBACK_ENABLED=true or for diagnostics."
         : "Direct MCP HTTP probe disabled. Normal traffic uses the Runtime Bridge WebSocket.",
       category: "runtime",
-      envKey: "MCP_SERVER_URL",
-      url: mcpHttpDebugEnabled ? cleanUrl(process.env.MCP_SERVER_URL) : null,
+      envKey: platformService("mcp-server").envKey,
+      url: mcpHttpDebugEnabled ? configuredPlatformServiceUrl("mcp-server") : null,
       healthPath: "/health",
       required: false,
       remoteCapable: true,
@@ -146,20 +198,20 @@ export async function GET(request: NextRequest) {
       label: "LLM Gateway Debug",
       description: "Local or colocated model gateway behind the MCP runtime. Direct probe is diagnostic only.",
       category: "runtime",
-      envKey: "LLM_GATEWAY_URL",
-      url: cleanUrl(process.env.LLM_GATEWAY_URL ?? process.env.LLM_GATEWAY_INTERNAL_URL),
+      envKey: platformService("llm-gateway").envKey,
+      url: configuredPlatformServiceUrl("llm-gateway", "LLM_GATEWAY_INTERNAL_URL"),
       healthPath: "/health",
       required: false,
       remoteCapable: true,
-      authToken: process.env.LLM_GATEWAY_BEARER ?? null,
+      authToken: platformServiceToken("llm-gateway"),
     },
     {
       id: "formal-verifier",
       label: "Formal Verifier",
       description: "Optional verification gate for proof-backed code and workflow changes.",
       category: "runtime",
-      envKey: "FORMAL_VERIFIER_URL",
-      url: cleanUrl(process.env.FORMAL_VERIFIER_URL ?? process.env.FORMAL_VERIFIER_INTERNAL_URL),
+      envKey: platformService("formal-verifier").envKey,
+      url: configuredPlatformServiceUrl("formal-verifier", "FORMAL_VERIFIER_INTERNAL_URL"),
       healthPath: "/health",
       required: false,
       remoteCapable: true,
@@ -170,12 +222,12 @@ export async function GET(request: NextRequest) {
       label: "Audit Governance",
       description: "Governance ledger and audit evidence collection.",
       category: "governance",
-      envKey: "AUDIT_GOV_URL",
-      url: cleanUrl(process.env.AUDIT_GOV_URL),
+      envKey: platformService("audit-governance").envKey,
+      url: configuredPlatformServiceUrl("audit-governance"),
       healthPath: "/health",
       required: false,
       remoteCapable: true,
-      authToken: process.env.AUDIT_GOV_SERVICE_TOKEN ?? null,
+      authToken: platformServiceToken("audit-governance"),
     },
   ];
 

@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { proxyHeaders, proxyRequest, requireVerifiedCallerBearer } from "../../_proxy";
 import { platformWebCredentialError } from "@/lib/serverEnvGuard";
+import { platformServiceToken, platformServiceUrl } from "@/lib/platformServices";
 
-const AUDIT_GOV_URL = process.env.AUDIT_GOV_URL ?? "http://host.docker.internal:8500";
+const AUDIT_GOV_URL = platformServiceUrl("audit-governance");
 
 function auditGovToken(): string | null {
-  return process.env.AUDIT_GOV_SERVICE_TOKEN ?? process.env.AUDIT_GOV_TOKEN ?? null;
+  return platformServiceToken("audit-governance");
 }
 
 function upstreamPath(parts: string[]): string {

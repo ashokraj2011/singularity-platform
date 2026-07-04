@@ -51,7 +51,8 @@ import {
   Wrench,
   Zap,
 } from "lucide-react";
-import { formatDate, shortId, valueText, workgraphFetch } from "@/lib/workgraph";
+import { asRow, asString } from "@/lib/row";
+import { formatDate, shortId, unwrapWorkgraphItems, valueText, workgraphFetch } from "@/lib/workgraph";
 
 type WorkflowTemplate = {
   id: string;
@@ -85,9 +86,9 @@ type DesignEdge = {
 };
 
 type DesignGraph = {
-  phases?: Record<string, unknown>[];
-  nodes?: DesignNode[];
-  edges?: DesignEdge[];
+  phases: Record<string, unknown>[];
+  nodes: DesignNode[];
+  edges: DesignEdge[];
 };
 
 type WorkflowNodeData = {
@@ -170,8 +171,10 @@ const NODE_TYPES = [
 const rfNodeTypes = { workflowNode: WorkflowCanvasNode };
 
 export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
-  const { data: template, error: templateError, mutate: reloadTemplate } = useSWR<WorkflowTemplate>(`/workflow-templates/${workflowId}`, (path: string) => workgraphFetch<WorkflowTemplate>(path));
-  const { data: graph, error: graphError, isLoading, mutate: reloadGraph } = useSWR<DesignGraph>(`/workflow-templates/${workflowId}/design-graph`, (path: string) => workgraphFetch<DesignGraph>(path), { refreshInterval: 15000 });
+  const { data: templateData, error: templateError, mutate: reloadTemplate } = useSWR<unknown>(`/workflow-templates/${workflowId}`, (path: string) => workgraphFetch<unknown>(path));
+  const { data: graphData, error: graphError, isLoading, mutate: reloadGraph } = useSWR<unknown>(`/workflow-templates/${workflowId}/design-graph`, (path: string) => workgraphFetch<unknown>(path), { refreshInterval: 15000 });
+  const template = useMemo(() => normalizeWorkflowTemplate(templateData, workflowId), [templateData, workflowId]);
+  const graph = useMemo(() => normalizeDesignGraph(graphData), [graphData]);
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState<WorkflowNodeData>([]);
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState([]);
   const [name, setName] = useState("");
@@ -183,8 +186,8 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const nodes = graph?.nodes ?? [];
-  const edges = graph?.edges ?? [];
+  const nodes = graph.nodes;
+  const edges = graph.edges;
 
   const editableName = name || template?.name || "";
   const editableDescription = description || template?.description || "";
@@ -587,6 +590,102 @@ function NodeSelect({ nodes, value, onChange }: { nodes: DesignNode[]; value: st
       {nodes.map((node) => <option key={node.id} value={node.id}>{node.label ?? node.id}</option>)}
     </select>
   );
+}
+
+function normalizeWorkflowTemplate(value: unknown, fallbackId: string): WorkflowTemplate | null {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.templateId ?? row.template_id, fallbackId);
+  if (!id) return null;
+  return {
+    id,
+    name: asString(row.name ?? row.displayName ?? row.display_name, id),
+    description: asString(row.description) || null,
+    status: asString(row.status, "DRAFT"),
+    profile: asString(row.profile, "main"),
+    capabilityId: asString(row.capabilityId ?? row.capability_id) || null,
+    workflowTypeKey: asString(row.workflowTypeKey ?? row.workflow_type_key) || null,
+    currentVersion: normalizeOptionalNumber(row.currentVersion ?? row.current_version),
+    createdAt: asString(row.createdAt ?? row.created_at) || null,
+    updatedAt: asString(row.updatedAt ?? row.updated_at) || null,
+  };
+}
+
+function normalizeDesignGraph(value: unknown): DesignGraph {
+  const row = asRow(value);
+  const nodes = uniqueById(unwrapWorkgraphItems<Record<string, unknown>>(row.nodes).map(normalizeDesignNode));
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = uniqueById(unwrapWorkgraphItems<Record<string, unknown>>(row.edges)
+    .map(normalizeDesignEdge)
+    .filter((edge): edge is DesignEdge => Boolean(edge && nodeIds.has(edge.sourceNodeId) && nodeIds.has(edge.targetNodeId))));
+  return {
+    phases: unwrapWorkgraphItems<Record<string, unknown>>(row.phases),
+    nodes,
+    edges,
+  };
+}
+
+function normalizeDesignNode(value: unknown, index: number): DesignNode | null {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.nodeId ?? row.node_id);
+  if (!id) return null;
+  const nodeType = normalizeNodeType(row.nodeType ?? row.node_type ?? row.type);
+  const nodeTypeKey = normalizeNodeType(row.nodeTypeKey ?? row.node_type_key ?? nodeType);
+  return {
+    id,
+    label: asString(row.label ?? row.name, nodeTypeLabel(nodeType)),
+    nodeType,
+    nodeTypeKey,
+    config: normalizeConfig(row.config),
+    positionX: normalizePosition(row.positionX ?? row.position_x, 100 + index * 220),
+    positionY: normalizePosition(row.positionY ?? row.position_y, 160),
+  };
+}
+
+function normalizeDesignEdge(value: unknown): DesignEdge | null {
+  const row = asRow(value);
+  const sourceNodeId = asString(row.sourceNodeId ?? row.source_node_id ?? row.source);
+  const targetNodeId = asString(row.targetNodeId ?? row.target_node_id ?? row.target);
+  if (!sourceNodeId || !targetNodeId || sourceNodeId === targetNodeId) return null;
+  const id = asString(row.id, `${sourceNodeId}-${targetNodeId}`);
+  return {
+    id,
+    sourceNodeId,
+    targetNodeId,
+    edgeType: asString(row.edgeType ?? row.edge_type ?? row.type, "SEQUENTIAL"),
+    label: asString(row.label) || null,
+  };
+}
+
+function normalizeNodeType(value: unknown): string {
+  const type = asString(value, "HUMAN_TASK").toUpperCase().replace(/[^A-Z0-9_]/g, "_");
+  return type || "HUMAN_TASK";
+}
+
+function normalizeConfig(value: unknown): Record<string, unknown> {
+  const row = asRow(value);
+  return Object.fromEntries(Object.entries(row).filter(([key]) => key.length > 0).slice(0, 80));
+}
+
+function normalizePosition(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(asString(value));
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.round(parsed), -10_000), 10_000);
+}
+
+function normalizeOptionalNumber(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(asString(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function uniqueById<T extends { id: string }>(items: Array<T | null>): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    if (!item || seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
 }
 
 function NodeIcon({ type }: { type: string }) {

@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { asBoolean, asRow, asRowArray, asString } from "@/lib/row";
 import { PlatformTopologyMap } from "@/components/PlatformTopologyMap";
 import {
   CommandBlock,
@@ -76,7 +77,15 @@ type RuntimeService = {
   ok: boolean | null;
   httpStatus: number | null;
   message: string;
+  strictChecks: RuntimeStrictCheck[];
+  strictFailureSummary?: string;
   checkedAt: string;
+};
+
+type RuntimeStrictCheck = {
+  name: string;
+  ok: boolean;
+  reason?: string;
 };
 
 type AdoptionHealth = {
@@ -189,16 +198,14 @@ async function runtimeInfrastructure(): Promise<RuntimeInfrastructure> {
   const res = await fetch(apiPath("/api/runtime-infrastructure"), { cache: "no-store", headers: authHeaders() });
   const { raw, parsed } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
-  if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 300) : "Empty runtime infrastructure response");
-  return parsed as RuntimeInfrastructure;
+  return normalizeRuntimeInfrastructure(parsed);
 }
 
 async function adoptionHealth(): Promise<AdoptionHealth> {
   const res = await fetch(apiPath("/api/adoption/health"), { cache: "no-store", headers: authHeaders() });
   const { raw, parsed } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
-  if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 300) : "Empty adoption health response");
-  return parsed as AdoptionHealth;
+  return normalizeAdoptionHealth(parsed);
 }
 
 function checkUiTone(result: CheckResult["result"], loading: boolean): UiTone {
@@ -235,11 +242,148 @@ function formatTime(value?: string) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+function normalizeRuntimeInfrastructure(value: unknown): RuntimeInfrastructure {
+  const row = asRow(value);
+  const summary = asRow(row.summary);
+  const services = asRowArray(row.services).map(normalizeRuntimeService).filter((service): service is RuntimeService => service !== null);
+  const requiredServices = services.filter((service) => service.required);
+  const optionalServices = services.filter((service) => !service.required);
+  const requiredHealthy = requiredServices.length > 0
+    ? requiredServices.every((service) => service.ok === true)
+    : asBoolean(summary.requiredHealthy ?? summary.required_healthy);
+  return {
+    generatedAt: asString(row.generatedAt ?? row.generated_at, new Date().toISOString()),
+    summary: {
+      requiredHealthy,
+      requiredCount: normalizeNumber(summary.requiredCount ?? summary.required_count, requiredServices.length, 0, 500),
+      optionalConfigured: normalizeNumber(summary.optionalConfigured ?? summary.optional_configured, optionalServices.filter((service) => service.url || service.ok !== null).length, 0, 500),
+      optionalHealthy: normalizeNumber(summary.optionalHealthy ?? summary.optional_healthy, optionalServices.filter((service) => service.ok === true).length, 0, 500),
+    },
+    services,
+  };
+}
+
+function normalizeRuntimeService(value: unknown): RuntimeService | null {
+  const row = asRow(value);
+  const id = asString(row.id);
+  if (!id) return null;
+  const required = asBoolean(row.required);
+  const status = normalizeRuntimeStatus(row.status);
+  const ok = normalizeOptionalBoolean(row.ok);
+  const strictChecks = normalizeRuntimeStrictChecks(row.details);
+  const strictFailureSummary = runtimeStrictFailureSummary(strictChecks);
+  return {
+    id,
+    label: asString(row.label ?? row.name, id),
+    description: asString(row.description),
+    category: normalizeRuntimeCategory(row.category),
+    envKey: asString(row.envKey ?? row.env_key, "-"),
+    url: asString(row.url) || null,
+    required,
+    remoteCapable: asBoolean(row.remoteCapable ?? row.remote_capable),
+    status,
+    ok,
+    httpStatus: normalizeOptionalNumber(row.httpStatus ?? row.http_status),
+    message: asString(row.message, ok === true ? "Healthy" : status === "not_configured" ? "Not configured" : "No probe message reported."),
+    strictChecks,
+    strictFailureSummary,
+    checkedAt: asString(row.checkedAt ?? row.checked_at, new Date().toISOString()),
+  };
+}
+
+function normalizeRuntimeStrictChecks(value: unknown): RuntimeStrictCheck[] {
+  const details = asRow(value);
+  const checks: RuntimeStrictCheck[] = [];
+  for (const check of asRowArray(details.checks)) {
+    const name = asString(check.name);
+    if (!name) continue;
+    checks.push({
+      name,
+      ok: asBoolean(check.ok),
+      reason: asString(check.reason) || undefined,
+    });
+    if (checks.length >= 20) break;
+  }
+  return checks;
+}
+
+function runtimeStrictFailureSummary(checks: RuntimeStrictCheck[]): string | undefined {
+  const failed = checks.filter((check) => !check.ok);
+  if (failed.length === 0) return undefined;
+  const parts = failed.slice(0, 3).map((check) => check.reason ? `${check.name}: ${check.reason}` : check.name);
+  if (failed.length > parts.length) parts.push(`+${failed.length - parts.length} more`);
+  return `Failed checks: ${parts.join("; ")}`;
+}
+
+function normalizeAdoptionHealth(value: unknown): AdoptionHealth {
+  const row = asRow(value);
+  const summary = asRow(row.summary);
+  return {
+    score: normalizeNumber(row.score, 0, 0, 100),
+    summary: {
+      ready: normalizeNumber(summary.ready, 0, 0, 500),
+      warning: normalizeNumber(summary.warning, 0, 0, 500),
+      blocked: normalizeNumber(summary.blocked, 0, 0, 500),
+      connectedRuntimeCount: normalizeNumber(summary.connectedRuntimeCount ?? summary.connected_runtime_count, 0, 0, 500),
+      readyProviderCount: normalizeNumber(summary.readyProviderCount ?? summary.ready_provider_count, 0, 0, 500),
+      seededIntentCount: normalizeNumber(summary.seededIntentCount ?? summary.seeded_intent_count, 0, 0, 500),
+    },
+    blocked: asRowArray(row.blocked).map(normalizeHealthIssue).filter((item): item is NonNullable<AdoptionHealth["blocked"]>[number] => item !== null),
+    warning: asRowArray(row.warning ?? row.warnings).map(normalizeHealthIssue).filter((item): item is NonNullable<AdoptionHealth["warning"]>[number] => item !== null),
+  };
+}
+
+function normalizeHealthIssue(value: unknown): NonNullable<AdoptionHealth["blocked"]>[number] | null {
+  const row = asRow(value);
+  const id = asString(row.id);
+  const label = asString(row.label ?? row.name, id || "Adoption check");
+  if (!id && !label) return null;
+  return {
+    id: id || label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+    label,
+    summary: asString(row.summary ?? row.message, "No summary reported."),
+    fixCommand: asString(row.fixCommand ?? row.fix_command) || undefined,
+    fixRoute: asString(row.fixRoute ?? row.fix_route) || undefined,
+  };
+}
+
+function normalizeRuntimeStatus(value: unknown): RuntimeStatus {
+  const status = asString(value).toLowerCase();
+  if (status === "healthy" || status === "unhealthy" || status === "unreachable" || status === "not_configured") return status;
+  return "unreachable";
+}
+
+function normalizeRuntimeCategory(value: unknown): RuntimeService["category"] {
+  const category = asString(value).toLowerCase();
+  if (category === "runtime" || category === "governance" || category === "core") return category;
+  return "core";
+}
+
+function normalizeOptionalBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  const text = asString(value).toLowerCase();
+  if (text === "true") return true;
+  if (text === "false") return false;
+  return null;
+}
+
+function normalizeOptionalNumber(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(asString(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = normalizeOptionalNumber(value);
+  if (parsed == null) return fallback;
+  return Math.min(Math.max(Math.round(parsed), min), max);
+}
+
 function parseJsonBody(value: string | undefined): Record<string, unknown> | null {
   if (!value) return null;
   try {
-    const parsed = JSON.parse(value) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+    const parsed: unknown = JSON.parse(value);
+    const row = asRow(parsed);
+    return Object.keys(row).length > 0 ? row : null;
   } catch {
     return null;
   }
@@ -921,6 +1065,11 @@ function RuntimeRow({ service, compact = false }: { service: RuntimeService; com
           <Pill>{service.envKey}</Pill>
           {service.remoteCapable && <Pill>remote capable</Pill>}
         </div>
+        {service.strictFailureSummary && (
+          <div className="mt-2 rounded-md border border-red-100 bg-red-50 px-2 py-1.5 text-[11px] leading-5 text-red-800">
+            {service.strictFailureSummary}
+          </div>
+        )}
         {!compact && <p className="mt-2 text-xs leading-5 text-slate-500">{service.message}</p>}
       </div>
     </div>
@@ -942,6 +1091,11 @@ function RuntimeConfigCard({ service }: { service: RuntimeService }) {
       <code className="block overflow-x-auto rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2 font-mono text-[11px] text-slate-700">
         {service.url ?? "not configured"}
       </code>
+      {service.strictFailureSummary && (
+        <div className="mt-2 rounded-md border border-red-100 bg-red-50 px-2.5 py-2 text-[11px] leading-5 text-red-800">
+          {service.strictFailureSummary}
+        </div>
+      )}
     </article>
   );
 }
@@ -1019,7 +1173,7 @@ function sourceFromService(service: RuntimeService | undefined, loading: boolean
     ok: service?.ok ?? null,
     required: service?.required ?? false,
     endpoint: service?.url ?? service?.envKey ?? "not configured",
-    message: service?.message ?? "Waiting for runtime probe.",
+    message: service?.strictFailureSummary ?? service?.message ?? "Waiting for runtime probe.",
     checkedAt: service?.checkedAt,
   };
 }

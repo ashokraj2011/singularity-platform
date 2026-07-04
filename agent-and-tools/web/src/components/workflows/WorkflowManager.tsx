@@ -5,7 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { Archive, ArchiveRestore, Copy, Edit3, FileJson, GitBranch, Play, Plus, RefreshCw, Search, Upload, Workflow, X } from "lucide-react";
-import { formatDate, shortId, unwrapWorkgraphItems, valueText, workgraphFetch, WorkgraphError } from "@/lib/workgraph";
+import { asBoolean, asRow, asString } from "@/lib/row";
+import { formatDate, shortId, unwrapWorkgraphItems, workgraphFetch, WorkgraphError } from "@/lib/workgraph";
 import { isWorkbenchProfile, workbenchNeoUrl } from "@/lib/workbenchLaunch";
 
 type WorkflowTemplate = {
@@ -49,8 +50,8 @@ export function WorkflowManager({ initialTab = "templates" }: { initialTab?: "te
   const templatesPath = `/workflow-templates?size=100${showArchived ? "&archived=true" : ""}${profile !== "all" ? `&profile=${profile}` : ""}`;
   const { data: templatesData, error: templatesError, isLoading: templatesLoading, mutate: reloadTemplates } = useSWR(templatesPath, fetcher, { refreshInterval: 15000 });
   const { data: runsData, error: runsError, isLoading: runsLoading, mutate: reloadRuns } = useSWR("/workflow-instances?size=100", fetcher, { refreshInterval: 10000 });
-  const templates = unwrapWorkgraphItems<WorkflowTemplate>(templatesData).filter((template) => matches(template, query, ["name", "description", "capabilityId", "workflowTypeKey"]));
-  const allRuns = unwrapWorkgraphItems<WorkflowInstance>(runsData).filter((run) => !run.isDesign);
+  const templates = normalizeWorkflowTemplates(templatesData).filter((template) => matches(template, query, ["name", "description", "capabilityId", "workflowTypeKey"]));
+  const allRuns = normalizeWorkflowInstances(runsData).filter((run) => !run.isDesign);
   const requestedTemplateId = searchParams.get("templateId");
   const runs = allRuns
     .filter((run) => !requestedTemplateId || run.templateId === requestedTemplateId)
@@ -220,7 +221,7 @@ export function StartWorkflowCatalog() {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<WorkflowTemplate | null>(null);
   const { data, error, isLoading } = useSWR("/workflow-templates?size=100&profile=main", fetcher, { refreshInterval: 15000 });
-  const workflows = unwrapWorkgraphItems<WorkflowTemplate>(data).filter((workflow) => !workflow.archivedAt && matches(workflow, query, ["name", "description", "capabilityId", "workflowTypeKey"]));
+  const workflows = normalizeWorkflowTemplates(data).filter((workflow) => !workflow.archivedAt && matches(workflow, query, ["name", "description", "capabilityId", "workflowTypeKey"]));
 
   return (
     <div style={{ maxWidth: 1180 }}>
@@ -274,7 +275,7 @@ function CreateWorkflowDialog({ onClose, onCreated, onReload }: { onClose: () =>
     setBusy(true);
     setError(null);
     try {
-      const created = await workgraphFetch<{ id: string }>("/workflow-templates", {
+      const created = normalizeCreateWorkflowResult(await workgraphFetch<unknown>("/workflow-templates", {
         method: "POST",
         body: JSON.stringify({
           name: name.trim(),
@@ -285,7 +286,7 @@ function CreateWorkflowDialog({ onClose, onCreated, onReload }: { onClose: () =>
           starter,
           metadata: { workflowType: workflowTypeKey || "BUSINESS", visibility: "TEAM", criticality: "MEDIUM", dataSensitivity: "INTERNAL" },
         }),
-      });
+      }));
       onReload();
       onCreated(created.id);
     } catch (err) {
@@ -338,7 +339,7 @@ function StartWorkflowDialog({ workflow, onClose }: { workflow: WorkflowTemplate
   const [error, setError] = useState<string | null>(null);
   const workItemsPath = workflow.capabilityId ? `/work-items?targetCapabilityId=${encodeURIComponent(workflow.capabilityId)}&available=true&limit=100` : null;
   const { data, isLoading, mutate } = useSWR(workItemsPath, fetcher, { refreshInterval: 10000 });
-  const items = unwrapWorkgraphItems<WorkItemRow>(data);
+  const items = normalizeWorkItems(data);
   const choices = items.flatMap((item) => (item.targets ?? [])
     .filter((target) => target.targetCapabilityId === workflow.capabilityId && !target.childWorkflowInstanceId && ["QUEUED", "CLAIMED", "REWORK_REQUESTED"].includes(target.status))
     .map((target) => ({ item, target, key: `${item.id}:${target.id}` })));
@@ -377,10 +378,10 @@ function StartWorkflowDialog({ workflow, onClose }: { workflow: WorkflowTemplate
       if (["QUEUED", "REWORK_REQUESTED"].includes(choice.target.status)) {
         await workgraphFetch(`/work-items/${choice.item.id}/targets/${choice.target.id}/claim`, { method: "POST", body: "{}" });
       }
-      const result = await workgraphFetch<{ childWorkflowInstanceId?: string }>(`/work-items/${choice.item.id}/targets/${choice.target.id}/start`, {
+      const result = normalizeStartWorkflowResult(await workgraphFetch<unknown>(`/work-items/${choice.item.id}/targets/${choice.target.id}/start`, {
         method: "POST",
         body: JSON.stringify({ childWorkflowTemplateId: workflow.id }),
-      });
+      }));
       if (result.childWorkflowInstanceId) {
         router.push(isWorkbenchProfile(workflow.profile)
           ? workbenchNeoUrl({
@@ -448,10 +449,131 @@ function StartWorkflowDialog({ workflow, onClose }: { workflow: WorkflowTemplate
 type WorkItemTarget = { id: string; targetCapabilityId: string; status: string; childWorkflowInstanceId?: string | null };
 type WorkItemRow = { id: string; workCode?: string | null; title: string; description?: string | null; targets?: WorkItemTarget[] };
 
-function matches(row: Record<string, unknown>, query: string, keys: string[]): boolean {
+function normalizeWorkflowTemplates(value: unknown): WorkflowTemplate[] {
+  return unwrapWorkgraphItems<Record<string, unknown>>(value)
+    .map(normalizeWorkflowTemplate)
+    .filter((template): template is WorkflowTemplate => template !== null)
+    .sort((left, right) => sortTime(right.updatedAt ?? right.createdAt) - sortTime(left.updatedAt ?? left.createdAt));
+}
+
+function normalizeWorkflowTemplate(value: unknown): WorkflowTemplate | null {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.templateId ?? row.template_id);
+  if (!id) return null;
+  return {
+    id,
+    name: asString(row.name ?? row.displayName ?? row.display_name, id),
+    description: asString(row.description) || null,
+    status: asString(row.status, "DRAFT"),
+    profile: normalizeProfile(row.profile),
+    capabilityId: asString(row.capabilityId ?? row.capability_id) || null,
+    workflowTypeKey: asString(row.workflowTypeKey ?? row.workflow_type_key) || null,
+    currentVersion: normalizeOptionalNumber(row.currentVersion ?? row.current_version),
+    archivedAt: asString(row.archivedAt ?? row.archived_at) || null,
+    createdAt: asString(row.createdAt ?? row.created_at) || null,
+    updatedAt: asString(row.updatedAt ?? row.updated_at) || null,
+  };
+}
+
+function normalizeWorkflowInstances(value: unknown): WorkflowInstance[] {
+  return unwrapWorkgraphItems<Record<string, unknown>>(value)
+    .map(normalizeWorkflowInstance)
+    .filter((run): run is WorkflowInstance => run !== null)
+    .sort((left, right) => sortTime(right.startedAt ?? right.createdAt) - sortTime(left.startedAt ?? left.createdAt));
+}
+
+function normalizeWorkflowInstance(value: unknown): WorkflowInstance | null {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.instanceId ?? row.instance_id);
+  if (!id) return null;
+  return {
+    id,
+    name: asString(row.name, id),
+    status: asString(row.status, "UNKNOWN"),
+    templateId: asString(row.templateId ?? row.template_id) || null,
+    templateVersion: normalizeOptionalNumber(row.templateVersion ?? row.template_version),
+    isDesign: normalizeBoolean(row.isDesign ?? row.is_design),
+    createdAt: asString(row.createdAt ?? row.created_at) || null,
+    startedAt: asString(row.startedAt ?? row.started_at) || null,
+    completedAt: asString(row.completedAt ?? row.completed_at) || null,
+    archivedAt: asString(row.archivedAt ?? row.archived_at) || null,
+  };
+}
+
+function normalizeWorkItems(value: unknown): WorkItemRow[] {
+  return unwrapWorkgraphItems<Record<string, unknown>>(value)
+    .map(normalizeWorkItem)
+    .filter((item): item is WorkItemRow => item !== null);
+}
+
+function normalizeWorkItem(value: unknown): WorkItemRow | null {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.workItemId ?? row.work_item_id);
+  if (!id) return null;
+  return {
+    id,
+    workCode: asString(row.workCode ?? row.work_code) || null,
+    title: asString(row.title ?? row.name, id),
+    description: asString(row.description) || null,
+    targets: unwrapWorkgraphItems<Record<string, unknown>>(row.targets).map(normalizeWorkItemTarget).filter((target): target is WorkItemTarget => target !== null),
+  };
+}
+
+function normalizeWorkItemTarget(value: unknown): WorkItemTarget | null {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.targetId ?? row.target_id);
+  const targetCapabilityId = asString(row.targetCapabilityId ?? row.target_capability_id ?? row.capabilityId ?? row.capability_id);
+  if (!id || !targetCapabilityId) return null;
+  return {
+    id,
+    targetCapabilityId,
+    status: asString(row.status, "UNKNOWN"),
+    childWorkflowInstanceId: asString(row.childWorkflowInstanceId ?? row.child_workflow_instance_id) || null,
+  };
+}
+
+function normalizeCreateWorkflowResult(value: unknown): { id: string } {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.templateId ?? row.template_id);
+  if (!id) throw new WorkgraphError("Workflow template was created but the response did not include an id.");
+  return { id };
+}
+
+function normalizeStartWorkflowResult(value: unknown): { childWorkflowInstanceId?: string } {
+  const row = asRow(value);
+  const childWorkflowInstanceId = asString(row.childWorkflowInstanceId ?? row.child_workflow_instance_id ?? row.workflowInstanceId ?? row.workflow_instance_id);
+  return childWorkflowInstanceId ? { childWorkflowInstanceId } : {};
+}
+
+function normalizeProfile(value: unknown): WorkflowTemplate["profile"] {
+  const profile = asString(value).toLowerCase();
+  if (profile === "workbench") return "workbench";
+  if (profile === "main") return "main";
+  return profile || "main";
+}
+
+function normalizeBoolean(value: unknown): boolean {
+  if (asBoolean(value)) return true;
+  return ["true", "1", "yes"].includes(asString(value).toLowerCase());
+}
+
+function normalizeOptionalNumber(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(asString(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sortTime(value: unknown): number {
+  const text = asString(value);
+  if (!text) return 0;
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function matches(row: object, query: string, keys: string[]): boolean {
   if (!query.trim()) return true;
+  const record = row as Record<string, unknown>;
   const q = query.toLowerCase();
-  return keys.some((key) => String(row[key] ?? "").toLowerCase().includes(q));
+  return keys.some((key) => String(record[key] ?? "").toLowerCase().includes(q));
 }
 
 function Metric({ label, value }: { label: string; value: string | number }) {

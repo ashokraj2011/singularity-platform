@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
-import { type LoginResponse, safeNextPath, saveIdentitySession } from "@/lib/identity/session";
+import { readResponseBody, responseMessage } from "@/lib/api";
+import { type LoginResponse, normalizeLoginResponse, safeNextPath, saveIdentitySession } from "@/lib/identity/session";
 
 const OIDC_STATE_KEY = "singularity.identity.oidc.state";
 const OIDC_NONCE_KEY = "singularity.identity.oidc.nonce";
@@ -16,14 +17,12 @@ function clearOidcStorage() {
 }
 
 async function responseError(response: Response): Promise<string> {
-  const raw = await response.text();
-  if (!raw) return response.statusText || "SSO login failed.";
-  try {
-    const parsed = JSON.parse(raw) as { detail?: string; message?: string; error?: string };
-    return parsed.detail ?? parsed.message ?? parsed.error ?? raw.slice(0, 500);
-  } catch {
-    return raw.slice(0, 500);
-  }
+  const { raw, parsed } = await readResponseBody(response);
+  return responseMessage(parsed, raw, response.statusText || "SSO login failed.");
+}
+
+function isLoginResponse(value: unknown): value is LoginResponse {
+  return normalizeLoginResponse(value) !== null;
 }
 
 export function IdentityOidcCallbackPage() {
@@ -66,8 +65,9 @@ export function IdentityOidcCallbackPage() {
         throw new Error(await responseError(response));
       }
 
-      const body = (await response.json()) as LoginResponse;
-      saveIdentitySession(body);
+      const { parsed } = await readResponseBody(response);
+      if (!isLoginResponse(parsed)) throw new Error("IAM SSO callback returned an invalid session response.");
+      saveIdentitySession(parsed);
       clearOidcStorage();
       if (active) {
         setStatus("success");

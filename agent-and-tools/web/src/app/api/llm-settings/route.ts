@@ -1,5 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
+import { readJsonish } from "../_json";
 import { requireVerifiedCallerBearer } from "../_proxy";
+import { serverEnv } from "@/lib/serverRootEnv";
+import {
+  configuredPlatformServiceUrl,
+  contextFabricStatusHeaders,
+  flagEnabled,
+  platformEnvName,
+  platformServiceToken,
+  platformServiceUrl,
+  serviceBearerHeaders,
+  trimTrailingSlash,
+} from "@/lib/platformServices";
 
 export const dynamic = "force-dynamic";
 
@@ -8,30 +20,34 @@ type McpFetchResult = {
   status?: number;
   data?: unknown;
   error?: string;
+  skipped?: boolean;
 };
 
-function trimTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, "");
-}
-
-function bearerHeaders(token: string | null | undefined): HeadersInit {
-  const bearer = token?.trim();
-  return bearer ? { Authorization: bearer.startsWith("Bearer ") ? bearer : `Bearer ${bearer}` } : {};
-}
-
 function mcpHeaders(): HeadersInit {
-  return bearerHeaders(process.env.MCP_BEARER_TOKEN);
+  return serviceBearerHeaders("mcp-server");
 }
 
 function llmGatewayHeaders(): HeadersInit {
-  return bearerHeaders(process.env.LLM_GATEWAY_BEARER);
+  return serviceBearerHeaders("llm-gateway");
+}
+
+function contextFabricHeaders(): HeadersInit {
+  return contextFabricStatusHeaders();
 }
 
 function localDevAllowsAnonymousRead(): boolean {
-  if (process.env.LLM_SETTINGS_REQUIRE_AUTH === "true") return false;
-  if (process.env.LLM_SETTINGS_REQUIRE_AUTH === "false") return true;
-  const env = (process.env.SINGULARITY_ENV ?? process.env.APP_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
+  if (serverEnv("LLM_SETTINGS_REQUIRE_AUTH") === "true") return false;
+  if (serverEnv("LLM_SETTINGS_REQUIRE_AUTH") === "false") return true;
+  const env = platformEnvName();
   return !["production", "staging", "perf"].includes(env);
+}
+
+function runtimeHttpFallbackEnabled(): boolean {
+  return flagEnabled(serverEnv("RUNTIME_HTTP_FALLBACK_ENABLED") ?? serverEnv("MCP_HTTP_DEBUG_PROBE_ENABLED"));
+}
+
+function skippedResult(reason: string): McpFetchResult {
+  return { ok: true, skipped: true, data: { status: "skipped", reason } };
 }
 
 async function getJson(baseUrl: string, path: string, headers: HeadersInit = {}): Promise<McpFetchResult> {
@@ -41,13 +57,8 @@ async function getJson(baseUrl: string, path: string, headers: HeadersInit = {})
       headers,
       cache: "no-store",
     });
-    const text = await res.text();
-    let data: unknown = text;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = text;
-    }
+    const body = await readJsonish(res);
+    const data = body.data;
     if (!res.ok) {
       return {
         ok: false,
@@ -63,22 +74,25 @@ async function getJson(baseUrl: string, path: string, headers: HeadersInit = {})
 }
 
 async function mcpGet(path: string): Promise<McpFetchResult> {
-  const mcpUrl = trimTrailingSlash(process.env.MCP_SERVER_URL ?? "http://mcp-server:7100");
+  const mcpUrl = platformServiceUrl("mcp-server");
   return getJson(mcpUrl, path, path === "/health" ? {} : mcpHeaders());
 }
 
 async function llmGatewayGet(path: string): Promise<McpFetchResult> {
-  const gatewayUrl = trimTrailingSlash(process.env.LLM_GATEWAY_URL ?? process.env.LLM_GATEWAY_INTERNAL_URL ?? "http://llm-gateway:8001");
+  const gatewayUrl = configuredPlatformServiceUrl("llm-gateway", "LLM_GATEWAY_INTERNAL_URL") ?? "";
+  if (!gatewayUrl) {
+    return skippedResult("Direct LLM Gateway debug probe is not configured. Provider readiness should come from connected MCP runtime health.");
+  }
   return getJson(gatewayUrl, path, path === "/health" ? {} : llmGatewayHeaders());
 }
 
 async function contextFabricGet(path: string): Promise<McpFetchResult> {
-  const contextFabricUrl = trimTrailingSlash(process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000");
-  return getJson(contextFabricUrl, path);
+  const contextFabricUrl = platformServiceUrl("context-fabric");
+  return getJson(contextFabricUrl, path, path === "/health" ? {} : contextFabricHeaders());
 }
 
 function configuredPath(envKey: string, fallback: string): string {
-  return process.env[envKey] ?? process.env[`MCP_${envKey}`] ?? fallback;
+  return serverEnv(envKey) ?? serverEnv(`MCP_${envKey}`) ?? fallback;
 }
 
 export async function GET(request: NextRequest) {
@@ -87,17 +101,19 @@ export async function GET(request: NextRequest) {
     if (authFailure) return authFailure;
   }
 
-  const mcpUrl = trimTrailingSlash(process.env.MCP_SERVER_URL ?? "http://mcp-server:7100");
-  const llmGatewayUrl = trimTrailingSlash(process.env.LLM_GATEWAY_URL ?? process.env.LLM_GATEWAY_INTERNAL_URL ?? "http://llm-gateway:8001");
-  const contextFabricUrl = trimTrailingSlash(process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000");
-  const rawEventHorizonProvider = process.env.EVENT_HORIZON_PROVIDER || process.env.NEXT_PUBLIC_EVENT_HORIZON_PROVIDER || null;
-  const rawEventHorizonModel = process.env.EVENT_HORIZON_MODEL || process.env.NEXT_PUBLIC_EVENT_HORIZON_MODEL || null;
+  const mcpUrl = platformServiceUrl("mcp-server");
+  const llmGatewayUrl = configuredPlatformServiceUrl("llm-gateway", "LLM_GATEWAY_INTERNAL_URL") ?? "";
+  const contextFabricUrl = platformServiceUrl("context-fabric");
+  const rawEventHorizonProvider = serverEnv("EVENT_HORIZON_PROVIDER") || serverEnv("NEXT_PUBLIC_EVENT_HORIZON_PROVIDER") || null;
+  const rawEventHorizonModel = serverEnv("EVENT_HORIZON_MODEL") || serverEnv("NEXT_PUBLIC_EVENT_HORIZON_MODEL") || null;
+  const httpFallbackEnabled = runtimeHttpFallbackEnabled();
+  const mcpHttpSkipped = skippedResult("Direct MCP HTTP probing is disabled. Normal traffic uses Context Fabric Runtime Bridge.");
   const [gatewayHealth, providers, models, mcpHealth, workspaceStats, contextFabricHealth, runtimeBridgeStatus] = await Promise.all([
     llmGatewayGet("/health"),
     llmGatewayGet("/llm/providers"),
     llmGatewayGet("/llm/models"),
-    mcpGet("/health"),
-    mcpGet("/mcp/workspaces/stats"),
+    httpFallbackEnabled ? mcpGet("/health") : Promise.resolve(mcpHttpSkipped),
+    httpFallbackEnabled ? mcpGet("/mcp/workspaces/stats") : Promise.resolve(mcpHttpSkipped),
     contextFabricGet("/health"),
     contextFabricGet("/api/runtime-bridge/status"),
   ]);
@@ -109,23 +125,23 @@ export async function GET(request: NextRequest) {
       hub: "context-fabric",
       llmGateway: "served-through-mcp-runtime",
       mcpRuntime: "runtime-bridge-websocket",
-      httpFallback: process.env.RUNTIME_HTTP_FALLBACK_ENABLED === "true" ? "enabled" : "disabled",
+      httpFallback: httpFallbackEnabled ? "enabled" : "disabled",
     },
-    gatewayUrl: llmGatewayUrl,
-    llmGatewayUrl,
+    gatewayUrl: llmGatewayUrl || "not configured",
+    llmGatewayUrl: llmGatewayUrl || "not configured",
     mcpUrl,
     contextFabricUrl,
-    authMode: process.env.LLM_GATEWAY_BEARER?.trim() ? "bearer" : "none",
-    mcpAuthMode: process.env.MCP_BEARER_TOKEN?.trim() ? "bearer" : "none",
+    authMode: platformServiceToken("llm-gateway") ? "bearer" : "none",
+    mcpAuthMode: platformServiceToken("mcp-server") ? "bearer" : "none",
     configuredPaths: {
       providerConfigPath: configuredPath("LLM_PROVIDER_CONFIG_PATH", "/etc/singularity/llm-providers.json"),
       modelCatalogPath: configuredPath("LLM_MODEL_CATALOG_PATH", "/etc/singularity/llm-models.json"),
     },
     consumers: {
-      agentRuntimeUrl: process.env.AGENT_RUNTIME_URL ?? null,
-      promptComposerUrl: process.env.PROMPT_COMPOSER_URL ?? null,
-      contextFabricUrl: process.env.CONTEXT_FABRIC_URL ?? null,
-      eventHorizonModelAlias: process.env.EVENT_HORIZON_MODEL_ALIAS || process.env.NEXT_PUBLIC_EVENT_HORIZON_MODEL_ALIAS || null,
+      agentRuntimeUrl: serverEnv("AGENT_RUNTIME_URL") ?? null,
+      promptComposerUrl: serverEnv("PROMPT_COMPOSER_URL") ?? null,
+      contextFabricUrl: serverEnv("CONTEXT_FABRIC_URL") ?? null,
+      eventHorizonModelAlias: serverEnv("EVENT_HORIZON_MODEL_ALIAS") || serverEnv("NEXT_PUBLIC_EVENT_HORIZON_MODEL_ALIAS") || null,
       ...(rawEventHorizonProvider || rawEventHorizonModel ? {
         legacyEventHorizonProvider: rawEventHorizonProvider,
         legacyEventHorizonModel: rawEventHorizonModel,

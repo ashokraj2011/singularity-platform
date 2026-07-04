@@ -18,47 +18,19 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 import { shortId } from "@/lib/workgraph";
+import { filterGalleryItems, normalizeGalleryResponse, type GalleryData, type GalleryItem } from "./gallery-model";
 
-type GalleryItem = {
-  id: string;
-  label: string;
-  description: string;
-  requiredInputs?: string[];
-  sampleStory?: string;
-  defaultAgents?: string[];
-  defaultModelAlias?: string;
-  runtimePreference?: string;
-  governancePreset?: string;
-  runtimeRequirement?: string;
-  templateCount?: number;
-  workflowTemplate?: { id?: string; name?: string; description?: string; workflowTypeKey?: string; capabilityId?: string | null } | null;
-  templates?: Array<{ id?: string; name?: string; workflowTypeKey?: string; capabilityId?: string | null }>;
-};
-
-type GalleryResponse = { generatedAt?: string; items?: GalleryItem[] };
-
-async function fetchGallery(): Promise<GalleryResponse> {
+async function fetchGallery(): Promise<GalleryData> {
   const res = await fetch(apiPath("/api/workflow-templates/gallery"), { cache: "no-store", headers: authHeaders() });
   const { raw, parsed } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
-  return parsed as GalleryResponse;
+  return normalizeGalleryResponse(parsed);
 }
 
 export default function WorkflowTemplateGalleryPage() {
   const { data, error, isLoading, mutate } = useSWR("workflow-template-gallery-page", fetchGallery, { refreshInterval: 30000 });
   const [query, setQuery] = useState("");
-  const items = useMemo(() => {
-    const text = query.trim().toLowerCase();
-    const rows = data?.items ?? [];
-    if (!text) return rows;
-    return rows.filter((item) => [
-      item.label,
-      item.description,
-      item.workflowTemplate?.name,
-      item.defaultAgents?.join(" "),
-      item.requiredInputs?.join(" "),
-    ].join(" ").toLowerCase().includes(text));
-  }, [data?.items, query]);
+  const items = useMemo(() => filterGalleryItems(data?.items ?? [], query), [data?.items, query]);
 
   return (
     <div style={{ maxWidth: 1320 }}>
@@ -99,15 +71,21 @@ export default function WorkflowTemplateGalleryPage() {
         </section>
       )}
 
+      {data?.referenceOnly && (
+        <section className="card" style={{ padding: 14, borderColor: "#fde68a", background: "#fffbeb", color: "#92400e", marginBottom: 16 }}>
+          {data.message ?? "Login is required to inspect saved workflow templates. Showing the built-in SDLC intent catalog."}
+        </section>
+      )}
+
       <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(310px, 1fr))", gap: 14 }}>
-        {items.map((item) => <GalleryCard key={item.id} item={item} />)}
+        {items.map((item) => <GalleryCard key={item.id} item={item} referenceOnly={Boolean(data?.referenceOnly)} />)}
         {!isLoading && items.length === 0 && <Empty />}
       </section>
     </div>
   );
 }
 
-function GalleryCard({ item }: { item: GalleryItem }) {
+function GalleryCard({ item, referenceOnly }: { item: GalleryItem; referenceOnly: boolean }) {
   const seeded = Boolean(item.workflowTemplate?.id);
   return (
     <article className="card" style={{ padding: 18, display: "grid", gap: 13 }}>
@@ -116,7 +94,7 @@ function GalleryCard({ item }: { item: GalleryItem }) {
           {seeded ? <CheckCircle2 size={20} /> : <AlertTriangle size={20} />}
         </span>
         <span className={seeded ? "badge badge-active" : "badge badge-pending_approval"}>
-          {seeded ? `${item.templateCount ?? 1} match` : "missing seed"}
+          {seeded ? `${item.templateCount ?? 1} match` : referenceOnly ? "login required" : "missing seed"}
         </span>
       </div>
 
@@ -126,7 +104,7 @@ function GalleryCard({ item }: { item: GalleryItem }) {
       </div>
 
       <div style={{ display: "grid", gap: 8 }}>
-        <Fact icon={GitBranch} label="Template" value={item.workflowTemplate?.name ?? "No seeded workflow"} muted={!seeded} />
+        <Fact icon={GitBranch} label="Template" value={item.workflowTemplate?.name ?? (referenceOnly ? "Login to inspect" : "No seeded workflow")} muted={!seeded} />
         <Fact icon={RadioTower} label="Runtime" value={item.runtimeRequirement ?? item.runtimePreference ?? "Runtime required"} />
         <Fact icon={ShieldCheck} label="Governance" value={item.governancePreset ?? "standard"} />
         <Fact icon={Sparkles} label="Model alias" value={item.defaultModelAlias ?? "balanced"} />

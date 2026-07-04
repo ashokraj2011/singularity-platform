@@ -101,6 +101,7 @@ export const ROUTES: RouteMeta[] = [
   { id: "work-items", label: "Work Hub", href: "/work-items", group: "Workflows", icon: Network, advanced: true },
   { id: "workflows-history", label: "Run History", href: "/workflows/history", group: "Workflows", icon: FileText, advanced: true },
   { id: "workflows-runtime", label: "Runtime", href: "/workflows/runtime", group: "Workflows", icon: Zap, advanced: true },
+  { id: "workflows-routing-policies", label: "Routing Policies", href: "/workflows/routing-policies", group: "Workflows", icon: Route, advanced: true, description: "Diagnose WorkItem routing rules and stale workflow-template bindings.", keywords: ["routing", "workitem", "policy", "template", "diagnostics"] },
   { id: "workflows-metadata", label: "Metadata", href: "/workflows/metadata", group: "Workflows", icon: Database, advanced: true },
   { id: "workflows-artifacts-explorer", label: "Artifact Explorer", href: "/workflows/artifacts/explorer", group: "Workflows", icon: Package, advanced: true },
   { id: "workflows-node-types", label: "Node Types", href: "/workflows/node-types", group: "Workflows", icon: Puzzle, advanced: true },

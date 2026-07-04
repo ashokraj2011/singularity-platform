@@ -3,6 +3,14 @@ import { existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { NextRequest, NextResponse } from "next/server";
+import { readJsonish, readRequestJson } from "../../_json";
+import {
+  flagEnabled,
+  iamApiBase as platformIamApiBase,
+  platformEnvName,
+  platformServiceToken,
+  platformServiceUrl,
+} from "@/lib/platformServices";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -64,31 +72,21 @@ function clampMaxCommits(value: unknown): number {
   return Math.max(1, Math.min(parsed, 500));
 }
 
-function trimTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, "");
-}
-
-function flagEnabled(value: string | null | undefined): boolean {
-  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
-}
-
 function platformProductionClass(): boolean {
-  const env = (process.env.SINGULARITY_ENV ?? process.env.APP_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
+  const env = platformEnvName();
   return ["production", "staging", "perf"].includes(env) || process.env.AUTH_OPTIONAL === "false";
 }
 
 function contextFabricUrl(): string {
-  return trimTrailingSlash(process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000");
+  return platformServiceUrl("context-fabric");
 }
 
 function contextFabricServiceToken(): string | null {
-  return (process.env.CONTEXT_FABRIC_SERVICE_TOKEN || process.env.IAM_SERVICE_TOKEN || "").trim() || null;
+  return platformServiceToken("context-fabric");
 }
 
 function iamApiBase(): string {
-  const raw = process.env.IAM_BASE_URL ?? process.env.IAM_SERVICE_URL ?? "http://iam-service:8100/api/v1";
-  const trimmed = raw.replace(/\/+$/, "");
-  return trimmed.endsWith("/api/v1") ? trimmed : `${trimmed}/api/v1`;
+  return platformIamApiBase();
 }
 
 function bearerToken(req: NextRequest): string | null {
@@ -138,7 +136,7 @@ async function verifiedCallerIdentity(req: NextRequest): Promise<RuntimeIdentity
         cache: "no-store",
       });
       if (verify.ok) {
-        const body = await verify.json().catch(() => null) as { valid?: boolean; user?: unknown } | null;
+        const body = (await readJsonish(verify)).data as { valid?: boolean; user?: unknown } | null;
         if (body?.valid) return readIdentity(body.user);
       }
     } catch {
@@ -166,9 +164,13 @@ function envRuntimeIdentity(): RuntimeIdentity | null {
 async function singleConnectedRuntimeIdentity(): Promise<RuntimeIdentity | null> {
   if (platformProductionClass()) return null;
   try {
-    const res = await fetch(`${contextFabricUrl()}/api/runtime-bridge/status`, { cache: "no-store" });
+    const token = contextFabricServiceToken();
+    const res = await fetch(`${contextFabricUrl()}/api/runtime-bridge/status`, {
+      cache: "no-store",
+      headers: token ? { "X-Service-Token": token } : {},
+    });
     if (!res.ok) return null;
-    const body = await res.json().catch(() => null);
+    const body = (await readJsonish(res)).data;
     const connected = isRecord(body) && Array.isArray(body.connected) ? body.connected : [];
     if (connected.length !== 1) return null;
     const identity = readIdentity(connected[0]);
@@ -348,11 +350,11 @@ async function runViaRuntimeBridge(req: NextRequest, body: ExplainRequest): Prom
       cache: "no-store",
       signal: AbortSignal.timeout(TIMEOUT_MS + 15_000),
     });
-    const text = await res.text();
-    const parsed = text ? JSON.parse(text) as Record<string, unknown> : {};
+    const body = await readJsonish(res, 1200);
+    const parsed = isRecord(body.data) ? body.data as Record<string, unknown> : {};
     if (!res.ok) {
       return runtimeUnavailable(
-        isRecord(parsed) ? String(parsed.detail ?? parsed.message ?? text).slice(0, 800) : text.slice(0, 800),
+        isRecord(body.data) ? String(parsed.detail ?? parsed.message ?? body.text).slice(0, 800) : body.text.slice(0, 800),
         identity,
       );
     }
@@ -463,12 +465,16 @@ async function runLocalFallback(body: ExplainRequest): Promise<NextResponse> {
 }
 
 export async function POST(req: NextRequest) {
-  let body: ExplainRequest = {};
-  try {
-    body = await req.json() as ExplainRequest;
-  } catch {
-    body = {};
+  const requestBody = await readRequestJson(req);
+  if (requestBody.parseError) {
+    return NextResponse.json(
+      { code: "INVALID_JSON", message: "Request body must be valid JSON.", detail: requestBody.text },
+      { status: 400 },
+    );
   }
+  const body = requestBody.data && typeof requestBody.data === "object" && !Array.isArray(requestBody.data)
+    ? requestBody.data as ExplainRequest
+    : {};
 
   const since = cleanText(body.since, 80);
   const until = cleanText(body.until, 80);

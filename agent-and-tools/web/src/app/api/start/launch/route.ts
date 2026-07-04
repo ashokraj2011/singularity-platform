@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { jsonishMessage, readJsonish, readRequestJson } from "../../_json";
 import { buildStartPreview, type StartPreviewInput } from "../_shared";
 
 export const dynamic = "force-dynamic";
@@ -13,23 +14,35 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function messageFrom(value: unknown, fallback: string): string {
-  const obj = record(value);
-  const message = obj.message ?? obj.error ?? obj.detail ?? obj.title;
-  if (typeof message === "string" && message.trim()) return message;
-  if (typeof value === "string" && value.trim()) return value.slice(0, 700);
-  return fallback;
+  return jsonishMessage(value, fallback);
 }
 
 export async function POST(req: NextRequest) {
-  let body: StartPreviewInput & { plan?: unknown; workflowTemplateId?: string } = {};
-  try {
-    body = await req.json();
-  } catch {
-    body = {};
+  const requestBody = await readRequestJson(req);
+  if (requestBody.parseError) {
+    return NextResponse.json(
+      { code: "INVALID_JSON", message: "Request body must be valid JSON.", detail: requestBody.text },
+      { status: 400 },
+    );
   }
+  const body = requestBody.data && typeof requestBody.data === "object" && !Array.isArray(requestBody.data)
+    ? requestBody.data as StartPreviewInput & { plan?: unknown; workflowTemplateId?: string }
+    : {};
 
   const preview = await buildStartPreview(req, body);
   const recommendation = preview.recommendation;
+  const hardBlockers = preview.blockers.filter((blocker) => blocker.severity === "blocked");
+  if (hardBlockers.length > 0) {
+    return NextResponse.json(
+      {
+        code: "START_PREREQUISITES_BLOCKED",
+        message: hardBlockers.map((blocker) => `${blocker.label}: ${blocker.message}`).join(" "),
+        recommendation,
+        blockers: preview.blockers,
+      },
+      { status: 409 },
+    );
+  }
   if (!recommendation.capabilityId || !recommendation.workflowTemplateId) {
     return NextResponse.json(
       {
@@ -61,13 +74,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify(launchPayload),
       cache: "no-store",
     });
-    const text = await res.text();
-    let parsed: unknown = null;
-    try {
-      parsed = text ? JSON.parse(text) : null;
-    } catch {
-      parsed = text;
-    }
+    const parsed = (await readJsonish(res)).data;
     if (!res.ok) {
       return NextResponse.json(
         {

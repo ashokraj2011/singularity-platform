@@ -1,11 +1,64 @@
 import path from "node:path";
+import fs from "node:fs";
 import { createRequire } from "node:module";
+import { SERVICE_DEFINITIONS, defaultServiceUrl } from "./src/lib/platformServiceDefinitions.mjs";
 
 const require = createRequire(import.meta.url);
 const webNodeModules = path.join(process.cwd(), "node_modules");
 const workgraphWebSource = new URL("../../workgraph-studio/apps/web/src", import.meta.url).pathname;
 const workgraphEngineSource = new URL("../../workgraph-studio/packages/engine/src/index.ts", import.meta.url).pathname;
 const blueprintWorkbenchSource = new URL("../../workgraph-studio/apps/blueprint-workbench/src", import.meta.url).pathname;
+
+function stripEnvQuotes(value) {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function loadRootEnv() {
+  const candidates = [
+    path.resolve(process.cwd(), "../../.env.local"),
+    path.resolve(process.cwd(), "../.env.local"),
+    path.resolve(process.cwd(), ".env.local"),
+  ];
+  const env = {};
+  for (const candidate of candidates) {
+    if (!fs.existsSync(candidate)) continue;
+    for (const rawLine of fs.readFileSync(candidate, "utf8").split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const normalized = line.startsWith("export ") ? line.slice("export ".length).trim() : line;
+      const eq = normalized.indexOf("=");
+      if (eq <= 0) continue;
+      const key = normalized.slice(0, eq).trim();
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) continue;
+      const value = stripEnvQuotes(normalized.slice(eq + 1)).replace(/\$([A-Z0-9_]+)/g, (_match, ref) => env[ref] ?? process.env[ref] ?? "");
+      env[key] = value;
+      if (process.env[key] === undefined || process.env[key] === "") {
+        process.env[key] = value;
+      }
+    }
+    break;
+  }
+  return env;
+}
+
+const rootEnv = loadRootEnv();
+
+function configEnv(key, fallback) {
+  return process.env[key] || rootEnv[key] || fallback;
+}
+
+function localDefaults() {
+  return Boolean(configEnv("PG_HOST", ""));
+}
+
+function serviceUrl(serviceId, local) {
+  const service = SERVICE_DEFINITIONS[serviceId];
+  return configEnv(service.envKey, defaultServiceUrl(serviceId, local));
+}
 
 function healthDestination(value, defaultBase, path) {
   const raw = (value || defaultBase).replace(/\/+$/, "");
@@ -118,7 +171,9 @@ const nextConfig = {
     ];
   },
   async rewrites() {
-    const iamHealthDestination = healthDestination(process.env.IAM_HEALTH_URL, "http://iam-service:8100", "/api/v1/health");
+    const local = localDefaults();
+    const iamDefault = serviceUrl("iam", local).replace(/\/api\/v1\/?$/, "");
+    const iamHealthDestination = healthDestination(configEnv("IAM_HEALTH_URL", ""), iamDefault, "/api/v1/health");
     // Blue Blueprint Workbench cockpit runs IN-PROCESS as the Next /workbench
     // route (slice 2 — no separate :5176 dev server, no :8085 gateway). Only the
     // cockpit's own API paths still need proxying to the backends, same as the
@@ -136,23 +191,23 @@ const nextConfig = {
       // Runtime (new spec) — must come BEFORE the older /api/agents and /api/tools rules
       {
         source: "/api/runtime/:path*",
-        destination: `${process.env.AGENT_RUNTIME_URL ?? "http://localhost:3003"}/api/v1/:path*`,
+        destination: `${serviceUrl("agent-runtime", local)}/api/v1/:path*`,
       },
       {
         source: "/api/agents/:path*",
-        destination: `${process.env.AGENT_SERVICE_URL ?? "http://localhost:3001"}/api/v1/:path*`,
+        destination: `${serviceUrl("agent-service", local)}/api/v1/:path*`,
       },
       {
         source: "/api/client-runners/:path*",
-        destination: `${process.env.TOOL_SERVICE_URL ?? "http://localhost:3001"}/api/v1/client-runners/:path*`,
+        destination: `${serviceUrl("tool-service", local)}/api/v1/client-runners/:path*`,
       },
       {
         source: "/api/tools/:path*",
-        destination: `${process.env.TOOL_SERVICE_URL ?? "http://localhost:3001"}/api/v1/tools/:path*`,
+        destination: `${serviceUrl("tool-service", local)}/api/v1/tools/:path*`,
       },
       {
         source: "/api/cf/:path*",
-        destination: `${process.env.CONTEXT_FABRIC_URL ?? "http://host.docker.internal:8000"}/:path*`,
+        destination: `${serviceUrl("context-fabric", local)}/:path*`,
       },
       {
         source: "/ops-health/iam",
@@ -160,27 +215,27 @@ const nextConfig = {
       },
       {
         source: "/ops-health/workgraph-api",
-        destination: `${process.env.WORKGRAPH_API_URL ?? "http://workgraph-api:8080"}/health`,
+        destination: `${serviceUrl("workgraph-api", local)}/health`,
       },
       {
         source: "/ops-health/prompt-composer",
-        destination: `${process.env.PROMPT_COMPOSER_URL ?? "http://prompt-composer:3004"}/health`,
+        destination: `${serviceUrl("prompt-composer", local)}/health`,
       },
       {
         source: "/ops-health/context-api",
-        destination: `${process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000"}/health`,
+        destination: `${serviceUrl("context-fabric", local)}/health`,
       },
       {
         source: "/ops-health/agent-runtime",
-        destination: `${process.env.AGENT_RUNTIME_URL ?? "http://agent-runtime:3003"}/health`,
+        destination: `${serviceUrl("agent-runtime", local)}/health`,
       },
       {
         source: "/ops-health/tool-service",
-        destination: `${process.env.TOOL_SERVICE_URL ?? "http://agent-service:3001"}/health`,
+        destination: `${serviceUrl("tool-service", local)}/health`,
       },
       {
         source: "/ops-health/agent-service",
-        destination: `${process.env.AGENT_SERVICE_URL ?? "http://agent-service:3001"}/health`,
+        destination: `${serviceUrl("agent-service", local)}/health`,
       },
       ],
     };

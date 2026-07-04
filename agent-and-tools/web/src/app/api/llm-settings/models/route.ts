@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { jsonishMessage, readJsonish, readRequestJson } from "../../_json";
 import { requireVerifiedCallerBearer } from "../../_proxy";
+import { configuredPlatformServiceUrl, serviceBearerHeaders } from "@/lib/platformServices";
 
 export const dynamic = "force-dynamic";
 
@@ -9,33 +11,41 @@ export const dynamic = "force-dynamic";
 // require a verified caller (unlike the read at GET /api/llm-settings).
 
 function gatewayBase(): string {
-  return (process.env.LLM_GATEWAY_URL ?? process.env.LLM_GATEWAY_INTERNAL_URL ?? "http://llm-gateway:8001").replace(/\/+$/, "");
+  return configuredPlatformServiceUrl("llm-gateway", "LLM_GATEWAY_INTERNAL_URL") ?? "";
 }
 
 function gatewayHeaders(): HeadersInit {
-  const bearer = process.env.LLM_GATEWAY_BEARER?.trim();
   return {
     "content-type": "application/json",
-    ...(bearer ? { Authorization: bearer.startsWith("Bearer ") ? bearer : `Bearer ${bearer}` } : {}),
+    ...serviceBearerHeaders("llm-gateway"),
   };
 }
 
 async function forward(method: string, path: string, body?: unknown): Promise<NextResponse> {
+  const base = gatewayBase();
+  if (!base) {
+    return NextResponse.json({ error: "LLM Gateway is not configured for model catalog writes." }, { status: 503 });
+  }
   try {
-    const res = await fetch(`${gatewayBase()}${path}`, {
+    const res = await fetch(`${base}${path}`, {
       method,
       headers: gatewayHeaders(),
       cache: "no-store",
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
-    const text = await res.text();
-    let data: unknown = text;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      /* keep raw text */
+    const responseBody = await readJsonish(res);
+    if (!res.ok) {
+      return NextResponse.json(
+        {
+          code: "LLM_GATEWAY_REQUEST_FAILED",
+          message: jsonishMessage(responseBody.data, res.statusText || "LLM Gateway request failed"),
+          status: res.status,
+          details: responseBody.data,
+        },
+        { status: res.status || 502 },
+      );
     }
-    return NextResponse.json(data, { status: res.status });
+    return NextResponse.json(responseBody.data, { status: res.status });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : "gateway request failed" }, { status: 502 });
   }
@@ -45,7 +55,11 @@ async function forward(method: string, path: string, body?: unknown): Promise<Ne
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const authFailure = await requireVerifiedCallerBearer(request, "LLM settings");
   if (authFailure) return authFailure;
-  const body = await request.json().catch(() => ({}));
+  const requestBody = await readRequestJson(request);
+  if (requestBody.parseError) {
+    return NextResponse.json({ code: "INVALID_JSON", message: "Request body must be valid JSON.", detail: requestBody.text }, { status: 400 });
+  }
+  const body = requestBody.data && typeof requestBody.data === "object" && !Array.isArray(requestBody.data) ? requestBody.data : {};
   return forward("POST", "/llm/models", body);
 }
 
@@ -55,7 +69,11 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
   if (authFailure) return authFailure;
   const id = request.nextUrl.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "id query param required" }, { status: 400 });
-  const body = await request.json().catch(() => ({}));
+  const requestBody = await readRequestJson(request);
+  if (requestBody.parseError) {
+    return NextResponse.json({ code: "INVALID_JSON", message: "Request body must be valid JSON.", detail: requestBody.text }, { status: 400 });
+  }
+  const body = requestBody.data && typeof requestBody.data === "object" && !Array.isArray(requestBody.data) ? requestBody.data : {};
   return forward("PUT", `/llm/models/${encodeURIComponent(id)}`, body);
 }
 

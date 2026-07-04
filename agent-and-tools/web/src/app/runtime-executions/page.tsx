@@ -4,10 +4,11 @@ import Link from "next/link";
 import { Activity, Info, Workflow } from "lucide-react";
 import { runtimeApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { asDateTime, asRow, asRowArray, asString, type Row } from "@/lib/row";
 
 export default function RuntimeExecutionsPage() {
   const { data: execs, isLoading } = useSWR("runtime-executions", () => runtimeApi.listExecutions(), { refreshInterval: 5000 });
-  const items = (execs ?? []) as Record<string, unknown>[];
+  const items = asRowArray(execs);
 
   return (
     <div>
@@ -42,26 +43,29 @@ export default function RuntimeExecutionsPage() {
       {isLoading && <div className="text-slate-500 text-sm">Loading…</div>}
 
       <div className="space-y-3">
-        {items.map(e => {
-          const at = e.agentTemplate as Record<string, unknown> | undefined;
-          const cap = e.capability as Record<string, unknown> | undefined;
+        {items.map((e: Row, index: number) => {
+          const at = asRow(e.agentTemplate);
+          const cap = asRow(e.capability);
+          const id = asString(e.id, `execution-${index}`);
+          const model = [asString(e.modelProvider), asString(e.modelName)].filter(Boolean).join("/") || "model pending";
+          const capabilityName = asString(cap.name);
           return (
-            <div key={e.id as string} className="card p-5 flex items-start gap-4">
+            <div key={id} className="card p-5 flex items-start gap-4">
               <div className="p-2.5 bg-emerald-50 rounded-lg shrink-0">
                 <Activity size={18} className="text-emerald-600" />
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap mb-1">
-                  <span className="font-medium text-slate-900">{at?.name as string ?? "—"}</span>
-                  <StatusBadge value={e.executionStatus as string} />
-                  {!!cap && <span className="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded">{cap.name as string}</span>}
-                  <span className="text-xs text-slate-400 font-mono">{e.modelProvider as string}/{e.modelName as string}</span>
+                  <span className="font-medium text-slate-900">{asString(at.name, "Untitled execution")}</span>
+                  <StatusBadge value={asString(e.executionStatus, "unknown")} />
+                  {!!capabilityName && <span className="text-xs bg-purple-50 text-purple-700 px-2 py-0.5 rounded">{capabilityName}</span>}
+                  <span className="text-xs text-slate-400 font-mono">{model}</span>
                 </div>
-                <p className="text-sm text-slate-700">{e.userRequest as string}</p>
-                <div className="text-xs text-slate-400 mt-1">{new Date(e.createdAt as string).toLocaleString()}</div>
+                <p className="text-sm text-slate-700">{asString(e.userRequest, "No request captured.")}</p>
+                <div className="text-xs text-slate-400 mt-1">{asDateTime(e.createdAt)}</div>
               </div>
               <div className="flex flex-col gap-2 shrink-0">
-                <Link href={`/runtime-executions/${e.id}`} className="btn-secondary text-xs">View receipt</Link>
+                <Link href={`/runtime-executions/${encodeURIComponent(id)}`} className="btn-secondary text-xs">View receipt</Link>
               </div>
             </div>
           );

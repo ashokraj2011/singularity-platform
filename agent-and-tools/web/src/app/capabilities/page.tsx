@@ -4,6 +4,7 @@ import useSWR from "swr";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
+  AlertTriangle,
   Bot,
   ChevronRight,
   FileText,
@@ -19,6 +20,18 @@ import { identityApi, runtimeApi, type IamBusinessUnit, type IamTeam } from "@/l
 import { CAPABILITY_ROLE_OPTIONS } from "@/lib/capabilityRoles";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { PageHeader, EmptyState, ErrorState } from "@/components/ui/primitives";
+import {
+  capabilityDisplayName,
+  capabilityIdentityKey,
+  capabilityIdentityLabel,
+  capabilityRowId,
+  capabilityRowsFromListResponse,
+  capabilityShortId,
+  capabilityText,
+  duplicateCapabilitiesByIdentity,
+  isArchivedCapability,
+  uniqueCapabilitiesByIdentity,
+} from "./capability-list-model";
 
 type LocalBootstrapFile = { path: string; content: string };
 type BootstrapCatalogAgent = {
@@ -131,11 +144,14 @@ const CAPABILITY_TYPE_OPTIONS = [
   { value: "DELIVERY", label: "Delivery" },
   { value: "COLLECTION", label: "Collection" },
 ] as const;
+type CapabilityListTab = "active" | "archived";
 
 export default function CapabilitiesPage() {
   const router = useRouter();
   const localInputRef = useRef<HTMLInputElement>(null);
-  const { data, isLoading, mutate } = useSWR("runtime-capabilities", () => runtimeApi.listCapabilities());
+  const { data, isLoading, mutate } = useSWR("runtime-capabilities-with-archive", () =>
+    runtimeApi.listCapabilities({ includeArchived: true }),
+  );
   const { data: iamTeams = [] } = useSWR<IamTeam[]>("iam-teams", () => identityApi.listTeams());
   const { data: iamBusinessUnits = [] } = useSWR<IamBusinessUnit[]>("iam-business-units", () => identityApi.listBusinessUnits());
   const { data: bootstrapAgentCatalog } = useSWR<BootstrapAgentCatalog>("bootstrap-agent-catalog", () => runtimeApi.bootstrapAgentCatalog() as Promise<BootstrapAgentCatalog>);
@@ -146,18 +162,54 @@ export default function CapabilitiesPage() {
   const [localNote, setLocalNote] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [listTab, setListTab] = useState<CapabilityListTab>("active");
   const selectedAgents = agentPreviewForPreset(form.agentPreset, bootstrapAgentCatalog);
   const lockedAgentCount = selectedAgents.filter(agent => agent.locked).length;
   const gitGroundedAgentCount = selectedAgents.filter(agent => agent.learnsFromGit).length;
   const requiredAgentCount = selectedAgents.filter(agent => agent.activationRequired).length;
-  const items = (data ?? []) as Record<string, unknown>[];
-  const collectionCapabilities = useMemo(
-    () => items.filter(cap => isCollectionType(String(cap.capabilityType ?? ""))),
+  const items = useMemo(() => capabilityRowsFromListResponse(data), [data]);
+  const activeRawItems = useMemo(
+    () => items.filter(cap => !isArchivedCapability(cap)),
     [items],
   );
-  const childCapabilityOptions = useMemo(
-    () => items.filter(cap => !isCollectionType(String(cap.capabilityType ?? ""))),
+  const archivedRawItems = useMemo(
+    () => items.filter(isArchivedCapability),
     [items],
+  );
+  const activeItems = useMemo(
+    () => uniqueCapabilitiesByIdentity(activeRawItems),
+    [activeRawItems],
+  );
+  const archivedItems = useMemo(
+    () => uniqueCapabilitiesByIdentity(archivedRawItems),
+    [archivedRawItems],
+  );
+  const activeDuplicateGroups = useMemo(
+    () => duplicateCapabilitiesByIdentity(activeRawItems),
+    [activeRawItems],
+  );
+  const archivedDuplicateGroups = useMemo(
+    () => duplicateCapabilitiesByIdentity(archivedRawItems),
+    [archivedRawItems],
+  );
+  const activeIdentityKeys = useMemo(
+    () => new Set(activeItems.map(capabilityIdentityKey).filter(Boolean)),
+    [activeItems],
+  );
+  const archivedIdentityKeys = useMemo(
+    () => new Set(archivedItems.map(capabilityIdentityKey).filter(Boolean)),
+    [archivedItems],
+  );
+  const visibleItems = listTab === "archived" ? archivedItems : activeItems;
+  const visibleDuplicateGroups = listTab === "archived" ? archivedDuplicateGroups : activeDuplicateGroups;
+  const hiddenDuplicateCount = visibleDuplicateGroups.reduce((sum, group) => sum + group.duplicateCount, 0);
+  const collectionCapabilities = useMemo(
+    () => activeItems.filter(cap => isCollectionType(capabilityText(cap, "capabilityType", "capability_type"))),
+    [activeItems],
+  );
+  const childCapabilityOptions = useMemo(
+    () => activeItems.filter(cap => !isCollectionType(capabilityText(cap, "capabilityType", "capability_type"))),
+    [activeItems],
   );
   const isCollection = isCollectionType(form.capabilityType);
 
@@ -402,11 +454,13 @@ export default function CapabilitiesPage() {
                   <SearchableSelect
                     placeholder={collectionCapabilities.length > 0 ? "Search parent collection..." : "No collection capability yet"}
                     value={form.parentCapabilityId}
-                    options={collectionCapabilities.map(cap => ({
-                      value: String(cap.id),
-                      label: String(cap.name ?? cap.id),
-                      description: String(cap.appId ?? cap.capabilityType ?? ""),
-                    }))}
+                    options={collectionCapabilities
+                      .map(cap => ({
+                        value: capabilityRowId(cap),
+                        label: capabilityDisplayName(cap),
+                        description: capabilityText(cap, "appId", "app_id", "capabilityType", "capability_type"),
+                      }))
+                      .filter(option => option.value)}
                     onChange={value => setForm(f => ({ ...f, parentCapabilityId: value }))}
                   />
                 </Field>
@@ -603,26 +657,111 @@ export default function CapabilitiesPage() {
 
       {isLoading && <div className="text-slate-500 text-sm">Loading...</div>}
 
-      <div className="space-y-3">
-        {items.map(c => (
-          <Link key={c.id as string} href={`/capabilities/${c.id}`}
-            className="card p-5 flex items-center gap-4 hover:shadow-md transition-shadow">
-            <div className="p-2.5 bg-purple-50 rounded-lg"><GitBranch size={20} className="text-purple-600" /></div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-medium text-slate-900">{c.name as string}</span>
-                <StatusBadge value={c.status as string} />
-                {!!c.appId && <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded">app: {c.appId as string}</span>}
-                {!!c.capabilityType && <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded">{c.capabilityType as string}</span>}
-                {!!c.criticality && <span className="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded">crit: {c.criticality as string}</span>}
-              </div>
-              {!!c.description && <div className="text-sm text-slate-600 mt-1">{c.description as string}</div>}
+      <div className="mb-4 flex w-fit flex-wrap items-center gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
+        <button
+          type="button"
+          onClick={() => setListTab("active")}
+          className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+            listTab === "active"
+              ? "bg-emerald-50 text-emerald-700 shadow-sm"
+              : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+          }`}
+        >
+          Active <span className="ml-1 text-xs opacity-70">{activeItems.length}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setListTab("archived")}
+          className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+            listTab === "archived"
+              ? "bg-slate-900 text-white shadow-sm"
+              : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+          }`}
+        >
+          Archived <span className="ml-1 text-xs opacity-70">{archivedItems.length}</span>
+        </button>
+      </div>
+
+      {visibleDuplicateGroups.length > 0 && (
+        <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+          <div className="flex items-start gap-3">
+            <div className="rounded-lg bg-amber-100 p-2 text-amber-700">
+              <AlertTriangle size={18} />
             </div>
-            <ChevronRight size={16} className="text-slate-400 shrink-0" />
-          </Link>
-        ))}
-        {!isLoading && items.length === 0 && (
-          <EmptyState icon={GitBranch} title="No capabilities yet" hint="Bootstrap your first one above." />
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold text-amber-950">Duplicate capability identities detected</div>
+              <p className="mt-1 text-amber-900">
+                Showing the deterministic canonical row for each app/name identity and hiding {hiddenDuplicateCount} duplicate
+                {hiddenDuplicateCount === 1 ? " row" : " rows"}. This usually means old data was created before
+                idempotent sync or active-identity constraints were applied.
+              </p>
+              <div className="mt-3 grid gap-2 lg:grid-cols-2">
+                {visibleDuplicateGroups.slice(0, 4).map(group => (
+                  <div key={group.key} className="rounded-lg border border-amber-200 bg-white/70 px-3 py-2">
+                    <div className="font-medium text-slate-900">{capabilityIdentityLabel(group.canonical)}</div>
+                    <div className="mt-1 text-xs text-slate-600">
+                      Canonical {capabilityShortId(group.canonical)}; hidden{" "}
+                      {group.duplicateIds.map(capabilityShortId).join(", ")}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {visibleDuplicateGroups.length > 4 && (
+                <div className="mt-2 text-xs text-amber-800">
+                  {visibleDuplicateGroups.length - 4} more duplicate identity group
+                  {visibleDuplicateGroups.length - 4 === 1 ? "" : "s"} hidden from this summary.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {visibleItems.map((c, index) => {
+          const rowId = capabilityRowId(c);
+          if (!rowId) return null;
+          const identityKey = capabilityIdentityKey(c);
+          const displayName = capabilityDisplayName(c);
+          const status = capabilityText(c, "status") || "UNKNOWN";
+          const appId = capabilityText(c, "appId", "app_id", "applicationId", "application_id");
+          const capabilityType = capabilityText(c, "capabilityType", "capability_type");
+          const criticality = capabilityText(c, "criticality");
+          const description = capabilityText(c, "description");
+          const hasCounterpart = Boolean(identityKey && (
+            listTab === "archived" ? activeIdentityKeys.has(identityKey) : archivedIdentityKeys.has(identityKey)
+          ));
+          return (
+            <Link key={rowId || `${displayName}-${index}`} href={`/capabilities/${encodeURIComponent(rowId)}`}
+              className="card p-5 flex items-center gap-4 hover:shadow-md transition-shadow">
+              <div className={`p-2.5 rounded-lg ${listTab === "archived" ? "bg-slate-100" : "bg-purple-50"}`}>
+                <GitBranch size={20} className={listTab === "archived" ? "text-slate-500" : "text-purple-600"} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium text-slate-900">{displayName}</span>
+                  <StatusBadge value={status} />
+                  {!!appId && <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded">app: {appId}</span>}
+                  {!!capabilityType && <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded">{capabilityType}</span>}
+                  {!!criticality && <span className="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded">crit: {criticality}</span>}
+                  {hasCounterpart && (
+                    <span className="text-xs text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded">
+                      {listTab === "archived" ? "active copy exists" : "archived copy exists"}
+                    </span>
+                  )}
+                </div>
+                {!!description && <div className="text-sm text-slate-600 mt-1">{description}</div>}
+              </div>
+              <ChevronRight size={16} className="text-slate-400 shrink-0" />
+            </Link>
+          );
+        })}
+        {!isLoading && visibleItems.length === 0 && (
+          <EmptyState
+            icon={GitBranch}
+            title={listTab === "archived" ? "No archived capabilities" : "No active capabilities yet"}
+            hint={listTab === "archived" ? "Archived capabilities will appear here after they are retired." : "Bootstrap your first one above."}
+          />
         )}
       </div>
     </div>
@@ -985,7 +1124,8 @@ function CapabilityMultiSelect({
       />
       <div className="max-h-44 space-y-1 overflow-auto">
         {filtered.length > 0 ? filtered.map(cap => {
-          const id = String(cap.id);
+          const id = capabilityRowId(cap);
+          if (!id) return null;
           const checked = selected.has(id);
           return (
             <button
@@ -1001,7 +1141,7 @@ function CapabilityMultiSelect({
             >
               <span>
                 <span className="block font-medium">{capabilityLabel(cap)}</span>
-                <span className="block text-xs text-slate-500">{String(cap.capabilityType ?? "capability")}</span>
+                <span className="block text-xs text-slate-500">{capabilityText(cap, "capabilityType", "capability_type") || "capability"}</span>
               </span>
               <span className="text-xs font-semibold">{checked ? "Selected" : "Add"}</span>
             </button>
@@ -1046,9 +1186,9 @@ function isCollectionType(value: string): boolean {
 }
 
 function capabilityLabel(cap: Record<string, unknown>): string {
-  const name = String(cap.name ?? cap.id ?? "Capability");
-  const appId = cap.appId ? ` (${String(cap.appId)})` : "";
-  return `${name}${appId}`;
+  const name = capabilityDisplayName(cap);
+  const appId = capabilityText(cap, "appId", "app_id", "applicationId", "application_id");
+  return appId ? `${name} (${appId})` : name;
 }
 
 function isBootstrapDiscoveryPath(path: string): boolean {

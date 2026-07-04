@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 FROM node:20-alpine AS base
 ENV NPM_CONFIG_FETCH_RETRIES=5 \
     NPM_CONFIG_FETCH_RETRY_FACTOR=2 \
@@ -72,9 +70,12 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN apk add --no-cache nginx
 COPY --from=next-builder /app/agent-and-tools/web/.next/standalone ./
 COPY --from=next-builder /app/agent-and-tools/web/.next/static ./.next/static
+COPY --from=next-builder /app/agent-and-tools/web/.next/static ./web/.next/static
 COPY --from=next-builder /app/agent-and-tools/web/public ./public
+COPY --from=next-builder /app/agent-and-tools/web/public ./web/public
 COPY --from=workbench-builder /app/workgraph-studio/apps/blueprint-workbench/dist ./workbench
 COPY agent-and-tools/web/platform.nginx.conf /etc/nginx/http.d/default.conf
+COPY agent-and-tools/web/scripts/check-standalone-bundle.mjs /app/check-standalone-bundle.mjs
 RUN mkdir -p /run/nginx && cat > /app/start-platform-web.sh <<'SH' && chmod +x /app/start-platform-web.sh
 #!/bin/sh
 set -e
@@ -112,7 +113,9 @@ if [ "$production_class" = "1" ]; then
       fi
     done
 fi
-HOSTNAME=0.0.0.0 PORT=3000 node /app/server.js &
+SERVER_ROOT="$(node /app/check-standalone-bundle.mjs /app --print-root)"
+cd "$SERVER_ROOT"
+HOSTNAME=0.0.0.0 PORT=3000 node server.js &
 exec nginx -g 'daemon off;'
 SH
 EXPOSE 80

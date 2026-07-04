@@ -3,7 +3,6 @@
 import Link from "next/link";
 import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
-import useSWR from "swr";
 import {
   AlertTriangle,
   Bot,
@@ -18,9 +17,10 @@ import {
   Wrench,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { apiPath, authHeaders, readResponseBody, responseMessage, runtimeApi } from "@/lib/api";
+import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 import { shortId } from "@/lib/workgraph";
 import { isWorkbenchProfile, workbenchNeoUrl } from "@/lib/workbenchLaunch";
+import { asBoolean, asRow, asRowArray, asString, asStringArray } from "@/lib/row";
 import { Stepper, StatusChip, type Step } from "@/components/ui/primitives";
 
 type Capability = { id: string; name?: string; capabilityType?: string | null; status?: string | null };
@@ -38,16 +38,41 @@ type GalleryItem = {
   templateCount?: number;
   workflowTemplate?: { id?: string; name?: string; workflowTypeKey?: string; profile?: string | null } | null;
 };
-type GalleryResponse = { items?: GalleryItem[] };
 type AdoptionHealth = {
   score?: number;
   summary?: {
     connectedRuntimeCount?: number;
     readyProviderCount?: number;
+    readyModelAliasCount?: number;
+    readyModelAliases?: string[];
+    defaultModelAlias?: string | null;
+    defaultModelReady?: boolean;
     seededIntentCount?: number;
   };
   blocked?: Array<{ id: string; label: string; summary: string; fixCommand?: string; fixRoute?: string }>;
   warning?: Array<{ id: string; label: string; summary: string; fixCommand?: string; fixRoute?: string }>;
+};
+type StartBlocker = { id: string; label: string; message: string; severity: "blocked" | "warning"; fixCommand?: string; fixRoute?: string };
+type StartRecommendation = {
+  intent: string;
+  intentLabel: string;
+  capabilityId: string | null;
+  capabilityName: string | null;
+  workflowTemplateId: string | null;
+  workflowTemplateName: string | null;
+  modelAlias: string;
+  runtimePreference: string;
+  governancePreset: string;
+  demoMode: boolean;
+};
+type StartPreview = {
+  story: string;
+  recommendation: StartRecommendation;
+  intents: GalleryItem[];
+  capabilities: Capability[];
+  blockers: StartBlocker[];
+  health?: AdoptionHealth;
+  catalog?: { referenceOnly?: boolean; authRequired?: boolean; message?: string | null };
 };
 type LaunchResult = {
   runUrl?: string | null;
@@ -60,21 +85,167 @@ type LaunchResult = {
 
 type PrereqCheck = { label: string; ok: boolean; optional?: boolean };
 
-async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(apiPath(url), { cache: "no-store", headers: { "Content-Type": "application/json", ...authHeaders() } });
-  const { raw, parsed } = await readResponseBody(res);
-  if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
-  return parsed as T;
+const fallbackStory = "As a platform team, I want a governed agentic SDLC workflow that turns a story into WorkItems, runs implementation, captures tests, and exports delivery evidence.";
+const blockerSeverities = new Set<StartBlocker["severity"]>(["blocked", "warning"]);
+
+function nullableString(value: unknown): string | null {
+  return asString(value) || null;
 }
 
-const fallbackStory = "As a platform team, I want a governed agentic SDLC workflow that turns a story into WorkItems, runs implementation, captures tests, and exports delivery evidence.";
+function optionalString(value: unknown): string | undefined {
+  return asString(value) || undefined;
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeWorkflowTemplate(value: unknown): GalleryItem["workflowTemplate"] {
+  const row = asRow(value);
+  if (Object.keys(row).length === 0) return null;
+  return {
+    id: optionalString(row.id),
+    name: optionalString(row.name),
+    workflowTypeKey: optionalString(row.workflowTypeKey),
+    profile: nullableString(row.profile),
+  };
+}
+
+function normalizeGalleryItem(value: unknown, index: number): GalleryItem {
+  const row = asRow(value);
+  return {
+    id: asString(row.id, `intent-${index}`),
+    label: asString(row.label, `Intent ${index + 1}`),
+    description: asString(row.description, "Guided SDLC workflow."),
+    requiredInputs: asStringArray(row.requiredInputs),
+    sampleStory: optionalString(row.sampleStory),
+    defaultAgents: asStringArray(row.defaultAgents),
+    defaultModelAlias: optionalString(row.defaultModelAlias),
+    runtimePreference: optionalString(row.runtimePreference),
+    governancePreset: optionalString(row.governancePreset),
+    runtimeRequirement: optionalString(row.runtimeRequirement),
+    templateCount: asNumber(row.templateCount),
+    workflowTemplate: normalizeWorkflowTemplate(row.workflowTemplate),
+  };
+}
+
+function normalizeCapability(value: unknown, index: number): Capability {
+  const row = asRow(value);
+  return {
+    id: asString(row.id, `capability-${index}`),
+    name: optionalString(row.name),
+    capabilityType: nullableString(row.capabilityType),
+    status: nullableString(row.status),
+  };
+}
+
+function normalizeHealthIssue(value: unknown, index: number): { id: string; label: string; summary: string; fixCommand?: string; fixRoute?: string } {
+  const row = asRow(value);
+  return {
+    id: asString(row.id, `health-${index}`),
+    label: asString(row.label, "Health check"),
+    summary: asString(row.summary, "Check needs attention."),
+    ...(optionalString(row.fixCommand) ? { fixCommand: optionalString(row.fixCommand) } : {}),
+    ...(optionalString(row.fixRoute) ? { fixRoute: optionalString(row.fixRoute) } : {}),
+  };
+}
+
+function normalizeAdoptionHealth(value: unknown): AdoptionHealth {
+  const row = asRow(value);
+  const summary = asRow(row.summary);
+  return {
+    score: asNumber(row.score),
+    summary: {
+      connectedRuntimeCount: asNumber(summary.connectedRuntimeCount),
+      readyProviderCount: asNumber(summary.readyProviderCount),
+      readyModelAliasCount: asNumber(summary.readyModelAliasCount),
+      readyModelAliases: asStringArray(summary.readyModelAliases),
+      defaultModelAlias: nullableString(summary.defaultModelAlias),
+      defaultModelReady: asBoolean(summary.defaultModelReady),
+      seededIntentCount: asNumber(summary.seededIntentCount),
+    },
+    blocked: asRowArray(row.blocked).map(normalizeHealthIssue),
+    warning: asRowArray(row.warning).map(normalizeHealthIssue),
+  };
+}
+
+function normalizeBlocker(value: unknown, index: number): StartBlocker {
+  const row = asRow(value);
+  const severity = asString(row.severity);
+  return {
+    id: asString(row.id, `blocker-${index}`),
+    label: asString(row.label, "Prerequisite"),
+    message: asString(row.message, "Setup check needs attention."),
+    severity: blockerSeverities.has(severity as StartBlocker["severity"]) ? severity as StartBlocker["severity"] : "warning",
+    ...(optionalString(row.fixCommand) ? { fixCommand: optionalString(row.fixCommand) } : {}),
+    ...(optionalString(row.fixRoute) ? { fixRoute: optionalString(row.fixRoute) } : {}),
+  };
+}
+
+function normalizeRecommendation(value: unknown): StartRecommendation {
+  const row = asRow(value);
+  return {
+    intent: asString(row.intent, "build_feature"),
+    intentLabel: asString(row.intentLabel, "Build Feature"),
+    capabilityId: nullableString(row.capabilityId),
+    capabilityName: nullableString(row.capabilityName),
+    workflowTemplateId: nullableString(row.workflowTemplateId),
+    workflowTemplateName: nullableString(row.workflowTemplateName),
+    modelAlias: asString(row.modelAlias, "mock"),
+    runtimePreference: asString(row.runtimePreference, "mock_ok"),
+    governancePreset: asString(row.governancePreset, "standard"),
+    demoMode: asBoolean(row.demoMode),
+  };
+}
+
+function normalizeStartPreview(value: unknown, fallbackStoryText: string): StartPreview {
+  const row = asRow(value);
+  const catalog = asRow(row.catalog);
+  return {
+    story: asString(row.story, fallbackStoryText),
+    recommendation: normalizeRecommendation(row.recommendation),
+    intents: asRowArray(row.intents).map(normalizeGalleryItem),
+    capabilities: asRowArray(row.capabilities).map(normalizeCapability),
+    blockers: asRowArray(row.blockers).map(normalizeBlocker),
+    health: normalizeAdoptionHealth(row.health),
+    catalog: {
+      referenceOnly: asBoolean(catalog.referenceOnly),
+      authRequired: asBoolean(catalog.authRequired),
+      message: nullableString(catalog.message),
+    },
+  };
+}
+
+function normalizeLaunchResult(value: unknown): LaunchResult {
+  const row = asRow(value);
+  const workflowTemplate = normalizeWorkflowTemplate(row.workflowTemplate);
+  const workflowInstance = asRow(row.workflowInstance);
+  return {
+    runUrl: nullableString(row.runUrl),
+    workItems: asRowArray(row.workItems).map((item) => ({
+      id: asString(item.id),
+      workCode: asString(item.workCode),
+    })),
+    failedWorkItems: asRowArray(row.failedWorkItems).map((item) => ({
+      title: asString(item.title, "WorkItem"),
+      error: asString(item.error, "Creation failed"),
+    })),
+    workflowTemplate,
+    workflowInstance: Object.keys(workflowInstance).length > 0
+      ? {
+        id: optionalString(workflowInstance.id),
+        status: optionalString(workflowInstance.status),
+      }
+      : null,
+    warnings: asStringArray(row.warnings),
+  };
+}
 
 export default function WorkflowStartPage() {
-  const { data: capabilities = [], error: capabilitiesError } = useSWR("workflow-start-capabilities", () => runtimeApi.listCapabilities() as Promise<Capability[]>);
-  const { data: gallery, error: galleryError } = useSWR("workflow-template-gallery", () => fetchJson<GalleryResponse>("/api/workflow-templates/gallery"));
-  const { data: health, error: healthError, mutate: refreshHealth } = useSWR("adoption-health", () => fetchJson<AdoptionHealth>("/api/adoption/health"), { refreshInterval: 15000 });
-
-  const intents = gallery?.items ?? [];
+  const [preview, setPreview] = useState<StartPreview | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const [intentId, setIntentId] = useState("build_feature");
   const [capabilityId, setCapabilityId] = useState("");
   const [story, setStory] = useState(fallbackStory);
@@ -85,14 +256,23 @@ export default function WorkflowStartPage() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<LaunchResult | null>(null);
 
+  const intents = preview?.intents ?? [];
+  const capabilities = preview?.capabilities ?? [];
+  const health = preview?.health;
+  const referenceOnlyGallery = Boolean(preview?.catalog?.referenceOnly);
+  const blockers = preview?.blockers ?? [];
+  const blockingIssues = blockers.filter((blocker) => blocker.severity === "blocked");
+  const warningIssues = blockers.filter((blocker) => blocker.severity === "warning");
   const selectedIntent = useMemo(() => intents.find((item) => item.id === intentId) ?? intents[0] ?? null, [intentId, intents]);
   const selectedCapability = capabilities.find((capability) => capability.id === capabilityId) ?? null;
   const runtimeConnected = (health?.summary?.connectedRuntimeCount ?? 0) > 0;
-  const llmReady = (health?.summary?.readyProviderCount ?? 0) > 0;
+  const readyModelAliases = health?.summary?.readyModelAliases ?? [];
+  const selectedModelReady = modelAlias === "mock" || readyModelAliases.includes(modelAlias);
+  const llmReady = selectedModelReady || (modelAlias === (health?.summary?.defaultModelAlias ?? "") && health?.summary?.defaultModelReady === true);
   const requiresRuntime = runtimePreference !== "mock_ok" && selectedIntent?.runtimePreference !== "mock_ok";
   const requiresRealModel = modelAlias !== "mock";
   const hasTemplate = Boolean(selectedIntent?.workflowTemplate?.id);
-  const canLaunch = Boolean(capabilityId && story.trim().length >= 8 && hasTemplate && (!requiresRuntime || runtimeConnected) && (!requiresRealModel || llmReady) && !launching);
+  const canLaunch = Boolean(capabilityId && story.trim().length >= 8 && hasTemplate && (!requiresRuntime || runtimeConnected) && (!requiresRealModel || llmReady) && blockingIssues.length === 0 && !launching && !loadingPreview);
   const prereqChecks: PrereqCheck[] = [
     { label: "Capability selected", ok: Boolean(capabilityId) },
     { label: "Story written", ok: story.trim().length >= 8 },
@@ -128,20 +308,64 @@ export default function WorkflowStartPage() {
       })
     : null;
 
+  async function loadPreview(next: Partial<{ story: string; intent: string; capabilityId: string; modelAlias: string; runtimePreference: string; governancePreset: string }> = {}) {
+    setLoadingPreview(true);
+    setPreviewError(null);
+    try {
+      const res = await fetch(apiPath("/api/start/preview"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        cache: "no-store",
+        body: JSON.stringify({
+          story: next.story ?? story,
+          intent: next.intent ?? intentId,
+          capabilityId: next.capabilityId ?? capabilityId,
+          modelAlias: next.modelAlias ?? modelAlias,
+          runtimePreference: next.runtimePreference ?? runtimePreference,
+          governancePreset: next.governancePreset ?? governancePreset,
+        }),
+      });
+      const { raw, parsed } = await readResponseBody(res);
+      if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+      const data = normalizeStartPreview(parsed, next.story ?? story);
+      setPreview(data);
+      setStory(data.story || next.story || story);
+      setIntentId(data.recommendation.intent || next.intent || intentId);
+      setCapabilityId(data.recommendation.capabilityId ?? next.capabilityId ?? "");
+      setModelAlias(data.recommendation.modelAlias || next.modelAlias || "mock");
+      setRuntimePreference(data.recommendation.runtimePreference || next.runtimePreference || "mock_ok");
+      setGovernancePreset(data.recommendation.governancePreset || next.governancePreset || "standard");
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : "Could not load launch preview.");
+    } finally {
+      setLoadingPreview(false);
+    }
+  }
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const intent = params.get("intent");
-    if (intent) setIntentId(intent);
+    const requestedIntent = params.get("intent") || undefined;
+    if (requestedIntent) setIntentId(requestedIntent);
+    void loadPreview({ intent: requestedIntent });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function applyIntent(item: GalleryItem) {
+    const nextStory = item.sampleStory || fallbackStory;
     setIntentId(item.id);
-    setStory(item.sampleStory || fallbackStory);
+    setStory(nextStory);
     setModelAlias(item.defaultModelAlias || "balanced");
     setRuntimePreference(item.runtimePreference || "user_runtime");
     setGovernancePreset(item.governancePreset || "standard");
     setResult(null);
     setError(null);
+    void loadPreview({
+      intent: item.id,
+      story: nextStory,
+      modelAlias: item.defaultModelAlias,
+      runtimePreference: item.runtimePreference,
+      governancePreset: item.governancePreset,
+    });
   }
 
   async function launch() {
@@ -165,8 +389,8 @@ export default function WorkflowStartPage() {
       });
       const { raw, parsed } = await readResponseBody(res);
       if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
-      setResult(parsed as LaunchResult);
-      void refreshHealth();
+      setResult(normalizeLaunchResult(parsed));
+      void loadPreview();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Launch failed");
     } finally {
@@ -204,13 +428,19 @@ export default function WorkflowStartPage() {
       <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(185px, 1fr))", gap: 10, marginBottom: 16 }}>
         <Metric icon={ShieldCheck} label="Adoption score" value={health?.score != null ? `${health.score}%` : "..."} tone={(health?.score ?? 0) >= 80 ? "#047857" : "#b45309"} />
         <Metric icon={RadioTower} label="Runtime bridge" value={runtimeConnected ? "Connected" : "Waiting"} tone={runtimeConnected ? "#047857" : "#b45309"} />
-        <Metric icon={Sparkles} label="LLM providers" value={`${health?.summary?.readyProviderCount ?? 0} ready`} tone={llmReady ? "#047857" : "#b45309"} />
+        <Metric icon={Sparkles} label="Model aliases" value={`${health?.summary?.readyModelAliasCount ?? 0} ready`} tone={llmReady ? "#047857" : "#b45309"} />
         <Metric icon={GitBranch} label="Seeded intents" value={`${health?.summary?.seededIntentCount ?? 0}/${intents.length || 0}`} tone={hasTemplate ? "#047857" : "#b45309"} />
       </section>
 
-      {(capabilitiesError || galleryError || healthError) && (
+      {previewError && (
         <section className="data-panel" style={{ padding: 14, borderColor: "#fde68a", background: "#fffbeb", color: "#92400e", marginBottom: 16 }}>
-          {String(capabilitiesError?.message ?? galleryError?.message ?? healthError?.message)}
+          {previewError}
+        </section>
+      )}
+
+      {referenceOnlyGallery && (
+        <section className="data-panel" style={{ padding: 14, borderColor: "#fde68a", background: "#fffbeb", color: "#92400e", marginBottom: 16 }}>
+          {preview?.catalog?.message ?? "Login is required to inspect saved workflow templates. Showing the built-in SDLC intent catalog."}
         </section>
       )}
 
@@ -234,8 +464,8 @@ export default function WorkflowStartPage() {
             >
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
                 <strong>{item.label}</strong>
-                <span className={item.workflowTemplate ? "badge badge-active" : "badge badge-pending_approval"}>
-                  {item.workflowTemplate ? "seeded" : "missing"}
+                <span className={item.workflowTemplate?.id ? "badge badge-active" : "badge badge-pending_approval"}>
+                  {item.workflowTemplate?.id ? "seeded" : referenceOnlyGallery ? "login required" : "missing"}
                 </span>
               </div>
               <p style={{ margin: "6px 0 0", color: "var(--color-outline)", fontSize: 12, lineHeight: 1.45 }}>{item.description}</p>
@@ -255,7 +485,16 @@ export default function WorkflowStartPage() {
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10 }}>
             <Field label="Capability">
-              <select value={capabilityId} onChange={(event) => setCapabilityId(event.target.value)} style={inputStyle()}>
+              <select
+                value={capabilityId}
+                onChange={(event) => {
+                  const nextCapabilityId = event.target.value;
+                  setCapabilityId(nextCapabilityId);
+                  setResult(null);
+                  void loadPreview({ capabilityId: nextCapabilityId });
+                }}
+                style={inputStyle()}
+              >
                 <option value="">Select capability</option>
                 {capabilities.map((capability) => <option key={capability.id} value={capability.id}>{capability.name ?? capability.id}</option>)}
               </select>
@@ -295,7 +534,19 @@ export default function WorkflowStartPage() {
             </Field>
           </div>
 
-          <Prerequisites checks={prereqChecks} warnings={health?.warning ?? []} />
+          {loadingPreview && (
+            <Panel tone="#2563eb" icon={Loader2} title="Refreshing launch preview" body="Checking capability, workflow template, runtime, and model readiness." />
+          )}
+          <Prerequisites checks={prereqChecks} warnings={warningIssues} />
+          {!llmReady && requiresRealModel && (
+            <Panel
+              tone="#b91c1c"
+              icon={AlertTriangle}
+              title="Selected model alias is not ready"
+              body={`${modelAlias || "Model alias"} is not in the ready alias set reported by Runtime + LLM. Choose one of: ${readyModelAliases.slice(0, 6).join(", ") || "no ready aliases reported"}.`}
+              actions={<Link href="/llm-settings" className="btn-secondary"><Wrench size={14} /> Runtime setup</Link>}
+            />
+          )}
           {error && <Panel tone="#b91c1c" icon={AlertTriangle} title="Launch failed" body={error} />}
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -364,7 +615,7 @@ function Prerequisites({
   warnings,
 }: {
   checks: PrereqCheck[];
-  warnings: Array<{ id: string; label: string; summary: string; fixCommand?: string; fixRoute?: string }>;
+  warnings: StartBlocker[];
 }) {
   const allReady = checks.every((check) => check.ok || check.optional);
   return (
@@ -392,7 +643,7 @@ function Prerequisites({
               <Link href="/operations/readiness" className="btn-secondary"><ShieldCheck size={14} /> Readiness</Link>
             </>
           }
-          footnote={warnings.slice(0, 2).map((warning) => warning.summary).join(" ")}
+          footnote={warnings.slice(0, 2).map((warning) => warning.message).join(" ")}
         />
       )}
     </div>

@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
+import { readRequestJson } from "../../_json";
 import { callComposer, estimateTokensFromPreview, selectedAliases } from "../_shared/composer";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
-  const body = await request.json().catch(() => null) as { compose?: Record<string, unknown>; modelAliases?: unknown } | null;
+  const requestBody = await readRequestJson(request);
+  if (requestBody.parseError) {
+    return NextResponse.json({ error: "Request body must be valid JSON.", detail: requestBody.text }, { status: 400 });
+  }
+  const body = requestBody.data as { compose?: Record<string, unknown>; modelAliases?: unknown } | null;
   if (!body?.compose || typeof body.compose !== "object") {
     return NextResponse.json({ error: "Request body must include compose." }, { status: 400 });
   }

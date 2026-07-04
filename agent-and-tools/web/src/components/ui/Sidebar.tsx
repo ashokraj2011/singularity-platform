@@ -17,6 +17,34 @@ import {
 const menuSections = sidebarSections();
 const journeyItems = journeyRoutes();
 const allMenuItems = menuSections.flatMap((section) => section.items);
+const sidebarGroupLabels = new Set<NavGroup>(menuSections.map((section) => section.label));
+
+function parseStoredBoolean(raw: string | null, fallback: boolean): boolean {
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  return fallback;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function parseStoredOpenGroups(raw: string | null): Record<string, boolean> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) return {};
+    const next: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (sidebarGroupLabels.has(key as NavGroup) && typeof value === "boolean") {
+        next[key] = value;
+      }
+    }
+    return next;
+  } catch {
+    return {};
+  }
+}
 
 function NavItem({
   label,
@@ -130,18 +158,9 @@ export function Sidebar() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem("sidebar-collapsed");
-    if (stored !== null) setCollapsed(stored === "true");
-    const storedGroups = localStorage.getItem("sidebar-open-groups");
-    if (storedGroups) {
-      try {
-        setOpenGroups(JSON.parse(storedGroups) as Record<string, boolean>);
-      } catch {
-        setOpenGroups({});
-      }
-    }
-    const storedAdvanced = localStorage.getItem("sidebar-advanced-open");
-    if (storedAdvanced !== null) setAdvancedOpen(storedAdvanced === "true");
+    setCollapsed((current) => parseStoredBoolean(localStorage.getItem("sidebar-collapsed"), current));
+    setOpenGroups(parseStoredOpenGroups(localStorage.getItem("sidebar-open-groups")));
+    setAdvancedOpen((current) => parseStoredBoolean(localStorage.getItem("sidebar-advanced-open"), current));
   }, []);
 
   useEffect(() => {

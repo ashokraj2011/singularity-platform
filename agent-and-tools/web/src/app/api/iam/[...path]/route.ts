@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { proxyHeaders, proxyRequest } from "../../_proxy";
+import { iamApiBase } from "@/lib/platformServices";
 
-const IAM_BASE_URL = process.env.IAM_BASE_URL ?? "http://iam-service:8100/api/v1";
+const IAM_BASE_URL = iamApiBase();
 
 async function proxy(req: NextRequest, context: { params: Promise<{ path?: string[] }> }) {
   const params = await context.params;

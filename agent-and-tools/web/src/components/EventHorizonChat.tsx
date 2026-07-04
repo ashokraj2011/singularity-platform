@@ -26,9 +26,41 @@ const SESSION_KEY = "event-horizon.agent-tools.session";
 const SESSION_ID_KEY = "event-horizon.agent-tools.session-id";
 const DEFAULT_CAPABILITY_ID = process.env.NEXT_PUBLIC_EVENT_HORIZON_CAPABILITY_ID ?? "00000000-0000-0000-0000-00000000aaaa";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ACTION_INTENTS = new Set<ActionIntent>([
+  "explain_capability",
+  "find_runtime_evidence",
+  "draft_review_note",
+  "recommend_agent_team",
+  "explain_prompt_stack",
+]);
 
 function newId(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isActionIntent(value: unknown): value is ActionIntent {
+  return typeof value === "string" && ACTION_INTENTS.has(value as ActionIntent);
+}
+
+function isChatMessage(value: unknown): value is ChatMessage {
+  if (!isRecord(value)) return false;
+  return typeof value.id === "string"
+    && (value.role === "assistant" || value.role === "user")
+    && typeof value.text === "string"
+    && typeof value.createdAt === "string";
+}
+
+function parseStoredMessages(raw: string): ChatMessage[] {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter(isChatMessage).slice(-50) : [];
+  } catch {
+    return [];
+  }
 }
 
 function greeting(path: string): ChatMessage {
@@ -99,11 +131,28 @@ function answer(question: string, ctx: ContextSnapshot): string {
 type EventHorizonActionRow = {
   id: string;
   surface: string;
-  intent: string;
+  intent: ActionIntent;
   label: string;
   prompt: string;
   displayOrder: number;
 };
+
+function isEventHorizonActionRow(value: unknown): value is EventHorizonActionRow {
+  if (!isRecord(value)) return false;
+  return typeof value.id === "string"
+    && typeof value.surface === "string"
+    && isActionIntent(value.intent)
+    && typeof value.label === "string"
+    && typeof value.prompt === "string"
+    && typeof value.displayOrder === "number"
+    && Number.isFinite(value.displayOrder);
+}
+
+function parseActionCatalog(value: unknown): EventHorizonActionRow[] {
+  return Array.isArray(value)
+    ? value.filter(isEventHorizonActionRow).sort((a, b) => a.displayOrder - b.displayOrder)
+    : [];
+}
 
 function mapActionIntent(intent: ActionIntent | null): "find_evidence" | "draft_approval_note" | "recommend_budget_model" | undefined {
   if (intent === "find_runtime_evidence") return "find_evidence";
@@ -150,7 +199,7 @@ export function EventHorizonChat() {
         const { parsed } = await readResponseBody(r);
         return parsed;
       })
-      .then((data) => setActions(Array.isArray(data) ? data : []))
+      .then((data) => setActions(parseActionCatalog(data)))
       .catch((err) => console.warn("[EventHorizonChat] failed to load action catalog:", err));
   }, []);
 
@@ -165,14 +214,10 @@ export function EventHorizonChat() {
     }
     const raw = localStorage.getItem(SESSION_KEY);
     if (raw) {
-      try {
-        const parsed = JSON.parse(raw) as ChatMessage[];
-        if (Array.isArray(parsed) && parsed.length) {
-          setMessages(parsed);
-          return;
-        }
-      } catch {
-        // ignore corrupt local session
+      const parsed = parseStoredMessages(raw);
+      if (parsed.length) {
+        setMessages(parsed);
+        return;
       }
     }
     setMessages([greeting(pathname)]);
@@ -316,7 +361,7 @@ export function EventHorizonChat() {
                 <button
                   key={action.intent}
                   type="button"
-                  onClick={() => void sendAction(action.intent as ActionIntent, action.prompt)}
+                  onClick={() => void sendAction(action.intent, action.prompt)}
                   disabled={thinking}
                   className="rounded-full border border-emerald-200 bg-white px-2 py-1 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
                 >

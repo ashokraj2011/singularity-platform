@@ -12,21 +12,13 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { composerAuthFailure, composerAuthHeaders } from "../../prompt-workbench/_shared/composer";
+import { platformServiceUrl } from "@/lib/platformServices";
+import { jsonishMessage, readJsonish } from "../../_json";
 
 export const dynamic = "force-dynamic";
 
 function composerUrl(): string {
-  return (process.env.PROMPT_COMPOSER_URL ?? "http://localhost:3004").replace(/\/+$/, "");
-}
-
-async function readBody(res: Response): Promise<unknown> {
-  const text = await res.text();
-  if (!text) return null;
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return text;
-  }
+  return platformServiceUrl("prompt-composer");
 }
 
 export async function GET(request: NextRequest) {
@@ -38,10 +30,11 @@ export async function GET(request: NextRequest) {
       `${composerUrl()}/api/v1/event-horizon-actions?surface=${encodeURIComponent(surface)}`,
       { headers: composerAuthHeaders(request, { contentType: false }), signal: AbortSignal.timeout(10_000) },
     );
-    const body = await readBody(r);
+    const responseBody = await readJsonish(r);
+    const body = responseBody.data;
     if (!r.ok) {
       return NextResponse.json(
-        { error: "composer fetch failed", detail: typeof body === "string" ? body.slice(0, 300) : body },
+        { error: "composer fetch failed", detail: jsonishMessage(body, r.statusText || "Prompt Composer request failed", 300) },
         { status: r.status },
       );
     }

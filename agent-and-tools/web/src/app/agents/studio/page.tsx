@@ -27,6 +27,19 @@ import {
   Wrench,
   X,
 } from "lucide-react";
+import {
+  normalizeAgent,
+  normalizeAgentListResponse,
+  normalizeAgentProfileCreateResponse,
+  normalizeAgentVersionListResponse,
+  normalizeCapabilityListResponse,
+  normalizeProfileSourcesResponse,
+  normalizePromptProfileListResponse,
+  normalizePromptProfileResponse,
+  normalizeProviderPreviewResponse,
+  normalizeSkill,
+  normalizeSkillListResponse,
+} from "./agent-studio-model";
 
 /**
  * M23 — Agent Studio (canonical route: /agents/studio).
@@ -207,10 +220,11 @@ export default function AgentStudioPage() {
   const [filter, setFilter] = useState<"all" | "editable" | "locked" | "missing-profile">("all");
   const [showCreateProfile, setShowCreateProfile] = useState(false);
 
-  const { data: capabilities = [], error: capabilitiesError, isLoading: capabilitiesLoading } = useSWR(
+  const { data: capabilitiesRaw, error: capabilitiesError, isLoading: capabilitiesLoading } = useSWR(
     "runtime-capabilities-for-agent-studio",
-    () => runtimeApi.listCapabilities() as Promise<Capability[]>,
+    () => runtimeApi.listCapabilities(),
   );
+  const capabilities = useMemo(() => normalizeCapabilityListResponse(capabilitiesRaw), [capabilitiesRaw]);
 
   const selectedCapability = capabilities.find((c) => c.id === capabilityId) ?? null;
   const validCapabilitySelected = !capabilityId || UUID_RE.test(capabilityId);
@@ -227,7 +241,7 @@ export default function AgentStudioPage() {
     return runtimeApi.listTemplatesScoped("all", capabilityId);
   });
 
-  const items = (data?.items ?? []) as Agent[];
+  const items = useMemo(() => normalizeAgentListResponse(data), [data]);
   const common     = useMemo(() => items.filter((a) => !a.capabilityId), [items]);
   const capability = useMemo(
     () => items.filter((a) => a.capabilityId === capabilityId),
@@ -432,8 +446,8 @@ export default function AgentStudioPage() {
           onClose={() => setShowCreateProfile(false)}
           onDone={(agent) => {
             setShowCreateProfile(false);
-            setCapabilityId(String(agent.capabilityId ?? ""));
-            setSelected(agent as Agent);
+            setCapabilityId(agent.capabilityId ?? "");
+            setSelected(agent);
             mutate();
           }}
         />
@@ -538,10 +552,10 @@ function CreateAgentProfileWizard({
   initialCapabilityId: string;
   onAuthRequired: () => void;
   onClose: () => void;
-  onDone: (agent: Record<string, unknown>) => void;
+  onDone: (agent: Agent) => void;
 }) {
-  const { data: skills = [], mutate: refreshSkills } = useSWR("agent-profile-local-skills", () => runtimeApi.listSkills());
-  const { data: profiles = [] } = useSWR("agent-profile-prompt-profiles", () => runtimeApi.listProfiles());
+  const { data: skillsRaw, mutate: refreshSkills } = useSWR("agent-profile-local-skills", () => runtimeApi.listSkills());
+  const { data: profilesRaw } = useSWR("agent-profile-prompt-profiles", () => runtimeApi.listProfiles());
   const [step, setStep] = useState(0);
   const [capabilityId, setCapabilityId] = useState(initialCapabilityId);
   const [name, setName] = useState("");
@@ -565,8 +579,8 @@ function CreateAgentProfileWizard({
   const [err, setErr] = useState<string | null>(null);
 
   const selectedCapability = capabilities.find((cap) => cap.id === capabilityId);
-  const localSkills = (skills as Array<Record<string, unknown>>);
-  const promptProfiles = (profiles as Array<Record<string, unknown>>);
+  const localSkills = useMemo(() => normalizeSkillListResponse(skillsRaw), [skillsRaw]);
+  const promptProfiles = useMemo(() => normalizePromptProfileListResponse(profilesRaw), [profilesRaw]);
 
   function addBinding(binding: ProfileSkillBinding) {
     setBindings((current) => [...current, binding]);
@@ -577,9 +591,10 @@ function CreateAgentProfileWizard({
     if (!skill) return;
     addBinding({
       sourceType: "local",
-      skillId: String(skill.id),
-      name: String(skill.name ?? "Local tool"),
-      description: typeof skill.description === "string" ? skill.description : undefined,
+      skillId: skill.id,
+      name: skill.name,
+      description: skill.description,
+      skillType: skill.skillType,
       permissions: ["read", "invoke"],
       readOnly: false,
       providerLocked: false,
@@ -601,14 +616,18 @@ function CreateAgentProfileWizard({
         name: trimmedName,
         skillType: localSkillType.trim() || "TOOL",
         description: localSkillDescription.trim() || undefined,
-      }) as Record<string, unknown>;
+      });
+      const createdSkill = normalizeSkill(skill);
+      if (!createdSkill) {
+        throw new Error("Create local tool returned no usable skill id.");
+      }
       await refreshSkills();
       addBinding({
         sourceType: "local",
-        skillId: String(skill.id),
-        name: String(skill.name ?? trimmedName),
-        description: typeof skill.description === "string" ? skill.description : localSkillDescription.trim() || undefined,
-        skillType: String(skill.skillType ?? localSkillType),
+        skillId: createdSkill.id,
+        name: createdSkill.name || trimmedName,
+        description: createdSkill.description ?? (localSkillDescription.trim() || undefined),
+        skillType: createdSkill.skillType ?? localSkillType,
         permissions: ["read", "invoke"],
         readOnly: false,
         providerLocked: false,
@@ -632,7 +651,12 @@ function CreateAgentProfileWizard({
     setProviderBusy(true);
     setErr(null);
     try {
-      const preview = await runtimeApi.previewSkillSource({ sourceType: "provider_manifest", providerManifestUrl: url }) as ProviderPreview;
+      const preview = normalizeProviderPreviewResponse(
+        await runtimeApi.previewSkillSource({ sourceType: "provider_manifest", providerManifestUrl: url }),
+      );
+      if (!preview) {
+        throw new Error("Provider preview returned no manifest details.");
+      }
       setProviderPreview(preview);
       setProviderPermissions(["read"]);
     } catch (e) {
@@ -668,14 +692,14 @@ function CreateAgentProfileWizard({
     const hasWritePermission = selectedPermissions.some((permission) => permission !== "read");
     addBinding({
       sourceType: "provider_manifest",
-      name: String(providerPreview.title ?? "Provider source"),
+      name: providerPreview.title ?? "Provider source",
       description: typeof providerPreview.description === "string" ? providerPreview.description : undefined,
       skillType: "PROVIDER_MANIFEST",
       providerManifestUrl: url,
       sourceRef: url,
       permissions: selectedPermissions,
-      readOnly: !hasWritePermission,
-      providerLocked: false,
+      readOnly: Boolean(providerPreview.readOnly) || !hasWritePermission,
+      providerLocked: Boolean(providerPreview.providerLocked),
       isDefault: true,
       metadata: {
         manifestVersion: providerPreview.manifestVersion,
@@ -708,6 +732,18 @@ function CreateAgentProfileWizard({
   function addFiles(nextFiles: FileList | null) {
     if (!nextFiles) return;
     const accepted = Array.from(nextFiles).filter((file) => /\.(txt|md|markdown|pdf|docx|xlsx|pptx)$/i.test(file.name));
+    const seenNames = new Set(files.map((file) => file.name.trim().toLowerCase()).filter(Boolean));
+    for (const file of accepted) {
+      const key = file.name.trim().toLowerCase();
+      if (!key) continue;
+      if (seenNames.has(key)) {
+        setErr(`Uploaded source filename "${file.name}" appears more than once. Rename one file before creating the agent profile.`);
+        return;
+      }
+      seenNames.add(key);
+    }
+    if (accepted.length === 0) return;
+    setErr(null);
     setFiles((current) => [...current, ...accepted]);
     const uploadBindings: ProfileSkillBinding[] = accepted.map((file) => ({
       sourceType: "uploaded_document",
@@ -752,7 +788,10 @@ function CreateAgentProfileWizard({
         basePromptProfileId: basePromptProfileId || undefined,
         skillBindings: bindings,
       }, files);
-      const template = (result.template ?? result.profile) as Record<string, unknown>;
+      const template = normalizeAgentProfileCreateResponse(result);
+      if (!template) {
+        throw new Error("Create agent returned no usable template.");
+      }
       onDone(template);
     } catch (e) {
       if (isUnauthorized(e)) onAuthRequired();
@@ -823,7 +862,7 @@ function CreateAgentProfileWizard({
                 Prompt profile
                 <select className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm" value={basePromptProfileId} onChange={(e) => setBasePromptProfileId(e.target.value)}>
                   <option value="">No existing profile</option>
-                  {promptProfiles.map((profile) => <option key={profile.id as string} value={profile.id as string}>{String(profile.name ?? profile.id)}</option>)}
+                  {promptProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name ?? profile.id}</option>)}
                 </select>
               </label>
               <label className="block text-sm font-medium text-slate-700">
@@ -897,7 +936,7 @@ function CreateAgentProfileWizard({
                 <div className="flex gap-2">
                   <select className="h-10 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm" value={localSkillId} onChange={(e) => setLocalSkillId(e.target.value)}>
                     <option value="">Select existing local tool...</option>
-                    {localSkills.map((skill) => <option key={skill.id as string} value={skill.id as string}>{String(skill.name ?? skill.id)}</option>)}
+                    {localSkills.map((skill) => <option key={skill.id} value={skill.id}>{skill.name}</option>)}
                   </select>
                   <button type="button" className="btn-secondary text-xs" onClick={addLocalSkill} disabled={!localSkillId}>Add</button>
                 </div>
@@ -1235,26 +1274,29 @@ function DetailPanel({ agent, onChanged }: { agent: Agent | null; onChanged: (ag
   const [editing, setEditing] = useState(false);
   const [restoreBusy, setRestoreBusy] = useState<number | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
-  const { data: profile, error: profileError, isLoading: profileLoading } = useSWR(
+  const { data: profileRaw, error: profileError, isLoading: profileLoading } = useSWR(
     agent?.basePromptProfileId ? `prompt-profile-${agent.basePromptProfileId}` : null,
-    () => runtimeApi.getProfile(agent!.basePromptProfileId!) as Promise<PromptProfile>,
+    () => runtimeApi.getProfile(agent!.basePromptProfileId!),
   );
   const {
-    data: versions = [],
+    data: versionsRaw,
     error: versionsError,
     mutate: mutateVersions,
   } = useSWR(
     agent?.id ? `agent-template-versions-${agent.id}` : null,
-    () => runtimeApi.listTemplateVersions(agent!.id) as Promise<AgentVersion[]>,
+    () => runtimeApi.listTemplateVersions(agent!.id),
   );
   const {
-    data: sourceGovernance,
+    data: sourceGovernanceRaw,
     error: sourceGovernanceError,
     isLoading: sourceGovernanceLoading,
   } = useSWR(
     agent?.id ? `agent-template-sources-${agent.id}` : null,
-    () => runtimeApi.getAgentProfileSources(agent!.id) as Promise<ProfileSourcesResponse>,
+    () => runtimeApi.getAgentProfileSources(agent!.id),
   );
+  const profile = useMemo(() => normalizePromptProfileResponse(profileRaw), [profileRaw]);
+  const versions = useMemo(() => normalizeAgentVersionListResponse(versionsRaw), [versionsRaw]);
+  const sourceGovernance = useMemo(() => normalizeProfileSourcesResponse(sourceGovernanceRaw), [sourceGovernanceRaw]);
 
   if (!agent) {
     return (
@@ -1277,9 +1319,12 @@ function DetailPanel({ agent, onChanged }: { agent: Agent | null; onChanged: (ag
     setRestoreBusy(version);
     setRestoreError(null);
     try {
-      const restored = await runtimeApi.restoreTemplateVersion(agent!.id, version, {
+      const restored = normalizeAgent(await runtimeApi.restoreTemplateVersion(agent!.id, version, {
         changeSummary: `Restored from version ${version}`,
-      }) as Agent;
+      }));
+      if (!restored) {
+        throw new Error("Restore returned no usable agent template.");
+      }
       onChanged(restored);
       await mutateVersions();
     } catch (e) {
@@ -1534,13 +1579,16 @@ function EditAgentDialog({
     setSubmitting(true);
     setErr(null);
     try {
-      const updated = await runtimeApi.patchTemplate(agent.id, {
+      const updated = normalizeAgent(await runtimeApi.patchTemplate(agent.id, {
         name: form.name,
         description: form.description || undefined,
         basePromptProfileId: form.basePromptProfileId || undefined,
         status: form.status,
         changeSummary: form.changeSummary || `Updated ${agent.name}`,
-      }) as Agent;
+      }));
+      if (!updated) {
+        throw new Error("Save returned no usable agent template.");
+      }
       onDone(updated);
     } catch (e) {
       const formatted = apiErrorSummary(e);

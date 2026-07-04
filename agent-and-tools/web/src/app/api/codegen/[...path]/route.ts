@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { proxyHeaders, proxyRequest, requireVerifiedCallerBearer } from "../../_proxy";
+import { platformServiceUrl } from "@/lib/platformServices";
 
-const WORKGRAPH_API_URL = process.env.WORKGRAPH_API_URL ?? "http://workgraph-api:8080";
+const WORKGRAPH_API_URL = platformServiceUrl("workgraph-api");
 
 async function proxy(req: NextRequest, context: { params: Promise<{ path?: string[] }> }) {
   const authFailure = await requireVerifiedCallerBearer(req, "Workgraph Code Generation");

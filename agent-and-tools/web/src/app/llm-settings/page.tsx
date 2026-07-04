@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Cpu, RadioTower, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
 import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { asBoolean, asRow, asRowArray, asString, asStringArray } from "@/lib/row";
 import { CopyButton } from "@/components/ui/CopyButton";
 
 type GatewayResult = {
@@ -11,6 +12,7 @@ type GatewayResult = {
   status?: number;
   data?: unknown;
   error?: string;
+  skipped?: boolean;
 };
 
 type LlmSettings = {
@@ -47,6 +49,7 @@ type ProviderRow = {
   name: string;
   ready?: boolean;
   allowed?: boolean;
+  enabled?: boolean;
   default_model?: string | null;
   warnings?: string[];
 };
@@ -64,6 +67,24 @@ type ModelRow = {
   warnings?: string[];
 };
 
+type DefaultReadiness = {
+  ready: boolean;
+  label: string;
+  warnings: string[];
+};
+
+type RuntimeRow = {
+  runtime_id?: string;
+  device_id?: string;
+  runtime_type?: string;
+  device_name?: string;
+  tenant_id?: string;
+  user_id?: string;
+  supported_frame_types: string[];
+  health: Record<string, unknown>;
+  last_seen_at?: number | null;
+};
+
 const consumerLabels: Record<string, string> = {
   agentRuntimeUrl: "Agent Runtime URL",
   promptComposerUrl: "Prompt Composer URL",
@@ -73,20 +94,173 @@ const consumerLabels: Record<string, string> = {
   legacyEventHorizonModel: "Legacy Event Horizon Model",
 };
 
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+function asProviderRows(value: unknown): ProviderRow[] {
+  return asRowArray(value)
+    .map(normalizeProviderRow)
+    .filter((item): item is ProviderRow => item !== null);
 }
 
-function asStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.map(String) : [];
+function asModelRows(value: unknown): ModelRow[] {
+  return asRowArray(value)
+    .map(normalizeModelRow)
+    .filter((item): item is ModelRow => item !== null);
+}
+
+function normalizeLlmSettings(value: unknown): LlmSettings {
+  const row = asRow(value);
+  const gatewayUrl = asString(row.gatewayUrl ?? row.gateway_url, "http://localhost:8001");
+  const llmGatewayUrl = asString(row.llmGatewayUrl ?? row.llm_gateway_url, gatewayUrl);
+  const mcpUrl = asString(row.mcpUrl ?? row.mcp_url, "http://localhost:8090");
+  const contextFabricUrl = asString(row.contextFabricUrl ?? row.context_fabric_url, "http://localhost:8000");
+  const topology = asRow(row.topology);
+  const configuredPaths = asRow(row.configuredPaths ?? row.configured_paths);
+  const consumers = asRow(row.consumers);
+  return {
+    generatedAt: asString(row.generatedAt ?? row.generated_at, new Date().toISOString()),
+    gatewayUrl,
+    llmGatewayUrl,
+    mcpUrl,
+    contextFabricUrl,
+    authMode: asString(row.authMode ?? row.auth_mode, "unknown"),
+    mcpAuthMode: asString(row.mcpAuthMode ?? row.mcp_auth_mode, "unknown"),
+    topology: {
+      mode: asString(topology.mode, "dial-in-runtime"),
+      hub: asString(topology.hub, "context-fabric"),
+      llmGateway: asString(topology.llmGateway ?? topology.llm_gateway, "served-through-mcp-runtime"),
+      mcpRuntime: asString(topology.mcpRuntime ?? topology.mcp_runtime, "runtime-bridge-websocket"),
+      httpFallback: asString(topology.httpFallback ?? topology.http_fallback, "disabled"),
+    },
+    configuredPaths: {
+      providerConfigPath: asString(configuredPaths.providerConfigPath ?? configuredPaths.provider_config_path, "unknown"),
+      modelCatalogPath: asString(configuredPaths.modelCatalogPath ?? configuredPaths.model_catalog_path, "unknown"),
+    },
+    consumers: Object.fromEntries(
+      Object.entries(consumers)
+        .filter(([key]) => key.length > 0)
+        .map(([key, item]) => [key, asString(item) || null])
+        .slice(0, 40),
+    ),
+    health: normalizeGatewayResult(row.health),
+    gatewayHealth: normalizeGatewayResult(row.gatewayHealth ?? row.gateway_health),
+    mcpHealth: normalizeGatewayResult(row.mcpHealth ?? row.mcp_health),
+    contextFabricHealth: normalizeGatewayResult(row.contextFabricHealth ?? row.context_fabric_health),
+    runtimeBridgeStatus: normalizeGatewayResult(row.runtimeBridgeStatus ?? row.runtime_bridge_status),
+    providers: normalizeGatewayResult(row.providers),
+    models: normalizeGatewayResult(row.models),
+    workspaceStats: normalizeGatewayResult(row.workspaceStats ?? row.workspace_stats),
+  };
+}
+
+function normalizeGatewayResult(value: unknown): GatewayResult {
+  const row = asRow(value);
+  return {
+    ok: asBoolean(row.ok),
+    status: normalizeOptionalNumber(row.status) ?? undefined,
+    data: row.data,
+    error: asString(row.error ?? row.message) || undefined,
+    skipped: asBoolean(row.skipped),
+  };
+}
+
+function normalizeProviderRow(value: unknown): ProviderRow | null {
+  const row = asRow(value);
+  const name = asString(row.name ?? row.provider);
+  if (!name) return null;
+  return {
+    name,
+    ready: asBoolean(row.ready),
+    allowed: typeof row.allowed === "boolean" ? row.allowed : undefined,
+    enabled: typeof row.enabled === "boolean" ? row.enabled : undefined,
+    default_model: asString(row.default_model ?? row.defaultModel) || null,
+    warnings: asStringArray(row.warnings, 20, 240),
+  };
+}
+
+function normalizeModelRow(value: unknown): ModelRow | null {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.alias);
+  const provider = asString(row.provider);
+  const model = asString(row.model);
+  if (!id && !provider && !model) return null;
+  return {
+    id: id || undefined,
+    label: asString(row.label ?? row.name) || undefined,
+    provider: provider || undefined,
+    model: model || undefined,
+    ready: asBoolean(row.ready),
+    default: asBoolean(row.default ?? row.isDefault ?? row.is_default),
+    supportsTools: asBoolean(row.supportsTools ?? row.supports_tools),
+    costTier: asString(row.costTier ?? row.cost_tier) || undefined,
+    description: asString(row.description) || undefined,
+    warnings: asStringArray(row.warnings, 20, 240),
+  };
+}
+
+function normalizeRuntimeRows(value: unknown): RuntimeRow[] {
+  return asRowArray(value)
+    .map((runtime, index): RuntimeRow | null => {
+      const runtimeId = asString(runtime.runtime_id ?? runtime.runtimeId ?? runtime.device_id ?? runtime.deviceId);
+      const deviceId = asString(runtime.device_id ?? runtime.deviceId);
+      if (!runtimeId && !deviceId) return null;
+      return {
+        runtime_id: runtimeId || undefined,
+        device_id: deviceId || undefined,
+        runtime_type: asString(runtime.runtime_type ?? runtime.runtimeType, "mcp"),
+        device_name: asString(runtime.device_name ?? runtime.deviceName, `runtime-${index + 1}`),
+        tenant_id: asString(runtime.tenant_id ?? runtime.tenantId) || undefined,
+        user_id: asString(runtime.user_id ?? runtime.userId) || undefined,
+        supported_frame_types: asStringArray(runtime.supported_frame_types ?? runtime.supportedFrameTypes, 20, 80),
+        health: asRow(runtime.health),
+        last_seen_at: normalizeOptionalNumber(runtime.last_seen_at ?? runtime.lastSeenAt),
+      };
+    })
+    .filter((runtime): runtime is RuntimeRow => runtime !== null);
+}
+
+function defaultReadiness(
+  runtimeHealth: Record<string, unknown>,
+  models: ModelRow[],
+  defaultAlias: string,
+  defaultProvider: string,
+  providers: ProviderRow[],
+): DefaultReadiness {
+  if (typeof runtimeHealth.llm_default_model_ready === "boolean") {
+    const warnings = asStringArray(runtimeHealth.llm_default_model_warnings);
+    return {
+      ready: runtimeHealth.llm_default_model_ready,
+      label: defaultAlias,
+      warnings,
+    };
+  }
+  const byAlias = models.find(model => model.id === defaultAlias);
+  const byDefault = models.find(model => model.default);
+  const model = byAlias ?? byDefault;
+  if (model) {
+    return {
+      ready: model.ready !== false,
+      label: model.id ?? defaultAlias,
+      warnings: model.warnings ?? [],
+    };
+  }
+  const provider = providers.find(row => row.name === defaultProvider);
+  return {
+    ready: provider?.ready ?? false,
+    label: defaultAlias || defaultProvider || "default",
+    warnings: provider?.warnings ?? ["Default model alias was not reported."],
+  };
 }
 
 function statusClass(ok?: boolean) {
   return ok ? "badge-active" : "badge-critical";
 }
 
+function normalizeOptionalNumber(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(asString(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function numberValue(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  return normalizeOptionalNumber(value);
 }
 
 function formatBytes(value: unknown): string {
@@ -109,8 +283,9 @@ function formatPercent(value: unknown): string {
 }
 
 function formatTimestamp(value: unknown): string {
-  if (typeof value !== "number") return "-";
-  return new Date(value * 1000).toLocaleString();
+  const timestamp = normalizeOptionalNumber(value);
+  if (timestamp == null) return "-";
+  return new Date(timestamp * 1000).toLocaleString();
 }
 
 export default function LlmSettingsPage() {
@@ -125,9 +300,7 @@ export default function LlmSettingsPage() {
       const res = await fetch(apiPath("/api/llm-settings"), { cache: "no-store", headers: authHeaders() });
       const { raw, parsed } = await readResponseBody(res);
       if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
-      if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 400) : "Empty LLM settings response");
-      const data = parsed as LlmSettings;
-      setSettings(data);
+      setSettings(normalizeLlmSettings(parsed));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load LLM settings");
     } finally {
@@ -194,33 +367,44 @@ export default function LlmSettingsPage() {
     }
   }
 
-  const providerData = asRecord(settings?.providers.data);
-  const modelData = asRecord(settings?.models.data);
-  const workspaceEnvelope = asRecord(settings?.workspaceStats?.data);
-  const workspaceData = asRecord(workspaceEnvelope.data ?? settings?.workspaceStats?.data);
-  const workspaceGc = asRecord(workspaceData.gc);
-  const runtimeBridgeEnvelope = asRecord(settings?.runtimeBridgeStatus?.data);
-  const connectedRuntimes = Array.isArray(runtimeBridgeEnvelope.connected)
-    ? runtimeBridgeEnvelope.connected as Record<string, unknown>[]
-    : [];
+  const providerData = asRow(settings?.providers.data);
+  const modelData = asRow(settings?.models.data);
+  const workspaceEnvelope = asRow(settings?.workspaceStats?.data);
+  const workspaceData = asRow(workspaceEnvelope.data ?? settings?.workspaceStats?.data);
+  const workspaceGc = asRow(workspaceData.gc);
+  const runtimeBridgeEnvelope = asRow(settings?.runtimeBridgeStatus?.data);
+  const connectedRuntimes = normalizeRuntimeRows(runtimeBridgeEnvelope.connected);
   const runtimeConnected = connectedRuntimes.length > 0;
-  const gatewayConfig = asRecord(providerData.config);
-  const providers = Array.isArray(providerData.providers) ? providerData.providers as ProviderRow[] : [];
-  const models = Array.isArray(modelData.models) ? modelData.models as ModelRow[] : [];
-  const defaultProvider = String(providerData.default_provider ?? "unknown");
-  const defaultModelAlias = String(providerData.default_model_alias ?? modelData.default_model_alias ?? "none");
+  const runtimeHealthRows = connectedRuntimes.map(runtime => runtime.health);
+  const runtimeProviderRows = runtimeHealthRows.flatMap(health => asProviderRows(health.llm_providers));
+  const runtimeModelRows = runtimeHealthRows.flatMap(health => asModelRows(health.llm_models));
+  const runtimeProviderHealth = runtimeHealthRows.find(health => asProviderRows(health.llm_providers).length > 0) ?? {};
+  const gatewayConfig = asRow(providerData.config);
+  const directProviders = asProviderRows(providerData.providers);
+  const directModels = asModelRows(modelData.models);
+  const providers = runtimeProviderRows.length > 0 ? runtimeProviderRows : directProviders;
+  const models = runtimeModelRows.length > 0 ? runtimeModelRows : directModels;
+  const providerStatusSource = runtimeProviderRows.length > 0 ? "Runtime Bridge" : "Platform debug gateway";
+  const modelStatusSource = runtimeModelRows.length > 0 ? "Runtime Bridge" : "Platform debug gateway";
+  const defaultProvider = String(runtimeProviderHealth.llm_default_provider ?? providerData.default_provider ?? "unknown");
+  const defaultModelAlias = String(runtimeProviderHealth.llm_default_model_alias ?? modelData.default_model_alias ?? "none");
+  const defaultModelReadiness = defaultReadiness(runtimeProviderHealth, models, defaultModelAlias, defaultProvider, providers);
+  const readyAliases = asStringArray(runtimeProviderHealth.llm_ready_model_aliases).length
+    ? asStringArray(runtimeProviderHealth.llm_ready_model_aliases)
+    : models.filter(model => model.ready).map(model => String(model.id)).filter(Boolean);
   const warnings = useMemo(() => [
     ...asStringArray(providerData.warnings),
     ...asStringArray(modelData.warnings),
+    ...(defaultModelReadiness.ready ? [] : [`Default model alias ${defaultModelReadiness.label} is not ready${defaultModelReadiness.warnings.length ? `: ${defaultModelReadiness.warnings.join("; ")}` : ""}`]),
     ...(settings?.contextFabricHealth?.ok ? [] : [`Context Fabric health failed: ${settings?.contextFabricHealth?.error ?? settings?.contextFabricHealth?.status ?? "unknown"}`]),
     ...(settings?.runtimeBridgeStatus?.ok ? [] : [`Runtime Bridge status failed: ${settings?.runtimeBridgeStatus?.error ?? settings?.runtimeBridgeStatus?.status ?? "unknown"}`]),
     ...(runtimeConnected ? [] : ["No MCP runtime is currently connected through the Runtime Bridge."]),
     ...(settings?.topology?.httpFallback === "enabled" && !(settings?.mcpHealth?.ok) ? [`MCP HTTP debug probe failed: ${settings?.mcpHealth?.error ?? settings?.mcpHealth?.status ?? "unknown"}`] : []),
     ...(settings?.topology?.httpFallback === "enabled" && !(settings?.gatewayHealth?.ok ?? settings?.health.ok) ? [`LLM Gateway debug probe failed: ${settings?.gatewayHealth?.error ?? settings?.health.error ?? settings?.gatewayHealth?.status ?? settings?.health.status ?? "unknown"}`] : []),
-    ...(settings?.providers.ok ? [] : [`Provider status failed: ${settings?.providers.error ?? settings?.providers.status ?? "unknown"}`]),
-    ...(settings?.models.ok ? [] : [`Model catalog failed: ${settings?.models.error ?? settings?.models.status ?? "unknown"}`]),
-    ...(settings?.workspaceStats?.ok === false ? [`Workspace stats failed: ${settings.workspaceStats.error ?? settings.workspaceStats.status ?? "unknown"}`] : []),
-  ], [modelData, providerData, runtimeConnected, settings]);
+    ...(settings?.providers.ok || runtimeProviderRows.length > 0 ? [] : [`Provider status failed: ${settings?.providers.error ?? settings?.providers.status ?? "unknown"}`]),
+    ...(settings?.models.ok || runtimeModelRows.length > 0 ? [] : [`Model catalog failed: ${settings?.models.error ?? settings?.models.status ?? "unknown"}`]),
+    ...(settings?.workspaceStats?.ok === false && !settings.workspaceStats.skipped ? [`Workspace stats failed: ${settings.workspaceStats.error ?? settings.workspaceStats.status ?? "unknown"}`] : []),
+  ], [defaultModelReadiness, modelData, providerData, runtimeConnected, runtimeModelRows.length, runtimeProviderRows.length, settings]);
 
   const readyModels = models.filter(model => model.ready).length;
   const readyProviders = providers.filter(provider => provider.ready).length;
@@ -280,10 +464,43 @@ export default function LlmSettingsPage() {
         <SummaryTile icon={runtimeConnected ? RadioTower : XCircle} label="Runtime Bridge" value={runtimeConnected ? `${connectedRuntimes.length} connected` : "No runtime"} tone={runtimeConnected ? "ok" : "bad"} />
         <SummaryTile icon={Cpu} label="LLM path" value="MCP model-run" />
         <SummaryTile icon={ShieldCheck} label="HTTP fallback" value={settings?.topology?.httpFallback ?? "disabled"} tone={settings?.topology?.httpFallback === "enabled" ? "warn" : "ok"} />
+        <SummaryTile icon={Cpu} label="Provider source" value={providerStatusSource} />
         <SummaryTile icon={Cpu} label="Default provider" value={defaultProvider} />
-        <SummaryTile icon={ShieldCheck} label="Default alias" value={defaultModelAlias} />
+        <SummaryTile icon={defaultModelReadiness.ready ? ShieldCheck : AlertTriangle} label="Default alias" value={defaultModelAlias} tone={defaultModelReadiness.ready ? "ok" : "bad"} />
         <SummaryTile icon={Cpu} label="Ready models" value={`${readyModels}/${models.length || 0}`} />
       </div>
+
+      {!defaultModelReadiness.ready && (
+        <section className="card border-red-200 bg-red-50 p-4 mb-6">
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={18} className="mt-0.5 text-red-700" />
+            <div>
+              <h2 className="text-sm font-bold text-red-900">Default model is not launch-ready</h2>
+              <p className="mt-1 text-sm text-red-800">
+                `{defaultModelReadiness.label}` is selected as the default, but its provider is not ready. Workflows that use the default alias will fail until the credential/provider is fixed or the default is moved to a ready alias.
+              </p>
+              {defaultModelReadiness.warnings.length > 0 && (
+                <ul className="mt-2 list-disc pl-5 text-xs text-red-800">
+                  {defaultModelReadiness.warnings.map((warning, index) => <li key={`${warning}-${index}`}>{warning}</li>)}
+                </ul>
+              )}
+              <div className="mt-3 grid gap-2 text-xs md:grid-cols-2">
+                <CommandBlock
+                  label="Switch to a ready alias"
+                  command={`bin/mcp-runtime-setup.sh connect --default-provider <ready-provider> --default-model ${readyAliases[0] ?? "mock-fast"}`}
+                />
+                <CommandBlock
+                  label="Keep provider, add credential"
+                  command={`bin/mcp-runtime-setup.sh connect --default-provider ${defaultProvider} --default-model ${defaultModelAlias} --${defaultProvider === "anthropic" ? "anthropic-api-key" : defaultProvider === "openai" ? "openai-api-key" : defaultProvider === "openrouter" ? "openrouter-api-key" : defaultProvider === "copilot" ? "copilot-token" : "openai-api-key"} <token>`}
+                />
+              </div>
+              {readyAliases.length > 0 && (
+                <p className="mt-2 text-xs text-red-700">Ready aliases now: {readyAliases.slice(0, 8).join(", ")}</p>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
 
       <section className="card overflow-hidden mb-6">
         <div className="p-4 border-b border-slate-200 flex items-start justify-between gap-4">
@@ -306,21 +523,26 @@ export default function LlmSettingsPage() {
             </thead>
             <tbody>
               {connectedRuntimes.map((runtime, index) => {
-                const health = asRecord(runtime.health);
-                const frames = Array.isArray(runtime.supported_frame_types) ? runtime.supported_frame_types.map(String).join(", ") : "-";
+                const health = runtime.health;
+                const frames = runtime.supported_frame_types.length ? runtime.supported_frame_types.join(", ") : "-";
                 return (
                   <tr key={`${runtime.runtime_id ?? runtime.device_id ?? index}`} className="border-b border-slate-100 last:border-b-0">
                     <td className="px-4 py-2">
-                      <div className="font-mono text-xs text-slate-900">{String(runtime.runtime_id ?? runtime.device_id ?? "-")}</div>
-                      <div className="text-xs text-slate-500">{String(runtime.runtime_type ?? "mcp")} · {String(runtime.device_name ?? "-")}</div>
+                      <div className="font-mono text-xs text-slate-900">{runtime.runtime_id ?? runtime.device_id ?? "-"}</div>
+                      <div className="text-xs text-slate-500">{runtime.runtime_type ?? "mcp"} · {runtime.device_name ?? "-"}</div>
                     </td>
                     <td className="px-4 py-2 text-xs">
-                      <div>tenant: <span className="font-mono">{String(runtime.tenant_id ?? "-")}</span></div>
-                      <div>user: <span className="font-mono">{String(runtime.user_id ?? "-")}</span></div>
+                      <div>tenant: <span className="font-mono">{runtime.tenant_id ?? "-"}</span></div>
+                      <div>user: <span className="font-mono">{runtime.user_id ?? "-"}</span></div>
                     </td>
                     <td className="px-4 py-2 text-xs font-mono">{frames}</td>
                     <td className="px-4 py-2 text-xs">
-                      {health.llm_gateway_url_configured ? "local gateway configured" : "gateway not reported"}
+                      <div>{health.llm_gateway_url_configured ? "local gateway configured" : "gateway not reported"}</div>
+                      {Array.isArray(health.llm_providers) && (
+                        <div className="text-slate-500">
+                          {asProviderRows(health.llm_providers).filter(provider => provider.ready).length}/{asProviderRows(health.llm_providers).length} providers ready
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-2 text-xs">{formatTimestamp(runtime.last_seen_at)}</td>
                   </tr>
@@ -349,7 +571,7 @@ export default function LlmSettingsPage() {
           />
           <CommandBlock
             label="Terminal 2: MCP + LLM runtime"
-            command={"bin/mcp-runtime-setup.sh\n# choose copilot, anthropic, openai-compatible, mock, or disabled\ncurl -s http://localhost:8000/api/runtime-bridge/status | jq"}
+            command={"bin/mcp-runtime-setup.sh\n# choose copilot, anthropic, openai-compatible, mock, or disabled\nsource .env.local\ncurl -s -H \"X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN\" http://localhost:8000/api/runtime-bridge/status | jq"}
           />
           <CommandBlock
             label="Copilot runtime mode"
@@ -386,6 +608,8 @@ export default function LlmSettingsPage() {
           <Field label="Model catalog" value={String(gatewayConfig.model_catalog_path ?? settings?.configuredPaths.modelCatalogPath ?? "unknown")} mono />
           <Field label="Caller provider override" value={String(gatewayConfig.allow_caller_provider_override ?? "unknown")} />
           <Field label="Timeout seconds" value={String(gatewayConfig.upstream_timeout_sec ?? "unknown")} />
+          <Field label="Provider status source" value={providerStatusSource} />
+          <Field label="Model status source" value={modelStatusSource} />
         </div>
       </section>
 
@@ -395,7 +619,7 @@ export default function LlmSettingsPage() {
             <h2 className="text-lg font-semibold text-slate-900">MCP Workspace Storage</h2>
             <p className="text-sm text-slate-500">Managed work-item workspaces and source-cache usage reported by MCP.</p>
           </div>
-          <span className={`badge ${statusClass(settings?.workspaceStats?.ok !== false)}`}>{settings?.workspaceStats?.ok === false ? "unavailable" : "reported"}</span>
+          <span className={`badge ${statusClass(settings?.workspaceStats?.ok !== false)}`}>{settings?.workspaceStats?.skipped ? "bridge mode" : settings?.workspaceStats?.ok === false ? "unavailable" : "reported"}</span>
         </div>
         <div className="grid md:grid-cols-4 gap-3 text-sm mb-4">
           <Field label="Managed bytes" value={formatBytes(workspaceData.totalManagedBytes)} />
@@ -409,6 +633,11 @@ export default function LlmSettingsPage() {
           <Field label="Work item bytes" value={formatBytes(workspaceData.workItemBytes)} />
           <Field label="Source cache bytes" value={formatBytes(workspaceData.sourceCacheBytes)} />
         </div>
+        {settings?.workspaceStats?.skipped && (
+          <p className="mt-4 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3">
+            Direct MCP HTTP diagnostics are disabled. Runtime health is shown through the Runtime Bridge; workspace storage stats become available when MCP HTTP debug probing is explicitly enabled.
+          </p>
+        )}
         {numberValue(workspaceData.quotaUsedPercent) != null && numberValue(workspaceData.quotaUsedPercent)! >= 80 && (
           <p className="mt-4 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
             MCP workspace storage is above 80% of the configured quota. Shorten the GC age or increase `MCP_WORKSPACE_DISK_QUOTA_BYTES`.
@@ -430,7 +659,9 @@ export default function LlmSettingsPage() {
       <section className="card overflow-hidden mb-6">
         <div className="p-4 border-b border-slate-200">
           <h2 className="text-lg font-semibold text-slate-900">Providers</h2>
-          <p className="text-sm text-slate-500">Non-mock providers are ready only when explicitly allowed, configured with a base URL, and backed by a credential.</p>
+          <p className="text-sm text-slate-500">
+            Showing {providerStatusSource}. Non-mock providers are ready only when explicitly allowed, configured with a base URL, and backed by a credential.
+          </p>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -448,7 +679,7 @@ export default function LlmSettingsPage() {
                 <tr key={provider.name} className="border-b border-slate-100 last:border-b-0">
                   <td className="px-4 py-2 font-mono">{provider.name}</td>
                   <td className="px-4 py-2"><span className={`badge ${statusClass(provider.ready)}`}>{provider.ready ? "ready" : "not ready"}</span></td>
-                  <td className="px-4 py-2">{provider.allowed ? "Yes" : "No"}</td>
+                  <td className="px-4 py-2">{provider.allowed === undefined ? (provider.enabled === false ? "No" : "Yes") : provider.allowed ? "Yes" : "No"}</td>
                   <td className="px-4 py-2 font-mono text-xs">{provider.default_model ?? "-"}</td>
                   <td className="px-4 py-2 text-xs text-slate-500">{(provider.warnings ?? []).join("; ") || "-"}</td>
                 </tr>
@@ -464,7 +695,7 @@ export default function LlmSettingsPage() {
       <section className="card overflow-hidden mb-6">
         <div className="p-4 border-b border-slate-200">
           <h2 className="text-lg font-semibold text-slate-900">Approved Model Aliases</h2>
-          <p className="text-sm text-slate-500">Workflows and agents should pass aliases. Raw provider/model overrides stay out of normal execution.</p>
+          <p className="text-sm text-slate-500">Showing {modelStatusSource}. Workflows and agents should pass aliases. Raw provider/model overrides stay out of normal execution.</p>
         </div>
         <div className="mb-4 flex items-center justify-between gap-3">
           <span className="text-xs text-slate-500">New models persist to <code className="font-mono">.singularity/llm-models.json</code> and reload live.</span>
@@ -487,7 +718,7 @@ export default function LlmSettingsPage() {
                 <input className="border rounded px-2 py-1" type="number" value={form.maxOutputTokens} onChange={e => setForm(f => ({ ...f, maxOutputTokens: e.target.value }))} placeholder="8000" /></label>
               <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Cost tier</span>
                 <select className="border rounded px-2 py-1" value={form.costTier} onChange={e => setForm(f => ({ ...f, costTier: e.target.value }))}>
-                  {["low", "medium", "high", "free"].map(t => <option key={t} value={t}>{t}</option>)}
+                  {["free", "low", "medium", "standard", "high"].map(t => <option key={t} value={t}>{t}</option>)}
                 </select></label>
               <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Input $/Mtok</span>
                 <input className="border rounded px-2 py-1" type="number" step="0.01" value={form.inputPricePerMtok} onChange={e => setForm(f => ({ ...f, inputPricePerMtok: e.target.value }))} placeholder="3.0" /></label>

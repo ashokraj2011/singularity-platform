@@ -127,7 +127,7 @@ export default function HelpPage() {
           <li>Approval materializes knowledge artifacts; the <strong>Primary stack</strong> is then inferred from the ingested repo content (e.g. Java / Maven), and the world model grounds the agents.</li>
         </ol>
         <p>
-          <strong>Refresh learning</strong> (on the capability page) re-ingests approved repos/knowledge and
+          <strong>Refresh approved learning</strong> (on the capability page) re-ingests approved repos/knowledge and
           re-grounds the world model. If you see <em>&quot;Stack pending&quot;</em> or a redistill <em>conflict</em>,
           it means nothing is ingested yet — approve the bootstrap candidates first, then Refresh learning.
         </p>
@@ -209,7 +209,7 @@ export default function HelpPage() {
             <tbody className="divide-y divide-slate-100 align-top">
               <tr>
                 <td className="py-2 pr-4 font-medium text-slate-900">Capability shows &quot;Stack pending&quot;</td>
-                <td className="py-2">The repo isn&apos;t ingested yet. Approve the bootstrap learning candidates, then use <strong>Refresh learning</strong>.</td>
+                <td className="py-2">The repo isn&apos;t ingested yet. Approve the bootstrap learning candidates, then use <strong>Refresh approved learning</strong>.</td>
               </tr>
               <tr>
                 <td className="py-2 pr-4 font-medium text-slate-900">&quot;Conflict&quot; when grounding a capability</td>

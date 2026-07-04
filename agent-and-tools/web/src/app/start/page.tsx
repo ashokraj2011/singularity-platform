@@ -19,6 +19,7 @@ import {
 import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { EvidenceRail, IconTile, MetricStrip, StatusPill, Timeline, type UiState } from "@/components/ui/primitives";
+import { asBoolean, asRow, asRowArray, asString, asStringArray } from "@/lib/row";
 
 type StartBlocker = {
   id: string;
@@ -45,6 +46,14 @@ type StartRecommendation = {
 type StartPreview = {
   story: string;
   recommendation: StartRecommendation;
+  modelReadiness?: {
+    alias: string;
+    ready: boolean;
+    source: string;
+    defaultAlias?: string | null;
+    readyAliases?: string[];
+    warnings?: string[];
+  };
   sampleStories: Array<{ intent: string; label: string; story: string }>;
   intents: Array<{ id: string; label: string; description?: string; templateCount?: number; workflowTemplate?: { id?: string; name?: string } }>;
   capabilities: Array<{ id: string; name: string; capabilityType?: string | null; status?: string | null }>;
@@ -83,6 +92,9 @@ const deploymentCommands = {
   unknown: "bin/setup.sh --yes\nbin/doctor.sh --fix",
 } as const;
 
+const deploymentModes = new Set<OnboardingState["deploymentMode"]>(["docker", "bare-metal", "split-runtime", "unknown"]);
+const blockerSeverities = new Set<StartBlocker["severity"]>(["blocked", "warning"]);
+
 function statusFromBlocker(blocker: StartBlocker): UiState {
   return blocker.severity === "blocked" ? "blocked" : "degraded";
 }
@@ -92,7 +104,159 @@ function shortId(value?: string | null): string {
   return value.length > 16 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value;
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+function nullableString(value: unknown): string | null {
+  return asString(value) || null;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return asString(value) || undefined;
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeDeploymentMode(value: unknown): OnboardingState["deploymentMode"] {
+  const mode = asString(value);
+  return deploymentModes.has(mode as OnboardingState["deploymentMode"])
+    ? mode as OnboardingState["deploymentMode"]
+    : "unknown";
+}
+
+function normalizeBlocker(value: unknown, index: number): StartBlocker {
+  const row = asRow(value);
+  const severity = asString(row.severity);
+  return {
+    id: asString(row.id, `blocker-${index}`),
+    label: asString(row.label, "Prerequisite"),
+    message: asString(row.message, "Setup check needs attention."),
+    severity: blockerSeverities.has(severity as StartBlocker["severity"]) ? severity as StartBlocker["severity"] : "warning",
+    ...(optionalString(row.fixCommand) ? { fixCommand: optionalString(row.fixCommand) } : {}),
+    ...(optionalString(row.fixRoute) ? { fixRoute: optionalString(row.fixRoute) } : {}),
+  };
+}
+
+function normalizeRecommendation(value: unknown): StartRecommendation {
+  const row = asRow(value);
+  return {
+    intent: asString(row.intent, "build_feature"),
+    intentLabel: asString(row.intentLabel, "Build Feature"),
+    capabilityId: nullableString(row.capabilityId),
+    capabilityName: nullableString(row.capabilityName),
+    workflowTemplateId: nullableString(row.workflowTemplateId),
+    workflowTemplateName: nullableString(row.workflowTemplateName),
+    modelAlias: asString(row.modelAlias, "mock"),
+    runtimePreference: asString(row.runtimePreference, "mock_ok"),
+    governancePreset: asString(row.governancePreset, "standard"),
+    demoMode: asBoolean(row.demoMode),
+  };
+}
+
+function normalizeStartPreview(value: unknown, fallbackStory: string): StartPreview {
+  const row = asRow(value);
+  const readiness = asRow(row.modelReadiness);
+  const health = asRow(row.health);
+  const summary = asRow(health.summary);
+  return {
+    story: asString(row.story, fallbackStory),
+    recommendation: normalizeRecommendation(row.recommendation),
+    ...(Object.keys(readiness).length > 0 ? {
+      modelReadiness: {
+        alias: asString(readiness.alias, "mock"),
+        ready: asBoolean(readiness.ready),
+        source: asString(readiness.source, "unknown"),
+        defaultAlias: nullableString(readiness.defaultAlias),
+        readyAliases: asStringArray(readiness.readyAliases),
+        warnings: asStringArray(readiness.warnings),
+      },
+    } : {}),
+    sampleStories: asRowArray(row.sampleStories).map((item, index) => ({
+      intent: asString(item.intent, `sample-${index}`),
+      label: asString(item.label, `Sample ${index + 1}`),
+      story: asString(item.story, starterStory),
+    })),
+    intents: asRowArray(row.intents).map((item, index) => {
+      const workflowTemplate = asRow(item.workflowTemplate);
+      return {
+        id: asString(item.id, `intent-${index}`),
+        label: asString(item.label, `Intent ${index + 1}`),
+        description: optionalString(item.description),
+        templateCount: asNumber(item.templateCount),
+        workflowTemplate: Object.keys(workflowTemplate).length > 0
+          ? {
+            id: optionalString(workflowTemplate.id),
+            name: optionalString(workflowTemplate.name),
+          }
+          : undefined,
+      };
+    }),
+    capabilities: asRowArray(row.capabilities).map((item, index) => ({
+      id: asString(item.id, `capability-${index}`),
+      name: asString(item.name, `Capability ${index + 1}`),
+      capabilityType: nullableString(item.capabilityType),
+      status: nullableString(item.status),
+    })),
+    blockers: asRowArray(row.blockers).map(normalizeBlocker),
+    health: {
+      score: asNumber(health.score),
+      summary: {
+        connectedRuntimeCount: asNumber(summary.connectedRuntimeCount),
+        readyProviderCount: asNumber(summary.readyProviderCount),
+        seededIntentCount: asNumber(summary.seededIntentCount),
+      },
+    },
+  };
+}
+
+function normalizeLaunchResult(value: unknown): LaunchResult {
+  const row = asRow(value);
+  return {
+    runUrl: nullableString(row.runUrl),
+    workItemsUrl: nullableString(row.workItemsUrl),
+    workItems: asRowArray(row.workItems).map((item) => ({
+      id: optionalString(item.id),
+      workCode: optionalString(item.workCode),
+    })),
+    failedWorkItems: asRowArray(row.failedWorkItems).map((item) => ({
+      title: optionalString(item.title),
+      error: optionalString(item.error),
+    })),
+    workflowTemplate: Object.keys(asRow(row.workflowTemplate)).length > 0
+      ? {
+        id: optionalString(asRow(row.workflowTemplate).id),
+        name: optionalString(asRow(row.workflowTemplate).name),
+        profile: nullableString(asRow(row.workflowTemplate).profile),
+      }
+      : null,
+    workflowInstance: Object.keys(asRow(row.workflowInstance)).length > 0
+      ? {
+        id: optionalString(asRow(row.workflowInstance).id),
+        name: optionalString(asRow(row.workflowInstance).name),
+        status: optionalString(asRow(row.workflowInstance).status),
+      }
+      : null,
+    recommendation: Object.keys(asRow(row.recommendation)).length > 0 ? normalizeRecommendation(row.recommendation) : undefined,
+    warnings: asStringArray(row.warnings),
+  };
+}
+
+function normalizeOnboardingState(value: unknown): OnboardingState {
+  const row = asRow(value);
+  return {
+    deploymentMode: normalizeDeploymentMode(row.deploymentMode),
+    completedSteps: asStringArray(row.completedSteps),
+    dismissedTips: asStringArray(row.dismissedTips),
+    ...(optionalString(row.preferredIntent) ? { preferredIntent: optionalString(row.preferredIntent) } : {}),
+    ...(optionalString(row.preferredModelAlias) ? { preferredModelAlias: optionalString(row.preferredModelAlias) } : {}),
+  };
+}
+
+function normalizeOnboardingEnvelope(value: unknown): { state: OnboardingState } {
+  return { state: normalizeOnboardingState(asRow(value).state) };
+}
+
+async function postJson(path: string, body: unknown): Promise<unknown> {
   const res = await fetch(apiPath(path), {
     method: "POST",
     headers: { "content-type": "application/json", ...authHeaders() },
@@ -101,14 +265,14 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
   });
   const { raw, parsed } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
-  return parsed as T;
+  return parsed;
 }
 
-async function getJson<T>(path: string): Promise<T> {
+async function getJson(path: string): Promise<unknown> {
   const res = await fetch(apiPath(path), { cache: "no-store", headers: authHeaders() });
   const { raw, parsed } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
-  return parsed as T;
+  return parsed;
 }
 
 export default function StartPage() {
@@ -132,6 +296,7 @@ export default function StartPage() {
     story.trim().length >= 8
     && (capabilityId || recommendation?.capabilityId)
     && recommendation?.workflowTemplateId
+    && blockingIssues.length === 0
     && !launching,
   );
   const selectedCapabilityName = useMemo(() => {
@@ -143,14 +308,14 @@ export default function StartPage() {
     setLoadingPreview(true);
     setError(null);
     try {
-      const data = await postJson<StartPreview>("/api/start/preview", {
+      const data = normalizeStartPreview(await postJson("/api/start/preview", {
         story: next.story ?? story,
         intent: next.intent ?? intent,
         capabilityId: next.capabilityId ?? capabilityId,
         modelAlias: next.modelAlias ?? modelAlias,
         runtimePreference: next.runtimePreference ?? runtimePreference,
         governancePreset: next.governancePreset ?? governancePreset,
-      });
+      }), next.story ?? story);
       setPreview(data);
       setStory(data.story);
       setIntent(data.recommendation.intent);
@@ -170,14 +335,14 @@ export default function StartPage() {
     setError(null);
     setLaunchResult(null);
     try {
-      const result = await postJson<LaunchResult>("/api/start/launch", {
+      const result = normalizeLaunchResult(await postJson("/api/start/launch", {
         story,
         intent,
         capabilityId,
         modelAlias,
         runtimePreference,
         governancePreset,
-      });
+      }));
       setLaunchResult(result);
       await saveOnboarding({ completedSteps: [...onboarding.completedSteps, "launched-first-sdlc-run"] });
     } catch (err) {
@@ -196,7 +361,7 @@ export default function StartPage() {
     };
     setOnboarding(next);
     try {
-      const saved = await postJson<{ state: OnboardingState }>("/api/onboarding/state", next);
+      const saved = normalizeOnboardingEnvelope(await postJson("/api/onboarding/state", next));
       setOnboarding(saved.state);
     } catch {
       // Cookie persistence is convenience only; keep the in-memory state.
@@ -205,8 +370,8 @@ export default function StartPage() {
 
   useEffect(() => {
     void loadPreview();
-    void getJson<{ state: OnboardingState }>("/api/onboarding/state")
-      .then((data) => setOnboarding(data.state))
+    void getJson("/api/onboarding/state")
+      .then((data) => setOnboarding(normalizeOnboardingEnvelope(data).state))
       .catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -350,9 +515,19 @@ export default function StartPage() {
                 { title: "Intent", detail: recommendation?.intentLabel ?? "Choose an SDLC intent", state: recommendation?.intent ? "ready" : "waiting", icon: GitBranch },
                 { title: "Template", detail: recommendation?.workflowTemplateName ?? recommendation?.workflowTemplateId ?? "Missing seeded workflow", state: recommendation?.workflowTemplateId ? "ready" : "blocked", icon: Rocket },
                 { title: "Runtime", detail: runtimePreference || "Not selected", state: runtimePreference === "mock_ok" ? "optional" : "ready", icon: Network },
-                { title: "Model", detail: modelAlias || "Not selected", state: modelAlias === "mock" ? "optional" : "ready", icon: Wand2 },
+                {
+                  title: "Model",
+                  detail: modelAlias || "Not selected",
+                  state: preview?.modelReadiness?.ready ? "ready" : modelAlias === "mock" ? "optional" : "blocked",
+                  icon: Wand2,
+                },
               ]}
             />
+            {preview?.modelReadiness && !preview.modelReadiness.ready && (
+              <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs leading-5 text-red-800">
+                <strong>Model alias blocked:</strong> {preview.modelReadiness.alias} is not ready. {(preview.modelReadiness.warnings ?? []).join(" ") || "Choose a ready alias from Runtime + LLM."}
+              </div>
+            )}
           </section>
 
           <SetupAssistant

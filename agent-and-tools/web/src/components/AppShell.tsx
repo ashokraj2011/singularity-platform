@@ -10,7 +10,7 @@ import { RequireSession } from "@/components/RequireSession";
 import { useEffect, useState } from "react";
 import { Bell, Play, RadioTower, Search, Settings } from "lucide-react";
 import { CommandPalette } from "@/components/CommandPalette";
-import { apiPath, authHeaders } from "@/lib/api";
+import { apiPath, authHeaders, readResponseBody } from "@/lib/api";
 import { StatusPill, type UiState } from "@/components/ui/primitives";
 
 // Routes that render their own full-viewport UX (the blue Blueprint Workbench
@@ -54,7 +54,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           setRuntimeState({ state: "degraded", label: "Runtime check failed" });
           return;
         }
-        const data = await res.json() as { summary?: { requiredHealthy?: boolean; optionalHealthy?: number; optionalConfigured?: number } };
+        const { parsed } = await readResponseBody(res);
+        const data = parsed && typeof parsed === "object"
+          ? parsed as { summary?: { requiredHealthy?: boolean; optionalHealthy?: number; optionalConfigured?: number } }
+          : {};
         const optionalHealthy = data.summary?.optionalHealthy ?? 0;
         const optionalConfigured = data.summary?.optionalConfigured ?? 0;
         if (data.summary?.requiredHealthy && optionalHealthy > 0) {

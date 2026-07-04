@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { iamApiBase } from "@/lib/platformServices";
+import { jsonishMessage, readJsonish } from "./_json";
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -46,12 +48,6 @@ function callerBearerToken(req: NextRequest): string | null {
   return token || null;
 }
 
-function iamApiBase(): string {
-  const raw = process.env.IAM_BASE_URL ?? process.env.IAM_SERVICE_URL ?? "http://iam-service:8100/api/v1";
-  const trimmed = raw.replace(/\/+$/, "");
-  return trimmed.endsWith("/api/v1") ? trimmed : `${trimmed}/api/v1`;
-}
-
 function authInvalid(serviceName: string, message: string, status = 401): NextResponse {
   return NextResponse.json(
     {
@@ -67,6 +63,10 @@ function isUserLike(value: unknown): boolean {
   const record = value as Record<string, unknown>;
   const kind = typeof record.kind === "string" ? record.kind : undefined;
   return Boolean(record.id || record.user_id || record.sub) && (!kind || kind === "user");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 export async function requireVerifiedCallerBearer(req: NextRequest, serviceName: string): Promise<NextResponse | null> {
@@ -90,9 +90,17 @@ export async function requireVerifiedCallerBearer(req: NextRequest, serviceName:
         cache: "no-store",
       });
       if (verify.ok) {
-        const body = await verify.json().catch(() => null) as { valid?: boolean; user?: unknown; reason?: string } | null;
+        const verifyBody = await readJsonish(verify);
+        if (verifyBody.parseError || !isRecord(verifyBody.data)) {
+          return authInvalid(
+            serviceName,
+            `IAM verify returned an invalid response: ${verifyBody.text || verify.statusText || "empty body"}`,
+            503,
+          );
+        }
+        const body = verifyBody.data as { valid?: boolean; user?: unknown; reason?: string };
         if (body?.valid && isUserLike(body.user)) return null;
-        return authInvalid(serviceName, body?.reason ?? "IAM rejected token");
+        return authInvalid(serviceName, jsonishMessage(body, "IAM rejected token"));
       }
       if (verify.status === 401 || verify.status === 403) {
         return authInvalid(serviceName, `IAM verify rejected platform service token (${verify.status})`, 503);
@@ -109,8 +117,16 @@ export async function requireVerifiedCallerBearer(req: NextRequest, serviceName:
       cache: "no-store",
     });
     if (me.status === 401 || me.status === 403) return authInvalid(serviceName, `IAM rejected token (${me.status})`);
-    if (!me.ok) return authInvalid(serviceName, `IAM /me returned ${me.status}`, 503);
-    const user = await me.json().catch(() => null);
+    const meBody = await readJsonish(me);
+    if (!me.ok) return authInvalid(serviceName, jsonishMessage(meBody.data, `IAM /me returned ${me.status}`), 503);
+    if (meBody.parseError) {
+      return authInvalid(
+        serviceName,
+        `IAM /me returned an invalid response: ${meBody.text || me.statusText || "empty body"}`,
+        503,
+      );
+    }
+    const user = meBody.data;
     if (!isUserLike(user)) return authInvalid(serviceName, "IAM response did not identify a user");
     return null;
   } catch (err) {
@@ -141,13 +157,30 @@ export async function proxyRequest(
     const responseHeaders = new Headers(res.headers);
     HOP_BY_HOP_HEADERS.forEach((key) => responseHeaders.delete(key));
 
+    const normalizeErrors = options.normalizeTextErrors ?? true;
     const contentType = res.headers.get("content-type") ?? "";
-    if (options.normalizeTextErrors && !res.ok && !contentType.includes("json")) {
+    if (normalizeErrors && !res.ok) {
       const text = await res.text();
+      if (contentType.includes("json")) {
+        try {
+          JSON.parse(text);
+          return new NextResponse(text, {
+            status: res.status,
+            statusText: res.statusText,
+            headers: responseHeaders,
+          });
+        } catch {
+          // Fall through to a Platform Web JSON envelope. A few upstreams return
+          // text/plain or invalid JSON for 500s; client pages should never crash
+          // while parsing an error response.
+        }
+      }
       return NextResponse.json(
         {
           code: "UPSTREAM_ERROR",
-          message: text.trim().slice(0, 500) || res.statusText,
+          message: text.trim().slice(0, 500) || res.statusText || "Upstream request failed",
+          status: res.status,
+          statusText: res.statusText,
           upstream: upstreamUrl,
         },
         { status: res.status || 502 },

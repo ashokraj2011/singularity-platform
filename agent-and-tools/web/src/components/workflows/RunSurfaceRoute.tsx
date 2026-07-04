@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RunArtifactsPage } from "workgraph-web/features/runtime/RunArtifactsPage";
 import { RunInsightsPage } from "workgraph-web/features/runtime/RunInsightsPage";
 import { RunViewerPage } from "workgraph-web/features/runtime/RunViewerPage";
+import { WorkgraphSurfaceBoundary } from "@/components/workflows/WorkgraphSurfaceBoundary";
 
 // Mounted at the Next routes /runs/[id], /runs/[id]/artifacts, /runs/[id]/insights.
 // Picks the page from the pathname (each page reads the run id via Next useParams).
@@ -34,7 +35,9 @@ export function RunSurfaceRoute() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <Page />
+      <WorkgraphSurfaceBoundary surfaceLabel="Run cockpit">
+        <Page />
+      </WorkgraphSurfaceBoundary>
     </QueryClientProvider>
   );
 }

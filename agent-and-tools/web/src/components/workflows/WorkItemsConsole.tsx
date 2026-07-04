@@ -4,8 +4,20 @@ import Link from "next/link";
 import type { CSSProperties, ReactNode } from "react";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
-import { Archive, CheckCircle2, GitBranch, Play, Plus, RefreshCw, Route, Search, UserCheck, X } from "lucide-react";
+import { AlertTriangle, Archive, CheckCircle2, GitBranch, Play, Plus, RefreshCw, Route, Search, UserCheck, X } from "lucide-react";
+import { asRow, asString } from "@/lib/row";
 import { formatDate, shortId, unwrapWorkgraphItems, valueText, workgraphFetch } from "@/lib/workgraph";
+
+type WorkflowTemplateStatus = {
+  state?: "valid" | "invalid" | string | null;
+  reason?: string | null;
+  message?: string | null;
+  template?: {
+    id?: string | null;
+    name?: string | null;
+    workflowTypeKey?: string | null;
+  } | null;
+};
 
 type WorkItemTarget = {
   id: string;
@@ -14,6 +26,7 @@ type WorkItemTarget = {
   claimedById?: string | null;
   childWorkflowTemplateId?: string | null;
   childWorkflowInstanceId?: string | null;
+  workflowTemplateStatus?: WorkflowTemplateStatus | null;
   roleKey?: string | null;
 };
 
@@ -63,9 +76,10 @@ export function WorkItemsConsole() {
   const [createOpen, setCreateOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const path = `/work-items?limit=100${filter ? `&${filter}` : ""}`;
-  const { data, error, isLoading, mutate } = useSWR(path, workgraphFetch, { refreshInterval: 10000 });
-  const items = unwrapWorkgraphItems<WorkItem>(data, ["workItems"]).filter((item) => matches(item, query));
+  const { data, error, isLoading, mutate } = useSWR<unknown>(path, (url: string) => workgraphFetch<unknown>(url), { refreshInterval: 10000 });
+  const items = normalizeWorkItems(data).filter((item) => matches(item, query));
   const selected = useMemo(() => items.find((item) => item.id === selectedId) ?? items[0], [items, selectedId]);
+  const invalidTemplateTargetCount = items.reduce((count, item) => count + invalidTemplateTargets(item).length, 0);
 
   async function runAction(label: string, fn: () => Promise<unknown>) {
     setActionError(null);
@@ -90,6 +104,7 @@ export function WorkItemsConsole() {
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button className="btn-primary" type="button" onClick={() => setCreateOpen(true)}><Plus size={15} /> New WorkItem</button>
+            <Link className="btn-secondary" href="/workflows/routing-policies"><Route size={15} /> Routing policies</Link>
             <button className="btn-secondary" type="button" onClick={() => void mutate()}><RefreshCw size={15} /> Refresh</button>
           </div>
         </div>
@@ -100,6 +115,7 @@ export function WorkItemsConsole() {
         <Metric label="In progress" value={items.filter((item) => item.status === "IN_PROGRESS").length} tone="#2563eb" />
         <Metric label="Awaiting approval" value={items.filter((item) => item.status === "AWAITING_PARENT_APPROVAL").length} tone="#b45309" />
         <Metric label="Targets" value={items.reduce((count, item) => count + (item.targets?.length ?? 0), 0)} />
+        <Metric label="Template issues" value={invalidTemplateTargetCount} tone={invalidTemplateTargetCount > 0 ? "#b91c1c" : "#15803d"} />
       </section>
 
       <section className="card" style={{ padding: 14, marginBottom: 16 }}>
@@ -140,6 +156,7 @@ export function WorkItemsConsole() {
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                     <strong style={{ fontSize: 14, overflowWrap: "anywhere" }}>{item.title ?? item.workCode ?? item.id}</strong>
                     <Badge tone={statusTone(item.status)}>{item.status ?? "UNKNOWN"}</Badge>
+                    {invalidTemplateTargets(item).length > 0 && <Badge tone="#b91c1c">Template issue</Badge>}
                   </div>
                   <p style={{ margin: "6px 0 0", color: "var(--color-outline)", fontSize: 12, lineHeight: 1.45 }}>
                     {item.workCode ?? shortId(item.id)} · {item.workItemTypeKey ?? "GENERAL"} · {item.routingMode ?? "MANUAL"}
@@ -167,6 +184,7 @@ export function WorkItemsConsole() {
 
 function WorkItemDetail({ item, onAction }: { item: WorkItem; onAction: (label: string, fn: () => Promise<unknown>) => void }) {
   const firstTarget = item.targets?.[0];
+  const invalidTargets = invalidTemplateTargets(item);
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <div>
@@ -187,6 +205,18 @@ function WorkItemDetail({ item, onAction }: { item: WorkItem; onAction: (label: 
         </div>
       </div>
 
+      {invalidTargets.length > 0 && (
+        <section style={{ border: "1px solid rgba(185,28,28,0.24)", borderRadius: 8, padding: 12, background: "rgba(254,242,242,0.72)", color: "#7f1d1d" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, fontWeight: 850 }}>
+            <AlertTriangle size={15} />
+            Workflow template binding needs attention
+          </div>
+          <p style={{ margin: "6px 0 0", fontSize: 12, lineHeight: 1.55 }}>
+            One or more targets reference a missing, archived, workbench-only, or wrong-capability workflow template. Route the WorkItem again or detach the stale template before starting the target directly.
+          </p>
+        </section>
+      )}
+
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button className="btn-secondary text-xs" type="button" onClick={() => onAction("Route", () => workgraphFetch(`/work-items/${item.id}/route`, { method: "POST", body: "{}" }))}><Route size={13} /> Route</button>
         <button className="btn-secondary text-xs" type="button" onClick={() => onAction("Start", () => workgraphFetch(`/work-items/${item.id}/start`, { method: "POST", body: "{}" }))}><Play size={13} /> Start</button>
@@ -203,11 +233,19 @@ function WorkItemDetail({ item, onAction }: { item: WorkItem; onAction: (label: 
             <article key={target.id} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", marginBottom: 6 }}>
                 <strong style={{ fontSize: 13 }}>{shortId(target.targetCapabilityId)}</strong>
-                <Badge tone={statusTone(target.status)}>{target.status ?? "UNKNOWN"}</Badge>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                  <Badge tone={statusTone(target.status)}>{target.status ?? "UNKNOWN"}</Badge>
+                  {target.workflowTemplateStatus?.state === "invalid" && <Badge tone="#b91c1c">{target.workflowTemplateStatus.reason ?? "Template issue"}</Badge>}
+                </div>
               </div>
               <div style={{ color: "var(--color-outline)", fontSize: 12, lineHeight: 1.55 }}>
                 Role {target.roleKey ?? "-"} · Claimed {shortId(target.claimedById)} · Workflow {shortId(target.childWorkflowInstanceId ?? target.childWorkflowTemplateId)}
               </div>
+              {target.workflowTemplateStatus?.message && (
+                <div style={{ marginTop: 8, borderRadius: 7, padding: "7px 8px", background: target.workflowTemplateStatus.state === "invalid" ? "rgba(254,242,242,0.9)" : "rgba(240,253,244,0.86)", color: target.workflowTemplateStatus.state === "invalid" ? "#7f1d1d" : "#166534", fontSize: 12, lineHeight: 1.45 }}>
+                  {target.workflowTemplateStatus.message}
+                </div>
+              )}
             </article>
           ))}
           {(item.targets ?? []).length === 0 && <EmptyPanel text="No targets attached." />}
@@ -300,12 +338,141 @@ function CreateWorkItemDialog({ onClose, onCreated }: { onClose: () => void; onC
   );
 }
 
+function normalizeWorkItems(value: unknown): WorkItem[] {
+  return unwrapWorkgraphItems<Record<string, unknown>>(value, ["workItems", "work_items"])
+    .map(normalizeWorkItem)
+    .filter((item): item is WorkItem => item !== null)
+    .sort((left, right) => sortTime(right.updatedAt ?? right.createdAt) - sortTime(left.updatedAt ?? left.createdAt));
+}
+
+function normalizeWorkItem(value: unknown): WorkItem | null {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.workItemId ?? row.work_item_id);
+  if (!id) return null;
+  return {
+    id,
+    workCode: asString(row.workCode ?? row.work_code) || null,
+    title: asString(row.title ?? row.name, id),
+    description: asString(row.description) || null,
+    status: asString(row.status, "UNKNOWN"),
+    workItemTypeKey: asString(row.workItemTypeKey ?? row.work_item_type_key, "GENERAL"),
+    workflowTypeKey: asString(row.workflowTypeKey ?? row.workflow_type_key) || null,
+    routingMode: asString(row.routingMode ?? row.routing_mode, "MANUAL"),
+    routingState: asString(row.routingState ?? row.routing_state) || null,
+    urgency: asString(row.urgency) || null,
+    priority: normalizeOptionalNumber(row.priority),
+    dueAt: asString(row.dueAt ?? row.due_at) || null,
+    targetCapabilityId: asString(row.targetCapabilityId ?? row.target_capability_id) || null,
+    sourceWorkflowInstanceId: asString(row.sourceWorkflowInstanceId ?? row.source_workflow_instance_id) || null,
+    sourceWorkflowNodeId: asString(row.sourceWorkflowNodeId ?? row.source_workflow_node_id) || null,
+    targets: uniqueById(unwrapWorkgraphItems<Record<string, unknown>>(row.targets).map(normalizeWorkItemTarget)),
+    events: unwrapWorkgraphItems<Record<string, unknown>>(row.events).map(normalizeWorkItemEvent).slice(0, 30),
+    clarifications: unwrapWorkgraphItems<Record<string, unknown>>(row.clarifications).map(normalizeClarification).slice(0, 20),
+    createdAt: asString(row.createdAt ?? row.created_at) || null,
+    updatedAt: asString(row.updatedAt ?? row.updated_at) || null,
+  };
+}
+
+function normalizeWorkItemTarget(value: unknown, index: number): WorkItemTarget | null {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.targetId ?? row.target_id, `target-${index + 1}`);
+  const targetCapabilityId = asString(row.targetCapabilityId ?? row.target_capability_id ?? row.capabilityId ?? row.capability_id);
+  return {
+    id,
+    targetCapabilityId: targetCapabilityId || null,
+    status: asString(row.status, "UNKNOWN"),
+    claimedById: asString(row.claimedById ?? row.claimed_by_id) || null,
+    childWorkflowTemplateId: asString(row.childWorkflowTemplateId ?? row.child_workflow_template_id) || null,
+    childWorkflowInstanceId: asString(row.childWorkflowInstanceId ?? row.child_workflow_instance_id) || null,
+    workflowTemplateStatus: normalizeWorkflowTemplateStatus(row.workflowTemplateStatus ?? row.workflow_template_status),
+    roleKey: asString(row.roleKey ?? row.role_key) || null,
+  };
+}
+
+function normalizeWorkflowTemplateStatus(value: unknown): WorkflowTemplateStatus | null {
+  const row = asRow(value);
+  const state = asString(row.state).toLowerCase();
+  const reason = asString(row.reason) || null;
+  const message = asString(row.message) || null;
+  const template = normalizeTemplateSummary(row.template);
+  if (!state && !reason && !message && !template) return null;
+  return {
+    state: state === "valid" || state === "invalid" ? state : state || "invalid",
+    reason,
+    message,
+    template,
+  };
+}
+
+function normalizeTemplateSummary(value: unknown): WorkflowTemplateStatus["template"] {
+  const row = asRow(value);
+  const id = asString(row.id ?? row.templateId ?? row.template_id);
+  const name = asString(row.name ?? row.displayName ?? row.display_name);
+  const workflowTypeKey = asString(row.workflowTypeKey ?? row.workflow_type_key);
+  if (!id && !name && !workflowTypeKey) return null;
+  return {
+    id: id || null,
+    name: name || null,
+    workflowTypeKey: workflowTypeKey || null,
+  };
+}
+
+function normalizeWorkItemEvent(value: unknown, index: number): NonNullable<WorkItem["events"]>[number] {
+  const row = asRow(value);
+  const payload = row.payload === undefined ? undefined : row.payload;
+  return {
+    id: asString(row.id, `event-${index + 1}`),
+    eventType: asString(row.eventType ?? row.event_type) || undefined,
+    type: asString(row.type) || undefined,
+    message: asString(row.message) || undefined,
+    createdAt: asString(row.createdAt ?? row.created_at) || undefined,
+    payload,
+  };
+}
+
+function normalizeClarification(value: unknown, index: number): NonNullable<WorkItem["clarifications"]>[number] {
+  const row = asRow(value);
+  return {
+    id: asString(row.id, `clarification-${index + 1}`),
+    question: asString(row.question) || undefined,
+    answer: asString(row.answer) || undefined,
+    createdAt: asString(row.createdAt ?? row.created_at) || undefined,
+  };
+}
+
+function normalizeOptionalNumber(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(asString(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sortTime(value: unknown): number {
+  const text = asString(value);
+  if (!text) return 0;
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? 0 : date.getTime();
+}
+
+function uniqueById<T extends { id: string }>(items: Array<T | null>): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    if (!item || seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
+}
+
 function matches(item: WorkItem, query: string) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return [item.title, item.description, item.workCode, item.status, item.workItemTypeKey, item.routingMode, item.routingState, ...(item.targets ?? []).map((target) => target.targetCapabilityId)]
+  return [item.title, item.description, item.workCode, item.status, item.workItemTypeKey, item.routingMode, item.routingState, ...(item.targets ?? []).flatMap((target) => [target.targetCapabilityId, target.workflowTemplateStatus?.reason, target.workflowTemplateStatus?.message])]
     .filter(Boolean)
     .some((value) => String(value).toLowerCase().includes(q));
+}
+
+function invalidTemplateTargets(item: WorkItem): WorkItemTarget[] {
+  return (item.targets ?? []).filter((target) => target.workflowTemplateStatus?.state === "invalid");
 }
 
 function Segment({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {

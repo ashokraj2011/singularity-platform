@@ -22,6 +22,32 @@ const SCHEMA_TEMPLATE = JSON.stringify({
   required: ["query"]
 }, null, 2);
 
+function parseJsonObjectField(label: string, raw: string, optional = false): Record<string, unknown> | undefined {
+  const text = raw.trim();
+  if (!text) {
+    if (optional) return undefined;
+    throw new Error(`${label} is required and must be a JSON object.`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Invalid JSON";
+    throw new Error(`${label} must be valid JSON: ${message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${label} must be a JSON object.`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function commaList(value: string): string[] {
+  return value
+    .split(",")
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
 export default function ToolsPage() {
   const { data, isLoading, mutate } = useSWR("tools", fetcher);
   const [showCreate, setShowCreate] = useState(false);
@@ -47,20 +73,36 @@ export default function ToolsPage() {
     setCreating(true);
     setError(null);
     try {
+      let inputSchema: Record<string, unknown>;
+      let runtime: Record<string, unknown>;
+      let outputSchema: Record<string, unknown> | undefined;
+      try {
+        inputSchema = parseJsonObjectField("Input schema", form.input_schema) as Record<string, unknown>;
+        outputSchema = parseJsonObjectField("Output schema", form.output_schema, true);
+      } catch (err) {
+        setWizardStep(1);
+        throw err;
+      }
+      try {
+        runtime = parseJsonObjectField("Runtime", form.runtime) as Record<string, unknown>;
+      } catch (err) {
+        setWizardStep(2);
+        throw err;
+      }
       await toolApi.register({
         tool_name: form.tool_name,
         version: form.version,
         display_name: form.display_name,
         description: form.description,
         risk_level: form.risk_level,
-        input_schema: JSON.parse(form.input_schema) as Record<string, unknown>,
-        runtime: JSON.parse(form.runtime) as Record<string, unknown>,
-        output_schema: form.output_schema ? JSON.parse(form.output_schema) as Record<string, unknown> : undefined,
+        input_schema: inputSchema,
+        runtime,
+        output_schema: outputSchema,
         requires_approval: form.requires_approval,
         execution_target: form.execution_target,
-        allowed_capabilities: form.allowed_capabilities ? form.allowed_capabilities.split(",").map(s => s.trim()) : [],
-        allowed_agents: form.allowed_agents ? form.allowed_agents.split(",").map(s => s.trim()) : [],
-        tags: form.tags ? form.tags.split(",").map(s => s.trim()) : [],
+        allowed_capabilities: commaList(form.allowed_capabilities),
+        allowed_agents: commaList(form.allowed_agents),
+        tags: commaList(form.tags),
       });
       setShowCreate(false);
       await mutate();

@@ -15,6 +15,7 @@ import {
   Workflow,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { readResponseBody } from "@/lib/api";
 
 type CountResult = { value: number | string; state: "live" | "guarded" | "offline" };
 
@@ -22,9 +23,11 @@ async function fetchCount(url: string, keys: string[]): Promise<CountResult> {
   try {
     const res = await fetch(url, { cache: "no-store" });
     if (res.status === 401 || res.status === 403) return { value: "Guarded", state: "guarded" };
-    const text = await res.text();
     if (!res.ok) return { value: "Check", state: "offline" };
-    const data = text ? JSON.parse(text) as Record<string, unknown> : {};
+    const { parsed } = await readResponseBody(res);
+    const data = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
     for (const key of keys) {
       const value = data[key];
       if (Array.isArray(value)) return { value: value.length, state: "live" };

@@ -1,6 +1,6 @@
 "use client";
 
-import { apiPath, authHeaders } from "@/lib/api";
+import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 
 export class WorkgraphError extends Error {
   constructor(message: string, public status?: number, public code?: string) {
@@ -20,28 +20,26 @@ export function unwrapWorkgraphItems<T = Record<string, unknown>>(data: unknown,
 }
 
 export async function workgraphFetch<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(apiPath(`/api/workgraph${path.startsWith("/") ? path : `/${path}`}`), {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-      ...(init?.headers ?? {}),
-    },
-  });
-  const text = await res.text();
-  let body: unknown = null;
+  let res: Response;
   try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = text;
+    res = await fetch(apiPath(`/api/workgraph${path.startsWith("/") ? path : `/${path}`}`), {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(),
+        ...(init?.headers ?? {}),
+      },
+    });
+  } catch (err) {
+    throw new WorkgraphError(err instanceof Error ? err.message : "Workgraph network request failed");
   }
+  const { raw, parsed } = await readResponseBody(res);
   if (!res.ok) {
-    const obj = body && typeof body === "object" ? body as Record<string, unknown> : {};
+    const obj = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
     const code = typeof obj.code === "string" ? obj.code : undefined;
-    const message = String(obj.message ?? obj.error ?? text ?? res.statusText);
-    throw new WorkgraphError(message, res.status, code);
+    throw new WorkgraphError(responseMessage(parsed, raw, res.statusText), res.status, code);
   }
-  return body as T;
+  return parsed as T;
 }
 
 export function shortId(value: unknown): string {

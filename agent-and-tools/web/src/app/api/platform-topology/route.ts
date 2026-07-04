@@ -1,5 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireVerifiedCallerBearer } from "../_proxy";
+import { serverEnv } from "@/lib/serverRootEnv";
+import {
+  cleanUrl,
+  configuredPlatformServiceUrl,
+  flagEnabled,
+  iamApiBase,
+  localDevAllowsAnonymousRead,
+  platformService,
+  platformServiceToken,
+  platformServiceUrl,
+} from "@/lib/platformServices";
+import { healthProbeMessage } from "../_health-message";
 
 export const dynamic = "force-dynamic";
 
@@ -44,30 +56,17 @@ type TopologyEdge = {
 
 const HEALTH_TIMEOUT_MS = 2500;
 
-function cleanUrl(value: string | null | undefined): string | null {
-  const trimmed = value?.trim();
-  if (!trimmed) return null;
-  return trimmed.replace(/\/+$/, "");
-}
-
-function flagEnabled(value: string | null | undefined): boolean {
-  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
-}
-
 function authHeader(token: string | null | undefined): HeadersInit {
   const trimmed = token?.trim();
   if (!trimmed) return {};
-  return { Authorization: trimmed.startsWith("Bearer ") ? trimmed : `Bearer ${trimmed}` };
+  return {
+    Authorization: trimmed.startsWith("Bearer ") ? trimmed : `Bearer ${trimmed}`,
+    "X-Service-Token": trimmed,
+  };
 }
 
 function endpoint(baseUrl: string, path = "/health"): string {
   return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
-}
-
-function iamApiBase(): string {
-  const raw = process.env.IAM_BASE_URL ?? process.env.IAM_SERVICE_URL ?? "http://iam-service:8100/api/v1";
-  const trimmed = raw.replace(/\/+$/, "");
-  return trimmed.endsWith("/api/v1") ? trimmed : `${trimmed}/api/v1`;
 }
 
 function staticNode(config: ProbeConfig, status: TopologyStatus, message: string, ok: boolean | null): TopologyNode {
@@ -114,7 +113,7 @@ async function probe(config: ProbeConfig): Promise<TopologyNode> {
       status: res.ok ? "live" : "degraded",
       ok: res.ok,
       httpStatus: res.status,
-      message: text.slice(0, 260) || res.statusText || (res.ok ? "Healthy" : "Unhealthy"),
+      message: healthProbeMessage(text, res.statusText, res.ok, 260),
       checkedAt,
     };
   } catch (err) {
@@ -142,13 +141,16 @@ function edgeStatus(edge: Omit<TopologyEdge, "status" | "message">, nodes: Map<s
 }
 
 export async function GET(request: NextRequest) {
-  const authFailure = await requireVerifiedCallerBearer(request, "Platform topology");
-  if (authFailure) return authFailure;
+  if (!localDevAllowsAnonymousRead()) {
+    const authFailure = await requireVerifiedCallerBearer(request, "Platform topology");
+    if (authFailure) return authFailure;
+  }
 
-  const platformUrl = cleanUrl(process.env.PLATFORM_WEB_PUBLIC_URL ?? "http://localhost:5180");
+  const platformUrl = cleanUrl(serverEnv("PLATFORM_WEB_PUBLIC_URL", "http://localhost:5180"));
   const mcpHttpDebugEnabled =
-    flagEnabled(process.env.RUNTIME_HTTP_FALLBACK_ENABLED) ||
-    flagEnabled(process.env.MCP_HTTP_DEBUG_PROBE_ENABLED);
+    flagEnabled(serverEnv("RUNTIME_HTTP_FALLBACK_ENABLED")) ||
+    flagEnabled(serverEnv("MCP_HTTP_DEBUG_PROBE_ENABLED"));
+  const contextFabricUrl = platformServiceUrl("context-fabric");
   const staticNodes: TopologyNode[] = [
     staticNode({
       id: "browser",
@@ -204,7 +206,7 @@ export async function GET(request: NextRequest) {
       description: "Authentication, session verification, users, teams, roles, and capability permissions.",
       kind: "api",
       group: "core",
-      envKey: "IAM_BASE_URL",
+      envKey: platformService("iam").envKey,
       url: cleanUrl(iamApiBase()),
       healthPath: "/health",
       required: true,
@@ -217,8 +219,8 @@ export async function GET(request: NextRequest) {
       description: "Agent catalog, profile/template lifecycle, learning endpoints, and agent metadata.",
       kind: "api",
       group: "agent",
-      envKey: "AGENT_SERVICE_URL",
-      url: cleanUrl(process.env.AGENT_SERVICE_URL ?? "http://agent-service:3001"),
+      envKey: platformService("agent-service").envKey,
+      url: cleanUrl(platformServiceUrl("agent-service")),
       required: true,
       remoteCapable: false,
       position: { x: 30, y: 62 },
@@ -229,8 +231,8 @@ export async function GET(request: NextRequest) {
       description: "Tool catalog, grants, source-backed tools, and central execution metadata.",
       kind: "api",
       group: "agent",
-      envKey: "TOOL_SERVICE_URL",
-      url: cleanUrl(process.env.TOOL_SERVICE_URL ?? "http://agent-service:3001"),
+      envKey: platformService("tool-service").envKey,
+      url: cleanUrl(platformServiceUrl("tool-service")),
       required: true,
       remoteCapable: false,
       position: { x: 46, y: 62 },
@@ -238,11 +240,12 @@ export async function GET(request: NextRequest) {
     {
       id: "agent-runtime",
       label: "Agent Runtime",
-      description: "Resolved agent execution, runtime snapshots, receipts, and governed invocations.",
+      description: "Resolved agent execution, runtime snapshots, receipts, governed invocations, and strict schema invariants.",
       kind: "api",
       group: "agent",
-      envKey: "AGENT_RUNTIME_URL",
-      url: cleanUrl(process.env.AGENT_RUNTIME_URL ?? "http://agent-runtime:3003"),
+      envKey: platformService("agent-runtime").envKey,
+      url: cleanUrl(platformServiceUrl("agent-runtime")),
+      healthPath: "/healthz/strict",
       required: true,
       remoteCapable: false,
       position: { x: 62, y: 62 },
@@ -253,12 +256,12 @@ export async function GET(request: NextRequest) {
       description: "Prompt profiles, assemblies, layer composition, compression, and response orchestration.",
       kind: "api",
       group: "agent",
-      envKey: "PROMPT_COMPOSER_URL",
-      url: cleanUrl(process.env.PROMPT_COMPOSER_URL ?? "http://prompt-composer:3004"),
+      envKey: platformService("prompt-composer").envKey,
+      url: cleanUrl(platformServiceUrl("prompt-composer")),
       required: true,
       remoteCapable: false,
       position: { x: 78, y: 62 },
-      authToken: process.env.PROMPT_COMPOSER_SERVICE_TOKEN ?? null,
+      authToken: platformServiceToken("prompt-composer"),
     },
     {
       id: "workgraph-api",
@@ -266,8 +269,8 @@ export async function GET(request: NextRequest) {
       description: "Workflow templates, runtime runs, events, artifacts, work items, and SSE streams.",
       kind: "api",
       group: "workflow",
-      envKey: "WORKGRAPH_API_URL",
-      url: cleanUrl(process.env.WORKGRAPH_API_URL ?? "http://workgraph-api:8080"),
+      envKey: platformService("workgraph-api").envKey,
+      url: cleanUrl(platformServiceUrl("workgraph-api")),
       required: true,
       remoteCapable: false,
       position: { x: 50, y: 77 },
@@ -278,12 +281,12 @@ export async function GET(request: NextRequest) {
       description: "Context, memory, knowledge, receipts, artifact context, and runtime bridge coordination.",
       kind: "api",
       group: "core",
-      envKey: "CONTEXT_FABRIC_URL",
-      url: cleanUrl(process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000"),
+      envKey: platformService("context-fabric").envKey,
+      url: cleanUrl(contextFabricUrl),
       required: true,
       remoteCapable: true,
       position: { x: 30, y: 77 },
-      authToken: process.env.CONTEXT_FABRIC_SERVICE_TOKEN ?? null,
+      authToken: platformServiceToken("context-fabric"),
     },
     {
       id: "runtime-bridge",
@@ -291,12 +294,13 @@ export async function GET(request: NextRequest) {
       description: "Context Fabric WebSocket registry for MCP runtimes that dial in from Docker, servers, or laptops.",
       kind: "runtime",
       group: "runtime",
-      envKey: "CONTEXT_FABRIC_URL",
-      url: cleanUrl(process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000"),
+      envKey: platformService("context-fabric").envKey,
+      url: cleanUrl(contextFabricUrl),
       healthPath: "/api/runtime-bridge/status",
       required: true,
       remoteCapable: true,
       position: { x: 22, y: 92 },
+      authToken: platformServiceToken("context-fabric"),
     },
     {
       id: "mcp-server",
@@ -306,8 +310,8 @@ export async function GET(request: NextRequest) {
         : "Direct MCP HTTP probe disabled. Normal traffic uses the Runtime Bridge WebSocket.",
       kind: "runtime",
       group: "runtime",
-      envKey: "MCP_SERVER_URL",
-      url: mcpHttpDebugEnabled ? cleanUrl(process.env.MCP_SERVER_URL) : null,
+      envKey: platformService("mcp-server").envKey,
+      url: mcpHttpDebugEnabled ? configuredPlatformServiceUrl("mcp-server") : null,
       required: false,
       remoteCapable: true,
       position: { x: 40, y: 92 },
@@ -318,12 +322,12 @@ export async function GET(request: NextRequest) {
       description: "Model gateway behind MCP runtime. Direct probe is diagnostic; normal model traffic is model-run over the bridge.",
       kind: "runtime",
       group: "runtime",
-      envKey: "LLM_GATEWAY_URL",
-      url: cleanUrl(process.env.LLM_GATEWAY_URL ?? process.env.LLM_GATEWAY_INTERNAL_URL),
+      envKey: platformService("llm-gateway").envKey,
+      url: configuredPlatformServiceUrl("llm-gateway", "LLM_GATEWAY_INTERNAL_URL"),
       required: false,
       remoteCapable: true,
       position: { x: 58, y: 92 },
-      authToken: process.env.LLM_GATEWAY_BEARER ?? null,
+      authToken: platformServiceToken("llm-gateway"),
     },
     {
       id: "formal-verifier",
@@ -331,8 +335,8 @@ export async function GET(request: NextRequest) {
       description: "Optional verification service for proof-backed SDLC gates.",
       kind: "runtime",
       group: "governance",
-      envKey: "FORMAL_VERIFIER_URL",
-      url: cleanUrl(process.env.FORMAL_VERIFIER_URL ?? process.env.FORMAL_VERIFIER_INTERNAL_URL),
+      envKey: platformService("formal-verifier").envKey,
+      url: configuredPlatformServiceUrl("formal-verifier", "FORMAL_VERIFIER_INTERNAL_URL"),
       required: false,
       remoteCapable: true,
       position: { x: 74, y: 92 },
@@ -343,12 +347,12 @@ export async function GET(request: NextRequest) {
       description: "Optional external governance ledger, audit packs, and trust evidence sink.",
       kind: "governance",
       group: "governance",
-      envKey: "AUDIT_GOV_URL",
-      url: cleanUrl(process.env.AUDIT_GOV_URL),
+      envKey: platformService("audit-governance").envKey,
+      url: configuredPlatformServiceUrl("audit-governance"),
       required: false,
       remoteCapable: true,
       position: { x: 88, y: 92 },
-      authToken: process.env.AUDIT_GOV_SERVICE_TOKEN ?? null,
+      authToken: platformServiceToken("audit-governance"),
     },
   ];
 

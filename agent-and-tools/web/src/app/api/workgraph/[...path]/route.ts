@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { proxyHeaders, proxyRequest, requireVerifiedCallerBearer } from "../../_proxy";
+import { readJsonish } from "../../_json";
 import { platformWebCredentialError, platformWebProductionEnv } from "@/lib/serverEnvGuard";
+import { serverEnv } from "@/lib/serverRootEnv";
+import { iamApiBase, platformServiceUrl } from "@/lib/platformServices";
 
-const WORKGRAPH_API_URL = process.env.WORKGRAPH_API_URL ?? "http://workgraph-api:8080";
-const IAM_BASE_URL = process.env.IAM_BASE_URL ?? "http://iam-service:8100/api/v1";
-const SERVICE_AUTH_ENABLED = (process.env.WORKGRAPH_PROXY_SERVICE_AUTH ?? "false").toLowerCase() === "true";
+const WORKGRAPH_API_URL = platformServiceUrl("workgraph-api");
+const IAM_BASE_URL = iamApiBase();
+const SERVICE_AUTH_ENABLED = (serverEnv("WORKGRAPH_PROXY_SERVICE_AUTH", "false") ?? "false").toLowerCase() === "true";
 const SERVICE_NAME = "platform-web";
 const SERVICE_SCOPES = ["read:reference-data", "read:mcp-servers", "publish:events"];
-const TENANT_ISOLATION_MODE = (process.env.TENANT_ISOLATION_MODE ?? "off").trim().toLowerCase();
-const REQUIRE_TENANT_ID = (process.env.REQUIRE_TENANT_ID ?? "false").trim().toLowerCase();
+const TENANT_ISOLATION_MODE = (serverEnv("TENANT_ISOLATION_MODE", "off") ?? "off").trim().toLowerCase();
+const REQUIRE_TENANT_ID = (serverEnv("REQUIRE_TENANT_ID", "false") ?? "false").trim().toLowerCase();
 
 let cachedServiceToken: { token: string; expiresAt: number } | null = null;
 
@@ -63,7 +66,7 @@ function isJwtLike(token: string): boolean {
 
 function configuredTenantIds(): string[] {
   return [...new Set(
-    (process.env.IAM_SERVICE_TOKEN_TENANT_IDS ?? "")
+    (serverEnv("IAM_SERVICE_TOKEN_TENANT_IDS") ?? "")
       .split(",")
       .map((tenantId) => tenantId.trim())
       .filter(Boolean),
@@ -108,18 +111,14 @@ function workgraphProxyTokenError(token: string | undefined): string | null {
 }
 
 async function readJsonObject(res: Response): Promise<Record<string, unknown>> {
-  const text = await res.text();
-  if (!text) return {};
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
+  const body = await readJsonish(res);
+  return body.data && typeof body.data === "object" && !Array.isArray(body.data)
+    ? body.data as Record<string, unknown>
+    : {};
 }
 
 async function getServiceToken(): Promise<string | null> {
-  const pinned = process.env.WORKGRAPH_PROXY_SERVICE_TOKEN;
+  const pinned = serverEnv("WORKGRAPH_PROXY_SERVICE_TOKEN");
   if (pinned) return workgraphProxyTokenError(pinned) ? null : pinned;
   if (platformWebProductionEnv()) return null;
   const tenantIds = configuredTenantIds();
@@ -128,8 +127,8 @@ async function getServiceToken(): Promise<string | null> {
     return cachedServiceToken.token;
   }
 
-  const email = process.env.IAM_BOOTSTRAP_USERNAME;
-  const password = process.env.IAM_BOOTSTRAP_PASSWORD;
+  const email = serverEnv("IAM_BOOTSTRAP_USERNAME");
+  const password = serverEnv("IAM_BOOTSTRAP_PASSWORD");
   if (!email || !password) return null;
 
   const base = IAM_BASE_URL.replace(/\/$/, "");
@@ -173,7 +172,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path?: strin
   const authFailure = await requireVerifiedCallerBearer(req, "Workgraph");
   if (authFailure) return authFailure;
 
-  if (platformWebProductionEnv() && !process.env.WORKGRAPH_PROXY_SERVICE_TOKEN) {
+  if (platformWebProductionEnv() && !serverEnv("WORKGRAPH_PROXY_SERVICE_TOKEN")) {
     return NextResponse.json(
       {
         code: "PLATFORM_WEB_CREDENTIAL_UNSAFE",
@@ -185,7 +184,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path?: strin
 
   const serviceToken = await getServiceToken();
   if (!serviceToken) {
-    const error = workgraphProxyTokenError(process.env.WORKGRAPH_PROXY_SERVICE_TOKEN);
+    const error = workgraphProxyTokenError(serverEnv("WORKGRAPH_PROXY_SERVICE_TOKEN"));
     if (error) return NextResponse.json({ code: "PLATFORM_WEB_CREDENTIAL_UNSAFE", message: error }, { status: 503 });
     if (tenantScopedTokenRequired() && configuredTenantIds().length === 0) {
       return NextResponse.json(

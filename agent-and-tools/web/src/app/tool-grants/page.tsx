@@ -7,6 +7,22 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 
 const SCOPE_TYPES = ["AGENT_TEMPLATE", "AGENT_BINDING", "CAPABILITY", "ROLE", "WORKFLOW_PHASE", "TEAM", "USER"];
 
+function parseToolInput(raw: string): Record<string, unknown> {
+  const text = raw.trim();
+  if (!text) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Invalid JSON";
+    throw new Error(`Tool input must be valid JSON: ${message}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Tool input must be a JSON object.");
+  }
+  return parsed as Record<string, unknown>;
+}
+
 export default function ToolGrantsPage() {
   const { data: tools } = useSWR("runtime-tools", () => runtimeApi.listToolDefs());
   const { data: policies, mutate: mutatePolicies } = useSWR("runtime-policies", () => runtimeApi.listPolicies());
@@ -25,6 +41,8 @@ export default function ToolGrantsPage() {
     input: '{"repositoryId":"ccre-runtime","query":"evaluation_group"}',
   });
   const [validateResult, setValidateResult] = useState<Record<string, unknown> | null>(null);
+  const [validateError, setValidateError] = useState<string | null>(null);
+  const [validateBusy, setValidateBusy] = useState(false);
 
   async function createPolicy() {
     if (!policyForm.name) return;
@@ -43,18 +61,26 @@ export default function ToolGrantsPage() {
     await mutateGrants();
   }
   async function validateCall() {
-    let parsed: unknown;
-    try { parsed = JSON.parse(validateForm.input); } catch { parsed = {}; }
-    const body = {
-      agentBindingId: validateForm.agentBindingId || undefined,
-      capabilityId: validateForm.capabilityId || undefined,
-      toolName: validateForm.toolName,
-      workflowPhase: validateForm.workflowPhase || undefined,
-      environment: validateForm.environment || undefined,
-      input: parsed,
-    };
-    const result = await runtimeApi.validateCall(body as never);
-    setValidateResult(result as Record<string, unknown>);
+    setValidateBusy(true);
+    setValidateError(null);
+    setValidateResult(null);
+    try {
+      if (!validateForm.toolName.trim()) throw new Error("Tool name is required before validation.");
+      const body = {
+        agentBindingId: validateForm.agentBindingId || undefined,
+        capabilityId: validateForm.capabilityId || undefined,
+        toolName: validateForm.toolName.trim(),
+        workflowPhase: validateForm.workflowPhase || undefined,
+        environment: validateForm.environment || undefined,
+        input: parseToolInput(validateForm.input),
+      };
+      const result = await runtimeApi.validateCall(body as never);
+      setValidateResult(result as Record<string, unknown>);
+    } catch (err) {
+      setValidateError(err instanceof Error ? err.message : "Validation failed.");
+    } finally {
+      setValidateBusy(false);
+    }
   }
 
   const toolList = (tools ?? []) as Record<string, unknown>[];
@@ -154,7 +180,14 @@ export default function ToolGrantsPage() {
         <textarea rows={3} className="col-span-2 px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono"
           placeholder='{"repositoryId":"...","query":"..."}'
           value={validateForm.input} onChange={e => setValidateForm(v => ({ ...v, input: e.target.value }))} />
-        <button className="btn-primary col-span-2" onClick={validateCall}>Run validation</button>
+        {validateError && (
+          <div className="col-span-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+            {validateError}
+          </div>
+        )}
+        <button className="btn-primary col-span-2" onClick={validateCall} disabled={validateBusy}>
+          {validateBusy ? "Validating..." : "Run validation"}
+        </button>
       </div>
       {validateResult && (
         <pre className="card p-4 text-xs font-mono whitespace-pre-wrap">

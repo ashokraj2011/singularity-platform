@@ -3,12 +3,13 @@ import useSWR from "swr";
 import { Users } from "lucide-react";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { apiPath, readResponseBody, responseMessage } from "@/lib/api";
+import { asDateTime, asRow, asRowArray, asString, asStringArray, type Row } from "@/lib/row";
 
 const fetcher = async () => {
   const res = await fetch(apiPath("/api/client-runners"));
   const { raw, parsed } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
-  return (parsed && typeof parsed === "object" ? parsed : { runners: [] }) as { runners: Record<string, unknown>[] };
+  return { runners: asRowArray(asRow(parsed).runners) };
 };
 
 export default function RunnersPage() {
@@ -25,38 +26,40 @@ export default function RunnersPage() {
       {isLoading && <div className="text-slate-500 text-sm">Loading…</div>}
 
       <div className="space-y-3">
-        {runners.map((r) => {
-          const runner = r as Record<string, unknown>;
-          const caps = runner.capabilities as Record<string, unknown>;
+        {runners.map((runner: Row, index: number) => {
+          const caps = asRow(runner.capabilities);
+          const id = asString(runner.id, `runner-${index}`);
+          const name = asString(runner.runner_name, id);
+          const type = asString(runner.runner_type);
+          const tools = asStringArray(caps.tools);
+          const providers = asStringArray(caps.providers);
           return (
-            <div key={runner.id as string} className="card p-5 flex items-start gap-4">
+            <div key={id} className="card p-5 flex items-start gap-4">
               <div className="p-2.5 bg-amber-50 rounded-lg shrink-0">
                 <Users size={20} className="text-amber-600" />
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
-                  <span className="font-medium text-slate-900">{(runner.runner_name ?? runner.id) as string}</span>
-                  <StatusBadge value={runner.status as string} />
-                  {!!runner.runner_type && (
-                    <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded">{runner.runner_type as string}</span>
+                  <span className="font-medium text-slate-900">{name}</span>
+                  <StatusBadge value={asString(runner.status, "unknown")} />
+                  {!!type && (
+                    <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded">{type}</span>
                   )}
                 </div>
-                <div className="font-mono text-xs text-slate-500 mb-2">{runner.id as string}</div>
-                {!!caps && (
+                <div className="font-mono text-xs text-slate-500 mb-2">{id}</div>
+                {(tools.length > 0 || providers.length > 0) && (
                   <div className="flex flex-wrap gap-2 text-xs">
-                    {(caps.tools as string[] | undefined)?.map((t) => (
-                      <span key={t} className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded">{t}</span>
+                    {tools.map((tool, toolIndex) => (
+                      <span key={`${tool}-${toolIndex}`} className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded">{tool}</span>
                     ))}
-                    {(caps.providers as string[] | undefined)?.map((p) => (
-                      <span key={p} className="bg-purple-50 text-purple-700 px-2 py-0.5 rounded">{p}</span>
+                    {providers.map((provider, providerIndex) => (
+                      <span key={`${provider}-${providerIndex}`} className="bg-purple-50 text-purple-700 px-2 py-0.5 rounded">{provider}</span>
                     ))}
                   </div>
                 )}
               </div>
               <div className="text-xs text-slate-400 shrink-0">
-                {runner.last_seen_at
-                  ? `Last seen: ${new Date(runner.last_seen_at as string).toLocaleTimeString()}`
-                  : "Never seen"}
+                {asString(runner.last_seen_at) ? `Last seen: ${asDateTime(runner.last_seen_at)}` : "Never seen"}
               </div>
             </div>
           );

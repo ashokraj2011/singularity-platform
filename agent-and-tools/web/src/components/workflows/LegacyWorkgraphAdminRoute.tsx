@@ -19,6 +19,7 @@ import { PlannerPage } from "workgraph-web/features/planner/PlannerPage";
 import { CustomNodeTypesPage } from "workgraph-web/features/workflow/CustomNodeTypesPage";
 import { WorkflowStudioPage } from "workgraph-web/features/workflow/WorkflowStudioPage";
 import { WorkflowsListPage } from "workgraph-web/features/workflow/WorkflowsListPage";
+import { WorkgraphSurfaceBoundary } from "@/components/workflows/WorkgraphSurfaceBoundary";
 
 // These workgraph-web feature pages now route natively on Next (next/navigation),
 // so the old MemoryRouter/Routes embedding is gone. Each Next route under
@@ -45,9 +46,11 @@ function WgProvider({ children }: { children: React.ReactNode }) {
   // prerender (covers every Legacy*Route, which all render through WgProvider).
   return (
     <QueryClientProvider client={queryClient}>
-      <Suspense fallback={<div style={{ padding: 24, color: "var(--color-outline)" }}>Loading…</div>}>
-        {children}
-      </Suspense>
+      <WorkgraphSurfaceBoundary surfaceLabel="Workgraph surface">
+        <Suspense fallback={<div style={{ padding: 24, color: "var(--color-outline)" }}>Loading…</div>}>
+          {children}
+        </Suspense>
+      </WorkgraphSurfaceBoundary>
     </QueryClientProvider>
   );
 }

@@ -2,7 +2,8 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AlertCircle, Fingerprint, KeyRound, Lock, Mail } from "lucide-react";
-import { type LoginResponse, safeNextPath, saveIdentitySession } from "@/lib/identity/session";
+import { readResponseBody, responseMessage } from "@/lib/api";
+import { type LoginResponse, normalizeLoginResponse, safeNextPath, saveIdentitySession } from "@/lib/identity/session";
 
 const OIDC_STATE_KEY = "singularity.identity.oidc.state";
 const OIDC_NONCE_KEY = "singularity.identity.oidc.nonce";
@@ -26,6 +27,25 @@ type LoginUrlResponse = {
   nonce: string;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isProviderReadiness(value: unknown): value is ProviderReadiness {
+  return isRecord(value) && typeof value.localLoginEnabled === "boolean" && isRecord(value.oidc);
+}
+
+function isLoginResponse(value: unknown): value is LoginResponse {
+  return normalizeLoginResponse(value) !== null;
+}
+
+function isLoginUrlResponse(value: unknown): value is LoginUrlResponse {
+  return isRecord(value)
+    && typeof value.authorization_url === "string"
+    && typeof value.state === "string"
+    && typeof value.nonce === "string";
+}
+
 export function IdentityLoginPage() {
   const [email, setEmail] = useState("admin@singularity.local");
   const [password, setPassword] = useState("");
@@ -47,8 +67,10 @@ export function IdentityLoginPage() {
     let active = true;
     fetch("/api/iam/auth/providers", { headers: { accept: "application/json" } })
       .then(async (response) => {
-        if (!response.ok) throw new Error(`Provider discovery failed: ${response.status}`);
-        return response.json() as Promise<ProviderReadiness>;
+        const { raw, parsed } = await readResponseBody(response);
+        if (!response.ok) throw new Error(responseMessage(parsed, raw, `Provider discovery failed: ${response.status}`));
+        if (!isProviderReadiness(parsed)) throw new Error("Provider discovery returned an invalid response.");
+        return parsed;
       })
       .then((body) => {
         if (active) setProviders(body);
@@ -77,20 +99,11 @@ export function IdentityLoginPage() {
         body: JSON.stringify({ email, password }),
       });
 
-      if (!response.ok) {
-        const raw = await response.text();
-        let detail = "Invalid credentials. Please try again.";
-        try {
-          const parsed = JSON.parse(raw) as { detail?: string; message?: string };
-          detail = parsed.detail ?? parsed.message ?? detail;
-        } catch {
-          // Keep the generic credential message for non-JSON upstream errors.
-        }
-        throw new Error(detail);
-      }
+      const { raw, parsed } = await readResponseBody(response);
+      if (!response.ok) throw new Error(responseMessage(parsed, raw, "Invalid credentials. Please try again."));
+      if (!isLoginResponse(parsed)) throw new Error("IAM login returned an invalid session response.");
 
-      const body = (await response.json()) as LoginResponse;
-      saveIdentitySession(body);
+      saveIdentitySession(parsed);
       window.location.assign(destination);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to sign in.");
@@ -104,11 +117,10 @@ export function IdentityLoginPage() {
     setSsoSubmitting(true);
     try {
       const response = await fetch("/api/iam/auth/oidc/login-url", { headers: { accept: "application/json" } });
-      if (!response.ok) {
-        const raw = await response.text();
-        throw new Error(raw || "OIDC provider is not ready.");
-      }
-      const body = (await response.json()) as LoginUrlResponse;
+      const { raw, parsed } = await readResponseBody(response);
+      if (!response.ok) throw new Error(responseMessage(parsed, raw, "OIDC provider is not ready."));
+      if (!isLoginUrlResponse(parsed)) throw new Error("OIDC provider returned an invalid login URL response.");
+      const body = parsed;
       localStorage.setItem(OIDC_STATE_KEY, body.state);
       localStorage.setItem(OIDC_NONCE_KEY, body.nonce);
       localStorage.setItem(OIDC_NEXT_KEY, destination);

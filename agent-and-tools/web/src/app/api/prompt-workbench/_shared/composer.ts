@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { platformWebCredentialError, platformWebProductionEnv } from "@/lib/serverEnvGuard";
 import { requireVerifiedCallerBearer } from "../../_proxy";
+import { platformServiceToken, platformServiceUrl } from "@/lib/platformServices";
+import { jsonishMessage, readJsonish } from "../../_json";
 
 type ComposerEnvelope<T = unknown> = {
   success?: boolean;
@@ -14,19 +16,15 @@ export type PromptWorkbenchComposeBody = Record<string, unknown> & {
   contextPolicy?: Record<string, unknown>;
 };
 
-function trimTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, "");
-}
-
 function composerUrl(): string {
-  return trimTrailingSlash(process.env.PROMPT_COMPOSER_URL ?? "http://localhost:3004");
+  return platformServiceUrl("prompt-composer");
 }
 
 function composerServiceToken(): string | undefined {
   return (
-    process.env.PROMPT_COMPOSER_SERVICE_TOKEN
-    || process.env.WORKGRAPH_PROXY_SERVICE_TOKEN
-    || process.env.IAM_SERVICE_TOKEN
+    platformServiceToken("prompt-composer")
+    || platformServiceToken("workgraph-api")
+    || platformServiceToken("iam")
     || ""
   ).trim() || undefined;
 }
@@ -61,22 +59,12 @@ export async function composerAuthFailure(request: NextRequest): Promise<NextRes
   }, { status: 503 });
 }
 
-async function readJson(res: Response): Promise<unknown> {
-  const text = await res.text();
-  if (!text) return null;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
 function errorMessage(data: unknown, fallback: string): string {
   if (data && typeof data === "object") {
     const envelope = data as ComposerEnvelope;
-    return envelope.error?.message ?? String((data as Record<string, unknown>).message ?? fallback);
+    return envelope.error?.message ?? jsonishMessage(data, fallback);
   }
-  return typeof data === "string" ? data.slice(0, 500) : fallback;
+  return jsonishMessage(data, fallback);
 }
 
 export async function callComposer<T = unknown>(
@@ -86,12 +74,13 @@ export async function callComposer<T = unknown>(
 ): Promise<{ ok: true; data: T; requestId?: string | null } | { ok: false; status: number; error: string; details?: unknown; requestId?: string | null }> {
   const authFailure = await composerAuthFailure(request);
   if (authFailure) {
-    const body = await authFailure.json().catch(() => ({ error: "Prompt Composer service auth is not configured" }));
+    const body = (await readJsonish(authFailure)).data;
+    const record = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
     return {
       ok: false,
       status: authFailure.status,
-      error: String((body as Record<string, unknown>).error ?? "Prompt Composer service auth is not configured"),
-      details: (body as Record<string, unknown>).detail,
+      error: jsonishMessage(body, "Prompt Composer service auth is not configured"),
+      details: record.detail,
     };
   }
   try {
@@ -101,7 +90,8 @@ export async function callComposer<T = unknown>(
       body: JSON.stringify({ ...body, previewOnly }),
       cache: "no-store",
     });
-    const payload = await readJson(res);
+    const responseBody = await readJsonish(res);
+    const payload = responseBody.data;
     const envelope = payload && typeof payload === "object" ? payload as ComposerEnvelope<T> : null;
 
     if (!res.ok || envelope?.success === false) {
@@ -109,7 +99,7 @@ export async function callComposer<T = unknown>(
         ok: false,
         status: res.status || 502,
         error: errorMessage(payload, `Prompt Composer returned ${res.status}`),
-        details: envelope?.error?.details ?? payload,
+        details: envelope?.error?.details ?? (responseBody.parseError ? { body: responseBody.text, parseError: responseBody.parseError } : payload),
         requestId: envelope?.requestId ?? null,
       };
     }

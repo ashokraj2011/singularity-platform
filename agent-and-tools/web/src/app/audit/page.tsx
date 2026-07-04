@@ -37,15 +37,20 @@ type Approval = {
   status: string; decided_by?: string; decision_reason?: string;
 };
 
+type AuditSeverity = "info" | "warn" | "error" | "audit";
+type AuditRiskLevel = "low" | "medium" | "high" | "critical";
+
 type SavedSearch = {
   name: string;
   q?: string;
   kinds?: string[];
-  severities?: ("info" | "warn" | "error" | "audit")[];
-  riskLevels?: ("low" | "medium" | "high" | "critical")[];
+  severities?: AuditSeverity[];
+  riskLevels?: AuditRiskLevel[];
 };
 
 const SAVED_SEARCHES_KEY = "m63.savedSearches.v1";
+const AUDIT_SEVERITIES = new Set<AuditSeverity>(["info", "warn", "error", "audit"]);
+const AUDIT_RISK_LEVELS = new Set<AuditRiskLevel>(["low", "medium", "high", "critical"]);
 const RELATIVE_TIMES = [
   { label: "15m", ms: 15 * 60 * 1000 },
   { label: "1h",  ms: 60 * 60 * 1000 },
@@ -54,6 +59,88 @@ const RELATIVE_TIMES = [
   { label: "7d",  ms: 7 * 24 * 60 * 60 * 1000 },
   { label: "30d", ms: 30 * 24 * 60 * 60 * 1000 },
 ];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function nullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isAuditEventRow(value: unknown): value is AuditEventRow {
+  if (!isRecord(value)) return false;
+  return typeof value.id === "string"
+    && nullableString(value.trace_id)
+    && typeof value.source_service === "string"
+    && typeof value.kind === "string"
+    && nullableString(value.subject_type)
+    && nullableString(value.subject_id)
+    && nullableString(value.actor_id)
+    && nullableString(value.capability_id)
+    && nullableString(value.tenant_id)
+    && typeof value.severity === "string"
+    && nullableString(value.risk_level)
+    && isRecord(value.payload)
+    && typeof value.created_at === "string";
+}
+
+function parseAuditEventFrame(raw: string): AuditEventRow | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isAuditEventRow(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizedStringArray(value: unknown, maxItems = 20, maxLength = 120): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const values = [...new Set(
+    value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim().slice(0, maxLength))
+      .filter(Boolean),
+  )].slice(0, maxItems);
+  return values.length ? values : undefined;
+}
+
+function normalizedEnumArray<T extends string>(value: unknown, allowed: Set<T>, maxItems = 12): T[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const values = [...new Set(value.filter((item): item is T => typeof item === "string" && allowed.has(item as T)))].slice(0, maxItems);
+  return values.length ? values : undefined;
+}
+
+function normalizeSavedSearch(value: unknown): SavedSearch | null {
+  if (!isRecord(value) || typeof value.name !== "string") return null;
+  const name = value.name.trim().slice(0, 80);
+  if (!name) return null;
+  const q = typeof value.q === "string" ? value.q.trim().slice(0, 500) : "";
+  return {
+    name,
+    ...(q ? { q } : {}),
+    ...(normalizedStringArray(value.kinds) ? { kinds: normalizedStringArray(value.kinds) } : {}),
+    ...(normalizedEnumArray(value.severities, AUDIT_SEVERITIES) ? { severities: normalizedEnumArray(value.severities, AUDIT_SEVERITIES) } : {}),
+    ...(normalizedEnumArray(value.riskLevels, AUDIT_RISK_LEVELS) ? { riskLevels: normalizedEnumArray(value.riskLevels, AUDIT_RISK_LEVELS) } : {}),
+  };
+}
+
+function parseSavedSearches(raw: string | null): SavedSearch[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const byName = new Map<string, SavedSearch>();
+    for (const candidate of parsed) {
+      const saved = normalizeSavedSearch(candidate);
+      if (saved) byName.set(saved.name, saved);
+      if (byName.size >= 30) break;
+    }
+    return [...byName.values()];
+  } catch {
+    return [];
+  }
+}
 
 export default function AuditPage() {
   const { data: summary } = useSWR("audit-summary", () => auditGovApi.summary(), { refreshInterval: 5_000 });
@@ -106,10 +193,7 @@ export default function AuditPage() {
   // ── Saved searches ───────────────────────────────────────────────────────
   const [savedSearches, setSavedSearches] = useState<SavedSearch[]>(() => {
     if (typeof window === "undefined") return [];
-    try {
-      const raw = localStorage.getItem(SAVED_SEARCHES_KEY);
-      return raw ? JSON.parse(raw) as SavedSearch[] : [];
-    } catch { return []; }
+    return parseSavedSearches(localStorage.getItem(SAVED_SEARCHES_KEY));
   });
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -213,18 +297,17 @@ export default function AuditPage() {
     const es = new EventSource(url);
     eventSourceRef.current = es;
     es.addEventListener("audit", (ev) => {
-      try {
-        const data = JSON.parse((ev as MessageEvent).data) as AuditEventRow;
-        // Paused: buffer; otherwise prepend (cap at 500 to keep memory bounded).
-        setPaused(currentPaused => {
-          if (currentPaused) {
-            setPausedBuffer(buf => [data, ...buf].slice(0, 500));
-          } else {
-            setRows(prev => [data, ...prev].slice(0, 500));
-          }
-          return currentPaused;
-        });
-      } catch { /* ignore malformed frames */ }
+      const data = parseAuditEventFrame((ev as MessageEvent).data);
+      if (!data) return;
+      // Paused: buffer; otherwise prepend (cap at 500 to keep memory bounded).
+      setPaused(currentPaused => {
+        if (currentPaused) {
+          setPausedBuffer(buf => [data, ...buf].slice(0, 500));
+        } else {
+          setRows(prev => [data, ...prev].slice(0, 500));
+        }
+        return currentPaused;
+      });
     });
     es.onerror = () => {
       // Browser will auto-reconnect; we just surface the state.
@@ -632,10 +715,17 @@ export default function AuditPage() {
               className="text-xs px-2 py-1 rounded-md border border-dashed border-slate-300 text-slate-500 hover:bg-slate-50"
               onClick={() => {
                 const name = window.prompt("Saved-search name:");
-                if (!name) return;
+                const normalizedName = name?.trim().slice(0, 80);
+                if (!normalizedName) return;
                 setSavedSearches(prev => {
-                  const next = prev.filter(x => x.name !== name);
-                  next.push({ name, q: q || undefined, kinds: selectedKinds, severities: selectedSeverities, riskLevels: selectedRisks });
+                  const next = prev.filter(x => x.name !== normalizedName);
+                  next.push({
+                    name: normalizedName,
+                    q: q.trim() || undefined,
+                    kinds: normalizedStringArray(selectedKinds),
+                    severities: normalizedEnumArray(selectedSeverities, AUDIT_SEVERITIES),
+                    riskLevels: normalizedEnumArray(selectedRisks, AUDIT_RISK_LEVELS),
+                  });
                   return next;
                 });
               }}

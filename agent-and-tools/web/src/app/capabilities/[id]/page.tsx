@@ -2,7 +2,7 @@
 import { useRef, useState } from "react";
 import useSWR from "swr";
 import { useParams, useSearchParams } from "next/navigation";
-import { apiPath, identityApi, readResponseBody, responseMessage, runtimeApi, workgraphApi, workgraphRunInsightsUrl, type IamBusinessUnit, type IamTeam } from "@/lib/api";
+import { ApiError, apiPath, identityApi, readResponseBody, responseMessage, runtimeApi, workgraphApi, workgraphRunInsightsUrl, type IamBusinessUnit, type IamTeam } from "@/lib/api";
 import { CAPABILITY_ROLE_OPTIONS, capabilityRoleLabel } from "@/lib/capabilityRoles";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Archive, Bot, CheckCircle2, ExternalLink, Pencil, PlayCircle, Plus, RefreshCw, Rocket, Save, Sparkles, Upload, X } from "lucide-react";
@@ -18,17 +18,35 @@ type CapabilityEditForm = {
 };
 
 type ArchitectureLayer = { key: string; label: string; items: string[] };
+type ArchitectureHighlight = { key: string; label: string; value: string; detail?: string };
+type StoredArchitectureDiagram = {
+  kind?: string;
+  view?: string;
+  title?: string;
+  description?: string;
+  highlights?: ArchitectureHighlight[];
+  layers?: ArchitectureLayer[];
+  mermaid?: string;
+  codeGraphMermaid?: string;
+};
 
 export default function CapabilityDetailPage() {
   const params = useParams<{ id: string }>();
   const id = decodeURIComponent(params.id);
   const searchParams = useSearchParams();
   const { data: cap, mutate: mutateCap } = useSWR(`cap-${id}`, () => runtimeApi.getCapability(id));
+  const { data: groundingStatus, mutate: mutateGroundingStatus } = useSWR(
+    `cap-grounding-${id}`,
+    () => runtimeApi.getCapabilityGroundingStatus(id),
+    { refreshInterval: latest => isLearningWorkerBusy(asOptionalObject(latest)) ? 2500 : 0 },
+  );
   const { data: iamTeams = [] } = useSWR<IamTeam[]>("iam-teams", () => identityApi.listTeams());
   const { data: iamBusinessUnits = [] } = useSWR<IamBusinessUnit[]>("iam-business-units", () => identityApi.listBusinessUnits());
   const { data: templates } = useSWR("runtime-tmpl-options", () => runtimeApi.listTemplates());
   const runIdFromQuery = searchParams.get("bootstrapRunId");
-  const latestRunId = runIdFromQuery ?? (((cap as Record<string, unknown> | undefined)?.bootstrapRuns as Array<Record<string, unknown>> | undefined)?.[0]?.id as string | undefined);
+  const capEnvelope = asObject(cap);
+  const latestBootstrapRunId = capabilityString(asObjectArray(capEnvelope.bootstrapRuns)[0]?.id);
+  const latestRunId = runIdFromQuery ?? (latestBootstrapRunId || undefined);
   const { data: bootstrapRun, mutate: mutateBootstrap } = useSWR(
     latestRunId ? `bootstrap-run-${id}-${latestRunId}` : null,
     () => runtimeApi.getBootstrapRun(id, latestRunId as string),
@@ -42,12 +60,21 @@ export default function CapabilityDetailPage() {
   const [repo, setRepo] = useState({ repoName: "", repoUrl: "", defaultBranch: "main", repositoryType: "GITHUB" });
   const [bind, setBind] = useState({ agentTemplateId: "", bindingName: "", roleInCapability: "" });
   const [know, setKnow] = useState({ artifactType: "ARCHITECTURE_SUMMARY", title: "", content: "", confidence: 0.8 });
+  const mutationActionInFlightRef = useRef(false);
+  const archiveInFlightRef = useRef(false);
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
+  const learningActionInFlightRef = useRef(false);
+  const [learningAction, setLearningAction] = useState<"sync" | "grounding" | null>(null);
+  const localLearningAction = learningAction !== null;
+  const [mutationAction, setMutationAction] = useState<"repo" | "binding" | "knowledge" | null>(null);
+  const [mutationMsg, setMutationMsg] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<string | null>(null);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [refreshResult, setRefreshResult] = useState<Record<string, unknown> | null>(null);
   const [editing, setEditing] = useState(false);
+  const editSaveInFlightRef = useRef(false);
   const [savingEdit, setSavingEdit] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<CapabilityEditForm>({
@@ -61,70 +88,136 @@ export default function CapabilityDetailPage() {
   });
 
   if (!cap) return <div className="text-slate-500">Loading…</div>;
-  const c = cap as Record<string, unknown>;
-  const repos = (c.repositories as Array<Record<string, unknown>>) ?? [];
-  const bindings = (c.bindings as Array<Record<string, unknown>>) ?? [];
-  const know_artifacts = (c.knowledgeArtifacts as Array<Record<string, unknown>>) ?? [];
+  const c = asObject(cap);
+  const repos = asObjectArray(c.repositories);
+  const bindings = asObjectArray(c.bindings);
+  const know_artifacts = asObjectArray(c.knowledgeArtifacts);
   const isArchived = c.status === "ARCHIVED";
   const defaultRepoUrl = repos.map(repo => capabilityString(repo.repoUrl)).find(Boolean) ?? "";
+  const groundingStatusObject = asOptionalObject(groundingStatus) ?? asOptionalObject(c.learningStatus);
+  const groundingRunning = isGroundingRunning(groundingStatusObject);
+  const serverLearningBusy = isLearningWorkerBusy(groundingStatusObject);
+  const learningBusy = localLearningAction || serverLearningBusy;
+  const learningBusyTitle = learningWorkerBusyTitle(groundingStatusObject);
 
   async function addRepo() {
-    if (!repo.repoName || !repo.repoUrl) return;
-    await runtimeApi.attachRepo(id, repo as never);
-    setRepo({ repoName: "", repoUrl: "", defaultBranch: "main", repositoryType: "GITHUB" });
-    await mutateCap();
+    if (mutationActionInFlightRef.current) return;
+    if (!repo.repoName || !repo.repoUrl) {
+      setMutationError("Repository name and URL are required.");
+      setMutationMsg(null);
+      return;
+    }
+    mutationActionInFlightRef.current = true;
+    setMutationAction("repo");
+    setMutationError(null);
+    setMutationMsg(null);
+    try {
+      await runtimeApi.attachRepo(id, repo as never);
+      setRepo({ repoName: "", repoUrl: "", defaultBranch: "main", repositoryType: "GITHUB" });
+      await mutateCap();
+      await mutateGroundingStatus();
+      setMutationMsg("Repository source attached. Approve or sync sources, then refresh grounding to learn stack details.");
+    } catch (err) {
+      setMutationError(actionErrorMessage(err, "Attach repository failed"));
+    } finally {
+      mutationActionInFlightRef.current = false;
+      setMutationAction(null);
+    }
   }
 
   async function addBinding() {
-    if (!bind.agentTemplateId || !bind.bindingName) return;
-    const template = ((templates?.items ?? []) as Record<string, unknown>[]).find(t => t.id === bind.agentTemplateId);
-    await runtimeApi.bindAgent(id, {
-      agentTemplateId: bind.agentTemplateId,
-      bindingName: bind.bindingName,
-      roleInCapability: bind.roleInCapability || template?.roleType,
-    });
-    setBind({ agentTemplateId: "", bindingName: "", roleInCapability: "" });
-    await mutateCap();
+    if (mutationActionInFlightRef.current) return;
+    if (!bind.agentTemplateId || !bind.bindingName) {
+      setMutationError("Agent template and binding name are required.");
+      setMutationMsg(null);
+      return;
+    }
+    const template = asObjectArray(asObject(templates).items).find(t => t.id === bind.agentTemplateId);
+    mutationActionInFlightRef.current = true;
+    setMutationAction("binding");
+    setMutationError(null);
+    setMutationMsg(null);
+    try {
+      await runtimeApi.bindAgent(id, {
+        agentTemplateId: bind.agentTemplateId,
+        bindingName: bind.bindingName,
+        roleInCapability: bind.roleInCapability || template?.roleType,
+      });
+      setBind({ agentTemplateId: "", bindingName: "", roleInCapability: "" });
+      await mutateCap();
+      setMutationMsg("Agent binding added to this capability.");
+    } catch (err) {
+      setMutationError(actionErrorMessage(err, "Bind agent failed"));
+    } finally {
+      mutationActionInFlightRef.current = false;
+      setMutationAction(null);
+    }
   }
 
   async function addKnowledge() {
-    if (!know.title || !know.content) return;
-    await runtimeApi.addKnowledge(id, know as never);
-    setKnow({ artifactType: "ARCHITECTURE_SUMMARY", title: "", content: "", confidence: 0.8 });
-    await mutateCap();
+    if (mutationActionInFlightRef.current) return;
+    if (!know.title || !know.content) {
+      setMutationError("Knowledge title and content are required.");
+      setMutationMsg(null);
+      return;
+    }
+    mutationActionInFlightRef.current = true;
+    setMutationAction("knowledge");
+    setMutationError(null);
+    setMutationMsg(null);
+    try {
+      await runtimeApi.addKnowledge(id, know as never);
+      setKnow({ artifactType: "ARCHITECTURE_SUMMARY", title: "", content: "", confidence: 0.8 });
+      await mutateCap();
+      setMutationMsg("Knowledge artifact added to this capability.");
+    } catch (err) {
+      setMutationError(actionErrorMessage(err, "Add knowledge artifact failed"));
+    } finally {
+      mutationActionInFlightRef.current = false;
+      setMutationAction(null);
+    }
   }
 
   async function archiveCapability() {
+    if (archiveInFlightRef.current) return;
+    archiveInFlightRef.current = true;
     const confirmed = window.confirm(
       "Archive this capability? This disables its bindings, archives capability-scoped agents, stops source polling, and removes active learning artifacts from runtime retrieval.",
     );
-    if (!confirmed) return;
+    if (!confirmed) {
+      archiveInFlightRef.current = false;
+      return;
+    }
     setArchiving(true);
     setArchiveError(null);
     try {
       await runtimeApi.archiveCapability(id);
       await mutateCap();
       await mutateBootstrap();
+      await mutateGroundingStatus();
     } catch (err) {
       setArchiveError(err instanceof Error ? err.message : "Archive failed");
     } finally {
+      archiveInFlightRef.current = false;
       setArchiving(false);
     }
   }
 
-  // Refresh learning — re-ingest the repo/knowledge (which repopulates the
-  // inferred "Primary stack" + embeddings) and re-distill the world model (which
-  // re-grounds this capability's agents). Use after a failed/empty discovery,
-  // or to pull the latest repo state into agent grounding.
+  // Refresh repository grounding only. Source sync is a separate action below so
+  // a content sync cannot accidentally leave durable grounding stuck in RUNNING.
   async function refreshLearning() {
-    setRefreshing(true);
+    if (learningActionInFlightRef.current || serverLearningBusy) return;
+    learningActionInFlightRef.current = true;
+    setLearningAction("grounding");
     setRefreshError(null);
     setRefreshMsg(null);
+    setRefreshResult(null);
     try {
-      // Re-run the learning worker: re-sync APPROVED repos/knowledge sources +
-      // re-embed (repopulates the inferred stack). It returns warnings/nextActions
-      // when sources still need human approval — ingestion is governance-gated.
-      const worker = await runtimeApi.runLearningWorker(id, {});
+      const worker = await runtimeApi.runLearningWorker(id, {
+        syncApprovedSources: false,
+        refreshRepositoryProfiles: true,
+        reembed: false,
+      });
       // Best-effort re-ground. The redistill endpoint returns 409 ("nothing to
       // distill — no README candidate or indexed symbols") when no repo content
       // has been ingested yet — expected until sources are approved + ingested,
@@ -136,15 +229,59 @@ export default function CapabilityDetailPage() {
         grounded = false;
       }
       await mutateCap();
-      const notes = [...(worker?.warnings ?? []), ...(worker?.nextActions ?? [])];
+      await mutateGroundingStatus();
+      const workerResult = asObject(worker);
+      setRefreshResult(workerResult);
+      const notes = [...asStringArray(workerResult.warnings), ...asStringArray(workerResult.nextActions)];
       const head = grounded
-        ? "Learning refreshed — sources re-ingested and world-model re-grounded."
-        : "Learning refreshed — but the world model can't be grounded yet: no repo content/symbols are ingested.";
+        ? "Repository grounding refreshed and the world model was re-grounded."
+        : "Repository grounding refreshed, but the world model can't be re-grounded yet: no repo content/symbols are ingested.";
       setRefreshMsg(notes.length ? `${head} Action needed: ${notes.join(" ")}` : head);
     } catch (err) {
-      setRefreshError(err instanceof Error ? err.message : "Refresh learning failed");
+      if (isLearningWorkerAlreadyRunningError(err)) {
+        await mutateGroundingStatus();
+        setRefreshError(null);
+        setRefreshMsg("A learning refresh is already running for this capability. This page is polling status and will re-enable the learning actions when it finishes.");
+        return;
+      }
+      setRefreshError(err instanceof Error ? err.message : "Refresh repository grounding failed");
     } finally {
-      setRefreshing(false);
+      learningActionInFlightRef.current = false;
+      setLearningAction(null);
+    }
+  }
+
+  async function syncApprovedLearningSources() {
+    if (learningActionInFlightRef.current || serverLearningBusy) return;
+    learningActionInFlightRef.current = true;
+    setLearningAction("sync");
+    setRefreshError(null);
+    setRefreshMsg(null);
+    setRefreshResult(null);
+    try {
+      const worker = await runtimeApi.runLearningWorker(id, {
+        syncApprovedSources: true,
+        refreshRepositoryProfiles: false,
+        reembed: true,
+      });
+      await mutateCap();
+      await mutateGroundingStatus();
+      const workerResult = asObject(worker);
+      setRefreshResult(workerResult);
+      const notes = [...asStringArray(workerResult.warnings), ...asStringArray(workerResult.nextActions)];
+      const head = "Approved source content synced. Repository grounding was not changed.";
+      setRefreshMsg(notes.length ? `${head} Action needed: ${notes.join(" ")}` : head);
+    } catch (err) {
+      if (isLearningWorkerAlreadyRunningError(err)) {
+        await mutateGroundingStatus();
+        setRefreshError(null);
+        setRefreshMsg("A learning refresh is already running for this capability. This page is polling status and will re-enable the learning actions when it finishes.");
+        return;
+      }
+      setRefreshError(err instanceof Error ? err.message : "Sync approved sources failed");
+    } finally {
+      learningActionInFlightRef.current = false;
+      setLearningAction(null);
     }
   }
 
@@ -164,10 +301,12 @@ export default function CapabilityDetailPage() {
 
   async function saveCapabilityDetails(e: React.FormEvent) {
     e.preventDefault();
+    if (editSaveInFlightRef.current) return;
     if (!editForm.name.trim()) {
       setEditError("Capability name is required.");
       return;
     }
+    editSaveInFlightRef.current = true;
     setSavingEdit(true);
     setEditError(null);
     try {
@@ -183,15 +322,20 @@ export default function CapabilityDetailPage() {
       await mutateCap();
       setEditing(false);
     } catch (err) {
-      setEditError(err instanceof Error ? err.message : "Capability update failed");
+      setEditError(actionErrorMessage(err, "Capability update failed"));
     } finally {
+      editSaveInFlightRef.current = false;
       setSavingEdit(false);
     }
   }
 
-  const tmplOptions = (templates?.items ?? []) as Record<string, unknown>[];
+  const tmplOptions = asObjectArray(asObject(templates).items);
   const selectedTemplate = tmplOptions.find((template) => template.id === bind.agentTemplateId);
-  const architectureDiagram = getArchitectureDiagram(c, bootstrapRun as Record<string, unknown> | undefined);
+  const architectureDiagram = getArchitectureDiagram(
+    c,
+    asOptionalObject(bootstrapRun),
+    asOptionalObject(groundingStatus),
+  );
 
   return (
     <div>
@@ -199,22 +343,34 @@ export default function CapabilityDetailPage() {
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-3 mb-1">
-              <h1 className="text-xl font-bold text-slate-900">{c.name as string}</h1>
-              <StatusBadge value={c.status as string} />
-              {!!c.appId && <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded">app: {c.appId as string}</span>}
+              <h1 className="text-xl font-bold text-slate-900">{capabilityString(c.name) || "Untitled capability"}</h1>
+              <StatusBadge value={capabilityString(c.status) || "unknown"} />
+              {!!capabilityString(c.appId) && <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded">app: {capabilityString(c.appId)}</span>}
             </div>
-            {!!c.description && <p className="text-sm text-slate-600 mt-2">{c.description as string}</p>}
-            <div className="font-mono text-xs text-slate-400 mt-2">id: {c.id as string}</div>
+            {!!capabilityString(c.description) && <p className="text-sm text-slate-600 mt-2">{capabilityString(c.description)}</p>}
+            <div className="font-mono text-xs text-slate-400 mt-2">id: {capabilityString(c.id) || id}</div>
           </div>
           {!isArchived && (
             <div className="flex flex-wrap items-center gap-2">
               <button
                 className="btn-secondary text-xs"
-                disabled={refreshing}
-                onClick={refreshLearning}
-                title="Re-ingest the repository + knowledge (repopulates the inferred stack) and re-distill the world model to re-ground this capability's agents"
+                disabled={learningBusy}
+                onClick={syncApprovedLearningSources}
+                title={serverLearningBusy
+                  ? learningBusyTitle
+                  : "Sync approved repository and document sources into retrievable knowledge without changing the durable repository grounding status"}
               >
-                <RefreshCw size={14} className={refreshing ? "animate-spin" : undefined} /> {refreshing ? "Refreshing..." : "Refresh learning"}
+                <RefreshCw size={14} className={(learningAction === "sync" || serverLearningBusy) ? "animate-spin" : undefined} /> {learningAction === "sync" ? "Syncing..." : serverLearningBusy ? "Worker running..." : "Sync sources"}
+              </button>
+              <button
+                className="btn-secondary text-xs"
+                disabled={learningBusy}
+                onClick={refreshLearning}
+                title={serverLearningBusy
+                  ? learningBusyTitle
+                  : "Refresh the durable repository profile and re-distill the world model for this capability"}
+              >
+                <RefreshCw size={14} className={(learningAction === "grounding" || serverLearningBusy) ? "animate-spin" : undefined} /> {learningAction === "grounding" ? "Refreshing..." : serverLearningBusy ? "Worker running..." : "Refresh grounding"}
               </button>
               <button className="btn-secondary text-xs" onClick={beginEdit}>
                 <Pencil size={14} /> Edit details
@@ -227,8 +383,17 @@ export default function CapabilityDetailPage() {
         </div>
         {archiveError && <div className="mt-3 text-sm text-red-600">{archiveError}</div>}
         {editError && <div className="mt-3 text-sm text-red-600">{editError}</div>}
+        {mutationError && <div className="mt-3 text-sm text-red-600">{mutationError}</div>}
+        {mutationMsg && <div className="mt-3 text-sm text-emerald-700">{mutationMsg}</div>}
         {refreshError && <div className="mt-3 text-sm text-red-600">{refreshError}</div>}
         {refreshMsg && <div className="mt-3 text-sm text-emerald-700">{refreshMsg}</div>}
+        <LearningWorkerResultPanel title="Last learning action" result={refreshResult} />
+        <CapabilityGroundingStatusPanel
+          status={groundingStatusObject}
+          repoCount={repos.length}
+          refreshing={learningAction === "grounding"}
+          onRefresh={isArchived ? undefined : refreshLearning}
+        />
         {isArchived && (
           <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
             This capability is archived. Bindings and capability-scoped agents are disabled, polling is stopped, and active learning artifacts are removed from runtime retrieval.
@@ -405,7 +570,7 @@ export default function CapabilityDetailPage() {
           capabilityId={id}
           capability={c}
           runId={latestRunId}
-          run={bootstrapRun as Record<string, unknown> | undefined}
+          run={asOptionalObject(bootstrapRun)}
           disabled={isArchived}
           onMutate={async () => {
             await mutateCap();
@@ -452,20 +617,24 @@ export default function CapabilityDetailPage() {
                 This is the job the agent performs inside this capability.
               </p>
             </div>
-            <button className="btn-primary" disabled={isArchived} onClick={addBinding}><Plus size={14} /> Bind</button>
+            <button className="btn-primary" disabled={isArchived || mutationAction !== null} onClick={addBinding}>
+              <Plus size={14} /> {mutationAction === "binding" ? "Binding..." : "Bind"}
+            </button>
           </div>
 
           <div className="space-y-2">
-            {bindings.map(b => {
-              const at = b.agentTemplate as Record<string, unknown>;
+            {bindings.map((b, index) => {
+              const at = asObject(b.agentTemplate);
+              const bindingName = capabilityString(b.bindingName) || `Binding ${index + 1}`;
+              const bindingId = capabilityString(b.id) || `${bindingName}-${index}`;
               return (
-                <div key={b.id as string} className="card p-4 text-sm">
+                <div key={bindingId} className="card p-4 text-sm">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-slate-800">{b.bindingName as string}</span>
-                    <StatusBadge value={b.status as string} />
-                    <span className="text-xs text-slate-500">{at?.name as string}</span>
+                    <span className="font-medium text-slate-800">{bindingName}</span>
+                    <StatusBadge value={capabilityString(b.status) || "unknown"} />
+                    <span className="text-xs text-slate-500">{capabilityString(at.name) || "template pending"}</span>
                   </div>
-                  <div className="font-mono text-xs text-slate-400">id: {b.id as string}</div>
+                  <div className="font-mono text-xs text-slate-400">id: {bindingId}</div>
                 </div>
               );
             })}
@@ -482,7 +651,9 @@ export default function CapabilityDetailPage() {
             <input className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm"
               placeholder="https://github.com/org/repo"
               value={repo.repoUrl} onChange={e => setRepo(r => ({ ...r, repoUrl: e.target.value }))} />
-            <button className="btn-primary" disabled={isArchived} onClick={addRepo}><Plus size={14} /> Attach</button>
+            <button className="btn-primary" disabled={isArchived || mutationAction !== null} onClick={addRepo}>
+              <Plus size={14} /> {mutationAction === "repo" ? "Attaching..." : "Attach"}
+            </button>
           </div>
           <div className="space-y-2">
             {repos.map(r => (
@@ -525,13 +696,14 @@ export default function CapabilityDetailPage() {
 
       {tab === "sources" && <SourcesTab capabilityId={id} repos={repos} disabled={isArchived} onMutate={mutateCap} />}
 
-      {tab === "tuning" && <TuningTab capabilityId={id} />}
+      {tab === "tuning" && <TuningTab capabilityId={id} disabled={isArchived} />}
 
       {tab === "knowledge" && (
         <div>
           <KnowledgeUploadCard
             capabilityId={id}
             artifactType={know.artifactType}
+            disabled={isArchived}
             onUploaded={async () => { await mutateCap(); }}
           />
           <div className="card p-4 mb-4 space-y-2">
@@ -546,7 +718,9 @@ export default function CapabilityDetailPage() {
             <textarea rows={3} className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
               placeholder="content"
               value={know.content} onChange={e => setKnow(k => ({ ...k, content: e.target.value }))} />
-            <button className="btn-primary" disabled={isArchived} onClick={addKnowledge}><Plus size={14} /> Add Artifact</button>
+            <button className="btn-primary" disabled={isArchived || mutationAction !== null} onClick={addKnowledge}>
+              <Plus size={14} /> {mutationAction === "knowledge" ? "Adding..." : "Add Artifact"}
+            </button>
           </div>
           <div className="space-y-2">
             {know_artifacts.map(a => (
@@ -614,6 +788,146 @@ function SummaryCard({ label, value, note }: { label: string; value: string; not
   );
 }
 
+function CapabilityGroundingStatusPanel({
+  status,
+  repoCount,
+  refreshing,
+  onRefresh,
+}: {
+  status?: Record<string, unknown>;
+  repoCount: number;
+  refreshing: boolean;
+  onRefresh?: () => void;
+}) {
+  const raw = String(status?.status ?? status?.preciseState ?? (repoCount > 0 ? "BLOCKED" : "NOT_CONFIGURED")).toUpperCase();
+  const stack = uniqueStringArray(asStringArray(status?.lastGoodStack));
+  const fixCommand = capabilityString(status?.fixCommand);
+  const label = groundingStateLabel(raw);
+  const tone = groundingStateTone(raw);
+  const message = capabilityString(status?.message) || groundingStateMessage(raw, repoCount);
+  const failure = capabilityString(status?.lastFailureMessage);
+  const lastSuccess = capabilityString(status?.lastSuccessAt);
+  const lastFailure = capabilityString(status?.lastFailureAt);
+  const version = capabilityNumber(status?.repoProfileVersion);
+  const repositorySources = capabilityNumber(status?.activeRepositoryCount, repoCount);
+  const documentSources = capabilityNumber(status?.activeKnowledgeSourceCount);
+  const sourceDrifted = Boolean(status?.sourceDrifted);
+  const serverRunning = raw === "RUNNING";
+  const serverLearningBusy = isLearningWorkerBusy(status);
+  const activeWorker = asOptionalObject(status?.activeLearningWorker);
+  const activeWorkerOperation = capabilityString(activeWorker?.operation);
+  const refreshDisabled = refreshing || serverLearningBusy;
+
+  return (
+    <section className={`mt-4 rounded-xl border p-4 ${tone.container}`}>
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${tone.pill}`}>
+              {label}
+            </span>
+            {version > 0 && <span className="text-xs text-slate-500">profile v{version}</span>}
+            {lastSuccess && <span className="text-xs text-slate-500">last learned {formatCompactDate(lastSuccess)}</span>}
+            {!lastSuccess && lastFailure && <span className="text-xs text-slate-500">last failed {formatCompactDate(lastFailure)}</span>}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-600">
+            <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5">{repositorySources} repo source{repositorySources === 1 ? "" : "s"}</span>
+            <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5">{documentSources} document/link source{documentSources === 1 ? "" : "s"}</span>
+            {sourceDrifted && (
+              <span className="rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 font-medium text-amber-800">sources changed</span>
+            )}
+            {serverLearningBusy && activeWorkerOperation && (
+              <span className="rounded-full border border-sky-200 bg-sky-100 px-2 py-0.5 font-medium text-sky-800">{activeWorkerOperation} running</span>
+            )}
+          </div>
+          <p className="mt-2 text-sm text-slate-700">{message}</p>
+          {stack.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {stack.slice(0, 8).map((item, itemIndex) => (
+                <span key={`stack-${itemIndex}-${item}`} className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700">
+                  {item}
+                </span>
+              ))}
+            </div>
+          )}
+          {failure && raw !== "LEARNED" && (
+            <p className="mt-2 text-xs text-slate-600">
+              <span className="font-semibold">Why:</span> {failure}
+            </p>
+          )}
+          {fixCommand && raw !== "LEARNED" && (
+            <pre className="mt-3 max-h-28 overflow-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100">{fixCommand}</pre>
+          )}
+        </div>
+        {onRefresh && (
+          <button
+            className="btn-secondary shrink-0 text-xs"
+            disabled={refreshDisabled}
+            onClick={onRefresh}
+            title={serverLearningBusy ? learningWorkerBusyTitle(status) : undefined}
+          >
+            <RefreshCw size={14} className={refreshDisabled ? "animate-spin" : undefined} />
+            {refreshing ? "Refreshing..." : serverRunning ? "Refresh running..." : serverLearningBusy ? "Worker running..." : "Refresh grounding"}
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function groundingStateLabel(value: string): string {
+  if (value === "LEARNED") return "Grounding learned";
+  if (value === "STALE") return "Using last learned stack";
+  if (value === "RUNNING") return "Learning in progress";
+  if (value === "BLOCKED") return "Grounding blocked";
+  if (value === "ARCHIVED") return "Grounding archived";
+  return "Grounding not configured";
+}
+
+function groundingStateMessage(value: string, repoCount: number): string {
+  if (value === "LEARNED") return "The capability has a durable learned repo profile.";
+  if (value === "STALE") return "The last learned profile is still usable, but the latest refresh failed.";
+  if (value === "RUNNING") return "The learning worker is refreshing approved sources.";
+  if (value === "ARCHIVED") return "This capability is archived. Grounding is retained for evidence but no longer refreshed.";
+  if (value === "BLOCKED") return repoCount > 0
+    ? "A repository is attached, but the latest source scan did not produce a repo profile."
+    : "Attach a repository or approved knowledge source before refreshing learning.";
+  return "Attach a repository or approved knowledge source to learn this capability.";
+}
+
+function groundingStateTone(value: string): { container: string; pill: string } {
+  if (value === "LEARNED") return {
+    container: "border-emerald-200 bg-emerald-50/70",
+    pill: "bg-emerald-100 text-emerald-800",
+  };
+  if (value === "STALE") return {
+    container: "border-amber-200 bg-amber-50/70",
+    pill: "bg-amber-100 text-amber-800",
+  };
+  if (value === "RUNNING") return {
+    container: "border-sky-200 bg-sky-50/70",
+    pill: "bg-sky-100 text-sky-800",
+  };
+  if (value === "BLOCKED") return {
+    container: "border-red-200 bg-red-50/70",
+    pill: "bg-red-100 text-red-800",
+  };
+  if (value === "ARCHIVED") return {
+    container: "border-slate-200 bg-slate-50",
+    pill: "bg-slate-200 text-slate-700",
+  };
+  return {
+    container: "border-slate-200 bg-slate-50",
+    pill: "bg-slate-200 text-slate-700",
+  };
+}
+
+function formatCompactDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
 function UltraModePanel({
   capability,
   capabilityId,
@@ -626,6 +940,7 @@ function UltraModePanel({
   disabled?: boolean;
 }) {
   const capabilityName = capabilityString(capability.name) || "Capability";
+  const launchInFlightRef = useRef(false);
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -646,6 +961,7 @@ function UltraModePanel({
 
   async function launchUltraMode(event: React.FormEvent) {
     event.preventDefault();
+    if (launchInFlightRef.current) return;
     const goal = form.goal.trim();
     const repoUrl = (form.repoUrl || defaultRepoUrl).trim();
     if (!goal) {
@@ -657,6 +973,7 @@ function UltraModePanel({
       return;
     }
 
+    launchInFlightRef.current = true;
     setBusy(true);
     setError(null);
     setResult(null);
@@ -707,8 +1024,9 @@ function UltraModePanel({
       setResult({ workflowId, runId, url });
       window.location.href = url;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Ultra Mode launch failed");
+      setError(actionErrorMessage(err, "Ultra Mode launch failed"));
     } finally {
+      launchInFlightRef.current = false;
       setBusy(false);
     }
   }
@@ -849,6 +1167,47 @@ function normalizeCriticality(value: unknown): "CRITICAL" | "HIGH" | "MEDIUM" | 
 
 function capabilityString(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function capabilityNumber(value: unknown, fallback = 0): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function isGroundingRunning(status?: Record<string, unknown>): boolean {
+  return String(status?.status ?? status?.preciseState ?? "").toUpperCase() === "RUNNING";
+}
+
+function isLearningWorkerBusy(status?: Record<string, unknown>): boolean {
+  if (isGroundingRunning(status)) return true;
+  const worker = asOptionalObject(status?.activeLearningWorker);
+  if (!worker) return false;
+  const expiresAt = capabilityString(worker.expiresAt);
+  const expiresAtMs = Date.parse(expiresAt);
+  return !Number.isFinite(expiresAtMs) || expiresAtMs > Date.now();
+}
+
+function learningWorkerBusyTitle(status?: Record<string, unknown>): string {
+  const worker = asOptionalObject(status?.activeLearningWorker);
+  const operation = capabilityString(worker?.operation).toLowerCase();
+  const label = operation === "sync"
+    ? "Approved source sync"
+    : operation === "grounding" || isGroundingRunning(status)
+      ? "Repository grounding refresh"
+      : "Learning worker";
+  return `${label} is already running for this capability. Wait for it to finish before starting another learning action.`;
+}
+
+function isLearningWorkerAlreadyRunningError(err: unknown): boolean {
+  return err instanceof ApiError
+    && err.status === 409
+    && /(repository grounding refresh|approved source sync) is already running/i.test(err.message);
+}
+
+function actionErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError && err.status === 409) return err.message;
+  if (err instanceof Error && err.message.trim()) return err.message;
+  return fallback;
 }
 
 function nullableTrim(value: string): string | null {
@@ -1052,12 +1411,14 @@ function AgentRosterTab({
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {bindings.map(binding => {
-          const template = binding.agentTemplate as Record<string, unknown> | undefined;
-          const role = binding.roleInCapability ?? template?.roleType ?? "AGENT";
-          const templateStatus = String(template?.status ?? binding.status ?? "DRAFT");
+        {bindings.map((binding, index) => {
+          const template = asObject(binding.agentTemplate);
+          const role = capabilityString(binding.roleInCapability) || capabilityString(template.roleType) || "AGENT";
+          const templateStatus = capabilityString(template.status) || capabilityString(binding.status) || "DRAFT";
+          const bindingName = capabilityString(binding.bindingName) || `Binding ${index + 1}`;
+          const templateId = capabilityString(template.id) || capabilityString(binding.agentTemplateId);
           return (
-            <div key={binding.id as string} className="card p-4">
+            <div key={capabilityString(binding.id) || `${bindingName}-${index}`} className="card p-4">
               <div className="flex items-start gap-3">
                 <div className="p-2 rounded-lg bg-singularity-50 text-singularity-700 shrink-0">
                   <Bot size={18} />
@@ -1065,31 +1426,31 @@ function AgentRosterTab({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-semibold text-slate-900">
-                      {(template?.name as string | undefined) ?? (binding.bindingName as string)}
+                      {capabilityString(template.name) || bindingName}
                     </span>
                     <StatusBadge value={templateStatus} />
                     <span className="text-[10px] uppercase tracking-wide bg-slate-100 text-slate-600 px-2 py-0.5 rounded">
                       {capabilityRoleLabel(role)}
                     </span>
                   </div>
-                  {!!template?.description && (
-                    <p className="text-sm text-slate-600 mt-2 line-clamp-2">{template.description as string}</p>
+                  {!!capabilityString(template.description) && (
+                    <p className="text-sm text-slate-600 mt-2 line-clamp-2">{capabilityString(template.description)}</p>
                   )}
                   <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-slate-500">
                     <div>
                       <span className="uppercase tracking-wide">Binding</span>
-                      <div className="font-medium text-slate-700 truncate">{binding.bindingName as string}</div>
+                      <div className="font-medium text-slate-700 truncate">{bindingName}</div>
                     </div>
                     <div>
                       <span className="uppercase tracking-wide">Binding status</span>
-                      <div className="font-medium text-slate-700">{binding.status as string}</div>
+                      <div className="font-medium text-slate-700">{capabilityString(binding.status) || "unknown"}</div>
                     </div>
                     <div className="sm:col-span-2 font-mono truncate">
-                      template: {(template?.id as string | undefined) ?? (binding.agentTemplateId as string)}
+                      template: {templateId || "template pending"}
                     </div>
-                    {template?.baseTemplateId ? (
+                    {capabilityString(template.baseTemplateId) ? (
                       <div className="sm:col-span-2 font-mono truncate">
-                        derived from: {template.baseTemplateId as string}
+                        derived from: {capabilityString(template.baseTemplateId)}
                       </div>
                     ) : null}
                   </div>
@@ -1123,11 +1484,13 @@ function BootstrapTab({
   disabled?: boolean;
   onMutate: () => Promise<unknown> | void;
 }) {
+  const actionInFlightRef = useRef(false);
   const [decisions, setDecisions] = useState<Record<string, "APPROVE" | "REJECT" | "SKIP">>({});
   const [agentSelection, setAgentSelection] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<Record<string, unknown> | null>(null);
 
   if (!runId) {
@@ -1145,19 +1508,24 @@ function BootstrapTab({
   if (!run) return <div className="text-slate-500 text-sm">Loading bootstrap packet...</div>;
 
   const activeRunId = runId;
-  const candidates = ((run.candidates as Array<Record<string, unknown>>) ?? []);
+  const candidates = asObjectArray(run.candidates);
   const groups = groupCandidates(candidates);
   const generatedAgents = getGeneratedAgents(run, capability);
-  const runWarnings = ((run.warnings as string[]) ?? []);
-  const runErrors = ((run.errors as string[]) ?? []);
+  const runWarnings = asStringArray(run.warnings);
+  const runErrors = asStringArray(run.errors);
   const operatingModel = getOperatingModel(run);
   const architectureDiagram = getArchitectureDiagram(capability, run);
-  const repositories = (((run.capability as Record<string, unknown> | undefined)?.repositories as Array<Record<string, unknown>> | undefined) ??
-    ((capability.repositories as Array<Record<string, unknown>>) ?? []));
-  const knowledgeSources = (((run.capability as Record<string, unknown> | undefined)?.knowledgeSources as Array<Record<string, unknown>> | undefined) ?? []);
+  const runCapability = asObject(run.capability);
+  const repositories = asObjectArray(runCapability.repositories).length
+    ? asObjectArray(runCapability.repositories)
+    : asObjectArray(capability.repositories);
+  const knowledgeSources = asObjectArray(runCapability.knowledgeSources);
+  const actionBusy = busy || syncing;
 
   async function submitReview() {
-    setBusy(true); setError(null);
+    if (actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
+    setBusy(true); setError(null); setMsg(null);
     try {
       const approveGroupKeys: string[] = [];
       const rejectGroupKeys: string[] = [];
@@ -1176,26 +1544,35 @@ function BootstrapTab({
         activateAgentTemplateIds,
       });
       await onMutate();
+      setMsg("Bootstrap review applied. Approved learning and selected agents are active for this capability.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Review failed");
+      setError(actionErrorMessage(err, "Bootstrap review failed"));
     } finally {
+      actionInFlightRef.current = false;
       setBusy(false);
     }
   }
 
   async function syncApprovedSources() {
-    setSyncing(true); setError(null); setSyncResult(null);
+    if (actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
+    setSyncing(true); setError(null); setMsg(null); setSyncResult(null);
     try {
       const repositoryIds = repositories
         .filter(repo => repo.repositoryType !== "LOCAL" && !String(repo.repoUrl ?? "").startsWith("local://"))
-        .map(repo => repo.id as string);
-      const knowledgeSourceIds = knowledgeSources.map(source => source.id as string);
+        .map(repo => capabilityString(repo.id))
+        .filter(Boolean);
+      const knowledgeSourceIds = knowledgeSources
+        .map(source => capabilityString(source.id))
+        .filter(Boolean);
       const out = await runtimeApi.syncCapability(capabilityId, { repositoryIds, knowledgeSourceIds });
       setSyncResult(out);
       await onMutate();
+      setMsg("Approved sources ingested. The result summary below shows what changed and what still needs attention.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sync failed");
+      setError(actionErrorMessage(err, "Approved source ingestion failed"));
     } finally {
+      actionInFlightRef.current = false;
       setSyncing(false);
     }
   }
@@ -1225,9 +1602,10 @@ function BootstrapTab({
         </div>
       </div>
 
-      {(runWarnings.length > 0 || runErrors.length > 0 || error) && (
+      {(runWarnings.length > 0 || runErrors.length > 0 || error || msg) && (
         <div className="card p-4 space-y-2">
           {error && <div className="text-sm text-red-600">{error}</div>}
+          {msg && <div className="text-sm text-emerald-700">{msg}</div>}
           {runErrors.map((item, i) => <div key={`err-${i}`} className="text-sm text-red-600">Error: {item}</div>)}
           {runWarnings.map((item, i) => <div key={`warn-${i}`} className="text-sm text-amber-700">Warning: {item}</div>)}
         </div>
@@ -1298,7 +1676,7 @@ function BootstrapTab({
                 className="mt-1"
                 checked={agent.activationRequired || (agentSelection[agent.id] ?? true)}
                 onChange={e => setAgentSelection(s => ({ ...s, [agent.id]: e.target.checked }))}
-                disabled={agent.status === "ACTIVE" || agent.activationRequired}
+                disabled={actionBusy || agent.status === "ACTIVE" || agent.activationRequired}
               />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
@@ -1340,6 +1718,7 @@ function BootstrapTab({
                     className="px-2 py-1.5 text-xs border border-slate-200 rounded-md"
                     value={decisions[group.key] ?? "APPROVE"}
                     onChange={e => setDecisions(d => ({ ...d, [group.key]: e.target.value as "APPROVE" | "REJECT" | "SKIP" }))}
+                    disabled={actionBusy}
                   >
                     <option value="APPROVE">Approve</option>
                     <option value="REJECT">Reject</option>
@@ -1367,29 +1746,119 @@ function BootstrapTab({
 
       <div className="card p-4 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-sm font-medium text-slate-900">Activate approved learning</p>
+          <p className="text-sm font-medium text-slate-900">Activate reviewed learning</p>
           <p className="text-xs text-slate-500">
             Review materializes selected groups as ACTIVE knowledge artifacts and activates selected agents. Manual sync is allowed only after approval.
           </p>
         </div>
         <div className="flex gap-2">
-          <button className="btn-secondary" disabled={syncing || disabled} onClick={syncApprovedSources}>
-            <RefreshCw size={14} /> {syncing ? "Syncing..." : "Sync approved sources"}
+          <button className="btn-secondary" disabled={actionBusy || disabled} onClick={syncApprovedSources}>
+            <RefreshCw size={14} /> {syncing ? "Ingesting..." : "Ingest approved sources"}
           </button>
-          <button className="btn-primary" disabled={busy || disabled} onClick={submitReview}>
+          <button className="btn-primary" disabled={actionBusy || disabled} onClick={submitReview}>
             <CheckCircle2 size={14} /> {busy ? "Saving..." : "Apply review"}
           </button>
         </div>
       </div>
 
       {syncResult && (
-        <div className="card p-4 text-xs text-slate-600">
-          <div className="font-semibold text-slate-900 mb-2">Last sync result</div>
-          <pre className="whitespace-pre-wrap overflow-auto">{JSON.stringify(syncResult, null, 2)}</pre>
-        </div>
+        <LearningWorkerResultPanel title="Last approved-source sync" result={syncResult} />
       )}
     </div>
   );
+}
+
+function LearningWorkerResultPanel({ title, result }: { title: string; result: Record<string, unknown> | null }) {
+  if (!result) return null;
+  const sync = asRecord(result.sync) ?? result;
+  const repositoryProfiles = asRecord(result.repositoryProfiles);
+  const reembed = asRecord(result.reembed);
+  const warnings = uniqueStringArray([
+    ...asStringArray(result.warnings),
+    ...asStringArray(sync.warnings),
+    ...asStringArray(repositoryProfiles?.warnings),
+  ]);
+  const nextActions = uniqueStringArray(asStringArray(result.nextActions));
+  const repositories = asObjectArray(sync.repositories);
+  const knowledgeSources = asObjectArray(sync.knowledgeSources);
+  const skipped = warnings.filter(item => /skipped because|duplicate|same URL|same source/i.test(item));
+  const reembedded = sumEmbedded(reembed);
+  const refreshedProfiles = capabilityNumber(repositoryProfiles?.refreshed, 0);
+  const ranAt = typeof result.ranAt === "string" ? result.ranAt : null;
+
+  return (
+    <section className="mt-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-slate-900">{title}</div>
+          <p className="mt-1 text-xs text-slate-500">
+            Refresh results are summarized here so repeated syncs show what changed, what was skipped, and what still needs operator action.
+          </p>
+        </div>
+        {ranAt && <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-600">{formatCompactDate(ranAt)}</span>}
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-4">
+        <LearningResultMetric label="Repositories" value={repositories.length} />
+        <LearningResultMetric label="Knowledge sources" value={knowledgeSources.length} />
+        <LearningResultMetric label="Profiles refreshed" value={refreshedProfiles} />
+        <LearningResultMetric label="Embeddings updated" value={reembedded} />
+      </div>
+
+      {skipped.length > 0 && (
+        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+          <div className="font-semibold">Skipped duplicate source work</div>
+          <ul className="mt-1 list-disc space-y-1 pl-4">
+            {skipped.map(item => <li key={item}>{item}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {warnings.length > 0 && (
+        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+          <div className="font-semibold">Warnings</div>
+          <ul className="mt-1 list-disc space-y-1 pl-4">
+            {warnings.map(item => <li key={item}>{item}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {nextActions.length > 0 && (
+        <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-800">
+          <div className="font-semibold">Next actions</div>
+          <ul className="mt-1 list-disc space-y-1 pl-4">
+            {nextActions.map(item => <li key={item}>{item}</li>)}
+          </ul>
+        </div>
+      )}
+
+      <details className="mt-3 rounded-lg border border-slate-200 bg-slate-50">
+        <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-slate-700">Raw result</summary>
+        <pre className="max-h-72 overflow-auto px-3 pb-3 text-xs text-slate-600">{JSON.stringify(result, null, 2)}</pre>
+      </details>
+    </section>
+  );
+}
+
+function LearningResultMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="mt-1 text-lg font-semibold text-slate-900">{value}</div>
+    </div>
+  );
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function sumEmbedded(value: Record<string, unknown> | null): number {
+  if (!value) return 0;
+  return ["knowledge", "memory", "code"].reduce((total, key) => {
+    const bucket = asRecord(value[key]);
+    return total + capabilityNumber(bucket?.embedded, 0);
+  }, 0);
 }
 
 function groupCandidates(candidates: Array<Record<string, unknown>>) {
@@ -1415,14 +1884,14 @@ function groupCandidates(candidates: Array<Record<string, unknown>>) {
 }
 
 function getOperatingModel(run: Record<string, unknown>): Record<string, unknown> | null {
-  const summary = run.sourceSummary as Record<string, unknown> | undefined;
-  const model = summary?.operatingModel;
-  return model && typeof model === "object" && !Array.isArray(model) ? model as Record<string, unknown> : null;
+  const summary = asObject(run.sourceSummary);
+  return asRecord(summary.operatingModel);
 }
 
 function getArchitectureDiagram(
   capability: Record<string, unknown>,
   run?: Record<string, unknown>,
+  groundingStatus?: Record<string, unknown>,
 ): Record<string, unknown> | null {
   const operatingModel = run ? getOperatingModel(run) : null;
   const fromBootstrap = operatingModel?.architectureDiagram;
@@ -1435,8 +1904,8 @@ function getArchitectureDiagram(
   const children = asObjectArray(capability.children).map(child => String(child.name ?? child.id ?? "Child capability")).slice(0, 5);
   const bindings = asObjectArray(capability.bindings)
     .map(binding => {
-      const template = binding.agentTemplate as Record<string, unknown> | undefined;
-      return String(template?.name ?? binding.bindingName ?? "Capability agent");
+      const template = asObject(binding.agentTemplate);
+      return capabilityString(template.name) || capabilityString(binding.bindingName) || "Capability agent";
     })
     .slice(0, 5);
   const knowledge = asObjectArray(capability.knowledgeArtifacts).length;
@@ -1466,22 +1935,117 @@ function getArchitectureDiagram(
     };
   }
 
-  const stored = fromBootstrap && typeof fromBootstrap === "object" && !Array.isArray(fromBootstrap)
-    ? fromBootstrap as Record<string, unknown>
-    : undefined;
-  return buildRelevantApplicationArchitecture(capability, {
-    title: stored?.title ? String(stored.title) : `${name} application architecture`,
-    mermaid: stored?.mermaid ? String(stored.mermaid) : undefined,
-  });
+  const stored = normalizeStoredArchitectureDiagram(fromBootstrap);
+  const inferred = buildRelevantApplicationArchitecture(
+    capability,
+    {
+      title: stored?.title ? String(stored.title) : `${name} application architecture`,
+      mermaid: stored?.mermaid ? String(stored.mermaid) : undefined,
+    },
+    groundingStatus,
+  );
+  return mergeStoredArchitectureDiagram(inferred, stored);
 }
 
 function isCollectionCapability(value: string): boolean {
   return ["COLLECTION", "CAPABILITY_COLLECTION", "PORTFOLIO", "DOMAIN_COLLECTION"].includes(value.trim().toUpperCase());
 }
 
+function normalizeStoredArchitectureDiagram(value: unknown): StoredArchitectureDiagram | undefined {
+  const raw = asRecord(value);
+  if (!raw) return undefined;
+  const layers = normalizeArchitectureLayers(raw.layers);
+  const highlights = normalizeArchitectureHighlights(raw.highlights);
+  return {
+    kind: capabilityString(raw.kind),
+    view: capabilityString(raw.view),
+    title: capabilityString(raw.title),
+    description: capabilityString(raw.description),
+    mermaid: capabilityString(raw.mermaid),
+    codeGraphMermaid: capabilityString(raw.codeGraphMermaid),
+    layers: layers.length ? layers : undefined,
+    highlights: highlights.length ? highlights : undefined,
+  };
+}
+
+function normalizeArchitectureLayers(value: unknown): ArchitectureLayer[] {
+  return asObjectArray(value)
+    .map((layer, index) => {
+      const label = capabilityString(layer.label) || `Layer ${index + 1}`;
+      const key = capabilityString(layer.key) || label.toLowerCase().replace(/[^a-z0-9]+/g, "_") || `layer_${index + 1}`;
+      const items = uniqueStringArray(asStringArray(layer.items));
+      return { key, label, items };
+    })
+    .filter(layer => layer.items.length > 0);
+}
+
+function normalizeArchitectureHighlights(value: unknown): ArchitectureHighlight[] {
+  return asObjectArray(value)
+    .map((highlight, index) => {
+      const label = capabilityString(highlight.label) || `Signal ${index + 1}`;
+      const key = capabilityString(highlight.key) || label.toLowerCase().replace(/[^a-z0-9]+/g, "_") || `signal_${index + 1}`;
+      const rawValue = capabilityString(highlight.value);
+      return {
+        key,
+        label,
+        value: rawValue || "--",
+        detail: capabilityString(highlight.detail) || undefined,
+      };
+    })
+    .filter(highlight => highlight.value !== "--" || Boolean(highlight.detail));
+}
+
+function mergeStoredArchitectureDiagram(
+  inferred: Record<string, unknown>,
+  stored?: StoredArchitectureDiagram,
+): Record<string, unknown> {
+  if (!stored) return inferred;
+  return {
+    ...inferred,
+    kind: stored.kind || inferred.kind,
+    view: stored.view || inferred.view,
+    title: stored.title || inferred.title,
+    description: stored.description || inferred.description,
+    highlights: mergeArchitectureHighlights(inferred.highlights, stored.highlights),
+    layers: mergeArchitectureLayers(inferred.layers, stored.layers),
+    mermaid: stored.mermaid || inferred.mermaid,
+    codeGraphMermaid: stored.codeGraphMermaid || inferred.codeGraphMermaid,
+  };
+}
+
+function mergeArchitectureHighlights(inferredValue: unknown, storedValue?: ArchitectureHighlight[]): ArchitectureHighlight[] {
+  const inferred = normalizeArchitectureHighlights(inferredValue);
+  const byKey = new Map(inferred.map(item => [item.key, item]));
+  for (const highlight of storedValue ?? []) {
+    if (isPlaceholderArchitectureHighlight(highlight)) continue;
+    byKey.set(highlight.key, highlight);
+  }
+  return Array.from(byKey.values());
+}
+
+function mergeArchitectureLayers(inferredValue: unknown, storedValue?: ArchitectureLayer[]): ArchitectureLayer[] {
+  const inferred = normalizeArchitectureLayers(inferredValue);
+  const byKey = new Map(inferred.map(item => [item.key, item]));
+  for (const layer of storedValue ?? []) {
+    if (isPlaceholderArchitectureLayer(layer)) continue;
+    byKey.set(layer.key, layer);
+  }
+  return Array.from(byKey.values());
+}
+
+function isPlaceholderArchitectureHighlight(highlight: ArchitectureHighlight): boolean {
+  return /^(stack|api)$/i.test(highlight.key.trim()) && /^(pending|stack pending|api pending)$/i.test(highlight.value.trim());
+}
+
+function isPlaceholderArchitectureLayer(layer: ArchitectureLayer): boolean {
+  if (!/^(runtime_stack|contract|domain_model)$/i.test(layer.key.trim())) return false;
+  return layer.items.length > 0 && layer.items.every(item => /\bpending\b/i.test(item));
+}
+
 function buildRelevantApplicationArchitecture(
   capability: Record<string, unknown>,
   stored?: { title?: string; mermaid?: string },
+  groundingStatus?: Record<string, unknown>,
 ): Record<string, unknown> {
   const name = String(capability.name ?? "Capability");
   const appId = capabilityString(capability.appId);
@@ -1497,13 +2061,21 @@ function buildRelevantApplicationArchitecture(
     .map(repo => String(repo.repoName ?? repo.repoUrl ?? "Repository"))
     .filter(Boolean);
   const endpointItems = inferEndpointItems(corpus);
-  const stackItems = inferStackItems(corpus, repos);
+  const learnedGroundingStack = uniqueStringArray(asStringArray(groundingStatus?.lastGoodStack))
+    .filter(isLearnedStackSignal);
+  const stackItems = uniqueStringArray([...learnedGroundingStack, ...inferStackItems(corpus, repos)]);
   const domainItems = inferDomainItems(corpus, name);
   const requestResponseItems = inferContractItems(corpus);
   const agentItems = bindings
     .map(binding => {
-      const template = binding.agentTemplate as Record<string, unknown> | undefined;
-      return capabilityRoleLabel(binding.roleInCapability ?? template?.roleType ?? template?.name ?? binding.bindingName ?? "Agent");
+      const template = asObject(binding.agentTemplate);
+      return capabilityRoleLabel(
+        capabilityString(binding.roleInCapability)
+          || capabilityString(template.roleType)
+          || capabilityString(template.name)
+          || capabilityString(binding.bindingName)
+          || "Agent",
+      );
     })
     .filter(Boolean);
   const branchItems = repos.flatMap(repo => {
@@ -1519,7 +2091,41 @@ function buildRelevantApplicationArchitecture(
   const repoCount = repoLabels.length;
   const endpointCount = endpointItems.filter(item => /^(GET|POST|PUT|DELETE|PATCH|ANY)\s+\//i.test(item)).length || endpointItems.length;
   const operatorCount = countDomainOperators(corpus);
-  const primaryStack = stackItems.find(item => !/pending/i.test(item)) ?? "Stack pending";
+  const learnedStackItems = uniqueStringArray(stackItems.filter(isLearnedStackSignal));
+  const hasKnowledgeArtifacts = artifacts.length > 0;
+  const stackStatusLabel = learnedStackItems.length > 0 ? "Primary stack" : "Stack status";
+  const primaryStack = learnedStackItems[0]
+    ?? (repoCount ? "Not learned yet" : hasKnowledgeArtifacts ? "Document-only" : "No source");
+  const primaryStackDetail = learnedStackItems.length > 0
+    ? learnedStackItems.slice(1, 3).join(" / ")
+    : repoCount
+      ? "Refresh grounding after source sync or MCP indexing produces stack signals"
+      : hasKnowledgeArtifacts
+        ? "Attach a repository source to learn executable stack details; approved documents still guide prompts"
+        : "Attach an approved repository or document source before refreshing learning";
+  const runtimeStackItems = learnedStackItems.length
+    ? learnedStackItems
+    : [
+        repoCount
+          ? "Repository attached; executable stack not learned yet"
+          : hasKnowledgeArtifacts
+            ? "Document knowledge attached; no executable stack source"
+            : "No repository or document source attached",
+        primaryStackDetail,
+      ];
+  const apiSurfaceValue = endpointCount
+    ? `${endpointCount} endpoint${endpointCount === 1 ? "" : "s"}`
+    : repoCount
+      ? "Not learned yet"
+      : hasKnowledgeArtifacts
+        ? "Document-only"
+        : "No source";
+  const apiSurfaceDetail = endpointItems[0]
+    ?? (repoCount
+      ? "Sync approved sources and refresh grounding to discover API routes"
+      : hasKnowledgeArtifacts
+        ? "Approved documents do not include concrete API route signals"
+        : "Attach an approved repository or API document to discover endpoints");
 
   const layers: ArchitectureLayer[] = [
     {
@@ -1534,7 +2140,7 @@ function buildRelevantApplicationArchitecture(
     {
       key: "runtime_stack",
       label: "Runtime Stack",
-      items: stackItems,
+      items: runtimeStackItems,
     },
     {
       key: "domain_model",
@@ -1549,7 +2155,9 @@ function buildRelevantApplicationArchitecture(
     {
       key: "codebase",
       label: "Repository Intelligence",
-      items: branchItems.length ? [...branchItems, `${artifacts.length} knowledge artifacts`] : [`${artifacts.length} knowledge artifacts`, "Repository pending"],
+      items: branchItems.length
+        ? [...branchItems, `${artifacts.length} knowledge artifacts`]
+        : [`${artifacts.length} knowledge artifacts`, repoCount ? "Grounding not learned yet" : "No repository source attached"],
     },
     {
       key: "delivery",
@@ -1566,21 +2174,21 @@ function buildRelevantApplicationArchitecture(
     kind: "APPLICATION_CAPABILITY_ARCHITECTURE",
     view: "application",
     title: stored?.title ?? `${name} application architecture`,
-    description: buildApplicationDescription(name, stackItems, endpointItems, domainItems),
+    description: buildApplicationDescription(name, learnedStackItems, endpointItems, domainItems),
     highlights: [
-      { key: "stack", label: "Primary stack", value: primaryStack, detail: stackItems.slice(1, 3).join(" / ") },
-      { key: "api", label: "API surface", value: endpointCount ? `${endpointCount} endpoint${endpointCount === 1 ? "" : "s"}` : "Pending", detail: endpointItems[0] ?? "No endpoint signal yet" },
+      { key: "stack", label: stackStatusLabel, value: primaryStack, detail: primaryStackDetail },
+      { key: "api", label: "API surface", value: apiSurfaceValue, detail: apiSurfaceDetail },
       { key: "rules", label: "Domain rules", value: operatorCount ? `${operatorCount} operators` : "Detected model", detail: domainItems[0] },
       { key: "repo", label: "Source", value: repoCount ? `${repoCount} repo${repoCount === 1 ? "" : "s"}` : "No repo", detail: repoLabels[0] ?? "Attach a repository to ground the graph" },
     ],
     layers,
-    mermaid: buildApplicationMermaid(name, endpointItems, stackItems, domainItems),
-    codeGraphMermaid: buildApplicationMermaid(name, endpointItems, stackItems, domainItems),
+    mermaid: buildApplicationMermaid(name, endpointItems, learnedStackItems, domainItems),
+    codeGraphMermaid: buildApplicationMermaid(name, endpointItems, learnedStackItems, domainItems),
   };
 }
 
 function buildApplicationDescription(name: string, stackItems: string[], endpointItems: string[], domainItems: string[]): string {
-  const stack = stackItems.find(item => !/pending/i.test(item));
+  const stack = stackItems.find(isLearnedStackSignal);
   const endpoint = endpointItems.find(item => /\//.test(item));
   const domain = domainItems[0];
   return [
@@ -1589,6 +2197,10 @@ function buildApplicationDescription(name: string, stackItems: string[], endpoin
     endpoint ? `Primary API signal: ${endpoint}.` : "",
     domain ? `Domain signal: ${domain}.` : "",
   ].filter(Boolean).join(" ");
+}
+
+function isLearnedStackSignal(item: string): boolean {
+  return Boolean(item.trim()) && !/\b(pending|not learned|needs grounding|document-only|no source|no repository)\b/i.test(item);
 }
 
 function inferStackItems(corpus: string, repos: Array<Record<string, unknown>>): string[] {
@@ -1602,7 +2214,7 @@ function inferStackItems(corpus: string, repos: Array<Record<string, unknown>>):
   if (/\bgradle\b|build\.gradle/i.test(text)) items.add("Gradle");
   if (/localhost:8080|port\s+8080/i.test(text)) items.add("Default port 8080");
   if (/content-type.*application\/json|application\/json/i.test(text)) items.add("REST JSON API");
-  return Array.from(items).length ? Array.from(items) : ["Runtime stack discovery pending"];
+  return Array.from(items);
 }
 
 function inferEndpointItems(corpus: string): string[] {
@@ -1627,7 +2239,7 @@ function inferContractItems(corpus: string): string[] {
   if (/"result"\s*:|Response Schema[\s\S]{0,300}\bresult\b/i.test(corpus)) items.add("Response returns result boolean");
   if (/400 Bad Request/i.test(corpus)) items.add("400 for structurally invalid rules");
   if (/422 Unprocessable Entity/i.test(corpus)) items.add("422 for invalid request fields");
-  return Array.from(items).length ? Array.from(items) : ["Request/response contract pending"];
+  return Array.from(items).length ? Array.from(items) : ["No request/response contract signal learned yet"];
 }
 
 function inferDomainItems(corpus: string, capabilityName: string): string[] {
@@ -1643,7 +2255,7 @@ function inferDomainItems(corpus: string, capabilityName: string): string[] {
   if (conditionOps.length) items.add(`Condition operators: ${conditionOps.slice(0, 12).join(", ")}${conditionOps.length > 12 ? "..." : ""}`);
   if (/dot[\s-]?separated path|field.*a\.b\.c|field path/i.test(corpus)) items.add("Dot-path field lookup into data payloads");
   if (/numeric comparisons|date\/time comparisons|ISO.?8601/i.test(corpus)) items.add("Numeric and ISO-8601 date/time comparisons");
-  return Array.from(items).length ? Array.from(items) : ["Domain model discovery pending"];
+  return Array.from(items).length ? Array.from(items) : ["No domain model signal learned yet"];
 }
 
 function countDomainOperators(corpus: string): number {
@@ -1669,8 +2281,38 @@ function escapeMermaidLabel(value: string): string {
   return value.replace(/[<>{}[\]|"]/g, " ").replace(/\s+/g, " ").trim().slice(0, 90);
 }
 
-function asStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+function asObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function asOptionalObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function asStringArray(value: unknown, maxItems = 80, maxLength = 160): string[] {
+  return Array.isArray(value)
+    ? value
+      .map(item => capabilityString(item).slice(0, maxLength))
+      .filter(Boolean)
+      .slice(0, maxItems)
+    : [];
+}
+
+function formatDateTime(value: unknown, fallback = "never"): string {
+  const text = capabilityString(value);
+  if (!text) return fallback;
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString();
+}
+
+function uniqueStringArray(items: string[]): string[] {
+  const seen = new Set<string>();
+  return items.filter(item => {
+    const key = item.trim().toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function asObjectArray(value: unknown): Array<Record<string, unknown>> {
@@ -1680,16 +2322,19 @@ function asObjectArray(value: unknown): Array<Record<string, unknown>> {
 }
 
 function getGeneratedAgents(run: Record<string, unknown>, capability: Record<string, unknown>) {
-  const jsonAgents = Array.isArray(run.generatedAgentIds) ? run.generatedAgentIds as Array<Record<string, unknown>> : [];
-  const bindings = ((((run.capability as Record<string, unknown> | undefined)?.bindings as Array<Record<string, unknown>> | undefined) ??
-    ((capability.bindings as Array<Record<string, unknown>>) ?? [])));
+  const jsonAgents = asObjectArray(run.generatedAgentIds);
+  const runCapability = asObject(run.capability);
+  const bindings = asObjectArray(runCapability.bindings).length
+    ? asObjectArray(runCapability.bindings)
+    : asObjectArray(capability.bindings);
   const byTemplate = new Map<string, Record<string, unknown>>();
   for (const binding of bindings) {
-    const template = binding.agentTemplate as Record<string, unknown> | undefined;
-    if (template?.id) byTemplate.set(template.id as string, template);
+    const template = asObject(binding.agentTemplate);
+    const templateId = capabilityString(template.id);
+    if (templateId) byTemplate.set(templateId, template);
   }
   return jsonAgents.map(agent => {
-    const id = agent.id as string;
+    const id = capabilityString(agent.id);
     const template = byTemplate.get(id);
     return {
       id,
@@ -1713,19 +2358,23 @@ const SUPPORTED_EXT = /\.(txt|md|markdown|pdf)$/i;
 const MAX_BYTES = 25 * 1024 * 1024; // 25 MB matches the multer limit
 
 function KnowledgeUploadCard({
-  capabilityId, artifactType, onUploaded,
+  capabilityId, artifactType, disabled, onUploaded,
 }: {
   capabilityId: string;
   artifactType: string;
+  disabled?: boolean;
   onUploaded: () => Promise<void> | void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const uploadInFlightRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpload, setLastUpload] = useState<string[]>([]);
   const [dragOver, setDragOver] = useState(false);
 
   async function handleFiles(files: FileList | File[]) {
+    if (uploadInFlightRef.current || disabled) return;
+    uploadInFlightRef.current = true;
     setBusy(true); setError(null);
     const arr = Array.from(files);
     try {
@@ -1759,8 +2408,9 @@ function KnowledgeUploadCard({
       setLastUpload(arr.map(f => f.name).filter(n => !skipped.some(s => s.name === n)));
       await onUploaded();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
+      setError(actionErrorMessage(err, "Upload failed"));
     } finally {
+      uploadInFlightRef.current = false;
       setBusy(false);
       if (inputRef.current) inputRef.current.value = "";
     }
@@ -1768,12 +2418,15 @@ function KnowledgeUploadCard({
 
   return (
     <div
-      className={`card p-4 mb-3 border-2 border-dashed transition-colors ${dragOver ? "border-singularity-500 bg-singularity-50" : "border-slate-200"}`}
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      className={`card p-4 mb-3 border-2 border-dashed transition-colors ${disabled ? "border-slate-200 bg-slate-50 opacity-75" : dragOver ? "border-singularity-500 bg-singularity-50" : "border-slate-200"}`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        if (!disabled) setDragOver(true);
+      }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => {
         e.preventDefault(); setDragOver(false);
-        if (e.dataTransfer.files) void handleFiles(e.dataTransfer.files);
+        if (!disabled && e.dataTransfer.files) void handleFiles(e.dataTransfer.files);
       }}
     >
       <div className="flex items-center gap-3">
@@ -1781,7 +2434,9 @@ function KnowledgeUploadCard({
         <div className="flex-1">
           <p className="text-sm text-slate-700 font-medium">Upload knowledge files</p>
           <p className="text-xs text-slate-500">
-            Drag and drop <code>.txt</code> / <code>.md</code> / <code>.pdf</code> files, or click to browse. Files become ACTIVE artifacts the prompt-composer pulls into <code>RUNTIME_EVIDENCE</code> layers (and now embedded for semantic retrieval).
+            {disabled
+              ? "Archived capabilities are read-only. Existing artifacts remain visible for evidence, but new files cannot be added."
+              : <>Drag and drop <code>.txt</code> / <code>.md</code> / <code>.pdf</code> files, or click to browse. Files become ACTIVE artifacts the prompt-composer pulls into <code>RUNTIME_EVIDENCE</code> layers (and now embedded for semantic retrieval).</>}
           </p>
         </div>
         <input
@@ -1790,11 +2445,12 @@ function KnowledgeUploadCard({
           multiple
           accept=".txt,.md,.markdown,.pdf,text/plain,text/markdown,application/pdf"
           className="hidden"
+          disabled={disabled}
           onChange={(e) => { if (e.target.files) void handleFiles(e.target.files); }}
         />
         <button
           className="btn-primary text-xs whitespace-nowrap"
-          disabled={busy}
+          disabled={busy || disabled}
           onClick={() => inputRef.current?.click()}
         >
           {busy ? "Uploading…" : "Choose files"}
@@ -1818,7 +2474,31 @@ const CODE_SKIP_DIRS = new Set([
   ".next", ".turbo", ".cache", "coverage", "target",
 ]);
 const FILE_SIZE_CAP = 200_000; // 200 KB per file
-const PAYLOAD_CAP   = 24_000_000; // 24 MB total
+const PAYLOAD_CAP = 24_000_000; // 24 MB total
+
+type CodeExtractResult = {
+  filesProcessed: number;
+  symbolsScanned: number;
+  inserted: number;
+  skippedDuplicate: number;
+  embeddingErrors: number;
+  provider: string;
+  providerModel: string;
+};
+
+function normalizeCodeExtractResult(value: unknown): CodeExtractResult | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  return {
+    filesProcessed: capabilityNumber(record.filesProcessed, 0),
+    symbolsScanned: capabilityNumber(record.symbolsScanned, 0),
+    inserted: capabilityNumber(record.inserted, 0),
+    skippedDuplicate: capabilityNumber(record.skippedDuplicate, 0),
+    embeddingErrors: capabilityNumber(record.embeddingErrors, 0),
+    provider: capabilityString(record.provider) || "unknown",
+    providerModel: capabilityString(record.providerModel) || "unknown",
+  };
+}
 
 function CodeExtractCard({
   capabilityId, repoId, repoName, repoUrl, repositoryType, disabled,
@@ -1831,29 +2511,31 @@ function CodeExtractCard({
   disabled?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const codeSyncInFlightRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [syncSummary, setSyncSummary] = useState<Record<string, unknown> | null>(null);
-  const [result, setResult] = useState<{
-    filesProcessed: number; symbolsScanned: number; inserted: number;
-    skippedDuplicate: number; embeddingErrors: number;
-    provider: string; providerModel: string;
-  } | null>(null);
+  const [result, setResult] = useState<CodeExtractResult | null>(null);
   const isLocal = repositoryType === "LOCAL" || repoUrl.startsWith("local://");
 
   async function syncRemoteRepo() {
+    if (codeSyncInFlightRef.current || disabled) return;
+    codeSyncInFlightRef.current = true;
     setBusy(true); setError(null); setResult(null); setSyncSummary(null);
     try {
-      const out = await runtimeApi.syncCapability(capabilityId, { repositoryIds: [repoId] });
+      const out = asObject(await runtimeApi.syncCapability(capabilityId, { repositoryIds: [repoId] }));
       setSyncSummary(out);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sync failed");
+      setError(actionErrorMessage(err, "Sync failed"));
     } finally {
+      codeSyncInFlightRef.current = false;
       setBusy(false);
     }
   }
 
   async function handleFiles(files: FileList) {
+    if (codeSyncInFlightRef.current || disabled) return;
+    codeSyncInFlightRef.current = true;
     setBusy(true); setError(null); setResult(null); setSyncSummary(null);
     try {
       const payload: Array<{ path: string; content: string }> = [];
@@ -1875,17 +2557,20 @@ function CodeExtractCard({
       if (payload.length === 0) {
         throw new Error("No source files (.py / .ts / .tsx / .js / .jsx) found in selection.");
       }
-      const out = await runtimeApi.syncCapability(capabilityId, { localFiles: payload });
+      const out = asObject(await runtimeApi.syncCapability(capabilityId, { localFiles: payload }));
       setSyncSummary(out);
-      const local = out.local as typeof result | null | undefined;
+      const local = normalizeCodeExtractResult(out.local);
       if (local) setResult(local);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Extraction failed");
+      setError(actionErrorMessage(err, "Extraction failed"));
     } finally {
+      codeSyncInFlightRef.current = false;
       setBusy(false);
       if (inputRef.current) inputRef.current.value = "";
     }
   }
+
+  const syncWarnings = asStringArray(syncSummary?.warnings);
 
   return (
     <div className="card p-4 mb-3">
@@ -1929,9 +2614,9 @@ function CodeExtractCard({
         )}
       </div>
       {error && <div className="mt-3 text-xs text-red-600">{error}</div>}
-      {syncSummary && Array.isArray(syncSummary.warnings) && syncSummary.warnings.length > 0 && (
+      {syncWarnings.length > 0 && (
         <div className="mt-3 text-xs text-amber-700">
-          {(syncSummary.warnings as string[]).join(" ")}
+          {syncWarnings.join(" ")}
         </div>
       )}
       {result && (
@@ -1977,30 +2662,52 @@ function SourcesTab({ capabilityId, repos, disabled, onMutate }: {
     `know-sources-${capabilityId}`,
     () => runtimeApi.listKnowledgeSources(capabilityId),
   );
-  const list = (sources ?? []) as Array<Record<string, unknown>>;
+  const list = asObjectArray(sources);
 
+  const sourceActionInFlightRef = useRef(false);
   const [newUrl, setNewUrl] = useState("");
   const [newInterval, setNewInterval] = useState(600);
   const [busy, setBusy] = useState(false);
+  const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
 
   async function addSource() {
+    if (sourceActionInFlightRef.current) return;
     if (!newUrl) return;
-    setBusy(true); setError(null);
+    sourceActionInFlightRef.current = true;
+    setBusy(true); setError(null); setMsg(null);
     try {
       await runtimeApi.addKnowledgeSource(capabilityId, {
         url: newUrl, pollIntervalSec: newInterval,
       });
       setNewUrl(""); setNewInterval(600);
       await mutateSources();
+      await onMutate();
+      setMsg("Knowledge URL source added. It will be ingested by the source polling worker.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "add failed");
-    } finally { setBusy(false); }
+      setError(actionErrorMessage(err, "Add knowledge URL source failed"));
+    } finally {
+      sourceActionInFlightRef.current = false;
+      setBusy(false);
+    }
   }
 
   async function deleteSource(id: string) {
-    await runtimeApi.deleteKnowledgeSource(capabilityId, id);
-    await mutateSources();
+    if (!id || sourceActionInFlightRef.current) return;
+    sourceActionInFlightRef.current = true;
+    setDeleteBusyId(id); setError(null); setMsg(null);
+    try {
+      await runtimeApi.deleteKnowledgeSource(capabilityId, id);
+      await mutateSources();
+      await onMutate();
+      setMsg("Knowledge URL source removed.");
+    } catch (err) {
+      setError(actionErrorMessage(err, "Remove knowledge URL source failed"));
+    } finally {
+      sourceActionInFlightRef.current = false;
+      setDeleteBusyId(null);
+    }
   }
 
   return (
@@ -2013,7 +2720,15 @@ function SourcesTab({ capabilityId, repos, disabled, onMutate }: {
         </p>
         {repos.length === 0 && <p className="text-sm text-slate-400">No repositories attached. Add one under the <strong>repos</strong> tab.</p>}
         <div className="space-y-2">
-          {repos.map(r => <RepoPollRow key={r.id as string} capabilityId={capabilityId} repo={r} disabled={disabled} onMutate={onMutate} />)}
+          {repos.map((r, index) => (
+            <RepoPollRow
+              key={capabilityString(r.id) || `repo-${index}`}
+              capabilityId={capabilityId}
+              repo={r}
+              disabled={disabled}
+              onMutate={onMutate}
+            />
+          ))}
         </div>
       </section>
 
@@ -2046,24 +2761,37 @@ function SourcesTab({ capabilityId, repos, disabled, onMutate }: {
           </button>
         </div>
         {error && <div className="text-xs text-red-600 mb-2">{error}</div>}
+        {msg && <div className="text-xs text-emerald-700 mb-2">{msg}</div>}
 
         <div className="space-y-2">
-          {list.map(s => (
-            <div key={s.id as string} className="card p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-slate-800 truncate">{(s.title as string) || (s.url as string)}</div>
-                  <div className="text-xs text-slate-500 truncate">{s.url as string}</div>
-                  <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap gap-3">
-                    <span>poll: every <strong>{s.pollIntervalSec as number}s</strong></span>
-                    <span>last: {s.lastPolledAt ? new Date(s.lastPolledAt as string).toLocaleString() : "never"}</span>
-                    {s.lastPollError ? <span className="text-red-600">err: {String(s.lastPollError).slice(0,80)}</span> : null}
+          {list.map((s, index) => {
+            const sourceId = capabilityString(s.id);
+            const url = capabilityString(s.url);
+            const title = capabilityString(s.title) || url || `Knowledge source ${index + 1}`;
+            const pollInterval = Number.isFinite(Number(s.pollIntervalSec)) ? Number(s.pollIntervalSec) : 0;
+            return (
+              <div key={sourceId || `${title}-${index}`} className="card p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-slate-800 truncate">{title}</div>
+                    <div className="text-xs text-slate-500 truncate">{url || "URL pending"}</div>
+                    <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap gap-3">
+                      <span>poll: every <strong>{pollInterval || "?"}s</strong></span>
+                      <span>last: {formatDateTime(s.lastPolledAt)}</span>
+                      {s.lastPollError ? <span className="text-red-600">err: {String(s.lastPollError).slice(0,80)}</span> : null}
+                    </div>
                   </div>
+                  <button
+                    className="text-xs text-red-600 hover:underline disabled:text-slate-400"
+                    disabled={disabled || !sourceId || deleteBusyId !== null}
+                    onClick={() => deleteSource(sourceId)}
+                  >
+                    {deleteBusyId === sourceId ? "Removing..." : "Remove"}
+                  </button>
                 </div>
-                <button className="text-xs text-red-600 hover:underline disabled:text-slate-400" disabled={disabled} onClick={() => deleteSource(s.id as string)}>Remove</button>
               </div>
-            </div>
-          ))}
+            );
+          })}
           {list.length === 0 && <p className="text-sm text-slate-400">No knowledge sources yet.</p>}
         </div>
       </section>
@@ -2077,31 +2805,47 @@ function RepoPollRow({ capabilityId, repo, disabled, onMutate }: {
   disabled?: boolean;
   onMutate: () => Promise<unknown> | void;
 }) {
+  const saveInFlightRef = useRef(false);
   const [interval, setInterval] = useState<string>(repo.pollIntervalSec ? String(repo.pollIntervalSec) : "");
   const [busy, setBusy] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const repoId = capabilityString(repo.id);
+  const repoName = capabilityString(repo.repoName) || capabilityString(repo.repoUrl) || "Repository";
+  const repoUrl = capabilityString(repo.repoUrl) || "Repository URL pending";
+  const lastPollError = capabilityString(repo.lastPollError).slice(0, 80);
 
   async function save() {
+    if (!repoId || saveInFlightRef.current || disabled) return;
+    saveInFlightRef.current = true;
     setBusy(true);
+    setError(null);
     try {
-      await runtimeApi.updateRepoPoll(capabilityId, repo.id as string, {
+      await runtimeApi.updateRepoPoll(capabilityId, repoId, {
         pollIntervalSec: interval ? Number(interval) : null,
       });
       setSavedAt(Date.now());
       await onMutate();
-    } finally { setBusy(false); }
+    } catch (err) {
+      setSavedAt(null);
+      setError(actionErrorMessage(err, "Repository polling update failed"));
+    } finally {
+      saveInFlightRef.current = false;
+      setBusy(false);
+    }
   }
 
   return (
     <div className="card p-3 flex items-start justify-between gap-3">
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium text-slate-800 truncate">{repo.repoName as string}</div>
-        <div className="text-xs text-slate-500 truncate">{repo.repoUrl as string}</div>
+        <div className="text-sm font-medium text-slate-800 truncate">{repoName}</div>
+        <div className="text-xs text-slate-500 truncate">{repoUrl}</div>
         <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap gap-3">
-          <span>last: {repo.lastPolledAt ? new Date(repo.lastPolledAt as string).toLocaleString() : "never"}</span>
+          <span>last: {formatDateTime(repo.lastPolledAt)}</span>
           {repo.lastPolledSha ? <span>sha: <code>{String(repo.lastPolledSha).slice(0,7)}</code></span> : null}
-          {repo.lastPollError ? <span className="text-red-600">err: {String(repo.lastPollError).slice(0,80)}</span> : null}
+          {lastPollError ? <span className="text-red-600">err: {lastPollError}</span> : null}
         </div>
+        {error && <div className="mt-2 text-xs text-red-600">{error}</div>}
       </div>
       <div className="flex items-end gap-2">
         <div>
@@ -2110,9 +2854,10 @@ function RepoPollRow({ capabilityId, repo, disabled, onMutate }: {
             type="number" min={60} max={86400}
             className="w-24 px-2 py-1.5 text-sm border border-slate-200 rounded-md"
             value={interval} onChange={e => setInterval(e.target.value)} placeholder="(off)"
+            disabled={busy || disabled}
           />
         </div>
-        <button className="btn-primary text-xs whitespace-nowrap" disabled={busy || disabled} onClick={save}>
+        <button className="btn-primary text-xs whitespace-nowrap" disabled={busy || disabled || !repoId} onClick={save}>
           {busy ? "Saving…" : savedAt && Date.now() - savedAt < 2000 ? "Saved" : "Save"}
         </button>
       </div>
@@ -2147,15 +2892,18 @@ interface DebugResponse {
                                 filePath: string; startLine: number | null; summary: string | null;
                                 language: string | null; repoName: string }>;
 }
+type ScoredHit = { label: string; sub: string; cosineSimilarity: number; ageDays: number; finalScore: number };
 
-function TuningTab({ capabilityId }: { capabilityId: string }) {
+function TuningTab({ capabilityId, disabled }: { capabilityId: string; disabled?: boolean }) {
+  const runInFlightRef = useRef(false);
   const [task, setTask] = useState("");
   const [busy, setBusy] = useState(false);
   const [data, setData] = useState<DebugResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function run() {
-    if (!task.trim()) return;
+    if (!task.trim() || runInFlightRef.current || disabled) return;
+    runInFlightRef.current = true;
     setBusy(true); setError(null); setData(null);
     try {
       const res = await fetch(apiPath(COMPOSER_DEBUG_URL), {
@@ -2166,10 +2914,13 @@ function TuningTab({ capabilityId }: { capabilityId: string }) {
       const { raw, parsed } = await readResponseBody(res);
       if (!res.ok) throw new Error(`debug ${res.status}: ${responseMessage(parsed, raw, res.statusText)}`);
       if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 300) : "debug response was empty");
-      setData(parsed as DebugResponse);
+      setData(normalizeDebugResponse(parsed));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "request failed");
-    } finally { setBusy(false); }
+      setError(actionErrorMessage(err, "request failed"));
+    } finally {
+      runInFlightRef.current = false;
+      setBusy(false);
+    }
   }
 
   return (
@@ -2186,17 +2937,23 @@ function TuningTab({ capabilityId }: { capabilityId: string }) {
           className="flex-1 px-2 py-1.5 text-sm border border-slate-200 rounded-md"
           placeholder="How do I price a bond?"
           value={task} onChange={e => setTask(e.target.value)}
+          disabled={busy || disabled}
         />
-        <button className="btn-primary text-xs" disabled={busy || !task.trim()} onClick={run}>
+        <button className="btn-primary text-xs" disabled={busy || disabled || !task.trim()} onClick={run}>
           {busy ? "Scoring…" : "Run"}
         </button>
       </div>
+      {disabled && (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          Archived capabilities are read-only. Retrieval tuning is retained for evidence through existing artifacts and receipts, but debug retrieval is disabled.
+        </div>
+      )}
       {error && <div className="text-xs text-red-600">{error}</div>}
       {data && (
         <div className="space-y-3">
           <div className="text-xs text-slate-500">
-            provider: <strong>{data.provider}</strong> · model: <strong>{data.model}</strong> · dim: <strong>{data.dim}</strong>
-            {" "}· recency boost ≤ <strong>{(data.tuning.recencyBoostMax * 100).toFixed(0)}%</strong> for items &lt; <strong>{data.tuning.recencyBoostDays}d</strong> old
+            provider: <strong>{data.provider}</strong> · model: <strong>{data.model}</strong> · dim: <strong>{data.dim || "n/a"}</strong>
+            {" "}· recency boost &lt;= <strong>{formatPercent(data.tuning.recencyBoostMax)}</strong> for items &lt; <strong>{data.tuning.recencyBoostDays || "n/a"}d</strong> old
           </div>
           <ScoredSection title="Knowledge" hits={data.knowledge.map(h => ({ ...h, label: h.title, sub: h.artifactType }))} />
           <ScoredSection title="Memory"    hits={data.memory.map(h => ({ ...h, label: h.title, sub: h.memoryType }))} />
@@ -2211,10 +2968,64 @@ function TuningTab({ capabilityId }: { capabilityId: string }) {
   );
 }
 
-function ScoredSection({ title, hits }: {
-  title: string;
-  hits: Array<{ label: string; sub: string; cosineSimilarity: number; ageDays: number; finalScore: number }>;
-}) {
+function normalizeDebugResponse(value: unknown): DebugResponse {
+  const record = asObject(value);
+  const tuning = asObject(record.tuning);
+  return {
+    capabilityId: capabilityString(record.capabilityId),
+    task: capabilityString(record.task),
+    provider: capabilityString(record.provider) || "unknown",
+    model: capabilityString(record.model) || "unknown",
+    dim: capabilityNumber(record.dim, 0),
+    tuning: {
+      recencyBoostMax: capabilityNumber(tuning.recencyBoostMax, 0),
+      recencyBoostDays: capabilityNumber(tuning.recencyBoostDays, 0),
+    },
+    knowledge: asObjectArray(record.knowledge).map(item => ({
+      ...normalizeDebugHit(item),
+      id: capabilityString(item.id),
+      artifactType: capabilityString(item.artifactType) || "knowledge",
+      title: capabilityString(item.title) || "Untitled knowledge",
+      content: capabilityString(item.content),
+    })),
+    memory: asObjectArray(record.memory).map(item => ({
+      ...normalizeDebugHit(item),
+      id: capabilityString(item.id),
+      memoryType: capabilityString(item.memoryType) || "memory",
+      title: capabilityString(item.title) || "Untitled memory",
+      content: capabilityString(item.content),
+    })),
+    code: asObjectArray(record.code).map(item => ({
+      ...normalizeDebugHit(item),
+      symbol_id: capabilityString(item.symbol_id),
+      symbolName: capabilityString(item.symbolName) || null,
+      symbolType: capabilityString(item.symbolType) || null,
+      filePath: capabilityString(item.filePath) || "unknown file",
+      startLine: Number.isFinite(Number(item.startLine)) ? Number(item.startLine) : null,
+      summary: capabilityString(item.summary) || null,
+      language: capabilityString(item.language) || null,
+      repoName: capabilityString(item.repoName) || "unknown repo",
+    })),
+  };
+}
+
+function normalizeDebugHit(value: Record<string, unknown>): DebugHit {
+  return {
+    cosineSimilarity: capabilityNumber(value.cosineSimilarity, Number.NaN),
+    ageDays: capabilityNumber(value.ageDays, Number.NaN),
+    finalScore: capabilityNumber(value.finalScore, Number.NaN),
+  };
+}
+
+function formatScore(value: number, digits: number): string {
+  return Number.isFinite(value) ? value.toFixed(digits) : "n/a";
+}
+
+function formatPercent(value: number): string {
+  return Number.isFinite(value) ? `${(value * 100).toFixed(0)}%` : "n/a";
+}
+
+function ScoredSection({ title, hits }: { title: string; hits: ScoredHit[] }) {
   return (
     <div className="card p-3">
       <h4 className="text-xs font-semibold text-slate-700 mb-2">{title} ({hits.length})</h4>
@@ -2230,8 +3041,8 @@ function ScoredSection({ title, hits }: {
                 <div className="text-slate-500 truncate">{h.sub}</div>
               </div>
               <div className="text-right shrink-0">
-                <div className="text-slate-700">cos <strong>{h.cosineSimilarity.toFixed(3)}</strong></div>
-                <div className="text-slate-500">age {h.ageDays.toFixed(1)}d → score <strong>{h.finalScore.toFixed(3)}</strong></div>
+                <div className="text-slate-700">cos <strong>{formatScore(h.cosineSimilarity, 3)}</strong></div>
+                <div className="text-slate-500">age {formatScore(h.ageDays, 1)}d - score <strong>{formatScore(h.finalScore, 3)}</strong></div>
               </div>
             </div>
           ))}
