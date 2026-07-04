@@ -16,7 +16,12 @@ const {
 
 function main() {
   const source = fs.readFileSync("src/lib/iam/service-token.ts", "utf8");
+  const envSource = fs.readFileSync("src/config/env.ts", "utf8");
   assert.match(source, /const SCOPES = \["read:reference-data", "write:reference-data", "publish:events"\]/);
+  assert.match(envSource, /IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC: boundedInt\([\s\S]*?10,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC/);
+  assert.match(source, /const IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_MS = env\.IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC \* 1000;/);
+  assert.match(source, /AbortSignal\.timeout\(IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_MS\)/);
+  assert.doesNotMatch(source, /AbortSignal\.timeout\(10_000\)/);
   assert.deepEqual(configuredTenantIdsForServiceToken(), ["tenant-a", "tenant-b"]);
 
   const matching = jwt.sign({

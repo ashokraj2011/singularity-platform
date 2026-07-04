@@ -22,6 +22,7 @@ const AGENT_RUNTIME_LIMITS = {
   AGENT_SOURCE_FETCH_TIMEOUT_SEC: 300,
   CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC: 900,
   AGENT_CONTRACT_MINT_TIMEOUT_SEC: 300,
+  IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC: 300,
 } as const;
 
 const schema = z.object({
@@ -87,6 +88,11 @@ const schema = z.object({
     15,
     1,
     AGENT_RUNTIME_LIMITS.AGENT_CONTRACT_MINT_TIMEOUT_SEC,
+  ),
+  IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC: boundedInt(
+    10,
+    1,
+    AGENT_RUNTIME_LIMITS.IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC,
   ),
   AGENT_SOURCE_ALLOW_PRIVATE_URLS: z.preprocess(
     (v) => v === undefined ? undefined : String(v).toLowerCase() === "true",

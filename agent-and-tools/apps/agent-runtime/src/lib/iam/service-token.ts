@@ -6,6 +6,7 @@ const SERVICE_NAME = "agent-runtime";
 const SCOPES = ["read:reference-data", "write:reference-data", "publish:events"];
 const REFRESH_BUFFER_HOURS = 24;
 const TTL_HOURS = 24 * 30;
+const IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_MS = env.IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC * 1000;
 
 interface CachedToken {
   jwt: string;
@@ -111,7 +112,7 @@ async function mint(): Promise<string | undefined> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ email: username, password }),
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_MS),
   });
   if (!loginRes.ok) {
     console.warn(`[agent-runtime iam-service-token] bootstrap login failed (${loginRes.status})`);
@@ -136,7 +137,7 @@ async function mint(): Promise<string | undefined> {
       tenant_ids: configuredTenantIdsForServiceToken(),
       ttl_hours: TTL_HOURS,
     }),
-    signal: AbortSignal.timeout(10_000),
+    signal: AbortSignal.timeout(IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_MS),
   });
   if (!mintRes.ok) {
     console.warn(`[agent-runtime iam-service-token] mint failed (${mintRes.status}): ${(await mintRes.text()).slice(0, 200)}`);
