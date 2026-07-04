@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -39,6 +38,7 @@ from .stage_execution_policy import StageExecutionPolicy, StageExecutionPolicyEr
 from .prompt_resolver import PromptNotFoundError
 from .turn import MinContextUnavailable, SUBMIT_PHASE_OUTPUT, TurnResult, run_turn
 from .verify_synthesis import SyntheticVerifierResult, synthesize_verifier_run
+from .env_config import bounded_float_env, bounded_int_env
 # M99 S1.1 — deterministic pre-ACT localization (platform-driven, gated OFF
 # by default via governed_automation; see localization.py).
 # M99 S1.3 — git push preflight (platform-driven, same gating; see git_preflight.py).
@@ -65,9 +65,27 @@ DEFAULT_MAX_TURNS = 25
 # STAGE_DEADLINE, which workgraph maps to FAILED/restartable) instead of being
 # orphaned by the client abort and then duplicated by the retry. 0 disables.
 # Keep this < the client envelope if you tune either side.
-STAGE_WALL_CLOCK_SEC = max(0.0, float(os.environ.get("GOVERNED_STAGE_WALL_CLOCK_SEC", "780")))
-LLM_RETRY_ATTEMPTS = max(0, int(os.environ.get("GOVERNED_LLM_RETRY_ATTEMPTS", "2")))
-LLM_RETRY_BASE_DELAY_SEC = max(0.1, float(os.environ.get("GOVERNED_LLM_RETRY_BASE_DELAY_SEC", "1.0")))
+STAGE_WALL_CLOCK_SEC = bounded_float_env(
+    "GOVERNED_STAGE_WALL_CLOCK_SEC",
+    default=780.0,
+    min_value=0.0,
+    max_value=24.0 * 60.0 * 60.0,
+    logger=log,
+)
+LLM_RETRY_ATTEMPTS = bounded_int_env(
+    "GOVERNED_LLM_RETRY_ATTEMPTS",
+    default=2,
+    min_value=0,
+    max_value=10,
+    logger=log,
+)
+LLM_RETRY_BASE_DELAY_SEC = bounded_float_env(
+    "GOVERNED_LLM_RETRY_BASE_DELAY_SEC",
+    default=1.0,
+    min_value=0.1,
+    max_value=60.0,
+    logger=log,
+)
 _TRANSIENT_LLM_ERROR_CODES = {
     "LLM_GATEWAY_TIMEOUT",
     "LLM_GATEWAY_UNAVAILABLE",
