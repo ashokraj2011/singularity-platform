@@ -105,6 +105,10 @@ allowed_frame_types=[…] · (optional) tenant_id, shared
 Context Fabric rejects runtime tokens that only carry `sub`. This prevents every
 runtime for a user from collapsing onto the same registry slot. **Always mint a
 distinct `runtime_id`.**
+Token identity/display claims are bounded to IAM-compatible lengths
+(`runtime_id`/`device_id`/tenant/user ids, `runtime_type`, and `device_name`);
+oversized signed claims are rejected instead of being stored or exposed in
+Operations.
 `exp` is mandatory and must be a JWT NumericDate; Context Fabric rejects missing,
 string, or already-expired expiries so runtime tokens cannot become unbounded
 bridge credentials.

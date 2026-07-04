@@ -111,6 +111,11 @@ _KNOWN_RUNTIME_FRAME_TYPES = {
 }
 _MAX_RUNTIME_CAPABILITY_TAGS = 32
 _MAX_RUNTIME_CAPABILITY_TAG_LEN = 96
+_MAX_RUNTIME_USER_ID_LEN = 128
+_MAX_RUNTIME_ID_LEN = 128
+_MAX_RUNTIME_TENANT_ID_LEN = 128
+_MAX_RUNTIME_TYPE_LEN = 64
+_MAX_RUNTIME_DEVICE_NAME_LEN = 200
 
 # Finding #7 — device-revocation enforcement. A revoked device JWT must stop working
 # without waiting for its (up-to-365-day) natural expiry, so the bridge asks IAM whether
@@ -231,6 +236,12 @@ def _claim_bool(claims: dict[str, Any], key: str) -> bool:
     return False
 
 
+def _reject_oversized_claim(claims: dict[str, Any], key: str, max_len: int) -> None:
+    value = _claim_str(claims, key)
+    if value and len(value) > max_len:
+        raise JWTError(f"{key} too long")
+
+
 def _runtime_claims_shared(claims: dict[str, Any]) -> bool:
     return _claim_bool(claims, "shared") or _claim_str(claims, "runtime_scope").lower() in {
         "tenant",
@@ -277,6 +288,14 @@ def _verify_runtime_token(token: str) -> dict[str, Any]:
     kind = claims.get("kind")
     if kind not in {"runtime", "device"}:
         raise JWTError(f"expected kind=runtime|device, got {kind}")
+    for key in ("sub", "user_id"):
+        _reject_oversized_claim(claims, key, _MAX_RUNTIME_USER_ID_LEN)
+    for key in ("device_id", "runtime_id"):
+        _reject_oversized_claim(claims, key, _MAX_RUNTIME_ID_LEN)
+    for key in ("tenant_id", "tenant", "org_id"):
+        _reject_oversized_claim(claims, key, _MAX_RUNTIME_TENANT_ID_LEN)
+    _reject_oversized_claim(claims, "runtime_type", _MAX_RUNTIME_TYPE_LEN)
+    _reject_oversized_claim(claims, "device_name", _MAX_RUNTIME_DEVICE_NAME_LEN)
     if not _claim_str(claims, "sub"):
         raise JWTError("missing sub")
     if kind == "device" and not _claim_str(claims, "device_id"):
@@ -296,11 +315,12 @@ def _first_claim_str(claims: dict[str, Any], *keys: str) -> str:
     return ""
 
 
-def _first_hello_str(hello: dict[str, Any], *keys: str) -> str:
+def _first_hello_str(hello: dict[str, Any], *keys: str, max_len: int | None = None) -> str:
     for key in keys:
         value = hello.get(key)
         if value is not None and str(value).strip():
-            return str(value).strip()
+            cleaned = str(value).strip()
+            return cleaned[:max_len] if max_len is not None else cleaned
     return ""
 
 
@@ -320,12 +340,12 @@ def _token_authoritative_runtime_metadata(
     runtime_id = _first_claim_str(claims, "runtime_id", "device_id", "sub")
     runtime_type = (
         _first_claim_str(claims, "runtime_type")
-        or _first_hello_str(hello, "runtime_type")
+        or _first_hello_str(hello, "runtime_type", max_len=_MAX_RUNTIME_TYPE_LEN)
         or "mcp"
     )
     device_name = (
         _first_claim_str(claims, "device_name")
-        or _first_hello_str(hello, "device_name")
+        or _first_hello_str(hello, "device_name", max_len=_MAX_RUNTIME_DEVICE_NAME_LEN)
         or runtime_id
     )
     return {

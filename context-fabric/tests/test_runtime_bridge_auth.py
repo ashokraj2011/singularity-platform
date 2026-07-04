@@ -102,6 +102,35 @@ def test_runtime_token_accepts_runtime_id_or_device_id(monkeypatch):
     assert with_device_id["device_id"] == "device-a"
 
 
+@pytest.mark.parametrize(
+    "claim,max_len",
+    [
+        ("sub", 128),
+        ("user_id", 128),
+        ("runtime_id", 128),
+        ("device_id", 128),
+        ("tenant_id", 128),
+        ("tenant", 128),
+        ("org_id", 128),
+        ("runtime_type", 64),
+        ("device_name", 200),
+    ],
+)
+def test_runtime_token_rejects_oversized_identity_and_display_claims(monkeypatch, claim, max_len):
+    monkeypatch.setattr(laptop_bridge, "JWT_SECRET", "test-secret")
+    payload = {
+        "kind": "runtime",
+        "sub": "user-a",
+        "runtime_id": "runtime-a",
+        "exp": int(time.time()) + 60,
+        "allowed_frame_types": ["tool-run"],
+        claim: "x" * (max_len + 1),
+    }
+
+    with pytest.raises(laptop_bridge.JWTError, match=f"{claim} too long"):
+        laptop_bridge._verify_runtime_token(_signed_runtime_token(payload))
+
+
 def test_runtime_token_requires_allowed_frame_types(monkeypatch):
     monkeypatch.setattr(laptop_bridge, "JWT_SECRET", "test-secret")
     base_payload = {
@@ -259,6 +288,24 @@ def test_runtime_metadata_allows_legacy_hello_display_fallbacks():
         "runtime_type": "mcp",
         "device_name": "legacy-laptop",
     }
+
+
+def test_runtime_metadata_bounds_legacy_hello_display_fallbacks():
+    metadata = laptop_bridge._token_authoritative_runtime_metadata(
+        {
+            "kind": "device",
+            "sub": "user-legacy",
+            "device_id": "legacy-device",
+        },
+        {
+            "type": "hello",
+            "runtime_type": "r" * 80,
+            "device_name": "d" * 240,
+        },
+    )
+
+    assert metadata["runtime_type"] == "r" * 64
+    assert metadata["device_name"] == "d" * 200
 
 
 def test_runtime_revocation_identity_prefers_device_id_then_runtime_id():
