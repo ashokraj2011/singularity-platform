@@ -1,6 +1,7 @@
 import { env } from "../config/env";
 import { AppError } from "../shared/errors";
 import { readUpstreamJsonObject } from "../shared/upstream-json";
+import { contextFabricClientConfig } from "./context-fabric.config";
 
 export interface ChatRespondRequest {
   session_id: string;
@@ -96,6 +97,8 @@ export interface ExecuteRespondResponse {
 }
 
 export const contextFabricClient = {
+  config: contextFabricClientConfig(),
+
   serviceHeaders(baseHeaders: Record<string, string> = {}): Record<string, string> {
     return env.CONTEXT_FABRIC_SERVICE_TOKEN
       ? { ...baseHeaders, "X-Service-Token": env.CONTEXT_FABRIC_SERVICE_TOKEN }
@@ -114,7 +117,7 @@ export const contextFabricClient = {
       method: "POST",
       headers: contextFabricClient.serviceHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(input),
-      signal: AbortSignal.timeout(240_000),
+      signal: AbortSignal.timeout(contextFabricClient.config.timeoutMs),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
@@ -143,8 +146,8 @@ export const contextFabricClient = {
       method: "POST",
       headers: contextFabricClient.serviceHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(input),
-      // context-fabric /chat/respond chains downstream calls; allow up to ~4min
-      signal: AbortSignal.timeout(240_000),
+      // context-fabric /chat/respond chains downstream calls.
+      signal: AbortSignal.timeout(contextFabricClient.config.timeoutMs),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");

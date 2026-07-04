@@ -716,6 +716,12 @@ Agent Runtime treats that contract pin as mandatory for production-class templat
 
 Context Fabric caches Prompt Composer stage prompts and policies with bounded operator knobs: `STAGE_PROMPT_CACHE_TTL_SEC` defaults to `60`, `STAGE_POLICY_CACHE_TTL_SEC` defaults to `300`, and both clamp at `86400`. Composer HTTP timeouts use `STAGE_PROMPT_HTTP_TIMEOUT_SEC` default `15` and `STAGE_POLICY_HTTP_TIMEOUT_SEC` default `10`, both clamped at `300`. Invalid or sub-second values fall back to defaults so a typo cannot prevent Context Fabric from starting or create a tight composer polling loop.
 
+Prompt Composer's own calls back to Context Fabric use
+`CONTEXT_FABRIC_CLIENT_TIMEOUT_SEC`, default `240`, bounded `1..900`. The
+governed single-turn path and legacy `/chat/respond` path share that value for
+local fetch cancellation, so operators can tune slow model calls without
+unbounded waits or accidental instant failures.
+
 Context Fabric MCP dispatch timeouts use the same governed env helper:
 `MCP_TOOL_RUN_TIMEOUT_SEC` defaults to `120`, minimum `1`, maximum `3600`,
 while `MCP_TOOL_RUN_LONG_TIMEOUT_SEC` defaults to `960`, minimum `1`,

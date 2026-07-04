@@ -9,10 +9,17 @@ function readRepoFile(relativePath: string): string {
 function main() {
   const client = readRepoFile("src/clients/context-fabric.client.ts");
   assert.match(client, /serviceHeaders\(baseHeaders: Record<string, string> = \{\}\)/);
+  assert.match(client, /config: contextFabricClientConfig\(\)/);
   assert.match(client, /env\.CONTEXT_FABRIC_SERVICE_TOKEN/);
   assert.match(client, /"X-Service-Token": env\.CONTEXT_FABRIC_SERVICE_TOKEN/);
   assert.match(client, /headers: contextFabricClient\.serviceHeaders\(\{ "Content-Type": "application\/json" \}\)/);
+  assert.match(client, /AbortSignal\.timeout\(contextFabricClient\.config\.timeoutMs\)/);
   assert.doesNotMatch(client, /headers: \{ "Content-Type": "application\/json" \}/);
+  assert.doesNotMatch(client, /AbortSignal\.timeout\(240_000\)/);
+
+  const clientConfig = readRepoFile("src/clients/context-fabric.config.ts");
+  assert.match(clientConfig, /boundedIntEnv\("CONTEXT_FABRIC_CLIENT_TIMEOUT_SEC", 240, 1, 900\)/);
+  assert.match(clientConfig, /timeoutMs: timeoutSec \* 1000/);
 
   const envConfig = readRepoFile("src/config/env.ts");
   assert.match(envConfig, /CONTEXT_FABRIC_SERVICE_TOKEN: z\.string\(\)\.optional\(\)/);
