@@ -37,6 +37,7 @@ dotenv.config();
 assertProductionSecret({ name: "JWT_SECRET", value: process.env.JWT_SECRET });
 assertProductionSecret({ name: "MCP_BEARER_TOKEN", value: process.env.MCP_BEARER_TOKEN, minLength: 32 });
 assertProductionSecret({ name: "AUDIT_GOV_SERVICE_TOKEN", value: process.env.AUDIT_GOV_SERVICE_TOKEN, minLength: 32 });
+assertProductionSecret({ name: "CONTEXT_FABRIC_SERVICE_TOKEN", value: process.env.CONTEXT_FABRIC_SERVICE_TOKEN, minLength: 32 });
 assertProductionInvariant({
   name: "AUTH_OPTIONAL",
   ok: process.env.AUTH_OPTIONAL !== "true",
