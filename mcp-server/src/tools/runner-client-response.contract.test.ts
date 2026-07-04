@@ -24,8 +24,38 @@ assert.match(
 
 assert.match(
   source,
+  /const RUNNER_EXECUTE_GRACE_MS = config\.MCP_RUNNER_EXECUTE_GRACE_MS;/,
+  "runner execute grace must come from bounded MCP config",
+);
+
+assert.match(
+  source,
+  /signal: AbortSignal\.timeout\(req\.timeoutMs \+ RUNNER_EXECUTE_GRACE_MS\)/,
+  "runner execute should use the shared grace timeout constant",
+);
+
+assert.match(
+  source,
   /const body = await readRunnerEnvelope\(response, "runner health"\)/,
   "runner health should use the guarded parser",
+);
+
+assert.match(
+  source,
+  /const RUNNER_HEALTH_TIMEOUT_MS = config\.MCP_RUNNER_HEALTH_TIMEOUT_MS;/,
+  "runner health timeout must come from bounded MCP config",
+);
+
+assert.match(
+  source,
+  /AbortSignal\.timeout\(RUNNER_HEALTH_TIMEOUT_MS\)/,
+  "runner health should use the shared health timeout constant",
+);
+
+assert.doesNotMatch(
+  source,
+  /AbortSignal\.timeout\(1500\)|req\.timeoutMs \+ 5_000/,
+  "runner client should not hardcode runner timeout milliseconds",
 );
 
 assert.doesNotMatch(

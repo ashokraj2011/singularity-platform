@@ -44,6 +44,8 @@ const MCP_LIMITS = {
   WORKSPACE_LOCK_STALE_MS: 24 * 60 * 60_000,
   WORKSPACE_GC_AGE_HOURS: 30 * 24,
   WORKSPACE_DISK_QUOTA_BYTES: 10 * 1024 * 1024 * 1024 * 1024,
+  RUNNER_EXECUTE_GRACE_MS: 300_000,
+  RUNNER_HEALTH_TIMEOUT_MS: 300_000,
   AUDIT_RESTORE_LIMIT: 100_000,
   FORMAL_VERIFICATION_TIMEOUT_MS: 10 * 60_000,
   LOOP_REPETITION_THRESHOLD: 20,
@@ -228,6 +230,8 @@ const schema = z.object({
   MCP_RUNNER_DEFAULT_IMAGE: z.string().default("node:20-alpine"),
   MCP_RUNNER_IMAGE_MAP_JSON: z.string().optional(),
   MCP_RUNNER_NETWORK_MODE: z.string().default("none"),
+  MCP_RUNNER_EXECUTE_GRACE_MS: boundedPositiveInt(5_000, MCP_LIMITS.RUNNER_EXECUTE_GRACE_MS),
+  MCP_RUNNER_HEALTH_TIMEOUT_MS: boundedPositiveInt(1_500, MCP_LIMITS.RUNNER_HEALTH_TIMEOUT_MS),
 
   // Optional SMT/formal verifier hook. When enabled, finish_work_branch runs
   // a pre-commit proof over the code-change evidence and verification receipts

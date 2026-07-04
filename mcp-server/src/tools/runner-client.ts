@@ -1,6 +1,9 @@
 import { config } from "../config";
 import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
 
+const RUNNER_EXECUTE_GRACE_MS = config.MCP_RUNNER_EXECUTE_GRACE_MS;
+const RUNNER_HEALTH_TIMEOUT_MS = config.MCP_RUNNER_HEALTH_TIMEOUT_MS;
+
 export interface RunnerExecuteRequest {
   command: string;
   args: string[];
@@ -44,7 +47,7 @@ export async function callSandboxRunner(req: RunnerExecuteRequest): Promise<Reco
         authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(req),
-      signal: AbortSignal.timeout(req.timeoutMs + 5_000),
+      signal: AbortSignal.timeout(req.timeoutMs + RUNNER_EXECUTE_GRACE_MS),
     });
   } catch (err) {
     throw new Error(`MCP_RUNNER_UNAVAILABLE: ${(err as Error).message}`);
@@ -60,7 +63,7 @@ export async function callSandboxRunner(req: RunnerExecuteRequest): Promise<Reco
 }
 export async function sandboxRunnerStatus(): Promise<Record<string, unknown>> {
   const url = `${config.MCP_RUNNER_URL.replace(/\/+$/, "")}/health`;
-  const response = await fetch(url, { signal: AbortSignal.timeout(1500) });
+  const response = await fetch(url, { signal: AbortSignal.timeout(RUNNER_HEALTH_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`runner health returned ${response.status}`);
   const body = await readRunnerEnvelope(response, "runner health");
   if (body.success === false || !body.data || typeof body.data !== "object") {
