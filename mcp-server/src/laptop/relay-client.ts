@@ -43,6 +43,7 @@ import { runWorktreeWriteFile, writeFileSchema } from "../mcp/worktree";
 import { ensureFreshGatewayStatus, listConfiguredProviders } from "../llm/client";
 import { modelCatalogResponse } from "../llm/model-catalog";
 import { configuredDefaultModel, configuredDefaultProvider } from "../llm/provider-config";
+import { readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
 import {
   decodeInbound,
   type HelloFrame, type HeartbeatFrame, type ResponseFrame,
@@ -653,7 +654,14 @@ async function runModelViaLocalGateway(body: unknown): Promise<unknown> {
     const text = await res.text().catch(() => "");
     throw new Error(`local gateway ${res.status}: ${text.slice(0, 300)}`);
   }
-  return res.json();
+  const parsed = await readUpstreamJsonBody(res);
+  if (parsed.parseError) {
+    throw new Error(`local gateway returned invalid JSON (${res.status}): ${parsed.parseError}; body=${upstreamSnippet(parsed.raw, 300)}`);
+  }
+  if (parsed.data === null) {
+    throw new Error(`local gateway returned empty JSON response (${res.status})`);
+  }
+  return parsed.data;
 }
 
 // Convenience: a stable device_id when none is configured. Real CLI mints
