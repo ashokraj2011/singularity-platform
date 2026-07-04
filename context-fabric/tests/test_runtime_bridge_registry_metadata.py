@@ -261,3 +261,41 @@ def test_outbound_runtime_frame_size_is_checked_before_send(monkeypatch):
         assert conn.pending == {}
 
     _run(_case())
+
+
+def test_runtime_pending_request_cap_rejects_before_send(monkeypatch):
+    monkeypatch.setattr(lr, "MAX_PENDING_REQUESTS_PER_RUNTIME", 1)
+
+    class RejectingWS:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def send_text(self, text: str) -> None:
+            self.sent.append(text)
+            raise AssertionError("runtime at pending cap should not receive another frame")
+
+    async def _case():
+        registry = LaptopRegistry()
+        ws = RejectingWS()
+        conn = ActiveConnection(
+            user_id="user-a",
+            device_id="runtime-a",
+            device_name="runtime",
+            ws=ws,  # type: ignore[arg-type]
+            connected_at=1.0,
+            last_seen_at=1.0,
+            supported_frame_types=["model-run"],
+        )
+        conn.pending["existing"] = asyncio.get_running_loop().create_future()
+        await registry.register(conn)
+
+        with pytest.raises(lr.LaptopSendFailed, match="RUNTIME_BUSY"):
+            await registry.dispatch_model_via_laptop(
+                user_id="user-a",
+                request_body={"messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert ws.sent == []
+        assert list(conn.pending.keys()) == ["existing"]
+
+    _run(_case())

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -25,6 +26,7 @@ log = logging.getLogger("laptop-registry")
 INVOKE_TIMEOUT_SEC = 180
 HEARTBEAT_TIMEOUT_SEC = 90
 MAX_PAYLOAD_BYTES = 16 * 1024 * 1024   # I2
+MAX_PENDING_REQUESTS_PER_RUNTIME = int(os.environ.get("RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME", "32"))
 _REDACTED = "[redacted]"
 _SENSITIVE_KEY_PARTS = (
     "token",
@@ -689,6 +691,11 @@ class LaptopRegistry:
         if conn is None:
             scope = f"user {user_id}" if not tenant_id else f"user {user_id} tenant {tenant_id}"
             raise LaptopNotConnected(f"no live runtime serving '{required}' for {scope}")
+        if len(conn.pending) >= MAX_PENDING_REQUESTS_PER_RUNTIME:
+            raise LaptopSendFailed(
+                f"RUNTIME_BUSY: runtime {conn.runtime_id or conn.device_id} already has "
+                f"{len(conn.pending)} pending bridge request(s); max={MAX_PENDING_REQUESTS_PER_RUNTIME}"
+            )
 
         request_id = uuid4().hex
 
