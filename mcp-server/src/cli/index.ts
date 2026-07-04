@@ -29,6 +29,7 @@ const DEFAULT_IAM    = process.env.SINGULARITY_IAM_URL    ?? "http://localhost:8
 const DEFAULT_BRIDGE = process.env.RUNTIME_BRIDGE_URL
   ?? process.env.LAPTOP_BRIDGE_URL
   ?? "ws://localhost:8000/api/runtime-bridge/connect";
+const CLI_HTTP_TIMEOUT_MS = boundedPositiveIntEnv("SINGULARITY_MCP_CLI_HTTP_TIMEOUT_MS", 10_000, 300_000);
 
 interface SavedToken {
   access_token:    string;
@@ -76,6 +77,14 @@ function parseArgs(): { cmd: string; flags: Record<string, string> } {
   return { cmd, flags };
 }
 
+function boundedPositiveIntEnv(name: string, defaultValue: number, maxValue: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return defaultValue;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 1) return defaultValue;
+  return Math.min(Math.floor(value), maxValue);
+}
+
 // ─── login ──────────────────────────────────────────────────────────────────
 async function cmdLogin(flags: Record<string, string>): Promise<void> {
   const platform   = flags["platform"]    ?? DEFAULT_IAM;
@@ -91,6 +100,7 @@ async function cmdLogin(flags: Record<string, string>): Promise<void> {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ email, password }),
+    signal: AbortSignal.timeout(CLI_HTTP_TIMEOUT_MS),
   });
   if (!loginRes.ok) {
     console.error(`✗ /auth/local/login failed: ${loginRes.status} ${await loginRes.text()}`);
@@ -104,6 +114,7 @@ async function cmdLogin(flags: Record<string, string>): Promise<void> {
   const deviceRes = await fetch(`${platform.replace(/\/$/, "")}/auth/device-token`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${userAccessToken}` },
+    signal: AbortSignal.timeout(CLI_HTTP_TIMEOUT_MS),
     body: JSON.stringify({
       device_id: deviceId,
       device_name: deviceName,

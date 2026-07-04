@@ -572,6 +572,7 @@ Core features:
 - Token usage upload.
 - Completion events.
 - Diagnostics and Copilot CLI version checks.
+- `singularity-mcp login` IAM calls are bounded by `SINGULARITY_MCP_CLI_HTTP_TIMEOUT_MS` (default `10000`, minimum `1`, capped at `300000`; invalid values fall back to the default).
 
 ## 8. WorkItem Metadata And Routing Model
 

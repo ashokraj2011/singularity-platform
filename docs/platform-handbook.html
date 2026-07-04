@@ -863,6 +863,7 @@ prompt assembly.</p>
 <li>Token usage upload.</li>
 <li>Completion events.</li>
 <li>Diagnostics and Copilot CLI version checks.</li>
+<li><code>singularity-mcp login</code> IAM calls are bounded by <code>SINGULARITY_MCP_CLI_HTTP_TIMEOUT_MS</code> (default <code>10000</code>, minimum <code>1</code>, capped at <code>300000</code>; invalid values fall back to the default).</li>
 </ul>
 <h2 id="8-workitem-metadata-and-routing-model">8. WorkItem Metadata And Routing Model<a class="anchor" href="#8-workitem-metadata-and-routing-model" aria-label="Link to 8. WorkItem Metadata And Routing Model">#</a></h2>
 <p>The WorkItem-first flow is:</p>

@@ -18,6 +18,30 @@ assert.match(
 
 assert.match(
   cliSource,
+  /function boundedPositiveIntEnv\(name: string, defaultValue: number, maxValue: number\): number/,
+  "CLI should parse bounded positive integer environment overrides for HTTP calls",
+);
+
+assert.match(
+  cliSource,
+  /const CLI_HTTP_TIMEOUT_MS = boundedPositiveIntEnv\("SINGULARITY_MCP_CLI_HTTP_TIMEOUT_MS", 10_000, 300_000\);/,
+  "CLI login should expose a capped HTTP timeout knob",
+);
+
+assert.match(
+  cliSource,
+  /\/auth\/local\/login[\s\S]*?signal: AbortSignal\.timeout\(CLI_HTTP_TIMEOUT_MS\)/,
+  "CLI local login call should use the bounded HTTP timeout",
+);
+
+assert.match(
+  cliSource,
+  /\/auth\/device-token[\s\S]*?signal: AbortSignal\.timeout\(CLI_HTTP_TIMEOUT_MS\)/,
+  "CLI device-token call should use the bounded HTTP timeout",
+);
+
+assert.match(
+  cliSource,
   /requiredStringField\(loginBody, "access_token", "\/auth\/local\/login"\)/,
   "CLI login should require an access_token before calling device-token mint",
 );
