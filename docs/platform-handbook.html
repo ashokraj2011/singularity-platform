@@ -1075,6 +1075,12 @@ and <code>LOG_INGEST_MAX_BATCH</code> both default to <code>500</code>, minimum 
 Invalid or below-minimum values fall back to defaults, while oversized values
 clamp to caps, so ingest cannot accidentally run with disabled rate limits or
 huge per-request batches after an env typo.</p>
+<p>MCP audit-governance client calls are bounded separately:
+<code>MCP_AUDIT_GOV_CHECK_TIMEOUT_MS</code> defaults to <code>3000</code> for awaited budget/rate
+checks, while <code>MCP_AUDIT_GOV_EMIT_TIMEOUT_MS</code> and
+<code>MCP_AUDIT_GOV_APPROVAL_TIMEOUT_MS</code> both default to <code>5000</code> for fire-and-forget
+event emission and approval persistence/consume calls. All three are bounded
+<code>1..300000</code>, preventing a slow ledger from becoming an implicit unbounded wait.</p>
 <p>Audit Governance engine workers use the same bounded env helper. Judge and
 lesson extraction LLM timeouts default to <code>30000</code> ms and cap at <code>300000</code>; the
 diagnosis timeout defaults to <code>120000</code> ms and caps at <code>600000</code>. The shared

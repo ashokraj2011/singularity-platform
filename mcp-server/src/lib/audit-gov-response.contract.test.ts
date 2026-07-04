@@ -4,6 +4,7 @@ import path from "node:path";
 
 const check = readFileSync(path.resolve(process.cwd(), "src/lib/audit-gov-check.ts"), "utf8");
 const approvals = readFileSync(path.resolve(process.cwd(), "src/lib/audit-gov-approvals.ts"), "utf8");
+const emit = readFileSync(path.resolve(process.cwd(), "src/lib/audit-gov-emit.ts"), "utf8");
 
 assert.match(
   check,
@@ -21,6 +22,24 @@ assert.match(
   check,
   /return readAuditGovCheckJson<T>\(res, path\)/,
   "budget/rate-limit checks should use guarded response parsing",
+);
+
+assert.match(
+  check,
+  /const AUDIT_GOV_CHECK_TIMEOUT_MS = config\.MCP_AUDIT_GOV_CHECK_TIMEOUT_MS;/,
+  "audit-governance checks should use bounded MCP timeout config",
+);
+
+assert.match(
+  check,
+  /AbortSignal\.timeout\(AUDIT_GOV_CHECK_TIMEOUT_MS\)/,
+  "audit-governance checks should use the shared check timeout constant",
+);
+
+assert.doesNotMatch(
+  check,
+  /const TIMEOUT_MS\s*=\s*3_000|AbortSignal\.timeout\(TIMEOUT_MS\)/,
+  "audit-governance checks should not hardcode milliseconds",
 );
 
 assert.doesNotMatch(
@@ -47,10 +66,46 @@ assert.match(
   "approval consume should validate required response fields before resuming",
 );
 
+assert.match(
+  approvals,
+  /const AUDIT_GOV_APPROVAL_TIMEOUT_MS = config\.MCP_AUDIT_GOV_APPROVAL_TIMEOUT_MS;/,
+  "approval persistence should use bounded MCP timeout config",
+);
+
+assert.match(
+  approvals,
+  /AbortSignal\.timeout\(AUDIT_GOV_APPROVAL_TIMEOUT_MS\)/,
+  "approval persistence and consume should use the shared approval timeout constant",
+);
+
+assert.doesNotMatch(
+  approvals,
+  /const TIMEOUT_MS\s*=\s*5_000|AbortSignal\.timeout\(TIMEOUT_MS\)/,
+  "approval persistence should not hardcode milliseconds",
+);
+
 assert.doesNotMatch(
   approvals,
   /res\.json\(\)/,
   "approval consume should not call res.json() directly",
+);
+
+assert.match(
+  emit,
+  /const AUDIT_GOV_EMIT_TIMEOUT_MS = config\.MCP_AUDIT_GOV_EMIT_TIMEOUT_MS;/,
+  "audit event emission should use bounded MCP timeout config",
+);
+
+assert.match(
+  emit,
+  /AbortSignal\.timeout\(AUDIT_GOV_EMIT_TIMEOUT_MS\)/,
+  "audit event emission should use the shared emit timeout constant",
+);
+
+assert.doesNotMatch(
+  emit,
+  /const TIMEOUT_MS\s*=\s*5_000|AbortSignal\.timeout\(TIMEOUT_MS\)/,
+  "audit event emission should not hardcode milliseconds",
 );
 
 console.log("mcp audit-governance response contract tests passed");

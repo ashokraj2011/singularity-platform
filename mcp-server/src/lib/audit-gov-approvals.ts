@@ -11,12 +11,13 @@
  * in-memory map alone holds the envelope. Restart loses it. We log a warn
  * so the operator can investigate.
  */
+import { config } from "../config";
 import { log } from "../shared/log";
 import type { PendingApproval } from "../audit/pending";
 import { isJsonObject, readUpstreamJsonBody } from "./upstream-json";
 
 const AUDIT_GOV_URL = process.env.AUDIT_GOV_URL ?? "http://host.docker.internal:8500";
-const TIMEOUT_MS = 5_000;
+const AUDIT_GOV_APPROVAL_TIMEOUT_MS = config.MCP_AUDIT_GOV_APPROVAL_TIMEOUT_MS;
 
 /** Persist the full LoopState envelope to audit-gov so mcp-server restart
  * doesn't drop in-flight approvals. Returns true on success. Awaited (not
@@ -46,7 +47,7 @@ export async function persistApproval(env: PendingApproval, opts: {
         expires_at: env.expires_at,
         continuation_payload: env as unknown as Record<string, unknown>,
       }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(AUDIT_GOV_APPROVAL_TIMEOUT_MS),
     });
     if (!res.ok) {
       log.warn(`audit-gov persistApproval ${env.continuation_token} → ${res.status}`);
@@ -96,7 +97,7 @@ export async function consumeApproval(continuationToken: string): Promise<Consum
   try {
     const res = await fetch(
       `${AUDIT_GOV_URL.replace(/\/$/, "")}/api/v1/governance/approvals/${encodeURIComponent(continuationToken)}/consume`,
-      { method: "POST", signal: AbortSignal.timeout(TIMEOUT_MS) },
+      { method: "POST", signal: AbortSignal.timeout(AUDIT_GOV_APPROVAL_TIMEOUT_MS) },
     );
     if (res.status === 404 || res.status === 409 || res.status === 410) {
       const detail = (await res.text().catch(() => "")).slice(0, 200);

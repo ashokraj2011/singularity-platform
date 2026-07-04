@@ -4,11 +4,12 @@
  * Unlike the fire-and-forget emitter, these calls are AWAITED and gate the
  * agent loop. The caller's governanceMode decides outage behavior.
  */
+import { config } from "../config";
 import { log } from "../shared/log";
 import { isJsonObject, readUpstreamJsonBody } from "./upstream-json";
 
 const AUDIT_GOV_URL = process.env.AUDIT_GOV_URL ?? "http://host.docker.internal:8500";
-const TIMEOUT_MS    = 3_000;
+const AUDIT_GOV_CHECK_TIMEOUT_MS = config.MCP_AUDIT_GOV_CHECK_TIMEOUT_MS;
 
 export interface CheckResult {
   allowed: boolean;
@@ -55,7 +56,7 @@ async function getJson<T>(path: string, qs: Record<string, string | undefined>):
   for (const [k, v] of Object.entries(qs)) if (v) params.set(k, v);
   const url = `${AUDIT_GOV_URL.replace(/\/$/, "")}${path}?${params}`;
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(AUDIT_GOV_CHECK_TIMEOUT_MS) });
     if (!res.ok) {
       log.warn(`audit-gov ${path} → ${res.status}`);
       return null;

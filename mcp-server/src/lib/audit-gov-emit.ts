@@ -4,10 +4,11 @@
  * Producers should NEVER await this — emission failures must not block the
  * agent loop. Errors land on stderr only. Set AUDIT_GOV_URL="" to disable.
  */
+import { config } from "../config";
 import { log } from "../shared/log";
 
 const AUDIT_GOV_URL = process.env.AUDIT_GOV_URL ?? "http://host.docker.internal:8500";
-const TIMEOUT_MS    = 5_000;
+const AUDIT_GOV_EMIT_TIMEOUT_MS = config.MCP_AUDIT_GOV_EMIT_TIMEOUT_MS;
 const AUDIT_GOV_SERVICE_TOKEN = process.env.AUDIT_GOV_SERVICE_TOKEN ?? "";
 
 function auditHeaders(): Record<string, string> {
@@ -52,7 +53,7 @@ export function emitAuditEvent(input: EmitInput): void {
         method: "POST",
         headers: auditHeaders(),
         body: JSON.stringify(input),
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: AbortSignal.timeout(AUDIT_GOV_EMIT_TIMEOUT_MS),
       });
       if (!res.ok) {
         // M35.4 — capture raw body for debug, include status + url
