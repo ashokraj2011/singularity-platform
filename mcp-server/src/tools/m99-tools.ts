@@ -37,6 +37,7 @@ import { readFileTool } from "./core";
 import { config } from "../config";
 
 const execFileP = promisify(execFile);
+const GIT_PUSH_PREFLIGHT_TIMEOUT_MS = config.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS;
 
 // ── shared helpers ───────────────────────────────────────────────────────────
 
@@ -366,13 +367,19 @@ export const gitPushPreflightTool: ToolHandler = {
     try {
       await ensureGitRepo();
       if (!branch) {
-        const { stdout } = await execFileP("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd });
+        const { stdout } = await execFileP("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+          cwd,
+          timeout: GIT_PUSH_PREFLIGHT_TIMEOUT_MS,
+        });
         branch = stdout.trim();
       }
       // Does the local branch have any commit to push at all?
       let hasCommit = true;
       try {
-        const { stdout } = await execFileP("git", ["rev-list", "--count", branch], { cwd });
+        const { stdout } = await execFileP("git", ["rev-list", "--count", branch], {
+          cwd,
+          timeout: GIT_PUSH_PREFLIGHT_TIMEOUT_MS,
+        });
         hasCommit = Number(stdout.trim()) > 0;
       } catch {
         hasCommit = false;
@@ -390,7 +397,11 @@ export const gitPushPreflightTool: ToolHandler = {
         };
       }
       // Dry-run the push. Success → preflight passes.
-      await execFileP("git", ["push", "--dry-run", "-u", remote, branch], { cwd, maxBuffer: 10 * 1024 * 1024 });
+      await execFileP("git", ["push", "--dry-run", "-u", remote, branch], {
+        cwd,
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: GIT_PUSH_PREFLIGHT_TIMEOUT_MS,
+      });
       return {
         success: true,
         output: { ok: true, remote, branch, has_commit: true, message: "Push preflight passed (dry-run clean)." },

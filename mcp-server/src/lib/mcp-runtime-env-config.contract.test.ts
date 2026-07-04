@@ -230,6 +230,14 @@ assert.equal(
 assert.match(fsGitSource, /setTimeout\(\(\) => \{[\s\S]*?child\.kill\("SIGTERM"\)[\s\S]*?\}, FS_GIT_TIMEOUT_MS\)/);
 assert.match(fsGitSource, /setTimeout\(\(\) => child\.kill\("SIGKILL"\), PROCESS_KILL_GRACE_MS\)/);
 
+const m99ToolsSource = readFileSync("src/tools/m99-tools.ts", "utf8");
+assert.match(m99ToolsSource, /const GIT_PUSH_PREFLIGHT_TIMEOUT_MS = config\.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS;/);
+assert.equal(
+  (m99ToolsSource.match(/timeout: GIT_PUSH_PREFLIGHT_TIMEOUT_MS/g) ?? []).length,
+  3,
+  "all git_push_preflight subprocess calls should carry the configured timeout",
+);
+
 const sourceDiscoverSource = readFileSync("src/mcp/source-discover.ts", "utf8");
 assert.match(sourceDiscoverSource, /const SOURCE_DISCOVERY_TIMEOUT_MS = config\.MCP_SOURCE_DISCOVERY_TIMEOUT_MS;/);
 assert.match(sourceDiscoverSource, /timeoutMs = SOURCE_DISCOVERY_TIMEOUT_MS/);

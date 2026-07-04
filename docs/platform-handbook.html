@@ -770,9 +770,9 @@ MCP <code>/healthz/strict</code> also bounds its diagnostics:
 The operator worktree file API also bounds local git helpers:
 <code>MCP_WORKTREE_GIT_HASH_TIMEOUT_MS</code> defaults to <code>5000</code> for blob hash reads and
 <code>MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS</code> defaults to <code>30000</code> for add/diff/commit,
-patch apply, branch, checkpoint, and fs/git tool helpers. Both are bounded
-<code>1..300000</code>, keeping slow worktree filesystems tunable without making
-browser-initiated edits wait forever.
+patch apply, branch, checkpoint, fs/git tool helpers, and git push preflight.
+Both are bounded <code>1..300000</code>, keeping slow worktree filesystems and remote
+preflight checks tunable without making browser-initiated edits wait forever.
 Workspace root resolution bounds legacy sibling-branch probes separately:
 <code>MCP_WORKSPACE_BRANCH_PROBE_TIMEOUT_MS</code> defaults to <code>2000</code> and is bounded
 <code>1..60000</code> for the quick <code>git rev-parse --abbrev-ref HEAD</code> checks used while
