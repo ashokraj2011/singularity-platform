@@ -29,6 +29,8 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
         "config.MCP_RUNNER_EXECUTE_GRACE_MS,",
         "config.MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS,",
         "config.MCP_PYTHON_TOOL_MAX_TIMEOUT_MS,",
+        "config.MCP_COMMAND_TOOL_DEFAULT_TIMEOUT_MS,",
+        "config.MCP_COMMAND_TOOL_MAX_TIMEOUT_MS,",
         "config.MCP_RUNNER_HEALTH_TIMEOUT_MS,",
         "config.MCP_STRICT_HEALTH_GIT_TIMEOUT_MS,",
         "config.MCP_STRICT_HEALTH_LLM_TIMEOUT_MS,",
@@ -66,7 +68,7 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
 
 const defaults = runConfig({});
 assert.equal(defaults.status, 0, defaults.stderr);
-assert.match(defaults.stdout, /3:5:300:5:5:8:2000:5000:120000:600000:1500:2000:1500:2000:3000:5000:5000:30000:10000:1000:60000:5000:30000:300000:600000:20000:120000:10000:30000:60000:2000:30000:4096:0\.7/);
+assert.match(defaults.stdout, /3:5:300:5:5:8:2000:5000:120000:600000:120000:600000:1500:2000:1500:2000:3000:5000:5000:30000:10000:1000:60000:5000:30000:300000:600000:20000:120000:10000:30000:60000:2000:30000:4096:0\.7/);
 
 const custom = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "4",
@@ -79,6 +81,8 @@ const custom = runConfig({
   MCP_RUNNER_EXECUTE_GRACE_MS: "6000",
   MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS: "180000",
   MCP_PYTHON_TOOL_MAX_TIMEOUT_MS: "900000",
+  MCP_COMMAND_TOOL_DEFAULT_TIMEOUT_MS: "150000",
+  MCP_COMMAND_TOOL_MAX_TIMEOUT_MS: "700000",
   MCP_RUNNER_HEALTH_TIMEOUT_MS: "2500",
   MCP_STRICT_HEALTH_GIT_TIMEOUT_MS: "3000",
   MCP_STRICT_HEALTH_LLM_TIMEOUT_MS: "3500",
@@ -105,7 +109,7 @@ const custom = runConfig({
   MCP_PII_NER_CONFIDENCE_FLOOR: "0.85",
 });
 assert.equal(custom.status, 0, custom.stderr);
-assert.match(custom.stdout, /4:9:120:9:12:11:2500:6000:180000:900000:2500:3000:3500:4500:4000:4500:5500:45000:15000:2000:90000:6500:35000:240000:480000:25000:180000:17000:33000:65000:3500:45000:8192:0\.85/);
+assert.match(custom.stdout, /4:9:120:9:12:11:2500:6000:180000:900000:150000:700000:2500:3000:3500:4500:4000:4500:5500:45000:15000:2000:90000:6500:35000:240000:480000:25000:180000:17000:33000:65000:3500:45000:8192:0\.85/);
 
 const impossibleLoopDetector = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "10",
@@ -135,6 +139,13 @@ const invertedPythonToolTimeouts = runConfig({
 assert.notEqual(invertedPythonToolTimeouts.status, 0);
 assert.match(invertedPythonToolTimeouts.stderr, /MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS/);
 
+const invertedCommandToolTimeouts = runConfig({
+  MCP_COMMAND_TOOL_DEFAULT_TIMEOUT_MS: "900000",
+  MCP_COMMAND_TOOL_MAX_TIMEOUT_MS: "600000",
+});
+assert.notEqual(invertedCommandToolTimeouts.status, 0);
+assert.match(invertedCommandToolTimeouts.stderr, /MCP_COMMAND_TOOL_DEFAULT_TIMEOUT_MS/);
+
 for (const [name, value] of [
   ["MCP_LOOP_REPETITION_THRESHOLD", "0"],
   ["MCP_LOOP_REPETITION_WINDOW", "101"],
@@ -146,6 +157,8 @@ for (const [name, value] of [
   ["MCP_RUNNER_EXECUTE_GRACE_MS", "0"],
   ["MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS", "0"],
   ["MCP_PYTHON_TOOL_MAX_TIMEOUT_MS", "0"],
+  ["MCP_COMMAND_TOOL_DEFAULT_TIMEOUT_MS", "0"],
+  ["MCP_COMMAND_TOOL_MAX_TIMEOUT_MS", "0"],
   ["MCP_RUNNER_HEALTH_TIMEOUT_MS", "0"],
   ["MCP_STRICT_HEALTH_GIT_TIMEOUT_MS", "0"],
   ["MCP_STRICT_HEALTH_LLM_TIMEOUT_MS", "0"],
@@ -188,6 +201,9 @@ assert.match(configSource, /MCP_RUNNER_EXECUTE_GRACE_MS: boundedPositiveInt\(5_0
 assert.match(configSource, /MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS: boundedPositiveInt\(120_000, MCP_LIMITS\.PYTHON_TOOL_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_PYTHON_TOOL_MAX_TIMEOUT_MS: boundedPositiveInt\(600_000, MCP_LIMITS\.PYTHON_TOOL_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS must be less than or equal to[\s\S]*?MCP_PYTHON_TOOL_MAX_TIMEOUT_MS/);
+assert.match(configSource, /MCP_COMMAND_TOOL_DEFAULT_TIMEOUT_MS: boundedPositiveInt\(120_000, MCP_LIMITS\.COMMAND_TOOL_TIMEOUT_MS\)/);
+assert.match(configSource, /MCP_COMMAND_TOOL_MAX_TIMEOUT_MS: boundedPositiveInt\(600_000, MCP_LIMITS\.COMMAND_TOOL_TIMEOUT_MS\)/);
+assert.match(configSource, /MCP_COMMAND_TOOL_DEFAULT_TIMEOUT_MS must be less than or equal to[\s\S]*?MCP_COMMAND_TOOL_MAX_TIMEOUT_MS/);
 assert.match(configSource, /MCP_RUNNER_HEALTH_TIMEOUT_MS: boundedPositiveInt\(1_500, MCP_LIMITS\.RUNNER_HEALTH_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_STRICT_HEALTH_GIT_TIMEOUT_MS: boundedPositiveInt\(2_000, MCP_LIMITS\.STRICT_HEALTH_GIT_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_STRICT_HEALTH_LLM_TIMEOUT_MS: boundedPositiveInt\(1_500, MCP_LIMITS\.STRICT_HEALTH_LLM_TIMEOUT_MS\)/);
@@ -352,8 +368,13 @@ assert.match(gitHistorySource, /timeout: GIT_HISTORY_TIMEOUT_MS/);
 assert.doesNotMatch(gitHistorySource, /timeout: 60_000/);
 
 const commandToolSource = readFileSync("src/tools/command.ts", "utf8");
+assert.match(commandToolSource, /const DEFAULT_TIMEOUT_MS = config\.MCP_COMMAND_TOOL_DEFAULT_TIMEOUT_MS;/);
+assert.match(commandToolSource, /const MAX_TIMEOUT_MS = config\.MCP_COMMAND_TOOL_MAX_TIMEOUT_MS;/);
 assert.match(commandToolSource, /const PROCESS_KILL_GRACE_MS = config\.MCP_PROCESS_KILL_GRACE_MS;/);
+assert.match(commandToolSource, /Math\.min\(Math\.floor\(args\.timeout_ms\), MAX_TIMEOUT_MS\)/);
 assert.match(commandToolSource, /setTimeout\(\(\) => child\.kill\("SIGKILL"\), PROCESS_KILL_GRACE_MS\)/);
+assert.doesNotMatch(commandToolSource, /const DEFAULT_TIMEOUT_MS = 120_000/);
+assert.doesNotMatch(commandToolSource, /10 \* 60_000/);
 assert.doesNotMatch(commandToolSource, /setTimeout\(\(\) => child\.kill\("SIGKILL"\), 2_000\)/);
 
 const copilotExecuteSource = readFileSync("src/tools/copilot-execute.ts", "utf8");

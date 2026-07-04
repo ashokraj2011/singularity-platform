@@ -117,7 +117,8 @@ function applyNoTestsOverride<T extends Record<string, unknown>>(receipt: T, ver
   };
 }
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = config.MCP_COMMAND_TOOL_DEFAULT_TIMEOUT_MS;
+const MAX_TIMEOUT_MS = config.MCP_COMMAND_TOOL_MAX_TIMEOUT_MS;
 // M44 — Lowered from 12_000 to 8_000 to align with the Workbench/MCP-default
 // max_tool_result_chars. Explicit caller `max_output_chars` still overrides.
 const DEFAULT_MAX_OUTPUT_CHARS = 8_000;
@@ -312,7 +313,7 @@ async function runCommand(args: Record<string, unknown>, defaultKind: "command" 
   const { command, argv } = normalizeInvocation(args);
   const cwd = resolveSandboxedPath(typeof args.cwd === "string" && args.cwd.trim() ? args.cwd : ".");
   const timeoutMs = typeof args.timeout_ms === "number" && args.timeout_ms > 0
-    ? Math.min(Math.floor(args.timeout_ms), 10 * 60_000)
+    ? Math.min(Math.floor(args.timeout_ms), MAX_TIMEOUT_MS)
     : DEFAULT_TIMEOUT_MS;
   const maxOutputChars = typeof args.max_output_chars === "number" && args.max_output_chars > 0
     ? Math.min(Math.floor(args.max_output_chars), 100_000)
@@ -516,7 +517,7 @@ const commandInputSchema = {
     command: { type: "string", description: "Executable or simple command line, for example 'npm test'." },
     args: { type: "array", items: { type: "string" }, description: "Optional argv array. Prefer this for commands with quoted args." },
     cwd: { type: "string", description: "Sandbox-relative working directory. Defaults to sandbox root." },
-    timeout_ms: { type: "number", description: "Timeout in milliseconds, max 600000." },
+    timeout_ms: { type: "number", description: "Timeout in milliseconds, capped by MCP_COMMAND_TOOL_MAX_TIMEOUT_MS." },
     max_output_chars: { type: "number", description: "Maximum stdout/stderr excerpt chars." },
     profile: { type: "string", description: "Optional runner image/profile key for container execution." },
   },

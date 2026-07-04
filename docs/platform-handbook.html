@@ -755,6 +755,10 @@ into <code>NaN</code>, negative thresholds, or unbounded prompt layers.</p>
 <li>No provider keys or arbitrary host environment.</li>
 </ul>
 <p><code>run_command</code> and <code>run_test</code> return verification receipts with command, exit code, excerpts, duration, pass/fail, timeout state, and isolation metadata.
+Their default and maximum request timeouts are centrally configured through
+<code>MCP_COMMAND_TOOL_DEFAULT_TIMEOUT_MS</code>, default <code>120000</code>, and
+<code>MCP_COMMAND_TOOL_MAX_TIMEOUT_MS</code>, default <code>600000</code>; both are bounded
+<code>1..3600000</code>, and MCP startup fails if the default exceeds the configured max.
 MCP bounds runner-side client waits before dispatch: <code>MCP_RUNNER_EXECUTE_GRACE_MS</code>
 defaults to <code>5000</code> and is bounded <code>1..300000</code> as the HTTP grace window after a
 tool-requested command timeout, while <code>MCP_RUNNER_HEALTH_TIMEOUT_MS</code> defaults

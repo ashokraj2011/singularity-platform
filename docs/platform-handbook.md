@@ -452,6 +452,10 @@ Target isolation properties:
 - No provider keys or arbitrary host environment.
 
 `run_command` and `run_test` return verification receipts with command, exit code, excerpts, duration, pass/fail, timeout state, and isolation metadata.
+Their default and maximum request timeouts are centrally configured through
+`MCP_COMMAND_TOOL_DEFAULT_TIMEOUT_MS`, default `120000`, and
+`MCP_COMMAND_TOOL_MAX_TIMEOUT_MS`, default `600000`; both are bounded
+`1..3600000`, and MCP startup fails if the default exceeds the configured max.
 MCP bounds runner-side client waits before dispatch: `MCP_RUNNER_EXECUTE_GRACE_MS`
 defaults to `5000` and is bounded `1..300000` as the HTTP grace window after a
 tool-requested command timeout, while `MCP_RUNNER_HEALTH_TIMEOUT_MS` defaults
