@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { proxyHeaders, proxyRequest, requireVerifiedCallerBearer } from "../../_proxy";
 import { jsonishMessage, readJsonish } from "../../_json";
 import { platformWebCredentialError, platformWebProductionEnv } from "@/lib/serverEnvGuard";
+import { boundedSecondsEnv } from "@/lib/serverEnvBounds";
 import { serverEnv } from "@/lib/serverRootEnv";
 import { iamApiBase, platformServiceUrl } from "@/lib/platformServices";
 
@@ -12,6 +13,7 @@ const SERVICE_NAME = "platform-web";
 const SERVICE_SCOPES = ["read:reference-data", "read:mcp-servers", "publish:events"];
 const TENANT_ISOLATION_MODE = (serverEnv("TENANT_ISOLATION_MODE", "off") ?? "off").trim().toLowerCase();
 const REQUIRE_TENANT_ID = (serverEnv("REQUIRE_TENANT_ID", "false") ?? "false").trim().toLowerCase();
+const TOKEN_MINT_TIMEOUT_MS = boundedSecondsEnv("WORKGRAPH_PROXY_TOKEN_MINT_TIMEOUT_SEC", 10, 1, 300) * 1000;
 
 let cachedServiceToken: { token: string; expiresAt: number } | null = null;
 
@@ -154,6 +156,7 @@ async function getServiceToken(): Promise<ServiceTokenResult> {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ email, password }),
+      signal: AbortSignal.timeout(TOKEN_MINT_TIMEOUT_MS),
     });
   } catch (err) {
     return tokenMintFailure(`IAM bootstrap login request failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -180,6 +183,7 @@ async function getServiceToken(): Promise<ServiceTokenResult> {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${loginToken}` },
       body: JSON.stringify({ service_name: SERVICE_NAME, scopes: SERVICE_SCOPES, tenant_ids: tenantIds, ttl_hours: 24 * 30 }),
+      signal: AbortSignal.timeout(TOKEN_MINT_TIMEOUT_MS),
     });
   } catch (err) {
     return tokenMintFailure(`IAM service-token mint request failed: ${err instanceof Error ? err.message : String(err)}`);

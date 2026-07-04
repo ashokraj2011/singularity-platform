@@ -111,6 +111,18 @@ assert.match(
 
 assert.match(
   workgraphProxy,
+  /import \{ boundedSecondsEnv \} from "@\/lib\/serverEnvBounds";/,
+  "Workgraph proxy should use the central server env bounds helper for token mint timeout config",
+);
+
+assert.match(
+  workgraphProxy,
+  /const TOKEN_MINT_TIMEOUT_MS = boundedSecondsEnv\("WORKGRAPH_PROXY_TOKEN_MINT_TIMEOUT_SEC", 10, 1, 300\) \* 1000;/,
+  "Workgraph proxy should expose a bounded IAM service-token mint timeout knob",
+);
+
+assert.match(
+  workgraphProxy,
   /async function readJsonObject\(res: Response, source: string\): Promise<Record<string, unknown>> \{[\s\S]*?const body = await readJsonish\(res\);[\s\S]*?throw new Error\(`\$\{source\} returned invalid JSON/,
   "Workgraph proxy service-token minting should reject malformed IAM success bodies through readJsonish",
 );
@@ -129,8 +141,20 @@ assert.match(
 
 assert.match(
   workgraphProxy,
+  /\/auth\/local\/login`, \{[\s\S]*?signal: AbortSignal\.timeout\(TOKEN_MINT_TIMEOUT_MS\)/,
+  "Workgraph proxy should bound IAM bootstrap login calls while minting service tokens",
+);
+
+assert.match(
+  workgraphProxy,
   /IAM service-token mint failed[\s\S]*?jsonishMessage\(body\.data/,
   "Workgraph proxy should preserve plaintext or JSON IAM service-token mint failure messages",
+);
+
+assert.match(
+  workgraphProxy,
+  /\/auth\/service-token`, \{[\s\S]*?signal: AbortSignal\.timeout\(TOKEN_MINT_TIMEOUT_MS\)/,
+  "Workgraph proxy should bound IAM service-token mint calls",
 );
 
 assert.match(

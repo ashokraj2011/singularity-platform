@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { iamApiBase } from "@/lib/platformServices";
-import { serverEnv } from "@/lib/serverRootEnv";
+import { boundedSecondsEnv } from "@/lib/serverEnvBounds";
 import { jsonishMessage, readJsonish } from "./_json";
 
 const HOP_BY_HOP_HEADERS = new Set([
@@ -18,14 +18,6 @@ const HOP_BY_HOP_HEADERS = new Set([
 ]);
 
 const PROXY_AUTH_TIMEOUT_MS = boundedSecondsEnv("PLATFORM_WEB_PROXY_AUTH_TIMEOUT_SEC", 5, 1, 300) * 1000;
-
-function boundedSecondsEnv(name: string, defaultValue: number, min: number, max: number): number {
-  const raw = serverEnv(name);
-  if (!raw || raw.trim() === "") return defaultValue;
-  const value = Number(raw.trim());
-  if (!Number.isFinite(value) || value < min) return defaultValue;
-  return Math.min(max, Math.trunc(value));
-}
 
 export function proxyHeaders(req: NextRequest, upstreamBase: string, defaultBearer?: string): Headers {
   const headers = new Headers();

@@ -38,20 +38,14 @@ assert.match(
 
 assert.match(
   proxy,
-  /import \{ serverEnv \} from "@\/lib\/serverRootEnv";/,
-  "shared proxy auth should use server root env loading for timeout config",
+  /import \{ boundedSecondsEnv \} from "@\/lib\/serverEnvBounds";/,
+  "shared proxy auth should use the central server env bounds helper for timeout config",
 );
 
 assert.match(
   proxy,
   /const PROXY_AUTH_TIMEOUT_MS = boundedSecondsEnv\("PLATFORM_WEB_PROXY_AUTH_TIMEOUT_SEC", 5, 1, 300\) \* 1000;/,
   "shared proxy auth should expose a bounded IAM verification timeout knob",
-);
-
-assert.match(
-  proxy,
-  /function boundedSecondsEnv\(name: string, defaultValue: number, min: number, max: number\): number/,
-  "shared proxy auth should parse bounded timeout seconds locally",
 );
 
 assert.match(

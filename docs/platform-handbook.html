@@ -1110,6 +1110,11 @@ typo cannot create an effectively unbounded browser session.</p>
 and <code>/me</code> calls with <code>PLATFORM_WEB_PROXY_AUTH_TIMEOUT_SEC</code>, default <code>5</code>, bounded
 <code>1..300</code>. Slow identity checks therefore fail closed with the existing proxy
 auth error envelope instead of holding Next request workers open.</p>
+<p>Platform Web&#39;s Workgraph service-token auto-mint path bounds IAM bootstrap login
+and service-token mint calls with <code>WORKGRAPH_PROXY_TOKEN_MINT_TIMEOUT_SEC</code>,
+default <code>10</code>, bounded <code>1..300</code>. This path is development/local convenience only;
+production-class deployments should still inject a pre-minted
+<code>WORKGRAPH_PROXY_SERVICE_TOKEN</code>.</p>
 <p>Agent Runtime capability/polling knobs are schema-validated at startup.
 <code>POLL_WORKER_TICK_SEC</code> defaults to <code>30</code> and is bounded <code>5..3600</code>.
 <code>POLL_WORKER_INITIAL_DELAY_SEC</code> defaults to <code>5</code> and is bounded <code>1..300</code>,
