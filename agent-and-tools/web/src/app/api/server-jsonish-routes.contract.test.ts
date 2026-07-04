@@ -242,6 +242,24 @@ assert.doesNotMatch(
 );
 
 assert.match(
+  eventHorizonActions,
+  /import \{ boundedSecondsEnv \} from "@\/lib\/serverEnvBounds";/,
+  "Event Horizon action catalog should use the central server env bounds helper",
+);
+
+assert.match(
+  eventHorizonActions,
+  /const EVENT_HORIZON_ACTIONS_TIMEOUT_MS = boundedSecondsEnv\("EVENT_HORIZON_ACTIONS_TIMEOUT_SEC", 10, 1, 300\) \* 1000;/,
+  "Event Horizon action catalog should expose a bounded Composer timeout knob",
+);
+
+assert.match(
+  eventHorizonActions,
+  /\/api\/v1\/event-horizon-actions\?surface=[\s\S]*?signal: AbortSignal\.timeout\(EVENT_HORIZON_ACTIONS_TIMEOUT_MS\)/,
+  "Event Horizon action catalog should use the bounded timeout",
+);
+
+assert.match(
   workgraphProxy,
   /import \{ jsonishMessage, readJsonish \} from "\.\.\/\.\.\/_json";/,
   "Workgraph proxy should use the shared jsonish helper for IAM/service-token upstream responses",

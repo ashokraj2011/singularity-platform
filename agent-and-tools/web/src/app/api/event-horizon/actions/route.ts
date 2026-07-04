@@ -14,8 +14,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { composerAuthFailure, composerAuthHeaders } from "../../prompt-workbench/_shared/composer";
 import { platformServiceUrl } from "@/lib/platformServices";
 import { jsonishMessage, readJsonish } from "../../_json";
+import { boundedSecondsEnv } from "@/lib/serverEnvBounds";
 
 export const dynamic = "force-dynamic";
+
+const EVENT_HORIZON_ACTIONS_TIMEOUT_MS = boundedSecondsEnv("EVENT_HORIZON_ACTIONS_TIMEOUT_SEC", 10, 1, 300) * 1000;
 
 function composerUrl(): string {
   return platformServiceUrl("prompt-composer");
@@ -28,7 +31,7 @@ export async function GET(request: NextRequest) {
   try {
     const r = await fetch(
       `${composerUrl()}/api/v1/event-horizon-actions?surface=${encodeURIComponent(surface)}`,
-      { headers: composerAuthHeaders(request, { contentType: false }), signal: AbortSignal.timeout(10_000) },
+      { headers: composerAuthHeaders(request, { contentType: false }), signal: AbortSignal.timeout(EVENT_HORIZON_ACTIONS_TIMEOUT_MS) },
     );
     const responseBody = await readJsonish(r);
     const body = responseBody.data;

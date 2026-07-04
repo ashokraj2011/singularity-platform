@@ -1142,6 +1142,11 @@ longer governed model calls than readiness probes.</p>
 This keeps prompt profile, layer, instruction, and admin calls from waiting
 indefinitely behind a stalled Composer service while preserving the dedicated
 longer Prompt Workbench compose timeout above.</p>
+<p>Platform Web&#39;s Event Horizon quick-action catalog fetch uses
+<code>EVENT_HORIZON_ACTIONS_TIMEOUT_SEC</code>, default <code>10</code>, bounded <code>1..300</code>, for the
+Prompt Composer <code>/api/v1/event-horizon-actions</code> read. A Composer outage
+therefore degrades the floating helper&#39;s quick actions without blocking the
+page shell.</p>
 <p>Agent Runtime capability/polling knobs are schema-validated at startup.
 <code>POLL_WORKER_TICK_SEC</code> defaults to <code>30</code> and is bounded <code>5..3600</code>.
 <code>POLL_WORKER_INITIAL_DELAY_SEC</code> defaults to <code>5</code> and is bounded <code>1..300</code>,
