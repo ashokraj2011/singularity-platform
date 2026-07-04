@@ -12,8 +12,10 @@ import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { resolveSandboxedPath, sandboxRoot } from "../workspace/sandbox";
 import type { ToolHandler } from "./registry";
+import { config } from "../config";
 
 const execFileP = promisify(execFile);
+const HTTP_TOOL_TIMEOUT_MS = config.MCP_HTTP_TOOL_TIMEOUT_MS;
 
 const SKIP_DIRS = new Set([
   "node_modules", ".git", "dist", "build", "out", "__pycache__", ".venv", "venv",
@@ -236,7 +238,7 @@ export const httpGetTool: ToolHandler = {
       if (!isHostAllowed(url)) throw new Error("host is not on HTTP_TOOL_ALLOWED_DOMAINS allow-list");
       const max = typeof args.max_bytes === "number" && args.max_bytes > 0 ? args.max_bytes : 100_000;
       const headers = (typeof args.headers === "object" && args.headers !== null) ? args.headers as Record<string, string> : {};
-      const res = await fetch(url, { method: "GET", headers, signal: AbortSignal.timeout(30_000) });
+      const res = await fetch(url, { method: "GET", headers, signal: AbortSignal.timeout(HTTP_TOOL_TIMEOUT_MS) });
       const text = (await res.text()).slice(0, max);
       let body: unknown = text;
       if (args.as_json) {
@@ -281,7 +283,7 @@ export const webFetchTool: ToolHandler = {
       const res = await fetch(url, {
         method: "GET",
         headers: { "user-agent": "Singularity-MCP/0.1.0 web_fetch" },
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(HTTP_TOOL_TIMEOUT_MS),
       });
       const html = await res.text();
       const text = stripHtml(html).slice(0, max);
