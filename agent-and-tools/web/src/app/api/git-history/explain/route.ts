@@ -11,6 +11,7 @@ import {
   platformServiceToken,
   platformServiceUrl,
 } from "@/lib/platformServices";
+import { boundedSecondsEnv } from "@/lib/serverEnvBounds";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -18,6 +19,8 @@ export const runtime = "nodejs";
 const execFileAsync = promisify(execFile);
 const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 const TIMEOUT_MS = 60_000;
+const GIT_HISTORY_IAM_VERIFY_TIMEOUT_MS = boundedSecondsEnv("GIT_HISTORY_IAM_VERIFY_TIMEOUT_SEC", 5, 1, 300) * 1000;
+const GIT_HISTORY_RUNTIME_STATUS_TIMEOUT_MS = boundedSecondsEnv("GIT_HISTORY_RUNTIME_STATUS_TIMEOUT_SEC", 5, 1, 300) * 1000;
 const TOOL_NAME = "git_history_explain";
 
 type ExplainRequest = {
@@ -134,6 +137,7 @@ async function verifiedCallerIdentity(req: NextRequest): Promise<RuntimeIdentity
         },
         body: JSON.stringify({ token }),
         cache: "no-store",
+        signal: AbortSignal.timeout(GIT_HISTORY_IAM_VERIFY_TIMEOUT_MS),
       });
       if (verify.ok) {
         const body = (await readJsonish(verify)).data as { valid?: boolean; user?: unknown } | null;
@@ -168,6 +172,7 @@ async function singleConnectedRuntimeIdentity(): Promise<RuntimeIdentity | null>
     const res = await fetch(`${contextFabricUrl()}/api/runtime-bridge/status`, {
       cache: "no-store",
       headers: token ? { "X-Service-Token": token } : {},
+      signal: AbortSignal.timeout(GIT_HISTORY_RUNTIME_STATUS_TIMEOUT_MS),
     });
     if (!res.ok) return null;
     const body = (await readJsonish(res)).data;

@@ -40,6 +40,13 @@ GIT_HISTORY_REPO=/path/to/singularity-platform
 
 The UI status bar shows whether a report was served by the Runtime Bridge or by the explicit local debug fallback.
 
+Platform Web bounds its control-plane lookups before dispatching a git-history
+tool run: `GIT_HISTORY_IAM_VERIFY_TIMEOUT_SEC` defaults to `5`, bounded
+`1..300`, for caller-token verification; `GIT_HISTORY_RUNTIME_STATUS_TIMEOUT_SEC`
+defaults to `5`, bounded `1..300`, for the local single-runtime discovery path.
+Tune these on the Platform Web host when IAM or Context Fabric sits behind a
+slow network hop.
+
 MCP-side git commands for `git_history_explain` use
 `MCP_GIT_HISTORY_TIMEOUT_MS`, default `60000`, bounded `1..300000`. Tune it on
 the runtime host when large monorepo history reports need more time.

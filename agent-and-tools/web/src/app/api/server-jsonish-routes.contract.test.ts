@@ -86,6 +86,36 @@ assert.doesNotMatch(
 );
 
 assert.match(
+  gitHistory,
+  /import \{ boundedSecondsEnv \} from "@\/lib\/serverEnvBounds";/,
+  "git history explain route should use the central server env bounds helper",
+);
+
+assert.match(
+  gitHistory,
+  /const GIT_HISTORY_IAM_VERIFY_TIMEOUT_MS = boundedSecondsEnv\("GIT_HISTORY_IAM_VERIFY_TIMEOUT_SEC", 5, 1, 300\) \* 1000;/,
+  "git history explain route should expose a bounded IAM verify timeout knob",
+);
+
+assert.match(
+  gitHistory,
+  /const GIT_HISTORY_RUNTIME_STATUS_TIMEOUT_MS = boundedSecondsEnv\("GIT_HISTORY_RUNTIME_STATUS_TIMEOUT_SEC", 5, 1, 300\) \* 1000;/,
+  "git history explain route should expose a bounded runtime status timeout knob",
+);
+
+assert.match(
+  gitHistory,
+  /\/auth\/verify`, \{[\s\S]*?signal: AbortSignal\.timeout\(GIT_HISTORY_IAM_VERIFY_TIMEOUT_MS\)/,
+  "git history IAM verification should use the bounded timeout",
+);
+
+assert.match(
+  gitHistory,
+  /\/api\/runtime-bridge\/status`, \{[\s\S]*?signal: AbortSignal\.timeout\(GIT_HISTORY_RUNTIME_STATUS_TIMEOUT_MS\)/,
+  "git history single-runtime discovery should use the bounded timeout",
+);
+
+assert.match(
   llmModels,
   /code: "LLM_GATEWAY_REQUEST_FAILED"[\s\S]*?message: jsonishMessage\(responseBody\.data/,
   "LLM model writes should return structured JSON when the gateway returns plaintext errors",

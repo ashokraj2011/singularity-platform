@@ -1014,6 +1014,13 @@ MCP's read-only HTTP tools (`http_get` and `web_fetch`) use
 `MCP_HTTP_TOOL_TIMEOUT_MS`, default `30000`, bounded `1..300000`. This keeps
 agent-facing network reads responsive by default while allowing deliberate
 tuning for slower approved enterprise endpoints.
+
+Platform Web's Git History explainer route bounds its IAM verification wait
+with `GIT_HISTORY_IAM_VERIFY_TIMEOUT_SEC`, default `5`, bounded `1..300`, and
+its local single-runtime discovery status call with
+`GIT_HISTORY_RUNTIME_STATUS_TIMEOUT_SEC`, default `5`, bounded `1..300`, before
+dispatching `git_history_explain` through Context Fabric.
+
 Git-history explanation (`git_history_explain`) bounds each local git command
 with `MCP_GIT_HISTORY_TIMEOUT_MS`, default `60000`, bounded `1..300000`, so
 date-range evidence reports remain tunable for large monorepos.
