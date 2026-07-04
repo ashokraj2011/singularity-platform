@@ -750,6 +750,7 @@ set -euo pipefail
 #   export COPILOT_ALLOW_ALL="1"
 #   export COPILOT_CONTINUE_ON_ERROR="0"
 #   export COPILOT_ARTIFACT_MAX_BYTES="262144"
+#   export COPILOT_ARTIFACT_MAX_FILES="40"
 #   export SINGULARITY_PUSH_RESULTS="1"   # opt-in: upload results+artifacts to the platform (default OFF)
 #   export COPILOT_INCLUDE_UNTRACKED="1"  # opt-in: also upload NEW untracked files a stage created
 # Privacy (finding #5): only files a stage actually changes (git status delta) are
@@ -814,6 +815,20 @@ def safe_name(value):
     value = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-").lower()
     return value[:80] or "stage"
 
+def env_int(name, default, min_value=1, max_value=None):
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if value < min_value:
+        return default
+    if max_value is not None:
+        return min(value, max_value)
+    return value
+
 def file_artifact(cwd, rel_path, stage_key=None, node_id=None, max_bytes=262144):
     rel_path = rel_path.replace("\\\\", "/")
     target = (cwd / rel_path).resolve()
@@ -873,8 +888,8 @@ def main():
     copilot_bin = os.environ.get("COPILOT_BIN", "copilot")
     allow_all = os.environ.get("COPILOT_ALLOW_ALL", "1").lower() not in ("0", "false", "no")
     continue_on_error = os.environ.get("COPILOT_CONTINUE_ON_ERROR", "0").lower() in ("1", "true", "yes")
-    max_artifact_bytes = int(os.environ.get("COPILOT_ARTIFACT_MAX_BYTES", "262144"))
-    max_artifacts = int(os.environ.get("COPILOT_ARTIFACT_MAX_FILES", "40"))
+    max_artifact_bytes = env_int("COPILOT_ARTIFACT_MAX_BYTES", 262144, 1, 5 * 1024 * 1024)
+    max_artifacts = env_int("COPILOT_ARTIFACT_MAX_FILES", 40, 1, 200)
     include_untracked = os.environ.get("COPILOT_INCLUDE_UNTRACKED", "0").lower() in ("1", "true", "yes")
     cwd = pathlib.Path(os.environ.get("WORK_DIR", os.getcwd())).resolve()
     out_dir = pathlib.Path(os.environ.get("COPILOT_OUTPUT_DIR", str(cwd / ".singularity" / "copilot-runs" / run_id))).resolve()

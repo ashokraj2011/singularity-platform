@@ -24,6 +24,16 @@ describe('Workflow best-effort upstream response contracts', () => {
     expect(router).not.toMatch(/JSON\.parse\(raw\)/)
   })
 
+  it('bounds generated Copilot runner artifact env knobs', () => {
+    const router = source('src/modules/workflow/instances.router.ts')
+
+    expect(router).toContain('def env_int(name, default, min_value=1, max_value=None):')
+    expect(router).toContain('max_artifact_bytes = env_int("COPILOT_ARTIFACT_MAX_BYTES", 262144, 1, 5 * 1024 * 1024)')
+    expect(router).toContain('max_artifacts = env_int("COPILOT_ARTIFACT_MAX_FILES", 40, 1, 200)')
+    expect(router).not.toContain('int(os.environ.get("COPILOT_ARTIFACT_MAX_BYTES", "262144"))')
+    expect(router).not.toContain('int(os.environ.get("COPILOT_ARTIFACT_MAX_FILES", "40"))')
+  })
+
   it('keeps Workbench Copilot handoff prompt composition fail-soft', () => {
     const router = source('src/modules/blueprint/blueprint.router.ts')
 

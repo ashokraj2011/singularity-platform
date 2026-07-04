@@ -716,6 +716,11 @@ best-effort Context Fabric compose call uses `COPILOT_COMPOSE_TIMEOUT_MS`,
 default `30000`, minimum `1000`, and maximum `120000`. Invalid values fall
 back to `30000`; if composition still times out or returns malformed JSON, the
 download continues with raw stage tasks plus degraded-composition headers.
+The generated runner script also bounds evidence upload knobs:
+`COPILOT_ARTIFACT_MAX_BYTES` defaults to `262144` and caps at `5242880` per
+file, while `COPILOT_ARTIFACT_MAX_FILES` defaults to `40` and caps at `200`.
+Invalid or too-small values fall back to defaults so a shell typo does not
+prevent the runner from posting metrics and artifacts.
 
 Workgraph file and artifact byte limits are also bounded at startup.
 `MAX_UPLOAD_BYTES` defaults to `1073741824` and caps at `2147483648` for
