@@ -78,9 +78,14 @@ def _verify_hs256_jwt(token: str, secret: str) -> dict[str, Any]:
         claims = json.loads(_b64url_decode(payload_b64))
     except Exception:
         raise JWTError("bad payload") from None
-    # exp check (seconds since epoch)
+    # Runtime/device tokens are long-lived but never unbounded. JWT "exp" is a
+    # NumericDate; reject missing or malformed expiries instead of treating them
+    # as non-expiring bridge credentials.
     now = int(time.time())
-    if isinstance(claims.get("exp"), (int, float)) and now > int(claims["exp"]):
+    exp = claims.get("exp")
+    if type(exp) not in (int, float):
+        raise JWTError("missing or invalid exp")
+    if now > int(exp):
         raise JWTError("token expired")
     return claims
 

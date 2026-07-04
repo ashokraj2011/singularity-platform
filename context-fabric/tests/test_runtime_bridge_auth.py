@@ -1,11 +1,65 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import json
+import time
+
 import pytest
 from fastapi import FastAPI
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from context_api_service.app import laptop_bridge
+
+
+def _b64(value: dict) -> str:
+    return base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).rstrip(b"=").decode()
+
+
+def _signed_runtime_token(payload: dict, *, secret: str = "test-secret") -> str:
+    header = _b64({"alg": "HS256", "typ": "JWT"})
+    body = _b64(payload)
+    sig = hmac.new(secret.encode(), f"{header}.{body}".encode("ascii"), hashlib.sha256).digest()
+    sig_b64 = base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
+    return f"{header}.{body}.{sig_b64}"
+
+
+def test_hs256_runtime_jwt_requires_numeric_expiry():
+    now = int(time.time())
+    base_payload = {
+        "kind": "runtime",
+        "sub": "user-a",
+        "runtime_id": "runtime-a",
+    }
+
+    valid = laptop_bridge._verify_hs256_jwt(
+        _signed_runtime_token({**base_payload, "exp": now + 60}),
+        "test-secret",
+    )
+    assert valid["sub"] == "user-a"
+
+    with pytest.raises(laptop_bridge.JWTError, match="missing or invalid exp"):
+        laptop_bridge._verify_hs256_jwt(_signed_runtime_token(base_payload), "test-secret")
+
+    with pytest.raises(laptop_bridge.JWTError, match="missing or invalid exp"):
+        laptop_bridge._verify_hs256_jwt(
+            _signed_runtime_token({**base_payload, "exp": str(now + 60)}),
+            "test-secret",
+        )
+
+
+def test_hs256_runtime_jwt_rejects_expired_token():
+    token = _signed_runtime_token({
+        "kind": "runtime",
+        "sub": "user-a",
+        "runtime_id": "runtime-a",
+        "exp": int(time.time()) - 1,
+    })
+
+    with pytest.raises(laptop_bridge.JWTError, match="token expired"):
+        laptop_bridge._verify_hs256_jwt(token, "test-secret")
 
 
 def test_runtime_metadata_uses_token_claims_over_spoofed_hello():

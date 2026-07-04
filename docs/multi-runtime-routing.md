@@ -97,12 +97,16 @@ var the runtime echoes in its hello.
 
 ```
 kind=runtime · sub=<iam-user-id> · runtime_id=<UNIQUE per runtime>
-runtime_type=mcp · capability_tags=[…] · (optional) tenant_id, allowed_frame_types, shared
+runtime_type=mcp · exp=<numeric unix seconds> · capability_tags=[…]
+(optional) tenant_id, allowed_frame_types, shared
 ```
 
 `runtime_id` resolves as `claims.runtime_id || claims.device_id || claims.sub`. If
 you leave it unset it falls all the way back to the **user id**, so *every* runtime
 for that user collides on one slot. **Always mint a distinct `runtime_id`.**
+`exp` is mandatory and must be a JWT NumericDate; Context Fabric rejects missing,
+string, or already-expired expiries so runtime tokens cannot become unbounded
+bridge credentials.
 
 ---
 
