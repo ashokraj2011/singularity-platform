@@ -1,5 +1,6 @@
 import { env } from "../config/env";
 import { AppError } from "../shared/errors";
+import { readUpstreamJsonObject } from "../shared/upstream-json";
 
 export interface ChatRespondRequest {
   session_id: string;
@@ -123,7 +124,15 @@ export const contextFabricClient = {
         "CONTEXT_FABRIC_ERROR",
       );
     }
-    return await res.json() as ExecuteRespondResponse;
+    try {
+      return await readUpstreamJsonObject(res, `context-fabric ${path}`) as unknown as ExecuteRespondResponse;
+    } catch (err) {
+      throw new AppError(
+        (err as Error).message,
+        502,
+        "CONTEXT_FABRIC_INVALID_RESPONSE",
+      );
+    }
   },
 
   async chatRespond(input: ChatRespondRequest): Promise<ChatRespondResponse> {
@@ -145,6 +154,14 @@ export const contextFabricClient = {
         "CONTEXT_FABRIC_ERROR",
       );
     }
-    return await res.json() as ChatRespondResponse;
+    try {
+      return await readUpstreamJsonObject(res, "context-fabric /chat/respond") as unknown as ChatRespondResponse;
+    } catch (err) {
+      throw new AppError(
+        (err as Error).message,
+        502,
+        "CONTEXT_FABRIC_INVALID_RESPONSE",
+      );
+    }
   },
 };

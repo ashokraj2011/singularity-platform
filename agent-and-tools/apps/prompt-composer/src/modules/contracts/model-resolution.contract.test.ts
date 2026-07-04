@@ -4,7 +4,6 @@ import { ValidationError } from "../../shared/errors";
 type FetchResponse = {
   ok: boolean;
   status: number;
-  json?: () => Promise<unknown>;
   text?: () => Promise<string>;
 };
 
@@ -12,6 +11,14 @@ const originalFetch = globalThis.fetch;
 
 function mockFetch(response: FetchResponse) {
   globalThis.fetch = (async () => response) as unknown as typeof fetch;
+}
+
+function jsonResponse(body: unknown): FetchResponse {
+  return {
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(body),
+  };
 }
 
 async function expectValidationError(fn: () => Promise<unknown>, pattern: RegExp) {
@@ -29,20 +36,16 @@ async function main() {
   process.env.DATABASE_URL = process.env.DATABASE_URL ?? "postgresql://test:test@localhost:5432/test";
   const { resolveModelAlias } = await import("./contracts.service");
 
-  mockFetch({
-    ok: true,
-    status: 200,
-    json: async () => ({
-      success: true,
-      data: {
-        defaultModelAlias: "balanced",
-        models: [
-          { id: "balanced", provider: "anthropic", model: "claude-sonnet-4-5-20251001", version: "2026-06-19" },
-          { id: "fast", provider: "openai", model: "gpt-4o-mini" },
-        ],
-      },
-    }),
-  });
+  mockFetch(jsonResponse({
+    success: true,
+    data: {
+      defaultModelAlias: "balanced",
+      models: [
+        { id: "balanced", provider: "anthropic", model: "claude-sonnet-4-5-20251001", version: "2026-06-19" },
+        { id: "fast", provider: "openai", model: "gpt-4o-mini" },
+      ],
+    },
+  }));
 
   const defaultResolution = await resolveModelAlias(undefined);
   assert.equal(defaultResolution.alias, "balanced");
@@ -70,11 +73,7 @@ async function main() {
     /model catalog lookup failed/,
   );
 
-  mockFetch({
-    ok: true,
-    status: 200,
-    json: async () => ({ success: true, data: { models: [] } }),
-  });
+  mockFetch(jsonResponse({ success: true, data: { models: [] } }));
   await expectValidationError(
     () => resolveModelAlias(undefined),
     /no modelAlias supplied and model catalog has no default alias/,

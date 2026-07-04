@@ -13,6 +13,7 @@ import { prisma } from "../../config/prisma";
 import { logger } from "../../config/logger";
 import { assembleBundle } from "./bundler";
 import { ValidationError } from "../../shared/errors";
+import { readUpstreamJsonObject } from "../../shared/upstream-json";
 
 const MCP_SERVER_URL     = (process.env.MCP_SERVER_URL ?? "http://mcp-server:7100").replace(/\/$/, "");
 const MCP_BEARER_TOKEN   = process.env.MCP_BEARER_TOKEN ?? "";
@@ -59,7 +60,7 @@ export async function resolveModelAlias(alias: string | undefined): Promise<{
         "[contracts] MCP model catalog failed; refusing unresolved contract model");
       throw new ValidationError(`Cannot mint ImmutableContract: model catalog lookup failed for alias "${alias ?? "<default>"}"`);
     }
-    const json = await res.json() as ModelCatalogResponse;
+    const json = await readUpstreamJsonObject(res, "MCP /llm/models") as ModelCatalogResponse;
     const defaultAlias = json.data?.defaultModelAlias ?? json.data?.default_model_alias ?? json.default_model_alias ?? null;
     const effectiveAlias = alias ?? defaultAlias;
     if (!effectiveAlias) {

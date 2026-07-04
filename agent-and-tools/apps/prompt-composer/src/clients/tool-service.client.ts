@@ -1,5 +1,6 @@
 import { env } from "../config/env";
 import { logger } from "../config/logger";
+import { readUpstreamJsonObject } from "../shared/upstream-json";
 
 export interface DiscoveredTool {
   tool_name: string;
@@ -50,7 +51,7 @@ export const toolServiceClient = {
         logger.warn({ status: res.status }, "tool-service /tools/discover non-200");
         return [];
       }
-      const json = await res.json() as { tools?: DiscoveredTool[] };
+      const json = await readUpstreamJsonObject(res, "tool-service /tools/discover") as { tools?: DiscoveredTool[] };
       return json.tools ?? [];
     } catch (err) {
       logger.warn({ err: (err as Error).message }, "tool-service /tools/discover failed; continuing without dynamic tools");

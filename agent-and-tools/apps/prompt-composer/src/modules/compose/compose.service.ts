@@ -6,6 +6,7 @@ import { env } from "../../config/env";
 import { NotFoundError, ValidationError } from "../../shared/errors";
 import { sha256, estimateTokens } from "../../shared/hash";
 import { render as renderMustache } from "../../shared/mustache";
+import { readUpstreamJsonObject } from "../../shared/upstream-json";
 import { toolServiceClient, DiscoveredTool } from "../../clients/tool-service.client";
 import { contextFabricClient } from "../../clients/context-fabric.client";
 import { ComposeInput, ArtifactInput } from "./compose.schemas";
@@ -254,7 +255,7 @@ async function fetchLearningState(input: {
       signal: AbortSignal.timeout(3_000),
     });
     if (!res.ok) throw new Error(`learning-service ${res.status}`);
-    return await res.json() as LearningStateResponse;
+    return await readUpstreamJsonObject(res, "learning-service state") as LearningStateResponse;
   } catch (err) {
     logger.warn({ err }, "learning-service unavailable; continuing without learned context");
     return { degraded: true, patterns: [] };
@@ -1440,7 +1441,7 @@ Input schema: ${JSON.stringify(t.input_schema ?? { type: "object" })}`;
         warnings.push(warning);
         return null;
       }
-      const json = await res.json() as ArtifactFetchResponse;
+      const json = await readUpstreamJsonObject(res, "workgraph artifact fetch") as ArtifactFetchResponse;
       if (!json.content) {
         warnings.push(`Artifact "${art.label}" fetch returned no text content.`);
         return null;
@@ -2177,7 +2178,7 @@ async function compressOneLayer(
       console.warn(`[compress] HTTP ${res.status} for layer ${layerType}: ${body.slice(0, 160)}`);
       return null;
     }
-    const body = await res.json() as Record<string, unknown>;
+    const body = await readUpstreamJsonObject(res, "prompt-compressor /compress");
     const compressed = typeof body.compressed_text === "string" ? body.compressed_text : null;
     if (!compressed) return null;
     return {
