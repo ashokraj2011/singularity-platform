@@ -21,10 +21,17 @@ from typing import Any
 import httpx
 
 from ..config import settings
+from .env_config import bounded_float_env
 
 log = logging.getLogger(__name__)
 
-_HTTP_TIMEOUT = float(os.environ.get("CF_CAPTURE_RUN_MEMORY_TIMEOUT_SEC", "5"))
+_HTTP_TIMEOUT = bounded_float_env(
+    "CF_CAPTURE_RUN_MEMORY_TIMEOUT_SEC",
+    default=5.0,
+    min_value=1.0,
+    max_value=300.0,
+    logger=log,
+)
 _MAX_CONTENT_CHARS = 4000
 # Only successful completions become memory candidates by default. Failures are
 # noisy and rarely a reusable "lesson"; opt them in with CF_CAPTURE_RUN_MEMORY_STOP_REASONS.

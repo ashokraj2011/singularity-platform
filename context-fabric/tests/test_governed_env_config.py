@@ -173,3 +173,45 @@ def test_governed_stage_driver_knob_bounds(monkeypatch):
         min_value=0.1,
         max_value=60.0,
     ) == 60.0
+
+
+def test_model_catalog_and_memory_capture_knob_bounds(monkeypatch):
+    monkeypatch.setenv("LLM_MODEL_CATALOG_TTL_SEC", "999999")
+    assert bounded_float_env(
+        "LLM_MODEL_CATALOG_TTL_SEC",
+        default=300.0,
+        min_value=1.0,
+        max_value=86_400.0,
+    ) == 86_400.0
+
+    monkeypatch.setenv("LLM_MODEL_CATALOG_TIMEOUT_SEC", "0")
+    assert bounded_float_env(
+        "LLM_MODEL_CATALOG_TIMEOUT_SEC",
+        default=5.0,
+        min_value=1.0,
+        max_value=300.0,
+    ) == 5.0
+
+    monkeypatch.setenv("LLM_MODEL_CATALOG_TIMEOUT_SEC", "450")
+    assert bounded_float_env(
+        "LLM_MODEL_CATALOG_TIMEOUT_SEC",
+        default=5.0,
+        min_value=1.0,
+        max_value=300.0,
+    ) == 300.0
+
+    monkeypatch.setenv("CF_CAPTURE_RUN_MEMORY_TIMEOUT_SEC", "bad")
+    assert bounded_float_env(
+        "CF_CAPTURE_RUN_MEMORY_TIMEOUT_SEC",
+        default=5.0,
+        min_value=1.0,
+        max_value=300.0,
+    ) == 5.0
+
+    monkeypatch.setenv("CF_CAPTURE_RUN_MEMORY_TIMEOUT_SEC", "900")
+    assert bounded_float_env(
+        "CF_CAPTURE_RUN_MEMORY_TIMEOUT_SEC",
+        default=5.0,
+        min_value=1.0,
+        max_value=300.0,
+    ) == 300.0

@@ -10,6 +10,7 @@ to a static default budget.
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any, Awaitable, Callable, Optional
@@ -17,11 +18,26 @@ from typing import Any, Awaitable, Callable, Optional
 import httpx
 
 from ..response_json import response_json_object
+from .env_config import bounded_float_env
+
+log = logging.getLogger(__name__)
 
 _GATEWAY_URL = os.environ.get("LLM_GATEWAY_URL", "http://llm-gateway:8001").rstrip("/")
 _GATEWAY_BEARER = os.environ.get("LLM_GATEWAY_BEARER", "")
-_TTL_SEC = float(os.environ.get("LLM_MODEL_CATALOG_TTL_SEC", "300"))
-_TIMEOUT_SEC = float(os.environ.get("LLM_MODEL_CATALOG_TIMEOUT_SEC", "5"))
+_TTL_SEC = bounded_float_env(
+    "LLM_MODEL_CATALOG_TTL_SEC",
+    default=300.0,
+    min_value=1.0,
+    max_value=24.0 * 60.0 * 60.0,
+    logger=log,
+)
+_TIMEOUT_SEC = bounded_float_env(
+    "LLM_MODEL_CATALOG_TIMEOUT_SEC",
+    default=5.0,
+    min_value=1.0,
+    max_value=300.0,
+    logger=log,
+)
 
 # key (model id / model / label) → context_window_tokens. Cached across calls.
 _cache: dict[str, Any] = {"by_key": {}, "expires_at": 0.0}

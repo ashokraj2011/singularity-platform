@@ -658,6 +658,8 @@ Important endpoints:
 
 Context Fabric's governed stage loop has bounded runtime knobs. `GOVERNED_STAGE_WALL_CLOCK_SEC` defaults to `780`; `0` still disables the deadline, invalid values fall back to the default, and huge values clamp at `86400`. Transient LLM retries use `GOVERNED_LLM_RETRY_ATTEMPTS` default `2`, clamped to `10`, and `GOVERNED_LLM_RETRY_BASE_DELAY_SEC` default `1.0`, clamped to `60`. These bounds prevent bad env values from crashing startup or creating runaway retry/backoff behavior.
 
+Context Fabric's best-effort model metadata and memory capture calls are also bounded. `LLM_MODEL_CATALOG_TTL_SEC` defaults to `300` and clamps at `86400`; `LLM_MODEL_CATALOG_TIMEOUT_SEC` and `CF_CAPTURE_RUN_MEMORY_TIMEOUT_SEC` default to `5` and clamp at `300`. Invalid or sub-second values fall back to defaults so optional catalog/memory paths stay non-blocking.
+
 ### 9.4 Prompt Composer API
 
 Mounted under `http://localhost:3004/api/v1`.
