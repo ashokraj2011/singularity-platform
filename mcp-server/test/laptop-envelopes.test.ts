@@ -24,11 +24,14 @@ import {
   InvokeFrame,
   PingFrame,
   ResponseFrame,
+  RUNTIME_BRIDGE_MAX_FRAME_BYTES,
   SUPPORTED_FRAME_TYPES,
   ToolRunFrame,
   ToolRunPayload,
   ToolRunResponsePayload,
   decodeInbound,
+  encodeOutboundFrame,
+  oversizedResponseFrame,
 } from "../src/laptop/envelopes";
 
 // ── HelloFrame capability negotiation ──────────────────────────────────────
@@ -420,6 +423,40 @@ describe("round-trip", () => {
     const innerParsed = ToolRunResponsePayload.parse(parsed.payload);
     expect(innerParsed.tool_success).toBe(true);
     expect(innerParsed.tool_invocation_id).toBe("ti-rt");
+  });
+});
+
+// ── outbound frame bounds ──────────────────────────────────────────────────
+
+describe("outbound bridge frame bounds", () => {
+  it("pins the runtime bridge frame ceiling to Context Fabric's 16 MiB limit", () => {
+    expect(RUNTIME_BRIDGE_MAX_FRAME_BYTES).toBe(16 * 1024 * 1024);
+  });
+
+  it("counts UTF-8 bytes and marks oversized outbound frames", () => {
+    const encoded = encodeOutboundFrame({
+      type: "heartbeat",
+      sent_at: "2026-01-01T00:00:00Z",
+      health: { emoji: "🙂", text: "abc" },
+    }, 40);
+
+    expect(encoded.bytes).toBe(Buffer.byteLength(encoded.text, "utf8"));
+    expect(encoded.oversized).toBe(true);
+  });
+
+  it("builds a compact error response for oversized runtime payloads", () => {
+    const original: ResponseFrame = {
+      type: "response",
+      request_id: "req-big",
+      payload: { content: "x".repeat(1000) },
+    };
+    const fallback = oversizedResponseFrame(original, 1000, 128);
+
+    expect(fallback.request_id).toBe("req-big");
+    expect(fallback.payload).toBeNull();
+    expect(fallback.error?.code).toBe("RUNTIME_RESPONSE_TOO_LARGE");
+    expect(fallback.error?.details).toEqual({ bytes: 1000, max_bytes: 128 });
+    expect(encodeOutboundFrame(fallback, 512).oversized).toBe(false);
   });
 });
 

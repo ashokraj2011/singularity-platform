@@ -46,6 +46,9 @@ import { configuredDefaultModel, configuredDefaultProvider } from "../llm/provid
 import { readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
 import {
   decodeInbound,
+  encodeOutboundFrame,
+  oversizedResponseFrame,
+  RUNTIME_BRIDGE_MAX_FRAME_BYTES,
   SUPPORTED_FRAME_TYPES,
   type HelloFrame, type HeartbeatFrame, type ResponseFrame,
 } from "./envelopes";
@@ -220,7 +223,24 @@ export class LaptopRelayClient {
 
   private send(frame: HelloFrame | HeartbeatFrame | ResponseFrame): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    try { this.ws.send(JSON.stringify(frame)); }
+    const encoded = encodeOutboundFrame(frame);
+    if (encoded.oversized) {
+      log.warn(
+        {
+          frameType: frame.type,
+          requestId: frame.type === "response" ? frame.request_id : undefined,
+          bytes: encoded.bytes,
+          maxBytes: RUNTIME_BRIDGE_MAX_FRAME_BYTES,
+        },
+        "[laptop-relay] outbound bridge frame too large",
+      );
+      if (frame.type !== "response") return;
+      const fallback = encodeOutboundFrame(oversizedResponseFrame(frame, encoded.bytes));
+      try { this.ws.send(fallback.text); }
+      catch (err) { log.warn({ err: (err as Error).message }, "[laptop-relay] send failed"); }
+      return;
+    }
+    try { this.ws.send(encoded.text); }
     catch (err) { log.warn({ err: (err as Error).message }, "[laptop-relay] send failed"); }
   }
 

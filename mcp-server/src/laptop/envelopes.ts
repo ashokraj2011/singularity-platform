@@ -80,6 +80,36 @@ export const ResponseFrame = z.object({
 });
 export type ResponseFrame = z.infer<typeof ResponseFrame>;
 
+export type OutboundFrame = HelloFrame | HeartbeatFrame | ResponseFrame;
+
+export const RUNTIME_BRIDGE_MAX_FRAME_BYTES = 16 * 1024 * 1024;
+
+export function encodeOutboundFrame(
+  frame: OutboundFrame,
+  maxBytes = RUNTIME_BRIDGE_MAX_FRAME_BYTES,
+): { text: string; bytes: number; oversized: boolean } {
+  const text = JSON.stringify(frame);
+  const bytes = Buffer.byteLength(text, "utf8");
+  return { text, bytes, oversized: bytes > maxBytes };
+}
+
+export function oversizedResponseFrame(
+  frame: ResponseFrame,
+  bytes: number,
+  maxBytes = RUNTIME_BRIDGE_MAX_FRAME_BYTES,
+): ResponseFrame {
+  return {
+    type: "response",
+    request_id: frame.request_id,
+    payload: null,
+    error: {
+      code: "RUNTIME_RESPONSE_TOO_LARGE",
+      message: `runtime response exceeded ${maxBytes} bytes`,
+      details: { bytes, max_bytes: maxBytes },
+    },
+  };
+}
+
 // ── inbound (bridge → laptop) ───────────────────────────────────────────────
 
 export const AuthAckFrame = z.object({

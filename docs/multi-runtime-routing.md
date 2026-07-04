@@ -90,6 +90,9 @@ fail deterministically instead of timing out on a popped pending future.
 Outbound Context Fabric dispatch frames are checked against the same ceiling
 before they are written to the runtime socket; oversized requests fail as
 `RUNTIME_FRAME_TOO_LARGE` and do not leave a pending request behind.
+MCP also checks runtime-to-Context-Fabric frames before socket writes; oversized
+response payloads are replaced with a compact `RUNTIME_RESPONSE_TOO_LARGE`
+response for the same request id.
 JSON frames must decode to objects; arrays, strings, numbers, and `null` are
 rejected during hello or ignored as malformed live frames.
 On the runtime side, MCP bounds bridge request ids to `1..128` characters and
