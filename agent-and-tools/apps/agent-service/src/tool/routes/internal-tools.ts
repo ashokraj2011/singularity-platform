@@ -23,17 +23,17 @@ import { query } from "../database";
 import { requireAuth } from "../middleware/auth";
 import { getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral } from "@agentandtools/shared";
 import { readUpstreamJsonObject } from "../../shared/upstream-json";
+import { internalToolsConfig } from "./internal-tools.config";
 
-const RECENCY_BOOST_DAYS = Number(process.env.EMBEDDING_RECENCY_DAYS ?? 30);
-const RECENCY_BOOST_MAX  = Number(process.env.EMBEDDING_RECENCY_BOOST ?? 0.2);
+const INTERNAL_TOOLS_CONFIG = internalToolsConfig();
 const CONTEXT_FABRIC_URL = (process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000").replace(/\/$/, "");
 const CONTEXT_FABRIC_SERVICE_TOKEN = process.env.CONTEXT_FABRIC_SERVICE_TOKEN ?? "";
 const TOOL_LLM_MODEL_ALIAS = process.env.TOOL_LLM_MODEL_ALIAS?.trim();
 
 function recencyBoost(ageDays: number): number {
-  if (ageDays >= RECENCY_BOOST_DAYS) return 0;
-  if (ageDays <= 0) return RECENCY_BOOST_MAX;
-  return ((RECENCY_BOOST_DAYS - ageDays) / RECENCY_BOOST_DAYS) * RECENCY_BOOST_MAX;
+  if (ageDays >= INTERNAL_TOOLS_CONFIG.recencyBoostDays) return 0;
+  if (ageDays <= 0) return INTERNAL_TOOLS_CONFIG.recencyBoostMax;
+  return ((INTERNAL_TOOLS_CONFIG.recencyBoostDays - ageDays) / INTERNAL_TOOLS_CONFIG.recencyBoostDays) * INTERNAL_TOOLS_CONFIG.recencyBoostMax;
 }
 
 function rerank<T extends { cosineSimilarity: number; ageDays: number; finalScore: number }>(rows: T[], take: number): T[] {

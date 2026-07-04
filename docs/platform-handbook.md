@@ -741,6 +741,12 @@ well: `RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC` defaults to `300`, minimum `5`,
 maximum `86400`, and `RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME` defaults to
 `32`, minimum `1`, maximum `1024`.
 
+Tool Service internal semantic tools use bounded retrieval scoring knobs too:
+`EMBEDDING_RECENCY_DAYS` defaults to `30` and clamps to `1..3650`, while
+`EMBEDDING_RECENCY_BOOST` defaults to `0.2` and clamps to `0..1`. Invalid or
+below-minimum values fall back to defaults, so recall/search tools cannot
+produce `NaN` scores or runaway recency weighting from a bad env file.
+
 Shared Node, Python, and Workgraph inline system-prompt clients also bound
 `SYSTEM_PROMPT_CACHE_TTL_SEC`: default `300`, minimum `1`, maximum `86400`.
 Invalid values fall back to `300` so Composer prompt fetches do not lose cache

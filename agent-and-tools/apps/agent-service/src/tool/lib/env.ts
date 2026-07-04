@@ -4,7 +4,9 @@ export type BoundedIntegerOptions = {
   max: number;
 };
 
-function validBounds(options: BoundedIntegerOptions): boolean {
+export type BoundedNumberOptions = BoundedIntegerOptions;
+
+function validBounds(options: BoundedNumberOptions): boolean {
   return (
     Number.isFinite(options.defaultValue)
     && Number.isFinite(options.min)
@@ -14,14 +16,32 @@ function validBounds(options: BoundedIntegerOptions): boolean {
   );
 }
 
+function finiteNumber(raw: string | number | undefined): number | null {
+  if (raw === undefined) return null;
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  if (raw.trim() === "") return null;
+  const value = Number(raw.trim());
+  return Number.isFinite(value) ? value : null;
+}
+
+export function boundedNumber(raw: string | number | undefined, options: BoundedNumberOptions): number {
+  if (!validBounds(options)) {
+    throw new Error("invalid bounded number options");
+  }
+  const value = finiteNumber(raw);
+  if (value === null || value < options.min) return options.defaultValue;
+  return Math.min(options.max, value);
+}
+
+export function boundedEnvNumber(name: string, options: BoundedNumberOptions): number {
+  return boundedNumber(process.env[name], options);
+}
+
 export function boundedInteger(raw: string | number | undefined, options: BoundedIntegerOptions): number {
   if (!validBounds(options)) {
     throw new Error("invalid bounded integer options");
   }
-  if (raw === undefined) return options.defaultValue;
-  const value = typeof raw === "number" ? raw : Number(raw.trim());
-  if (!Number.isFinite(value) || value < options.min) return options.defaultValue;
-  return Math.min(options.max, Math.trunc(value));
+  return Math.trunc(boundedNumber(raw, options));
 }
 
 export function boundedEnvInteger(name: string, options: BoundedIntegerOptions): number {
