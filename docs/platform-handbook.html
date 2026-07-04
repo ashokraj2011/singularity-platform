@@ -758,7 +758,11 @@ into <code>NaN</code>, negative thresholds, or unbounded prompt layers.</p>
 MCP bounds runner-side client waits before dispatch: <code>MCP_RUNNER_EXECUTE_GRACE_MS</code>
 defaults to <code>5000</code> and is bounded <code>1..300000</code> as the HTTP grace window after a
 tool-requested command timeout, while <code>MCP_RUNNER_HEALTH_TIMEOUT_MS</code> defaults
-to <code>1500</code> and is bounded <code>1..300000</code> for readiness checks.</p>
+to <code>1500</code> and is bounded <code>1..300000</code> for readiness checks.
+MCP <code>/healthz/strict</code> also bounds its diagnostics:
+<code>MCP_STRICT_HEALTH_GIT_TIMEOUT_MS</code> defaults to <code>2000</code> and
+<code>MCP_STRICT_HEALTH_LLM_TIMEOUT_MS</code> defaults to <code>1500</code>, both bounded
+<code>1..300000</code>, so boot diagnostics stay quick without hardcoded waits.</p>
 <h3 id="713-llm-gateway">7.13 LLM Gateway<a class="anchor" href="#713-llm-gateway" aria-label="Link to 7.13 LLM Gateway">#</a></h3>
 <p>LLM Gateway abstracts providers and model aliases.</p>
 <p>Core features:</p>

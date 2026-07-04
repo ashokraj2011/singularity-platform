@@ -456,6 +456,10 @@ MCP bounds runner-side client waits before dispatch: `MCP_RUNNER_EXECUTE_GRACE_M
 defaults to `5000` and is bounded `1..300000` as the HTTP grace window after a
 tool-requested command timeout, while `MCP_RUNNER_HEALTH_TIMEOUT_MS` defaults
 to `1500` and is bounded `1..300000` for readiness checks.
+MCP `/healthz/strict` also bounds its diagnostics:
+`MCP_STRICT_HEALTH_GIT_TIMEOUT_MS` defaults to `2000` and
+`MCP_STRICT_HEALTH_LLM_TIMEOUT_MS` defaults to `1500`, both bounded
+`1..300000`, so boot diagnostics stay quick without hardcoded waits.
 
 ### 7.13 LLM Gateway
 

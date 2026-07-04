@@ -27,6 +27,8 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
         "config.MCP_LEARNING_SERVICE_TIMEOUT_SEC,",
         "config.MCP_RUNNER_EXECUTE_GRACE_MS,",
         "config.MCP_RUNNER_HEALTH_TIMEOUT_MS,",
+        "config.MCP_STRICT_HEALTH_GIT_TIMEOUT_MS,",
+        "config.MCP_STRICT_HEALTH_LLM_TIMEOUT_MS,",
         "config.MCP_MUTATION_FINALIZATION_MAX_TOKENS,",
         "config.MCP_PII_NER_CONFIDENCE_FLOOR",
         "].join(':'));",
@@ -42,7 +44,7 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
 
 const defaults = runConfig({});
 assert.equal(defaults.status, 0, defaults.stderr);
-assert.match(defaults.stdout, /3:5:300:5:5:8:5000:1500:4096:0\.7/);
+assert.match(defaults.stdout, /3:5:300:5:5:8:5000:1500:2000:1500:4096:0\.7/);
 
 const custom = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "4",
@@ -53,11 +55,13 @@ const custom = runConfig({
   MCP_LEARNING_SERVICE_TIMEOUT_SEC: "11",
   MCP_RUNNER_EXECUTE_GRACE_MS: "6000",
   MCP_RUNNER_HEALTH_TIMEOUT_MS: "2500",
+  MCP_STRICT_HEALTH_GIT_TIMEOUT_MS: "3000",
+  MCP_STRICT_HEALTH_LLM_TIMEOUT_MS: "3500",
   MCP_MUTATION_FINALIZATION_MAX_TOKENS: "8192",
   MCP_PII_NER_CONFIDENCE_FLOOR: "0.85",
 });
 assert.equal(custom.status, 0, custom.stderr);
-assert.match(custom.stdout, /4:9:120:9:12:11:6000:2500:8192:0\.85/);
+assert.match(custom.stdout, /4:9:120:9:12:11:6000:2500:3000:3500:8192:0\.85/);
 
 const impossibleLoopDetector = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "10",
@@ -75,6 +79,8 @@ for (const [name, value] of [
   ["MCP_LEARNING_SERVICE_TIMEOUT_SEC", "0"],
   ["MCP_RUNNER_EXECUTE_GRACE_MS", "0"],
   ["MCP_RUNNER_HEALTH_TIMEOUT_MS", "0"],
+  ["MCP_STRICT_HEALTH_GIT_TIMEOUT_MS", "0"],
+  ["MCP_STRICT_HEALTH_LLM_TIMEOUT_MS", "0"],
   ["MCP_MUTATION_FINALIZATION_MAX_TOKENS", "999999"],
   ["MCP_PII_NER_CONFIDENCE_FLOOR", "1.1"],
 ] as const) {
@@ -92,6 +98,8 @@ assert.match(configSource, /MCP_AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_SEC: boundedPo
 assert.match(configSource, /MCP_LEARNING_SERVICE_TIMEOUT_SEC: boundedPositiveInt\(8, MCP_LIMITS\.LEARNING_SERVICE_TIMEOUT_SEC\)/);
 assert.match(configSource, /MCP_RUNNER_EXECUTE_GRACE_MS: boundedPositiveInt\(5_000, MCP_LIMITS\.RUNNER_EXECUTE_GRACE_MS\)/);
 assert.match(configSource, /MCP_RUNNER_HEALTH_TIMEOUT_MS: boundedPositiveInt\(1_500, MCP_LIMITS\.RUNNER_HEALTH_TIMEOUT_MS\)/);
+assert.match(configSource, /MCP_STRICT_HEALTH_GIT_TIMEOUT_MS: boundedPositiveInt\(2_000, MCP_LIMITS\.STRICT_HEALTH_GIT_TIMEOUT_MS\)/);
+assert.match(configSource, /MCP_STRICT_HEALTH_LLM_TIMEOUT_MS: boundedPositiveInt\(1_500, MCP_LIMITS\.STRICT_HEALTH_LLM_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_MUTATION_FINALIZATION_MAX_TOKENS: boundedPositiveInt\(4096, MCP_LIMITS\.MUTATION_FINALIZATION_MAX_TOKENS\)/);
 assert.match(configSource, /MCP_PII_NER_CONFIDENCE_FLOOR: boundedNumber\(0\.7, 0, 1\)/);
 
@@ -110,5 +118,13 @@ assert.doesNotMatch(invokeSource, /Number\(process\.env\.MCP_MUTATION_FINALIZATI
 const piiSource = readFileSync("src/security/pii-ner.ts", "utf8");
 assert.match(piiSource, /const NER_CONFIDENCE_FLOOR = config\.MCP_PII_NER_CONFIDENCE_FLOOR;/);
 assert.doesNotMatch(piiSource, /Number\(process\.env\.MCP_PII_NER_CONFIDENCE_FLOOR/);
+
+const healthzSource = readFileSync("src/healthz-strict.ts", "utf8");
+assert.match(healthzSource, /const STRICT_HEALTH_GIT_TIMEOUT_MS = config\.MCP_STRICT_HEALTH_GIT_TIMEOUT_MS;/);
+assert.match(healthzSource, /const STRICT_HEALTH_LLM_TIMEOUT_MS = config\.MCP_STRICT_HEALTH_LLM_TIMEOUT_MS;/);
+assert.match(healthzSource, /timeout: STRICT_HEALTH_GIT_TIMEOUT_MS/);
+assert.match(healthzSource, /AbortSignal\.timeout\(STRICT_HEALTH_LLM_TIMEOUT_MS\)/);
+assert.doesNotMatch(healthzSource, /timeout: 2000/);
+assert.doesNotMatch(healthzSource, /AbortSignal\.timeout\(1500\)/);
 
 console.log("mcp runtime env config contract tests passed");

@@ -31,6 +31,9 @@ export interface InvariantResult {
 
 type InvariantCheck = () => Promise<InvariantResult> | InvariantResult;
 
+const STRICT_HEALTH_GIT_TIMEOUT_MS = config.MCP_STRICT_HEALTH_GIT_TIMEOUT_MS;
+const STRICT_HEALTH_LLM_TIMEOUT_MS = config.MCP_STRICT_HEALTH_LLM_TIMEOUT_MS;
+
 const checks: InvariantCheck[] = [
   // 1. Sandbox root exists, is a directory, and is writable.
   () => {
@@ -54,7 +57,7 @@ const checks: InvariantCheck[] = [
   // 3. `git` binary resolves on PATH (catches the "spawn git ENOENT" masquerade).
   () => {
     try {
-      const v = execFileSync("git", ["--version"], { encoding: "utf8", timeout: 2000 }).trim();
+      const v = execFileSync("git", ["--version"], { encoding: "utf8", timeout: STRICT_HEALTH_GIT_TIMEOUT_MS }).trim();
       return { name: "git_on_path", ok: true, details: { version: v } };
     } catch (err) {
       return { name: "git_on_path", ok: false, reason: `git not on PATH: ${(err as Error).message}` };
@@ -67,7 +70,7 @@ const checks: InvariantCheck[] = [
     if (!url) return { name: "llm_gateway_reachable", ok: false, reason: "LLM_GATEWAY_URL is not set" };
     if (url === "mock") return { name: "llm_gateway_reachable", ok: true, details: { mode: "in-process-mock" } };
     try {
-      const res = await fetch(`${url.replace(/\/$/, "")}/health`, { signal: AbortSignal.timeout(1500) });
+      const res = await fetch(`${url.replace(/\/$/, "")}/health`, { signal: AbortSignal.timeout(STRICT_HEALTH_LLM_TIMEOUT_MS) });
       if (!res.ok) {
         return { name: "llm_gateway_reachable", ok: false, reason: `LLM gateway /health returned ${res.status}`, details: { url } };
       }
