@@ -16,6 +16,17 @@ const foundry = read("src/lib/foundry/api.ts");
 const git = read("src/lib/git/api.ts");
 const identity = read("src/lib/identity/api.ts");
 const controlPlane = read("src/components/ControlPlaneConsole.tsx");
+const runners = read("src/app/runners/page.tsx");
+const llmSettings = read("src/app/llm-settings/page.tsx");
+const operationsStatus = read("src/components/OperationsStatusPage.tsx");
+const accessKeys = read("src/components/AccessKeysConsole.tsx");
+const topology = read("src/components/PlatformTopologyMap.tsx");
+const start = read("src/app/start/page.tsx");
+const workflowStart = read("src/app/workflows/start/page.tsx");
+const gallery = read("src/app/workflows/templates/gallery/page.tsx");
+const gitHistory = read("src/app/operations/git-history/page.tsx");
+const eventHorizon = read("src/components/EventHorizonChat.tsx");
+const capabilityDetail = read("src/app/capabilities/[id]/page.tsx");
 const api = read("src/lib/api.ts");
 
 for (const [label, source] of [
@@ -29,6 +40,17 @@ for (const [label, source] of [
   ["git broker fetch helper", git],
   ["identity fetch helper", identity],
   ["control plane fetch helper", controlPlane],
+  ["runners page", runners],
+  ["llm settings page", llmSettings],
+  ["operations status page", operationsStatus],
+  ["access keys console", accessKeys],
+  ["platform topology map", topology],
+  ["start page", start],
+  ["workflow start page", workflowStart],
+  ["workflow template gallery page", gallery],
+  ["git history explainer page", gitHistory],
+  ["event horizon chat", eventHorizon],
+  ["capability detail", capabilityDetail],
 ] as const) {
   assert.match(source, /readResponseBody/, `${label} should use the shared safe response reader`);
   assert.doesNotMatch(source, /response\.json\(\)|res\.json\(\)/, `${label} should not call response.json() directly`);
@@ -70,6 +92,32 @@ for (const [label, source] of [
   );
 }
 
+for (const [label, source] of [
+  ["app shell", shell],
+  ["launchpad", launchpad],
+  ["resource list", resourceList],
+  ["control plane", controlPlane],
+  ["runners", runners],
+  ["llm settings", llmSettings],
+  ["operations status", operationsStatus],
+  ["access keys", accessKeys],
+  ["topology", topology],
+  ["start", start],
+  ["workflow start", workflowStart],
+  ["gallery", gallery],
+  ["git history", gitHistory],
+  ["event horizon", eventHorizon],
+  ["identity login", login],
+  ["oidc callback", oidc],
+  ["capability detail", capabilityDetail],
+] as const) {
+  assert.match(
+    source,
+    /assertValidApiResponse\(/,
+    `${label} should reject malformed successful API bodies`,
+  );
+}
+
 assert.match(
   workgraph,
   /throw new WorkgraphError\(responseMessage\(parsed, raw, res\.statusText\), res\.status, code\)/,
@@ -86,6 +134,12 @@ assert.match(
   api,
   /export function invalidApiResponseMessage\(url: string, raw: string, parseError\?: string\): string/,
   "shared API helpers should centralize malformed successful response messages",
+);
+
+assert.match(
+  api,
+  /export function assertValidApiResponse\(url: string, raw: string, parseError\?: string\): void/,
+  "shared API helpers should expose a lightweight malformed-success assertion for page fetchers",
 );
 
 assert.match(

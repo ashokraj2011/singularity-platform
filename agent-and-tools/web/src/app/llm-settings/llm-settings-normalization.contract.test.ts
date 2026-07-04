@@ -22,8 +22,8 @@ assert.match(
 
 assert.match(
   source,
-  /const \{ raw, parsed \} = await readResponseBody\(res\);[\s\S]*?setSettings\(normalizeLlmSettings\(parsed\)\);/,
-  "LLM settings load should normalize parsed API data before setting state",
+  /const \{ raw, parsed, parseError \} = await readResponseBody\(res\);[\s\S]*?assertValidApiResponse\("\/api\/llm-settings", raw, parseError\);[\s\S]*?setSettings\(normalizeLlmSettings\(parsed\)\);/,
+  "LLM settings load should reject malformed success bodies and normalize parsed API data before setting state",
 );
 
 assert.match(

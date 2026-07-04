@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AlertCircle, Fingerprint, KeyRound, Lock, Mail } from "lucide-react";
-import { readResponseBody, responseMessage } from "@/lib/api";
+import { assertValidApiResponse, readResponseBody, responseMessage } from "@/lib/api";
 import { type LoginResponse, normalizeLoginResponse, safeNextPath, saveIdentitySession } from "@/lib/identity/session";
 
 const OIDC_STATE_KEY = "singularity.identity.oidc.state";
@@ -67,8 +67,9 @@ export function IdentityLoginPage() {
     let active = true;
     fetch("/api/iam/auth/providers", { headers: { accept: "application/json" } })
       .then(async (response) => {
-        const { raw, parsed } = await readResponseBody(response);
+        const { raw, parsed, parseError } = await readResponseBody(response);
         if (!response.ok) throw new Error(responseMessage(parsed, raw, `Provider discovery failed: ${response.status}`));
+        assertValidApiResponse("/api/iam/auth/providers", raw, parseError);
         if (!isProviderReadiness(parsed)) throw new Error("Provider discovery returned an invalid response.");
         return parsed;
       })
@@ -99,8 +100,9 @@ export function IdentityLoginPage() {
         body: JSON.stringify({ email, password }),
       });
 
-      const { raw, parsed } = await readResponseBody(response);
+      const { raw, parsed, parseError } = await readResponseBody(response);
       if (!response.ok) throw new Error(responseMessage(parsed, raw, "Invalid credentials. Please try again."));
+      assertValidApiResponse("/api/iam/auth/local/login", raw, parseError);
       if (!isLoginResponse(parsed)) throw new Error("IAM login returned an invalid session response.");
 
       saveIdentitySession(parsed);
@@ -117,8 +119,9 @@ export function IdentityLoginPage() {
     setSsoSubmitting(true);
     try {
       const response = await fetch("/api/iam/auth/oidc/login-url", { headers: { accept: "application/json" } });
-      const { raw, parsed } = await readResponseBody(response);
+      const { raw, parsed, parseError } = await readResponseBody(response);
       if (!response.ok) throw new Error(responseMessage(parsed, raw, "OIDC provider is not ready."));
+      assertValidApiResponse("/api/iam/auth/oidc/login-url", raw, parseError);
       if (!isLoginUrlResponse(parsed)) throw new Error("OIDC provider returned an invalid login URL response.");
       const body = parsed;
       localStorage.setItem(OIDC_STATE_KEY, body.state);

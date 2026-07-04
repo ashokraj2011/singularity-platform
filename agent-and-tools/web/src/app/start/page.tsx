@@ -16,7 +16,7 @@ import {
   Sparkles,
   Wand2,
 } from "lucide-react";
-import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, assertValidApiResponse, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { EvidenceRail, IconTile, MetricStrip, StatusPill, Timeline, type UiState } from "@/components/ui/primitives";
 import { asBoolean, asRow, asRowArray, asString, asStringArray } from "@/lib/row";
@@ -263,15 +263,17 @@ async function postJson(path: string, body: unknown): Promise<unknown> {
     body: JSON.stringify(body),
     cache: "no-store",
   });
-  const { raw, parsed } = await readResponseBody(res);
+  const { raw, parsed, parseError } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+  assertValidApiResponse(path, raw, parseError);
   return parsed;
 }
 
 async function getJson(path: string): Promise<unknown> {
   const res = await fetch(apiPath(path), { cache: "no-store", headers: authHeaders() });
-  const { raw, parsed } = await readResponseBody(res);
+  const { raw, parsed, parseError } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+  assertValidApiResponse(path, raw, parseError);
   return parsed;
 }
 

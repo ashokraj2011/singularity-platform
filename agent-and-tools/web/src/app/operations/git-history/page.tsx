@@ -19,7 +19,7 @@ import {
   ShieldCheck,
   Terminal,
 } from "lucide-react";
-import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, assertValidApiResponse, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 import { CopyButton } from "@/components/ui/CopyButton";
 
 type ExplainResponse = {
@@ -100,7 +100,7 @@ async function explain(body: Record<string, unknown>): Promise<ExplainResponse> 
     headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
-  const { raw, parsed } = await readResponseBody(res);
+  const { raw, parsed, parseError } = await readResponseBody(res);
   if (!res.ok) {
     const base = responseMessage(parsed, raw, res.statusText);
     if (parsed && typeof parsed === "object") {
@@ -111,6 +111,7 @@ async function explain(body: Record<string, unknown>): Promise<ExplainResponse> 
     }
     throw new Error(base);
   }
+  assertValidApiResponse("/api/git-history/explain", raw, parseError);
   return parsed as ExplainResponse;
 }
 

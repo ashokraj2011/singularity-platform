@@ -25,7 +25,7 @@ import {
   XCircle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, assertValidApiResponse, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 import { asBoolean, asRow, asRowArray, asString } from "@/lib/row";
 import { PlatformTopologyMap } from "@/components/PlatformTopologyMap";
 import {
@@ -196,15 +196,17 @@ async function check(path: string): Promise<{ ok: boolean; status: number; body:
 
 async function runtimeInfrastructure(): Promise<RuntimeInfrastructure> {
   const res = await fetch(apiPath("/api/runtime-infrastructure"), { cache: "no-store", headers: authHeaders() });
-  const { raw, parsed } = await readResponseBody(res);
+  const { raw, parsed, parseError } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+  assertValidApiResponse("/api/runtime-infrastructure", raw, parseError);
   return normalizeRuntimeInfrastructure(parsed);
 }
 
 async function adoptionHealth(): Promise<AdoptionHealth> {
   const res = await fetch(apiPath("/api/adoption/health"), { cache: "no-store", headers: authHeaders() });
-  const { raw, parsed } = await readResponseBody(res);
+  const { raw, parsed, parseError } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+  assertValidApiResponse("/api/adoption/health", raw, parseError);
   return normalizeAdoptionHealth(parsed);
 }
 

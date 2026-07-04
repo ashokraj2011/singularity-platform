@@ -23,7 +23,7 @@ import {
   Workflow,
   XCircle,
 } from "lucide-react";
-import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, assertValidApiResponse, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 import { asBoolean, asRow, asRowArray, asString } from "@/lib/row";
 
 type TopologyStatus = "live" | "degraded" | "offline" | "unconfigured" | "unknown";
@@ -79,8 +79,9 @@ async function fetchTopology(): Promise<Topology> {
     cache: "no-store",
     headers: authHeaders(),
   });
-  const { raw, parsed } = await readResponseBody(res);
+  const { raw, parsed, parseError } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+  assertValidApiResponse("/api/platform-topology", raw, parseError);
   return normalizeTopology(parsed);
 }
 

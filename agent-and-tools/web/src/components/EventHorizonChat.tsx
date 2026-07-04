@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { Bot, RefreshCcw, Send, Sparkles, Trash2, X } from "lucide-react";
-import { apiPath, authHeaders, readResponseBody, responseMessage, runtimeApi } from "@/lib/api";
+import { apiPath, assertValidApiResponse, authHeaders, readResponseBody, responseMessage, runtimeApi } from "@/lib/api";
 
 type ChatMessage = {
   id: string;
@@ -196,7 +196,8 @@ export function EventHorizonChat() {
     fetch(apiPath("/api/event-horizon/actions?surface=capability-admin"))
       .then(async (r) => {
         if (!r.ok) return [];
-        const { parsed } = await readResponseBody(r);
+        const { raw, parsed, parseError } = await readResponseBody(r);
+        assertValidApiResponse("/api/event-horizon/actions?surface=capability-admin", raw, parseError);
         return parsed;
       })
       .then((data) => setActions(parseActionCatalog(data)))
@@ -272,8 +273,9 @@ export function EventHorizonChat() {
         context: { ...ctx, actionIntent: actionIntent ?? ctx.actionIntent ?? null },
       }),
     });
-    const { raw, parsed } = await readResponseBody(res);
+    const { raw, parsed, parseError } = await readResponseBody(res);
     if (!res.ok) throw new Error(responseMessage(parsed, raw, `Event Horizon returned ${res.status}`));
+    assertValidApiResponse("/api/workgraph/event-horizon/chat", raw, parseError);
     if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 300) : "Event Horizon returned an empty response");
     const json = parsed as { response?: string; status?: string };
     return json.response || `Event Horizon completed with status ${json.status ?? "UNKNOWN"}, but returned no text.`;

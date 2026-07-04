@@ -2,7 +2,7 @@
 import { useRef, useState } from "react";
 import useSWR from "swr";
 import { useParams, useSearchParams } from "next/navigation";
-import { ApiError, apiPath, identityApi, readResponseBody, responseMessage, runtimeApi, workgraphApi, workgraphRunInsightsUrl, type IamBusinessUnit, type IamTeam } from "@/lib/api";
+import { ApiError, apiPath, assertValidApiResponse, identityApi, readResponseBody, responseMessage, runtimeApi, workgraphApi, workgraphRunInsightsUrl, type IamBusinessUnit, type IamTeam } from "@/lib/api";
 import { CAPABILITY_ROLE_OPTIONS, capabilityRoleLabel } from "@/lib/capabilityRoles";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { Archive, Bot, CheckCircle2, ExternalLink, Pencil, PlayCircle, Plus, RefreshCw, Rocket, Save, Sparkles, Upload, X } from "lucide-react";
@@ -2398,7 +2398,8 @@ function KnowledgeUploadCard({
         const { raw, parsed } = await readResponseBody(res);
         throw new Error(`Upload failed (${res.status}): ${responseMessage(parsed, raw, res.statusText)}`);
       }
-      const { raw, parsed } = await readResponseBody(res);
+      const { raw, parsed, parseError } = await readResponseBody(res);
+      assertValidApiResponse(`/api/runtime/capabilities/${encodeURIComponent(capabilityId)}/knowledge-artifacts/upload`, raw, parseError);
       if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 300) : "Upload returned an empty response");
       const body = parsed as { data?: { uploaded: number; skipped?: Array<{name:string; reason:string}> } };
       const skipped = body.data?.skipped ?? [];
@@ -2911,8 +2912,9 @@ function TuningTab({ capabilityId, disabled }: { capabilityId: string; disabled?
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ capabilityId, task }),
       });
-      const { raw, parsed } = await readResponseBody(res);
+      const { raw, parsed, parseError } = await readResponseBody(res);
       if (!res.ok) throw new Error(`debug ${res.status}: ${responseMessage(parsed, raw, res.statusText)}`);
+      assertValidApiResponse(COMPOSER_DEBUG_URL, raw, parseError);
       if (!parsed || typeof parsed !== "object") throw new Error(raw ? raw.slice(0, 300) : "debug response was empty");
       setData(normalizeDebugResponse(parsed));
     } catch (err) {

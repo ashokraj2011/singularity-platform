@@ -21,7 +21,7 @@ import {
   TerminalSquare,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, assertValidApiResponse, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 import {
   CommandBlock,
   EmptyState,
@@ -147,8 +147,9 @@ async function fetchAccessKeys(): Promise<AccessKeysResponse> {
     cache: "no-store",
     headers: authHeaders(),
   });
-  const { raw, parsed } = await readResponseBody(res);
+  const { raw, parsed, parseError } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+  assertValidApiResponse("/api/platform-access-keys", raw, parseError);
   return parsed as AccessKeysResponse;
 }
 

@@ -17,7 +17,7 @@ import {
   Wrench,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, assertValidApiResponse, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 import { shortId } from "@/lib/workgraph";
 import { isWorkbenchProfile, workbenchNeoUrl } from "@/lib/workbenchLaunch";
 import { asBoolean, asRow, asRowArray, asString, asStringArray } from "@/lib/row";
@@ -325,8 +325,9 @@ export default function WorkflowStartPage() {
           governancePreset: next.governancePreset ?? governancePreset,
         }),
       });
-      const { raw, parsed } = await readResponseBody(res);
+      const { raw, parsed, parseError } = await readResponseBody(res);
       if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+      assertValidApiResponse("/api/start/preview", raw, parseError);
       const data = normalizeStartPreview(parsed, next.story ?? story);
       setPreview(data);
       setStory(data.story || next.story || story);
@@ -387,8 +388,9 @@ export default function WorkflowStartPage() {
           governancePreset,
         }),
       });
-      const { raw, parsed } = await readResponseBody(res);
+      const { raw, parsed, parseError } = await readResponseBody(res);
       if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+      assertValidApiResponse("/api/start/launch", raw, parseError);
       setResult(normalizeLaunchResult(parsed));
       void loadPreview();
     } catch (err) {

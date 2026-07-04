@@ -16,14 +16,15 @@ import {
   Sparkles,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, assertValidApiResponse, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 import { shortId } from "@/lib/workgraph";
 import { filterGalleryItems, normalizeGalleryResponse, type GalleryData, type GalleryItem } from "./gallery-model";
 
 async function fetchGallery(): Promise<GalleryData> {
   const res = await fetch(apiPath("/api/workflow-templates/gallery"), { cache: "no-store", headers: authHeaders() });
-  const { raw, parsed } = await readResponseBody(res);
+  const { raw, parsed, parseError } = await readResponseBody(res);
   if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+  assertValidApiResponse("/api/workflow-templates/gallery", raw, parseError);
   return normalizeGalleryResponse(parsed);
 }
 

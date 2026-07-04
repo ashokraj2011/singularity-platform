@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
-import { readResponseBody, responseMessage } from "@/lib/api";
+import { assertValidApiResponse, readResponseBody, responseMessage } from "@/lib/api";
 import { type LoginResponse, normalizeLoginResponse, safeNextPath, saveIdentitySession } from "@/lib/identity/session";
 
 const OIDC_STATE_KEY = "singularity.identity.oidc.state";
@@ -65,7 +65,8 @@ export function IdentityOidcCallbackPage() {
         throw new Error(await responseError(response));
       }
 
-      const { parsed } = await readResponseBody(response);
+      const { raw, parsed, parseError } = await readResponseBody(response);
+      assertValidApiResponse("/api/iam/auth/oidc/code-login", raw, parseError);
       if (!isLoginResponse(parsed)) throw new Error("IAM SSO callback returned an invalid session response.");
       saveIdentitySession(parsed);
       clearOidcStorage();

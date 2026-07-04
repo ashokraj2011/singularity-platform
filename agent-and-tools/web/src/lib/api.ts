@@ -44,6 +44,10 @@ export function invalidApiResponseDetails(raw: string, parseError?: string): { p
   return { ...(parseError ? { parseError } : {}), body: raw.slice(0, 500) };
 }
 
+export function assertValidApiResponse(url: string, raw: string, parseError?: string): void {
+  if (parseError) throw new Error(invalidApiResponseMessage(url, raw, parseError));
+}
+
 export function responseMessage(parsed: unknown, raw: string, fallback: string): string {
   if (parsed && typeof parsed === "object") {
     const obj = parsed as Record<string, unknown>;

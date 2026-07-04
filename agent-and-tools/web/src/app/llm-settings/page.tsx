@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Cpu, RadioTower, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
-import { apiPath, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
+import { apiPath, assertValidApiResponse, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 import { asBoolean, asRow, asRowArray, asString, asStringArray } from "@/lib/row";
 import { CopyButton } from "@/components/ui/CopyButton";
 
@@ -298,8 +298,9 @@ export default function LlmSettingsPage() {
     setError(null);
     try {
       const res = await fetch(apiPath("/api/llm-settings"), { cache: "no-store", headers: authHeaders() });
-      const { raw, parsed } = await readResponseBody(res);
+      const { raw, parsed, parseError } = await readResponseBody(res);
       if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+      assertValidApiResponse("/api/llm-settings", raw, parseError);
       setSettings(normalizeLlmSettings(parsed));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load LLM settings");
@@ -342,8 +343,9 @@ export default function LlmSettingsPage() {
         headers: { "content-type": "application/json", ...authHeaders() },
         body: JSON.stringify(payload),
       });
-      const { raw, parsed } = await readResponseBody(res);
+      const { raw, parsed, parseError } = await readResponseBody(res);
       if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+      assertValidApiResponse("/api/llm-settings/models", raw, parseError);
       setForm({ ...blankForm, provider: form.provider });
       setAdding(false);
       await load();
@@ -359,8 +361,9 @@ export default function LlmSettingsPage() {
     setSaveError(null);
     try {
       const res = await fetch(apiPath(`/api/llm-settings/models?id=${encodeURIComponent(id)}`), { method: "DELETE", headers: authHeaders() });
-      const { raw, parsed } = await readResponseBody(res);
+      const { raw, parsed, parseError } = await readResponseBody(res);
       if (!res.ok) throw new Error(responseMessage(parsed, raw, res.statusText));
+      assertValidApiResponse(`/api/llm-settings/models?id=${encodeURIComponent(id)}`, raw, parseError);
       await load();
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "Failed to delete model");
