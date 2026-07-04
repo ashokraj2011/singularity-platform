@@ -12,6 +12,8 @@ function learningServiceHeaders(): Record<string, string> {
   return token ? { authorization: `Bearer ${token}` } : {};
 }
 
+const LEARNING_SERVICE_TIMEOUT_MS = config.MCP_LEARNING_SERVICE_TIMEOUT_SEC * 1000;
+
 async function readLearningJson(res: Response, path: string): Promise<unknown> {
   const body = await readUpstreamJsonBody(res);
   if (!body.raw.trim()) return null;
@@ -27,7 +29,7 @@ async function learningFetch(path: string, init?: RequestInit): Promise<unknown>
       ...learningServiceHeaders(),
       ...(init?.headers ?? {}),
     },
-    signal: AbortSignal.timeout(8_000),
+    signal: AbortSignal.timeout(LEARNING_SERVICE_TIMEOUT_MS),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");

@@ -22,6 +22,24 @@ assert.match(
   "learningFetch should use guarded response parsing",
 );
 
+assert.match(
+  source,
+  /const LEARNING_SERVICE_TIMEOUT_MS = config\.MCP_LEARNING_SERVICE_TIMEOUT_SEC \* 1000;/,
+  "learningFetch should use a bounded MCP config timeout",
+);
+
+assert.match(
+  source,
+  /AbortSignal\.timeout\(LEARNING_SERVICE_TIMEOUT_MS\)/,
+  "learningFetch should use the shared learning-service timeout constant",
+);
+
+assert.doesNotMatch(
+  source,
+  /AbortSignal\.timeout\(8_000\)/,
+  "learningFetch should not hardcode milliseconds",
+);
+
 assert.doesNotMatch(
   source,
   /return res\.json\(\)/,

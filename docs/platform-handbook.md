@@ -493,7 +493,7 @@ The learning architecture is hybrid:
 - Prompt Composer merges learning summaries and patterns with existing global lessons.
 - The folded learning routes require `LEARNING_SERVICE_TOKEN` for both reads and writes; Prompt Composer and MCP send that token when querying learned context.
 - If the folded learning routes are unavailable, prompt assembly should degrade gracefully.
-- Prompt Composer bounds best-effort learned-context fetches with `LEARNING_SERVICE_TIMEOUT_SEC`, default `3`, range `1..300`; invalid or too-small values fall back to the default and oversized values clamp.
+- Prompt Composer bounds best-effort learned-context fetches with `LEARNING_SERVICE_TIMEOUT_SEC`, default `3`, range `1..300`; MCP bounds learning tool calls with `MCP_LEARNING_SERVICE_TIMEOUT_SEC`, default `8`, range `1..300`. Invalid or too-small values fail/fall back according to the owning service's startup policy, and oversized values clamp or fail before runtime use.
 
 Prompt Composer bounds lesson-retrieval knobs such as `LESSON_SUPERSEDE_COSINE`,
 `LESSON_MAX_ACTIVE_PER_SCOPE`, `LESSON_TOOL_MATCH_BOOST`,

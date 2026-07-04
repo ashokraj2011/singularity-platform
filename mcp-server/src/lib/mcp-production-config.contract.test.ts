@@ -94,5 +94,8 @@ const learningSource = readFileSync("src/tools/learning.ts", "utf8");
 assert.match(learningSource, /function learningServiceHeaders\(\): Record<string, string>/);
 assert.match(learningSource, /config\.LEARNING_SERVICE_TOKEN \?\? process\.env\.AUDIT_GOV_SERVICE_TOKEN/);
 assert.match(learningSource, /\.\.\.learningServiceHeaders\(\)/);
+assert.match(learningSource, /const LEARNING_SERVICE_TIMEOUT_MS = config\.MCP_LEARNING_SERVICE_TIMEOUT_SEC \* 1000;/);
+assert.match(learningSource, /signal: AbortSignal\.timeout\(LEARNING_SERVICE_TIMEOUT_MS\)/);
+assert.doesNotMatch(learningSource, /AbortSignal\.timeout\(8_000\)/);
 
 console.log("mcp production config contract tests passed");

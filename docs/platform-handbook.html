@@ -789,7 +789,7 @@ into <code>NaN</code>, negative thresholds, or unbounded prompt layers.</p>
 <li>Prompt Composer merges learning summaries and patterns with existing global lessons.</li>
 <li>The folded learning routes require <code>LEARNING_SERVICE_TOKEN</code> for both reads and writes; Prompt Composer and MCP send that token when querying learned context.</li>
 <li>If the folded learning routes are unavailable, prompt assembly should degrade gracefully.</li>
-<li>Prompt Composer bounds best-effort learned-context fetches with <code>LEARNING_SERVICE_TIMEOUT_SEC</code>, default <code>3</code>, range <code>1..300</code>; invalid or too-small values fall back to the default and oversized values clamp.</li>
+<li>Prompt Composer bounds best-effort learned-context fetches with <code>LEARNING_SERVICE_TIMEOUT_SEC</code>, default <code>3</code>, range <code>1..300</code>; MCP bounds learning tool calls with <code>MCP_LEARNING_SERVICE_TIMEOUT_SEC</code>, default <code>8</code>, range <code>1..300</code>. Invalid or too-small values fail/fall back according to the owning service&#39;s startup policy, and oversized values clamp or fail before runtime use.</li>
 </ul>
 <p>Prompt Composer bounds lesson-retrieval knobs such as <code>LESSON_SUPERSEDE_COSINE</code>,
 <code>LESSON_MAX_ACTIVE_PER_SCOPE</code>, <code>LESSON_TOOL_MATCH_BOOST</code>,
