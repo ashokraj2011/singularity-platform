@@ -20,8 +20,10 @@ import { z } from "zod";
 import { AppError } from "../shared/errors";
 import { isSharedRuntime, gitBrokerEnforce, staticGitToken } from "../lib/runtime-claims";
 import { readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
+import { config } from "../config";
 
 export const sourceDiscoverRouter: Router = Router();
+const SOURCE_DISCOVERY_TIMEOUT_MS = config.MCP_SOURCE_DISCOVERY_TIMEOUT_MS;
 
 function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } {
   let parsed: URL;
@@ -56,7 +58,7 @@ function githubHeaders(extra?: Record<string, string>): Record<string, string> {
 
 export type SourceTreeEntry = { path: string; type: string; size: number };
 
-async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 20_000): Promise<Response> {
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = SOURCE_DISCOVERY_TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {

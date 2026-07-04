@@ -893,6 +893,12 @@ Provider manifests can be signed with `X-Manifest-Key-Id` and `X-Manifest-Signat
 
 Source-backed skills also pass through an SSRF guard before Agent Runtime previews URL documents or fetches provider manifests during resolution. Source URLs must be absolute `http`/`https` URLs, cannot include embedded credentials, and cannot target localhost, private/link-local/reserved networks, or cloud metadata hostnames. `AGENT_SOURCE_FETCH_TIMEOUT_SEC` defaults to `5` and is bounded `1..300` for provider-manifest and URL-document preview fetches. `AGENT_SOURCE_ALLOW_PRIVATE_URLS=true` is available only for deliberate local development against a private test manifest; production-class doctor and deploy preflight require `AGENT_SOURCE_ALLOW_PRIVATE_URLS=false`.
 
+GitHub repository source discovery for capability bootstrap routes through MCP
+(`/mcp/source/tree` and `/mcp/source/file`) so the runtime owns GitHub egress
+and tokens. `MCP_SOURCE_DISCOVERY_TIMEOUT_MS` defaults to `20000` and is
+bounded `1..300000`, making slow enterprise GitHub/API paths tunable while
+still failing startup on zero, negative, or oversized waits.
+
 The tool subsystem (merged into `agent-service` on `:3001`, formerly `tool-service`) requires a resolved profile capability set on governed discovery and invocation requests as `effective_capabilities` or `effectiveCapabilities`. That set is authoritative: `/api/v1/tools/discover` hides tools that do not have `invoke`, and `/api/v1/tools/invoke` blocks calls whose `requested_capability_id` / `requestedCapabilityId` is missing or lacks the requested permission. If the set is omitted, tool-service fails closed by default; set `TOOL_EFFECTIVE_CAPABILITY_REQUIRED=false` only for a deliberate legacy migration window.
 
 Server-side tool invocation is also endpoint-scoped. Tool-service only fetches `runtime.endpoint_url` values that match `TOOL_SERVER_ENDPOINT_ALLOWLIST`; when unset, the allowlist is limited to the seeded internal `/api/v1/internal-tools` and `/api/v1/connector-tools` prefixes on tool-service. External/API skills that need `invoke` must add exact `https://...` provider invocation prefixes. Metadata hosts, Docker host aliases, loopback/private IP targets outside the baked internal tool-service routes, and URLs with embedded credentials are blocked even if an unsafe allowlist is configured.

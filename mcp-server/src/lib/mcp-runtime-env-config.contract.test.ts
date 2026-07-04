@@ -34,6 +34,7 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
         "config.MCP_AUDIT_GOV_APPROVAL_TIMEOUT_MS,",
         "config.MCP_WORKTREE_GIT_HASH_TIMEOUT_MS,",
         "config.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS,",
+        "config.MCP_SOURCE_DISCOVERY_TIMEOUT_MS,",
         "config.MCP_MUTATION_FINALIZATION_MAX_TOKENS,",
         "config.MCP_PII_NER_CONFIDENCE_FLOOR",
         "].join(':'));",
@@ -49,7 +50,7 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
 
 const defaults = runConfig({});
 assert.equal(defaults.status, 0, defaults.stderr);
-assert.match(defaults.stdout, /3:5:300:5:5:8:5000:1500:2000:1500:3000:5000:5000:5000:30000:4096:0\.7/);
+assert.match(defaults.stdout, /3:5:300:5:5:8:5000:1500:2000:1500:3000:5000:5000:5000:30000:20000:4096:0\.7/);
 
 const custom = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "4",
@@ -67,11 +68,12 @@ const custom = runConfig({
   MCP_AUDIT_GOV_APPROVAL_TIMEOUT_MS: "5500",
   MCP_WORKTREE_GIT_HASH_TIMEOUT_MS: "6500",
   MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS: "35000",
+  MCP_SOURCE_DISCOVERY_TIMEOUT_MS: "25000",
   MCP_MUTATION_FINALIZATION_MAX_TOKENS: "8192",
   MCP_PII_NER_CONFIDENCE_FLOOR: "0.85",
 });
 assert.equal(custom.status, 0, custom.stderr);
-assert.match(custom.stdout, /4:9:120:9:12:11:6000:2500:3000:3500:4000:4500:5500:6500:35000:8192:0\.85/);
+assert.match(custom.stdout, /4:9:120:9:12:11:6000:2500:3000:3500:4000:4500:5500:6500:35000:25000:8192:0\.85/);
 
 const impossibleLoopDetector = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "10",
@@ -96,6 +98,7 @@ for (const [name, value] of [
   ["MCP_AUDIT_GOV_APPROVAL_TIMEOUT_MS", "0"],
   ["MCP_WORKTREE_GIT_HASH_TIMEOUT_MS", "0"],
   ["MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS", "0"],
+  ["MCP_SOURCE_DISCOVERY_TIMEOUT_MS", "0"],
   ["MCP_MUTATION_FINALIZATION_MAX_TOKENS", "999999"],
   ["MCP_PII_NER_CONFIDENCE_FLOOR", "1.1"],
 ] as const) {
@@ -120,6 +123,7 @@ assert.match(configSource, /MCP_AUDIT_GOV_EMIT_TIMEOUT_MS: boundedPositiveInt\(5
 assert.match(configSource, /MCP_AUDIT_GOV_APPROVAL_TIMEOUT_MS: boundedPositiveInt\(5_000, MCP_LIMITS\.AUDIT_GOV_APPROVAL_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_WORKTREE_GIT_HASH_TIMEOUT_MS: boundedPositiveInt\(5_000, MCP_LIMITS\.WORKTREE_GIT_HASH_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS: boundedPositiveInt\(30_000, MCP_LIMITS\.WORKTREE_GIT_WRITE_TIMEOUT_MS\)/);
+assert.match(configSource, /MCP_SOURCE_DISCOVERY_TIMEOUT_MS: boundedPositiveInt\(20_000, MCP_LIMITS\.SOURCE_DISCOVERY_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_MUTATION_FINALIZATION_MAX_TOKENS: boundedPositiveInt\(4096, MCP_LIMITS\.MUTATION_FINALIZATION_MAX_TOKENS\)/);
 assert.match(configSource, /MCP_PII_NER_CONFIDENCE_FLOOR: boundedNumber\(0\.7, 0, 1\)/);
 
@@ -154,5 +158,10 @@ assert.match(worktreeSource, /timeout: WORKTREE_GIT_HASH_TIMEOUT_MS/);
 assert.match(worktreeSource, /timeout: WORKTREE_GIT_WRITE_TIMEOUT_MS/);
 assert.doesNotMatch(worktreeSource, /timeout: 5_000/);
 assert.doesNotMatch(worktreeSource, /timeout: 30_000/);
+
+const sourceDiscoverSource = readFileSync("src/mcp/source-discover.ts", "utf8");
+assert.match(sourceDiscoverSource, /const SOURCE_DISCOVERY_TIMEOUT_MS = config\.MCP_SOURCE_DISCOVERY_TIMEOUT_MS;/);
+assert.match(sourceDiscoverSource, /timeoutMs = SOURCE_DISCOVERY_TIMEOUT_MS/);
+assert.doesNotMatch(sourceDiscoverSource, /timeoutMs = 20_000/);
 
 console.log("mcp runtime env config contract tests passed");
