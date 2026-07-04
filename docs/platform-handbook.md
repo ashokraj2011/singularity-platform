@@ -456,6 +456,10 @@ MCP bounds runner-side client waits before dispatch: `MCP_RUNNER_EXECUTE_GRACE_M
 defaults to `5000` and is bounded `1..300000` as the HTTP grace window after a
 tool-requested command timeout, while `MCP_RUNNER_HEALTH_TIMEOUT_MS` defaults
 to `1500` and is bounded `1..300000` for readiness checks.
+Inside `mcp-sandbox-runner`, Docker process cleanup and Docker health probing
+are bounded separately: `MCP_RUNNER_DOCKER_KILL_GRACE_MS` defaults to `2000`
+and caps at `60000`, while `MCP_RUNNER_DOCKER_HEALTH_TIMEOUT_MS` defaults to
+`1500` and caps at `300000`.
 MCP `/healthz/strict` also bounds its diagnostics:
 `MCP_STRICT_HEALTH_GIT_TIMEOUT_MS` defaults to `2000` and
 `MCP_STRICT_HEALTH_LLM_TIMEOUT_MS` defaults to `1500`, both bounded

@@ -4,6 +4,17 @@ import { z } from "zod";
 
 dotenv.config();
 
+const boundedInt = (defaultValue: number, min: number, max: number) =>
+  z.coerce.number().int().min(min).max(max).default(defaultValue);
+
+const boundedPositiveInt = (defaultValue: number, max: number) =>
+  boundedInt(defaultValue, 1, max);
+
+const RUNNER_LIMITS = {
+  DOCKER_KILL_GRACE_MS: 60_000,
+  DOCKER_HEALTH_TIMEOUT_MS: 300_000,
+} as const;
+
 const schema = z.object({
   PORT: z.coerce.number().int().positive().default(7110),
   MCP_RUNNER_TOKEN: z.string().min(16),
@@ -20,6 +31,8 @@ const schema = z.object({
   MCP_RUNNER_MEMORY_LIMIT: z.string().default("1g"),
   MCP_RUNNER_PIDS_LIMIT: z.coerce.number().int().positive().default(256),
   MCP_RUNNER_TMPFS_SIZE: z.string().default("64m"),
+  MCP_RUNNER_DOCKER_KILL_GRACE_MS: boundedPositiveInt(2_000, RUNNER_LIMITS.DOCKER_KILL_GRACE_MS),
+  MCP_RUNNER_DOCKER_HEALTH_TIMEOUT_MS: boundedPositiveInt(1_500, RUNNER_LIMITS.DOCKER_HEALTH_TIMEOUT_MS),
   // (2026-05-26) Optional persistent build-tool cache. When set, the
   // runner bind-mounts this host directory as /root inside the sandbox
   // container (replacing the /root tmpfs). Build tools that cache

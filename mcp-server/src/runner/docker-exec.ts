@@ -218,7 +218,7 @@ export async function executeInDocker(req: ExecuteRequest, opts: DockerExecution
       timedOut = true;
       void forceRemoveContainer(containerName, spawnImpl);
       child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
+      setTimeout(() => child.kill("SIGKILL"), runnerConfig.MCP_RUNNER_DOCKER_KILL_GRACE_MS).unref();
     }, timeoutMs);
     timer.unref();
     child.stdout.setEncoding("utf8");
@@ -281,7 +281,7 @@ export function runnerHealth() {
   }
   const docker = spawnSync("docker", ["version", "--format", "{{.Server.Version}}"], {
     encoding: "utf8",
-    timeout: 1_500,
+    timeout: runnerConfig.MCP_RUNNER_DOCKER_HEALTH_TIMEOUT_MS,
     env: { PATH: process.env.PATH ?? "" },
   });
   const dockerAvailable = docker.status === 0;
