@@ -210,6 +210,20 @@ interface SysPromptCacheEntry {
 }
 const sysPromptCache = new Map<string, SysPromptCacheEntry>()
 const sysPromptInflight = new Map<string, Promise<{ content: string; version: number }>>()
+const SYSTEM_PROMPT_CACHE_DEFAULT_TTL_SEC = 300
+const SYSTEM_PROMPT_CACHE_MAX_TTL_SEC = 24 * 60 * 60
+
+export function systemPromptCacheTtlMs(
+  raw = process.env.SYSTEM_PROMPT_CACHE_TTL_SEC,
+): number {
+  const fallback = SYSTEM_PROMPT_CACHE_DEFAULT_TTL_SEC * 1000
+  if (raw === undefined || raw.trim() === '') return fallback
+
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback
+
+  return Math.min(SYSTEM_PROMPT_CACHE_MAX_TTL_SEC, Math.trunc(parsed)) * 1000
+}
 
 export async function promptComposerAuthHeaders(
   baseHeaders: Record<string, string> = {},
@@ -221,7 +235,7 @@ export async function promptComposerAuthHeaders(
 }
 
 async function getSystemPromptCached(key: string, vars?: Record<string, unknown>): Promise<{ content: string; version: number }> {
-  const ttlMs = Number(process.env.SYSTEM_PROMPT_CACHE_TTL_SEC ?? 300) * 1000
+  const ttlMs = systemPromptCacheTtlMs()
   const cacheKey = vars ? `${key}::${JSON.stringify(vars, Object.keys(vars).sort())}` : key
   const hit = sysPromptCache.get(cacheKey)
   if (hit && Date.now() - hit.fetchedAt < ttlMs) return { content: hit.content, version: hit.version }

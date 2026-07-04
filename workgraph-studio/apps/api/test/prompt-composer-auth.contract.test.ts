@@ -16,6 +16,14 @@ describe('Workgraph -> Prompt Composer service auth contract', () => {
     expect(client).toContain("headers: await promptComposerAuthHeaders({ 'content-type': 'application/json' })")
   })
 
+  it('keeps system prompt cache TTL parsing bounded', () => {
+    const client = source('src/lib/prompt-composer/client.ts')
+
+    expect(client).toContain('export function systemPromptCacheTtlMs')
+    expect(client).toContain('const ttlMs = systemPromptCacheTtlMs()')
+    expect(client).not.toContain('Number(process.env.SYSTEM_PROMPT_CACHE_TTL_SEC ?? 300) * 1000')
+  })
+
   it('requires a Workgraph service token source in production-class environments', () => {
     const config = source('src/config.ts')
 
