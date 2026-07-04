@@ -208,6 +208,24 @@ def _claim_str(claims: dict[str, Any], key: str) -> str:
     return str(value).strip()
 
 
+def _claim_bool(claims: dict[str, Any], key: str) -> bool:
+    value = claims.get(key)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def _runtime_claims_shared(claims: dict[str, Any]) -> bool:
+    return _claim_bool(claims, "shared") or _claim_str(claims, "runtime_scope").lower() in {
+        "tenant",
+        "shared",
+    }
+
+
 def _verify_runtime_token(token: str) -> dict[str, Any]:
     """Decode + validate a runtime/device JWT. Raises JWTError on failure."""
     claims = _verify_hs256_jwt(token, JWT_SECRET)
@@ -374,10 +392,7 @@ async def runtime_connect(ws: WebSocket) -> None:
     )
     health_raw = hello.get("health")
     health = health_raw if isinstance(health_raw, dict) else {}
-    shared = bool(
-        claims.get("shared")
-        or str(claims.get("runtime_scope") or "").lower() in {"tenant", "shared"}
-    )
+    shared = _runtime_claims_shared(claims)
 
     conn = ActiveConnection(
         user_id=user_id,

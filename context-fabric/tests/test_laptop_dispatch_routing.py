@@ -346,6 +346,46 @@ def test_registry_selects_user_runtime_before_tenant_shared_runtime():
     assert selected_shared.runtime_id == "shared-runtime"
 
 
+def test_registry_does_not_treat_false_shared_claim_as_tenant_runtime():
+    from context_api_service.app import laptop_bridge
+    from context_api_service.app.laptop_registry import ActiveConnection, LaptopRegistry
+
+    registry = LaptopRegistry()
+    now = 1.0
+
+    _run(registry.register(ActiveConnection(
+        user_id="user-a",
+        device_id="personal-runtime",
+        device_name="personal runtime",
+        ws=object(),  # type: ignore[arg-type]
+        connected_at=now,
+        last_seen_at=now,
+        supported_frame_types=["tool-run"],
+        runtime_id="personal-runtime",
+        runtime_type="mcp",
+        tenant_id="tenant-a",
+        shared=laptop_bridge._runtime_claims_shared({
+            "shared": "false",
+            "runtime_scope": "user",
+        }),
+    )))
+
+    selected_owner = _run(registry.select_runtime(
+        user_id="user-a",
+        tenant_id="tenant-a",
+        frame_type="tool-run",
+    ))
+    selected_other_user = _run(registry.select_runtime(
+        user_id="user-b",
+        tenant_id="tenant-a",
+        frame_type="tool-run",
+    ))
+
+    assert selected_owner is not None
+    assert selected_owner.runtime_id == "personal-runtime"
+    assert selected_other_user is None
+
+
 def test_work_finish_frame_carries_git_credential_only_to_shared_runtime():
     """P0 #2 — the brokered, short-lived git credential must reach a SHARED
     runtime over the work-finish-branch frame (it has no per-user creds and must

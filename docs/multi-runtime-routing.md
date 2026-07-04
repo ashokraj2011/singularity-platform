@@ -129,6 +129,9 @@ cloud control plane.
 **(d) Shared tenant runtime.** A runtime minted with `shared=true` + a `tenant_id`
 serves any user in that tenant (used after the user-owned lookup). Lets you blend
 per-user laptops with a shared cloud runtime for the same tenant.
+`shared` is parsed strictly: boolean `true` or true-like strings such as
+`"true"`/`"1"` enable tenant sharing; `"false"`/`"0"`/`"no"` do not. A token may
+also use `runtime_scope=tenant` or `runtime_scope=shared`.
 
 ---
 

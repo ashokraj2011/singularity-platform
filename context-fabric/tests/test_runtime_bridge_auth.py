@@ -117,6 +117,26 @@ def test_device_token_still_requires_device_id(monkeypatch):
     assert claims["device_id"] == "device-a"
 
 
+@pytest.mark.parametrize("value", [True, 1, "1", "true", "TRUE", "yes", "on"])
+def test_runtime_shared_claim_accepts_explicit_true_values(value):
+    assert laptop_bridge._runtime_claims_shared({"shared": value}) is True
+
+
+@pytest.mark.parametrize("value", [False, 0, "0", "false", "FALSE", "no", "off", "", None])
+def test_runtime_shared_claim_rejects_false_like_values(value):
+    assert laptop_bridge._runtime_claims_shared({"shared": value}) is False
+
+
+@pytest.mark.parametrize("scope", ["tenant", "shared", "TENANT", " shared "])
+def test_runtime_shared_claim_accepts_shared_scopes(scope):
+    assert laptop_bridge._runtime_claims_shared({"shared": False, "runtime_scope": scope}) is True
+
+
+@pytest.mark.parametrize("scope", ["user", "personal", "", None])
+def test_runtime_shared_claim_rejects_personal_scopes(scope):
+    assert laptop_bridge._runtime_claims_shared({"shared": "false", "runtime_scope": scope}) is False
+
+
 def test_runtime_metadata_uses_token_claims_over_spoofed_hello():
     metadata = laptop_bridge._token_authoritative_runtime_metadata(
         {
