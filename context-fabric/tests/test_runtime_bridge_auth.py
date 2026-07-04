@@ -327,6 +327,21 @@ def test_runtime_response_request_id_bounds_and_normalizes():
     assert laptop_bridge._runtime_response_request_id({}) is None
 
 
+def test_runtime_json_object_accepts_only_json_objects():
+    obj, err = laptop_bridge._runtime_json_object('{"type":"heartbeat"}')
+    assert obj == {"type": "heartbeat"}
+    assert err is None
+
+    obj, err = laptop_bridge._runtime_json_object("{bad-json")
+    assert obj is None
+    assert err == "bad-json"
+
+    for raw in ('["heartbeat"]', '"heartbeat"', "null", "123"):
+        obj, err = laptop_bridge._runtime_json_object(raw)
+        assert obj is None
+        assert err == "not-object"
+
+
 def test_runtime_revocation_identity_prefers_device_id_then_runtime_id():
     assert laptop_bridge._runtime_revocation_identity({
         "kind": "device",

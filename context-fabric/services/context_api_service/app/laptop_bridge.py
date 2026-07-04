@@ -390,6 +390,16 @@ def _runtime_response_request_id(frame: dict[str, Any]) -> str | None:
     return value
 
 
+def _runtime_json_object(raw: str) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, "bad-json"
+    if not isinstance(parsed, dict):
+        return None, "not-object"
+    return parsed, None
+
+
 @router.websocket("/api/runtime-bridge/connect")
 @router.websocket("/api/laptop-bridge/connect")
 async def runtime_connect(ws: WebSocket) -> None:
@@ -441,10 +451,10 @@ async def runtime_connect(ws: WebSocket) -> None:
     if _runtime_frame_too_large(hello_raw):
         await ws.close(code=1009, reason="runtime hello too large")
         return
-    try:
-        hello = json.loads(hello_raw)
-    except json.JSONDecodeError:
-        await ws.close(code=4400, reason="bad hello JSON")
+    hello, hello_err = _runtime_json_object(hello_raw)
+    if hello is None:
+        reason = "bad hello JSON" if hello_err == "bad-json" else "bad hello frame"
+        await ws.close(code=4400, reason=reason)
         return
     if hello.get("type") != "hello":
         await ws.close(code=4400, reason=f"expected hello, got {hello.get('type')}")
@@ -541,10 +551,12 @@ async def runtime_connect(ws: WebSocket) -> None:
                 )
                 await ws.close(code=1009, reason="runtime frame too large")
                 break
-            try:
-                frame = json.loads(raw)
-            except json.JSONDecodeError:
-                log.warning("bad JSON frame from user=%s runtime=%s", user_id, runtime_id)
+            frame, frame_err = _runtime_json_object(raw)
+            if frame is None:
+                if frame_err == "bad-json":
+                    log.warning("bad JSON frame from user=%s runtime=%s", user_id, runtime_id)
+                else:
+                    log.warning("non-object frame from user=%s runtime=%s", user_id, runtime_id)
                 continue
             ftype = frame.get("type")
             if ftype == "heartbeat":
