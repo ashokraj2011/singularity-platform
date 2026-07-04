@@ -42,10 +42,18 @@ type SystemPromptEnvelope = {
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, InflightEntry>();
 
+const SYSTEM_PROMPT_DEFAULT_TTL_SEC = 300;
+const SYSTEM_PROMPT_MAX_TTL_SEC = 24 * 60 * 60;
+
+function boundedTtlSeconds(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return SYSTEM_PROMPT_DEFAULT_TTL_SEC;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 1) return SYSTEM_PROMPT_DEFAULT_TTL_SEC;
+  return Math.min(SYSTEM_PROMPT_MAX_TTL_SEC, Math.trunc(parsed));
+}
+
 function ttlMs(): number {
-  const raw = process.env.SYSTEM_PROMPT_CACHE_TTL_SEC;
-  const n = raw ? Number(raw) : 300;
-  return Math.max(1, n) * 1000;
+  return boundedTtlSeconds(process.env.SYSTEM_PROMPT_CACHE_TTL_SEC) * 1000;
 }
 
 function composerUrl(): string {

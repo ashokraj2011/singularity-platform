@@ -49,13 +49,19 @@ class _CacheEntry:
 _cache: dict[str, _CacheEntry] = {}
 _locks: dict[str, asyncio.Lock] = {}
 
+_DEFAULT_TTL_SECONDS = 300
+_MAX_TTL_SECONDS = 24 * 60 * 60
+
 
 def _ttl_seconds() -> int:
     raw = os.getenv("SYSTEM_PROMPT_CACHE_TTL_SEC", "300")
     try:
-        return max(1, int(raw))
+        value = int(raw)
     except (TypeError, ValueError):
-        return 300
+        return _DEFAULT_TTL_SECONDS
+    if value < 1:
+        return _DEFAULT_TTL_SECONDS
+    return min(value, _MAX_TTL_SECONDS)
 
 
 def _composer_url() -> str:

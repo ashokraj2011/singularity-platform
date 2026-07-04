@@ -107,4 +107,41 @@ describe("system prompt client", () => {
     expect(second.content).toBe("cached copy");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it("falls back to a safe cache TTL when SYSTEM_PROMPT_CACHE_TTL_SEC is invalid", async () => {
+    process.env.SYSTEM_PROMPT_CACHE_TTL_SEC = "bad";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const fetchMock = vi.fn(async () => promptEnvelope({ content: "cached under default ttl" }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const first = await getSystemPrompt("event-horizon.system");
+    vi.setSystemTime(new Date("2026-01-01T00:00:10.000Z"));
+    const second = await getSystemPrompt("event-horizon.system");
+
+    expect(first.content).toBe("cached under default ttl");
+    expect(second.content).toBe("cached under default ttl");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("clamps an oversized cache TTL to one day", async () => {
+    process.env.SYSTEM_PROMPT_CACHE_TTL_SEC = "999999999";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(promptEnvelope({ content: "day one" }))
+      .mockResolvedValueOnce(promptEnvelope({ content: "day three" }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const first = await getSystemPrompt("event-horizon.system");
+    vi.setSystemTime(new Date("2026-01-03T00:00:01.000Z"));
+    const second = await getSystemPrompt("event-horizon.system");
+
+    expect(first.content).toBe("day one");
+    expect(second.content).toBe("day three");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
