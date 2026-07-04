@@ -39,6 +39,7 @@ from .iam_service_token import (
     invalidate_iam_service_token,
     configured_tenant_ids_for_service_token,
 )
+from .response_json import response_json_object
 
 # M73 — refactor target modules. Helpers below are thin re-exports of the
 # canonical implementations in execute_modules/. See execute_modules/__init__.py
@@ -260,7 +261,7 @@ async def _get(url: str, params: Optional[dict] = None, timeout: float = 30.0,
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.get(url, params=params, headers=headers)
         resp.raise_for_status()
-        return resp.json()
+        return response_json_object(resp, "legacy execute GET")
 
 
 async def _iam_get(url: str, params: Optional[dict] = None, timeout: float = 30.0) -> dict:
@@ -995,7 +996,7 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
         except Exception:
             pass
         try:
-            detail = exc.response.json()
+            detail = response_json_object(exc.response, "MCP invoke error")
         except Exception:
             detail = {"message": exc.response.text[:500]}
         # M64 / M73-followup Slice 3 — classify_invoke_error() in

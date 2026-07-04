@@ -314,6 +314,42 @@ free_stale_platform_web_legacy_port() {
   done
 }
 
+clean_platform_web_cache() {
+  local web_dir="$ROOT/agent-and-tools/web"
+  local pids pid cwd full_cmd in_use=0
+  if [ ! -d "$web_dir" ]; then
+    warn "platform-web directory not found at $web_dir"
+    return 0
+  fi
+  if [ "${SINGULARITY_FORCE_CLEAN_WEB_CACHE:-0}" != "1" ] && command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -ti tcp:5180 -sTCP:LISTEN 2>/dev/null || true)"
+    [ -n "$pids" ] && in_use=1
+    for pid in $(lsof -ti tcp:3000 -sTCP:LISTEN 2>/dev/null || true); do
+      cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1 || true)
+      full_cmd=$(ps -p "$pid" -o command= 2>/dev/null || true)
+      case "$cwd:$full_cmd" in
+        "$web_dir:"*|"$web_dir/"*|*"$web_dir"*) in_use=1 ;;
+      esac
+    done
+    if [ "$in_use" = "1" ]; then
+      warn "platform-web may be running; stop it before cleaning cache: bin/bare-metal-apps.sh down"
+      warn "override only if needed: SINGULARITY_FORCE_CLEAN_WEB_CACHE=1 $0 clean-web-cache"
+      return 1
+    fi
+  fi
+  rm -rf "$web_dir/.next"
+  ok "platform-web Next cache cleared → agent-and-tools/web/.next"
+}
+
+platform_web_cache_error_hint() {
+  local log_file="$1"
+  [ -s "$log_file" ] || return 0
+  if grep -E "vendor-chunks|Cannot find module.*\\.next|_buildManifest|_ssgManifest|react-loadable-manifest" "$log_file" >/dev/null 2>&1; then
+    warn "platform-web log looks like a stale Next cache/chunk mismatch."
+    warn "fix: bin/bare-metal-apps.sh down && bin/bare-metal.sh clean-web-cache && bin/bare-metal-apps.sh up"
+  fi
+}
+
 runtime_token_is_fresh() {
   local token="$1"
   [ -n "$token" ] || return 1
@@ -815,7 +851,10 @@ PY
   # WORKGRAPH_PROXY/PROMPT_COMPOSER tokens (minted via IAM separately).
   # WORKGRAPH_INCOMING_EVENT_SECRETS (per-caller HMAC map) is generated below.
   _rand_secret() { openssl rand -hex "${1:-32}" 2>/dev/null || LC_ALL=C tr -dc 'a-f0-9' </dev/urandom | head -c "$(( ${1:-32} * 2 ))"; }
-  _persisted_env() { [ -f "$ENV_FILE" ] && sed -n "s/^export $1=\"\\(.*\\)\"\$/\\1/p" "$ENV_FILE" | tail -1; }
+  _persisted_env() {
+    [ -f "$ENV_FILE" ] || return 0
+    sed -n "s/^export $1=\"\\(.*\\)\"\$/\\1/p" "$ENV_FILE" | tail -1 || true
+  }
   _is_weak_secret() { case "$1" in ""|dev-*|changeme*|demo-*) return 0 ;; *) return 1 ;; esac; }
   provision_secret() { # <VAR> <config_key> <bytes>
     local var="$1" cfg="$2" bytes="${3:-32}" cur
@@ -1095,13 +1134,44 @@ JSON
       || warn "agent-and-tools library build had warnings — agent/tool/composer services may not start"
   fi
 
+  agent_runtime_hardening_migrations=(
+    "20260702160000_capability_learning_status"
+    "20260703120000_capability_active_identity_unique"
+    "20260703123000_capability_knowledge_source_identity"
+    "20260703124500_capability_source_identity"
+    "20260703130000_capability_code_symbol_identity"
+    "20260703131500_agent_capability_binding_identity"
+    "20260703133000_agent_template_active_identity"
+    "20260703134500_capability_learning_candidate_identity"
+    "20260703140000_agent_skill_active_identity"
+    "20260703141000_agent_skill_source_identity"
+    "20260703142000_agent_template_skill_source_identity"
+    "20260703143000_capability_code_embedding_identity"
+    "20260704110000_capability_learning_worker_lock"
+    "20260704113000_capability_archive_reconcile"
+  )
+
   # ── 4. Push schemas + seed ────────────────────────────────────────────────
   info "applying agent-runtime schema…"
   ( cd agent-and-tools/apps/agent-runtime \
     && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma db push --skip-generate >/dev/null 2>&1 \
-    && psql "$DATABASE_URL_AGENT_TOOLS" -v ON_ERROR_STOP=1 -q -f prisma/post-push.sql >/dev/null 2>&1 \
-    && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate >/dev/null 2>&1 ) \
+    && DISABLE_ERD=true DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate >/dev/null 2>&1 ) \
     || warn "agent-runtime schema push had warnings"
+
+  # Prisma db push cannot express partial unique indexes, reconciliation
+  # updates, or idempotent operational cleanup. Apply those raw SQL migrations
+  # explicitly so bare-metal setup gets the same hardening invariants as a
+  # migrated database without requiring a full migration baseline reset.
+  info "applying agent-runtime hardening migrations…"
+  for migration_name in "${agent_runtime_hardening_migrations[@]}"; do
+    psql "$DATABASE_URL_AGENT_TOOLS" -v ON_ERROR_STOP=1 -q \
+      -f "agent-and-tools/apps/agent-runtime/prisma/migrations/${migration_name}/migration.sql" >/dev/null 2>&1 \
+      || warn "agent-runtime hardening migration ${migration_name} had warnings"
+  done
+
+  ( cd agent-and-tools/apps/agent-runtime \
+    && psql "$DATABASE_URL_AGENT_TOOLS" -v ON_ERROR_STOP=1 -q -f prisma/post-push.sql >/dev/null 2>&1 ) \
+    || warn "agent-runtime post-push SQL had warnings"
 
   # The folded-in tool-service routes (agent-service /api/v1/tools, executions,
   # discovery, runners) + seedCoreToolkit use a RAW `tool` schema that Prisma db
@@ -1225,10 +1295,27 @@ SQL
   boot() {
     local name="$1"; shift
     local cmd="$*"
-    ( bash -c "$cmd" >> "$LOG_DIR/${name}.log" 2>&1 & echo $! >> "$PID_FILE" )
+    local log_file="$LOG_DIR/${name}.log"
+    if command -v setsid >/dev/null 2>&1; then
+      setsid bash -c "$cmd" >> "$log_file" 2>&1 < /dev/null &
+    else
+      nohup bash -c "$cmd" >> "$log_file" 2>&1 < /dev/null &
+    fi
+    echo $! >> "$PID_FILE"
     sleep 0.3
     local pid
     pid=$(tail -n 1 "$PID_FILE")
+    if ! kill -0 "$pid" 2>/dev/null; then
+      err "${name} exited during startup (PID ${pid})"
+      if [ -s "$log_file" ]; then
+        warn "last ${name} log lines:"
+        tail -n 40 "$log_file" | sed 's/^/  │ /' >&2 || true
+        [ "$name" = "platform-web" ] && platform_web_cache_error_hint "$log_file"
+      else
+        warn "${name} did not write a log before exiting"
+      fi
+      return 1
+    fi
     ok "${name} (PID ${pid})  → tail -f logs/${name}.log"
   }
   info "booting services…"
@@ -1288,7 +1375,7 @@ SQL
   # were crashing with ModuleNotFoundError.)
   # JWT_SECRET: context-api verifies Runtime Bridge tokens IAM signs. Direct
   # MCP/LLM HTTP fallback is disabled unless RUNTIME_HTTP_FALLBACK_ENABLED=true.
-  boot context-api      "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" CALL_LOG_DATABASE_URL=\"$CALL_LOG_DATABASE_URL\" EVENTS_STORE_DATABASE_URL=\"$EVENTS_STORE_DATABASE_URL\" CONTEXT_MEMORY_DATABASE_URL=\"$CONTEXT_MEMORY_DATABASE_URL\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" RUNTIME_HTTP_FALLBACK_ENABLED=\"$RUNTIME_HTTP_FALLBACK_ENABLED\" JWT_SECRET=\"$JWT_SECRET\" DEFAULT_GOVERNANCE_MODE=\"$DEFAULT_GOVERNANCE_MODE\" CF_TOOL_GRANT_ENABLED=\"$CF_TOOL_GRANT_ENABLED\" TOOL_GRANT_SIGNING_SECRET=\"$TOOL_GRANT_SIGNING_SECRET\" ${PREFER_LAPTOP_LLM:+PREFER_LAPTOP_LLM=\"$PREFER_LAPTOP_LLM\" }python3 -m uvicorn services.context_api_service.app.main:app --host 0.0.0.0 --port 8000"
+  boot context-api      "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" CALL_LOG_DATABASE_URL=\"$CALL_LOG_DATABASE_URL\" EVENTS_STORE_DATABASE_URL=\"$EVENTS_STORE_DATABASE_URL\" CONTEXT_MEMORY_DATABASE_URL=\"$CONTEXT_MEMORY_DATABASE_URL\" PORT=8000 IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" IAM_BOOTSTRAP_USERNAME=\"$LOCAL_SUPER_ADMIN_EMAIL\" IAM_BOOTSTRAP_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" RUNTIME_HTTP_FALLBACK_ENABLED=\"$RUNTIME_HTTP_FALLBACK_ENABLED\" JWT_SECRET=\"$JWT_SECRET\" DEFAULT_GOVERNANCE_MODE=\"$DEFAULT_GOVERNANCE_MODE\" CF_TOOL_GRANT_ENABLED=\"$CF_TOOL_GRANT_ENABLED\" TOOL_GRANT_SIGNING_SECRET=\"$TOOL_GRANT_SIGNING_SECRET\" ${PREFER_LAPTOP_LLM:+PREFER_LAPTOP_LLM=\"$PREFER_LAPTOP_LLM\" }python3 -m uvicorn services.context_api_service.app.main:app --host 0.0.0.0 --port 8000"
   if [ -n "$BARE_METAL_FULL" ]; then
     boot context-memory "cd context-fabric && PYTHONPATH=\"$ROOT/context-fabric/shared\" CONTEXT_FABRIC_DATABASE_URL=\"$CONTEXT_FABRIC_DATABASE_URL\" CONTEXT_MEMORY_DATABASE_URL=\"$CONTEXT_MEMORY_DATABASE_URL\" PORT=8002 IAM_BASE_URL=\"$IAM_BASE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" python3 -m uvicorn services.context_memory_service.app.main:app --host 0.0.0.0 --port 8002"
   fi
@@ -1302,6 +1389,10 @@ SQL
   # calls through Next rewrites and keeps users in one shell:
   # /operations, /agents, /agents/studio, /workflows, /workbench, /foundry,
   # and /identity. The old split Vite apps are legacy/debug-only now.
+  # Next dev and next build share .next; stale production/dev chunks there cause
+  # intermittent "vendor-chunks/* not found" and React manifest errors. Bare-metal
+  # always runs the dev server, so clear the cache before launch.
+  clean_platform_web_cache
   boot platform-web     "cd agent-and-tools/web        && PORT=5180 IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_HEALTH_URL=\"http://localhost:8100/api/v1/health\" IAM_BOOTSTRAP_USERNAME=\"$LOCAL_SUPER_ADMIN_EMAIL\" IAM_BOOTSTRAP_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" TENANT_ISOLATION_MODE=\"$TENANT_ISOLATION_MODE\" REQUIRE_TENANT_ID=\"$REQUIRE_TENANT_ID\" IAM_SERVICE_TOKEN_TENANT_IDS=\"$IAM_SERVICE_TOKEN_TENANT_IDS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" WORKGRAPH_API_URL=\"http://localhost:8080\" WORKGRAPH_PROXY_SERVICE_AUTH=true WORKGRAPH_PROXY_SERVICE_TOKEN=\"$WORKGRAPH_PROXY_SERVICE_TOKEN\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" NEXT_PUBLIC_WORKGRAPH_WEB_URL=\"/workflows\" npm run dev"
 
   # Append-only helper for anyone who starts the legacy/debug UIs manually.
@@ -1405,6 +1496,7 @@ cmd_smoke() {
     "http://localhost:8500/health|200,304|5" \
     "http://localhost:8000/health|200,304|5" \
     "http://localhost:8080/health|200,304|5" \
+    "http://localhost:3003/healthz/strict|200,304|10" \
     "http://localhost:5180/api/runtime/agents/templates?scope=common&limit=3|200,401,403|10" \
     "http://localhost:5180/healthz|200,304|10" \
     "http://localhost:5180/|200,304|20" \
@@ -1530,6 +1622,7 @@ shift || true
 case "$cmd" in
   up)       cmd_up "$@" ;;
   down)     cmd_down ;;
+  clean-web-cache|clean-platform-web-cache) clean_platform_web_cache ;;
   reset-db) cmd_reset_db "$@" ;;
   smoke)    cmd_smoke ;;
   status)   cmd_status ;;
@@ -1555,6 +1648,9 @@ Compatibility all-in-one:
   $0 reset-db <db_user> [db_password] [db_host] [db_port]
                             DROP all platform databases (clean slate). DESTRUCTIVE.
                             Run '$0 down' first, then '$0 up' to recreate fresh.
+
+  $0 clean-web-cache        remove stale Platform Web .next output.
+                            Use after Next vendor-chunk/module errors.
 
   $0 smoke                  curl every /health endpoint — green when healthy.
   $0 status                 list running PIDs.

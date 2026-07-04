@@ -35,6 +35,8 @@ from typing import Any, Optional
 
 import httpx
 
+from ..response_json import response_json_object
+
 
 # Error codes from llm-gateway that mcp-server forwards verbatim. Workbench
 # surfaces these with retry-specific copy ("Provider overloaded — retry
@@ -70,7 +72,7 @@ async def dispatch_invoke(
             headers={"Authorization": f"Bearer {mcp_bearer}"},
         )
         resp.raise_for_status()
-        return resp.json()
+        return response_json_object(resp, "MCP invoke")
 
 
 async def dispatch_resume(
@@ -90,7 +92,7 @@ async def dispatch_resume(
             headers={"Authorization": f"Bearer {mcp_bearer}"},
         )
         resp.raise_for_status()
-        return resp.json()
+        return response_json_object(resp, "MCP resume")
 
 
 def classify_invoke_error(

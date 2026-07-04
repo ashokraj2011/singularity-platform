@@ -634,6 +634,31 @@ function promptComposerAuthHeaders(): Record<string, string> {
   return token ? { authorization: `Bearer ${token}` } : {};
 }
 
+async function readPromptComposerSystemPrompt(res: Response, key: string): Promise<string> {
+  const text = await res.text();
+  if (!text.trim()) {
+    throw new Error(`mcp-server system prompt fetch ${key} returned an empty response (${res.status})`);
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(text) as unknown;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`mcp-server system prompt fetch ${key} returned invalid JSON (${res.status}): ${detail}; body=${text.slice(0, 300)}`);
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error(`mcp-server system prompt fetch ${key} returned a non-object JSON response`);
+  }
+  const envelope = body as { success?: boolean; data?: { content?: unknown }; error?: { message?: unknown } };
+  if (envelope.success === false) {
+    throw new Error(`mcp-server system prompt fetch ${key} returned success=false`);
+  }
+  if (typeof envelope.data?.content !== "string" || !envelope.data.content.trim()) {
+    throw new Error(`mcp-server system prompt fetch ${key} returned no prompt content`);
+  }
+  return envelope.data.content;
+}
+
 async function getNudgePrompt(): Promise<string> {
   if (cachedNudgePrompt && Date.now() - cachedNudgePromptAt < NUDGE_PROMPT_TTL_MS) {
     return cachedNudgePrompt;
@@ -650,12 +675,12 @@ async function getNudgePrompt(): Promise<string> {
     if (cachedNudgePrompt) return cachedNudgePrompt; // stale-ok
     throw new Error(`mcp-server nudge prompt fetch ${NUDGE_PROMPT_KEY} failed: ${res.status}`);
   }
-  const body = await res.json() as { success: boolean; data: { content: string } };
-  if (!body.success) {
+  try {
+    cachedNudgePrompt = await readPromptComposerSystemPrompt(res, NUDGE_PROMPT_KEY);
+  } catch (err) {
     if (cachedNudgePrompt) return cachedNudgePrompt;
-    throw new Error(`mcp-server nudge prompt fetch returned success=false`);
+    throw err;
   }
-  cachedNudgePrompt = body.data.content;
   cachedNudgePromptAt = Date.now();
   return cachedNudgePrompt;
 }
@@ -680,12 +705,9 @@ async function getApplierPrompt(): Promise<string> {
       if (cachedApplierPrompt) return cachedApplierPrompt;
       return DEFAULT_APPLIER_PROMPT;
     }
-    const body = await res.json() as { success: boolean; data: { content: string } };
-    if (body.success && body.data?.content) {
-      cachedApplierPrompt = body.data.content;
-      cachedApplierPromptAt = Date.now();
-      return cachedApplierPrompt;
-    }
+    cachedApplierPrompt = await readPromptComposerSystemPrompt(res, APPLIER_PROMPT_KEY);
+    cachedApplierPromptAt = Date.now();
+    return cachedApplierPrompt;
   } catch (err) {
     if (cachedApplierPrompt) return cachedApplierPrompt;
   }

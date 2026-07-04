@@ -7,7 +7,7 @@ from context_api_service.app import execute as execute_mod
 def _client(monkeypatch, *, production: bool = True) -> TestClient:
     monkeypatch.setattr(execute_mod, "is_production_class_env", lambda: production)
     monkeypatch.setattr(execute_mod.settings, "iam_service_token", "cf-service-token")
-    monkeypatch.setattr(execute_mod.call_log, "list_recent", lambda limit: [{"id": "call-1"}])
+    monkeypatch.setattr(execute_mod.call_log, "list_recent", lambda limit, tenant_id=None: [{"id": "call-1"}])
     monkeypatch.setattr(execute_mod.call_log, "get_by_id", lambda call_id: {"id": call_id})
     monkeypatch.setattr(
         execute_mod.events_store,

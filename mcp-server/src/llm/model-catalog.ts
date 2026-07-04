@@ -5,6 +5,8 @@ import { config } from "../config";
 import { listConfiguredProviders } from "./client";
 import { AppError } from "../shared/errors";
 
+const CostTierSchema = z.enum(["mock", "free", "low", "medium", "standard", "high"]);
+
 const CatalogEntrySchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1).optional(),
@@ -14,7 +16,7 @@ const CatalogEntrySchema = z.object({
   default: z.boolean().optional(),
   maxOutputTokens: z.number().int().positive().optional(),
   supportsTools: z.boolean().optional(),
-  costTier: z.enum(["mock", "low", "medium", "high"]).optional(),
+  costTier: CostTierSchema.optional(),
   description: z.string().optional(),
 });
 
@@ -36,6 +38,11 @@ export type ResolvedModelConfig = {
 function providerReady(provider: string): boolean {
   const row = listConfiguredProviders().find(p => p.name === provider.toLowerCase());
   return row?.ready ?? false;
+}
+
+function providerWarnings(provider: string): string[] {
+  const row = listConfiguredProviders().find(p => p.name === provider.toLowerCase());
+  return row?.warnings?.length ? row.warnings : [`Provider ${provider} is not ready.`];
 }
 
 function readCatalogSource(): unknown {
@@ -102,7 +109,12 @@ export function loadModelCatalog() {
     const entries = parsed.data.map((entry): LlmModelCatalogEntry => {
       const readyByProvider = providerReady(entry.provider);
       const ready = entry.ready === false ? false : readyByProvider;
-      const entryWarnings = ready ? [] : [`Provider ${entry.provider} is not ready for ${entry.id}.`];
+      const entryWarnings = ready
+        ? []
+        : [
+            ...(entry.ready === false ? [`Model alias ${entry.id} is disabled in the catalog.`] : []),
+            ...(!readyByProvider ? providerWarnings(entry.provider).map(warning => `Provider ${entry.provider}: ${warning}`) : []),
+          ];
       return {
         ...entry,
         label: entry.label ?? `${entry.provider} / ${entry.model}`,

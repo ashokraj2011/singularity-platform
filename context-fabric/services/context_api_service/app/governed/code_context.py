@@ -37,6 +37,7 @@ import httpx
 # governed.code_context (this module) back in mid-import. git_broker only depends
 # on app.config + app.iam_service_token, so it imports cleanly from here.
 from ..git_broker import _git_broker_enabled, clone_credential_for_run
+from ..response_json import response_json_object
 
 
 _DEFAULT_TIMEOUT_SEC = 45.0  # AST indexing of medium repos lands under this
@@ -261,4 +262,4 @@ async def _default_post(
     async with httpx.AsyncClient(timeout=timeout_sec) as client:
         resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
-        return resp.json()
+        return response_json_object(resp, "MCP code-context build")

@@ -126,7 +126,8 @@ directly:
 
 ```bash
 curl http://localhost:8001/health                       # gateway
-curl http://localhost:8000/api/laptop-bridge/status      # connected laptop(s)
+source .env.local
+curl -H "X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN" http://localhost:8000/api/laptop-bridge/status
 ```
 
 **End-to-end:** open Platform Web (http://localhost:5180) → launch a Workbench /

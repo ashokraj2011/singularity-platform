@@ -25,6 +25,64 @@ log = logging.getLogger("laptop-registry")
 INVOKE_TIMEOUT_SEC = 180
 HEARTBEAT_TIMEOUT_SEC = 90
 MAX_PAYLOAD_BYTES = 16 * 1024 * 1024   # I2
+_REDACTED = "[redacted]"
+_SENSITIVE_KEY_PARTS = (
+    "token",
+    "secret",
+    "password",
+    "credential",
+    "authorization",
+    "bearer",
+    "api_key",
+    "apikey",
+    "access_key",
+    "private_key",
+)
+
+
+def _is_sensitive_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_").replace(" ", "_")
+    return any(part in normalized for part in _SENSITIVE_KEY_PARTS)
+
+
+def _sanitize_metadata(value: Any, *, depth: int = 0) -> Any:
+    """Return operator-safe metadata for status/diagnostic surfaces.
+
+    Runtime health is client-supplied. Keep useful readiness booleans/URLs, but
+    redact secret-shaped keys and bound payload size so a runtime cannot leak
+    tokens or flood Operations UI/debug endpoints through its hello frame.
+    """
+    if depth > 6:
+        return "[truncated]"
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for index, (key, item) in enumerate(value.items()):
+            if index >= 50:
+                out["__truncated__"] = True
+                break
+            key_s = str(key)
+            out[key_s] = _REDACTED if _is_sensitive_key(key_s) else _sanitize_metadata(item, depth=depth + 1)
+        return out
+    if isinstance(value, list):
+        items = [_sanitize_metadata(item, depth=depth + 1) for item in value[:20]]
+        if len(value) > 20:
+            items.append("[truncated]")
+        return items
+    if isinstance(value, tuple):
+        items = [_sanitize_metadata(item, depth=depth + 1) for item in value[:20]]
+        if len(value) > 20:
+            items.append("[truncated]")
+        return items
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.lower().startswith(("bearer ", "token ")):
+            return _REDACTED
+        if len(stripped) > 500:
+            return f"{stripped[:500]}...[truncated]"
+        return value
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)
 
 
 @dataclass
@@ -111,11 +169,13 @@ class LaptopRegistry:
             if not fut.done():
                 fut.set_exception(LaptopDisconnected(reason))
 
-    async def heartbeat(self, user_id: str, device_id: str) -> None:
+    async def heartbeat(self, user_id: str, device_id: str, health: Optional[dict[str, Any]] = None) -> None:
         async with self._lock:
             conn = self._lookup(user_id, device_id)
             if conn:
                 conn.last_seen_at = time.time()
+                if isinstance(health, dict):
+                    conn.health = health
 
     def _lookup(self, user_id: str, device_id: str) -> Optional[ActiveConnection]:
         return self._by_user.get(user_id, {}).get(device_id)
@@ -206,6 +266,88 @@ class LaptopRegistry:
         marker_users = {"", "*", "shared", "__shared__"}
         return bool(conn.shared or conn.user_id in marker_users or conn.user_id == conn.tenant_id)
 
+    async def diagnostics(
+        self,
+        *,
+        user_id: str | None = None,
+        tenant_id: str | None = None,
+        frame_type: str | None = None,
+        capability_tags: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Explain runtime routing instead of forcing operators to infer it
+        from /status and logs. This deliberately mirrors select_runtime's
+        rules and returns candidate rejection reasons."""
+        async with self._lock:
+            requested_tags = {str(tag) for tag in (capability_tags or []) if str(tag)}
+            candidates: list[dict[str, Any]] = []
+            selected: dict[str, Any] | None = None
+
+            for candidate_user_id, by_device in self._by_user.items():
+                for device_id, conn in by_device.items():
+                    reasons: list[str] = []
+                    path = "other-user"
+                    if user_id and candidate_user_id == user_id:
+                        path = "user-owned"
+                    elif tenant_id and self._is_shared_runtime(conn):
+                        path = "tenant-shared"
+                    elif user_id:
+                        reasons.append("different-user")
+
+                    if tenant_id and conn.tenant_id and conn.tenant_id != tenant_id:
+                        reasons.append("different-tenant")
+                    if tenant_id and path == "tenant-shared" and conn.tenant_id != tenant_id:
+                        reasons.append("shared-runtime-not-bound-to-tenant")
+                    if frame_type and frame_type not in (conn.supported_frame_types or []):
+                        reasons.append(f"missing-frame:{frame_type}")
+                    if requested_tags:
+                        advertised = {str(tag) for tag in (conn.capability_tags or []) if str(tag)}
+                        missing = sorted(requested_tags - advertised)
+                        if missing:
+                            reasons.append(f"missing-tags:{','.join(missing)}")
+
+                    eligible = not reasons and path in {"user-owned", "tenant-shared"} if (user_id or tenant_id) else not reasons
+                    row = {
+                        "eligible": eligible,
+                        "path": path,
+                        "reasons": reasons,
+                        "user_id": candidate_user_id,
+                        "tenant_id": conn.tenant_id,
+                        "runtime_id": conn.runtime_id or device_id,
+                        "runtime_type": conn.runtime_type,
+                        "device_id": device_id,
+                        "device_name": conn.device_name,
+                        "shared": conn.shared,
+                        "supported_frame_types": list(conn.supported_frame_types or []),
+                        "capability_tags": list(conn.capability_tags or []),
+                        "health": _sanitize_metadata(conn.health or {}),
+                        "connected_at": conn.connected_at,
+                        "last_seen_at": conn.last_seen_at,
+                    }
+                    candidates.append(row)
+                    if eligible and selected is None:
+                        selected = row
+
+            if not candidates:
+                summary = "No runtimes are connected."
+            elif selected:
+                summary = f"Selected runtime {selected['runtime_id']} via {selected['path']}."
+            else:
+                summary = "Runtimes are connected, but none match the requested user/tenant/frame/tag constraints."
+
+            return {
+                "status": "ok",
+                "summary": summary,
+                "request": {
+                    "user_id": user_id,
+                    "tenant_id": tenant_id,
+                    "frame_type": frame_type,
+                    "capability_tags": list(capability_tags or []),
+                },
+                "selected": selected,
+                "candidates": candidates,
+                "count": len(candidates),
+            }
+
     async def status_snapshot(self) -> dict[str, Any]:
         async with self._lock:
             connected: list[dict[str, Any]] = []
@@ -222,7 +364,7 @@ class LaptopRegistry:
                         "shared": conn.shared,
                         "supported_frame_types": list(conn.supported_frame_types or []),
                         "capability_tags": list(conn.capability_tags or []),
-                        "health": conn.health or {},
+                        "health": _sanitize_metadata(conn.health or {}),
                         "connected_at": conn.connected_at,
                         "last_seen_at": conn.last_seen_at,
                     }

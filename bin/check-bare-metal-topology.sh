@@ -27,7 +27,11 @@ runtime = Path("bin/bare-metal-runtime.sh").read_text()
 doctor = Path("bin/doctor.sh").read_text()
 setup = Path("bin/setup.sh").read_text()
 copilot = Path("bin/llm-use-copilot.sh").read_text()
+docker_core = Path("bin/docker-core.sh").read_text()
+apply_schemas = Path("bin/apply-schemas.sh").read_text()
 web_package = Path("agent-and-tools/web/package.json").read_text()
+web_dockerfile = Path("agent-and-tools/web/Dockerfile").read_text()
+standalone_guard = Path("agent-and-tools/web/scripts/check-standalone-bundle.mjs").read_text()
 healthz_route = Path("agent-and-tools/web/src/app/healthz/route.ts")
 runtime_infra_route = Path("agent-and-tools/web/src/app/api/runtime-infrastructure/route.ts").read_text()
 platform_topology_route = Path("agent-and-tools/web/src/app/api/platform-topology/route.ts").read_text()
@@ -50,8 +54,8 @@ checks["bare-metal-runtime frees only llm/mcp ports"] = (
     and '3001' not in runtime
 )
 checks["bare-metal-runtime boots only llm-gateway and mcp-server"] = (
-    'boot llm-gateway' in runtime
-    and 'boot mcp-server' in runtime
+    'record_boot_pid llm-gateway "$pid"' in runtime
+    and 'record_boot_pid mcp-server "$pid"' in runtime
     and 'boot platform-web' not in runtime
     and 'boot workgraph-api' not in runtime
     and 'boot agent-runtime' not in runtime
@@ -74,8 +78,8 @@ checks["copilot switcher recognizes split runtime pid file"] = (
     and '[ -f "$ROOT/.pids.runtime" ] || [ -f "$ROOT/.pids" ]' in copilot
 )
 checks["platform-web package scripts honor launcher PORT"] = (
-    '"dev": "next dev -p ${PORT:-3000}"' in web_package
-    and '"start": "next start -p ${PORT:-3000}"' in web_package
+    'next dev -p ${PORT:-3000}' in web_package
+    and 'next start -p ${PORT:-3000}' in web_package
 )
 checks["bare-metal clears only stale repo-owned platform-web :3000"] = (
     'free_stale_platform_web_legacy_port' in bare
@@ -90,6 +94,88 @@ checks["bare-metal port sweep kills repo-owned process tree"] = (
     and 'target="$(repo_owned_process_root "$pid")"' in bare
     and 'kill_process_tree "$target" "$label on :$port"' in bare
     and 'kill_process_tree "$pid" "bare-metal pidfile process"' in bare
+)
+checks["bare-metal applies agent-runtime hardening migrations"] = (
+    'agent_runtime_hardening_migrations=(' in bare
+    and '20260703120000_capability_active_identity_unique' in bare
+    and '20260704110000_capability_learning_worker_lock' in bare
+    and '20260704113000_capability_archive_reconcile' in bare
+    and 'applying agent-runtime hardening migrations' in bare
+    and 'prisma/migrations/${migration_name}/migration.sql' in bare
+)
+checks["docker schema applier applies agent-runtime hardening migrations"] = (
+    'applying agent-runtime hardening migrations (partial indexes + archive reconciliation)' in apply_schemas
+    and '20260703120000_capability_active_identity_unique' in apply_schemas
+    and '20260704110000_capability_learning_worker_lock' in apply_schemas
+    and '20260704113000_capability_archive_reconcile' in apply_schemas
+    and 'psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "prisma/migrations/${migration_name}/migration.sql"' in apply_schemas
+)
+checks["docker schema applier does not hide piped docker exec failures"] = (
+    'set -euo pipefail' in apply_schemas
+)
+checks["bare-metal boot fails fast with service log tail"] = (
+    'if ! kill -0 "$pid" 2>/dev/null; then' in bare
+    and 'err "${name} exited during startup (PID ${pid})"' in bare
+    and 'warn "last ${name} log lines:"' in bare
+    and 'tail -n 40 "$log_file"' in bare
+)
+checks["bare-metal cleans stale platform-web Next cache before boot"] = (
+    'clean_platform_web_cache()' in bare
+    and 'rm -rf "$web_dir/.next"' in bare
+    and 'clean-web-cache|clean-platform-web-cache) clean_platform_web_cache ;;' in bare
+    and 'Use after Next vendor-chunk/module errors.' in bare
+    and 'clean_platform_web_cache\n  boot platform-web' in bare
+)
+checks["bare-metal explains platform-web stale Next chunk crashes"] = (
+    'platform_web_cache_error_hint()' in bare
+    and 'vendor-chunks|Cannot find module.*\\\\.next|_buildManifest|_ssgManifest|react-loadable-manifest' in bare
+    and 'platform-web log looks like a stale Next cache/chunk mismatch.' in bare
+    and 'bin/bare-metal-apps.sh down && bin/bare-metal.sh clean-web-cache && bin/bare-metal-apps.sh up' in bare
+    and '[ "$name" = "platform-web" ] && platform_web_cache_error_hint "$log_file"' in bare
+)
+checks["platform-web docker fails fast on incomplete Next standalone bundle"] = (
+    not web_dockerfile.startswith("# syntax=docker/dockerfile")
+    and 'COPY agent-and-tools/web/scripts/check-standalone-bundle.mjs /app/check-standalone-bundle.mjs' in web_dockerfile
+    and 'COPY --from=next-builder /app/agent-and-tools/web/.next/static ./web/.next/static' in web_dockerfile
+    and 'COPY --from=next-builder /app/agent-and-tools/web/public ./web/public' in web_dockerfile
+    and 'SERVER_ROOT="$(node /app/check-standalone-bundle.mjs /app --print-root)"' in web_dockerfile
+    and 'cd "$SERVER_ROOT"' in web_dockerfile
+    and 'HOSTNAME=0.0.0.0 PORT=3000 node server.js &' in web_dockerfile
+    and 'platform-web standalone bundle is incomplete' in standalone_guard
+    and 'platform-web standalone bundle is missing compiled server chunks or static assets' in standalone_guard
+    and 'path.join(base, "web")' in standalone_guard
+    and 'source.matchAll(/require\\(' in standalone_guard
+    and 'path.resolve(path.dirname(file), match[2])' in standalone_guard
+    and '.next/server/chunks/*.js' in standalone_guard
+    and '.next/static/*' in standalone_guard
+    and 'rebuild platform-web from a clean workspace/image cache' in standalone_guard
+)
+checks["plain docker validates platform-web image before start"] = (
+    'validate_platform_web_image()' in docker_core
+    and 'docker run --rm --entrypoint node "$IMG_PLATFORM_WEB" /app/check-standalone-bundle.mjs /app --print-root' in docker_core
+    and 'platform-web image failed standalone bundle validation' in docker_core
+    and 'fix: bin/docker-core.sh build --yes' in docker_core
+    and 'validate_platform_web_image\n  if [ "$WITH_AUDIT" = "1" ]' in docker_core
+)
+checks["plain docker preflights base images with bounded pull"] = (
+    'bin/docker-core.sh preflight [--with-audit]' in docker_core
+    and 'pull_image_with_timeout()' in docker_core
+    and 'subprocess.run(' in docker_core
+    and 'timeout=timeout' in docker_core
+    and 'DOCKER_CORE_IMAGE_PULL_TIMEOUT_SEC' in docker_core
+    and 'DOCKER_CORE_SKIP_IMAGE_PREFLIGHT' in docker_core
+    and '"node:20-alpine"' in docker_core
+    and '"node:22-alpine"' in docker_core
+    and '"python:3.11-slim"' in docker_core
+    and '"python:3.12-slim"' in docker_core
+    and '"pgvector/pgvector:pg16"' in docker_core
+    and '"postgres:16-alpine"' in docker_core
+    and '"minio/minio:latest"' in docker_core
+    and 'run_preflight()' in docker_core
+    and 'platform-web image is not built yet; run: bin/docker-core.sh build --yes' in docker_core
+    and 'plain Docker preflight passed' in docker_core
+    and 'preflight)\n    parse_flags "$@"' in docker_core
+    and 'preflight_docker_images "$@"\n  if [ "$force" = "1" ]' in docker_core
 )
 checks["bare-metal smoke accepts guarded platform APIs and Next cold compile"] = (
     'http://localhost:5180/api/runtime/agents/templates?scope=common&limit=3|200,401,403|10' in bare
@@ -115,17 +201,17 @@ checks["bare-metal auto-mints platform-web service token"] = (
 )
 checks["platform-web IAM health rewrite accepts full health URL"] = (
     'function healthDestination' in Path("agent-and-tools/web/next.config.mjs").read_text()
-    and 'const iamHealthDestination = healthDestination(process.env.IAM_HEALTH_URL' in Path("agent-and-tools/web/next.config.mjs").read_text()
+    and 'const iamHealthDestination = healthDestination(configEnv("IAM_HEALTH_URL", "")' in Path("agent-and-tools/web/next.config.mjs").read_text()
     and 'destination: iamHealthDestination' in Path("agent-and-tools/web/next.config.mjs").read_text()
 )
 checks["platform-web treats MCP HTTP as explicit debug probe"] = (
-    'flagEnabled(process.env.RUNTIME_HTTP_FALLBACK_ENABLED)' in runtime_infra_route
-    and 'flagEnabled(process.env.MCP_HTTP_DEBUG_PROBE_ENABLED)' in runtime_infra_route
+    'flagEnabled(serverEnv("RUNTIME_HTTP_FALLBACK_ENABLED"))' in runtime_infra_route
+    and 'flagEnabled(serverEnv("MCP_HTTP_DEBUG_PROBE_ENABLED"))' in runtime_infra_route
     and 'Direct MCP HTTP probe disabled. Normal traffic uses the Runtime Bridge WebSocket.' in runtime_infra_route
-    and 'url: mcpHttpDebugEnabled ? cleanUrl(process.env.MCP_SERVER_URL) : null' in runtime_infra_route
-    and 'flagEnabled(process.env.RUNTIME_HTTP_FALLBACK_ENABLED)' in platform_topology_route
-    and 'flagEnabled(process.env.MCP_HTTP_DEBUG_PROBE_ENABLED)' in platform_topology_route
-    and 'url: mcpHttpDebugEnabled ? cleanUrl(process.env.MCP_SERVER_URL) : null' in platform_topology_route
+    and 'url: mcpHttpDebugEnabled ? configuredPlatformServiceUrl("mcp-server") : null' in runtime_infra_route
+    and 'flagEnabled(serverEnv("RUNTIME_HTTP_FALLBACK_ENABLED"))' in platform_topology_route
+    and 'flagEnabled(serverEnv("MCP_HTTP_DEBUG_PROBE_ENABLED"))' in platform_topology_route
+    and 'url: mcpHttpDebugEnabled ? configuredPlatformServiceUrl("mcp-server") : null' in platform_topology_route
 )
 
 checks["bare-metal up base port sweep excludes llm/mcp"] = bool(
@@ -240,7 +326,8 @@ checks["bare-metal workgraph receives platform governance and grant mode"] = (
     and 'cd workgraph-studio/apps/api' in bare
 )
 checks["bare-metal workgraph receives internal and incoming-event secrets"] = (
-    'export WORKGRAPH_INCOMING_EVENT_SECRETS="${WORKGRAPH_INCOMING_EVENT_SECRETS:-$(config_value tokens.workgraphIncomingEventSecrets' in bare
+    'provision_secret WORKGRAPH_INCOMING_EVENT_SECRET tokens.workgraphIncomingEventSecret 32' in bare
+    and 'export WORKGRAPH_INCOMING_EVENT_SECRETS=' in bare
     and 'WORKGRAPH_INTERNAL_TOKEN=\\"$WORKGRAPH_INTERNAL_TOKEN\\"' in bare
     and 'WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS=\\"$WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS\\"' in bare
     and 'WORKGRAPH_INCOMING_EVENT_SECRETS=\\"$WORKGRAPH_INCOMING_EVENT_SECRETS\\"' in bare
@@ -255,6 +342,26 @@ checks["bare-metal doctor remediation uses split launchers"] = (
     'logs: bin/bare-metal-apps.sh logs $name' in doctor
     and 'start locally with bin/bare-metal-runtime.sh up' in doctor
     and 'restart Platform Web: bin/bare-metal-apps.sh down && bin/setup.sh --yes' in doctor
+)
+checks["bare-metal doctor fails unhealthy HTTP statuses"] = (
+    'http_success(){' in doctor
+    and 'elif ! http_success "$code"; then' in doctor
+    and 'fail "$name unhealthy ($code)"' in doctor
+    and 'warn "$name unhealthy ($code)"' in doctor
+)
+checks["bare-metal doctor explains strict health failures"] = (
+    'agent_runtime_strict_hint(){' in doctor
+    and 'archived_capability_lifecycle' in doctor
+    and 'npx prisma migrate deploy' in doctor
+    and 'npx prisma db push --skip-generate' in doctor
+    and 'failed checks:' in doctor
+)
+checks["bare-metal doctor explains runtime registry failures"] = (
+    'runtime_registry_hint(){' in doctor
+    and 'required unhealthy:' in doctor
+    and 'details = service.get("details")' in doctor
+    and 'service.get("id") == "agent-runtime-strict"' in doctor
+    and 'runtime_registry_hint "$runtime_status"' in doctor
 )
 checks["split runtime mode skips only llm-gateway and mcp-server"] = (
     '"llm-gateway|http://localhost:8001/health"' in runtime_block

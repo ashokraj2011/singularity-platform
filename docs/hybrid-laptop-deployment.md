@@ -51,7 +51,7 @@ laptop mcp-server ──(outbound WSS, device JWT)──▶ context-api  wss://<
         └──────────── invoke / tool-run frames ◀───────┘
 ```
 
-- Endpoint: `WS /api/laptop-bridge/connect` and `GET /api/laptop-bridge/status` on **context-api** (`context-fabric/services/context_api_service/app/laptop_bridge.py`).
+- Endpoint: `WS /api/laptop-bridge/connect` and authenticated `GET /api/laptop-bridge/status` on **context-api** (`context-fabric/services/context_api_service/app/laptop_bridge.py`).
 - Auth: a **90‑day device JWT** (HS256, signed with the platform's shared `JWT_SECRET`). You mint it once via the mcp-server CLI `login`.
 - Routing: a run/stage with `prefer_laptop=true` dispatches to the connected laptop; if `prefer_laptop=true` and no laptop is connected, the run fails fast with `MCP_NOT_CONNECTED`.
 
@@ -283,7 +283,8 @@ curl -H "authorization: Bearer <token>" http://localhost:7100/healthz/strict   #
 
 **Bridge mode — confirm the remote sees the laptop:**
 ```bash
-curl https://<remote-context-api>/api/laptop-bridge/status          # shows the connected device
+export CONTEXT_FABRIC_SERVICE_TOKEN=<platform-context-fabric-service-token>
+curl -H "X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN" https://<remote-context-api>/api/laptop-bridge/status
 ```
 
 **Direct mode — from a remote box:**

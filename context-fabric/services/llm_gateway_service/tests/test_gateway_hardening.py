@@ -268,3 +268,158 @@ def test_anthropic_retries_once_on_rate_limit(monkeypatch: pytest.MonkeyPatch, t
     assert sleeps == [0.0]
     assert resp.content == "ok"
     assert resp.input_tokens == 3
+
+
+def test_openai_chat_invalid_json_surfaces_as_upstream_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    providers = {
+        "defaultProvider": "openai",
+        "allowedProviders": ["openai"],
+        "providers": {
+            "openai": {
+                "enabled": True,
+                "baseUrl": "https://gateway.example.test/v1",
+                "credentialEnv": "OPENAI_API_KEY",
+                "defaultModel": "gpt-test",
+            }
+        },
+    }
+    catalog = [{"id": "openai-test", "provider": "openai", "model": "gpt-test", "default": True}]
+    _, _, router = load_modules(monkeypatch, tmp_path, providers, catalog)
+    router.settings.openai_api_key = "test-key"
+    openai = router.openai_provider
+    monkeypatch.setattr(openai, "provider_base_url", lambda _provider: "https://gateway.example.test/v1")
+
+    class FakeResponse:
+        status_code = 200
+        text = "Internal Server Error"
+
+        def json(self) -> dict:
+            raise ValueError("not json")
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(openai.httpx, "AsyncClient", FakeClient)
+
+    req = router.ChatCompletionRequest(model_alias="openai-test", messages=[{"role": "user", "content": "hello"}])
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(router.chat_completions(req))
+
+    assert exc.value.status_code == 502
+    assert "invalid JSON" in str(exc.value.detail)
+
+
+def test_openai_embeddings_invalid_json_surfaces_as_upstream_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    providers = {
+        "defaultProvider": "openai",
+        "allowedProviders": ["openai"],
+        "providers": {
+            "openai": {
+                "enabled": True,
+                "baseUrl": "https://gateway.example.test/v1",
+                "credentialEnv": "OPENAI_API_KEY",
+                "defaultModel": "text-embedding-test",
+            }
+        },
+    }
+    catalog = [{"id": "embed-test", "provider": "openai", "model": "text-embedding-test", "default": True}]
+    _, _, router = load_modules(monkeypatch, tmp_path, providers, catalog)
+    router.settings.openai_api_key = "test-key"
+    openai = router.openai_provider
+    monkeypatch.setattr(openai, "provider_base_url", lambda _provider: "https://gateway.example.test/v1")
+
+    class FakeResponse:
+        status_code = 200
+        text = "<html>bad gateway</html>"
+
+        def json(self) -> dict:
+            raise ValueError("not json")
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(openai.httpx, "AsyncClient", FakeClient)
+
+    req = router.EmbeddingsRequest(model_alias="embed-test", input=["hello"])
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(router.embeddings(req))
+
+    assert exc.value.status_code == 502
+    assert "invalid JSON" in str(exc.value.detail)
+
+
+def test_anthropic_invalid_json_surfaces_as_upstream_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    providers = {
+        "defaultProvider": "anthropic",
+        "allowedProviders": ["anthropic"],
+        "providers": {
+            "anthropic": {
+                "enabled": True,
+                "baseUrl": "https://api.anthropic.com",
+                "credentialEnv": "ANTHROPIC_API_KEY",
+                "defaultModel": "claude-haiku-4-5-20251001",
+            }
+        },
+    }
+    catalog = [{"id": "anthropic", "provider": "anthropic", "model": "claude-haiku-4-5-20251001", "default": True}]
+    _, _, router = load_modules(monkeypatch, tmp_path, providers, catalog)
+    router.settings.anthropic_api_key = "test-key"
+    anthropic = router.anthropic_provider
+    monkeypatch.setattr(anthropic, "provider_base_url", lambda _provider: "https://api.anthropic.com")
+
+    class FakeResponse:
+        status_code = 200
+        text = "proxy says nope"
+        headers: dict = {}
+
+        def json(self) -> dict:
+            raise ValueError("not json")
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(anthropic.httpx, "AsyncClient", FakeClient)
+
+    req = router.ChatCompletionRequest(
+        model_alias="anthropic",
+        messages=[{"role": "user", "content": "hello"}],
+        max_output_tokens=10,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(router.chat_completions(req))
+
+    assert exc.value.status_code == 502
+    assert "invalid JSON" in str(exc.value.detail)

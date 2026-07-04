@@ -320,7 +320,7 @@ function suggestedVerification(categories: CategorySummary[]): string[] {
     checks.push("Run Workgraph API tests or at minimum open /workflows, /workflows/start, and /runs in Platform Web.");
   }
   if (names.has("Context Fabric / MCP / LLM")) {
-    checks.push("Run Context Fabric/MCP runtime bridge smoke: curl /api/runtime-bridge/status and test one tool-run/model-run path.");
+    checks.push("Run Context Fabric/MCP runtime bridge smoke with X-Service-Token on /api/runtime-bridge/status, then test one tool-run/model-run path.");
   }
   if (names.has("Agent Runtime / Tools")) {
     checks.push("Run agent profile/tool lifecycle smoke checks and verify /agents/studio.");

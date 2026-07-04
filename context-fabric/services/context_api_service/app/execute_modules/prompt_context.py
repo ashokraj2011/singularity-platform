@@ -34,6 +34,7 @@ from typing import Any, Optional
 import httpx
 
 from ..config import settings
+from ..response_json import response_json_object
 from .response_mapper import int_limit, str_value, trim_text
 
 
@@ -49,7 +50,7 @@ async def _post(
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
-        return resp.json()
+        return response_json_object(resp, "legacy execute POST")
 
 
 def context_plan_status(
@@ -183,7 +184,7 @@ async def fetch_capability_world_model(
             # failure.
             return None, "world_model.skipped: not yet generated (404)"
         resp.raise_for_status()
-        body = resp.json()
+        body = response_json_object(resp, "agent-runtime world-model")
         # agent-runtime wraps responses in {success, data, requestId}. The
         # view we want lives on `data`; tolerate both shapes for
         # forward-compat (older test fixtures return the view directly).

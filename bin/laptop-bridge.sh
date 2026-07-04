@@ -67,6 +67,107 @@ export JWT_SECRET MCP_BEARER_TOKEN
 dc()  { docker compose -f docker-compose.yml -f docker-compose.laptop-bridge.yml "$@"; }
 # Direct-HTTP overlay (box calls the host mcp/gateway at host.docker.internal).
 dcd() { docker compose -f docker-compose.yml -f docker-compose.laptop-direct.yml "$@"; }
+
+load_local_env() {
+  [ -f .env.local ] || return 0
+  set -a
+  # shellcheck source=/dev/null
+  . ./.env.local
+  set +a
+}
+
+runtime_bridge_status() {
+  local url="${1:-http://localhost:8000/api/runtime-bridge/status}"
+  if [ -n "${CONTEXT_FABRIC_SERVICE_TOKEN:-}" ]; then
+    curl -fsS -H "X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN" "$url" 2>/dev/null
+  else
+    curl -fsS "$url" 2>/dev/null
+  fi
+}
+
+print_runtime_bridge_status() {
+  local body
+  if ! body="$(runtime_bridge_status)"; then
+    echo "   (context-api down, missing CONTEXT_FABRIC_SERVICE_TOKEN, direct mode, or no runtime connected)"
+    return 0
+  fi
+  BODY="$body" node <<'NODE'
+const bodyText = process.env.BODY || "";
+try {
+  const body = JSON.parse(bodyText);
+  if (body.detail) {
+    console.log(`   ${body.detail}`);
+    process.exit(0);
+  }
+  const count = Number(body.count || 0);
+  console.log(`   ${count > 0 ? "CONNECTED" : "not connected"} (count=${count})`);
+  function walk(value, rows = []) {
+    if (Array.isArray(value)) value.forEach((item) => walk(item, rows));
+    else if (value && typeof value === "object") {
+      if (value.runtime_id || value.device_id) rows.push(value);
+      Object.values(value).forEach((item) => walk(item, rows));
+    }
+    return rows;
+  }
+  function healthOf(row) {
+    return row.health || (row.metadata && row.metadata.health) || {};
+  }
+  function providerState(provider) {
+    if (provider.ready) return "ready";
+    if (provider.enabled === false) return "disabled";
+    if (provider.allowed === false) return "blocked";
+    return "not-ready";
+  }
+  function printLlmHealth(row) {
+    const health = healthOf(row);
+    if (!health || typeof health !== "object") return;
+    const defaults = [
+      health.llm_default_provider ? `provider=${health.llm_default_provider}` : "",
+      health.llm_default_model_alias ? `alias=${health.llm_default_model_alias}` : "",
+      health.llm_default_model ? `model=${health.llm_default_model}` : "",
+    ].filter(Boolean);
+    if (defaults.length) console.log(`     LLM defaults: ${defaults.join(" ")}`);
+    if (health.llm_default_model_ready === false) {
+      const warnings = Array.isArray(health.llm_default_model_warnings) ? health.llm_default_model_warnings : [];
+      console.log(`     ! default model is not ready${warnings.length ? `: ${warnings.join("; ")}` : ""}`);
+    }
+    if (health.llm_default_provider_ready === false) {
+      const warnings = Array.isArray(health.llm_default_provider_warnings) ? health.llm_default_provider_warnings : [];
+      console.log(`     ! default provider is not ready${warnings.length ? `: ${warnings.join("; ")}` : ""}`);
+    }
+    const readyAliases = Array.isArray(health.llm_ready_model_aliases) ? health.llm_ready_model_aliases : [];
+    if (readyAliases.length) console.log(`     ready aliases: ${readyAliases.slice(0, 8).join(", ")}`);
+    if (health.llm_model_catalog_source) {
+      const warnings = Array.isArray(health.llm_model_catalog_warnings) ? health.llm_model_catalog_warnings : [];
+      console.log(`     catalog=${health.llm_model_catalog_source}${warnings.length ? ` warning=${warnings[0]}` : ""}`);
+    }
+    const providers = Array.isArray(health.llm_providers) ? health.llm_providers : [];
+    if (providers.length) {
+      console.log(`     providers: ${providers.slice(0, 8).map((p) => `${p.name}:${providerState(p)}`).join(" ")}`);
+    }
+    const models = Array.isArray(health.llm_models) ? health.llm_models : [];
+    const visibleModels = models.filter((m) => m.default || m.ready).slice(0, 6);
+    if (visibleModels.length) {
+      console.log(`     models: ${visibleModels.map((m) => `${m.id}${m.default ? "*" : ""}${m.ready === false ? "(not-ready)" : ""}`).join(", ")}`);
+    }
+  }
+  const seen = new Set();
+  for (const row of walk(body)) {
+    const id = row.runtime_id || row.device_id;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const frames = Array.isArray(row.supported_frame_types) ? row.supported_frame_types.join(",") : "";
+    const user = row.user_id || row.userId || row.sub || "unknown-user";
+    const tenant = row.tenant_id || row.tenantId || "default";
+    console.log(`   - ${id} type=${row.runtime_type || row.runtimeType || "mcp"} user=${user} tenant=${tenant} frames=${frames}`);
+    printLlmHealth(row);
+  }
+} catch {
+  console.log("   received non-JSON Runtime Bridge status response");
+}
+NODE
+}
+
 # The three services that carry the Copilot-questions feature code (rebuild these
 # after a git pull so the box runs your new code, not a stale image).
 FEATURE_SVCS="platform-core context-api workgraph-api platform-web"
@@ -247,6 +348,7 @@ cmd_mcp() {
 }
 
 cmd_status() {
+  load_local_env
   printf '── llm-gateway (:8001) … '
   curl -fsS http://localhost:8001/health >/dev/null 2>&1 && echo "UP" || echo "DOWN"
   printf '── mcp-server (:7100, direct HTTP) … '
@@ -255,7 +357,7 @@ cmd_status() {
   printf '── context-api (:8000) … '
   curl -fsS http://localhost:8000/health >/dev/null 2>&1 && echo "UP" || echo "DOWN"
   echo  "── runtime bridge — does the box see the MCP runtime? (BRIDGE mode only)"
-  curl -fsS http://localhost:8000/api/runtime-bridge/status 2>/dev/null || echo "   (context-api down, or direct mode / no runtime connected)"
+  print_runtime_bridge_status
   echo
 }
 

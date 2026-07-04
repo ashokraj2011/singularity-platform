@@ -237,7 +237,7 @@ run_runtime_bridge() {
   in_target bash -lc 'mkdir -p logs; (bin/laptop-bridge.sh gateway > logs/deploy-test-gateway.log 2>&1 & echo $! > .deploy-test-gateway.pid)'
   in_target bash -lc 'for i in $(seq 1 90); do curl -fsS http://localhost:8001/health >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
   in_target bash -lc 'mkdir -p logs; (bin/laptop-bridge.sh mcp > logs/deploy-test-mcp.log 2>&1 & echo $! > .deploy-test-mcp.pid)'
-  in_target bash -lc 'for i in $(seq 1 90); do curl -fsS http://localhost:8000/api/runtime-bridge/status | grep -q "\"count\":[[:space:]]*[1-9]" && exit 0; sleep 1; done; curl -s http://localhost:8000/api/runtime-bridge/status || true; exit 1'
+  in_target bash -lc 'source .env.local 2>/dev/null || true; for i in $(seq 1 90); do curl -fsS -H "X-Service-Token: ${CONTEXT_FABRIC_SERVICE_TOKEN:-}" http://localhost:8000/api/runtime-bridge/status | grep -q "\"count\":[[:space:]]*[1-9]" && exit 0; sleep 1; done; curl -s -H "X-Service-Token: ${CONTEXT_FABRIC_SERVICE_TOKEN:-}" http://localhost:8000/api/runtime-bridge/status || true; exit 1'
   if [ "$KEEP_RUNNING" != "1" ]; then
     in_target bash -lc 'kill "$(cat .deploy-test-mcp.pid 2>/dev/null)" "$(cat .deploy-test-gateway.pid 2>/dev/null)" >/dev/null 2>&1 || true'
     in_target bash -lc 'bin/laptop-bridge.sh box-down'

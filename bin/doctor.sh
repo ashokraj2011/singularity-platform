@@ -31,6 +31,10 @@ CONF="$ROOT/.singularity/setup.conf"; [ -f "$CONF" ] && . "$CONF"
 PG_USER="${PG_USER:-${USER:-postgres}}"; PG_PASS="${PG_PASS:-postgres}"
 PG_HOST="${PG_HOST:-localhost}"; PG_PORT="${PG_PORT:-5432}"
 export PGPASSWORD="$PG_PASS"
+ar_url="postgresql://$PG_USER:$PG_PASS@$PG_HOST:$PG_PORT/singularity"
+wg_url="postgresql://$PG_USER:$PG_PASS@$PG_HOST:$PG_PORT/workgraph"
+agent_runtime_migrate_fix="(cd agent-and-tools/apps/agent-runtime && DATABASE_URL=$ar_url npx prisma migrate deploy)"
+agent_runtime_db_push_fix="(cd agent-and-tools/apps/agent-runtime && DATABASE_URL=$ar_url npx prisma db push --skip-generate)"
 
 http_code(){
   local code
@@ -70,6 +74,104 @@ except Exception:
     pass
 PY
   fi
+}
+http_success(){
+  case "$1" in
+    2??|3??) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+agent_runtime_strict_hint(){
+  local url="$1" payload
+  payload="$(http_get "$url" 6)"
+  printf '%s' "$payload" | python3 -c '
+import json
+import sys
+
+migrate_fix = sys.argv[1]
+db_push_fix = sys.argv[2]
+
+try:
+    root = json.load(sys.stdin)
+except Exception:
+    print(f"check {sys.argv[3]} · fix: {db_push_fix}")
+    sys.exit(0)
+
+data = root.get("data", root) if isinstance(root, dict) else {}
+checks = data.get("checks", []) if isinstance(data, dict) else []
+failed = [c for c in checks if isinstance(c, dict) and c.get("ok") is not True]
+if not failed:
+    print(f"check {sys.argv[3]} · fix: {db_push_fix}")
+    sys.exit(0)
+
+parts = []
+for item in failed[:3]:
+    name = str(item.get("name") or "unknown")
+    reason = str(item.get("reason") or "").strip()
+    parts.append(f"{name}: {reason}" if reason else name)
+if len(failed) > 3:
+    parts.append(f"+{len(failed) - 3} more")
+
+names = {str(item.get("name") or "") for item in failed}
+fix = migrate_fix if "archived_capability_lifecycle" in names else db_push_fix
+joined = "; ".join(parts)
+print(f"failed checks: {joined} · fix: {fix}")
+' "$agent_runtime_migrate_fix" "$agent_runtime_db_push_fix" "$url" 2>/dev/null
+}
+runtime_registry_hint(){
+  printf '%s' "$1" | python3 -c '
+import json
+import sys
+
+migrate_fix = sys.argv[1]
+db_push_fix = sys.argv[2]
+ops_fix = "open http://localhost:5180/operations/readiness"
+
+try:
+    root = json.load(sys.stdin)
+except Exception:
+    print(ops_fix)
+    sys.exit(0)
+
+data = root.get("data", root) if isinstance(root, dict) else {}
+services = data.get("services", []) if isinstance(data, dict) else []
+bad = [service for service in services if isinstance(service, dict) and service.get("required") is True and service.get("ok") is not True]
+if not bad:
+    print(ops_fix)
+    sys.exit(0)
+
+parts = []
+fix = ops_fix
+for service in bad[:4]:
+    label = str(service.get("label") or service.get("id") or "required service")
+    status = service.get("httpStatus")
+    message = str(service.get("message") or service.get("status") or "unhealthy").strip()
+    details = service.get("details") if isinstance(service.get("details"), dict) else {}
+    checks = details.get("checks", []) if isinstance(details, dict) else []
+    failed_checks = [check for check in checks if isinstance(check, dict) and check.get("ok") is not True]
+    if failed_checks:
+        names = [str(check.get("name") or "unknown") for check in failed_checks[:3]]
+        reasons = []
+        for check in failed_checks[:2]:
+            reason = str(check.get("reason") or "").strip()
+            if reason:
+                reasons.append(reason)
+        message = ", ".join(names)
+        if reasons:
+            joined_reasons = "; ".join(reasons)
+            message = f"{message}: {joined_reasons}"
+        failed_names = {str(check.get("name") or "") for check in failed_checks}
+        if service.get("id") == "agent-runtime-strict":
+            fix = migrate_fix if "archived_capability_lifecycle" in failed_names else db_push_fix
+    status_text = f" {status}" if status is not None else ""
+    parts.append(f"{label}{status_text}: {message}")
+
+if len(bad) > 4:
+    parts.append(f"+{len(bad) - 4} more")
+
+joined_parts = " | ".join(parts)
+print(f"required unhealthy: {joined_parts} · fix: {fix}")
+' "$agent_runtime_migrate_fix" "$agent_runtime_db_push_fix" 2>/dev/null
 }
 http_post_json(){
   local url="$1" body="$2" timeout="${3:-6}"
@@ -143,6 +245,7 @@ services=(
   "workgraph-api|http://localhost:8080/health" \
   "agent-service|http://localhost:3001/health" \
   "agent-runtime|http://localhost:3003/health" \
+  "agent-runtime strict|http://localhost:3003/healthz/strict" \
   "prompt-composer|http://localhost:3004/health" \
   "audit-gov|http://localhost:8500/health" \
   "context-fabric|http://localhost:8000/health" \
@@ -155,8 +258,19 @@ services=(
 )
 for s in "${services[@]}"; do
   name="${s%%|*}"; url="${s##*|}"; code=$(http_code "$url")
-  if [ "$code" = "000" ]; then fail "$name down ($url)" "start: bin/setup.sh --yes   ·   logs: bin/bare-metal-apps.sh logs $name"
-  else pass "$name up ($code)"; fi
+  if [ "$code" = "000" ]; then
+    fail "$name down ($url)" "start: bin/setup.sh --yes   ·   logs: bin/bare-metal-apps.sh logs $name"
+  elif ! http_success "$code"; then
+    if [ "$name" = "agent-runtime strict" ]; then
+      strict_hint="$(agent_runtime_strict_hint "$url")"
+      [ -n "$strict_hint" ] || strict_hint="check $url   ·   fix: $agent_runtime_db_push_fix"
+      fail "$name unhealthy ($code)" "$strict_hint"
+    else
+      fail "$name unhealthy ($code)" "check $url   ·   logs: bin/bare-metal-apps.sh logs $name"
+    fi
+  else
+    pass "$name up ($code)"
+  fi
 done
 runtime_services=(
   "llm-gateway|http://localhost:8001/health"
@@ -167,8 +281,13 @@ if [ -n "$BOX_ONLY" ]; then
 else
   for s in "${runtime_services[@]}"; do
     name="${s%%|*}"; url="${s##*|}"; code=$(http_code "$url")
-    if [ "$code" = "000" ]; then warn "$name not running locally" "optional/remote-capable runtime; start locally with bin/bare-metal-runtime.sh up"
-    else pass "$name up ($code)"; fi
+    if [ "$code" = "000" ]; then
+      warn "$name not running locally" "optional/remote-capable runtime; start locally with bin/bare-metal-runtime.sh up"
+    elif ! http_success "$code"; then
+      warn "$name unhealthy ($code)" "check $url   ·   optional/remote-capable runtime; start locally with bin/bare-metal-runtime.sh up"
+    else
+      pass "$name up ($code)"
+    fi
   done
 fi
 local_tok=$(get_auth_token)
@@ -184,9 +303,15 @@ except Exception:
   sys.exit(1)' 2>/dev/null)
 case "$?" in
   0) pass "platform runtime registry ($runtime_summary)" ;;
-  2) fail "platform runtime registry reports required service unhealthy" "open http://localhost:5180/operations/readiness" ;;
+  2) fail "platform runtime registry reports required service unhealthy" "$(runtime_registry_hint "$runtime_status")" ;;
   *) warn "platform runtime registry unavailable" "open http://localhost:5180/operations/readiness after platform-web is running" ;;
 esac
+
+if [ -f "$ROOT/logs/platform-web.log" ] && grep -Eq 'vendor-chunks/.*not found|Cannot find module.*vendor-chunks|React.*manifest|_next/static.*not found' "$ROOT/logs/platform-web.log"; then
+  fail "platform-web log contains stale Next cache signatures" "run: bin/bare-metal-apps.sh down && bin/bare-metal.sh clean-web-cache && bin/bare-metal-apps.sh up"
+else
+  pass "platform-web Next cache has no known stale-chunk signature"
+fi
 
 # ── 2. Platform Web env (.env.local) ─────────────────────────────────────────
 section "2. Platform Web env (.env.local)"
@@ -218,8 +343,6 @@ ensure_kv "agent-and-tools/web/.env.local" "NEXT_PUBLIC_WORKGRAPH_WEB_URL=/workf
 # ── 3. Seeds ─────────────────────────────────────────────────────────────────
 section "3. Seeds"
 seed_apply="seed/apply.sh $PG_USER $PG_PASS $PG_HOST $PG_PORT"
-ar_url="postgresql://$PG_USER:$PG_PASS@$PG_HOST:$PG_PORT/singularity"
-wg_url="postgresql://$PG_USER:$PG_PASS@$PG_HOST:$PG_PORT/workgraph"
 
 if db_up singularity_iam; then
   n=$(psql_q singularity_iam "select count(*) from iam.users where email like 'user%@singularity.local'")

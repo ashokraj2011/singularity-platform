@@ -916,7 +916,8 @@ Verify the active provider/model catalog and the runtime bridge connection:
 ```bash
 curl -s http://localhost:8001/llm/providers | jq
 curl -s http://localhost:8001/llm/models | jq
-curl -s http://localhost:8000/api/runtime-bridge/status | jq
+source .env.local
+curl -s -H "X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN" http://localhost:8000/api/runtime-bridge/status | jq
 ```
 
 > For the **bare-metal** stack, the interactive wizard `bin/setup.sh` asks for the bridge URL/model/token and runs this for you (choose the *bridge* LLM option).

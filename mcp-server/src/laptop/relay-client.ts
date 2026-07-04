@@ -40,6 +40,9 @@ import { runFinishWorkBranch, FinishBranchSchema } from "../mcp/work";
 // runWorktreeWriteFile the platform's HTTP PUT /mcp/worktree/:code/file route
 // uses, so CF can materialize evidence into a dial-in runtime's worktree.
 import { runWorktreeWriteFile, writeFileSchema } from "../mcp/worktree";
+import { ensureFreshGatewayStatus, listConfiguredProviders } from "../llm/client";
+import { modelCatalogResponse } from "../llm/model-catalog";
+import { configuredDefaultModel, configuredDefaultProvider } from "../llm/provider-config";
 import {
   decodeInbound,
   type HelloFrame, type HeartbeatFrame, type ResponseFrame,
@@ -71,11 +74,14 @@ export class LaptopRelayClient {
   private stopping = false;
   private inflight = 0;
   private maxConcurrent = 1;
+  private loggedTokenDiagnostic = false;
+  private loggedAuthFailureHint = false;
 
   constructor(private cfg: RelayConfig) {}
 
   start(): void {
     this.stopping = false;
+    this.logRuntimeTokenDiagnostic();
     void this.connect();
   }
 
@@ -101,7 +107,7 @@ export class LaptopRelayClient {
 
     ws.on("open", () => {
       log.info({}, "[laptop-relay] WS open, sending hello");
-      this.sendHello();
+      void this.sendHello();
     });
 
     ws.on("message", (data) => {
@@ -123,6 +129,9 @@ export class LaptopRelayClient {
 
     ws.on("error", (err) => {
       log.warn({ err: err.message }, "[laptop-relay] WS error");
+      if (/Unexpected server response:\s*(401|403)/i.test(err.message)) {
+        this.logBridgeAuthFailureHint(err.message);
+      }
       // 'close' will fire next; reconnect handled there.
     });
   }
@@ -138,13 +147,82 @@ export class LaptopRelayClient {
 
   private resetBackoff(): void { this.backoffMs = MIN_BACKOFF_MS; }
 
+  private logRuntimeTokenDiagnostic(): void {
+    if (this.loggedTokenDiagnostic) return;
+    this.loggedTokenDiagnostic = true;
+    const diagnostic = runtimeTokenDiagnostic(this.cfg.deviceToken);
+    if (!diagnostic.valid) {
+      log.warn(
+        {
+          bridgeUrl: this.cfg.bridgeUrl,
+          runtimeId: this.cfg.runtimeId ?? this.cfg.deviceId,
+          reason: diagnostic.error,
+        },
+        "[runtime-dial-in] runtime token is not a decodable JWT; Context Fabric will reject bridge registration",
+      );
+      return;
+    }
+
+    log.info(
+      {
+        bridgeUrl: this.cfg.bridgeUrl,
+        tokenKind: diagnostic.kind,
+        tokenSubject: diagnostic.sub,
+        tokenRuntimeId: diagnostic.runtime_id,
+        tokenDeviceId: diagnostic.device_id,
+        tokenTenantId: diagnostic.tenant_id,
+        tokenShared: diagnostic.shared,
+        tokenExpiresAt: diagnostic.expires_at,
+        helloRuntimeId: this.cfg.runtimeId ?? this.cfg.deviceId,
+        helloTenantId: this.cfg.tenantId,
+        helloUserId: this.cfg.userId,
+      },
+      "[runtime-dial-in] runtime token identity (redacted)",
+    );
+
+    const tokenRuntimeId = diagnostic.runtime_id ?? diagnostic.device_id;
+    const helloRuntimeId = this.cfg.runtimeId ?? this.cfg.deviceId;
+    if (tokenRuntimeId && helloRuntimeId && tokenRuntimeId !== helloRuntimeId) {
+      log.warn(
+        { tokenRuntimeId, helloRuntimeId },
+        "[runtime-dial-in] token runtime_id differs from local SINGULARITY_RUNTIME_ID; Context Fabric uses the token identity",
+      );
+    }
+    if (diagnostic.expired) {
+      log.warn(
+        { tokenExpiresAt: diagnostic.expires_at },
+        "[runtime-dial-in] runtime token is expired; re-mint before connecting",
+      );
+    }
+  }
+
+  private logBridgeAuthFailureHint(errorMessage: string): void {
+    if (this.loggedAuthFailureHint) return;
+    this.loggedAuthFailureHint = true;
+    const diagnostic = runtimeTokenDiagnostic(this.cfg.deviceToken);
+    log.warn(
+      {
+        error: errorMessage,
+        bridgeUrl: this.cfg.bridgeUrl,
+        tokenKind: diagnostic.valid ? diagnostic.kind : undefined,
+        tokenSubject: diagnostic.valid ? diagnostic.sub : undefined,
+        tokenRuntimeId: diagnostic.valid ? diagnostic.runtime_id : undefined,
+        tokenDeviceId: diagnostic.valid ? diagnostic.device_id : undefined,
+        tokenTenantId: diagnostic.valid ? diagnostic.tenant_id : undefined,
+        tokenExpiresAt: diagnostic.valid ? diagnostic.expires_at : undefined,
+        tokenDiagnostic: diagnostic.valid ? (diagnostic.expired ? "expired" : "decoded") : diagnostic.error,
+      },
+      "[runtime-dial-in] bridge rejected the runtime token; check JWT_SECRET, token expiry, kind=runtime/device, sub=user id, and runtime_id. Re-run bin/mcp-runtime-setup.sh connect or bin/laptop-bridge.sh mint-token <iam-user-id>.",
+    );
+  }
+
   private send(frame: HelloFrame | HeartbeatFrame | ResponseFrame): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     try { this.ws.send(JSON.stringify(frame)); }
     catch (err) { log.warn({ err: (err as Error).message }, "[laptop-relay] send failed"); }
   }
 
-  private sendHello(): void {
+  private async sendHello(): Promise<void> {
     const hello: HelloFrame = {
       type: "hello",
       device_id:     this.cfg.deviceId,
@@ -158,11 +236,7 @@ export class LaptopRelayClient {
       capability_tags: this.cfg.capabilityTags ?? ["mcp", "tools", "llm"],
       shared: this.cfg.shared,
       runtime_scope: this.cfg.runtimeScope,
-      health: {
-        llm_gateway_url_configured: Boolean(process.env.LLM_GATEWAY_URL),
-        llm_gateway_url: redactUrl(process.env.LLM_GATEWAY_URL ?? "http://localhost:8001"),
-        git_push_enabled: Boolean(process.env.MCP_GIT_PUSH_ENABLED),
-      },
+      health: await runtimeHealthSnapshot(),
       // M75 Slice 1 — advertise both legacy invoke and the new per-tool
       // tool-run frame. The bridge picks based on which it's configured
       // to send; for the cutover the bridge sends invoke by default and
@@ -177,8 +251,17 @@ export class LaptopRelayClient {
   private startHeartbeat(): void {
     this.clearHeartbeat();
     this.heartbeatTimer = setInterval(() => {
-      this.send({ type: "heartbeat", sent_at: new Date().toISOString() });
+      void this.sendHeartbeat();
     }, HEARTBEAT_MS);
+    void this.sendHeartbeat();
+  }
+
+  private async sendHeartbeat(): Promise<void> {
+    this.send({
+      type: "heartbeat",
+      sent_at: new Date().toISOString(),
+      health: await runtimeHealthSnapshot(),
+    });
   }
 
   private clearHeartbeat(): void {
@@ -204,7 +287,7 @@ export class LaptopRelayClient {
     }
 
     if (frame.type === "ping") {
-      this.send({ type: "heartbeat", sent_at: new Date().toISOString() });
+      void this.sendHeartbeat();
       return;
     }
 
@@ -583,6 +666,55 @@ export function ensureDeviceId(): string {
   return CACHED_DEVICE_ID;
 }
 
+type RuntimeTokenDiagnostic =
+  | {
+      valid: true;
+      kind?: string;
+      sub?: string;
+      runtime_id?: string;
+      device_id?: string;
+      tenant_id?: string;
+      shared?: boolean;
+      exp?: number;
+      expires_at?: string;
+      expired: boolean;
+    }
+  | {
+      valid: false;
+      error: string;
+      expired: false;
+    };
+
+function runtimeTokenDiagnostic(token: string): RuntimeTokenDiagnostic {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return { valid: false, error: "malformed JWT", expired: false };
+    const payload = JSON.parse(Buffer.from(parts[1] ?? "", "base64url").toString("utf8")) as Record<string, unknown>;
+    const exp = typeof payload.exp === "number" ? payload.exp : Number(payload.exp);
+    const expiresAt = Number.isFinite(exp) ? new Date(exp * 1000).toISOString() : undefined;
+    const expired = Number.isFinite(exp) ? Date.now() > exp * 1000 : false;
+    return {
+      valid: true,
+      kind: stringClaim(payload.kind),
+      sub: stringClaim(payload.sub),
+      runtime_id: stringClaim(payload.runtime_id),
+      device_id: stringClaim(payload.device_id),
+      tenant_id: stringClaim(payload.tenant_id),
+      shared: payload.shared === true,
+      exp: Number.isFinite(exp) ? exp : undefined,
+      expires_at: expiresAt,
+      expired,
+    };
+  } catch (err) {
+    return { valid: false, error: (err as Error).message || "bad JWT payload", expired: false };
+  }
+}
+
+function stringClaim(value: unknown): string | undefined {
+  const text = typeof value === "string" || typeof value === "number" ? String(value).trim() : "";
+  return text || undefined;
+}
+
 function redactUrl(raw: string): string {
   try {
     const url = new URL(raw);
@@ -591,5 +723,61 @@ function redactUrl(raw: string): string {
     return url.toString();
   } catch {
     return raw ? "configured" : "";
+  }
+}
+
+async function runtimeHealthSnapshot(): Promise<Record<string, unknown>> {
+  const base: Record<string, unknown> = {
+    llm_gateway_url_configured: Boolean(process.env.LLM_GATEWAY_URL),
+    llm_gateway_url: redactUrl(process.env.LLM_GATEWAY_URL ?? "http://localhost:8001"),
+    git_push_enabled: Boolean(process.env.MCP_GIT_PUSH_ENABLED),
+    llm_default_provider: configuredDefaultProvider(),
+    llm_default_model: configuredDefaultModel(),
+    llm_provider_status_source: "mcp-runtime",
+  };
+  try {
+    await ensureFreshGatewayStatus();
+    const catalog = modelCatalogResponse();
+    const providers = listConfiguredProviders();
+    const defaultModel = catalog.models.find(model => model.default) ?? catalog.models[0];
+    const defaultProvider = providers.find(provider => provider.name === configuredDefaultProvider());
+    const readyAliases = catalog.models
+      .filter(model => model.ready)
+      .slice(0, 20)
+      .map(model => model.id);
+    return {
+      ...base,
+      llm_default_model_alias: catalog.defaultModelAlias,
+      llm_default_model_ready: defaultModel?.ready ?? false,
+      llm_default_model_warnings: defaultModel?.warnings?.slice(0, 5) ?? ["No default model alias is configured."],
+      llm_default_provider_ready: defaultProvider?.ready ?? false,
+      llm_default_provider_warnings: defaultProvider?.warnings?.slice(0, 5) ?? ["Default provider is not configured."],
+      llm_ready_model_aliases: readyAliases,
+      llm_model_catalog_source: catalog.source,
+      llm_model_catalog_warnings: catalog.warnings,
+      llm_providers: providers.map(provider => ({
+        name: provider.name,
+        ready: provider.ready,
+        allowed: provider.allowed,
+        enabled: provider.enabled,
+        default_model: provider.default_model,
+        warnings: provider.warnings.slice(0, 5),
+      })),
+      llm_models: catalog.models.slice(0, 50).map(model => ({
+        id: model.id,
+        label: model.label,
+        provider: model.provider,
+        ready: model.ready,
+        default: model.default ?? false,
+        supportsTools: model.supportsTools ?? false,
+        warnings: model.warnings.slice(0, 5),
+      })),
+    };
+  } catch (err) {
+    return {
+      ...base,
+      llm_provider_status_source: "mcp-runtime-error",
+      llm_provider_probe_error: err instanceof Error ? err.message.slice(0, 300) : "provider status probe failed",
+    };
   }
 }

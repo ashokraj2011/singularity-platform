@@ -79,7 +79,8 @@ ws://localhost:8000/api/runtime-bridge/connect
 Check runtime registration:
 
 ```bash
-curl -s http://localhost:8000/api/runtime-bridge/status | jq
+source .env.local
+curl -s -H "X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN" http://localhost:8000/api/runtime-bridge/status | jq
 ```
 
 Inside the plain Docker core, direct debug URLs default to:

@@ -6,13 +6,15 @@ import { config } from "../config";
 export const SupportedProviderSchema = z.enum(["mock", "openai", "openrouter", "anthropic", "copilot"]);
 export type SupportedProvider = z.infer<typeof SupportedProviderSchema>;
 
+const CostTierSchema = z.enum(["mock", "free", "low", "medium", "standard", "high"]);
+
 const ProviderSettingsSchema = z.object({
   enabled: z.boolean().optional(),
-  baseUrl: z.string().min(1).optional(),
+  baseUrl: z.string().optional(),
   defaultModel: z.string().min(1).optional(),
-  credentialEnv: z.string().min(1).optional(),
+  credentialEnv: z.string().optional(),
   supportsTools: z.boolean().optional(),
-  costTier: z.enum(["mock", "low", "medium", "high"]).optional(),
+  costTier: CostTierSchema.optional(),
   description: z.string().optional(),
 }).passthrough();
 

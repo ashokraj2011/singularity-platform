@@ -29,7 +29,7 @@ GIT_HISTORY_SOURCE_URI=https://github.com/org/repo
 GIT_HISTORY_SOURCE_REF=main
 ```
 
-For local single-user development, if exactly one runtime is connected, Platform Web can infer that runtime from `/api/runtime-bridge/status`. In multi-user or strict environments, pass a real caller bearer token or set the runtime user/tenant env explicitly.
+For local single-user development, if exactly one runtime is connected, Platform Web can infer that runtime through the server-side, service-token authenticated `/api/runtime-bridge/status` read. In multi-user or strict environments, pass a real caller bearer token or set the runtime user/tenant env explicitly.
 
 Local Platform Web execution is debug-only. Enable it only when you intentionally want the Next server to run the script against a mounted checkout:
 

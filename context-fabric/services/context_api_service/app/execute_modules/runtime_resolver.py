@@ -25,6 +25,7 @@ from fastapi import HTTPException
 
 from ..config import settings
 from ..iam_service_token import get_iam_service_token, invalidate_iam_service_token
+from ..response_json import response_json
 
 
 async def _iam_get(
@@ -42,7 +43,7 @@ async def _iam_get(
                 headers={"Authorization": f"Bearer {token or ''}"},
             )
             resp.raise_for_status()
-            return resp.json()
+            return response_json(resp, "IAM MCP runtime lookup")
 
     token = await get_iam_service_token()
     try:

@@ -253,7 +253,7 @@ The standards the verifier checks come from the run's `acceptanceCriteria` / `de
 - **Operations shows LLM / MCP "offline" (split)** — make sure the host gateway + mcp are running and that the direct/bridge overlay points backend health checks at the laptop path. Rebuild + recreate `platform-web` after pulling (`docker compose … build platform-web && … up -d --no-deps platform-web`).
 - **`invalid input value for enum NodeType: VERIFIER`** — run the §6 enum migration before the seed.
 - **Agent phase fails immediately under `fail_closed`** — audit-governance isn't reachable; re-seed with `SEED_GOVERNANCE_MODE=fail_open`.
-- **Bridge shows no laptop** — check `GET https://<box>:8000/api/laptop-bridge/status`; the device token must be signed with the box's `JWT_SECRET` and carry `kind=device`, `sub`, `device_id`.
+- **Bridge shows no laptop** — check authenticated `GET https://<box>:8000/api/laptop-bridge/status` with `X-Service-Token`; the device token must be signed with the box's `JWT_SECRET` and carry `kind=device`, `sub`, `device_id`.
 
 ---
 

@@ -37,6 +37,37 @@ _cached_exp: Optional[datetime] = None
 _lock = asyncio.Lock()
 
 
+def _response_json_object(response: httpx.Response, source: str) -> Optional[dict]:
+    text = response.text or ""
+    if not text.strip():
+        log.warning("[iam-service-token] %s returned an empty response (%s)", source, response.status_code)
+        return None
+    try:
+        payload = json.loads(text)
+    except Exception as exc:
+        log.warning(
+            "[iam-service-token] %s returned invalid JSON (%s): %s; body=%s",
+            source,
+            response.status_code,
+            exc,
+            text[:200],
+        )
+        return None
+    if not isinstance(payload, dict):
+        log.warning("[iam-service-token] %s returned a non-object JSON response (%s)", source, response.status_code)
+        return None
+    return payload
+
+
+def _access_token_from_response(response: httpx.Response, source: str) -> Optional[str]:
+    payload = _response_json_object(response, source)
+    token = payload.get("access_token") if isinstance(payload, dict) else None
+    if isinstance(token, str) and token.strip():
+        return token
+    log.warning("[iam-service-token] %s response did not include access_token", source)
+    return None
+
+
 def _decode_exp(jwt: str) -> Optional[datetime]:
     try:
         parts = jwt.split(".")
@@ -114,7 +145,7 @@ async def _mint() -> Optional[str]:
             if login.status_code >= 400:
                 log.warning("[iam-service-token] bootstrap login failed (%s)", login.status_code)
                 return None
-            user_jwt = login.json().get("access_token")
+            user_jwt = _access_token_from_response(login, "bootstrap login")
             if not user_jwt:
                 return None
 
@@ -131,7 +162,7 @@ async def _mint() -> Optional[str]:
             if mint.status_code >= 400:
                 log.warning("[iam-service-token] mint failed (%s): %s", mint.status_code, mint.text[:200])
                 return None
-            jwt = mint.json().get("access_token")
+            jwt = _access_token_from_response(mint, "service-token mint")
             if not jwt:
                 return None
             if not validate_iam_service_token_tenant_scope(jwt):

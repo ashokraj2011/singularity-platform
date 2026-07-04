@@ -29,6 +29,7 @@ from .governed.grant import grant_enabled, mint_tool_grant
 from .governed.phase_state import Phase
 from .governed.policy_loader import PhasePolicy, StagePolicy
 from .iam_service_token import get_iam_service_token, invalidate_iam_service_token
+from .response_json import UpstreamJsonError, response_json_object
 
 log = logging.getLogger(__name__)
 
@@ -287,11 +288,12 @@ async def call_server_tool(
             raise HTTPException(status_code=502, detail=f"tool-service unreachable: {exc}")
 
     text = resp.text
-    parsed: Any
     try:
-        parsed = resp.json()
-    except Exception:
-        parsed = {"status": "error", "error": text[:1000]}
+        parsed = response_json_object(resp, "tool-service invoke")
+    except UpstreamJsonError as exc:
+        parsed = {"status": "error", "error": exc.snippet or str(exc)}
+        if resp.status_code < 400:
+            raise HTTPException(status_code=502, detail=f"tool-service returned invalid JSON: {parsed['error']}") from exc
     if resp.status_code >= 500:
         raise HTTPException(status_code=502, detail=f"tool-service returned {resp.status_code}: {text[:500]}")
     if resp.status_code >= 400:
@@ -339,7 +341,7 @@ async def list_mcp_servers_for_capability(
             status_code=resp.status_code,
             detail=f"IAM returned {resp.status_code}: {resp.text[:300]}",
         )
-    return {"capability_id": capability_id, "servers": resp.json()}
+    return {"capability_id": capability_id, "servers": response_json_object(resp, "IAM capability MCP servers")}
 
 
 # ── M13 — code-changes proxy ────────────────────────────────────────────────
@@ -386,7 +388,7 @@ async def _fetch_mcp_server(server_id: str) -> dict[str, Any]:
             status_code=resp.status_code,
             detail=f"IAM returned {resp.status_code}: {resp.text[:300]}",
         )
-    return resp.json()
+    return response_json_object(resp, "IAM MCP server lookup")
 
 
 @router.get("/code-changes")
@@ -457,7 +459,7 @@ async def list_code_changes_for_call(
             }
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"MCP returned {resp.status_code}: {resp.text[:300]}")
-    body = resp.json()
+    body = response_json_object(resp, "MCP code-changes list")
     items = (body.get("data") or {}).get("items") or []
     # MCP returns only the records it still has — fill gaps with stale placeholders so id ordering is preserved.
     by_id = {it["id"]: it for it in items if isinstance(it, dict) and "id" in it}
@@ -498,7 +500,7 @@ async def get_code_change(
         raise HTTPException(status_code=404, detail="code-change not found in MCP (may have been evicted from ring)")
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"MCP returned {resp.status_code}: {resp.text[:300]}")
-    return resp.json().get("data")
+    return response_json_object(resp, "MCP code-change detail").get("data")
 
 
 @router.get("/servers/{server_id}")
@@ -527,4 +529,4 @@ async def get_mcp_server(
             status_code=resp.status_code,
             detail=f"IAM returned {resp.status_code}: {resp.text[:300]}",
         )
-    return resp.json()
+    return response_json_object(resp, "IAM MCP server detail")

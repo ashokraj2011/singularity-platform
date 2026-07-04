@@ -23,6 +23,7 @@ from . import placement as _placement
 # git_broker depends only on app.config + app.iam_service_token (never governed.*),
 # so a top-level import here is cycle-free.
 from ..git_broker import _git_broker_enabled, clone_credential_for_run
+from ..response_json import UpstreamJsonError, response_json_object
 
 log = logging.getLogger(__name__)
 
@@ -251,13 +252,12 @@ async def dispatch_tool(
     except httpx.HTTPError as exc:
         raise ToolDispatchError(f"mcp-server unreachable: {exc}") from exc
 
-    body: dict[str, Any]
     try:
-        body = response.json()
-    except ValueError:
+        body = response_json_object(response, "MCP tool-run")
+    except UpstreamJsonError as exc:
         raise ToolDispatchError(
-            f"mcp-server returned non-JSON ({response.status_code}): {response.text[:200]}"
-        )
+            f"mcp-server returned invalid JSON ({response.status_code}): {exc.snippet or str(exc)}"
+        ) from exc
 
     if not response.is_success:
         # The endpoint's error shape is `{success: false, error: {code, message, details}}`.

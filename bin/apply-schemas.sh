@@ -17,7 +17,7 @@
 # Usage:
 #   ./bin/apply-schemas.sh
 
-set -e
+set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
@@ -63,6 +63,31 @@ info "applying agent-runtime schema (DB: singularity)…"
 docker exec "$(runtime_container)" sh -c \
   "cd /app/apps/agent-runtime && npx prisma db push --skip-generate --accept-data-loss" \
   2>&1 | tail -3
+
+info "applying agent-runtime hardening migrations (partial indexes + archive reconciliation)…"
+docker exec "$(runtime_container)" sh -c '
+  set -e
+  cd /app/apps/agent-runtime
+  for migration_name in \
+    20260702160000_capability_learning_status \
+    20260703120000_capability_active_identity_unique \
+    20260703123000_capability_knowledge_source_identity \
+    20260703124500_capability_source_identity \
+    20260703130000_capability_code_symbol_identity \
+    20260703131500_agent_capability_binding_identity \
+    20260703133000_agent_template_active_identity \
+    20260703134500_capability_learning_candidate_identity \
+    20260703140000_agent_skill_active_identity \
+    20260703141000_agent_skill_source_identity \
+    20260703142000_agent_template_skill_source_identity \
+    20260703143000_capability_code_embedding_identity \
+    20260704110000_capability_learning_worker_lock \
+    20260704113000_capability_archive_reconcile
+  do
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "prisma/migrations/${migration_name}/migration.sql"
+  done
+' 2>&1 | tail -8
+
 info "applying agent-runtime post-push SQL (pgvector indexes + retrieval FTS)…"
 docker exec "$(runtime_container)" sh -c \
   "cd /app/apps/agent-runtime && psql \"\$DATABASE_URL\" -v ON_ERROR_STOP=1 -q -f prisma/post-push.sql" \

@@ -314,6 +314,15 @@ def warnings() -> List[str]:
     return list(_warnings)
 
 
+def unique_warnings(values: List[str]) -> List[str]:
+    out: List[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
+
 def reset_cache_for_tests() -> None:
     """Test-only: drop cached config so the next load reads from disk."""
     global _loaded_providers, _loaded_catalog, _warnings

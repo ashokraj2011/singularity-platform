@@ -54,9 +54,23 @@ capability bootstrap) discover a repo through the requesting user's laptop runti
 — so repo ingestion works in the cloud+laptop split, where the cloud has no
 co-located mcp HTTP. agent-runtime POSTs `/api/runtime-bridge/source/{tree,file}`
 on CF (service-token auth, `user_id` in the body); CF relays the frame to that
-user's runtime, which fetches from GitHub with its **local** token. agent-runtime
-falls back to the direct `MCP_SERVER_URL` HTTP path when CF is unset or no laptop
-runtime is online (the all-in-one box).
+user's runtime, which fetches from GitHub with its **local** token. Any direct
+`MCP_SERVER_URL` path is debug compatibility and must be enabled explicitly with
+`RUNTIME_HTTP_FALLBACK_ENABLED=true`; normal runtime traffic is WebSocket-first
+and fails closed when no eligible runtime is connected.
+
+All **HTTP control-plane endpoints** under `/api/runtime-bridge/*` that dispatch
+or inspect runtime routing require `X-Service-Token` by default, even in local
+development where `/execute` may be relaxed for demos. This includes status,
+diagnostics, source discovery, tool-run, branch finalization, and worktree file
+write routes. Use `/health` for unauthenticated liveness; use authenticated
+status for runtime inventory because it includes user/runtime identity.
+For a purely local one-off debug session only, `RUNTIME_BRIDGE_ALLOW_UNAUTHENTICATED_HTTP=true`
+can temporarily disable that HTTP guard outside production-class environments;
+do not use that setting for shared laptops, office networks, or cloud installs.
+This auth escape hatch does not mean direct MCP HTTP fallback is enabled; mutating
+routes such as branch finalization and worktree writes still require
+`RUNTIME_HTTP_FALLBACK_ENABLED=true` before they will call `MCP_SERVER_URL`.
 
 ---
 

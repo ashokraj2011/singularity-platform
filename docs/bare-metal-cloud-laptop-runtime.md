@@ -175,7 +175,8 @@ curl -fsS http://<cloud-host>:5180/
 4. Verify no runtime is connected yet:
 
 ```bash
-curl -s http://<cloud-host>:8000/api/runtime-bridge/status | jq
+source .env.local
+curl -s -H "X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN" http://<cloud-host>:8000/api/runtime-bridge/status | jq
 ```
 
 Expected before the laptop starts:
@@ -225,8 +226,14 @@ The script:
 - mints or stores `.singularity/laptop-device-token`
 - starts local `llm-gateway` on `:8001`
 - starts local `mcp-server` in Runtime Bridge dial-in mode
-- polls cloud Context Fabric until the runtime appears connected
+- verifies the runtime connection when run from a trusted platform shell that
+  has `CONTEXT_FABRIC_SERVICE_TOKEN`; otherwise the runtime still dials in and
+  status can be checked from Platform Web or from the cloud/server shell
 - prints the LLM providers and model aliases available from the laptop gateway
+
+Do not copy the platform `CONTEXT_FABRIC_SERVICE_TOKEN` to every laptop/runtime
+host just for status checks. That token is for trusted platform-side inventory
+reads. MCP only needs its runtime JWT to dial in.
 
 For Copilot as an OpenAI-compatible LLM provider, first start the local bridge:
 
@@ -314,7 +321,8 @@ bridge.
 6. Verify from the cloud/server:
 
 ```bash
-curl -s http://<cloud-host>:8000/api/runtime-bridge/status | jq
+source .env.local
+curl -s -H "X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN" http://<cloud-host>:8000/api/runtime-bridge/status | jq
 ```
 
 Expected:
@@ -571,14 +579,15 @@ Useful checks:
 ```bash
 curl -s http://localhost:8001/llm/providers | jq
 curl -s http://localhost:8001/llm/models | jq
-curl -s http://<cloud-host>:8000/api/runtime-bridge/status | jq
+source .env.local
+curl -s -H "X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN" http://<cloud-host>:8000/api/runtime-bridge/status | jq
 ```
 
 ## What To Look For
 
 | Test | Expected evidence |
 |---|---|
-| Runtime bridge registration | cloud `/api/runtime-bridge/status` shows one connected MCP runtime |
+| Runtime bridge registration | authenticated cloud `/api/runtime-bridge/status` shows one connected MCP runtime |
 | Anthropic/OpenAI-compatible LLM | laptop gateway `/llm/providers` shows provider `ready=true` |
 | Cloud workflow using laptop LLM | laptop MCP logs show `model-run` frames |
 | Copilot SDLC executor | laptop MCP logs show `copilot_execute -> copilot -p` |
@@ -590,6 +599,7 @@ curl -s http://<cloud-host>:8000/api/runtime-bridge/status | jq
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | WebSocket registration returns `403` | `JWT_SECRET` mismatch, expired token, or token signed with old secret | Export the same `JWT_SECRET` on cloud and laptop, re-run `bin/laptop-bridge.sh mint-token <iam-user-id>`, restart MCP |
+| `/api/runtime-bridge/status` returns `401` | missing `CONTEXT_FABRIC_SERVICE_TOKEN` on the status curl | Source the cloud `.env.local` or pass `-H "X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN"` |
 | `/api/runtime-bridge/status` shows `count: 0` | MCP not running, wrong `RUNTIME_BRIDGE_URL`, firewall, or cloud Context Fabric down | Check laptop MCP logs, verify `curl http://<cloud-host>:8000/health`, use `ws://` or `wss://` correctly |
 | Workflow fails with `RUNTIME_NOT_CONNECTED` | No connected runtime for the launching user | Confirm JWT `sub` equals the IAM user id that launched the run |
 | Workflow uses cloud/debug path | `RUNTIME_HTTP_FALLBACK_ENABLED=true` or run explicitly opted out of laptop | Set fallback to `false`, remove `prefer_laptop=false` from the run |

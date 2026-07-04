@@ -255,7 +255,7 @@ def suggested_verification(categories: Iterable[CategorySummary]) -> list[str]:
     if "Workflow / Workgraph" in names:
         checks.append("Run Workgraph API tests or at minimum open /workflows, /workflows/start, and /runs in Platform Web.")
     if "Context Fabric / MCP / LLM" in names:
-        checks.append("Run Context Fabric/MCP runtime bridge smoke: curl /api/runtime-bridge/status and test one tool-run/model-run path.")
+        checks.append("Run Context Fabric/MCP runtime bridge smoke with X-Service-Token on /api/runtime-bridge/status, then test one tool-run/model-run path.")
     if "Agent Runtime / Tools" in names:
         checks.append("Run agent profile/tool lifecycle smoke checks and verify /agents/studio.")
     if "Deployment / Scripts / Docker" in names:

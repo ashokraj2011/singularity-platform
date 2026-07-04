@@ -25,6 +25,17 @@ class AnthropicUpstreamError(RuntimeError):
         self.status_code = status_code
 
 
+def _response_json_object(res: httpx.Response) -> Dict[str, Any]:
+    try:
+        data = res.json()
+    except Exception as exc:
+        snippet = res.text[:400] if isinstance(res.text, str) else ""
+        raise AnthropicUpstreamError(502, f"anthropic returned invalid JSON: {snippet}") from exc
+    if not isinstance(data, dict):
+        raise AnthropicUpstreamError(502, "anthropic returned invalid JSON object")
+    return data
+
+
 def _retry_after_seconds(res: httpx.Response) -> float:
     raw = res.headers.get("retry-after")
     if raw:
@@ -268,7 +279,7 @@ async def respond(
         # "found in `tool_r" — we never saw the block kind.
         snippet = res.text[:2000] if isinstance(res.text, str) else ""
         raise AnthropicUpstreamError(res.status_code, f"anthropic returned {res.status_code}: {snippet}")
-    data = res.json()
+    data = _response_json_object(res)
     text_content = ""
     tool_calls: List[ToolCall] = []
     # M83.r — capture thinking blocks. Anthropic emits them as content

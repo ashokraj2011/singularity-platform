@@ -51,16 +51,21 @@ export RUNTIME_HTTP_FALLBACK_ENABLED=false
 ```
 
 Set `RUNTIME_HTTP_FALLBACK_ENABLED=true` only for direct-HTTP debug overlays or
-temporary compatibility testing.
+temporary compatibility testing. With the default `false`, tool/model/code
+context dispatch, branch finalization, and worktree file writes fail closed when
+no eligible Runtime Bridge MCP runtime is connected.
 
 ## Status
 
 Use:
 
 ```bash
-curl http://localhost:8000/api/runtime-bridge/status
+source .env.local
+curl -s -H "X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN" http://localhost:8000/api/runtime-bridge/status | jq
 ```
 
 The response includes connected runtimes, tenant/user grouping, supported
 frames, capability tags, health metadata, and last heartbeat. The legacy
 `/api/laptop-bridge/status` endpoint returns the same data during migration.
+Runtime status is a protected control-plane read by default; use `/health` for
+unauthenticated liveness only.

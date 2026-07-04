@@ -134,8 +134,12 @@ def list_models(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
         warnings = list(status.get("warnings", []))
         try:
             provider_config.validate_model_entry(entry, credentials)
+        except provider_config.ProviderNotReadyError as exc:
+            if not warnings:
+                warnings.append(str(exc))
         except provider_config.ProviderConfigError as exc:
             warnings.append(str(exc))
+        warnings = provider_config.unique_warnings(warnings)
         enriched.append({**entry, "ready": not warnings, "warnings": warnings})
     return {
         "default_model_alias": provider_config.default_model_alias(),

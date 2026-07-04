@@ -23,6 +23,7 @@ import httpx
 
 from .config import settings
 from .iam_service_token import get_iam_service_token
+from .response_json import UpstreamJsonError, response_json_object
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +84,11 @@ async def broker_git_credential(
     if resp.status_code >= 300:
         log.warning("git broker: IAM issue failed (%s) for op=%s: %s", resp.status_code, operation, resp.text[:200])
         return None
-    return resp.json()
+    try:
+        return response_json_object(resp, "IAM git credential issue")
+    except UpstreamJsonError as exc:
+        log.warning("git broker: IAM issue returned invalid JSON for op=%s: %s", operation, exc)
+        return None
 
 
 # Per-run memo for the clone (READ) credential. A run materializes its repo at

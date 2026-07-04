@@ -22,6 +22,8 @@ from typing import Any
 
 import httpx
 
+from ..response_json import UpstreamJsonError, response_json_object
+
 log = logging.getLogger(__name__)
 
 
@@ -77,9 +79,9 @@ async def _resolve_gateway_url() -> str:
         async with httpx.AsyncClient(timeout=2.0) as client:
             res = await client.get(
                 f"{_REGISTRY_URL}/api/v1/services/{_GATEWAY_SERVICE_NAME}"
-            )
+        )
         if res.status_code == 200:
-            data = res.json()
+            data = response_json_object(res, "platform registry LLM gateway lookup")
             # GET /services/:name returns the row flat at top level, so
             # internal_url / base_url sit at the top. internal_url is nullable;
             # prefer it (container-network address) then fall back to base_url.
@@ -361,11 +363,11 @@ async def call_gateway_chat(
         )
 
     try:
-        payload = response.json()
-    except ValueError as exc:
+        payload = response_json_object(response, "LLM gateway chat")
+    except UpstreamJsonError as exc:
         raise LLMGatewayError(
             "LLM_GATEWAY_BAD_RESPONSE",
-            f"Gateway returned non-JSON: {response.text[:500]}",
+            str(exc),
         ) from exc
 
     return ChatResponse.from_dict(payload)

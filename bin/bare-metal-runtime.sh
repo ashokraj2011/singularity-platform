@@ -225,15 +225,105 @@ free_ports() {
   free_port_specs "bare-metal runtime" "${RUNTIME_PORT_SPECS[@]}"
 }
 
-boot() {
-  local name="$1"; shift
-  local cmd="$*"
+record_boot_pid() {
+  local name="$1" pid="$2"
   mkdir -p "$LOG_DIR"
-  ( bash -c "$cmd" >> "$LOG_DIR/${name}.log" 2>&1 & printf '%s %s\n' "$name" "$!" >> "$PID_FILE" )
-  sleep 0.3
-  local pid
-  pid=$(tail -n 1 "$PID_FILE" | awk '{print $2}')
+  printf '%s %s\n' "$name" "$pid" >> "$PID_FILE"
+  sleep 0.8
+  if ! kill -0 "$pid" 2>/dev/null; then
+    err "${name} exited during startup; last log lines:"
+    tail -40 "$LOG_DIR/${name}.log" 2>/dev/null | sed -E 's/([A-Z0-9_]*(TOKEN|SECRET|PASSWORD|API_KEY)[A-Z0-9_]*=)([^[:space:]]+)/\1[redacted]/g' >&2 || true
+    exit 1
+  fi
   ok "${name} (PID ${pid})  -> tail -f logs/${name}.log"
+}
+
+spawn_detached() {
+  local name="$1" cwd="$2"
+  shift 2
+  mkdir -p "$LOG_DIR"
+  SPAWN_CWD="$cwd" SPAWN_LOG="$LOG_DIR/${name}.log" python3 - "$@" <<'PY'
+import os
+import subprocess
+import sys
+
+cwd = os.environ["SPAWN_CWD"]
+log_path = os.environ["SPAWN_LOG"]
+cmd = sys.argv[1:]
+if not cmd:
+    raise SystemExit("spawn_detached requires a command")
+
+with open(log_path, "ab", buffering=0) as log:
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        env=os.environ.copy(),
+        start_new_session=True,
+    )
+print(proc.pid)
+PY
+}
+
+boot_llm_gateway() {
+  mkdir -p "$LOG_DIR"
+  local pid
+  export LLM_PROVIDER_CONFIG_PATH
+  export LLM_MODEL_CATALOG_PATH
+  export ALLOW_CALLER_PROVIDER_OVERRIDE=false
+  pid="$(spawn_detached llm-gateway "$ROOT/context-fabric" python3 -m uvicorn services.llm_gateway_service.app.main:app --host 0.0.0.0 --port 8001)"
+  record_boot_pid llm-gateway "$pid"
+}
+
+boot_mcp_server() {
+  local mcp_workspace="$1"
+  local dial_in="${2:-false}"
+  mkdir -p "$LOG_DIR"
+  local pid
+  export PORT=7100
+  export MCP_BEARER_TOKEN
+  export MCP_DEFAULT_GOVERNANCE_MODE
+  export MCP_TOOL_GRANT_MODE
+  export MCP_REQUIRE_EFFECTIVE_CAPABILITIES
+  export TOOL_GRANT_SIGNING_SECRET
+  export LLM_GATEWAY_URL
+  export MCP_COMMAND_EXECUTION_MODE=process
+  export MCP_SANDBOX_ROOT="$mcp_workspace"
+  export MCP_LLM_PROVIDER_CONFIG_PATH="$LLM_PROVIDER_CONFIG_PATH"
+  export MCP_LLM_MODEL_CATALOG_PATH="$LLM_MODEL_CATALOG_PATH"
+  export AUDIT_GOV_URL
+  export AUDIT_GOV_SERVICE_TOKEN
+  export LEARNING_SERVICE_TOKEN
+  export CONTEXT_FABRIC_SERVICE_TOKEN
+  export PROMPT_COMPOSER_SERVICE_TOKEN
+  [ -z "${COPILOT_PROVIDER_TYPE:-}" ] || export COPILOT_PROVIDER_TYPE
+  [ -z "${COPILOT_PROVIDER_BASE_URL:-}" ] || export COPILOT_PROVIDER_BASE_URL
+  [ -z "${COPILOT_PROVIDER_API_KEY:-}" ] || export COPILOT_PROVIDER_API_KEY
+  [ -z "${COPILOT_MODEL:-}" ] || export COPILOT_MODEL
+  [ -z "${MCP_GIT_PUSH_ENABLED:-}" ] || export MCP_GIT_PUSH_ENABLED
+  [ -z "${MCP_GIT_AUTH_MODE:-}" ] || export MCP_GIT_AUTH_MODE
+  [ -z "${GITHUB_TOKEN:-}" ] || export GITHUB_TOKEN
+  [ -z "${GH_TOKEN:-}" ] || export GH_TOKEN
+  if [ "$dial_in" = "true" ]; then
+    export RUNTIME_DIAL_IN_MODE=true
+    export LAPTOP_MODE=true
+    export RUNTIME_BRIDGE_URL
+    export LAPTOP_BRIDGE_URL="$RUNTIME_BRIDGE_URL"
+    export SINGULARITY_RUNTIME_TOKEN
+    export SINGULARITY_DEVICE_TOKEN="$SINGULARITY_RUNTIME_TOKEN"
+    export SINGULARITY_RUNTIME_ID="${SINGULARITY_RUNTIME_ID:-baremetal-mcp-runtime}"
+    export SINGULARITY_DEVICE_ID="${SINGULARITY_RUNTIME_ID:-baremetal-mcp-runtime}"
+    export SINGULARITY_RUNTIME_NAME="${SINGULARITY_RUNTIME_NAME:-bare-metal-mcp-runtime}"
+    export SINGULARITY_DEVICE_NAME="${SINGULARITY_RUNTIME_NAME:-bare-metal-mcp-runtime}"
+    export SINGULARITY_RUNTIME_TYPE=mcp
+    export SINGULARITY_TENANT_ID="${SINGULARITY_TENANT_ID:-}"
+    export SINGULARITY_USER_ID="${SINGULARITY_USER_ID:-}"
+    export SINGULARITY_RUNTIME_CAPABILITY_TAGS="${SINGULARITY_RUNTIME_CAPABILITY_TAGS:-mcp,tools,llm}"
+  fi
+  pid="$(spawn_detached mcp-server "$ROOT/mcp-server" npm run dev)"
+  record_boot_pid mcp-server "$pid"
 }
 
 http_code() {
@@ -283,6 +373,45 @@ raise SystemExit(0)
 PY
 }
 
+runtime_token_matches_local_iam() {
+  case "${SINGULARITY_ALLOW_FOREIGN_RUNTIME_TOKEN:-false}" in
+    1|true|TRUE|yes|YES) return 0 ;;
+  esac
+  local token="$1"
+  local iam_base="${IAM_BASE_URL:-http://localhost:8100/api/v1}"
+  local email="${SINGULARITY_RUNTIME_USER_EMAIL:-${LOCAL_SUPER_ADMIN_EMAIL:-admin@singularity.local}}"
+  local password="${SINGULARITY_RUNTIME_USER_PASSWORD:-${LOCAL_SUPER_ADMIN_PASSWORD:-Admin1234!}}"
+  TOKEN="$token" IAM_BASE_URL="${iam_base%/}" RUNTIME_TOKEN_EMAIL="$email" RUNTIME_TOKEN_PASSWORD="$password" "${SINGULARITY_PYTHON_BIN:-python3}" - <<'PY' >/dev/null 2>&1
+import base64
+import json
+import os
+import urllib.request
+
+def decode_payload(token: str) -> dict:
+    payload_b64 = token.split(".")[1]
+    payload_b64 += "=" * (-len(payload_b64) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
+
+def post_json(path: str, payload: dict) -> dict:
+    req = urllib.request.Request(
+        f"{os.environ['IAM_BASE_URL'].rstrip('/')}{path}",
+        data=json.dumps(payload).encode(),
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5) as res:
+        return json.loads(res.read().decode() or "{}")
+
+runtime_sub = decode_payload(os.environ["TOKEN"]).get("sub")
+login = post_json("/auth/local/login", {
+    "email": os.environ["RUNTIME_TOKEN_EMAIL"],
+    "password": os.environ["RUNTIME_TOKEN_PASSWORD"],
+})
+admin_sub = decode_payload(login["access_token"]).get("sub")
+raise SystemExit(0 if runtime_sub and runtime_sub == admin_sub else 1)
+PY
+}
+
 load_runtime_token() {
   local token source
   if [ -n "${SINGULARITY_RUNTIME_TOKEN:-}" ]; then
@@ -297,13 +426,13 @@ load_runtime_token() {
   else
     return 1
   fi
-  if runtime_token_is_fresh "$token"; then
+  if runtime_token_is_fresh "$token" && runtime_token_matches_local_iam "$token"; then
     export SINGULARITY_RUNTIME_TOKEN="$token"
     export SINGULARITY_DEVICE_TOKEN="$token"
     ok "runtime bridge token loaded from $source"
     return 0
   fi
-  warn "runtime bridge token from $source is missing, expired, or invalid"
+  warn "runtime bridge token from $source is missing, expired, invalid, or belongs to a different local IAM user"
   if [ "$source" = "$DEVICE_TOKEN_FILE" ]; then
     rm -f "$DEVICE_TOKEN_FILE"
   else
@@ -432,20 +561,18 @@ cmd_up() {
   ensure_node_runtime
 
   info "booting runtime infrastructure..."
-  boot llm-gateway "cd context-fabric && LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" ALLOW_CALLER_PROVIDER_OVERRIDE=false python3 -m uvicorn services.llm_gateway_service.app.main:app --host 0.0.0.0 --port 8001"
+  boot_llm_gateway
 
   local mcp_workspace="${SINGULARITY_MCP_WORKSPACE:-$HOME/.singularity/mcp-workspace}"
   mkdir -p "$mcp_workspace"
-  local mcp_common
-  mcp_common="cd mcp-server && PORT=7100 MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" MCP_DEFAULT_GOVERNANCE_MODE=\"$MCP_DEFAULT_GOVERNANCE_MODE\" MCP_TOOL_GRANT_MODE=\"$MCP_TOOL_GRANT_MODE\" MCP_REQUIRE_EFFECTIVE_CAPABILITIES=\"$MCP_REQUIRE_EFFECTIVE_CAPABILITIES\" TOOL_GRANT_SIGNING_SECRET=\"$TOOL_GRANT_SIGNING_SECRET\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" MCP_COMMAND_EXECUTION_MODE=process MCP_SANDBOX_ROOT=\"$mcp_workspace\" MCP_LLM_PROVIDER_CONFIG_PATH=\"$LLM_PROVIDER_CONFIG_PATH\" MCP_LLM_MODEL_CATALOG_PATH=\"$LLM_MODEL_CATALOG_PATH\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" LEARNING_SERVICE_TOKEN=\"$LEARNING_SERVICE_TOKEN\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" ${COPILOT_PROVIDER_TYPE:+COPILOT_PROVIDER_TYPE=\"$COPILOT_PROVIDER_TYPE\" }${COPILOT_PROVIDER_BASE_URL:+COPILOT_PROVIDER_BASE_URL=\"$COPILOT_PROVIDER_BASE_URL\" }${COPILOT_PROVIDER_API_KEY:+COPILOT_PROVIDER_API_KEY=\"$COPILOT_PROVIDER_API_KEY\" }${COPILOT_MODEL:+COPILOT_MODEL=\"$COPILOT_MODEL\" }${MCP_GIT_PUSH_ENABLED:+MCP_GIT_PUSH_ENABLED=\"$MCP_GIT_PUSH_ENABLED\" }${MCP_GIT_AUTH_MODE:+MCP_GIT_AUTH_MODE=\"$MCP_GIT_AUTH_MODE\" }${GITHUB_TOKEN:+GITHUB_TOKEN=\"$GITHUB_TOKEN\" }${GH_TOKEN:+GH_TOKEN=\"$GH_TOKEN\" }"
 
   if [ -n "${SINGULARITY_RUNTIME_TOKEN:-}" ]; then
     info "MCP runtime will dial into Context Fabric: $RUNTIME_BRIDGE_URL"
-    boot mcp-server "$mcp_common RUNTIME_DIAL_IN_MODE=true LAPTOP_MODE=true RUNTIME_BRIDGE_URL=\"$RUNTIME_BRIDGE_URL\" LAPTOP_BRIDGE_URL=\"$RUNTIME_BRIDGE_URL\" SINGULARITY_RUNTIME_TOKEN=\"$SINGULARITY_RUNTIME_TOKEN\" SINGULARITY_DEVICE_TOKEN=\"$SINGULARITY_RUNTIME_TOKEN\" SINGULARITY_RUNTIME_ID=\"${SINGULARITY_RUNTIME_ID:-baremetal-mcp-runtime}\" SINGULARITY_DEVICE_ID=\"${SINGULARITY_RUNTIME_ID:-baremetal-mcp-runtime}\" SINGULARITY_RUNTIME_NAME=\"${SINGULARITY_RUNTIME_NAME:-bare-metal-mcp-runtime}\" SINGULARITY_DEVICE_NAME=\"${SINGULARITY_RUNTIME_NAME:-bare-metal-mcp-runtime}\" SINGULARITY_RUNTIME_TYPE=mcp SINGULARITY_TENANT_ID=\"${SINGULARITY_TENANT_ID:-}\" SINGULARITY_USER_ID=\"${SINGULARITY_USER_ID:-}\" SINGULARITY_RUNTIME_CAPABILITY_TAGS=\"${SINGULARITY_RUNTIME_CAPABILITY_TAGS:-mcp,tools,llm}\" npm run dev"
+    boot_mcp_server "$mcp_workspace" true
   else
     warn "SINGULARITY_RUNTIME_TOKEN is not set; starting MCP in direct HTTP debug mode on :7100."
     warn "Context Fabric will use this only when RUNTIME_HTTP_FALLBACK_ENABLED=true."
-    boot mcp-server "$mcp_common npm run dev"
+    boot_mcp_server "$mcp_workspace" false
   fi
 
   echo
@@ -500,7 +627,7 @@ cmd_smoke() {
       fail=$((fail + 1))
     fi
   else
-    dim "  MCP runtime is in dial-in mode; verify from Context Fabric /api/runtime-bridge/status."
+    dim "  MCP runtime is in dial-in mode; verify with: source .env.local && curl -s -H 'X-Service-Token: \$CONTEXT_FABRIC_SERVICE_TOKEN' http://localhost:8000/api/runtime-bridge/status | jq"
   fi
   [ "$fail" = "0" ] || { err "$fail runtime endpoint(s) failing - check logs/"; exit 1; }
   ok "runtime infrastructure healthy."

@@ -132,7 +132,7 @@ In bridge mode, keep the platform-side MCP URL pointed at a small shared/default
 Context Fabric already exposes:
 
 ```text
-GET /api/laptop-bridge/status
+GET /api/laptop-bridge/status  # requires X-Service-Token by default
 WS  /api/laptop-bridge/connect
 ```
 
@@ -222,7 +222,8 @@ curl -H "authorization: Bearer <runtime-token>" http://127.0.0.1:7100/healthz/st
 For bridge mode, verify AWS sees the laptop:
 
 ```bash
-curl https://<aws-context-api-url>/api/laptop-bridge/status
+export CONTEXT_FABRIC_SERVICE_TOKEN=<platform-context-fabric-service-token>
+curl -H "X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN" https://<aws-context-api-url>/api/laptop-bridge/status
 ```
 
 For direct HTTP mode, verify from an AWS container:

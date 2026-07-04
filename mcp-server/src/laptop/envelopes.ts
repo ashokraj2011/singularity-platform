@@ -62,6 +62,7 @@ export type HelloFrame = z.infer<typeof HelloFrame>;
 export const HeartbeatFrame = z.object({
   type: z.literal("heartbeat"),
   sent_at: z.string(),
+  health: z.record(z.unknown()).optional(),
 });
 export type HeartbeatFrame = z.infer<typeof HeartbeatFrame>;
 

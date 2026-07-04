@@ -16,6 +16,8 @@ from typing import Any, Awaitable, Callable, Optional
 
 import httpx
 
+from ..response_json import response_json_object
+
 _GATEWAY_URL = os.environ.get("LLM_GATEWAY_URL", "http://llm-gateway:8001").rstrip("/")
 _GATEWAY_BEARER = os.environ.get("LLM_GATEWAY_BEARER", "")
 _TTL_SEC = float(os.environ.get("LLM_MODEL_CATALOG_TTL_SEC", "300"))
@@ -34,7 +36,7 @@ async def _fetch_catalog() -> dict[str, int]:
     async with httpx.AsyncClient(timeout=_TIMEOUT_SEC) as client:
         resp = await client.get(url, headers=headers)
         resp.raise_for_status()
-        body = resp.json()
+        body = response_json_object(resp, "LLM gateway model catalog")
     out: dict[str, int] = {}
     for entry in (body or {}).get("models", []) or []:
         if not isinstance(entry, dict):

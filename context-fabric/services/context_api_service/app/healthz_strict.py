@@ -21,6 +21,7 @@ import httpx
 
 from context_fabric_shared.database import is_postgres_target, resolve_database_target
 from .config import settings
+from .response_json import response_json_object
 
 
 @dataclass
@@ -119,7 +120,8 @@ async def _check_iam_bootstrap_works() -> InvariantResult:
             r = await client.post(f"{base}/auth/local/login", json={"email": user, "password": pw})
         if r.status_code != 200:
             return InvariantResult(name="iam_bootstrap_creds_set", ok=False, reason=f"login failed: {r.status_code} {r.text[:200]}")
-        token = (r.json() or {}).get("access_token")
+        payload = response_json_object(r, "IAM bootstrap login")
+        token = payload.get("access_token")
         if not token:
             return InvariantResult(name="iam_bootstrap_creds_set", ok=False, reason="login returned no access_token")
         return InvariantResult(name="iam_bootstrap_creds_set", ok=True)

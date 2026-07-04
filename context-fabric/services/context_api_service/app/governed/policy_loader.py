@@ -21,6 +21,7 @@ from typing import Any
 
 import httpx
 
+from ..response_json import response_json_object
 from .phase_state import Phase
 
 log = logging.getLogger(__name__)
@@ -190,7 +191,7 @@ async def load_stage_policy(
             f"prompt-composer {response.status_code} loading StagePolicy: {response.text[:200]}"
         )
 
-    payload = response.json()
+    payload = response_json_object(response, "prompt-composer stage policy resolve")
     if not payload.get("success"):
         raise RuntimeError(f"prompt-composer returned success=false: {payload.get('error')}")
     policy = _stage_from_dict(payload.get("data") or {})

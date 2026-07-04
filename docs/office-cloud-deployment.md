@@ -103,7 +103,8 @@ npm start                    # launch from a terminal so the runner inherits PAT
 2. **Pair → "Generate key & connect"** with your platform login — the SAME user you will launch runs as. The app mints the Connection Key via IAM, stores it in the keychain, starts the runner, and registers with Context Fabric.
 3. Verify: Dashboard shows `registered with bridge`; from any machine:
    ```bash
-   curl -s http://<box-host>:8000/api/laptop-bridge/status     # → "count": 1
+   export CONTEXT_FABRIC_SERVICE_TOKEN=<platform-context-fabric-service-token>
+   curl -s -H "X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN" http://<box-host>:8000/api/laptop-bridge/status
    ```
 
 ## C — Daily use

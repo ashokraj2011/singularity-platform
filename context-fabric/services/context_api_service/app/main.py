@@ -11,6 +11,7 @@ from context_fabric_shared.http_client import post_json, get_json
 from .config import settings
 from .internal_mcp import router as internal_mcp_router
 from .execute import check_execute_service_token, router as execute_router
+from .response_json import response_json_object
 from .receipts import router as receipts_router
 from .laptop_bridge import (
     router as laptop_bridge_router,
@@ -248,7 +249,7 @@ async def chat_respond(
     async with httpx.AsyncClient(timeout=180.0) as client:
         mcp_http = await client.post(f"{settings.mcp_default_base_url.rstrip('/')}/mcp/invoke", json=mcp_payload, headers=headers)
         mcp_http.raise_for_status()
-        mcp_resp = mcp_http.json()
+        mcp_resp = response_json_object(mcp_http, "MCP chat invoke")
     mcp_data = mcp_resp.get("data") or {}
     response_text = (mcp_data.get("finalResponse") or "")
     mcp_usage = mcp_data.get("modelUsage") or {}

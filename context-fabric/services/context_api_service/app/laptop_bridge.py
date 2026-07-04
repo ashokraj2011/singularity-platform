@@ -28,7 +28,7 @@ from urllib.parse import quote
 from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from .config import settings, is_production_class_env
@@ -41,6 +41,7 @@ from .laptop_registry import (
     LaptopNotConnected,
     LaptopSendFailed,
 )
+from .response_json import response_json_object
 
 
 class JWTError(Exception):
@@ -92,6 +93,7 @@ router = APIRouter()
 JWT_SECRET = os.environ.get("JWT_SECRET", "changeme_dev_only_min_32_chars_long!!")
 JWT_ALGORITHM = "HS256"
 HEARTBEAT_SWEEP_SEC = 30
+_TRUTHY = {"1", "true", "yes", "on"}
 
 # Finding #7 — device-revocation enforcement. A revoked device JWT must stop working
 # without waiting for its (up-to-365-day) natural expiry, so the bridge asks IAM whether
@@ -104,6 +106,60 @@ REVOCATION_RECHECK_SEC = int(os.environ.get("RUNTIME_BRIDGE_REVOCATION_RECHECK_S
 # explicitly with RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN={true,false}.
 _rev_fail_open_default = "false" if is_production_class_env() else "true"
 REVOCATION_FAIL_OPEN = os.environ.get("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", _rev_fail_open_default).lower() not in ("0", "false", "no")
+
+
+def _runtime_bridge_allow_unauthenticated_http() -> bool:
+    """Explicit local-only escape hatch for bridge HTTP dispatch/debug endpoints.
+
+    Runtime WebSocket connect always authenticates with runtime JWTs. These HTTP
+    endpoints are the control-plane side of that bridge and can dispatch source,
+    tool, branch, or file-write frames to a connected runtime, so they stay
+    service-token protected even when /execute is relaxed for local demos.
+    """
+    if is_production_class_env():
+        return False
+    return os.environ.get("RUNTIME_BRIDGE_ALLOW_UNAUTHENTICATED_HTTP", "").lower() in _TRUTHY
+
+
+def _runtime_http_fallback_enabled() -> bool:
+    return os.environ.get("RUNTIME_HTTP_FALLBACK_ENABLED", "false").strip().lower() in _TRUTHY
+
+
+def _raise_runtime_http_fallback_disabled(operation: str) -> None:
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            f"RUNTIME_NOT_CONNECTED: no connected MCP runtime is available for {operation}; "
+            "direct MCP HTTP fallback is disabled. Start a Runtime Bridge MCP runtime "
+            "or set RUNTIME_HTTP_FALLBACK_ENABLED=true for explicit local/debug fallback."
+        ),
+    )
+
+
+def _runtime_bridge_service_tokens() -> list[str]:
+    raw = [
+        getattr(settings, "iam_service_token", "") or "",
+        os.environ.get("CONTEXT_FABRIC_SERVICE_TOKEN", "") or "",
+    ]
+    tokens: list[str] = []
+    for token in raw:
+        cleaned = token.strip()
+        if cleaned and cleaned not in tokens:
+            tokens.append(cleaned)
+    return tokens
+
+
+def check_runtime_bridge_service_token(provided: Optional[str]) -> None:
+    if _runtime_bridge_allow_unauthenticated_http():
+        return
+    expected = _runtime_bridge_service_tokens()
+    if not expected:
+        raise HTTPException(status_code=503, detail="runtime bridge service token is not configured")
+    if not provided:
+        raise HTTPException(status_code=401, detail="missing runtime bridge service token")
+    supplied = provided.strip()
+    if not any(hmac.compare_digest(supplied, token) for token in expected):
+        raise HTTPException(status_code=401, detail="invalid runtime bridge service token")
 
 
 def _iam_api_base() -> Optional[str]:
@@ -133,7 +189,7 @@ async def _device_revoked(user_id: str, device_id: str) -> Optional[bool]:
                 invalidate_iam_service_token()
                 return None
             resp.raise_for_status()
-            data = resp.json()
+            data = response_json_object(resp, "IAM device status")
         return bool(data.get("revoked"))
     except Exception as err:  # network / parse failure — let the caller decide policy
         log.warning("device revocation check failed user=%s device=%s err=%s", user_id, device_id, err)
@@ -305,7 +361,8 @@ async def runtime_connect(ws: WebSocket) -> None:
                 continue
             ftype = frame.get("type")
             if ftype == "heartbeat":
-                await REGISTRY.heartbeat(user_id, runtime_id)
+                health_raw = frame.get("health")
+                await REGISTRY.heartbeat(user_id, runtime_id, health_raw if isinstance(health_raw, dict) else None)
                 # Finding #7 — re-check revocation for this live connection, throttled to
                 # REVOCATION_RECHECK_SEC. Only a confirmed revocation disconnects; an
                 # unreachable IAM (None) leaves the session up until it can be confirmed.
@@ -365,13 +422,57 @@ def stop_sweep_task() -> None:
 
 # ── Status endpoint (handy for the SPA + smoke tests) ──────────────────────
 @router.get("/api/runtime-bridge/status")
-async def runtime_status() -> dict[str, Any]:
+async def runtime_status(
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+) -> dict[str, Any]:
+    check_runtime_bridge_service_token(x_service_token)
     return await REGISTRY.status_snapshot()
 
 
 @router.get("/api/laptop-bridge/status")
-async def status() -> dict[str, Any]:
+async def status(
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+) -> dict[str, Any]:
+    check_runtime_bridge_service_token(x_service_token)
     return await REGISTRY.status_snapshot()
+
+
+class _RuntimeDiagnosticsReq(BaseModel):
+    user_id: Optional[str] = None
+    tenant_id: Optional[str] = None
+    frame_type: Optional[str] = None
+    capability_tags: list[str] = []
+
+
+@router.get("/api/runtime-bridge/diagnostics")
+async def runtime_diagnostics_get(
+    user_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    frame_type: Optional[str] = None,
+    capability_tags: list[str] = Query(default=[]),
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+) -> dict[str, Any]:
+    check_runtime_bridge_service_token(x_service_token)
+    return await REGISTRY.diagnostics(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        frame_type=frame_type,
+        capability_tags=capability_tags,
+    )
+
+
+@router.post("/api/runtime-bridge/diagnostics")
+async def runtime_diagnostics_post(
+    req: _RuntimeDiagnosticsReq,
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+) -> dict[str, Any]:
+    check_runtime_bridge_service_token(x_service_token)
+    return await REGISTRY.diagnostics(
+        user_id=req.user_id,
+        tenant_id=req.tenant_id,
+        frame_type=req.frame_type,
+        capability_tags=req.capability_tags,
+    )
 
 
 # ── Repo source discovery over the bridge ──────────────────────────────────
@@ -421,10 +522,7 @@ async def runtime_source_tree(
     req: _SourceTreeReq,
     x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
 ) -> dict[str, Any]:
-    # Lazy import avoids any import cycle with execute.py at module load.
-    from .execute import check_execute_service_token
-
-    check_execute_service_token(x_service_token)
+    check_runtime_bridge_service_token(x_service_token)
     return await _dispatch_source(
         op="tree",
         user_id=req.user_id,
@@ -438,9 +536,7 @@ async def runtime_source_file(
     req: _SourceFileReq,
     x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
 ) -> dict[str, Any]:
-    from .execute import check_execute_service_token
-
-    check_execute_service_token(x_service_token)
+    check_runtime_bridge_service_token(x_service_token)
     return await _dispatch_source(
         op="file",
         user_id=req.user_id,
@@ -470,10 +566,9 @@ async def runtime_tool_run(
     req: _ToolRunReq,
     x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
 ) -> dict[str, Any]:
-    from .execute import check_execute_service_token
     from .governed.dispatch import dispatch_tool, ToolDispatchError
 
-    check_execute_service_token(x_service_token)
+    check_runtime_bridge_service_token(x_service_token)
     rc = req.run_context or {}
     laptop_user_id = req.laptop_user_id or rc.get("user_id") or rc.get("userId")
     try:
@@ -500,8 +595,9 @@ async def runtime_tool_run(
 
 # ── Work-branch finalize dispatch over the bridge ──────────────────────────
 # Routes GitPushExecutor's finish-branch through CF: prefer the requesting user's
-# dialed-in runtime (it pushes with its LOCAL git creds), else fall back to the
-# co-located/shared mcp-server over HTTP. Mirrors the tool-run endpoint above.
+# dialed-in runtime (it pushes with its LOCAL git creds). Direct HTTP to a
+# co-located/shared mcp-server is debug compatibility only and requires
+# RUNTIME_HTTP_FALLBACK_ENABLED=true, matching governed tool/model dispatch.
 class _WorkFinishReq(BaseModel):
     user_id: Optional[str] = None
     tenant_id: Optional[str] = None
@@ -532,7 +628,7 @@ async def _http_finish_branch(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"mcp /work/finish-branch unreachable: {err}") from err
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=resp.text[:300])
-    data = resp.json()
+    data = response_json_object(resp, "MCP finish-branch fallback")
     # mcp returns {success, data:{tool_invocation, output}}; the laptop frame
     # returns {tool_invocation, output}. Normalize to the latter.
     return data.get("data", data) if isinstance(data, dict) else data
@@ -543,9 +639,7 @@ async def runtime_work_finish_branch(
     req: _WorkFinishReq,
     x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
 ) -> dict[str, Any]:
-    from .execute import check_execute_service_token
-
-    check_execute_service_token(x_service_token)
+    check_runtime_bridge_service_token(x_service_token)
     payload: dict[str, Any] = {
         "message": req.message,
         "remote": req.remote,
@@ -576,10 +670,12 @@ async def runtime_work_finish_branch(
             raise HTTPException(status_code=504, detail=str(err)) from err
         except (LaptopSendFailed, LaptopInvokeError) as err:
             raise HTTPException(status_code=502, detail=str(err)) from err
-    # P0 #2 — co-located/shared mcp-server (HTTP fallback, never a personal
-    # laptop): attach the brokered, short-lived, repo-scoped git credential (when
-    # CF minted one) so the push authenticates as the requesting user instead of a
-    # process-global static token.
+    if not _runtime_http_fallback_enabled():
+        _raise_runtime_http_fallback_disabled("finish-branch")
+    # P0 #2 — co-located/shared mcp-server (explicit HTTP fallback, never a
+    # personal laptop): attach the brokered, short-lived, repo-scoped git
+    # credential (when CF minted one) so the push authenticates as the requesting
+    # user instead of a process-global static token.
     if req.gitCredential:
         payload = {**payload, "gitCredential": req.gitCredential}
     return await _http_finish_branch(payload)
@@ -587,8 +683,8 @@ async def runtime_work_finish_branch(
 
 # ── Worktree file write dispatch over the bridge ───────────────────────────
 # Routes evidence materialization's worktree writes through CF: prefer the user's
-# dialed-in runtime (writes into its LOCAL worktree), else fall back to the
-# co-located/shared mcp-server over HTTP. Mirrors the work-finish endpoint.
+# dialed-in runtime (writes into its LOCAL worktree). Direct HTTP fallback is
+# debug compatibility only and requires RUNTIME_HTTP_FALLBACK_ENABLED=true.
 class _WorktreeWriteReq(BaseModel):
     user_id: Optional[str] = None
     tenant_id: Optional[str] = None
@@ -617,7 +713,7 @@ async def _http_worktree_write(work_item_code: str, rel_path: str, body: dict[st
         raise HTTPException(status_code=502, detail=f"mcp worktree write unreachable: {err}") from err
     if resp.status_code >= 400:
         raise HTTPException(status_code=resp.status_code, detail=resp.text[:300])
-    data = resp.json()
+    data = response_json_object(resp, "MCP worktree write fallback")
     return data.get("data", data) if isinstance(data, dict) else data
 
 
@@ -626,9 +722,7 @@ async def runtime_worktree_write_file(
     req: _WorktreeWriteReq,
     x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
 ) -> dict[str, Any]:
-    from .execute import check_execute_service_token
-
-    check_execute_service_token(x_service_token)
+    check_runtime_bridge_service_token(x_service_token)
     body_fields: dict[str, Any] = {
         "content": req.content,
         "message": req.message,
@@ -650,6 +744,8 @@ async def runtime_worktree_write_file(
             raise HTTPException(status_code=504, detail=str(err)) from err
         except (LaptopSendFailed, LaptopInvokeError) as err:
             raise HTTPException(status_code=502, detail=str(err)) from err
+    if not _runtime_http_fallback_enabled():
+        _raise_runtime_http_fallback_disabled("worktree file write")
     return await _http_worktree_write(req.workItemCode, req.path, body_fields)
 
 

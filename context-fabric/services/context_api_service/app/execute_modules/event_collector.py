@@ -28,6 +28,7 @@ import json
 import httpx
 
 from .. import events_store
+from ..response_json import response_json_object
 
 
 async def drain_mcp_events(
@@ -46,7 +47,7 @@ async def drain_mcp_events(
                 headers={"Authorization": f"Bearer {mcp_bearer}"},
             )
             resp.raise_for_status()
-            payload = resp.json()
+            payload = response_json_object(resp, "MCP events drain")
         items = (payload.get("data") or {}).get("items") or []
         if not items:
             return 0

@@ -49,6 +49,7 @@ Singularity plain Docker launcher.
 Usage:
   bin/docker-core.sh up [--build] [--with-audit]
   bin/docker-core.sh build [--with-audit]
+  bin/docker-core.sh preflight [--with-audit]
   bin/docker-core.sh seed [--with-audit]
   bin/docker-core.sh smoke [--with-audit]
   bin/docker-core.sh status
@@ -160,8 +161,85 @@ image_missing() {
   ! docker image inspect "$1" >/dev/null 2>&1
 }
 
+pull_image_with_timeout() {
+  local image="$1" timeout_sec="${DOCKER_CORE_IMAGE_PULL_TIMEOUT_SEC:-240}"
+  python3 - "$image" "$timeout_sec" <<'PY'
+import subprocess
+import sys
+
+image = sys.argv[1]
+timeout = int(sys.argv[2])
+try:
+    result = subprocess.run(
+        ["docker", "pull", image],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+except subprocess.TimeoutExpired:
+    print(f"timed out after {timeout}s while pulling {image}", file=sys.stderr)
+    sys.exit(124)
+
+if result.returncode != 0:
+    output = (result.stderr or result.stdout or "").strip()
+    if output:
+        print(output, file=sys.stderr)
+    sys.exit(result.returncode)
+PY
+}
+
+preflight_docker_images() {
+  [ "${DOCKER_CORE_SKIP_IMAGE_PREFLIGHT:-0}" = "1" ] && {
+    log "skipping Docker image preflight because DOCKER_CORE_SKIP_IMAGE_PREFLIGHT=1"
+    return 0
+  }
+
+  local images=(
+    "node:20-alpine"
+    "node:22-alpine"
+    "python:3.11-slim"
+    "python:3.12-slim"
+    "pgvector/pgvector:pg16"
+    "postgres:16-alpine"
+    "minio/minio:latest"
+  )
+  local image
+  for image in "${images[@]}"; do
+    log "preflighting Docker image $image"
+    if ! pull_image_with_timeout "$image"; then
+      err "Docker image preflight failed for $image"
+      err "check Docker registry access, VPN/proxy settings, or pre-pull the image manually"
+      err "override only for known-good local caches: DOCKER_CORE_SKIP_IMAGE_PREFLIGHT=1 bin/docker-core.sh up --build"
+      exit 1
+    fi
+  done
+}
+
+validate_platform_web_image() {
+  local output
+  log "validating $IMG_PLATFORM_WEB standalone bundle"
+  if ! output="$(docker run --rm --entrypoint node "$IMG_PLATFORM_WEB" /app/check-standalone-bundle.mjs /app --print-root 2>&1)"; then
+    err "platform-web image failed standalone bundle validation"
+    printf '%s\n' "$output" >&2
+    err "fix: bin/docker-core.sh build --yes"
+    exit 1
+  fi
+  log "platform-web standalone root: $output"
+}
+
+run_preflight() {
+  preflight_docker_images
+  if image_missing "$IMG_PLATFORM_WEB"; then
+    log "platform-web image is not built yet; run: bin/docker-core.sh build --yes"
+  else
+    validate_platform_web_image
+  fi
+  log "plain Docker preflight passed"
+}
+
 build_images() {
   local force="${1:-0}"
+  preflight_docker_images "$@"
   if [ "$force" = "1" ] || image_missing "$IMG_IAM"; then
     log "building $IMG_IAM"
     docker build -t "$IMG_IAM" "$ROOT/singularity-iam-service"
@@ -195,6 +273,7 @@ build_images() {
       -f "$ROOT/agent-and-tools/web/Dockerfile" \
       "$ROOT"
   fi
+  validate_platform_web_image
   if [ "$WITH_AUDIT" = "1" ] && { [ "$force" = "1" ] || image_missing "$IMG_AUDIT"; }; then
     log "building $IMG_AUDIT"
     docker build --target dev -t "$IMG_AUDIT" "$ROOT/audit-governance-service"
@@ -467,6 +546,7 @@ start_apps() {
     "$IMG_PLATFORM_CORE" >/dev/null
   wait_for_url "agent-service" "http://localhost:${AGENT_SERVICE_PORT:-3001}/health" 180
   wait_for_url "agent-runtime" "http://localhost:${AGENT_RUNTIME_PORT:-3003}/health" 180
+  wait_for_url "agent-runtime strict health" "http://localhost:${AGENT_RUNTIME_PORT:-3003}/healthz/strict" 180
   wait_for_url "prompt-composer" "http://localhost:${PROMPT_COMPOSER_PORT:-3004}/health" 180
 
   log "starting Context Fabric"
@@ -668,6 +748,7 @@ run_smoke() {
   check_url "Workgraph" "http://localhost:${WORKGRAPH_API_PORT:-8080}/health" || fail=$((fail + 1))
   check_url "agent-service" "http://localhost:${AGENT_SERVICE_PORT:-3001}/health" || fail=$((fail + 1))
   check_url "agent-runtime" "http://localhost:${AGENT_RUNTIME_PORT:-3003}/health" || fail=$((fail + 1))
+  check_url "agent-runtime strict" "http://localhost:${AGENT_RUNTIME_PORT:-3003}/healthz/strict" || fail=$((fail + 1))
   check_url "prompt-composer" "http://localhost:${PROMPT_COMPOSER_PORT:-3004}/health" || fail=$((fail + 1))
   if [ "$WITH_AUDIT" = "1" ]; then
     check_url "audit-governance" "http://localhost:${AUDIT_GOV_PORT:-8500}/health" || fail=$((fail + 1))
@@ -753,6 +834,12 @@ case "$cmd" in
     require_docker
     load_env
     build_images 1
+    ;;
+  preflight)
+    parse_flags "$@"
+    require_docker
+    load_env
+    run_preflight
     ;;
   seed)
     parse_flags "$@"

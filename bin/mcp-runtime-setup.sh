@@ -48,6 +48,8 @@ Required for first connect, unless --runtime-token is supplied:
 Cloud/runtime options:
   --context-fabric-url URL     e.g. http://cloud.example.com:8000
   --bridge-url URL             e.g. wss://cloud.example.com/api/runtime-bridge/connect
+  --context-fabric-service-token TOKEN
+                                Optional; current command only, not persisted
   --runtime-token JWT          Existing IAM runtime/device token
   --tenant-id ID               Optional tenant id claim/hello metadata
   --runtime-id ID              Stable runtime id (default mcp-runtime-<user>)
@@ -105,6 +107,16 @@ load_env_file() {
   set +a
 }
 
+bridge_status_body() {
+  local status_url="$1" timeout="${2:-6}"
+  local token="${CONTEXT_FABRIC_SERVICE_TOKEN:-${IAM_SERVICE_TOKEN:-}}"
+  if [ -n "$token" ]; then
+    curl -s --max-time "$timeout" -H "X-Service-Token: $token" "$status_url" 2>/dev/null || true
+  else
+    curl -s --max-time "$timeout" "$status_url" 2>/dev/null || true
+  fi
+}
+
 upsert_env() {
   local file="$1" key="$2" value="$3"
   [ -n "$value" ] || return 0
@@ -118,6 +130,18 @@ upsert_env() {
     : > "$tmp"
   fi
   printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  mv "$tmp" "$file"
+  chmod 600 "$file" 2>/dev/null || true
+}
+
+remove_env_key() {
+  local file="$1" key="$2"
+  [ -f "$file" ] || return 0
+  local tmp="${file}.tmp.$$"
+  awk -v k="$key" '
+    $0 ~ "^[[:space:]]*(export[[:space:]]+)?" k "=" { next }
+    { print }
+  ' "$file" > "$tmp"
   mv "$tmp" "$file"
   chmod 600 "$file" 2>/dev/null || true
 }
@@ -372,11 +396,45 @@ boot_process() {
   local name="$1"; shift
   local cmd="$*"
   mkdir -p "$LOG_DIR"
-  ( bash -c "$cmd" >> "$LOG_DIR/${name}.log" 2>&1 & printf '%s %s\n' "$name" "$!" >> "$PID_FILE" )
+  if command -v setsid >/dev/null 2>&1; then
+    setsid bash -c "$cmd" >> "$LOG_DIR/${name}.log" 2>&1 < /dev/null &
+  else
+    nohup bash -c "$cmd" >> "$LOG_DIR/${name}.log" 2>&1 < /dev/null &
+  fi
+  printf '%s %s\n' "$name" "$!" >> "$PID_FILE"
   sleep 0.4
   local pid
   pid="$(tail -n 1 "$PID_FILE" | awk '{print $2}')"
   ok "$name started (pid $pid) -> logs/${name}.log"
+}
+
+kill_tree() {
+  local pid="$1" label="${2:-process}" child
+  [ -n "$pid" ] || return 0
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    kill_tree "$child" "$label"
+  done
+  kill "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.2
+  done
+  kill -9 "$pid" 2>/dev/null || true
+  dim "force-stopped $label ($pid)"
+}
+
+stop_repo_runtime_processes() {
+  local pid cwd
+  while read -r pid; do
+    [ -n "${pid:-}" ] || continue
+    [ "$pid" = "$$" ] && continue
+    cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1 || true)"
+    case "$cwd" in
+      "$ROOT/mcp-server"|"$ROOT/mcp-server"/*|"$ROOT/context-fabric"|"$ROOT/context-fabric"/*)
+        kill_tree "$pid" "stale repo runtime"
+        ;;
+    esac
+  done < <(pgrep -f "mcp-server|llm_gateway_service" 2>/dev/null || true)
 }
 
 stop_runtime() {
@@ -384,11 +442,12 @@ stop_runtime() {
     while read -r name pid; do
       [ -n "${pid:-}" ] || continue
       if kill -0 "$pid" 2>/dev/null; then
-        kill "$pid" 2>/dev/null || true
+        kill_tree "$pid" "$name"
         dim "stopped $name ($pid)"
       fi
     done < "$PID_FILE"
   fi
+  stop_repo_runtime_processes
   free_port 8001 llm-gateway
   free_port 7100 mcp-server
   rm -f "$PID_FILE"
@@ -407,7 +466,7 @@ wait_for_gateway() {
 wait_for_bridge() {
   local status_url="$1" runtime_id="$2" i body
   for i in $(seq 1 45); do
-    body="$(curl -s --max-time 5 "$status_url" 2>/dev/null || true)"
+    body="$(bridge_status_body "$status_url" 5)"
     if [ -n "$body" ]; then
       BODY="$body" RUNTIME_ID="$runtime_id" node <<'NODE' >/dev/null 2>&1 && return 0 || true
 const body = JSON.parse(process.env.BODY || "{}");
@@ -426,10 +485,13 @@ NODE
 print_bridge_status() {
   local status_url="$1" runtime_id="${2:-}"
   local body
-  body="$(curl -s --max-time 6 "$status_url" 2>/dev/null || true)"
+  body="$(bridge_status_body "$status_url" 6)"
   if [ -z "$body" ]; then
     warn "could not read Context Fabric runtime status at $status_url"
     return 0
+  fi
+  if [ -z "${CONTEXT_FABRIC_SERVICE_TOKEN:-${IAM_SERVICE_TOKEN:-}}" ]; then
+    warn "CONTEXT_FABRIC_SERVICE_TOKEN is not loaded; protected Runtime Bridge status may report unauthorized"
   fi
   BODY="$body" RUNTIME_ID="$runtime_id" node <<'NODE'
 const body = JSON.parse(process.env.BODY || "{}");
@@ -450,11 +512,54 @@ const rows = walk(body).filter((row, idx, arr) => {
   const id = row.runtime_id || row.device_id;
   return id && arr.findIndex((other) => (other.runtime_id || other.device_id) === id) === idx;
 });
+function healthOf(row) {
+  return row.health || (row.metadata && row.metadata.health) || {};
+}
+function providerState(provider) {
+  if (provider.ready) return "ready";
+  if (provider.enabled === false) return "disabled";
+  if (provider.allowed === false) return "blocked";
+  return "not-ready";
+}
+function printLlmHealth(row) {
+  const health = healthOf(row);
+  if (!health || typeof health !== "object") return;
+  const defaults = [
+    health.llm_default_provider ? `provider=${health.llm_default_provider}` : "",
+    health.llm_default_model_alias ? `alias=${health.llm_default_model_alias}` : "",
+    health.llm_default_model ? `model=${health.llm_default_model}` : "",
+  ].filter(Boolean);
+  if (defaults.length) console.log(`  LLM defaults: ${defaults.join(" ")}`);
+  if (health.llm_default_model_ready === false) {
+    const warnings = Array.isArray(health.llm_default_model_warnings) ? health.llm_default_model_warnings : [];
+    console.log(`  ! default model is not ready${warnings.length ? `: ${warnings.join("; ")}` : ""}`);
+  }
+  if (health.llm_default_provider_ready === false) {
+    const warnings = Array.isArray(health.llm_default_provider_warnings) ? health.llm_default_provider_warnings : [];
+    console.log(`  ! default provider is not ready${warnings.length ? `: ${warnings.join("; ")}` : ""}`);
+  }
+  const readyAliases = Array.isArray(health.llm_ready_model_aliases) ? health.llm_ready_model_aliases : [];
+  if (readyAliases.length) console.log(`  ready aliases: ${readyAliases.slice(0, 8).join(", ")}`);
+  if (health.llm_model_catalog_source) {
+    const warnings = Array.isArray(health.llm_model_catalog_warnings) ? health.llm_model_catalog_warnings : [];
+    console.log(`  catalog=${health.llm_model_catalog_source}${warnings.length ? ` warning=${warnings[0]}` : ""}`);
+  }
+  const providers = Array.isArray(health.llm_providers) ? health.llm_providers : [];
+  if (providers.length) {
+    console.log(`  providers: ${providers.slice(0, 8).map((p) => `${p.name}:${providerState(p)}`).join(" ")}`);
+  }
+  const models = Array.isArray(health.llm_models) ? health.llm_models : [];
+  const visibleModels = models.filter((m) => m.default || m.ready).slice(0, 6);
+  if (visibleModels.length) {
+    console.log(`  models: ${visibleModels.map((m) => `${m.id}${m.default ? "*" : ""}${m.ready === false ? "(not-ready)" : ""}`).join(", ")}`);
+  }
+}
 for (const row of rows.slice(0, 8)) {
   const id = row.runtime_id || row.device_id;
   const frames = row.supported_frame_types || row.supportedFrames || row.frame_types || [];
   const last = row.last_heartbeat_at || row.lastHeartbeatAt || row.connected_at || "";
   console.log(`- ${id} type=${row.runtime_type || row.runtimeType || "?"} user=${row.user_id || row.userId || row.sub || "?"} frames=${Array.isArray(frames) ? frames.join(",") : frames} ${last}`);
+  printLlmHealth(row);
 }
 NODE
 }
@@ -481,6 +586,15 @@ for (const p of providers.providers || []) {
   console.log(`- provider ${p.name}: ready=${Boolean(p.ready)} allowed=${Boolean(p.allowed)} model=${p.default_model || p.defaultModel || "-"}${warnings}`);
 }
 const rows = Array.isArray(models.models) ? models.models : [];
+const defaultAlias = providers.default_model_alias || providers.defaultModelAlias;
+const defaultModel = rows.find((row) => row.id === defaultAlias) || rows.find((row) => row.default);
+if (defaultModel && defaultModel.ready === false) {
+  const warnings = Array.isArray(defaultModel.warnings) ? defaultModel.warnings : [];
+  console.log(`! default model alias ${defaultModel.id} is not ready${warnings.length ? `: ${warnings.join("; ")}` : ""}`);
+  const ready = rows.filter((row) => row.ready !== false).map((row) => row.id).slice(0, 8);
+  if (ready.length) console.log(`  ready aliases: ${ready.join(", ")}`);
+  console.log("  fix: provide the selected provider credential and restart, or rerun bin/mcp-runtime-setup.sh connect --default-provider <ready-provider> --default-model <ready-alias>");
+}
 if (rows.length) {
   console.log("");
   console.log("Usable model aliases:");
@@ -496,7 +610,13 @@ cmd_connect() {
   require npm
   require curl
 
+  remove_env_key "$LAPTOP_ENV_FILE" CONTEXT_FABRIC_SERVICE_TOKEN
+  load_env_file "$ROOT/.env.local"
+  load_env_file "$LAPTOP_ENV_FILE"
+  load_env_file "$SECRETS_FILE"
+
   local context_url="${CONTEXT_FABRIC_URL:-}"
+  local context_service_token="${CONTEXT_FABRIC_SERVICE_TOKEN:-}"
   local bridge_url="${RUNTIME_BRIDGE_URL:-${LAPTOP_BRIDGE_URL:-}}"
   local iam_user_id="${IAM_USER_ID:-${SINGULARITY_USER_ID:-}}"
   local jwt_secret="${JWT_SECRET:-}"
@@ -521,6 +641,7 @@ cmd_connect() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --context-fabric-url|--context-url) context_url="${2:?missing value}"; shift 2 ;;
+      --context-fabric-service-token|--service-token) context_service_token="${2:?missing value}"; shift 2 ;;
       --bridge-url|--runtime-bridge-url) bridge_url="${2:?missing value}"; shift 2 ;;
       --iam-user-id|--user-id) iam_user_id="${2:?missing value}"; shift 2 ;;
       --jwt-secret) jwt_secret="${2:?missing value}"; shift 2 ;;
@@ -555,6 +676,19 @@ cmd_connect() {
 
   if [ -z "$runtime_token" ] && [ -s "$DEVICE_TOKEN_FILE" ]; then
     runtime_token="$(tr -d '\n' < "$DEVICE_TOKEN_FILE")"
+  fi
+  if [ -n "$runtime_token" ] && [ -n "$iam_user_id" ]; then
+    local runtime_sub
+    runtime_sub="$(json_claim "$runtime_token" sub)"
+    case "${SINGULARITY_ALLOW_FOREIGN_RUNTIME_TOKEN:-false}" in
+      1|true|TRUE|yes|YES) ;;
+      *)
+        if [ -n "$runtime_sub" ] && [ "$runtime_sub" != "$iam_user_id" ]; then
+          warn "ignoring runtime token for user $runtime_sub; expected $iam_user_id"
+          runtime_token=""
+        fi
+        ;;
+    esac
   fi
   if [ -z "$runtime_id" ] && [ -n "$runtime_token" ]; then
     runtime_id="$(json_claim "$runtime_token" runtime_id)"
@@ -604,6 +738,7 @@ cmd_connect() {
   upsert_env "$SECRETS_FILE" COPILOT_TOKEN "$copilot_token"
 
   export CONTEXT_FABRIC_URL="$context_url"
+  export CONTEXT_FABRIC_SERVICE_TOKEN="$context_service_token"
   export RUNTIME_BRIDGE_URL="$bridge_url"
   export LAPTOP_BRIDGE_URL="$bridge_url"
   export LLM_GATEWAY_URL="http://localhost:8001"
@@ -648,10 +783,13 @@ cmd_connect() {
   fi
 
   info "starting MCP runtime dial-in"
-  boot_process mcp-server "cd \"$ROOT/mcp-server\" && env PORT=7100 RUNTIME_DIAL_IN_MODE=true LAPTOP_MODE=true RUNTIME_BRIDGE_URL=\"$bridge_url\" LAPTOP_BRIDGE_URL=\"$bridge_url\" SINGULARITY_RUNTIME_TOKEN=\"$runtime_token\" SINGULARITY_DEVICE_TOKEN=\"$runtime_token\" SINGULARITY_RUNTIME_ID=\"$runtime_id\" SINGULARITY_DEVICE_ID=\"$runtime_id\" SINGULARITY_RUNTIME_NAME=\"$runtime_name\" SINGULARITY_DEVICE_NAME=\"$runtime_name\" SINGULARITY_RUNTIME_TYPE=mcp SINGULARITY_TENANT_ID=\"$tenant_id\" MCP_BEARER_TOKEN=\"${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}\" LLM_GATEWAY_URL=\"http://localhost:8001\" MCP_COMMAND_EXECUTION_MODE=process MCP_SANDBOX_ROOT=\"$workspace\" MCP_LLM_PROVIDER_CONFIG_PATH=\"$PROVIDERS_FILE\" MCP_LLM_MODEL_CATALOG_PATH=\"$MODELS_FILE\" GITHUB_TOKEN=\"${GITHUB_TOKEN:-}\" GH_TOKEN=\"${GH_TOKEN:-}\" MCP_GIT_AUTH_MODE=\"${MCP_GIT_AUTH_MODE:-}\" MCP_GIT_PUSH_ENABLED=\"${MCP_GIT_PUSH_ENABLED:-}\" COPILOT_BIN=\"${COPILOT_BIN:-copilot}\" npm run dev"
+  boot_process mcp-server "cd \"$ROOT/mcp-server\" && env PORT=7100 RUNTIME_DIAL_IN_MODE=true LAPTOP_MODE=true RUNTIME_BRIDGE_URL=\"$bridge_url\" LAPTOP_BRIDGE_URL=\"$bridge_url\" SINGULARITY_RUNTIME_TOKEN=\"$runtime_token\" SINGULARITY_DEVICE_TOKEN=\"$runtime_token\" SINGULARITY_RUNTIME_ID=\"$runtime_id\" SINGULARITY_DEVICE_ID=\"$runtime_id\" SINGULARITY_RUNTIME_NAME=\"$runtime_name\" SINGULARITY_DEVICE_NAME=\"$runtime_name\" SINGULARITY_RUNTIME_TYPE=mcp SINGULARITY_TENANT_ID=\"$tenant_id\" MCP_BEARER_TOKEN=\"${MCP_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}\" LLM_GATEWAY_URL=\"http://localhost:8001\" MCP_COMMAND_EXECUTION_MODE=process MCP_SANDBOX_ROOT=\"$workspace\" MCP_LLM_PROVIDER_CONFIG_PATH=\"$PROVIDERS_FILE\" MCP_LLM_MODEL_CATALOG_PATH=\"$MODELS_FILE\" GITHUB_TOKEN=\"${GITHUB_TOKEN:-}\" GH_TOKEN=\"${GH_TOKEN:-}\" MCP_GIT_AUTH_MODE=\"${MCP_GIT_AUTH_MODE:-disabled}\" MCP_GIT_PUSH_ENABLED=\"${MCP_GIT_PUSH_ENABLED:-false}\" COPILOT_BIN=\"${COPILOT_BIN:-copilot}\" npm run dev"
 
   echo
-  if wait_for_bridge "$status_url" "$runtime_id"; then
+  if [ -z "${CONTEXT_FABRIC_SERVICE_TOKEN:-${IAM_SERVICE_TOKEN:-}}" ]; then
+    warn "started MCP runtime; skipping Context Fabric status verification because no context service token is loaded"
+    warn "Run status with --context-fabric-service-token from a trusted platform shell, or check Platform Web Runtime + LLM Switchboard"
+  elif wait_for_bridge "$status_url" "$runtime_id"; then
     ok "MCP runtime is connected to Context Fabric"
   else
     warn "MCP runtime has not appeared in Context Fabric yet"
@@ -669,16 +807,23 @@ cmd_connect() {
 }
 
 cmd_status() {
-  local context_override="" bridge_override=""
+  local context_override="" bridge_override="" service_token_override=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --context-fabric-url|--context-url) context_override="${2:?missing value}"; shift 2 ;;
+      --context-fabric-service-token|--service-token) service_token_override="${2:?missing value}"; shift 2 ;;
       --bridge-url|--runtime-bridge-url) bridge_override="${2:?missing value}"; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       *) err "unknown status option: $1"; exit 1 ;;
     esac
   done
+  remove_env_key "$LAPTOP_ENV_FILE" CONTEXT_FABRIC_SERVICE_TOKEN
+  load_env_file "$ROOT/.env.local"
   load_env_file "$LAPTOP_ENV_FILE"
+  load_env_file "$SECRETS_FILE"
+  if [ -n "$service_token_override" ]; then
+    export CONTEXT_FABRIC_SERVICE_TOKEN="$service_token_override"
+  fi
   local context_url="${context_override:-${CONTEXT_FABRIC_URL:-}}"
   local bridge_url="${bridge_override:-${RUNTIME_BRIDGE_URL:-${LAPTOP_BRIDGE_URL:-}}}"
   export LLM_GATEWAY_URL="${LLM_GATEWAY_URL:-http://localhost:8001}"

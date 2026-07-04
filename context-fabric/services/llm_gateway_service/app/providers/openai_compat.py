@@ -18,6 +18,17 @@ from ..provider_config import provider_base_url
 from ..types import ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ToolCall, ToolDescriptor
 
 
+def _response_json_object(res: httpx.Response, *, provider: str, operation: str) -> Dict[str, Any]:
+    try:
+        data = res.json()
+    except Exception as exc:
+        snippet = res.text[:400] if isinstance(res.text, str) else ""
+        raise RuntimeError(f"{provider} {operation} returned invalid JSON: {snippet}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{provider} {operation} returned invalid JSON object")
+    return data
+
+
 def _to_openai_tools(tools: Optional[List[ToolDescriptor]]) -> Optional[List[Dict[str, Any]]]:
     if not tools:
         return None
@@ -177,7 +188,7 @@ async def respond(
         # on a second round trip to reproduce just to see the rest.
         snippet = res.text[:2000] if isinstance(res.text, str) else ""
         raise RuntimeError(f"{provider} returned {res.status_code}: {snippet}")
-    data = res.json()
+    data = _response_json_object(res, provider=provider, operation="chat")
     choice = (data.get("choices") or [None])[0]
     if not choice:
         raise RuntimeError(f"{provider} returned no choices")
@@ -262,7 +273,7 @@ async def embed(
     if res.status_code != 200:
         snippet = res.text[:400] if isinstance(res.text, str) else ""
         raise RuntimeError(f"{provider} embeddings {res.status_code}: {snippet}")
-    data = res.json()
+    data = _response_json_object(res, provider=provider, operation="embeddings")
     rows = data.get("data") or []
     vectors = [row.get("embedding") or [] for row in rows]
     usage = data.get("usage") or {}
