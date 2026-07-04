@@ -10,6 +10,7 @@ import { gitAskpassEnv } from "./git-workspace";
 import { baseSandboxRoot, sandboxRoot, SKIP_DIRS } from "./sandbox";
 
 const execFileP = promisify(execFile);
+const SOURCE_MATERIALIZER_GIT_TIMEOUT_MS = config.MCP_SOURCE_MATERIALIZER_GIT_TIMEOUT_MS;
 
 export interface WorkspaceSourceRequest {
   sourceType?: string;
@@ -69,6 +70,7 @@ async function git(args: string[], opts?: { cwd?: string; allowFail?: boolean; m
         // upward and accidentally operate on the parent sandbox repository.
         GIT_CEILING_DIRECTORIES: path.dirname(path.resolve(cwd)),
       },
+      timeout: SOURCE_MATERIALIZER_GIT_TIMEOUT_MS,
       maxBuffer: opts?.maxBuffer ?? 20 * 1024 * 1024,
     });
     return stdout.trim();
@@ -280,6 +282,7 @@ async function gitBare(
         ...(opts?.authEnv ?? {}),
         GIT_TERMINAL_PROMPT: "0",
       },
+      timeout: SOURCE_MATERIALIZER_GIT_TIMEOUT_MS,
       maxBuffer: opts?.maxBuffer ?? 20 * 1024 * 1024,
     });
     return stdout.trim();
@@ -301,6 +304,7 @@ async function gitRaw(
         ...(opts?.authEnv ?? {}),
         GIT_TERMINAL_PROMPT: "0",
       },
+      timeout: SOURCE_MATERIALIZER_GIT_TIMEOUT_MS,
       maxBuffer: opts?.maxBuffer ?? 20 * 1024 * 1024,
     });
     return stdout.trim();
