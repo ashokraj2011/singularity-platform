@@ -14,12 +14,19 @@
 import { hasAgentToolsToken, SESSION_LAST_ACTIVITY_KEY } from "@/lib/api";
 
 const DEFAULT_IDLE_MINUTES = 30;
+const MIN_IDLE_MINUTES = 1;
+const MAX_IDLE_MINUTES = 12 * 60;
+
+export function boundedIdleMinutes(raw = process.env.NEXT_PUBLIC_SESSION_IDLE_MINUTES): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_IDLE_MINUTES;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < MIN_IDLE_MINUTES) return DEFAULT_IDLE_MINUTES;
+  return Math.min(MAX_IDLE_MINUTES, Math.trunc(parsed));
+}
 
 /** Idle window in ms. Override with NEXT_PUBLIC_SESSION_IDLE_MINUTES. */
 export function idleLimitMs(): number {
-  const raw = Number(process.env.NEXT_PUBLIC_SESSION_IDLE_MINUTES);
-  const minutes = Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_IDLE_MINUTES;
-  return minutes * 60_000;
+  return boundedIdleMinutes() * 60_000;
 }
 
 /** DOM events that count as "the user is still here" and push the deadline forward. */
