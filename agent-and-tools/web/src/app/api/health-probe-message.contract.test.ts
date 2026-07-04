@@ -37,6 +37,24 @@ assert.match(
 
 assert.match(
   topology,
+  /import \{ boundedSecondsEnv \} from "@\/lib\/serverEnvBounds";/,
+  "platform topology probes should use the central server env bounds helper",
+);
+
+assert.match(
+  topology,
+  /const HEALTH_TIMEOUT_MS = boundedSecondsEnv\("PLATFORM_TOPOLOGY_HEALTH_TIMEOUT_SEC", 3, 1, 300\) \* 1000;/,
+  "platform topology probes should expose a bounded health timeout knob",
+);
+
+assert.match(
+  topology,
+  /fetch\(endpoint\(config\.url, healthPath \?\? "\/health"\), \{[\s\S]*?signal: AbortSignal\.timeout\(HEALTH_TIMEOUT_MS\)/,
+  "platform topology probes should use the bounded timeout",
+);
+
+assert.match(
+  topology,
   /id: "agent-runtime"[\s\S]*?label: "Agent Runtime"[\s\S]*?strict schema invariants[\s\S]*?envKey: platformService\("agent-runtime"\)\.envKey[\s\S]*?healthPath: "\/healthz\/strict"[\s\S]*?required: true/,
   "platform topology should render Agent Runtime from strict health, not shallow liveness",
 );
@@ -45,6 +63,24 @@ assert.match(
   runtime,
   /import \{ healthProbeMessage \} from "\.\.\/_health-message";[\s\S]*?const body = await readJsonish\(res, 1200\);[\s\S]*?message: healthProbeMessage\(body\.raw, res\.statusText, res\.ok, 220\)/,
   "runtime infrastructure probes should normalize JSON health payloads before returning them to the UI",
+);
+
+assert.match(
+  runtime,
+  /import \{ boundedSecondsEnv \} from "@\/lib\/serverEnvBounds";/,
+  "runtime infrastructure probes should use the central server env bounds helper",
+);
+
+assert.match(
+  runtime,
+  /const HEALTH_TIMEOUT_MS = boundedSecondsEnv\("RUNTIME_INFRA_HEALTH_TIMEOUT_SEC", 3, 1, 300\) \* 1000;/,
+  "runtime infrastructure probes should expose a bounded health timeout knob",
+);
+
+assert.match(
+  runtime,
+  /fetch\(endpoint\(config\.url, config\.healthPath\), \{[\s\S]*?signal: AbortSignal\.timeout\(HEALTH_TIMEOUT_MS\)/,
+  "runtime infrastructure probes should use the bounded timeout",
 );
 
 assert.match(

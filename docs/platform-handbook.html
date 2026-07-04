@@ -1127,6 +1127,12 @@ bounded <code>1..300</code>; <code>ADOPTION_HEALTH_FETCH_TIMEOUT_SEC</code> cont
 <code>/api/start/launch</code> handoff to planner launch uses <code>START_LAUNCH_TIMEOUT_SEC</code>,
 default <code>60</code>, bounded <code>1..900</code>, so a stalled planner cannot hold the guided
 SDLC launch request indefinitely.</p>
+<p>Platform Web&#39;s Operations probes are also bounded. The Live App Map route
+<code>/api/platform-topology</code> uses <code>PLATFORM_TOPOLOGY_HEALTH_TIMEOUT_SEC</code>, default
+<code>3</code>, bounded <code>1..300</code>; the Runtime Infrastructure route uses
+<code>RUNTIME_INFRA_HEALTH_TIMEOUT_SEC</code>, default <code>3</code>, bounded <code>1..300</code>. Slow health
+checks therefore degrade individual cards instead of stalling the whole
+Operations page.</p>
 <p>Platform Web&#39;s Prompt Workbench <code>compose-and-respond</code> calls use
 <code>PROMPT_WORKBENCH_COMPOSER_TIMEOUT_SEC</code>, default <code>240</code>, bounded <code>1..900</code>. This
 keeps interactive prompt experiments from waiting forever while still allowing

@@ -14,5 +14,5 @@ if (process.env.SINGULARITY_WEB_SKIP_CLEAN_NEXT === "1") {
   process.exit(0);
 }
 
-fs.rmSync(nextDir, { recursive: true, force: true });
+fs.rmSync(nextDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 console.log(`platform-web Next dev cache cleared: ${path.relative(appRoot, nextDir) || ".next"}`);

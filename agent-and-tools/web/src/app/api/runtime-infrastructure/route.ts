@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireVerifiedCallerBearer } from "../_proxy";
 import { readJsonish } from "../_json";
 import { serverEnv } from "@/lib/serverRootEnv";
+import { boundedSecondsEnv } from "@/lib/serverEnvBounds";
 import {
   cleanUrl,
   configuredPlatformServiceUrl,
@@ -37,7 +38,7 @@ type RuntimeEntry = Omit<RuntimeEntryConfig, "authToken"> & {
   checkedAt: string;
 };
 
-const HEALTH_TIMEOUT_MS = 2500;
+const HEALTH_TIMEOUT_MS = boundedSecondsEnv("RUNTIME_INFRA_HEALTH_TIMEOUT_SEC", 3, 1, 300) * 1000;
 
 function authHeader(token: string | null | undefined): HeadersInit {
   const trimmed = token?.trim();
@@ -99,14 +100,11 @@ async function probe(config: RuntimeEntryConfig): Promise<RuntimeEntry> {
     };
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-
   try {
     const res = await fetch(endpoint(config.url, config.healthPath), {
       cache: "no-store",
       headers: authHeader(authToken),
-      signal: controller.signal,
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     });
     const body = await readJsonish(res, 1200);
     return {
@@ -127,8 +125,6 @@ async function probe(config: RuntimeEntryConfig): Promise<RuntimeEntry> {
       message: err instanceof Error ? err.message : "Health check failed",
       checkedAt,
     };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

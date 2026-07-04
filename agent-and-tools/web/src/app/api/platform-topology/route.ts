@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireVerifiedCallerBearer } from "../_proxy";
 import { serverEnv } from "@/lib/serverRootEnv";
+import { boundedSecondsEnv } from "@/lib/serverEnvBounds";
 import {
   cleanUrl,
   configuredPlatformServiceUrl,
@@ -54,7 +55,7 @@ type TopologyEdge = {
   message: string;
 };
 
-const HEALTH_TIMEOUT_MS = 2500;
+const HEALTH_TIMEOUT_MS = boundedSecondsEnv("PLATFORM_TOPOLOGY_HEALTH_TIMEOUT_SEC", 3, 1, 300) * 1000;
 
 function authHeader(token: string | null | undefined): HeadersInit {
   const trimmed = token?.trim();
@@ -98,14 +99,11 @@ async function probe(config: ProbeConfig): Promise<TopologyNode> {
     };
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
-
   try {
     const res = await fetch(endpoint(config.url, healthPath ?? "/health"), {
       cache: "no-store",
       headers: authHeader(authToken),
-      signal: controller.signal,
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
     });
     const text = await res.text();
     return {
@@ -125,8 +123,6 @@ async function probe(config: ProbeConfig): Promise<TopologyNode> {
       message: err instanceof Error ? err.message : "Health check failed",
       checkedAt,
     };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

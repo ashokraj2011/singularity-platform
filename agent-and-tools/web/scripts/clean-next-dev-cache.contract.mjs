@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 
 const repoRoot = process.cwd();
 const script = path.join(repoRoot, "scripts/clean-next-dev-cache.mjs");
+const scriptSource = fs.readFileSync(script, "utf8");
 const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
 
 assert.match(
@@ -19,6 +20,12 @@ assert.match(
   pkg.scripts.build,
   /node scripts\/clean-next-dev-cache\.mjs && next build/,
   "platform-web build script should clear stale Next chunks before creating a standalone bundle",
+);
+
+assert.match(
+  scriptSource,
+  /fs\.rmSync\(nextDir, \{ recursive: true, force: true, maxRetries: 5, retryDelay: 200 \}\)/,
+  "platform-web Next cache cleaner should retry transient ENOTEMPTY/EBUSY removals before failing builds",
 );
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "platform-web-next-cache-"));
