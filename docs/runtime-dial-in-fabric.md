@@ -49,6 +49,19 @@ export SINGULARITY_USER_ID=<user-id>
 export LLM_GATEWAY_URL=http://localhost:8001
 ```
 
+Optional MCP-side connection timing knobs:
+
+```bash
+export MCP_RUNTIME_BRIDGE_HEARTBEAT_MS=30000
+export MCP_RUNTIME_BRIDGE_HANDSHAKE_TIMEOUT_MS=10000
+export MCP_RUNTIME_BRIDGE_RECONNECT_MIN_BACKOFF_MS=1000
+export MCP_RUNTIME_BRIDGE_RECONNECT_MAX_BACKOFF_MS=60000
+```
+
+All four values are bounded positive integers at MCP startup. MCP also refuses
+to boot if the reconnect minimum is greater than the reconnect maximum, so a
+bad env file cannot invert the runtime bridge backoff loop.
+
 Context Fabric:
 
 ```bash

@@ -45,6 +45,7 @@ import { modelCatalogResponse } from "../llm/model-catalog";
 import { configuredDefaultModel, configuredDefaultProvider } from "../llm/provider-config";
 import { readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
 import { runtimeTokenDiagnostic } from "./runtime-token-diagnostic";
+import { config } from "../config";
 import {
   decodeInboundRaw,
   encodeOutboundFrame,
@@ -55,9 +56,10 @@ import {
   type HelloFrame, type HeartbeatFrame, type InboundFrame, type ResponseFrame,
 } from "./envelopes";
 
-const HEARTBEAT_MS = 30_000;
-const MIN_BACKOFF_MS = 1_000;
-const MAX_BACKOFF_MS = 60_000;
+const HEARTBEAT_MS = config.MCP_RUNTIME_BRIDGE_HEARTBEAT_MS;
+const RELAY_HANDSHAKE_TIMEOUT_MS = config.MCP_RUNTIME_BRIDGE_HANDSHAKE_TIMEOUT_MS;
+const MIN_BACKOFF_MS = config.MCP_RUNTIME_BRIDGE_RECONNECT_MIN_BACKOFF_MS;
+const MAX_BACKOFF_MS = config.MCP_RUNTIME_BRIDGE_RECONNECT_MAX_BACKOFF_MS;
 
 interface RelayConfig {
   bridgeUrl:    string;                       // wss://platform/api/runtime-bridge/connect
@@ -108,7 +110,7 @@ export class LaptopRelayClient {
 
     const ws = new WebSocket(this.cfg.bridgeUrl, {
       headers: { Authorization: `Bearer ${this.cfg.deviceToken}` },
-      handshakeTimeout: 10_000,
+      handshakeTimeout: RELAY_HANDSHAKE_TIMEOUT_MS,
     });
     this.ws = ws;
 

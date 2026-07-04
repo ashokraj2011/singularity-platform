@@ -768,6 +768,13 @@ Runtime Bridge registry/auth knobs use the shared Context Fabric env helper as
 well: `RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC` defaults to `300`, minimum `5`,
 maximum `86400`, and `RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME` defaults to
 `32`, minimum `1`, maximum `1024`.
+MCP runtime dial-in timings are schema-validated on the runtime side too:
+`MCP_RUNTIME_BRIDGE_HEARTBEAT_MS` defaults to `30000`,
+`MCP_RUNTIME_BRIDGE_HANDSHAKE_TIMEOUT_MS` defaults to `10000`,
+`MCP_RUNTIME_BRIDGE_RECONNECT_MIN_BACKOFF_MS` defaults to `1000`, and
+`MCP_RUNTIME_BRIDGE_RECONNECT_MAX_BACKOFF_MS` defaults to `60000`. All are
+bounded positive integers, and MCP refuses to start if the reconnect minimum is
+greater than the reconnect maximum.
 
 Tool Service internal semantic tools use bounded retrieval scoring knobs too:
 `EMBEDDING_RECENCY_DAYS` defaults to `30` and clamps to `1..3650`, while
