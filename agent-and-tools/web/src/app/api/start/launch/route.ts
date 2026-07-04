@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jsonishMessage, readJsonish, readRequestJson } from "../../_json";
 import { buildStartPreview, type StartPreviewInput } from "../_shared";
+import { boundedSecondsEnv } from "@/lib/serverEnvBounds";
 
 export const dynamic = "force-dynamic";
+
+const START_LAUNCH_TIMEOUT_MS = boundedSecondsEnv("START_LAUNCH_TIMEOUT_SEC", 60, 1, 900) * 1000;
 
 function authHeaders(req: NextRequest): HeadersInit {
   const auth = req.headers.get("authorization");
@@ -73,6 +76,7 @@ export async function POST(req: NextRequest) {
       headers: { "content-type": "application/json", ...authHeaders(req) },
       body: JSON.stringify(launchPayload),
       cache: "no-store",
+      signal: AbortSignal.timeout(START_LAUNCH_TIMEOUT_MS),
     });
     const parsed = (await readJsonish(res)).data;
     if (!res.ok) {

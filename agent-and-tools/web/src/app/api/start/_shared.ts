@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { readJsonish } from "../_json";
+import { boundedSecondsEnv } from "@/lib/serverEnvBounds";
 
 export type StartBlocker = {
   id: string;
@@ -41,7 +42,7 @@ export type StartPreviewInput = {
   governancePreset?: string;
 };
 
-const FETCH_TIMEOUT_MS = 3500;
+const FETCH_TIMEOUT_MS = boundedSecondsEnv("START_PREVIEW_FETCH_TIMEOUT_SEC", 4, 1, 300) * 1000;
 const FALLBACK_STORY = "As a product owner, I want a governed SDLC workflow that turns a story into WorkItems, launches implementation, captures tests, and exports delivery evidence.";
 
 function authHeaders(req: NextRequest): HeadersInit {
@@ -50,20 +51,16 @@ function authHeaders(req: NextRequest): HeadersInit {
 }
 
 async function getJson(origin: string, path: string, req: NextRequest): Promise<{ ok: boolean; status: number; data: unknown; text: string }> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(`${origin}${path}`, {
       cache: "no-store",
       headers: authHeaders(req),
-      signal: controller.signal,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     const body = await readJsonish(res);
     return { ok: res.ok, status: res.status, data: body.data, text: body.text };
   } catch (err) {
     return { ok: false, status: 0, data: null, text: err instanceof Error ? err.message : "Request failed" };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

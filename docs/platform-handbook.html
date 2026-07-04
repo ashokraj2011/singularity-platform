@@ -1120,6 +1120,13 @@ production-class deployments should still inject a pre-minted
 mutations forwarded to LLM Gateway use <code>LLM_SETTINGS_WRITE_TIMEOUT_SEC</code>, default
 <code>15</code>, bounded <code>1..300</code>, so a stalled gateway cannot hold the settings API
 indefinitely.</p>
+<p>Platform Web&#39;s first-run adoption path bounds its internal fan-out calls:
+<code>START_PREVIEW_FETCH_TIMEOUT_SEC</code> controls <code>/api/start/preview</code>, default <code>4</code>,
+bounded <code>1..300</code>; <code>ADOPTION_HEALTH_FETCH_TIMEOUT_SEC</code> controls
+<code>/api/adoption/health</code>, default <code>4</code>, bounded <code>1..300</code>. The final
+<code>/api/start/launch</code> handoff to planner launch uses <code>START_LAUNCH_TIMEOUT_SEC</code>,
+default <code>60</code>, bounded <code>1..900</code>, so a stalled planner cannot hold the guided
+SDLC launch request indefinitely.</p>
 <p>Platform Web&#39;s Prompt Workbench <code>compose-and-respond</code> calls use
 <code>PROMPT_WORKBENCH_COMPOSER_TIMEOUT_SEC</code>, default <code>240</code>, bounded <code>1..900</code>. This
 keeps interactive prompt experiments from waiting forever while still allowing

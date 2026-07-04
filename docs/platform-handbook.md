@@ -871,6 +871,14 @@ mutations forwarded to LLM Gateway use `LLM_SETTINGS_WRITE_TIMEOUT_SEC`, default
 `15`, bounded `1..300`, so a stalled gateway cannot hold the settings API
 indefinitely.
 
+Platform Web's first-run adoption path bounds its internal fan-out calls:
+`START_PREVIEW_FETCH_TIMEOUT_SEC` controls `/api/start/preview`, default `4`,
+bounded `1..300`; `ADOPTION_HEALTH_FETCH_TIMEOUT_SEC` controls
+`/api/adoption/health`, default `4`, bounded `1..300`. The final
+`/api/start/launch` handoff to planner launch uses `START_LAUNCH_TIMEOUT_SEC`,
+default `60`, bounded `1..900`, so a stalled planner cannot hold the guided
+SDLC launch request indefinitely.
+
 Platform Web's Prompt Workbench `compose-and-respond` calls use
 `PROMPT_WORKBENCH_COMPOSER_TIMEOUT_SEC`, default `240`, bounded `1..900`. This
 keeps interactive prompt experiments from waiting forever while still allowing

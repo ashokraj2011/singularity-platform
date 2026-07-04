@@ -73,6 +73,60 @@ for (const [label, source] of [
   assert.match(source, /parseError[\s\S]*?Request body must be valid JSON/, `${label} should return a clear 400 for malformed JSON`);
 }
 
+assert.match(
+  adoption,
+  /import \{ boundedSecondsEnv \} from "@\/lib\/serverEnvBounds";/,
+  "adoption health route should use the central server env bounds helper",
+);
+
+assert.match(
+  adoption,
+  /const FETCH_TIMEOUT_MS = boundedSecondsEnv\("ADOPTION_HEALTH_FETCH_TIMEOUT_SEC", 4, 1, 300\) \* 1000;/,
+  "adoption health route should expose a bounded fan-out timeout knob",
+);
+
+assert.match(
+  adoption,
+  /fetch\(`\$\{origin\}\$\{path\}`, \{[\s\S]*?signal: AbortSignal\.timeout\(FETCH_TIMEOUT_MS\)/,
+  "adoption health route fan-out calls should use the bounded timeout",
+);
+
+assert.match(
+  startShared,
+  /import \{ boundedSecondsEnv \} from "@\/lib\/serverEnvBounds";/,
+  "start preview shared route should use the central server env bounds helper",
+);
+
+assert.match(
+  startShared,
+  /const FETCH_TIMEOUT_MS = boundedSecondsEnv\("START_PREVIEW_FETCH_TIMEOUT_SEC", 4, 1, 300\) \* 1000;/,
+  "start preview route should expose a bounded fan-out timeout knob",
+);
+
+assert.match(
+  startShared,
+  /fetch\(`\$\{origin\}\$\{path\}`, \{[\s\S]*?signal: AbortSignal\.timeout\(FETCH_TIMEOUT_MS\)/,
+  "start preview route fan-out calls should use the bounded timeout",
+);
+
+assert.match(
+  startLaunch,
+  /import \{ boundedSecondsEnv \} from "@\/lib\/serverEnvBounds";/,
+  "start launch route should use the central server env bounds helper",
+);
+
+assert.match(
+  startLaunch,
+  /const START_LAUNCH_TIMEOUT_MS = boundedSecondsEnv\("START_LAUNCH_TIMEOUT_SEC", 60, 1, 900\) \* 1000;/,
+  "start launch route should expose a bounded planner launch timeout knob",
+);
+
+assert.match(
+  startLaunch,
+  /\/api\/planner\/launch[\s\S]*?fetch\(upstream, \{[\s\S]*?signal: AbortSignal\.timeout\(START_LAUNCH_TIMEOUT_MS\)/,
+  "start launch route should bound planner launch calls",
+);
+
 assert.doesNotMatch(
   gitHistory,
   /const parsed = text \? JSON\.parse\(text\)/,
