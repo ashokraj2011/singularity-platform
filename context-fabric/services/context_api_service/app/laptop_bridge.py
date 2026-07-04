@@ -57,6 +57,8 @@ def _b64url_decode(s: str) -> bytes:
 def _verify_hs256_jwt(token: str, secret: str) -> dict[str, Any]:
     """Pure-Python HS256 JWT verify. Avoids the python-jose / cryptography
     native wheel which segfaults on some arch combinations."""
+    if len(token) > _MAX_RUNTIME_JWT_LEN:
+        raise JWTError("token too long")
     parts = token.split(".")
     if len(parts) != 3:
         raise JWTError("malformed JWT")
@@ -65,6 +67,8 @@ def _verify_hs256_jwt(token: str, secret: str) -> dict[str, Any]:
         header = json.loads(_b64url_decode(header_b64))
     except Exception:
         raise JWTError("bad header") from None
+    if not isinstance(header, dict):
+        raise JWTError("bad header")
     if header.get("alg") != "HS256":
         raise JWTError(f"unsupported alg: {header.get('alg')}")
     signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
@@ -79,6 +83,8 @@ def _verify_hs256_jwt(token: str, secret: str) -> dict[str, Any]:
         claims = json.loads(_b64url_decode(payload_b64))
     except Exception:
         raise JWTError("bad payload") from None
+    if not isinstance(claims, dict):
+        raise JWTError("bad payload")
     # Runtime/device tokens are long-lived but never unbounded. JWT "exp" is a
     # NumericDate; reject missing or malformed expiries instead of treating them
     # as non-expiring bridge credentials.
@@ -118,6 +124,7 @@ _MAX_RUNTIME_TENANT_ID_LEN = 128
 _MAX_RUNTIME_TYPE_LEN = 64
 _MAX_RUNTIME_DEVICE_NAME_LEN = 200
 _MAX_RUNTIME_REQUEST_ID_LEN = 128
+_MAX_RUNTIME_JWT_LEN = 16 * 1024
 
 # Finding #7 — device-revocation enforcement. A revoked device JWT must stop working
 # without waiting for its (up-to-365-day) natural expiry, so the bridge asks IAM whether

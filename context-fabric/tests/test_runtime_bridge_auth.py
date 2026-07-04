@@ -14,12 +14,17 @@ from fastapi.testclient import TestClient
 from context_api_service.app import laptop_bridge
 
 
-def _b64(value: dict) -> str:
+def _b64(value: object) -> str:
     return base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).rstrip(b"=").decode()
 
 
-def _signed_runtime_token(payload: dict, *, secret: str = "test-secret") -> str:
-    header = _b64({"alg": "HS256", "typ": "JWT"})
+def _signed_runtime_token(
+    payload: object,
+    *,
+    secret: str = "test-secret",
+    header: object | None = None,
+) -> str:
+    header = _b64(header if header is not None else {"alg": "HS256", "typ": "JWT"})
     body = _b64(payload)
     sig = hmac.new(secret.encode(), f"{header}.{body}".encode("ascii"), hashlib.sha256).digest()
     sig_b64 = base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
@@ -46,6 +51,41 @@ def test_hs256_runtime_jwt_requires_numeric_expiry():
     with pytest.raises(laptop_bridge.JWTError, match="missing or invalid exp"):
         laptop_bridge._verify_hs256_jwt(
             _signed_runtime_token({**base_payload, "exp": str(now + 60)}),
+            "test-secret",
+        )
+
+
+def test_hs256_runtime_jwt_rejects_oversized_token(monkeypatch):
+    monkeypatch.setattr(laptop_bridge, "_MAX_RUNTIME_JWT_LEN", 16)
+    token = _signed_runtime_token({
+        "kind": "runtime",
+        "sub": "user-a",
+        "runtime_id": "runtime-a",
+        "exp": int(time.time()) + 60,
+    })
+
+    with pytest.raises(laptop_bridge.JWTError, match="token too long"):
+        laptop_bridge._verify_hs256_jwt(token, "test-secret")
+
+
+def test_hs256_runtime_jwt_requires_object_header_and_payload():
+    now = int(time.time())
+    valid_payload = {
+        "kind": "runtime",
+        "sub": "user-a",
+        "runtime_id": "runtime-a",
+        "exp": now + 60,
+    }
+
+    with pytest.raises(laptop_bridge.JWTError, match="bad header"):
+        laptop_bridge._verify_hs256_jwt(
+            _signed_runtime_token(valid_payload, header=["not-object"]),
+            "test-secret",
+        )
+
+    with pytest.raises(laptop_bridge.JWTError, match="bad payload"):
+        laptop_bridge._verify_hs256_jwt(
+            _signed_runtime_token(["not-object"]),
             "test-secret",
         )
 

@@ -130,6 +130,8 @@ Operations.
 `exp` is mandatory and must be a JWT NumericDate; Context Fabric rejects missing,
 string, or already-expired expiries so runtime tokens cannot become unbounded
 bridge credentials.
+Runtime JWTs are capped at `16 KiB`, and both the decoded JWT header and payload
+must be JSON objects before claims are trusted.
 `allowed_frame_types` is also mandatory for `kind=runtime` tokens and must include
 recognized frame names; it is the token-side upper bound for what
 `hello.supported_frame_types` may advertise.
