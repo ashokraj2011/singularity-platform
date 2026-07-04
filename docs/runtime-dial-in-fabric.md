@@ -55,6 +55,11 @@ Context Fabric:
 export RUNTIME_HTTP_FALLBACK_ENABLED=false
 ```
 
+MCP validates numeric runtime knobs at startup. Values that are obviously
+unsafe, such as `PORT=70000`, runaway `LLM_GATEWAY_TIMEOUT_SEC`, very large
+`MAX_AGENT_STEPS`, or oversized workspace indexing limits, fail closed during
+boot instead of being accepted and surprising a later workflow run.
+
 Set `RUNTIME_HTTP_FALLBACK_ENABLED=true` only for direct-HTTP debug overlays or
 temporary compatibility testing. With the default `false`, tool/model/code
 context dispatch, branch finalization, and worktree file writes fail closed when

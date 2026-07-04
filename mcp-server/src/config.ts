@@ -21,16 +21,40 @@ function envBool(defaultValue: boolean): z.ZodEffects<z.ZodOptional<z.ZodString>
   });
 }
 
+const boundedInt = (defaultValue: number, min: number, max: number) =>
+  z.coerce.number().int().min(min).max(max).default(defaultValue);
+
+const boundedPositiveInt = (defaultValue: number, max: number) =>
+  boundedInt(defaultValue, 1, max);
+
+const MCP_LIMITS = {
+  PORT: 65_535,
+  SESSION_TOKEN_TTL_SEC: 7 * 24 * 60 * 60,
+  TOOL_GRANT_CLOCK_SKEW_SEC: 5 * 60,
+  LLM_GATEWAY_TIMEOUT_SEC: 60 * 60,
+  AGENT_STEPS: 100,
+  AGENT_TIMEOUT_SEC: 60 * 60,
+  AST_FILE_BYTES: 10 * 1024 * 1024,
+  AST_WORKSPACE_BYTES: 1024 * 1024 * 1024,
+  AST_SYMBOLS: 5_000_000,
+  WORKSPACE_LOCK_TIMEOUT_MS: 10 * 60_000,
+  WORKSPACE_LOCK_STALE_MS: 24 * 60 * 60_000,
+  WORKSPACE_GC_AGE_HOURS: 30 * 24,
+  WORKSPACE_DISK_QUOTA_BYTES: 10 * 1024 * 1024 * 1024 * 1024,
+  AUDIT_RESTORE_LIMIT: 100_000,
+  FORMAL_VERIFICATION_TIMEOUT_MS: 10 * 60_000,
+} as const;
+
 const schema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   APP_ENV: z.string().optional(),
   ENVIRONMENT: z.string().optional(),
   SINGULARITY_ENV: z.string().optional(),
-  PORT: z.coerce.number().default(7000),
+  PORT: boundedPositiveInt(7000, MCP_LIMITS.PORT),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   MCP_BEARER_TOKEN: z.string().min(16),
   MCP_SESSION_JWT_SECRET: z.string().optional(),
-  MCP_SESSION_TOKEN_TTL_SEC: z.coerce.number().int().positive().default(12 * 60 * 60),
+  MCP_SESSION_TOKEN_TTL_SEC: boundedPositiveInt(12 * 60 * 60, MCP_LIMITS.SESSION_TOKEN_TTL_SEC),
   MCP_SESSION_TOKEN_ISSUER: z.string().default("singularity-mcp"),
   // SECURITY (review finding 4): scopes the static MCP_BEARER_TOKEN may use.
   // Previously a static bearer bypassed ALL requireMcpScope checks (an invisible
@@ -72,7 +96,7 @@ const schema = z.object({
   MCP_TOOL_GRANT_REQUIRED_CATEGORIES: z.string().default("mutate,finalize,run"),
   // Allowance for clock drift between CF (issuer) and MCP (verifier) when
   // checking issuedAt/expiresAt, in seconds.
-  MCP_TOOL_GRANT_CLOCK_SKEW_SEC: z.coerce.number().int().nonnegative().default(30),
+  MCP_TOOL_GRANT_CLOCK_SKEW_SEC: boundedInt(30, 0, MCP_LIMITS.TOOL_GRANT_CLOCK_SKEW_SEC),
   // Require Context Fabric / agent-runtime to send the resolved effective
   // capability set on direct tool dispatches. This closes the read-tool side
   // of the /mcp/tool-run bearer-token bypass: grants protect mutating/high-risk
@@ -101,7 +125,7 @@ const schema = z.object({
   // unit tests that don't want a live gateway container.
   LLM_GATEWAY_URL:        z.string().min(1),
   LLM_GATEWAY_BEARER:     z.string().optional(),
-  LLM_GATEWAY_TIMEOUT_SEC: z.coerce.number().int().positive().default(240),
+  LLM_GATEWAY_TIMEOUT_SEC: boundedPositiveInt(240, MCP_LIMITS.LLM_GATEWAY_TIMEOUT_SEC),
 
   // External MCP-side provider config (display-only after M33). The gateway
   // owns the authoritative provider list; mcp-server reads this file only
@@ -112,8 +136,8 @@ const schema = z.object({
   MCP_LLM_MODEL_CATALOG_JSON: z.string().optional(),
   MCP_LLM_MODEL_CATALOG_PATH: z.string().optional(),
 
-  MAX_AGENT_STEPS: z.coerce.number().int().positive().default(12),
-  TIMEOUT_SEC: z.coerce.number().int().positive().default(240),
+  MAX_AGENT_STEPS: boundedPositiveInt(12, MCP_LIMITS.AGENT_STEPS),
+  TIMEOUT_SEC: boundedPositiveInt(240, MCP_LIMITS.AGENT_TIMEOUT_SEC),
 
   // ── Phased Agent Reasoning Model (v4) ──────────────────────────────────
   // Behind a flag for safe rollout. When false (default), runLoop uses the
@@ -139,12 +163,12 @@ const schema = z.object({
   // and point this at it.
   MCP_SANDBOX_ROOT: z.string().default("/workspace"),
   MCP_AST_DB_PATH: z.string().optional(),
-  MCP_AST_MAX_FILE_BYTES: z.coerce.number().int().positive().default(200_000),
-  MCP_AST_MAX_WORKSPACE_BYTES: z.coerce.number().int().positive().default(24_000_000),
+  MCP_AST_MAX_FILE_BYTES: boundedPositiveInt(200_000, MCP_LIMITS.AST_FILE_BYTES),
+  MCP_AST_MAX_WORKSPACE_BYTES: boundedPositiveInt(24_000_000, MCP_LIMITS.AST_WORKSPACE_BYTES),
   // M27.5 — symbol cap. When the on-disk SQLite grows past this many rows
   // we LRU-evict the oldest-indexed files until back under cap. Tune up for
   // monorepos; tune down on laptops with constrained disk.
-  MCP_AST_MAX_SYMBOLS: z.coerce.number().int().positive().default(250_000),
+  MCP_AST_MAX_SYMBOLS: boundedPositiveInt(250_000, MCP_LIMITS.AST_SYMBOLS),
   MCP_WORK_BRANCH_PREFIX: z.string().default("sg"),
   MCP_WORKITEM_WORKSPACES_ROOT: z.string().optional(),
   MCP_WORK_BRANCH_PUSH_ON_FINISH: envBool(false),
@@ -165,13 +189,13 @@ const schema = z.object({
   // prefixes; a resolved local path must sit under one of them. UNSET = allow any
   // (preserves the laptop/dev flow), matching agent-runtime's allowPrivateUrls gate.
   MCP_ALLOWED_LOCAL_SOURCE_ROOTS: z.string().optional(),
-  MCP_WORKSPACE_LOCK_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
-  MCP_WORKSPACE_LOCK_STALE_MS: z.coerce.number().int().positive().default(30 * 60_000),
+  MCP_WORKSPACE_LOCK_TIMEOUT_MS: boundedPositiveInt(15_000, MCP_LIMITS.WORKSPACE_LOCK_TIMEOUT_MS),
+  MCP_WORKSPACE_LOCK_STALE_MS: boundedPositiveInt(30 * 60_000, MCP_LIMITS.WORKSPACE_LOCK_STALE_MS),
   MCP_WORKSPACE_GC_ENABLED: envBool(true),
-  MCP_WORKSPACE_GC_MAX_AGE_HOURS: z.coerce.number().int().positive().default(72),
-  MCP_WORKSPACE_DISK_QUOTA_BYTES: z.coerce.number().int().nonnegative().default(0),
+  MCP_WORKSPACE_GC_MAX_AGE_HOURS: boundedPositiveInt(72, MCP_LIMITS.WORKSPACE_GC_AGE_HOURS),
+  MCP_WORKSPACE_DISK_QUOTA_BYTES: boundedInt(0, 0, MCP_LIMITS.WORKSPACE_DISK_QUOTA_BYTES),
   MCP_AUDIT_LOG_PATH: z.string().optional(),
-  MCP_AUDIT_RESTORE_LIMIT: z.coerce.number().int().positive().default(5000),
+  MCP_AUDIT_RESTORE_LIMIT: boundedPositiveInt(5000, MCP_LIMITS.AUDIT_RESTORE_LIMIT),
 
   // Local command execution. Production/default Docker runs use a dedicated
   // runner service; process mode is reserved for unit tests and explicit dev
@@ -189,7 +213,7 @@ const schema = z.object({
   // before committing or pushing.
   FORMAL_VERIFICATION_ENABLED: envBool(false),
   FORMAL_VERIFIER_URL: z.string().default("http://localhost:8010"),
-  FORMAL_VERIFICATION_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
+  FORMAL_VERIFICATION_TIMEOUT_MS: boundedPositiveInt(3000, MCP_LIMITS.FORMAL_VERIFICATION_TIMEOUT_MS),
   FORMAL_VERIFICATION_BLOCK_ON_UNKNOWN: envBool(true),
 
   // Context Fabric internal adapter used when the LLM selects a SERVER-target

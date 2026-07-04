@@ -55,6 +55,22 @@ const missingGrantSecret = runConfig({ TOOL_GRANT_SIGNING_SECRET: "" });
 assert.notEqual(missingGrantSecret.status, 0);
 assert.match(missingGrantSecret.stderr, /TOOL_GRANT_SIGNING_SECRET/);
 
+const invalidPort = runConfig({ PORT: "70000" });
+assert.notEqual(invalidPort.status, 0);
+assert.match(invalidPort.stderr, /PORT/);
+
+const excessiveGatewayTimeout = runConfig({ LLM_GATEWAY_TIMEOUT_SEC: "999999" });
+assert.notEqual(excessiveGatewayTimeout.status, 0);
+assert.match(excessiveGatewayTimeout.stderr, /LLM_GATEWAY_TIMEOUT_SEC/);
+
+const excessiveAgentSteps = runConfig({ MAX_AGENT_STEPS: "100000" });
+assert.notEqual(excessiveAgentSteps.status, 0);
+assert.match(excessiveAgentSteps.stderr, /MAX_AGENT_STEPS/);
+
+const excessiveWorkspaceIndex = runConfig({ MCP_AST_MAX_WORKSPACE_BYTES: "999999999999" });
+assert.notEqual(excessiveWorkspaceIndex.status, 0);
+assert.match(excessiveWorkspaceIndex.stderr, /MCP_AST_MAX_WORKSPACE_BYTES/);
+
 const appEnvProduction = runConfig({
   NODE_ENV: "development",
   APP_ENV: "production",
