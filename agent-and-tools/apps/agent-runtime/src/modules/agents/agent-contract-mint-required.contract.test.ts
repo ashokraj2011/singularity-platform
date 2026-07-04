@@ -60,6 +60,21 @@ assert.match(
 );
 assert.match(
   source,
+  /const AGENT_CONTRACT_MINT_TIMEOUT_MS = env\.AGENT_CONTRACT_MINT_TIMEOUT_SEC \* 1000;/,
+  "contract mint timeout must come from bounded agent-runtime env config",
+);
+assert.match(
+  source,
+  /signal: AbortSignal\.timeout\(AGENT_CONTRACT_MINT_TIMEOUT_MS\)/,
+  "contract mint fetch must use the bounded timeout constant",
+);
+assert.doesNotMatch(
+  source,
+  /AbortSignal\.timeout\(15_000\)/,
+  "contract mint fetch must not hardcode a 15 second timeout",
+);
+assert.match(
+  source,
   /const contractId = stringValue\(data\.id\);[\s\S]*const bundleHash = stringValue\(data\.bundleHash\)[\s\S]*malformed contract response[\s\S]*await recordContractPin\(template, contractId, bundleHash\)/,
   "maybeMintContract must validate contract id/hash before recording the pin",
 );

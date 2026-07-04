@@ -54,6 +54,7 @@ import { requireActiveCapability } from "../capabilities/capability-lifecycle";
 import { parseUpstreamJson, readUpstreamJsonObject } from "../../shared/upstream-json";
 
 const AGENT_SOURCE_FETCH_TIMEOUT_MS = env.AGENT_SOURCE_FETCH_TIMEOUT_SEC * 1000;
+const AGENT_CONTRACT_MINT_TIMEOUT_MS = env.AGENT_CONTRACT_MINT_TIMEOUT_SEC * 1000;
 
 type TemplateSnapshotSource = {
   id: string;
@@ -763,7 +764,7 @@ async function maybeMintContract(template: TemplateSnapshotSource, actor?: AuthU
         capturedBy: actor?.user_id ?? null,
         capturedFrom: "agent-service:publish",
       }),
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(AGENT_CONTRACT_MINT_TIMEOUT_MS),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
