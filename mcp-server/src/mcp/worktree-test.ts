@@ -28,14 +28,14 @@ import { z } from "zod";
 import { workspaceRootForRunContext, baseSandboxRoot } from "../workspace/sandbox";
 import { callSandboxRunner } from "../tools/runner-client";
 import { AppError } from "../shared/errors";
+import { config } from "../config";
 
 export const worktreeTestRouter: Router = Router();
 
-// Per-call defaults. The runner enforces a hard ceiling (MAX_TIMEOUT_MS
-// = 600_000) so the operator can't ask for more than 10 minutes; we
-// default to 5 to keep the UX honest about expectations.
-const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
-const MAX_TIMEOUT_MS = 10 * 60 * 1000;
+// Per-call defaults. The operator-configured ceiling keeps browser-triggered
+// worktree tests bounded while still allowing larger enterprise test suites.
+const DEFAULT_TIMEOUT_MS = config.MCP_WORKTREE_TEST_DEFAULT_TIMEOUT_MS;
+const MAX_TIMEOUT_MS = config.MCP_WORKTREE_TEST_MAX_TIMEOUT_MS;
 const MAX_OUTPUT_CHARS = 100_000;
 
 const runTestSchema = z.object({

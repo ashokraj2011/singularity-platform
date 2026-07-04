@@ -40,6 +40,8 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
         "config.MCP_RUNTIME_BRIDGE_RECONNECT_MAX_BACKOFF_MS,",
         "config.MCP_WORKTREE_GIT_HASH_TIMEOUT_MS,",
         "config.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS,",
+        "config.MCP_WORKTREE_TEST_DEFAULT_TIMEOUT_MS,",
+        "config.MCP_WORKTREE_TEST_MAX_TIMEOUT_MS,",
         "config.MCP_SOURCE_DISCOVERY_TIMEOUT_MS,",
         "config.MCP_SOURCE_MATERIALIZER_GIT_TIMEOUT_MS,",
         "config.MCP_RG_SEARCH_TIMEOUT_MS,",
@@ -62,7 +64,7 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
 
 const defaults = runConfig({});
 assert.equal(defaults.status, 0, defaults.stderr);
-assert.match(defaults.stdout, /3:5:300:5:5:8:2000:5000:1500:2000:1500:2000:3000:5000:5000:30000:10000:1000:60000:5000:30000:20000:120000:10000:30000:60000:2000:30000:4096:0\.7/);
+assert.match(defaults.stdout, /3:5:300:5:5:8:2000:5000:1500:2000:1500:2000:3000:5000:5000:30000:10000:1000:60000:5000:30000:300000:600000:20000:120000:10000:30000:60000:2000:30000:4096:0\.7/);
 
 const custom = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "4",
@@ -86,6 +88,8 @@ const custom = runConfig({
   MCP_RUNTIME_BRIDGE_RECONNECT_MAX_BACKOFF_MS: "90000",
   MCP_WORKTREE_GIT_HASH_TIMEOUT_MS: "6500",
   MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS: "35000",
+  MCP_WORKTREE_TEST_DEFAULT_TIMEOUT_MS: "240000",
+  MCP_WORKTREE_TEST_MAX_TIMEOUT_MS: "480000",
   MCP_SOURCE_DISCOVERY_TIMEOUT_MS: "25000",
   MCP_SOURCE_MATERIALIZER_GIT_TIMEOUT_MS: "180000",
   MCP_RG_SEARCH_TIMEOUT_MS: "17000",
@@ -97,7 +101,7 @@ const custom = runConfig({
   MCP_PII_NER_CONFIDENCE_FLOOR: "0.85",
 });
 assert.equal(custom.status, 0, custom.stderr);
-assert.match(custom.stdout, /4:9:120:9:12:11:2500:6000:2500:3000:3500:4500:4000:4500:5500:45000:15000:2000:90000:6500:35000:25000:180000:17000:33000:65000:3500:45000:8192:0\.85/);
+assert.match(custom.stdout, /4:9:120:9:12:11:2500:6000:2500:3000:3500:4500:4000:4500:5500:45000:15000:2000:90000:6500:35000:240000:480000:25000:180000:17000:33000:65000:3500:45000:8192:0\.85/);
 
 const impossibleLoopDetector = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "10",
@@ -112,6 +116,13 @@ const invertedRuntimeBridgeBackoff = runConfig({
 });
 assert.notEqual(invertedRuntimeBridgeBackoff.status, 0);
 assert.match(invertedRuntimeBridgeBackoff.stderr, /MCP_RUNTIME_BRIDGE_RECONNECT_MIN_BACKOFF_MS/);
+
+const invertedWorktreeTestTimeouts = runConfig({
+  MCP_WORKTREE_TEST_DEFAULT_TIMEOUT_MS: "600000",
+  MCP_WORKTREE_TEST_MAX_TIMEOUT_MS: "300000",
+});
+assert.notEqual(invertedWorktreeTestTimeouts.status, 0);
+assert.match(invertedWorktreeTestTimeouts.stderr, /MCP_WORKTREE_TEST_DEFAULT_TIMEOUT_MS/);
 
 for (const [name, value] of [
   ["MCP_LOOP_REPETITION_THRESHOLD", "0"],
@@ -135,6 +146,8 @@ for (const [name, value] of [
   ["MCP_RUNTIME_BRIDGE_RECONNECT_MAX_BACKOFF_MS", "0"],
   ["MCP_WORKTREE_GIT_HASH_TIMEOUT_MS", "0"],
   ["MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS", "0"],
+  ["MCP_WORKTREE_TEST_DEFAULT_TIMEOUT_MS", "0"],
+  ["MCP_WORKTREE_TEST_MAX_TIMEOUT_MS", "0"],
   ["MCP_SOURCE_DISCOVERY_TIMEOUT_MS", "0"],
   ["MCP_SOURCE_MATERIALIZER_GIT_TIMEOUT_MS", "0"],
   ["MCP_RG_SEARCH_TIMEOUT_MS", "0"],
@@ -173,6 +186,9 @@ assert.match(configSource, /MCP_RUNTIME_BRIDGE_RECONNECT_MAX_BACKOFF_MS: bounded
 assert.match(configSource, /MCP_RUNTIME_BRIDGE_RECONNECT_MIN_BACKOFF_MS must be less than or equal to[\s\S]*?MCP_RUNTIME_BRIDGE_RECONNECT_MAX_BACKOFF_MS/);
 assert.match(configSource, /MCP_WORKTREE_GIT_HASH_TIMEOUT_MS: boundedPositiveInt\(5_000, MCP_LIMITS\.WORKTREE_GIT_HASH_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS: boundedPositiveInt\(30_000, MCP_LIMITS\.WORKTREE_GIT_WRITE_TIMEOUT_MS\)/);
+assert.match(configSource, /MCP_WORKTREE_TEST_DEFAULT_TIMEOUT_MS: boundedPositiveInt\(5 \* 60_000, MCP_LIMITS\.WORKTREE_TEST_TIMEOUT_MS\)/);
+assert.match(configSource, /MCP_WORKTREE_TEST_MAX_TIMEOUT_MS: boundedPositiveInt\(10 \* 60_000, MCP_LIMITS\.WORKTREE_TEST_TIMEOUT_MS\)/);
+assert.match(configSource, /MCP_WORKTREE_TEST_DEFAULT_TIMEOUT_MS must be less than or equal to[\s\S]*?MCP_WORKTREE_TEST_MAX_TIMEOUT_MS/);
 assert.match(configSource, /MCP_SOURCE_DISCOVERY_TIMEOUT_MS: boundedPositiveInt\(20_000, MCP_LIMITS\.SOURCE_DISCOVERY_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_SOURCE_MATERIALIZER_GIT_TIMEOUT_MS: boundedPositiveInt\([\s\S]*?120_000,[\s\S]*?MCP_LIMITS\.SOURCE_MATERIALIZER_GIT_TIMEOUT_MS/);
 assert.match(configSource, /MCP_RG_SEARCH_TIMEOUT_MS: boundedPositiveInt\(10_000, MCP_LIMITS\.RG_SEARCH_TIMEOUT_MS\)/);
@@ -214,6 +230,14 @@ assert.match(worktreeSource, /timeout: WORKTREE_GIT_HASH_TIMEOUT_MS/);
 assert.match(worktreeSource, /timeout: WORKTREE_GIT_WRITE_TIMEOUT_MS/);
 assert.doesNotMatch(worktreeSource, /timeout: 5_000/);
 assert.doesNotMatch(worktreeSource, /timeout: 30_000/);
+
+const worktreeTestSource = readFileSync("src/mcp/worktree-test.ts", "utf8");
+assert.match(worktreeTestSource, /const DEFAULT_TIMEOUT_MS = config\.MCP_WORKTREE_TEST_DEFAULT_TIMEOUT_MS;/);
+assert.match(worktreeTestSource, /const MAX_TIMEOUT_MS = config\.MCP_WORKTREE_TEST_MAX_TIMEOUT_MS;/);
+assert.match(worktreeTestSource, /timeoutMs: z\.number\(\)\.int\(\)\.positive\(\)\.max\(MAX_TIMEOUT_MS\)\.optional\(\)/);
+assert.match(worktreeTestSource, /const timeoutMs = body\.timeoutMs \?\? DEFAULT_TIMEOUT_MS;/);
+assert.doesNotMatch(worktreeTestSource, /const DEFAULT_TIMEOUT_MS = 5 \* 60 \* 1000/);
+assert.doesNotMatch(worktreeTestSource, /const MAX_TIMEOUT_MS = 10 \* 60 \* 1000/);
 
 const gitWorkspaceSource = readFileSync("src/workspace/git-workspace.ts", "utf8");
 assert.match(gitWorkspaceSource, /const WORKTREE_GIT_WRITE_TIMEOUT_MS = config\.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS;/);

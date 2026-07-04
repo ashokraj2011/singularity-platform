@@ -777,7 +777,11 @@ edits wait forever.
 Workspace root resolution bounds legacy sibling-branch probes separately:
 <code>MCP_WORKSPACE_BRANCH_PROBE_TIMEOUT_MS</code> defaults to <code>2000</code> and is bounded
 <code>1..60000</code> for the quick <code>git rev-parse --abbrev-ref HEAD</code> checks used while
-finding a workitem&#39;s <code>wi/&lt;code&gt;</code> worktree.</p>
+finding a workitem&#39;s <code>wi/&lt;code&gt;</code> worktree.
+Workbench-triggered worktree tests are bounded with
+<code>MCP_WORKTREE_TEST_DEFAULT_TIMEOUT_MS</code>, default <code>300000</code>, and
+<code>MCP_WORKTREE_TEST_MAX_TIMEOUT_MS</code>, default <code>600000</code>; both are bounded
+<code>1..3600000</code>, and MCP startup fails if the default exceeds the configured max.</p>
 <h3 id="713-llm-gateway">7.13 LLM Gateway<a class="anchor" href="#713-llm-gateway" aria-label="Link to 7.13 LLM Gateway">#</a></h3>
 <p>LLM Gateway abstracts providers and model aliases.</p>
 <p>Core features:</p>
