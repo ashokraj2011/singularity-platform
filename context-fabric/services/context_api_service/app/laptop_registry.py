@@ -26,7 +26,9 @@ log = logging.getLogger("laptop-registry")
 INVOKE_TIMEOUT_SEC = 180
 HEARTBEAT_TIMEOUT_SEC = 90
 MAX_PAYLOAD_BYTES = 16 * 1024 * 1024   # I2
-MAX_PENDING_REQUESTS_PER_RUNTIME = int(os.environ.get("RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME", "32"))
+_DEFAULT_MAX_PENDING_REQUESTS_PER_RUNTIME = 32
+_MAX_PENDING_REQUESTS_PER_RUNTIME_CAP = 1024
+MAX_PENDING_REQUESTS_PER_RUNTIME = 0
 _REDACTED = "[redacted]"
 _SENSITIVE_KEY_PARTS = (
     "token",
@@ -39,6 +41,32 @@ _SENSITIVE_KEY_PARTS = (
     "apikey",
     "access_key",
     "private_key",
+)
+
+
+def _bounded_int_env(name: str, *, default: int, min_value: int, max_value: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        log.warning("invalid integer env %s=%r; using default=%s", name, raw, default)
+        return default
+    if value < min_value:
+        log.warning("integer env %s=%s below min=%s; using default=%s", name, value, min_value, default)
+        return default
+    if value > max_value:
+        log.warning("integer env %s=%s above max=%s; clamping", name, value, max_value)
+        return max_value
+    return value
+
+
+MAX_PENDING_REQUESTS_PER_RUNTIME = _bounded_int_env(
+    "RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME",
+    default=_DEFAULT_MAX_PENDING_REQUESTS_PER_RUNTIME,
+    min_value=1,
+    max_value=_MAX_PENDING_REQUESTS_PER_RUNTIME_CAP,
 )
 
 

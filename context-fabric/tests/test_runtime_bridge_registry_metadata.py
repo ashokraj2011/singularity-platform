@@ -137,6 +137,48 @@ def test_heartbeat_updates_runtime_health_metadata_safely():
     assert stored["long"].endswith("...[truncated]")
 
 
+def test_bounded_int_env_defaults_and_clamps(monkeypatch):
+    monkeypatch.delenv("RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME", raising=False)
+    assert lr._bounded_int_env(
+        "RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME",
+        default=32,
+        min_value=1,
+        max_value=1024,
+    ) == 32
+
+    monkeypatch.setenv("RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME", "not-an-int")
+    assert lr._bounded_int_env(
+        "RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME",
+        default=32,
+        min_value=1,
+        max_value=1024,
+    ) == 32
+
+    monkeypatch.setenv("RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME", "0")
+    assert lr._bounded_int_env(
+        "RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME",
+        default=32,
+        min_value=1,
+        max_value=1024,
+    ) == 32
+
+    monkeypatch.setenv("RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME", "64")
+    assert lr._bounded_int_env(
+        "RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME",
+        default=32,
+        min_value=1,
+        max_value=1024,
+    ) == 64
+
+    monkeypatch.setenv("RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME", "5000")
+    assert lr._bounded_int_env(
+        "RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME",
+        default=32,
+        min_value=1,
+        max_value=1024,
+    ) == 1024
+
+
 def test_deliver_response_rejects_oversized_runtime_payload(monkeypatch):
     monkeypatch.setattr(lr, "MAX_PAYLOAD_BYTES", 64)
 

@@ -93,7 +93,8 @@ before they are written to the runtime socket; oversized requests fail as
 Context Fabric also caps outstanding pending requests per runtime
 (`RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME`, default `32`); when a runtime is
 already saturated, new dispatches fail fast with `RUNTIME_BUSY` before any
-socket write.
+socket write. Invalid values fall back to the default and values above `1024`
+are clamped.
 MCP also checks runtime-to-Context-Fabric frames before socket writes; oversized
 response payloads are replaced with a compact `RUNTIME_RESPONSE_TOO_LARGE`
 response for the same request id.
