@@ -995,6 +995,8 @@ MCP&#39;s own runtime-loop knobs are schema-validated at startup as well:
 <code>SYSTEM_PROMPT_CACHE_TTL_SEC</code> defaults to <code>300</code> and is bounded <code>1..86400</code>,
 <code>MCP_PROMPT_COMPOSER_TIMEOUT_SEC</code> defaults to <code>5</code> and is bounded <code>1..300</code>
 for MCP&#39;s Prompt Composer system-prompt fetches,
+<code>MCP_AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_SEC</code> defaults to <code>5</code> and is bounded
+<code>1..300</code> for MCP&#39;s best-effort Agent Runtime world-model callbacks,
 <code>MCP_MUTATION_FINALIZATION_MAX_TOKENS</code> defaults to <code>4096</code> and is bounded
 <code>1..64000</code>, and <code>MCP_PII_NER_CONFIDENCE_FLOOR</code> defaults to <code>0.7</code> and is
 bounded <code>0..1</code>. Invalid values fail MCP startup instead of drifting into

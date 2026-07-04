@@ -21,6 +21,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { config } from "../config";
 import { isJsonObject, readUpstreamJsonBody } from "../lib/upstream-json";
 
 export const BUILD_SYSTEM_FILES: readonly string[] = [
@@ -54,6 +55,7 @@ export const BUILD_SYSTEM_FILES: readonly string[] = [
 ] as const;
 
 const PER_FILE_READ_CAP = 256 * 1024;
+const AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_MS = config.MCP_AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_SEC * 1000;
 
 export type RepoFingerprintResult = {
   fingerprint: string;
@@ -149,7 +151,7 @@ export async function reportAstIndexBuiltToAgentRuntime(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ astIndexFiles }),
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_MS),
     });
     return res.ok;
   } catch (err) {
@@ -185,7 +187,7 @@ export async function reportFingerprintToAgentRuntime(
         hashedBuildFiles: result.hashedBuildFiles,
         topLevelEntries: result.topLevelEntries,
       }),
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_MS),
     });
     if (!res.ok) {
       // eslint-disable-next-line no-console

@@ -28,6 +28,24 @@ assert.match(
   "repo fingerprint reporting should ignore malformed best-effort responses",
 );
 
+assert.match(
+  source,
+  /const AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_MS = config\.MCP_AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_SEC \* 1000;/,
+  "repo fingerprint reporting should use a bounded MCP config timeout",
+);
+
+assert.match(
+  source,
+  /AbortSignal\.timeout\(AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_MS\)/,
+  "repo fingerprint reporting should use the shared world-model timeout constant",
+);
+
+assert.doesNotMatch(
+  source,
+  /AbortSignal\.timeout\(5_000\)/,
+  "repo fingerprint reporting should not hardcode milliseconds",
+);
+
 assert.doesNotMatch(
   source,
   /await res\.json\(\)|JSON\.parse\(text\)|JSON\.parse\(raw\)/,
