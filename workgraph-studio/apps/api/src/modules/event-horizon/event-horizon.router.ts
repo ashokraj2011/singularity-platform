@@ -7,8 +7,16 @@ import { promptComposerAuthHeaders, promptComposerClient } from '../../lib/promp
 import { prisma } from '../../lib/prisma'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { resolveLlmRouting } from '../llm-routing/resolve'
+import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 
 export const eventHorizonRouter: ExpressRouter = Router()
+
+type ComposerActionEnvelope = {
+  success?: boolean
+  data?: unknown
+  parseError?: string
+  raw?: string
+}
 
 const bodySchema = z.object({
   message: z.string().min(1).max(4000),
@@ -26,6 +34,22 @@ const bodySchema = z.object({
   ]).optional(),
   context: z.record(z.unknown()).default({}),
 })
+
+async function readComposerActionEnvelope(response: Response): Promise<ComposerActionEnvelope> {
+  const body = await readUpstreamJsonBody(response)
+  if (!body.raw.trim()) return {}
+  if (body.parseError) {
+    return {
+      parseError: body.parseError,
+      raw: upstreamSnippet(body.raw, 500),
+    }
+  }
+  if (isJsonObject(body.data)) return body.data as ComposerActionEnvelope
+  return {
+    parseError: 'Prompt Composer actions returned a non-object JSON body',
+    raw: upstreamSnippet(body.raw, 500),
+  }
+}
 
 // M37.3 — PLATFORM_CONTEXT was a 35-line hardcoded object literal here.
 // Now it lives as a JSON blob in prompt-composer's SystemPrompt table
@@ -111,7 +135,10 @@ eventHorizonRouter.get('/actions', async (req, res) => {
       const text = await r.text().catch(() => '')
       return res.status(r.status).json({ error: 'composer fetch failed', detail: text.slice(0, 300) })
     }
-    const json = await r.json() as { success?: boolean; data?: unknown }
+    const json = await readComposerActionEnvelope(r)
+    if (json.parseError) {
+      return res.status(502).json({ error: 'composer actions invalid response', detail: json.parseError, raw: json.raw })
+    }
     res.json(json.data ?? [])
   } catch (err) {
     res.status(502).json({ error: 'event-horizon actions fetch failed', detail: (err as Error).message })

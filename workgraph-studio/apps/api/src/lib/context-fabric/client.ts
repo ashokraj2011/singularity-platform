@@ -14,6 +14,7 @@
 import { Agent } from 'undici'
 import { config } from '../../config'
 import { tracingHeaders } from '../observability/http-trace'
+import { isJsonObject, readUpstreamJsonBody, upstreamSnippet, type UpstreamJsonBody } from '../upstream-json'
 
 // undici (Node's built-in fetch) enforces its own default headers/body timeouts
 // (~300s) PER CONNECTION, independent of the fetch AbortSignal. A governed stage
@@ -413,6 +414,42 @@ export class ContextFabricError extends Error {
   }
 }
 
+type ContextFabricBody = UpstreamJsonBody
+
+async function readContextFabricBody(res: Response): Promise<ContextFabricBody> {
+  return readUpstreamJsonBody(res)
+}
+
+function contextFabricDetail(body: ContextFabricBody): unknown {
+  if (isJsonObject(body.data) && 'detail' in body.data) return body.data.detail
+  if (body.parseError) return { body: upstreamSnippet(body.raw, 500), parseError: body.parseError }
+  return body.data
+}
+
+function contextFabricMessage(path: string, status: number, body: ContextFabricBody, max = 500): string {
+  const text = body.raw.trim() || (typeof body.data === 'string' ? body.data : '')
+  return `context-fabric ${path} returned ${status}: ${upstreamSnippet(text, max) || 'empty response body'}`
+}
+
+async function readContextFabricJson<T>(res: Response, path: string): Promise<T> {
+  const body = await readContextFabricBody(res)
+  if (!res.ok) {
+    throw new ContextFabricError(
+      contextFabricMessage(path, res.status, body),
+      res.status,
+      contextFabricDetail(body),
+    )
+  }
+  if (body.parseError) {
+    throw new ContextFabricError(
+      `context-fabric ${path} returned invalid JSON (${body.parseError}): ${upstreamSnippet(body.raw, 500) || 'empty response body'}`,
+      502,
+      contextFabricDetail(body),
+    )
+  }
+  return body.data as T
+}
+
 export function contextFabricServiceHeaders(baseHeaders: Record<string, string> = {}): Record<string, string> {
   return config.CONTEXT_FABRIC_SERVICE_TOKEN
     ? { ...baseHeaders, 'X-Service-Token': config.CONTEXT_FABRIC_SERVICE_TOKEN }
@@ -429,22 +466,7 @@ export const contextFabricClient = {
       dispatcher: longCallDispatcher,
       signal: AbortSignal.timeout((input.limits?.timeoutSec ?? 240) * 1000 + 10_000),
     } as RequestInit & { dispatcher: Agent })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      // FastAPI returns structured errors as { detail: { code, message, ... } }.
-      // Parse so callers (M26 AgentTaskExecutor) can branch on err.detail.code.
-      let parsedDetail: unknown
-      try {
-        const obj = JSON.parse(text) as { detail?: unknown }
-        parsedDetail = obj?.detail
-      } catch { /* leave undefined */ }
-      throw new ContextFabricError(
-        `context-fabric /execute returned ${res.status}: ${text.slice(0, 500)}`,
-        res.status,
-        parsedDetail,
-      )
-    }
-    return (await res.json()) as ExecuteResponse
+    return readContextFabricJson<ExecuteResponse>(res, '/execute')
   },
 
   // Governed VERBATIM single-turn execution — POST /api/v1/execute-governed-single-turn.
@@ -463,17 +485,7 @@ export const contextFabricClient = {
       dispatcher: longCallDispatcher,
       signal: AbortSignal.timeout((input.limits?.timeoutSec ?? 240) * 1000 + 10_000),
     } as RequestInit & { dispatcher: Agent })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      let parsedDetail: unknown
-      try { parsedDetail = (JSON.parse(text) as { detail?: unknown })?.detail } catch { /* noop */ }
-      throw new ContextFabricError(
-        `context-fabric /execute-governed-single-turn returned ${res.status}: ${text.slice(0, 500)}`,
-        res.status,
-        parsedDetail,
-      )
-    }
-    return (await res.json()) as ExecuteResponse
+    return readContextFabricJson<ExecuteResponse>(res, '/execute-governed-single-turn')
   },
 
   // M13 — fetch all code-changes captured by a single cf execute call.
@@ -489,14 +501,7 @@ export const contextFabricClient = {
       headers: tracingHeaders(contextFabricServiceHeaders()),
       signal:  AbortSignal.timeout(15_000),
     })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      throw new ContextFabricError(
-        `context-fabric /internal/mcp/code-changes returned ${res.status}: ${text.slice(0, 300)}`,
-        res.status,
-      )
-    }
-    return (await res.json()) as CodeChangeListResponse
+    return readContextFabricJson<CodeChangeListResponse>(res, '/internal/mcp/code-changes')
   },
 
   // M71 Slice F — Multi-turn governed stage driver.
@@ -527,20 +532,10 @@ export const contextFabricClient = {
           : 900_000,
       ),
     } as RequestInit & { dispatcher: Agent })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      let parsedDetail: unknown
-      try {
-        const obj = JSON.parse(text) as { detail?: unknown }
-        parsedDetail = obj?.detail
-      } catch { /* leave undefined */ }
-      throw new ContextFabricError(
-        `context-fabric /execute-governed-stage returned ${res.status}: ${text.slice(0, 500)}`,
-        res.status,
-        parsedDetail,
-      )
-    }
-    const json = (await res.json()) as { success: boolean; data: GovernedStageResponse }
+    const json = await readContextFabricJson<{ success: boolean; data: GovernedStageResponse }>(
+      res,
+      '/execute-governed-stage',
+    )
     if (!json.success) {
       throw new ContextFabricError('context-fabric returned success=false', 502, json)
     }
@@ -555,13 +550,6 @@ export const contextFabricClient = {
       body: JSON.stringify(input),
       signal: AbortSignal.timeout(250_000),
     })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      throw new ContextFabricError(
-        `context-fabric /execute/resume returned ${res.status}: ${text.slice(0, 500)}`,
-        res.status,
-      )
-    }
-    return (await res.json()) as ExecuteResponse
+    return readContextFabricJson<ExecuteResponse>(res, '/execute/resume')
   },
 }

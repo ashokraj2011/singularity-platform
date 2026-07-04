@@ -21,6 +21,7 @@ import { prisma } from '../prisma'
 import { withTenantDbTransaction } from '../tenant-db-context'
 import { config } from '../../config'
 import { getIamServiceToken } from '../iam/service-token'
+import { isJsonObject, readUpstreamJsonBody } from '../upstream-json'
 
 const MEMORY_TYPE = 'RUN_OUTCOME'
 const RUNTIME_MEMORY_BASE = '/api/v1/memory'
@@ -55,6 +56,18 @@ async function authHeader(): Promise<string | undefined> {
   return tok ? `Bearer ${tok}` : undefined
 }
 
+async function readRuntimePostBody(res: Response, path: string): Promise<{ data?: { id?: string } } | null> {
+  const body = await readUpstreamJsonBody(res)
+  if (!body.raw.trim()) return null
+  if (body.parseError) {
+    console.warn(`[learning] POST ${path} returned invalid JSON: ${body.parseError}`)
+    return null
+  }
+  if (isJsonObject(body.data)) return body.data as { data?: { id?: string } }
+  console.warn(`[learning] POST ${path} returned non-object JSON`)
+  return null
+}
+
 async function runtimePost(path: string, body: unknown): Promise<{ id?: string } | null> {
   const authorization = await authHeader()
   if (!authorization) {
@@ -74,7 +87,7 @@ async function runtimePost(path: string, body: unknown): Promise<{ id?: string }
     return null
   }
   // agent-runtime wraps as { success, data, error, requestId }.
-  const json = (await res.json().catch(() => null)) as { data?: { id?: string } } | null
+  const json = await readRuntimePostBody(res, path)
   return json?.data ?? null
 }
 

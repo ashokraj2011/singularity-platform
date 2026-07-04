@@ -8,6 +8,7 @@
 
 import { config } from '../../config'
 import { getIamServiceToken } from '../iam/service-token'
+import { readUpstreamJsonBody, upstreamSnippet, type UpstreamJsonBody } from '../upstream-json'
 
 export class AgentAndToolsError extends Error {
   constructor(
@@ -27,6 +28,25 @@ async function resolvedAgentToolsAuthHeader(authHeader?: string): Promise<string
   }
   const token = await getIamServiceToken()
   return token ? `Bearer ${token}` : undefined
+}
+
+type AgentToolsBody = UpstreamJsonBody
+
+async function readAgentToolsBody(res: Response): Promise<AgentToolsBody> {
+  return readUpstreamJsonBody(res)
+}
+
+function agentToolsDetail(body: AgentToolsBody): unknown {
+  if (body.parseError) return { body: upstreamSnippet(body.raw, 500), parseError: body.parseError }
+  return body.data
+}
+
+function agentToolsInvalidJsonError(path: string, body: AgentToolsBody): AgentAndToolsError {
+  return new AgentAndToolsError(
+    `agent-and-tools returned invalid JSON on ${path}: ${body.parseError ?? 'invalid JSON'}${body.raw ? `: ${upstreamSnippet(body.raw, 500)}` : ''}`,
+    502,
+    agentToolsDetail(body),
+  )
 }
 
 /**
@@ -56,17 +76,16 @@ async function proxyGet(
       502,
     )
   }
-  const text = await res.text()
-  let body: unknown
-  try { body = text ? JSON.parse(text) : null } catch { body = text }
+  const body = await readAgentToolsBody(res)
   if (!res.ok) {
     throw new AgentAndToolsError(
       `agent-and-tools ${res.status} on ${path}`,
       res.status,
-      body,
+      agentToolsDetail(body),
     )
   }
-  return body
+  if (body.parseError) throw agentToolsInvalidJsonError(path, body)
+  return body.data
 }
 
 async function proxyPost(
@@ -91,17 +110,16 @@ async function proxyPost(
       502,
     )
   }
-  const text = await res.text()
-  let body: unknown
-  try { body = text ? JSON.parse(text) : null } catch { body = text }
+  const body = await readAgentToolsBody(res)
   if (!res.ok) {
     throw new AgentAndToolsError(
       `agent-and-tools ${res.status} on ${path}`,
       res.status,
-      body,
+      agentToolsDetail(body),
     )
   }
-  return body
+  if (body.parseError) throw agentToolsInvalidJsonError(path, body)
+  return body.data
 }
 
 // ── Tool service ───────────────────────────────────────────────────────────
@@ -287,14 +305,13 @@ export async function patchAgentTemplate(
   } catch (err) {
     throw new AgentAndToolsError(`agent-and-tools fetch failed (${url}): ${(err as Error).message}`, 502)
   }
-  const text = await res.text()
-  let bodyOut: unknown
-  try { bodyOut = text ? JSON.parse(text) : null } catch { bodyOut = text }
+  const bodyOut = await readAgentToolsBody(res)
   if (!res.ok) {
-    throw new AgentAndToolsError(`agent-and-tools ${res.status} on PATCH /agents/templates/${id}`, res.status, bodyOut)
+    throw new AgentAndToolsError(`agent-and-tools ${res.status} on PATCH /agents/templates/${id}`, res.status, agentToolsDetail(bodyOut))
   }
-  const root = (bodyOut && typeof bodyOut === 'object' ? bodyOut : {}) as Record<string, unknown>
-  return (root.data ?? bodyOut) as AgentTemplate
+  if (bodyOut.parseError) throw agentToolsInvalidJsonError(`PATCH /agents/templates/${id}`, bodyOut)
+  const root = (bodyOut.data && typeof bodyOut.data === 'object' ? bodyOut.data : {}) as Record<string, unknown>
+  return (root.data ?? bodyOut.data) as AgentTemplate
 }
 
 /**

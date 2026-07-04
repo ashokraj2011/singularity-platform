@@ -21,6 +21,7 @@ import { config } from '../../config'
 import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
 import { requireTenantFromRequest, resolveTenantFromRequest, tenantIsolationStrict } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
+import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 
 export const receiptsRouter: Router = Router()
 
@@ -41,6 +42,28 @@ interface ReceiptEnvelope {
 
 function asIso(d: Date | null | undefined): string | null {
   return d ? d.toISOString() : null
+}
+
+type ContextFabricReceiptsBody = {
+  receipts?: ReceiptEnvelope[]
+  parseError?: string
+  raw?: string
+}
+
+async function readContextFabricReceiptsBody(res: Response): Promise<ContextFabricReceiptsBody> {
+  const body = await readUpstreamJsonBody(res)
+  if (!body.raw.trim()) return {}
+  if (body.parseError) {
+    return {
+      parseError: body.parseError,
+      raw: upstreamSnippet(body.raw, 500),
+    }
+  }
+  if (isJsonObject(body.data)) return body.data as ContextFabricReceiptsBody
+  return {
+    parseError: 'Context Fabric receipts response was not a JSON object',
+    raw: upstreamSnippet(body.raw, 500),
+  }
 }
 
 // ── workgraph local receipts ───────────────────────────────────────────────
@@ -194,8 +217,9 @@ async function cfReceipts(traceId: string): Promise<ReceiptEnvelope[]> {
     // token's configured tenants.
     const res = await fetch(url, { headers: contextFabricServiceHeaders(), signal: AbortSignal.timeout(5_000) })
     if (!res.ok) return []
-    const body = await res.json() as { receipts?: ReceiptEnvelope[] }
-    return body.receipts ?? []
+    const body = await readContextFabricReceiptsBody(res)
+    if (body.parseError || !Array.isArray(body.receipts)) return []
+    return body.receipts
   } catch {
     return []
   }

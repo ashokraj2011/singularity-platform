@@ -13,6 +13,7 @@
  */
 import { log } from "../shared/log";
 import type { PendingApproval } from "../audit/pending";
+import { isJsonObject, readUpstreamJsonBody } from "./upstream-json";
 
 const AUDIT_GOV_URL = process.env.AUDIT_GOV_URL ?? "http://host.docker.internal:8500";
 const TIMEOUT_MS = 5_000;
@@ -66,6 +67,27 @@ export interface ConsumedApproval {
   payload: PendingApproval | null;
 }
 
+async function readConsumedApprovalBody(res: Response, continuationToken: string): Promise<{
+  id?: unknown;
+  decision?: unknown;
+  decided_by?: unknown;
+  decision_reason?: unknown;
+  continuation_payload?: unknown;
+} | null> {
+  const body = await readUpstreamJsonBody(res);
+  if (!body.raw.trim()) {
+    log.warn(`audit-gov consumeApproval ${continuationToken} returned empty response (${res.status})`);
+    return null;
+  }
+  if (body.parseError) {
+    log.warn(`audit-gov consumeApproval ${continuationToken} returned invalid JSON (${res.status}): ${body.parseError}`);
+    return null;
+  }
+  if (isJsonObject(body.data)) return body.data;
+  log.warn(`audit-gov consumeApproval ${continuationToken} returned non-object JSON (${res.status})`);
+  return null;
+}
+
 /** Atomic single-use claim — flips status pending→consumed in audit-gov and
  * returns the stored continuation_payload. Returns null on miss (not found,
  * not yet decided, already consumed, or expired). */
@@ -85,19 +107,16 @@ export async function consumeApproval(continuationToken: string): Promise<Consum
       log.warn(`audit-gov consumeApproval ${continuationToken} → ${res.status}`);
       return null;
     }
-    const body = await res.json() as {
-      id: string;
-      decision: "approved" | "rejected";
-      decided_by: string | null;
-      decision_reason: string | null;
-      continuation_payload: PendingApproval | null;
-    };
+    const body = await readConsumedApprovalBody(res, continuationToken);
+    if (!body || typeof body.id !== "string" || (body.decision !== "approved" && body.decision !== "rejected")) return null;
     return {
       id: body.id,
       decision: body.decision,
-      decided_by: body.decided_by,
-      decision_reason: body.decision_reason,
-      payload: body.continuation_payload ?? null,
+      decided_by: typeof body.decided_by === "string" ? body.decided_by : null,
+      decision_reason: typeof body.decision_reason === "string" ? body.decision_reason : null,
+      payload: body.continuation_payload && typeof body.continuation_payload === "object"
+        ? body.continuation_payload as PendingApproval
+        : null,
     };
   } catch (err) {
     log.warn(`audit-gov consumeApproval ${continuationToken} failed: ${(err as Error).message}`);

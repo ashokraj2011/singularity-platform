@@ -110,14 +110,26 @@ describe('Workgraph platform governance defaults', () => {
   })
 
   it('requires HMAC-signed incoming cross-service events', () => {
+    const app = readFileSync('src/app.ts', 'utf8')
     const incoming = readFileSync('src/modules/audit/incoming-events.router.ts', 'utf8')
 
+    expect(app).toContain('function captureRawJsonBody(req: Request')
+    expect(app).toContain("app.use(express.json({ limit: '10mb', verify: captureRawJsonBody }))")
+    expect(app).toContain('rawReq.rawBody = Buffer.from(buf)')
+
     expect(incoming).toContain('config.WORKGRAPH_INCOMING_EVENT_SECRETS')
+    expect(incoming).toContain('type RawBodyRequest = Request & { rawBody?: Buffer }')
+    expect(incoming).toContain('function requestBodyForSignature(req: Request, fallbackBody: string): Buffer | string')
+    expect(incoming).toContain('return rawBody && rawBody.length > 0 ? rawBody : fallbackBody')
+    expect(incoming).toContain('function verifySignature(req: Request, body: Buffer | string, secret: string): boolean')
     expect(incoming).toContain("return res.status(400).json({ code: 'BAD_REQUEST', message: 'envelope.source_service is required' })")
     expect(incoming).toContain("return res.status(401).json({ code: 'UNTRUSTED_SOURCE'")
     expect(incoming).toContain("return res.status(401).json({ code: 'BAD_SIGNATURE'")
+    expect(incoming).toContain('const compactFallback = JSON.stringify({ event_name: eventName, envelope: body.envelope })')
+    expect(incoming).toContain('verifySignature(req, requestBodyForSignature(req, compactFallback), secret)')
     expect(incoming).not.toContain('if (secret) {')
     expect(incoming).not.toContain('Without a secret it accepts any caller')
+    expect(incoming).not.toContain('const reserialized = JSON.stringify')
   })
 
   it('does not hard-code implicit workflow/workbench defaults to fail_open', () => {
@@ -170,10 +182,15 @@ describe('Workgraph platform governance defaults', () => {
     expect(grantHelper).toContain('/internal/mcp/tool-grants')
     expect(grantHelper).toContain("'X-Service-Token': config.CONTEXT_FABRIC_SERVICE_TOKEN")
     expect(grantHelper).toContain("mode === 'enforce'")
+    expect(grantHelper).toContain("import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from '../../../../lib/upstream-json'")
+    expect(grantHelper).toContain('const responseBody = await readUpstreamJsonBody(response)')
+    expect(grantHelper).toContain('Context Fabric tool-grant response for ${request.toolName} was invalid JSON')
+    expect(grantHelper).not.toMatch(/JSON\.parse\(text\)/)
 
     expect(runPython).toContain("requestOperationalMcpToolGrant")
     expect(runPython).toContain("toolName: 'run_python'")
-    expect(runPython).toContain("...(toolGrant ? { tool_grant: toolGrant } : {})")
+    expect(runPython).toContain("...(toolGrant ? { grant: toolGrant } : {})")
+    expect(runPython).toContain("...(grant ? { tool_grant: grant } : {})")
 
     expect(gitPush).toContain("toolName: 'finish_work_branch'")
     expect(gitPush).toContain("approvalStatus: args.approvalStatus")

@@ -45,4 +45,23 @@ describe('Workgraph -> Context Fabric service auth contract', () => {
     expect(llmGatewayAdapter).not.toContain("client.post('/mcp/invoke'")
     expect(llmGatewayAdapter).not.toContain('modelConfig:')
   })
+
+  it('normalizes Context Fabric JSON/plaintext responses in the shared client', () => {
+    const client = source('src/lib/context-fabric/client.ts')
+
+    expect(client).toContain("import { isJsonObject, readUpstreamJsonBody, upstreamSnippet, type UpstreamJsonBody } from '../upstream-json'")
+    expect(client).toContain('async function readContextFabricBody(res: Response): Promise<ContextFabricBody>')
+    expect(client).toContain('return readUpstreamJsonBody(res)')
+    expect(client).toContain('function contextFabricDetail(body: ContextFabricBody): unknown')
+    expect(client).toContain('async function readContextFabricJson<T>(res: Response, path: string): Promise<T>')
+    expect(client).toContain('context-fabric ${path} returned invalid JSON')
+    expect(client).toContain("return readContextFabricJson<ExecuteResponse>(res, '/execute')")
+    expect(client).toContain("return readContextFabricJson<ExecuteResponse>(res, '/execute-governed-single-turn')")
+    expect(client).toContain("return readContextFabricJson<CodeChangeListResponse>(res, '/internal/mcp/code-changes')")
+    expect(client).toContain("'/execute-governed-stage'")
+    expect(client).toContain("return readContextFabricJson<ExecuteResponse>(res, '/execute/resume')")
+    expect(client).not.toMatch(/await res\.json\(\)/)
+    expect(client).not.toMatch(/JSON\.parse\(text\)/)
+    expect(client).not.toMatch(/JSON\.parse\(raw\)/)
+  })
 })

@@ -7,6 +7,7 @@
  * still renders.
  */
 import { config } from '../../config'
+import { readUpstreamJsonBody, upstreamSnippet, type UpstreamJsonBody } from '../upstream-json'
 
 const TIMEOUT_MS = 5_000
 
@@ -22,6 +23,20 @@ function authHeader(): Record<string, string> {
   return token ? { authorization: `Bearer ${token}` } : {}
 }
 
+type AuditGovBody = UpstreamJsonBody
+
+async function readAuditGovBody(res: Response): Promise<AuditGovBody> {
+  return readUpstreamJsonBody(res)
+}
+
+function auditGovErrorText(path: string, status: number, body: AuditGovBody, max = 500): string {
+  const text = body.raw.trim() || (typeof body.data === 'string' ? body.data : '')
+  if (body.parseError && status >= 200 && status < 300) {
+    return `audit-gov ${path} returned invalid JSON (${body.parseError}): ${upstreamSnippet(text, max) || 'empty response body'}`
+  }
+  return `audit-gov ${path} -> ${status}: ${upstreamSnippet(text, max) || 'empty response body'}`
+}
+
 async function getJson<T>(path: string, query: Record<string, string | undefined>): Promise<T | null> {
   const url = new URL(path, config.AUDIT_GOV_URL.replace(/\/?$/, '/'))
   for (const [k, v] of Object.entries(query)) if (v) url.searchParams.set(k, v)
@@ -31,11 +46,16 @@ async function getJson<T>(path: string, query: Record<string, string | undefined
       headers: authHeader(),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
+    const body = await readAuditGovBody(res)
     if (!res.ok) {
-      console.warn(`audit-gov ${path} → ${res.status}`)
+      console.warn(auditGovErrorText(path, res.status, body, 200))
       return null
     }
-    return (await res.json()) as T
+    if (body.parseError) {
+      console.warn(auditGovErrorText(path, res.status, body, 200))
+      return null
+    }
+    return body.data as T
   } catch (err) {
     console.warn(`audit-gov ${path} failed: ${(err as Error).message}`)
     return null
@@ -51,12 +71,16 @@ export async function postJson<T>(path: string, body: unknown): Promise<T | null
       body: JSON.stringify(body ?? {}),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
+    const responseBody = await readAuditGovBody(res)
     if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      console.warn(`audit-gov ${path} → ${res.status} ${text.slice(0, 200)}`)
+      console.warn(auditGovErrorText(path, res.status, responseBody, 200))
       return null
     }
-    return (await res.json()) as T
+    if (responseBody.parseError) {
+      console.warn(auditGovErrorText(path, res.status, responseBody, 200))
+      return null
+    }
+    return responseBody.data as T
   } catch (err) {
     console.warn(`audit-gov ${path} failed: ${(err as Error).message}`)
     return null
@@ -88,11 +112,14 @@ export async function getJsonStrict<T>(
       headers: authHeader(),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
+    const body = await readAuditGovBody(res)
     if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      return { ok: false, status: res.status, data: null, errorText: text.slice(0, 500) }
+      return { ok: false, status: res.status, data: null, errorText: auditGovErrorText(path, res.status, body) }
     }
-    return { ok: true, status: res.status, data: (await res.json()) as T }
+    if (body.parseError) {
+      return { ok: false, status: 502, data: null, errorText: auditGovErrorText(path, res.status, body) }
+    }
+    return { ok: true, status: res.status, data: body.data as T }
   } catch (err) {
     return { ok: false, status: 502, data: null, errorText: (err as Error).message }
   }
@@ -110,11 +137,14 @@ export async function patchJsonStrict<T>(
       body: JSON.stringify(body ?? {}),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
+    const responseBody = await readAuditGovBody(res)
     if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      return { ok: false, status: res.status, data: null, errorText: text.slice(0, 500) }
+      return { ok: false, status: res.status, data: null, errorText: auditGovErrorText(path, res.status, responseBody) }
     }
-    return { ok: true, status: res.status, data: (await res.json()) as T }
+    if (responseBody.parseError) {
+      return { ok: false, status: 502, data: null, errorText: auditGovErrorText(path, res.status, responseBody) }
+    }
+    return { ok: true, status: res.status, data: responseBody.data as T }
   } catch (err) {
     return { ok: false, status: 502, data: null, errorText: (err as Error).message }
   }

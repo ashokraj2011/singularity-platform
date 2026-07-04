@@ -5,6 +5,7 @@
  * agent loop. The caller's governanceMode decides outage behavior.
  */
 import { log } from "../shared/log";
+import { isJsonObject, readUpstreamJsonBody } from "./upstream-json";
 
 const AUDIT_GOV_URL = process.env.AUDIT_GOV_URL ?? "http://host.docker.internal:8500";
 const TIMEOUT_MS    = 3_000;
@@ -31,6 +32,23 @@ export function outageResult(mode: GovernanceMode, check: "budget" | "rate_limit
   return { allowed: true, unavailable: true, reason: `audit-governance unavailable during ${check} check; fail_open allowed execution` };
 }
 
+async function readAuditGovCheckJson<T>(res: Response, path: string): Promise<T | null> {
+  const body = await readUpstreamJsonBody(res);
+  if (!body.raw.trim()) {
+    log.warn(`audit-gov ${path} returned empty response (${res.status})`);
+    return null;
+  }
+  if (body.parseError) {
+    log.warn(`audit-gov ${path} returned invalid JSON (${res.status}): ${body.parseError}`);
+    return null;
+  }
+  if (isJsonObject(body.data)) {
+    return body.data as T;
+  }
+  log.warn(`audit-gov ${path} returned non-object JSON (${res.status})`);
+  return null;
+}
+
 async function getJson<T>(path: string, qs: Record<string, string | undefined>): Promise<T | null> {
   if (!AUDIT_GOV_URL) return null;
   const params = new URLSearchParams();
@@ -42,7 +60,7 @@ async function getJson<T>(path: string, qs: Record<string, string | undefined>):
       log.warn(`audit-gov ${path} → ${res.status}`);
       return null;
     }
-    return (await res.json()) as T;
+    return readAuditGovCheckJson<T>(res, path);
   } catch (err) {
     log.warn(`audit-gov ${path} failed: ${(err as Error).message}`);
     return null;

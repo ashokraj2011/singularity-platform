@@ -8,6 +8,7 @@ import { mergeAgentRunCorrelation } from '../../lib/agent-run-correlation'
 import { ForbiddenError, NotFoundError, ValidationError } from '../../lib/errors'
 import { promptComposerClient } from '../../lib/prompt-composer/client'
 import { assertCanViewWorkItem } from '../work-items/work-items.service'
+import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 
 type JsonRecord = Record<string, unknown>
 
@@ -43,6 +44,36 @@ function mcpBaseUrl(): string {
   return config.MCP_SERVER_URL.replace(/\/+$/, '')
 }
 
+type McpSessionTokenResponse = {
+  token: string
+  jti: string
+  expiresAt: string
+  scopes: string[]
+}
+
+async function readMcpSessionTokenResponse(res: Response): Promise<McpSessionTokenResponse> {
+  const responseBody = await readUpstreamJsonBody(res)
+  if (responseBody.parseError) {
+    throw new ValidationError(
+      `MCP session token mint returned invalid JSON (${res.status}): ${responseBody.parseError}${responseBody.raw ? `: ${upstreamSnippet(responseBody.raw, 500)}` : ''}`,
+    )
+  }
+
+  if (!isJsonObject(responseBody.data)) {
+    throw new ValidationError(`MCP session token mint returned an invalid body (${res.status})`)
+  }
+  const candidate = responseBody.data as Partial<McpSessionTokenResponse>
+  if (typeof candidate.token !== 'string' || typeof candidate.jti !== 'string' || typeof candidate.expiresAt !== 'string' || !Array.isArray(candidate.scopes)) {
+    throw new ValidationError(`MCP session token mint response was missing required fields (${res.status})`)
+  }
+  return {
+    token: candidate.token,
+    jti: candidate.jti,
+    expiresAt: candidate.expiresAt,
+    scopes: candidate.scopes.filter((scope): scope is string => typeof scope === 'string'),
+  }
+}
+
 async function mintMcpSessionToken(input: {
   invocationId: string
   agentRunId: string
@@ -72,7 +103,7 @@ async function mintMcpSessionToken(input: {
     const text = await res.text().catch(() => '')
     throw new ValidationError(`MCP session token mint failed (${res.status}): ${text.slice(0, 300)}`)
   }
-  return await res.json() as { token: string; jti: string; expiresAt: string; scopes: string[] }
+  return readMcpSessionTokenResponse(res)
 }
 
 async function ensureLaptopAgent(actorId: string, externalTemplateId?: string | null) {

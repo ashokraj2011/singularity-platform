@@ -19,6 +19,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { AppError } from "../shared/errors";
 import { isSharedRuntime, gitBrokerEnforce } from "../lib/runtime-claims";
+import { readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
 
 export const sourceDiscoverRouter: Router = Router();
 
@@ -46,12 +47,46 @@ function githubHeaders(extra?: Record<string, string>): Record<string, string> {
   const token = isSharedRuntime() && gitBrokerEnforce() ? undefined : process.env.GITHUB_TOKEN?.trim();
   return {
     "user-agent": "singularity-mcp-server",
+    "x-github-api-version": "2022-11-28",
     ...(token ? { authorization: `Bearer ${token}` } : {}),
     ...(extra ?? {}),
   };
 }
 
 export type SourceTreeEntry = { path: string; type: string; size: number };
+
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 20_000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new AppError(`GitHub request timed out or failed: ${message}`, 502, "UPSTREAM_ERROR");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readGitHubJson<T>(resp: Response, source: string): Promise<T> {
+  const body = await readUpstreamJsonBody(resp);
+  if (!body.raw.trim()) {
+    throw new AppError(`${source} returned an empty response (${resp.status})`, 502, "UPSTREAM_INVALID_RESPONSE");
+  }
+  if (body.parseError) {
+    throw new AppError(
+      `${source} returned invalid JSON (${resp.status}): ${body.parseError}; body=${upstreamSnippet(body.raw, 300)}`,
+      502,
+      "UPSTREAM_INVALID_RESPONSE",
+    );
+  }
+  if (body.data && typeof body.data === "object") return body.data as T;
+  throw new AppError(
+    `${source} returned invalid JSON (${resp.status}): response JSON was not an object; body=${upstreamSnippet(body.raw, 300)}`,
+    502,
+    "UPSTREAM_INVALID_RESPONSE",
+  );
+}
 
 // Reusable repo-tree fetch — used by BOTH the HTTP /source/tree route and the
 // laptop relay-client's `source-tree` bridge frame, so capability repo discovery
@@ -61,11 +96,11 @@ export type SourceTreeEntry = { path: string; type: string; size: number };
 export async function fetchGitHubTree(repoUrl: string, branch: string): Promise<SourceTreeEntry[]> {
   const { owner, repo } = parseGitHubRepo(repoUrl);
   const url = `https://api.github.com/repos/${owner}/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
-  const resp = await fetch(url, { headers: githubHeaders({ accept: "application/vnd.github+json" }) });
+  const resp = await fetchWithTimeout(url, { headers: githubHeaders({ accept: "application/vnd.github+json" }) });
   if (!resp.ok) {
     throw new AppError(`GitHub tree lookup failed (${resp.status})`, 502, "UPSTREAM_ERROR");
   }
-  const body = (await resp.json()) as { tree?: Array<{ path?: string; type?: string; size?: number }> };
+  const body = await readGitHubJson<{ tree?: Array<{ path?: string; type?: string; size?: number }> }>(resp, "GitHub tree lookup");
   return (body.tree ?? []).map(item => ({
     path: item.path ?? "",
     type: item.type ?? "",
@@ -77,13 +112,54 @@ export async function fetchGitHubTree(repoUrl: string, branch: string): Promise<
 // non-fatal for discovery — returns "" rather than throwing.
 export async function fetchGitHubFile(repoUrl: string, branch: string, path: string): Promise<string> {
   const { owner, repo } = parseGitHubRepo(repoUrl);
-  const raw = `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(branch)}/${path
+  const encodedPath = path
     .split("/")
     .map(encodeURIComponent)
-    .join("/")}`;
-  const resp = await fetch(raw, { headers: githubHeaders() });
-  if (!resp.ok) return "";
-  return resp.text();
+    .join("/");
+  const contents = `https://api.github.com/repos/${owner}/${repo}/contents/${encodedPath}?ref=${encodeURIComponent(branch)}`;
+  const resp = await fetchWithTimeout(contents, { headers: githubHeaders({ accept: "application/vnd.github+json" }) });
+  if (resp.status === 404) return "";
+  if (resp.status === 403) {
+    throw new AppError(`GitHub file lookup forbidden or rate limited (${githubRateLimitHint(resp)})`, 502, "UPSTREAM_ERROR");
+  }
+  if (!resp.ok) {
+    throw new AppError(`GitHub file lookup failed (${resp.status})`, 502, "UPSTREAM_ERROR");
+  }
+  const body = await readGitHubJson<{
+    type?: string;
+    content?: string;
+    encoding?: string;
+    download_url?: string | null;
+  } | Array<unknown>>(resp, "GitHub file lookup");
+  if (Array.isArray(body) || body.type !== "file") return "";
+  if (body.encoding === "base64" && typeof body.content === "string") {
+    return Buffer.from(body.content.replace(/\s/g, ""), "base64").toString("utf8");
+  }
+  if (typeof body.content === "string" && body.content.length > 0) return body.content;
+  // Large files may omit inline base64 content. Stay on api.github.com instead
+  // of following download_url to raw.githubusercontent.com; the latter is often
+  // blocked separately on enterprise networks and bypasses GitHub API headers.
+  const rawResp = await fetchWithTimeout(contents, { headers: githubHeaders({ accept: "application/vnd.github.raw" }) });
+  if (rawResp.status === 404) return "";
+  if (rawResp.status === 403) {
+    throw new AppError(`GitHub raw file lookup forbidden or rate limited (${githubRateLimitHint(rawResp)})`, 502, "UPSTREAM_ERROR");
+  }
+  if (!rawResp.ok) {
+    throw new AppError(`GitHub raw file lookup failed (${rawResp.status})`, 502, "UPSTREAM_ERROR");
+  }
+  return rawResp.text();
+}
+
+function githubRateLimitHint(resp: Response): string {
+  const remaining = resp.headers.get("x-ratelimit-remaining");
+  const reset = resp.headers.get("x-ratelimit-reset");
+  const resource = resp.headers.get("x-ratelimit-resource");
+  const parts = [
+    resource ? `resource=${resource}` : null,
+    remaining ? `remaining=${remaining}` : null,
+    reset ? `reset=${reset}` : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" ") : "check GitHub token, SSO, and rate limits";
 }
 
 const treeSchema = z.object({

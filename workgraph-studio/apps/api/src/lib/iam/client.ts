@@ -13,6 +13,7 @@
  */
 
 import { config } from '../../config'
+import { readUpstreamJsonBody, upstreamSnippet } from '../upstream-json'
 
 // ── Types mirroring IAM's SPA types (kept independent so we can adjust) ──────
 
@@ -54,6 +55,12 @@ export class IamUnavailableError extends Error {
 }
 export class IamUnauthorizedError extends Error {
   constructor(message = 'IAM rejected the bearer token') { super(message); this.name = 'IamUnauthorizedError' }
+}
+
+type IamBody = {
+  value: unknown
+  text: string
+  parseError?: string
 }
 
 // ── Tiny TTL cache (single-process, no external deps) ────────────────────────
@@ -117,6 +124,33 @@ async function iamFetch(
   return res
 }
 
+async function readIamBody(res: Response): Promise<IamBody> {
+  const body = await readUpstreamJsonBody(res)
+  return { value: body.data, text: body.raw, parseError: body.parseError }
+}
+
+function iamBodyPreview(body: IamBody): string {
+  if (typeof body.value === 'string') return upstreamSnippet(body.value, 200)
+  try {
+    return upstreamSnippet(JSON.stringify(body.value), 200)
+  } catch {
+    return upstreamSnippet(body.text, 200)
+  }
+}
+
+async function readIamJson<T>(res: Response, path: string): Promise<T> {
+  const body = await readIamBody(res)
+  if (body.parseError) {
+    throw new IamUnavailableError(`IAM ${path} returned invalid JSON (${res.status}): ${iamBodyPreview(body)}`)
+  }
+  return body.value as T
+}
+
+async function iamResponseError(res: Response, path: string): Promise<string> {
+  const body = await readIamBody(res)
+  return `IAM ${path} -> ${res.status}: ${iamBodyPreview(body)}`
+}
+
 // ── M10 — federated lookup proxy ─────────────────────────────────────────────
 
 /**
@@ -135,9 +169,7 @@ export async function proxyGet(
   }
   const fullPath = qs.toString() ? `${path}?${qs.toString()}` : path
   const res = await iamFetch(fullPath, { method: 'GET', token: callerToken })
-  const text = await res.text()
-  let body: unknown
-  try { body = text ? JSON.parse(text) : null } catch { body = text }
+  const body = await readIamBody(res)
   if (res.status === 401 || res.status === 403) {
     throw new IamUnauthorizedError(`IAM denied request to ${path} (${res.status})`)
   }
@@ -147,9 +179,12 @@ export async function proxyGet(
     return null
   }
   if (!res.ok) {
-    throw new IamUnavailableError(`IAM ${res.status} on ${path}: ${typeof body === 'string' ? body.slice(0, 200) : JSON.stringify(body).slice(0, 200)}`)
+    throw new IamUnavailableError(`IAM ${res.status} on ${path}: ${iamBodyPreview(body)}`)
   }
-  return body
+  if (body.parseError) {
+    throw new IamUnavailableError(`IAM ${path} returned invalid JSON (${res.status}): ${iamBodyPreview(body)}`)
+  }
+  return body.value
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -173,7 +208,7 @@ export async function verifyToken(token: string): Promise<IamUser> {
   }).catch(() => null)
 
   if (res && res.ok) {
-    const body = await res.json() as { valid?: boolean; user?: IamUser; reason?: string }
+    const body = await readIamJson<{ valid?: boolean; user?: IamUser; reason?: string }>(res, '/auth/verify')
     if (!body.valid || !body.user) throw new IamUnauthorizedError(body.reason ?? 'Token rejected by IAM')
     cacheSet(token, body.user, config.IAM_VERIFY_CACHE_TTL)
     return body.user
@@ -187,7 +222,7 @@ export async function verifyToken(token: string): Promise<IamUser> {
   if (!res.ok) {
     throw new IamUnavailableError(`IAM /me returned ${res.status}`)
   }
-  const user = await res.json() as IamUser
+  const user = await readIamJson<IamUser>(res, '/me')
   cacheSet(token, user, config.IAM_VERIFY_CACHE_TTL)
   return user
 }
@@ -195,19 +230,19 @@ export async function verifyToken(token: string): Promise<IamUser> {
 export async function getUser(userId: string, callerToken?: string): Promise<IamUser> {
   const res = await iamFetch(`/users/${encodeURIComponent(userId)}`, { token: callerToken })
   if (!res.ok) throw new IamUnavailableError(`IAM /users/${userId} → ${res.status}`)
-  return res.json() as any
+  return readIamJson<IamUser>(res, `/users/${userId}`)
 }
 
 export async function getTeamMembers(teamId: string, callerToken?: string): Promise<IamTeamMember[]> {
   const res = await iamFetch(`/teams/${encodeURIComponent(teamId)}/members`, { token: callerToken })
   if (!res.ok) throw new IamUnavailableError(`IAM /teams/${teamId}/members → ${res.status}`)
-  return res.json() as any
+  return readIamJson<IamTeamMember[]>(res, `/teams/${teamId}/members`)
 }
 
 export async function getCapabilityMembers(capabilityId: string, callerToken?: string): Promise<IamCapabilityMember[]> {
   const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}/members`, { token: callerToken })
   if (!res.ok) throw new IamUnavailableError(`IAM /capabilities/${capabilityId}/members → ${res.status}`)
-  return res.json() as any
+  return readIamJson<IamCapabilityMember[]>(res, `/capabilities/${capabilityId}/members`)
 }
 
 export interface IamCapabilityRelationship {
@@ -235,7 +270,7 @@ export async function listCapabilityRelationships(
   const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}/relationships`, { token: callerToken }).catch(() => null)
   if (!res || res.status === 404) return []
   if (!res.ok) throw new IamUnavailableError(`IAM /capabilities/${capabilityId}/relationships → ${res.status}`)
-  return res.json() as any
+  return readIamJson<IamCapabilityRelationship[]>(res, `/capabilities/${capabilityId}/relationships`)
 }
 
 /**
@@ -247,7 +282,7 @@ export async function getUsersBySkill(skillKey: string, callerToken?: string): P
   const res = await iamFetch(`/skills/${encodeURIComponent(skillKey)}/users`, { token: callerToken }).catch(() => null)
   if (!res || res.status === 404) return []
   if (!res.ok) throw new IamUnavailableError(`IAM /skills/${skillKey}/users → ${res.status}`)
-  return res.json() as any
+  return readIamJson<IamUser[]>(res, `/skills/${skillKey}/users`)
 }
 
 // ── Per-user lookups (with TTL cache for inbox-style hot paths) ──────────────
@@ -291,7 +326,7 @@ export async function getUserTeams(userId: string, callerToken?: string): Promis
     if (!res) continue
     if (res.status === 404) continue
     if (!res.ok) throw new IamUnavailableError(`IAM ${path} → ${res.status}`)
-    const data = await res.json() as any
+    const data = await readIamJson<any>(res, path)
     // Accept either [{ id, ... }] or [{ team_id, ... }] or { data: [...] }
     const arr: any[] = Array.isArray(data) ? data
                     : Array.isArray(data?.data) ? data.data
@@ -323,7 +358,7 @@ export async function getUserSkills(userId: string, callerToken?: string): Promi
     return []
   }
   if (!res.ok) throw new IamUnavailableError(`IAM /users/${userId}/skills → ${res.status}`)
-  const data = await res.json() as any
+  const data = await readIamJson<any>(res, `/users/${userId}/skills`)
   const arr: any[] = Array.isArray(data) ? data
                   : Array.isArray(data?.data) ? data.data
                   : Array.isArray(data?.content) ? data.content
@@ -361,7 +396,11 @@ export async function authzCheck(
     token: callerToken,
   })
   if (!res.ok) return { allowed: false, reason: `authz/check returned ${res.status}` }
-  return res.json() as any
+  try {
+    return await readIamJson<IamAuthzCheckResponse>(res, '/authz/check')
+  } catch (err) {
+    return { allowed: false, reason: err instanceof Error ? err.message : 'authz/check returned invalid JSON' }
+  }
 }
 
 // ── Capability cache helpers (refreshes the local capabilities_cache row) ────
@@ -385,7 +424,11 @@ export async function getCapability(capabilityId: string, callerToken?: string):
   // Pull from IAM
   const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}`, { token: callerToken }).catch(() => null)
   if (!res || !res.ok) return null
-  const cap = await res.json() as { id: string; name: string; capability_type?: string; status?: string; is_governing?: boolean }
+  const cap = await readIamJson<{ id: string; name: string; capability_type?: string; status?: string; is_governing?: boolean }>(
+    res,
+    `/capabilities/${capabilityId}`,
+  ).catch(() => null)
+  if (!cap?.id || !cap.name) return null
   const isGov = Boolean(cap.is_governing)
   // Upsert into cache
   try {
@@ -428,7 +471,7 @@ export async function resolveGovernance(
     method: 'POST', body: JSON.stringify(ctx), token: callerToken,
   }).catch(() => null)
   if (!res || !res.ok) return null
-  const body = await res.json().catch(() => null) as { success?: boolean; data?: Record<string, unknown> } | null
+  const body = await readIamJson<{ success?: boolean; data?: Record<string, unknown> }>(res, '/governance/resolve').catch(() => null)
   return body?.data ?? null
 }
 
@@ -485,7 +528,7 @@ export async function listGovernedByAttachments(
   const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}/governed-by${qs}`, { token: callerToken }).catch(() => null)
   if (!res || res.status === 404) return []
   if (!res.ok) throw new IamUnavailableError(`IAM governed-by list → ${res.status}`)
-  return res.json() as Promise<IamGovernanceAttachment[]>
+  return readIamJson<IamGovernanceAttachment[]>(res, `/capabilities/${capabilityId}/governed-by${qs}`)
 }
 
 export async function attachGovernedBy(
@@ -494,8 +537,8 @@ export async function attachGovernedBy(
   const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}/governed-by`, {
     method: 'POST', body: JSON.stringify(body), token: callerToken,
   })
-  if (!res.ok) throw new IamUnavailableError(`IAM attach governed-by → ${res.status}: ${(await res.text()).slice(0, 200)}`)
-  return res.json() as Promise<IamGovernanceAttachment>
+  if (!res.ok) throw new IamUnavailableError(await iamResponseError(res, 'attach governed-by'))
+  return readIamJson<IamGovernanceAttachment>(res, `/capabilities/${capabilityId}/governed-by`)
 }
 
 export async function patchGovernanceAttachment(
@@ -504,8 +547,8 @@ export async function patchGovernanceAttachment(
   const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}/governed-by/${encodeURIComponent(attachmentId)}`, {
     method: 'PATCH', body: JSON.stringify(body), token: callerToken,
   })
-  if (!res.ok) throw new IamUnavailableError(`IAM patch governed-by → ${res.status}: ${(await res.text()).slice(0, 200)}`)
-  return res.json() as Promise<IamGovernanceAttachment>
+  if (!res.ok) throw new IamUnavailableError(await iamResponseError(res, 'patch governed-by'))
+  return readIamJson<IamGovernanceAttachment>(res, `/capabilities/${capabilityId}/governed-by/${attachmentId}`)
 }
 
 export async function deactivateGovernanceAttachment(

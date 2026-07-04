@@ -6,6 +6,7 @@ import { signToken } from '../../lib/jwt'
 import { validate } from '../../middleware/validate'
 import { authMiddleware } from '../../middleware/auth'
 import { config } from '../../config'
+import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 
 export const authRouter: Router = Router()
 
@@ -13,6 +14,26 @@ const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
 })
+
+type UpstreamAuthBody = {
+  value: unknown
+  raw: string
+  parseError?: string
+}
+
+async function readUpstreamAuthBody(upstream: Response): Promise<UpstreamAuthBody> {
+  const body = await readUpstreamJsonBody(upstream)
+  return { value: body.data ?? {}, raw: body.raw, parseError: body.parseError }
+}
+
+function authBodyMessage(body: UpstreamAuthBody, fallback: string): string {
+  if (isJsonObject(body.value)) {
+    if ('detail' in body.value) return String((body.value as { detail?: unknown }).detail)
+    if ('message' in body.value) return String((body.value as { message?: unknown }).message)
+  }
+  if (typeof body.value === 'string' && body.value.trim()) return upstreamSnippet(body.value, 300)
+  return fallback
+}
 
 authRouter.post('/login', validate(loginSchema), async (req, res, next) => {
   try {
@@ -78,26 +99,23 @@ authRouter.post('/iam-login', validate(loginSchema), async (req, res, next) => {
       body: JSON.stringify(req.body),
     })
 
-    const text = await upstream.text()
-    let body: unknown = text
-    try {
-      body = text ? JSON.parse(text) : {}
-    } catch {
-      // Keep the raw upstream body for diagnostics below.
-    }
+    const body = await readUpstreamAuthBody(upstream)
 
     if (!upstream.ok) {
-      const message =
-        typeof body === 'object' && body && 'detail' in body
-          ? String((body as { detail?: unknown }).detail)
-          : typeof body === 'object' && body && 'message' in body
-            ? String((body as { message?: unknown }).message)
-            : 'IAM sign in failed'
+      const message = authBodyMessage(body, 'IAM sign in failed')
       res.status(upstream.status).json({ code: 'IAM_LOGIN_FAILED', message })
       return
     }
 
-    res.status(upstream.status).json(body)
+    if (body.parseError || !isJsonObject(body.value)) {
+      res.status(502).json({
+        code: 'IAM_LOGIN_INVALID_RESPONSE',
+        message: 'IAM sign in returned an invalid response',
+      })
+      return
+    }
+
+    res.status(upstream.status).json(body.value)
   } catch (err) {
     next(err)
   }

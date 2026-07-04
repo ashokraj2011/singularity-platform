@@ -2,6 +2,7 @@ import { type WorkflowInstance, type WorkflowNode } from '@prisma/client'
 import { config } from '../../../../config'
 import { redactSecrets } from '../../../../lib/redact'
 import { requestOperationalMcpToolGrant } from './mcpToolGrant'
+import { readUpstreamJsonBody, upstreamSnippet } from '../../../../lib/upstream-json'
 
 /**
  * RUN_PYTHON executor — runs an inline Python program in the mcp-server sandbox.
@@ -96,6 +97,20 @@ type ToolRunPayload = {
   grant?: unknown
 }
 
+async function parseToolRunBody(response: Response, source: string): Promise<{ body: Record<string, unknown> } | { error: string }> {
+  const parsed = await readUpstreamJsonBody(response)
+  if (!parsed.raw.trim()) return { body: {} }
+  if (parsed.parseError) {
+    return { error: `${source} returned invalid JSON (${parsed.parseError}): ${upstreamSnippet(parsed.raw, 700)}` }
+  }
+  if (isRecord(parsed.data)) return { body: parsed.data }
+  return { error: `${source} returned a non-object response body` }
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
 // Prefer Context Fabric runtime dispatch so a laptop/remote MCP that only dials
 // into CF still runs the tool; fall back to direct mcp-server HTTP (debug /
 // back-compat) only when CF is unconfigured, unreachable, or refuses the dispatch.
@@ -110,11 +125,13 @@ async function dispatchToolRun(payload: ToolRunPayload, timeoutMs: number): Prom
         signal: AbortSignal.timeout(timeoutMs + 10_000),
       })
       if (resp.ok) {
-        const text = await resp.text()
-        const body = (text ? JSON.parse(text) : {}) as { result?: unknown; tool_success?: boolean; tool_error?: string | null }
-        if (body.tool_success === false) return { error: `run_python failed${body.tool_error ? `: ${body.tool_error}` : ''}` }
+        const parsed = await parseToolRunBody(resp, 'Context Fabric runtime bridge')
+        if ('error' in parsed) return { error: parsed.error }
+        const body = parsed.body
+        const toolError = stringField(body.tool_error)
+        if (body.tool_success === false) return { error: `run_python failed${toolError ? `: ${toolError}` : ''}` }
         if (isRecord(body.result)) return { receipt: body.result }
-        return { error: `run_python returned no receipt${body.tool_error ? `: ${body.tool_error}` : ''}` }
+        return { error: `run_python returned no receipt${toolError ? `: ${toolError}` : ''}` }
       }
       // CF reachable but refused/failed the dispatch — fall through to mcp HTTP.
     } catch {
@@ -127,25 +144,33 @@ async function dispatchToolRun(payload: ToolRunPayload, timeoutMs: number): Prom
 // Direct mcp-server HTTP — the legacy transport, now a fallback.
 async function dispatchToolRunViaMcp(payload: ToolRunPayload, timeoutMs: number): Promise<DispatchResult> {
   const { grant, ...rest } = payload
-  const response = await fetch(`${config.MCP_SERVER_URL.replace(/\/$/, '')}/mcp/tool-run`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${config.MCP_BEARER_TOKEN}` },
-    body: JSON.stringify({ ...rest, ...(grant ? { tool_grant: grant } : {}) }),
-    signal: AbortSignal.timeout(timeoutMs + 10_000),
-  })
-  const text = await response.text()
-  const body = (text ? JSON.parse(text) : {}) as {
-    success?: boolean
-    data?: { result?: unknown; toolSuccess?: boolean; toolError?: string | null }
-    error?: { message?: string } | string
+  let response: Response
+  try {
+    response = await fetch(`${config.MCP_SERVER_URL.replace(/\/$/, '')}/mcp/tool-run`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${config.MCP_BEARER_TOKEN}` },
+      body: JSON.stringify({ ...rest, ...(grant ? { tool_grant: grant } : {}) }),
+      signal: AbortSignal.timeout(timeoutMs + 10_000),
+    })
+  } catch (err) {
+    return { error: `run_python dispatch failed: MCP tool-run unreachable: ${(err as Error).message}` }
   }
-  if (!response.ok || body.success === false) {
-    const msg = typeof body.error === 'string' ? body.error : body.error?.message ?? `tool-run returned ${response.status}`
+  const parsed = await parseToolRunBody(response, 'MCP tool-run')
+  if ('error' in parsed) return { error: `run_python dispatch failed: ${parsed.error}` }
+  const body = parsed.body
+  const data = isRecord(body.data) ? body.data : {}
+  const errorObject = isRecord(body.error) ? body.error : null
+  const errorText = typeof body.error === 'string'
+    ? body.error
+    : stringField(errorObject?.message)
+  const success = body.success === undefined ? response.ok : body.success === true
+  if (!response.ok || !success) {
+    const msg = errorText ?? `tool-run returned ${response.status}`
     return { error: `run_python dispatch failed: ${msg}` }
   }
-  const result = body.data?.result
+  const result = data.result
   if (!isRecord(result)) {
-    const toolErr = body.data?.toolError
+    const toolErr = stringField(data.toolError)
     return { error: `run_python returned no receipt${toolErr ? `: ${toolErr}` : ''}` }
   }
   return { receipt: result }

@@ -21,6 +21,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { isJsonObject, readUpstreamJsonBody } from "../lib/upstream-json";
 
 export const BUILD_SYSTEM_FILES: readonly string[] = [
   "pom.xml",
@@ -118,6 +119,18 @@ export function computeRepoFingerprint(workspacePath: string): RepoFingerprintRe
   };
 }
 
+async function readAgentRuntimeFingerprintBody(res: Response): Promise<Record<string, unknown> | null> {
+  const body = await readUpstreamJsonBody(res);
+  if (!body.raw.trim()) return null;
+  if (body.parseError) {
+    // eslint-disable-next-line no-console
+    console.warn(`[repo-fingerprint] agent-runtime drift endpoint returned invalid JSON (${res.status}): ${body.parseError}`);
+    return null;
+  }
+  if (isJsonObject(body.data)) return body.data;
+  return null;
+}
+
 /**
  * M61 Wire B P2 — Best-effort POST that an AST index was built for
  * the capability's workspace. Fire-and-forget; the call exists so
@@ -179,7 +192,8 @@ export async function reportFingerprintToAgentRuntime(
       console.warn(`[repo-fingerprint] HTTP ${res.status} from agent-runtime drift endpoint`);
       return null;
     }
-    const body = await res.json() as { data?: { drift?: boolean; firstStamp?: boolean; previousFingerprint?: string | null } };
+    const body = await readAgentRuntimeFingerprintBody(res);
+    if (!body) return null;
     const payload = body.data ?? (body as Record<string, unknown>);
     const out = {
       drift: Boolean((payload as { drift?: boolean }).drift),

@@ -7,6 +7,7 @@ import { redactSecrets } from '../../../../lib/redact'
 import { requestOperationalMcpToolGrant } from './mcpToolGrant'
 import { resolveCapabilityRepo } from '../../../../lib/agent-and-tools/capability-repo'
 import { resolveRuntimeTenantId } from '../../../../lib/runtime-tenant'
+import { readUpstreamJsonBody, upstreamSnippet } from '../../../../lib/upstream-json'
 
 type JsonObject = Record<string, unknown>
 type WorkspaceEvidence = {
@@ -102,6 +103,16 @@ function numberAt(root: unknown, path: string): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value)
   return undefined
+}
+
+async function readJsonObjectResponse(response: Response, source: string): Promise<{ body: JsonObject; raw: string } | { error: string; raw: string }> {
+  const parsed = await readUpstreamJsonBody(response)
+  if (!parsed.raw.trim()) return { body: {}, raw: parsed.raw }
+  if (parsed.parseError) {
+    return { error: `${source} returned invalid JSON (${parsed.parseError}): ${upstreamSnippet(parsed.raw, 700)}`, raw: parsed.raw }
+  }
+  if (isRecord(parsed.data)) return { body: parsed.data, raw: parsed.raw }
+  return { error: `${source} returned a non-object response body`, raw: parsed.raw }
 }
 
 function findWorkspaceEvidence(value: unknown): WorkspaceEvidence {
@@ -206,7 +217,9 @@ async function hydrateFromMcpFinishReceipt(evidence: WorkspaceEvidence): Promise
         signal: AbortSignal.timeout(5_000),
       })
       if (!response.ok) continue
-      const body = await response.json() as { data?: unknown }
+      const parsed = await readJsonObjectResponse(response, 'MCP tool invocation receipt')
+      if ('error' in parsed) continue
+      const body = parsed.body
       const record = isRecord(body.data) ? body.data : {}
       if (stringAt(record, 'tool_name') !== 'finish_work_branch') continue
       const output = isRecord(record.output) ? record.output : {}
@@ -563,22 +576,23 @@ async function callMcpFinishWorkBranch(args: {
   // unreachable / errors (debug + back-compat).
   const cfUrl = config.CONTEXT_FABRIC_URL?.replace(/\/$/, '')
   if (cfUrl) {
+    let cfResp: Response | null = null
     try {
-      const cfResp = await fetch(`${cfUrl}/api/runtime-bridge/work/finish-branch`, {
+      cfResp = await fetch(`${cfUrl}/api/runtime-bridge/work/finish-branch`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'X-Service-Token': config.CONTEXT_FABRIC_SERVICE_TOKEN ?? '' },
         body: JSON.stringify(payload),
       })
-      if (cfResp.ok) {
-        const cfText = await cfResp.text()
-        const cfData = (cfText ? JSON.parse(cfText) as JsonObject : {})
-        // CF returns { tool_invocation, output }; callers read body.data.*.
-        return { success: true, data: cfData }
-      }
-      // CF reachable but errored — fall through to direct mcp HTTP.
     } catch {
       // CF unreachable — fall through to direct mcp HTTP.
     }
+    if (cfResp?.ok) {
+      const parsed = await readJsonObjectResponse(cfResp, 'Context Fabric finish-branch')
+      if ('error' in parsed) throw new Error(redactSecrets(parsed.error))
+      // CF returns { tool_invocation, output }; callers read body.data.*.
+      return { success: true, data: parsed.body }
+    }
+    // CF reachable but errored — fall through to direct mcp HTTP.
   }
   const response = await fetch(`${config.MCP_SERVER_URL.replace(/\/$/, '')}/mcp/work/finish-branch`, {
     method: 'POST',
@@ -588,17 +602,12 @@ async function callMcpFinishWorkBranch(args: {
     },
     body: JSON.stringify(payload),
   })
-  const text = await response.text()
-  let body: JsonObject = {}
-  try {
-    body = text ? JSON.parse(text) as JsonObject : {}
-  } catch {
-    body = { raw: text }
-  }
+  const parsed = await readJsonObjectResponse(response, 'MCP finish-branch')
   if (!response.ok) {
-    throw new Error(redactSecrets(`MCP /work/finish-branch failed (${response.status}): ${text}`))
+    throw new Error(redactSecrets(`MCP /work/finish-branch failed (${response.status}): ${parsed.raw}`))
   }
-  return body
+  if ('error' in parsed) throw new Error(redactSecrets(parsed.error))
+  return parsed.body
 }
 
 export async function activateGitPush(

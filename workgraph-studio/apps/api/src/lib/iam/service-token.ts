@@ -19,6 +19,7 @@
  */
 
 import { config } from '../../config'
+import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from '../upstream-json'
 
 const SCOPES = ['read:reference-data', 'read:mcp-servers', 'publish:events']
 const SERVICE_NAME = 'workgraph-api'
@@ -32,6 +33,28 @@ interface CachedToken {
 
 let cached:  CachedToken | null = null
 let inflight: Promise<string | undefined> | null = null
+
+async function readIamTokenJson(res: Response, source: string): Promise<Record<string, unknown> | null> {
+  const body = await readUpstreamJsonBody(res)
+  if (!body.raw.trim()) {
+    console.warn(`[iam-service-token] ${source} returned an empty response (${res.status})`)
+    return null
+  }
+  if (body.parseError) {
+    console.warn(`[iam-service-token] ${source} returned invalid JSON (${res.status}): ${body.parseError}; body=${upstreamSnippet(body.raw, 200)}`)
+    return null
+  }
+  if (isJsonObject(body.data)) return body.data
+  console.warn(`[iam-service-token] ${source} returned a non-object JSON response (${res.status})`)
+  return null
+}
+
+function accessTokenFromBody(body: Record<string, unknown> | null, source: string): string | undefined {
+  const token = body?.access_token
+  if (typeof token === 'string' && token.trim()) return token
+  console.warn(`[iam-service-token] ${source} response did not include access_token`)
+  return undefined
+}
 
 function decodeExp(jwt: string): Date | null {
   try {
@@ -109,8 +132,8 @@ async function mint(): Promise<string | undefined> {
     console.warn(`[iam-service-token] bootstrap login failed (${loginRes.status})`)
     return undefined
   }
-  const loginBody = await loginRes.json() as { access_token?: string }
-  const userJwt = loginBody.access_token
+  const loginBody = await readIamTokenJson(loginRes, 'bootstrap login')
+  const userJwt = accessTokenFromBody(loginBody, 'bootstrap login')
   if (!userJwt) return undefined
 
   const mintRes = await fetch(`${base}/auth/service-token`, {
@@ -128,8 +151,8 @@ async function mint(): Promise<string | undefined> {
     console.warn(`[iam-service-token] mint failed (${mintRes.status}): ${(await mintRes.text()).slice(0, 200)}`)
     return undefined
   }
-  const body = await mintRes.json() as { access_token?: string }
-  const svcJwt = body.access_token
+  const body = await readIamTokenJson(mintRes, 'service-token mint')
+  const svcJwt = accessTokenFromBody(body, 'service-token mint')
   if (!svcJwt) return undefined
   if (!validateIamServiceTokenTenantScope(svcJwt)) return undefined
 

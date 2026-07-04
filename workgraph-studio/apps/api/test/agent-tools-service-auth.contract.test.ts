@@ -25,6 +25,20 @@ describe('Workgraph -> agent-and-tools service auth contract', () => {
     expect(assignments.length).toBeGreaterThanOrEqual(3)
   })
 
+  it('normalizes Agent Runtime and Tool Service response bodies through the shared parser', () => {
+    const client = source('src/lib/agent-and-tools/client.ts')
+
+    expect(client).toContain("import { readUpstreamJsonBody, upstreamSnippet, type UpstreamJsonBody } from '../upstream-json'")
+    expect(client).toContain('async function readAgentToolsBody(res: Response): Promise<AgentToolsBody>')
+    expect(client).toContain('return readUpstreamJsonBody(res)')
+    expect(client).toContain('function agentToolsInvalidJsonError(path: string, body: AgentToolsBody): AgentAndToolsError')
+    expect(client).toContain('if (body.parseError) throw agentToolsInvalidJsonError(path, body)')
+    expect(client).toContain('if (bodyOut.parseError) throw agentToolsInvalidJsonError(`PATCH /agents/templates/${id}`, bodyOut)')
+    expect(client).not.toMatch(/await res\.json\(\)/)
+    expect(client).not.toMatch(/JSON\.parse\(text\)/)
+    expect(client).not.toMatch(/JSON\.parse\(raw\)/)
+  })
+
   it('documents production token availability in the Workgraph startup guard', () => {
     const config = source('src/config.ts')
 

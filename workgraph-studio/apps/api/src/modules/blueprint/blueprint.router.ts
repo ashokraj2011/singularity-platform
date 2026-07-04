@@ -15,6 +15,7 @@ import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
 import { validate } from '../../middleware/validate'
 import { NotFoundError, ValidationError, ForbiddenError } from '../../lib/errors'
 import { mapLimit } from '../../lib/map-limit'
+import { readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 import { classifyFailures, type FailureClassification } from './inherited-failure-analyzer'
 import { synthesizeLoopTrace } from './loop-trace-synthesizer'
 import { createWorkItem } from '../work-items/work-items.service'
@@ -78,6 +79,43 @@ const WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES: Record<string, string> = (() => {
   // design/develop (SDLC) + fix (bug-fix) are the code-heavy stages.
   return { design: 'claude-sonnet-4-5', develop: 'claude-sonnet-4-5', fix: 'claude-sonnet-4-5' }
 })()
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+async function readJsonResponseBody(res: Response, source: string): Promise<unknown> {
+  const body = await readUpstreamJsonBody(res)
+  if (!body.raw.trim()) return {}
+  if (!body.parseError) return body.data
+  throw new ValidationError(`${source} returned invalid JSON (${res.status}): ${body.parseError}; body=${upstreamSnippet(body.raw, 300)}`)
+}
+
+function upstreamErrorMessage(body: unknown): string | undefined {
+  if (!isJsonObject(body)) return undefined
+  const error = body.error
+  if (isJsonObject(error) && typeof error.message === 'string') return error.message
+  if (typeof body.message === 'string') return body.message
+  if (typeof body.detail === 'string') return body.detail
+  return undefined
+}
+
+function upstreamErrorCode(body: unknown): string | undefined {
+  if (!isJsonObject(body)) return undefined
+  const error = body.error
+  if (isJsonObject(error) && typeof error.code === 'string') return error.code
+  if (typeof body.code === 'string') return body.code
+  return undefined
+}
+
+function unwrapUpstreamData(body: unknown): unknown {
+  if (isJsonObject(body) && 'data' in body && body.data != null) return body.data
+  return body
+}
+
+async function readGithubJson<T>(res: Response, source: string): Promise<T> {
+  return readJsonResponseBody(res, source) as Promise<T>
+}
 // (2026-05-26) Bumped from 8 to 14 after design stage MAX_TURNS at
 // turn 8 on workflowInstance 8d42bedf — Architect spent 2 turns in
 // PLAN (repo_map) and 6 in EXPLORE (read_file, get_ast_slice, get_symbol,
@@ -1742,11 +1780,11 @@ blueprintRouter.get('/sessions/:id/worktree/tree', async (req, res, next) => {
     const upstream = await fetch(`${mcpUrl}/mcp/worktree/${encodeURIComponent(workItemCode)}/tree?${params.toString()}`, {
       headers: { authorization: `Bearer ${config.MCP_BEARER_TOKEN}` },
     })
-    const body = await upstream.json().catch(() => ({})) as { success?: boolean; data?: unknown; error?: { message?: string } }
+    const body = await readJsonResponseBody(upstream, 'mcp-server worktree tree')
     if (!upstream.ok) {
-      throw new ValidationError(body.error?.message ?? `mcp-server worktree tree returned ${upstream.status}`)
+      throw new ValidationError(upstreamErrorMessage(body) ?? `mcp-server worktree tree returned ${upstream.status}`)
     }
-    res.json(body.data ?? body)
+    res.json(unwrapUpstreamData(body))
   } catch (err) { next(err) }
 })
 
@@ -1765,11 +1803,11 @@ blueprintRouter.get('/sessions/:id/worktree/file', async (req, res, next) => {
     const upstream = await fetch(`${mcpUrl}/mcp/worktree/${encodeURIComponent(workItemCode)}/file?${params.toString()}`, {
       headers: { authorization: `Bearer ${config.MCP_BEARER_TOKEN}` },
     })
-    const body = await upstream.json().catch(() => ({})) as { success?: boolean; data?: unknown; error?: { message?: string } }
+    const body = await readJsonResponseBody(upstream, 'mcp-server worktree file')
     if (!upstream.ok) {
-      throw new ValidationError(body.error?.message ?? `mcp-server worktree file returned ${upstream.status}`)
+      throw new ValidationError(upstreamErrorMessage(body) ?? `mcp-server worktree file returned ${upstream.status}`)
     }
-    res.json(body.data ?? body)
+    res.json(unwrapUpstreamData(body))
   } catch (err) { next(err) }
 })
 
@@ -1807,18 +1845,18 @@ blueprintRouter.put('/sessions/:id/worktree/file', async (req, res, next) => {
       },
       body: JSON.stringify(proxyBody),
     })
-    const body = await upstream.json().catch(() => ({})) as { success?: boolean; data?: unknown; error?: { message?: string; code?: string } }
+    const body = await readJsonResponseBody(upstream, 'mcp-server worktree write')
     if (!upstream.ok) {
-      const code = body.error?.code
+      const code = upstreamErrorCode(body)
       // 409 stale-sha is special — bubble it as a typed error so the
       // workbench can re-fetch and re-apply rather than discard.
       if (upstream.status === 409) {
-        res.status(409).json({ code: 'STALE_EDIT', message: body.error?.message ?? 'stale edit', upstreamCode: code })
+        res.status(409).json({ code: 'STALE_EDIT', message: upstreamErrorMessage(body) ?? 'stale edit', upstreamCode: code })
         return
       }
-      throw new ValidationError(body.error?.message ?? `mcp-server worktree write returned ${upstream.status}`)
+      throw new ValidationError(upstreamErrorMessage(body) ?? `mcp-server worktree write returned ${upstream.status}`)
     }
-    res.json(body.data ?? body)
+    res.json(unwrapUpstreamData(body))
   } catch (err) { next(err) }
 })
 
@@ -2708,8 +2746,9 @@ async function composeWorkbenchStagePrompt(input: {
       }),
     })
     if (!resp.ok) return input.task
-    const body = (await resp.json()) as { prompt?: string }
-    return typeof body?.prompt === 'string' && body.prompt.trim() ? body.prompt : input.task
+    const body = await readJsonResponseBody(resp, 'context-fabric workbench prompt composition')
+    const prompt = isJsonObject(body) ? body.prompt : undefined
+    return typeof prompt === 'string' && prompt.trim() ? prompt : input.task
   } catch {
     return input.task
   }
@@ -10026,7 +10065,10 @@ async function snapshotGithub(sourceUri: string, sourceRef: string | undefined, 
   const treeUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`
   const treeResp = await githubFetch(treeUrl)
   if (!treeResp.ok) throw new ValidationError(`GitHub tree scan failed (${githubErrorDetail(treeResp)})`)
-  const treeJson = await treeResp.json() as { tree?: Array<{ path: string; type: string; size?: number; sha?: string }> }
+  const treeJson = await readGithubJson<{ tree?: Array<{ path: string; type: string; size?: number; sha?: string }> }>(
+    treeResp,
+    'GitHub tree scan',
+  )
   const prefix = parsed.path ? parsed.path.replace(/^\/+|\/+$/g, '') : ''
   const manifest: ManifestEntry[] = []
   let totalBytes = 0
@@ -10102,7 +10144,7 @@ function parseGithubUrl(sourceUri: string): { owner: string; repo: string; branc
 async function githubDefaultBranch(owner: string, repo: string): Promise<string> {
   const res = await githubFetch(`https://api.github.com/repos/${owner}/${repo}`)
   if (!res.ok) throw new ValidationError(`GitHub repository lookup failed (${githubErrorDetail(res)})`)
-  const body = await res.json() as { default_branch?: string }
+  const body = await readGithubJson<{ default_branch?: string }>(res, 'GitHub repository lookup')
   return body.default_branch ?? 'main'
 }
 

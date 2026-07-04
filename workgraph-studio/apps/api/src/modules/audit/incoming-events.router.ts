@@ -47,6 +47,8 @@ interface IncomingBody {
   envelope:   EventEnvelope
 }
 
+type RawBodyRequest = Request & { rawBody?: Buffer }
+
 function loadSecrets(): Record<string, string> {
   const raw = config.WORKGRAPH_INCOMING_EVENT_SECRETS
   if (!raw) return {}
@@ -62,7 +64,12 @@ function loadSecrets(): Record<string, string> {
   catch { return {} }
 }
 
-function verifySignature(req: Request, body: string, secret: string): boolean {
+function requestBodyForSignature(req: Request, fallbackBody: string): Buffer | string {
+  const rawBody = (req as RawBodyRequest).rawBody
+  return rawBody && rawBody.length > 0 ? rawBody : fallbackBody
+}
+
+function verifySignature(req: Request, body: Buffer | string, secret: string): boolean {
   const sigHeader = req.header('x-event-signature')
   if (!sigHeader) return false
   const [scheme, hex] = sigHeader.split('=', 2)
@@ -93,10 +100,12 @@ incomingEventsRouter.post('/', async (req, res) => {
   if (!secret) {
     return res.status(401).json({ code: 'UNTRUSTED_SOURCE', message: `No incoming event secret configured for ${source}` })
   }
-  // Re-serialize from parsed body to compare against signature over the
-  // exact bytes the dispatcher sent. The platform dispatchers use compact JSON.
-  const reserialized = JSON.stringify({ event_name: eventName, envelope: body.envelope })
-  if (!verifySignature(req, reserialized, secret)) {
+  // Verify the HMAC over the exact bytes that Express received. Re-serialization
+  // changes insignificant JSON whitespace/order and makes valid events fragile.
+  // The compact fallback covers tests or embedded callers that invoke the router
+  // without passing through the app-level raw-body capture middleware.
+  const compactFallback = JSON.stringify({ event_name: eventName, envelope: body.envelope })
+  if (!verifySignature(req, requestBodyForSignature(req, compactFallback), secret)) {
     return res.status(401).json({ code: 'BAD_SIGNATURE', message: 'HMAC verification failed' })
   }
 

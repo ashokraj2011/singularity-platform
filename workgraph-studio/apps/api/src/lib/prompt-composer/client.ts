@@ -23,6 +23,7 @@
 
 import { config } from '../../config'
 import { getIamServiceToken } from '../iam/service-token'
+import { isJsonObject, readUpstreamJsonBody, upstreamSnippet, type UpstreamJsonBody } from '../upstream-json'
 
 export interface ComposeArtifact {
   consumableId?: string
@@ -106,6 +107,63 @@ export interface ComposeResponse {
 export class PromptComposerError extends Error {
   constructor(message: string, public status: number, public detail?: unknown) {
     super(message)
+    this.name = 'PromptComposerError'
+  }
+}
+
+type PromptComposerBody = UpstreamJsonBody
+
+type PromptComposerEnvelope<T> = {
+  success: boolean
+  data?: T
+  error?: unknown
+}
+
+async function readPromptComposerBody(res: Response): Promise<PromptComposerBody> {
+  return readUpstreamJsonBody(res)
+}
+
+function promptComposerDetail(body: PromptComposerBody): unknown {
+  if (isJsonObject(body.data)) return body.data.error ?? body.data.detail ?? body.data
+  if (body.parseError) return { body: upstreamSnippet(body.raw, 500), parseError: body.parseError }
+  return body.data
+}
+
+function promptComposerMessage(path: string, status: number, body: PromptComposerBody, max = 500): string {
+  const text = body.raw.trim() || (typeof body.data === 'string' ? body.data : '')
+  return `prompt-composer ${path} returned ${status}: ${upstreamSnippet(text, max) || 'empty response body'}`
+}
+
+async function readPromptComposerEnvelope<T>(
+  res: Response,
+  path: string,
+): Promise<PromptComposerEnvelope<T>> {
+  const body = await readPromptComposerBody(res)
+  if (!res.ok) {
+    throw new PromptComposerError(
+      promptComposerMessage(path, res.status, body),
+      res.status,
+      promptComposerDetail(body),
+    )
+  }
+  if (body.parseError) {
+    throw new PromptComposerError(
+      `prompt-composer ${path} returned invalid JSON (${body.parseError}): ${upstreamSnippet(body.raw, 500) || 'empty response body'}`,
+      502,
+      promptComposerDetail(body),
+    )
+  }
+  if (!isJsonObject(body.data)) {
+    throw new PromptComposerError(
+      `prompt-composer ${path} returned an invalid envelope`,
+      502,
+      body.data,
+    )
+  }
+  return {
+    success: body.data.success === true,
+    data: body.data.data as T | undefined,
+    error: body.data.error,
   }
 }
 
@@ -183,17 +241,29 @@ async function getSystemPromptCached(key: string, vars?: Record<string, unknown>
         signal: AbortSignal.timeout(10_000),
       })
       if (!res.ok) {
-        const text = await res.text().catch(() => '')
-        if (hit) return { content: hit.content, version: hit.version }
-        throw new PromptComposerError(`SystemPrompt fetch ${key} → ${res.status}: ${text.slice(0, 300)}`, res.status)
+        try {
+          await readPromptComposerEnvelope<{ content: string; version: number }>(res, `/system-prompts/${key}`)
+        } catch (err) {
+          if (hit) return { content: hit.content, version: hit.version }
+          throw err
+        }
       }
-      const json = await res.json() as { success: boolean; data: { content: string; version: number } }
-      if (!json.success) {
+      let json: PromptComposerEnvelope<{ content: string; version: number }>
+      try {
+        json = await readPromptComposerEnvelope<{ content: string; version: number }>(res, `/system-prompts/${key}`)
+      } catch (err) {
         if (hit) return { content: hit.content, version: hit.version }
-        throw new PromptComposerError(`SystemPrompt fetch ${key} returned success=false`, 502)
+        throw err
       }
-      sysPromptCache.set(cacheKey, { fetchedAt: Date.now(), content: json.data.content, version: json.data.version })
-      return { content: json.data.content, version: json.data.version }
+      const data = isJsonObject(json.data) ? json.data : null
+      const content = typeof data?.content === 'string' ? data.content : ''
+      const version = typeof data?.version === 'number' ? data.version : 0
+      if (!json.success || !content) {
+        if (hit) return { content: hit.content, version: hit.version }
+        throw new PromptComposerError(`SystemPrompt fetch ${key} returned an unusable envelope`, 502, json.error ?? json.data)
+      }
+      sysPromptCache.set(cacheKey, { fetchedAt: Date.now(), content, version })
+      return { content, version }
     } finally {
       sysPromptInflight.delete(cacheKey)
     }
@@ -211,17 +281,11 @@ export const promptComposerClient = {
       body: JSON.stringify(input),
       signal: AbortSignal.timeout(240_000),
     })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      throw new PromptComposerError(
-        `prompt-composer /compose-and-respond returned ${res.status}: ${text.slice(0, 500)}`,
-        res.status,
-      )
-    }
-    const json = await res.json() as { success: boolean; data: ComposeResponse; error?: unknown }
+    const json = await readPromptComposerEnvelope<ComposeResponse>(res, '/compose-and-respond')
     if (!json.success) {
       throw new PromptComposerError('prompt-composer returned success=false', 502, json.error)
     }
+    if (!json.data) throw new PromptComposerError('prompt-composer returned success=true without data', 502, json)
     return json.data
   },
 
@@ -245,17 +309,11 @@ export const promptComposerClient = {
       body: JSON.stringify(input),
       signal: AbortSignal.timeout(15_000),
     })
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      throw new PromptComposerError(
-        `prompt-composer /stage-prompts/resolve returned ${res.status}: ${text.slice(0, 500)}`,
-        res.status,
-      )
-    }
-    const json = await res.json() as { success: boolean; data: ResolveStageResponse; error?: unknown }
+    const json = await readPromptComposerEnvelope<ResolveStageResponse>(res, '/stage-prompts/resolve')
     if (!json.success) {
       throw new PromptComposerError('prompt-composer stage resolve returned success=false', 502, json.error)
     }
+    if (!json.data) throw new PromptComposerError('prompt-composer stage resolve returned success=true without data', 502, json)
     return json.data
   },
 }

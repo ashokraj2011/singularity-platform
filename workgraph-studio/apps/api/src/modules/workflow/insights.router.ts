@@ -20,6 +20,7 @@ import { assertInstancePermission } from '../../lib/permissions/workflowTemplate
 import { assertWorkflowInstanceTenant } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { resolveRuntimeTenantId } from '../../lib/runtime-tenant'
+import { isJsonObject, readUpstreamJsonBody } from '../../lib/upstream-json'
 import {
   fetchEventsForInstance,
   fetchEventsForTrace,
@@ -43,6 +44,17 @@ function sseWrite(res: Response, event: string, data: unknown, id?: string) {
   if (id) res.write(`id: ${id}\n`)
   res.write(`event: ${event}\n`)
   res.write(`data: ${JSON.stringify(data)}\n\n`)
+}
+
+async function readInsightJsonObject<T>(response: globalThis.Response, source: string): Promise<T | null> {
+  const body = await readUpstreamJsonBody(response)
+  if (!body.raw.trim()) return null
+  if (body.parseError) {
+    console.warn(`[workflow-insights] ${source} returned invalid JSON: ${body.parseError}`)
+    return null
+  }
+  if (isJsonObject(body.data)) return body.data as T
+  return null
 }
 
 async function traceIdsForInstance(instanceId: string): Promise<string[]> {
@@ -128,13 +140,13 @@ insightsRouter.get('/:id/events/stream', async (req: Request, res: Response, nex
             '[insights] context-fabric /execute/events returned non-2xx')
           continue
         }
+        const parsedBody = await readUpstreamJsonBody(cf)
         let body: { events?: StreamEvent[] } = {}
-        try {
-          const raw = await cf.text()
-          body = raw ? JSON.parse(raw) : {}
-        } catch (parseErr) {
-          req.log?.warn?.({ url: url.toString(), traceId, parseErr: (parseErr as Error).message },
+        if (parsedBody.parseError) {
+          req.log?.warn?.({ url: url.toString(), traceId, parseErr: parsedBody.parseError },
             '[insights] context-fabric returned non-JSON body')
+        } else if (isJsonObject(parsedBody.data)) {
+          body = parsedBody.data as { events?: StreamEvent[] }
         }
         for (const ev of body.events ?? []) {
           if (!ev.id || seen.has(ev.id)) continue
@@ -444,7 +456,8 @@ async function fetchAssemblyCitations(promptAssemblyId: string): Promise<NodeIns
       signal: AbortSignal.timeout(5000),
     })
     if (!resp.ok) return []
-    const body = await resp.json() as { data?: { evidenceRefs?: unknown } }
+    const body = await readInsightJsonObject<{ data?: { evidenceRefs?: unknown } }>(resp, 'prompt assembly citations')
+    if (!body) return []
     const refs = body.data?.evidenceRefs
     if (!Array.isArray(refs)) return []
     return refs.slice(0, 12).map((raw) => {

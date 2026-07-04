@@ -9,6 +9,7 @@ import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { mapLimit } from '../../lib/map-limit'
+import { readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, restartNode, forceCompleteNode, startInstance } from './runtime/WorkflowRuntime'
 import { promoteWorkbenchToTables } from './lib/promote-workbench'
@@ -85,6 +86,24 @@ const failNodeSchema = z.object({
   code: z.string().optional(),
   details: z.record(z.unknown()).optional(),
 })
+
+type WorkflowJsonRead<T> = {
+  data?: T
+  error?: string
+  raw?: string
+}
+
+async function readWorkflowJsonResponse<T>(response: globalThis.Response, source: string): Promise<WorkflowJsonRead<T>> {
+  const body = await readUpstreamJsonBody(response)
+  if (!body.raw.trim()) return {}
+  if (body.parseError) {
+    return { error: `${source} returned invalid JSON: ${body.parseError}`, raw: upstreamSnippet(body.raw, 500) }
+  }
+  if (body.data && typeof body.data === 'object' && !Array.isArray(body.data)) {
+    return { data: body.data as T }
+  }
+  return { error: `${source} returned a non-object JSON body`, raw: upstreamSnippet(body.raw, 500) }
+}
 
 // M98 — Operator manual completion. A comment is mandatory so the audit trail
 // always records WHY the node was forced complete (e.g. "pushed by hand after
@@ -1006,7 +1025,14 @@ async function composeCopilotStagePrompt(input: {
     if (!resp.ok) {
       return { prompt: input.task, degraded: true, warning: `prompt composition failed (HTTP ${resp.status}); using raw task` }
     }
-    const body = (await resp.json()) as { prompt?: string; degraded?: boolean; warning?: string }
+    const parsed = await readWorkflowJsonResponse<{ prompt?: string; degraded?: boolean; warning?: string }>(
+      resp,
+      'context-fabric prompt composition',
+    )
+    if (parsed.error) {
+      return { prompt: input.task, degraded: true, warning: `${parsed.error}; using raw task` }
+    }
+    const body = parsed.data ?? {}
     // Finding #11 — distinguish a real composed prompt from a silent raw-task fallback,
     // and propagate CF's own degraded signal (e.g. world-model lookup failed).
     if (typeof body?.prompt !== 'string' || !body.prompt.trim()) {
@@ -2036,7 +2062,15 @@ workflowInstancesRouter.get('/:id/events/stream', async (req, res, next) => {
       res.status(502).json({ error: 'context-fabric unreachable for call lookup' })
       return
     }
-    const callsBody = (await callsResp.json()) as { items?: Array<{ trace_id?: string }> }
+    const parsedCalls = await readWorkflowJsonResponse<{ items?: Array<{ trace_id?: string }> }>(
+      callsResp,
+      'context-fabric call lookup',
+    )
+    if (parsedCalls.error) {
+      res.status(502).json({ error: 'context-fabric invalid call lookup response', detail: parsedCalls.error, raw: parsedCalls.raw })
+      return
+    }
+    const callsBody = parsedCalls.data ?? {}
     const traceId = callsBody.items?.[0]?.trace_id
     if (!traceId) {
       res.status(404).json({ error: 'no trace recorded for this workflow instance yet' })

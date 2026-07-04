@@ -1,5 +1,6 @@
 import { config } from "../config";
 import { emitAuditEvent } from "../lib/audit-gov-emit";
+import { readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
 import type { ToolHandler } from "./registry";
 
 function learningBase(): string {
@@ -9,6 +10,13 @@ function learningBase(): string {
 function learningServiceHeaders(): Record<string, string> {
   const token = config.LEARNING_SERVICE_TOKEN ?? process.env.AUDIT_GOV_SERVICE_TOKEN ?? "";
   return token ? { authorization: `Bearer ${token}` } : {};
+}
+
+async function readLearningJson(res: Response, path: string): Promise<unknown> {
+  const body = await readUpstreamJsonBody(res);
+  if (!body.raw.trim()) return null;
+  if (!body.parseError) return body.data;
+  throw new Error(`learning-service ${path} returned invalid JSON (${res.status}): ${body.parseError}; body=${upstreamSnippet(body.raw, 300)}`);
 }
 
 async function learningFetch(path: string, init?: RequestInit): Promise<unknown> {
@@ -25,7 +33,7 @@ async function learningFetch(path: string, init?: RequestInit): Promise<unknown>
     const text = await res.text().catch(() => "");
     throw new Error(`learning-service ${res.status}: ${text.slice(0, 300)}`);
   }
-  return res.json();
+  return readLearningJson(res, path);
 }
 
 export const queryLearningStateTool: ToolHandler = {

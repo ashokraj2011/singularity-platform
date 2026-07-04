@@ -4,6 +4,7 @@ import { prisma } from '../../lib/prisma'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { AppError, NotFoundError } from '../../lib/errors'
 import { createReceipt, logEvent, publishOutbox } from '../../lib/audit'
+import { readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 
 export const FORMAL_DISABLED_CODE = 'FORMAL_VERIFICATION_DISABLED'
 
@@ -150,6 +151,33 @@ function unsafeQuery() {
   }
 }
 
+function verifierMessage(parsed: Record<string, unknown>, fallback: string): string {
+  const detail = parsed.detail as Record<string, unknown> | string | undefined
+  if (typeof detail === 'string') return detail
+  if (isRecord(detail) && typeof detail.message === 'string' && detail.message.trim()) return detail.message.trim()
+  if (typeof parsed.message === 'string' && parsed.message.trim()) return parsed.message.trim()
+  return fallback
+}
+
+function verifierCode(parsed: Record<string, unknown>, fallback: string): string {
+  const detail = parsed.detail as Record<string, unknown> | string | undefined
+  if (isRecord(detail) && typeof detail.code === 'string' && detail.code.trim()) return detail.code.trim()
+  if (typeof parsed.code === 'string' && parsed.code.trim()) return parsed.code.trim()
+  return fallback
+}
+
+async function readVerifierJsonObject(res: Response, source: string): Promise<{
+  parsed: Record<string, unknown>
+  raw: string
+  invalidReason?: string
+}> {
+  const body = await readUpstreamJsonBody(res)
+  if (!body.raw.trim()) return { parsed: {}, raw: body.raw }
+  if (body.parseError) return { parsed: { message: upstreamSnippet(body.raw, 700) }, raw: body.raw, invalidReason: body.parseError }
+  if (isRecord(body.data)) return { parsed: body.data, raw: body.raw }
+  return { parsed: { message: `${source} returned a non-object JSON response` }, raw: body.raw, invalidReason: 'non-object JSON response' }
+}
+
 async function callVerifier(path: string, payload: FormalPayload): Promise<Record<string, unknown>> {
   const url = `${config.FORMAL_VERIFIER_URL.replace(/\/+$/, '')}${path}`
   const res = await fetch(url, {
@@ -157,21 +185,20 @@ async function callVerifier(path: string, payload: FormalPayload): Promise<Recor
     headers: { 'content-type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(payload),
   })
-  const body = await res.text()
-  let parsed: Record<string, unknown> = {}
-  try {
-    parsed = body ? JSON.parse(body) as Record<string, unknown> : {}
-  } catch {
-    parsed = { message: body }
-  }
+  const body = await readVerifierJsonObject(res, 'Formal verifier')
   if (!res.ok) {
-    const detail = parsed.detail as Record<string, unknown> | string | undefined
-    const message = typeof detail === 'string'
-      ? detail
-      : String(detail?.message ?? parsed.message ?? `Formal verifier returned HTTP ${res.status}`)
-    throw new AppError(message, String((typeof detail === 'object' && detail?.code) || parsed.code || 'FORMAL_VERIFIER_ERROR'), res.status)
+    const message = verifierMessage(body.parsed, `Formal verifier returned HTTP ${res.status}`)
+    throw new AppError(message, verifierCode(body.parsed, 'FORMAL_VERIFIER_ERROR'), res.status)
   }
-  return parsed
+  if (body.invalidReason) {
+    const snippet = upstreamSnippet(body.raw, 700)
+    throw new AppError(
+      `Formal verifier returned invalid JSON for ${path}: ${body.invalidReason}${snippet ? `: ${snippet}` : ''}`,
+      'FORMAL_VERIFIER_BAD_RESPONSE',
+      502,
+    )
+  }
+  return body.parsed
 }
 
 async function recordFormalEvent(kind: string, entityType: string, entityId: string, actorId: string | undefined, payload: Record<string, unknown>) {

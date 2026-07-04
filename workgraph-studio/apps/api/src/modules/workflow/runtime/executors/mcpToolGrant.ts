@@ -1,5 +1,6 @@
 import { config } from '../../../../config'
 import { redactSecrets } from '../../../../lib/redact'
+import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from '../../../../lib/upstream-json'
 
 type GrantRequest = {
   toolName: string
@@ -61,12 +62,14 @@ export async function requestOperationalMcpToolGrant(request: GrantRequest): Pro
     return {}
   }
 
-  const text = await response.text()
+  const responseBody = await readUpstreamJsonBody(response)
   let body: GrantResponse = {}
-  try {
-    body = text ? JSON.parse(text) as GrantResponse : {}
-  } catch {
-    body = { error: text }
+  if (responseBody.parseError) {
+    body = { error: upstreamSnippet(responseBody.raw, 700) }
+  } else if (isJsonObject(responseBody.data)) {
+    body = responseBody.data as GrantResponse
+  } else if (responseBody.data !== null) {
+    body = { error: 'Context Fabric tool-grant response was not a JSON object' }
   }
 
   if (!response.ok) {
@@ -74,9 +77,16 @@ export async function requestOperationalMcpToolGrant(request: GrantRequest): Pro
       ? body.detail
       : typeof body.error === 'string'
         ? body.error
-        : text || `HTTP ${response.status}`
+        : responseBody.raw || `HTTP ${response.status}`
     if (mode === 'enforce') {
       throw new Error(`Context Fabric refused MCP tool grant for ${request.toolName}: ${redactSecrets(detail)}`)
+    }
+    return {}
+  }
+
+  if (responseBody.parseError) {
+    if (mode === 'enforce') {
+      throw new Error(`Context Fabric tool-grant response for ${request.toolName} was invalid JSON: ${redactSecrets(body.error)}`)
     }
     return {}
   }

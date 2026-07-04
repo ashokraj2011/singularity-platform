@@ -20,7 +20,7 @@ const instance = { id: 'inst-1' } as unknown as AnyInstance
 
 function mockToolRun(result: Record<string, unknown>, status = 200, success = true) {
   ;(global.fetch as Mock).mockResolvedValue(
-    new Response(JSON.stringify({ success, data: { result, toolSuccess: true } }), { status }),
+    new Response(JSON.stringify({ result, tool_success: success, tool_error: success ? null : 'boom' }), { status }),
   )
 }
 

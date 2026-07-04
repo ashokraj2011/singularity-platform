@@ -31,10 +31,35 @@ import { contextFabricClient } from '../../lib/context-fabric/client'
 import { promptComposerAuthHeaders } from '../../lib/prompt-composer/client'
 import { prisma } from '../../lib/prisma'
 import { assertAgentRunTenant } from '../../lib/tenant-isolation'
+import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 
 export const contractsRouter: Router = Router()
 
 const COMPOSER_URL = config.PROMPT_COMPOSER_URL.replace(/\/$/, '')
+
+type ComposerEnvelope<T = unknown> = {
+  success?: boolean
+  data?: T
+  error?: unknown
+  parseError?: string
+  raw?: string
+}
+
+async function readComposerEnvelope<T = unknown>(response: globalThis.Response, source: string): Promise<ComposerEnvelope<T>> {
+  const body = await readUpstreamJsonBody(response)
+  if (!body.raw.trim()) return {}
+  if (body.parseError) {
+    return {
+      parseError: body.parseError,
+      raw: upstreamSnippet(body.raw, 500),
+    }
+  }
+  if (isJsonObject(body.data)) return body.data as ComposerEnvelope<T>
+  return {
+    parseError: `${source} returned a non-object JSON body`,
+    raw: upstreamSnippet(body.raw, 500),
+  }
+}
 
 contractsRouter.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -50,7 +75,10 @@ contractsRouter.get('/', async (req: Request, res: Response, next: NextFunction)
       const text = await r.text().catch(() => '')
       return res.status(r.status).json({ error: 'composer contracts fetch failed', detail: text.slice(0, 300) })
     }
-    const json = await r.json() as { success?: boolean; data?: unknown }
+    const json = await readComposerEnvelope(r, 'composer contracts fetch')
+    if (json.parseError) {
+      return res.status(502).json({ error: 'composer contracts invalid response', detail: json.parseError, raw: json.raw })
+    }
     res.json(json.data ?? [])
   } catch (err) {
     next(err)
@@ -67,7 +95,10 @@ contractsRouter.get('/:contractId', async (req: Request, res: Response, next: Ne
       const text = await r.text().catch(() => '')
       return res.status(r.status).json({ error: 'composer contract fetch failed', detail: text.slice(0, 300) })
     }
-    const json = await r.json() as { success?: boolean; data?: unknown }
+    const json = await readComposerEnvelope(r, 'composer contract fetch')
+    if (json.parseError) {
+      return res.status(502).json({ error: 'composer contract invalid response', detail: json.parseError, raw: json.raw })
+    }
     res.json(json.data ?? null)
   } catch (err) {
     next(err)
@@ -274,7 +305,11 @@ contractsRouter.post('/:contractId/replay', async (req: Request, res: Response, 
     if (!cr.ok) {
       return res.status(cr.status).json({ error: 'contract fetch failed' })
     }
-    const contract = (await cr.json() as { success?: boolean; data?: ContractBundle }).data
+    const contractEnvelope = await readComposerEnvelope<ContractBundle>(cr, 'composer contract replay fetch')
+    if (contractEnvelope.parseError) {
+      return res.status(502).json({ error: 'contract fetch invalid response', detail: contractEnvelope.parseError, raw: contractEnvelope.raw })
+    }
+    const contract = contractEnvelope.data
     if (!contract) {
       return res.status(404).json({ error: 'contract bundle empty' })
     }

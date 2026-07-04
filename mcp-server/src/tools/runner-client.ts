@@ -1,4 +1,5 @@
 import { config } from "../config";
+import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
 
 export interface RunnerExecuteRequest {
   command: string;
@@ -12,6 +13,20 @@ export interface RunnerExecuteRequest {
   // single run; omitted → runner's global MCP_RUNNER_NETWORK_MODE default.
   network?: "none" | "bridge";
   env?: Record<string, string>;
+}
+
+async function readRunnerEnvelope(response: Response, source: string): Promise<{ success?: boolean; data?: unknown; error?: unknown }> {
+  const body = await readUpstreamJsonBody(response);
+  if (!body.raw.trim()) {
+    throw new Error(`MCP_RUNNER_UNAVAILABLE: ${source} returned empty response (${response.status})`);
+  }
+  if (body.parseError) {
+    throw new Error(`MCP_RUNNER_UNAVAILABLE: ${source} returned invalid JSON (${response.status}): ${body.parseError}; body=${upstreamSnippet(body.raw, 300)}`);
+  }
+  if (isJsonObject(body.data)) {
+    return body.data as { success?: boolean; data?: unknown; error?: unknown };
+  }
+  throw new Error(`MCP_RUNNER_UNAVAILABLE: ${source} returned invalid JSON (${response.status}): response JSON was not an object; body=${upstreamSnippet(body.raw, 300)}`);
 }
 
 export async function callSandboxRunner(req: RunnerExecuteRequest): Promise<Record<string, unknown>> {
@@ -34,13 +49,7 @@ export async function callSandboxRunner(req: RunnerExecuteRequest): Promise<Reco
   } catch (err) {
     throw new Error(`MCP_RUNNER_UNAVAILABLE: ${(err as Error).message}`);
   }
-  const raw = await response.text();
-  let body: { success?: boolean; data?: unknown; error?: unknown } = {};
-  try {
-    body = raw ? JSON.parse(raw) : {};
-  } catch {
-    throw new Error(`MCP_RUNNER_UNAVAILABLE: runner returned non-JSON response (${response.status})`);
-  }
+  const body = await readRunnerEnvelope(response, "runner execute");
   if (!response.ok || body.success === false) {
     throw new Error(`MCP_RUNNER_UNAVAILABLE: ${String(body.error ?? `runner returned ${response.status}`)}`);
   }
@@ -53,7 +62,7 @@ export async function sandboxRunnerStatus(): Promise<Record<string, unknown>> {
   const url = `${config.MCP_RUNNER_URL.replace(/\/+$/, "")}/health`;
   const response = await fetch(url, { signal: AbortSignal.timeout(1500) });
   if (!response.ok) throw new Error(`runner health returned ${response.status}`);
-  const body = await response.json() as { success?: boolean; data?: unknown };
+  const body = await readRunnerEnvelope(response, "runner health");
   if (body.success === false || !body.data || typeof body.data !== "object") {
     throw new Error("runner health returned invalid payload");
   }

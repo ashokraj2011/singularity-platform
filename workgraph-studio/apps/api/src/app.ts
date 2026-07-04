@@ -1,4 +1,4 @@
-import express, { Express } from 'express'
+import express, { Express, type Request } from 'express'
 import cors from 'cors'
 import { pinoHttp } from 'pino-http'
 import { config } from './config'
@@ -63,11 +63,18 @@ import { internalArtifactFetchRouter } from './modules/internal/artifact-fetch.r
 // feature-flag mirror for trusted internal workers.
 import { featureFlagsRouter, internalFeatureFlagsRouter } from './modules/admin/feature-flags.router'
 
+type RawBodyRequest = Request & { rawBody?: Buffer }
+
+function captureRawJsonBody(req: Request, _res: unknown, buf: Buffer): void {
+  const rawReq = req as RawBodyRequest
+  rawReq.rawBody = Buffer.from(buf)
+}
+
 export function createApp(): Express {
   const app = express()
 
   app.use(pinoHttp({ quietReqLogger: true }))
-  app.use(express.json({ limit: '10mb' }))
+  app.use(express.json({ limit: '10mb', verify: captureRawJsonBody }))
   app.use(tenantDbContextMiddleware)
   app.use(
     cors({
