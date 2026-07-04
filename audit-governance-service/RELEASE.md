@@ -31,8 +31,10 @@ operator surface for "what is happening across services."
 | `AUDIT_GOV_SERVICE_TOKEN`            | (required in prod)                                   | Bearer auth on ingest. 32+ chars; KNOWN_BAD list enforced.     |
 | `AUDIT_GOV_ALLOW_ANONYMOUS_DEV`      | unset                                                | When `1`, allow unauth ingest in dev. Off by default (M35.1).  |
 | `AUDIT_GOV_ALLOWED_SOURCE_SERVICES`  | empty (no allowlist)                                 | When set, reject events whose `source_service` isn't in the comma-separated list. |
-| `AUDIT_GOV_EVENT_RATE_WINDOW_MS`     | `60000`                                              | Per-actor rate-limit window.                                   |
-| `AUDIT_GOV_EVENT_RATE_MAX`           | `2000`                                               | Events per window per (ip, source_service, tenant_id).          |
+| `AUDIT_GOV_EVENT_RATE_WINDOW_MS`     | `60000`                                              | Per-actor rate-limit window. Bounded `1000..3600000`.           |
+| `AUDIT_GOV_EVENT_RATE_MAX`           | `2000`                                               | Events per window per (ip, source_service, tenant_id). Bounded `1..100000`. |
+| `AUDIT_GOV_EVENT_BATCH_MAX`          | `500`                                                | Events per `/events/batch` request. Bounded `1..5000`.          |
+| `LOG_INGEST_MAX_BATCH`               | `500`                                                | Operational logs per ingest request. Bounded `1..5000`.         |
 | `AUDIT_GOV_STREAM_MAX_SUBSCRIBERS`   | `50`                                                 | Concurrent SSE clients per instance. Bounded `1..1000`.         |
 | `AUDIT_GOV_STREAM_KEEPALIVE_MS`      | `15000`                                              | Heartbeat interval on SSE streams. Bounded `1000..300000`.      |
 | `AUDIT_GOV_STREAM_QUEUE_MAX`         | `500`                                                | Per-client SSE event queue before oldest events are dropped. Bounded `1..10000`. |

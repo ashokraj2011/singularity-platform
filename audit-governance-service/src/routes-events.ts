@@ -14,6 +14,7 @@ import { timingSafeEqual } from "node:crypto";
 import { query } from "./db";
 import { eventSchema, authzDecisionSchema } from "./types";
 import { denormaliseLlmCall } from "./cost-worker";
+import { boundedEnvInteger } from "./env";
 // M63 Slice D — pure-function risk classifier mapping (kind, severity)
 // → low/medium/high/critical so the search UI can filter by blast radius
 // independently of "did the call succeed."
@@ -31,8 +32,21 @@ const SERVICE_TOKEN = process.env.AUDIT_GOV_SERVICE_TOKEN ?? "";
 // unauthenticated event ingest whenever someone forgot to set the env var.
 // Now you MUST explicitly set AUDIT_GOV_ALLOW_ANONYMOUS_DEV=1 to allow it.
 const ALLOW_ANON_DEV = process.env.AUDIT_GOV_ALLOW_ANONYMOUS_DEV === "1";
-const RATE_LIMIT_WINDOW_MS = Number(process.env.AUDIT_GOV_EVENT_RATE_WINDOW_MS ?? 60_000);
-const RATE_LIMIT_MAX = Number(process.env.AUDIT_GOV_EVENT_RATE_MAX ?? 2_000);
+const RATE_LIMIT_WINDOW_MS = boundedEnvInteger("AUDIT_GOV_EVENT_RATE_WINDOW_MS", {
+  defaultValue: 60_000,
+  min: 1_000,
+  max: 3_600_000,
+});
+const RATE_LIMIT_MAX = boundedEnvInteger("AUDIT_GOV_EVENT_RATE_MAX", {
+  defaultValue: 2_000,
+  min: 1,
+  max: 100_000,
+});
+const EVENT_BATCH_MAX = boundedEnvInteger("AUDIT_GOV_EVENT_BATCH_MAX", {
+  defaultValue: 500,
+  min: 1,
+  max: 5_000,
+});
 const buckets = new Map<string, { resetAt: number; count: number }>();
 
 // M35.1 — known source services. Events with `source_service` outside this
@@ -206,7 +220,9 @@ eventsRouter.post("/", async (req: Request, res: Response) => {
 eventsRouter.post("/batch", async (req: Request, res: Response) => {
   const events = Array.isArray(req.body?.events) ? req.body.events : [];
   if (events.length === 0) return res.status(400).json({ error: "events[] required" });
-  if (events.length > 500) return res.status(400).json({ error: "max 500 events per batch" });
+  if (events.length > EVENT_BATCH_MAX) {
+    return res.status(400).json({ error: `max ${EVENT_BATCH_MAX} events per batch`, max_batch: EVENT_BATCH_MAX });
+  }
   const out: Array<{ id: string }> = [];
   for (const e of events) out.push(await ingestOne(e));
   res.status(201).json({ ingested: out.length, ids: out.map((r) => r.id) });

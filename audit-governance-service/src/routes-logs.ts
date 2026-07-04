@@ -12,6 +12,7 @@ import { z } from "zod";
 import { query } from "./db";
 import { requireServiceAuth } from "./routes-events";
 import { getLogStorage, StoredLogInput } from "./log-storage";
+import { boundedEnvInteger } from "./env";
 
 export const logsRouter = Router();
 
@@ -19,6 +20,12 @@ export const logsRouter = Router();
 // whole router; the per-route guards on the ingest endpoints below are now redundant but kept.
 // Browser consumers reach logs via the platform-web proxy (which injects the token).
 logsRouter.use(requireServiceAuth);
+
+const LOG_INGEST_MAX_BATCH = boundedEnvInteger("LOG_INGEST_MAX_BATCH", {
+  defaultValue: 500,
+  min: 1,
+  max: 5_000,
+});
 
 const LogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "audit"]);
 
@@ -206,10 +213,9 @@ function logsFromBody(body: unknown): NormalizedLog[] {
 }
 
 async function ingestLogs(req: Request, res: Response): Promise<void> {
-  const maxBatch = Number(process.env.LOG_INGEST_MAX_BATCH ?? 500);
   const logs = logsFromBody(req.body);
-  if (logs.length > maxBatch) {
-    res.status(400).json({ error: "batch_too_large", max_batch: maxBatch });
+  if (logs.length > LOG_INGEST_MAX_BATCH) {
+    res.status(400).json({ error: "batch_too_large", max_batch: LOG_INGEST_MAX_BATCH });
     return;
   }
 

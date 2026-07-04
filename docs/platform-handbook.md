@@ -743,6 +743,14 @@ minimum `1`, maximum `10000`. Invalid, non-finite, or below-minimum values fall
 back to defaults so an env typo cannot disable capacity checks, create a tight
 heartbeat loop, or leave each client with an unbounded event queue.
 
+Audit Governance also bounds ingest pressure knobs. `AUDIT_GOV_EVENT_RATE_WINDOW_MS`
+defaults to `60000`, minimum `1000`, maximum `3600000`; `AUDIT_GOV_EVENT_RATE_MAX`
+defaults to `2000`, minimum `1`, maximum `100000`; `AUDIT_GOV_EVENT_BATCH_MAX`
+and `LOG_INGEST_MAX_BATCH` both default to `500`, minimum `1`, maximum `5000`.
+Invalid or below-minimum values fall back to defaults, while oversized values
+clamp to caps, so ingest cannot accidentally run with disabled rate limits or
+huge per-request batches after an env typo.
+
 Workgraph's Copilot handoff export keeps prompt composition fail-soft. The
 best-effort Context Fabric compose call uses `COPILOT_COMPOSE_TIMEOUT_MS`,
 default `30000`, minimum `1000`, and maximum `120000`. Invalid values fall
