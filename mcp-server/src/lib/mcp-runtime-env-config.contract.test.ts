@@ -242,6 +242,14 @@ assert.equal(
   "all git_push_preflight subprocess calls should carry the configured timeout",
 );
 
+const workflowToolsSource = readFileSync("src/tools/workflow-tools.ts", "utf8");
+assert.match(workflowToolsSource, /const WORKFLOW_GIT_TIMEOUT_MS = config\.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS;/);
+assert.equal(
+  (workflowToolsSource.match(/timeout: WORKFLOW_GIT_TIMEOUT_MS/g) ?? []).length,
+  4,
+  "all workflow review git subprocess calls should carry the configured timeout",
+);
+
 const sourceDiscoverSource = readFileSync("src/mcp/source-discover.ts", "utf8");
 assert.match(sourceDiscoverSource, /const SOURCE_DISCOVERY_TIMEOUT_MS = config\.MCP_SOURCE_DISCOVERY_TIMEOUT_MS;/);
 assert.match(sourceDiscoverSource, /timeoutMs = SOURCE_DISCOVERY_TIMEOUT_MS/);

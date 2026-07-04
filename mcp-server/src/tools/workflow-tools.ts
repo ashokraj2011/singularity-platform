@@ -21,8 +21,10 @@ import { listIndexedFiles, statsForIndex } from "../workspace/ast-index";
 import { detectVerifiers, type DetectedVerifier } from "../workspace/verifier-registry";
 import { ALLOWED_COMMANDS } from "./command";
 import type { ToolHandler } from "./registry";
+import { config } from "../config";
 
 const execFileP = promisify(execFile);
+const WORKFLOW_GIT_TIMEOUT_MS = config.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS;
 
 // ── shared git helpers ────────────────────────────────────────────────────
 
@@ -30,7 +32,9 @@ const execFileP = promisify(execFile);
 async function gitChangedPaths(cwd: string): Promise<string[]> {
   try {
     const { stdout } = await execFileP("git", ["status", "--porcelain"], {
-      cwd, maxBuffer: 2 * 1024 * 1024,
+      cwd,
+      maxBuffer: 2 * 1024 * 1024,
+      timeout: WORKFLOW_GIT_TIMEOUT_MS,
     });
     return stdout
       .split("\n")
@@ -53,8 +57,16 @@ async function gitNumstat(cwd: string): Promise<Array<{
 }>> {
   try {
     const [{ stdout: numStdout }, { stdout: statusStdout }] = await Promise.all([
-      execFileP("git", ["diff", "HEAD", "--numstat"], { cwd, maxBuffer: 10 * 1024 * 1024 }),
-      execFileP("git", ["status", "--porcelain"], { cwd, maxBuffer: 2 * 1024 * 1024 }),
+      execFileP("git", ["diff", "HEAD", "--numstat"], {
+        cwd,
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: WORKFLOW_GIT_TIMEOUT_MS,
+      }),
+      execFileP("git", ["status", "--porcelain"], {
+        cwd,
+        maxBuffer: 2 * 1024 * 1024,
+        timeout: WORKFLOW_GIT_TIMEOUT_MS,
+      }),
     ]);
     const statusByPath = new Map<string, "added" | "modified" | "deleted">();
     for (const line of statusStdout.split("\n")) {
@@ -423,7 +435,10 @@ export const reviewDiffTool: ToolHandler = {
       // Resolve branch + commit context
       let branch = "(detached)";
       try {
-        const { stdout } = await execFileP("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: root });
+        const { stdout } = await execFileP("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+          cwd: root,
+          timeout: WORKFLOW_GIT_TIMEOUT_MS,
+        });
         branch = stdout.trim();
       } catch { /* leave as detached */ }
 
