@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useAuthStore } from '../../store/auth.store'
 import { workgraphApiPath } from '../../lib/api'
 import { sharedAuthToken } from '../../lib/sharedAuth'
+import { readJsonResponse, responseEvents } from '../../lib/httpJson'
 
 type ActivityRow = {
   id: string
@@ -78,9 +79,9 @@ export function CopilotActivityPanel({ instanceId }: { instanceId: string }) {
         if (!r.ok) {
           setStatus('error')
         } else {
-          const d = await r.json() as { events?: ActivityRow[] }
+          const d = await readJsonResponse<unknown>(r, 'copilot activity')
           const fresh: ActivityRow[] = []
-          for (const ev of d.events ?? []) {
+          for (const ev of responseEvents<ActivityRow>(d)) {
             if (seen.current.has(ev.id)) continue
             seen.current.add(ev.id)
             fresh.push(ev)

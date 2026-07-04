@@ -1,0 +1,19 @@
+export async function readJsonResponse<T>(response: Response, label = 'response'): Promise<T> {
+  const text = await response.text().catch(() => '')
+  const body = text.trim()
+  if (!body) return undefined as T
+
+  try {
+    return JSON.parse(body) as T
+  } catch {
+    const preview = body.replace(/\s+/g, ' ').slice(0, 160)
+    throw new Error(`${label} returned non-JSON response${preview ? `: ${preview}` : ''}`)
+  }
+}
+
+export function responseItems<T>(value: unknown): T[] {
+  if (value && typeof value === 'object' && Array.isArray((value as { items?: unknown }).items)) {
+    return (value as { items: T[] }).items
+  }
+  return []
+}

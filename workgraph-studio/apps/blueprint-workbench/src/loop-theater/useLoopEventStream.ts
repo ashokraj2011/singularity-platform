@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { eventToScene, deriveToolCallScene, type AuditEvent, type SceneAction } from './eventToScene'
 import { workbenchPath } from '../vite-env-compat'
+import { readJsonResponse, responseItems } from '../httpJson'
 
 // In dev, audit-gov is reachable via the Vite proxy added in vite.config.ts.
 // In prod, the nginx `/audit-gov/` location proxies to audit-gov.
@@ -94,8 +95,8 @@ export function useLoopEventStream(opts: UseLoopEventStreamOptions): UseLoopEven
     })
       .then(async (res) => {
         if (!res.ok) throw new Error(`audit-gov returned ${res.status}`)
-        const data = await res.json() as { items?: AuditEvent[] }
-        const items = data.items ?? []
+        const data = await readJsonResponse<unknown>(res, 'audit-gov replay')
+        const items = responseItems<AuditEvent>(data)
         // Oldest first — audit-gov returns newest-first by default.
         items.sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
         const built: SceneAction[] = []

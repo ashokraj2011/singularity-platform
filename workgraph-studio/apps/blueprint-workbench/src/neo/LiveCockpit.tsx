@@ -28,6 +28,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { workbenchPath } from '../vite-env-compat'
+import { readJsonResponse, responseItems } from '../httpJson'
 
 interface CockpitEvent {
   id: string
@@ -315,8 +316,8 @@ export function LiveCockpit({
           body: JSON.stringify({ traceIdPrefix: tracePrefix, limit: 100 }),
         })
         if (closed || !res.ok) return
-        const data = await res.json() as { items?: CockpitEvent[] }
-        const items = (data.items ?? []).slice()
+        const data = await readJsonResponse<unknown>(res, 'audit-gov cockpit catch-up')
+        const items = responseItems<CockpitEvent>(data).slice()
         // Oldest first so they read chronologically when the rollup
         // sorts by arrival.
         items.sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))

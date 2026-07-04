@@ -39,6 +39,19 @@ type QueueItem = {
   createdAt: string
 }
 
+async function readJsonResponse<T>(response: Response, label: string): Promise<T> {
+  const text = await response.text().catch(() => '')
+  const body = text.trim()
+  if (!body) return undefined as T
+
+  try {
+    return JSON.parse(body) as T
+  } catch {
+    const preview = body.replace(/\s+/g, ' ').slice(0, 160)
+    throw new Error(`${label} returned non-JSON response${preview ? `: ${preview}` : ''}`)
+  }
+}
+
 export class LocalRetryQueue {
   private memory: QueueItem[] = []
 
@@ -125,7 +138,7 @@ export class SingularityLaptopSdk {
       const text = await res.text().catch(() => '')
       throw new Error(`${method} ${path} failed: ${res.status} ${text.slice(0, 300)}`)
     }
-    return await res.json() as T
+    return await readJsonResponse<T>(res, `${method} ${path}`)
   }
 
   async startInvocation(workItemId: string, input: StartInvocationInput = {}): Promise<LaptopInvocationStart> {

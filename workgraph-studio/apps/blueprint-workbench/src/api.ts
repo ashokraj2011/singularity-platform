@@ -1,4 +1,5 @@
 import { API_BASE, sharedAuthToken } from './base'
+import { readJsonResponse } from './httpJson'
 
 export type SourceType = 'github' | 'localdir'
 export type Stage = string
@@ -681,7 +682,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     throw new Error(text || `Request failed with ${res.status}`)
   }
-  return await res.json() as T
+  return await readJsonResponse<T>(res, `${method} ${path}`)
 }
 
 /**

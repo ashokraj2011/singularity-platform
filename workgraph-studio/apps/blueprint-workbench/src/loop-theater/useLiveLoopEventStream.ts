@@ -21,6 +21,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { eventToScene, deriveToolCallScene, type AuditEvent, type SceneAction } from './eventToScene'
 import { workbenchPath } from '../vite-env-compat'
+import { readJsonResponse, responseItems } from '../httpJson'
 
 // M100 P1 — base-relative so it resolves under the edge-gateway prefix
 // (/workbench/audit-gov) and standalone (/audit-gov). Mirrors src/base.ts.
@@ -76,8 +77,8 @@ export function useLiveLoopEventStream(opts: UseLiveLoopEventStreamOptions): Use
           body: JSON.stringify({ traceIdPrefix, limit: 100 }),
         })
         if (closed || !res.ok) return
-        const data = await res.json() as { items?: AuditEvent[] }
-        const items = data.items ?? []
+        const data = await readJsonResponse<unknown>(res, 'audit-gov catch-up')
+        const items = responseItems<AuditEvent>(data)
         // Oldest first so they read chronologically.
         items.sort((a, b) => (a.created_at ?? '').localeCompare(b.created_at ?? ''))
         const built: SceneAction[] = []

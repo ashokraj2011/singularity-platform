@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useAuthStore } from '../../store/auth.store'
 import { workgraphApiPath } from '../../lib/api'
 import { sharedAuthToken } from '../../lib/sharedAuth'
+import { readJsonResponse, responseEvents, responseTailId } from '../../lib/httpJson'
 
 type EventRow = {
   id: string
@@ -117,11 +118,12 @@ export function LiveEventsPanel({ runId }: { runId: string }) {
           setStatus('error')
           setError(`HTTP ${r.status}`)
         } else {
-          const d = await r.json() as { events?: EventRow[]; tail_id?: string | null }
-          if (d.events?.length) for (const ev of d.events) pushEvent(ev)
+          const d = await readJsonResponse<unknown>(r, 'workflow events')
+          const polledEvents = responseEvents<EventRow>(d)
+          if (polledEvents.length) for (const ev of polledEvents) pushEvent(ev)
           setStatus('polling')
           setError(null)
-          sinceId = d.tail_id ?? sinceId
+          sinceId = responseTailId(d) ?? sinceId
         }
       } catch (err) {
         setStatus('error')
