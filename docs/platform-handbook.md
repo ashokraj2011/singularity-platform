@@ -946,6 +946,8 @@ local process execution mode.
 Headless GitHub Copilot helpers (`copilot_suggest` and `copilot_explain`) use
 `MCP_COPILOT_HEADLESS_TIMEOUT_MS`, default `30000`, bounded `1..300000`, so
 operators can tune slow `gh copilot` extension calls without changing code.
+If a timed-out `gh copilot` child ignores SIGTERM, MCP follows up with SIGKILL
+after `MCP_PROCESS_KILL_GRACE_MS`.
 
 The tool subsystem (merged into `agent-service` on `:3001`, formerly `tool-service`) requires a resolved profile capability set on governed discovery and invocation requests as `effective_capabilities` or `effectiveCapabilities`. That set is authoritative: `/api/v1/tools/discover` hides tools that do not have `invoke`, and `/api/v1/tools/invoke` blocks calls whose `requested_capability_id` / `requestedCapabilityId` is missing or lacks the requested permission. If the set is omitted, tool-service fails closed by default; set `TOOL_EFFECTIVE_CAPABILITY_REQUIRED=false` only for a deliberate legacy migration window.
 

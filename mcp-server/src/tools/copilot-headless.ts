@@ -17,6 +17,7 @@ import type { ToolHandler } from "./registry";
 import { config } from "../config";
 
 const COPILOT_HEADLESS_TIMEOUT_MS = config.MCP_COPILOT_HEADLESS_TIMEOUT_MS;
+const PROCESS_KILL_GRACE_MS = config.MCP_PROCESS_KILL_GRACE_MS;
 
 async function runGh(args: string[], input?: string): Promise<{ stdout: string; stderr: string; exit_code: number }> {
   return new Promise((resolve) => {
@@ -26,13 +27,34 @@ async function runGh(args: string[], input?: string): Promise<{ stdout: string; 
     });
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    let settled = false;
+    let killTimer: NodeJS.Timeout | null = null;
     const t = setTimeout(() => {
+      timedOut = true;
       child.kill("SIGTERM");
+      killTimer = setTimeout(() => child.kill("SIGKILL"), PROCESS_KILL_GRACE_MS);
+      killTimer.unref();
     }, COPILOT_HEADLESS_TIMEOUT_MS);
+    t.unref();
     child.stdout.on("data", (b) => { stdout += b.toString(); });
     child.stderr.on("data", (b) => { stderr += b.toString(); });
-    child.on("close", (code) => {
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(t);
+      if (killTimer) clearTimeout(killTimer);
+      const message = [stderr.trim(), err.message].filter(Boolean).join("\n");
+      resolve({ stdout, stderr: message, exit_code: -1 });
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(t);
+      if (killTimer) clearTimeout(killTimer);
+      if (timedOut && !stderr.trim()) {
+        stderr = `gh copilot timed out after ${COPILOT_HEADLESS_TIMEOUT_MS}ms`;
+      }
       resolve({ stdout, stderr, exit_code: code ?? -1 });
     });
     if (input) {

@@ -316,7 +316,10 @@ assert.doesNotMatch(copilotExecuteSource, /setTimeout\(\(\) => child\.kill\("SIG
 
 const copilotHeadlessSource = readFileSync("src/tools/copilot-headless.ts", "utf8");
 assert.match(copilotHeadlessSource, /const COPILOT_HEADLESS_TIMEOUT_MS = config\.MCP_COPILOT_HEADLESS_TIMEOUT_MS;/);
+assert.match(copilotHeadlessSource, /const PROCESS_KILL_GRACE_MS = config\.MCP_PROCESS_KILL_GRACE_MS;/);
 assert.match(copilotHeadlessSource, /\}, COPILOT_HEADLESS_TIMEOUT_MS\)/);
+assert.match(copilotHeadlessSource, /setTimeout\(\(\) => child\.kill\("SIGKILL"\), PROCESS_KILL_GRACE_MS\)/);
+assert.match(copilotHeadlessSource, /child\.on\("error"/);
 assert.doesNotMatch(copilotHeadlessSource, /const COPILOT_TIMEOUT_MS = 30_000/);
 
 console.log("mcp runtime env config contract tests passed");
