@@ -731,7 +731,7 @@ class LaptopRegistry:
         return response, conn
 
     async def deliver_response(self, user_id: str, device_id: str, request_id: str,
-                               payload: Any, error: Optional[dict]) -> None:
+                               payload: Any, error: Any) -> None:
         async with self._lock:
             conn = self._lookup(user_id, device_id)
         if conn is None:
@@ -740,11 +740,21 @@ class LaptopRegistry:
         fut = conn.pending.pop(request_id, None)
         if fut is None or fut.done():
             return
-        if error:
+        oversized = _oversized_response_part(payload=payload, error=error)
+        if oversized is not None:
+            field, size = oversized
             fut.set_exception(LaptopInvokeError(
-                code=str(error.get("code", "UNKNOWN")),
-                message=str(error.get("message", "invocation error")),
-                details=error.get("details"),
+                code="RUNTIME_RESPONSE_TOO_LARGE",
+                message=f"runtime response {field} exceeded {MAX_PAYLOAD_BYTES} bytes",
+                details={"field": field, "bytes": size, "max_bytes": MAX_PAYLOAD_BYTES},
+            ))
+            return
+        error_obj = _normalize_runtime_error(error)
+        if error_obj:
+            fut.set_exception(LaptopInvokeError(
+                code=str(error_obj.get("code", "UNKNOWN")),
+                message=str(error_obj.get("message", "invocation error")),
+                details=error_obj.get("details"),
             ))
         else:
             fut.set_result(payload)
@@ -811,3 +821,30 @@ REGISTRY = LaptopRegistry()
 def _dump_json(obj: Any) -> str:
     import json
     return json.dumps(obj, ensure_ascii=False, default=str)
+
+
+def _json_size_bytes(obj: Any) -> int:
+    try:
+        return len(_dump_json(obj).encode("utf-8"))
+    except Exception:
+        return MAX_PAYLOAD_BYTES + 1
+
+
+def _oversized_response_part(*, payload: Any, error: Any) -> tuple[str, int] | None:
+    for field, value in (("payload", payload), ("error", error)):
+        size = _json_size_bytes(value)
+        if size > MAX_PAYLOAD_BYTES:
+            return field, size
+    return None
+
+
+def _normalize_runtime_error(error: Any) -> dict[str, Any] | None:
+    if error is None:
+        return None
+    if isinstance(error, dict):
+        return error
+    return {
+        "code": "INVALID_RUNTIME_ERROR",
+        "message": "runtime response error was not an object",
+        "details": {"error_type": type(error).__name__},
+    }

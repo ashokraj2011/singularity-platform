@@ -40,6 +40,7 @@ from .laptop_registry import (
     LaptopInvokeTimeout,
     LaptopNotConnected,
     LaptopSendFailed,
+    MAX_PAYLOAD_BYTES,
 )
 from .response_json import response_json_object
 
@@ -509,6 +510,16 @@ async def runtime_connect(ws: WebSocket) -> None:
         last_rev_check = time.monotonic()
         while True:
             raw = await ws.receive_text()
+            raw_size = len(raw.encode("utf-8"))
+            if raw_size > MAX_PAYLOAD_BYTES:
+                log.warning(
+                    "closing oversized runtime frame user=%s runtime=%s bytes=%s",
+                    user_id,
+                    runtime_id,
+                    raw_size,
+                )
+                await ws.close(code=1009, reason="runtime frame too large")
+                break
             try:
                 frame = json.loads(raw)
             except json.JSONDecodeError:

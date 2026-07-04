@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
+from context_api_service.app import laptop_registry as lr
 from context_api_service.app.laptop_registry import (
     ActiveConnection,
     LaptopRegistry,
@@ -132,3 +135,92 @@ def test_heartbeat_updates_runtime_health_metadata_safely():
     assert status["connected"][0]["health"]["api_key"] == "[redacted]"
     assert stored["api_key"] == "[redacted]"
     assert stored["long"].endswith("...[truncated]")
+
+
+def test_deliver_response_rejects_oversized_runtime_payload(monkeypatch):
+    monkeypatch.setattr(lr, "MAX_PAYLOAD_BYTES", 64)
+
+    async def _case():
+        registry = LaptopRegistry()
+        conn = ActiveConnection(
+            user_id="user-a",
+            device_id="runtime-a",
+            device_name="runtime",
+            ws=object(),  # type: ignore[arg-type]
+            connected_at=1.0,
+            last_seen_at=1.0,
+            supported_frame_types=["model-run"],
+        )
+        await registry.register(conn)
+        fut = asyncio.get_running_loop().create_future()
+        conn.pending["req-1"] = fut
+
+        await registry.deliver_response("user-a", "runtime-a", "req-1", {"blob": "x" * 80}, None)
+
+        with pytest.raises(lr.LaptopInvokeError) as exc:
+            await fut
+        assert exc.value.code == "RUNTIME_RESPONSE_TOO_LARGE"
+        assert exc.value.details["field"] == "payload"
+        assert exc.value.details["max_bytes"] == 64
+
+    _run(_case())
+
+
+def test_deliver_response_rejects_oversized_runtime_error(monkeypatch):
+    monkeypatch.setattr(lr, "MAX_PAYLOAD_BYTES", 64)
+
+    async def _case():
+        registry = LaptopRegistry()
+        conn = ActiveConnection(
+            user_id="user-a",
+            device_id="runtime-a",
+            device_name="runtime",
+            ws=object(),  # type: ignore[arg-type]
+            connected_at=1.0,
+            last_seen_at=1.0,
+            supported_frame_types=["tool-run"],
+        )
+        await registry.register(conn)
+        fut = asyncio.get_running_loop().create_future()
+        conn.pending["req-2"] = fut
+
+        await registry.deliver_response(
+            "user-a",
+            "runtime-a",
+            "req-2",
+            None,
+            {"code": "TOOL_FAILED", "message": "x" * 80},
+        )
+
+        with pytest.raises(lr.LaptopInvokeError) as exc:
+            await fut
+        assert exc.value.code == "RUNTIME_RESPONSE_TOO_LARGE"
+        assert exc.value.details["field"] == "error"
+
+    _run(_case())
+
+
+def test_deliver_response_normalizes_malformed_runtime_error():
+    async def _case():
+        registry = LaptopRegistry()
+        conn = ActiveConnection(
+            user_id="user-a",
+            device_id="runtime-a",
+            device_name="runtime",
+            ws=object(),  # type: ignore[arg-type]
+            connected_at=1.0,
+            last_seen_at=1.0,
+            supported_frame_types=["tool-run"],
+        )
+        await registry.register(conn)
+        fut = asyncio.get_running_loop().create_future()
+        conn.pending["req-3"] = fut
+
+        await registry.deliver_response("user-a", "runtime-a", "req-3", None, "not-an-object")
+
+        with pytest.raises(lr.LaptopInvokeError) as exc:
+            await fut
+        assert exc.value.code == "INVALID_RUNTIME_ERROR"
+        assert exc.value.details == {"error_type": "str"}
+
+    _run(_case())

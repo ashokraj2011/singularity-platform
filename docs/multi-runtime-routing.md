@@ -79,6 +79,13 @@ This auth escape hatch does not mean direct MCP HTTP fallback is enabled; mutati
 routes such as branch finalization and worktree writes still require
 `RUNTIME_HTTP_FALLBACK_ENABLED=true` before they will call `MCP_SERVER_URL`.
 
+Runtime frames and response parts are bounded by the bridge payload ceiling
+(`16 MiB` today). Context Fabric closes oversized raw WebSocket frames with a
+WebSocket `1009` close and rejects oversized `response.payload` or
+`response.error` bodies with `RUNTIME_RESPONSE_TOO_LARGE`. Malformed
+non-object `response.error` frames are normalized to `INVALID_RUNTIME_ERROR` so
+callers fail deterministically instead of timing out on a popped pending future.
+
 ---
 
 ## 2. Identity: one token per runtime (token-authoritative)
