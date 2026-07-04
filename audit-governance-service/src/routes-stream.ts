@@ -24,11 +24,24 @@
  * a runaway UI bug.
  */
 import { Router, Request, Response } from "express";
+import { boundedEnvInteger } from "./env";
 import { requireServiceAuth } from "./routes-events";
 
-const MAX_SUBSCRIBERS = Number(process.env.AUDIT_GOV_STREAM_MAX_SUBSCRIBERS ?? 50);
-const KEEPALIVE_INTERVAL_MS = Number(process.env.AUDIT_GOV_STREAM_KEEPALIVE_MS ?? 15_000);
-const PER_CLIENT_QUEUE_MAX = Number(process.env.AUDIT_GOV_STREAM_QUEUE_MAX ?? 500);
+const MAX_SUBSCRIBERS = boundedEnvInteger("AUDIT_GOV_STREAM_MAX_SUBSCRIBERS", {
+  defaultValue: 50,
+  min: 1,
+  max: 1_000,
+});
+const KEEPALIVE_INTERVAL_MS = boundedEnvInteger("AUDIT_GOV_STREAM_KEEPALIVE_MS", {
+  defaultValue: 15_000,
+  min: 1_000,
+  max: 300_000,
+});
+const PER_CLIENT_QUEUE_MAX = boundedEnvInteger("AUDIT_GOV_STREAM_QUEUE_MAX", {
+  defaultValue: 500,
+  min: 1,
+  max: 10_000,
+});
 
 export type AuditEventRow = {
   id: string;

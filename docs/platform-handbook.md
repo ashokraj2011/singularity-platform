@@ -735,6 +735,14 @@ Platform Web bounds the client idle-session knob
 Invalid, non-finite, or sub-minute values fall back to `30`, so a public env
 typo cannot create an effectively unbounded browser session.
 
+Audit Governance bounds live audit stream knobs before creating SSE
+subscribers. `AUDIT_GOV_STREAM_MAX_SUBSCRIBERS` defaults to `50`, minimum `1`,
+maximum `1000`; `AUDIT_GOV_STREAM_KEEPALIVE_MS` defaults to `15000`, minimum
+`1000`, maximum `300000`; and `AUDIT_GOV_STREAM_QUEUE_MAX` defaults to `500`,
+minimum `1`, maximum `10000`. Invalid, non-finite, or below-minimum values fall
+back to defaults so an env typo cannot disable capacity checks, create a tight
+heartbeat loop, or leave each client with an unbounded event queue.
+
 Workgraph's Copilot handoff export keeps prompt composition fail-soft. The
 best-effort Context Fabric compose call uses `COPILOT_COMPOSE_TIMEOUT_MS`,
 default `30000`, minimum `1000`, and maximum `120000`. Invalid values fall
