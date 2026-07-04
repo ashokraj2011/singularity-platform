@@ -23,15 +23,17 @@
 import { prisma } from "../../config/prisma";
 import { logger } from "../../config/logger";
 import { emitAuditEvent } from "../../lib/audit-gov-emit";
+import { capsuleGcConfig } from "./capsule-gc.config";
 
-const MAX_COMPILE_CONCURRENCY = Math.max(1, Number(process.env.CAPSULE_COMPILE_MAX_CONCURRENCY ?? 5));
-const TTL_DAYS                = Math.max(1, Number(process.env.CAPSULE_TTL_DAYS ?? 30));
-const COLD_DAYS               = Math.max(1, Number(process.env.CAPSULE_COLD_DAYS ?? 30));
-const GC_INTERVAL_MS          = Math.max(60_000, Number(process.env.CAPSULE_GC_INTERVAL_MS ?? 15 * 60_000));
+const CAPSULE_GC_CONFIG = capsuleGcConfig();
+const MAX_COMPILE_CONCURRENCY = CAPSULE_GC_CONFIG.maxCompileConcurrency;
+const TTL_DAYS                = CAPSULE_GC_CONFIG.ttlDays;
+const COLD_DAYS               = CAPSULE_GC_CONFIG.coldDays;
+const GC_INTERVAL_MS          = CAPSULE_GC_CONFIG.gcIntervalMs;
 // Size hardening — cap the cached compiled body. A RAW capsule is
 // JSON.stringify(layers), which is unbounded; an oversized row bloats the table
 // AND injects a huge layer on every cache hit. Over this, we skip the write.
-const MAX_CAPSULE_CHARS       = Math.max(1_000, Number(process.env.CAPSULE_MAX_CHARS ?? 200_000));
+const MAX_CAPSULE_CHARS       = CAPSULE_GC_CONFIG.maxCapsuleChars;
 
 const inflight = new Map<string, number>();
 
@@ -118,11 +120,11 @@ export function stopCapsuleGc(): void {
 
 // ─── M25.5 C5 — failure tracking ─────────────────────────────────────────
 
-const FAILURE_WINDOW_MS = Math.max(60_000, Number(process.env.CAPSULE_FAILURE_WINDOW_MS ?? 60 * 60_000)); // 1h
-const FAILURE_ALERT_THRESHOLD = Math.max(0, Math.min(1, Number(process.env.CAPSULE_FAILURE_ALERT_RATE ?? 0.05)));
-const FAILURE_ALERT_INTERVAL_MS = Math.max(30_000, Number(process.env.CAPSULE_FAILURE_ALERT_INTERVAL_MS ?? 60_000));
-const FAILURE_ALERT_MIN_ATTEMPTS = Math.max(1, Number(process.env.CAPSULE_FAILURE_ALERT_MIN_ATTEMPTS ?? 20));
-const RETRY_DELAY_MS = Math.max(1_000, Number(process.env.CAPSULE_RETRY_DELAY_MS ?? 30_000));
+const FAILURE_WINDOW_MS = CAPSULE_GC_CONFIG.failureWindowMs;
+const FAILURE_ALERT_THRESHOLD = CAPSULE_GC_CONFIG.failureAlertThreshold;
+const FAILURE_ALERT_INTERVAL_MS = CAPSULE_GC_CONFIG.failureAlertIntervalMs;
+const FAILURE_ALERT_MIN_ATTEMPTS = CAPSULE_GC_CONFIG.failureAlertMinAttempts;
+const RETRY_DELAY_MS = CAPSULE_GC_CONFIG.retryDelayMs;
 
 interface AttemptSample { t: number; success: boolean }
 const attempts: AttemptSample[] = [];

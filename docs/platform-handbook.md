@@ -364,6 +364,15 @@ Core features:
 - Debug retrieval.
 - Code-aware prompt layer rendering.
 
+Compiled-context capsule GC and retry knobs are bounded at startup:
+`CAPSULE_COMPILE_MAX_CONCURRENCY`, `CAPSULE_TTL_DAYS`, `CAPSULE_COLD_DAYS`,
+`CAPSULE_GC_INTERVAL_MS`, `CAPSULE_MAX_CHARS`,
+`CAPSULE_FAILURE_WINDOW_MS`, `CAPSULE_FAILURE_ALERT_RATE`,
+`CAPSULE_FAILURE_ALERT_INTERVAL_MS`, `CAPSULE_FAILURE_ALERT_MIN_ATTEMPTS`, and
+`CAPSULE_RETRY_DELAY_MS`. Invalid values fall back to safe defaults and
+oversized values clamp so prompt caching cannot turn into unbounded storage,
+retry, or alert behavior.
+
 ### 7.10 Agent Execution Runtime / Server Runtime
 
 The Agent Execution Runtime is the server runtime boundary for agentic coding and tools.
