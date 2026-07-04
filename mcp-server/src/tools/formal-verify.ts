@@ -1,6 +1,9 @@
 import type { ToolHandler } from "./registry";
 import { config } from "../config";
 
+const FORMAL_VERIFICATION_TIMEOUT_MS = config.FORMAL_VERIFICATION_TIMEOUT_MS;
+const FORMAL_VERIFICATION_HTTP_GRACE_MS = config.FORMAL_VERIFICATION_HTTP_GRACE_MS;
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -13,8 +16,8 @@ function asRecordArray(value: unknown): Array<Record<string, unknown>> {
 
 function positiveTimeout(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
-    ? Math.min(Math.floor(value), 60_000)
-    : config.FORMAL_VERIFICATION_TIMEOUT_MS;
+    ? Math.min(Math.floor(value), FORMAL_VERIFICATION_TIMEOUT_MS)
+    : FORMAL_VERIFICATION_TIMEOUT_MS;
 }
 
 export const formalVerifyTool: ToolHandler = {
@@ -60,7 +63,7 @@ export const formalVerifyTool: ToolHandler = {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(timeoutMs + 1_000),
+        signal: AbortSignal.timeout(timeoutMs + FORMAL_VERIFICATION_HTTP_GRACE_MS),
       });
       const text = await res.text();
       let parsed: Record<string, unknown> = {};

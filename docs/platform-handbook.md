@@ -920,6 +920,11 @@ Workgraph also bounds the formal verification request timeout before sending
 workflow/governance payloads to the verifier service. `FORMAL_VERIFICATION_TIMEOUT_MS`
 defaults to `3000`, has a minimum of `1`, and caps at `10000`, matching the
 formal-verifier service default maximum. Invalid values fall back to `3000`.
+MCP's `formal_verify` tool and finish-branch proof hook also use
+`FORMAL_VERIFICATION_TIMEOUT_MS`; in MCP it defaults to `3000` and is bounded
+`1..600000`. `FORMAL_VERIFICATION_HTTP_GRACE_MS`, default `1000` and bounded
+`1..60000`, is added to the HTTP transport wait so solver timeouts and network
+cleanup are tuned explicitly instead of hidden in tool code.
 
 ### 9.5 Agent Runtime API
 

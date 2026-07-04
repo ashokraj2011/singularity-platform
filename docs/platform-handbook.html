@@ -1167,7 +1167,12 @@ Invalid or too-small values fall back to <code>15</code>, and oversized values c
 <p>Workgraph also bounds the formal verification request timeout before sending
 workflow/governance payloads to the verifier service. <code>FORMAL_VERIFICATION_TIMEOUT_MS</code>
 defaults to <code>3000</code>, has a minimum of <code>1</code>, and caps at <code>10000</code>, matching the
-formal-verifier service default maximum. Invalid values fall back to <code>3000</code>.</p>
+formal-verifier service default maximum. Invalid values fall back to <code>3000</code>.
+MCP&#39;s <code>formal_verify</code> tool and finish-branch proof hook also use
+<code>FORMAL_VERIFICATION_TIMEOUT_MS</code>; in MCP it defaults to <code>3000</code> and is bounded
+<code>1..600000</code>. <code>FORMAL_VERIFICATION_HTTP_GRACE_MS</code>, default <code>1000</code> and bounded
+<code>1..60000</code>, is added to the HTTP transport wait so solver timeouts and network
+cleanup are tuned explicitly instead of hidden in tool code.</p>
 <h3 id="95-agent-runtime-api">9.5 Agent Runtime API<a class="anchor" href="#95-agent-runtime-api" aria-label="Link to 9.5 Agent Runtime API">#</a></h3>
 <p>Mounted under <code>http://localhost:3003/api/v1</code>.</p>
 <p>Important endpoints:</p>

@@ -863,7 +863,7 @@ async function runFormalVerificationBeforeFinish(input: {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(config.FORMAL_VERIFICATION_TIMEOUT_MS + 1_000),
+      signal: AbortSignal.timeout(config.FORMAL_VERIFICATION_TIMEOUT_MS + config.FORMAL_VERIFICATION_HTTP_GRACE_MS),
     });
     const text = await res.text();
     let parsed: Record<string, unknown> = {};
