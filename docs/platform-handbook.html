@@ -767,6 +767,12 @@ Workflow <code>run_python</code> execution is bounded through the same central M
 <code>MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS</code> defaults to <code>120000</code>, and
 <code>MCP_PYTHON_TOOL_MAX_TIMEOUT_MS</code> defaults to <code>600000</code>; both are bounded
 <code>1..3600000</code>, and MCP startup fails if the default exceeds the configured max.
+The agentic <code>copilot_execute</code> CLI handoff uses
+<code>MCP_COPILOT_EXECUTE_DEFAULT_TIMEOUT_MS</code>, default <code>900000</code>, and
+<code>MCP_COPILOT_EXECUTE_MAX_TIMEOUT_MS</code>, default <code>1800000</code>; both are bounded
+<code>1..7200000</code>, with the same startup invariant. Its git diff/status/commit
+evidence capture reuses <code>MCP_WORKTREE_GIT_HASH_TIMEOUT_MS</code> and
+<code>MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS</code>.
 Inside <code>mcp-sandbox-runner</code>, Docker process cleanup and Docker health probing
 are bounded separately. Docker command execution defaults to
 <code>MCP_RUNNER_DOCKER_EXECUTE_DEFAULT_TIMEOUT_MS=120000</code>, with

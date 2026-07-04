@@ -20,8 +20,10 @@ import { log } from "../shared/log";
  * (ensureWorkspaceSource) before this tool runs, so cwd = the sandbox root.
  */
 const COPILOT_BIN = process.env.COPILOT_BIN || "copilot";
-const DEFAULT_TIMEOUT_MS = 900_000; // 15 min — agentic phases are slow
-const MAX_TIMEOUT_MS = 30 * 60_000;
+const DEFAULT_TIMEOUT_MS = config.MCP_COPILOT_EXECUTE_DEFAULT_TIMEOUT_MS;
+const MAX_TIMEOUT_MS = config.MCP_COPILOT_EXECUTE_MAX_TIMEOUT_MS;
+const GIT_HASH_TIMEOUT_MS = config.MCP_WORKTREE_GIT_HASH_TIMEOUT_MS;
+const GIT_WRITE_TIMEOUT_MS = config.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS;
 const MAX_SUMMARY_CHARS = 16_000;
 const MAX_DIFF_CHARS = 200_000;
 const PROCESS_KILL_GRACE_MS = config.MCP_PROCESS_KILL_GRACE_MS;
@@ -67,7 +69,7 @@ export const copilotExecuteTool: ToolHandler = {
       type: "object",
       properties: {
         task: { type: "string", description: "The implementation task / prompt for Copilot to execute in the workspace." },
-        timeout_ms: { type: "number", description: "Max milliseconds for the CLI run (default 900000, max 1800000)." },
+        timeout_ms: { type: "number", description: "Max milliseconds for the CLI run, capped by MCP_COPILOT_EXECUTE_MAX_TIMEOUT_MS." },
         commit: { type: "boolean", description: "Commit the resulting changes onto the work-item branch (default true)." },
         commit_message: { type: "string", description: "Commit message; defaults to 'copilot: <first line of task>'." },
       },
@@ -120,8 +122,8 @@ export const copilotExecuteTool: ToolHandler = {
     let diff = "";
     let changedPaths: string[] = [];
     try {
-      diff = (await spawnCapture("git", ["diff"], cwd, 30_000)).stdout;
-      const porcelain = (await spawnCapture("git", ["status", "--porcelain"], cwd, 30_000)).stdout;
+      diff = (await spawnCapture("git", ["diff"], cwd, GIT_WRITE_TIMEOUT_MS)).stdout;
+      const porcelain = (await spawnCapture("git", ["status", "--porcelain"], cwd, GIT_WRITE_TIMEOUT_MS)).stdout;
       changedPaths = porcelain.split("\n").map((l) => l.slice(3).trim()).filter(Boolean);
     } catch (err) {
       log.warn({ err: (err as Error).message }, "copilot_execute: git diff capture failed");
@@ -145,16 +147,16 @@ export const copilotExecuteTool: ToolHandler = {
     const shouldCommit = args.commit !== false && changedPaths.length > 0;
     if (shouldCommit) {
       try {
-        await spawnCapture("git", ["add", "-A"], cwd, 30_000);
+        await spawnCapture("git", ["add", "-A"], cwd, GIT_WRITE_TIMEOUT_MS);
         const msg = (typeof args.commit_message === "string" && args.commit_message.trim())
           ? args.commit_message.trim()
           : `copilot: ${task.split("\n")[0].slice(0, 72)}`;
         const c = await spawnCapture(
           "git",
           ["-c", "user.email=copilot@singularity.local", "-c", "user.name=Singularity Copilot", "commit", "-m", msg],
-          cwd, 30_000,
+          cwd, GIT_WRITE_TIMEOUT_MS,
         );
-        if (c.code === 0) commitSha = (await spawnCapture("git", ["rev-parse", "HEAD"], cwd, 10_000)).stdout.trim();
+        if (c.code === 0) commitSha = (await spawnCapture("git", ["rev-parse", "HEAD"], cwd, GIT_HASH_TIMEOUT_MS)).stdout.trim();
         else log.warn({ stderr: c.stderr.slice(0, 200) }, "copilot_execute: git commit non-zero");
       } catch (err) {
         log.warn({ err: (err as Error).message }, "copilot_execute: commit failed");

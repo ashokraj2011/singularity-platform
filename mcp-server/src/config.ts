@@ -69,6 +69,7 @@ const MCP_LIMITS = {
   GIT_HISTORY_TIMEOUT_MS: 300_000,
   PROCESS_KILL_GRACE_MS: 60_000,
   COPILOT_HEADLESS_TIMEOUT_MS: 300_000,
+  COPILOT_EXECUTE_TIMEOUT_MS: 2 * 60 * 60_000,
   AUDIT_RESTORE_LIMIT: 100_000,
   FORMAL_VERIFICATION_TIMEOUT_MS: 10 * 60_000,
   LOOP_REPETITION_THRESHOLD: 20,
@@ -293,6 +294,8 @@ const schema = z.object({
   MCP_GIT_HISTORY_TIMEOUT_MS: boundedPositiveInt(60_000, MCP_LIMITS.GIT_HISTORY_TIMEOUT_MS),
   MCP_PROCESS_KILL_GRACE_MS: boundedPositiveInt(2_000, MCP_LIMITS.PROCESS_KILL_GRACE_MS),
   MCP_COPILOT_HEADLESS_TIMEOUT_MS: boundedPositiveInt(30_000, MCP_LIMITS.COPILOT_HEADLESS_TIMEOUT_MS),
+  MCP_COPILOT_EXECUTE_DEFAULT_TIMEOUT_MS: boundedPositiveInt(900_000, MCP_LIMITS.COPILOT_EXECUTE_TIMEOUT_MS),
+  MCP_COPILOT_EXECUTE_MAX_TIMEOUT_MS: boundedPositiveInt(30 * 60_000, MCP_LIMITS.COPILOT_EXECUTE_TIMEOUT_MS),
 
   // Optional SMT/formal verifier hook. When enabled, finish_work_branch runs
   // a pre-commit proof over the code-change evidence and verification receipts
@@ -368,6 +371,14 @@ if (parsed.data.MCP_COMMAND_TOOL_DEFAULT_TIMEOUT_MS > parsed.data.MCP_COMMAND_TO
   console.error(
     "FATAL: MCP_COMMAND_TOOL_DEFAULT_TIMEOUT_MS must be less than or equal to " +
       "MCP_COMMAND_TOOL_MAX_TIMEOUT_MS so run_command defaults cannot exceed the request ceiling.",
+  );
+  process.exit(1);
+}
+
+if (parsed.data.MCP_COPILOT_EXECUTE_DEFAULT_TIMEOUT_MS > parsed.data.MCP_COPILOT_EXECUTE_MAX_TIMEOUT_MS) {
+  console.error(
+    "FATAL: MCP_COPILOT_EXECUTE_DEFAULT_TIMEOUT_MS must be less than or equal to " +
+      "MCP_COPILOT_EXECUTE_MAX_TIMEOUT_MS so copilot_execute defaults cannot exceed the request ceiling.",
   );
   process.exit(1);
 }
