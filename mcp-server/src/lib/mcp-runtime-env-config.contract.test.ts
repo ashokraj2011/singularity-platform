@@ -27,6 +27,8 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
         "config.MCP_LEARNING_SERVICE_TIMEOUT_SEC,",
         "config.MCP_WORKSPACE_BRANCH_PROBE_TIMEOUT_MS,",
         "config.MCP_RUNNER_EXECUTE_GRACE_MS,",
+        "config.MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS,",
+        "config.MCP_PYTHON_TOOL_MAX_TIMEOUT_MS,",
         "config.MCP_RUNNER_HEALTH_TIMEOUT_MS,",
         "config.MCP_STRICT_HEALTH_GIT_TIMEOUT_MS,",
         "config.MCP_STRICT_HEALTH_LLM_TIMEOUT_MS,",
@@ -64,7 +66,7 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
 
 const defaults = runConfig({});
 assert.equal(defaults.status, 0, defaults.stderr);
-assert.match(defaults.stdout, /3:5:300:5:5:8:2000:5000:1500:2000:1500:2000:3000:5000:5000:30000:10000:1000:60000:5000:30000:300000:600000:20000:120000:10000:30000:60000:2000:30000:4096:0\.7/);
+assert.match(defaults.stdout, /3:5:300:5:5:8:2000:5000:120000:600000:1500:2000:1500:2000:3000:5000:5000:30000:10000:1000:60000:5000:30000:300000:600000:20000:120000:10000:30000:60000:2000:30000:4096:0\.7/);
 
 const custom = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "4",
@@ -75,6 +77,8 @@ const custom = runConfig({
   MCP_LEARNING_SERVICE_TIMEOUT_SEC: "11",
   MCP_WORKSPACE_BRANCH_PROBE_TIMEOUT_MS: "2500",
   MCP_RUNNER_EXECUTE_GRACE_MS: "6000",
+  MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS: "180000",
+  MCP_PYTHON_TOOL_MAX_TIMEOUT_MS: "900000",
   MCP_RUNNER_HEALTH_TIMEOUT_MS: "2500",
   MCP_STRICT_HEALTH_GIT_TIMEOUT_MS: "3000",
   MCP_STRICT_HEALTH_LLM_TIMEOUT_MS: "3500",
@@ -101,7 +105,7 @@ const custom = runConfig({
   MCP_PII_NER_CONFIDENCE_FLOOR: "0.85",
 });
 assert.equal(custom.status, 0, custom.stderr);
-assert.match(custom.stdout, /4:9:120:9:12:11:2500:6000:2500:3000:3500:4500:4000:4500:5500:45000:15000:2000:90000:6500:35000:240000:480000:25000:180000:17000:33000:65000:3500:45000:8192:0\.85/);
+assert.match(custom.stdout, /4:9:120:9:12:11:2500:6000:180000:900000:2500:3000:3500:4500:4000:4500:5500:45000:15000:2000:90000:6500:35000:240000:480000:25000:180000:17000:33000:65000:3500:45000:8192:0\.85/);
 
 const impossibleLoopDetector = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "10",
@@ -124,6 +128,13 @@ const invertedWorktreeTestTimeouts = runConfig({
 assert.notEqual(invertedWorktreeTestTimeouts.status, 0);
 assert.match(invertedWorktreeTestTimeouts.stderr, /MCP_WORKTREE_TEST_DEFAULT_TIMEOUT_MS/);
 
+const invertedPythonToolTimeouts = runConfig({
+  MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS: "900000",
+  MCP_PYTHON_TOOL_MAX_TIMEOUT_MS: "600000",
+});
+assert.notEqual(invertedPythonToolTimeouts.status, 0);
+assert.match(invertedPythonToolTimeouts.stderr, /MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS/);
+
 for (const [name, value] of [
   ["MCP_LOOP_REPETITION_THRESHOLD", "0"],
   ["MCP_LOOP_REPETITION_WINDOW", "101"],
@@ -133,6 +144,8 @@ for (const [name, value] of [
   ["MCP_LEARNING_SERVICE_TIMEOUT_SEC", "0"],
   ["MCP_WORKSPACE_BRANCH_PROBE_TIMEOUT_MS", "0"],
   ["MCP_RUNNER_EXECUTE_GRACE_MS", "0"],
+  ["MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS", "0"],
+  ["MCP_PYTHON_TOOL_MAX_TIMEOUT_MS", "0"],
   ["MCP_RUNNER_HEALTH_TIMEOUT_MS", "0"],
   ["MCP_STRICT_HEALTH_GIT_TIMEOUT_MS", "0"],
   ["MCP_STRICT_HEALTH_LLM_TIMEOUT_MS", "0"],
@@ -172,6 +185,9 @@ assert.match(configSource, /MCP_AGENT_RUNTIME_WORLD_MODEL_TIMEOUT_SEC: boundedPo
 assert.match(configSource, /MCP_LEARNING_SERVICE_TIMEOUT_SEC: boundedPositiveInt\(8, MCP_LIMITS\.LEARNING_SERVICE_TIMEOUT_SEC\)/);
 assert.match(configSource, /MCP_WORKSPACE_BRANCH_PROBE_TIMEOUT_MS: boundedPositiveInt\(2_000, MCP_LIMITS\.WORKSPACE_BRANCH_PROBE_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_RUNNER_EXECUTE_GRACE_MS: boundedPositiveInt\(5_000, MCP_LIMITS\.RUNNER_EXECUTE_GRACE_MS\)/);
+assert.match(configSource, /MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS: boundedPositiveInt\(120_000, MCP_LIMITS\.PYTHON_TOOL_TIMEOUT_MS\)/);
+assert.match(configSource, /MCP_PYTHON_TOOL_MAX_TIMEOUT_MS: boundedPositiveInt\(600_000, MCP_LIMITS\.PYTHON_TOOL_TIMEOUT_MS\)/);
+assert.match(configSource, /MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS must be less than or equal to[\s\S]*?MCP_PYTHON_TOOL_MAX_TIMEOUT_MS/);
 assert.match(configSource, /MCP_RUNNER_HEALTH_TIMEOUT_MS: boundedPositiveInt\(1_500, MCP_LIMITS\.RUNNER_HEALTH_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_STRICT_HEALTH_GIT_TIMEOUT_MS: boundedPositiveInt\(2_000, MCP_LIMITS\.STRICT_HEALTH_GIT_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_STRICT_HEALTH_LLM_TIMEOUT_MS: boundedPositiveInt\(1_500, MCP_LIMITS\.STRICT_HEALTH_LLM_TIMEOUT_MS\)/);
@@ -322,6 +338,13 @@ const sandboxSource = readFileSync("src/workspace/sandbox.ts", "utf8");
 assert.match(sandboxSource, /const WORKSPACE_BRANCH_PROBE_TIMEOUT_MS = config\.MCP_WORKSPACE_BRANCH_PROBE_TIMEOUT_MS;/);
 assert.match(sandboxSource, /timeout: WORKSPACE_BRANCH_PROBE_TIMEOUT_MS/);
 assert.doesNotMatch(sandboxSource, /timeout: 2_000/);
+
+const pythonToolSource = readFileSync("src/tools/python.ts", "utf8");
+assert.match(pythonToolSource, /const DEFAULT_TIMEOUT_MS = config\.MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS;/);
+assert.match(pythonToolSource, /const MAX_TIMEOUT_MS = config\.MCP_PYTHON_TOOL_MAX_TIMEOUT_MS;/);
+assert.match(pythonToolSource, /Math\.min\(Math\.floor\(args\.timeout_ms\), MAX_TIMEOUT_MS\)/);
+assert.doesNotMatch(pythonToolSource, /const DEFAULT_TIMEOUT_MS = 120_000/);
+assert.doesNotMatch(pythonToolSource, /const MAX_TIMEOUT_MS = 600_000/);
 
 const gitHistorySource = readFileSync("src/tools/git-history.ts", "utf8");
 assert.match(gitHistorySource, /const GIT_HISTORY_TIMEOUT_MS = config\.MCP_GIT_HISTORY_TIMEOUT_MS;/);

@@ -27,8 +27,8 @@ import { callSandboxRunner } from "./runner-client";
  * `python3 <file> [args...]`, and the file is removed afterward.
  */
 
-const MAX_TIMEOUT_MS = 600_000;
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = config.MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS;
+const MAX_TIMEOUT_MS = config.MCP_PYTHON_TOOL_MAX_TIMEOUT_MS;
 const DEFAULT_MAX_OUTPUT_CHARS = 12_000;
 const MAX_OUTPUT_CHARS = 100_000;
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -61,7 +61,7 @@ const pythonInputSchema = {
     code: { type: "string", description: "Inline Python source to execute." },
     args: { type: "array", items: { type: "string" }, description: "Optional argv passed after the script." },
     env: { type: "object", description: "Optional environment variables injected into the sandbox." },
-    timeout_ms: { type: "number", description: "Timeout in milliseconds, max 600000 (default 120000)." },
+    timeout_ms: { type: "number", description: "Timeout in milliseconds, capped by MCP_PYTHON_TOOL_MAX_TIMEOUT_MS." },
     allow_network: { type: "boolean", description: "Opt into outbound network for this run (default false → no network)." },
     max_output_chars: { type: "number", description: "Maximum stdout/stderr excerpt chars." },
   },

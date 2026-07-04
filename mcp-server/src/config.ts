@@ -46,6 +46,7 @@ const MCP_LIMITS = {
   WORKSPACE_DISK_QUOTA_BYTES: 10 * 1024 * 1024 * 1024 * 1024,
   WORKSPACE_BRANCH_PROBE_TIMEOUT_MS: 60_000,
   RUNNER_EXECUTE_GRACE_MS: 300_000,
+  PYTHON_TOOL_TIMEOUT_MS: 60 * 60_000,
   RUNNER_HEALTH_TIMEOUT_MS: 300_000,
   STRICT_HEALTH_GIT_TIMEOUT_MS: 60_000,
   STRICT_HEALTH_LLM_TIMEOUT_MS: 300_000,
@@ -253,6 +254,8 @@ const schema = z.object({
   MCP_RUNNER_IMAGE_MAP_JSON: z.string().optional(),
   MCP_RUNNER_NETWORK_MODE: z.string().default("none"),
   MCP_RUNNER_EXECUTE_GRACE_MS: boundedPositiveInt(5_000, MCP_LIMITS.RUNNER_EXECUTE_GRACE_MS),
+  MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS: boundedPositiveInt(120_000, MCP_LIMITS.PYTHON_TOOL_TIMEOUT_MS),
+  MCP_PYTHON_TOOL_MAX_TIMEOUT_MS: boundedPositiveInt(600_000, MCP_LIMITS.PYTHON_TOOL_TIMEOUT_MS),
   MCP_RUNNER_HEALTH_TIMEOUT_MS: boundedPositiveInt(1_500, MCP_LIMITS.RUNNER_HEALTH_TIMEOUT_MS),
   MCP_STRICT_HEALTH_GIT_TIMEOUT_MS: boundedPositiveInt(2_000, MCP_LIMITS.STRICT_HEALTH_GIT_TIMEOUT_MS),
   MCP_STRICT_HEALTH_LLM_TIMEOUT_MS: boundedPositiveInt(1_500, MCP_LIMITS.STRICT_HEALTH_LLM_TIMEOUT_MS),
@@ -346,6 +349,14 @@ if (parsed.data.MCP_WORKTREE_TEST_DEFAULT_TIMEOUT_MS > parsed.data.MCP_WORKTREE_
   console.error(
     "FATAL: MCP_WORKTREE_TEST_DEFAULT_TIMEOUT_MS must be less than or equal to " +
       "MCP_WORKTREE_TEST_MAX_TIMEOUT_MS so worktree test defaults cannot exceed the request ceiling.",
+  );
+  process.exit(1);
+}
+
+if (parsed.data.MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS > parsed.data.MCP_PYTHON_TOOL_MAX_TIMEOUT_MS) {
+  console.error(
+    "FATAL: MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS must be less than or equal to " +
+      "MCP_PYTHON_TOOL_MAX_TIMEOUT_MS so run_python defaults cannot exceed the request ceiling.",
   );
   process.exit(1);
 }

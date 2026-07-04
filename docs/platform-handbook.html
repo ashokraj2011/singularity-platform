@@ -759,6 +759,10 @@ MCP bounds runner-side client waits before dispatch: <code>MCP_RUNNER_EXECUTE_GR
 defaults to <code>5000</code> and is bounded <code>1..300000</code> as the HTTP grace window after a
 tool-requested command timeout, while <code>MCP_RUNNER_HEALTH_TIMEOUT_MS</code> defaults
 to <code>1500</code> and is bounded <code>1..300000</code> for readiness checks.
+Workflow <code>run_python</code> execution is bounded through the same central MCP config:
+<code>MCP_PYTHON_TOOL_DEFAULT_TIMEOUT_MS</code> defaults to <code>120000</code>, and
+<code>MCP_PYTHON_TOOL_MAX_TIMEOUT_MS</code> defaults to <code>600000</code>; both are bounded
+<code>1..3600000</code>, and MCP startup fails if the default exceeds the configured max.
 Inside <code>mcp-sandbox-runner</code>, Docker process cleanup and Docker health probing
 are bounded separately: <code>MCP_RUNNER_DOCKER_KILL_GRACE_MS</code> defaults to <code>2000</code>
 and caps at <code>60000</code>, while <code>MCP_RUNNER_DOCKER_HEALTH_TIMEOUT_MS</code> defaults to
