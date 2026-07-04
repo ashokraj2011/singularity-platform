@@ -125,11 +125,37 @@ _MAX_RUNTIME_TYPE_LEN = 64
 _MAX_RUNTIME_DEVICE_NAME_LEN = 200
 _MAX_RUNTIME_REQUEST_ID_LEN = 128
 _MAX_RUNTIME_JWT_LEN = 16 * 1024
+_DEFAULT_REVOCATION_RECHECK_SEC = 300
+_MIN_REVOCATION_RECHECK_SEC = 5
+_MAX_REVOCATION_RECHECK_SEC = 24 * 60 * 60
+
+
+def _bounded_int_env(name: str, *, default: int, min_value: int, max_value: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        log.warning("invalid integer env %s=%r; using default=%s", name, raw, default)
+        return default
+    if value < min_value:
+        log.warning("integer env %s=%s below min=%s; using default=%s", name, value, min_value, default)
+        return default
+    if value > max_value:
+        log.warning("integer env %s=%s above max=%s; clamping", name, value, max_value)
+        return max_value
+    return value
 
 # Finding #7 — device-revocation enforcement. A revoked device JWT must stop working
 # without waiting for its (up-to-365-day) natural expiry, so the bridge asks IAM whether
 # the device row is revoked: once at connect, then periodically for live connections.
-REVOCATION_RECHECK_SEC = int(os.environ.get("RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC", "300"))
+REVOCATION_RECHECK_SEC = _bounded_int_env(
+    "RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC",
+    default=_DEFAULT_REVOCATION_RECHECK_SEC,
+    min_value=_MIN_REVOCATION_RECHECK_SEC,
+    max_value=_MAX_REVOCATION_RECHECK_SEC,
+)
 # SECURITY: when IAM can't be reached at connect, fail CLOSED by default in
 # production-class envs (a revoked device must not slip in during an IAM blip),
 # and fail OPEN only in dev so a local IAM blip doesn't take down dial-in. The

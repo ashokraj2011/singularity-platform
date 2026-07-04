@@ -240,6 +240,48 @@ def test_runtime_capability_tag_list_canonicalizes_and_bounds_tags():
     assert laptop_bridge._runtime_capability_tag_list("mcp") == []
 
 
+def test_runtime_bridge_revocation_recheck_env_defaults_and_clamps(monkeypatch):
+    monkeypatch.delenv("RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC", raising=False)
+    assert laptop_bridge._bounded_int_env(
+        "RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC",
+        default=300,
+        min_value=5,
+        max_value=86_400,
+    ) == 300
+
+    monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC", "not-an-int")
+    assert laptop_bridge._bounded_int_env(
+        "RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC",
+        default=300,
+        min_value=5,
+        max_value=86_400,
+    ) == 300
+
+    monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC", "1")
+    assert laptop_bridge._bounded_int_env(
+        "RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC",
+        default=300,
+        min_value=5,
+        max_value=86_400,
+    ) == 300
+
+    monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC", "600")
+    assert laptop_bridge._bounded_int_env(
+        "RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC",
+        default=300,
+        min_value=5,
+        max_value=86_400,
+    ) == 600
+
+    monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC", "999999")
+    assert laptop_bridge._bounded_int_env(
+        "RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC",
+        default=300,
+        min_value=5,
+        max_value=86_400,
+    ) == 86_400
+
+
 def test_device_token_still_requires_device_id(monkeypatch):
     monkeypatch.setattr(laptop_bridge, "JWT_SECRET", "test-secret")
     base_payload = {

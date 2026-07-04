@@ -156,6 +156,10 @@ recognized frame names; it is the token-side upper bound for what
 blank values are dropped, duplicates are removed, and count/length are bounded.
 Revocation checks use the token's `device_id` claim, falling back to `runtime_id`
 for runtime-only tokens, and never trust the hello frame for revocation identity.
+Live connections re-check revocation every
+`RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC` seconds (default `300`). Invalid values
+fall back to the default, values below `5` seconds fall back to the default to
+avoid tight IAM polling loops, and values above `86400` are clamped.
 
 ---
 
