@@ -21,6 +21,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, chmodSync, unlinkSy
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
 
 const HOME           = process.env.SINGULARITY_MCP_HOME ?? join(homedir(), ".singularity-mcp");
 const TOKEN_FILE     = join(HOME, "token.json");
@@ -95,13 +96,14 @@ async function cmdLogin(flags: Record<string, string>): Promise<void> {
     console.error(`✗ /auth/local/login failed: ${loginRes.status} ${await loginRes.text()}`);
     process.exit(1);
   }
-  const loginBody = await loginRes.json() as { access_token: string };
+  const loginBody = await readCliJsonObject(loginRes, "/auth/local/login");
+  const userAccessToken = requiredStringField(loginBody, "access_token", "/auth/local/login");
 
   // Step 2 — exchange the user JWT for a 90-day device token.
   const deviceId = loadToken()?.device_id ?? randomUUID();
   const deviceRes = await fetch(`${platform.replace(/\/$/, "")}/auth/device-token`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${loginBody.access_token}` },
+    headers: { "content-type": "application/json", authorization: `Bearer ${userAccessToken}` },
     body: JSON.stringify({
       device_id: deviceId,
       device_name: deviceName,
@@ -118,22 +120,56 @@ async function cmdLogin(flags: Record<string, string>): Promise<void> {
     console.error(`✗ /auth/device-token failed: ${deviceRes.status} ${await deviceRes.text()}`);
     process.exit(1);
   }
-  const dt = await deviceRes.json() as {
-    access_token: string; token_kind?: string; device_id: string; user_id: string;
-    email: string; device_name: string; expires_in_days: number;
-  };
+  const dt = await readCliJsonObject(deviceRes, "/auth/device-token");
+  const deviceAccessToken = requiredStringField(dt, "access_token", "/auth/device-token");
+  const savedDeviceId = optionalStringField(dt, "device_id") ?? deviceId;
+  const savedUserId = requiredStringField(dt, "user_id", "/auth/device-token");
+  const savedEmail = optionalStringField(dt, "email") ?? email;
+  const savedDeviceName = optionalStringField(dt, "device_name") ?? deviceName;
+  const savedTtlDays = optionalNumberField(dt, "expires_in_days") ?? ttlDays;
+  const tokenKind = optionalStringField(dt, "token_kind") ?? "runtime";
 
   saveToken({
-    access_token:    dt.access_token,
-    device_id:       dt.device_id,
-    device_name:     dt.device_name,
-    email:           dt.email,
-    user_id:         dt.user_id,
-    expires_in_days: dt.expires_in_days,
+    access_token:    deviceAccessToken,
+    device_id:       savedDeviceId,
+    device_name:     savedDeviceName,
+    email:           savedEmail,
+    user_id:         savedUserId,
+    expires_in_days: savedTtlDays,
     saved_at:        new Date().toISOString(),
   });
-  console.log(`✓ saved ${dt.token_kind ?? "runtime"} token to ${TOKEN_FILE} (user_id=${dt.user_id}, runtime_id=${dt.device_id})`);
+  console.log(`✓ saved ${tokenKind} token to ${TOKEN_FILE} (user_id=${savedUserId}, runtime_id=${savedDeviceId})`);
   console.log(`  Next: singularity-mcp start`);
+}
+
+async function readCliJsonObject(res: Response, source: string): Promise<Record<string, unknown>> {
+  const body = await readUpstreamJsonBody(res);
+  const snippet = upstreamSnippet(body.raw, 400) || "empty response body";
+  if (body.parseError) {
+    throw new Error(`${source} returned invalid JSON (${res.status}): ${body.parseError}; body=${snippet}`);
+  }
+  if (!isJsonObject(body.data)) {
+    throw new Error(`${source} returned invalid JSON (${res.status}): response JSON was not an object; body=${snippet}`);
+  }
+  return body.data;
+}
+
+function requiredStringField(row: Record<string, unknown>, key: string, source: string): string {
+  const value = optionalStringField(row, key);
+  if (!value) throw new Error(`${source} response missing required field '${key}'`);
+  return value;
+}
+
+function optionalStringField(row: Record<string, unknown>, key: string): string | undefined {
+  const raw = row[key];
+  const value = typeof raw === "string" || typeof raw === "number" ? String(raw).trim() : "";
+  return value || undefined;
+}
+
+function optionalNumberField(row: Record<string, unknown>, key: string): number | undefined {
+  const raw = row[key];
+  const value = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : NaN;
+  return Number.isFinite(value) ? value : undefined;
 }
 
 // ─── start ──────────────────────────────────────────────────────────────────
