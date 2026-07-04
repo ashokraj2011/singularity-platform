@@ -474,6 +474,12 @@ The learning architecture is hybrid:
 - The folded learning routes require `LEARNING_SERVICE_TOKEN` for both reads and writes; Prompt Composer and MCP send that token when querying learned context.
 - If the folded learning routes are unavailable, prompt assembly should degrade gracefully.
 
+Prompt Composer bounds lesson-retrieval knobs such as `LESSON_SUPERSEDE_COSINE`,
+`LESSON_MAX_ACTIVE_PER_SCOPE`, `LESSON_TOOL_MATCH_BOOST`,
+`LESSON_RETRIEVAL_FLOOR`, and `LESSONS_TOPK`; invalid values fall back to safe
+defaults and oversized top-K values clamp at `50` so a bad env file cannot bloat
+prompt assembly.
+
 See [M35 Hybrid Learning ADR](./adr/0001-m35-hybrid-learning.md).
 
 ### 7.16 Laptop CLI And Desktop

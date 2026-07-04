@@ -729,8 +729,9 @@ export const composeService = {
         // capability. Disabled when taskVec is null (no embedding, no match).
         if (taskVec && process.env.LESSONS_LEARNED_ENABLED !== "false") {
           try {
+            const { boundedLessonTake } = await import("../lessons/lessons.config");
             const { lessonsService } = await import("../lessons/lessons.service");
-            const lessonTake = Number(process.env.LESSONS_TOPK ?? 3);
+            const lessonTake = boundedLessonTake(process.env.LESSONS_TOPK, 3);
             const lessons = await lessonsService.semanticLessons(capabilityId, taskVec, { take: lessonTake });
             for (const l of lessons) {
               const citation = makeCitationKey("lesson", l.toolName ? `${l.toolName}-rule` : "rule", l.id);

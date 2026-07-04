@@ -17,16 +17,19 @@ import {
   toVectorLiteral,
 } from "@agentandtools/shared";
 import type { CreateLessonInput, LessonRow } from "./lessons.schemas";
+import { boundedLessonTake, lessonConfig } from "./lessons.config";
+
+const LESSON_CONFIG = lessonConfig();
 
 /** Cosine-similarity threshold above which a new lesson supersedes an older
  *  one on the same (capabilityId, toolName) scope. Tuned to be conservative —
  *  only near-duplicate rules supersede; semantically related ones coexist. */
-const SUPERSEDE_COSINE_THRESHOLD = Number(process.env.LESSON_SUPERSEDE_COSINE ?? 0.85);
+const SUPERSEDE_COSINE_THRESHOLD = LESSON_CONFIG.supersedeCosineThreshold;
 
 /** Max active lessons per (capabilityId, toolName) tuple — prevents the
  *  layer from bloating prompts as the catalog grows. Older lessons with
  *  lower confidence get archived when this is exceeded. */
-const MAX_ACTIVE_PER_SCOPE = Number(process.env.LESSON_MAX_ACTIVE_PER_SCOPE ?? 20);
+const MAX_ACTIVE_PER_SCOPE = LESSON_CONFIG.maxActivePerScope;
 
 export const lessonsService = {
   async create(input: CreateLessonInput): Promise<LessonRow> {
@@ -155,7 +158,7 @@ export const lessonsService = {
     confidence: number;
     cosineSimilarity: number;
   }>> {
-    const take = opts?.take ?? 3;
+    const take = boundedLessonTake(opts?.take, LESSON_CONFIG.defaultTopK);
     const candidatePool = take * 5;
     type Row = {
       id: string;
@@ -167,7 +170,7 @@ export const lessonsService = {
     // Tool-narrowed lessons rank above capability-only lessons; we union and let
     // the cosine sort sort them out, but bias tool-matched ones by +0.05 cosine
     // so they tend to win ties (configurable via env if it ever matters).
-    const toolBoost = Number(process.env.LESSON_TOOL_MATCH_BOOST ?? 0.05);
+    const toolBoost = LESSON_CONFIG.toolMatchBoost;
     const rows = await prisma.$queryRawUnsafe<Row[]>(
       `SELECT id,
               "ruleText",
@@ -188,7 +191,7 @@ export const lessonsService = {
     // Light filter: drop anything below a meaningful similarity floor. The
     // boost above can push tool-matched lessons above the floor even when
     // their raw cosine is borderline — that's the desired tie-break.
-    const floor = Number(process.env.LESSON_RETRIEVAL_FLOOR ?? 0.3);
+    const floor = LESSON_CONFIG.retrievalFloor;
     return rows
       .filter((r) => Number(r.cosine_similarity) >= floor)
       .slice(0, take)
