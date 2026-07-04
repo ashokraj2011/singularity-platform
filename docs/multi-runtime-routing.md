@@ -55,6 +55,12 @@ context.
 
 So **tools and models are routed independently** — by frame type + capability tag —
 even though they often live on the same runtime.
+Model calls use `LLM_GATEWAY_TIMEOUT_SEC` (default `300`, clamped to `7200`)
+whether served through a connected runtime's `model-run` frame or direct gateway
+fallback. LLM gateway registry discovery uses `LLM_GATEWAY_DISCOVERY_TTL_SEC`
+(default `30`, clamped to `86400`). Invalid or sub-second values fall back to
+defaults instead of preventing Context Fabric from starting or creating a tight
+registry polling loop.
 
 `source-tree`/`source-file` let a **cloud control-plane** service (agent-runtime
 capability bootstrap) discover a repo through the requesting user's laptop runtime
