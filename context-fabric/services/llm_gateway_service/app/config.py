@@ -9,9 +9,73 @@ other service calls the routes here over HTTP via `LLM_GATEWAY_URL`.
 from __future__ import annotations
 
 import os
-from typing import Optional
+import sys
+from typing import Mapping, Optional
 
 from pydantic_settings import BaseSettings
+
+
+DEFAULT_UPSTREAM_TIMEOUT_SEC = 240
+DEFAULT_RATE_LIMIT_RETRIES = 2
+DEFAULT_RATE_LIMIT_RETRY_DELAY_SEC = 65.0
+DEFAULT_RATE_LIMIT_MAX_SLEEP_SEC = 75.0
+
+
+def _warn_config(name: str, raw: str, value: int | float, reason: str) -> None:
+    print(
+        f"[llm-gateway] WARNING: ignoring {name}={raw!r}; using {value!r} ({reason})",
+        file=sys.stderr,
+    )
+
+
+def _bounded_int_env(
+    env: Mapping[str, str],
+    name: str,
+    default: int,
+    *,
+    min_value: int,
+    max_value: int,
+) -> int:
+    raw = env.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        _warn_config(name, raw, default, "expected integer")
+        return default
+    if value < min_value:
+        _warn_config(name, raw, default, f"minimum is {min_value}")
+        return default
+    if value > max_value:
+        _warn_config(name, raw, max_value, f"maximum is {max_value}")
+        return max_value
+    return value
+
+
+def _bounded_float_env(
+    env: Mapping[str, str],
+    name: str,
+    default: float,
+    *,
+    min_value: float,
+    max_value: float,
+) -> float:
+    raw = env.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        _warn_config(name, raw, default, "expected number")
+        return default
+    if value < min_value:
+        _warn_config(name, raw, default, f"minimum is {min_value}")
+        return default
+    if value > max_value:
+        _warn_config(name, raw, max_value, f"maximum is {max_value}")
+        return max_value
+    return value
 
 
 class Settings(BaseSettings):
@@ -39,16 +103,16 @@ class Settings(BaseSettings):
     prompt_cache_enabled: bool = True
 
     # Request timeout for upstream provider calls (seconds).
-    upstream_timeout_sec: int = 240
+    upstream_timeout_sec: int = DEFAULT_UPSTREAM_TIMEOUT_SEC
 
     # Upstream provider transient-failure handling. Retries fire for
     # 429 (rate limit), 503 (upstream down), and 529 (Anthropic
     # overloaded_error). Default 2 retries (3 total attempts) cleanly
     # absorbs ~2 min of upstream wobble; pure latency on healthy calls
     # is unchanged since no retries fire when status==200.
-    upstream_rate_limit_retries: int = 2
-    upstream_rate_limit_retry_delay_sec: float = 65.0
-    upstream_rate_limit_max_sleep_sec: float = 75.0
+    upstream_rate_limit_retries: int = DEFAULT_RATE_LIMIT_RETRIES
+    upstream_rate_limit_retry_delay_sec: float = DEFAULT_RATE_LIMIT_RETRY_DELAY_SEC
+    upstream_rate_limit_max_sleep_sec: float = DEFAULT_RATE_LIMIT_MAX_SLEEP_SEC
 
     # Service-to-service bearer accepted on this gateway. Empty disables
     # auth (development only — in production set this via IAM-minted
@@ -65,10 +129,22 @@ class Settings(BaseSettings):
         extra = "ignore"
 
     def __init__(self, **kwargs):
+        # BaseSettings is case-insensitive by default and would try to parse
+        # UPSTREAM_TIMEOUT_SEC before this post-init env mapper runs. Seed
+        # constructor defaults so our bounded parser below owns those values.
+        kwargs.setdefault("upstream_timeout_sec", DEFAULT_UPSTREAM_TIMEOUT_SEC)
+        kwargs.setdefault("upstream_rate_limit_retries", DEFAULT_RATE_LIMIT_RETRIES)
+        kwargs.setdefault(
+            "upstream_rate_limit_retry_delay_sec",
+            DEFAULT_RATE_LIMIT_RETRY_DELAY_SEC,
+        )
+        kwargs.setdefault(
+            "upstream_rate_limit_max_sleep_sec",
+            DEFAULT_RATE_LIMIT_MAX_SLEEP_SEC,
+        )
         super().__init__(**kwargs)
         env = os.environ
-        # Map env vars (uppercase) -> snake_case fields, since pydantic
-        # BaseSettings only honours the lowercase form by default.
+        # Map legacy/operator env names and apply gateway-specific guards.
         self.provider_config_path = env.get(
             "LLM_PROVIDER_CONFIG_PATH",
             env.get("MCP_LLM_PROVIDER_CONFIG_PATH", self.provider_config_path),
@@ -88,19 +164,34 @@ class Settings(BaseSettings):
         self.prompt_cache_enabled = (
             env.get("LLM_PROMPT_CACHE_ENABLED", "true").lower() == "true"
         )
-        self.upstream_timeout_sec = int(env.get("UPSTREAM_TIMEOUT_SEC", str(self.upstream_timeout_sec)))
-        self.upstream_rate_limit_retries = int(env.get(
+        self.upstream_timeout_sec = _bounded_int_env(
+            env,
+            "UPSTREAM_TIMEOUT_SEC",
+            self.upstream_timeout_sec,
+            min_value=1,
+            max_value=3600,
+        )
+        self.upstream_rate_limit_retries = _bounded_int_env(
+            env,
             "LLM_GATEWAY_RATE_LIMIT_RETRIES",
-            str(self.upstream_rate_limit_retries),
-        ))
-        self.upstream_rate_limit_retry_delay_sec = float(env.get(
+            self.upstream_rate_limit_retries,
+            min_value=0,
+            max_value=10,
+        )
+        self.upstream_rate_limit_retry_delay_sec = _bounded_float_env(
+            env,
             "LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC",
-            str(self.upstream_rate_limit_retry_delay_sec),
-        ))
-        self.upstream_rate_limit_max_sleep_sec = float(env.get(
+            self.upstream_rate_limit_retry_delay_sec,
+            min_value=0.0,
+            max_value=300.0,
+        )
+        self.upstream_rate_limit_max_sleep_sec = _bounded_float_env(
+            env,
             "LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC",
-            str(self.upstream_rate_limit_max_sleep_sec),
-        ))
+            self.upstream_rate_limit_max_sleep_sec,
+            min_value=0.0,
+            max_value=300.0,
+        )
         self.gateway_bearer = env.get("LLM_GATEWAY_BEARER", "")
         self.allow_caller_provider_override = (
             env.get("ALLOW_CALLER_PROVIDER_OVERRIDE", "false").lower() == "true"

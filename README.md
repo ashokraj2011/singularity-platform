@@ -796,6 +796,11 @@ standard bare-metal processes and the laptop runs MCP plus LLM Gateway, use the
 
 `context-fabric/services/llm_gateway_service` owns provider/model routing. MCP passes model aliases to its local/colocated gateway; only the gateway can hold provider credentials or open provider URLs. Raw provider/model caller overrides are disabled by default with `ALLOW_CALLER_PROVIDER_OVERRIDE=false`.
 
+The gateway bounds provider timing knobs at startup. Invalid numeric values such
+as `UPSTREAM_TIMEOUT_SEC=bad` fall back to safe defaults; extreme retry delay or
+sleep values are clamped so a provider outage cannot accidentally park a runtime
+for hours.
+
 The gateway reads two local JSON files:
 
 - `.singularity/llm-providers.json` — provider policy: allowlist, default provider/model, base URLs, credential env names, and enabled/disabled flags.

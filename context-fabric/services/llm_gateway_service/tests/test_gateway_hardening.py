@@ -52,6 +52,43 @@ def test_missing_provider_config_defaults_to_mock_only(monkeypatch: pytest.Monke
     )
 
 
+def test_numeric_env_values_default_and_clamp(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    monkeypatch.setenv("UPSTREAM_TIMEOUT_SEC", "bad")
+    monkeypatch.setenv("LLM_GATEWAY_RATE_LIMIT_RETRIES", "-1")
+    monkeypatch.setenv("LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC", "999999")
+    monkeypatch.setenv("LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC", "999999")
+
+    config, _, _ = load_modules(monkeypatch, tmp_path, None, None)
+
+    assert config.settings.upstream_timeout_sec == 240
+    assert config.settings.upstream_rate_limit_retries == 2
+    assert config.settings.upstream_rate_limit_retry_delay_sec == 300.0
+    assert config.settings.upstream_rate_limit_max_sleep_sec == 300.0
+    stderr = capsys.readouterr().err
+    assert "UPSTREAM_TIMEOUT_SEC" in stderr
+    assert "LLM_GATEWAY_RATE_LIMIT_RETRIES" in stderr
+    assert "LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC" in stderr
+    assert "LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC" in stderr
+
+
+def test_numeric_env_values_accept_disable_retry_boundaries(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setenv("UPSTREAM_TIMEOUT_SEC", "3600")
+    monkeypatch.setenv("LLM_GATEWAY_RATE_LIMIT_RETRIES", "0")
+    monkeypatch.setenv("LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC", "0")
+    monkeypatch.setenv("LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC", "300")
+
+    config, _, _ = load_modules(monkeypatch, tmp_path, None, None)
+
+    assert config.settings.upstream_timeout_sec == 3600
+    assert config.settings.upstream_rate_limit_retries == 0
+    assert config.settings.upstream_rate_limit_retry_delay_sec == 0.0
+    assert config.settings.upstream_rate_limit_max_sleep_sec == 300.0
+
+
 def test_openai_alias_without_base_url_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     providers = {
         "defaultProvider": "openai",
