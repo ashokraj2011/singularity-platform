@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from context_api_service.app.governed.env_config import bounded_float_env, bounded_int_env
+from context_api_service.app.governed.env_config import bounded_float_env, bounded_float_value, bounded_int_env
 
 
 def test_bounded_float_env_defaults_and_clamps(monkeypatch):
@@ -16,6 +16,22 @@ def test_bounded_float_env_defaults_and_clamps(monkeypatch):
     ) == 10.0
 
     monkeypatch.setenv("TEST_FLOAT_ENV", "not-a-float")
+    assert bounded_float_env(
+        "TEST_FLOAT_ENV",
+        default=10.0,
+        min_value=1.0,
+        max_value=100.0,
+    ) == 10.0
+
+    monkeypatch.setenv("TEST_FLOAT_ENV", "nan")
+    assert bounded_float_env(
+        "TEST_FLOAT_ENV",
+        default=10.0,
+        min_value=1.0,
+        max_value=100.0,
+    ) == 10.0
+
+    monkeypatch.setenv("TEST_FLOAT_ENV", "inf")
     assert bounded_float_env(
         "TEST_FLOAT_ENV",
         default=10.0,
@@ -46,6 +62,15 @@ def test_bounded_float_env_defaults_and_clamps(monkeypatch):
         min_value=1.0,
         max_value=100.0,
     ) == 100.0
+
+
+def test_bounded_float_value_defaults_and_clamps():
+    assert bounded_float_value(None, default=10.0, min_value=1.0, max_value=100.0) == 10.0
+    assert bounded_float_value("nan", default=10.0, min_value=1.0, max_value=100.0) == 10.0
+    assert bounded_float_value(float("inf"), default=10.0, min_value=1.0, max_value=100.0) == 10.0
+    assert bounded_float_value("0", default=10.0, min_value=1.0, max_value=100.0) == 10.0
+    assert bounded_float_value("42.5", default=10.0, min_value=1.0, max_value=100.0) == 42.5
+    assert bounded_float_value("999999", default=10.0, min_value=1.0, max_value=100.0) == 100.0
 
 
 def test_bounded_int_env_defaults_and_clamps(monkeypatch):

@@ -1,25 +1,32 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 
 
-def bounded_float_env(
-    name: str,
+def bounded_float_value(
+    raw: object,
     *,
     default: float,
     min_value: float,
     max_value: float,
     logger: logging.Logger | None = None,
+    name: str = "value",
 ) -> float:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
+    if raw is None:
+        return default
+    if isinstance(raw, str) and not raw.strip():
         return default
     try:
         value = float(raw)
     except (TypeError, ValueError):
         if logger:
             logger.warning("invalid float env %s=%r; using default=%s", name, raw, default)
+        return default
+    if not math.isfinite(value):
+        if logger:
+            logger.warning("non-finite float env %s=%r; using default=%s", name, raw, default)
         return default
     if value < min_value:
         if logger:
@@ -30,6 +37,24 @@ def bounded_float_env(
             logger.warning("float env %s=%s above max=%s; clamping", name, value, max_value)
         return max_value
     return value
+
+
+def bounded_float_env(
+    name: str,
+    *,
+    default: float,
+    min_value: float,
+    max_value: float,
+    logger: logging.Logger | None = None,
+) -> float:
+    return bounded_float_value(
+        os.environ.get(name, ""),
+        default=default,
+        min_value=min_value,
+        max_value=max_value,
+        logger=logger,
+        name=name,
+    )
 
 
 def bounded_int_env(

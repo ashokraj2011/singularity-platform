@@ -10,6 +10,12 @@ def test_default_mcp_invoke_timeout_env_is_bounded(monkeypatch):
     monkeypatch.setenv("CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC", "bad")
     assert execute._default_mcp_invoke_timeout_sec() == 480.0
 
+    monkeypatch.setenv("CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC", "nan")
+    assert execute._default_mcp_invoke_timeout_sec() == 480.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC", "inf")
+    assert execute._default_mcp_invoke_timeout_sec() == 480.0
+
     monkeypatch.setenv("CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC", "0")
     assert execute._default_mcp_invoke_timeout_sec() == 480.0
 
@@ -25,6 +31,8 @@ def test_request_timeout_sec_accepts_camel_and_snake_case_but_bounds_values():
     assert execute._request_timeout_sec({"timeoutSec": "30.5"}, default=240.0) == 30.5
     assert execute._request_timeout_sec({"timeout_sec": 45}, default=240.0) == 45.0
     assert execute._request_timeout_sec({"timeoutSec": "bad"}, default=240.0) == 240.0
+    assert execute._request_timeout_sec({"timeoutSec": "nan"}, default=240.0) == 240.0
+    assert execute._request_timeout_sec({"timeoutSec": float("inf")}, default=240.0) == 240.0
     assert execute._request_timeout_sec({"timeoutSec": 0}, default=240.0) == 240.0
     assert execute._request_timeout_sec({"timeoutSec": 999999}, default=240.0) == 7200.0
 

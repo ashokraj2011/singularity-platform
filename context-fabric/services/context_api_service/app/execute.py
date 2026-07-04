@@ -33,6 +33,7 @@ from pydantic import AliasChoices, BaseModel, Field
 from . import call_log, events_store
 from .audit_gov_emit import emit_audit_event
 from .config import is_production_class_env, settings
+from .env_config import bounded_float_value
 from .governed import placement as _placement
 from .governed.env_config import bounded_int_env
 from .iam_service_token import (
@@ -97,15 +98,13 @@ _MAX_DEEP_REASONING_BUDGET_TOKENS = 32_768
 
 
 def _bounded_timeout_value(raw: Any, *, default: float) -> float:
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return default
-    if value < _MIN_MCP_INVOKE_TIMEOUT_SEC:
-        return default
-    if value > _MAX_MCP_INVOKE_TIMEOUT_SEC:
-        return _MAX_MCP_INVOKE_TIMEOUT_SEC
-    return value
+    return bounded_float_value(
+        raw,
+        default=default,
+        min_value=_MIN_MCP_INVOKE_TIMEOUT_SEC,
+        max_value=_MAX_MCP_INVOKE_TIMEOUT_SEC,
+        name="timeoutSec",
+    )
 
 
 def _request_timeout_sec(limits: dict[str, Any], *, default: float) -> float:
