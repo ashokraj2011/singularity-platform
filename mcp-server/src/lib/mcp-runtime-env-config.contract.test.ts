@@ -43,6 +43,7 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
         "config.MCP_SOURCE_DISCOVERY_TIMEOUT_MS,",
         "config.MCP_HTTP_TOOL_TIMEOUT_MS,",
         "config.MCP_GIT_HISTORY_TIMEOUT_MS,",
+        "config.MCP_PROCESS_KILL_GRACE_MS,",
         "config.MCP_MUTATION_FINALIZATION_MAX_TOKENS,",
         "config.MCP_PII_NER_CONFIDENCE_FLOOR",
         "].join(':'));",
@@ -58,7 +59,7 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
 
 const defaults = runConfig({});
 assert.equal(defaults.status, 0, defaults.stderr);
-assert.match(defaults.stdout, /3:5:300:5:5:8:2000:5000:1500:2000:1500:2000:3000:5000:5000:30000:10000:1000:60000:5000:30000:20000:30000:60000:4096:0\.7/);
+assert.match(defaults.stdout, /3:5:300:5:5:8:2000:5000:1500:2000:1500:2000:3000:5000:5000:30000:10000:1000:60000:5000:30000:20000:30000:60000:2000:4096:0\.7/);
 
 const custom = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "4",
@@ -85,11 +86,12 @@ const custom = runConfig({
   MCP_SOURCE_DISCOVERY_TIMEOUT_MS: "25000",
   MCP_HTTP_TOOL_TIMEOUT_MS: "33000",
   MCP_GIT_HISTORY_TIMEOUT_MS: "65000",
+  MCP_PROCESS_KILL_GRACE_MS: "3500",
   MCP_MUTATION_FINALIZATION_MAX_TOKENS: "8192",
   MCP_PII_NER_CONFIDENCE_FLOOR: "0.85",
 });
 assert.equal(custom.status, 0, custom.stderr);
-assert.match(custom.stdout, /4:9:120:9:12:11:2500:6000:2500:3000:3500:4500:4000:4500:5500:45000:15000:2000:90000:6500:35000:25000:33000:65000:8192:0\.85/);
+assert.match(custom.stdout, /4:9:120:9:12:11:2500:6000:2500:3000:3500:4500:4000:4500:5500:45000:15000:2000:90000:6500:35000:25000:33000:65000:3500:8192:0\.85/);
 
 const impossibleLoopDetector = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "10",
@@ -130,6 +132,7 @@ for (const [name, value] of [
   ["MCP_SOURCE_DISCOVERY_TIMEOUT_MS", "0"],
   ["MCP_HTTP_TOOL_TIMEOUT_MS", "0"],
   ["MCP_GIT_HISTORY_TIMEOUT_MS", "0"],
+  ["MCP_PROCESS_KILL_GRACE_MS", "0"],
   ["MCP_MUTATION_FINALIZATION_MAX_TOKENS", "999999"],
   ["MCP_PII_NER_CONFIDENCE_FLOOR", "1.1"],
 ] as const) {
@@ -164,6 +167,7 @@ assert.match(configSource, /MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS: boundedPositiveIn
 assert.match(configSource, /MCP_SOURCE_DISCOVERY_TIMEOUT_MS: boundedPositiveInt\(20_000, MCP_LIMITS\.SOURCE_DISCOVERY_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_HTTP_TOOL_TIMEOUT_MS: boundedPositiveInt\(30_000, MCP_LIMITS\.HTTP_TOOL_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_GIT_HISTORY_TIMEOUT_MS: boundedPositiveInt\(60_000, MCP_LIMITS\.GIT_HISTORY_TIMEOUT_MS\)/);
+assert.match(configSource, /MCP_PROCESS_KILL_GRACE_MS: boundedPositiveInt\(2_000, MCP_LIMITS\.PROCESS_KILL_GRACE_MS\)/);
 assert.match(configSource, /MCP_MUTATION_FINALIZATION_MAX_TOKENS: boundedPositiveInt\(4096, MCP_LIMITS\.MUTATION_FINALIZATION_MAX_TOKENS\)/);
 assert.match(configSource, /MCP_PII_NER_CONFIDENCE_FLOOR: boundedNumber\(0\.7, 0, 1\)/);
 
@@ -235,5 +239,15 @@ const gitHistorySource = readFileSync("src/tools/git-history.ts", "utf8");
 assert.match(gitHistorySource, /const GIT_HISTORY_TIMEOUT_MS = config\.MCP_GIT_HISTORY_TIMEOUT_MS;/);
 assert.match(gitHistorySource, /timeout: GIT_HISTORY_TIMEOUT_MS/);
 assert.doesNotMatch(gitHistorySource, /timeout: 60_000/);
+
+const commandToolSource = readFileSync("src/tools/command.ts", "utf8");
+assert.match(commandToolSource, /const PROCESS_KILL_GRACE_MS = config\.MCP_PROCESS_KILL_GRACE_MS;/);
+assert.match(commandToolSource, /setTimeout\(\(\) => child\.kill\("SIGKILL"\), PROCESS_KILL_GRACE_MS\)/);
+assert.doesNotMatch(commandToolSource, /setTimeout\(\(\) => child\.kill\("SIGKILL"\), 2_000\)/);
+
+const copilotExecuteSource = readFileSync("src/tools/copilot-execute.ts", "utf8");
+assert.match(copilotExecuteSource, /const PROCESS_KILL_GRACE_MS = config\.MCP_PROCESS_KILL_GRACE_MS;/);
+assert.match(copilotExecuteSource, /setTimeout\(\(\) => child\.kill\("SIGKILL"\), PROCESS_KILL_GRACE_MS\)/);
+assert.doesNotMatch(copilotExecuteSource, /setTimeout\(\(\) => child\.kill\("SIGKILL"\), 2_000\)/);
 
 console.log("mcp runtime env config contract tests passed");

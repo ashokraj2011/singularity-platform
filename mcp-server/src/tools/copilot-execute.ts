@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { ToolHandler } from "./registry";
+import { config } from "../config";
 import { resolveSandboxedPath } from "../workspace/sandbox";
 import { log } from "../shared/log";
 
@@ -23,6 +24,7 @@ const DEFAULT_TIMEOUT_MS = 900_000; // 15 min — agentic phases are slow
 const MAX_TIMEOUT_MS = 30 * 60_000;
 const MAX_SUMMARY_CHARS = 16_000;
 const MAX_DIFF_CHARS = 200_000;
+const PROCESS_KILL_GRACE_MS = config.MCP_PROCESS_KILL_GRACE_MS;
 
 interface SpawnResult { code: number | null; stdout: string; stderr: string; timedOut: boolean }
 
@@ -36,7 +38,7 @@ function spawnCapture(cmd: string, args: string[], cwd: string, timeoutMs: numbe
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
+      setTimeout(() => child.kill("SIGKILL"), PROCESS_KILL_GRACE_MS).unref();
     }, timeoutMs);
     timer.unref();
     child.stdout.setEncoding("utf8");

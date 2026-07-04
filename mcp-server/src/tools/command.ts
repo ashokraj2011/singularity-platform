@@ -121,6 +121,7 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 // M44 — Lowered from 12_000 to 8_000 to align with the Workbench/MCP-default
 // max_tool_result_chars. Explicit caller `max_output_chars` still overrides.
 const DEFAULT_MAX_OUTPUT_CHARS = 8_000;
+const PROCESS_KILL_GRACE_MS = config.MCP_PROCESS_KILL_GRACE_MS;
 export const ALLOWED_COMMANDS = new Set([
   "git",
   "rg",
@@ -364,7 +365,7 @@ async function runCommand(args: Record<string, unknown>, defaultKind: "command" 
     let settled = false;
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
+      setTimeout(() => child.kill("SIGKILL"), PROCESS_KILL_GRACE_MS).unref();
     }, timeoutMs);
     timer.unref();
     child.stdout.setEncoding("utf8");
