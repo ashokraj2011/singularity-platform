@@ -85,6 +85,11 @@ def _sanitize_metadata(value: Any, *, depth: int = 0) -> Any:
     return str(value)
 
 
+def _safe_health_metadata(value: Any) -> dict[str, Any]:
+    sanitized = _sanitize_metadata(value if isinstance(value, dict) else {})
+    return sanitized if isinstance(sanitized, dict) else {}
+
+
 @dataclass
 class ActiveConnection:
     user_id:       str
@@ -121,6 +126,7 @@ class LaptopRegistry:
     async def register(self, conn: ActiveConnection) -> None:
         """R2 — single connection per (user_id, device_id). Close the previous
         one if a fresh one arrives."""
+        conn.health = _safe_health_metadata(conn.health)
         async with self._lock:
             by_device = self._by_user.setdefault(conn.user_id, {})
             existing = by_device.get(conn.device_id)
@@ -175,7 +181,7 @@ class LaptopRegistry:
             if conn:
                 conn.last_seen_at = time.time()
                 if isinstance(health, dict):
-                    conn.health = health
+                    conn.health = _safe_health_metadata(health)
 
     def _lookup(self, user_id: str, device_id: str) -> Optional[ActiveConnection]:
         return self._by_user.get(user_id, {}).get(device_id)

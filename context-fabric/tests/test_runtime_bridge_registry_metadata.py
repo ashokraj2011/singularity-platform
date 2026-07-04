@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
-from context_api_service.app.laptop_registry import ActiveConnection, LaptopRegistry, _sanitize_metadata
+from context_api_service.app.laptop_registry import (
+    ActiveConnection,
+    LaptopRegistry,
+    _safe_health_metadata,
+    _sanitize_metadata,
+)
 
 
 def _run(coro):
@@ -50,6 +55,17 @@ def test_sanitize_metadata_bounds_lists_dicts_and_long_strings():
     assert nested["list"][-1] == "[truncated]"
 
 
+def test_safe_health_metadata_returns_sanitized_dict_only():
+    assert _safe_health_metadata("not-a-dict") == {}
+    assert _safe_health_metadata({
+        "authorization": "Bearer secret",
+        "items": list(range(25)),
+    }) == {
+        "authorization": "[redacted]",
+        "items": [*range(20), "[truncated]"],
+    }
+
+
 def test_status_and_diagnostics_sanitize_runtime_health_metadata():
     registry = LaptopRegistry()
     now = 1.0
@@ -73,12 +89,14 @@ def test_status_and_diagnostics_sanitize_runtime_health_metadata():
 
     status = _run(registry.status_snapshot())
     diagnostics = _run(registry.diagnostics(user_id="user-a", frame_type="source-file", capability_tags=["mcp"]))
+    stored = registry._by_user["user-a"]["runtime-a"].health
 
     assert status["connected"][0]["health"] == {
         "llm_gateway_url_configured": True,
         "token": "[redacted]",
         "nested": {"password": "[redacted]"},
     }
+    assert stored == status["connected"][0]["health"]
     assert diagnostics["selected"]["health"]["token"] == "[redacted]"
     assert diagnostics["selected"]["health"]["nested"]["password"] == "[redacted]"
 
@@ -104,9 +122,13 @@ def test_heartbeat_updates_runtime_health_metadata_safely():
         "llm_gateway_url_configured": True,
         "llm_providers": [{"name": "copilot", "ready": True}],
         "api_key": "must-not-leak",
+        "long": "x" * 600,
     }))
     status = _run(registry.status_snapshot())
+    stored = registry._by_user["user-a"]["runtime-a"].health
 
     assert status["connected"][0]["health"]["llm_gateway_url_configured"] is True
     assert status["connected"][0]["health"]["llm_providers"] == [{"name": "copilot", "ready": True}]
     assert status["connected"][0]["health"]["api_key"] == "[redacted]"
+    assert stored["api_key"] == "[redacted]"
+    assert stored["long"].endswith("...[truncated]")
