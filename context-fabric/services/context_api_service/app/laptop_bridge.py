@@ -201,31 +201,41 @@ async def _device_revoked(user_id: str, device_id: str) -> Optional[bool]:
         return None
 
 
+def _claim_str(claims: dict[str, Any], key: str) -> str:
+    value = claims.get(key)
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 def _verify_runtime_token(token: str) -> dict[str, Any]:
     """Decode + validate a runtime/device JWT. Raises JWTError on failure."""
     claims = _verify_hs256_jwt(token, JWT_SECRET)
-    if claims.get("kind") not in {"runtime", "device"}:
-        raise JWTError(f"expected kind=runtime|device, got {claims.get('kind')}")
-    if not claims.get("sub"):
+    kind = claims.get("kind")
+    if kind not in {"runtime", "device"}:
+        raise JWTError(f"expected kind=runtime|device, got {kind}")
+    if not _claim_str(claims, "sub"):
         raise JWTError("missing sub")
-    if claims.get("kind") == "device" and not claims.get("device_id"):
+    if kind == "device" and not _claim_str(claims, "device_id"):
         raise JWTError("missing device_id")
+    if kind == "runtime" and not (_claim_str(claims, "runtime_id") or _claim_str(claims, "device_id")):
+        raise JWTError("missing runtime_id")
     return claims
 
 
 def _first_claim_str(claims: dict[str, Any], *keys: str) -> str:
     for key in keys:
-        value = claims.get(key)
-        if value is not None and str(value):
-            return str(value)
+        value = _claim_str(claims, key)
+        if value:
+            return value
     return ""
 
 
 def _first_hello_str(hello: dict[str, Any], *keys: str) -> str:
     for key in keys:
         value = hello.get(key)
-        if value is not None and str(value):
-            return str(value)
+        if value is not None and str(value).strip():
+            return str(value).strip()
     return ""
 
 

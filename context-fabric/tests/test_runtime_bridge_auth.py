@@ -62,6 +62,61 @@ def test_hs256_runtime_jwt_rejects_expired_token():
         laptop_bridge._verify_hs256_jwt(token, "test-secret")
 
 
+def test_runtime_token_requires_nonblank_runtime_identity(monkeypatch):
+    monkeypatch.setattr(laptop_bridge, "JWT_SECRET", "test-secret")
+    base_payload = {
+        "kind": "runtime",
+        "sub": "user-a",
+        "exp": int(time.time()) + 60,
+    }
+
+    with pytest.raises(laptop_bridge.JWTError, match="missing runtime_id"):
+        laptop_bridge._verify_runtime_token(_signed_runtime_token(base_payload))
+
+    with pytest.raises(laptop_bridge.JWTError, match="missing runtime_id"):
+        laptop_bridge._verify_runtime_token(_signed_runtime_token({
+            **base_payload,
+            "runtime_id": "   ",
+            "device_id": "",
+        }))
+
+
+def test_runtime_token_accepts_runtime_id_or_device_id(monkeypatch):
+    monkeypatch.setattr(laptop_bridge, "JWT_SECRET", "test-secret")
+    base_payload = {
+        "kind": "runtime",
+        "sub": "user-a",
+        "exp": int(time.time()) + 60,
+    }
+
+    with_runtime_id = laptop_bridge._verify_runtime_token(
+        _signed_runtime_token({**base_payload, "runtime_id": "runtime-a"})
+    )
+    with_device_id = laptop_bridge._verify_runtime_token(
+        _signed_runtime_token({**base_payload, "device_id": "device-a"})
+    )
+
+    assert with_runtime_id["runtime_id"] == "runtime-a"
+    assert with_device_id["device_id"] == "device-a"
+
+
+def test_device_token_still_requires_device_id(monkeypatch):
+    monkeypatch.setattr(laptop_bridge, "JWT_SECRET", "test-secret")
+    base_payload = {
+        "kind": "device",
+        "sub": "user-a",
+        "exp": int(time.time()) + 60,
+    }
+
+    with pytest.raises(laptop_bridge.JWTError, match="missing device_id"):
+        laptop_bridge._verify_runtime_token(_signed_runtime_token(base_payload))
+
+    claims = laptop_bridge._verify_runtime_token(
+        _signed_runtime_token({**base_payload, "device_id": "device-a"})
+    )
+    assert claims["device_id"] == "device-a"
+
+
 def test_runtime_metadata_uses_token_claims_over_spoofed_hello():
     metadata = laptop_bridge._token_authoritative_runtime_metadata(
         {
