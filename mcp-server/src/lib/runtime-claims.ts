@@ -19,6 +19,7 @@ export interface RuntimeClaims {
 }
 
 let _cached: RuntimeClaims | null = null;
+let _cacheKey: string | null = null;
 
 function _decodePayload(token: string): Record<string, unknown> {
   const seg = token.split(".")[1] ?? "";
@@ -26,9 +27,10 @@ function _decodePayload(token: string): Record<string, unknown> {
 }
 
 export function runtimeClaims(): RuntimeClaims {
-  if (_cached) return _cached;
   const token = process.env.SINGULARITY_RUNTIME_TOKEN ?? process.env.SINGULARITY_DEVICE_TOKEN;
   const envShared = String(process.env.SINGULARITY_RUNTIME_SHARED ?? "false").toLowerCase() === "true";
+  const cacheKey = JSON.stringify([token ?? "", envShared]);
+  if (_cached && _cacheKey === cacheKey) return _cached;
   let claims: Record<string, unknown> = {};
   if (token) {
     try {
@@ -44,6 +46,7 @@ export function runtimeClaims(): RuntimeClaims {
     tenantId: str(claims.tenant_id),
     runtimeId: str(claims.runtime_id),
   };
+  _cacheKey = cacheKey;
   return _cached;
 }
 
@@ -51,16 +54,37 @@ export function isSharedRuntime(): boolean {
   return runtimeClaims().shared;
 }
 
+export type StaticGitToken = {
+  source: string;
+  value: string;
+};
+
+/** Resolve the process-global static git token using the same precedence as
+ *  git-workspace.ts: process.env[MCP_GIT_TOKEN_ENV] → MCP_GIT_TOKEN →
+ *  GITHUB_TOKEN → GH_TOKEN. A shared runtime must not use this value for
+ *  user-attributed git work; brokered per-user credentials should be used. */
+export function staticGitToken(): StaticGitToken | null {
+  const envName = process.env.MCP_GIT_TOKEN_ENV?.trim() || "GITHUB_TOKEN";
+  const candidates: Array<[string, string | undefined]> = [
+    [envName, process.env[envName]],
+    ["MCP_GIT_TOKEN", process.env.MCP_GIT_TOKEN],
+    ["GITHUB_TOKEN", process.env.GITHUB_TOKEN],
+    ["GH_TOKEN", process.env.GH_TOKEN],
+  ];
+  const seen = new Set<string>();
+  for (const [source, raw] of candidates) {
+    if (seen.has(source)) continue;
+    seen.add(source);
+    const value = raw?.trim();
+    if (value) return { source, value };
+  }
+  return null;
+}
+
 /** True when any process-global static git token env is set (the thing a shared
  *  runtime must NOT carry — it would attribute every user's push to one identity). */
 export function staticGitTokenPresent(): boolean {
-  const envName = process.env.MCP_GIT_TOKEN_ENV;
-  return Boolean(
-    process.env.GITHUB_TOKEN?.trim() ||
-    process.env.GH_TOKEN?.trim() ||
-    process.env.MCP_GIT_TOKEN?.trim() ||
-    (envName ? process.env[envName]?.trim() : undefined),
-  );
+  return staticGitToken() !== null;
 }
 
 /** Opt-in hard gate: when true, a shared runtime carrying a static git token is

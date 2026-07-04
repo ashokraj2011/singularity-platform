@@ -11,7 +11,7 @@ import { configuredDefaultModel, configuredDefaultProvider } from "./llm/provide
 // Bug-fix (M-fix) — warm the gateway-provider cache on boot so the first
 // Operations Portal page-load after restart shows accurate readiness.
 import { refreshGatewayProviderStatus } from "./llm/client";
-import { isSharedRuntime, staticGitTokenPresent, gitBrokerEnforce } from "./lib/runtime-claims";
+import { isSharedRuntime, staticGitToken, staticGitTokenPresent, gitBrokerEnforce } from "./lib/runtime-claims";
 
 // Runtime dial-in mode. When LAPTOP_MODE/RUNTIME_DIAL_IN_MODE=true, skip the
 // inbound HTTP server and open an outbound WS to Context Fabric's runtime
@@ -48,9 +48,9 @@ function bootLaptopMode(): void {
   // push/clone would run as one identity. `shared` is read token-authoritatively
   // from the runtime JWT. Brokered per-user credentials (IAM via CF) replace it.
   // Opt-in enforcement (MCP_GIT_BROKER_ENFORCE) makes this fatal; otherwise warn.
-  if (isSharedRuntime() && (staticGitTokenPresent() || Boolean(config.MCP_GIT_TOKEN))) {
+  if (isSharedRuntime() && staticGitTokenPresent()) {
     if (gitBrokerEnforce()) {
-      log.error({}, "[runtime-dial-in] SHARED runtime carries a process-global git token AND MCP_GIT_BROKER_ENFORCE=true — refusing to start. Remove GITHUB_TOKEN/GH_TOKEN/MCP_GIT_TOKEN and use brokered per-user credentials. Exiting.");
+      log.error({}, "[runtime-dial-in] SHARED runtime carries a process-global git token AND MCP_GIT_BROKER_ENFORCE=true — refusing to start. Remove static git token envs and use brokered per-user credentials. Exiting.");
       process.exit(1);
     }
     log.warn({}, "[runtime-dial-in] SHARED runtime carries a process-global git token — every user would push as ONE identity. Move to brokered per-user credentials (set MCP_GIT_BROKER_ENFORCE=true to make this fatal).");
@@ -106,12 +106,9 @@ function bootLaptopMode(): void {
  */
 function gitAuthDiagnostic(): Record<string, unknown> {
   const tokenEnvName = config.MCP_GIT_TOKEN_ENV || "GITHUB_TOKEN";
-  let token: string | undefined;
-  let source = "(none)";
-  if (process.env[tokenEnvName]) { token = process.env[tokenEnvName]; source = tokenEnvName; }
-  else if (config.MCP_GIT_TOKEN)  { token = config.MCP_GIT_TOKEN;  source = "MCP_GIT_TOKEN"; }
-  else if (process.env.GITHUB_TOKEN) { token = process.env.GITHUB_TOKEN; source = "GITHUB_TOKEN"; }
-  else if (process.env.GH_TOKEN)  { token = process.env.GH_TOKEN;  source = "GH_TOKEN"; }
+  const resolved = staticGitToken();
+  const token = resolved?.value;
+  const source = resolved?.source ?? "(none)";
 
   let tokenClass = "none";
   if (token) {

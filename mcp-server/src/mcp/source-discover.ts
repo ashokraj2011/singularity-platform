@@ -18,7 +18,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { AppError } from "../shared/errors";
-import { isSharedRuntime, gitBrokerEnforce } from "../lib/runtime-claims";
+import { isSharedRuntime, gitBrokerEnforce, staticGitToken } from "../lib/runtime-claims";
 import { readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
 
 export const sourceDiscoverRouter: Router = Router();
@@ -42,9 +42,10 @@ function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } {
 
 function githubHeaders(extra?: Record<string, string>): Record<string, string> {
   // P0 #2 — a shared runtime under broker enforcement must NOT use a process-global
-  // GITHUB_TOKEN (it would attribute every user's fetch to one identity). The boot
-  // guard already refuses to start in that case; this is defense-in-depth.
-  const token = isSharedRuntime() && gitBrokerEnforce() ? undefined : process.env.GITHUB_TOKEN?.trim();
+  // git token (it would attribute every user's fetch to one identity). The boot
+  // guard already refuses to start in that case; this is defense-in-depth for
+  // all supported static-token envs, not only GITHUB_TOKEN.
+  const token = isSharedRuntime() && gitBrokerEnforce() ? undefined : staticGitToken()?.value;
   return {
     "user-agent": "singularity-mcp-server",
     "x-github-api-version": "2022-11-28",
