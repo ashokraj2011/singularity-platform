@@ -89,6 +89,92 @@ def test_numeric_env_values_accept_disable_retry_boundaries(monkeypatch: pytest.
     assert config.settings.upstream_rate_limit_max_sleep_sec == 300.0
 
 
+def test_model_catalog_sanitizes_bad_rows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    providers = {
+        "defaultProvider": "mock",
+        "allowedProviders": ["mock"],
+        "providers": {"mock": {"enabled": True, "defaultModel": "mock-fast"}},
+    }
+    catalog = [
+        "not-an-object",
+        {"provider": "mock", "model": "mock-fast"},
+        {"id": "mock", "provider": "MOCK", "model": "mock-fast", "default": True},
+        {"id": "mock", "provider": "mock", "model": "mock-other"},
+    ]
+
+    _, provider_config, router = load_modules(monkeypatch, tmp_path, providers, catalog)
+
+    assert provider_config.default_model_alias() == "mock"
+    assert provider_config.resolve_alias("mock")["provider"] == "mock"
+    assert provider_config.resolve_alias("mock")["model"] == "mock-fast"
+    listed = router.list_models()
+    assert [entry["id"] for entry in listed["models"]] == ["mock"]
+    warnings = "\n".join(listed["warnings"])
+    assert "expected object" in warnings
+    assert "missing id" in warnings
+    assert "duplicate id mock" in warnings
+
+
+def test_model_catalog_non_array_warns_and_disables_aliases(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    providers = {
+        "defaultProvider": "mock",
+        "allowedProviders": ["mock"],
+        "providers": {"mock": {"enabled": True, "defaultModel": "mock-fast"}},
+    }
+
+    _, provider_config, router = load_modules(monkeypatch, tmp_path, providers, {"id": "mock"})
+
+    assert provider_config.default_model_alias() is None
+    listed = router.list_models()
+    assert listed["models"] == []
+    assert "Model catalog must be a JSON array" in "\n".join(listed["warnings"])
+
+
+def test_estimated_cost_rejects_invalid_catalog_prices(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    providers = {
+        "defaultProvider": "mock",
+        "allowedProviders": ["mock"],
+        "providers": {"mock": {"enabled": True, "defaultModel": "mock-fast"}},
+    }
+    catalog = [
+        {
+            "id": "valid",
+            "provider": "mock",
+            "model": "mock-fast",
+            "inputPricePerMtok": 1.0,
+            "outputPricePerMtok": 2.0,
+        },
+        {
+            "id": "negative",
+            "provider": "mock",
+            "model": "mock-fast",
+            "inputPricePerMtok": -1.0,
+            "outputPricePerMtok": 2.0,
+        },
+        {
+            "id": "huge",
+            "provider": "mock",
+            "model": "mock-fast",
+            "inputPricePerMtok": 10001.0,
+            "outputPricePerMtok": 2.0,
+        },
+        {
+            "id": "boolean",
+            "provider": "mock",
+            "model": "mock-fast",
+            "inputPricePerMtok": True,
+            "outputPricePerMtok": 2.0,
+        },
+    ]
+
+    _, provider_config, _ = load_modules(monkeypatch, tmp_path, providers, catalog)
+
+    assert provider_config.compute_estimated_cost("valid", 1000, 2000) == 0.005
+    assert provider_config.compute_estimated_cost("negative", 1000, 2000) is None
+    assert provider_config.compute_estimated_cost("huge", 1000, 2000) is None
+    assert provider_config.compute_estimated_cost("boolean", 1000, 2000) is None
+
+
 def test_openai_alias_without_base_url_is_rejected(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     providers = {
         "defaultProvider": "openai",

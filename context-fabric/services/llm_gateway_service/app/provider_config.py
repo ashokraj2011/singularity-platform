@@ -6,6 +6,7 @@ Mounted into this container; no other service mounts these files after M33.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +27,7 @@ class ProviderNotReadyError(ProviderConfigError):
 _loaded_providers: Optional[Dict[str, Any]] = None
 _loaded_catalog:   Optional[List[Dict[str, Any]]] = None
 _warnings:         List[str] = []
+_MAX_PRICE_PER_MTOK = 10_000.0
 
 
 def _load_providers() -> Dict[str, Any]:
@@ -81,9 +83,34 @@ def _load_catalog() -> List[Dict[str, Any]]:
         _loaded_catalog = []
         return _loaded_catalog
     if not isinstance(raw, list):
-        raise ProviderConfigError("Model catalog must be a JSON array")
-    _loaded_catalog = raw
-    return raw
+        _warnings.append("Model catalog must be a JSON array; alias resolution unavailable.")
+        _loaded_catalog = []
+        return _loaded_catalog
+    _loaded_catalog = _sanitize_catalog(raw)
+    return _loaded_catalog
+
+
+def _sanitize_catalog(raw: List[Any]) -> List[Dict[str, Any]]:
+    sanitized: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            _warnings.append(f"Model catalog entry {index} ignored: expected object.")
+            continue
+        model_id = str(entry.get("id") or "").strip()
+        if not model_id:
+            _warnings.append(f"Model catalog entry {index} ignored: missing id.")
+            continue
+        if model_id in seen_ids:
+            _warnings.append(f"Model catalog entry {index} ignored: duplicate id {model_id}.")
+            continue
+        seen_ids.add(model_id)
+        clean = dict(entry)
+        clean["id"] = model_id
+        if "provider" in clean:
+            clean["provider"] = str(clean.get("provider") or "").lower()
+        sanitized.append(clean)
+    return sanitized
 
 
 def default_provider() -> str:
@@ -220,12 +247,23 @@ def compute_estimated_cost(
         return None
     in_price = entry.get("inputPricePerMtok")
     out_price = entry.get("outputPricePerMtok")
-    if not isinstance(in_price, (int, float)) or not isinstance(out_price, (int, float)):
+    input_rate = _safe_price_per_mtok(in_price)
+    output_rate = _safe_price_per_mtok(out_price)
+    if input_rate is None or output_rate is None:
         return None
     # Per-million-token rates. Round to 6 decimals (fraction of a cent
     # precision is plenty for accounting and avoids float noise in JSON).
-    cost = (input_tokens * float(in_price) + output_tokens * float(out_price)) / 1_000_000.0
+    cost = (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000.0
     return round(cost, 6)
+
+
+def _safe_price_per_mtok(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    price = float(value)
+    if not math.isfinite(price) or price < 0 or price > _MAX_PRICE_PER_MTOK:
+        return None
+    return price
 
 
 # ── UI-managed catalog writes ───────────────────────────────────────────────

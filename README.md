@@ -806,6 +806,10 @@ The gateway reads two local JSON files:
 - `.singularity/llm-providers.json` — provider policy: allowlist, default provider/model, base URLs, credential env names, and enabled/disabled flags.
 - `.singularity/llm-models.json` — approved workflow-facing model aliases. Workflows choose aliases; the gateway resolves aliases to real providers/models.
 
+Malformed model-catalog rows are ignored with warnings exposed from
+`/llm/models`; duplicate aliases keep the first valid row. Invalid or unsafe
+price fields make estimated cost `null` instead of breaking the request path.
+
 These generated files are intentionally ignored by git because they are local setup state. Checked-in examples live under:
 
 - `mcp-server/examples/llm-providers.default.json`
