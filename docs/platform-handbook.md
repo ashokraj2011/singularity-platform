@@ -680,6 +680,8 @@ Prompt Composer also fails closed when minting an `ImmutableContract` if model r
 
 Agent Runtime treats that contract pin as mandatory for production-class template activation. When an `AgentTemplate` update leaves the template `ACTIVE`, Agent Runtime waits for Prompt Composer to mint and record the `contractId`/`contractHash`. In local development a mint outage is still logged and tolerated; in production-class environments, or when `AGENT_CONTRACT_MINT_REQUIRED=true`, failed minting reverts the template status and returns `CONTRACT_MINT_REQUIRED` so an agent cannot silently publish without replay evidence.
 
+Context Fabric caches Prompt Composer stage prompts and policies with bounded operator knobs: `STAGE_PROMPT_CACHE_TTL_SEC` defaults to `60`, `STAGE_POLICY_CACHE_TTL_SEC` defaults to `300`, and both clamp at `86400`. Composer HTTP timeouts use `STAGE_PROMPT_HTTP_TIMEOUT_SEC` default `15` and `STAGE_POLICY_HTTP_TIMEOUT_SEC` default `10`, both clamped at `300`. Invalid or sub-second values fall back to defaults so a typo cannot prevent Context Fabric from starting or create a tight composer polling loop.
+
 ### 9.5 Agent Runtime API
 
 Mounted under `http://localhost:3003/api/v1`.

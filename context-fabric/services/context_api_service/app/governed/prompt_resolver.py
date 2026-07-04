@@ -21,14 +21,27 @@ from typing import Any
 import httpx
 
 from ..response_json import response_json_object
+from .env_config import bounded_float_env
 from .phase_state import Phase
 
 log = logging.getLogger(__name__)
 
 
 _COMPOSER_URL = os.environ.get("PROMPT_COMPOSER_URL", "http://prompt-composer:3004").rstrip("/")
-_CACHE_TTL_SEC = float(os.environ.get("STAGE_PROMPT_CACHE_TTL_SEC", "60"))
-_HTTP_TIMEOUT = float(os.environ.get("STAGE_PROMPT_HTTP_TIMEOUT_SEC", "15"))
+_CACHE_TTL_SEC = bounded_float_env(
+    "STAGE_PROMPT_CACHE_TTL_SEC",
+    default=60.0,
+    min_value=1.0,
+    max_value=24.0 * 60.0 * 60.0,
+    logger=log,
+)
+_HTTP_TIMEOUT = bounded_float_env(
+    "STAGE_PROMPT_HTTP_TIMEOUT_SEC",
+    default=15.0,
+    min_value=1.0,
+    max_value=300.0,
+    logger=log,
+)
 
 
 class PromptNotFoundError(LookupError):
