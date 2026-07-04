@@ -72,3 +72,19 @@ def test_llm_laptop_target_env_optin_loses_to_enterprise(monkeypatch):
     monkeypatch.setenv("PREFER_LAPTOP_LLM", "true")
     monkeypatch.setenv("ENTERPRISE_LLM_GATEWAY", "true")
     assert p.llm_laptop_target({"user_id": "u1"}) is None
+
+
+def test_runtime_capability_tags_are_explicit_runtime_filters():
+    assert p.runtime_capability_tags({
+        "capability_id": "governed-delivery",
+        "runtime_capability_tags": ["mcp", "llm", "mcp", ""],
+    }) == ["mcp", "llm"]
+    assert p.runtime_capability_tags({
+        "capabilityId": "business-capability-only",
+    }) == []
+
+
+def test_runtime_capability_tags_keep_legacy_aliases():
+    assert p.runtime_capability_tags({"runtimeCapabilityTags": ["tools"]}) == ["tools"]
+    assert p.runtime_capability_tags({"capability_tags": ["mcp"]}) == ["mcp"]
+    assert p.runtime_capability_tags({"capabilityTags": ["llm"]}) == ["llm"]

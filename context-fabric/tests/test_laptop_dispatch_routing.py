@@ -183,6 +183,67 @@ def test_dispatch_with_laptop_user_id_routes_via_bridge():
     assert seen_call["grant"] == grant
 
 
+def test_dispatch_does_not_treat_business_capability_id_as_runtime_tag():
+    """A normal governed run carries capability_id for policy/audit, but that
+    is not the same as a runtime placement tag. Generic runtimes minted by the
+    setup scripts advertise mcp/tools/llm, not every business capability id."""
+    seen_call: dict[str, Any] = {}
+
+    async def bridge_returns_ok(kwargs):
+        seen_call.update(kwargs)
+        return (
+            {
+                "result": {"ok": True},
+                "duration_ms": 1,
+                "tool_invocation_id": "ti-cap",
+                "tool_success": True,
+                "tool_error": None,
+            },
+            {"device_id": "dev-cap", "device_name": "runtime"},
+        )
+
+    with _patch_registry(bridge_returns_ok):
+        outcome = _run(dispatch_tool(
+            "repo_map",
+            {},
+            run_context={"user_id": "user-42", "capability_id": "sdlc-delivery"},
+        ))
+
+    assert outcome.tool_invocation_id == "ti-cap"
+    assert seen_call["capability_tags"] == []
+
+
+def test_dispatch_uses_explicit_runtime_capability_tags():
+    seen_call: dict[str, Any] = {}
+
+    async def bridge_returns_ok(kwargs):
+        seen_call.update(kwargs)
+        return (
+            {
+                "result": {"ok": True},
+                "duration_ms": 1,
+                "tool_invocation_id": "ti-runtime-tag",
+                "tool_success": True,
+                "tool_error": None,
+            },
+            {"device_id": "dev-tag", "device_name": "runtime"},
+        )
+
+    with _patch_registry(bridge_returns_ok):
+        outcome = _run(dispatch_tool(
+            "repo_map",
+            {},
+            run_context={
+                "user_id": "user-42",
+                "capability_id": "sdlc-delivery",
+                "runtime_capability_tags": ["mcp", "tools"],
+            },
+        ))
+
+    assert outcome.tool_invocation_id == "ti-runtime-tag"
+    assert seen_call["capability_tags"] == ["mcp", "tools"]
+
+
 def test_registry_tool_run_frame_includes_tool_grant():
     """The registry is the last platform-side hop before the WebSocket
     frame. Pin the actual tool-run payload shape so grant enforcement

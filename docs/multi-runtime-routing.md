@@ -36,6 +36,13 @@ It never falls back to another user's runtime. Eligibility (`_matches`) requires
 - requested `capability_tags ⊆ conn.capability_tags`, **and**
 - tenant compatible (a tenant-bound request won't go to a different tenant's runtime).
 
+These are **runtime placement tags** only. Context Fabric does not automatically
+turn a governed business `capability_id` into a runtime tag, because generic MCP
+runtimes minted by the setup scripts advertise broad tags such as `mcp`,
+`tools`, and `llm`. When a run must be constrained to a specialized runtime,
+set `runtime_capability_tags` / `runtimeCapabilityTags` explicitly in the run
+context.
+
 ### Frame type ↔ what serves it
 
 | Frame | Purpose | Served by a runtime advertising |
@@ -172,8 +179,10 @@ small, recommended change.
 round-robin or load-balance. So running **two identical** runtimes for one user
 does not split load; one effectively wins. To steer work deliberately, **give
 runtimes distinct `capability_tags`** (e.g. `tools` on one, `llm` on another)
-rather than two identical ones. Capability-weighted / round-robin selection across
-identical runtimes is a future enhancement, not current behavior.
+rather than two identical ones, then request those tags with
+`runtime_capability_tags` in the run context. Capability-weighted / round-robin
+selection across identical runtimes is a future enhancement, not current
+behavior.
 
 ---
 

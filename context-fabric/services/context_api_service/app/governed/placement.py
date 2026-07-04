@@ -102,10 +102,31 @@ def runtime_tenant_target(run_context: dict[str, Any] | None) -> str | None:
 
 
 def runtime_capability_tags(run_context: dict[str, Any] | None) -> list[str]:
+    """Return explicit runtime-placement tags.
+
+    Do not derive these from the business ``capability_id``. Runtime tags are
+    an operator placement filter (for example ``llm`` or ``tools``); a
+    capability id is a governed SDLC/work domain. Treating every capability id
+    as a runtime tag makes a healthy generic MCP runtime look disconnected
+    unless its token was minted with every possible business capability.
+    """
     rc = run_context or {}
-    raw = rc.get("capability_tags") or rc.get("capabilityTags")
-    tags = [str(tag) for tag in raw] if isinstance(raw, list) else []
-    cap = rc.get("capability_id") or rc.get("capabilityId")
-    if cap:
-        tags.append(str(cap))
+    raw = (
+        rc.get("runtime_capability_tags")
+        or rc.get("runtimeCapabilityTags")
+        # Back-compat for earlier clients that used capability_tags for
+        # runtime placement rather than business capability metadata.
+        or rc.get("capability_tags")
+        or rc.get("capabilityTags")
+    )
+    if not isinstance(raw, list):
+        return []
+    tags: list[str] = []
+    seen: set[str] = set()
+    for tag in raw:
+        value = str(tag).strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        tags.append(value)
     return tags
