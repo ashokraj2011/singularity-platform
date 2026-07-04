@@ -105,14 +105,38 @@ assert.doesNotMatch(
 
 assert.match(
   workgraphProxy,
-  /import \{ readJsonish \} from "\.\.\/\.\.\/_json";/,
+  /import \{ jsonishMessage, readJsonish \} from "\.\.\/\.\.\/_json";/,
   "Workgraph proxy should use the shared jsonish helper for IAM/service-token upstream responses",
 );
 
 assert.match(
   workgraphProxy,
-  /async function readJsonObject\(res: Response\): Promise<Record<string, unknown>> \{[\s\S]*?const body = await readJsonish\(res\);[\s\S]*?body\.data as Record<string, unknown>/,
-  "Workgraph proxy service-token minting should parse JSON-or-text IAM responses through readJsonish",
+  /async function readJsonObject\(res: Response, source: string\): Promise<Record<string, unknown>> \{[\s\S]*?const body = await readJsonish\(res\);[\s\S]*?throw new Error\(`\$\{source\} returned invalid JSON/,
+  "Workgraph proxy service-token minting should reject malformed IAM success bodies through readJsonish",
+);
+
+assert.match(
+  workgraphProxy,
+  /function tokenMintFailure\(message: string, details\?: Record<string, unknown>\): ServiceTokenResult[\s\S]*?code: "WORKGRAPH_PROXY_TOKEN_MINT_FAILED"/,
+  "Workgraph proxy should return a stable error code for IAM bootstrap/service-token mint failures",
+);
+
+assert.match(
+  workgraphProxy,
+  /IAM bootstrap login failed[\s\S]*?jsonishMessage\(body\.data/,
+  "Workgraph proxy should preserve plaintext or JSON IAM bootstrap login failure messages",
+);
+
+assert.match(
+  workgraphProxy,
+  /IAM service-token mint failed[\s\S]*?jsonishMessage\(body\.data/,
+  "Workgraph proxy should preserve plaintext or JSON IAM service-token mint failure messages",
+);
+
+assert.match(
+  workgraphProxy,
+  /if \(serviceTokenResult\.failure\) \{[\s\S]*?return NextResponse\.json\(serviceTokenResult\.failure, \{ status: 503 \}\);/,
+  "Workgraph proxy should surface token mint failures instead of silently returning the original 401",
 );
 
 assert.doesNotMatch(

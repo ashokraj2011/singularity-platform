@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { proxyHeaders, proxyRequest, requireVerifiedCallerBearer } from "../../_proxy";
-import { readJsonish } from "../../_json";
+import { jsonishMessage, readJsonish } from "../../_json";
 import { platformWebCredentialError, platformWebProductionEnv } from "@/lib/serverEnvGuard";
 import { serverEnv } from "@/lib/serverRootEnv";
 import { iamApiBase, platformServiceUrl } from "@/lib/platformServices";
@@ -14,6 +14,10 @@ const TENANT_ISOLATION_MODE = (serverEnv("TENANT_ISOLATION_MODE", "off") ?? "off
 const REQUIRE_TENANT_ID = (serverEnv("REQUIRE_TENANT_ID", "false") ?? "false").trim().toLowerCase();
 
 let cachedServiceToken: { token: string; expiresAt: number } | null = null;
+
+type ServiceTokenResult =
+  | { token: string; failure?: undefined }
+  | { token: null; failure?: { code: string; message: string; details?: Record<string, unknown> } };
 
 function normalizeWorkgraphPath(parts: string[]): string {
   if (!parts.length) return "";
@@ -110,53 +114,97 @@ function workgraphProxyTokenError(token: string | undefined): string | null {
   return null;
 }
 
-async function readJsonObject(res: Response): Promise<Record<string, unknown>> {
+async function readJsonObject(res: Response, source: string): Promise<Record<string, unknown>> {
   const body = await readJsonish(res);
-  return body.data && typeof body.data === "object" && !Array.isArray(body.data)
-    ? body.data as Record<string, unknown>
-    : {};
+  if (body.data && typeof body.data === "object" && !Array.isArray(body.data)) {
+    return body.data as Record<string, unknown>;
+  }
+  throw new Error(`${source} returned invalid JSON (${res.status}): ${body.text || body.parseError || res.statusText || "empty body"}`);
 }
 
-async function getServiceToken(): Promise<string | null> {
+function tokenMintFailure(message: string, details?: Record<string, unknown>): ServiceTokenResult {
+  return {
+    token: null,
+    failure: {
+      code: "WORKGRAPH_PROXY_TOKEN_MINT_FAILED",
+      message,
+      ...(details ? { details } : {}),
+    },
+  };
+}
+
+async function getServiceToken(): Promise<ServiceTokenResult> {
   const pinned = serverEnv("WORKGRAPH_PROXY_SERVICE_TOKEN");
-  if (pinned) return workgraphProxyTokenError(pinned) ? null : pinned;
-  if (platformWebProductionEnv()) return null;
+  if (pinned) return workgraphProxyTokenError(pinned) ? { token: null } : { token: pinned };
+  if (platformWebProductionEnv()) return { token: null };
   const tenantIds = configuredTenantIds();
-  if (tenantScopedTokenRequired() && tenantIds.length === 0) return null;
+  if (tenantScopedTokenRequired() && tenantIds.length === 0) return { token: null };
   if (cachedServiceToken && cachedServiceToken.expiresAt - Date.now() > 24 * 60 * 60 * 1000) {
-    return cachedServiceToken.token;
+    return { token: cachedServiceToken.token };
   }
 
   const email = serverEnv("IAM_BOOTSTRAP_USERNAME");
   const password = serverEnv("IAM_BOOTSTRAP_PASSWORD");
-  if (!email || !password) return null;
+  if (!email || !password) return { token: null };
 
   const base = IAM_BASE_URL.replace(/\/$/, "");
-  const login = await fetch(`${base}/auth/local/login`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!login.ok) return null;
-  const loginBody = await readJsonObject(login);
+  let login: Response;
+  try {
+    login = await fetch(`${base}/auth/local/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+  } catch (err) {
+    return tokenMintFailure(`IAM bootstrap login request failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!login.ok) {
+    const body = await readJsonish(login);
+    return tokenMintFailure(
+      `IAM bootstrap login failed (${login.status}): ${jsonishMessage(body.data, body.text || login.statusText || "login failed")}`,
+      { status: login.status, body: body.text },
+    );
+  }
+  let loginBody: Record<string, unknown>;
+  try {
+    loginBody = await readJsonObject(login, "IAM bootstrap login");
+  } catch (err) {
+    return tokenMintFailure(err instanceof Error ? err.message : String(err));
+  }
   const loginToken = typeof loginBody.access_token === "string" ? loginBody.access_token : null;
-  if (!loginToken) return null;
+  if (!loginToken) return tokenMintFailure("IAM bootstrap login response did not include access_token.");
 
-  const minted = await fetch(`${base}/auth/service-token`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${loginToken}` },
-    body: JSON.stringify({ service_name: SERVICE_NAME, scopes: SERVICE_SCOPES, tenant_ids: tenantIds, ttl_hours: 24 * 30 }),
-  });
-  if (!minted.ok) return null;
-  const mintedBody = await readJsonObject(minted);
+  let minted: Response;
+  try {
+    minted = await fetch(`${base}/auth/service-token`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${loginToken}` },
+      body: JSON.stringify({ service_name: SERVICE_NAME, scopes: SERVICE_SCOPES, tenant_ids: tenantIds, ttl_hours: 24 * 30 }),
+    });
+  } catch (err) {
+    return tokenMintFailure(`IAM service-token mint request failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!minted.ok) {
+    const body = await readJsonish(minted);
+    return tokenMintFailure(
+      `IAM service-token mint failed (${minted.status}): ${jsonishMessage(body.data, body.text || minted.statusText || "mint failed")}`,
+      { status: minted.status, body: body.text },
+    );
+  }
+  let mintedBody: Record<string, unknown>;
+  try {
+    mintedBody = await readJsonObject(minted, "IAM service-token mint");
+  } catch (err) {
+    return tokenMintFailure(err instanceof Error ? err.message : String(err));
+  }
   const mintedToken = typeof mintedBody.access_token === "string" ? mintedBody.access_token : null;
-  if (!mintedToken) return null;
+  if (!mintedToken) return tokenMintFailure("IAM service-token mint response did not include access_token.");
 
   cachedServiceToken = {
     token: mintedToken,
     expiresAt: decodeJwtExpiry(mintedToken) || Date.now() + 29 * 24 * 60 * 60 * 1000,
   };
-  return cachedServiceToken.token;
+  return { token: cachedServiceToken.token };
 }
 
 async function proxy(req: NextRequest, context: { params: Promise<{ path?: string[] }> }) {
@@ -182,8 +230,12 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path?: strin
     );
   }
 
-  const serviceToken = await getServiceToken();
+  const serviceTokenResult = await getServiceToken();
+  const serviceToken = serviceTokenResult.token;
   if (!serviceToken) {
+    if (serviceTokenResult.failure) {
+      return NextResponse.json(serviceTokenResult.failure, { status: 503 });
+    }
     const error = workgraphProxyTokenError(serverEnv("WORKGRAPH_PROXY_SERVICE_TOKEN"));
     if (error) return NextResponse.json({ code: "PLATFORM_WEB_CREDENTIAL_UNSAFE", message: error }, { status: 503 });
     if (tenantScopedTokenRequired() && configuredTenantIds().length === 0) {
