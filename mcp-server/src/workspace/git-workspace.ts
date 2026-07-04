@@ -10,6 +10,7 @@ import { redactSecrets } from "../security/redact";
 import { sandboxRoot } from "./sandbox";
 
 const execFileP = promisify(execFile);
+const WORKTREE_GIT_WRITE_TIMEOUT_MS = config.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS;
 
 export interface BranchRequest {
   workflowInstanceId?: string;
@@ -102,6 +103,7 @@ async function git(args: string[], opts?: { allowFail?: boolean; maxBuffer?: num
       cwd: sandboxRoot(),
       maxBuffer: opts?.maxBuffer ?? 10 * 1024 * 1024,
       env: opts?.env ? { ...process.env, ...opts.env } : process.env,
+      timeout: WORKTREE_GIT_WRITE_TIMEOUT_MS,
     });
     return stdout.trim();
   } catch (err) {
@@ -573,6 +575,7 @@ export async function dirtyPaths(): Promise<string[]> {
     cwd: sandboxRoot(),
     maxBuffer: 10 * 1024 * 1024,
     env: process.env,
+    timeout: WORKTREE_GIT_WRITE_TIMEOUT_MS,
   }).catch(() => ({ stdout: "" }));
   const porcelain = String(stdout);
   return porcelain.split("\n")
@@ -597,6 +600,7 @@ export async function changedPathsBetween(from: string, to: string): Promise<str
     cwd: sandboxRoot(),
     maxBuffer: 10 * 1024 * 1024,
     env: process.env,
+    timeout: WORKTREE_GIT_WRITE_TIMEOUT_MS,
   }).catch(() => ({ stdout: "" }));
   return String(stdout)
     .split("\n")
@@ -961,7 +965,7 @@ export async function createCheckpoint(
 export async function rollbackToCheckpoint(ref: string, paths?: string[]): Promise<void> {
   const cwd = sandboxRoot();
   const target = paths?.length ? ["--", ...paths] : ["--", "."];
-  await execFileP("git", ["checkout", ref, ...target], { cwd });
+  await execFileP("git", ["checkout", ref, ...target], { cwd, timeout: WORKTREE_GIT_WRITE_TIMEOUT_MS });
 }
 
 /**
@@ -972,10 +976,10 @@ export async function cleanupCheckpoints(runId: string): Promise<void> {
   const prefix = `refs/singularity/checkpoints/${runId}/`;
   try {
     const { stdout } = await execFileP(
-      "git", ["for-each-ref", "--format=%(refname)", prefix], { cwd }
+      "git", ["for-each-ref", "--format=%(refname)", prefix], { cwd, timeout: WORKTREE_GIT_WRITE_TIMEOUT_MS }
     );
     for (const ref of stdout.trim().split("\n").filter(Boolean)) {
-      await execFileP("git", ["update-ref", "-d", ref], { cwd });
+      await execFileP("git", ["update-ref", "-d", ref], { cwd, timeout: WORKTREE_GIT_WRITE_TIMEOUT_MS });
     }
   } catch { /* no refs to clean — fine */ }
 }

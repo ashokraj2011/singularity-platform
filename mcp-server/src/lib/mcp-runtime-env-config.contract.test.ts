@@ -211,6 +211,14 @@ assert.match(worktreeSource, /timeout: WORKTREE_GIT_WRITE_TIMEOUT_MS/);
 assert.doesNotMatch(worktreeSource, /timeout: 5_000/);
 assert.doesNotMatch(worktreeSource, /timeout: 30_000/);
 
+const gitWorkspaceSource = readFileSync("src/workspace/git-workspace.ts", "utf8");
+assert.match(gitWorkspaceSource, /const WORKTREE_GIT_WRITE_TIMEOUT_MS = config\.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS;/);
+assert.equal(
+  (gitWorkspaceSource.match(/timeout: WORKTREE_GIT_WRITE_TIMEOUT_MS/g) ?? []).length,
+  6,
+  "all git-workspace direct git exec paths should carry the configured timeout",
+);
+
 const sourceDiscoverSource = readFileSync("src/mcp/source-discover.ts", "utf8");
 assert.match(sourceDiscoverSource, /const SOURCE_DISCOVERY_TIMEOUT_MS = config\.MCP_SOURCE_DISCOVERY_TIMEOUT_MS;/);
 assert.match(sourceDiscoverSource, /timeoutMs = SOURCE_DISCOVERY_TIMEOUT_MS/);
