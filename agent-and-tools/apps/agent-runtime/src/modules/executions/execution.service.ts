@@ -15,9 +15,68 @@
  * are now gone, so prompt-composer can own its tables on its own DB.
  */
 import { prisma } from "../../config/prisma";
-import { NotFoundError } from "../../shared/errors";
+import { ConflictError, ForbiddenError, NotFoundError } from "../../shared/errors";
 import { env } from "../../config/env";
 import { Prisma } from "../../../generated/prisma-client";
+import { assertCapabilityNotArchived } from "../capabilities/capability-lifecycle";
+
+type ExecutionDbClient = typeof prisma | Prisma.TransactionClient;
+
+type ExecutionTemplateRow = {
+  id: string;
+  name: string;
+  status: string;
+  capabilityId: string | null;
+};
+
+type ExecutionBindingRow = {
+  id: string;
+  bindingName: string;
+  status: string;
+  agentTemplateId: string;
+  capabilityId: string;
+};
+
+async function lockExecutionTemplate(
+  client: ExecutionDbClient,
+  templateId: string,
+): Promise<ExecutionTemplateRow | null> {
+  const rows = await client.$queryRaw<ExecutionTemplateRow[]>(Prisma.sql`
+    SELECT id, name, status, "capabilityId" AS "capabilityId"
+    FROM "AgentTemplate"
+    WHERE id = ${templateId}
+    FOR UPDATE
+  `);
+  return rows[0] ?? null;
+}
+
+async function lockExecutionBinding(
+  client: ExecutionDbClient,
+  bindingId: string,
+): Promise<ExecutionBindingRow | null> {
+  const rows = await client.$queryRaw<ExecutionBindingRow[]>(Prisma.sql`
+    SELECT id, "bindingName" AS "bindingName", status, "agentTemplateId" AS "agentTemplateId", "capabilityId" AS "capabilityId"
+    FROM "AgentCapabilityBinding"
+    WHERE id = ${bindingId}
+    FOR UPDATE
+  `);
+  return rows[0] ?? null;
+}
+
+async function assertExecutionCapabilityWritable(
+  client: ExecutionDbClient,
+  capabilityId: string,
+): Promise<void> {
+  const rows = await client.$queryRaw<Array<{ status: string }>>(Prisma.sql`
+    SELECT status
+    FROM "Capability"
+    WHERE id = ${capabilityId}
+    FOR UPDATE
+  `);
+  const capability = rows[0];
+  if (!capability) throw new NotFoundError("Capability not found");
+  assertCapabilityNotArchived(capability, "Cannot create an execution for an archived capability.");
+}
 
 export const executionService = {
   async create(input: {
@@ -25,21 +84,49 @@ export const executionService = {
     agentTemplateId: string; agentBindingId?: string;
     userRequest: string; modelProvider?: string; modelName?: string;
   }, userId?: string) {
-    const template = await prisma.agentTemplate.findUnique({ where: { id: input.agentTemplateId } });
-    if (!template) throw new NotFoundError("Agent template not found");
+    return prisma.$transaction(async (tx) => {
+      const template = await lockExecutionTemplate(tx, input.agentTemplateId);
+      if (!template) throw new NotFoundError("Agent template not found");
+      if (template.status !== "ACTIVE") {
+        throw new ConflictError(`Agent template "${template.name}" is ${template.status} and cannot be used for execution.`);
+      }
 
-    return prisma.agentExecution.create({
-      data: {
-        workflowExecutionId: input.workflowExecutionId,
-        capabilityId: input.capabilityId,
-        agentTemplateId: input.agentTemplateId,
-        agentBindingId: input.agentBindingId,
-        userRequest: input.userRequest,
-        modelProvider: input.modelProvider ?? env.AGENT_RUN_FALLBACK_PROVIDER,
-        modelName: input.modelName ?? env.AGENT_RUN_FALLBACK_MODEL,
-        executionStatus: "CREATED",
-        createdBy: userId,
-      },
+      let executionCapabilityId = input.capabilityId ?? template.capabilityId ?? undefined;
+      if (template.capabilityId && input.capabilityId && template.capabilityId !== input.capabilityId) {
+        throw new ForbiddenError("Cannot execute a capability-owned agent template for another capability.");
+      }
+      if (input.agentBindingId) {
+        const binding = await lockExecutionBinding(tx, input.agentBindingId);
+        if (!binding) throw new NotFoundError("Agent capability binding not found");
+        if (binding.status !== "ACTIVE") {
+          throw new ConflictError(`Agent capability binding "${binding.bindingName}" is ${binding.status} and cannot be used for execution.`);
+        }
+        if (binding.agentTemplateId !== input.agentTemplateId) {
+          throw new ConflictError("Agent capability binding does not reference the requested agent template.");
+        }
+        if (input.capabilityId && binding.capabilityId !== input.capabilityId) {
+          throw new ForbiddenError("Agent capability binding belongs to another capability.");
+        }
+        executionCapabilityId = binding.capabilityId;
+      }
+
+      if (executionCapabilityId) {
+        await assertExecutionCapabilityWritable(tx, executionCapabilityId);
+      }
+
+      return tx.agentExecution.create({
+        data: {
+          workflowExecutionId: input.workflowExecutionId,
+          capabilityId: executionCapabilityId,
+          agentTemplateId: input.agentTemplateId,
+          agentBindingId: input.agentBindingId,
+          userRequest: input.userRequest,
+          modelProvider: input.modelProvider ?? env.AGENT_RUN_FALLBACK_PROVIDER,
+          modelName: input.modelName ?? env.AGENT_RUN_FALLBACK_MODEL,
+          executionStatus: "CREATED",
+          createdBy: userId,
+        },
+      });
     });
   },
 

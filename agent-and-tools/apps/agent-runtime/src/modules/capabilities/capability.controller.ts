@@ -18,6 +18,18 @@ import { distillAndUpsertWorldModel } from "./bootstrap-phase3-distill";
 // timeout; returns exit code + capped stdout/stderr.
 import { probeCommand } from "./command-probe.service";
 import { extractKnowledgeText } from "./document-extract";
+import { findDuplicateKnowledgeUploadName } from "./capability-upload-identity";
+import { ConflictError, ForbiddenError } from "../../shared/errors";
+
+async function assertCapabilityMutable(
+  capabilityId: string,
+  message = "Capability is archived and cannot be modified.",
+): Promise<void> {
+  const capability = await capabilityService.get(capabilityId);
+  if (String(capability.status ?? "").toUpperCase() === "ARCHIVED") {
+    throw new ForbiddenError(message);
+  }
+}
 
 export const capabilityController = {
   async bootstrapAgentCatalog(_req: Request, res: Response) {
@@ -29,14 +41,18 @@ export const capabilityController = {
   async bootstrap(req: Request, res: Response) {
     return ok(res, await capabilityService.bootstrap(req.body, req.user?.user_id, req.headers.authorization), 201);
   },
-  async list(_req: Request, res: Response) {
-    return ok(res, await capabilityService.list());
+  async list(req: Request, res: Response) {
+    const includeArchived = String(req.query.includeArchived ?? "").toLowerCase() === "true";
+    return ok(res, await capabilityService.list({ includeArchived }));
   },
   async get(req: Request, res: Response) {
     return ok(res, await capabilityService.get(req.params.id));
   },
   async readiness(req: Request, res: Response) {
     return ok(res, await capabilityService.readiness(req.params.id));
+  },
+  async groundingStatus(req: Request, res: Response) {
+    return ok(res, await capabilityService.groundingStatus(req.params.id));
   },
   async architectureDiagram(req: Request, res: Response) {
     return ok(res, await capabilityService.architectureDiagram(req.params.id));
@@ -87,7 +103,8 @@ export const capabilityController = {
     return ok(res, await capabilityService.addKnowledge(req.params.id, req.body), 201);
   },
   async listKnowledge(req: Request, res: Response) {
-    return ok(res, await capabilityService.listKnowledge(req.params.id));
+    const includeArchived = String(req.query.includeArchived ?? "").toLowerCase() === "true";
+    return ok(res, await capabilityService.listKnowledge(req.params.id, { includeArchived }));
   },
   async extractSymbols(req: Request, res: Response) {
     const result = await capabilityService.extractRepositorySymbols(
@@ -132,6 +149,13 @@ export const capabilityController = {
   async uploadKnowledge(req: Request, res: Response) {
     const files = (req as Request & { files?: Express.Multer.File[] }).files ?? [];
     if (files.length === 0) return res.status(400).json({ error: "no files" });
+    await assertCapabilityMutable(req.params.id, "Capability is archived; knowledge upload is read-only.");
+    const duplicateUploadName = findDuplicateKnowledgeUploadName(files);
+    if (duplicateUploadName) {
+      throw new ConflictError(
+        `Uploaded knowledge filename "${duplicateUploadName}" appears more than once. Rename one file before uploading.`,
+      );
+    }
 
     const artifactType = (req.body.artifactType as string | undefined) ?? "DOC";
     const baseConf = Number(req.body.confidence ?? 0.9);
@@ -199,6 +223,7 @@ export const capabilityController = {
   // (re-run the LLM enrichment + architecture slice + upsert) without
   // re-onboarding. Returns the distillation stats.
   async redistillWorldModel(req: Request, res: Response) {
+    await assertCapabilityMutable(req.params.id, "Capability is archived; world-model maintenance is read-only.");
     const stats = await distillAndUpsertWorldModel(req.params.id);
     if (stats.skipped) {
       return res.status(409).json({ error: "nothing to distill — no README candidate or indexed symbols for this capability" });
@@ -210,6 +235,7 @@ export const capabilityController = {
     const body = req.body as { fingerprint?: unknown; hashedBuildFiles?: unknown; topLevelEntries?: unknown };
     const fingerprint = typeof body.fingerprint === "string" ? body.fingerprint.trim() : "";
     if (!fingerprint) return res.status(400).json({ error: "fingerprint is required" });
+    await assertCapabilityMutable(req.params.id, "Capability is archived; world-model maintenance is read-only.");
     const hashedBuildFiles = Array.isArray(body.hashedBuildFiles)
       ? body.hashedBuildFiles.filter((s): s is string => typeof s === "string")
       : undefined;
@@ -254,6 +280,7 @@ export const capabilityController = {
     if (cmd.length > 500) return res.status(400).json({ error: "cmd too long (max 500)" });
     const cwd = typeof body.cwd === "string" ? body.cwd.trim() : undefined;
     if (cwd && cwd.length > 200) return res.status(400).json({ error: "cwd too long (max 200)" });
+    await assertCapabilityMutable(req.params.id, "Capability is archived; world-model maintenance is read-only.");
     const result = await probeCommand({ cmd, cwd });
     return ok(res, result, 200);
   },
@@ -263,6 +290,7 @@ export const capabilityController = {
     const n = typeof body.astIndexFiles === "number" && Number.isFinite(body.astIndexFiles)
       ? Math.max(0, Math.floor(body.astIndexFiles))
       : 0;
+    await assertCapabilityMutable(req.params.id, "Capability is archived; world-model maintenance is read-only.");
     const out = await upsertWorldModel({
       capabilityId: req.params.id,
       astIndexedAt: new Date(),

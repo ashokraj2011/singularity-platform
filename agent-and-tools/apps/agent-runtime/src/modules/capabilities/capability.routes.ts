@@ -1,8 +1,10 @@
-import { Router } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 import { capabilityController } from "./capability.controller";
+import { capabilityService } from "./capability.service";
 import { validate } from "../../middleware/validate.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
+import { ForbiddenError } from "../../shared/errors";
 import {
   createCapabilitySchema, attachRepositorySchema, bindAgentSchema, knowledgeArtifactSchema,
   extractSymbolsSchema,
@@ -19,6 +21,14 @@ const knowledgeUpload = multer({
   limits:  { fileSize: 25 * 1024 * 1024, files: 10 },
 });
 
+async function requireMutableCapabilityBeforeUpload(req: Request, _res: Response, next: NextFunction): Promise<void> {
+  const capability = await capabilityService.get(req.params.id);
+  if (String(capability.status ?? "").toUpperCase() === "ARCHIVED") {
+    throw new ForbiddenError("Capability is archived; knowledge upload is read-only.");
+  }
+  next();
+}
+
 export const capabilityRoutes = Router();
 
 capabilityRoutes.use(requireAuth);
@@ -28,6 +38,7 @@ capabilityRoutes.get("/bootstrap-agent-catalog", capabilityController.bootstrapA
 capabilityRoutes.post("/", validate(createCapabilitySchema), capabilityController.create);
 capabilityRoutes.get("/", capabilityController.list);
 capabilityRoutes.get("/:id/readiness", capabilityController.readiness);
+capabilityRoutes.get("/:id/grounding-status", capabilityController.groundingStatus);
 capabilityRoutes.get("/:id/architecture-diagram", capabilityController.architectureDiagram);
 capabilityRoutes.get("/:id", capabilityController.get);
 capabilityRoutes.patch("/:id", validate(updateCapabilitySchema), capabilityController.update);
@@ -55,6 +66,7 @@ capabilityRoutes.get("/:id/knowledge-artifacts", capabilityController.listKnowle
 // M15 — multipart upload (txt/md/pdf). Server extracts text + delegates to addKnowledge.
 capabilityRoutes.post(
   "/:id/knowledge-artifacts/upload",
+  requireMutableCapabilityBeforeUpload,
   knowledgeUpload.array("files", 10),
   capabilityController.uploadKnowledge,
 );

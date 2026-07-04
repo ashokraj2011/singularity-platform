@@ -30,6 +30,7 @@
  *     it. Worker shape stays the same — only this file changes.
  */
 import { prisma } from "../../config/prisma";
+import { readUpstreamJsonObject } from "../../shared/upstream-json";
 import { upsertWorldModel, type ArchitectureSlice, type CodeConvention, type Entrypoint } from "./world-model.service";
 import { PHASE_KEYS, markPhaseStarted, markPhaseCompleted, markPhaseFailed, markPhaseSkipped } from "./bootstrap-phases";
 
@@ -289,7 +290,7 @@ export async function enrichWorldModelViaLLM(markdown: string): Promise<WorldMod
       signal: AbortSignal.timeout(DISTILL_TIMEOUT_MS),
     });
     if (!res.ok) return null;
-    const body = (await res.json()) as { content?: string };
+    const body = await readUpstreamJsonObject(res, "LLM gateway world-model enrichment") as { content?: string };
     return parseEnrichment(body.content ?? "");
   } catch {
     return null;
@@ -313,7 +314,7 @@ export interface DistillStats {
 export async function distillAndUpsertWorldModel(capabilityId: string): Promise<DistillStats> {
   // README-like learning candidate (bootstrap groups READMEs under "capability_overview").
   const candidate = await prisma.capabilityLearningCandidate.findFirst({
-    where: { capabilityId, groupKey: "capability_overview" },
+    where: { capabilityId, groupKey: "capability_overview", status: { not: "SUPERSEDED" } },
     orderBy: [{ confidence: "desc" }, { createdAt: "asc" }],
     select: { content: true },
   });

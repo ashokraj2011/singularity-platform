@@ -35,6 +35,8 @@ import { createHash } from "node:crypto";
 import { prisma } from "../../config/prisma";
 import { capabilityService } from "./capability.service";
 import type { InputFile } from "./symbol-extractor";
+import { ForbiddenError } from "../../shared/errors";
+import { capabilityIsArchivedOrMissing } from "./capability-lifecycle";
 
 const execFileP = promisify(execFile);
 
@@ -56,6 +58,12 @@ let isTicking = false;
 function log(msg: string): void {
   // eslint-disable-next-line no-console
   console.log(`[poll-worker] ${msg}`);
+}
+
+async function assertCapabilityPollable(capabilityId: string, action: string): Promise<void> {
+  if (await capabilityIsArchivedOrMissing(capabilityId)) {
+    throw new ForbiddenError(`Cannot ${action} for an archived capability.`);
+  }
 }
 
 export function startPollWorker(): void {
@@ -106,31 +114,48 @@ async function pollRepositories(): Promise<void> {
     id: string; capabilityId: string; repoName: string; repoUrl: string;
     defaultBranch: string | null; lastPolledSha: string | null;
   }>>(`
-    SELECT id, "capabilityId", "repoName", "repoUrl", "defaultBranch", "lastPolledSha"
-    FROM "CapabilityRepository"
-    WHERE "pollIntervalSec" IS NOT NULL
-      AND status = 'ACTIVE'
-      AND ("lastPolledAt" IS NULL
-           OR "lastPolledAt" + ("pollIntervalSec" * INTERVAL '1 second') < now())
-    ORDER BY COALESCE("lastPolledAt", to_timestamp(0)) ASC
+    SELECT r.id, r."capabilityId", r."repoName", r."repoUrl", r."defaultBranch", r."lastPolledSha"
+    FROM "CapabilityRepository" r
+    JOIN "Capability" c ON c.id = r."capabilityId"
+    WHERE r."pollIntervalSec" IS NOT NULL
+      AND r.status = 'ACTIVE'
+      AND c.status <> 'ARCHIVED'
+      AND (r."lastPolledAt" IS NULL
+           OR r."lastPolledAt" + (r."pollIntervalSec" * INTERVAL '1 second') < now())
+    ORDER BY COALESCE(r."lastPolledAt", to_timestamp(0)) ASC
     LIMIT 5
   `);
   for (const r of due) {
     try {
       const result = await pollOneRepo(r);
+      if (result.skippedArchived) continue;
       await prisma.$executeRawUnsafe(
         `UPDATE "CapabilityRepository"
          SET "lastPolledAt" = now(),
              "lastPolledSha" = $1,
              "lastPollError" = NULL
-         WHERE id = $2`,
+         WHERE id = $2
+           AND status = 'ACTIVE'
+           AND EXISTS (
+             SELECT 1 FROM "Capability" c
+             WHERE c.id = "CapabilityRepository"."capabilityId"
+               AND c.status <> 'ARCHIVED'
+           )`,
         result.headSha, r.id,
       );
       if (result.extracted) log(`repo ${r.repoName}: extracted (sha ${result.headSha.slice(0,7)})`);
     } catch (err) {
       const msg = (err as Error).message.slice(0, 500);
       await prisma.$executeRawUnsafe(
-        `UPDATE "CapabilityRepository" SET "lastPolledAt" = now(), "lastPollError" = $1 WHERE id = $2`,
+        `UPDATE "CapabilityRepository"
+         SET "lastPolledAt" = now(), "lastPollError" = $1
+         WHERE id = $2
+           AND status = 'ACTIVE'
+           AND EXISTS (
+             SELECT 1 FROM "Capability" c
+             WHERE c.id = "CapabilityRepository"."capabilityId"
+               AND c.status <> 'ARCHIVED'
+           )`,
         msg, r.id,
       );
       log(`repo ${r.repoName}: error ${msg}`);
@@ -142,6 +167,7 @@ export async function syncRepositoryNow(
   capabilityId: string,
   repoId: string,
 ): Promise<{ repoId: string; repoName: string; headSha: string; extracted: boolean }> {
+  await assertCapabilityPollable(capabilityId, "sync repository sources");
   const repo = await prisma.capabilityRepository.findFirst({
     where: { id: repoId, capabilityId },
   });
@@ -160,21 +186,43 @@ export async function syncRepositoryNow(
       defaultBranch: repo.defaultBranch,
       lastPolledSha: repo.lastPolledSha,
     });
-    await prisma.capabilityRepository.update({
-      where: { id: repo.id },
-      data: {
-        lastPolledAt: new Date(),
-        lastPolledSha: result.headSha,
-        lastPollError: null,
-      },
-    });
-    return { repoId: repo.id, repoName: repo.repoName, ...result };
+    if (result.skippedArchived) throw new ForbiddenError("Cannot sync repository sources for an archived capability.");
+    await prisma.$executeRawUnsafe(
+      `UPDATE "CapabilityRepository"
+       SET "lastPolledAt" = now(),
+           "lastPolledSha" = $1,
+           "lastPollError" = NULL
+       WHERE id = $2
+         AND status = 'ACTIVE'
+         AND EXISTS (
+           SELECT 1 FROM "Capability" c
+           WHERE c.id = "CapabilityRepository"."capabilityId"
+             AND c.status <> 'ARCHIVED'
+         )`,
+      result.headSha,
+      repo.id,
+    );
+    return {
+      repoId: repo.id,
+      repoName: repo.repoName,
+      headSha: result.headSha,
+      extracted: result.extracted,
+    };
   } catch (err) {
     const msg = (err as Error).message.slice(0, 500);
-    await prisma.capabilityRepository.update({
-      where: { id: repo.id },
-      data: { lastPolledAt: new Date(), lastPollError: msg },
-    });
+    await prisma.$executeRawUnsafe(
+      `UPDATE "CapabilityRepository"
+       SET "lastPolledAt" = now(), "lastPollError" = $1
+       WHERE id = $2
+         AND status = 'ACTIVE'
+         AND EXISTS (
+           SELECT 1 FROM "Capability" c
+           WHERE c.id = "CapabilityRepository"."capabilityId"
+             AND c.status <> 'ARCHIVED'
+         )`,
+      msg,
+      repo.id,
+    );
     throw err;
   }
 }
@@ -182,7 +230,10 @@ export async function syncRepositoryNow(
 async function pollOneRepo(r: {
   id: string; capabilityId: string; repoName: string; repoUrl: string;
   defaultBranch: string | null; lastPolledSha: string | null;
-}): Promise<{ headSha: string; extracted: boolean }> {
+}): Promise<{ headSha: string; extracted: boolean; skippedArchived?: boolean }> {
+  if (await capabilityIsArchivedOrMissing(r.capabilityId)) {
+    return { headSha: r.lastPolledSha ?? "", extracted: false, skippedArchived: true };
+  }
   // Use a per-repo cache dir so successive polls reuse the local clone.
   const baseDir = process.env.POLL_WORKER_CACHE_DIR ?? path.join(os.tmpdir(), "agent-runtime-polls");
   const repoDir = path.join(baseDir, r.id);
@@ -260,31 +311,48 @@ async function pollKnowledgeSources(): Promise<void> {
     id: string; capabilityId: string; url: string; artifactType: string;
     title: string | null; lastContentHash: string | null;
   }>>(`
-    SELECT id, "capabilityId", url, "artifactType", title, "lastContentHash"
-    FROM "CapabilityKnowledgeSource"
-    WHERE "pollIntervalSec" IS NOT NULL
-      AND status = 'ACTIVE'
-      AND ("lastPolledAt" IS NULL
-           OR "lastPolledAt" + ("pollIntervalSec" * INTERVAL '1 second') < now())
-    ORDER BY COALESCE("lastPolledAt", to_timestamp(0)) ASC
+    SELECT s.id, s."capabilityId", s.url, s."artifactType", s.title, s."lastContentHash"
+    FROM "CapabilityKnowledgeSource" s
+    JOIN "Capability" c ON c.id = s."capabilityId"
+    WHERE s."pollIntervalSec" IS NOT NULL
+      AND s.status = 'ACTIVE'
+      AND c.status <> 'ARCHIVED'
+      AND (s."lastPolledAt" IS NULL
+           OR s."lastPolledAt" + (s."pollIntervalSec" * INTERVAL '1 second') < now())
+    ORDER BY COALESCE(s."lastPolledAt", to_timestamp(0)) ASC
     LIMIT 10
   `);
   for (const s of due) {
     try {
       const result = await pollOneSource(s);
+      if (result.skippedArchived) continue;
       await prisma.$executeRawUnsafe(
         `UPDATE "CapabilityKnowledgeSource"
          SET "lastPolledAt" = now(),
              "lastContentHash" = $1,
              "lastPollError" = NULL
-         WHERE id = $2`,
+         WHERE id = $2
+           AND status = 'ACTIVE'
+           AND EXISTS (
+             SELECT 1 FROM "Capability" c
+             WHERE c.id = "CapabilityKnowledgeSource"."capabilityId"
+               AND c.status <> 'ARCHIVED'
+           )`,
         result.contentHash, s.id,
       );
       if (result.upserted) log(`knowledge ${s.url}: upserted (hash ${result.contentHash.slice(0,8)})`);
     } catch (err) {
       const msg = (err as Error).message.slice(0, 500);
       await prisma.$executeRawUnsafe(
-        `UPDATE "CapabilityKnowledgeSource" SET "lastPolledAt" = now(), "lastPollError" = $1 WHERE id = $2`,
+        `UPDATE "CapabilityKnowledgeSource"
+         SET "lastPolledAt" = now(), "lastPollError" = $1
+         WHERE id = $2
+           AND status = 'ACTIVE'
+           AND EXISTS (
+             SELECT 1 FROM "Capability" c
+             WHERE c.id = "CapabilityKnowledgeSource"."capabilityId"
+               AND c.status <> 'ARCHIVED'
+           )`,
         msg, s.id,
       );
       log(`knowledge ${s.url}: error ${msg}`);
@@ -296,6 +364,7 @@ export async function syncKnowledgeSourceNow(
   capabilityId: string,
   sourceId: string,
 ): Promise<{ sourceId: string; url: string; contentHash: string; upserted: boolean }> {
+  await assertCapabilityPollable(capabilityId, "sync knowledge sources");
   const source = await prisma.capabilityKnowledgeSource.findFirst({
     where: { id: sourceId, capabilityId },
   });
@@ -311,21 +380,43 @@ export async function syncKnowledgeSourceNow(
       title: source.title,
       lastContentHash: source.lastContentHash,
     });
-    await prisma.capabilityKnowledgeSource.update({
-      where: { id: source.id },
-      data: {
-        lastPolledAt: new Date(),
-        lastContentHash: result.contentHash,
-        lastPollError: null,
-      },
-    });
-    return { sourceId: source.id, url: source.url, ...result };
+    if (result.skippedArchived) throw new ForbiddenError("Cannot sync knowledge sources for an archived capability.");
+    await prisma.$executeRawUnsafe(
+      `UPDATE "CapabilityKnowledgeSource"
+       SET "lastPolledAt" = now(),
+           "lastContentHash" = $1,
+           "lastPollError" = NULL
+       WHERE id = $2
+         AND status = 'ACTIVE'
+         AND EXISTS (
+           SELECT 1 FROM "Capability" c
+           WHERE c.id = "CapabilityKnowledgeSource"."capabilityId"
+             AND c.status <> 'ARCHIVED'
+         )`,
+      result.contentHash,
+      source.id,
+    );
+    return {
+      sourceId: source.id,
+      url: source.url,
+      contentHash: result.contentHash,
+      upserted: result.upserted,
+    };
   } catch (err) {
     const msg = (err as Error).message.slice(0, 500);
-    await prisma.capabilityKnowledgeSource.update({
-      where: { id: source.id },
-      data: { lastPolledAt: new Date(), lastPollError: msg },
-    });
+    await prisma.$executeRawUnsafe(
+      `UPDATE "CapabilityKnowledgeSource"
+       SET "lastPolledAt" = now(), "lastPollError" = $1
+       WHERE id = $2
+         AND status = 'ACTIVE'
+         AND EXISTS (
+           SELECT 1 FROM "Capability" c
+           WHERE c.id = "CapabilityKnowledgeSource"."capabilityId"
+             AND c.status <> 'ARCHIVED'
+         )`,
+      msg,
+      source.id,
+    );
     throw err;
   }
 }
@@ -333,20 +424,20 @@ export async function syncKnowledgeSourceNow(
 async function pollOneSource(s: {
   id: string; capabilityId: string; url: string; artifactType: string;
   title: string | null; lastContentHash: string | null;
-}): Promise<{ contentHash: string; upserted: boolean }> {
+}): Promise<{ contentHash: string; upserted: boolean; skippedArchived?: boolean }> {
+  if (await capabilityIsArchivedOrMissing(s.capabilityId)) {
+    return { contentHash: s.lastContentHash ?? "", upserted: false, skippedArchived: true };
+  }
   const res = await fetch(s.url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`fetch ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const text = (await res.text()).slice(0, URL_CONTENT_CAP);
   const contentHash = createHash("sha256").update(text).digest("hex");
   if (contentHash === s.lastContentHash) return { contentHash, upserted: false };
 
-  const title = s.title ?? extractTitle(text) ?? s.url;
-  // Idempotent on (capabilityId, sourceRef=url) — archive prior + add new
-  // so the artifact history is preserved (matches addKnowledge versioning).
-  await prisma.capabilityKnowledgeArtifact.updateMany({
-    where: { capabilityId: s.capabilityId, sourceRef: s.url, status: "ACTIVE" },
-    data:  { status: "ARCHIVED" },
-  });
+  const title = s.title?.trim() || s.url;
+  // Idempotent on the source-backed artifact identity. Do not archive first:
+  // if the process dies before lastContentHash is saved, the retry must reuse
+  // the same active artifact instead of creating a duplicate history row.
   await capabilityService.addKnowledge(s.capabilityId, {
     artifactType: s.artifactType,
     title,
@@ -356,9 +447,4 @@ async function pollOneSource(s: {
     confidence: 0.9,
   });
   return { contentHash, upserted: true };
-}
-
-function extractTitle(md: string): string | undefined {
-  const m = md.match(/^#\s+(.+)$/m);
-  return m ? m[1].trim().slice(0, 200) : undefined;
 }

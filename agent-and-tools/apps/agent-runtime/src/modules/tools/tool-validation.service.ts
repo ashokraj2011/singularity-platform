@@ -13,6 +13,8 @@ export interface ValidateResult {
   reason: string;
 }
 
+type GrantScopeFilter = { grantScopeType: "AGENT_TEMPLATE" | "AGENT_BINDING" | "CAPABILITY"; grantScopeId: string };
+
 export const toolValidationService = {
   async validate(input: ValidateCallInput): Promise<ValidateResult> {
     // 1. Resolve tool by namespace.name
@@ -40,18 +42,14 @@ export const toolValidationService = {
       return deny(`Input failed schema: ${ajv.errorsText(validateFn.errors)}`, contract.riskLevel);
     }
 
-    // 4. Resolve grants. A call is allowed if AT LEAST ONE applicable grant exists.
-    const orFilters: Array<Record<string, string>> = [];
-    if (input.agentTemplateId) orFilters.push({ grantScopeType: "AGENT_TEMPLATE", grantScopeId: input.agentTemplateId });
-    if (input.agentBindingId) orFilters.push({ grantScopeType: "AGENT_BINDING", grantScopeId: input.agentBindingId });
-    if (input.capabilityId) orFilters.push({ grantScopeType: "CAPABILITY", grantScopeId: input.capabilityId });
-
-    if (orFilters.length === 0) {
-      return deny("No agent / binding / capability scope provided to resolve grants", contract.riskLevel);
-    }
+    // 4. Resolve and validate the live grant scopes before consulting grants.
+    // A stale grant row must not authorize calls through an archived capability
+    // or inactive template/binding.
+    const scopeResolution = await resolveRuntimeGrantScopes(input);
+    if (!scopeResolution.allowed) return deny(scopeResolution.reason, contract.riskLevel);
 
     const grants = await prisma.toolGrant.findMany({
-      where: { toolId: tool.id, status: "ACTIVE", OR: orFilters as never },
+      where: { toolId: tool.id, status: "ACTIVE", OR: scopeResolution.filters as never },
     });
 
     // 5. Filter by workflow phase + environment (null on grant means "any")
@@ -79,4 +77,72 @@ export const toolValidationService = {
 
 function deny(reason: string, risk: string): ValidateResult {
   return { allowed: false, requiresApproval: false, riskLevel: risk, reason };
+}
+
+async function resolveRuntimeGrantScopes(input: ValidateCallInput): Promise<
+  { allowed: true; filters: GrantScopeFilter[] } | { allowed: false; reason: string }
+> {
+  const filters: GrantScopeFilter[] = [];
+
+  if (input.agentTemplateId) {
+    const template = await prisma.agentTemplate.findUnique({
+      where: { id: input.agentTemplateId },
+      select: { id: true, status: true, capabilityId: true },
+    });
+    if (!template) return { allowed: false, reason: "Agent template scope not found" };
+    if (template.status !== "ACTIVE") {
+      return { allowed: false, reason: `Agent template scope is ${template.status} and cannot authorize tool calls` };
+    }
+    if (input.capabilityId && template.capabilityId && template.capabilityId !== input.capabilityId) {
+      return { allowed: false, reason: "Agent template scope belongs to another capability" };
+    }
+    if (template.capabilityId) {
+      const activeCapability = await capabilityIsActive(template.capabilityId);
+      if (!activeCapability.active) return { allowed: false, reason: activeCapability.reason };
+    }
+    filters.push({ grantScopeType: "AGENT_TEMPLATE", grantScopeId: input.agentTemplateId });
+  }
+
+  if (input.agentBindingId) {
+    const binding = await prisma.agentCapabilityBinding.findUnique({
+      where: { id: input.agentBindingId },
+      select: { id: true, status: true, capabilityId: true, agentTemplateId: true },
+    });
+    if (!binding) return { allowed: false, reason: "Agent binding scope not found" };
+    if (binding.status !== "ACTIVE") {
+      return { allowed: false, reason: `Agent binding scope is ${binding.status} and cannot authorize tool calls` };
+    }
+    if (input.agentTemplateId && binding.agentTemplateId !== input.agentTemplateId) {
+      return { allowed: false, reason: "Agent binding scope belongs to another template" };
+    }
+    if (input.capabilityId && binding.capabilityId !== input.capabilityId) {
+      return { allowed: false, reason: "Agent binding scope belongs to another capability" };
+    }
+    const activeCapability = await capabilityIsActive(binding.capabilityId);
+    if (!activeCapability.active) return { allowed: false, reason: activeCapability.reason };
+    filters.push({ grantScopeType: "AGENT_BINDING", grantScopeId: input.agentBindingId });
+  }
+
+  if (input.capabilityId) {
+    const activeCapability = await capabilityIsActive(input.capabilityId);
+    if (!activeCapability.active) return { allowed: false, reason: activeCapability.reason };
+    filters.push({ grantScopeType: "CAPABILITY", grantScopeId: input.capabilityId });
+  }
+
+  if (filters.length === 0) {
+    return { allowed: false, reason: "No agent / binding / capability scope provided to resolve grants" };
+  }
+  return { allowed: true, filters };
+}
+
+async function capabilityIsActive(capabilityId: string): Promise<{ active: true } | { active: false; reason: string }> {
+  const capability = await prisma.capability.findUnique({
+    where: { id: capabilityId },
+    select: { status: true },
+  });
+  if (!capability) return { active: false, reason: "Capability scope not found" };
+  if (capability.status !== "ACTIVE") {
+    return { active: false, reason: `Capability scope is ${capability.status} and cannot authorize tool calls` };
+  }
+  return { active: true };
 }

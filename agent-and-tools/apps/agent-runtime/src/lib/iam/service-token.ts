@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import { env } from "../../config/env";
+import { optionalStringField, readUpstreamJsonObject } from "../../shared/upstream-json";
 
 const SERVICE_NAME = "agent-runtime";
 const SCOPES = ["read:reference-data", "write:reference-data", "publish:events"];
@@ -116,8 +117,14 @@ async function mint(): Promise<string | undefined> {
     console.warn(`[agent-runtime iam-service-token] bootstrap login failed (${loginRes.status})`);
     return devSelfSignedToken();
   }
-  const loginBody = await loginRes.json() as { access_token?: string };
-  const userJwt = loginBody.access_token;
+  let loginBody: Record<string, unknown>;
+  try {
+    loginBody = await readUpstreamJsonObject(loginRes, "IAM bootstrap login");
+  } catch (err) {
+    console.warn(`[agent-runtime iam-service-token] bootstrap login returned invalid JSON: ${(err as Error).message}`);
+    return devSelfSignedToken();
+  }
+  const userJwt = optionalStringField(loginBody, "access_token");
   if (!userJwt) return devSelfSignedToken();
 
   const mintRes = await fetch(`${base}/auth/service-token`, {
@@ -135,8 +142,14 @@ async function mint(): Promise<string | undefined> {
     console.warn(`[agent-runtime iam-service-token] mint failed (${mintRes.status}): ${(await mintRes.text()).slice(0, 200)}`);
     return devSelfSignedToken();
   }
-  const body = await mintRes.json() as { access_token?: string };
-  const serviceJwt = body.access_token;
+  let body: Record<string, unknown>;
+  try {
+    body = await readUpstreamJsonObject(mintRes, "IAM service-token mint");
+  } catch (err) {
+    console.warn(`[agent-runtime iam-service-token] mint returned invalid JSON: ${(err as Error).message}`);
+    return devSelfSignedToken();
+  }
+  const serviceJwt = optionalStringField(body, "access_token");
   if (!serviceJwt || !validateIamServiceTokenTenantScope(serviceJwt)) return undefined;
 
   const expiresAt = decodeExp(serviceJwt) ?? new Date(Date.now() + TTL_HOURS * 3600 * 1000);

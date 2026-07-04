@@ -116,7 +116,10 @@ model AgentTemplate {
   executions AgentExecution[]
   versions   AgentTemplateVersion[]
 
-  @@unique([capabilityId, name])
+  // Capability-scoped template names are uniquely enforced for active
+  // non-archived rows by a partial normalized DB index. Prisma cannot model
+  // that expression index, so keep query-friendly indexes here only.
+  @@index([capabilityId, name])
   @@index([capabilityId])
   @@index([baseTemplateId])
 }
@@ -198,7 +201,10 @@ model AgentTemplateSkill {
   agentTemplate AgentTemplate @relation(fields: [agentTemplateId], references: [id])
   skill         AgentSkill    @relation(fields: [skillId], references: [id])
 
-  @@unique([agentTemplateId, skillId])
+  // A template may bind the same reusable skill through multiple source-backed
+  // contexts. Source-aware uniqueness is enforced by a normalized expression DB
+  // index because Prisma cannot model btrim/lower/coalesce expression keys.
+  @@index([agentTemplateId, skillId])
   @@index([sourceType, sourceRef])
   @@index([capabilityId])
 }
@@ -225,6 +231,8 @@ model Capability {
   knowledgeSources   CapabilityKnowledgeSource[]
   bootstrapRuns      CapabilityBootstrapRun[]
   learningCandidates CapabilityLearningCandidate[]
+  learningStatus     CapabilityLearningStatus?
+  learningWorkerLock CapabilityLearningWorkerLock?
   executions         AgentExecution[]
   worldModel         CapabilityWorldModel?
 }
@@ -323,6 +331,52 @@ model CapabilityWorldModel {
   capability Capability @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
 
   @@index([refreshedAt])
+}
+
+model CapabilityLearningStatus {
+  id                 String   @id @default(uuid())
+  capabilityId       String   @unique
+  status             String   @default("NOT_CONFIGURED")
+  message            String?
+  lastAttemptAt      DateTime?
+  lastSuccessAt      DateTime?
+  lastFailureAt      DateTime?
+  lastFailureCode    String?
+  lastFailureMessage String?
+  runtimeId          String?
+  runtimeUserId      String?
+  runtimeTenantId    String?
+  sourceFingerprint  String?
+  repoProfileVersion Int      @default(0)
+  activeSourceCount  Int      @default(0)
+  learnedSourceCount Int      @default(0)
+  lastGoodStack      Json     @default("[]")
+  lastRepoProfiles   Json     @default("[]")
+  diagnostics        Json     @default("{}")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  capability Capability @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([updatedAt])
+}
+
+model CapabilityLearningWorkerLock {
+  id           String   @id @default(uuid())
+  capabilityId String   @unique
+  operation    String
+  ownerId      String
+  startedAt    DateTime @default(now())
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  capability Capability @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
+
+  @@index([operation])
+  @@index([expiresAt])
+  @@index([updatedAt])
 }
 
 model AgentCapabilityBinding {
@@ -570,6 +624,9 @@ model CapabilityCodeEmbedding {
   createdAt      DateTime @default(now())
 
   symbol CapabilityCodeSymbol @relation(fields: [symbolId], references: [id])
+
+  @@unique([symbolId])
+  @@index([embeddingModel])
 }
 
 model AgentExecution {

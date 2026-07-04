@@ -1,5 +1,6 @@
 import type { Capability } from "../../../generated/prisma-client";
 import { getIamServiceAuthHeader } from "../../lib/iam/service-token";
+import { readUpstreamJsonObject } from "../../shared/upstream-json";
 
 const DEFAULT_IAM_BASE_URL = "http://localhost:8100";
 
@@ -105,7 +106,7 @@ async function resolveIamTeam(
   try {
     const res = await fetch(`${baseUrl}/teams?size=200`, { headers });
     if (!res.ok) return false;
-    const body = await res.json() as {
+    const body = await readUpstreamJsonObject(res, "IAM teams list") as {
       items?: Array<{ id?: string; team_key?: string; name?: string }>;
     };
     const normalized = normalizeTeamRef(teamRef);
@@ -131,7 +132,7 @@ async function fetchIamTeam(
     const res = await fetch(`${baseUrl}/teams/${encodeURIComponent(teamId)}`, { headers });
     if (res.status === 404) return false;
     if (!res.ok) return null;
-    const body = await res.json() as { id?: string; team_key?: string; name?: string };
+    const body = await readUpstreamJsonObject(res, "IAM team lookup") as { id?: string; team_key?: string; name?: string };
     return body.id ? { id: body.id, team_key: body.team_key, name: body.name } : null;
   } catch {
     return null;

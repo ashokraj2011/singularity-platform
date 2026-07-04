@@ -5,18 +5,12 @@ import { publishEvent } from "../../lib/eventbus/publisher";
 import { emitAuditEvent } from "../../lib/audit-gov-emit";
 import { prisma } from "../../config/prisma";
 import type { AuthUser } from "../../middleware/auth.middleware";
+import { canManageCapability, isPlatformAdmin } from "../../lib/authz/platform-admin";
 import { createAgentProfileSchema, previewSkillSourceSchema } from "./agent.schemas";
 
 function canEditTemplate(template: { capabilityId?: string | null; lockedReason?: string | null }, user?: AuthUser): boolean {
-  const roles = (user?.roles ?? []).map((r) => r.toLowerCase());
-  const platformAdmin = Boolean(
-    user?.is_platform_admin ||
-    user?.is_super_admin ||
-    roles.includes("platform-admin") ||
-    roles.includes("super-admin"),
-  );
-  if (!template.capabilityId) return platformAdmin;
-  return platformAdmin || Boolean(user?.capability_ids?.includes(template.capabilityId));
+  if (!template.capabilityId) return isPlatformAdmin(user);
+  return canManageCapability(user, template.capabilityId);
 }
 
 function shapeTemplate<T extends { capabilityId?: string | null; lockedReason?: string | null }>(template: T, user?: AuthUser): T & {

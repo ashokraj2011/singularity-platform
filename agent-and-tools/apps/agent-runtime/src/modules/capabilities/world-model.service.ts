@@ -15,6 +15,7 @@
  */
 import { Prisma } from "../../../generated/prisma-client";
 import { prisma } from "../../config/prisma";
+import { ForbiddenError, NotFoundError } from "../../shared/errors";
 
 // ---------- Public TS shapes ------------------------------------------------
 
@@ -332,6 +333,25 @@ export type WorldModelUpsertInput = {
   lastAutoRefreshAt?: Date | null;
 };
 
+type WorldModelDbClient = typeof prisma | Prisma.TransactionClient;
+
+async function assertWorldModelCapabilityWritable(
+  client: WorldModelDbClient,
+  capabilityId: string,
+): Promise<void> {
+  const rows = await client.$queryRaw<Array<{ status: string }>>(Prisma.sql`
+    SELECT status
+    FROM "Capability"
+    WHERE id = ${capabilityId}
+    FOR UPDATE
+  `);
+  const capability = rows[0];
+  if (!capability) throw new NotFoundError("Capability not found");
+  if (capability.status === "ARCHIVED") {
+    throw new ForbiddenError("Capability is archived; world-model maintenance is read-only.");
+  }
+}
+
 /**
  * Upsert the world-model row. Caller specifies only the fields it
  * owns — the bootstrap path writes (fingerprint, language, buildSystem,
@@ -362,29 +382,32 @@ export async function upsertWorldModel(
   if (input.codeConventions !== undefined) data.codeConventions = input.codeConventions as unknown as Prisma.InputJsonValue;
   if (input.lastAutoRefreshAt !== undefined) data.lastAutoRefreshAt = input.lastAutoRefreshAt;
 
-  const row = await prisma.capabilityWorldModel.upsert({
-    where: { capabilityId: input.capabilityId },
-    create: {
-      capabilityId: input.capabilityId,
-      repoFingerprint: input.repoFingerprint ?? null,
-      primaryLanguage: input.primaryLanguage ?? null,
-      buildSystem: input.buildSystem ?? null,
-      testCommands: (input.testCommands ?? []) as unknown as Prisma.InputJsonValue,
-      buildCommands: (input.buildCommands ?? []) as unknown as Prisma.InputJsonValue,
-      runCommands: (input.runCommands ?? []) as unknown as Prisma.InputJsonValue,
-      agentRules: (input.agentRules ?? []) as unknown as Prisma.InputJsonValue,
-      readmeSummary: input.readmeSummary ?? null,
-      architectureSlice: (input.architectureSlice ?? {}) as unknown as Prisma.InputJsonValue,
-      astIndexedAt: input.astIndexedAt ?? null,
-      astIndexFiles: input.astIndexFiles ?? 0,
-      repoPatterns: (input.repoPatterns ?? []) as unknown as Prisma.InputJsonValue,
-      entrypoints: (input.entrypoints ?? []) as unknown as Prisma.InputJsonValue,
-      knownFailures: (input.knownFailures ?? []) as unknown as Prisma.InputJsonValue,
-      skillFileSummaries: (input.skillFileSummaries ?? []) as unknown as Prisma.InputJsonValue,
-      codeConventions: (input.codeConventions ?? []) as unknown as Prisma.InputJsonValue,
-      lastAutoRefreshAt: input.lastAutoRefreshAt ?? null,
-    },
-    update: data,
+  const row = await prisma.$transaction(async (tx) => {
+    await assertWorldModelCapabilityWritable(tx, input.capabilityId);
+    return tx.capabilityWorldModel.upsert({
+      where: { capabilityId: input.capabilityId },
+      create: {
+        capabilityId: input.capabilityId,
+        repoFingerprint: input.repoFingerprint ?? null,
+        primaryLanguage: input.primaryLanguage ?? null,
+        buildSystem: input.buildSystem ?? null,
+        testCommands: (input.testCommands ?? []) as unknown as Prisma.InputJsonValue,
+        buildCommands: (input.buildCommands ?? []) as unknown as Prisma.InputJsonValue,
+        runCommands: (input.runCommands ?? []) as unknown as Prisma.InputJsonValue,
+        agentRules: (input.agentRules ?? []) as unknown as Prisma.InputJsonValue,
+        readmeSummary: input.readmeSummary ?? null,
+        architectureSlice: (input.architectureSlice ?? {}) as unknown as Prisma.InputJsonValue,
+        astIndexedAt: input.astIndexedAt ?? null,
+        astIndexFiles: input.astIndexFiles ?? 0,
+        repoPatterns: (input.repoPatterns ?? []) as unknown as Prisma.InputJsonValue,
+        entrypoints: (input.entrypoints ?? []) as unknown as Prisma.InputJsonValue,
+        knownFailures: (input.knownFailures ?? []) as unknown as Prisma.InputJsonValue,
+        skillFileSummaries: (input.skillFileSummaries ?? []) as unknown as Prisma.InputJsonValue,
+        codeConventions: (input.codeConventions ?? []) as unknown as Prisma.InputJsonValue,
+        lastAutoRefreshAt: input.lastAutoRefreshAt ?? null,
+      },
+      update: data,
+    });
   });
   return projectWorldModel(row);
 }
@@ -402,9 +425,12 @@ export async function markWorldModelAutoRefreshed(
   capabilityId: string,
   at: Date,
 ): Promise<void> {
-  await prisma.capabilityWorldModel.upsert({
-    where: { capabilityId },
-    create: { capabilityId, lastAutoRefreshAt: at },
-    update: { lastAutoRefreshAt: at },
+  await prisma.$transaction(async (tx) => {
+    await assertWorldModelCapabilityWritable(tx, capabilityId);
+    await tx.capabilityWorldModel.upsert({
+      where: { capabilityId },
+      create: { capabilityId, lastAutoRefreshAt: at },
+      update: { lastAutoRefreshAt: at },
+    });
   });
 }

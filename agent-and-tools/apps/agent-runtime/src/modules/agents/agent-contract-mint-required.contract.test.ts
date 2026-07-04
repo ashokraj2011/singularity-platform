@@ -19,6 +19,11 @@ assert.match(
   /const mintResult = await maybeMintContract\(result, actor\);/,
   "template updates must await contract minting instead of firing it in the background",
 );
+assert.match(
+  source,
+  /const restoredResult = await prisma\.\$transaction[\s\S]*?const mintResult = await maybeMintContract\(restoredResult, actor\);/,
+  "template restores must also await contract minting when they restore an ACTIVE version",
+);
 assert.doesNotMatch(
   source,
   /void maybeMintContract\(result, actor\)/,
@@ -34,6 +39,11 @@ assert.match(
   /data: \{ status: existing\.status \}/,
   "failed production-class activation must compensate by restoring the previous template status",
 );
+assert.match(
+  source,
+  /restoredResult\.status === "ACTIVE"[\s\S]*?CONTRACT_MINT_REQUIRED/,
+  "failed production-class restore to ACTIVE must surface the same stable contract error code",
+);
 
 // [P1] mint vs pin-record separation — a transient DB error recording the
 // contract pin must NOT be reported as a mint failure (that would revert the
@@ -45,8 +55,13 @@ assert.match(
 );
 assert.match(
   source,
-  /await recordContractPin\(template, body\.data\.id, body\.data\.bundleHash\)/,
-  "maybeMintContract must record the pin via the helper after a successful mint, not inline in the mint try",
+  /const body = await readUpstreamJsonObject\(res, "prompt-composer contract mint"\)/,
+  "maybeMintContract must parse prompt-composer responses through the shared upstream parser",
+);
+assert.match(
+  source,
+  /const contractId = stringValue\(data\.id\);[\s\S]*const bundleHash = stringValue\(data\.bundleHash\)[\s\S]*malformed contract response[\s\S]*await recordContractPin\(template, contractId, bundleHash\)/,
+  "maybeMintContract must validate contract id/hash before recording the pin",
 );
 assert.match(
   source,

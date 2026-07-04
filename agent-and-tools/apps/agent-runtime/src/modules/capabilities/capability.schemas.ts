@@ -77,7 +77,10 @@ export const reviewBootstrapSchema = z.object({
   approveGroupKeys: z.array(z.string().min(1)).default([]),
   rejectGroupKeys: z.array(z.string().min(1)).default([]),
   activateAgentTemplateIds: z.array(z.string().uuid()).default([]),
-});
+}).refine(
+  (body) => !body.approveGroupKeys.some((key) => body.rejectGroupKeys.includes(key)),
+  "A bootstrap learning group cannot be both approved and rejected.",
+);
 
 export const syncCapabilitySchema = z.object({
   repositoryIds: z.array(z.string().uuid()).optional(),
@@ -90,10 +93,14 @@ export const learningWorkerRunSchema = z.object({
   rejectGroupKeys: z.array(z.string().min(1)).default([]),
   activateAgentTemplateIds: z.array(z.string().uuid()).default([]),
   syncApprovedSources: z.boolean().default(true),
+  refreshRepositoryProfiles: z.boolean().default(true),
   reembed: z.boolean().default(true),
   reembedKinds: z.array(z.enum(["knowledge", "memory", "code"])).default(["knowledge", "memory", "code"]),
   dryRun: z.boolean().default(false),
-});
+}).refine(
+  (body) => !body.approveGroupKeys.some((key) => body.rejectGroupKeys.includes(key)),
+  "A bootstrap learning group cannot be both approved and rejected.",
+);
 
 export const bindAgentSchema = z.object({
   agentTemplateId: z.string().uuid(),

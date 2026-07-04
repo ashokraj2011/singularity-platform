@@ -1,7 +1,9 @@
 import { Prisma } from "../../../generated/prisma-client";
+import { v4 as uuidv4 } from "uuid";
 import { prisma } from "../../config/prisma";
-import { ForbiddenError, NotFoundError } from "../../shared/errors";
+import { ConflictError, ForbiddenError, NotFoundError } from "../../shared/errors";
 import { sha256 } from "../../shared/hash";
+import { readUpstreamJsonObject } from "../../shared/upstream-json";
 import { extractSymbols, type InputFile } from "./symbol-extractor";
 import {
   getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral,
@@ -26,10 +28,100 @@ import {
   markPhaseSkipped,
   patchPhase,
 } from "./bootstrap-phases";
+import {
+  deriveCapabilityGroundingState,
+  learningMessageForStatus,
+  missingRepositoryMessage,
+  shouldRecordGroundingAttempt,
+  type CapabilityLearningGroundingStatus,
+} from "./capability-grounding-status";
+import {
+  capabilityDuplicateConflictMessage,
+  capabilityDuplicateWhere,
+  capabilityNaturalKey,
+  normalizedCapabilityType,
+  normalizedIdentityValue,
+  type CapabilityIdentityInput,
+} from "./capability-identity";
+import { sourceBackedKnowledgeArtifactKey } from "./capability-knowledge-identity";
+import {
+  capabilityKnowledgeSourceKey,
+  capabilityRepositorySourceKey,
+  normalizedKnowledgeArtifactType,
+  normalizedRepositoryBranch,
+  normalizedRepositoryType,
+  normalizedSourceValue,
+} from "./capability-source-identity";
+import { capabilityCodeSymbolKey } from "./capability-code-symbol-identity";
+import {
+  capabilityCodeEmbeddingKey,
+  normalizedCodeEmbeddingValue,
+} from "./capability-code-embedding-identity";
+import { capabilityAgentBindingKey } from "./capability-binding-identity";
+import {
+  capabilityAgentTemplateKey,
+  normalizedAgentTemplateName,
+} from "./capability-agent-template-identity";
+import {
+  capabilityLearningCandidateKey,
+  normalizedLearningCandidateIdentityValue,
+} from "./capability-learning-candidate-identity";
+import { collapseCapabilityListDuplicates } from "./capability-list-identity";
+import { assertCapabilityNotArchived, requireActiveCapability } from "./capability-lifecycle";
 // M61 Wire B P3 — README distillation + architecture slice worker.
 // Runs after Phase 1 completes (both sync and async paths) and writes
 // readmeSummary + architectureSlice.rootPackages to CapabilityWorldModel.
 import { runBootstrapDistillationPhase } from "./bootstrap-phase3-distill";
+
+const CAPABILITY_LEARNING_RUN_STALE_MS = Number(process.env.CAPABILITY_LEARNING_RUN_STALE_MS ?? 15 * 60 * 1000);
+type CapabilityLearningWorkerOperation = "grounding" | "sync";
+
+async function claimCapabilityLearningWorker(capabilityId: string, operation: CapabilityLearningWorkerOperation): Promise<() => Promise<void>> {
+  const staleAfterMs = Math.max(CAPABILITY_LEARNING_RUN_STALE_MS, 60_000);
+  const ownerId = uuidv4();
+  const expiresAt = new Date(Date.now() + staleAfterMs);
+  const claim = await prisma.$queryRaw<Array<{ ownerId: string }>>`
+    INSERT INTO "CapabilityLearningWorkerLock" (
+      "id", "capabilityId", "operation", "ownerId", "startedAt", "expiresAt", "createdAt", "updatedAt"
+    )
+    SELECT ${uuidv4()}, ${capabilityId}, ${operation}, ${ownerId}, CURRENT_TIMESTAMP, ${expiresAt}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    FROM "Capability" c
+    WHERE c.id = ${capabilityId}
+      AND c.status <> 'ARCHIVED'
+    ON CONFLICT ("capabilityId") DO UPDATE
+    SET
+      "operation" = EXCLUDED."operation",
+      "ownerId" = EXCLUDED."ownerId",
+      "startedAt" = EXCLUDED."startedAt",
+      "expiresAt" = EXCLUDED."expiresAt",
+      "updatedAt" = CURRENT_TIMESTAMP
+    WHERE "CapabilityLearningWorkerLock"."expiresAt" <= CURRENT_TIMESTAMP
+    RETURNING "ownerId"
+  `;
+  if (claim[0]?.ownerId !== ownerId) {
+    await requireActiveCapability(capabilityId, "Cannot run learning worker for an archived capability.");
+    const [current] = await prisma.$queryRaw<Array<{ operation: string; expiresAt: Date | null }>>`
+      SELECT "operation", "expiresAt"
+      FROM "CapabilityLearningWorkerLock"
+      WHERE "capabilityId" = ${capabilityId}
+      LIMIT 1
+    `;
+    const runningOperation = current?.operation === "grounding" ? "Repository grounding refresh" : "Approved source sync";
+    const retryHint = current?.expiresAt instanceof Date
+      ? `retry after ${current.expiresAt.toISOString()} if the worker crashed`
+      : `retry after ${Math.ceil(staleAfterMs / 60000)} minutes if the worker crashed`;
+    throw new ConflictError(
+      `${runningOperation} is already running for this capability. Wait for the current learning worker to finish, or ${retryHint}.`,
+    );
+  }
+  return async () => {
+    await prisma.$executeRaw`
+      DELETE FROM "CapabilityLearningWorkerLock"
+      WHERE "capabilityId" = ${capabilityId}
+        AND "ownerId" = ${ownerId}
+    `;
+  };
+}
 
 const BOOTSTRAP_AGENT_CATALOG = [
   {
@@ -213,6 +305,15 @@ type RepositoryProfile = {
   graphMermaid: string;
 };
 
+type RepositoryProfileSummary = Pick<RepositoryProfile, "repoName" | "languages" | "frameworks" | "buildTools" | "endpointCount">;
+
+type RepositoryRefreshResult = {
+  refreshed: number;
+  artifacts: number;
+  profiles: RepositoryProfileSummary[];
+  warnings: string[];
+};
+
 type CapabilityArchitectureDiagram = {
   kind: "APPLICATION_CAPABILITY_ARCHITECTURE" | "TOGAF_CAPABILITY_COLLECTION";
   title: string;
@@ -261,7 +362,11 @@ export const capabilityService = {
     name: string; parentCapabilityId?: string; capabilityType?: string;
     appId?: string; businessUnitId?: string; ownerTeamId?: string; criticality?: string; description?: string;
   }, authHeader?: string) {
-    const capability = await prisma.capability.create({ data: { ...input, status: "ACTIVE" } });
+    const capability = await prisma.$transaction(async (tx) => {
+      await lockCapabilityNaturalKey(tx, input);
+      await assertNoActiveCapabilityDuplicate(tx, input);
+      return tx.capability.create({ data: { ...input, status: "ACTIVE" } });
+    }).catch(err => rethrowCapabilityIdentityConflict(err, input));
     const warning = await syncIamCapabilityReference(capability, { authHeader });
     if (warning) console.warn(`[capability] ${warning}`);
     const governanceWarning = await ensureDefaultGovernanceLimits(capability.id);
@@ -273,19 +378,23 @@ export const capabilityService = {
     const warnings: string[] = [];
     const errors: string[] = [];
     const requestedChildCapabilityIds = Array.from(new Set(input.childCapabilityIds ?? []));
-    const capability = await prisma.capability.create({
-      data: {
-        name: input.name,
-        appId: input.appId,
-        parentCapabilityId: input.parentCapabilityId,
-        capabilityType: input.capabilityType,
-        businessUnitId: input.businessUnitId,
-        ownerTeamId: input.ownerTeamId,
-        criticality: input.criticality,
-        description: input.description,
-        status: "ACTIVE",
-      },
-    });
+    const capability = await prisma.$transaction(async (tx) => {
+      await lockCapabilityNaturalKey(tx, input);
+      await assertNoActiveCapabilityDuplicate(tx, input);
+      return tx.capability.create({
+        data: {
+          name: input.name,
+          appId: input.appId,
+          parentCapabilityId: input.parentCapabilityId,
+          capabilityType: input.capabilityType,
+          businessUnitId: input.businessUnitId,
+          ownerTeamId: input.ownerTeamId,
+          criticality: input.criticality,
+          description: input.description,
+          status: "ACTIVE",
+        },
+      });
+    }).catch(err => rethrowCapabilityIdentityConflict(err, input));
     const iamWarning = await syncIamCapabilityReference(capability, {
       authHeader,
       ownerUserId: userId,
@@ -395,29 +504,25 @@ export const capabilityService = {
       for (const agent of selectedAgents) {
         const base = common.find(t => t.roleType === agent.baseRoleType);
         if (!base) warnings.push(`No common ${agent.baseRoleType} base template found for ${agent.label}; created a draft placeholder.`);
-        const template = await prisma.agentTemplate.create({
-          data: {
-            name: `${capability.name} ${agent.label} Agent`,
-            roleType: agent.roleType,
-            description: capabilityAgentDescription(capability.name, agent, base?.description),
-            basePromptProfileId: base?.basePromptProfileId ?? undefined,
-            defaultToolPolicyId: base?.defaultToolPolicyId ?? undefined,
-            capabilityId: capability.id,
-            baseTemplateId: base?.id ?? undefined,
-            lockedReason: agent.locked ? `${agent.label} is a locked capability gate derived from the platform baseline.` : null,
-            status: "DRAFT",
-            createdBy: userId,
-          },
+        const template = await persistCapabilityAgentTemplate({
+          name: `${capability.name} ${agent.label} Agent`,
+          roleType: agent.roleType,
+          description: capabilityAgentDescription(capability.name, agent, base?.description),
+          basePromptProfileId: base?.basePromptProfileId ?? undefined,
+          defaultToolPolicyId: base?.defaultToolPolicyId ?? undefined,
+          capabilityId: capability.id,
+          baseTemplateId: base?.id ?? undefined,
+          lockedReason: agent.locked ? `${agent.label} is a locked capability gate derived from the platform baseline.` : null,
+          status: "DRAFT",
+          createdBy: userId,
         });
-        const binding = await prisma.agentCapabilityBinding.create({
-          data: {
-            capabilityId: capability.id,
-            agentTemplateId: template.id,
-            bindingName: `${agent.label} binding`,
-            roleInCapability: agent.bindingRole,
-            status: "DRAFT",
-            createdBy: userId,
-          },
+        const binding = await persistAgentCapabilityBinding({
+          capabilityId: capability.id,
+          agentTemplateId: template.id,
+          bindingName: `${agent.label} binding`,
+          roleInCapability: agent.bindingRole,
+          status: "DRAFT",
+          createdBy: userId,
         });
         generatedAgents.push({
           id: template.id,
@@ -426,7 +531,7 @@ export const capabilityService = {
           bindingRole: agent.bindingRole,
           label: agent.label,
           name: template.name,
-          baseTemplateId: base?.id,
+          baseTemplateId: template.baseTemplateId ?? base?.id,
           bindingId: binding.id,
           locked: agent.locked,
           activationRequired: agent.activationRequired,
@@ -437,16 +542,12 @@ export const capabilityService = {
 
       for (const repoInput of input.repositories ?? []) {
         const repoName = repoInput.repoName?.trim() || repoNameFromUrl(repoInput.repoUrl);
-        const repo = await prisma.capabilityRepository.create({
-          data: {
-            capabilityId: capability.id,
-            repoName,
-            repoUrl: repoInput.repoUrl,
-            defaultBranch: repoInput.defaultBranch ?? "main",
-            repositoryType: repoInput.repositoryType ?? "GITHUB",
-            pollIntervalSec: null,
-            status: "ACTIVE",
-          },
+        const repo = await persistCapabilityRepositorySource(capability.id, {
+          repoName,
+          repoUrl: repoInput.repoUrl,
+          defaultBranch: repoInput.defaultBranch ?? "main",
+          repositoryType: repoInput.repositoryType ?? "GITHUB",
+          pollIntervalSec: null,
         });
         try {
           const discovery = await discoverGitHubRepoWithProfile(repo.repoUrl, repo.defaultBranch ?? "main", userId);
@@ -467,15 +568,11 @@ export const capabilityService = {
       }
 
       for (const doc of input.documentLinks ?? []) {
-        await prisma.capabilityKnowledgeSource.create({
-          data: {
-            capabilityId: capability.id,
-            url: doc.url,
-            artifactType: doc.artifactType ?? "DOC",
-            title: doc.title,
-            pollIntervalSec: null,
-            status: "ACTIVE",
-          },
+        await persistCapabilityKnowledgeSource(capability.id, {
+          url: doc.url,
+          artifactType: doc.artifactType ?? "DOC",
+          title: doc.title,
+          pollIntervalSec: null,
         });
         try {
           discovered.push(await fetchDocumentLink(doc));
@@ -485,16 +582,12 @@ export const capabilityService = {
       }
 
       if ((input.localFiles ?? []).length > 0) {
-        await prisma.capabilityRepository.create({
-          data: {
-            capabilityId: capability.id,
-            repoName: "Local bootstrap source",
-            repoUrl: LOCAL_BOOTSTRAP_REF,
-            defaultBranch: "local",
-            repositoryType: "LOCAL",
-            pollIntervalSec: null,
-            status: "ACTIVE",
-          },
+        await persistCapabilityRepositorySource(capability.id, {
+          repoName: "Local bootstrap source",
+          repoUrl: LOCAL_BOOTSTRAP_REF,
+          defaultBranch: "local",
+          repositoryType: "LOCAL",
+          pollIntervalSec: null,
         });
         discovered.push(...discoverLocalSignals(input.localFiles ?? []));
       }
@@ -544,22 +637,24 @@ export const capabilityService = {
         ...buildLearningCandidates(discovered),
         ...buildAgentGroundingCandidates(capability.name, selectedAgents, discovered),
       ];
+      const reusedLearningCandidateIds: string[] = [];
       for (const candidate of candidates) {
-        await prisma.capabilityLearningCandidate.create({
-          data: {
-            capabilityId: capability.id,
-            bootstrapRunId: run.id,
-            groupKey: candidate.groupKey,
-            groupTitle: candidate.groupTitle,
-            artifactType: candidate.artifactType,
-            title: candidate.title,
-            content: candidate.content,
-            sourceType: candidate.sourceType,
-            sourceRef: candidate.sourceRef,
-            confidence: candidate.confidence,
-            status: "PENDING",
-          },
+        const persisted = await persistCapabilityLearningCandidate({
+          capabilityId: capability.id,
+          bootstrapRunId: run.id,
+          groupKey: candidate.groupKey,
+          groupTitle: candidate.groupTitle,
+          artifactType: candidate.artifactType,
+          title: candidate.title,
+          content: candidate.content,
+          sourceType: candidate.sourceType,
+          sourceRef: candidate.sourceRef,
+          confidence: candidate.confidence,
+          status: "PENDING",
         });
+        if (persisted.bootstrapRunId && persisted.bootstrapRunId !== run.id) {
+          reusedLearningCandidateIds.push(persisted.id);
+        }
       }
 
       // M61 Slice B — Capture the row first, then stamp phase
@@ -581,6 +676,8 @@ export const capabilityService = {
             localFiles: input.localFiles?.length ?? 0,
             discoveredSignals: discovered.length,
             candidateGroups: candidates.length,
+            reusedLearningCandidateIds: Array.from(new Set(reusedLearningCandidateIds)),
+            reusedLearningCandidateCount: new Set(reusedLearningCandidateIds).size,
             childCapabilityIds: requestedChildren,
             sharedApplications: input.sharedApplications ?? [],
             repositoryProfiles,
@@ -665,33 +762,29 @@ export const capabilityService = {
       for (const agent of selectedAgents) {
         const base = common.find((t) => t.roleType === agent.baseRoleType);
         if (!base) warnings.push(`No common ${agent.baseRoleType} base template found for ${agent.label}; created a draft placeholder.`);
-        const template = await prisma.agentTemplate.create({
-          data: {
-            name: `${capability.name} ${agent.label} Agent`,
-            roleType: agent.roleType,
-            description: capabilityAgentDescription(capability.name, agent, base?.description),
-            basePromptProfileId: base?.basePromptProfileId ?? undefined,
-            defaultToolPolicyId: base?.defaultToolPolicyId ?? undefined,
-            capabilityId: capability.id,
-            baseTemplateId: base?.id ?? undefined,
-            lockedReason: agent.locked ? `${agent.label} is a locked capability gate derived from the platform baseline.` : null,
-            status: "DRAFT",
-            createdBy: userId,
-          },
+        const template = await persistCapabilityAgentTemplate({
+          name: `${capability.name} ${agent.label} Agent`,
+          roleType: agent.roleType,
+          description: capabilityAgentDescription(capability.name, agent, base?.description),
+          basePromptProfileId: base?.basePromptProfileId ?? undefined,
+          defaultToolPolicyId: base?.defaultToolPolicyId ?? undefined,
+          capabilityId: capability.id,
+          baseTemplateId: base?.id ?? undefined,
+          lockedReason: agent.locked ? `${agent.label} is a locked capability gate derived from the platform baseline.` : null,
+          status: "DRAFT",
+          createdBy: userId,
         });
-        const binding = await prisma.agentCapabilityBinding.create({
-          data: {
-            capabilityId: capability.id,
-            agentTemplateId: template.id,
-            bindingName: `${agent.label} binding`,
-            roleInCapability: agent.bindingRole,
-            status: "DRAFT",
-            createdBy: userId,
-          },
+        const binding = await persistAgentCapabilityBinding({
+          capabilityId: capability.id,
+          agentTemplateId: template.id,
+          bindingName: `${agent.label} binding`,
+          roleInCapability: agent.bindingRole,
+          status: "DRAFT",
+          createdBy: userId,
         });
         generatedAgents.push({
           id: template.id, key: agent.key, roleType: agent.roleType, bindingRole: agent.bindingRole,
-          label: agent.label, name: template.name, baseTemplateId: base?.id, bindingId: binding.id,
+          label: agent.label, name: template.name, baseTemplateId: template.baseTemplateId ?? base?.id, bindingId: binding.id,
           locked: agent.locked, activationRequired: agent.activationRequired,
           learnsFromGit: agent.learnsFromGit, grounding: agent.grounding,
         });
@@ -699,13 +792,12 @@ export const capabilityService = {
 
       for (const repoInput of input.repositories ?? []) {
         const repoName = repoInput.repoName?.trim() || repoNameFromUrl(repoInput.repoUrl);
-        const repo = await prisma.capabilityRepository.create({
-          data: {
-            capabilityId: capability.id, repoName, repoUrl: repoInput.repoUrl,
-            defaultBranch: repoInput.defaultBranch ?? "main",
-            repositoryType: repoInput.repositoryType ?? "GITHUB",
-            pollIntervalSec: null, status: "ACTIVE",
-          },
+        const repo = await persistCapabilityRepositorySource(capability.id, {
+          repoName,
+          repoUrl: repoInput.repoUrl,
+          defaultBranch: repoInput.defaultBranch ?? "main",
+          repositoryType: repoInput.repositoryType ?? "GITHUB",
+          pollIntervalSec: null,
         });
         try {
           const discovery = await discoverGitHubRepoWithProfile(repo.repoUrl, repo.defaultBranch ?? "main", userId);
@@ -725,11 +817,11 @@ export const capabilityService = {
       }
 
       for (const doc of input.documentLinks ?? []) {
-        await prisma.capabilityKnowledgeSource.create({
-          data: {
-            capabilityId: capability.id, url: doc.url, artifactType: doc.artifactType ?? "DOC",
-            title: doc.title, pollIntervalSec: null, status: "ACTIVE",
-          },
+        await persistCapabilityKnowledgeSource(capability.id, {
+          url: doc.url,
+          artifactType: doc.artifactType ?? "DOC",
+          title: doc.title,
+          pollIntervalSec: null,
         });
         try {
           discovered.push(await fetchDocumentLink(doc));
@@ -739,12 +831,12 @@ export const capabilityService = {
       }
 
       if ((input.localFiles ?? []).length > 0) {
-        await prisma.capabilityRepository.create({
-          data: {
-            capabilityId: capability.id, repoName: "Local bootstrap source",
-            repoUrl: LOCAL_BOOTSTRAP_REF, defaultBranch: "local", repositoryType: "LOCAL",
-            pollIntervalSec: null, status: "ACTIVE",
-          },
+        await persistCapabilityRepositorySource(capability.id, {
+          repoName: "Local bootstrap source",
+          repoUrl: LOCAL_BOOTSTRAP_REF,
+          defaultBranch: "local",
+          repositoryType: "LOCAL",
+          pollIntervalSec: null,
         });
         discovered.push(...discoverLocalSignals(input.localFiles ?? []));
       }
@@ -776,16 +868,18 @@ export const capabilityService = {
         ...buildLearningCandidates(discovered),
         ...buildAgentGroundingCandidates(capability.name, selectedAgents, discovered),
       ];
+      const reusedLearningCandidateIds: string[] = [];
       for (const candidate of candidates) {
-        await prisma.capabilityLearningCandidate.create({
-          data: {
-            capabilityId: capability.id, bootstrapRunId: run.id,
-            groupKey: candidate.groupKey, groupTitle: candidate.groupTitle,
-            artifactType: candidate.artifactType, title: candidate.title, content: candidate.content,
-            sourceType: candidate.sourceType, sourceRef: candidate.sourceRef,
-            confidence: candidate.confidence, status: "PENDING",
-          },
+        const persisted = await persistCapabilityLearningCandidate({
+          capabilityId: capability.id, bootstrapRunId: run.id,
+          groupKey: candidate.groupKey, groupTitle: candidate.groupTitle,
+          artifactType: candidate.artifactType, title: candidate.title, content: candidate.content,
+          sourceType: candidate.sourceType, sourceRef: candidate.sourceRef,
+          confidence: candidate.confidence, status: "PENDING",
         });
+        if (persisted.bootstrapRunId && persisted.bootstrapRunId !== run.id) {
+          reusedLearningCandidateIds.push(persisted.id);
+        }
       }
 
       await prisma.capabilityBootstrapRun.update({
@@ -801,6 +895,8 @@ export const capabilityService = {
             localFiles: input.localFiles?.length ?? 0,
             discoveredSignals: discovered.length,
             candidateGroups: candidates.length,
+            reusedLearningCandidateIds: Array.from(new Set(reusedLearningCandidateIds)),
+            reusedLearningCandidateCount: new Set(reusedLearningCandidateIds).size,
             childCapabilityIds: requestedChildren,
             sharedApplications: input.sharedApplications ?? [],
             repositoryProfiles,
@@ -854,45 +950,60 @@ export const capabilityService = {
   async getBootstrapRun(capabilityId: string, runId: string) {
     const run = await prisma.capabilityBootstrapRun.findUnique({
       where: { id: runId },
-      include: { candidates: { orderBy: [{ groupKey: "asc" }, { createdAt: "asc" }] }, capability: { include: { bindings: { include: { agentTemplate: true } }, repositories: true, knowledgeSources: true } } },
+      include: {
+        candidates: {
+          where: { status: { not: "SUPERSEDED" } },
+          orderBy: [{ groupKey: "asc" }, { createdAt: "asc" }],
+        },
+        capability: { include: { bindings: { include: { agentTemplate: true } }, repositories: true, knowledgeSources: true } },
+      },
     });
     if (!run || run.capabilityId !== capabilityId) throw new NotFoundError("Capability bootstrap run not found");
-    return run;
+    const reusedLearningCandidateIds = jsonStringArray(jsonRecord(run.sourceSummary).reusedLearningCandidateIds);
+    if (reusedLearningCandidateIds.length === 0) return run;
+
+    const reusedCandidates = await prisma.capabilityLearningCandidate.findMany({
+      where: {
+        capabilityId,
+        id: { in: reusedLearningCandidateIds },
+        status: { not: "SUPERSEDED" },
+      },
+      orderBy: [{ groupKey: "asc" }, { createdAt: "asc" }],
+    });
+    if (reusedCandidates.length === 0) return run;
+
+    const candidatesById = new Map<string, typeof run.candidates[number]>();
+    for (const candidate of run.candidates) candidatesById.set(candidate.id, candidate);
+    for (const candidate of reusedCandidates) candidatesById.set(candidate.id, candidate);
+    return {
+      ...run,
+      candidates: Array.from(candidatesById.values()).sort(compareLearningCandidatesForReview),
+    };
   },
 
   async reviewBootstrapRun(capabilityId: string, runId: string, input: {
     approveGroupKeys: string[]; rejectGroupKeys: string[]; activateAgentTemplateIds: string[];
   }, userId?: string) {
-    assertCapabilityNotArchived(await this.get(capabilityId));
+    await requireActiveCapability(capabilityId);
     const run = await this.getBootstrapRun(capabilityId, runId);
     const approve = new Set(input.approveGroupKeys);
     const reject = new Set(input.rejectGroupKeys);
+    const conflictingGroups = Array.from(approve).filter(groupKey => reject.has(groupKey));
+    if (conflictingGroups.length > 0) {
+      throw new ConflictError(
+        `Bootstrap learning group(s) cannot be both approved and rejected: ${conflictingGroups.join(", ")}`,
+      );
+    }
     const approvedCandidates = run.candidates.filter(c => c.status === "PENDING" && approve.has(c.groupKey));
     const rejectedIds = run.candidates.filter(c => c.status === "PENDING" && reject.has(c.groupKey)).map(c => c.id);
 
     for (const candidate of approvedCandidates) {
-      const artifact = await this.addKnowledge(capabilityId, {
-        artifactType: candidate.artifactType,
-        title: candidate.title,
-        content: candidate.content,
-        sourceType: `BOOTSTRAP_${candidate.sourceType ?? "DISCOVERY"}`,
-        sourceRef: candidate.sourceRef ?? undefined,
-        confidence: candidate.confidence ? Number(candidate.confidence) : 0.8,
-      });
-      await prisma.capabilityLearningCandidate.update({
-        where: { id: candidate.id },
-        data: {
-          status: "MATERIALIZED",
-          materializedArtifactId: artifact.id,
-          reviewedBy: userId,
-          reviewedAt: new Date(),
-        },
-      });
+      await materializeBootstrapLearningCandidate(capabilityId, candidate, userId);
     }
 
     if (rejectedIds.length > 0) {
       await prisma.capabilityLearningCandidate.updateMany({
-        where: { id: { in: rejectedIds } },
+        where: { id: { in: rejectedIds }, status: "PENDING" },
         data: { status: "REJECTED", reviewedBy: userId, reviewedAt: new Date() },
       });
     }
@@ -910,11 +1021,11 @@ export const capabilityService = {
 
     if (activateAgentTemplateIds.length > 0) {
       await prisma.agentTemplate.updateMany({
-        where: { capabilityId, id: { in: activateAgentTemplateIds } },
+        where: { capabilityId, id: { in: activateAgentTemplateIds }, status: { not: "ARCHIVED" } },
         data: { status: "ACTIVE" },
       });
       await prisma.agentCapabilityBinding.updateMany({
-        where: { capabilityId, agentTemplateId: { in: activateAgentTemplateIds } },
+        where: { capabilityId, agentTemplateId: { in: activateAgentTemplateIds }, status: { not: "ARCHIVED" } },
         data: { status: "ACTIVE" },
       });
     }
@@ -933,7 +1044,7 @@ export const capabilityService = {
     syncRepository: (capabilityId: string, repoId: string) => Promise<unknown>;
     syncKnowledgeSource: (capabilityId: string, sourceId: string) => Promise<unknown>;
   }) {
-    assertCapabilityNotArchived(await this.get(capabilityId));
+    await requireActiveCapability(capabilityId);
     const approved = await prisma.capabilityLearningCandidate.findMany({
       where: { capabilityId, status: "MATERIALIZED" },
       select: { sourceRef: true, sourceType: true },
@@ -944,30 +1055,53 @@ export const capabilityService = {
 
     const warnings: string[] = [];
     const repositories = [];
+    const syncedRepositoryKeys = new Set<string>();
     for (const repoId of input.repositoryIds ?? []) {
       const repo = await prisma.capabilityRepository.findUnique({ where: { id: repoId } });
       if (!repo || repo.capabilityId !== capabilityId) {
         warnings.push(`Repository ${repoId} not found for capability.`);
         continue;
       }
+      const repoKey = capabilityRepositorySourceKey({
+        capabilityId,
+        repoUrl: repo.repoUrl,
+        defaultBranch: repo.defaultBranch,
+        repositoryType: repo.repositoryType,
+      });
+      if (repoKey && syncedRepositoryKeys.has(repoKey)) {
+        warnings.push(`Repository ${repo.repoName} was skipped because another active repository source has the same URL, branch, and type.`);
+        continue;
+      }
       if (!isApprovedSource(approved, repo.repoUrl)) {
         warnings.push(`Repository ${repo.repoName} is not approved for runtime learning yet.`);
         continue;
       }
+      if (repoKey) syncedRepositoryKeys.add(repoKey);
       repositories.push({ repoId, result: await helpers.syncRepository(capabilityId, repoId) });
     }
 
     const knowledgeSources = [];
+    const syncedKnowledgeSourceKeys = new Set<string>();
     for (const sourceId of input.knowledgeSourceIds ?? []) {
       const source = await prisma.capabilityKnowledgeSource.findUnique({ where: { id: sourceId } });
       if (!source || source.capabilityId !== capabilityId) {
         warnings.push(`Knowledge source ${sourceId} not found for capability.`);
         continue;
       }
+      const sourceKey = capabilityKnowledgeSourceKey({
+        capabilityId,
+        url: source.url,
+        artifactType: source.artifactType,
+      });
+      if (sourceKey && syncedKnowledgeSourceKeys.has(sourceKey)) {
+        warnings.push(`Knowledge source ${source.url} was skipped because another active source has the same URL and artifact type.`);
+        continue;
+      }
       if (!isApprovedSource(approved, source.url)) {
         warnings.push(`Knowledge source ${source.url} is not approved for runtime learning yet.`);
         continue;
       }
+      if (sourceKey) syncedKnowledgeSourceKeys.add(sourceKey);
       knowledgeSources.push({ sourceId, result: await helpers.syncKnowledgeSource(capabilityId, sourceId) });
     }
 
@@ -993,6 +1127,7 @@ export const capabilityService = {
     rejectGroupKeys?: string[];
     activateAgentTemplateIds?: string[];
     syncApprovedSources?: boolean;
+    refreshRepositoryProfiles?: boolean;
     reembed?: boolean;
     reembedKinds?: ("knowledge" | "memory" | "code")[];
     dryRun?: boolean;
@@ -1000,8 +1135,15 @@ export const capabilityService = {
     syncRepository: (capabilityId: string, repoId: string) => Promise<unknown>;
     syncKnowledgeSource: (capabilityId: string, sourceId: string) => Promise<unknown>;
   }, userId?: string) {
-    assertCapabilityNotArchived(await this.get(capabilityId));
+    await requireActiveCapability(capabilityId);
     const dryRun = input.dryRun === true;
+    const willRefreshRepositoryProfiles = input.refreshRepositoryProfiles !== false;
+    const willSyncApprovedSources = input.syncApprovedSources !== false;
+    const releaseLearningWorker = !dryRun && (willSyncApprovedSources || willRefreshRepositoryProfiles)
+      ? await claimCapabilityLearningWorker(capabilityId, willRefreshRepositoryProfiles ? "grounding" : "sync")
+      : null;
+
+    try {
     const warnings: string[] = [];
     const nextActions: string[] = [];
     const before = await learningWorkerSnapshot(capabilityId);
@@ -1039,8 +1181,20 @@ export const capabilityService = {
       nextActions.push("Review pending bootstrap learning groups, then rerun the worker to materialize approved knowledge.");
     }
 
+    if (willRefreshRepositoryProfiles && shouldRecordGroundingAttempt({ dryRun, refreshRepositoryProfiles: input.refreshRepositoryProfiles })) {
+      const claim = await recordLearningAttempt(capabilityId, {
+        message: "Learning refresh started.",
+        diagnostics: { requestedByUserId: userId ?? null },
+      });
+      if (!claim.claimed) {
+        throw new ConflictError(
+          `Repository grounding refresh is already running for this capability. Wait for the current refresh to finish, or retry after ${Math.ceil(CAPABILITY_LEARNING_RUN_STALE_MS / 60000)} minutes if the worker crashed.`,
+        );
+      }
+    }
+
     let sync: unknown = null;
-    if (input.syncApprovedSources !== false) {
+    if (willSyncApprovedSources) {
       const [repositories, knowledgeSources] = await Promise.all([
         prisma.capabilityRepository.findMany({ where: { capabilityId, status: "ACTIVE" }, select: { id: true } }),
         prisma.capabilityKnowledgeSource.findMany({ where: { capabilityId, status: "ACTIVE" }, select: { id: true } }),
@@ -1070,6 +1224,34 @@ export const capabilityService = {
       if (Array.isArray(syncWarnings)) warnings.push(...syncWarnings.map(String));
     }
 
+    let repositoryProfiles: unknown = null;
+    if (willRefreshRepositoryProfiles) {
+      if (dryRun) {
+        const repositories = await prisma.capabilityRepository.findMany({
+          where: { capabilityId, status: "ACTIVE" },
+          select: { id: true, repoName: true, repoUrl: true, defaultBranch: true, repositoryType: true },
+        });
+        repositoryProfiles = {
+          dryRun: true,
+          repositoryIds: repositories.map(repo => repo.id),
+        };
+      } else {
+        try {
+          repositoryProfiles = await refreshRepositoryProfileLearning(capabilityId, userId);
+          const profileWarnings = (repositoryProfiles as { warnings?: unknown }).warnings;
+          if (Array.isArray(profileWarnings)) warnings.push(...profileWarnings.map(String));
+          await recordRepositoryLearningStatus(capabilityId, repositoryProfiles as RepositoryRefreshResult);
+        } catch (err) {
+          const message = `Repository intelligence refresh failed: ${(err as Error).message}`;
+          warnings.push(message);
+          repositoryProfiles = { error: message };
+          await recordLearningFailure(capabilityId, "REPOSITORY_PROFILE_REFRESH_FAILED", message, {
+            requestedByUserId: userId ?? null,
+          });
+        }
+      }
+    }
+
     let reembed: unknown = null;
     if (input.reembed !== false) {
       const kinds = input.reembedKinds ?? ["knowledge", "memory", "code"];
@@ -1096,36 +1278,61 @@ export const capabilityService = {
       before,
       review,
       sync,
+      repositoryProfiles,
       reembed,
       after,
       warnings: Array.from(new Set(warnings)),
       nextActions: Array.from(new Set(nextActions)),
       capsuleInvalidation: "No direct purge required. Prompt Composer task signatures include capability content timestamps/counts, so newly materialized artifacts and memory make old capsules unreachable.",
     };
+    } finally {
+      try {
+        await releaseLearningWorker?.();
+      } catch {
+        // Lease expiry is the safety net; do not mask the worker result.
+      }
+    }
   },
 
-  async list() {
-    return prisma.capability.findMany({
+  async list(options: { includeArchived?: boolean } = {}) {
+    const rows = await prisma.capability.findMany({
+      where: options.includeArchived ? undefined : { status: { not: "ARCHIVED" } },
       orderBy: { createdAt: "desc" },
-      include: { children: true, repositories: true },
+      include: {
+        children: { where: { status: { not: "ARCHIVED" } } },
+        repositories: { where: { status: "ACTIVE" }, orderBy: { createdAt: "asc" } },
+      },
     });
+    return collapseCapabilityListDuplicates(rows);
   },
 
   async get(id: string) {
     const cap = await prisma.capability.findUnique({
       where: { id },
       include: {
-        children: true,
+        children: { where: { status: { not: "ARCHIVED" } } },
         parent: true,
-        repositories: true,
-        knowledgeArtifacts: { orderBy: { createdAt: "desc" } },
-        bindings: { include: { agentTemplate: true } },
+        repositories: { where: { status: "ACTIVE" }, orderBy: { createdAt: "asc" } },
+        learningStatus: true,
+        worldModel: true,
+        knowledgeArtifacts: { where: { status: "ACTIVE" }, orderBy: { createdAt: "desc" } },
+        bindings: {
+          where: {
+            status: { not: "ARCHIVED" },
+            agentTemplate: { status: { not: "ARCHIVED" } },
+          },
+          include: { agentTemplate: true },
+        },
         bootstrapRuns: { orderBy: { createdAt: "desc" }, take: 5 },
-        learningCandidates: { orderBy: { createdAt: "desc" }, take: 100 },
+        learningCandidates: { where: { status: { not: "SUPERSEDED" } }, orderBy: { createdAt: "desc" }, take: 100 },
       },
     });
     if (!cap) throw new NotFoundError("Capability not found");
     return cap;
+  },
+
+  async groundingStatus(id: string) {
+    return buildCapabilityGroundingStatus(id);
   },
 
   async readiness(id: string) {
@@ -1137,7 +1344,7 @@ export const capabilityService = {
         knowledgeSources: true,
         bindings: { include: { agentTemplate: true } },
         bootstrapRuns: { orderBy: { createdAt: "desc" }, take: 3 },
-        learningCandidates: { orderBy: { createdAt: "desc" }, take: 100 },
+        learningCandidates: { where: { status: { not: "SUPERSEDED" } }, orderBy: { createdAt: "desc" }, take: 100 },
       },
     });
     if (!cap) throw new NotFoundError("Capability not found");
@@ -1460,7 +1667,19 @@ export const capabilityService = {
     if (input.criticality !== undefined) data.criticality = input.criticality;
     if (input.description !== undefined) data.description = input.description;
 
-    const updated = await prisma.capability.update({ where: { id }, data });
+    const identityChanged = input.name !== undefined || input.appId !== undefined || input.capabilityType !== undefined;
+    const nextIdentity = {
+      name: input.name ?? existing.name,
+      appId: input.appId !== undefined ? input.appId : existing.appId,
+      capabilityType: input.capabilityType !== undefined ? input.capabilityType : existing.capabilityType,
+    };
+    const updated = identityChanged
+      ? await prisma.$transaction(async (tx) => {
+          await lockCapabilityNaturalKey(tx, nextIdentity);
+          await assertNoActiveCapabilityDuplicate(tx, nextIdentity, id);
+          return tx.capability.update({ where: { id }, data });
+        }).catch(err => rethrowCapabilityIdentityConflict(err, nextIdentity, id))
+      : await prisma.capability.update({ where: { id }, data });
     const warning = await syncIamCapabilityReference(updated, { authHeader });
     if (warning) console.warn(`[capability] ${warning}`);
     return this.get(id);
@@ -1471,6 +1690,13 @@ export const capabilityService = {
     if (!existing) throw new NotFoundError("Capability not found");
 
     const result = await prisma.$transaction(async (tx) => {
+      const [scopedTemplates, scopedBindings] = await Promise.all([
+        tx.agentTemplate.findMany({ where: { capabilityId: id }, select: { id: true } }),
+        tx.agentCapabilityBinding.findMany({ where: { capabilityId: id }, select: { id: true } }),
+      ]);
+      const scopedTemplateIds = scopedTemplates.map((template) => template.id);
+      const scopedBindingIds = scopedBindings.map((binding) => binding.id);
+
       const archived = await tx.capability.update({
         where: { id },
         data: { status: "ARCHIVED" },
@@ -1500,6 +1726,49 @@ export const capabilityService = {
         where: { capabilityId: id, status: "PENDING" },
         data: { status: "REJECTED", reviewedBy: userId, reviewedAt: new Date() },
       });
+      const toolGrantScopes: Prisma.ToolGrantWhereInput[] = [
+        { grantScopeType: "CAPABILITY", grantScopeId: id },
+      ];
+      const toolPolicyScopes: Prisma.ToolPolicyWhereInput[] = [
+        { scopeType: "CAPABILITY", scopeId: id },
+      ];
+      if (scopedTemplateIds.length > 0) {
+        toolGrantScopes.push({ grantScopeType: "AGENT_TEMPLATE", grantScopeId: { in: scopedTemplateIds } });
+        toolPolicyScopes.push({ scopeType: "AGENT_TEMPLATE", scopeId: { in: scopedTemplateIds } });
+      }
+      if (scopedBindingIds.length > 0) {
+        toolGrantScopes.push({ grantScopeType: "AGENT_BINDING", grantScopeId: { in: scopedBindingIds } });
+        toolPolicyScopes.push({ scopeType: "AGENT_BINDING", scopeId: { in: scopedBindingIds } });
+      }
+      await tx.toolGrant.updateMany({
+        where: { status: { not: "ARCHIVED" }, OR: toolGrantScopes },
+        data: { status: "ARCHIVED" },
+      });
+      await tx.toolPolicy.updateMany({
+        where: { status: { not: "ARCHIVED" }, OR: toolPolicyScopes },
+        data: { status: "ARCHIVED" },
+      });
+      await tx.capabilityLearningWorkerLock.deleteMany({
+        where: { capabilityId: id },
+      });
+      await tx.capabilityLearningStatus.upsert({
+        where: { capabilityId: id },
+        create: {
+          capabilityId: id,
+          status: "ARCHIVED",
+          message: learningMessageForStatus("ARCHIVED"),
+          lastAttemptAt: new Date(),
+          diagnostics: { archivedBy: userId ?? null, archiveCancelledLearningWorker: true },
+        },
+        update: {
+          status: "ARCHIVED",
+          message: learningMessageForStatus("ARCHIVED"),
+          lastAttemptAt: new Date(),
+          lastFailureCode: null,
+          lastFailureMessage: null,
+          diagnostics: { archivedBy: userId ?? null, archiveCancelledLearningWorker: true },
+        },
+      });
 
       return {
         capability: archived,
@@ -1514,10 +1783,8 @@ export const capabilityService = {
   async attachRepository(capabilityId: string, input: {
     repoName: string; repoUrl: string; defaultBranch: string; repositoryType: string;
   }) {
-    assertCapabilityNotArchived(await this.get(capabilityId));
-    return prisma.capabilityRepository.create({
-      data: { ...input, capabilityId, status: "ACTIVE" },
-    });
+    await requireActiveCapability(capabilityId);
+    return persistCapabilityRepositorySource(capabilityId, input);
   },
 
   async bindAgent(capabilityId: string, input: {
@@ -1525,17 +1792,31 @@ export const capabilityService = {
     roleInCapability?: string; promptProfileId?: string;
     toolPolicyId?: string; memoryScopePolicyId?: string;
   }, userId?: string) {
-    assertCapabilityNotArchived(await this.get(capabilityId));
+    await requireActiveCapability(capabilityId);
     const template = await prisma.agentTemplate.findUnique({ where: { id: input.agentTemplateId } });
     if (!template) throw new NotFoundError("Agent template not found");
-    return prisma.agentCapabilityBinding.create({
-      data: { ...input, roleInCapability: input.roleInCapability ?? template.roleType, capabilityId, createdBy: userId, status: "ACTIVE" },
+    if (template.status !== "ACTIVE") {
+      throw new ConflictError(`Agent template "${template.name}" is ${template.status} and cannot be bound as an active capability agent.`);
+    }
+    if (template.capabilityId && template.capabilityId !== capabilityId) {
+      throw new ForbiddenError("Cannot bind an agent template owned by another capability.");
+    }
+    return persistAgentCapabilityBinding({
+      ...input,
+      roleInCapability: input.roleInCapability ?? template.roleType,
+      capabilityId,
+      createdBy: userId,
+      status: "ACTIVE",
     });
   },
 
   async listBindings(capabilityId: string) {
     return prisma.agentCapabilityBinding.findMany({
-      where: { capabilityId },
+      where: {
+        capabilityId,
+        status: { not: "ARCHIVED" },
+        agentTemplate: { status: { not: "ARCHIVED" } },
+      },
       include: { agentTemplate: true },
       orderBy: { createdAt: "desc" },
     });
@@ -1545,59 +1826,20 @@ export const capabilityService = {
     artifactType: string; title: string; content: string;
     sourceType?: string; sourceRef?: string; confidence?: number;
   }) {
-    assertCapabilityNotArchived(await this.get(capabilityId));
-    const contentHash = sha256(input.content);
-    const created = await prisma.capabilityKnowledgeArtifact.create({
-      data: {
-        capabilityId,
-        artifactType: input.artifactType,
-        title: input.title,
-        content: input.content,
-        sourceType: input.sourceType,
-        sourceRef: input.sourceRef,
-        confidence: input.confidence,
-        contentHash,
-        status: "ACTIVE",
-      },
+    await requireActiveCapability(capabilityId);
+    const { artifact, contentHash } = await persistKnowledgeArtifact(capabilityId, input);
+    await ensureKnowledgeEmbedding({
+      artifactId: artifact.id,
+      title: input.title,
+      content: input.content,
+      contentHash,
     });
-
-    // M15 — embed-on-write. Failure logs and continues; the row still lands
-    // and the composer simply won't pick it up via semantic search until a
-    // backfill/re-upload. Prisma can't bind `vector(N)`, so we use raw SQL.
-    try {
-      const reused = await prisma.$executeRawUnsafe(
-        `UPDATE "CapabilityKnowledgeArtifact" target
-         SET embedding = source.embedding
-         FROM (
-           SELECT embedding FROM "CapabilityKnowledgeArtifact"
-           WHERE "contentHash" = $1 AND id <> $2 AND embedding IS NOT NULL
-           ORDER BY "createdAt" DESC
-           LIMIT 1
-         ) source
-         WHERE target.id = $2`,
-        contentHash,
-        created.id,
-      );
-      if (reused > 0) return created;
-      const embedder = getEmbeddingProvider();
-      const embedTarget = `${input.title}\n${input.content}`.slice(0, 8_000);
-      const embedded = await embedder.embed({ text: embedTarget });
-      assertDimMatches(embedded.dim, `${embedded.provider}:${embedded.model}`);
-      await prisma.$executeRawUnsafe(
-        `UPDATE "CapabilityKnowledgeArtifact" SET embedding = $1::vector WHERE id = $2`,
-        toVectorLiteral(embedded.vector),
-        created.id,
-      );
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn(`[knowledge] embedding failed for ${created.id}: ${(err as Error).message}`);
-    }
-    return created;
+    return artifact;
   },
 
-  async listKnowledge(capabilityId: string) {
+  async listKnowledge(capabilityId: string, input: { includeArchived?: boolean } = {}) {
     return prisma.capabilityKnowledgeArtifact.findMany({
-      where: { capabilityId },
+      where: input.includeArchived ? { capabilityId } : { capabilityId, status: "ACTIVE" },
       orderBy: { createdAt: "desc" },
     });
   },
@@ -1608,7 +1850,7 @@ export const capabilityService = {
   // don't abort the whole run — the symbol row still lands so a follow-up
   // can re-embed.
   async extractRepositorySymbols(capabilityId: string, repositoryId: string, files: InputFile[]) {
-    assertCapabilityNotArchived(await this.get(capabilityId));
+    await requireActiveCapability(capabilityId);
     const repo = await prisma.capabilityRepository.findUnique({ where: { id: repositoryId } });
     if (!repo || repo.capabilityId !== capabilityId) {
       throw new NotFoundError("Repository not found for this capability");
@@ -1670,31 +1912,13 @@ export const capabilityService = {
         // pgvector embedding lives for it yet — common after migrating M14
         // rows where vectorId was JSON text and `embedding` is null. Prisma
         // can't `select` an Unsupported() column, so count via raw SQL.
-        const probe = await prisma.$queryRawUnsafe<Array<{ has: boolean }>>(
-          `SELECT EXISTS(
-             SELECT 1 FROM "CapabilityCodeEmbedding"
-             WHERE "symbolId" = $1 AND embedding IS NOT NULL
-           ) AS has`,
-          existing.id,
-        );
-        if (probe[0]?.has) { skippedDuplicate += 1; continue; }
         try {
-          const embedTarget = `${s.symbolName}\n${s.summary ?? ""}`.trim();
-          const embedded = await embedder.embed({ text: embedTarget });
-          assertDimMatches(embedded.dim, `${embedded.provider}:${embedded.model}`);
-          const emb = await prisma.capabilityCodeEmbedding.create({
-            data: {
-              symbolId: existing.id,
-              embeddingModel: `${embedded.provider}:${embedded.model}:${embedded.dim}`,
-              vectorId: JSON.stringify(embedded.vector),
-              summary: s.summary ?? null,
-            },
+          await ensureCodeSymbolEmbedding({
+            symbolId: existing.id,
+            symbolName: s.symbolName,
+            summary: s.summary ?? null,
+            embedder,
           });
-          await prisma.$executeRawUnsafe(
-            `UPDATE "CapabilityCodeEmbedding" SET embedding = $1::vector WHERE id = $2`,
-            toVectorLiteral(embedded.vector),
-            emb.id,
-          );
         } catch (err) {
           embeddingErrors += 1;
           // eslint-disable-next-line no-console
@@ -1735,47 +1959,46 @@ export const capabilityService = {
         if (parentSymbolId) parentLinked += 1;
       }
 
-      const row = await prisma.capabilityCodeSymbol.create({
-        data: {
-          capabilityId,
-          repositoryId,
-          filePath: s.filePath,
-          language: s.language,
-          symbolName: s.symbolName,
-          symbolType: s.symbolType,
-          parentSymbolId,
-          startLine: s.startLine,
-          summary,
-          symbolHash: s.symbolHash,
-        },
+      const { symbol: row, created } = await persistCapabilityCodeSymbol({
+        capabilityId,
+        repositoryId,
+        filePath: s.filePath,
+        language: s.language,
+        symbolName: s.symbolName,
+        symbolType: s.symbolType,
+        parentSymbolId,
+        startLine: s.startLine,
+        summary,
+        symbolHash: s.symbolHash,
       });
+      if (!created) {
+        try {
+          await ensureCodeSymbolEmbedding({
+            symbolId: row.id,
+            symbolName: s.symbolName,
+            summary,
+            embedder,
+          });
+        } catch (err) {
+          embeddingErrors += 1;
+          // eslint-disable-next-line no-console
+          console.warn(`[symbol-extractor] race re-embed failed for ${s.filePath}:${s.symbolName}: ${(err as Error).message}`);
+        }
+        skippedDuplicate += 1;
+        continue;
+      }
       if (s.symbolType === "class") {
         classByKey.set(`${s.filePath}::${s.symbolName}`, row.id);
       }
       inserted += 1;
 
       try {
-        const embedTarget = `${s.symbolName}\n${summary ?? ""}`.trim();
-        const embedded = await embedder.embed({ text: embedTarget });
-        assertDimMatches(embedded.dim, `${embedded.provider}:${embedded.model}`);
-        // M15 — write the embedding into the pgvector column via raw SQL.
-        // Prisma still can't bind `Unsupported("vector(N)")`, so we
-        // create the row first and UPDATE the vector second. The `vectorId`
-        // column is kept as JSON-string redundancy so we can audit which
-        // model produced which vector without a join.
-        const emb = await prisma.capabilityCodeEmbedding.create({
-          data: {
-            symbolId: row.id,
-            embeddingModel: `${embedded.provider}:${embedded.model}:${embedded.dim}`,
-            vectorId: JSON.stringify(embedded.vector),
-            summary,
-          },
+        await ensureCodeSymbolEmbedding({
+          symbolId: row.id,
+          symbolName: s.symbolName,
+          summary,
+          embedder,
         });
-        await prisma.$executeRawUnsafe(
-          `UPDATE "CapabilityCodeEmbedding" SET embedding = $1::vector WHERE id = $2`,
-          toVectorLiteral(embedded.vector),
-          emb.id,
-        );
       } catch (err) {
         embeddingErrors += 1;
         // eslint-disable-next-line no-console
@@ -1801,15 +2024,45 @@ export const capabilityService = {
   async updateRepositoryPoll(capabilityId: string, repoId: string, input: {
     pollIntervalSec?: number | null; defaultBranch?: string;
   }) {
-    assertCapabilityNotArchived(await this.get(capabilityId));
+    await requireActiveCapability(capabilityId);
     const repo = await prisma.capabilityRepository.findUnique({ where: { id: repoId } });
     if (!repo || repo.capabilityId !== capabilityId) throw new NotFoundError("Repository not found");
-    return prisma.capabilityRepository.update({
-      where: { id: repoId },
-      data: {
-        pollIntervalSec: input.pollIntervalSec === undefined ? undefined : input.pollIntervalSec,
-        defaultBranch:   input.defaultBranch ?? undefined,
-      },
+    if (repo.status !== "ACTIVE") throw new ConflictError(`Repository is ${repo.status} and cannot be updated.`);
+    const identityChanged = input.defaultBranch !== undefined;
+    if (!identityChanged) {
+      return prisma.$transaction(async (tx) => {
+        await assertActiveCapabilityForWrite(tx, capabilityId);
+        const updated = await tx.capabilityRepository.updateMany({
+          where: { id: repoId, capabilityId, status: "ACTIVE" },
+          data: {
+            pollIntervalSec: input.pollIntervalSec === undefined ? undefined : input.pollIntervalSec,
+          },
+        });
+        if (updated.count === 0) throw new NotFoundError("Repository not found");
+        return tx.capabilityRepository.findUniqueOrThrow({ where: { id: repoId } });
+      });
+    }
+    const nextIdentity = {
+      capabilityId,
+      repoUrl: repo.repoUrl,
+      defaultBranch: normalizedRepositoryBranch(input.defaultBranch),
+      repositoryType: repo.repositoryType,
+    };
+    const sourceKey = capabilityRepositorySourceKey(nextIdentity);
+    if (!sourceKey) throw new Error("Repository source identity is incomplete.");
+    return prisma.$transaction(async (tx) => {
+      await assertActiveCapabilityForWrite(tx, capabilityId);
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
+      await assertNoActiveRepositorySourceDuplicate(tx, nextIdentity, repoId);
+      const updated = await tx.capabilityRepository.updateMany({
+        where: { id: repoId, capabilityId, status: "ACTIVE" },
+        data: {
+          pollIntervalSec: input.pollIntervalSec === undefined ? undefined : input.pollIntervalSec,
+          defaultBranch: nextIdentity.defaultBranch,
+        },
+      });
+      if (updated.count === 0) throw new NotFoundError("Repository not found");
+      return tx.capabilityRepository.findUniqueOrThrow({ where: { id: repoId } });
     });
   },
 
@@ -1823,42 +2076,80 @@ export const capabilityService = {
   async addKnowledgeSource(capabilityId: string, input: {
     url: string; artifactType?: string; title?: string; pollIntervalSec?: number | null;
   }) {
-    assertCapabilityNotArchived(await this.get(capabilityId));
-    return prisma.capabilityKnowledgeSource.create({
-      data: {
-        capabilityId,
-        url: input.url,
-        artifactType: input.artifactType ?? "DOC",
-        title: input.title,
-        pollIntervalSec: input.pollIntervalSec ?? 600,
-        status: "ACTIVE",
-      },
+    await requireActiveCapability(capabilityId);
+    return persistCapabilityKnowledgeSource(capabilityId, {
+      ...input,
+      pollIntervalSec: input.pollIntervalSec ?? 600,
     });
   },
 
   async updateKnowledgeSource(capabilityId: string, sourceId: string, input: {
     url?: string; artifactType?: string; title?: string; pollIntervalSec?: number | null;
   }) {
-    assertCapabilityNotArchived(await this.get(capabilityId));
+    await requireActiveCapability(capabilityId);
     const src = await prisma.capabilityKnowledgeSource.findUnique({ where: { id: sourceId } });
     if (!src || src.capabilityId !== capabilityId) throw new NotFoundError("Knowledge source not found");
-    return prisma.capabilityKnowledgeSource.update({
-      where: { id: sourceId },
-      data: {
-        url:             input.url ?? undefined,
-        artifactType:    input.artifactType ?? undefined,
-        title:           input.title ?? undefined,
-        pollIntervalSec: input.pollIntervalSec === undefined ? undefined : input.pollIntervalSec,
-      },
+    if (src.status !== "ACTIVE") throw new ConflictError(`Knowledge source is ${src.status} and cannot be updated.`);
+    const identityChanged = input.url !== undefined || input.artifactType !== undefined;
+    if (!identityChanged) {
+      return prisma.$transaction(async (tx) => {
+        await assertActiveCapabilityForWrite(tx, capabilityId);
+        const updated = await tx.capabilityKnowledgeSource.updateMany({
+          where: { id: sourceId, capabilityId, status: "ACTIVE" },
+          data: {
+            title: input.title ?? undefined,
+            pollIntervalSec: input.pollIntervalSec === undefined ? undefined : input.pollIntervalSec,
+          },
+        });
+        if (updated.count === 0) throw new NotFoundError("Knowledge source not found");
+        return tx.capabilityKnowledgeSource.findUniqueOrThrow({ where: { id: sourceId } });
+      });
+    }
+    const nextIdentity = {
+      capabilityId,
+      url: normalizedSourceValue(input.url ?? src.url),
+      artifactType: normalizedKnowledgeArtifactType(input.artifactType ?? src.artifactType),
+    };
+    const sourceKey = capabilityKnowledgeSourceKey(nextIdentity);
+    if (!sourceKey) throw new Error("Knowledge source identity is incomplete.");
+    return prisma.$transaction(async (tx) => {
+      await assertActiveCapabilityForWrite(tx, capabilityId);
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
+      await assertNoActiveKnowledgeSourceDuplicate(tx, nextIdentity, sourceId);
+      const updated = await tx.capabilityKnowledgeSource.updateMany({
+        where: { id: sourceId, capabilityId, status: "ACTIVE" },
+        data: {
+          url: input.url === undefined ? undefined : nextIdentity.url,
+          artifactType: input.artifactType === undefined ? undefined : nextIdentity.artifactType,
+          title: input.title ?? undefined,
+          pollIntervalSec: input.pollIntervalSec === undefined ? undefined : input.pollIntervalSec,
+        },
+      });
+      if (updated.count === 0) throw new NotFoundError("Knowledge source not found");
+      return tx.capabilityKnowledgeSource.findUniqueOrThrow({ where: { id: sourceId } });
     });
   },
 
   async deleteKnowledgeSource(capabilityId: string, sourceId: string) {
-    assertCapabilityNotArchived(await this.get(capabilityId));
+    await requireActiveCapability(capabilityId);
     const src = await prisma.capabilityKnowledgeSource.findUnique({ where: { id: sourceId } });
     if (!src || src.capabilityId !== capabilityId) throw new NotFoundError("Knowledge source not found");
-    return prisma.capabilityKnowledgeSource.update({
-      where: { id: sourceId }, data: { status: "ARCHIVED" },
+    const sourceUrl = normalizedSourceValue(src.url);
+    return prisma.$transaction(async (tx) => {
+      await assertActiveCapabilityForWrite(tx, capabilityId);
+      const archivedArtifactCount = await tx.$executeRaw(Prisma.sql`
+        UPDATE "CapabilityKnowledgeArtifact"
+        SET status = 'ARCHIVED', "updatedAt" = now()
+        WHERE "capabilityId" = ${capabilityId}
+          AND status = 'ACTIVE'
+          AND NULLIF(btrim(COALESCE("sourceRef", '')), '') IS NOT NULL
+          AND lower(btrim("sourceRef")) = lower(${sourceUrl})
+      `);
+      const source = await tx.capabilityKnowledgeSource.update({
+        where: { id: sourceId },
+        data: { status: "ARCHIVED", pollIntervalSec: null },
+      });
+      return { ...source, archivedArtifactCount };
     });
   },
 
@@ -1870,7 +2161,7 @@ export const capabilityService = {
   //      is NULL.
   // Scoped to a single capability so a partial-tenant backfill is possible.
   async reembedCapability(capabilityId: string, opts: { kinds?: ("knowledge" | "memory" | "code")[] } = {}) {
-    await this.get(capabilityId);
+    await requireActiveCapability(capabilityId);
     const embedder = getEmbeddingProvider();
     const kinds = new Set(opts.kinds ?? ["knowledge", "memory", "code"]);
 
@@ -1894,11 +2185,20 @@ export const capabilityService = {
         try {
           const emb = await embedder.embed({ text: `${r.title}\n${r.content}`.slice(0, 8_000) });
           assertDimMatches(emb.dim, `${emb.provider}:${emb.model}`);
-          await prisma.$executeRawUnsafe(
-            `UPDATE "CapabilityKnowledgeArtifact" SET embedding = $1::vector WHERE id = $2`,
+          const updated = await prisma.$executeRawUnsafe(
+            `UPDATE "CapabilityKnowledgeArtifact" target
+             SET embedding = $1::vector
+             WHERE target.id = $2
+               AND target.status = 'ACTIVE'
+               AND EXISTS (
+                 SELECT 1
+                 FROM "Capability" c
+                 WHERE c.id = target."capabilityId"
+                   AND c.status <> 'ARCHIVED'
+               )`,
             toVectorLiteral(emb.vector), r.id,
           );
-          out.knowledge.embedded += 1;
+          if (updated > 0) out.knowledge.embedded += 1;
         } catch { out.knowledge.failed += 1; }
       }
     }
@@ -1916,11 +2216,21 @@ export const capabilityService = {
         try {
           const emb = await embedder.embed({ text: `${r.title}\n${r.content}`.slice(0, 8_000) });
           assertDimMatches(emb.dim, `${emb.provider}:${emb.model}`);
-          await prisma.$executeRawUnsafe(
-            `UPDATE "DistilledMemory" SET embedding = $1::vector WHERE id = $2`,
+          const updated = await prisma.$executeRawUnsafe(
+            `UPDATE "DistilledMemory" target
+             SET embedding = $1::vector
+             WHERE target.id = $2
+               AND target.status = 'ACTIVE'
+               AND target."scopeType" = 'CAPABILITY'
+               AND EXISTS (
+                 SELECT 1
+                 FROM "Capability" c
+                 WHERE c.id = target."scopeId"
+                   AND c.status <> 'ARCHIVED'
+               )`,
             toVectorLiteral(emb.vector), r.id,
           );
-          out.memory.embedded += 1;
+          if (updated > 0) out.memory.embedded += 1;
         } catch { out.memory.failed += 1; }
       }
     }
@@ -1944,26 +2254,13 @@ export const capabilityService = {
       out.code.scanned = rows.length;
       for (const r of rows) {
         try {
-          const target = `${r.symbolName ?? ""}\n${r.summary ?? ""}`.trim() || "symbol";
-          const emb = await embedder.embed({ text: target });
-          assertDimMatches(emb.dim, `${emb.provider}:${emb.model}`);
-          let embId = r.embedding_id;
-          if (!embId) {
-            const created = await prisma.capabilityCodeEmbedding.create({
-              data: {
-                symbolId: r.symbol_id,
-                embeddingModel: `${emb.provider}:${emb.model}:${emb.dim}`,
-                vectorId: JSON.stringify(emb.vector),
-                summary: r.summary,
-              },
-            });
-            embId = created.id;
-          }
-          await prisma.$executeRawUnsafe(
-            `UPDATE "CapabilityCodeEmbedding" SET embedding = $1::vector WHERE id = $2`,
-            toVectorLiteral(emb.vector), embId,
-          );
-          out.code.embedded += 1;
+          const embedded = await ensureCodeSymbolEmbedding({
+            symbolId: r.symbol_id,
+            symbolName: r.symbolName,
+            summary: r.summary,
+            embedder,
+          });
+          if (embedded) out.code.embedded += 1;
         } catch { out.code.failed += 1; }
       }
     }
@@ -2007,6 +2304,7 @@ async function mcpSourcePost(path: string, body: Record<string, unknown>, routeU
   // unchanged.
   const cfUrl = (process.env.CONTEXT_FABRIC_URL ?? "").replace(/\/+$/, "");
   const cfToken = process.env.CONTEXT_FABRIC_SERVICE_TOKEN ?? "";
+  let bridgeFailure = "";
   if (cfUrl && cfToken && routeUserId) {
     const op = path.endsWith("/file") ? "file" : "tree";
     try {
@@ -2016,32 +2314,42 @@ async function mcpSourcePost(path: string, body: Record<string, unknown>, routeU
         body: JSON.stringify({ user_id: routeUserId, ...body }),
         signal: AbortSignal.timeout(30_000),
       });
-      if (res.ok) return await res.json();
+      if (res.ok) return await readUpstreamJsonObject(res, `Runtime Bridge source-${op}`);
+      const detail = await res.text().catch(() => "");
+      bridgeFailure = `Runtime Bridge source-${op} returned HTTP ${res.status}${detail ? `: ${detail.slice(0, 500)}` : ""}`;
       // 503 = no laptop runtime online for this user → fall back to HTTP below.
       // Other statuses fall through too, so a transient bridge error doesn't
       // become a hard discovery failure when a co-located mcp is reachable.
-      console.warn(`[capability] CF bridge source-${op} returned ${res.status}; falling back to MCP_SERVER_URL`);
+      console.warn(`[capability] ${bridgeFailure}; falling back to MCP_SERVER_URL`);
     } catch (err) {
-      console.warn(`[capability] CF bridge source-${op} failed (${(err as Error).message}); falling back to MCP_SERVER_URL`);
+      bridgeFailure = `Runtime Bridge source-${op} failed: ${(err as Error).message}`;
+      console.warn(`[capability] ${bridgeFailure}; falling back to MCP_SERVER_URL`);
     }
   }
 
   const base = (process.env.MCP_SERVER_URL ?? "").replace(/\/+$/, "");
   if (!base) {
-    throw new Error("MCP_SERVER_URL is not configured; GitHub access must go through the MCP server.");
+    throw new Error(`${bridgeFailure ? `${bridgeFailure}; ` : ""}MCP_SERVER_URL is not configured; GitHub access must go through MCP runtime.`);
   }
   const token = process.env.MCP_BEARER_TOKEN ?? "";
-  const res = await fetch(`${base}${path}`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) throw new Error(`MCP source request ${path} failed (${res.status})`);
-  return res.json();
+  try {
+    const res = await fetch(`${base}${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      throw new Error(`MCP source request ${path} failed (${res.status})${detail ? `: ${detail.slice(0, 500)}` : ""}`);
+    }
+    return readUpstreamJsonObject(res, `MCP source request ${path}`);
+  } catch (err) {
+    throw new Error(`${bridgeFailure ? `${bridgeFailure}; ` : ""}Direct MCP source fallback failed: ${(err as Error).message}`);
+  }
 }
 
 async function fetchRepoTreeViaMcp(repoUrl: string, branch: string, routeUserId?: string): Promise<Array<{ path?: string; type?: string; size?: number }>> {
@@ -2625,6 +2933,25 @@ function jsonRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+function jsonStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.map(item => String(item ?? "").trim()).filter(item => {
+    if (!item || seen.has(item)) return false;
+    seen.add(item);
+    return true;
+  });
+}
+
+function compareLearningCandidatesForReview(
+  a: { groupKey: string; createdAt: Date; id: string },
+  b: { groupKey: string; createdAt: Date; id: string },
+): number {
+  return a.groupKey.localeCompare(b.groupKey)
+    || a.createdAt.getTime() - b.createdAt.getTime()
+    || a.id.localeCompare(b.id);
+}
+
 function normalizeArchitectureDiagram(value: unknown): CapabilityArchitectureDiagram | null {
   const raw = jsonRecord(value);
   const kind = raw.kind === "TOGAF_CAPABILITY_COLLECTION" ? raw.kind
@@ -2642,10 +2969,23 @@ function normalizeArchitectureDiagram(value: unknown): CapabilityArchitectureDia
       return {
         key: typeof row.key === "string" ? row.key : "layer",
         label: typeof row.label === "string" ? row.label : "Layer",
-        items: Array.isArray(row.items) ? row.items.map(String) : [],
+        items: Array.isArray(row.items)
+          ? row.items.map(item => String(item ?? "").trim()).filter(Boolean)
+          : [],
       };
-    })
+    }).filter(layer => layer.items.length > 0 && !isPlaceholderArchitectureLayer(layer))
     : [];
+  const highlights = Array.isArray(raw.highlights)
+    ? raw.highlights.map(item => {
+      const row = jsonRecord(item);
+      return {
+        key: typeof row.key === "string" ? row.key : "signal",
+        label: typeof row.label === "string" ? row.label : "Signal",
+        value: typeof row.value === "string" ? row.value : String(row.value ?? "--"),
+        detail: typeof row.detail === "string" ? row.detail : undefined,
+      };
+    }).filter(highlight => !isPlaceholderArchitectureHighlight(highlight))
+    : undefined;
   return {
     kind,
     view,
@@ -2654,19 +2994,18 @@ function normalizeArchitectureDiagram(value: unknown): CapabilityArchitectureDia
     mermaid: raw.mermaid,
     codeGraphMermaid: typeof raw.codeGraphMermaid === "string" ? raw.codeGraphMermaid : undefined,
     repositoryProfiles: Array.isArray(raw.repositoryProfiles) ? raw.repositoryProfiles as RepositoryProfile[] : undefined,
-    highlights: Array.isArray(raw.highlights)
-      ? raw.highlights.map(item => {
-        const row = jsonRecord(item);
-        return {
-          key: typeof row.key === "string" ? row.key : "signal",
-          label: typeof row.label === "string" ? row.label : "Signal",
-          value: typeof row.value === "string" ? row.value : String(row.value ?? "--"),
-          detail: typeof row.detail === "string" ? row.detail : undefined,
-        };
-      })
-      : undefined,
+    highlights: highlights?.length ? highlights : undefined,
     layers,
   };
+}
+
+function isPlaceholderArchitectureHighlight(highlight: { key: string; value: string }): boolean {
+  return /^(stack|api)$/i.test(highlight.key.trim()) && /^(pending|stack pending|api pending)$/i.test(highlight.value.trim());
+}
+
+function isPlaceholderArchitectureLayer(layer: { key: string; items: string[] }): boolean {
+  if (!/^(runtime_stack|contract|domain_model)$/i.test(layer.key.trim())) return false;
+  return layer.items.length > 0 && layer.items.every(item => /\bpending\b/i.test(item));
 }
 
 function buildCapabilityArchitectureDiagram(
@@ -2710,13 +3049,48 @@ function buildCapabilityArchitectureDiagram(
     : repositoryProfiles.length > 1
       ? buildPortfolioCodeGraphMermaid(capabilityName, repositoryProfiles)
       : buildInferredApplicationGraphMermaid(capabilityName, endpointItems, frameworkSummary, domainSummary);
+  const hasRepositorySource = repos.length > 0 || repositoryProfiles.length > 0;
+  const hasDocumentSource = docCount > 0 || docs.length > 0 || localCount > 0;
+  const stackEvidenceItems = unique([...frameworkSummary, ...languageSummary]);
+  const stackStatusValue = stackEvidenceItems[0]
+    ?? (hasRepositorySource ? "Not learned yet" : hasDocumentSource ? "Document-only" : "No source");
+  const stackStatusDetail = stackEvidenceItems.length > 0
+    ? (buildToolSummary.slice(0, 2).join(" / ") || "Learned from approved repository/doc signals")
+    : hasRepositorySource
+      ? "Refresh grounding after source sync or MCP indexing produces stack signals"
+      : hasDocumentSource
+        ? "Attach a repository source to learn executable stack details; approved documents still guide prompts"
+        : "Attach an approved repository or document source before refreshing learning";
+  const apiSurfaceValue = endpointTotal
+    ? `${endpointTotal} endpoint${endpointTotal === 1 ? "" : "s"}`
+    : hasRepositorySource
+      ? "Not learned yet"
+      : hasDocumentSource
+        ? "Document-only"
+        : "No source";
+  const apiSurfaceDetail = endpointItems[0]
+    ?? (hasRepositorySource
+      ? "Sync approved sources and refresh grounding to discover API routes"
+      : hasDocumentSource
+        ? "Approved documents do not include concrete API route signals"
+        : "Attach an approved repository or API document to discover endpoints");
+  const runtimeStackItems = stackEvidenceItems.length > 0
+    ? unique([...languageSummary, ...frameworkSummary, ...buildToolSummary])
+    : [
+        hasRepositorySource
+          ? "Repository attached; executable stack not learned yet"
+          : hasDocumentSource
+            ? "Document knowledge attached; no executable stack source"
+            : "No repository or document source attached",
+        stackStatusDetail,
+      ];
 
   if (collection) {
     const layers = [
       { key: "business", label: "Business Architecture", items: [`${capabilityName}${appSuffix}`, "Outcomes, value streams, policies, owners"] },
       { key: "application", label: "Application Architecture", items: [...(sharedApplications.length ? sharedApplications : []), ...(repos.length > 0 ? repos : ["Child applications / bounded contexts"])] },
       { key: "data", label: "Data Architecture", items: [`${docCount || docs.length || 0} doc/source signals`, "Approved knowledge, memory, citations, artifacts"] },
-      { key: "technology", label: "Technology Architecture", items: [...(frameworkSummary.length ? frameworkSummary : ["Framework discovery pending"]), ...(buildToolSummary.length ? buildToolSummary : ["Build tooling pending"]), "MCP workspaces, branches, AST index, local tools"] },
+      { key: "technology", label: "Technology Architecture", items: [...runtimeStackItems.slice(0, 5), "MCP workspaces, branches, AST index, local tools"] },
       { key: "governance", label: "Governance", items: ["Locked governance/verifier/security agents", "Budgets, approvals, receipts, audit ledger"] },
     ];
     return {
@@ -2747,13 +3121,13 @@ function buildCapabilityArchitectureDiagram(
       items: [
         `${capabilityName}${appSuffix}`,
         `Criticality: ${capability.criticality ?? input.criticality ?? "MEDIUM"}`,
-        ...(endpointItems.length ? endpointItems.slice(0, 4) : ["API surface pending discovery"]),
+        ...(endpointItems.length ? endpointItems.slice(0, 4) : [apiSurfaceDetail]),
       ],
     },
-    { key: "runtime_stack", label: "Runtime Stack", items: [...(languageSummary.length ? languageSummary : ["Language discovery pending"]), ...(frameworkSummary.length ? frameworkSummary : ["Framework discovery pending"]), ...(buildToolSummary.length ? buildToolSummary : ["Build tooling pending"])] },
-    { key: "domain_model", label: "Domain Model", items: domainSummary.length ? domainSummary : ["Domain model pending source review"] },
-    { key: "contract", label: "Request / Response Contract", items: contractSummary.length ? contractSummary : ["Request/response contract pending"] },
-    { key: "codebase", label: "Repository Intelligence", items: [...(repos.length ? repos : ["Repository pending"]), `${docCount || docs.length || 0} document/source signals`, `${localCount} local files`, `${endpointTotal} endpoints detected`] },
+    { key: "runtime_stack", label: "Runtime Stack", items: runtimeStackItems },
+    { key: "domain_model", label: "Domain Model", items: domainSummary.length ? domainSummary : ["No domain model signal learned yet"] },
+    { key: "contract", label: "Request / Response Contract", items: contractSummary.length ? contractSummary : ["No request/response contract signal learned yet"] },
+    { key: "codebase", label: "Repository Intelligence", items: [...(repos.length ? repos : [hasDocumentSource ? "Document-only source context" : "No repository source attached"]), `${docCount || docs.length || 0} document/source signals`, `${localCount} local files`, `${endpointTotal} endpoints detected`] },
     { key: "delivery", label: "Governed Delivery", items: [...agentItems.slice(0, 6), "Workbench stage artifacts", "Approvals, budgets, receipts, audit trail"] },
   ];
   return {
@@ -2762,9 +3136,9 @@ function buildCapabilityArchitectureDiagram(
     view: "application",
     description: buildApplicationArchitectureDescription(capabilityName, frameworkSummary, endpointItems, domainSummary),
     highlights: [
-      { key: "stack", label: "Primary stack", value: frameworkSummary[0] ?? languageSummary[0] ?? "Pending", detail: buildToolSummary.slice(0, 2).join(" / ") },
-      { key: "api", label: "API surface", value: endpointTotal ? `${endpointTotal} endpoint${endpointTotal === 1 ? "" : "s"}` : "Pending", detail: endpointItems[0] ?? "No endpoint signal yet" },
-      { key: "domain", label: "Domain rules", value: countDomainOperators(docCorpus) ? `${countDomainOperators(docCorpus)} operators` : "Detected model", detail: domainSummary[0] ?? "Domain discovery pending" },
+      { key: "stack", label: stackEvidenceItems.length ? "Primary stack" : "Stack status", value: stackStatusValue, detail: stackStatusDetail },
+      { key: "api", label: "API surface", value: apiSurfaceValue, detail: apiSurfaceDetail },
+      { key: "domain", label: "Domain rules", value: countDomainOperators(docCorpus) ? `${countDomainOperators(docCorpus)} operators` : "Detected model", detail: domainSummary[0] ?? "No domain rule signal learned yet" },
       { key: "source", label: "Source", value: repos.length ? `${repos.length} repo${repos.length === 1 ? "" : "s"}` : "No repo", detail: repos[0] ?? "Attach a repo to ground the graph" },
     ],
     layers,
@@ -2776,7 +3150,7 @@ function buildCapabilityArchitectureDiagram(
       `  C[Capability<br/>${escapeMermaid(capabilityName)}${capability.appId ? `<br/>App ID: ${escapeMermaid(capability.appId)}` : ""}]`,
       "  A[Agent Team<br/>PO / Architect / Developer / QA / Governance]",
       "  K[Grounding<br/>Repos / Docs / Memory / Code Symbols]",
-      `  P[Platform Inventory<br/>${endpointTotal} endpoints / ${escapeMermaid(frameworkSummary[0] ?? languageSummary[0] ?? "pending")}]`,
+      `  P[Platform Inventory<br/>${endpointTotal} endpoints / ${escapeMermaid(stackEvidenceItems[0] ?? stackStatusValue.toLowerCase())}]`,
       "  X[Context Fabric + MCP<br/>Budget / Model / Tools / AST]",
       "  E[Evidence<br/>Artifacts / Citations / Receipts]",
       "  S --> C --> A",
@@ -3099,13 +3473,1398 @@ function extractMarkdownTitle(md: string): string | undefined {
 }
 
 function isApprovedSource(approved: Array<{ sourceRef: string | null; sourceType: string | null }>, sourceRef: string): boolean {
-  return approved.some(item => item.sourceRef?.includes(sourceRef));
+  const expected = normalizedSourceValue(sourceRef).toLowerCase();
+  if (!expected) return false;
+  return approved.some(item => {
+    const actual = normalizedSourceValue(item.sourceRef).toLowerCase();
+    if (!actual) return false;
+    return actual === expected || actual.includes(expected) || expected.includes(actual);
+  });
 }
 
-function assertCapabilityNotArchived(capability: { status: string }): void {
-  if (capability.status === "ARCHIVED") {
-    throw new ForbiddenError("Capability is archived and cannot be modified.");
+type CapabilityRepositorySourceInput = {
+  repoName: string;
+  repoUrl: string;
+  defaultBranch?: string | null;
+  repositoryType?: string | null;
+  pollIntervalSec?: number | null;
+};
+
+type CapabilityKnowledgeSourceInput = {
+  url: string;
+  artifactType?: string | null;
+  title?: string | null;
+  pollIntervalSec?: number | null;
+};
+
+async function persistCapabilityRepositorySource(
+  capabilityId: string,
+  input: CapabilityRepositorySourceInput,
+) {
+  const repoUrl = normalizedSourceValue(input.repoUrl);
+  const defaultBranch = normalizedRepositoryBranch(input.defaultBranch);
+  const repositoryType = normalizedRepositoryType(input.repositoryType);
+  const sourceKey = capabilityRepositorySourceKey({ capabilityId, repoUrl, defaultBranch, repositoryType });
+  if (!sourceKey) throw new Error("Repository URL is required.");
+
+  return prisma.$transaction(async (tx) => {
+    await assertActiveCapabilityForWrite(tx, capabilityId);
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
+    const existing = await findActiveRepositorySource(tx, { capabilityId, repoUrl, defaultBranch, repositoryType });
+    if (!existing) {
+      return tx.capabilityRepository.create({
+        data: {
+          capabilityId,
+          repoName: input.repoName,
+          repoUrl,
+          defaultBranch,
+          repositoryType,
+          pollIntervalSec: input.pollIntervalSec === undefined ? null : input.pollIntervalSec,
+          status: "ACTIVE",
+        },
+      });
+    }
+
+    const next: Prisma.CapabilityRepositoryUpdateInput = {};
+    if (input.repoName && input.repoName !== existing.repoName) next.repoName = input.repoName;
+    if (existing.repoUrl !== repoUrl) next.repoUrl = repoUrl;
+    if ((existing.defaultBranch ?? "main") !== defaultBranch) next.defaultBranch = defaultBranch;
+    if ((existing.repositoryType ?? "GITHUB") !== repositoryType) next.repositoryType = repositoryType;
+    if (input.pollIntervalSec !== undefined && existing.pollIntervalSec !== input.pollIntervalSec) {
+      next.pollIntervalSec = input.pollIntervalSec;
+    }
+    if (Object.keys(next).length === 0) return existing;
+    return tx.capabilityRepository.update({ where: { id: existing.id }, data: next });
+  });
+}
+
+async function persistCapabilityKnowledgeSource(
+  capabilityId: string,
+  input: CapabilityKnowledgeSourceInput,
+) {
+  const url = normalizedSourceValue(input.url);
+  const artifactType = normalizedKnowledgeArtifactType(input.artifactType);
+  const sourceKey = capabilityKnowledgeSourceKey({ capabilityId, url, artifactType });
+  if (!sourceKey) throw new Error("Knowledge source URL is required.");
+
+  return prisma.$transaction(async (tx) => {
+    await assertActiveCapabilityForWrite(tx, capabilityId);
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
+    const existing = await findActiveKnowledgeSource(tx, { capabilityId, url, artifactType });
+    if (!existing) {
+      return tx.capabilityKnowledgeSource.create({
+        data: {
+          capabilityId,
+          url,
+          artifactType,
+          title: input.title ?? undefined,
+          pollIntervalSec: input.pollIntervalSec === undefined ? 600 : input.pollIntervalSec,
+          status: "ACTIVE",
+        },
+      });
+    }
+
+    const next: Prisma.CapabilityKnowledgeSourceUpdateInput = {};
+    if (existing.url !== url) next.url = url;
+    if (existing.artifactType !== artifactType) next.artifactType = artifactType;
+    if (input.title !== undefined && existing.title !== input.title) next.title = input.title;
+    if (input.pollIntervalSec !== undefined && existing.pollIntervalSec !== input.pollIntervalSec) {
+      next.pollIntervalSec = input.pollIntervalSec;
+    }
+    if (Object.keys(next).length === 0) return existing;
+    return tx.capabilityKnowledgeSource.update({ where: { id: existing.id }, data: next });
+  });
+}
+
+type CapabilityKnowledgeArtifactWriteInput = {
+  artifactType: string;
+  title: string;
+  content: string;
+  sourceType?: string | null;
+  sourceRef?: string | null;
+  confidence?: number | null;
+};
+
+async function persistCapabilityCodeSymbol(input: Prisma.CapabilityCodeSymbolUncheckedCreateInput) {
+  const symbolKey = capabilityCodeSymbolKey({
+    repositoryId: input.repositoryId,
+    symbolHash: input.symbolHash,
+  });
+  if (!symbolKey) throw new Error("Capability code symbol identity is incomplete.");
+
+  return prisma.$transaction(async (tx) => {
+    await assertActiveCapabilityForWrite(tx, String(input.capabilityId ?? ""), "Cannot record code symbols for an archived capability.");
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${symbolKey}))`;
+    const existing = await tx.capabilityCodeSymbol.findFirst({
+      where: {
+        repositoryId: input.repositoryId,
+        symbolHash: input.symbolHash,
+      },
+      select: { id: true },
+    });
+    if (existing) return { symbol: existing, created: false };
+
+    const symbol = await tx.capabilityCodeSymbol.create({ data: input });
+    return { symbol, created: true };
+  });
+}
+
+async function persistCapabilityLearningCandidate(input: Prisma.CapabilityLearningCandidateUncheckedCreateInput) {
+  const capabilityId = normalizedLearningCandidateIdentityValue(input.capabilityId);
+  const groupKey = normalizedLearningCandidateIdentityValue(input.groupKey);
+  const artifactType = normalizedLearningCandidateIdentityValue(input.artifactType);
+  const title = normalizedLearningCandidateIdentityValue(input.title);
+  const content = String(input.content ?? "");
+  const sourceType = normalizedLearningCandidateIdentityValue(input.sourceType as string | null | undefined);
+  const sourceRef = normalizedLearningCandidateIdentityValue(input.sourceRef as string | null | undefined);
+  const candidateKey = capabilityLearningCandidateKey({
+    capabilityId,
+    groupKey,
+    artifactType,
+    title,
+    content,
+    sourceType,
+    sourceRef,
+  });
+  if (!candidateKey) throw new Error("Capability learning candidate identity is incomplete.");
+
+  return prisma.$transaction(async (tx) => {
+    await assertActiveCapabilityForWrite(tx, capabilityId, "Cannot record learning candidate for an archived capability.");
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${candidateKey}))`;
+    const existingRows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT id
+      FROM "CapabilityLearningCandidate"
+      WHERE "capabilityId" = ${capabilityId}
+        AND status <> 'SUPERSEDED'
+        AND lower(btrim("groupKey")) = lower(btrim(${groupKey}))
+        AND lower(btrim("artifactType")) = lower(btrim(${artifactType}))
+        AND lower(btrim(title)) = lower(btrim(${title}))
+        AND lower(btrim(coalesce("sourceType", ''))) = lower(btrim(${sourceType}))
+        AND lower(btrim(coalesce("sourceRef", ''))) = lower(btrim(${sourceRef}))
+        AND content = ${content}
+      ORDER BY
+        CASE status
+          WHEN 'MATERIALIZED' THEN 0
+          WHEN 'REJECTED' THEN 1
+          WHEN 'PENDING' THEN 2
+          ELSE 3
+        END,
+        "updatedAt" DESC,
+        "createdAt" DESC
+      LIMIT 1
+    `);
+    const existingId = existingRows[0]?.id;
+    if (!existingId) {
+      return tx.capabilityLearningCandidate.create({
+        data: {
+          ...input,
+          capabilityId,
+          groupKey,
+          artifactType,
+          title,
+          content,
+          sourceType,
+          sourceRef,
+        },
+      });
+    }
+
+    const existing = await tx.capabilityLearningCandidate.findUniqueOrThrow({ where: { id: existingId } });
+    if (existing.status !== "PENDING") return existing;
+
+    const next: Prisma.CapabilityLearningCandidateUncheckedUpdateInput = {};
+    if (input.bootstrapRunId !== undefined && !existing.bootstrapRunId) {
+      next.bootstrapRunId = input.bootstrapRunId;
+    }
+    if (input.groupTitle !== undefined && existing.groupTitle !== input.groupTitle) next.groupTitle = input.groupTitle;
+    if (input.confidence !== undefined && String(existing.confidence ?? "") !== String(input.confidence ?? "")) {
+      next.confidence = input.confidence;
+    }
+    if (Object.keys(next).length === 0) return existing;
+    return tx.capabilityLearningCandidate.update({ where: { id: existing.id }, data: next });
+  });
+}
+
+async function materializeBootstrapLearningCandidate(
+  capabilityId: string,
+  candidate: {
+    id: string;
+    artifactType: string;
+    title: string;
+    content: string;
+    sourceType: string | null;
+    sourceRef: string | null;
+    confidence: Prisma.Decimal | number | string | null;
+  },
+  userId?: string,
+) {
+  const artifactInput: CapabilityKnowledgeArtifactWriteInput = {
+    artifactType: candidate.artifactType,
+    title: candidate.title,
+    content: candidate.content,
+    sourceType: `BOOTSTRAP_${candidate.sourceType ?? "DISCOVERY"}`,
+    sourceRef: candidate.sourceRef ?? undefined,
+    confidence: candidate.confidence ? Number(candidate.confidence) : 0.8,
+  };
+
+  const materialized = await prisma.$transaction(async (tx) => {
+    await assertActiveCapabilityForWrite(tx, capabilityId, "Cannot materialize learning for an archived capability.");
+    const rows = await tx.$queryRaw<Array<{ id: string; status: string; materializedArtifactId: string | null }>>(Prisma.sql`
+      SELECT id, status, "materializedArtifactId"
+      FROM "CapabilityLearningCandidate"
+      WHERE id = ${candidate.id}
+        AND "capabilityId" = ${capabilityId}
+      LIMIT 1
+      FOR UPDATE
+    `);
+    const current = rows[0];
+    if (!current) throw new NotFoundError("Capability learning candidate not found");
+    if (current.status !== "PENDING") return null;
+
+    const { artifact, contentHash } = await persistKnowledgeArtifactWithClient(tx, capabilityId, artifactInput, {
+      assumeCapabilityLocked: true,
+    });
+    await tx.capabilityLearningCandidate.update({
+      where: { id: candidate.id },
+      data: {
+        status: "MATERIALIZED",
+        materializedArtifactId: artifact.id,
+        reviewedBy: userId,
+        reviewedAt: new Date(),
+      },
+    });
+    return { artifact, contentHash };
+  });
+
+  if (!materialized) return null;
+  await ensureKnowledgeEmbedding({
+    artifactId: materialized.artifact.id,
+    title: artifactInput.title,
+    content: artifactInput.content,
+    contentHash: materialized.contentHash,
+  });
+  return materialized.artifact;
+}
+
+async function persistCapabilityAgentTemplate(input: Prisma.AgentTemplateUncheckedCreateInput) {
+  const capabilityId = String(input.capabilityId ?? "").trim();
+  const name = normalizedAgentTemplateName(input.name);
+  const templateKey = capabilityAgentTemplateKey({ capabilityId, name });
+  if (!templateKey) throw new Error("Capability and agent template name are required.");
+
+  return prisma.$transaction(async (tx) => {
+    await assertActiveCapabilityForWrite(tx, capabilityId, "Cannot persist agent template for an archived capability.");
+    if (input.defaultToolPolicyId) {
+      await assertActiveToolPolicyReference(tx, {
+        policyId: input.defaultToolPolicyId,
+        capabilityId,
+        context: "agent template default tool policy",
+      });
+    }
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${templateKey}))`;
+    const existingRows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+      SELECT id
+      FROM "AgentTemplate"
+      WHERE "capabilityId" = ${capabilityId}
+        AND status <> 'ARCHIVED'
+        AND lower(btrim(name)) = lower(btrim(${name}))
+      ORDER BY "updatedAt" DESC, "createdAt" DESC
+      LIMIT 1
+    `);
+    const existingId = existingRows[0]?.id;
+    if (!existingId) {
+      return tx.agentTemplate.create({
+        data: {
+          ...input,
+          name,
+          capabilityId,
+        },
+      });
+    }
+
+    const existing = await tx.agentTemplate.findUniqueOrThrow({ where: { id: existingId } });
+    if (input.defaultToolPolicyId) {
+      await assertActiveToolPolicyReference(tx, {
+        policyId: input.defaultToolPolicyId,
+        capabilityId,
+        agentTemplateId: existing.id,
+        context: "agent template default tool policy",
+      });
+    }
+    const next: Prisma.AgentTemplateUncheckedUpdateInput = {};
+    if (existing.name !== name) next.name = name;
+    if (input.roleType !== undefined && existing.roleType !== input.roleType) next.roleType = input.roleType;
+    if (input.description !== undefined && !existing.description && input.description !== existing.description) {
+      next.description = input.description;
+    }
+    if (input.basePromptProfileId !== undefined && input.basePromptProfileId && existing.basePromptProfileId !== input.basePromptProfileId) {
+      next.basePromptProfileId = input.basePromptProfileId;
+    }
+    if (input.defaultToolPolicyId !== undefined && input.defaultToolPolicyId && existing.defaultToolPolicyId !== input.defaultToolPolicyId) {
+      next.defaultToolPolicyId = input.defaultToolPolicyId;
+    }
+    if (input.baseTemplateId !== undefined && input.baseTemplateId && existing.baseTemplateId !== input.baseTemplateId) {
+      next.baseTemplateId = input.baseTemplateId;
+    }
+    if (input.lockedReason !== undefined && input.lockedReason && existing.lockedReason !== input.lockedReason) {
+      next.lockedReason = input.lockedReason;
+    }
+    if (input.status !== undefined && existing.status !== "ACTIVE" && existing.status !== input.status) {
+      next.status = input.status;
+    }
+    if (Object.keys(next).length === 0) return existing;
+    return tx.agentTemplate.update({ where: { id: existing.id }, data: next });
+  });
+}
+
+async function persistAgentCapabilityBinding(input: Prisma.AgentCapabilityBindingUncheckedCreateInput) {
+  const bindingKey = capabilityAgentBindingKey({
+    capabilityId: input.capabilityId,
+    agentTemplateId: input.agentTemplateId,
+  });
+  if (!bindingKey) throw new Error("Capability and agent template are required for binding.");
+
+  return prisma.$transaction(async (tx) => {
+    await assertActiveCapabilityForWrite(tx, String(input.capabilityId ?? ""), "Cannot persist agent binding for an archived capability.");
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${bindingKey}))`;
+    const existing = await tx.agentCapabilityBinding.findFirst({
+      where: {
+        capabilityId: input.capabilityId,
+        agentTemplateId: input.agentTemplateId,
+        status: { not: "ARCHIVED" },
+      },
+      orderBy: { updatedAt: "desc" },
+    });
+    await assertAgentBindingPolicyReferences(tx, input, existing?.id);
+    if (!existing) return tx.agentCapabilityBinding.create({ data: input });
+
+    const next: Prisma.AgentCapabilityBindingUpdateInput = {};
+    if (input.bindingName && input.bindingName !== existing.bindingName) next.bindingName = input.bindingName;
+    if (input.roleInCapability !== undefined && input.roleInCapability !== existing.roleInCapability) {
+      next.roleInCapability = input.roleInCapability;
+    }
+    if (input.promptProfileId !== undefined && input.promptProfileId !== existing.promptProfileId) {
+      next.promptProfileId = input.promptProfileId;
+    }
+    if (input.toolPolicyId !== undefined && input.toolPolicyId !== existing.toolPolicyId) {
+      next.toolPolicyId = input.toolPolicyId;
+    }
+    if (input.memoryScopePolicyId !== undefined && input.memoryScopePolicyId !== existing.memoryScopePolicyId) {
+      next.memoryScopePolicyId = input.memoryScopePolicyId;
+    }
+    if (input.status !== undefined && input.status !== existing.status) next.status = input.status;
+    if (Object.keys(next).length === 0) return existing;
+    return tx.agentCapabilityBinding.update({ where: { id: existing.id }, data: next });
+  });
+}
+
+async function ensureCodeSymbolEmbedding(input: {
+  symbolId: string;
+  symbolName: string | null;
+  summary?: string | null;
+  embedder: ReturnType<typeof getEmbeddingProvider>;
+}): Promise<boolean> {
+  const symbolId = normalizedCodeEmbeddingValue(input.symbolId);
+  const embeddingKey = capabilityCodeEmbeddingKey({ symbolId });
+  if (!embeddingKey) throw new Error("Capability code embedding identity is incomplete.");
+
+  const probe = await prisma.$queryRawUnsafe<Array<{ capabilityStatus: string; hasEmbedding: boolean }>>(
+    `SELECT c.status AS "capabilityStatus",
+            EXISTS(
+              SELECT 1 FROM "CapabilityCodeEmbedding" e
+              WHERE e."symbolId" = s.id AND e.embedding IS NOT NULL
+            ) AS "hasEmbedding"
+     FROM "CapabilityCodeSymbol" s
+     JOIN "Capability" c ON c.id = s."capabilityId"
+     WHERE s.id = $1`,
+    symbolId,
+  );
+  if (!probe[0] || probe[0].capabilityStatus === "ARCHIVED" || probe[0].hasEmbedding) return false;
+
+  const embedTarget = `${input.symbolName ?? ""}\n${input.summary ?? ""}`.trim() || "symbol";
+  const embedded = await input.embedder.embed({ text: embedTarget });
+  assertDimMatches(embedded.dim, `${embedded.provider}:${embedded.model}`);
+  const embeddingModel = `${embedded.provider}:${embedded.model}:${embedded.dim}`;
+  const vectorId = JSON.stringify(embedded.vector);
+  const vectorLiteral = toVectorLiteral(embedded.vector);
+
+  return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${embeddingKey}))`;
+    const activeRows = await tx.$queryRaw<Array<{ capabilityStatus: string }>>(Prisma.sql`
+      SELECT c.status AS "capabilityStatus"
+      FROM "CapabilityCodeSymbol" s
+      JOIN "Capability" c ON c.id = s."capabilityId"
+      WHERE s.id = ${symbolId}
+      FOR UPDATE OF c
+    `);
+    if (!activeRows[0] || activeRows[0].capabilityStatus === "ARCHIVED") return false;
+
+    const existingRows = await tx.$queryRaw<Array<{ id: string; hasEmbedding: boolean }>>(Prisma.sql`
+      SELECT id, embedding IS NOT NULL AS "hasEmbedding"
+      FROM "CapabilityCodeEmbedding"
+      WHERE "symbolId" = ${symbolId}
+      ORDER BY "createdAt" DESC, id DESC
+      LIMIT 1
+      FOR UPDATE
+    `);
+    const existing = existingRows[0];
+    if (existing?.hasEmbedding) return false;
+
+    const row = existing
+      ? await tx.capabilityCodeEmbedding.update({
+          where: { id: existing.id },
+          data: {
+            embeddingModel,
+            vectorId,
+            summary: input.summary ?? null,
+          },
+        })
+      : await tx.capabilityCodeEmbedding.create({
+          data: {
+            symbolId,
+            embeddingModel,
+            vectorId,
+            summary: input.summary ?? null,
+          },
+        });
+
+    const updated = await tx.$executeRawUnsafe(
+      `UPDATE "CapabilityCodeEmbedding" target
+       SET embedding = $1::vector
+       WHERE target.id = $2
+         AND EXISTS (
+           SELECT 1
+           FROM "CapabilityCodeSymbol" s
+           JOIN "Capability" c ON c.id = s."capabilityId"
+           WHERE s.id = target."symbolId"
+             AND c.status <> 'ARCHIVED'
+         )`,
+      vectorLiteral,
+      row.id,
+    );
+    return updated > 0;
+  });
+}
+
+async function persistKnowledgeArtifact(
+  capabilityId: string,
+  input: CapabilityKnowledgeArtifactWriteInput,
+) {
+  return prisma.$transaction((tx) => persistKnowledgeArtifactWithClient(tx, capabilityId, input));
+}
+
+async function persistKnowledgeArtifactWithClient(
+  client: CapabilityDbClient,
+  capabilityId: string,
+  input: CapabilityKnowledgeArtifactWriteInput,
+  options: { assumeCapabilityLocked?: boolean; archivedMessage?: string } = {},
+) {
+  if (!options.assumeCapabilityLocked) {
+    await assertActiveCapabilityForWrite(client, capabilityId, options.archivedMessage);
   }
+
+  const contentHash = sha256(input.content);
+  const artifactType = input.artifactType.trim() || input.artifactType;
+  const title = input.title.trim() || input.title;
+  const sourceType = input.sourceType?.trim() || null;
+  const sourceRef = input.sourceRef?.trim() || null;
+  const sourceKey = sourceBackedKnowledgeArtifactKey({
+    capabilityId,
+    artifactType,
+    title,
+    sourceType,
+    sourceRef,
+  });
+
+  if (sourceKey) {
+    await client.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
+  }
+
+  const existingRows = sourceKey
+    ? await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        SELECT id
+        FROM "CapabilityKnowledgeArtifact"
+        WHERE status = 'ACTIVE'
+          AND "capabilityId" = ${capabilityId}
+          AND lower(btrim("artifactType")) = lower(${artifactType})
+          AND lower(btrim("title")) = lower(${title})
+          AND lower(COALESCE(NULLIF(btrim("sourceType"), ''), '')) = lower(${sourceType ?? ""})
+          AND lower(btrim("sourceRef")) = lower(${sourceRef ?? ""})
+        ORDER BY "updatedAt" DESC, "createdAt" DESC, id DESC
+        LIMIT 1
+      `)
+    : [];
+  const existing = existingRows[0]
+    ? await client.capabilityKnowledgeArtifact.findUnique({ where: { id: existingRows[0].id } })
+    : null;
+
+  if (!existing) {
+    const artifact = await client.capabilityKnowledgeArtifact.create({
+      data: {
+        capabilityId,
+        artifactType,
+        title,
+        content: input.content,
+        sourceType,
+        sourceRef,
+        confidence: input.confidence ?? undefined,
+        contentHash,
+        status: "ACTIVE",
+      },
+    });
+    return { artifact, contentHash };
+  }
+
+  const confidenceChanged = String(existing.confidence ?? "") !== String(input.confidence ?? "");
+  const contentChanged = existing.contentHash !== contentHash || existing.content !== input.content;
+  const metadataChanged = existing.sourceType !== sourceType || existing.sourceRef !== sourceRef || confidenceChanged;
+  if (!contentChanged && !metadataChanged) return { artifact: existing, contentHash };
+
+  const artifact = await client.capabilityKnowledgeArtifact.update({
+    where: { id: existing.id },
+    data: {
+      content: input.content,
+      sourceType,
+      sourceRef,
+      confidence: input.confidence ?? undefined,
+      contentHash,
+      ...(contentChanged ? { version: { increment: 1 } } : {}),
+    },
+  });
+  if (contentChanged) {
+    await client.$executeRaw`UPDATE "CapabilityKnowledgeArtifact" SET embedding = NULL WHERE id = ${artifact.id}`;
+  }
+
+  return { artifact, contentHash };
+}
+
+async function assertActiveCapabilityForWrite(
+  client: CapabilityDbClient,
+  capabilityId: string,
+  message = "Capability is archived and cannot be modified.",
+): Promise<void> {
+  const rows = await client.$queryRaw<Array<{ status: string }>>(Prisma.sql`
+    SELECT status
+    FROM "Capability"
+    WHERE id = ${capabilityId}
+    FOR UPDATE
+  `);
+  const capability = rows[0];
+  if (!capability) throw new NotFoundError("Capability not found");
+  if (capability.status === "ARCHIVED") throw new ForbiddenError(message);
+}
+
+async function assertActiveToolPolicyReference(
+  client: CapabilityDbClient,
+  input: {
+    policyId: string;
+    capabilityId: string;
+    agentTemplateId?: string | null;
+    agentBindingId?: string | null;
+    context: string;
+  },
+): Promise<void> {
+  const rows = await client.$queryRaw<Array<{ status: string; scopeType: string | null; scopeId: string | null }>>(Prisma.sql`
+    SELECT status, "scopeType" AS "scopeType", "scopeId" AS "scopeId"
+    FROM "ToolPolicy"
+    WHERE id = ${input.policyId}
+    FOR UPDATE
+  `);
+  const policy = rows[0];
+  if (!policy) throw new NotFoundError("Tool policy not found");
+  if (policy.status !== "ACTIVE") {
+    throw new ConflictError(`Tool policy is ${policy.status} and cannot be used as ${input.context}.`);
+  }
+
+  const scopeType = policy.scopeType?.trim().toUpperCase();
+  if (!scopeType || !policy.scopeId) return;
+
+  if (scopeType === "CAPABILITY") {
+    if (policy.scopeId !== input.capabilityId) {
+      throw new ForbiddenError(`Tool policy scope belongs to another capability and cannot be used as ${input.context}.`);
+    }
+    return;
+  }
+
+  if (scopeType === "AGENT_TEMPLATE") {
+    if (!input.agentTemplateId || policy.scopeId !== input.agentTemplateId) {
+      throw new ForbiddenError(`Tool policy scope belongs to another agent template and cannot be used as ${input.context}.`);
+    }
+    return;
+  }
+
+  if (scopeType === "AGENT_BINDING") {
+    if (!input.agentBindingId || policy.scopeId !== input.agentBindingId) {
+      throw new ForbiddenError(`Tool policy scope belongs to another agent binding and cannot be used as ${input.context}.`);
+    }
+  }
+}
+
+async function assertAgentBindingPolicyReferences(
+  client: CapabilityDbClient,
+  input: Prisma.AgentCapabilityBindingUncheckedCreateInput,
+  existingBindingId?: string,
+): Promise<void> {
+  const capabilityId = String(input.capabilityId ?? "");
+  const agentTemplateId = String(input.agentTemplateId ?? "");
+  if (input.toolPolicyId) {
+    await assertActiveToolPolicyReference(client, {
+      policyId: input.toolPolicyId,
+      capabilityId,
+      agentTemplateId,
+      agentBindingId: existingBindingId,
+      context: "agent binding tool policy",
+    });
+  }
+  if (input.memoryScopePolicyId) {
+    await assertActiveToolPolicyReference(client, {
+      policyId: input.memoryScopePolicyId,
+      capabilityId,
+      agentTemplateId,
+      agentBindingId: existingBindingId,
+      context: "agent binding memory scope policy",
+    });
+  }
+}
+
+async function ensureKnowledgeEmbedding(input: {
+  artifactId: string;
+  title: string;
+  content: string;
+  contentHash: string;
+}) {
+  try {
+    const embeddedRows = await prisma.$queryRaw<Array<{ hasEmbedding: boolean }>>`
+      SELECT embedding IS NOT NULL AS "hasEmbedding"
+      FROM "CapabilityKnowledgeArtifact"
+      WHERE id = ${input.artifactId}
+      LIMIT 1
+    `;
+    if (embeddedRows[0]?.hasEmbedding) return;
+
+    const reused = await prisma.$executeRawUnsafe(
+      `UPDATE "CapabilityKnowledgeArtifact" target
+       SET embedding = source.embedding
+       FROM (
+         SELECT embedding FROM "CapabilityKnowledgeArtifact"
+         WHERE "contentHash" = $1 AND id <> $2 AND embedding IS NOT NULL
+         ORDER BY "createdAt" DESC
+         LIMIT 1
+       ) source
+       WHERE target.id = $2
+         AND target.status = 'ACTIVE'
+         AND target.embedding IS NULL
+         AND EXISTS (
+           SELECT 1
+           FROM "Capability" c
+           WHERE c.id = target."capabilityId"
+             AND c.status <> 'ARCHIVED'
+         )`,
+      input.contentHash,
+      input.artifactId,
+    );
+    if (reused > 0) return;
+
+    const embedder = getEmbeddingProvider();
+    const embedTarget = `${input.title}\n${input.content}`.slice(0, 8_000);
+    const embedded = await embedder.embed({ text: embedTarget });
+    assertDimMatches(embedded.dim, `${embedded.provider}:${embedded.model}`);
+    await prisma.$executeRawUnsafe(
+      `UPDATE "CapabilityKnowledgeArtifact" target
+       SET embedding = $1::vector
+       WHERE target.id = $2
+         AND target.status = 'ACTIVE'
+         AND EXISTS (
+           SELECT 1
+           FROM "Capability" c
+           WHERE c.id = target."capabilityId"
+             AND c.status <> 'ARCHIVED'
+         )`,
+      toVectorLiteral(embedded.vector),
+      input.artifactId,
+    );
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`[knowledge] embedding failed for ${input.artifactId}: ${(err as Error).message}`);
+  }
+}
+
+async function learningSourceState(capabilityId: string): Promise<{
+  activeSourceCount: number;
+  activeRepositoryCount: number;
+  activeKnowledgeSourceCount: number;
+  sourceFingerprint: string;
+  sources: Array<{ kind: string; ref: string; branch?: string | null; label?: string | null }>;
+}> {
+  const [repositories, knowledgeSources] = await Promise.all([
+    prisma.capabilityRepository.findMany({
+      where: { capabilityId, status: "ACTIVE" },
+      select: { repoName: true, repoUrl: true, defaultBranch: true, repositoryType: true },
+      orderBy: [{ repoUrl: "asc" }, { defaultBranch: "asc" }],
+    }),
+    prisma.capabilityKnowledgeSource.findMany({
+      where: { capabilityId, status: "ACTIVE" },
+      select: { url: true, artifactType: true, title: true },
+      orderBy: [{ url: "asc" }],
+    }),
+  ]);
+  const sources = [
+    ...repositories.map(repo => ({
+      kind: String(repo.repositoryType ?? "GITHUB"),
+      ref: repo.repoUrl,
+      branch: repo.defaultBranch ?? "main",
+      label: repo.repoName,
+    })),
+    ...knowledgeSources.map(source => ({
+      kind: `URL:${source.artifactType}`,
+      ref: source.url,
+      branch: null,
+      label: source.title,
+    })),
+  ];
+  return {
+    activeSourceCount: sources.length,
+    activeRepositoryCount: repositories.length,
+    activeKnowledgeSourceCount: knowledgeSources.length,
+    sourceFingerprint: sha256(JSON.stringify(sources)),
+    sources,
+  };
+}
+
+function stackFromRepositoryProfiles(profiles: RepositoryProfileSummary[]): string[] {
+  const items = new Set<string>();
+  for (const profile of profiles) {
+    for (const language of profile.languages ?? []) if (language.language) items.add(language.language);
+    for (const framework of profile.frameworks ?? []) items.add(framework);
+    for (const buildTool of profile.buildTools ?? []) items.add(buildTool);
+  }
+  return Array.from(items).slice(0, 12);
+}
+
+function stackFromCapabilityWorldModel(worldModel: { primaryLanguage?: string | null; buildSystem?: string | null } | null | undefined): string[] {
+  const items = new Set<string>();
+  if (worldModel?.primaryLanguage) items.add(worldModel.primaryLanguage);
+  if (worldModel?.buildSystem) items.add(worldModel.buildSystem);
+  return Array.from(items).slice(0, 12);
+}
+
+function learningDiagnostics(
+  sourceState: Awaited<ReturnType<typeof learningSourceState>>,
+  extra: Record<string, unknown> = {},
+): Prisma.InputJsonValue {
+  return {
+    sources: sourceState.sources,
+    activeRepositoryCount: sourceState.activeRepositoryCount,
+    activeKnowledgeSourceCount: sourceState.activeKnowledgeSourceCount,
+    ...extra,
+  } as Prisma.InputJsonValue;
+}
+
+async function withActiveCapabilityLearningStatusWrite<T>(
+  capabilityId: string,
+  write: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T | null> {
+  return prisma.$transaction(async (tx) => {
+    const [capability] = await tx.$queryRaw<Array<{ status: string }>>`
+      SELECT status
+      FROM "Capability"
+      WHERE id = ${capabilityId}
+      FOR UPDATE
+    `;
+    if (!capability) throw new NotFoundError("Capability not found");
+    if (capability.status === "ARCHIVED") return null;
+    return write(tx);
+  });
+}
+
+async function recordLearningAttempt(
+  capabilityId: string,
+  input: { message?: string; diagnostics?: Record<string, unknown> } = {},
+): Promise<{ claimed: boolean; status: CapabilityLearningGroundingStatus; activeRepositoryCount: number }> {
+  const sourceState = await learningSourceState(capabilityId);
+  const status: CapabilityLearningGroundingStatus = sourceState.activeRepositoryCount > 0 ? "RUNNING" : "NOT_CONFIGURED";
+  const message = status === "NOT_CONFIGURED"
+    ? missingRepositoryMessage(sourceState)
+    : learningMessageForStatus(status, input.message);
+  const diagnostics = learningDiagnostics(sourceState, input.diagnostics ?? {});
+
+  if (status === "RUNNING") {
+    const now = new Date();
+    const staleBefore = new Date(now.getTime() - Math.max(CAPABILITY_LEARNING_RUN_STALE_MS, 60_000));
+    const claim = await withActiveCapabilityLearningStatusWrite(capabilityId, async (tx) => {
+      await tx.$executeRaw`
+        INSERT INTO "CapabilityLearningStatus" ("id", "capabilityId", "status", "createdAt", "updatedAt")
+        VALUES (${uuidv4()}, ${capabilityId}, 'NOT_CONFIGURED', ${now}, ${now})
+        ON CONFLICT ("capabilityId") DO NOTHING
+      `;
+      return tx.capabilityLearningStatus.updateMany({
+        where: {
+          capabilityId,
+          OR: [
+            { status: { not: "RUNNING" } },
+            { lastAttemptAt: null },
+            { lastAttemptAt: { lt: staleBefore } },
+          ],
+        },
+        data: {
+          status,
+          message,
+          lastAttemptAt: now,
+          lastFailureCode: null,
+          lastFailureMessage: null,
+          activeSourceCount: sourceState.activeSourceCount,
+          sourceFingerprint: sourceState.sourceFingerprint,
+          diagnostics,
+        },
+      });
+    });
+    if (!claim) throw new ConflictError("Capability was archived while the learning worker was starting.");
+    return { claimed: claim.count > 0, status, activeRepositoryCount: sourceState.activeRepositoryCount };
+  }
+
+  const wrote = await withActiveCapabilityLearningStatusWrite(
+    capabilityId,
+    async (tx) => tx.capabilityLearningStatus.upsert({
+      where: { capabilityId },
+      create: {
+        capabilityId,
+        status,
+        message,
+        lastAttemptAt: new Date(),
+        activeSourceCount: sourceState.activeSourceCount,
+        sourceFingerprint: sourceState.sourceFingerprint,
+        diagnostics,
+      },
+      update: {
+        status,
+        message,
+        lastAttemptAt: new Date(),
+        lastFailureCode: null,
+        lastFailureMessage: null,
+        activeSourceCount: sourceState.activeSourceCount,
+        sourceFingerprint: sourceState.sourceFingerprint,
+        diagnostics,
+      },
+    }),
+  );
+  if (!wrote) throw new ConflictError("Capability was archived while the learning worker was starting.");
+  return { claimed: true, status, activeRepositoryCount: sourceState.activeRepositoryCount };
+}
+
+async function recordRepositoryLearningStatus(capabilityId: string, result: RepositoryRefreshResult) {
+  if (result.refreshed > 0) {
+    const sourceState = await learningSourceState(capabilityId);
+    const stack = stackFromRepositoryProfiles(result.profiles);
+    await withActiveCapabilityLearningStatusWrite(capabilityId, async (tx) => tx.capabilityLearningStatus.upsert({
+      where: { capabilityId },
+      create: {
+        capabilityId,
+        status: "LEARNED",
+        message: learningMessageForStatus("LEARNED"),
+        lastAttemptAt: new Date(),
+        lastSuccessAt: new Date(),
+        activeSourceCount: sourceState.activeSourceCount,
+        learnedSourceCount: result.refreshed,
+        sourceFingerprint: sourceState.sourceFingerprint,
+        repoProfileVersion: 1,
+        lastGoodStack: stack as Prisma.InputJsonValue,
+        lastRepoProfiles: result.profiles as Prisma.InputJsonValue,
+        diagnostics: learningDiagnostics(sourceState, { warnings: result.warnings, artifacts: result.artifacts }),
+      },
+      update: {
+        status: "LEARNED",
+        message: learningMessageForStatus("LEARNED"),
+        lastAttemptAt: new Date(),
+        lastSuccessAt: new Date(),
+        lastFailureCode: null,
+        lastFailureMessage: null,
+        activeSourceCount: sourceState.activeSourceCount,
+        learnedSourceCount: result.refreshed,
+        sourceFingerprint: sourceState.sourceFingerprint,
+        repoProfileVersion: { increment: 1 },
+        lastGoodStack: stack as Prisma.InputJsonValue,
+        lastRepoProfiles: result.profiles as Prisma.InputJsonValue,
+        diagnostics: learningDiagnostics(sourceState, { warnings: result.warnings, artifacts: result.artifacts }),
+      },
+    }));
+    return;
+  }
+
+  if (result.warnings.length > 0) {
+    await recordLearningFailure(capabilityId, "REPOSITORY_PROFILE_REFRESH_FAILED", result.warnings.join("; "), {
+      warnings: result.warnings,
+      artifacts: result.artifacts,
+    });
+    return;
+  }
+
+  const [sourceState, capability] = await Promise.all([
+    learningSourceState(capabilityId),
+    prisma.capability.findUnique({ where: { id: capabilityId }, include: { worldModel: true } }),
+  ]);
+  const lastGoodStack = stackFromCapabilityWorldModel(capability?.worldModel);
+  const status: CapabilityLearningGroundingStatus = sourceState.activeRepositoryCount === 0
+    ? "NOT_CONFIGURED"
+    : sourceState.activeRepositoryCount > 0
+    ? lastGoodStack.length > 0
+      ? "STALE"
+      : "BLOCKED"
+    : "NOT_CONFIGURED";
+  const detail = status === "NOT_CONFIGURED"
+    ? missingRepositoryMessage(sourceState)
+    : status === "BLOCKED"
+      ? "No repository profile was produced from the approved repository sources."
+      : undefined;
+  await withActiveCapabilityLearningStatusWrite(capabilityId, async (tx) => tx.capabilityLearningStatus.upsert({
+    where: { capabilityId },
+    create: {
+      capabilityId,
+      status,
+      message: learningMessageForStatus(status, detail),
+      lastAttemptAt: new Date(),
+      activeSourceCount: sourceState.activeSourceCount,
+      sourceFingerprint: sourceState.sourceFingerprint,
+      lastGoodStack: lastGoodStack as Prisma.InputJsonValue,
+      diagnostics: learningDiagnostics(sourceState),
+    },
+    update: {
+      status,
+      message: learningMessageForStatus(status, detail),
+      lastAttemptAt: new Date(),
+      activeSourceCount: sourceState.activeSourceCount,
+      sourceFingerprint: sourceState.sourceFingerprint,
+      lastGoodStack: lastGoodStack as Prisma.InputJsonValue,
+      diagnostics: learningDiagnostics(sourceState),
+    },
+  }));
+}
+
+async function recordLearningFailure(
+  capabilityId: string,
+  code: string,
+  message: string,
+  diagnostics: Record<string, unknown> = {},
+) {
+  const [sourceState, capability] = await Promise.all([
+    learningSourceState(capabilityId),
+    prisma.capability.findUnique({
+      where: { id: capabilityId },
+      include: { learningStatus: true, worldModel: true },
+    }),
+  ]);
+  const existing = capability?.learningStatus;
+  const lastGoodStack = Array.isArray(existing?.lastGoodStack) ? existing.lastGoodStack : [];
+  const worldModelStack = stackFromCapabilityWorldModel(capability?.worldModel);
+  const effectiveLastGoodStack = lastGoodStack.length > 0 ? lastGoodStack : worldModelStack;
+  const status: CapabilityLearningGroundingStatus = sourceState.activeRepositoryCount === 0
+    ? "NOT_CONFIGURED"
+    : effectiveLastGoodStack.length > 0
+      ? "STALE"
+      : "BLOCKED";
+  const detail = status === "NOT_CONFIGURED" ? missingRepositoryMessage(sourceState) : message;
+  await withActiveCapabilityLearningStatusWrite(capabilityId, async (tx) => tx.capabilityLearningStatus.upsert({
+    where: { capabilityId },
+    create: {
+      capabilityId,
+      status,
+      message: learningMessageForStatus(status, detail),
+      lastAttemptAt: new Date(),
+      lastFailureAt: new Date(),
+      lastFailureCode: code,
+      lastFailureMessage: message,
+      activeSourceCount: sourceState.activeSourceCount,
+      sourceFingerprint: sourceState.sourceFingerprint,
+      lastGoodStack: effectiveLastGoodStack as Prisma.InputJsonValue,
+      diagnostics: learningDiagnostics(sourceState, diagnostics),
+    },
+    update: {
+      status,
+      message: learningMessageForStatus(status, detail),
+      lastAttemptAt: new Date(),
+      lastFailureAt: new Date(),
+      lastFailureCode: code,
+      lastFailureMessage: message,
+      activeSourceCount: sourceState.activeSourceCount,
+      sourceFingerprint: sourceState.sourceFingerprint,
+      lastGoodStack: effectiveLastGoodStack as Prisma.InputJsonValue,
+      diagnostics: learningDiagnostics(sourceState, diagnostics),
+    },
+  }));
+}
+
+async function activeCapabilityLearningWorker(capabilityId: string) {
+  const lock = await prisma.capabilityLearningWorkerLock.findUnique({
+    where: { capabilityId },
+    select: {
+      operation: true,
+      startedAt: true,
+      expiresAt: true,
+      updatedAt: true,
+    },
+  });
+  if (!lock || lock.expiresAt.getTime() <= Date.now()) return null;
+  return {
+    operation: lock.operation,
+    startedAt: lock.startedAt.toISOString(),
+    expiresAt: lock.expiresAt.toISOString(),
+    updatedAt: lock.updatedAt.toISOString(),
+  };
+}
+
+function learningStatusIsStaleRunning(
+  stored: { status?: string | null; lastAttemptAt?: Date | string | null } | null | undefined,
+  activeLearningWorker: unknown,
+): boolean {
+  if (String(stored?.status ?? "").toUpperCase() !== "RUNNING") return false;
+  if (activeLearningWorker) return false;
+  const attemptAt = stored?.lastAttemptAt instanceof Date
+    ? stored.lastAttemptAt.getTime()
+    : Date.parse(String(stored?.lastAttemptAt ?? ""));
+  if (!Number.isFinite(attemptAt)) return true;
+  return Date.now() - attemptAt > Math.max(CAPABILITY_LEARNING_RUN_STALE_MS, 60_000);
+}
+
+async function buildCapabilityGroundingStatus(capabilityId: string) {
+  const [capability, sourceState, activeLearningWorker] = await Promise.all([
+    prisma.capability.findUnique({
+      where: { id: capabilityId },
+      include: { learningStatus: true, worldModel: true },
+    }),
+    learningSourceState(capabilityId),
+    activeCapabilityLearningWorker(capabilityId),
+  ]);
+  if (!capability) throw new NotFoundError("Capability not found");
+  const stored = capability.learningStatus;
+  const worldModelStack = stackFromCapabilityWorldModel(capability.worldModel);
+  const storedStack = Array.isArray(stored?.lastGoodStack) ? stored.lastGoodStack.map(String).filter(Boolean) : [];
+  const staleRunningWorker = learningStatusIsStaleRunning(stored, activeLearningWorker);
+  const effectiveStored = staleRunningWorker && stored
+    ? {
+        ...stored,
+        status: "BLOCKED",
+        message: "The last learning worker stopped without completing and its lease expired. Retry repository grounding, or inspect agent-runtime logs if this repeats.",
+      }
+    : stored;
+  if (capability.status === "ARCHIVED") {
+    return {
+      capabilityId,
+      status: "ARCHIVED",
+      preciseState: "ARCHIVED",
+      message: learningMessageForStatus("ARCHIVED"),
+      lastAttemptAt: stored?.lastAttemptAt ?? null,
+      lastSuccessAt: stored?.lastSuccessAt ?? null,
+      lastFailureAt: stored?.lastFailureAt ?? null,
+      lastFailureCode: stored?.lastFailureCode ?? null,
+      lastFailureMessage: stored?.lastFailureMessage ?? null,
+      activeSourceCount: sourceState.activeSourceCount,
+      activeRepositoryCount: sourceState.activeRepositoryCount,
+      activeKnowledgeSourceCount: sourceState.activeKnowledgeSourceCount,
+      learnedSourceCountAtLastAttempt: stored?.activeSourceCount ?? 0,
+      learnedSourceCount: stored?.learnedSourceCount ?? 0,
+      sourceFingerprint: stored?.sourceFingerprint ?? sourceState.sourceFingerprint,
+      currentSourceFingerprint: sourceState.sourceFingerprint,
+      sourceDrifted: false,
+      repoProfileVersion: stored?.repoProfileVersion ?? 0,
+      lastGoodStack: storedStack.length > 0 ? storedStack : worldModelStack,
+      lastRepoProfiles: stored?.lastRepoProfiles ?? [],
+      activeLearningWorker,
+      diagnostics: stored?.diagnostics ?? learningDiagnostics(sourceState),
+      fixCommand: null,
+    };
+  }
+  const derived = deriveCapabilityGroundingState({
+    stored: effectiveStored,
+    sourceState,
+    storedStack,
+    worldModelStack,
+  });
+  return {
+    capabilityId,
+    status: derived.status,
+    preciseState: derived.preciseState,
+    message: derived.message,
+    lastAttemptAt: stored?.lastAttemptAt ?? null,
+    lastSuccessAt: stored?.lastSuccessAt ?? null,
+    lastFailureAt: stored?.lastFailureAt ?? null,
+    lastFailureCode: staleRunningWorker ? "LEARNING_WORKER_STALE" : stored?.lastFailureCode ?? null,
+    lastFailureMessage: staleRunningWorker
+      ? "The learning worker lease expired before completion."
+      : stored?.lastFailureMessage ?? null,
+    activeSourceCount: sourceState.activeSourceCount,
+    activeRepositoryCount: sourceState.activeRepositoryCount,
+    activeKnowledgeSourceCount: sourceState.activeKnowledgeSourceCount,
+    learnedSourceCountAtLastAttempt: stored?.activeSourceCount ?? 0,
+    learnedSourceCount: stored?.learnedSourceCount ?? 0,
+    sourceFingerprint: derived.sourceFingerprint,
+    currentSourceFingerprint: derived.currentSourceFingerprint,
+    sourceDrifted: derived.sourceDrifted,
+    repoProfileVersion: stored?.repoProfileVersion ?? 0,
+    lastGoodStack: storedStack.length > 0 ? storedStack : worldModelStack,
+    lastRepoProfiles: stored?.lastRepoProfiles ?? [],
+    activeLearningWorker,
+    diagnostics: staleRunningWorker
+      ? { ...jsonRecord(learningDiagnostics(sourceState)), staleRunningWorker: true }
+      : stored?.diagnostics ?? learningDiagnostics(sourceState),
+    fixCommand: ["BLOCKED", "STALE"].includes(derived.status)
+      ? `curl -X POST http://localhost:5180/api/runtime/capabilities/${capabilityId}/learning-worker/run -H 'authorization: Bearer <token>' -H 'content-type: application/json' -d '{"syncApprovedSources":false,"refreshRepositoryProfiles":true,"reembed":false}'`
+      : null,
+  };
+}
+
+async function refreshRepositoryProfileLearning(capabilityId: string, userId?: string): Promise<RepositoryRefreshResult> {
+  const cap = await prisma.capability.findUnique({
+    where: { id: capabilityId },
+    include: {
+      repositories: { where: { status: "ACTIVE" }, orderBy: { createdAt: "asc" } },
+      bindings: { include: { agentTemplate: true }, orderBy: { createdAt: "asc" } },
+      bootstrapRuns: { orderBy: { createdAt: "desc" }, take: 1 },
+    },
+  });
+  if (!cap) throw new NotFoundError("Capability not found");
+
+  const profiles: RepositoryProfile[] = [];
+  const warnings: string[] = [];
+  for (const repo of cap.repositories) {
+    const repoType = String(repo.repositoryType ?? "").toUpperCase();
+    if (repoType === "LOCAL" || repo.repoUrl.startsWith("local://")) continue;
+    try {
+      const discovery = await discoverGitHubRepoWithProfile(repo.repoUrl, repo.defaultBranch ?? "main", userId);
+      profiles.push(discovery.profile);
+    } catch (err) {
+      warnings.push(`Repository profile refresh skipped for ${repo.repoName}: ${(err as Error).message}`);
+    }
+  }
+
+  if (profiles.length === 0) {
+    return { refreshed: 0, artifacts: 0, profiles: [], warnings };
+  }
+
+  const primaryLanguage = pickPrimaryLanguage(profiles);
+  const buildSystem = pickPrimaryBuildSystem(profiles);
+  await upsertWorldModel({
+    capabilityId,
+    ...(primaryLanguage ? { primaryLanguage } : {}),
+    ...(buildSystem ? { buildSystem } : {}),
+  });
+
+  const input: BootstrapInput = {
+    name: cap.name,
+    appId: cap.appId ?? undefined,
+    parentCapabilityId: cap.parentCapabilityId ?? undefined,
+    capabilityType: cap.capabilityType ?? undefined,
+    businessUnitId: cap.businessUnitId ?? undefined,
+    ownerTeamId: cap.ownerTeamId ?? undefined,
+    criticality: cap.criticality ?? undefined,
+    description: cap.description ?? undefined,
+    repositories: cap.repositories.map(repo => ({
+      repoName: repo.repoName,
+      repoUrl: repo.repoUrl,
+      defaultBranch: repo.defaultBranch ?? undefined,
+      repositoryType: repo.repositoryType ?? undefined,
+    })),
+    documentLinks: [],
+  };
+  const generatedAgents = cap.bindings.map(binding => ({
+    label: binding.agentTemplate?.name ?? binding.bindingName,
+    roleType: String(binding.roleInCapability ?? binding.agentTemplate?.roleType ?? "AGENT"),
+    locked: Boolean(binding.agentTemplate?.lockedReason),
+    learnsFromGit: true,
+  }));
+  const architectureDiagram = buildCapabilityArchitectureDiagram(cap, input, generatedAgents, [], profiles);
+  const artifactCandidates = [
+    ...buildPlatformInventoryCandidates(profiles),
+    buildArchitectureDiagramCandidate(cap.name, architectureDiagram),
+  ];
+
+  let artifactCount = 0;
+  for (const candidate of artifactCandidates) {
+    const { artifact, contentHash } = await persistKnowledgeArtifact(capabilityId, candidate);
+    await ensureKnowledgeEmbedding({
+      artifactId: artifact.id,
+      title: candidate.title,
+      content: candidate.content,
+      contentHash,
+    });
+    if (candidate.artifactType === "ARCHITECTURE_DIAGRAM") {
+      await prisma.capabilityKnowledgeArtifact.updateMany({
+        where: {
+          capabilityId,
+          artifactType: candidate.artifactType,
+          title: candidate.title,
+          status: "ACTIVE",
+          id: { not: artifact.id },
+        },
+        data: { status: "ARCHIVED" },
+      });
+    }
+    artifactCount += 1;
+  }
+
+  const latestRun = cap.bootstrapRuns[0];
+  if (latestRun) {
+    const summary = jsonRecord(latestRun.sourceSummary);
+    const operatingModel = jsonRecord(summary.operatingModel);
+    await prisma.capabilityBootstrapRun.update({
+      where: { id: latestRun.id },
+      data: {
+        sourceSummary: {
+          ...summary,
+          repositoryProfiles: profiles,
+          repositoryProfilesRefreshedAt: new Date().toISOString(),
+          operatingModel: {
+            ...operatingModel,
+            repositoryProfiles: profiles,
+            architectureDiagram,
+          },
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  return {
+    refreshed: profiles.length,
+    artifacts: artifactCount,
+    profiles: profiles.map(profile => ({
+      repoName: profile.repoName,
+      languages: profile.languages,
+      frameworks: profile.frameworks,
+      buildTools: profile.buildTools,
+      endpointCount: profile.endpointCount,
+    })),
+    warnings,
+  };
+}
+
+type CapabilityDbClient = typeof prisma | Prisma.TransactionClient;
+
+async function lockCapabilityNaturalKey(client: CapabilityDbClient, input: CapabilityIdentityInput): Promise<void> {
+  const key = capabilityNaturalKey(input);
+  await client.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+}
+
+async function assertNoActiveCapabilityDuplicate(
+  client: CapabilityDbClient,
+  input: CapabilityIdentityInput,
+  excludeId?: string,
+): Promise<void> {
+  const appId = normalizedIdentityValue(input.appId);
+  const name = normalizedIdentityValue(input.name);
+  const excludeClause = excludeId ? Prisma.sql`AND id <> ${excludeId}` : Prisma.empty;
+  const rows = appId
+    ? await client.$queryRaw<Array<{ id: string; name: string; appId: string | null; capabilityType: string | null }>>(Prisma.sql`
+        SELECT id, name, "appId", "capabilityType"
+        FROM "Capability"
+        WHERE status = 'ACTIVE'
+          ${excludeClause}
+          AND lower(btrim(COALESCE("appId", ''))) = lower(${appId})
+        LIMIT 1
+      `)
+    : name
+      ? await client.$queryRaw<Array<{ id: string; name: string; appId: string | null; capabilityType: string | null }>>(Prisma.sql`
+          SELECT id, name, "appId", "capabilityType"
+          FROM "Capability"
+          WHERE status = 'ACTIVE'
+            ${excludeClause}
+            AND NULLIF(btrim(COALESCE("appId", '')), '') IS NULL
+            AND lower(btrim(name)) = lower(${name})
+            AND lower(COALESCE(NULLIF(btrim("capabilityType"), ''), 'default')) = lower(${normalizedCapabilityType(input.capabilityType)})
+          LIMIT 1
+        `)
+      : [];
+  const existing = rows[0];
+  if (!existing) return;
+
+  throw new ConflictError(capabilityDuplicateConflictMessage(existing));
+}
+
+async function rethrowCapabilityIdentityConflict(
+  err: unknown,
+  input: CapabilityIdentityInput,
+  excludeId?: string,
+): Promise<never> {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== "P2002") {
+    throw err;
+  }
+
+  const where = capabilityDuplicateWhere(input, excludeId);
+  const existing = where
+    ? await prisma.capability.findFirst({
+        where,
+        select: { id: true, name: true, appId: true, capabilityType: true },
+      })
+    : null;
+  if (existing) {
+    throw new ConflictError(capabilityDuplicateConflictMessage(existing));
+  }
+
+  throw new ConflictError(
+    "Active capability already exists for this identity. Refresh the capability list and open the existing capability.",
+  );
+}
+
+async function findActiveRepositorySource(
+  client: CapabilityDbClient,
+  input: { capabilityId: string; repoUrl: string; defaultBranch?: string | null; repositoryType?: string | null },
+  excludeId?: string,
+) {
+  const excludeClause = excludeId ? Prisma.sql`AND id <> ${excludeId}` : Prisma.empty;
+  const rows = await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT id
+    FROM "CapabilityRepository"
+    WHERE status = 'ACTIVE'
+      ${excludeClause}
+      AND "capabilityId" = ${input.capabilityId}
+      AND lower(btrim("repoUrl")) = lower(${normalizedSourceValue(input.repoUrl)})
+      AND lower(COALESCE(NULLIF(btrim("defaultBranch"), ''), 'main')) = lower(${normalizedRepositoryBranch(input.defaultBranch)})
+      AND lower(COALESCE(NULLIF(btrim("repositoryType"), ''), 'GITHUB')) = lower(${normalizedRepositoryType(input.repositoryType)})
+    ORDER BY "updatedAt" DESC, "createdAt" DESC, id DESC
+    LIMIT 1
+  `);
+  return rows[0]
+    ? client.capabilityRepository.findUnique({ where: { id: rows[0].id } })
+    : null;
+}
+
+async function assertNoActiveRepositorySourceDuplicate(
+  client: CapabilityDbClient,
+  input: { capabilityId: string; repoUrl: string; defaultBranch?: string | null; repositoryType?: string | null },
+  excludeId?: string,
+) {
+  const existing = await findActiveRepositorySource(client, input, excludeId);
+  if (!existing) return;
+  throw new ConflictError(`Active repository source already exists for ${existing.repoUrl} (${existing.defaultBranch ?? "main"}).`);
+}
+
+async function findActiveKnowledgeSource(
+  client: CapabilityDbClient,
+  input: { capabilityId: string; url: string; artifactType?: string | null },
+  excludeId?: string,
+) {
+  const excludeClause = excludeId ? Prisma.sql`AND id <> ${excludeId}` : Prisma.empty;
+  const rows = await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT id
+    FROM "CapabilityKnowledgeSource"
+    WHERE status = 'ACTIVE'
+      ${excludeClause}
+      AND "capabilityId" = ${input.capabilityId}
+      AND lower(btrim("url")) = lower(${normalizedSourceValue(input.url)})
+      AND lower(COALESCE(NULLIF(btrim("artifactType"), ''), 'DOC')) = lower(${normalizedKnowledgeArtifactType(input.artifactType)})
+    ORDER BY "updatedAt" DESC, "createdAt" DESC, id DESC
+    LIMIT 1
+  `);
+  return rows[0]
+    ? client.capabilityKnowledgeSource.findUnique({ where: { id: rows[0].id } })
+    : null;
+}
+
+async function assertNoActiveKnowledgeSourceDuplicate(
+  client: CapabilityDbClient,
+  input: { capabilityId: string; url: string; artifactType?: string | null },
+  excludeId?: string,
+) {
+  const existing = await findActiveKnowledgeSource(client, input, excludeId);
+  if (!existing) return;
+  throw new ConflictError(`Active knowledge source already exists for ${existing.url} (${existing.artifactType}).`);
 }
 
 async function assertCodeExtractionApproved(
