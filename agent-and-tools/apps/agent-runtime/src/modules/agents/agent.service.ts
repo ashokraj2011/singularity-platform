@@ -53,6 +53,8 @@ import {
 import { requireActiveCapability } from "../capabilities/capability-lifecycle";
 import { parseUpstreamJson, readUpstreamJsonObject } from "../../shared/upstream-json";
 
+const AGENT_SOURCE_FETCH_TIMEOUT_MS = env.AGENT_SOURCE_FETCH_TIMEOUT_SEC * 1000;
+
 type TemplateSnapshotSource = {
   id: string;
   name: string;
@@ -574,7 +576,7 @@ async function fetchJsonWithTimeout(url: string): Promise<{
   signedManifest: boolean;
 }> {
   await assertAgentSourceUrlAllowed(url, { allowPrivateUrls: env.AGENT_SOURCE_ALLOW_PRIVATE_URLS });
-  const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+  const res = await fetch(url, { signal: AbortSignal.timeout(AGENT_SOURCE_FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`manifest fetch failed: ${res.status}`);
   const contentType = res.headers.get("content-type") ?? "";
   if (!contentType.includes("json")) {
@@ -829,7 +831,7 @@ export const agentService = {
       await assertAgentSourceUrlAllowed(url, { allowPrivateUrls: env.AGENT_SOURCE_ALLOW_PRIVATE_URLS });
       let description: string | undefined;
       try {
-        const res = await fetch(url, { signal: AbortSignal.timeout(5_000) });
+        const res = await fetch(url, { signal: AbortSignal.timeout(AGENT_SOURCE_FETCH_TIMEOUT_MS) });
         if (res.ok) description = (await res.text()).replace(/\s+/g, " ").trim().slice(0, 500);
       } catch {
         description = undefined;

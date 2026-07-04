@@ -19,6 +19,7 @@ const AGENT_RUNTIME_LIMITS = {
   CAPABILITY_DEFAULT_DAILY_TOKENS: 20_000_000,
   CAPABILITY_DEFAULT_DAILY_COST_USD: 10_000,
   CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE: 10_000,
+  AGENT_SOURCE_FETCH_TIMEOUT_SEC: 300,
 } as const;
 
 const schema = z.object({
@@ -69,6 +70,11 @@ const schema = z.object({
     30,
     1,
     AGENT_RUNTIME_LIMITS.CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE,
+  ),
+  AGENT_SOURCE_FETCH_TIMEOUT_SEC: boundedInt(
+    5,
+    1,
+    AGENT_RUNTIME_LIMITS.AGENT_SOURCE_FETCH_TIMEOUT_SEC,
   ),
   AGENT_SOURCE_ALLOW_PRIVATE_URLS: z.preprocess(
     (v) => v === undefined ? undefined : String(v).toLowerCase() === "true",
