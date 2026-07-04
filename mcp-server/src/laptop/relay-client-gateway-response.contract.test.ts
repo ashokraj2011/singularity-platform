@@ -16,6 +16,18 @@ assert.match(
   "model-run relay should reject malformed or empty 2xx local gateway responses clearly",
 );
 
+assert.match(
+  relayClientSource,
+  /const LOCAL_GATEWAY_TIMEOUT_MS = config\.LLM_GATEWAY_TIMEOUT_SEC \* 1000;/,
+  "model-run relay should reuse the bounded LLM_GATEWAY_TIMEOUT_SEC setting",
+);
+
+assert.match(
+  relayClientSource,
+  /signal: AbortSignal\.timeout\(LOCAL_GATEWAY_TIMEOUT_MS\)/,
+  "model-run relay fetch should be bounded by the local gateway timeout",
+);
+
 assert.doesNotMatch(
   relayClientSource,
   /runModelViaLocalGateway[\s\S]*?return res\.json\(\);/,

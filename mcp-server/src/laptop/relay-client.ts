@@ -60,6 +60,7 @@ const HEARTBEAT_MS = config.MCP_RUNTIME_BRIDGE_HEARTBEAT_MS;
 const RELAY_HANDSHAKE_TIMEOUT_MS = config.MCP_RUNTIME_BRIDGE_HANDSHAKE_TIMEOUT_MS;
 const MIN_BACKOFF_MS = config.MCP_RUNTIME_BRIDGE_RECONNECT_MIN_BACKOFF_MS;
 const MAX_BACKOFF_MS = config.MCP_RUNTIME_BRIDGE_RECONNECT_MAX_BACKOFF_MS;
+const LOCAL_GATEWAY_TIMEOUT_MS = config.LLM_GATEWAY_TIMEOUT_SEC * 1000;
 
 interface RelayConfig {
   bridgeUrl:    string;                       // wss://platform/api/runtime-bridge/connect
@@ -698,6 +699,7 @@ async function runModelViaLocalGateway(body: unknown): Promise<unknown> {
     method: "POST",
     headers,
     body: JSON.stringify(body ?? {}),
+    signal: AbortSignal.timeout(LOCAL_GATEWAY_TIMEOUT_MS),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");

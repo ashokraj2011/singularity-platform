@@ -795,9 +795,10 @@ non-sensical PII confidence floor. MCP also refuses to start when the
 repetition threshold is greater than the repetition window, because that would
 silently disable loop detection.
 The governed LLM client uses the same helper: `LLM_GATEWAY_TIMEOUT_SEC`
-defaults to `300`, minimum `1`, maximum `7200`; gateway discovery cache
-`LLM_GATEWAY_DISCOVERY_TTL_SEC` defaults to `30`, minimum `1`, maximum
-`86400`.
+defaults to `300`, minimum `1`, maximum `7200`; MCP runtime-bridge
+`model-run` forwarding to a local/colocated gateway uses that same bound.
+Gateway discovery cache `LLM_GATEWAY_DISCOVERY_TTL_SEC` defaults to `30`,
+minimum `1`, maximum `86400`.
 MCP's quick provider-readiness probe to the LLM gateway is bounded separately:
 `MCP_LLM_PROVIDER_STATUS_TIMEOUT_MS` defaults to `2000` and is bounded
 `1..300000`, so `/llm/providers` and `/llm/models` stay responsive while still
