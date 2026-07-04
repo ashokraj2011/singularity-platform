@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from context_api_service.app import laptop_bridge
+from context_api_service.app.env_config import bounded_int_env
 
 
 def _b64(value: object) -> str:
@@ -242,7 +243,7 @@ def test_runtime_capability_tag_list_canonicalizes_and_bounds_tags():
 
 def test_runtime_bridge_revocation_recheck_env_defaults_and_clamps(monkeypatch):
     monkeypatch.delenv("RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC", raising=False)
-    assert laptop_bridge._bounded_int_env(
+    assert bounded_int_env(
         "RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC",
         default=300,
         min_value=5,
@@ -250,7 +251,7 @@ def test_runtime_bridge_revocation_recheck_env_defaults_and_clamps(monkeypatch):
     ) == 300
 
     monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC", "not-an-int")
-    assert laptop_bridge._bounded_int_env(
+    assert bounded_int_env(
         "RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC",
         default=300,
         min_value=5,
@@ -258,7 +259,7 @@ def test_runtime_bridge_revocation_recheck_env_defaults_and_clamps(monkeypatch):
     ) == 300
 
     monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC", "1")
-    assert laptop_bridge._bounded_int_env(
+    assert bounded_int_env(
         "RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC",
         default=300,
         min_value=5,
@@ -266,7 +267,7 @@ def test_runtime_bridge_revocation_recheck_env_defaults_and_clamps(monkeypatch):
     ) == 300
 
     monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC", "600")
-    assert laptop_bridge._bounded_int_env(
+    assert bounded_int_env(
         "RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC",
         default=300,
         min_value=5,
@@ -274,7 +275,7 @@ def test_runtime_bridge_revocation_recheck_env_defaults_and_clamps(monkeypatch):
     ) == 600
 
     monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC", "999999")
-    assert laptop_bridge._bounded_int_env(
+    assert bounded_int_env(
         "RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC",
         default=300,
         min_value=5,

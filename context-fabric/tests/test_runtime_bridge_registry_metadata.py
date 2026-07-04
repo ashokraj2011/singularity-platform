@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from context_api_service.app import laptop_registry as lr
+from context_api_service.app.env_config import bounded_int_env
 from context_api_service.app.laptop_registry import (
     ActiveConnection,
     LaptopRegistry,
@@ -139,7 +140,7 @@ def test_heartbeat_updates_runtime_health_metadata_safely():
 
 def test_bounded_int_env_defaults_and_clamps(monkeypatch):
     monkeypatch.delenv("RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME", raising=False)
-    assert lr._bounded_int_env(
+    assert bounded_int_env(
         "RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME",
         default=32,
         min_value=1,
@@ -147,7 +148,7 @@ def test_bounded_int_env_defaults_and_clamps(monkeypatch):
     ) == 32
 
     monkeypatch.setenv("RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME", "not-an-int")
-    assert lr._bounded_int_env(
+    assert bounded_int_env(
         "RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME",
         default=32,
         min_value=1,
@@ -155,7 +156,7 @@ def test_bounded_int_env_defaults_and_clamps(monkeypatch):
     ) == 32
 
     monkeypatch.setenv("RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME", "0")
-    assert lr._bounded_int_env(
+    assert bounded_int_env(
         "RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME",
         default=32,
         min_value=1,
@@ -163,7 +164,7 @@ def test_bounded_int_env_defaults_and_clamps(monkeypatch):
     ) == 32
 
     monkeypatch.setenv("RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME", "64")
-    assert lr._bounded_int_env(
+    assert bounded_int_env(
         "RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME",
         default=32,
         min_value=1,
@@ -171,7 +172,7 @@ def test_bounded_int_env_defaults_and_clamps(monkeypatch):
     ) == 64
 
     monkeypatch.setenv("RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME", "5000")
-    assert lr._bounded_int_env(
+    assert bounded_int_env(
         "RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME",
         default=32,
         min_value=1,

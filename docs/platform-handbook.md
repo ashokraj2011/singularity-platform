@@ -715,6 +715,10 @@ The governed LLM client uses the same helper: `LLM_GATEWAY_TIMEOUT_SEC`
 defaults to `300`, minimum `1`, maximum `7200`; gateway discovery cache
 `LLM_GATEWAY_DISCOVERY_TTL_SEC` defaults to `30`, minimum `1`, maximum
 `86400`.
+Runtime Bridge registry/auth knobs use the shared Context Fabric env helper as
+well: `RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC` defaults to `300`, minimum `5`,
+maximum `86400`, and `RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME` defaults to
+`32`, minimum `1`, maximum `1024`.
 
 Shared Node, Python, and Workgraph inline system-prompt clients also bound
 `SYSTEM_PROMPT_CACHE_TTL_SEC`: default `300`, minimum `1`, maximum `86400`.

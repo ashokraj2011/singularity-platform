@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import WebSocket
+
+from .env_config import bounded_int_env
 
 log = logging.getLogger("laptop-registry")
 
@@ -44,29 +45,12 @@ _SENSITIVE_KEY_PARTS = (
 )
 
 
-def _bounded_int_env(name: str, *, default: int, min_value: int, max_value: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        log.warning("invalid integer env %s=%r; using default=%s", name, raw, default)
-        return default
-    if value < min_value:
-        log.warning("integer env %s=%s below min=%s; using default=%s", name, value, min_value, default)
-        return default
-    if value > max_value:
-        log.warning("integer env %s=%s above max=%s; clamping", name, value, max_value)
-        return max_value
-    return value
-
-
-MAX_PENDING_REQUESTS_PER_RUNTIME = _bounded_int_env(
+MAX_PENDING_REQUESTS_PER_RUNTIME = bounded_int_env(
     "RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME",
     default=_DEFAULT_MAX_PENDING_REQUESTS_PER_RUNTIME,
     min_value=1,
     max_value=_MAX_PENDING_REQUESTS_PER_RUNTIME_CAP,
+    logger=log,
 )
 
 

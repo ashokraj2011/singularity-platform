@@ -32,6 +32,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, WebSocket, WebSocke
 from pydantic import BaseModel
 
 from .config import settings, is_production_class_env
+from .env_config import bounded_int_env
 from .iam_service_token import get_iam_service_token, invalidate_iam_service_token
 from .laptop_registry import (
     REGISTRY,
@@ -130,31 +131,15 @@ _MIN_REVOCATION_RECHECK_SEC = 5
 _MAX_REVOCATION_RECHECK_SEC = 24 * 60 * 60
 
 
-def _bounded_int_env(name: str, *, default: int, min_value: int, max_value: int) -> int:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        log.warning("invalid integer env %s=%r; using default=%s", name, raw, default)
-        return default
-    if value < min_value:
-        log.warning("integer env %s=%s below min=%s; using default=%s", name, value, min_value, default)
-        return default
-    if value > max_value:
-        log.warning("integer env %s=%s above max=%s; clamping", name, value, max_value)
-        return max_value
-    return value
-
 # Finding #7 — device-revocation enforcement. A revoked device JWT must stop working
 # without waiting for its (up-to-365-day) natural expiry, so the bridge asks IAM whether
 # the device row is revoked: once at connect, then periodically for live connections.
-REVOCATION_RECHECK_SEC = _bounded_int_env(
+REVOCATION_RECHECK_SEC = bounded_int_env(
     "RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC",
     default=_DEFAULT_REVOCATION_RECHECK_SEC,
     min_value=_MIN_REVOCATION_RECHECK_SEC,
     max_value=_MAX_REVOCATION_RECHECK_SEC,
+    logger=log,
 )
 # SECURITY: when IAM can't be reached at connect, fail CLOSED by default in
 # production-class envs (a revoked device must not slip in during an IAM blip),
