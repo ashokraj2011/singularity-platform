@@ -304,8 +304,8 @@ type LoopOutcome =
 // it calls the SAME tool with the SAME args ≥ N times consecutively without
 // progress. Default: 3 strikes within a 5-call window. Env-gated so demos can
 // loosen if a model legitimately needs to re-read.
-const LOOP_REPETITION_THRESHOLD = Number(process.env.MCP_LOOP_REPETITION_THRESHOLD ?? 3);
-const LOOP_REPETITION_WINDOW    = Number(process.env.MCP_LOOP_REPETITION_WINDOW ?? 5);
+const LOOP_REPETITION_THRESHOLD = config.MCP_LOOP_REPETITION_THRESHOLD;
+const LOOP_REPETITION_WINDOW    = config.MCP_LOOP_REPETITION_WINDOW;
 const MUTATION_TOOL_NAMES = new Set(["apply_patch", "replace_text", "replace_range", "write_file"]);
 
 function argsHash(args: Record<string, unknown> | undefined): string {
@@ -623,7 +623,7 @@ function shouldNudgeForCodeToolUse(state: LoopState, llmResp: LlmResponse): bool
 const NUDGE_PROMPT_KEY = "mcp.code-tool-use-nudge";
 let cachedNudgePrompt: string | null = null;
 let cachedNudgePromptAt = 0;
-const NUDGE_PROMPT_TTL_MS = Number(process.env.SYSTEM_PROMPT_CACHE_TTL_SEC ?? 300) * 1000;
+const NUDGE_PROMPT_TTL_MS = config.SYSTEM_PROMPT_CACHE_TTL_SEC * 1000;
 
 function promptComposerAuthHeaders(): Record<string, string> {
   const token = (
@@ -2171,7 +2171,7 @@ function mutationToolsForFinalization(state: LoopState): ToolDescriptorForLlm[] 
 }
 
 function mutationFinalizationMaxTokens(state: LoopState): number {
-  return Math.max(state.modelConfig.maxTokens ?? 0, Number(process.env.MCP_MUTATION_FINALIZATION_MAX_TOKENS ?? 4096));
+  return Math.max(state.modelConfig.maxTokens ?? 0, config.MCP_MUTATION_FINALIZATION_MAX_TOKENS);
 }
 
 async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome | null> {

@@ -27,6 +27,9 @@ const boundedInt = (defaultValue: number, min: number, max: number) =>
 const boundedPositiveInt = (defaultValue: number, max: number) =>
   boundedInt(defaultValue, 1, max);
 
+const boundedNumber = (defaultValue: number, min: number, max: number) =>
+  z.coerce.number().min(min).max(max).default(defaultValue);
+
 const MCP_LIMITS = {
   PORT: 65_535,
   SESSION_TOKEN_TTL_SEC: 7 * 24 * 60 * 60,
@@ -43,6 +46,10 @@ const MCP_LIMITS = {
   WORKSPACE_DISK_QUOTA_BYTES: 10 * 1024 * 1024 * 1024 * 1024,
   AUDIT_RESTORE_LIMIT: 100_000,
   FORMAL_VERIFICATION_TIMEOUT_MS: 10 * 60_000,
+  LOOP_REPETITION_THRESHOLD: 20,
+  LOOP_REPETITION_WINDOW: 100,
+  SYSTEM_PROMPT_CACHE_TTL_SEC: 86_400,
+  MUTATION_FINALIZATION_MAX_TOKENS: 64_000,
 } as const;
 
 const schema = z.object({
@@ -138,6 +145,11 @@ const schema = z.object({
 
   MAX_AGENT_STEPS: boundedPositiveInt(12, MCP_LIMITS.AGENT_STEPS),
   TIMEOUT_SEC: boundedPositiveInt(240, MCP_LIMITS.AGENT_TIMEOUT_SEC),
+  MCP_LOOP_REPETITION_THRESHOLD: boundedPositiveInt(3, MCP_LIMITS.LOOP_REPETITION_THRESHOLD),
+  MCP_LOOP_REPETITION_WINDOW: boundedPositiveInt(5, MCP_LIMITS.LOOP_REPETITION_WINDOW),
+  SYSTEM_PROMPT_CACHE_TTL_SEC: boundedPositiveInt(300, MCP_LIMITS.SYSTEM_PROMPT_CACHE_TTL_SEC),
+  MCP_MUTATION_FINALIZATION_MAX_TOKENS: boundedPositiveInt(4096, MCP_LIMITS.MUTATION_FINALIZATION_MAX_TOKENS),
+  MCP_PII_NER_CONFIDENCE_FLOOR: boundedNumber(0.7, 0, 1),
 
   // ── Phased Agent Reasoning Model (v4) ──────────────────────────────────
   // Behind a flag for safe rollout. When false (default), runLoop uses the
@@ -243,6 +255,14 @@ const schema = z.object({
 const parsed = schema.safeParse(process.env);
 if (!parsed.success) {
   console.error("[mcp-server] invalid env:", parsed.error.flatten().fieldErrors);
+  process.exit(1);
+}
+
+if (parsed.data.MCP_LOOP_REPETITION_THRESHOLD > parsed.data.MCP_LOOP_REPETITION_WINDOW) {
+  console.error(
+    "FATAL: MCP_LOOP_REPETITION_THRESHOLD must be less than or equal to MCP_LOOP_REPETITION_WINDOW " +
+      "so the loop-repetition detector cannot be disabled by configuration.",
+  );
   process.exit(1);
 }
 

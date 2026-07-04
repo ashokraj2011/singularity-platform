@@ -711,6 +711,17 @@ Context Fabric MCP dispatch timeouts use the same governed env helper:
 while `MCP_TOOL_RUN_LONG_TIMEOUT_SEC` defaults to `960`, minimum `1`,
 maximum `7200` for long-running agentic tools such as `copilot_execute`.
 Invalid values fall back to defaults and oversized values clamp to the caps.
+MCP's own runtime-loop knobs are schema-validated at startup as well:
+`MCP_LOOP_REPETITION_THRESHOLD` defaults to `3` and is bounded `1..20`,
+`MCP_LOOP_REPETITION_WINDOW` defaults to `5` and is bounded `1..100`,
+`SYSTEM_PROMPT_CACHE_TTL_SEC` defaults to `300` and is bounded `1..86400`,
+`MCP_MUTATION_FINALIZATION_MAX_TOKENS` defaults to `4096` and is bounded
+`1..64000`, and `MCP_PII_NER_CONFIDENCE_FLOOR` defaults to `0.7` and is
+bounded `0..1`. Invalid values fail MCP startup instead of drifting into
+`NaN`, zero-window repetition checks, unbounded finalization requests, or a
+non-sensical PII confidence floor. MCP also refuses to start when the
+repetition threshold is greater than the repetition window, because that would
+silently disable loop detection.
 The governed LLM client uses the same helper: `LLM_GATEWAY_TIMEOUT_SEC`
 defaults to `300`, minimum `1`, maximum `7200`; gateway discovery cache
 `LLM_GATEWAY_DISCOVERY_TTL_SEC` defaults to `30`, minimum `1`, maximum

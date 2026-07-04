@@ -23,9 +23,10 @@
  * deployments that only need the regex baseline.
  */
 import type { PiiKind, PiiMatch } from "./pii-detector";
+import { config } from "../config";
 
 const MODEL_ID = process.env.MCP_PII_NER_MODEL ?? "Xenova/bert-base-NER";
-const NER_CONFIDENCE_FLOOR = Number(process.env.MCP_PII_NER_CONFIDENCE_FLOOR ?? 0.7);
+const NER_CONFIDENCE_FLOOR = config.MCP_PII_NER_CONFIDENCE_FLOOR;
 
 // Loaded once on first detect call. transformers.js Pipeline type is opaque
 // from external TS; we type as unknown and downcast at call time.
