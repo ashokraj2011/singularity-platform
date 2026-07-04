@@ -14,9 +14,11 @@ import { logger } from "../../config/logger";
 import { assembleBundle } from "./bundler";
 import { ValidationError } from "../../shared/errors";
 import { readUpstreamJsonObject } from "../../shared/upstream-json";
+import { contractsConfig } from "./contracts.config";
 
 const MCP_SERVER_URL     = (process.env.MCP_SERVER_URL ?? "http://mcp-server:7100").replace(/\/$/, "");
 const MCP_BEARER_TOKEN   = process.env.MCP_BEARER_TOKEN ?? "";
+const CONTRACTS_CONFIG = contractsConfig();
 
 export interface MintContractInput {
   agentTemplateId: string;
@@ -52,7 +54,7 @@ export async function resolveModelAlias(alias: string | undefined): Promise<{
     if (MCP_BEARER_TOKEN) headers.authorization = `Bearer ${MCP_BEARER_TOKEN}`;
     const res = await fetch(`${MCP_SERVER_URL}/llm/models`, {
       headers,
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(CONTRACTS_CONFIG.modelCatalogTimeoutMs),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
