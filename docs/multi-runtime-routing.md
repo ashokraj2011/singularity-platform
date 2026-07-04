@@ -93,6 +93,9 @@ before they are written to the runtime socket; oversized requests fail as
 MCP also checks runtime-to-Context-Fabric frames before socket writes; oversized
 response payloads are replaced with a compact `RUNTIME_RESPONSE_TOO_LARGE`
 response for the same request id.
+If a runtime response cannot be JSON serialized, MCP sends a compact
+`RUNTIME_RESPONSE_SERIALIZATION_FAILED` response for that request instead of
+throwing inside the relay send path.
 MCP checks bridge-to-runtime inbound frames before JSON parsing as well;
 oversized frames close the socket with WebSocket `1009` so the runtime reconnects
 cleanly instead of parsing unbounded payloads.

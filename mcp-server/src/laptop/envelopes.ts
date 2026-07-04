@@ -87,8 +87,13 @@ export const RUNTIME_BRIDGE_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 export function encodeOutboundFrame(
   frame: OutboundFrame,
   maxBytes = RUNTIME_BRIDGE_MAX_FRAME_BYTES,
-): { text: string; bytes: number; oversized: boolean } {
-  const text = JSON.stringify(frame);
+): { text: string; bytes: number; oversized: boolean; error?: string } {
+  let text: string;
+  try {
+    text = JSON.stringify(frame);
+  } catch (err) {
+    return { text: "", bytes: 0, oversized: false, error: (err as Error).message || "frame serialization failed" };
+  }
   const bytes = Buffer.byteLength(text, "utf8");
   return { text, bytes, oversized: bytes > maxBytes };
 }
@@ -106,6 +111,22 @@ export function oversizedResponseFrame(
       code: "RUNTIME_RESPONSE_TOO_LARGE",
       message: `runtime response exceeded ${maxBytes} bytes`,
       details: { bytes, max_bytes: maxBytes },
+    },
+  };
+}
+
+export function serializationFailureResponseFrame(
+  frame: ResponseFrame,
+  error: string,
+): ResponseFrame {
+  return {
+    type: "response",
+    request_id: frame.request_id,
+    payload: null,
+    error: {
+      code: "RUNTIME_RESPONSE_SERIALIZATION_FAILED",
+      message: "runtime response could not be serialized",
+      details: { error },
     },
   };
 }

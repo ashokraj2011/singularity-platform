@@ -33,6 +33,7 @@ import {
   decodeInboundRaw,
   encodeOutboundFrame,
   oversizedResponseFrame,
+  serializationFailureResponseFrame,
 } from "../src/laptop/envelopes";
 
 // ── HelloFrame capability negotiation ──────────────────────────────────────
@@ -500,6 +501,34 @@ describe("outbound bridge frame bounds", () => {
     expect(fallback.error?.code).toBe("RUNTIME_RESPONSE_TOO_LARGE");
     expect(fallback.error?.details).toEqual({ bytes: 1000, max_bytes: 128 });
     expect(encodeOutboundFrame(fallback, 512).oversized).toBe(false);
+  });
+
+  it("returns an encoding error instead of throwing on circular payloads", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const encoded = encodeOutboundFrame({
+      type: "response",
+      request_id: "req-circular",
+      payload: circular,
+    });
+
+    expect(encoded.error).toMatch(/circular/i);
+    expect(encoded.text).toBe("");
+    expect(encoded.bytes).toBe(0);
+  });
+
+  it("builds a compact error response for unserializable runtime payloads", () => {
+    const fallback = serializationFailureResponseFrame({
+      type: "response",
+      request_id: "req-circular",
+      payload: null,
+    }, "Converting circular structure to JSON");
+
+    expect(fallback.request_id).toBe("req-circular");
+    expect(fallback.payload).toBeNull();
+    expect(fallback.error?.code).toBe("RUNTIME_RESPONSE_SERIALIZATION_FAILED");
+    expect(fallback.error?.details).toEqual({ error: "Converting circular structure to JSON" });
+    expect(encodeOutboundFrame(fallback, 512).error).toBeUndefined();
   });
 });
 

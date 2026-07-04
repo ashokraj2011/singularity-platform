@@ -50,6 +50,7 @@ import {
   encodeOutboundFrame,
   oversizedResponseFrame,
   RUNTIME_BRIDGE_MAX_FRAME_BYTES,
+  serializationFailureResponseFrame,
   SUPPORTED_FRAME_TYPES,
   type HelloFrame, type HeartbeatFrame, type InboundFrame, type ResponseFrame,
 } from "./envelopes";
@@ -230,6 +231,19 @@ export class LaptopRelayClient {
   private send(frame: HelloFrame | HeartbeatFrame | ResponseFrame): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     const encoded = encodeOutboundFrame(frame);
+    if (encoded.error) {
+      log.warn(
+        {
+          frameType: frame.type,
+          requestId: frame.type === "response" ? frame.request_id : undefined,
+          err: encoded.error,
+        },
+        "[laptop-relay] outbound bridge frame serialization failed",
+      );
+      if (frame.type !== "response") return;
+      this.sendCompactResponse(serializationFailureResponseFrame(frame, encoded.error));
+      return;
+    }
     if (encoded.oversized) {
       log.warn(
         {
@@ -241,9 +255,21 @@ export class LaptopRelayClient {
         "[laptop-relay] outbound bridge frame too large",
       );
       if (frame.type !== "response") return;
-      const fallback = encodeOutboundFrame(oversizedResponseFrame(frame, encoded.bytes));
-      try { this.ws.send(fallback.text); }
-      catch (err) { log.warn({ err: (err as Error).message }, "[laptop-relay] send failed"); }
+      this.sendCompactResponse(oversizedResponseFrame(frame, encoded.bytes));
+      return;
+    }
+    try { this.ws.send(encoded.text); }
+    catch (err) { log.warn({ err: (err as Error).message }, "[laptop-relay] send failed"); }
+  }
+
+  private sendCompactResponse(frame: ResponseFrame): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const encoded = encodeOutboundFrame(frame);
+    if (encoded.error || encoded.oversized) {
+      log.warn(
+        { requestId: frame.request_id, err: encoded.error, bytes: encoded.bytes },
+        "[laptop-relay] compact bridge error response could not be sent",
+      );
       return;
     }
     try { this.ws.send(encoded.text); }
