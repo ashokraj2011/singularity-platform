@@ -42,6 +42,7 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
         "config.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS,",
         "config.MCP_SOURCE_DISCOVERY_TIMEOUT_MS,",
         "config.MCP_SOURCE_MATERIALIZER_GIT_TIMEOUT_MS,",
+        "config.MCP_RG_SEARCH_TIMEOUT_MS,",
         "config.MCP_HTTP_TOOL_TIMEOUT_MS,",
         "config.MCP_GIT_HISTORY_TIMEOUT_MS,",
         "config.MCP_PROCESS_KILL_GRACE_MS,",
@@ -61,7 +62,7 @@ function runConfig(extraEnv: Record<string, string | undefined>) {
 
 const defaults = runConfig({});
 assert.equal(defaults.status, 0, defaults.stderr);
-assert.match(defaults.stdout, /3:5:300:5:5:8:2000:5000:1500:2000:1500:2000:3000:5000:5000:30000:10000:1000:60000:5000:30000:20000:120000:30000:60000:2000:30000:4096:0\.7/);
+assert.match(defaults.stdout, /3:5:300:5:5:8:2000:5000:1500:2000:1500:2000:3000:5000:5000:30000:10000:1000:60000:5000:30000:20000:120000:10000:30000:60000:2000:30000:4096:0\.7/);
 
 const custom = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "4",
@@ -87,6 +88,7 @@ const custom = runConfig({
   MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS: "35000",
   MCP_SOURCE_DISCOVERY_TIMEOUT_MS: "25000",
   MCP_SOURCE_MATERIALIZER_GIT_TIMEOUT_MS: "180000",
+  MCP_RG_SEARCH_TIMEOUT_MS: "17000",
   MCP_HTTP_TOOL_TIMEOUT_MS: "33000",
   MCP_GIT_HISTORY_TIMEOUT_MS: "65000",
   MCP_PROCESS_KILL_GRACE_MS: "3500",
@@ -95,7 +97,7 @@ const custom = runConfig({
   MCP_PII_NER_CONFIDENCE_FLOOR: "0.85",
 });
 assert.equal(custom.status, 0, custom.stderr);
-assert.match(custom.stdout, /4:9:120:9:12:11:2500:6000:2500:3000:3500:4500:4000:4500:5500:45000:15000:2000:90000:6500:35000:25000:180000:33000:65000:3500:45000:8192:0\.85/);
+assert.match(custom.stdout, /4:9:120:9:12:11:2500:6000:2500:3000:3500:4500:4000:4500:5500:45000:15000:2000:90000:6500:35000:25000:180000:17000:33000:65000:3500:45000:8192:0\.85/);
 
 const impossibleLoopDetector = runConfig({
   MCP_LOOP_REPETITION_THRESHOLD: "10",
@@ -135,6 +137,7 @@ for (const [name, value] of [
   ["MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS", "0"],
   ["MCP_SOURCE_DISCOVERY_TIMEOUT_MS", "0"],
   ["MCP_SOURCE_MATERIALIZER_GIT_TIMEOUT_MS", "0"],
+  ["MCP_RG_SEARCH_TIMEOUT_MS", "0"],
   ["MCP_HTTP_TOOL_TIMEOUT_MS", "0"],
   ["MCP_GIT_HISTORY_TIMEOUT_MS", "0"],
   ["MCP_PROCESS_KILL_GRACE_MS", "0"],
@@ -172,6 +175,7 @@ assert.match(configSource, /MCP_WORKTREE_GIT_HASH_TIMEOUT_MS: boundedPositiveInt
 assert.match(configSource, /MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS: boundedPositiveInt\(30_000, MCP_LIMITS\.WORKTREE_GIT_WRITE_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_SOURCE_DISCOVERY_TIMEOUT_MS: boundedPositiveInt\(20_000, MCP_LIMITS\.SOURCE_DISCOVERY_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_SOURCE_MATERIALIZER_GIT_TIMEOUT_MS: boundedPositiveInt\([\s\S]*?120_000,[\s\S]*?MCP_LIMITS\.SOURCE_MATERIALIZER_GIT_TIMEOUT_MS/);
+assert.match(configSource, /MCP_RG_SEARCH_TIMEOUT_MS: boundedPositiveInt\(10_000, MCP_LIMITS\.RG_SEARCH_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_HTTP_TOOL_TIMEOUT_MS: boundedPositiveInt\(30_000, MCP_LIMITS\.HTTP_TOOL_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_GIT_HISTORY_TIMEOUT_MS: boundedPositiveInt\(60_000, MCP_LIMITS\.GIT_HISTORY_TIMEOUT_MS\)/);
 assert.match(configSource, /MCP_PROCESS_KILL_GRACE_MS: boundedPositiveInt\(2_000, MCP_LIMITS\.PROCESS_KILL_GRACE_MS\)/);
@@ -275,6 +279,12 @@ const coreToolSource = readFileSync("src/tools/core.ts", "utf8");
 assert.match(coreToolSource, /const HTTP_TOOL_TIMEOUT_MS = config\.MCP_HTTP_TOOL_TIMEOUT_MS;/);
 assert.match(coreToolSource, /AbortSignal\.timeout\(HTTP_TOOL_TIMEOUT_MS\)/);
 assert.doesNotMatch(coreToolSource, /AbortSignal\.timeout\(30_000\)/);
+assert.match(coreToolSource, /const RG_SEARCH_TIMEOUT_MS = config\.MCP_RG_SEARCH_TIMEOUT_MS;/);
+assert.match(coreToolSource, /timeout: RG_SEARCH_TIMEOUT_MS/);
+
+const discoverToolSource = readFileSync("src/tools/discover.ts", "utf8");
+assert.match(discoverToolSource, /const RG_SEARCH_TIMEOUT_MS = config\.MCP_RG_SEARCH_TIMEOUT_MS;/);
+assert.match(discoverToolSource, /timeout: RG_SEARCH_TIMEOUT_MS/);
 
 const sandboxSource = readFileSync("src/workspace/sandbox.ts", "utf8");
 assert.match(sandboxSource, /const WORKSPACE_BRANCH_PROBE_TIMEOUT_MS = config\.MCP_WORKSPACE_BRANCH_PROBE_TIMEOUT_MS;/);

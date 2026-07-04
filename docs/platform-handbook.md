@@ -924,6 +924,11 @@ Source materialization git subprocesses are bounded by
 `1..600000`. This covers clone, fetch, mirror refresh, checkout, and status
 commands so a stalled repo operation cannot hang the MCP runtime indefinitely.
 
+Ripgrep-backed code search helpers are bounded by `MCP_RG_SEARCH_TIMEOUT_MS`,
+default `10000`, bounded `1..300000`. This covers `search_code` and
+`grep_lines`, keeping large-repository searches responsive while allowing
+operators to widen the window for known-heavy workspaces.
+
 MCP's read-only HTTP tools (`http_get` and `web_fetch`) use
 `MCP_HTTP_TOOL_TIMEOUT_MS`, default `30000`, bounded `1..300000`. This keeps
 agent-facing network reads responsive by default while allowing deliberate

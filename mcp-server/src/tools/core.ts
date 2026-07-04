@@ -16,6 +16,7 @@ import { config } from "../config";
 
 const execFileP = promisify(execFile);
 const HTTP_TOOL_TIMEOUT_MS = config.MCP_HTTP_TOOL_TIMEOUT_MS;
+const RG_SEARCH_TIMEOUT_MS = config.MCP_RG_SEARCH_TIMEOUT_MS;
 
 const SKIP_DIRS = new Set([
   "node_modules", ".git", "dist", "build", "out", "__pycache__", ".venv", "venv",
@@ -183,7 +184,11 @@ export const searchCodeTool: ToolHandler = {
       if (!args.regex) argv.push("--fixed-strings");
       if (args.glob) argv.push("-g", String(args.glob));
       argv.push("--", q, target);
-      const { stdout } = await execFileP("rg", argv, { cwd, maxBuffer: 5 * 1024 * 1024 }).catch((err) => {
+      const { stdout } = await execFileP("rg", argv, {
+        cwd,
+        maxBuffer: 5 * 1024 * 1024,
+        timeout: RG_SEARCH_TIMEOUT_MS,
+      }).catch((err) => {
         // rg exits 1 when no matches — that's fine.
         const e = err as { code?: number; stdout?: string };
         if (e.code === 1) return { stdout: "" };

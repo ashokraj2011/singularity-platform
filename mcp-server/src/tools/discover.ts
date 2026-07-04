@@ -27,8 +27,10 @@ import { promisify } from "node:util";
 import { resolveSandboxedPath, sandboxRoot } from "../workspace/sandbox";
 import { globToRegex, toPosixPath } from "../workspace/glob";
 import type { ToolHandler } from "./registry";
+import { config } from "../config";
 
 const execFileP = promisify(execFile);
+const RG_SEARCH_TIMEOUT_MS = config.MCP_RG_SEARCH_TIMEOUT_MS;
 
 // Sandbox-skip set. Aligned with list_directory's SKIP_DIRS in core.ts.
 const SKIP_DIRS = new Set([
@@ -298,7 +300,11 @@ export const grepLinesTool: ToolHandler = {
       if (args.glob) argv.push("-g", String(args.glob));
       argv.push("--", q, target);
 
-      const { stdout } = await execFileP("rg", argv, { cwd, maxBuffer: 5 * 1024 * 1024 }).catch((err) => {
+      const { stdout } = await execFileP("rg", argv, {
+        cwd,
+        maxBuffer: 5 * 1024 * 1024,
+        timeout: RG_SEARCH_TIMEOUT_MS,
+      }).catch((err) => {
         const code = (err as { code?: number | string }).code;
         if (code === 1) return { stdout: "" };
         if (code === "ENOENT") {
@@ -377,4 +383,3 @@ function clamp(raw: unknown, fallback: number, min: number, max: number): number
   const n = typeof raw === "number" && Number.isFinite(raw) ? raw : fallback;
   return Math.max(min, Math.min(max, Math.floor(n)));
 }
-
