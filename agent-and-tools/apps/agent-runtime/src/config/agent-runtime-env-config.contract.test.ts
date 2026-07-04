@@ -34,6 +34,7 @@ function runEnv(extraEnv: Record<string, string | undefined>) {
         "env.CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC,",
         "env.AGENT_CONTRACT_MINT_TIMEOUT_SEC,",
         "env.AGENT_CONTRACT_PIN_RETRY_DELAY_MS,",
+        "env.IAM_AUTH_VERIFY_TIMEOUT_SEC,",
         "env.IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC",
         "].join(':'));",
       ].join(" "),
@@ -52,7 +53,7 @@ function read(relativePath: string): string {
 
 const defaults = runEnv({});
 assert.equal(defaults.status, 0, defaults.stderr);
-assert.match(defaults.stdout, /30:5:60:30:900000:200000:2:30:5:5:30:15:150:10/);
+assert.match(defaults.stdout, /30:5:60:30:900000:200000:2:30:5:5:30:15:150:5:10/);
 
 const custom = runEnv({
   POLL_WORKER_TICK_SEC: "60",
@@ -68,10 +69,11 @@ const custom = runEnv({
   CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC: "45",
   AGENT_CONTRACT_MINT_TIMEOUT_SEC: "20",
   AGENT_CONTRACT_PIN_RETRY_DELAY_MS: "250",
+  IAM_AUTH_VERIFY_TIMEOUT_SEC: "11",
   IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC: "25",
 });
 assert.equal(custom.status, 0, custom.stderr);
-assert.match(custom.stdout, /60:10:120:45:120000:500000:12\.5:90:18:12:45:20:250:25/);
+assert.match(custom.stdout, /60:10:120:45:120000:500000:12\.5:90:18:12:45:20:250:11:25/);
 
 for (const [name, value] of [
   ["POLL_WORKER_TICK_SEC", "4"],
@@ -87,6 +89,7 @@ for (const [name, value] of [
   ["CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC", "0"],
   ["AGENT_CONTRACT_MINT_TIMEOUT_SEC", "0"],
   ["AGENT_CONTRACT_PIN_RETRY_DELAY_MS", "-1"],
+  ["IAM_AUTH_VERIFY_TIMEOUT_SEC", "0"],
   ["IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC", "0"],
 ] as const) {
   const result = runEnv({ [name]: value });
@@ -108,6 +111,7 @@ assert.match(envSource, /AGENT_SOURCE_FETCH_TIMEOUT_SEC: boundedInt\([\s\S]*?5,[
 assert.match(envSource, /CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC: boundedInt\([\s\S]*?30,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC/);
 assert.match(envSource, /AGENT_CONTRACT_MINT_TIMEOUT_SEC: boundedInt\([\s\S]*?15,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.AGENT_CONTRACT_MINT_TIMEOUT_SEC/);
 assert.match(envSource, /AGENT_CONTRACT_PIN_RETRY_DELAY_MS: boundedInt\([\s\S]*?150,[\s\S]*?0,[\s\S]*?AGENT_RUNTIME_LIMITS\.AGENT_CONTRACT_PIN_RETRY_DELAY_MS/);
+assert.match(envSource, /IAM_AUTH_VERIFY_TIMEOUT_SEC: boundedInt\([\s\S]*?5,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.IAM_AUTH_VERIFY_TIMEOUT_SEC/);
 assert.match(envSource, /IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC: boundedInt\([\s\S]*?10,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC/);
 
 const capabilityService = read("src/modules/capabilities/capability.service.ts");
@@ -153,5 +157,10 @@ const iamServiceToken = read("src/lib/iam/service-token.ts");
 assert.match(iamServiceToken, /const IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_MS = env\.IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC \* 1000;/);
 assert.match(iamServiceToken, /AbortSignal\.timeout\(IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_MS\)/);
 assert.doesNotMatch(iamServiceToken, /AbortSignal\.timeout\(10_000\)/);
+
+const authMiddleware = read("src/middleware/auth.middleware.ts");
+assert.match(authMiddleware, /const IAM_AUTH_VERIFY_TIMEOUT_MS = env\.IAM_AUTH_VERIFY_TIMEOUT_SEC \* 1000;/);
+assert.match(authMiddleware, /\/me`, \{[\s\S]*?signal: AbortSignal\.timeout\(IAM_AUTH_VERIFY_TIMEOUT_MS\)/);
+assert.doesNotMatch(authMiddleware, /fetch\(`\$\{base\}\/me`, \{ headers: \{ Authorization: `Bearer \$\{token\}` \} \}\)/);
 
 console.log("agent-runtime env config contract tests passed");

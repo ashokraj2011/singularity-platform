@@ -725,6 +725,11 @@ into <code>NaN</code>, negative thresholds, or unbounded prompt layers.</p>
 <li>Learning and memory: <code>query_learning_state</code>, <code>query_similar_capabilities</code>, <code>record_outcome_pattern</code>, <code>record_assumption</code>, <code>record_blocker</code>.</li>
 <li>Copilot advisory tools where enabled.</li>
 </ul>
+<p>Agent Runtime IAM fallback verification calls to <code>/me</code> use
+<code>IAM_AUTH_VERIFY_TIMEOUT_SEC</code>, default <code>5</code>, bounded <code>1..300</code>. Local JWT
+verification remains first; out-of-range values fail startup with the rest of
+the Agent Runtime env contract so a slow IAM service cannot hold REST request
+workers open.</p>
 <h3 id="711-code-context-budgeter">7.11 Code Context Budgeter<a class="anchor" href="#711-code-context-budgeter" aria-label="Link to 7.11 Code Context Budgeter">#</a></h3>
 <p>The Code Context Budgeter reduces coding-agent token usage by making AST-first context the default.</p>
 <p>Target flow:</p>

@@ -27,6 +27,7 @@ const AGENT_RUNTIME_LIMITS = {
   CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC: 900,
   AGENT_CONTRACT_MINT_TIMEOUT_SEC: 300,
   AGENT_CONTRACT_PIN_RETRY_DELAY_MS: 30_000,
+  IAM_AUTH_VERIFY_TIMEOUT_SEC: 300,
   IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC: 300,
 } as const;
 
@@ -43,6 +44,11 @@ const schema = z.object({
     (v) => v === undefined ? undefined : String(v).toLowerCase() === "true",
     z.boolean(),
   ).default(process.env.NODE_ENV !== "production"),
+  IAM_AUTH_VERIFY_TIMEOUT_SEC: boundedInt(
+    5,
+    1,
+    AGENT_RUNTIME_LIMITS.IAM_AUTH_VERIFY_TIMEOUT_SEC,
+  ),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   // M33 — agent-runtime no longer chooses a real LLM provider; that
   // decision is made by the central llm-gateway when prompt-composer

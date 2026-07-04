@@ -414,6 +414,12 @@ Important runtime tool families:
 - Learning and memory: `query_learning_state`, `query_similar_capabilities`, `record_outcome_pattern`, `record_assumption`, `record_blocker`.
 - Copilot advisory tools where enabled.
 
+Agent Runtime IAM fallback verification calls to `/me` use
+`IAM_AUTH_VERIFY_TIMEOUT_SEC`, default `5`, bounded `1..300`. Local JWT
+verification remains first; out-of-range values fail startup with the rest of
+the Agent Runtime env contract so a slow IAM service cannot hold REST request
+workers open.
+
 ### 7.11 Code Context Budgeter
 
 The Code Context Budgeter reduces coding-agent token usage by making AST-first context the default.
