@@ -768,9 +768,13 @@ Workflow <code>run_python</code> execution is bounded through the same central M
 <code>MCP_PYTHON_TOOL_MAX_TIMEOUT_MS</code> defaults to <code>600000</code>; both are bounded
 <code>1..3600000</code>, and MCP startup fails if the default exceeds the configured max.
 Inside <code>mcp-sandbox-runner</code>, Docker process cleanup and Docker health probing
-are bounded separately: <code>MCP_RUNNER_DOCKER_KILL_GRACE_MS</code> defaults to <code>2000</code>
-and caps at <code>60000</code>, while <code>MCP_RUNNER_DOCKER_HEALTH_TIMEOUT_MS</code> defaults to
-<code>1500</code> and caps at <code>300000</code>.
+are bounded separately. Docker command execution defaults to
+<code>MCP_RUNNER_DOCKER_EXECUTE_DEFAULT_TIMEOUT_MS=120000</code>, with
+<code>MCP_RUNNER_DOCKER_EXECUTE_MAX_TIMEOUT_MS=600000</code>; both cap at <code>3600000</code>, and
+runner startup fails if the default exceeds the max. Process cleanup uses
+<code>MCP_RUNNER_DOCKER_KILL_GRACE_MS</code>, default <code>2000</code> and cap <code>60000</code>, while Docker
+health probing uses <code>MCP_RUNNER_DOCKER_HEALTH_TIMEOUT_MS</code>, default <code>1500</code> and
+cap <code>300000</code>.
 MCP <code>/healthz/strict</code> also bounds its diagnostics:
 <code>MCP_STRICT_HEALTH_GIT_TIMEOUT_MS</code> defaults to <code>2000</code> and
 <code>MCP_STRICT_HEALTH_LLM_TIMEOUT_MS</code> defaults to <code>1500</code>, both bounded

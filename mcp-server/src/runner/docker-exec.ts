@@ -5,9 +5,9 @@ import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { runnerConfig } from "./config";
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = runnerConfig.MCP_RUNNER_DOCKER_EXECUTE_DEFAULT_TIMEOUT_MS;
 const DEFAULT_MAX_OUTPUT_CHARS = 12_000;
-const MAX_TIMEOUT_MS = 600_000;
+const MAX_TIMEOUT_MS = runnerConfig.MCP_RUNNER_DOCKER_EXECUTE_MAX_TIMEOUT_MS;
 const MAX_OUTPUT_CHARS = 100_000;
 const ALLOWED_COMMANDS = new Set([
   "git",

@@ -11,6 +11,7 @@ const boundedPositiveInt = (defaultValue: number, max: number) =>
   boundedInt(defaultValue, 1, max);
 
 const RUNNER_LIMITS = {
+  DOCKER_EXECUTE_TIMEOUT_MS: 60 * 60_000,
   DOCKER_KILL_GRACE_MS: 60_000,
   DOCKER_HEALTH_TIMEOUT_MS: 300_000,
 } as const;
@@ -31,6 +32,8 @@ const schema = z.object({
   MCP_RUNNER_MEMORY_LIMIT: z.string().default("1g"),
   MCP_RUNNER_PIDS_LIMIT: z.coerce.number().int().positive().default(256),
   MCP_RUNNER_TMPFS_SIZE: z.string().default("64m"),
+  MCP_RUNNER_DOCKER_EXECUTE_DEFAULT_TIMEOUT_MS: boundedPositiveInt(120_000, RUNNER_LIMITS.DOCKER_EXECUTE_TIMEOUT_MS),
+  MCP_RUNNER_DOCKER_EXECUTE_MAX_TIMEOUT_MS: boundedPositiveInt(600_000, RUNNER_LIMITS.DOCKER_EXECUTE_TIMEOUT_MS),
   MCP_RUNNER_DOCKER_KILL_GRACE_MS: boundedPositiveInt(2_000, RUNNER_LIMITS.DOCKER_KILL_GRACE_MS),
   MCP_RUNNER_DOCKER_HEALTH_TIMEOUT_MS: boundedPositiveInt(1_500, RUNNER_LIMITS.DOCKER_HEALTH_TIMEOUT_MS),
   // (2026-05-26) Optional persistent build-tool cache. When set, the
@@ -49,6 +52,14 @@ const schema = z.object({
 const parsed = schema.safeParse(process.env);
 if (!parsed.success) {
   console.error("[mcp-sandbox-runner] invalid env:", parsed.error.flatten().fieldErrors);
+  process.exit(1);
+}
+
+if (parsed.data.MCP_RUNNER_DOCKER_EXECUTE_DEFAULT_TIMEOUT_MS > parsed.data.MCP_RUNNER_DOCKER_EXECUTE_MAX_TIMEOUT_MS) {
+  console.error(
+    "[mcp-sandbox-runner] FATAL: MCP_RUNNER_DOCKER_EXECUTE_DEFAULT_TIMEOUT_MS must be less than or equal to " +
+      "MCP_RUNNER_DOCKER_EXECUTE_MAX_TIMEOUT_MS so Docker execution defaults cannot exceed the request ceiling.",
+  );
   process.exit(1);
 }
 
