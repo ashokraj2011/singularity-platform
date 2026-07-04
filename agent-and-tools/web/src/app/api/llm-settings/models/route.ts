@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { jsonishMessage, readJsonish, readRequestJson } from "../../_json";
 import { requireVerifiedCallerBearer } from "../../_proxy";
 import { configuredPlatformServiceUrl, serviceBearerHeaders } from "@/lib/platformServices";
+import { boundedSecondsEnv } from "@/lib/serverEnvBounds";
 
 export const dynamic = "force-dynamic";
+const LLM_SETTINGS_WRITE_TIMEOUT_MS = boundedSecondsEnv("LLM_SETTINGS_WRITE_TIMEOUT_SEC", 15, 1, 300) * 1000;
 
 // Write proxy for the LLM model catalog. Forwards to the gateway's
 // POST/PUT/DELETE /llm/models, which persists to .singularity/llm-models.json
@@ -32,6 +34,7 @@ async function forward(method: string, path: string, body?: unknown): Promise<Ne
       headers: gatewayHeaders(),
       cache: "no-store",
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(LLM_SETTINGS_WRITE_TIMEOUT_MS),
     });
     const responseBody = await readJsonish(res);
     if (!res.ok) {

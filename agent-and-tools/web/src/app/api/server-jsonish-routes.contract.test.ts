@@ -92,6 +92,42 @@ assert.match(
 );
 
 assert.match(
+  llmSettings,
+  /import \{ boundedSecondsEnv \} from "@\/lib\/serverEnvBounds";/,
+  "LLM settings read route should use the central server env bounds helper",
+);
+
+assert.match(
+  llmSettings,
+  /const LLM_SETTINGS_FETCH_TIMEOUT_MS = boundedSecondsEnv\("LLM_SETTINGS_FETCH_TIMEOUT_SEC", 5, 1, 300\) \* 1000;/,
+  "LLM settings read route should expose a bounded status fetch timeout knob",
+);
+
+assert.match(
+  llmSettings,
+  /fetch\(`\$\{trimmedBase\}\$\{path\}`, \{[\s\S]*?signal: AbortSignal\.timeout\(LLM_SETTINGS_FETCH_TIMEOUT_MS\)/,
+  "LLM settings status fetches should use the bounded timeout",
+);
+
+assert.match(
+  llmModels,
+  /import \{ boundedSecondsEnv \} from "@\/lib\/serverEnvBounds";/,
+  "LLM settings model write route should use the central server env bounds helper",
+);
+
+assert.match(
+  llmModels,
+  /const LLM_SETTINGS_WRITE_TIMEOUT_MS = boundedSecondsEnv\("LLM_SETTINGS_WRITE_TIMEOUT_SEC", 15, 1, 300\) \* 1000;/,
+  "LLM settings model writes should expose a bounded gateway write timeout knob",
+);
+
+assert.match(
+  llmModels,
+  /fetch\(`\$\{base\}\$\{path\}`, \{[\s\S]*?signal: AbortSignal\.timeout\(LLM_SETTINGS_WRITE_TIMEOUT_MS\)/,
+  "LLM settings model writes should use the bounded timeout",
+);
+
+assert.match(
   promptComposer,
   /details: envelope\?\.error\?\.details \?\? \(responseBody\.parseError \? \{ body: responseBody\.text, parseError: responseBody\.parseError \} : payload\)/,
   "Prompt Workbench composer errors should preserve plaintext/invalid-JSON upstream details safely",

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { readJsonish } from "../_json";
 import { requireVerifiedCallerBearer } from "../_proxy";
+import { boundedSecondsEnv } from "@/lib/serverEnvBounds";
 import { serverEnv } from "@/lib/serverRootEnv";
 import {
   configuredPlatformServiceUrl,
@@ -14,6 +15,8 @@ import {
 } from "@/lib/platformServices";
 
 export const dynamic = "force-dynamic";
+
+const LLM_SETTINGS_FETCH_TIMEOUT_MS = boundedSecondsEnv("LLM_SETTINGS_FETCH_TIMEOUT_SEC", 5, 1, 300) * 1000;
 
 type McpFetchResult = {
   ok: boolean;
@@ -56,6 +59,7 @@ async function getJson(baseUrl: string, path: string, headers: HeadersInit = {})
     const res = await fetch(`${trimmedBase}${path}`, {
       headers,
       cache: "no-store",
+      signal: AbortSignal.timeout(LLM_SETTINGS_FETCH_TIMEOUT_MS),
     });
     const body = await readJsonish(res);
     const data = body.data;

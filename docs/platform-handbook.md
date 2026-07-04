@@ -865,6 +865,12 @@ default `10`, bounded `1..300`. This path is development/local convenience only;
 production-class deployments should still inject a pre-minted
 `WORKGRAPH_PROXY_SERVICE_TOKEN`.
 
+Platform Web's Runtime + LLM settings route bounds status fan-out calls with
+`LLM_SETTINGS_FETCH_TIMEOUT_SEC`, default `5`, bounded `1..300`. Model catalog
+mutations forwarded to LLM Gateway use `LLM_SETTINGS_WRITE_TIMEOUT_SEC`, default
+`15`, bounded `1..300`, so a stalled gateway cannot hold the settings API
+indefinitely.
+
 Agent Runtime capability/polling knobs are schema-validated at startup.
 `POLL_WORKER_TICK_SEC` defaults to `30` and is bounded `5..3600`.
 `POLL_WORKER_INITIAL_DELAY_SEC` defaults to `5` and is bounded `1..300`,
