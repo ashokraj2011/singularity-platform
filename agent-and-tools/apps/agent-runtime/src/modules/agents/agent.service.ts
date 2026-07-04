@@ -55,6 +55,7 @@ import { parseUpstreamJson, readUpstreamJsonObject } from "../../shared/upstream
 
 const AGENT_SOURCE_FETCH_TIMEOUT_MS = env.AGENT_SOURCE_FETCH_TIMEOUT_SEC * 1000;
 const AGENT_CONTRACT_MINT_TIMEOUT_MS = env.AGENT_CONTRACT_MINT_TIMEOUT_SEC * 1000;
+const AGENT_CONTRACT_PIN_RETRY_DELAY_MS = env.AGENT_CONTRACT_PIN_RETRY_DELAY_MS;
 
 type TemplateSnapshotSource = {
   id: string;
@@ -719,7 +720,7 @@ async function recordContractPin(
       return;
     } catch (err) {
       if (attempt === 0) {
-        await new Promise((resolve) => setTimeout(resolve, 150));
+        await new Promise((resolve) => setTimeout(resolve, AGENT_CONTRACT_PIN_RETRY_DELAY_MS));
         continue;
       }
       // eslint-disable-next-line no-console

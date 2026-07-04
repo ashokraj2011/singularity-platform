@@ -65,6 +65,11 @@ assert.match(
 );
 assert.match(
   source,
+  /const AGENT_CONTRACT_PIN_RETRY_DELAY_MS = env\.AGENT_CONTRACT_PIN_RETRY_DELAY_MS;/,
+  "contract pin retry delay must come from bounded agent-runtime env config",
+);
+assert.match(
+  source,
   /signal: AbortSignal\.timeout\(AGENT_CONTRACT_MINT_TIMEOUT_MS\)/,
   "contract mint fetch must use the bounded timeout constant",
 );
@@ -72,6 +77,16 @@ assert.doesNotMatch(
   source,
   /AbortSignal\.timeout\(15_000\)/,
   "contract mint fetch must not hardcode a 15 second timeout",
+);
+assert.match(
+  source,
+  /setTimeout\(resolve, AGENT_CONTRACT_PIN_RETRY_DELAY_MS\)/,
+  "contract pin retry must use the bounded retry delay constant",
+);
+assert.doesNotMatch(
+  source,
+  /setTimeout\(resolve, 150\)/,
+  "contract pin retry must not hardcode milliseconds",
 );
 assert.match(
   source,

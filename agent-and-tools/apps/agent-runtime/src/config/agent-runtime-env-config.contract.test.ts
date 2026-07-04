@@ -33,6 +33,7 @@ function runEnv(extraEnv: Record<string, string | undefined>) {
         "env.AGENT_SOURCE_FETCH_TIMEOUT_SEC,",
         "env.CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC,",
         "env.AGENT_CONTRACT_MINT_TIMEOUT_SEC,",
+        "env.AGENT_CONTRACT_PIN_RETRY_DELAY_MS,",
         "env.IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC",
         "].join(':'));",
       ].join(" "),
@@ -51,7 +52,7 @@ function read(relativePath: string): string {
 
 const defaults = runEnv({});
 assert.equal(defaults.status, 0, defaults.stderr);
-assert.match(defaults.stdout, /30:5:60:30:900000:200000:2:30:5:5:30:15:10/);
+assert.match(defaults.stdout, /30:5:60:30:900000:200000:2:30:5:5:30:15:150:10/);
 
 const custom = runEnv({
   POLL_WORKER_TICK_SEC: "60",
@@ -66,10 +67,11 @@ const custom = runEnv({
   AGENT_SOURCE_FETCH_TIMEOUT_SEC: "12",
   CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC: "45",
   AGENT_CONTRACT_MINT_TIMEOUT_SEC: "20",
+  AGENT_CONTRACT_PIN_RETRY_DELAY_MS: "250",
   IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC: "25",
 });
 assert.equal(custom.status, 0, custom.stderr);
-assert.match(custom.stdout, /60:10:120:45:120000:500000:12\.5:90:18:12:45:20:25/);
+assert.match(custom.stdout, /60:10:120:45:120000:500000:12\.5:90:18:12:45:20:250:25/);
 
 for (const [name, value] of [
   ["POLL_WORKER_TICK_SEC", "4"],
@@ -84,6 +86,7 @@ for (const [name, value] of [
   ["AGENT_SOURCE_FETCH_TIMEOUT_SEC", "0"],
   ["CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC", "0"],
   ["AGENT_CONTRACT_MINT_TIMEOUT_SEC", "0"],
+  ["AGENT_CONTRACT_PIN_RETRY_DELAY_MS", "-1"],
   ["IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC", "0"],
 ] as const) {
   const result = runEnv({ [name]: value });
@@ -104,6 +107,7 @@ assert.match(envSource, /AGENT_GOVERNANCE_LIMITS_TIMEOUT_SEC: boundedInt\([\s\S]
 assert.match(envSource, /AGENT_SOURCE_FETCH_TIMEOUT_SEC: boundedInt\([\s\S]*?5,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.AGENT_SOURCE_FETCH_TIMEOUT_SEC/);
 assert.match(envSource, /CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC: boundedInt\([\s\S]*?30,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC/);
 assert.match(envSource, /AGENT_CONTRACT_MINT_TIMEOUT_SEC: boundedInt\([\s\S]*?15,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.AGENT_CONTRACT_MINT_TIMEOUT_SEC/);
+assert.match(envSource, /AGENT_CONTRACT_PIN_RETRY_DELAY_MS: boundedInt\([\s\S]*?150,[\s\S]*?0,[\s\S]*?AGENT_RUNTIME_LIMITS\.AGENT_CONTRACT_PIN_RETRY_DELAY_MS/);
 assert.match(envSource, /IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC: boundedInt\([\s\S]*?10,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC/);
 
 const capabilityService = read("src/modules/capabilities/capability.service.ts");
@@ -137,10 +141,13 @@ assert.doesNotMatch(pollWorker, /timeout: (?:60_000|30_000)/);
 const agentService = read("src/modules/agents/agent.service.ts");
 assert.match(agentService, /const AGENT_SOURCE_FETCH_TIMEOUT_MS = env\.AGENT_SOURCE_FETCH_TIMEOUT_SEC \* 1000;/);
 assert.match(agentService, /const AGENT_CONTRACT_MINT_TIMEOUT_MS = env\.AGENT_CONTRACT_MINT_TIMEOUT_SEC \* 1000;/);
+assert.match(agentService, /const AGENT_CONTRACT_PIN_RETRY_DELAY_MS = env\.AGENT_CONTRACT_PIN_RETRY_DELAY_MS;/);
 assert.match(agentService, /AbortSignal\.timeout\(AGENT_SOURCE_FETCH_TIMEOUT_MS\)/);
 assert.doesNotMatch(agentService, /AbortSignal\.timeout\(5_000\)/);
 assert.match(agentService, /AbortSignal\.timeout\(AGENT_CONTRACT_MINT_TIMEOUT_MS\)/);
 assert.doesNotMatch(agentService, /AbortSignal\.timeout\(15_000\)/);
+assert.match(agentService, /setTimeout\(resolve, AGENT_CONTRACT_PIN_RETRY_DELAY_MS\)/);
+assert.doesNotMatch(agentService, /setTimeout\(resolve, 150\)/);
 
 const iamServiceToken = read("src/lib/iam/service-token.ts");
 assert.match(iamServiceToken, /const IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_MS = env\.IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC \* 1000;/);
