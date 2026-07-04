@@ -84,6 +84,8 @@ type McpEmbedEnvelope = {
   data?: EmbeddingsResponse;
 };
 
+type JsonObject = Record<string, unknown>;
+
 function mcpUrl(): string {
   return (process.env.MCP_SERVER_URL?.trim() || "http://mcp-server:7100").replace(/\/$/, "");
 }
@@ -179,16 +181,14 @@ async function invokeMcp(req: ChatCompletionRequest): Promise<McpInvokeData> {
   if (!res.ok) {
     throw new Error(`MCP /mcp/invoke -> ${res.status}: ${text.slice(0, 500)}`);
   }
-  let envelope: McpInvokeEnvelope;
-  try {
-    envelope = JSON.parse(text) as McpInvokeEnvelope;
-  } catch (err) {
-    throw new Error(`MCP /mcp/invoke returned malformed JSON: ${(err as Error).message}`);
-  }
+  const envelope = parseMcpEnvelope(text, "MCP /mcp/invoke") as McpInvokeEnvelope;
   if (envelope.success === false) {
     throw new Error("MCP returned success=false");
   }
-  return envelope.data ?? {};
+  if (!isPlainObject(envelope.data)) {
+    throw new Error("MCP /mcp/invoke returned no invocation data");
+  }
+  return envelope.data as McpInvokeData;
 }
 
 /** One-shot chat completion call through MCP. */
@@ -255,13 +255,8 @@ export async function llmEmbed(req: EmbeddingsRequest): Promise<EmbeddingsRespon
   if (!res.ok) {
     throw new Error(`MCP /mcp/embed -> ${res.status}: ${text.slice(0, 500)}`);
   }
-  let envelope: McpEmbedEnvelope;
-  try {
-    envelope = JSON.parse(text) as McpEmbedEnvelope;
-  } catch (err) {
-    throw new Error(`MCP /mcp/embed returned malformed JSON: ${(err as Error).message}`);
-  }
-  if (envelope.success === false || !envelope.data) {
+  const envelope = parseMcpEnvelope(text, "MCP /mcp/embed") as McpEmbedEnvelope;
+  if (envelope.success === false || !isPlainObject(envelope.data)) {
     throw new Error("MCP /mcp/embed returned no embedding data");
   }
   return envelope.data;
@@ -270,4 +265,27 @@ export async function llmEmbed(req: EmbeddingsRequest): Promise<EmbeddingsRespon
 /** True iff env tells us to short-circuit to the in-process mock. */
 export function isGatewayMockMode(): boolean {
   return (process.env.MCP_SERVER_URL ?? "").trim() === MOCK_SENTINEL;
+}
+
+function parseMcpEnvelope(text: string, upstream: string): JsonObject {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!isPlainObject(parsed)) {
+      throw new Error("response was not a JSON object");
+    }
+    return parsed;
+  } catch (err) {
+    const detail = err instanceof SyntaxError
+      ? responseSnippet(text) || err.message
+      : (err as Error).message;
+    throw new Error(`${upstream} returned malformed JSON: ${detail}`);
+  }
+}
+
+function isPlainObject(value: unknown): value is JsonObject {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function responseSnippet(text: string, max = 400): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, max);
 }
