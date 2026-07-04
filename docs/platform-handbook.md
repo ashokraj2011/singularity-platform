@@ -460,6 +460,11 @@ MCP `/healthz/strict` also bounds its diagnostics:
 `MCP_STRICT_HEALTH_GIT_TIMEOUT_MS` defaults to `2000` and
 `MCP_STRICT_HEALTH_LLM_TIMEOUT_MS` defaults to `1500`, both bounded
 `1..300000`, so boot diagnostics stay quick without hardcoded waits.
+The operator worktree file API also bounds local git helpers:
+`MCP_WORKTREE_GIT_HASH_TIMEOUT_MS` defaults to `5000` for blob hash reads and
+`MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS` defaults to `30000` for add/diff/commit
+helpers. Both are bounded `1..300000`, keeping slow worktree filesystems
+tunable without making browser-initiated edits wait forever.
 
 ### 7.13 LLM Gateway
 

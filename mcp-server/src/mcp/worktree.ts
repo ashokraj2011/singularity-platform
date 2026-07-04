@@ -22,11 +22,14 @@ import { z } from "zod";
 
 import { workspaceRootForRunContext, SKIP_DIRS } from "../workspace/sandbox";
 import { AppError } from "../shared/errors";
+import { config } from "../config";
 
 export const worktreeRouter: Router = Router();
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5 MB read cap
 const MAX_ENTRIES_PER_DIR = 5_000;
+const WORKTREE_GIT_HASH_TIMEOUT_MS = config.MCP_WORKTREE_GIT_HASH_TIMEOUT_MS;
+const WORKTREE_GIT_WRITE_TIMEOUT_MS = config.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS;
 
 // Path query schema. We accept relative paths only — the workitem
 // root is computed server-side from the URL param.
@@ -212,7 +215,7 @@ worktreeRouter.get("/:workItemCode/file", async (req, res, next) => {
     // recompute the git blob hash (prefix + size byte + sha-1).
     const blobShaProc = spawnSync("git", ["hash-object", target], {
       encoding: "utf8",
-      timeout: 5_000,
+      timeout: WORKTREE_GIT_HASH_TIMEOUT_MS,
     });
     const blobSha = (blobShaProc.stdout ?? "").trim() || null;
     res.json({
@@ -235,14 +238,14 @@ worktreeRouter.get("/:workItemCode/file", async (req, res, next) => {
 /**
  * M83 S2 — Run a git subcommand in the workitem worktree. Synchronous
  * (spawnSync) because writes are interactive and we want to surface
- * stderr in the error path. 30s cap per invocation; that's enormous
- * relative to a single git add/commit but matches the runner's caps.
+ * stderr in the error path. The timeout is bounded in config so operators can
+ * tune slow network filesystems without introducing an unbounded wait.
  */
 function gitInWorktree(workItemRoot: string, args: string[], env: NodeJS.ProcessEnv = {}): { stdout: string; stderr: string; status: number | null } {
   const proc = spawnSync("git", args, {
     cwd: workItemRoot,
     encoding: "utf8",
-    timeout: 30_000,
+    timeout: WORKTREE_GIT_WRITE_TIMEOUT_MS,
     env: { ...process.env, ...env },
   });
   return {
