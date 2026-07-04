@@ -223,6 +223,9 @@ type LearningStateResponse = {
   degraded?: boolean;
 };
 
+const LEARNING_SERVICE_TIMEOUT_MS = env.LEARNING_SERVICE_TIMEOUT_SEC * 1000;
+const WORKGRAPH_ARTIFACT_FETCH_TIMEOUT_MS = env.WORKGRAPH_ARTIFACT_FETCH_TIMEOUT_SEC * 1000;
+
 function learningServiceHeaders(): Record<string, string> {
   const token = env.LEARNING_SERVICE_TOKEN ?? process.env.AUDIT_GOV_SERVICE_TOKEN ?? "";
   return token ? { authorization: `Bearer ${token}` } : {};
@@ -241,7 +244,7 @@ async function fetchLearningState(input: {
   try {
     const res = await fetch(`${env.LEARNING_SERVICE_URL.replace(/\/+$/, "")}/api/v1/state?${params.toString()}`, {
       headers: learningServiceHeaders(),
-      signal: AbortSignal.timeout(3_000),
+      signal: AbortSignal.timeout(LEARNING_SERVICE_TIMEOUT_MS),
     });
     if (!res.ok) throw new Error(`learning-service ${res.status}`);
     return await readUpstreamJsonObject(res, "learning-service state") as LearningStateResponse;
@@ -1422,7 +1425,7 @@ Input schema: ${JSON.stringify(t.input_schema ?? { type: "object" })}`;
           ...(env.WORKGRAPH_ARTIFACT_FETCH_TOKEN ? { authorization: `Bearer ${env.WORKGRAPH_ARTIFACT_FETCH_TOKEN}` } : {}),
         },
         body: JSON.stringify({ minioRef: art.minioRef, maxBytes: env.ARTIFACT_FETCH_MAX_BYTES }),
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(WORKGRAPH_ARTIFACT_FETCH_TIMEOUT_MS),
       });
       if (!res.ok) {
         const text = await res.text().catch(() => "");

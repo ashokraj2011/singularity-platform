@@ -4,6 +4,17 @@ import { assertProductionInvariant, assertProductionSecret } from "@agentandtool
 
 dotenv.config();
 
+const boundedInt = (defaultValue: number, min: number, max: number) =>
+  z.preprocess((raw) => {
+    const value = typeof raw === "number"
+      ? raw
+      : typeof raw === "string" && raw.trim() !== ""
+        ? Number(raw.trim())
+        : Number.NaN;
+    if (!Number.isFinite(value) || value < min) return defaultValue;
+    return Math.min(max, Math.trunc(value));
+  }, z.number().int().min(min).max(max));
+
 const schema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   PORT: z.coerce.number().default(3004),
@@ -29,12 +40,14 @@ const schema = z.object({
   ).default(true),
   LEARNING_SERVICE_URL: z.string().url().optional(),
   LEARNING_SERVICE_TOKEN: z.string().optional(),
+  LEARNING_SERVICE_TIMEOUT_SEC: boundedInt(3, 1, 300),
   LEARNING_CONTEXT_ENABLED: z.preprocess(
     (v) => v === undefined ? undefined : String(v).toLowerCase() !== "false",
     z.boolean(),
   ).default(true),
   WORKGRAPH_ARTIFACT_FETCH_URL: z.string().url().optional(),
   WORKGRAPH_ARTIFACT_FETCH_TOKEN: z.string().optional(),
+  WORKGRAPH_ARTIFACT_FETCH_TIMEOUT_SEC: boundedInt(15, 1, 300),
   ARTIFACT_FETCH_MAX_BYTES: z.coerce.number().int().positive().max(256_000).default(64_000),
 });
 

@@ -789,6 +789,7 @@ into <code>NaN</code>, negative thresholds, or unbounded prompt layers.</p>
 <li>Prompt Composer merges learning summaries and patterns with existing global lessons.</li>
 <li>The folded learning routes require <code>LEARNING_SERVICE_TOKEN</code> for both reads and writes; Prompt Composer and MCP send that token when querying learned context.</li>
 <li>If the folded learning routes are unavailable, prompt assembly should degrade gracefully.</li>
+<li>Prompt Composer bounds best-effort learned-context fetches with <code>LEARNING_SERVICE_TIMEOUT_SEC</code>, default <code>3</code>, range <code>1..300</code>; invalid or too-small values fall back to the default and oversized values clamp.</li>
 </ul>
 <p>Prompt Composer bounds lesson-retrieval knobs such as <code>LESSON_SUPERSEDE_COSINE</code>,
 <code>LESSON_MAX_ACTIVE_PER_SCOPE</code>, <code>LESSON_TOOL_MATCH_BOOST</code>,
@@ -1075,7 +1076,11 @@ prevent the runner from posting metrics and artifacts.</p>
 multipart uploads; larger files should be attached as external links.
 <code>INTERNAL_ARTIFACT_FETCH_MAX_BYTES</code> defaults to <code>64000</code> and caps at <code>256000</code>
 for internal MinIO text fetches. Invalid values fall back to the defaults
-instead of disabling limits or making artifact reads unusable.</p>
+instead of disabling limits or making artifact reads unusable.
+Prompt Composer artifact body injection also bounds its Workgraph fetch wait
+with <code>WORKGRAPH_ARTIFACT_FETCH_TIMEOUT_SEC</code>, default <code>15</code>, range <code>1..300</code>.
+Invalid or too-small values fall back to <code>15</code>, and oversized values clamp at
+<code>300</code>, so optional artifact enrichment cannot become an accidental long wait.</p>
 <p>Workgraph also bounds the formal verification request timeout before sending
 workflow/governance payloads to the verifier service. <code>FORMAL_VERIFICATION_TIMEOUT_MS</code>
 defaults to <code>3000</code>, has a minimum of <code>1</code>, and caps at <code>10000</code>, matching the

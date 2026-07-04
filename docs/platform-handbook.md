@@ -493,6 +493,7 @@ The learning architecture is hybrid:
 - Prompt Composer merges learning summaries and patterns with existing global lessons.
 - The folded learning routes require `LEARNING_SERVICE_TOKEN` for both reads and writes; Prompt Composer and MCP send that token when querying learned context.
 - If the folded learning routes are unavailable, prompt assembly should degrade gracefully.
+- Prompt Composer bounds best-effort learned-context fetches with `LEARNING_SERVICE_TIMEOUT_SEC`, default `3`, range `1..300`; invalid or too-small values fall back to the default and oversized values clamp.
 
 Prompt Composer bounds lesson-retrieval knobs such as `LESSON_SUPERSEDE_COSINE`,
 `LESSON_MAX_ACTIVE_PER_SCOPE`, `LESSON_TOOL_MATCH_BOOST`,
@@ -825,6 +826,10 @@ multipart uploads; larger files should be attached as external links.
 `INTERNAL_ARTIFACT_FETCH_MAX_BYTES` defaults to `64000` and caps at `256000`
 for internal MinIO text fetches. Invalid values fall back to the defaults
 instead of disabling limits or making artifact reads unusable.
+Prompt Composer artifact body injection also bounds its Workgraph fetch wait
+with `WORKGRAPH_ARTIFACT_FETCH_TIMEOUT_SEC`, default `15`, range `1..300`.
+Invalid or too-small values fall back to `15`, and oversized values clamp at
+`300`, so optional artifact enrichment cannot become an accidental long wait.
 
 Workgraph also bounds the formal verification request timeout before sending
 workflow/governance payloads to the verifier service. `FORMAL_VERIFICATION_TIMEOUT_MS`
