@@ -60,9 +60,20 @@ export function _setEmbeddingProviderForTesting(p: EmbeddingProvider | undefined
   cached = p;
 }
 
+const DEFAULT_EMBEDDING_DIM = 1536;
+const MIN_EMBEDDING_DIM = 1;
+const MAX_EMBEDDING_DIM = 16_000;
+
+export function boundedEmbeddingDim(raw = process.env.EMBEDDING_DIM): number {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_EMBEDDING_DIM;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < MIN_EMBEDDING_DIM) return DEFAULT_EMBEDDING_DIM;
+  return Math.min(MAX_EMBEDDING_DIM, Math.trunc(parsed));
+}
+
 // M15 — column dim is fixed at 1536 by the migration. Embedders that produce a
 // different dim must be rejected at write time so we don't silently truncate.
-export const REQUIRED_EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM ?? 1536);
+export const REQUIRED_EMBEDDING_DIM = boundedEmbeddingDim();
 
 export function assertDimMatches(dim: number, source: string): void {
   if (dim !== REQUIRED_EMBEDDING_DIM) {

@@ -725,6 +725,11 @@ Shared Node, Python, and Workgraph inline system-prompt clients also bound
 Invalid values fall back to `300` so Composer prompt fetches do not lose cache
 behavior because of a bad env file.
 
+Shared embedding clients bound `EMBEDDING_DIM` before write-time dimension
+checks: default `1536`, minimum `1`, maximum `16000`. Invalid or non-finite
+values fall back to `1536` so vector inserts fail with a clear provider/model
+dimension mismatch instead of comparing against `NaN`.
+
 Workgraph's Copilot handoff export keeps prompt composition fail-soft. The
 best-effort Context Fabric compose call uses `COPILOT_COMPOSE_TIMEOUT_MS`,
 default `30000`, minimum `1000`, and maximum `120000`. Invalid values fall
