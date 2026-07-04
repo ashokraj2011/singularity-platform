@@ -691,9 +691,6 @@ class LaptopRegistry:
             raise LaptopNotConnected(f"no live runtime serving '{required}' for {scope}")
 
         request_id = uuid4().hex
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future = loop.create_future()
-        conn.pending[request_id] = fut
 
         # P0 #2 — fields that may cross the bridge ONLY to a SHARED runtime, never
         # a personal laptop (Decision #3). A brokered per-user git credential is
@@ -715,8 +712,19 @@ class LaptopRegistry:
             }
 
         frame = {"type": frame_type, "request_id": request_id, "payload": send_payload}
+        frame_text = _dump_json(frame)
+        frame_size = len(frame_text.encode("utf-8"))
+        if frame_size > MAX_PAYLOAD_BYTES:
+            raise LaptopSendFailed(
+                f"RUNTIME_FRAME_TOO_LARGE: outbound runtime frame exceeded "
+                f"{MAX_PAYLOAD_BYTES} bytes (bytes={frame_size}, type={frame_type})"
+            )
+
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        conn.pending[request_id] = fut
         try:
-            await conn.ws.send_text(_dump_json(frame))
+            await conn.ws.send_text(frame_text)
         except Exception as err:
             conn.pending.pop(request_id, None)
             raise LaptopSendFailed(str(err)) from err

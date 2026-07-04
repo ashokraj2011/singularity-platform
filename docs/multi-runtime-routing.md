@@ -87,6 +87,9 @@ bodies with `RUNTIME_RESPONSE_TOO_LARGE`. Runtime `response.request_id` values
 must be nonblank strings of at most `128` characters. Malformed non-object
 `response.error` frames are normalized to `INVALID_RUNTIME_ERROR` so callers
 fail deterministically instead of timing out on a popped pending future.
+Outbound Context Fabric dispatch frames are checked against the same ceiling
+before they are written to the runtime socket; oversized requests fail as
+`RUNTIME_FRAME_TOO_LARGE` and do not leave a pending request behind.
 JSON frames must decode to objects; arrays, strings, numbers, and `null` are
 rejected during hello or ignored as malformed live frames.
 On the runtime side, MCP bounds bridge request ids to `1..128` characters and

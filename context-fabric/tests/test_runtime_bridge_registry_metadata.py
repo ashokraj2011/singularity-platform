@@ -224,3 +224,40 @@ def test_deliver_response_normalizes_malformed_runtime_error():
         assert exc.value.details == {"error_type": "str"}
 
     _run(_case())
+
+
+def test_outbound_runtime_frame_size_is_checked_before_send(monkeypatch):
+    monkeypatch.setattr(lr, "MAX_PAYLOAD_BYTES", 180)
+
+    class RejectingWS:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def send_text(self, text: str) -> None:
+            self.sent.append(text)
+            raise AssertionError("oversized frame should not be sent")
+
+    async def _case():
+        registry = LaptopRegistry()
+        ws = RejectingWS()
+        conn = ActiveConnection(
+            user_id="user-a",
+            device_id="runtime-a",
+            device_name="runtime",
+            ws=ws,  # type: ignore[arg-type]
+            connected_at=1.0,
+            last_seen_at=1.0,
+            supported_frame_types=["model-run"],
+        )
+        await registry.register(conn)
+
+        with pytest.raises(lr.LaptopSendFailed, match="RUNTIME_FRAME_TOO_LARGE"):
+            await registry.dispatch_model_via_laptop(
+                user_id="user-a",
+                request_body={"messages": [{"role": "user", "content": "x" * 500}]},
+            )
+
+        assert ws.sent == []
+        assert conn.pending == {}
+
+    _run(_case())
