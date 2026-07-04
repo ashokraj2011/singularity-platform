@@ -5,9 +5,25 @@ import { trustedManifestKeyStrengthIssues } from "../modules/agents/agent-provid
 
 dotenv.config();
 
+const boundedInt = (defaultValue: number, min: number, max: number) =>
+  z.coerce.number().int().min(min).max(max).default(defaultValue);
+
+const boundedNumber = (defaultValue: number, min: number, max: number) =>
+  z.coerce.number().min(min).max(max).default(defaultValue);
+
+const AGENT_RUNTIME_LIMITS = {
+  PORT: 65_535,
+  PROVIDER_MANIFEST_MAX_TTL_SECONDS: 90 * 24 * 60 * 60,
+  POLL_WORKER_TICK_SEC: 3_600,
+  CAPABILITY_LEARNING_RUN_STALE_MS: 24 * 60 * 60 * 1000,
+  CAPABILITY_DEFAULT_DAILY_TOKENS: 20_000_000,
+  CAPABILITY_DEFAULT_DAILY_COST_USD: 10_000,
+  CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE: 10_000,
+} as const;
+
 const schema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
-  PORT: z.coerce.number().default(3003),
+  PORT: boundedInt(3003, 1, AGENT_RUNTIME_LIMITS.PORT),
   DATABASE_URL: z.string().url(),
   JWT_SECRET: z.string().min(8).default("dev-secret-change-in-prod"),
   IAM_SERVICE_URL: z.string().url().optional(),
@@ -28,7 +44,32 @@ const schema = z.object({
   AGENT_RUN_FALLBACK_MODEL: z.string().default("stub-model"),
   PROVIDER_MANIFEST_SIGNATURE_MODE: z.enum(["auto", "disabled", "required"]).default("auto"),
   PROVIDER_MANIFEST_TRUSTED_KEYS: z.string().optional(),
-  PROVIDER_MANIFEST_MAX_TTL_SECONDS: z.coerce.number().int().positive().default(30 * 24 * 60 * 60),
+  PROVIDER_MANIFEST_MAX_TTL_SECONDS: boundedInt(
+    30 * 24 * 60 * 60,
+    1,
+    AGENT_RUNTIME_LIMITS.PROVIDER_MANIFEST_MAX_TTL_SECONDS,
+  ),
+  POLL_WORKER_TICK_SEC: boundedInt(30, 5, AGENT_RUNTIME_LIMITS.POLL_WORKER_TICK_SEC),
+  CAPABILITY_LEARNING_RUN_STALE_MS: boundedInt(
+    15 * 60 * 1000,
+    60_000,
+    AGENT_RUNTIME_LIMITS.CAPABILITY_LEARNING_RUN_STALE_MS,
+  ),
+  CAPABILITY_DEFAULT_DAILY_TOKENS: boundedInt(
+    200_000,
+    1,
+    AGENT_RUNTIME_LIMITS.CAPABILITY_DEFAULT_DAILY_TOKENS,
+  ),
+  CAPABILITY_DEFAULT_DAILY_COST_USD: boundedNumber(
+    2,
+    0,
+    AGENT_RUNTIME_LIMITS.CAPABILITY_DEFAULT_DAILY_COST_USD,
+  ),
+  CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE: boundedInt(
+    30,
+    1,
+    AGENT_RUNTIME_LIMITS.CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE,
+  ),
   AGENT_SOURCE_ALLOW_PRIVATE_URLS: z.preprocess(
     (v) => v === undefined ? undefined : String(v).toLowerCase() === "true",
     z.boolean(),

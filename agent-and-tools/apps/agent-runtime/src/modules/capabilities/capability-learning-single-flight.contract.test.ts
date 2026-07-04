@@ -11,8 +11,8 @@ const migration = fs.readFileSync(
 
 assert.match(
   service,
-  /const CAPABILITY_LEARNING_RUN_STALE_MS = Number\(process\.env\.CAPABILITY_LEARNING_RUN_STALE_MS \?\? 15 \* 60 \* 1000\);/,
-  "learning refresh single-flight guard should have a bounded stale-run escape hatch",
+  /const CAPABILITY_LEARNING_RUN_STALE_MS = env\.CAPABILITY_LEARNING_RUN_STALE_MS;/,
+  "learning refresh single-flight guard should use the centrally bounded stale-run escape hatch",
 );
 
 assert.match(

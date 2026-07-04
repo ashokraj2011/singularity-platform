@@ -746,6 +746,16 @@ Platform Web bounds the client idle-session knob
 Invalid, non-finite, or sub-minute values fall back to `30`, so a public env
 typo cannot create an effectively unbounded browser session.
 
+Agent Runtime capability/polling knobs are schema-validated at startup.
+`POLL_WORKER_TICK_SEC` defaults to `30` and is bounded `5..3600`.
+`CAPABILITY_LEARNING_RUN_STALE_MS` defaults to `900000` and is bounded
+`60000..86400000`, so learning-worker leases cannot spin too quickly or stay
+stale forever because of a typo. Default governance limit seeds are bounded as
+well: `CAPABILITY_DEFAULT_DAILY_TOKENS` defaults to `200000` and is bounded
+`1..20000000`, `CAPABILITY_DEFAULT_DAILY_COST_USD` defaults to `2` and is
+bounded `0..10000`, and `CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE` defaults to
+`30` and is bounded `1..10000`.
+
 Audit Governance bounds live audit stream knobs before creating SSE
 subscribers. `AUDIT_GOV_STREAM_MAX_SUBSCRIBERS` defaults to `50`, minimum `1`,
 maximum `1000`; `AUDIT_GOV_STREAM_KEEPALIVE_MS` defaults to `15000`, minimum

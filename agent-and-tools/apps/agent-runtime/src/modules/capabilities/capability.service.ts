@@ -1,5 +1,6 @@
 import { Prisma } from "../../../generated/prisma-client";
 import { v4 as uuidv4 } from "uuid";
+import { env } from "../../config/env";
 import { prisma } from "../../config/prisma";
 import { ConflictError, ForbiddenError, NotFoundError } from "../../shared/errors";
 import { sha256 } from "../../shared/hash";
@@ -73,7 +74,7 @@ import { assertCapabilityNotArchived, requireActiveCapability } from "./capabili
 // readmeSummary + architectureSlice.rootPackages to CapabilityWorldModel.
 import { runBootstrapDistillationPhase } from "./bootstrap-phase3-distill";
 
-const CAPABILITY_LEARNING_RUN_STALE_MS = Number(process.env.CAPABILITY_LEARNING_RUN_STALE_MS ?? 15 * 60 * 1000);
+const CAPABILITY_LEARNING_RUN_STALE_MS = env.CAPABILITY_LEARNING_RUN_STALE_MS;
 type CapabilityLearningWorkerOperation = "grounding" | "sync";
 
 async function claimCapabilityLearningWorker(capabilityId: string, operation: CapabilityLearningWorkerOperation): Promise<() => Promise<void>> {
@@ -3422,9 +3423,9 @@ function deterministicSymbolSummary(symbol: {
 
 async function ensureDefaultGovernanceLimits(capabilityId: string): Promise<string | undefined> {
   const baseUrl = (process.env.AUDIT_GOV_URL ?? process.env.AUDIT_GOVERNANCE_URL ?? "http://localhost:8500").replace(/\/$/, "");
-  const tokensMax = Number(process.env.CAPABILITY_DEFAULT_DAILY_TOKENS ?? 200_000);
-  const costMaxUsd = Number(process.env.CAPABILITY_DEFAULT_DAILY_COST_USD ?? 2);
-  const maxCalls = Number(process.env.CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE ?? 30);
+  const tokensMax = env.CAPABILITY_DEFAULT_DAILY_TOKENS;
+  const costMaxUsd = env.CAPABILITY_DEFAULT_DAILY_COST_USD;
+  const maxCalls = env.CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE;
   // audit-gov requires the service bearer on writes — without it these POSTs 401.
   // Mirrors src/lib/audit-gov-emit.ts. (The token must also be passed to this
   // service at boot; see bin/bare-metal.sh agent-runtime.)

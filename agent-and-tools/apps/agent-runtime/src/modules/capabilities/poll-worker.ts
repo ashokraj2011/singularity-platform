@@ -32,6 +32,7 @@ import * as os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
+import { env } from "../../config/env";
 import { prisma } from "../../config/prisma";
 import { capabilityService } from "./capability.service";
 import type { InputFile } from "./symbol-extractor";
@@ -40,7 +41,7 @@ import { capabilityIsArchivedOrMissing } from "./capability-lifecycle";
 
 const execFileP = promisify(execFile);
 
-const TICK_SEC          = Number(process.env.POLL_WORKER_TICK_SEC ?? 30);
+const TICK_SEC          = env.POLL_WORKER_TICK_SEC;
 const ENABLED           = (process.env.POLL_WORKER_ENABLED ?? "1") !== "0";
 const SOURCE_EXT        = /\.(py|ts|tsx|js|jsx|mjs|cjs)$/i;
 const SKIP_DIRS         = new Set([
