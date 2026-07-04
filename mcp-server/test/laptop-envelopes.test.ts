@@ -30,6 +30,7 @@ import {
   ToolRunPayload,
   ToolRunResponsePayload,
   decodeInbound,
+  decodeInboundRaw,
   encodeOutboundFrame,
   oversizedResponseFrame,
 } from "../src/laptop/envelopes";
@@ -342,6 +343,48 @@ describe("decodeInbound", () => {
       request_id: "r".repeat(129),
       payload: { tool_name: "read_file" },
     })).toBeNull();
+  });
+});
+
+// ── decodeInboundRaw ───────────────────────────────────────────────────────
+
+describe("decodeInboundRaw", () => {
+  it("decodes chunked raw bridge messages and reports byte count", () => {
+    const raw = [
+      Buffer.from('{"type":"ping",'),
+      Buffer.from('"sent_at":"now"}'),
+    ];
+    const decoded = decodeInboundRaw(raw);
+
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(decoded.frame.type).toBe("ping");
+      expect(decoded.bytes).toBe(Buffer.byteLength('{"type":"ping","sent_at":"now"}', "utf8"));
+    }
+  });
+
+  it("rejects oversized raw bridge messages before JSON parse", () => {
+    const decoded = decodeInboundRaw('{"type":"ping","sent_at":"now"}', 10);
+
+    expect(decoded.ok).toBe(false);
+    if (!decoded.ok) {
+      expect(decoded.reason).toBe("too-large");
+      expect(decoded.bytes).toBeGreaterThan(10);
+    }
+  });
+
+  it("separates bad JSON, invalid frames, and unsupported message data", () => {
+    const badJson = decodeInboundRaw("{bad");
+    expect(badJson.ok).toBe(false);
+    if (!badJson.ok) expect(badJson.reason).toBe("bad-json");
+
+    const invalidFrame = decodeInboundRaw('{"type":"tool-run","request_id":"r"}');
+    expect(invalidFrame.ok).toBe(false);
+    if (!invalidFrame.ok) expect(invalidFrame.reason).toBe("invalid-frame");
+
+    const unsupported = decodeInboundRaw({ not: "raw-data" });
+    expect(unsupported.ok).toBe(false);
+    if (!unsupported.ok) expect(unsupported.reason).toBe("bad-json");
   });
 });
 

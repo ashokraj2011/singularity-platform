@@ -45,12 +45,12 @@ import { modelCatalogResponse } from "../llm/model-catalog";
 import { configuredDefaultModel, configuredDefaultProvider } from "../llm/provider-config";
 import { readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
 import {
-  decodeInbound,
+  decodeInboundRaw,
   encodeOutboundFrame,
   oversizedResponseFrame,
   RUNTIME_BRIDGE_MAX_FRAME_BYTES,
   SUPPORTED_FRAME_TYPES,
-  type HelloFrame, type HeartbeatFrame, type ResponseFrame,
+  type HelloFrame, type HeartbeatFrame, type InboundFrame, type ResponseFrame,
 } from "./envelopes";
 
 const HEARTBEAT_MS = 30_000;
@@ -116,13 +116,18 @@ export class LaptopRelayClient {
     });
 
     ws.on("message", (data) => {
-      let parsed: unknown;
-      try { parsed = JSON.parse(data.toString()); }
-      catch (err) {
-        log.warn({ err: (err as Error).message }, "[laptop-relay] bad JSON frame");
+      const decoded = decodeInboundRaw(data);
+      if (!decoded.ok) {
+        log.warn(
+          { reason: decoded.reason, bytes: decoded.bytes, err: decoded.error },
+          "[laptop-relay] invalid bridge frame",
+        );
+        if (decoded.reason === "too-large") {
+          try { ws.close(1009, "bridge frame too large"); } catch { /* ignore */ }
+        }
         return;
       }
-      void this.handleInbound(parsed);
+      void this.handleInbound(decoded.frame);
     });
 
     ws.on("close", (code, reason) => {
@@ -293,13 +298,7 @@ export class LaptopRelayClient {
     }
   }
 
-  private async handleInbound(raw: unknown): Promise<void> {
-    const frame = decodeInbound(raw);
-    if (!frame) {
-      log.warn({}, "[laptop-relay] unrecognised frame");
-      return;
-    }
-
+  private async handleInbound(frame: InboundFrame): Promise<void> {
     if (frame.type === "auth.ack") {
       log.info({ user_id: frame.user_id, device_id: frame.device_id }, "[laptop-relay] registered with bridge");
       this.resetBackoff();

@@ -307,10 +307,51 @@ export function decodeInbound(raw: unknown): InboundFrame | null {
   return null;
 }
 
+export type RawInboundDecodeResult =
+  | { ok: true; frame: InboundFrame; bytes: number }
+  | { ok: false; reason: "too-large" | "bad-json" | "invalid-frame"; bytes: number; error?: string };
+
+export function decodeInboundRaw(
+  data: unknown,
+  maxBytes = RUNTIME_BRIDGE_MAX_FRAME_BYTES,
+): RawInboundDecodeResult {
+  const buffer = rawDataBuffer(data);
+  if (!buffer) return { ok: false, reason: "bad-json", bytes: 0, error: "unsupported message data" };
+  const bytes = buffer.byteLength;
+  if (bytes > maxBytes) return { ok: false, reason: "too-large", bytes };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(buffer.toString("utf8"));
+  } catch (err) {
+    return { ok: false, reason: "bad-json", bytes, error: (err as Error).message };
+  }
+
+  const frame = decodeInbound(parsed);
+  if (!frame) return { ok: false, reason: "invalid-frame", bytes };
+  return { ok: true, frame, bytes };
+}
+
 function parseInbound<T>(
   schema: { safeParse: (raw: unknown) => { success: true; data: T } | { success: false } },
   raw: unknown,
 ): T | null {
   const parsed = schema.safeParse(raw);
   return parsed.success ? parsed.data : null;
+}
+
+function rawDataBuffer(data: unknown): Buffer | null {
+  if (typeof data === "string") return Buffer.from(data, "utf8");
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data);
+  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  if (Array.isArray(data)) {
+    const chunks: Buffer[] = [];
+    for (const item of data) {
+      if (!Buffer.isBuffer(item)) return null;
+      chunks.push(item);
+    }
+    return Buffer.concat(chunks);
+  }
+  return null;
 }

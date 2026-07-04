@@ -93,6 +93,9 @@ before they are written to the runtime socket; oversized requests fail as
 MCP also checks runtime-to-Context-Fabric frames before socket writes; oversized
 response payloads are replaced with a compact `RUNTIME_RESPONSE_TOO_LARGE`
 response for the same request id.
+MCP checks bridge-to-runtime inbound frames before JSON parsing as well;
+oversized frames close the socket with WebSocket `1009` so the runtime reconnects
+cleanly instead of parsing unbounded payloads.
 JSON frames must decode to objects; arrays, strings, numbers, and `null` are
 rejected during hello or ignored as malformed live frames.
 On the runtime side, MCP bounds bridge request ids to `1..128` characters and
