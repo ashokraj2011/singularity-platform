@@ -21,6 +21,7 @@
  */
 
 import { getRubricForStageType, type RubricSpec } from "./rubrics";
+import { readUpstreamJsonObject } from "./upstream-json";
 
 const LLM_GATEWAY_URL = (process.env.LLM_GATEWAY_URL ?? "http://host.docker.internal:8001").replace(/\/$/, "");
 const DEFAULT_JUDGE_MODEL_ALIAS = process.env.JUDGE_MODEL_ALIAS ?? process.env.ENGINE_MODEL_ALIAS ?? "";
@@ -214,7 +215,7 @@ export async function runJudge(input: JudgeInput): Promise<JudgeOutcome> {
 
   let gw: GatewayResponse;
   try {
-    gw = (await res.json()) as GatewayResponse;
+    gw = await readUpstreamJsonObject<GatewayResponse>(res, "LLM gateway judge");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return judgeUnavailable(`gateway returned non-JSON: ${message}`, rubric, failMode);

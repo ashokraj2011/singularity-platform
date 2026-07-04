@@ -19,6 +19,7 @@
  * gateway is unreachable or returns a malformed payload.
  */
 import { query, queryOne } from "../db";
+import { readUpstreamJsonObject } from "./upstream-json";
 
 const LLM_GATEWAY_URL    = (process.env.LLM_GATEWAY_URL ?? "http://host.docker.internal:8001").replace(/\/$/, "");
 const ENGINE_MODEL_ALIAS = process.env.ENGINE_MODEL_ALIAS?.trim();
@@ -100,12 +101,20 @@ async function getDiagnosisSystemPrompt(): Promise<string> {
     const text = await res.text().catch(() => "");
     throw new Error(`audit-gov diagnose system prompt fetch failed: ${res.status} ${text.slice(0, 200)}`);
   }
-  const body = await res.json() as { success: boolean; data: { content: string } };
-  if (!body.success) {
+  const body = await readUpstreamJsonObject<{ success?: unknown; data?: unknown }>(res, "audit-gov diagnose system prompt");
+  if (body.success !== true) {
     if (cachedDiagnosisPrompt) return cachedDiagnosisPrompt;
     throw new Error(`audit-gov diagnose system prompt fetch returned success=false`);
   }
-  cachedDiagnosisPrompt = body.data.content;
+  const data = body.data && typeof body.data === "object" && !Array.isArray(body.data)
+    ? body.data as Record<string, unknown>
+    : {};
+  const content = typeof data.content === "string" ? data.content : "";
+  if (!content) {
+    if (cachedDiagnosisPrompt) return cachedDiagnosisPrompt;
+    throw new Error("audit-gov diagnose system prompt response did not include content");
+  }
+  cachedDiagnosisPrompt = content;
   cachedDiagnosisPromptAt = Date.now();
   return cachedDiagnosisPrompt;
 }
@@ -138,8 +147,8 @@ async function callLlmForDiagnosis(prompt: string): Promise<DiagnosisResult> {
       signal: AbortSignal.timeout(ENGINE_TIMEOUT_MS),
     });
     if (res.ok) {
-      const body = (await res.json()) as { content?: string };
-      const content = body.content ?? "";
+      const body = await readUpstreamJsonObject<{ content?: unknown }>(res, "LLM gateway diagnose");
+      const content = typeof body.content === "string" ? body.content : "";
       // The diagnosis prompt instructs the model to emit a single
       // JSON object. Tolerate a code-fence wrapper or a leading
       // chatty preamble — we match the outermost {...} balanced

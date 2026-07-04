@@ -35,6 +35,7 @@ function mockGatewayResponse(opts: {
   status?: number;
   body?: unknown;
   reject?: Error;
+  rawText?: string;
 }) {
   const mock = vi.fn();
   if (opts.reject) {
@@ -44,7 +45,7 @@ function mockGatewayResponse(opts: {
       ok: (opts.status ?? 200) < 400,
       status: opts.status ?? 200,
       json: async () => opts.body,
-      text: async () => JSON.stringify(opts.body ?? ""),
+      text: async () => opts.rawText ?? JSON.stringify(opts.body ?? ""),
     });
   }
   globalThis.fetch = mock as unknown as typeof fetch;
@@ -253,6 +254,15 @@ describe("runJudge failure paths", () => {
     expect(out.passed).toBe(false);
     expect(out.reason).toContain("not parseable");
     expect(out.evidence.judge_status).toBe("malformed_response");
+  });
+
+  it("invalid gateway JSON envelope → fails closed by default", async () => {
+    mockGatewayResponse({ rawText: "Internal Server Error" });
+    const out = await runJudge(BASE_INPUT);
+    expect(out.passed).toBe(false);
+    expect(out.reason).toContain("gateway returned non-JSON");
+    expect(out.reason).toContain("invalid JSON");
+    expect(out.evidence.judge_status).toBe("unavailable");
   });
 
   it("malformed JSON + fail_mode='open' → passes with warning", async () => {

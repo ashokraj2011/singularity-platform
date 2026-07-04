@@ -47,26 +47,29 @@ function stubGatewayFlow(opts: {
   gatewayContent?: string;
   gatewayStatus?: number;
   gatewayThrows?: Error;
+  gatewayRawText?: string;
 }) {
   const mock = vi.fn(async (url: string) => {
     if (url.includes("/system-prompts/")) {
+      const body = {
+        success: true,
+        data: { content: opts.systemPrompt ?? "You are a diagnosis assistant." },
+      };
       return {
         ok: true,
         status: 200,
-        json: async () => ({
-          success: true,
-          data: { content: opts.systemPrompt ?? "You are a diagnosis assistant." },
-        }),
-        text: async () => "",
+        json: async () => body,
+        text: async () => JSON.stringify(body),
       };
     }
     if (url.includes("/v1/chat/completions")) {
       if (opts.gatewayThrows) throw opts.gatewayThrows;
+      const body = { content: opts.gatewayContent ?? "" };
       return {
         ok: (opts.gatewayStatus ?? 200) < 400,
         status: opts.gatewayStatus ?? 200,
-        json: async () => ({ content: opts.gatewayContent ?? "" }),
-        text: async () => opts.gatewayContent ?? "",
+        json: async () => body,
+        text: async () => opts.gatewayRawText ?? JSON.stringify(body),
       };
     }
     throw new Error(`unexpected fetch URL in test: ${url}`);
@@ -180,6 +183,12 @@ describe("callLlmForDiagnosis — failure modes fall back to heuristic", () => {
     stubGatewayFlow({ gatewayContent: "no json here, just chatter" });
     const result = await callLlmForDiagnosis("token blowout exceed budget");
     expect(result.category).toBe("token_blowout");
+  });
+
+  it("falls back to heuristic on invalid gateway JSON envelope", async () => {
+    stubGatewayFlow({ gatewayRawText: "Internal Server Error" });
+    const result = await callLlmForDiagnosis("latency timeout pattern");
+    expect(result.category).toBe("latency_spike");
   });
 
   it("never throws — heuristic always wins as last resort", async () => {

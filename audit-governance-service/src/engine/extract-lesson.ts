@@ -17,6 +17,7 @@
  * module skips any issue with a non-null lesson_id so re-runs are safe.
  */
 import { query, queryOne } from "../db";
+import { readUpstreamJsonObject } from "./upstream-json";
 
 const LESSON_CONFIRM_WINDOW_SEC = Number(process.env.LESSON_CONFIRM_WINDOW_SEC ?? 3600);
 const RETRY_LOOKBACK_HOURS      = Number(process.env.LESSON_RETRY_LOOKBACK_HOURS ?? 2);
@@ -42,12 +43,20 @@ async function getLessonSystemPrompt(): Promise<string> {
     if (cachedLessonSystemPrompt) return cachedLessonSystemPrompt;
     throw new Error(`audit-gov lesson-extract system prompt fetch failed: ${res.status}`);
   }
-  const body = await res.json() as { success: boolean; data: { content: string } };
-  if (!body.success) {
+  const body = await readUpstreamJsonObject<{ success?: unknown; data?: unknown }>(res, "audit-gov lesson-extract system prompt");
+  if (body.success !== true) {
     if (cachedLessonSystemPrompt) return cachedLessonSystemPrompt;
     throw new Error(`audit-gov lesson-extract system prompt returned success=false`);
   }
-  cachedLessonSystemPrompt = body.data.content;
+  const data = body.data && typeof body.data === "object" && !Array.isArray(body.data)
+    ? body.data as Record<string, unknown>
+    : {};
+  const content = typeof data.content === "string" ? data.content : "";
+  if (!content) {
+    if (cachedLessonSystemPrompt) return cachedLessonSystemPrompt;
+    throw new Error("audit-gov lesson-extract system prompt response did not include content");
+  }
+  cachedLessonSystemPrompt = content;
   cachedLessonSystemPromptAt = Date.now();
   return cachedLessonSystemPrompt;
 }
@@ -227,8 +236,11 @@ async function callMcpForText(systemPrompt: string, userPrompt: string): Promise
     const text = await res.text().catch(() => "");
     throw new Error(`mcp lesson-extract → ${res.status}: ${text.slice(0, 300)}`);
   }
-  const data = await res.json() as { data?: { finalResponse?: string } };
-  return data.data?.finalResponse ?? "";
+  const data = await readUpstreamJsonObject<{ data?: unknown }>(res, "MCP lesson-extract");
+  const responseData = data.data && typeof data.data === "object" && !Array.isArray(data.data)
+    ? data.data as Record<string, unknown>
+    : {};
+  return typeof responseData.finalResponse === "string" ? responseData.finalResponse : "";
 }
 
 async function postLessonToComposer(issue: IssueRow, lesson: ExtractedLesson): Promise<string> {
@@ -252,7 +264,12 @@ async function postLessonToComposer(issue: IssueRow, lesson: ExtractedLesson): P
     const text = await res.text().catch(() => "");
     throw new Error(`prompt-composer /lessons → ${res.status}: ${text.slice(0, 300)}`);
   }
-  const payload = await res.json() as { success: boolean; data: { id: string } };
-  if (!payload.success) throw new Error("prompt-composer /lessons returned success=false");
-  return payload.data.id;
+  const payload = await readUpstreamJsonObject<{ success?: unknown; data?: unknown }>(res, "prompt-composer /lessons");
+  if (payload.success !== true) throw new Error("prompt-composer /lessons returned success=false");
+  const payloadData = payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)
+    ? payload.data as Record<string, unknown>
+    : {};
+  const id = typeof payloadData.id === "string" ? payloadData.id : "";
+  if (!id) throw new Error("prompt-composer /lessons response did not include id");
+  return id;
 }
