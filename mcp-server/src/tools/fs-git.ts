@@ -22,12 +22,15 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import type { ToolHandler } from "./registry";
+import { config } from "../config";
 import { resolveSandboxedPath, sandboxRoot } from "../workspace/sandbox";
 import { indexChangedFiles, indexWorkspace } from "../workspace/ast-index";
 import { ensureGitRepo } from "../workspace/git-workspace";
 
 const execFileP = promisify(execFile);
 const FULL_REPLACE_SOFT_LIMIT_BYTES = 64_000;
+const FS_GIT_TIMEOUT_MS = config.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS;
+const PROCESS_KILL_GRACE_MS = config.MCP_PROCESS_KILL_GRACE_MS;
 
 function unifiedDiffForNewFile(relPath: string, content: string): string {
   const lines = content.split("\n");
@@ -78,6 +81,7 @@ async function gitDiffForPath(relPath: string): Promise<string | null> {
     const { stdout } = await execFileP("git", ["diff", "--", relPath], {
       cwd,
       maxBuffer: 10 * 1024 * 1024,
+      timeout: FS_GIT_TIMEOUT_MS,
     });
     return stdout.trim() ? stdout : null;
   } catch {
@@ -204,10 +208,30 @@ async function gitApply(args: string[], patch: string, cwd: string): Promise<voi
   await new Promise<void>((resolve, reject) => {
     const child = spawn("git", ["apply", ...args], { cwd, stdio: ["pipe", "pipe", "pipe"] });
     let stderr = "";
+    let timedOut = false;
+    let settled = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), PROCESS_KILL_GRACE_MS).unref();
+    }, FS_GIT_TIMEOUT_MS);
+    timer.unref();
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
     child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error(`git apply timed out after ${FS_GIT_TIMEOUT_MS}ms`));
+        return;
+      }
       if (code === 0) resolve();
       else reject(new Error((stderr || `git apply exited ${code}`).trim()));
     });
@@ -690,21 +714,36 @@ export const gitCommitTool: ToolHandler = {
       // on an existing repo because git init is idempotent.
       await ensureGitRepo();
       // Diff BEFORE staging so we can include it in the envelope.
-      const { stdout: pathsRaw } = await execFileP("git", ["diff", "--name-only"], { cwd });
-      const { stdout: untrackedRaw } = await execFileP("git", ["ls-files", "--others", "--exclude-standard"], { cwd });
+      const { stdout: pathsRaw } = await execFileP("git", ["diff", "--name-only"], {
+        cwd,
+        timeout: FS_GIT_TIMEOUT_MS,
+      });
+      const { stdout: untrackedRaw } = await execFileP("git", ["ls-files", "--others", "--exclude-standard"], {
+        cwd,
+        timeout: FS_GIT_TIMEOUT_MS,
+      });
       const paths = [...pathsRaw.split("\n"), ...untrackedRaw.split("\n")]
         .map((s) => s.trim()).filter(Boolean);
       if (paths.length === 0) {
         return { success: false, output: null, error: "no changes to commit" };
       }
-      await execFileP("git", ["add", "-A"], { cwd });
+      await execFileP("git", ["add", "-A"], { cwd, timeout: FS_GIT_TIMEOUT_MS });
       const author = typeof args.author === "string" && args.author.includes("<")
         ? ["--author", args.author] : [];
-      await execFileP("git", ["commit", "-m", message, ...author], { cwd, maxBuffer: 10 * 1024 * 1024 });
-      const { stdout: shaRaw } = await execFileP("git", ["rev-parse", "HEAD"], { cwd });
+      await execFileP("git", ["commit", "-m", message, ...author], {
+        cwd,
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: FS_GIT_TIMEOUT_MS,
+      });
+      const { stdout: shaRaw } = await execFileP("git", ["rev-parse", "HEAD"], {
+        cwd,
+        timeout: FS_GIT_TIMEOUT_MS,
+      });
       const sha = shaRaw.trim();
       const { stdout: diffRaw } = await execFileP("git", ["show", "--format=", sha], {
-        cwd, maxBuffer: 10 * 1024 * 1024,
+        cwd,
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: FS_GIT_TIMEOUT_MS,
       });
       await indexWorkspace("git_commit");
       return {

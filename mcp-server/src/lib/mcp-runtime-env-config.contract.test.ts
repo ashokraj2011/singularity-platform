@@ -219,6 +219,17 @@ assert.equal(
   "all git-workspace direct git exec paths should carry the configured timeout",
 );
 
+const fsGitSource = readFileSync("src/tools/fs-git.ts", "utf8");
+assert.match(fsGitSource, /const FS_GIT_TIMEOUT_MS = config\.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS;/);
+assert.match(fsGitSource, /const PROCESS_KILL_GRACE_MS = config\.MCP_PROCESS_KILL_GRACE_MS;/);
+assert.equal(
+  (fsGitSource.match(/timeout: FS_GIT_TIMEOUT_MS/g) ?? []).length,
+  7,
+  "all fs-git execFile git calls should carry the configured timeout",
+);
+assert.match(fsGitSource, /setTimeout\(\(\) => \{[\s\S]*?child\.kill\("SIGTERM"\)[\s\S]*?\}, FS_GIT_TIMEOUT_MS\)/);
+assert.match(fsGitSource, /setTimeout\(\(\) => child\.kill\("SIGKILL"\), PROCESS_KILL_GRACE_MS\)/);
+
 const sourceDiscoverSource = readFileSync("src/mcp/source-discover.ts", "utf8");
 assert.match(sourceDiscoverSource, /const SOURCE_DISCOVERY_TIMEOUT_MS = config\.MCP_SOURCE_DISCOVERY_TIMEOUT_MS;/);
 assert.match(sourceDiscoverSource, /timeoutMs = SOURCE_DISCOVERY_TIMEOUT_MS/);
