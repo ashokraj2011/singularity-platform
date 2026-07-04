@@ -2,6 +2,8 @@ import { env } from "../config/env";
 import { logger } from "../config/logger";
 import { readUpstreamJsonObject } from "../shared/upstream-json";
 
+const TOOL_SERVICE_DISCOVERY_TIMEOUT_MS = env.TOOL_SERVICE_DISCOVERY_TIMEOUT_SEC * 1000;
+
 export interface DiscoveredTool {
   tool_name: string;
   version: string;
@@ -46,6 +48,7 @@ export const toolServiceClient = {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(input),
+        signal: AbortSignal.timeout(TOOL_SERVICE_DISCOVERY_TIMEOUT_MS),
       });
       if (!res.ok) {
         logger.warn({ status: res.status }, "tool-service /tools/discover non-200");

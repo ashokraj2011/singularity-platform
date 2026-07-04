@@ -775,6 +775,11 @@ governed single-turn path and legacy `/chat/respond` path share that value for
 local fetch cancellation, so operators can tune slow model calls without
 unbounded waits or accidental instant failures.
 
+Prompt Composer dynamic tool discovery calls to Tool Service use
+`TOOL_SERVICE_DISCOVERY_TIMEOUT_SEC`, default `5`, bounded `1..300`. Discovery
+failures still degrade to an empty dynamic tool list, but a slow Tool Service
+can no longer pin the prompt assembly request indefinitely.
+
 Context Fabric MCP dispatch timeouts use the same governed env helper:
 `MCP_TOOL_RUN_TIMEOUT_SEC` defaults to `120`, minimum `1`, maximum `3600`,
 while `MCP_TOOL_RUN_LONG_TIMEOUT_SEC` defaults to `960`, minimum `1`,
