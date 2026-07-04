@@ -327,6 +327,7 @@ export type ConfiguredProviderInfo = {
 
 
 let cachedGatewayStatus: Record<string, { ready: boolean; warnings: string[] }> = {};
+const LLM_PROVIDER_STATUS_TIMEOUT_MS = config.MCP_LLM_PROVIDER_STATUS_TIMEOUT_MS;
 
 // Bug-fix (M-fix) — TTL-guarded lazy refresh. Before this, the cache was
 // only ever populated by /healthz/strict, so the Operations Portal's
@@ -346,7 +347,7 @@ export async function refreshGatewayProviderStatus(): Promise<void> {
     if (config.LLM_GATEWAY_BEARER) headers.authorization = `Bearer ${config.LLM_GATEWAY_BEARER}`;
     const res = await fetch(`${url.replace(/\/$/, "")}/llm/providers`, {
       headers,
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(LLM_PROVIDER_STATUS_TIMEOUT_MS),
     });
     if (!res.ok) {
       log.warn(`[llm] gateway /llm/providers returned ${res.status}; treating providers as enabled-only`);

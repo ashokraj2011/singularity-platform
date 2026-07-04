@@ -760,6 +760,10 @@ The governed LLM client uses the same helper: `LLM_GATEWAY_TIMEOUT_SEC`
 defaults to `300`, minimum `1`, maximum `7200`; gateway discovery cache
 `LLM_GATEWAY_DISCOVERY_TTL_SEC` defaults to `30`, minimum `1`, maximum
 `86400`.
+MCP's quick provider-readiness probe to the LLM gateway is bounded separately:
+`MCP_LLM_PROVIDER_STATUS_TIMEOUT_MS` defaults to `2000` and is bounded
+`1..300000`, so `/llm/providers` and `/llm/models` stay responsive while still
+being tunable for remote gateway deployments.
 Runtime Bridge registry/auth knobs use the shared Context Fabric env helper as
 well: `RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC` defaults to `300`, minimum `5`,
 maximum `86400`, and `RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME` defaults to
