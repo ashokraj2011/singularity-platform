@@ -3,9 +3,11 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import { resolveSandboxedPath, sandboxRoot } from "../workspace/sandbox";
 import type { ToolHandler } from "./registry";
+import { config } from "../config";
 
 const execFileP = promisify(execFile);
 const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
+const GIT_HISTORY_TIMEOUT_MS = config.MCP_GIT_HISTORY_TIMEOUT_MS;
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const FIELD_SEP = "\x1f";
 const RECORD_SEP = "\x1e";
@@ -53,7 +55,7 @@ async function runGit(repo: string, args: string[], allowFailure = false): Promi
         GIT_TERMINAL_PROMPT: "0",
       },
       maxBuffer: MAX_BUFFER_BYTES,
-      timeout: 60_000,
+      timeout: GIT_HISTORY_TIMEOUT_MS,
     });
     return { stdout, stderr, code: 0 };
   } catch (err) {

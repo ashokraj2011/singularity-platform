@@ -40,6 +40,10 @@ GIT_HISTORY_REPO=/path/to/singularity-platform
 
 The UI status bar shows whether a report was served by the Runtime Bridge or by the explicit local debug fallback.
 
+MCP-side git commands for `git_history_explain` use
+`MCP_GIT_HISTORY_TIMEOUT_MS`, default `60000`, bounded `1..300000`. Tune it on
+the runtime host when large monorepo history reports need more time.
+
 ## Basic Usage
 
 ```bash
