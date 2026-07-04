@@ -109,6 +109,8 @@ _KNOWN_RUNTIME_FRAME_TYPES = {
     "work-finish-branch",
     "worktree-write-file",
 }
+_MAX_RUNTIME_CAPABILITY_TAGS = 32
+_MAX_RUNTIME_CAPABILITY_TAG_LEN = 96
 
 # Finding #7 — device-revocation enforcement. A revoked device JWT must stop working
 # without waiting for its (up-to-365-day) natural expiry, so the bridge asks IAM whether
@@ -248,6 +250,25 @@ def _runtime_frame_list(raw: Any) -> list[str]:
         seen.add(frame)
         frames.append(frame)
     return frames
+
+
+def _runtime_capability_tag_list(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    tags: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        value = str(item).strip()
+        if not value:
+            continue
+        value = value[:_MAX_RUNTIME_CAPABILITY_TAG_LEN]
+        if value in seen:
+            continue
+        seen.add(value)
+        tags.append(value)
+        if len(tags) >= _MAX_RUNTIME_CAPABILITY_TAGS:
+            break
+    return tags
 
 
 def _verify_runtime_token(token: str) -> dict[str, Any]:
@@ -424,9 +445,8 @@ async def runtime_connect(ws: WebSocket) -> None:
         await ws.close(code=4401, reason="no allowed frame types")
         return
     # capability_tags + shared are routing-relevant → verified claims ONLY.
-    tags_raw = claims.get("capability_tags") or claims.get("capabilities")
-    capability_tags = (
-        [str(s) for s in tags_raw] if isinstance(tags_raw, list) else []
+    capability_tags = _runtime_capability_tag_list(
+        claims.get("capability_tags") or claims.get("capabilities")
     )
     health_raw = hello.get("health")
     health = health_raw if isinstance(health_raw, dict) else {}

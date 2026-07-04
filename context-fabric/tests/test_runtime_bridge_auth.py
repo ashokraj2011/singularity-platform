@@ -151,6 +151,26 @@ def test_runtime_frame_list_filters_unknown_blank_and_duplicate_frames():
     ]) == ["tool-run", "model-run"]
 
 
+def test_runtime_capability_tag_list_canonicalizes_and_bounds_tags():
+    long_tag = "x" * 120
+    raw = [
+        " mcp ",
+        "",
+        "tools",
+        "mcp",
+        long_tag,
+        *[f"tag-{i}" for i in range(40)],
+    ]
+
+    tags = laptop_bridge._runtime_capability_tag_list(raw)
+
+    assert tags[:3] == ["mcp", "tools", long_tag[:96]]
+    assert len(tags) == 32
+    assert tags.count("mcp") == 1
+    assert "" not in tags
+    assert laptop_bridge._runtime_capability_tag_list("mcp") == []
+
+
 def test_device_token_still_requires_device_id(monkeypatch):
     monkeypatch.setattr(laptop_bridge, "JWT_SECRET", "test-secret")
     base_payload = {
