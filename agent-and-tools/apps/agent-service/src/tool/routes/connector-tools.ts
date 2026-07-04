@@ -23,10 +23,21 @@
  */
 import { Router, Request, Response } from "express";
 import { requireAuth } from "../middleware/auth";
+import { boundedEnvInteger } from "../lib/env";
 import { readUpstreamJson } from "../../shared/upstream-json";
 
 const WORKGRAPH_API_URL    = process.env.WORKGRAPH_API_URL ?? "http://host.docker.internal:8080";
 const WORKGRAPH_API_BEARER = process.env.WORKGRAPH_API_BEARER ?? "";
+const WORKGRAPH_CONNECTOR_LIST_TIMEOUT_MS = boundedEnvInteger("WORKGRAPH_CONNECTOR_LIST_TIMEOUT_MS", {
+  defaultValue: 15_000,
+  min: 1_000,
+  max: 300_000,
+});
+const WORKGRAPH_CONNECTOR_INVOKE_TIMEOUT_MS = boundedEnvInteger("WORKGRAPH_CONNECTOR_INVOKE_TIMEOUT_MS", {
+  defaultValue: 60_000,
+  min: 1_000,
+  max: 300_000,
+});
 
 interface ConnectorRow {
   id: string;
@@ -39,7 +50,7 @@ async function findConnectorByName(name: string, expectedType?: string): Promise
   const url = `${WORKGRAPH_API_URL.replace(/\/$/, "")}/api/connectors`;
   const res = await fetch(url, {
     headers: WORKGRAPH_API_BEARER ? { authorization: `Bearer ${WORKGRAPH_API_BEARER}` } : {},
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(WORKGRAPH_CONNECTOR_LIST_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`workgraph /api/connectors ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const parsed = await readUpstreamJson(res, "workgraph /api/connectors");
@@ -62,7 +73,7 @@ async function invokeConnector(connectorId: string, operation: string, params: R
       ...(WORKGRAPH_API_BEARER ? { authorization: `Bearer ${WORKGRAPH_API_BEARER}` } : {}),
     },
     body: JSON.stringify({ operation, params }),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(WORKGRAPH_CONNECTOR_INVOKE_TIMEOUT_MS),
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`workgraph connector invoke ${res.status}: ${text.slice(0, 300)}`);

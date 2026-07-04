@@ -679,6 +679,24 @@ and federated user mapping.</li>
 <li>Debug retrieval.</li>
 <li>Code-aware prompt layer rendering.</li>
 </ul>
+<p>Compiled-context capsule compiler, GC, and retry knobs are bounded at startup:
+<code>CAPSULE_COMPILE_TIMEOUT_MS</code>, <code>SYSTEM_PROMPT_CACHE_TTL_SEC</code>,
+<code>CAPSULE_COMPILE_MAX_CONCURRENCY</code>, <code>CAPSULE_TTL_DAYS</code>, <code>CAPSULE_COLD_DAYS</code>,
+<code>CAPSULE_GC_INTERVAL_MS</code>, <code>CAPSULE_MAX_CHARS</code>,
+<code>CAPSULE_FAILURE_WINDOW_MS</code>, <code>CAPSULE_FAILURE_ALERT_RATE</code>,
+<code>CAPSULE_FAILURE_ALERT_INTERVAL_MS</code>, <code>CAPSULE_FAILURE_ALERT_MIN_ATTEMPTS</code>, and
+<code>CAPSULE_RETRY_DELAY_MS</code>. Invalid values fall back to safe defaults and
+oversized values clamp so prompt caching cannot turn into unbounded storage,
+retry, or alert behavior.</p>
+<p>Prompt Composer retrieval and stage-prompt memory knobs are bounded before use:
+<code>EMBEDDING_RECENCY_DAYS</code> defaults to <code>30</code> and clamps to <code>1..3650</code>,
+<code>EMBEDDING_RECENCY_BOOST</code> defaults to <code>0.2</code> and clamps to <code>0..1</code>,
+<code>RETRIEVAL_EMPTY_COSINE_THRESHOLD</code> defaults to <code>0.2</code> and clamps to <code>0..1</code>,
+<code>STAGE_PROMPT_MEMORY_TOP_K</code> defaults to <code>5</code> and clamps to <code>0..50</code>, and
+<code>STAGE_PROMPT_MEMORY_MAX_CHARS</code> defaults to <code>500</code> and clamps to <code>80..5000</code>.
+Invalid or below-minimum values fall back to defaults; oversized values clamp
+to the cap so retrieval scoring and long-term memory rendering cannot drift
+into <code>NaN</code>, negative thresholds, or unbounded prompt layers.</p>
 <h3 id="710-agent-execution-runtime-server-runtime">7.10 Agent Execution Runtime / Server Runtime<a class="anchor" href="#710-agent-execution-runtime-server-runtime" aria-label="Link to 7.10 Agent Execution Runtime / Server Runtime">#</a></h3>
 <p>The Agent Execution Runtime is the server runtime boundary for agentic coding and tools.</p>
 <p>Core features:</p>
@@ -772,6 +790,11 @@ and federated user mapping.</li>
 <li>The folded learning routes require <code>LEARNING_SERVICE_TOKEN</code> for both reads and writes; Prompt Composer and MCP send that token when querying learned context.</li>
 <li>If the folded learning routes are unavailable, prompt assembly should degrade gracefully.</li>
 </ul>
+<p>Prompt Composer bounds lesson-retrieval knobs such as <code>LESSON_SUPERSEDE_COSINE</code>,
+<code>LESSON_MAX_ACTIVE_PER_SCOPE</code>, <code>LESSON_TOOL_MATCH_BOOST</code>,
+<code>LESSON_RETRIEVAL_FLOOR</code>, and <code>LESSONS_TOPK</code>; invalid values fall back to safe
+defaults and oversized top-K values clamp at <code>50</code> so a bad env file cannot bloat
+prompt assembly.</p>
 <p>See <a href="./adr/0001-m35-hybrid-learning.md">M35 Hybrid Learning ADR</a>.</p>
 <h3 id="716-laptop-cli-and-desktop">7.16 Laptop CLI And Desktop<a class="anchor" href="#716-laptop-cli-and-desktop" aria-label="Link to 7.16 Laptop CLI And Desktop">#</a></h3>
 <p>Laptop mode supports direct Copilot execution from the user&#39;s machine.</p>
@@ -931,6 +954,10 @@ and federated user mapping.</li>
 <li><code>/api/runtime-bridge/status</code></li>
 <li><code>/api/laptop-bridge/connect</code> and <code>/api/laptop-bridge/status</code> compatibility aliases</li>
 </ul>
+<p>Context Fabric&#39;s governed stage loop has bounded runtime knobs. <code>GOVERNED_STAGE_WALL_CLOCK_SEC</code> defaults to <code>780</code>; <code>0</code> still disables the deadline, invalid values fall back to the default, and huge values clamp at <code>86400</code>. Transient LLM retries use <code>GOVERNED_LLM_RETRY_ATTEMPTS</code> default <code>2</code>, clamped to <code>10</code>, and <code>GOVERNED_LLM_RETRY_BASE_DELAY_SEC</code> default <code>1.0</code>, clamped to <code>60</code>. These bounds prevent bad env values from crashing startup or creating runaway retry/backoff behavior.</p>
+<p>Context Fabric&#39;s best-effort model metadata and memory capture calls are also bounded. <code>LLM_MODEL_CATALOG_TTL_SEC</code> defaults to <code>300</code> and clamps at <code>86400</code>; <code>LLM_MODEL_CATALOG_TIMEOUT_SEC</code> and <code>CF_CAPTURE_RUN_MEMORY_TIMEOUT_SEC</code> default to <code>5</code> and clamp at <code>300</code>. Invalid or sub-second values fall back to defaults so optional catalog/memory paths stay non-blocking.</p>
+<p>Governed turn prompt/code-context sizing is bounded as well. <code>CF_PROMPT_CAPTURE_MAX_CHARS</code> defaults to <code>200000</code> and clamps between <code>2000</code> and <code>2000000</code>; <code>CF_CODE_CONTEXT_DEFAULT_BUDGET</code> defaults to <code>7000</code> and clamps to MCP&#39;s accepted <code>1000..50000</code> range. <code>CF_CODE_CONTEXT_WINDOW_FRACTION</code> and <code>CF_CODE_CONTEXT_INPUT_FRACTION</code> fall back on invalid or near-zero values and clamp at <code>1.0</code>, preventing broken env from producing negative or oversized code-context requests.</p>
+<p>Legacy <code>/execute</code> MCP invoke timeouts are bounded too. <code>CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC</code> defaults to <code>480</code>, malformed, non-finite, or below-1 values fall back to the default, and request-level <code>limits.timeoutSec</code> / <code>timeout_sec</code> values clamp at <code>7200</code>. <code>DEEP_REASONING_BUDGET_TOKENS</code> defaults to <code>0</code> and clamps at <code>32768</code>, so an invalid Anthropic thinking-budget setting disables the feature instead of failing a run.</p>
 <h3 id="94-prompt-composer-api">9.4 Prompt Composer API<a class="anchor" href="#94-prompt-composer-api" aria-label="Link to 9.4 Prompt Composer API">#</a></h3>
 <p>Mounted under <code>http://localhost:3004/api/v1</code>.</p>
 <p>Important endpoints:</p>
@@ -949,7 +976,110 @@ and federated user mapping.</li>
 </ul>
 <p>Immutable contract replay is owned by Workgraph but executed by Context Fabric&#39;s governed single-turn endpoint. Workgraph fetches the saved <code>ImmutableContract</code> bundle from Prompt Composer, builds the replay prompt directly from the frozen <code>promptLayerVersions</code>, <code>systemPromptVersions</code>, <code>stageBindingVersions</code>, <code>toolPins</code>, <code>bundleHash</code>, and model alias metadata, then sends that prompt verbatim to <code>/api/v1/execute-governed-single-turn</code>. Replay must not ask Prompt Composer to re-assemble live prompt/profile rows after the bundle fetch. The frozen provider/model are forwarded as gateway expectations; if the saved alias now resolves to a different provider or model, the LLM gateway rejects before provider dispatch instead of silently replaying against the wrong model. <code>POST /contracts/:contractId/replay</code> accepts an optional <code>originalRunId</code>; when present, Workgraph tenant-validates that run and returns a deterministic response diff summary with content hashes, sizes, exact-match status, and first-difference excerpts against the stored <code>LLM_RESPONSE</code> output.</p>
 <p>Prompt Composer also fails closed when minting an <code>ImmutableContract</code> if model resolution cannot be pinned. If callers omit <code>modelAlias</code>, Composer resolves and records the current catalog default alias from <code>/llm/models</code>; if a supplied or default alias cannot be found, or the catalog is unreachable, minting rejects instead of persisting <code>provider: &quot;unresolved&quot;</code> placeholder metadata.</p>
-<p>Agent Runtime treats that contract pin as mandatory for production-class template activation. When an <code>AgentTemplate</code> update leaves the template <code>ACTIVE</code>, Agent Runtime waits for Prompt Composer to mint and record the <code>contractId</code>/<code>contractHash</code>. In local development a mint outage is still logged and tolerated; in production-class environments, or when <code>AGENT_CONTRACT_MINT_REQUIRED=true</code>, failed minting reverts the template status and returns <code>CONTRACT_MINT_REQUIRED</code> so an agent cannot silently publish without replay evidence.</p>
+<p>Agent Runtime treats that contract pin as mandatory for production-class template activation. When an <code>AgentTemplate</code> update leaves the template <code>ACTIVE</code>, Agent Runtime waits for Prompt Composer to mint and record the <code>contractId</code>/<code>contractHash</code>. <code>AGENT_CONTRACT_MINT_TIMEOUT_SEC</code> defaults to <code>15</code> and is bounded <code>1..300</code> for the Prompt Composer mint request. In local development a mint outage is still logged and tolerated; in production-class environments, or when <code>AGENT_CONTRACT_MINT_REQUIRED=true</code>, failed minting reverts the template status and returns <code>CONTRACT_MINT_REQUIRED</code> so an agent cannot silently publish without replay evidence.</p>
+<p>Context Fabric caches Prompt Composer stage prompts and policies with bounded operator knobs: <code>STAGE_PROMPT_CACHE_TTL_SEC</code> defaults to <code>60</code>, <code>STAGE_POLICY_CACHE_TTL_SEC</code> defaults to <code>300</code>, and both clamp at <code>86400</code>. Composer HTTP timeouts use <code>STAGE_PROMPT_HTTP_TIMEOUT_SEC</code> default <code>15</code> and <code>STAGE_POLICY_HTTP_TIMEOUT_SEC</code> default <code>10</code>, both clamped at <code>300</code>. Invalid or sub-second values fall back to defaults so a typo cannot prevent Context Fabric from starting or create a tight composer polling loop.</p>
+<p>Prompt Composer&#39;s own calls back to Context Fabric use
+<code>CONTEXT_FABRIC_CLIENT_TIMEOUT_SEC</code>, default <code>240</code>, bounded <code>1..900</code>. The
+governed single-turn path and legacy <code>/chat/respond</code> path share that value for
+local fetch cancellation, so operators can tune slow model calls without
+unbounded waits or accidental instant failures.</p>
+<p>Context Fabric MCP dispatch timeouts use the same governed env helper:
+<code>MCP_TOOL_RUN_TIMEOUT_SEC</code> defaults to <code>120</code>, minimum <code>1</code>, maximum <code>3600</code>,
+while <code>MCP_TOOL_RUN_LONG_TIMEOUT_SEC</code> defaults to <code>960</code>, minimum <code>1</code>,
+maximum <code>7200</code> for long-running agentic tools such as <code>copilot_execute</code>.
+Invalid values fall back to defaults and oversized values clamp to the caps.
+MCP&#39;s own runtime-loop knobs are schema-validated at startup as well:
+<code>MCP_LOOP_REPETITION_THRESHOLD</code> defaults to <code>3</code> and is bounded <code>1..20</code>,
+<code>MCP_LOOP_REPETITION_WINDOW</code> defaults to <code>5</code> and is bounded <code>1..100</code>,
+<code>SYSTEM_PROMPT_CACHE_TTL_SEC</code> defaults to <code>300</code> and is bounded <code>1..86400</code>,
+<code>MCP_MUTATION_FINALIZATION_MAX_TOKENS</code> defaults to <code>4096</code> and is bounded
+<code>1..64000</code>, and <code>MCP_PII_NER_CONFIDENCE_FLOOR</code> defaults to <code>0.7</code> and is
+bounded <code>0..1</code>. Invalid values fail MCP startup instead of drifting into
+<code>NaN</code>, zero-window repetition checks, unbounded finalization requests, or a
+non-sensical PII confidence floor. MCP also refuses to start when the
+repetition threshold is greater than the repetition window, because that would
+silently disable loop detection.
+The governed LLM client uses the same helper: <code>LLM_GATEWAY_TIMEOUT_SEC</code>
+defaults to <code>300</code>, minimum <code>1</code>, maximum <code>7200</code>; gateway discovery cache
+<code>LLM_GATEWAY_DISCOVERY_TTL_SEC</code> defaults to <code>30</code>, minimum <code>1</code>, maximum
+<code>86400</code>.
+Runtime Bridge registry/auth knobs use the shared Context Fabric env helper as
+well: <code>RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC</code> defaults to <code>300</code>, minimum <code>5</code>,
+maximum <code>86400</code>, and <code>RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME</code> defaults to
+<code>32</code>, minimum <code>1</code>, maximum <code>1024</code>.</p>
+<p>Tool Service internal semantic tools use bounded retrieval scoring knobs too:
+<code>EMBEDDING_RECENCY_DAYS</code> defaults to <code>30</code> and clamps to <code>1..3650</code>, while
+<code>EMBEDDING_RECENCY_BOOST</code> defaults to <code>0.2</code> and clamps to <code>0..1</code>. Invalid or
+below-minimum values fall back to defaults, so recall/search tools cannot
+produce <code>NaN</code> scores or runaway recency weighting from a bad env file.</p>
+<p>Shared Node, Python, and Workgraph inline system-prompt clients also bound
+<code>SYSTEM_PROMPT_CACHE_TTL_SEC</code>: default <code>300</code>, minimum <code>1</code>, maximum <code>86400</code>.
+Invalid values fall back to <code>300</code> so Composer prompt fetches do not lose cache
+behavior because of a bad env file.</p>
+<p>Shared embedding clients bound <code>EMBEDDING_DIM</code> before write-time dimension
+checks: default <code>1536</code>, minimum <code>1</code>, maximum <code>16000</code>. Invalid or non-finite
+values fall back to <code>1536</code> so vector inserts fail with a clear provider/model
+dimension mismatch instead of comparing against <code>NaN</code>.</p>
+<p>Platform Web bounds the client idle-session knob
+<code>NEXT_PUBLIC_SESSION_IDLE_MINUTES</code>: default <code>30</code>, minimum <code>1</code>, maximum <code>720</code>.
+Invalid, non-finite, or sub-minute values fall back to <code>30</code>, so a public env
+typo cannot create an effectively unbounded browser session.</p>
+<p>Agent Runtime capability/polling knobs are schema-validated at startup.
+<code>POLL_WORKER_TICK_SEC</code> defaults to <code>30</code> and is bounded <code>5..3600</code>.
+<code>CAPABILITY_LEARNING_RUN_STALE_MS</code> defaults to <code>900000</code> and is bounded
+<code>60000..86400000</code>, so learning-worker leases cannot spin too quickly or stay
+stale forever because of a typo. Default governance limit seeds are bounded as
+well: <code>CAPABILITY_DEFAULT_DAILY_TOKENS</code> defaults to <code>200000</code> and is bounded
+<code>1..20000000</code>, <code>CAPABILITY_DEFAULT_DAILY_COST_USD</code> defaults to <code>2</code> and is
+bounded <code>0..10000</code>, and <code>CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE</code> defaults to
+<code>30</code> and is bounded <code>1..10000</code>.
+Capability bootstrap discovery has its own bounded network timeout:
+<code>CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC</code> defaults to <code>30</code> and is bounded
+<code>1..900</code> for Runtime Bridge source reads, direct MCP source fallback, and
+document-link discovery.</p>
+<p>Audit Governance bounds live audit stream knobs before creating SSE
+subscribers. <code>AUDIT_GOV_STREAM_MAX_SUBSCRIBERS</code> defaults to <code>50</code>, minimum <code>1</code>,
+maximum <code>1000</code>; <code>AUDIT_GOV_STREAM_KEEPALIVE_MS</code> defaults to <code>15000</code>, minimum
+<code>1000</code>, maximum <code>300000</code>; and <code>AUDIT_GOV_STREAM_QUEUE_MAX</code> defaults to <code>500</code>,
+minimum <code>1</code>, maximum <code>10000</code>. Invalid, non-finite, or below-minimum values fall
+back to defaults so an env typo cannot disable capacity checks, create a tight
+heartbeat loop, or leave each client with an unbounded event queue.</p>
+<p>Audit Governance also bounds ingest pressure knobs. <code>AUDIT_GOV_EVENT_RATE_WINDOW_MS</code>
+defaults to <code>60000</code>, minimum <code>1000</code>, maximum <code>3600000</code>; <code>AUDIT_GOV_EVENT_RATE_MAX</code>
+defaults to <code>2000</code>, minimum <code>1</code>, maximum <code>100000</code>; <code>AUDIT_GOV_EVENT_BATCH_MAX</code>
+and <code>LOG_INGEST_MAX_BATCH</code> both default to <code>500</code>, minimum <code>1</code>, maximum <code>5000</code>.
+Invalid or below-minimum values fall back to defaults, while oversized values
+clamp to caps, so ingest cannot accidentally run with disabled rate limits or
+huge per-request batches after an env typo.</p>
+<p>Audit Governance engine workers use the same bounded env helper. Judge and
+lesson extraction LLM timeouts default to <code>30000</code> ms and cap at <code>300000</code>; the
+diagnosis timeout defaults to <code>120000</code> ms and caps at <code>600000</code>. The shared
+system-prompt cache TTL defaults to <code>300</code> seconds and caps at <code>86400</code>.
+Lesson extraction windows are bounded as well: confirmation wait defaults to
+<code>3600</code> seconds with a <code>60..604800</code> envelope, and retry lookback defaults to
+<code>2</code> hours with a <code>1..168</code> envelope. Engine sweeps default to every <code>300000</code> ms
+with a <code>30000..86400000</code> envelope, scanning the last <code>10</code> minutes with a
+<code>1..1440</code> envelope.</p>
+<p>Workgraph&#39;s Copilot handoff export keeps prompt composition fail-soft. The
+best-effort Context Fabric compose call uses <code>COPILOT_COMPOSE_TIMEOUT_MS</code>,
+default <code>30000</code>, minimum <code>1000</code>, and maximum <code>120000</code>. Invalid values fall
+back to <code>30000</code>; if composition still times out or returns malformed JSON, the
+download continues with raw stage tasks plus degraded-composition headers.
+The generated runner script also bounds evidence upload knobs:
+<code>COPILOT_ARTIFACT_MAX_BYTES</code> defaults to <code>262144</code> and caps at <code>5242880</code> per
+file, while <code>COPILOT_ARTIFACT_MAX_FILES</code> defaults to <code>40</code> and caps at <code>200</code>.
+Invalid or too-small values fall back to defaults so a shell typo does not
+prevent the runner from posting metrics and artifacts.</p>
+<p>Workgraph file and artifact byte limits are also bounded at startup.
+<code>MAX_UPLOAD_BYTES</code> defaults to <code>1073741824</code> and caps at <code>2147483648</code> for
+multipart uploads; larger files should be attached as external links.
+<code>INTERNAL_ARTIFACT_FETCH_MAX_BYTES</code> defaults to <code>64000</code> and caps at <code>256000</code>
+for internal MinIO text fetches. Invalid values fall back to the defaults
+instead of disabling limits or making artifact reads unusable.</p>
+<p>Workgraph also bounds the formal verification request timeout before sending
+workflow/governance payloads to the verifier service. <code>FORMAL_VERIFICATION_TIMEOUT_MS</code>
+defaults to <code>3000</code>, has a minimum of <code>1</code>, and caps at <code>10000</code>, matching the
+formal-verifier service default maximum. Invalid values fall back to <code>3000</code>.</p>
 <h3 id="95-agent-runtime-api">9.5 Agent Runtime API<a class="anchor" href="#95-agent-runtime-api" aria-label="Link to 9.5 Agent Runtime API">#</a></h3>
 <p>Mounted under <code>http://localhost:3003/api/v1</code>.</p>
 <p>Important endpoints:</p>
@@ -966,11 +1096,21 @@ and federated user mapping.</li>
 </ul>
 <p>Agent profiles are stored as <code>AgentTemplate</code> rows internally, but the user-facing profile API accepts source-backed skill bindings. Bindings can point at local skills, provider manifests, URL documents, or uploaded documents. <code>GET /agents/profiles/:id/sources</code> returns the stored source-governance summary without live network calls: local vs external counts, read-only/provider-locked state, linked knowledge sources/artifacts, and warnings for incomplete bindings. Runtime execution should call <code>POST /agents/profiles/:id/resolve</code> before use; it fetches provider manifests live, filters provider capabilities through profile permissions, fails closed for unreachable providers, and returns a deterministic effective capability set with a snapshot hash. Successful provider resolutions include non-secret manifest evidence (<code>manifestDigest</code>, <code>signatureKeyId</code>, and <code>signedManifest</code>) so runtime receipts can prove exactly which live manifest body shaped the effective capability set.</p>
 <p>Provider manifests can be signed with <code>X-Manifest-Key-Id</code> and <code>X-Manifest-Signature: sha256=&lt;hex&gt;</code>, where the signature is HMAC-SHA256 over the raw manifest body. Configure trusted keys with <code>PROVIDER_MANIFEST_TRUSTED_KEYS</code> as JSON (<code>{&quot;github&quot;:&quot;32+ char secret&quot;}</code>) or comma-separated <code>keyId:secret</code> pairs; production startup, doctor, and deploy preflight fail weak trusted-key secrets shorter than 32 characters. <code>PROVIDER_MANIFEST_SIGNATURE_MODE=auto</code> allows unsigned manifests only in local development when no trusted keys are configured; production-class environments must set <code>PROVIDER_MANIFEST_SIGNATURE_MODE=required</code>. Signed/provider-trusted manifests must also include <code>version</code> or <code>manifest_version</code> and an <code>expiresAt</code>/<code>expires_at</code> timestamp. Agent Runtime rejects expired manifests, future <code>issuedAt</code> timestamps, duplicate capability IDs, excessive validity windows (<code>PROVIDER_MANIFEST_MAX_TTL_SECONDS</code>, default 30 days), and insecure <code>http://</code> invocation endpoints in signed manifests.</p>
-<p>Source-backed skills also pass through an SSRF guard before Agent Runtime previews URL documents or fetches provider manifests during resolution. Source URLs must be absolute <code>http</code>/<code>https</code> URLs, cannot include embedded credentials, and cannot target localhost, private/link-local/reserved networks, or cloud metadata hostnames. <code>AGENT_SOURCE_ALLOW_PRIVATE_URLS=true</code> is available only for deliberate local development against a private test manifest; production-class doctor and deploy preflight require <code>AGENT_SOURCE_ALLOW_PRIVATE_URLS=false</code>.</p>
+<p>Source-backed skills also pass through an SSRF guard before Agent Runtime previews URL documents or fetches provider manifests during resolution. Source URLs must be absolute <code>http</code>/<code>https</code> URLs, cannot include embedded credentials, and cannot target localhost, private/link-local/reserved networks, or cloud metadata hostnames. <code>AGENT_SOURCE_FETCH_TIMEOUT_SEC</code> defaults to <code>5</code> and is bounded <code>1..300</code> for provider-manifest and URL-document preview fetches. <code>AGENT_SOURCE_ALLOW_PRIVATE_URLS=true</code> is available only for deliberate local development against a private test manifest; production-class doctor and deploy preflight require <code>AGENT_SOURCE_ALLOW_PRIVATE_URLS=false</code>.</p>
 <p>The tool subsystem (merged into <code>agent-service</code> on <code>:3001</code>, formerly <code>tool-service</code>) requires a resolved profile capability set on governed discovery and invocation requests as <code>effective_capabilities</code> or <code>effectiveCapabilities</code>. That set is authoritative: <code>/api/v1/tools/discover</code> hides tools that do not have <code>invoke</code>, and <code>/api/v1/tools/invoke</code> blocks calls whose <code>requested_capability_id</code> / <code>requestedCapabilityId</code> is missing or lacks the requested permission. If the set is omitted, tool-service fails closed by default; set <code>TOOL_EFFECTIVE_CAPABILITY_REQUIRED=false</code> only for a deliberate legacy migration window.</p>
 <p>Server-side tool invocation is also endpoint-scoped. Tool-service only fetches <code>runtime.endpoint_url</code> values that match <code>TOOL_SERVER_ENDPOINT_ALLOWLIST</code>; when unset, the allowlist is limited to the seeded internal <code>/api/v1/internal-tools</code> and <code>/api/v1/connector-tools</code> prefixes on tool-service. External/API skills that need <code>invoke</code> must add exact <code>https://...</code> provider invocation prefixes. Metadata hosts, Docker host aliases, loopback/private IP targets outside the baked internal tool-service routes, and URLs with embedded credentials are blocked even if an unsafe allowlist is configured.</p>
+<p>Server-side tool endpoint calls also bound <code>TOOL_SERVER_ENDPOINT_TIMEOUT_MS</code>:
+default <code>30000</code>, minimum <code>1000</code>, maximum <code>300000</code>. Invalid, non-finite, or
+sub-second values fall back to the default, and oversized values clamp to the
+cap, so a bad env file cannot crash <code>AbortSignal.timeout()</code> or leave server
+tool calls effectively unbounded.</p>
+<p>Connector-tool calls into Workgraph use the same bounded timeout posture:
+<code>WORKGRAPH_CONNECTOR_LIST_TIMEOUT_MS</code> defaults to <code>15000</code> and
+<code>WORKGRAPH_CONNECTOR_INVOKE_TIMEOUT_MS</code> defaults to <code>60000</code>; both clamp between
+<code>1000</code> and <code>300000</code>. Invalid values fall back to the defaults so connector
+discovery or invocation cannot become an accidental unbounded wait.</p>
 <p>Context Fabric resolves the agent profile snapshot at <code>/execute</code> time when <code>run_context.agent_template_id</code> is present, filters tool discovery with that effective set, and forwards it into MCP <code>runContext</code>. Profile-backed runs mark the effective set as required, so an empty or unavailable resolution hides/refuses tools instead of falling back to legacy-open behavior. MCP also treats any <code>profileSnapshotHash</code> as requiring the effective set and production-class deployments must set <code>MCP_REQUIRE_EFFECTIVE_CAPABILITIES=true</code>, so direct MCP dispatch cannot omit profile capability evidence and still invoke tools. The purpose-built <code>/mcp/work/finish-branch</code> endpoint uses the same effective-capability check before grant verification or any finalize/push side effect, so operational workflow hooks cannot bypass a read-only profile snapshot. MCP then forwards the same set to the Context Fabric SERVER-tool adapter, which passes it to tool-service. Context Fabric also persists <code>profileSnapshotHash</code>, non-secret <code>profileProviderResolutions</code>, and a compact <code>profileEffectiveCapabilities</code> receipt snapshot containing source/provenance, read-only/provider-locked state, manifest digest/signature evidence, and the clamped effective permission flags. Runtime-only schema bodies and invocation endpoints are intentionally omitted from the durable call log so audits can prove which provider manifest and permission set shaped the run without leaking operational endpoints into every receipt. Omitted <code>governance_mode</code> values use <code>DEFAULT_GOVERNANCE_MODE</code>; local development defaults to <code>fail_open</code>, but production-class startup, doctor, and deploy preflight require <code>DEFAULT_GOVERNANCE_MODE=fail_closed</code> so unannotated runs cannot skip the audit-governance precheck. Production deploy preflight also requires <code>AUDIT_GOV_URL</code> and verifies audit-governance <code>/health</code> before release, because fail-closed governance cannot honestly start if the ledger is unreachable. Workgraph also reads <code>DEFAULT_GOVERNANCE_MODE</code> for implicit workflow/workbench defaults, so low-risk or incomplete workflow policy does not force production calls back to fail-open. Non-blueprint workflow <code>AGENT_TASK</code> nodes default to Context Fabric&#39;s governed stage path via <code>WORKGRAPH_FORCE_GOVERNED_CODING=true</code>; explicit node opt-out or setting that env var to <code>false</code> is reserved for incident recovery and migration replay. Event Horizon chat defaults to Context Fabric&#39;s governed single-turn path via <code>CONTEXT_FABRIC_GOVERN_SIDE_CALLERS=true</code>; setting it to <code>false</code> is also an incident-recovery escape hatch. Direct MCP invokes and approval resumes use <code>MCP_DEFAULT_GOVERNANCE_MODE</code>; production-class MCP refuses to start unless it is <code>fail_closed</code>.</p>
-<p>Mutating and high-risk MCP tool calls are also grant-bound in production. Context Fabric must run with <code>CF_TOOL_GRANT_ENABLED=true</code> and mint per-call grants using <code>TOOL_GRANT_SIGNING_SECRET</code>; MCP must run with <code>MCP_TOOL_GRANT_MODE=enforce</code>, <code>MCP_REQUIRE_EFFECTIVE_CAPABILITIES=true</code>, and the same signing secret. The grant gate covers normal <code>/mcp/tool-run</code> calls and the purpose-built <code>/mcp/work/finish-branch</code> endpoint; executor-only tools such as <code>run_python</code> are classified as <code>run</code> so they cannot bypass the gate by being absent from the agent-facing manifest. Workgraph direct <code>RUN_PYTHON</code> and <code>GIT_PUSH</code> nodes request narrow operational grants from Context Fabric when grant mode is active; Context Fabric refuses <code>finish_work_branch</code> unless the workflow has an approved gate and refuses <code>run_python</code> network access unless the node explicitly allows it. <code>./singularity.sh config production-guardrails</code> writes the fail-closed/enforce/effective-capability posture, and <code>./singularity.sh config rotate-secrets</code> rotates the shared HMAC key. This keeps MCP independently deployable while preserving the same platform policy gate when it runs on another host.</p>
+<p>Mutating and high-risk MCP tool calls are also grant-bound in production. Context Fabric must run with <code>CF_TOOL_GRANT_ENABLED=true</code> and mint per-call grants using <code>TOOL_GRANT_SIGNING_SECRET</code>; MCP must run with <code>MCP_TOOL_GRANT_MODE=enforce</code>, <code>MCP_REQUIRE_EFFECTIVE_CAPABILITIES=true</code>, and the same signing secret. <code>CF_TOOL_GRANT_TTL_SEC</code> defaults to <code>120</code>; invalid or below-5 values fall back to the default, and values above <code>3600</code> are clamped. The grant gate covers normal <code>/mcp/tool-run</code> calls and the purpose-built <code>/mcp/work/finish-branch</code> endpoint; executor-only tools such as <code>run_python</code> are classified as <code>run</code> so they cannot bypass the gate by being absent from the agent-facing manifest. Workgraph direct <code>RUN_PYTHON</code> and <code>GIT_PUSH</code> nodes request narrow operational grants from Context Fabric when grant mode is active; Context Fabric refuses <code>finish_work_branch</code> unless the workflow has an approved gate and refuses <code>run_python</code> network access unless the node explicitly allows it. <code>./singularity.sh config production-guardrails</code> writes the fail-closed/enforce/effective-capability posture, and <code>./singularity.sh config rotate-secrets</code> rotates the shared HMAC key. This keeps MCP independently deployable while preserving the same platform policy gate when it runs on another host.</p>
 <p>Prompt Composer renders the same effective capability metadata into the prompt stack. Tool blocks and agent skill-source layers include source type, source reference, read-only/provider-locked state, and the clamped effective permissions; provider-advertised <code>invoke</code>, <code>configure</code>, or <code>edit</code> permissions are not shown to the model when the profile/source is read-only or provider-locked.</p>
 <h3 id="96-tool-api-merged-into-agent-service">9.6 Tool API (Merged Into Agent Service)<a class="anchor" href="#96-tool-api-merged-into-agent-service" aria-label="Link to 9.6 Tool API (Merged Into Agent Service)">#</a></h3>
 <p>The former <code>tool-service</code> is merged into <code>agent-service</code>; these routes are served under <code>http://localhost:3001/api/v1</code> (there is no <code>:3002</code>).</p>
@@ -1021,6 +1161,12 @@ cd singularity-platform</code></pre>
 ./singularity.sh recreate iam-service
 ./singularity.sh config prepare-production --tenant-id &lt;tenant-id&gt; --skip-rotate-secrets</code></pre>
 <p><code>prepare-production</code> is the safest shared/staging/production entrypoint: start with <code>--dry-run</code>, then run it once to apply strict tenant guardrails and rotate deploy secrets with signed provider manifests. Because rotation changes <code>JWT_SECRET</code>, <code>WORKGRAPH_PROXY_SERVICE_TOKEN</code> minting is deliberately deferred until IAM is restarted with the generated env; then rerun <code>prepare-production --skip-rotate-secrets</code> to mint the tenant-scoped <code>platform-web</code> service JWT and run deploy preflight. The lower-level commands remain available when you need one piece only. <code>rotate-secrets</code> generates strong local JWT, service, MCP bearer/runner tokens, and the shared MCP tool-grant signing secret, updates <code>.singularity/config.local.json</code>, and rewrites the generated env files. <code>WORKGRAPH_PROXY_SERVICE_TOKEN</code> is deliberately excluded from <code>rotate-secrets</code> because it must be a pre-minted IAM service JWT for <code>platform-web</code>, not a random shared secret; <code>mint-workgraph-proxy-token</code> logs into IAM or accepts <code>--admin-token</code>, mints that JWT, writes it to canonical config/env files, and preserves tenant scopes from <code>production-guardrails</code>. Platform Web also uses that JWT for server-side Prompt Composer proxy calls unless <code>PROMPT_COMPOSER_SERVICE_TOKEN</code> is explicitly set. Platform Web and Workgraph proxy service JWTs should carry read/reference scopes only; agent-runtime capability reference federation is the service path that requires <code>write:reference-data</code> in addition to <code>read:reference-data</code> and <code>publish:events</code>. IAM service-token reads are also scoped by surface: reference catalog, authz decision, and governance resolution reads require <code>read:reference-data</code>, MCP registry reads require <code>read:mcp-servers</code>, audit reads require <code>read:audit</code>, event subscription registry changes require <code>publish:events</code>, and service-authored governance writes require <code>governance:author</code> or <code>governance:enforce</code>. Human governance writes require matching <code>governance:author</code> or <code>governance:enforce</code> permissions on both the governed capability and the governing capability unless the user is a real super-admin. <code>--provider-manifest-key-id</code> also creates a trusted provider-manifest HMAC key and switches external manifests to required signatures. <code>production-guardrails</code> sets the production-class safety posture: strict tenant mode, required tenant IDs, optional auth disabled, default fail-closed Workgraph/Context Fabric/direct MCP governance, Context Fabric tool-grant minting, MCP grant verification enforcement, provider-manifest signatures required, and tenant-scoped IAM/Workgraph service-token allowlists. <code>--include-bootstrap-password</code> also rotates <code>LOCAL_SUPER_ADMIN_PASSWORD</code>; for an existing IAM database, recreate <code>iam-service</code> with the new env and then run <code>reset-bootstrap-password</code> to update the stored local credential hash.</p>
+<p>Agent Service, including the folded-in Tool Service routes, refuses production-class startup unless <code>JWT_SECRET</code>, <code>MCP_BEARER_TOKEN</code>, <code>AUDIT_GOV_SERVICE_TOKEN</code>, and <code>CONTEXT_FABRIC_SERVICE_TOKEN</code> are strong non-default values. This keeps internal tool synthesis and distillation calls from silently running without the Context Fabric service boundary.</p>
+<p>Agent Service and folded Tool Service synthesis calls to Context Fabric use
+<code>CONTEXT_FABRIC_SINGLE_TURN_TIMEOUT_SEC</code>, default <code>70</code>, bounded <code>1..300</code>.
+The same bounded value is sent in the Context Fabric <code>limits.timeoutSec</code> payload
+and used for local fetch cancellation, so a bad env file cannot create instant
+timeouts or unbounded waits.</p>
 <h3 id="104-start-the-stack">10.4 Start The Stack<a class="anchor" href="#104-start-the-stack" aria-label="Link to 10.4 Start The Stack">#</a></h3>
 <pre><code class="language-bash">./singularity.sh up</code></pre>
 <p>This starts the core Docker Compose stack. Local LLM Gateway, MCP, verification, compression, and audit-governance are optional profiles or remote services. <code>/foundry</code> is included in Platform Web and backed by Workgraph.</p>
