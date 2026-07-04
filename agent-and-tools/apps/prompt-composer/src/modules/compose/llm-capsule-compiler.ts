@@ -15,9 +15,11 @@
 import { llmRespond } from "@agentandtools/shared";
 import { logger } from "../../config/logger";
 import type { RetrievedChunk } from "./retrieval";
+import { llmCapsuleCompilerConfig } from "./llm-capsule-compiler.config";
 
-const TIMEOUT_MS = Number(process.env.CAPSULE_COMPILE_TIMEOUT_MS ?? 30_000);
-const MODEL_ALIAS = process.env.CAPSULE_COMPILE_MODEL_ALIAS?.trim();
+const COMPILER_CONFIG = llmCapsuleCompilerConfig();
+const TIMEOUT_MS = COMPILER_CONFIG.timeoutMs;
+const MODEL_ALIAS = COMPILER_CONFIG.modelAlias;
 
 // M36.4 — capsule-compiler system prompt now lives in the SystemPrompt table
 // (key "prompt-composer.capsule-compiler"). Since this file IS inside
@@ -29,7 +31,7 @@ import { prisma } from "../../config/prisma";
 const SYSTEM_PROMPT_KEY = "prompt-composer.capsule-compiler";
 let cachedSystemPrompt: string | null = null;
 let cachedAt = 0;
-const SYSTEM_PROMPT_TTL_MS = Number(process.env.SYSTEM_PROMPT_CACHE_TTL_SEC ?? 300) * 1000;
+const SYSTEM_PROMPT_TTL_MS = COMPILER_CONFIG.systemPromptCacheTtlMs;
 
 async function loadSystemPrompt(): Promise<string> {
   if (cachedSystemPrompt && Date.now() - cachedAt < SYSTEM_PROMPT_TTL_MS) {

@@ -364,7 +364,8 @@ Core features:
 - Debug retrieval.
 - Code-aware prompt layer rendering.
 
-Compiled-context capsule GC and retry knobs are bounded at startup:
+Compiled-context capsule compiler, GC, and retry knobs are bounded at startup:
+`CAPSULE_COMPILE_TIMEOUT_MS`, `SYSTEM_PROMPT_CACHE_TTL_SEC`,
 `CAPSULE_COMPILE_MAX_CONCURRENCY`, `CAPSULE_TTL_DAYS`, `CAPSULE_COLD_DAYS`,
 `CAPSULE_GC_INTERVAL_MS`, `CAPSULE_MAX_CHARS`,
 `CAPSULE_FAILURE_WINDOW_MS`, `CAPSULE_FAILURE_ALERT_RATE`,
