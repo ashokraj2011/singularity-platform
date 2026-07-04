@@ -63,6 +63,7 @@ const MCP_LIMITS = {
   HTTP_TOOL_TIMEOUT_MS: 300_000,
   GIT_HISTORY_TIMEOUT_MS: 300_000,
   PROCESS_KILL_GRACE_MS: 60_000,
+  COPILOT_HEADLESS_TIMEOUT_MS: 300_000,
   AUDIT_RESTORE_LIMIT: 100_000,
   FORMAL_VERIFICATION_TIMEOUT_MS: 10 * 60_000,
   LOOP_REPETITION_THRESHOLD: 20,
@@ -275,6 +276,7 @@ const schema = z.object({
   MCP_HTTP_TOOL_TIMEOUT_MS: boundedPositiveInt(30_000, MCP_LIMITS.HTTP_TOOL_TIMEOUT_MS),
   MCP_GIT_HISTORY_TIMEOUT_MS: boundedPositiveInt(60_000, MCP_LIMITS.GIT_HISTORY_TIMEOUT_MS),
   MCP_PROCESS_KILL_GRACE_MS: boundedPositiveInt(2_000, MCP_LIMITS.PROCESS_KILL_GRACE_MS),
+  MCP_COPILOT_HEADLESS_TIMEOUT_MS: boundedPositiveInt(30_000, MCP_LIMITS.COPILOT_HEADLESS_TIMEOUT_MS),
 
   // Optional SMT/formal verifier hook. When enabled, finish_work_branch runs
   // a pre-commit proof over the code-change evidence and verification receipts

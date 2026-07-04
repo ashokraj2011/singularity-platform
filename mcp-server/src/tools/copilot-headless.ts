@@ -14,8 +14,9 @@
  */
 import { spawn } from "node:child_process";
 import type { ToolHandler } from "./registry";
+import { config } from "../config";
 
-const COPILOT_TIMEOUT_MS = 30_000;
+const COPILOT_HEADLESS_TIMEOUT_MS = config.MCP_COPILOT_HEADLESS_TIMEOUT_MS;
 
 async function runGh(args: string[], input?: string): Promise<{ stdout: string; stderr: string; exit_code: number }> {
   return new Promise((resolve) => {
@@ -27,7 +28,7 @@ async function runGh(args: string[], input?: string): Promise<{ stdout: string; 
     let stderr = "";
     const t = setTimeout(() => {
       child.kill("SIGTERM");
-    }, COPILOT_TIMEOUT_MS);
+    }, COPILOT_HEADLESS_TIMEOUT_MS);
     child.stdout.on("data", (b) => { stdout += b.toString(); });
     child.stderr.on("data", (b) => { stderr += b.toString(); });
     child.on("close", (code) => {

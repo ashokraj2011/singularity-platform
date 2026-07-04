@@ -931,6 +931,10 @@ Process-mode command cleanup is bounded by `MCP_PROCESS_KILL_GRACE_MS`, default
 used by `run_command` and `copilot_execute` when MCP is explicitly running in
 local process execution mode.
 
+Headless GitHub Copilot helpers (`copilot_suggest` and `copilot_explain`) use
+`MCP_COPILOT_HEADLESS_TIMEOUT_MS`, default `30000`, bounded `1..300000`, so
+operators can tune slow `gh copilot` extension calls without changing code.
+
 The tool subsystem (merged into `agent-service` on `:3001`, formerly `tool-service`) requires a resolved profile capability set on governed discovery and invocation requests as `effective_capabilities` or `effectiveCapabilities`. That set is authoritative: `/api/v1/tools/discover` hides tools that do not have `invoke`, and `/api/v1/tools/invoke` blocks calls whose `requested_capability_id` / `requestedCapabilityId` is missing or lacks the requested permission. If the set is omitted, tool-service fails closed by default; set `TOOL_EFFECTIVE_CAPABILITY_REQUIRED=false` only for a deliberate legacy migration window.
 
 Server-side tool invocation is also endpoint-scoped. Tool-service only fetches `runtime.endpoint_url` values that match `TOOL_SERVER_ENDPOINT_ALLOWLIST`; when unset, the allowlist is limited to the seeded internal `/api/v1/internal-tools` and `/api/v1/connector-tools` prefixes on tool-service. External/API skills that need `invoke` must add exact `https://...` provider invocation prefixes. Metadata hosts, Docker host aliases, loopback/private IP targets outside the baked internal tool-service routes, and URLs with embedded credentials are blocked even if an unsafe allowlist is configured.
