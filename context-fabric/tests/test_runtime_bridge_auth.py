@@ -8,6 +8,59 @@ from fastapi.testclient import TestClient
 from context_api_service.app import laptop_bridge
 
 
+def test_runtime_metadata_uses_token_claims_over_spoofed_hello():
+    metadata = laptop_bridge._token_authoritative_runtime_metadata(
+        {
+            "kind": "runtime",
+            "sub": "user-real",
+            "tenant_id": "tenant-real",
+            "runtime_id": "runtime-real",
+            "runtime_type": "mcp",
+            "device_name": "trusted-runtime-name",
+        },
+        {
+            "type": "hello",
+            "user_id": "user-spoof",
+            "tenant_id": "tenant-spoof",
+            "runtime_id": "runtime-spoof",
+            "device_id": "device-spoof",
+            "runtime_type": "admin-runtime",
+            "device_name": "confusing-name",
+        },
+    )
+
+    assert metadata == {
+        "user_id": "user-real",
+        "tenant_id": "tenant-real",
+        "runtime_id": "runtime-real",
+        "runtime_type": "mcp",
+        "device_name": "trusted-runtime-name",
+    }
+
+
+def test_runtime_metadata_allows_legacy_hello_display_fallbacks():
+    metadata = laptop_bridge._token_authoritative_runtime_metadata(
+        {
+            "kind": "device",
+            "sub": "user-legacy",
+            "device_id": "legacy-device",
+        },
+        {
+            "type": "hello",
+            "runtime_type": "mcp",
+            "device_name": "legacy-laptop",
+        },
+    )
+
+    assert metadata == {
+        "user_id": "user-legacy",
+        "tenant_id": "",
+        "runtime_id": "legacy-device",
+        "runtime_type": "mcp",
+        "device_name": "legacy-laptop",
+    }
+
+
 def _configure(
     monkeypatch: pytest.MonkeyPatch,
     *,

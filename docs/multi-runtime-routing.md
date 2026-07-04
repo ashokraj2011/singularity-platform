@@ -83,9 +83,10 @@ routes such as branch finalization and worktree writes still require
 
 ## 2. Identity: one token per runtime (token-authoritative)
 
-CF derives **all** identity/routing fields — `user_id`, `tenant_id`, `runtime_id`,
-`capability_tags`, `shared` — from the **verified JWT claims only**. The client
-hello is advisory metadata (device_name, health, supported_frame_types) and any
+CF derives **all** identity/routing fields — `user_id`, `tenant_id`,
+`runtime_id`, `runtime_type`, `device_name`, `capability_tags`, `shared` — from
+the **verified JWT claims** when those claims exist. The client hello is advisory
+metadata (health, supported_frame_types, and legacy display fallbacks) and any
 hello field that conflicts with a claim is **logged and ignored**
 ([`laptop_bridge.py` security note](../context-fabric/services/context_api_service/app/laptop_bridge.py)).
 This is deliberate: otherwise any holder of a valid runtime token could register

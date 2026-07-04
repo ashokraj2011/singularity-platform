@@ -208,6 +208,55 @@ def _verify_runtime_token(token: str) -> dict[str, Any]:
     return claims
 
 
+def _first_claim_str(claims: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = claims.get(key)
+        if value is not None and str(value):
+            return str(value)
+    return ""
+
+
+def _first_hello_str(hello: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = hello.get(key)
+        if value is not None and str(value):
+            return str(value)
+    return ""
+
+
+def _token_authoritative_runtime_metadata(
+    claims: dict[str, Any],
+    hello: dict[str, Any],
+) -> dict[str, str]:
+    """Resolve runtime registration metadata.
+
+    Routing identity and operator-visible runtime identity should come from the
+    verified JWT when claims exist. The hello frame is a compatibility fallback
+    for older device tokens that did not carry runtime_type/device_name, not a
+    way for a runtime to impersonate another tenant/user/runtime shape.
+    """
+    user_id = _first_claim_str(claims, "user_id", "sub")
+    tenant_id = _first_claim_str(claims, "tenant_id", "tenant", "org_id")
+    runtime_id = _first_claim_str(claims, "runtime_id", "device_id", "sub")
+    runtime_type = (
+        _first_claim_str(claims, "runtime_type")
+        or _first_hello_str(hello, "runtime_type")
+        or "mcp"
+    )
+    device_name = (
+        _first_claim_str(claims, "device_name")
+        or _first_hello_str(hello, "device_name")
+        or runtime_id
+    )
+    return {
+        "user_id": user_id,
+        "tenant_id": tenant_id,
+        "runtime_id": runtime_id,
+        "runtime_type": runtime_type,
+        "device_name": device_name,
+    }
+
+
 @router.websocket("/api/runtime-bridge/connect")
 @router.websocket("/api/laptop-bridge/connect")
 async def runtime_connect(ws: WebSocket) -> None:
@@ -265,35 +314,33 @@ async def runtime_connect(ws: WebSocket) -> None:
         return
 
     # SECURITY: identity + routing fields come from the VERIFIED JWT claims ONLY.
-    # The client-supplied hello frame is advisory metadata (device_name,
-    # runtime_type, supported_frame_types, health) and must NOT be able to set
-    # user_id / tenant_id / runtime_id / shared / capability_tags — otherwise a
-    # holder of any valid runtime token could register as another user, tenant,
-    # or shared runtime and have tool/model/code work misrouted to them.
-    user_id = str(claims.get("user_id") or claims.get("sub") or "")
-    tenant_id = str(
-        claims.get("tenant_id")
-        or claims.get("tenant")
-        or claims.get("org_id")
-        or ""
-    )
-    runtime_id = str(
-        claims.get("runtime_id")
-        or claims.get("device_id")
-        or claims.get("sub")
-        or ""
-    )
+    # The client-supplied hello frame is advisory metadata (supported_frame_types,
+    # health) and a compatibility fallback for legacy display fields. It must NOT
+    # be able to set user_id / tenant_id / runtime_id / runtime_type / device_name
+    # / shared / capability_tags — otherwise a holder of any valid runtime token
+    # could register as another runtime and have tool/model/code work misrouted
+    # or misrepresented in Operations.
+    metadata = _token_authoritative_runtime_metadata(claims, hello)
+    user_id = metadata["user_id"]
+    tenant_id = metadata["tenant_id"]
+    runtime_id = metadata["runtime_id"]
+    runtime_type = metadata["runtime_type"]
+    device_name = metadata["device_name"]
     if not user_id or not runtime_id:
         await ws.close(code=4401, reason="missing runtime identity")
         return
     # Log (never trust) hello fields that conflict with the verified identity.
-    for _field, _claimed in (("user_id", user_id), ("tenant_id", tenant_id), ("runtime_id", runtime_id)):
+    for _field, _claimed in (
+        ("user_id", user_id),
+        ("tenant_id", tenant_id),
+        ("runtime_id", runtime_id),
+        ("runtime_type", runtime_type),
+        ("device_name", device_name),
+    ):
         _h = hello.get(_field) if _field != "runtime_id" else (hello.get("runtime_id") or hello.get("device_id"))
         if _h is not None and str(_h) != _claimed:
             log.warning("ignoring hello.%s=%r conflicting with verified claim %r", _field, _h, _claimed)
 
-    runtime_type = str(hello.get("runtime_type") or claims.get("runtime_type") or "mcp")
-    device_name = str(hello.get("device_name") or claims.get("device_name") or runtime_id)
     sft_raw = hello.get("supported_frame_types")
     supported_frame_types = (
         [str(s) for s in sft_raw] if isinstance(sft_raw, list) and sft_raw else ["invoke"]
