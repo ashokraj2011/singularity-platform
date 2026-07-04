@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { readUpstreamJsonObject } from "../../shared/upstream-json";
+import { boundedEnvInteger } from "../lib/env";
 
 export interface AuthUser {
   user_id: string;
@@ -28,6 +29,12 @@ type IamMeResponse = {
   capability_ids?: string[];
 };
 
+const IAM_AUTH_VERIFY_TIMEOUT_MS = boundedEnvInteger("IAM_AUTH_VERIFY_TIMEOUT_SEC", {
+  defaultValue: 5,
+  min: 1,
+  max: 300,
+}) * 1000;
+
 function iamApiBase(): string | null {
   const raw = process.env.IAM_SERVICE_URL ?? process.env.IAM_BASE_URL;
   if (!raw) return null;
@@ -54,7 +61,10 @@ async function verifyWithIam(token: string): Promise<AuthUser | null> {
   const base = iamApiBase();
   if (!base) return null;
   try {
-    const res = await fetch(`${base}/me`, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetch(`${base}/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(IAM_AUTH_VERIFY_TIMEOUT_MS),
+    });
     if (!res.ok) return null;
     const me = await readUpstreamJsonObject(res, "IAM /me") as IamMeResponse;
     const userId = me.user_id ?? me.id ?? me.sub;

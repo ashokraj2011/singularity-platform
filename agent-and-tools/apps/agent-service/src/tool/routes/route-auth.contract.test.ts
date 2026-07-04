@@ -17,7 +17,10 @@ function main() {
   const auth = source("src/tool/middleware/auth.ts");
   assert.match(auth, /async function verifyWithIam\(token: string\): Promise<AuthUser \| null>/);
   assert.match(auth, /process\.env\.IAM_SERVICE_URL \?\? process\.env\.IAM_BASE_URL/);
-  assert.match(auth, /fetch\(`\$\{base\}\/me`, \{ headers: \{ Authorization: `Bearer \$\{token\}` \} \}\)/);
+  assert.match(auth, /import \{ boundedEnvInteger \} from ["']\.\.\/lib\/env["'];?/);
+  assert.match(auth, /const IAM_AUTH_VERIFY_TIMEOUT_MS = boundedEnvInteger\("IAM_AUTH_VERIFY_TIMEOUT_SEC", \{[\s\S]*?defaultValue: 5,[\s\S]*?min: 1,[\s\S]*?max: 300,[\s\S]*?\}\) \* 1000;/);
+  assert.match(auth, /\/me`, \{[\s\S]*?signal: AbortSignal\.timeout\(IAM_AUTH_VERIFY_TIMEOUT_MS\)/);
+  assert.doesNotMatch(auth, /fetch\(`\$\{base\}\/me`, \{ headers: \{ Authorization: `Bearer \$\{token\}` \} \}\)/);
   assert.match(auth, /req\.user = await verifyWithIam\(token\) \?\? undefined/);
 
   assertRouterAuth("src/tool/routes/tools.ts", "toolRoutes");
