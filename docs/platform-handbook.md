@@ -780,6 +780,12 @@ Prompt Composer dynamic tool discovery calls to Tool Service use
 failures still degrade to an empty dynamic tool list, but a slow Tool Service
 can no longer pin the prompt assembly request indefinitely.
 
+Prompt Composer IAM fallback verification calls to `/me` use
+`IAM_AUTH_VERIFY_TIMEOUT_SEC`, default `5`, bounded `1..300`. Local JWT
+verification remains first; this only bounds the IAM fallback path so a slow
+identity service returns an unauthenticated decision instead of holding request
+workers open.
+
 Context Fabric MCP dispatch timeouts use the same governed env helper:
 `MCP_TOOL_RUN_TIMEOUT_SEC` defaults to `120`, minimum `1`, maximum `3600`,
 while `MCP_TOOL_RUN_LONG_TIMEOUT_SEC` defaults to `960`, minimum `1`,

@@ -1039,6 +1039,11 @@ unbounded waits or accidental instant failures.</p>
 <code>TOOL_SERVICE_DISCOVERY_TIMEOUT_SEC</code>, default <code>5</code>, bounded <code>1..300</code>. Discovery
 failures still degrade to an empty dynamic tool list, but a slow Tool Service
 can no longer pin the prompt assembly request indefinitely.</p>
+<p>Prompt Composer IAM fallback verification calls to <code>/me</code> use
+<code>IAM_AUTH_VERIFY_TIMEOUT_SEC</code>, default <code>5</code>, bounded <code>1..300</code>. Local JWT
+verification remains first; this only bounds the IAM fallback path so a slow
+identity service returns an unauthenticated decision instead of holding request
+workers open.</p>
 <p>Context Fabric MCP dispatch timeouts use the same governed env helper:
 <code>MCP_TOOL_RUN_TIMEOUT_SEC</code> defaults to <code>120</code>, minimum <code>1</code>, maximum <code>3600</code>,
 while <code>MCP_TOOL_RUN_LONG_TIMEOUT_SEC</code> defaults to <code>960</code>, minimum <code>1</code>,

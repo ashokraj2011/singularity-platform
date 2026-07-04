@@ -14,8 +14,13 @@ function assertRouterAuth(relativePath: string, routerName: string): void {
 
 function main() {
   const auth = source("src/middleware/auth.middleware.ts");
+  const env = source("src/config/env.ts");
   assert.match(auth, /async function verifyWithIam\(token: string\): Promise<AuthUser \| null>/);
   assert.match(auth, /process\.env\.IAM_SERVICE_URL \?\? process\.env\.IAM_BASE_URL/);
+  assert.match(env, /IAM_AUTH_VERIFY_TIMEOUT_SEC: boundedInt\(5, 1, 300\)/);
+  assert.match(auth, /const IAM_AUTH_VERIFY_TIMEOUT_MS = env\.IAM_AUTH_VERIFY_TIMEOUT_SEC \* 1000;/);
+  assert.match(auth, /\/me`, \{[\s\S]*?signal: AbortSignal\.timeout\(IAM_AUTH_VERIFY_TIMEOUT_MS\)/);
+  assert.doesNotMatch(auth, /fetch\(`\$\{base\}\/me`, \{ headers: \{ Authorization: `Bearer \$\{token\}` \} \}\)/);
   assert.match(auth, /function verifyServiceToken\(token: string\): AuthUser \| null/);
   assert.match(auth, /process\.env\.PROMPT_COMPOSER_SERVICE_TOKEN/);
   assert.match(auth, /env\.CONTEXT_FABRIC_SERVICE_TOKEN/);

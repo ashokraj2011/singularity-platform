@@ -24,6 +24,7 @@ const schema = z.object({
     (v) => v === undefined ? undefined : String(v).toLowerCase() === "true",
     z.boolean(),
   ).default(process.env.NODE_ENV !== "production"),
+  IAM_AUTH_VERIFY_TIMEOUT_SEC: boundedInt(5, 1, 300),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
   TOOL_SERVICE_URL: z.string().url().default("http://localhost:3001"),
   TOOL_SERVICE_DISCOVERY_TIMEOUT_SEC: boundedInt(5, 1, 300),
