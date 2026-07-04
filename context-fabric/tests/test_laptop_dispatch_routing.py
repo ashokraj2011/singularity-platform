@@ -28,10 +28,10 @@ import pytest
 from context_api_service.app.governed.dispatch import (
     ToolDispatchError,
     ToolDispatchResult,
-    _bounded_float_env,
     _timeout_for,
     dispatch_tool,
 )
+from context_api_service.app.governed.env_config import bounded_float_env
 
 
 def _run(coro):
@@ -79,7 +79,7 @@ def _patch_registry(behavior):
 
 def test_mcp_dispatch_timeout_env_defaults_and_clamps(monkeypatch):
     monkeypatch.delenv("MCP_TOOL_RUN_TIMEOUT_SEC", raising=False)
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "MCP_TOOL_RUN_TIMEOUT_SEC",
         default=120.0,
         min_value=1.0,
@@ -87,7 +87,7 @@ def test_mcp_dispatch_timeout_env_defaults_and_clamps(monkeypatch):
     ) == 120.0
 
     monkeypatch.setenv("MCP_TOOL_RUN_TIMEOUT_SEC", "not-a-float")
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "MCP_TOOL_RUN_TIMEOUT_SEC",
         default=120.0,
         min_value=1.0,
@@ -95,7 +95,7 @@ def test_mcp_dispatch_timeout_env_defaults_and_clamps(monkeypatch):
     ) == 120.0
 
     monkeypatch.setenv("MCP_TOOL_RUN_TIMEOUT_SEC", "0")
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "MCP_TOOL_RUN_TIMEOUT_SEC",
         default=120.0,
         min_value=1.0,
@@ -103,7 +103,7 @@ def test_mcp_dispatch_timeout_env_defaults_and_clamps(monkeypatch):
     ) == 120.0
 
     monkeypatch.setenv("MCP_TOOL_RUN_TIMEOUT_SEC", "45.5")
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "MCP_TOOL_RUN_TIMEOUT_SEC",
         default=120.0,
         min_value=1.0,
@@ -111,7 +111,7 @@ def test_mcp_dispatch_timeout_env_defaults_and_clamps(monkeypatch):
     ) == 45.5
 
     monkeypatch.setenv("MCP_TOOL_RUN_TIMEOUT_SEC", "999999")
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "MCP_TOOL_RUN_TIMEOUT_SEC",
         default=120.0,
         min_value=1.0,

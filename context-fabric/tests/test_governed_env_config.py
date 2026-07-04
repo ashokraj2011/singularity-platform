@@ -125,6 +125,40 @@ def test_prompt_composer_knob_bounds(monkeypatch):
     ) == 300.0
 
 
+def test_mcp_dispatch_timeout_knob_bounds(monkeypatch):
+    monkeypatch.setenv("MCP_TOOL_RUN_TIMEOUT_SEC", "0")
+    assert bounded_float_env(
+        "MCP_TOOL_RUN_TIMEOUT_SEC",
+        default=120.0,
+        min_value=1.0,
+        max_value=3600.0,
+    ) == 120.0
+
+    monkeypatch.setenv("MCP_TOOL_RUN_TIMEOUT_SEC", "999999")
+    assert bounded_float_env(
+        "MCP_TOOL_RUN_TIMEOUT_SEC",
+        default=120.0,
+        min_value=1.0,
+        max_value=3600.0,
+    ) == 3600.0
+
+    monkeypatch.setenv("MCP_TOOL_RUN_LONG_TIMEOUT_SEC", "bad")
+    assert bounded_float_env(
+        "MCP_TOOL_RUN_LONG_TIMEOUT_SEC",
+        default=960.0,
+        min_value=1.0,
+        max_value=7200.0,
+    ) == 960.0
+
+    monkeypatch.setenv("MCP_TOOL_RUN_LONG_TIMEOUT_SEC", "999999")
+    assert bounded_float_env(
+        "MCP_TOOL_RUN_LONG_TIMEOUT_SEC",
+        default=960.0,
+        min_value=1.0,
+        max_value=7200.0,
+    ) == 7200.0
+
+
 def test_governed_stage_driver_knob_bounds(monkeypatch):
     monkeypatch.setenv("GOVERNED_STAGE_WALL_CLOCK_SEC", "0")
     assert bounded_float_env(
