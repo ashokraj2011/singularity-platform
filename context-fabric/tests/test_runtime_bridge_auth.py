@@ -241,6 +241,28 @@ def test_runtime_metadata_allows_legacy_hello_display_fallbacks():
     }
 
 
+def test_runtime_revocation_identity_prefers_device_id_then_runtime_id():
+    assert laptop_bridge._runtime_revocation_identity({
+        "kind": "device",
+        "sub": "user-device",
+        "device_id": "device-a",
+    }) == ("user-device", "device-a")
+
+    assert laptop_bridge._runtime_revocation_identity({
+        "kind": "runtime",
+        "sub": "user-runtime",
+        "runtime_id": "runtime-a",
+    }) == ("user-runtime", "runtime-a")
+
+    assert laptop_bridge._runtime_revocation_identity({
+        "kind": "runtime",
+        "user_id": "user-claim",
+        "sub": "user-sub",
+        "device_id": "device-a",
+        "runtime_id": "runtime-a",
+    }) == ("user-claim", "device-a")
+
+
 def _configure(
     monkeypatch: pytest.MonkeyPatch,
     *,

@@ -316,6 +316,20 @@ def _token_authoritative_runtime_metadata(
     }
 
 
+def _runtime_revocation_identity(claims: dict[str, Any]) -> tuple[str, str]:
+    """Return the IAM device-status lookup identity for a bridge token.
+
+    IAM stores runtime tokens on the user-device surface. Modern IAM tokens carry
+    both device_id and runtime_id, but hand-minted/runtime-only tokens may carry
+    runtime_id only. Treat runtime_id as the revocable device identity fallback
+    so those tokens cannot bypass revocation checks.
+    """
+    return (
+        _first_claim_str(claims, "user_id", "sub"),
+        _first_claim_str(claims, "device_id", "runtime_id"),
+    )
+
+
 @router.websocket("/api/runtime-bridge/connect")
 @router.websocket("/api/laptop-bridge/connect")
 async def runtime_connect(ws: WebSocket) -> None:
@@ -340,10 +354,11 @@ async def runtime_connect(ws: WebSocket) -> None:
         await ws.close(code=4401, reason="invalid runtime token")
         return
 
-    # Finding #7 — reject a revoked device before accepting the socket. Uses the token's
-    # own identity (sub + device_id), not the client-supplied hello.
-    device_claim_id = str(claims.get("device_id") or "")
-    claim_user_id = str(claims.get("user_id") or claims.get("sub") or "")
+    # Finding #7 — reject a revoked runtime/device before accepting the socket.
+    # Uses the token's own identity, not the client-supplied hello. Runtime-only
+    # tokens may carry runtime_id without device_id, so runtime_id is the
+    # revocation identity fallback.
+    claim_user_id, device_claim_id = _runtime_revocation_identity(claims)
     if device_claim_id:
         revoked = await _device_revoked(claim_user_id, device_claim_id)
         if revoked is True:

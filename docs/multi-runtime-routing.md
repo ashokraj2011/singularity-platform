@@ -111,6 +111,8 @@ bridge credentials.
 `allowed_frame_types` is also mandatory for `kind=runtime` tokens and must include
 recognized frame names; it is the token-side upper bound for what
 `hello.supported_frame_types` may advertise.
+Revocation checks use the token's `device_id` claim, falling back to `runtime_id`
+for runtime-only tokens, and never trust the hello frame for revocation identity.
 
 ---
 
