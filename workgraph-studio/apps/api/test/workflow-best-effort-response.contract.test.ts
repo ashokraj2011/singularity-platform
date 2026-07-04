@@ -12,10 +12,13 @@ describe('Workflow best-effort upstream response contracts', () => {
 
     expect(router).toContain('type WorkflowJsonRead<T>')
     expect(router).toContain("import { readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'")
+    expect(router).toContain("import { copilotComposeTimeoutMs } from './copilot-compose-config'")
     expect(router).toContain('async function readWorkflowJsonResponse<T>(response: globalThis.Response, source: string): Promise<WorkflowJsonRead<T>>')
     expect(router).toContain('const body = await readUpstreamJsonBody(response)')
+    expect(router).toContain('const timeoutMs = copilotComposeTimeoutMs()')
     expect(router).toContain('context-fabric prompt composition')
     expect(router).toContain('context-fabric invalid call lookup response')
+    expect(router).not.toContain('Number(process.env.COPILOT_COMPOSE_TIMEOUT_MS ?? 30000)')
     expect(router).not.toMatch(/await resp\.json\(\)/)
     expect(router).not.toMatch(/await callsResp\.json\(\)/)
     expect(router).not.toMatch(/JSON\.parse\(raw\)/)

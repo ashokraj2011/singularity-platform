@@ -711,6 +711,12 @@ Shared Node, Python, and Workgraph inline system-prompt clients also bound
 Invalid values fall back to `300` so Composer prompt fetches do not lose cache
 behavior because of a bad env file.
 
+Workgraph's Copilot handoff export keeps prompt composition fail-soft. The
+best-effort Context Fabric compose call uses `COPILOT_COMPOSE_TIMEOUT_MS`,
+default `30000`, minimum `1000`, and maximum `120000`. Invalid values fall
+back to `30000`; if composition still times out or returns malformed JSON, the
+download continues with raw stage tasks plus degraded-composition headers.
+
 ### 9.5 Agent Runtime API
 
 Mounted under `http://localhost:3003/api/v1`.

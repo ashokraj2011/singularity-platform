@@ -17,6 +17,7 @@ import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { getWorkflowBudgetOverview } from './runtime/budget'
 import { analyzeWorkflowInstance } from './formal-verification'
+import { copilotComposeTimeoutMs } from './copilot-compose-config'
 import {
   assertPendingExecutionTenant,
   assertWorkflowInstanceTenant,
@@ -1006,7 +1007,7 @@ async function composeCopilotStagePrompt(input: {
   vars: Record<string, unknown>; runContext: Record<string, unknown>
 }): Promise<ComposedStagePrompt> {
   // Finding #10 — bound the call so one stalled CF compose can't hang the whole export.
-  const timeoutMs = Number(process.env.COPILOT_COMPOSE_TIMEOUT_MS ?? 30000)
+  const timeoutMs = copilotComposeTimeoutMs()
   try {
     const url = `${config.CONTEXT_FABRIC_URL.replace(/\/$/, '')}/api/v1/compose-copilot-prompt`
     const resp = await fetch(url, {
