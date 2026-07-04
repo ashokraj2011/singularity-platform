@@ -33,6 +33,12 @@ interface InflightEntry {
   promise: Promise<SystemPromptResult>;
 }
 
+type SystemPromptEnvelope = {
+  success?: boolean;
+  data?: unknown;
+  error?: unknown;
+};
+
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, InflightEntry>();
 
@@ -69,11 +75,11 @@ async function fetchOnce(key: string, vars?: Record<string, unknown>): Promise<S
       `SystemPrompt fetch ${key} → ${res.status}: ${text.slice(0, 500)}`,
     );
   }
-  const json = (await res.json()) as { success: boolean; data: SystemPromptResult; error?: unknown };
+  const json = parseSystemPromptEnvelope(await readResponseText(res), key);
   if (!json.success) {
     throw new Error(`SystemPrompt fetch ${key} returned success=false`);
   }
-  return json.data;
+  return normalizeSystemPromptResult(json.data, key);
 }
 
 /**
@@ -137,4 +143,48 @@ export function invalidateSystemPromptCache(key?: string): void {
 
 function stableHash(obj: Record<string, unknown>): string {
   return JSON.stringify(obj, Object.keys(obj).sort());
+}
+
+async function readResponseText(res: Response): Promise<string> {
+  try {
+    return await res.text();
+  } catch {
+    return "";
+  }
+}
+
+function responseSnippet(text: string, max = 400): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function parseSystemPromptEnvelope(text: string, key: string): SystemPromptEnvelope {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("response was not a JSON object");
+    }
+    return parsed as SystemPromptEnvelope;
+  } catch (err) {
+    const detail = err instanceof SyntaxError
+      ? `${responseSnippet(text) || err.message}`
+      : (err as Error).message;
+    throw new Error(`SystemPrompt fetch ${key} returned invalid JSON: ${detail}`);
+  }
+}
+
+function normalizeSystemPromptResult(data: unknown, key: string): SystemPromptResult {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error(`SystemPrompt fetch ${key} returned invalid data`);
+  }
+  const row = data as Partial<SystemPromptResult>;
+  if (typeof row.key !== "string" || typeof row.content !== "string" || typeof row.version !== "number") {
+    throw new Error(`SystemPrompt fetch ${key} returned incomplete data`);
+  }
+  return {
+    key: row.key,
+    version: row.version,
+    content: row.content,
+    jsonSchema: row.jsonSchema ?? null,
+    modelHint: typeof row.modelHint === "string" ? row.modelHint : null,
+  };
 }
