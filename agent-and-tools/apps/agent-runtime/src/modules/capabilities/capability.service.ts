@@ -75,6 +75,7 @@ import { assertCapabilityNotArchived, requireActiveCapability } from "./capabili
 import { runBootstrapDistillationPhase } from "./bootstrap-phase3-distill";
 
 const CAPABILITY_LEARNING_RUN_STALE_MS = env.CAPABILITY_LEARNING_RUN_STALE_MS;
+const CAPABILITY_DISCOVERY_FETCH_TIMEOUT_MS = env.CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC * 1000;
 type CapabilityLearningWorkerOperation = "grounding" | "sync";
 
 async function claimCapabilityLearningWorker(capabilityId: string, operation: CapabilityLearningWorkerOperation): Promise<() => Promise<void>> {
@@ -2313,7 +2314,7 @@ async function mcpSourcePost(path: string, body: Record<string, unknown>, routeU
         method: "POST",
         headers: { "content-type": "application/json", "X-Service-Token": cfToken },
         body: JSON.stringify({ user_id: routeUserId, ...body }),
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(CAPABILITY_DISCOVERY_FETCH_TIMEOUT_MS),
       });
       if (res.ok) return await readUpstreamJsonObject(res, `Runtime Bridge source-${op}`);
       const detail = await res.text().catch(() => "");
@@ -2341,7 +2342,7 @@ async function mcpSourcePost(path: string, body: Record<string, unknown>, routeU
         ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(CAPABILITY_DISCOVERY_FETCH_TIMEOUT_MS),
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => "");
@@ -2590,7 +2591,7 @@ function buildCodeGraphMermaid(
 }
 
 async function fetchDocumentLink(doc: BootstrapDocumentInput): Promise<DiscoveryDoc> {
-  const res = await fetch(doc.url, { signal: AbortSignal.timeout(30_000) });
+  const res = await fetch(doc.url, { signal: AbortSignal.timeout(CAPABILITY_DISCOVERY_FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`fetch ${res.status}`);
   const content = (await res.text()).slice(0, DISCOVERY_SOURCE_CHAR_CAP);
   return {

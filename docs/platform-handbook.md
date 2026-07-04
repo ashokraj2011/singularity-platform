@@ -777,6 +777,10 @@ well: `CAPABILITY_DEFAULT_DAILY_TOKENS` defaults to `200000` and is bounded
 `1..20000000`, `CAPABILITY_DEFAULT_DAILY_COST_USD` defaults to `2` and is
 bounded `0..10000`, and `CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE` defaults to
 `30` and is bounded `1..10000`.
+Capability bootstrap discovery has its own bounded network timeout:
+`CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC` defaults to `30` and is bounded
+`1..900` for Runtime Bridge source reads, direct MCP source fallback, and
+document-link discovery.
 
 Audit Governance bounds live audit stream knobs before creating SSE
 subscribers. `AUDIT_GOV_STREAM_MAX_SUBSCRIBERS` defaults to `50`, minimum `1`,
