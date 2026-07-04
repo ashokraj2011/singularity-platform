@@ -1120,6 +1120,10 @@ production-class deployments should still inject a pre-minted
 mutations forwarded to LLM Gateway use <code>LLM_SETTINGS_WRITE_TIMEOUT_SEC</code>, default
 <code>15</code>, bounded <code>1..300</code>, so a stalled gateway cannot hold the settings API
 indefinitely.</p>
+<p>Platform Web&#39;s Prompt Workbench <code>compose-and-respond</code> calls use
+<code>PROMPT_WORKBENCH_COMPOSER_TIMEOUT_SEC</code>, default <code>240</code>, bounded <code>1..900</code>. This
+keeps interactive prompt experiments from waiting forever while still allowing
+longer governed model calls than readiness probes.</p>
 <p>Agent Runtime capability/polling knobs are schema-validated at startup.
 <code>POLL_WORKER_TICK_SEC</code> defaults to <code>30</code> and is bounded <code>5..3600</code>.
 <code>POLL_WORKER_INITIAL_DELAY_SEC</code> defaults to <code>5</code> and is bounded <code>1..300</code>,

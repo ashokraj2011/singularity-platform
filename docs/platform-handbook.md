@@ -871,6 +871,11 @@ mutations forwarded to LLM Gateway use `LLM_SETTINGS_WRITE_TIMEOUT_SEC`, default
 `15`, bounded `1..300`, so a stalled gateway cannot hold the settings API
 indefinitely.
 
+Platform Web's Prompt Workbench `compose-and-respond` calls use
+`PROMPT_WORKBENCH_COMPOSER_TIMEOUT_SEC`, default `240`, bounded `1..900`. This
+keeps interactive prompt experiments from waiting forever while still allowing
+longer governed model calls than readiness probes.
+
 Agent Runtime capability/polling knobs are schema-validated at startup.
 `POLL_WORKER_TICK_SEC` defaults to `30` and is bounded `5..3600`.
 `POLL_WORKER_INITIAL_DELAY_SEC` defaults to `5` and is bounded `1..300`,

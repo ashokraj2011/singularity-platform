@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { platformWebCredentialError, platformWebProductionEnv } from "@/lib/serverEnvGuard";
 import { requireVerifiedCallerBearer } from "../../_proxy";
 import { platformServiceToken, platformServiceUrl } from "@/lib/platformServices";
+import { boundedSecondsEnv } from "@/lib/serverEnvBounds";
 import { jsonishMessage, readJsonish } from "../../_json";
 
 type ComposerEnvelope<T = unknown> = {
@@ -10,6 +11,8 @@ type ComposerEnvelope<T = unknown> = {
   error?: { code?: string; message?: string; details?: unknown } | null;
   requestId?: string | null;
 };
+
+const PROMPT_WORKBENCH_COMPOSER_TIMEOUT_MS = boundedSecondsEnv("PROMPT_WORKBENCH_COMPOSER_TIMEOUT_SEC", 240, 1, 900) * 1000;
 
 export type PromptWorkbenchComposeBody = Record<string, unknown> & {
   modelOverrides?: Record<string, unknown>;
@@ -89,6 +92,7 @@ export async function callComposer<T = unknown>(
       headers: composerAuthHeaders(request),
       body: JSON.stringify({ ...body, previewOnly }),
       cache: "no-store",
+      signal: AbortSignal.timeout(PROMPT_WORKBENCH_COMPOSER_TIMEOUT_MS),
     });
     const responseBody = await readJsonish(res);
     const payload = responseBody.data;

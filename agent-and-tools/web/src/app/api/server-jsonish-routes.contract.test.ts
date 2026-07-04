@@ -133,6 +133,24 @@ assert.match(
   "Prompt Workbench composer errors should preserve plaintext/invalid-JSON upstream details safely",
 );
 
+assert.match(
+  promptComposer,
+  /import \{ boundedSecondsEnv \} from "@\/lib\/serverEnvBounds";/,
+  "Prompt Workbench composer should use the central server env bounds helper",
+);
+
+assert.match(
+  promptComposer,
+  /const PROMPT_WORKBENCH_COMPOSER_TIMEOUT_MS = boundedSecondsEnv\("PROMPT_WORKBENCH_COMPOSER_TIMEOUT_SEC", 240, 1, 900\) \* 1000;/,
+  "Prompt Workbench composer should expose a bounded compose-and-respond timeout knob",
+);
+
+assert.match(
+  promptComposer,
+  /\/api\/v1\/compose-and-respond`, \{[\s\S]*?signal: AbortSignal\.timeout\(PROMPT_WORKBENCH_COMPOSER_TIMEOUT_MS\)/,
+  "Prompt Workbench compose-and-respond calls should use the bounded timeout",
+);
+
 assert.doesNotMatch(
   eventHorizonActions,
   /JSON\.parse\(text\)|await r\.json\(\)/,
