@@ -1038,7 +1038,10 @@ stale forever because of a typo. Default governance limit seeds are bounded as
 well: <code>CAPABILITY_DEFAULT_DAILY_TOKENS</code> defaults to <code>200000</code> and is bounded
 <code>1..20000000</code>, <code>CAPABILITY_DEFAULT_DAILY_COST_USD</code> defaults to <code>2</code> and is
 bounded <code>0..10000</code>, and <code>CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE</code> defaults to
-<code>30</code> and is bounded <code>1..10000</code>.
+<code>30</code> and is bounded <code>1..10000</code>. The audit-governance POSTs that seed those
+defaults use <code>AGENT_GOVERNANCE_LIMITS_TIMEOUT_SEC</code>, default <code>5</code> and bounded
+<code>1..300</code>, so a slow or unreachable ledger returns a warning instead of hanging
+capability creation.
 Capability bootstrap discovery has its own bounded network timeout:
 <code>CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC</code> defaults to <code>30</code> and is bounded
 <code>1..900</code> for Runtime Bridge source reads, direct MCP source fallback, and

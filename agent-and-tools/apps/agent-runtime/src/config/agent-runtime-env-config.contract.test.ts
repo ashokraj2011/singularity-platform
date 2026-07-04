@@ -28,6 +28,7 @@ function runEnv(extraEnv: Record<string, string | undefined>) {
         "env.CAPABILITY_DEFAULT_DAILY_TOKENS,",
         "env.CAPABILITY_DEFAULT_DAILY_COST_USD,",
         "env.CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE,",
+        "env.AGENT_GOVERNANCE_LIMITS_TIMEOUT_SEC,",
         "env.AGENT_SOURCE_FETCH_TIMEOUT_SEC,",
         "env.CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC,",
         "env.AGENT_CONTRACT_MINT_TIMEOUT_SEC,",
@@ -49,7 +50,7 @@ function read(relativePath: string): string {
 
 const defaults = runEnv({});
 assert.equal(defaults.status, 0, defaults.stderr);
-assert.match(defaults.stdout, /30:60:30:900000:200000:2:30:5:30:15:10/);
+assert.match(defaults.stdout, /30:60:30:900000:200000:2:30:5:5:30:15:10/);
 
 const custom = runEnv({
   POLL_WORKER_TICK_SEC: "60",
@@ -59,13 +60,14 @@ const custom = runEnv({
   CAPABILITY_DEFAULT_DAILY_TOKENS: "500000",
   CAPABILITY_DEFAULT_DAILY_COST_USD: "12.5",
   CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE: "90",
+  AGENT_GOVERNANCE_LIMITS_TIMEOUT_SEC: "18",
   AGENT_SOURCE_FETCH_TIMEOUT_SEC: "12",
   CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC: "45",
   AGENT_CONTRACT_MINT_TIMEOUT_SEC: "20",
   IAM_SERVICE_TOKEN_BOOTSTRAP_TIMEOUT_SEC: "25",
 });
 assert.equal(custom.status, 0, custom.stderr);
-assert.match(custom.stdout, /60:120:45:120000:500000:12\.5:90:12:45:20:25/);
+assert.match(custom.stdout, /60:120:45:120000:500000:12\.5:90:18:12:45:20:25/);
 
 for (const [name, value] of [
   ["POLL_WORKER_TICK_SEC", "4"],
@@ -75,6 +77,7 @@ for (const [name, value] of [
   ["CAPABILITY_DEFAULT_DAILY_TOKENS", "0"],
   ["CAPABILITY_DEFAULT_DAILY_COST_USD", "-1"],
   ["CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE", "0"],
+  ["AGENT_GOVERNANCE_LIMITS_TIMEOUT_SEC", "0"],
   ["AGENT_SOURCE_FETCH_TIMEOUT_SEC", "0"],
   ["CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC", "0"],
   ["AGENT_CONTRACT_MINT_TIMEOUT_SEC", "0"],
@@ -93,6 +96,7 @@ assert.match(envSource, /CAPABILITY_LEARNING_RUN_STALE_MS: boundedInt\([\s\S]*?1
 assert.match(envSource, /CAPABILITY_DEFAULT_DAILY_TOKENS: boundedInt\([\s\S]*?200_000,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.CAPABILITY_DEFAULT_DAILY_TOKENS/);
 assert.match(envSource, /CAPABILITY_DEFAULT_DAILY_COST_USD: boundedNumber\([\s\S]*?2,[\s\S]*?0,[\s\S]*?AGENT_RUNTIME_LIMITS\.CAPABILITY_DEFAULT_DAILY_COST_USD/);
 assert.match(envSource, /CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE: boundedInt\([\s\S]*?30,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE/);
+assert.match(envSource, /AGENT_GOVERNANCE_LIMITS_TIMEOUT_SEC: boundedInt\([\s\S]*?5,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.AGENT_GOVERNANCE_LIMITS_TIMEOUT_SEC/);
 assert.match(envSource, /AGENT_SOURCE_FETCH_TIMEOUT_SEC: boundedInt\([\s\S]*?5,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.AGENT_SOURCE_FETCH_TIMEOUT_SEC/);
 assert.match(envSource, /CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC: boundedInt\([\s\S]*?30,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC/);
 assert.match(envSource, /AGENT_CONTRACT_MINT_TIMEOUT_SEC: boundedInt\([\s\S]*?15,[\s\S]*?1,[\s\S]*?AGENT_RUNTIME_LIMITS\.AGENT_CONTRACT_MINT_TIMEOUT_SEC/);
@@ -104,12 +108,16 @@ assert.match(capabilityService, /const CAPABILITY_DISCOVERY_FETCH_TIMEOUT_MS = e
 assert.match(capabilityService, /const tokensMax = env\.CAPABILITY_DEFAULT_DAILY_TOKENS;/);
 assert.match(capabilityService, /const costMaxUsd = env\.CAPABILITY_DEFAULT_DAILY_COST_USD;/);
 assert.match(capabilityService, /const maxCalls = env\.CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE;/);
+assert.match(capabilityService, /const AGENT_GOVERNANCE_LIMITS_TIMEOUT_MS = env\.AGENT_GOVERNANCE_LIMITS_TIMEOUT_SEC \* 1000;/);
 assert.doesNotMatch(capabilityService, /Number\(process\.env\.CAPABILITY_LEARNING_RUN_STALE_MS/);
 assert.doesNotMatch(capabilityService, /Number\(process\.env\.CAPABILITY_DEFAULT_DAILY_TOKENS/);
 assert.doesNotMatch(capabilityService, /Number\(process\.env\.CAPABILITY_DEFAULT_DAILY_COST_USD/);
 assert.doesNotMatch(capabilityService, /Number\(process\.env\.CAPABILITY_DEFAULT_RATE_LIMIT_PER_MINUTE/);
+assert.doesNotMatch(capabilityService, /Number\(process\.env\.AGENT_GOVERNANCE_LIMITS_TIMEOUT_SEC/);
 assert.match(capabilityService, /AbortSignal\.timeout\(CAPABILITY_DISCOVERY_FETCH_TIMEOUT_MS\)/);
+assert.match(capabilityService, /AbortSignal\.timeout\(AGENT_GOVERNANCE_LIMITS_TIMEOUT_MS\)/);
 assert.doesNotMatch(capabilityService, /AbortSignal\.timeout\(30_000\)/);
+assert.doesNotMatch(capabilityService, /AbortSignal\.timeout\(5_000\)/);
 
 const pollWorker = read("src/modules/capabilities/poll-worker.ts");
 assert.match(pollWorker, /const TICK_SEC\s+= env\.POLL_WORKER_TICK_SEC;/);

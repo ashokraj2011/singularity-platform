@@ -76,6 +76,7 @@ import { runBootstrapDistillationPhase } from "./bootstrap-phase3-distill";
 
 const CAPABILITY_LEARNING_RUN_STALE_MS = env.CAPABILITY_LEARNING_RUN_STALE_MS;
 const CAPABILITY_DISCOVERY_FETCH_TIMEOUT_MS = env.CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC * 1000;
+const AGENT_GOVERNANCE_LIMITS_TIMEOUT_MS = env.AGENT_GOVERNANCE_LIMITS_TIMEOUT_SEC * 1000;
 type CapabilityLearningWorkerOperation = "grounding" | "sync";
 
 async function claimCapabilityLearningWorker(capabilityId: string, operation: CapabilityLearningWorkerOperation): Promise<() => Promise<void>> {
@@ -3446,7 +3447,7 @@ async function ensureDefaultGovernanceLimits(capabilityId: string): Promise<stri
           tokens_max: Number.isFinite(tokensMax) && tokensMax > 0 ? Math.floor(tokensMax) : null,
           cost_max_usd: Number.isFinite(costMaxUsd) && costMaxUsd >= 0 ? costMaxUsd : null,
         }),
-        signal: AbortSignal.timeout(5_000),
+        signal: AbortSignal.timeout(AGENT_GOVERNANCE_LIMITS_TIMEOUT_MS),
       }),
       fetch(`${baseUrl}/api/v1/governance/rate-limits`, {
         method: "POST",
@@ -3457,7 +3458,7 @@ async function ensureDefaultGovernanceLimits(capabilityId: string): Promise<stri
           period_seconds: 60,
           max_calls: Number.isFinite(maxCalls) && maxCalls > 0 ? Math.floor(maxCalls) : 30,
         }),
-        signal: AbortSignal.timeout(5_000),
+        signal: AbortSignal.timeout(AGENT_GOVERNANCE_LIMITS_TIMEOUT_MS),
       }),
     ]);
     if (!budgetRes.ok || !rateRes.ok) {
