@@ -6,6 +6,7 @@ import { emitAuditEvent } from "../lib/audit-gov-emit";
 import { effectiveCapabilityGate } from "../lib/effective-capability-gate";
 import { capabilityMetadataForTool } from "../lib/capability-metadata";
 import { serverToolUrlPolicy } from "../lib/server-tool-url-policy";
+import { boundedEnvInteger } from "../lib/env";
 import { parseUpstreamJson, readUpstreamText } from "../../shared/upstream-json";
 
 export const executionRoutes = Router();
@@ -17,6 +18,12 @@ executionRoutes.use(requireAuth);
 function effectiveCapabilitySetRequired(): boolean {
   return process.env.TOOL_EFFECTIVE_CAPABILITY_REQUIRED !== "false";
 }
+
+const SERVER_TOOL_ENDPOINT_TIMEOUT_MS = boundedEnvInteger("TOOL_SERVER_ENDPOINT_TIMEOUT_MS", {
+  defaultValue: 30_000,
+  min: 1_000,
+  max: 300_000,
+});
 
 function verifiedCallerAuthHeaders(req: Request): Record<string, string> {
   const header = req.headers.authorization;
@@ -205,7 +212,7 @@ executionRoutes.post("/invoke", async (req: Request, res: Response) => {
           ...verifiedCallerAuthHeaders(req),
         },
         body: JSON.stringify(args),
-        signal: AbortSignal.timeout(Number(process.env.TOOL_SERVER_ENDPOINT_TIMEOUT_MS ?? "30000")),
+        signal: AbortSignal.timeout(SERVER_TOOL_ENDPOINT_TIMEOUT_MS),
       });
       const text = await readUpstreamText(response);
       if (!response.ok) {
