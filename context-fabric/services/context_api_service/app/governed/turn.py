@@ -40,6 +40,10 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .env_config import bounded_float_env, bounded_int_env
+
+log = logging.getLogger(__name__)
+
 # M90.D (2026-05-27) — thinking-block audit capture gate. Default OFF.
 # Set AUDIT_CAPTURE_THINKING=true on the context-api container to
 # include thinking_blocks content in the governed.llm_response audit
@@ -69,7 +73,13 @@ _CAPTURE_FULL_PROMPT = os.environ.get("CF_CAPTURE_FULL_PROMPT", "true").lower() 
 # ledger, and obvious secrets (bearer tokens, API keys) are redacted. The actual
 # prompt sent to the gateway is untouched. Tune the cap with
 # CF_PROMPT_CAPTURE_MAX_CHARS.
-_PROMPT_CAPTURE_MAX_CHARS = int(os.environ.get("CF_PROMPT_CAPTURE_MAX_CHARS", "200000"))
+_PROMPT_CAPTURE_MAX_CHARS = bounded_int_env(
+    "CF_PROMPT_CAPTURE_MAX_CHARS",
+    default=200_000,
+    min_value=2_000,
+    max_value=2_000_000,
+    logger=log,
+)
 
 # [#20] Enforce governance toolPolicy.approvalRequired. Default OFF → legacy
 # advisory behavior (zero risk). When ON, a tool marked approvalRequired with no
@@ -150,8 +160,6 @@ from .stage_execution_policy import StageExecutionPolicy, apply_execution_policy
 from .tool_gateway import allowed_tools_for
 from .tool_schemas import schema_for_tool
 from ..execute_modules.tool_policy import filter_tools_by_effective_capabilities
-
-log = logging.getLogger(__name__)
 
 
 def _render_policy_facts(
@@ -479,17 +487,36 @@ def _extract_phase_output(
 
 # ── Code-context budget + minimum-context gate (code-context hardening D1/D3) ──
 
-# Static fallback when no model window / policy cap is known. Matches the legacy
-# mcp-server default so un-tuned stages behave exactly as before.
-_CODE_CONTEXT_DEFAULT_BUDGET = int(os.environ.get("CF_CODE_CONTEXT_DEFAULT_BUDGET", "7000"))
-# Fraction of the model's context window we'll spend on the code-context package
-# (the rest is prompt + history + output headroom).
-_CODE_CONTEXT_WINDOW_FRACTION = float(os.environ.get("CF_CODE_CONTEXT_WINDOW_FRACTION", "0.25"))
-# Fraction of the phase's max_input_tokens cap allotted to code context.
-_CODE_CONTEXT_INPUT_FRACTION = float(os.environ.get("CF_CODE_CONTEXT_INPUT_FRACTION", "0.6"))
 # Hard ceiling — mcp-server's /mcp/code-context/build rejects budgets above 50k.
 _CODE_CONTEXT_MAX_BUDGET = 50_000
 _CODE_CONTEXT_MIN_BUDGET = 1_000
+
+# Static fallback when no model window / policy cap is known. Matches the legacy
+# mcp-server default so un-tuned stages behave exactly as before.
+_CODE_CONTEXT_DEFAULT_BUDGET = bounded_int_env(
+    "CF_CODE_CONTEXT_DEFAULT_BUDGET",
+    default=7_000,
+    min_value=_CODE_CONTEXT_MIN_BUDGET,
+    max_value=_CODE_CONTEXT_MAX_BUDGET,
+    logger=log,
+)
+# Fraction of the model's context window we'll spend on the code-context package
+# (the rest is prompt + history + output headroom).
+_CODE_CONTEXT_WINDOW_FRACTION = bounded_float_env(
+    "CF_CODE_CONTEXT_WINDOW_FRACTION",
+    default=0.25,
+    min_value=0.01,
+    max_value=1.0,
+    logger=log,
+)
+# Fraction of the phase's max_input_tokens cap allotted to code context.
+_CODE_CONTEXT_INPUT_FRACTION = bounded_float_env(
+    "CF_CODE_CONTEXT_INPUT_FRACTION",
+    default=0.6,
+    min_value=0.01,
+    max_value=1.0,
+    logger=log,
+)
 
 
 class MinContextUnavailable(Exception):

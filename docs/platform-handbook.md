@@ -660,6 +660,8 @@ Context Fabric's governed stage loop has bounded runtime knobs. `GOVERNED_STAGE_
 
 Context Fabric's best-effort model metadata and memory capture calls are also bounded. `LLM_MODEL_CATALOG_TTL_SEC` defaults to `300` and clamps at `86400`; `LLM_MODEL_CATALOG_TIMEOUT_SEC` and `CF_CAPTURE_RUN_MEMORY_TIMEOUT_SEC` default to `5` and clamp at `300`. Invalid or sub-second values fall back to defaults so optional catalog/memory paths stay non-blocking.
 
+Governed turn prompt/code-context sizing is bounded as well. `CF_PROMPT_CAPTURE_MAX_CHARS` defaults to `200000` and clamps between `2000` and `2000000`; `CF_CODE_CONTEXT_DEFAULT_BUDGET` defaults to `7000` and clamps to MCP's accepted `1000..50000` range. `CF_CODE_CONTEXT_WINDOW_FRACTION` and `CF_CODE_CONTEXT_INPUT_FRACTION` fall back on invalid or near-zero values and clamp at `1.0`, preventing broken env from producing negative or oversized code-context requests.
+
 ### 9.4 Prompt Composer API
 
 Mounted under `http://localhost:3004/api/v1`.

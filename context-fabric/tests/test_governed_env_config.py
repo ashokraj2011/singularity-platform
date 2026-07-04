@@ -215,3 +215,61 @@ def test_model_catalog_and_memory_capture_knob_bounds(monkeypatch):
         min_value=1.0,
         max_value=300.0,
     ) == 300.0
+
+
+def test_governed_turn_prompt_and_code_context_knob_bounds(monkeypatch):
+    monkeypatch.setenv("CF_PROMPT_CAPTURE_MAX_CHARS", "bad")
+    assert bounded_int_env(
+        "CF_PROMPT_CAPTURE_MAX_CHARS",
+        default=200_000,
+        min_value=2_000,
+        max_value=2_000_000,
+    ) == 200_000
+
+    monkeypatch.setenv("CF_PROMPT_CAPTURE_MAX_CHARS", "1")
+    assert bounded_int_env(
+        "CF_PROMPT_CAPTURE_MAX_CHARS",
+        default=200_000,
+        min_value=2_000,
+        max_value=2_000_000,
+    ) == 200_000
+
+    monkeypatch.setenv("CF_PROMPT_CAPTURE_MAX_CHARS", "9999999")
+    assert bounded_int_env(
+        "CF_PROMPT_CAPTURE_MAX_CHARS",
+        default=200_000,
+        min_value=2_000,
+        max_value=2_000_000,
+    ) == 2_000_000
+
+    monkeypatch.setenv("CF_CODE_CONTEXT_DEFAULT_BUDGET", "0")
+    assert bounded_int_env(
+        "CF_CODE_CONTEXT_DEFAULT_BUDGET",
+        default=7_000,
+        min_value=1_000,
+        max_value=50_000,
+    ) == 7_000
+
+    monkeypatch.setenv("CF_CODE_CONTEXT_DEFAULT_BUDGET", "100000")
+    assert bounded_int_env(
+        "CF_CODE_CONTEXT_DEFAULT_BUDGET",
+        default=7_000,
+        min_value=1_000,
+        max_value=50_000,
+    ) == 50_000
+
+    monkeypatch.setenv("CF_CODE_CONTEXT_WINDOW_FRACTION", "0")
+    assert bounded_float_env(
+        "CF_CODE_CONTEXT_WINDOW_FRACTION",
+        default=0.25,
+        min_value=0.01,
+        max_value=1.0,
+    ) == 0.25
+
+    monkeypatch.setenv("CF_CODE_CONTEXT_INPUT_FRACTION", "2")
+    assert bounded_float_env(
+        "CF_CODE_CONTEXT_INPUT_FRACTION",
+        default=0.6,
+        min_value=0.01,
+        max_value=1.0,
+    ) == 1.0
