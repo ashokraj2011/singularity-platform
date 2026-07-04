@@ -38,14 +38,44 @@ assert.match(
 
 assert.match(
   proxy,
+  /import \{ serverEnv \} from "@\/lib\/serverRootEnv";/,
+  "shared proxy auth should use server root env loading for timeout config",
+);
+
+assert.match(
+  proxy,
+  /const PROXY_AUTH_TIMEOUT_MS = boundedSecondsEnv\("PLATFORM_WEB_PROXY_AUTH_TIMEOUT_SEC", 5, 1, 300\) \* 1000;/,
+  "shared proxy auth should expose a bounded IAM verification timeout knob",
+);
+
+assert.match(
+  proxy,
+  /function boundedSecondsEnv\(name: string, defaultValue: number, min: number, max: number\): number/,
+  "shared proxy auth should parse bounded timeout seconds locally",
+);
+
+assert.match(
+  proxy,
   /const verifyBody = await readJsonish\(verify\);[\s\S]*?IAM verify returned an invalid response[\s\S]*?jsonishMessage\(body, "IAM rejected token"\)/,
   "shared proxy auth should handle plaintext or malformed IAM verify responses without direct response.json parsing",
 );
 
 assert.match(
   proxy,
+  /\/auth\/verify`, \{[\s\S]*?signal: AbortSignal\.timeout\(PROXY_AUTH_TIMEOUT_MS\)/,
+  "shared proxy auth should bound IAM /auth/verify calls",
+);
+
+assert.match(
+  proxy,
   /const meBody = await readJsonish\(me\);[\s\S]*?jsonishMessage\(meBody\.data, `IAM \/me returned \$\{me\.status\}`\)[\s\S]*?IAM \/me returned an invalid response/,
   "shared proxy auth should normalize IAM /me errors and malformed bodies",
+);
+
+assert.match(
+  proxy,
+  /\/me`, \{[\s\S]*?signal: AbortSignal\.timeout\(PROXY_AUTH_TIMEOUT_MS\)/,
+  "shared proxy auth should bound IAM /me calls",
 );
 
 assert.doesNotMatch(

@@ -854,6 +854,11 @@ Platform Web bounds the client idle-session knob
 Invalid, non-finite, or sub-minute values fall back to `30`, so a public env
 typo cannot create an effectively unbounded browser session.
 
+Platform Web server-side API proxy caller verification bounds IAM `/auth/verify`
+and `/me` calls with `PLATFORM_WEB_PROXY_AUTH_TIMEOUT_SEC`, default `5`, bounded
+`1..300`. Slow identity checks therefore fail closed with the existing proxy
+auth error envelope instead of holding Next request workers open.
+
 Agent Runtime capability/polling knobs are schema-validated at startup.
 `POLL_WORKER_TICK_SEC` defaults to `30` and is bounded `5..3600`.
 `POLL_WORKER_INITIAL_DELAY_SEC` defaults to `5` and is bounded `1..300`,

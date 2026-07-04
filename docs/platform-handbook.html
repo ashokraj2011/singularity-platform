@@ -1106,6 +1106,10 @@ dimension mismatch instead of comparing against <code>NaN</code>.</p>
 <code>NEXT_PUBLIC_SESSION_IDLE_MINUTES</code>: default <code>30</code>, minimum <code>1</code>, maximum <code>720</code>.
 Invalid, non-finite, or sub-minute values fall back to <code>30</code>, so a public env
 typo cannot create an effectively unbounded browser session.</p>
+<p>Platform Web server-side API proxy caller verification bounds IAM <code>/auth/verify</code>
+and <code>/me</code> calls with <code>PLATFORM_WEB_PROXY_AUTH_TIMEOUT_SEC</code>, default <code>5</code>, bounded
+<code>1..300</code>. Slow identity checks therefore fail closed with the existing proxy
+auth error envelope instead of holding Next request workers open.</p>
 <p>Agent Runtime capability/polling knobs are schema-validated at startup.
 <code>POLL_WORKER_TICK_SEC</code> defaults to <code>30</code> and is bounded <code>5..3600</code>.
 <code>POLL_WORKER_INITIAL_DELAY_SEC</code> defaults to <code>5</code> and is bounded <code>1..300</code>,
