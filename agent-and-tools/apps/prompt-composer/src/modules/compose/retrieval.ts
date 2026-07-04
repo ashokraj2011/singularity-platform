@@ -10,6 +10,7 @@
  * wherever mcp-server runs (laptop, customer VPC, shared dev host).
  */
 import { createHash } from "node:crypto";
+import { retrievalConfig } from "./retrieval.config";
 
 // ── Typed retrieval shape (M25) ────────────────────────────────────────────
 //
@@ -97,13 +98,12 @@ export function reciprocalRankFusion<T>(
 }
 
 // ── Hybrid score with recency (M25.6) ──────────────────────────────────────
-const RECENCY_BOOST_DAYS = Number(process.env.EMBEDDING_RECENCY_DAYS ?? 30);
-const RECENCY_BOOST_MAX  = Number(process.env.EMBEDDING_RECENCY_BOOST ?? 0.2);
+const RETRIEVAL_CONFIG = retrievalConfig();
 
 export function recencyBoost(ageDays: number): number {
-  if (ageDays >= RECENCY_BOOST_DAYS) return 0;
-  if (ageDays <= 0) return RECENCY_BOOST_MAX;
-  return ((RECENCY_BOOST_DAYS - ageDays) / RECENCY_BOOST_DAYS) * RECENCY_BOOST_MAX;
+  if (ageDays >= RETRIEVAL_CONFIG.recencyBoostDays) return 0;
+  if (ageDays <= 0) return RETRIEVAL_CONFIG.recencyBoostMax;
+  return ((RETRIEVAL_CONFIG.recencyBoostDays - ageDays) / RETRIEVAL_CONFIG.recencyBoostDays) * RETRIEVAL_CONFIG.recencyBoostMax;
 }
 
 export function clampConfidence(x: number): number {

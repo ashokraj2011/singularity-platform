@@ -4,6 +4,7 @@ import { validate } from "../../middleware/validate.middleware";
 import { requireAuth } from "../../middleware/auth.middleware";
 import { composeSchema } from "./compose.schemas";
 import { composeService } from "./compose.service";
+import { retrievalConfig } from "./retrieval.config";
 
 export const composeRoutes = Router();
 composeRoutes.use(requireAuth);
@@ -32,12 +33,13 @@ composeDebugRoutes.post("/", async (req, res, next) => {
       composeService.semanticMemory(capabilityId, taskVec),
       composeService.semanticSymbols(capabilityId, taskVec),
     ]);
+    const tuning = retrievalConfig();
     res.json({
       capabilityId, task,
       provider: embedded.provider, model: embedded.model, dim: embedded.dim,
       tuning: {
-        recencyBoostMax:  Number(process.env.EMBEDDING_RECENCY_BOOST ?? 0.2),
-        recencyBoostDays: Number(process.env.EMBEDDING_RECENCY_DAYS ?? 30),
+        recencyBoostMax: tuning.recencyBoostMax,
+        recencyBoostDays: tuning.recencyBoostDays,
       },
       knowledge, memory, code,
     });

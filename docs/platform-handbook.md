@@ -374,6 +374,16 @@ Compiled-context capsule compiler, GC, and retry knobs are bounded at startup:
 oversized values clamp so prompt caching cannot turn into unbounded storage,
 retry, or alert behavior.
 
+Prompt Composer retrieval and stage-prompt memory knobs are bounded before use:
+`EMBEDDING_RECENCY_DAYS` defaults to `30` and clamps to `1..3650`,
+`EMBEDDING_RECENCY_BOOST` defaults to `0.2` and clamps to `0..1`,
+`RETRIEVAL_EMPTY_COSINE_THRESHOLD` defaults to `0.2` and clamps to `0..1`,
+`STAGE_PROMPT_MEMORY_TOP_K` defaults to `5` and clamps to `0..50`, and
+`STAGE_PROMPT_MEMORY_MAX_CHARS` defaults to `500` and clamps to `80..5000`.
+Invalid or below-minimum values fall back to defaults; oversized values clamp
+to the cap so retrieval scoring and long-term memory rendering cannot drift
+into `NaN`, negative thresholds, or unbounded prompt layers.
+
 ### 7.10 Agent Execution Runtime / Server Runtime
 
 The Agent Execution Runtime is the server runtime boundary for agentic coding and tools.

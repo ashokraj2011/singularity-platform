@@ -16,9 +16,10 @@ import {
 } from "@agentandtools/shared";
 import {
   type RetrievedChunk, makeCitationKey, toExcerpt, formatCiteMarker,
-  clampConfidence, includeCodeContext, recencyBoost as recencyBoostShared,
+  clampConfidence, includeCodeContext, recencyBoost,
   reciprocalRankFusion, retrievalMode, taskSignature,
 } from "./retrieval";
+import { retrievalConfig } from "./retrieval.config";
 import { compileCapsuleViaLlm, compileMode } from "./llm-capsule-compiler";
 import {
   tryAcquireCompileSlot, releaseCompileSlot, capsuleExpiry, capsuleTooLarge,
@@ -26,26 +27,14 @@ import {
 } from "./capsule-gc";
 import { emitAuditEvent } from "../../lib/audit-gov-emit";
 
-// M15 — hybrid scoring helper. Cosine ∈ [-1, 1] → [0, 2] via (cos+1)/2 only
-// when the caller asks; default keeps raw cosine because pgvector's `<=>`
-// returns 1-cosine (a distance), not similarity. We compute similarity as
-// `1 - distance` in the SQL query.
-const RECENCY_BOOST_DAYS = Number(process.env.EMBEDDING_RECENCY_DAYS ?? 30);
-const RECENCY_BOOST_MAX = Number(process.env.EMBEDDING_RECENCY_BOOST ?? 0.2);
-
-function recencyBoost(ageDays: number): number {
-  if (ageDays >= RECENCY_BOOST_DAYS) return 0;
-  if (ageDays <= 0) return RECENCY_BOOST_MAX;
-  return ((RECENCY_BOOST_DAYS - ageDays) / RECENCY_BOOST_DAYS) * RECENCY_BOOST_MAX;
-}
-
 // M25.6 H3 — when both vector AND FTS return only useless rows we'd be
 // shipping noise to the LLM (cosine 0.02 matches against an unrelated
 // artifact). The threshold is conservative — at 0.2 we're saying "even
 // the LEAST-bad row is below half-faith"; the fallback then pulls the
 // 3 most-recent rows so the agent has *some* context but isn't pretending
 // it found a semantic match.
-const EMPTY_FALLBACK_COSINE_MIN = Number(process.env.RETRIEVAL_EMPTY_COSINE_THRESHOLD ?? 0.2);
+const RETRIEVAL_CONFIG = retrievalConfig();
+const EMPTY_FALLBACK_COSINE_MIN = RETRIEVAL_CONFIG.emptyFallbackCosineMin;
 const EMPTY_FALLBACK_ENABLED    = (process.env.RETRIEVAL_EMPTY_FALLBACK ?? "true").toLowerCase() !== "false";
 const EMPTY_FALLBACK_TOPK       = 3;
 

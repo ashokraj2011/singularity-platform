@@ -17,6 +17,7 @@ import { NotFoundError } from "../../shared/errors";
 import { render as renderMustache } from "../../shared/mustache";
 import { buildAgentSkillSourceLayer } from "../compose/skill-source-layer";
 import type { ResolveStageInput, ResolveStageResult } from "./stage-prompts.schemas";
+import { stagePromptMemoryConfig } from "./stage-prompts.config";
 
 // #25 — read-only long-term-memory grounding for the governed turn. The composer
 // already surfaces distilled memory on /compose-and-respond; the governed loop
@@ -24,8 +25,9 @@ import type { ResolveStageInput, ResolveStageResult } from "./stage-prompts.sche
 // no memory. When a capabilityId is supplied we append the capability's promoted
 // (distilled, status ACTIVE) memory to extraContext so it reaches the turn's
 // user message. Best-effort + capped; the promotion WRITE lifecycle is separate.
-const LONG_TERM_MEMORY_TOP_K = Math.max(0, Number(process.env.STAGE_PROMPT_MEMORY_TOP_K ?? 5));
-const LONG_TERM_MEMORY_MAX_CHARS = Math.max(80, Number(process.env.STAGE_PROMPT_MEMORY_MAX_CHARS ?? 500));
+const LONG_TERM_MEMORY_CONFIG = stagePromptMemoryConfig();
+const LONG_TERM_MEMORY_TOP_K = LONG_TERM_MEMORY_CONFIG.topK;
+const LONG_TERM_MEMORY_MAX_CHARS = LONG_TERM_MEMORY_CONFIG.maxChars;
 
 async function renderLongTermMemory(capabilityId: string): Promise<string> {
   if (LONG_TERM_MEMORY_TOP_K === 0) return "";

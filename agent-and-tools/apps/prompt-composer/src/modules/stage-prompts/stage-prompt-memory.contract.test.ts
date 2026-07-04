@@ -26,6 +26,31 @@ assert.match(
 );
 assert.match(
   svc,
+  /import \{ stagePromptMemoryConfig \} from "\.\/stage-prompts\.config";/,
+  "stage prompt memory limits must come from bounded config",
+);
+assert.match(
+  svc,
+  /const LONG_TERM_MEMORY_CONFIG = stagePromptMemoryConfig\(\);/,
+  "stage prompt memory config must be read once through the helper",
+);
+assert.match(
+  svc,
+  /const LONG_TERM_MEMORY_TOP_K = LONG_TERM_MEMORY_CONFIG\.topK;/,
+  "top-k must use bounded stage prompt memory config",
+);
+assert.match(
+  svc,
+  /const LONG_TERM_MEMORY_MAX_CHARS = LONG_TERM_MEMORY_CONFIG\.maxChars;/,
+  "max chars must use bounded stage prompt memory config",
+);
+assert.doesNotMatch(
+  svc,
+  /Number\(process\.env\.STAGE_PROMPT_MEMORY_/,
+  "stage prompt memory env must not be parsed directly",
+);
+assert.match(
+  svc,
   /distilledMemory\.findMany\([\s\S]*?scopeType:\s*"CAPABILITY"[\s\S]*?status:\s*"ACTIVE"/,
   "must fetch ACTIVE capability-scoped distilled memory (the promoted long-term set)",
 );
