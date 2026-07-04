@@ -78,6 +78,11 @@ do not use that setting for shared laptops, office networks, or cloud installs.
 This auth escape hatch does not mean direct MCP HTTP fallback is enabled; mutating
 routes such as branch finalization and worktree writes still require
 `RUNTIME_HTTP_FALLBACK_ENABLED=true` before they will call `MCP_SERVER_URL`.
+When explicit MCP HTTP fallback is enabled, tool-run calls use
+`MCP_TOOL_RUN_TIMEOUT_SEC` (default `120`, clamped to `3600`) and long-running
+agentic tools such as `copilot_execute` use `MCP_TOOL_RUN_LONG_TIMEOUT_SEC`
+(default `960`, clamped to `7200`). Invalid or sub-second values fall back to
+the defaults instead of preventing Context Fabric from starting.
 
 Runtime frames and response parts are bounded by the bridge payload ceiling
 (`16 MiB` today). Context Fabric rejects oversized `hello` frames before JSON

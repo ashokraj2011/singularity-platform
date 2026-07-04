@@ -28,6 +28,8 @@ import pytest
 from context_api_service.app.governed.dispatch import (
     ToolDispatchError,
     ToolDispatchResult,
+    _bounded_float_env,
+    _timeout_for,
     dispatch_tool,
 )
 
@@ -73,6 +75,58 @@ def _patch_registry(behavior):
 
 
 # ── HTTP path unchanged when no laptop_user_id ─────────────────────────────
+
+
+def test_mcp_dispatch_timeout_env_defaults_and_clamps(monkeypatch):
+    monkeypatch.delenv("MCP_TOOL_RUN_TIMEOUT_SEC", raising=False)
+    assert _bounded_float_env(
+        "MCP_TOOL_RUN_TIMEOUT_SEC",
+        default=120.0,
+        min_value=1.0,
+        max_value=3600.0,
+    ) == 120.0
+
+    monkeypatch.setenv("MCP_TOOL_RUN_TIMEOUT_SEC", "not-a-float")
+    assert _bounded_float_env(
+        "MCP_TOOL_RUN_TIMEOUT_SEC",
+        default=120.0,
+        min_value=1.0,
+        max_value=3600.0,
+    ) == 120.0
+
+    monkeypatch.setenv("MCP_TOOL_RUN_TIMEOUT_SEC", "0")
+    assert _bounded_float_env(
+        "MCP_TOOL_RUN_TIMEOUT_SEC",
+        default=120.0,
+        min_value=1.0,
+        max_value=3600.0,
+    ) == 120.0
+
+    monkeypatch.setenv("MCP_TOOL_RUN_TIMEOUT_SEC", "45.5")
+    assert _bounded_float_env(
+        "MCP_TOOL_RUN_TIMEOUT_SEC",
+        default=120.0,
+        min_value=1.0,
+        max_value=3600.0,
+    ) == 45.5
+
+    monkeypatch.setenv("MCP_TOOL_RUN_TIMEOUT_SEC", "999999")
+    assert _bounded_float_env(
+        "MCP_TOOL_RUN_TIMEOUT_SEC",
+        default=120.0,
+        min_value=1.0,
+        max_value=3600.0,
+    ) == 3600.0
+
+
+def test_long_running_tool_uses_long_timeout(monkeypatch):
+    from context_api_service.app.governed import dispatch as dispatch_mod
+
+    monkeypatch.setattr(dispatch_mod, "_TIMEOUT", 12.0)
+    monkeypatch.setattr(dispatch_mod, "_LONG_TIMEOUT", 96.0)
+
+    assert _timeout_for("read_file") == 12.0
+    assert _timeout_for("copilot_execute") == 96.0
 
 
 def test_dispatch_without_laptop_user_id_uses_http(monkeypatch):

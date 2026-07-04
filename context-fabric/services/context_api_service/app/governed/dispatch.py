@@ -27,6 +27,30 @@ from ..response_json import UpstreamJsonError, response_json_object
 
 log = logging.getLogger(__name__)
 
+_DEFAULT_TOOL_RUN_TIMEOUT_SEC = 120.0
+_DEFAULT_TOOL_RUN_LONG_TIMEOUT_SEC = 960.0
+_MIN_TOOL_RUN_TIMEOUT_SEC = 1.0
+_MAX_TOOL_RUN_TIMEOUT_SEC = 60.0 * 60.0
+_MAX_TOOL_RUN_LONG_TIMEOUT_SEC = 2.0 * 60.0 * 60.0
+
+
+def _bounded_float_env(name: str, *, default: float, min_value: float, max_value: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        log.warning("invalid float env %s=%r; using default=%s", name, raw, default)
+        return default
+    if value < min_value:
+        log.warning("float env %s=%s below min=%s; using default=%s", name, value, min_value, default)
+        return default
+    if value > max_value:
+        log.warning("float env %s=%s above max=%s; clamping", name, value, max_value)
+        return max_value
+    return value
+
 
 # Environment knobs match mcp-server's compose env.
 #   MCP_SERVER_URL          — compose-internal URL (defaults to demo)
@@ -35,13 +59,23 @@ log = logging.getLogger(__name__)
 #   MCP_TOOL_RUN_LONG_TIMEOUT_SEC — timeout for slow agentic tools, default 960s
 _MCP_URL = os.environ.get("MCP_SERVER_URL", "http://mcp-server:7100").rstrip("/")
 _MCP_BEARER = os.environ.get("MCP_BEARER_TOKEN", "")
-_TIMEOUT = float(os.environ.get("MCP_TOOL_RUN_TIMEOUT_SEC", "120"))
+_TIMEOUT = _bounded_float_env(
+    "MCP_TOOL_RUN_TIMEOUT_SEC",
+    default=_DEFAULT_TOOL_RUN_TIMEOUT_SEC,
+    min_value=_MIN_TOOL_RUN_TIMEOUT_SEC,
+    max_value=_MAX_TOOL_RUN_TIMEOUT_SEC,
+)
 # Some tools run a whole agentic phase on the far side and legitimately take
 # minutes — copilot_execute shells out to `copilot -p --allow-all` (its own
 # timeout is 900s). The default 120s dispatch timeout aborts those mid-run with
 # an (empty-string) httpx timeout surfaced as "mcp-server unreachable". Give the
 # long-running set a much larger ceiling, just above the tool's own 900s.
-_LONG_TIMEOUT = float(os.environ.get("MCP_TOOL_RUN_LONG_TIMEOUT_SEC", "960"))
+_LONG_TIMEOUT = _bounded_float_env(
+    "MCP_TOOL_RUN_LONG_TIMEOUT_SEC",
+    default=_DEFAULT_TOOL_RUN_LONG_TIMEOUT_SEC,
+    min_value=_MIN_TOOL_RUN_TIMEOUT_SEC,
+    max_value=_MAX_TOOL_RUN_LONG_TIMEOUT_SEC,
+)
 _LONG_RUNNING_TOOLS = {"copilot_execute"}
 _TRUTHY = {"1", "true", "yes", "on"}
 
