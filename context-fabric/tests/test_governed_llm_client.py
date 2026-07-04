@@ -12,12 +12,13 @@ regression seal — if anyone ever changes the read order back to
 """
 from __future__ import annotations
 
-from context_api_service.app.governed.llm_client import ChatToolCall, _bounded_float_env
+from context_api_service.app.governed.env_config import bounded_float_env
+from context_api_service.app.governed.llm_client import ChatToolCall
 
 
 def test_llm_gateway_timeout_env_defaults_and_clamps(monkeypatch):
     monkeypatch.delenv("LLM_GATEWAY_TIMEOUT_SEC", raising=False)
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "LLM_GATEWAY_TIMEOUT_SEC",
         default=300.0,
         min_value=1.0,
@@ -25,7 +26,7 @@ def test_llm_gateway_timeout_env_defaults_and_clamps(monkeypatch):
     ) == 300.0
 
     monkeypatch.setenv("LLM_GATEWAY_TIMEOUT_SEC", "not-a-float")
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "LLM_GATEWAY_TIMEOUT_SEC",
         default=300.0,
         min_value=1.0,
@@ -33,7 +34,7 @@ def test_llm_gateway_timeout_env_defaults_and_clamps(monkeypatch):
     ) == 300.0
 
     monkeypatch.setenv("LLM_GATEWAY_TIMEOUT_SEC", "0")
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "LLM_GATEWAY_TIMEOUT_SEC",
         default=300.0,
         min_value=1.0,
@@ -41,7 +42,7 @@ def test_llm_gateway_timeout_env_defaults_and_clamps(monkeypatch):
     ) == 300.0
 
     monkeypatch.setenv("LLM_GATEWAY_TIMEOUT_SEC", "900.5")
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "LLM_GATEWAY_TIMEOUT_SEC",
         default=300.0,
         min_value=1.0,
@@ -49,7 +50,7 @@ def test_llm_gateway_timeout_env_defaults_and_clamps(monkeypatch):
     ) == 900.5
 
     monkeypatch.setenv("LLM_GATEWAY_TIMEOUT_SEC", "999999")
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "LLM_GATEWAY_TIMEOUT_SEC",
         default=300.0,
         min_value=1.0,
@@ -59,7 +60,7 @@ def test_llm_gateway_timeout_env_defaults_and_clamps(monkeypatch):
 
 def test_llm_gateway_discovery_ttl_env_defaults_and_clamps(monkeypatch):
     monkeypatch.delenv("LLM_GATEWAY_DISCOVERY_TTL_SEC", raising=False)
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "LLM_GATEWAY_DISCOVERY_TTL_SEC",
         default=30.0,
         min_value=1.0,
@@ -67,7 +68,7 @@ def test_llm_gateway_discovery_ttl_env_defaults_and_clamps(monkeypatch):
     ) == 30.0
 
     monkeypatch.setenv("LLM_GATEWAY_DISCOVERY_TTL_SEC", "invalid")
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "LLM_GATEWAY_DISCOVERY_TTL_SEC",
         default=30.0,
         min_value=1.0,
@@ -75,7 +76,7 @@ def test_llm_gateway_discovery_ttl_env_defaults_and_clamps(monkeypatch):
     ) == 30.0
 
     monkeypatch.setenv("LLM_GATEWAY_DISCOVERY_TTL_SEC", "0")
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "LLM_GATEWAY_DISCOVERY_TTL_SEC",
         default=30.0,
         min_value=1.0,
@@ -83,7 +84,7 @@ def test_llm_gateway_discovery_ttl_env_defaults_and_clamps(monkeypatch):
     ) == 30.0
 
     monkeypatch.setenv("LLM_GATEWAY_DISCOVERY_TTL_SEC", "45.25")
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "LLM_GATEWAY_DISCOVERY_TTL_SEC",
         default=30.0,
         min_value=1.0,
@@ -91,7 +92,7 @@ def test_llm_gateway_discovery_ttl_env_defaults_and_clamps(monkeypatch):
     ) == 45.25
 
     monkeypatch.setenv("LLM_GATEWAY_DISCOVERY_TTL_SEC", "999999")
-    assert _bounded_float_env(
+    assert bounded_float_env(
         "LLM_GATEWAY_DISCOVERY_TTL_SEC",
         default=30.0,
         min_value=1.0,

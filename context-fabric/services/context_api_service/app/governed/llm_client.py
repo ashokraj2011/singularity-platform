@@ -22,6 +22,7 @@ from typing import Any
 
 import httpx
 
+from .env_config import bounded_float_env
 from ..response_json import UpstreamJsonError, response_json_object
 
 log = logging.getLogger(__name__)
@@ -34,35 +35,18 @@ _MIN_GATEWAY_DISCOVERY_TTL_SEC = 1.0
 _MAX_GATEWAY_DISCOVERY_TTL_SEC = 24.0 * 60.0 * 60.0
 
 
-def _bounded_float_env(name: str, *, default: float, min_value: float, max_value: float) -> float:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        log.warning("invalid float env %s=%r; using default=%s", name, raw, default)
-        return default
-    if value < min_value:
-        log.warning("float env %s=%s below min=%s; using default=%s", name, value, min_value, default)
-        return default
-    if value > max_value:
-        log.warning("float env %s=%s above max=%s; clamping", name, value, max_value)
-        return max_value
-    return value
-
-
 # Environment knobs (same names as mcp-server so dev compose stays consistent):
 #   LLM_GATEWAY_URL          — base URL, or the literal "mock" for tests
 #   LLM_GATEWAY_BEARER       — optional bearer
 #   LLM_GATEWAY_TIMEOUT_SEC  — per-call timeout, default 300s (LLM calls are slow)
 _GATEWAY_URL = os.environ.get("LLM_GATEWAY_URL", "http://llm-gateway:8001").rstrip("/")
 _GATEWAY_BEARER = os.environ.get("LLM_GATEWAY_BEARER", "")
-_TIMEOUT = _bounded_float_env(
+_TIMEOUT = bounded_float_env(
     "LLM_GATEWAY_TIMEOUT_SEC",
     default=_DEFAULT_GATEWAY_TIMEOUT_SEC,
     min_value=_MIN_GATEWAY_TIMEOUT_SEC,
     max_value=_MAX_GATEWAY_TIMEOUT_SEC,
+    logger=log,
 )
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -80,11 +64,12 @@ _TRUTHY = {"1", "true", "yes", "on"}
 #   LLM_GATEWAY_DISCOVERY_TTL_SEC — resolver cache TTL (default 30s)
 _REGISTRY_URL = os.environ.get("PLATFORM_REGISTRY_URL", "").rstrip("/")
 _GATEWAY_SERVICE_NAME = os.environ.get("LLM_GATEWAY_SERVICE_NAME", "llm-gateway")
-_DISCOVERY_TTL_SEC = _bounded_float_env(
+_DISCOVERY_TTL_SEC = bounded_float_env(
     "LLM_GATEWAY_DISCOVERY_TTL_SEC",
     default=_DEFAULT_GATEWAY_DISCOVERY_TTL_SEC,
     min_value=_MIN_GATEWAY_DISCOVERY_TTL_SEC,
     max_value=_MAX_GATEWAY_DISCOVERY_TTL_SEC,
+    logger=log,
 )
 # {"url": str | None, "expires_at": float}. Module-global; reset in tests.
 _GATEWAY_CACHE: dict[str, Any] = {"url": None, "expires_at": 0.0}

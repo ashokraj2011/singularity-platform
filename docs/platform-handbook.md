@@ -711,6 +711,10 @@ Context Fabric MCP dispatch timeouts use the same governed env helper:
 while `MCP_TOOL_RUN_LONG_TIMEOUT_SEC` defaults to `960`, minimum `1`,
 maximum `7200` for long-running agentic tools such as `copilot_execute`.
 Invalid values fall back to defaults and oversized values clamp to the caps.
+The governed LLM client uses the same helper: `LLM_GATEWAY_TIMEOUT_SEC`
+defaults to `300`, minimum `1`, maximum `7200`; gateway discovery cache
+`LLM_GATEWAY_DISCOVERY_TTL_SEC` defaults to `30`, minimum `1`, maximum
+`86400`.
 
 Shared Node, Python, and Workgraph inline system-prompt clients also bound
 `SYSTEM_PROMPT_CACHE_TTL_SEC`: default `300`, minimum `1`, maximum `86400`.

@@ -159,6 +159,40 @@ def test_mcp_dispatch_timeout_knob_bounds(monkeypatch):
     ) == 7200.0
 
 
+def test_llm_gateway_client_knob_bounds(monkeypatch):
+    monkeypatch.setenv("LLM_GATEWAY_TIMEOUT_SEC", "0")
+    assert bounded_float_env(
+        "LLM_GATEWAY_TIMEOUT_SEC",
+        default=300.0,
+        min_value=1.0,
+        max_value=7200.0,
+    ) == 300.0
+
+    monkeypatch.setenv("LLM_GATEWAY_TIMEOUT_SEC", "999999")
+    assert bounded_float_env(
+        "LLM_GATEWAY_TIMEOUT_SEC",
+        default=300.0,
+        min_value=1.0,
+        max_value=7200.0,
+    ) == 7200.0
+
+    monkeypatch.setenv("LLM_GATEWAY_DISCOVERY_TTL_SEC", "bad")
+    assert bounded_float_env(
+        "LLM_GATEWAY_DISCOVERY_TTL_SEC",
+        default=30.0,
+        min_value=1.0,
+        max_value=86_400.0,
+    ) == 30.0
+
+    monkeypatch.setenv("LLM_GATEWAY_DISCOVERY_TTL_SEC", "999999")
+    assert bounded_float_env(
+        "LLM_GATEWAY_DISCOVERY_TTL_SEC",
+        default=30.0,
+        min_value=1.0,
+        max_value=86_400.0,
+    ) == 86_400.0
+
+
 def test_governed_stage_driver_knob_bounds(monkeypatch):
     monkeypatch.setenv("GOVERNED_STAGE_WALL_CLOCK_SEC", "0")
     assert bounded_float_env(
