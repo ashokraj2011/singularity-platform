@@ -29,6 +29,8 @@
  */
 import { z } from "zod";
 
+const RequestId = z.string().min(1).max(128);
+
 // ── outbound (laptop → bridge) ──────────────────────────────────────────────
 
 // M75 Slice 1 — wire-format frame-type identifiers the laptop understands.
@@ -68,7 +70,7 @@ export type HeartbeatFrame = z.infer<typeof HeartbeatFrame>;
 
 export const ResponseFrame = z.object({
   type:       z.literal("response"),
-  request_id: z.string(),
+  request_id: RequestId,
   payload:    z.unknown(),                    // the executeInvokePayload result
   error:      z.object({
     code:    z.string(),
@@ -96,7 +98,7 @@ export type AuthAckFrame = z.infer<typeof AuthAckFrame>;
 
 export const InvokeFrame = z.object({
   type:       z.literal("invoke"),
-  request_id: z.string(),
+  request_id: RequestId,
   payload:    z.unknown(),                    // raw /mcp/invoke body
   deadline_ms: z.number().int().positive().optional(),
 });
@@ -134,7 +136,7 @@ export type ToolRunPayload = z.infer<typeof ToolRunPayload>;
 
 export const ToolRunFrame = z.object({
   type:       z.literal("tool-run"),
-  request_id: z.string(),
+  request_id: RequestId,
   payload:    ToolRunPayload,
   deadline_ms: z.number().int().positive().optional(),
 });
@@ -177,7 +179,7 @@ export type DisconnectFrame = z.infer<typeof DisconnectFrame>;
 // returns, so context-fabric parses both with ChatResponse.from_dict.
 export const ModelRunFrame = z.object({
   type:        z.literal("model-run"),
-  request_id:  z.string(),
+  request_id:  RequestId,
   payload:     z.record(z.unknown()),   // gateway chat-completions request body
   deadline_ms: z.number().int().positive().optional(),
 });
@@ -191,7 +193,7 @@ export type ModelRunFrame = z.infer<typeof ModelRunFrame>;
 // the HTTP route returns, so context-fabric parses both transports identically.
 export const CodeContextFrame = z.object({
   type:        z.literal("code-context"),
-  request_id:  z.string(),
+  request_id:  RequestId,
   payload:     z.record(z.unknown()),   // code-context/build request body
   deadline_ms: z.number().int().positive().optional(),
 });
@@ -205,7 +207,7 @@ export type CodeContextFrame = z.infer<typeof CodeContextFrame>;
 // mcp HTTP endpoint.
 export const SourceTreeFrame = z.object({
   type:        z.literal("source-tree"),
-  request_id:  z.string(),
+  request_id:  RequestId,
   payload:     z.object({ repoUrl: z.string(), branch: z.string().default("main") }),
   deadline_ms: z.number().int().positive().optional(),
 });
@@ -213,7 +215,7 @@ export type SourceTreeFrame = z.infer<typeof SourceTreeFrame>;
 
 export const SourceFileFrame = z.object({
   type:        z.literal("source-file"),
-  request_id:  z.string(),
+  request_id:  RequestId,
   payload:     z.object({ repoUrl: z.string(), branch: z.string().default("main"), path: z.string() }),
   deadline_ms: z.number().int().positive().optional(),
 });
@@ -225,7 +227,7 @@ export type SourceFileFrame = z.infer<typeof SourceFileFrame>;
 // to the work-route module.
 export const WorkFinishBranchFrame = z.object({
   type:        z.literal("work-finish-branch"),
-  request_id:  z.string(),
+  request_id:  RequestId,
   payload:     z.record(z.unknown()),
   deadline_ms: z.number().int().positive().optional(),
 });
@@ -236,7 +238,7 @@ export type WorkFinishBranchFrame = z.infer<typeof WorkFinishBranchFrame>;
 // authorName?}; runWorktreeWriteFile validates it, so keep the envelope loose.
 export const WorktreeWriteFileFrame = z.object({
   type:        z.literal("worktree-write-file"),
-  request_id:  z.string(),
+  request_id:  RequestId,
   payload:     z.record(z.unknown()),
   deadline_ms: z.number().int().positive().optional(),
 });
@@ -261,16 +263,24 @@ export function decodeInbound(raw: unknown): InboundFrame | null {
   if (typeof raw !== "object" || raw === null) return null;
   const type = (raw as { type?: unknown }).type;
   if (typeof type !== "string") return null;
-  if (type === "auth.ack")     return AuthAckFrame.parse(raw);
-  if (type === "invoke")       return InvokeFrame.parse(raw);
-  if (type === "tool-run")     return ToolRunFrame.parse(raw);     // M75 Slice 1
-  if (type === "model-run")    return ModelRunFrame.parse(raw);    // LLM-on-laptop
-  if (type === "code-context") return CodeContextFrame.parse(raw); // world-model-on-laptop
-  if (type === "source-tree")  return SourceTreeFrame.parse(raw);  // repo discovery over the bridge
-  if (type === "source-file")  return SourceFileFrame.parse(raw);  // repo discovery over the bridge
-  if (type === "work-finish-branch") return WorkFinishBranchFrame.parse(raw); // git finalize over the bridge
-  if (type === "worktree-write-file") return WorktreeWriteFileFrame.parse(raw); // worktree write over the bridge
-  if (type === "ping")         return PingFrame.parse(raw);
-  if (type === "disconnect")   return DisconnectFrame.parse(raw);
+  if (type === "auth.ack")     return parseInbound(AuthAckFrame, raw);
+  if (type === "invoke")       return parseInbound(InvokeFrame, raw);
+  if (type === "tool-run")     return parseInbound(ToolRunFrame, raw);     // M75 Slice 1
+  if (type === "model-run")    return parseInbound(ModelRunFrame, raw);    // LLM-on-laptop
+  if (type === "code-context") return parseInbound(CodeContextFrame, raw); // world-model-on-laptop
+  if (type === "source-tree")  return parseInbound(SourceTreeFrame, raw);  // repo discovery over the bridge
+  if (type === "source-file")  return parseInbound(SourceFileFrame, raw);  // repo discovery over the bridge
+  if (type === "work-finish-branch") return parseInbound(WorkFinishBranchFrame, raw); // git finalize over the bridge
+  if (type === "worktree-write-file") return parseInbound(WorktreeWriteFileFrame, raw); // worktree write over the bridge
+  if (type === "ping")         return parseInbound(PingFrame, raw);
+  if (type === "disconnect")   return parseInbound(DisconnectFrame, raw);
   return null;
+}
+
+function parseInbound<T>(
+  schema: { safeParse: (raw: unknown) => { success: true; data: T } | { success: false } },
+  raw: unknown,
+): T | null {
+  const parsed = schema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
 }

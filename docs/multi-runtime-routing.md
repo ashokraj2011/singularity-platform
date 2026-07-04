@@ -85,6 +85,10 @@ WebSocket `1009` close and rejects oversized `response.payload` or
 `response.error` bodies with `RUNTIME_RESPONSE_TOO_LARGE`. Malformed
 non-object `response.error` frames are normalized to `INVALID_RUNTIME_ERROR` so
 callers fail deterministically instead of timing out on a popped pending future.
+On the runtime side, MCP bounds bridge request ids to `1..128` characters and
+decodes bridge-to-runtime frames with safe parsing; malformed known frame types
+are ignored as invalid frames instead of throwing into the WebSocket message
+handler.
 
 ---
 

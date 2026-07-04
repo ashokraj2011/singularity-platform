@@ -87,7 +87,16 @@ describe("HelloFrame.supported_frame_types", () => {
   it("SUPPORTED_FRAME_TYPES export matches schema enum", () => {
     // Pin the constant to prevent drift — Slice 2 imports this to
     // build the bridge's capability matcher.
-    expect(SUPPORTED_FRAME_TYPES).toEqual(["invoke", "tool-run", "model-run", "code-context"]);
+    expect(SUPPORTED_FRAME_TYPES).toEqual([
+      "invoke",
+      "tool-run",
+      "model-run",
+      "code-context",
+      "source-tree",
+      "source-file",
+      "work-finish-branch",
+      "worktree-write-file",
+    ]);
   });
 });
 
@@ -308,13 +317,28 @@ describe("decodeInbound", () => {
     expect(decodeInbound({ type: 42 })).toBeNull();
   });
 
-  it("throws on shape mismatch within a known type", () => {
-    // Different from the unknown-type case: when the type IS known
-    // but the payload doesn't match the schema, we want to know
-    // (operator-visible) rather than silently drop. Zod throws.
-    expect(() =>
-      decodeInbound({ type: "tool-run", request_id: "x" /* no payload */ }),
-    ).toThrow();
+  it("returns null on shape mismatch within a known type", () => {
+    // A malformed bridge frame must not throw into the WebSocket message
+    // handler. The relay logs + ignores null frames and waits for the next
+    // valid dispatch.
+    expect(decodeInbound({ type: "tool-run", request_id: "x" /* no payload */ })).toBeNull();
+  });
+
+  it("returns null for missing, blank, or oversized request_id values", () => {
+    expect(decodeInbound({
+      type: "tool-run",
+      request_id: "",
+      payload: { tool_name: "read_file" },
+    })).toBeNull();
+    expect(decodeInbound({
+      type: "tool-run",
+      payload: { tool_name: "read_file" },
+    })).toBeNull();
+    expect(decodeInbound({
+      type: "tool-run",
+      request_id: "r".repeat(129),
+      payload: { tool_name: "read_file" },
+    })).toBeNull();
   });
 });
 
