@@ -16,8 +16,12 @@ function main() {
   assert.match(internalTools, /system_prompt/);
   assert.match(internalTools, /model_overrides/);
   assert.match(internalTools, /source_type: "tool-service-internal"/);
+  assert.match(internalTools, /timeoutSec: CONTEXT_FABRIC_SINGLE_TURN_CONFIG\.timeoutSec/);
+  assert.match(internalTools, /AbortSignal\.timeout\(CONTEXT_FABRIC_SINGLE_TURN_CONFIG\.timeoutMs\)/);
   assert.doesNotMatch(internalTools, /\/mcp\/invoke/);
   assert.doesNotMatch(internalTools, /MCP_UPSTREAM/);
+  assert.doesNotMatch(internalTools, /timeoutSec:\s*70/);
+  assert.doesNotMatch(internalTools, /AbortSignal\.timeout\(70_000\)/);
 
   console.log("tool-service Context Fabric single-turn contract passed");
 }

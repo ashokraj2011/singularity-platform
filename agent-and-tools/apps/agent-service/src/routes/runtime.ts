@@ -4,6 +4,7 @@ import { query, queryOne } from "../database";
 import { requireAuth } from "../middleware/auth";
 import { AppError } from "../middleware/errorHandler";
 import { readUpstreamJsonObject } from "../shared/upstream-json";
+import { contextFabricSingleTurnConfig } from "../shared/context-fabric-single-turn.config";
 import {
   getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral,
 } from "@agentandtools/shared";
@@ -139,6 +140,7 @@ runtimeRoutes.post("/learning-candidates/:id/review", async (req: Request, res: 
 
 const CONTEXT_FABRIC_URL  = (process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000").replace(/\/$/, "");
 const CONTEXT_FABRIC_SERVICE_TOKEN = process.env.CONTEXT_FABRIC_SERVICE_TOKEN ?? "";
+const CONTEXT_FABRIC_SINGLE_TURN_CONFIG = contextFabricSingleTurnConfig();
 const DISTILL_MODEL_ALIAS = process.env.DISTILL_MODEL_ALIAS?.trim();
 
 interface DistilledMemoryEntry {
@@ -188,10 +190,10 @@ async function synthesiseCandidates(args: {
         source_type: "agent-service-distillation",
       },
       limits: {
-        timeoutSec: 70,
+        timeoutSec: CONTEXT_FABRIC_SINGLE_TURN_CONFIG.timeoutSec,
       },
     }),
-    signal: AbortSignal.timeout(70_000),
+    signal: AbortSignal.timeout(CONTEXT_FABRIC_SINGLE_TURN_CONFIG.timeoutMs),
   });
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 400);

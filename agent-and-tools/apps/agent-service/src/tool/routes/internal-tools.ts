@@ -23,11 +23,13 @@ import { query } from "../database";
 import { requireAuth } from "../middleware/auth";
 import { getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral } from "@agentandtools/shared";
 import { readUpstreamJsonObject } from "../../shared/upstream-json";
+import { contextFabricSingleTurnConfig } from "../../shared/context-fabric-single-turn.config";
 import { internalToolsConfig } from "./internal-tools.config";
 
 const INTERNAL_TOOLS_CONFIG = internalToolsConfig();
 const CONTEXT_FABRIC_URL = (process.env.CONTEXT_FABRIC_URL ?? "http://context-api:8000").replace(/\/$/, "");
 const CONTEXT_FABRIC_SERVICE_TOKEN = process.env.CONTEXT_FABRIC_SERVICE_TOKEN ?? "";
+const CONTEXT_FABRIC_SINGLE_TURN_CONFIG = contextFabricSingleTurnConfig();
 const TOOL_LLM_MODEL_ALIAS = process.env.TOOL_LLM_MODEL_ALIAS?.trim();
 
 function recencyBoost(ageDays: number): number {
@@ -201,10 +203,10 @@ async function callContextFabricSingleTurn(opts: { systemPrompt: string; message
       },
       run_context: { trace_id: opts.traceId, source_type: "tool-service-internal" },
       limits: {
-        timeoutSec: 70,
+        timeoutSec: CONTEXT_FABRIC_SINGLE_TURN_CONFIG.timeoutSec,
       },
     }),
-    signal: AbortSignal.timeout(70_000),
+    signal: AbortSignal.timeout(CONTEXT_FABRIC_SINGLE_TURN_CONFIG.timeoutMs),
   });
   if (!res.ok) throw new Error(`CONTEXT_FABRIC_UPSTREAM ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const data = await readUpstreamJsonObject(res, "Context Fabric governed single-turn") as { finalResponse?: string; data?: { finalResponse?: string } };

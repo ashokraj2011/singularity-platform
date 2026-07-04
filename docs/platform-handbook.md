@@ -932,6 +932,12 @@ Rotate development defaults before any shared/staging/production deployment:
 
 Agent Service, including the folded-in Tool Service routes, refuses production-class startup unless `JWT_SECRET`, `MCP_BEARER_TOKEN`, `AUDIT_GOV_SERVICE_TOKEN`, and `CONTEXT_FABRIC_SERVICE_TOKEN` are strong non-default values. This keeps internal tool synthesis and distillation calls from silently running without the Context Fabric service boundary.
 
+Agent Service and folded Tool Service synthesis calls to Context Fabric use
+`CONTEXT_FABRIC_SINGLE_TURN_TIMEOUT_SEC`, default `70`, bounded `1..300`.
+The same bounded value is sent in the Context Fabric `limits.timeoutSec` payload
+and used for local fetch cancellation, so a bad env file cannot create instant
+timeouts or unbounded waits.
+
 ### 10.4 Start The Stack
 
 ```bash
