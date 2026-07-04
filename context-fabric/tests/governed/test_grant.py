@@ -211,3 +211,13 @@ def test_ttl_is_clamped(monkeypatch):
         args={}, run_context={},
     )
     assert g["expiresAt"] - g["issuedAt"] == 3600
+
+
+@pytest.mark.parametrize("raw_ttl,expected", [("bad", 120), ("0", 120), ("4", 120), ("5", 5), ("99999", 3600)])
+def test_ttl_env_is_bounded(monkeypatch, raw_ttl, expected):
+    _enable(monkeypatch, ttl=raw_ttl)
+    g = grant.mint_tool_grant(
+        policy=_policy(), phase=Phase.ACT, tool_name="apply_patch",
+        args={}, run_context={},
+    )
+    assert g["expiresAt"] - g["issuedAt"] == expected

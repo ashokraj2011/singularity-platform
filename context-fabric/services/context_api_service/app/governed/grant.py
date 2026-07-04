@@ -53,6 +53,7 @@ import secrets
 import time
 from typing import Any
 
+from .env_config import bounded_int_env
 from .phase_state import Phase
 from .policy_loader import StagePolicy
 
@@ -83,13 +84,15 @@ def _signing_secret() -> str | None:
 
 
 def _ttl_sec() -> int:
-    try:
-        ttl = int(os.environ.get("CF_TOOL_GRANT_TTL_SEC", "120"))
-    except ValueError:
-        ttl = 120
     # Clamp to something sane: long enough to survive a slow tool dispatch,
     # short enough that a captured grant is near-useless. 1h hard ceiling.
-    return max(5, min(ttl, 3600))
+    return bounded_int_env(
+        "CF_TOOL_GRANT_TTL_SEC",
+        default=120,
+        min_value=5,
+        max_value=3600,
+        logger=log,
+    )
 
 
 def canonical_json(obj: Any) -> str:
