@@ -18,6 +18,11 @@ developer laptop without exposing inbound ports.
 
 `/api/laptop-bridge/connect` remains as a compatibility alias for old clients.
 
+After authentication, Context Fabric replies with `auth.ack`. MCP treats
+`max_concurrent_invokes` as advisory but bounded: values above 32 are rejected
+by the runtime bridge frame contract, so a bad bridge setting cannot make one
+runtime accept unbounded parallel tool/model work.
+
 ## Routing
 
 Context Fabric chooses runtimes in this order:

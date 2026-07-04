@@ -83,6 +83,7 @@ export type ResponseFrame = z.infer<typeof ResponseFrame>;
 export type OutboundFrame = HelloFrame | HeartbeatFrame | ResponseFrame;
 
 export const RUNTIME_BRIDGE_MAX_FRAME_BYTES = 16 * 1024 * 1024;
+export const RUNTIME_BRIDGE_MAX_CONCURRENT_INVOKES = 32;
 
 export function encodeOutboundFrame(
   frame: OutboundFrame,
@@ -143,7 +144,7 @@ export const AuthAckFrame = z.object({
   registered_at: z.string(),
   accepted_frame_types: z.array(z.string()).optional(),
   // Optional payload limits / config the bridge wants the laptop to respect.
-  max_concurrent_invokes: z.number().int().positive().optional(),
+  max_concurrent_invokes: z.number().int().positive().max(RUNTIME_BRIDGE_MAX_CONCURRENT_INVOKES).optional(),
 });
 export type AuthAckFrame = z.infer<typeof AuthAckFrame>;
 

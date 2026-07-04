@@ -24,6 +24,7 @@ import {
   InvokeFrame,
   PingFrame,
   ResponseFrame,
+  RUNTIME_BRIDGE_MAX_CONCURRENT_INVOKES,
   RUNTIME_BRIDGE_MAX_FRAME_BYTES,
   SUPPORTED_FRAME_TYPES,
   ToolRunFrame,
@@ -102,6 +103,34 @@ describe("HelloFrame.supported_frame_types", () => {
       "work-finish-branch",
       "worktree-write-file",
     ]);
+  });
+});
+
+// ── AuthAckFrame ───────────────────────────────────────────────────────────
+
+describe("AuthAckFrame", () => {
+  it("accepts the bridge concurrency ceiling", () => {
+    const frame = AuthAckFrame.parse({
+      type: "auth.ack",
+      user_id: "u1",
+      device_id: "d1",
+      registered_at: "2026-07-04T00:00:00.000Z",
+      max_concurrent_invokes: RUNTIME_BRIDGE_MAX_CONCURRENT_INVOKES,
+    });
+
+    expect(frame.max_concurrent_invokes).toBe(RUNTIME_BRIDGE_MAX_CONCURRENT_INVOKES);
+  });
+
+  it("rejects unbounded bridge concurrency", () => {
+    expect(() =>
+      AuthAckFrame.parse({
+        type: "auth.ack",
+        user_id: "u1",
+        device_id: "d1",
+        registered_at: "2026-07-04T00:00:00.000Z",
+        max_concurrent_invokes: RUNTIME_BRIDGE_MAX_CONCURRENT_INVOKES + 1,
+      }),
+    ).toThrow();
   });
 });
 
