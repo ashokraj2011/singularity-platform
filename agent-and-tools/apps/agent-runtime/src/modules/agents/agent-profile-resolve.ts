@@ -145,6 +145,17 @@ export function defaultPermissionsFor(sourceType: string): CapabilityPermission[
   return sourceType === "local" ? ["read", "invoke"] : ["read"];
 }
 
+export function normalizeCapabilityPermissions(
+  values: unknown,
+  fallback: CapabilityPermission[],
+  constrainedToRead = false,
+): CapabilityPermission[] {
+  let permissions = uniquePermissions(values, fallback);
+  if (constrainedToRead) permissions = permissions.filter((permission) => permission === "read");
+  if (!permissions.includes("read")) permissions.unshift("read");
+  return Array.from(new Set(permissions));
+}
+
 export function normalizeProfilePermissions(binding: {
   sourceType: string;
   permissions?: unknown;
@@ -156,10 +167,12 @@ export function normalizeProfilePermissions(binding: {
     : Boolean(binding.providerLocked);
   const external = binding.sourceType !== "local";
   const readOnly = binding.readOnly ?? external;
-  let permissions = uniquePermissions(binding.permissions, defaultPermissionsFor(binding.sourceType));
-  if (readOnly || providerLocked) permissions = permissions.filter((p) => p === "read");
-  if (!permissions.includes("read")) permissions.unshift("read");
-  return { permissions: Array.from(new Set(permissions)), readOnly, providerLocked };
+  const permissions = normalizeCapabilityPermissions(
+    binding.permissions,
+    defaultPermissionsFor(binding.sourceType),
+    readOnly || providerLocked,
+  );
+  return { permissions, readOnly, providerLocked };
 }
 
 function intersectPermissions(left: CapabilityPermission[], right: CapabilityPermission[]): CapabilityPermission[] {
@@ -216,9 +229,11 @@ export function resolveProviderCapabilities(
     const capConstraints = objectValue(capability.constraints);
     const capReadOnly = Boolean(capConstraints.readOnly ?? capConstraints.read_only ?? profile.readOnly);
     const capProviderLocked = Boolean(capConstraints.providerLocked ?? capConstraints.provider_locked ?? profile.providerLocked);
-    let providerPermissions = uniquePermissions(capability.permissions ?? capability.capability_permissions, ["read"]);
-    if (capReadOnly || capProviderLocked) providerPermissions = providerPermissions.filter((permission) => permission === "read");
-    if (!providerPermissions.includes("read")) providerPermissions.unshift("read");
+    const providerPermissions = normalizeCapabilityPermissions(
+      capability.permissions ?? capability.capability_permissions,
+      ["read"],
+      capReadOnly || capProviderLocked,
+    );
     const permissions = intersectPermissions(profile.permissions, providerPermissions);
     const rawId = stringValue(capability.id) ?? stringValue(capability.capability_id) ?? stringValue(capability.name);
     const id = rawId ?? `${slug(providerName)}.${index + 1}`;

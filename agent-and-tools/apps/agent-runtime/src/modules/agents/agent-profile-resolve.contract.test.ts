@@ -1,5 +1,6 @@
 import assert from "assert";
 import {
+  normalizeCapabilityPermissions,
   resolveLocalOrDocumentCapability,
   resolveProviderCapabilities,
   summarizeProfileSources,
@@ -82,6 +83,16 @@ function main() {
   const locked = provider.capabilities.find((capability) => capability.id === "github.repo.settings.update");
   assert.deepEqual(locked?.permissions, ["read"]);
   assert.equal(locked?.providerLocked, true);
+
+  assert.deepEqual(
+    normalizeCapabilityPermissions(["invoke", "edit"], ["read"], true),
+    ["read"],
+    "provider-locked/read-only preview permissions must clamp to read",
+  );
+  assert.deepEqual(
+    normalizeCapabilityPermissions(["read", "invoke", "edit"], ["read"], false),
+    ["read", "invoke", "edit"],
+  );
 
   const defaultReadOnlyProvider = resolveProviderCapabilities(
     binding({

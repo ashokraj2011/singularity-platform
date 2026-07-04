@@ -14,6 +14,7 @@ import { getIamServiceAuthHeader } from "../../lib/iam/service-token";
 import { isPlatformAdmin, requireCapabilityOwner, requirePlatformAdmin } from "../../lib/authz/platform-admin";
 import {
   resolveLocalOrDocumentCapability,
+  normalizeCapabilityPermissions,
   resolveProviderCapabilities,
   sortEffectiveCapabilities,
   summarizeProfileSources,
@@ -632,7 +633,11 @@ async function previewProviderManifest(url: string) {
       const constraints = objectValue(cap.constraints);
       const readOnly = Boolean(constraints.readOnly ?? constraints.read_only ?? providerReadOnly);
       const capabilityProviderLocked = Boolean(constraints.providerLocked ?? constraints.provider_locked ?? providerLocked);
-      const permissions = uniquePermissions(cap.permissions ?? cap.capability_permissions, ["read"]);
+      const permissions = normalizeCapabilityPermissions(
+        cap.permissions ?? cap.capability_permissions,
+        ["read"],
+        readOnly || capabilityProviderLocked,
+      );
       const rawId = stringValue(cap.id) ?? stringValue(cap.capability_id) ?? stringValue(cap.name) ?? `capability-${index + 1}`;
       return {
         id: rawId,
