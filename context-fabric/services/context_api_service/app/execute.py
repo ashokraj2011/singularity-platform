@@ -34,6 +34,7 @@ from . import call_log, events_store
 from .audit_gov_emit import emit_audit_event
 from .config import is_production_class_env, settings
 from .governed import placement as _placement
+from .governed.env_config import bounded_int_env
 from .iam_service_token import (
     get_iam_service_token,
     invalidate_iam_service_token,
@@ -87,6 +88,45 @@ _filter_tools_by_effective_capabilities = _tool_mod.filter_tools_by_effective_ca
 _default_mcp_record = _runtime_mod.default_mcp_record
 _resolve_mcp_record = _runtime_mod.resolve_mcp_record
 _mcp_record_by_id = _runtime_mod.mcp_record_by_id
+
+_DEFAULT_MCP_INVOKE_TIMEOUT_SEC = 480.0
+_DEFAULT_LAPTOP_INVOKE_TIMEOUT_SEC = 240.0
+_MIN_MCP_INVOKE_TIMEOUT_SEC = 1.0
+_MAX_MCP_INVOKE_TIMEOUT_SEC = 2.0 * 60.0 * 60.0
+_MAX_DEEP_REASONING_BUDGET_TOKENS = 32_768
+
+
+def _bounded_timeout_value(raw: Any, *, default: float) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if value < _MIN_MCP_INVOKE_TIMEOUT_SEC:
+        return default
+    if value > _MAX_MCP_INVOKE_TIMEOUT_SEC:
+        return _MAX_MCP_INVOKE_TIMEOUT_SEC
+    return value
+
+
+def _request_timeout_sec(limits: dict[str, Any], *, default: float) -> float:
+    raw = limits.get("timeoutSec") if "timeoutSec" in limits else limits.get("timeout_sec", default)
+    return _bounded_timeout_value(raw, default=default)
+
+
+def _default_mcp_invoke_timeout_sec() -> float:
+    return _bounded_timeout_value(
+        os.getenv("CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC", str(_DEFAULT_MCP_INVOKE_TIMEOUT_SEC)),
+        default=_DEFAULT_MCP_INVOKE_TIMEOUT_SEC,
+    )
+
+
+def _deep_reasoning_budget_tokens() -> int:
+    return bounded_int_env(
+        "DEEP_REASONING_BUDGET_TOKENS",
+        default=0,
+        min_value=0,
+        max_value=_MAX_DEEP_REASONING_BUDGET_TOKENS,
+    )
 
 router = APIRouter()
 
@@ -949,7 +989,7 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
                 mcp_data = await _laptop_mod.dispatch_via_laptop(
                     user_id=user_id,  # type: ignore[arg-type]
                     payload=invoke_payload,
-                    timeout_sec=float(req.limits.get("timeoutSec", 240)),
+                    timeout_sec=_request_timeout_sec(req.limits, default=_DEFAULT_LAPTOP_INVOKE_TIMEOUT_SEC),
                 )
                 # Wrap in mcp-server's standard envelope so downstream code
                 # treats this identically to an HTTP response.
@@ -970,14 +1010,12 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
             # window (~1s) so context-fabric doesn't abort a healthy
             # mid-flight workflow. Caller can still override per-request
             # via req.limits.timeoutSec.
-            _default_mcp_timeout = float(
-                os.getenv("CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC", "480"),
-            )
+            _default_mcp_timeout = _default_mcp_invoke_timeout_sec()
             mcp_resp = await _mcp_mod.dispatch_invoke(
                 mcp_base_url=mcp_base_url,
                 mcp_bearer=mcp_bearer,
                 payload=invoke_payload,
-                timeout_sec=float(req.limits.get("timeoutSec", _default_mcp_timeout)),
+                timeout_sec=_request_timeout_sec(req.limits, default=_default_mcp_timeout),
             )
         mcp_latency_ms = int((time.time() - mcp_started) * 1000)
     except HTTPException:
@@ -2252,13 +2290,7 @@ async def _execute_governed_stage_impl(req: GovernedStageRequest, x_service_toke
     # StagePolicy.limits.thinking_budget. Today we apply the same
     # default to every stage so operators see the reasoning trail in
     # the workbench's LoopTrace overlay without per-stage config.
-    import os as _os
-    try:
-        _thinking_budget = int(_os.environ.get("DEEP_REASONING_BUDGET_TOKENS", "0"))
-    except ValueError:
-        _thinking_budget = 0
-    if _thinking_budget < 0:
-        _thinking_budget = 0
+    _thinking_budget = _deep_reasoning_budget_tokens()
 
     # M91.A — parse incoming StageExecutionPolicy (if provided) into
     # the Pydantic model.
