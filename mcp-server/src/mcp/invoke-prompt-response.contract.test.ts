@@ -30,6 +30,24 @@ assert.match(
 
 assert.match(
   source,
+  /const PROMPT_COMPOSER_TIMEOUT_MS = config\.MCP_PROMPT_COMPOSER_TIMEOUT_SEC \* 1000;/,
+  "Prompt Composer system prompt fetches should use a bounded MCP config timeout",
+);
+
+assert.match(
+  source,
+  /AbortSignal\.timeout\(PROMPT_COMPOSER_TIMEOUT_MS\)/,
+  "Prompt Composer system prompt fetches should use the shared timeout constant",
+);
+
+assert.doesNotMatch(
+  source,
+  /AbortSignal\.timeout\(5_000\)/,
+  "Prompt Composer system prompt fetches should not hardcode milliseconds",
+);
+
+assert.match(
+  source,
   /cachedApplierPrompt = await readPromptComposerSystemPrompt\(res, APPLIER_PROMPT_KEY\)/,
   "applier system prompt should use guarded parsing",
 );

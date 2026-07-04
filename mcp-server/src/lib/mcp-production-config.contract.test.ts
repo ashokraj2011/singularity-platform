@@ -86,7 +86,9 @@ assert.doesNotMatch(invokeSource, /governanceMode:\s*z\.enum\(\[[^\n]+fail_open[
 assert.match(invokeSource, /function promptComposerAuthHeaders\(\): Record<string, string>/);
 assert.match(invokeSource, /process\.env\.PROMPT_COMPOSER_SERVICE_TOKEN/);
 assert.match(invokeSource, /process\.env\.CONTEXT_FABRIC_SERVICE_TOKEN/);
-assert.match(invokeSource, /headers: promptComposerAuthHeaders\(\), signal: AbortSignal\.timeout\(5_000\)/);
+assert.match(invokeSource, /const PROMPT_COMPOSER_TIMEOUT_MS = config\.MCP_PROMPT_COMPOSER_TIMEOUT_SEC \* 1000;/);
+assert.match(invokeSource, /headers: promptComposerAuthHeaders\(\), signal: AbortSignal\.timeout\(PROMPT_COMPOSER_TIMEOUT_MS\)/);
+assert.doesNotMatch(invokeSource, /AbortSignal\.timeout\(5_000\)/);
 
 const learningSource = readFileSync("src/tools/learning.ts", "utf8");
 assert.match(learningSource, /function learningServiceHeaders\(\): Record<string, string>/);

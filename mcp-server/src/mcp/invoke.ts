@@ -624,6 +624,7 @@ const NUDGE_PROMPT_KEY = "mcp.code-tool-use-nudge";
 let cachedNudgePrompt: string | null = null;
 let cachedNudgePromptAt = 0;
 const NUDGE_PROMPT_TTL_MS = config.SYSTEM_PROMPT_CACHE_TTL_SEC * 1000;
+const PROMPT_COMPOSER_TIMEOUT_MS = config.MCP_PROMPT_COMPOSER_TIMEOUT_SEC * 1000;
 
 function promptComposerAuthHeaders(): Record<string, string> {
   const token = (
@@ -670,7 +671,7 @@ async function getNudgePrompt(): Promise<string> {
     );
   }
   const url = `${composerUrl.replace(/\/$/, "")}/api/v1/system-prompts/${encodeURIComponent(NUDGE_PROMPT_KEY)}`;
-  const res = await fetch(url, { headers: promptComposerAuthHeaders(), signal: AbortSignal.timeout(5_000) });
+  const res = await fetch(url, { headers: promptComposerAuthHeaders(), signal: AbortSignal.timeout(PROMPT_COMPOSER_TIMEOUT_MS) });
   if (!res.ok) {
     if (cachedNudgePrompt) return cachedNudgePrompt; // stale-ok
     throw new Error(`mcp-server nudge prompt fetch ${NUDGE_PROMPT_KEY} failed: ${res.status}`);
@@ -700,7 +701,7 @@ async function getApplierPrompt(): Promise<string> {
   }
   const url = `${composerUrl.replace(/\/$/, "")}/api/v1/system-prompts/${encodeURIComponent(APPLIER_PROMPT_KEY)}`;
   try {
-    const res = await fetch(url, { headers: promptComposerAuthHeaders(), signal: AbortSignal.timeout(5_000) });
+    const res = await fetch(url, { headers: promptComposerAuthHeaders(), signal: AbortSignal.timeout(PROMPT_COMPOSER_TIMEOUT_MS) });
     if (!res.ok) {
       if (cachedApplierPrompt) return cachedApplierPrompt;
       return DEFAULT_APPLIER_PROMPT;
