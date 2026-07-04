@@ -98,7 +98,7 @@ var the runtime echoes in its hello.
 ```
 kind=runtime · sub=<iam-user-id> · runtime_id=<UNIQUE per runtime>
 runtime_type=mcp · exp=<numeric unix seconds> · capability_tags=[…]
-(optional) tenant_id, allowed_frame_types, shared
+allowed_frame_types=[…] · (optional) tenant_id, shared
 ```
 
 `kind=runtime` tokens must carry a nonblank `runtime_id` or `device_id`;
@@ -108,6 +108,9 @@ distinct `runtime_id`.**
 `exp` is mandatory and must be a JWT NumericDate; Context Fabric rejects missing,
 string, or already-expired expiries so runtime tokens cannot become unbounded
 bridge credentials.
+`allowed_frame_types` is also mandatory for `kind=runtime` tokens and must include
+recognized frame names; it is the token-side upper bound for what
+`hello.supported_frame_types` may advertise.
 
 ---
 

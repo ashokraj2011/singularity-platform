@@ -68,6 +68,7 @@ def test_runtime_token_requires_nonblank_runtime_identity(monkeypatch):
         "kind": "runtime",
         "sub": "user-a",
         "exp": int(time.time()) + 60,
+        "allowed_frame_types": ["tool-run"],
     }
 
     with pytest.raises(laptop_bridge.JWTError, match="missing runtime_id"):
@@ -87,6 +88,7 @@ def test_runtime_token_accepts_runtime_id_or_device_id(monkeypatch):
         "kind": "runtime",
         "sub": "user-a",
         "exp": int(time.time()) + 60,
+        "allowed_frame_types": ["tool-run"],
     }
 
     with_runtime_id = laptop_bridge._verify_runtime_token(
@@ -98,6 +100,55 @@ def test_runtime_token_accepts_runtime_id_or_device_id(monkeypatch):
 
     assert with_runtime_id["runtime_id"] == "runtime-a"
     assert with_device_id["device_id"] == "device-a"
+
+
+def test_runtime_token_requires_allowed_frame_types(monkeypatch):
+    monkeypatch.setattr(laptop_bridge, "JWT_SECRET", "test-secret")
+    base_payload = {
+        "kind": "runtime",
+        "sub": "user-a",
+        "runtime_id": "runtime-a",
+        "exp": int(time.time()) + 60,
+    }
+
+    with pytest.raises(laptop_bridge.JWTError, match="missing allowed_frame_types"):
+        laptop_bridge._verify_runtime_token(_signed_runtime_token(base_payload))
+
+    with pytest.raises(laptop_bridge.JWTError, match="missing allowed_frame_types"):
+        laptop_bridge._verify_runtime_token(_signed_runtime_token({
+            **base_payload,
+            "allowed_frame_types": "tool-run",
+        }))
+
+    with pytest.raises(laptop_bridge.JWTError, match="missing allowed_frame_types"):
+        laptop_bridge._verify_runtime_token(_signed_runtime_token({
+            **base_payload,
+            "allowed_frame_types": ["unknown-frame", ""],
+        }))
+
+
+def test_runtime_token_accepts_known_allowed_frame_types(monkeypatch):
+    monkeypatch.setattr(laptop_bridge, "JWT_SECRET", "test-secret")
+    claims = laptop_bridge._verify_runtime_token(_signed_runtime_token({
+        "kind": "runtime",
+        "sub": "user-a",
+        "runtime_id": "runtime-a",
+        "exp": int(time.time()) + 60,
+        "allowed_frame_types": ["tool-run", "model-run"],
+    }))
+
+    assert claims["allowed_frame_types"] == ["tool-run", "model-run"]
+
+
+def test_runtime_frame_list_filters_unknown_blank_and_duplicate_frames():
+    assert laptop_bridge._runtime_frame_list([
+        " tool-run ",
+        "unknown-frame",
+        "",
+        "model-run",
+        "tool-run",
+        123,
+    ]) == ["tool-run", "model-run"]
 
 
 def test_device_token_still_requires_device_id(monkeypatch):

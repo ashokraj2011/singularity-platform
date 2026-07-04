@@ -99,6 +99,16 @@ JWT_SECRET = os.environ.get("JWT_SECRET", "changeme_dev_only_min_32_chars_long!!
 JWT_ALGORITHM = "HS256"
 HEARTBEAT_SWEEP_SEC = 30
 _TRUTHY = {"1", "true", "yes", "on"}
+_KNOWN_RUNTIME_FRAME_TYPES = {
+    "invoke",
+    "tool-run",
+    "model-run",
+    "code-context",
+    "source-tree",
+    "source-file",
+    "work-finish-branch",
+    "worktree-write-file",
+}
 
 # Finding #7 — device-revocation enforcement. A revoked device JWT must stop working
 # without waiting for its (up-to-365-day) natural expiry, so the bridge asks IAM whether
@@ -226,6 +236,20 @@ def _runtime_claims_shared(claims: dict[str, Any]) -> bool:
     }
 
 
+def _runtime_frame_list(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    frames: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        frame = str(item).strip()
+        if not frame or frame not in _KNOWN_RUNTIME_FRAME_TYPES or frame in seen:
+            continue
+        seen.add(frame)
+        frames.append(frame)
+    return frames
+
+
 def _verify_runtime_token(token: str) -> dict[str, Any]:
     """Decode + validate a runtime/device JWT. Raises JWTError on failure."""
     claims = _verify_hs256_jwt(token, JWT_SECRET)
@@ -238,6 +262,8 @@ def _verify_runtime_token(token: str) -> dict[str, Any]:
         raise JWTError("missing device_id")
     if kind == "runtime" and not (_claim_str(claims, "runtime_id") or _claim_str(claims, "device_id")):
         raise JWTError("missing runtime_id")
+    if kind == "runtime" and not _runtime_frame_list(claims.get("allowed_frame_types")):
+        raise JWTError("missing allowed_frame_types")
     return claims
 
 
@@ -374,13 +400,10 @@ async def runtime_connect(ws: WebSocket) -> None:
         if _h is not None and str(_h) != _claimed:
             log.warning("ignoring hello.%s=%r conflicting with verified claim %r", _field, _h, _claimed)
 
-    sft_raw = hello.get("supported_frame_types")
-    supported_frame_types = (
-        [str(s) for s in sft_raw] if isinstance(sft_raw, list) and sft_raw else ["invoke"]
-    )
-    allowed_raw = claims.get("allowed_frame_types")
-    if isinstance(allowed_raw, list) and allowed_raw:
-        allowed = {str(s) for s in allowed_raw}
+    supported_frame_types = _runtime_frame_list(hello.get("supported_frame_types")) or ["invoke"]
+    allowed_frame_types = _runtime_frame_list(claims.get("allowed_frame_types"))
+    if allowed_frame_types:
+        allowed = set(allowed_frame_types)
         supported_frame_types = [s for s in supported_frame_types if s in allowed]
     if not supported_frame_types:
         await ws.close(code=4401, reason="no allowed frame types")

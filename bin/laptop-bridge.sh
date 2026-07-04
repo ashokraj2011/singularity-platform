@@ -216,7 +216,9 @@ cmd_mint_token() {
       kind: "runtime", sub: SUB,
       runtime_id: "runtime-test-" + SUB, runtime_type: "mcp",
       device_id: "runtime-test-" + SUB, device_name: "mcp-runtime-test",
-      runtime_scope: "user", capability_tags: ["mcp", "tools", "llm"],
+      runtime_scope: "user",
+      allowed_frame_types: ["tool-run", "model-run", "code-context", "source-tree", "source-file", "work-finish-branch", "worktree-write-file", "invoke"],
+      capability_tags: ["mcp", "tools", "llm"],
       iat: now, exp: now + 90 * 24 * 3600,
     });
     const sig = c.createHmac("sha256", JWT_SECRET).update(head + "." + body).digest("base64url");

@@ -1,5 +1,16 @@
 import assert from "node:assert/strict";
-import { HeartbeatFrame } from "./envelopes";
+import { HeartbeatFrame, SUPPORTED_FRAME_TYPES } from "./envelopes";
+
+assert.deepEqual(SUPPORTED_FRAME_TYPES, [
+  "invoke",
+  "tool-run",
+  "model-run",
+  "code-context",
+  "source-tree",
+  "source-file",
+  "work-finish-branch",
+  "worktree-write-file",
+]);
 
 const parsed = HeartbeatFrame.parse({
   type: "heartbeat",

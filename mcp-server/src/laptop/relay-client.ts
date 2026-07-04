@@ -46,6 +46,7 @@ import { configuredDefaultModel, configuredDefaultProvider } from "../llm/provid
 import { readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
 import {
   decodeInbound,
+  SUPPORTED_FRAME_TYPES,
   type HelloFrame, type HeartbeatFrame, type ResponseFrame,
 } from "./envelopes";
 
@@ -244,7 +245,7 @@ export class LaptopRelayClient {
       // graduates to tool-run as the platform-side dispatch lands
       // (Slice 3). Old bridges that don't know about supported_frame_types
       // just ignore it and keep sending invoke — which still works.
-      supported_frame_types: ["invoke", "tool-run", "model-run", "code-context", "source-tree", "source-file"],
+      supported_frame_types: [...SUPPORTED_FRAME_TYPES],
     };
     this.send(hello);
   }
