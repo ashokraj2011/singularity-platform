@@ -871,6 +871,11 @@ default `10`, bounded `1..300`. This keeps Context Fabric service-boundary
 credential refreshes from waiting indefinitely behind a slow or unavailable IAM
 service.
 
+Context Fabric's shared SystemPrompt client bounds Prompt Composer fetch/render
+calls with `SYSTEM_PROMPT_HTTP_TIMEOUT_SEC`, default `10`, bounded `1..300`.
+Cached prompts remain stale-OK on Composer outage, but cold-start fetches now
+fail on an operator-controlled deadline instead of hanging on a fixed timeout.
+
 Platform Web's Runtime + LLM settings route bounds status fan-out calls with
 `LLM_SETTINGS_FETCH_TIMEOUT_SEC`, default `5`, bounded `1..300`. Model catalog
 mutations forwarded to LLM Gateway use `LLM_SETTINGS_WRITE_TIMEOUT_SEC`, default

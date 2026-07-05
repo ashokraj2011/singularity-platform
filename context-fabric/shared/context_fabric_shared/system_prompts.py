@@ -15,12 +15,14 @@ Behaviour:
 Config (env, read on first call):
   PROMPT_COMPOSER_URL          required — http://prompt-composer:3004
   SYSTEM_PROMPT_CACHE_TTL_SEC  optional — default 300
+  SYSTEM_PROMPT_HTTP_TIMEOUT_SEC optional — default 10, bounded 1..300
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -51,6 +53,8 @@ _locks: dict[str, asyncio.Lock] = {}
 
 _DEFAULT_TTL_SECONDS = 300
 _MAX_TTL_SECONDS = 24 * 60 * 60
+_DEFAULT_HTTP_TIMEOUT_SECONDS = 10.0
+_MAX_HTTP_TIMEOUT_SECONDS = 300.0
 
 
 def _ttl_seconds() -> int:
@@ -62,6 +66,19 @@ def _ttl_seconds() -> int:
     if value < 1:
         return _DEFAULT_TTL_SECONDS
     return min(value, _MAX_TTL_SECONDS)
+
+
+def _http_timeout_seconds() -> float:
+    raw = os.getenv("SYSTEM_PROMPT_HTTP_TIMEOUT_SEC", "")
+    if not raw.strip():
+        return _DEFAULT_HTTP_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_HTTP_TIMEOUT_SECONDS
+    if not math.isfinite(value) or value < 1.0:
+        return _DEFAULT_HTTP_TIMEOUT_SECONDS
+    return min(value, _MAX_HTTP_TIMEOUT_SECONDS)
 
 
 def _composer_url() -> str:
@@ -85,13 +102,14 @@ def _get_lock(key: str) -> asyncio.Lock:
 
 async def _fetch_once(key: str, vars_payload: Optional[dict]) -> SystemPromptResult:
     base = _composer_url()
+    timeout = _http_timeout_seconds()
     if vars_payload is not None:
         url = f"{base}/api/v1/system-prompts/{key}/render"
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, json={"vars": vars_payload})
     else:
         url = f"{base}/api/v1/system-prompts/{key}"
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.get(url)
 
     if resp.status_code >= 400:

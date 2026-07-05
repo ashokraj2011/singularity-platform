@@ -1120,6 +1120,10 @@ service-token mint calls with <code>CONTEXT_FABRIC_IAM_SERVICE_TOKEN_TIMEOUT_SEC
 default <code>10</code>, bounded <code>1..300</code>. This keeps Context Fabric service-boundary
 credential refreshes from waiting indefinitely behind a slow or unavailable IAM
 service.</p>
+<p>Context Fabric&#39;s shared SystemPrompt client bounds Prompt Composer fetch/render
+calls with <code>SYSTEM_PROMPT_HTTP_TIMEOUT_SEC</code>, default <code>10</code>, bounded <code>1..300</code>.
+Cached prompts remain stale-OK on Composer outage, but cold-start fetches now
+fail on an operator-controlled deadline instead of hanging on a fixed timeout.</p>
 <p>Platform Web&#39;s Runtime + LLM settings route bounds status fan-out calls with
 <code>LLM_SETTINGS_FETCH_TIMEOUT_SEC</code>, default <code>5</code>, bounded <code>1..300</code>. Model catalog
 mutations forwarded to LLM Gateway use <code>LLM_SETTINGS_WRITE_TIMEOUT_SEC</code>, default
