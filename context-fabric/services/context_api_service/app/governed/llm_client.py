@@ -29,10 +29,13 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_GATEWAY_TIMEOUT_SEC = 300.0
 _DEFAULT_GATEWAY_DISCOVERY_TTL_SEC = 30.0
+_DEFAULT_GATEWAY_DISCOVERY_TIMEOUT_SEC = 2.0
 _MIN_GATEWAY_TIMEOUT_SEC = 1.0
 _MAX_GATEWAY_TIMEOUT_SEC = 2.0 * 60.0 * 60.0
 _MIN_GATEWAY_DISCOVERY_TTL_SEC = 1.0
 _MAX_GATEWAY_DISCOVERY_TTL_SEC = 24.0 * 60.0 * 60.0
+_MIN_GATEWAY_DISCOVERY_TIMEOUT_SEC = 1.0
+_MAX_GATEWAY_DISCOVERY_TIMEOUT_SEC = 300.0
 
 
 # Environment knobs (same names as mcp-server so dev compose stays consistent):
@@ -62,6 +65,7 @@ _TRUTHY = {"1", "true", "yes", "on"}
 #   PLATFORM_REGISTRY_URL        — registry base; unset → discovery disabled
 #   LLM_GATEWAY_SERVICE_NAME     — service_name to resolve (default "llm-gateway")
 #   LLM_GATEWAY_DISCOVERY_TTL_SEC — resolver cache TTL (default 30s)
+#   LLM_GATEWAY_DISCOVERY_TIMEOUT_SEC — registry lookup timeout (default 2s)
 _REGISTRY_URL = os.environ.get("PLATFORM_REGISTRY_URL", "").rstrip("/")
 _GATEWAY_SERVICE_NAME = os.environ.get("LLM_GATEWAY_SERVICE_NAME", "llm-gateway")
 _DISCOVERY_TTL_SEC = bounded_float_env(
@@ -69,6 +73,13 @@ _DISCOVERY_TTL_SEC = bounded_float_env(
     default=_DEFAULT_GATEWAY_DISCOVERY_TTL_SEC,
     min_value=_MIN_GATEWAY_DISCOVERY_TTL_SEC,
     max_value=_MAX_GATEWAY_DISCOVERY_TTL_SEC,
+    logger=log,
+)
+_DISCOVERY_TIMEOUT_SEC = bounded_float_env(
+    "LLM_GATEWAY_DISCOVERY_TIMEOUT_SEC",
+    default=_DEFAULT_GATEWAY_DISCOVERY_TIMEOUT_SEC,
+    min_value=_MIN_GATEWAY_DISCOVERY_TIMEOUT_SEC,
+    max_value=_MAX_GATEWAY_DISCOVERY_TIMEOUT_SEC,
     logger=log,
 )
 # {"url": str | None, "expires_at": float}. Module-global; reset in tests.
@@ -96,7 +107,7 @@ async def _resolve_gateway_url() -> str:
 
     resolved = _GATEWAY_URL  # fail-safe default
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
+        async with httpx.AsyncClient(timeout=_DISCOVERY_TIMEOUT_SEC) as client:
             res = await client.get(
                 f"{_REGISTRY_URL}/api/v1/services/{_GATEWAY_SERVICE_NAME}"
         )

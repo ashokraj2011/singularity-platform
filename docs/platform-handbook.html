@@ -1079,7 +1079,8 @@ The governed LLM client uses the same helper: <code>LLM_GATEWAY_TIMEOUT_SEC</cod
 defaults to <code>300</code>, minimum <code>1</code>, maximum <code>7200</code>; MCP runtime-bridge
 <code>model-run</code> forwarding to a local/colocated gateway uses that same bound.
 Gateway discovery cache <code>LLM_GATEWAY_DISCOVERY_TTL_SEC</code> defaults to <code>30</code>,
-minimum <code>1</code>, maximum <code>86400</code>.
+minimum <code>1</code>, maximum <code>86400</code>; the platform-registry lookup itself uses
+<code>LLM_GATEWAY_DISCOVERY_TIMEOUT_SEC</code>, default <code>2</code>, bounded <code>1..300</code>.
 MCP&#39;s quick provider-readiness probe to the LLM gateway is bounded separately:
 <code>MCP_LLM_PROVIDER_STATUS_TIMEOUT_MS</code> defaults to <code>2000</code> and is bounded
 <code>1..300000</code>, so <code>/llm/providers</code> and <code>/llm/models</code> stay responsive while still

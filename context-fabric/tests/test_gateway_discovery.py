@@ -27,6 +27,7 @@ def _reset_cache(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(lc, "_GATEWAY_URL", "http://static-gateway:8001")
     monkeypatch.setattr(lc, "_GATEWAY_SERVICE_NAME", "llm-gateway")
     monkeypatch.setattr(lc, "_DISCOVERY_TTL_SEC", 30.0)
+    monkeypatch.setattr(lc, "_DISCOVERY_TIMEOUT_SEC", 2.0)
     yield
 
 
@@ -34,6 +35,7 @@ def _fake_client(*, status: int, body: dict | None = None, raises: Exception | N
     """Build a FakeClient class whose .get returns a canned response or raises.
     Records the URLs it was asked for in `calls`."""
     calls: list[str] = []
+    timeouts: list[float] = []
 
     class FakeResp:
         status_code = status
@@ -43,7 +45,7 @@ def _fake_client(*, status: int, body: dict | None = None, raises: Exception | N
 
     class FakeClient:
         def __init__(self, *a, **k):
-            pass
+            timeouts.append(k.get("timeout"))
 
         async def __aenter__(self):
             return self
@@ -57,22 +59,23 @@ def _fake_client(*, status: int, body: dict | None = None, raises: Exception | N
                 raise raises
             return FakeResp()
 
-    return FakeClient, calls
+    return FakeClient, calls, timeouts
 
 
 def test_registry_unset_returns_static_url(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(lc, "_REGISTRY_URL", "")
     # Even if httpx were called it would fail the test; assert no call happens.
-    FakeClient, calls = _fake_client(status=200, body={"base_url": "http://should-not-be-used"})
+    FakeClient, calls, timeouts = _fake_client(status=200, body={"base_url": "http://should-not-be-used"})
     monkeypatch.setattr(lc.httpx, "AsyncClient", FakeClient)
     url = asyncio.run(lc._resolve_gateway_url())
     assert url == "http://static-gateway:8001"
     assert calls == []  # discovery disabled → no registry call
+    assert timeouts == []
 
 
 def test_registry_hit_prefers_internal_url(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(lc, "_REGISTRY_URL", "http://registry:8090")
-    FakeClient, calls = _fake_client(
+    FakeClient, calls, timeouts = _fake_client(
         status=200,
         body={"internal_url": "http://llm-gateway:8001/", "base_url": "http://host:8001"},
     )
@@ -80,11 +83,12 @@ def test_registry_hit_prefers_internal_url(monkeypatch: pytest.MonkeyPatch):
     url = asyncio.run(lc._resolve_gateway_url())
     assert url == "http://llm-gateway:8001"  # internal_url wins, trailing / stripped
     assert calls == ["http://registry:8090/api/v1/services/llm-gateway"]
+    assert timeouts == [2.0]
 
 
 def test_registry_hit_falls_back_to_base_url_when_internal_null(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(lc, "_REGISTRY_URL", "http://registry:8090")
-    FakeClient, _ = _fake_client(
+    FakeClient, _, _ = _fake_client(
         status=200, body={"internal_url": None, "base_url": "http://host:8001"},
     )
     monkeypatch.setattr(lc.httpx, "AsyncClient", FakeClient)
@@ -93,21 +97,32 @@ def test_registry_hit_falls_back_to_base_url_when_internal_null(monkeypatch: pyt
 
 def test_404_falls_back_to_static(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(lc, "_REGISTRY_URL", "http://registry:8090")
-    FakeClient, _ = _fake_client(status=404, body={"code": "NOT_FOUND"})
+    FakeClient, _, _ = _fake_client(status=404, body={"code": "NOT_FOUND"})
     monkeypatch.setattr(lc.httpx, "AsyncClient", FakeClient)
     assert asyncio.run(lc._resolve_gateway_url()) == "http://static-gateway:8001"
 
 
 def test_timeout_falls_back_to_static(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(lc, "_REGISTRY_URL", "http://registry:8090")
-    FakeClient, _ = _fake_client(status=200, raises=lc.httpx.TimeoutException("slow"))
+    FakeClient, _, _ = _fake_client(status=200, raises=lc.httpx.TimeoutException("slow"))
     monkeypatch.setattr(lc.httpx, "AsyncClient", FakeClient)
     assert asyncio.run(lc._resolve_gateway_url()) == "http://static-gateway:8001"
 
 
+def test_registry_lookup_uses_configured_discovery_timeout(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(lc, "_REGISTRY_URL", "http://registry:8090")
+    monkeypatch.setattr(lc, "_DISCOVERY_TIMEOUT_SEC", 12.5)
+    FakeClient, calls, timeouts = _fake_client(status=200, body={"base_url": "http://resolved:8001"})
+    monkeypatch.setattr(lc.httpx, "AsyncClient", FakeClient)
+
+    assert asyncio.run(lc._resolve_gateway_url()) == "http://resolved:8001"
+    assert calls == ["http://registry:8090/api/v1/services/llm-gateway"]
+    assert timeouts == [12.5]
+
+
 def test_result_is_cached_within_ttl(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(lc, "_REGISTRY_URL", "http://registry:8090")
-    FakeClient, calls = _fake_client(status=200, body={"base_url": "http://resolved:8001"})
+    FakeClient, calls, _ = _fake_client(status=200, body={"base_url": "http://resolved:8001"})
     monkeypatch.setattr(lc.httpx, "AsyncClient", FakeClient)
 
     async def _twice():
@@ -123,7 +138,7 @@ def test_result_is_cached_within_ttl(monkeypatch: pytest.MonkeyPatch):
 def test_cache_expires_and_reresolves(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(lc, "_REGISTRY_URL", "http://registry:8090")
     monkeypatch.setattr(lc, "_DISCOVERY_TTL_SEC", 0.0)  # expire immediately
-    FakeClient, calls = _fake_client(status=200, body={"base_url": "http://resolved:8001"})
+    FakeClient, calls, _ = _fake_client(status=200, body={"base_url": "http://resolved:8001"})
     monkeypatch.setattr(lc.httpx, "AsyncClient", FakeClient)
 
     async def _twice():

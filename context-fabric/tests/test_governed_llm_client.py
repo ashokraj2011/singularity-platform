@@ -100,6 +100,48 @@ def test_llm_gateway_discovery_ttl_env_defaults_and_clamps(monkeypatch):
     ) == 86400.0
 
 
+def test_llm_gateway_discovery_timeout_env_defaults_and_clamps(monkeypatch):
+    monkeypatch.delenv("LLM_GATEWAY_DISCOVERY_TIMEOUT_SEC", raising=False)
+    assert bounded_float_env(
+        "LLM_GATEWAY_DISCOVERY_TIMEOUT_SEC",
+        default=2.0,
+        min_value=1.0,
+        max_value=300.0,
+    ) == 2.0
+
+    monkeypatch.setenv("LLM_GATEWAY_DISCOVERY_TIMEOUT_SEC", "invalid")
+    assert bounded_float_env(
+        "LLM_GATEWAY_DISCOVERY_TIMEOUT_SEC",
+        default=2.0,
+        min_value=1.0,
+        max_value=300.0,
+    ) == 2.0
+
+    monkeypatch.setenv("LLM_GATEWAY_DISCOVERY_TIMEOUT_SEC", "0")
+    assert bounded_float_env(
+        "LLM_GATEWAY_DISCOVERY_TIMEOUT_SEC",
+        default=2.0,
+        min_value=1.0,
+        max_value=300.0,
+    ) == 2.0
+
+    monkeypatch.setenv("LLM_GATEWAY_DISCOVERY_TIMEOUT_SEC", "12.5")
+    assert bounded_float_env(
+        "LLM_GATEWAY_DISCOVERY_TIMEOUT_SEC",
+        default=2.0,
+        min_value=1.0,
+        max_value=300.0,
+    ) == 12.5
+
+    monkeypatch.setenv("LLM_GATEWAY_DISCOVERY_TIMEOUT_SEC", "999999")
+    assert bounded_float_env(
+        "LLM_GATEWAY_DISCOVERY_TIMEOUT_SEC",
+        default=2.0,
+        min_value=1.0,
+        max_value=300.0,
+    ) == 300.0
+
+
 def test_from_dict_reads_gateway_args_field():
     """The llm-gateway's canonical field name. Must not regress."""
     raw = {
