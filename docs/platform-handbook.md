@@ -848,8 +848,16 @@ bounded `1..300`; Context Fabric waits for the runtime's first WebSocket
 `1024..134217728`; runtime capability routing tags use
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS`, default `32`, bounded
 `1..256`, and `CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH`,
-default `96`, bounded `8..1024`; and `RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME`
-defaults to `32`, minimum `1`, maximum `1024`.
+default `96`, bounded `8..1024`. Runtime identity/display/request admission
+lengths use `CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_USER_ID_LENGTH`, default `128`,
+`CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_ID_LENGTH`, default `128`,
+`CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TENANT_ID_LENGTH`, default `128`,
+`CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_TYPE_LENGTH`, default `64`,
+`CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_DEVICE_NAME_LENGTH`, default `200`, and
+`CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_REQUEST_ID_LENGTH`, default `128`; identity
+and request-id caps bound `16..1024`, runtime type bounds `3..256`, and device
+name bounds `16..512`. `RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME` defaults to
+`32`, minimum `1`, maximum `1024`.
 MCP runtime dial-in timings are schema-validated on the runtime side too:
 `MCP_RUNTIME_BRIDGE_HEARTBEAT_MS` defaults to `30000`,
 `MCP_RUNTIME_BRIDGE_HANDSHAKE_TIMEOUT_MS` defaults to `10000`,

@@ -278,6 +278,116 @@ def test_runtime_token_rejects_oversized_identity_and_display_claims(monkeypatch
         laptop_bridge._verify_runtime_token(_signed_runtime_token(payload))
 
 
+_IDENTITY_LENGTH_ENVS = (
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_USER_ID_LENGTH",
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_ID_LENGTH",
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TENANT_ID_LENGTH",
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_TYPE_LENGTH",
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_DEVICE_NAME_LENGTH",
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_REQUEST_ID_LENGTH",
+)
+
+
+def test_runtime_identity_length_env_defaults_fallbacks_and_clamps(monkeypatch):
+    for name in _IDENTITY_LENGTH_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_USER_ID_LEN == 128
+    assert module._MAX_RUNTIME_ID_LEN == 128
+    assert module._MAX_RUNTIME_TENANT_ID_LEN == 128
+    assert module._MAX_RUNTIME_TYPE_LEN == 64
+    assert module._MAX_RUNTIME_DEVICE_NAME_LEN == 200
+    assert module._MAX_RUNTIME_REQUEST_ID_LEN == 128
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_USER_ID_LENGTH", "bad")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_ID_LENGTH", "0")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TENANT_ID_LENGTH", "bad")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_TYPE_LENGTH", "0")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_DEVICE_NAME_LENGTH", "bad")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_REQUEST_ID_LENGTH", "0")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_USER_ID_LEN == 128
+    assert module._MAX_RUNTIME_ID_LEN == 128
+    assert module._MAX_RUNTIME_TENANT_ID_LEN == 128
+    assert module._MAX_RUNTIME_TYPE_LEN == 64
+    assert module._MAX_RUNTIME_DEVICE_NAME_LEN == 200
+    assert module._MAX_RUNTIME_REQUEST_ID_LEN == 128
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_USER_ID_LENGTH", "32")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_ID_LENGTH", "40")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TENANT_ID_LENGTH", "48")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_TYPE_LENGTH", "8")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_DEVICE_NAME_LENGTH", "64")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_REQUEST_ID_LENGTH", "32")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_USER_ID_LEN == 32
+    assert module._MAX_RUNTIME_ID_LEN == 40
+    assert module._MAX_RUNTIME_TENANT_ID_LEN == 48
+    assert module._MAX_RUNTIME_TYPE_LEN == 8
+    assert module._MAX_RUNTIME_DEVICE_NAME_LEN == 64
+    assert module._MAX_RUNTIME_REQUEST_ID_LEN == 32
+
+    for name in _IDENTITY_LENGTH_ENVS:
+        monkeypatch.setenv(name, "999999")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_USER_ID_LEN == 1024
+    assert module._MAX_RUNTIME_ID_LEN == 1024
+    assert module._MAX_RUNTIME_TENANT_ID_LEN == 1024
+    assert module._MAX_RUNTIME_TYPE_LEN == 256
+    assert module._MAX_RUNTIME_DEVICE_NAME_LEN == 512
+    assert module._MAX_RUNTIME_REQUEST_ID_LEN == 1024
+
+    for name in _IDENTITY_LENGTH_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    importlib.reload(laptop_bridge)
+
+
+def test_runtime_identity_length_env_controls_admission_and_fallbacks(monkeypatch):
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_USER_ID_LENGTH", "32")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_ID_LENGTH", "32")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TENANT_ID_LENGTH", "32")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_TYPE_LENGTH", "8")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_DEVICE_NAME_LENGTH", "24")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_REQUEST_ID_LENGTH", "32")
+    module = importlib.reload(laptop_bridge)
+    monkeypatch.setattr(module, "JWT_SECRET", "test-secret")
+
+    base_payload = {
+        "kind": "runtime",
+        "sub": "user-a",
+        "runtime_id": "runtime-a",
+        "exp": int(time.time()) + 60,
+        "allowed_frame_types": ["tool-run"],
+    }
+
+    with pytest.raises(module.JWTError, match="user_id too long"):
+        module._verify_runtime_token(_signed_runtime_token({**base_payload, "user_id": "u" * 33}))
+    with pytest.raises(module.JWTError, match="runtime_id too long"):
+        module._verify_runtime_token(_signed_runtime_token({**base_payload, "runtime_id": "r" * 33}))
+    with pytest.raises(module.JWTError, match="tenant_id too long"):
+        module._verify_runtime_token(_signed_runtime_token({**base_payload, "tenant_id": "t" * 33}))
+    with pytest.raises(module.JWTError, match="runtime_type too long"):
+        module._verify_runtime_token(_signed_runtime_token({**base_payload, "runtime_type": "m" * 9}))
+    with pytest.raises(module.JWTError, match="device_name too long"):
+        module._verify_runtime_token(_signed_runtime_token({**base_payload, "device_name": "d" * 25}))
+
+    metadata = module._token_authoritative_runtime_metadata(
+        base_payload,
+        {
+            "runtime_type": "runtime-kind",
+            "device_name": "display-name-that-is-too-long",
+        },
+    )
+    assert metadata["runtime_type"] == "runtime-"[:8]
+    assert metadata["device_name"] == "display-name-that-is-too"
+    assert module._runtime_response_request_id({"request_id": "r" * 32}) == "r" * 32
+    assert module._runtime_response_request_id({"request_id": "r" * 33}) is None
+
+    for name in _IDENTITY_LENGTH_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    importlib.reload(laptop_bridge)
+
+
 def test_runtime_token_requires_allowed_frame_types(monkeypatch):
     monkeypatch.setattr(laptop_bridge, "JWT_SECRET", "test-secret")
     base_payload = {
@@ -983,10 +1093,22 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_USER_ID_LENGTH" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_ID_LENGTH" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TENANT_ID_LENGTH" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_TYPE_LENGTH" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_DEVICE_NAME_LENGTH" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_REQUEST_ID_LENGTH" in source
     assert "_MAX_RUNTIME_JWT_LEN = bounded_int_env(" in source
     assert "HEARTBEAT_SWEEP_SEC = bounded_int_env(" in source
     assert "_MAX_RUNTIME_CAPABILITY_TAGS = bounded_int_env(" in source
     assert "_MAX_RUNTIME_CAPABILITY_TAG_LEN = bounded_int_env(" in source
+    assert "_MAX_RUNTIME_USER_ID_LEN = bounded_int_env(" in source
+    assert "_MAX_RUNTIME_ID_LEN = bounded_int_env(" in source
+    assert "_MAX_RUNTIME_TENANT_ID_LEN = bounded_int_env(" in source
+    assert "_MAX_RUNTIME_TYPE_LEN = bounded_int_env(" in source
+    assert "_MAX_RUNTIME_DEVICE_NAME_LEN = bounded_int_env(" in source
+    assert "_MAX_RUNTIME_REQUEST_ID_LEN = bounded_int_env(" in source
     assert "httpx.AsyncClient(timeout=runtime_revocation_iam_timeout_sec())" in source
     assert "httpx.AsyncClient(timeout=runtime_http_fallback_timeout_sec())" in source
     assert "asyncio.wait_for(ws.receive_text(), timeout=runtime_hello_timeout_sec())" in source
@@ -995,5 +1117,11 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "\nHEARTBEAT_SWEEP_SEC = 30" not in source
     assert "\n_MAX_RUNTIME_CAPABILITY_TAGS = 32" not in source
     assert "\n_MAX_RUNTIME_CAPABILITY_TAG_LEN = 96" not in source
+    assert "\n_MAX_RUNTIME_USER_ID_LEN = 128" not in source
+    assert "\n_MAX_RUNTIME_ID_LEN = 128" not in source
+    assert "\n_MAX_RUNTIME_TENANT_ID_LEN = 128" not in source
+    assert "\n_MAX_RUNTIME_TYPE_LEN = 64" not in source
+    assert "\n_MAX_RUNTIME_DEVICE_NAME_LEN = 200" not in source
+    assert "\n_MAX_RUNTIME_REQUEST_ID_LEN = 128" not in source
     assert "httpx.AsyncClient(timeout=5.0)" not in source
     assert "httpx.AsyncClient(timeout=180.0)" not in source

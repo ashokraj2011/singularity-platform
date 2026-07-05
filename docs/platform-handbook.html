@@ -1104,8 +1104,16 @@ bounded <code>1..300</code>; Context Fabric waits for the runtime&#39;s first We
 <code>1024..134217728</code>; runtime capability routing tags use
 <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS</code>, default <code>32</code>, bounded
 <code>1..256</code>, and <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH</code>,
-default <code>96</code>, bounded <code>8..1024</code>; and <code>RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME</code>
-defaults to <code>32</code>, minimum <code>1</code>, maximum <code>1024</code>.
+default <code>96</code>, bounded <code>8..1024</code>. Runtime identity/display/request admission
+lengths use <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_USER_ID_LENGTH</code>, default <code>128</code>,
+<code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_ID_LENGTH</code>, default <code>128</code>,
+<code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TENANT_ID_LENGTH</code>, default <code>128</code>,
+<code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_RUNTIME_TYPE_LENGTH</code>, default <code>64</code>,
+<code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_DEVICE_NAME_LENGTH</code>, default <code>200</code>, and
+<code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_REQUEST_ID_LENGTH</code>, default <code>128</code>; identity
+and request-id caps bound <code>16..1024</code>, runtime type bounds <code>3..256</code>, and device
+name bounds <code>16..512</code>. <code>RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME</code> defaults to
+<code>32</code>, minimum <code>1</code>, maximum <code>1024</code>.
 MCP runtime dial-in timings are schema-validated on the runtime side too:
 <code>MCP_RUNTIME_BRIDGE_HEARTBEAT_MS</code> defaults to <code>30000</code>,
 <code>MCP_RUNTIME_BRIDGE_HANDSHAKE_TIMEOUT_MS</code> defaults to <code>10000</code>,
