@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import importlib
 import json
 from pathlib import Path
 import time
@@ -70,6 +71,57 @@ def test_hs256_runtime_jwt_rejects_oversized_token(monkeypatch):
 
     with pytest.raises(laptop_bridge.JWTError, match="token too long"):
         laptop_bridge._verify_hs256_jwt(token, "test-secret")
+
+
+def test_runtime_bridge_jwt_size_env_defaults_fallbacks_and_clamps(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES", raising=False)
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_JWT_LEN == 16 * 1024
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES", "bad")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_JWT_LEN == 16 * 1024
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES", "0")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_JWT_LEN == 16 * 1024
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES", "32768")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_JWT_LEN == 32 * 1024
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES", "999999")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_JWT_LEN == 128 * 1024
+
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES", raising=False)
+    importlib.reload(laptop_bridge)
+
+
+def test_runtime_bridge_jwt_size_env_uses_bounded_helper(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES", raising=False)
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES",
+        default=16 * 1024,
+        min_value=1024,
+        max_value=128 * 1024,
+    ) == 16 * 1024
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES", "0")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES",
+        default=16 * 1024,
+        min_value=1024,
+        max_value=128 * 1024,
+    ) == 16 * 1024
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES", "999999")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES",
+        default=16 * 1024,
+        min_value=1024,
+        max_value=128 * 1024,
+    ) == 128 * 1024
 
 
 def test_hs256_runtime_jwt_requires_object_header_and_payload():
@@ -790,9 +842,12 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES" in source
+    assert "_MAX_RUNTIME_JWT_LEN = bounded_int_env(" in source
     assert "httpx.AsyncClient(timeout=runtime_revocation_iam_timeout_sec())" in source
     assert "httpx.AsyncClient(timeout=runtime_http_fallback_timeout_sec())" in source
     assert "asyncio.wait_for(ws.receive_text(), timeout=runtime_hello_timeout_sec())" in source
     assert "asyncio.wait_for(ws.receive_text(), timeout=10)" not in source
+    assert "\n_MAX_RUNTIME_JWT_LEN = 16 * 1024" not in source
     assert "httpx.AsyncClient(timeout=5.0)" not in source
     assert "httpx.AsyncClient(timeout=180.0)" not in source

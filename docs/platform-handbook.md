@@ -835,7 +835,9 @@ maximum `86400`; each IAM device-revocation lookup uses
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC`, default `5`,
 bounded `1..300`; Context Fabric waits for the runtime's first WebSocket
 `hello` frame using `CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC`, default
-`10`, bounded `1..300`; runtime frame dispatch uses
+`10`, bounded `1..300`; runtime JWT admission uses
+`CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES`, default `16384`, bounded
+`1024..131072`; runtime frame dispatch uses
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC`, default `180`, bounded
 `1..7200`; stale runtime reaping uses
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC`, default `90`, bounded
