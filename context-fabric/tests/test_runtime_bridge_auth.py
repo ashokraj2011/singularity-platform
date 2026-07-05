@@ -306,6 +306,26 @@ def test_runtime_http_fallback_timeout_env_is_bounded(monkeypatch):
     assert laptop_bridge.runtime_http_fallback_timeout_sec() == 3600.0
 
 
+def test_runtime_revocation_iam_timeout_env_is_bounded(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC", raising=False)
+    assert laptop_bridge.runtime_revocation_iam_timeout_sec() == 5.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC", "bad")
+    assert laptop_bridge.runtime_revocation_iam_timeout_sec() == 5.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC", "nan")
+    assert laptop_bridge.runtime_revocation_iam_timeout_sec() == 5.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC", "0")
+    assert laptop_bridge.runtime_revocation_iam_timeout_sec() == 5.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC", "12.5")
+    assert laptop_bridge.runtime_revocation_iam_timeout_sec() == 12.5
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC", "999999")
+    assert laptop_bridge.runtime_revocation_iam_timeout_sec() == 300.0
+
+
 def test_device_token_still_requires_device_id(monkeypatch):
     monkeypatch.setattr(laptop_bridge, "JWT_SECRET", "test-secret")
     base_payload = {
@@ -468,6 +488,53 @@ def test_runtime_revocation_identity_prefers_device_id_then_runtime_id():
         "device_id": "device-a",
         "runtime_id": "runtime-a",
     }) == ("user-claim", "device-a")
+
+
+class FakeRevocationAsyncClient:
+    timeouts: list[float] = []
+    gets: list[tuple[str, dict[str, str] | None, dict[str, str] | None]] = []
+
+    def __init__(self, timeout: float):
+        self.timeouts.append(timeout)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, url: str, **kwargs):
+        self.gets.append((url, kwargs.get("params"), kwargs.get("headers")))
+        return httpx.Response(
+            200,
+            json={"revoked": True},
+            request=httpx.Request("GET", url),
+        )
+
+
+def test_runtime_revocation_iam_check_uses_configured_timeout(monkeypatch):
+    FakeRevocationAsyncClient.timeouts = []
+    FakeRevocationAsyncClient.gets = []
+
+    async def fake_iam_service_token():
+        return "iam-token"
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC", "12.5")
+    monkeypatch.setattr(laptop_bridge.settings, "iam_base_url", "http://iam.local")
+    monkeypatch.setattr(laptop_bridge, "get_iam_service_token", fake_iam_service_token)
+    monkeypatch.setattr(laptop_bridge.httpx, "AsyncClient", FakeRevocationAsyncClient)
+
+    revoked = asyncio.run(laptop_bridge._device_revoked("user-1", "device-1"))
+
+    assert revoked is True
+    assert FakeRevocationAsyncClient.timeouts == [12.5]
+    assert FakeRevocationAsyncClient.gets == [
+        (
+            "http://iam.local/api/v1/internal/devices/status",
+            {"user_id": "user-1", "device_id": "device-1"},
+            {"Authorization": "Bearer iam-token"},
+        )
+    ]
 
 
 def _configure(
@@ -701,5 +768,8 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     source = source_path.read_text()
 
     assert "CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC" in source
+    assert "httpx.AsyncClient(timeout=runtime_revocation_iam_timeout_sec())" in source
     assert "httpx.AsyncClient(timeout=runtime_http_fallback_timeout_sec())" in source
+    assert "httpx.AsyncClient(timeout=5.0)" not in source
     assert "httpx.AsyncClient(timeout=180.0)" not in source

@@ -129,6 +129,8 @@ _MAX_RUNTIME_JWT_LEN = 16 * 1024
 _DEFAULT_REVOCATION_RECHECK_SEC = 300
 _MIN_REVOCATION_RECHECK_SEC = 5
 _MAX_REVOCATION_RECHECK_SEC = 24 * 60 * 60
+_DEFAULT_RUNTIME_REVOCATION_IAM_TIMEOUT_SEC = 5.0
+_MAX_RUNTIME_REVOCATION_IAM_TIMEOUT_SEC = 300.0
 
 
 # Finding #7 — device-revocation enforcement. A revoked device JWT must stop working
@@ -162,6 +164,19 @@ def runtime_http_fallback_timeout_sec() -> float:
         min_value=1.0,
         max_value=_MAX_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC,
         name="CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC",
+    )
+
+
+def runtime_revocation_iam_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv(
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC",
+            str(_DEFAULT_RUNTIME_REVOCATION_IAM_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_RUNTIME_REVOCATION_IAM_TIMEOUT_SEC,
+        min_value=1.0,
+        max_value=_MAX_RUNTIME_REVOCATION_IAM_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC",
     )
 
 
@@ -240,7 +255,7 @@ async def _device_revoked(user_id: str, device_id: str) -> Optional[bool]:
     params = {"user_id": user_id, "device_id": device_id}
     headers = {"Authorization": f"Bearer {token}"}
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=runtime_revocation_iam_timeout_sec()) as client:
             resp = await client.get(url, params=params, headers=headers)
             if resp.status_code == 401:
                 invalidate_iam_service_token()

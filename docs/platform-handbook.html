@@ -1086,7 +1086,9 @@ MCP&#39;s quick provider-readiness probe to the LLM gateway is bounded separatel
 being tunable for remote gateway deployments.
 Runtime Bridge registry/auth knobs use the shared Context Fabric env helper as
 well: <code>RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC</code> defaults to <code>300</code>, minimum <code>5</code>,
-maximum <code>86400</code>, and <code>RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME</code> defaults to
+maximum <code>86400</code>; each IAM device-revocation lookup uses
+<code>CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC</code>, default <code>5</code>,
+bounded <code>1..300</code>; and <code>RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME</code> defaults to
 <code>32</code>, minimum <code>1</code>, maximum <code>1024</code>.
 MCP runtime dial-in timings are schema-validated on the runtime side too:
 <code>MCP_RUNTIME_BRIDGE_HEARTBEAT_MS</code> defaults to <code>30000</code>,
