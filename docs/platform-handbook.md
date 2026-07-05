@@ -889,6 +889,11 @@ lookups with `CONTEXT_FABRIC_RUNTIME_RESOLVER_IAM_TIMEOUT_SEC`, default `10`,
 bounded `1..300`. This controls the capability-to-runtime selection path before
 falling back to the deployment-wide default MCP runtime.
 
+Context Fabric's Git credential broker bounds IAM credential issue calls with
+`CONTEXT_FABRIC_GIT_BROKER_TIMEOUT_SEC`, default `20`, bounded `1..300`. Brokered
+Git tokens remain in-memory only; timeout failures still degrade to no brokered
+credential rather than logging or leaking token material.
+
 Platform Web's Runtime + LLM settings route bounds status fan-out calls with
 `LLM_SETTINGS_FETCH_TIMEOUT_SEC`, default `5`, bounded `1..300`. Model catalog
 mutations forwarded to LLM Gateway use `LLM_SETTINGS_WRITE_TIMEOUT_SEC`, default

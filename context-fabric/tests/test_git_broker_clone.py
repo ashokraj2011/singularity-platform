@@ -14,13 +14,53 @@ install, so skip it here):
 from __future__ import annotations
 
 import asyncio
+import importlib
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from context_api_service.app import git_broker
 
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+@pytest.fixture(autouse=True)
+def reset_git_broker_module(monkeypatch):
+    yield
+    monkeypatch.delenv("CONTEXT_FABRIC_GIT_BROKER_TIMEOUT_SEC", raising=False)
+    importlib.reload(git_broker)
+
+
+def _reload_with_timeout(monkeypatch, value: str | None):
+    if value is None:
+        monkeypatch.delenv("CONTEXT_FABRIC_GIT_BROKER_TIMEOUT_SEC", raising=False)
+    else:
+        monkeypatch.setenv("CONTEXT_FABRIC_GIT_BROKER_TIMEOUT_SEC", value)
+    return importlib.reload(git_broker)
+
+
+def test_git_broker_timeout_is_bounded_env(monkeypatch):
+    assert _reload_with_timeout(monkeypatch, None).GIT_BROKER_TIMEOUT_SEC == 20.0
+    assert _reload_with_timeout(monkeypatch, "bad").GIT_BROKER_TIMEOUT_SEC == 20.0
+    assert _reload_with_timeout(monkeypatch, "0").GIT_BROKER_TIMEOUT_SEC == 20.0
+    assert _reload_with_timeout(monkeypatch, "nan").GIT_BROKER_TIMEOUT_SEC == 20.0
+    assert _reload_with_timeout(monkeypatch, "12.5").GIT_BROKER_TIMEOUT_SEC == 12.5
+    assert _reload_with_timeout(monkeypatch, "9999").GIT_BROKER_TIMEOUT_SEC == 300.0
+
+
+def test_git_broker_uses_bounded_timeout_constant():
+    source = Path("services/context_api_service/app/git_broker.py").read_text()
+    assert "from .env_config import bounded_float_env" in source
+    assert "CONTEXT_FABRIC_GIT_BROKER_TIMEOUT_SEC" in source
+    assert (
+        'GIT_BROKER_TIMEOUT_SEC = bounded_float_env(\n'
+        '    "CONTEXT_FABRIC_GIT_BROKER_TIMEOUT_SEC",'
+    ) in source
+    assert "httpx.AsyncClient(timeout=GIT_BROKER_TIMEOUT_SEC)" in source
+    assert "httpx.AsyncClient(timeout=20.0)" not in source
 
 
 def test_broker_disabled_returns_none(monkeypatch):
@@ -36,6 +76,7 @@ def test_broker_missing_repo_or_tenant_returns_none(monkeypatch):
 
 
 def test_broker_issues_credential_resolving_repo_from_source_uri(monkeypatch):
+    module = _reload_with_timeout(monkeypatch, "12.5")
     monkeypatch.setenv("GIT_CREDENTIAL_BROKER_ENABLED", "true")
     captured: dict = {}
 
@@ -46,7 +87,8 @@ def test_broker_issues_credential_resolving_repo_from_source_uri(monkeypatch):
             return {"token": "ghs_secret", "issuanceId": "iss-1", "allowedOperation": "clone", "repo": "o/r"}
 
     class FakeClient:
-        def __init__(self, *a, **k): ...
+        def __init__(self, *a, **k):
+            captured["timeout"] = k.get("timeout")
         async def __aenter__(self):
             return self
         async def __aexit__(self, *a):
@@ -60,9 +102,9 @@ def test_broker_issues_credential_resolving_repo_from_source_uri(monkeypatch):
     async def fake_token():
         return "svc-jwt"
 
-    with patch.object(git_broker.httpx, "AsyncClient", FakeClient), patch.object(git_broker, "get_iam_service_token", fake_token):
+    with patch.object(module.httpx, "AsyncClient", FakeClient), patch.object(module, "get_iam_service_token", fake_token):
         cred = _run(
-            git_broker.broker_git_credential(
+            module.broker_git_credential(
                 {
                     "sourceUri": "https://github.com/o/r",
                     "tenant_id": "t-1",
@@ -76,6 +118,7 @@ def test_broker_issues_credential_resolving_repo_from_source_uri(monkeypatch):
         )
 
     assert cred is not None and cred["token"] == "ghs_secret"
+    assert captured["timeout"] == 12.5
     # sourceUri is resolved as the repo (the clone path names the repo that way).
     assert captured["json"]["repo"] == "https://github.com/o/r"
     assert captured["json"]["operation"] == "clone"

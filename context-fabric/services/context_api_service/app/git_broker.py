@@ -22,10 +22,19 @@ from typing import Any, Optional
 import httpx
 
 from .config import settings
+from .env_config import bounded_float_env
 from .iam_service_token import get_iam_service_token
 from .response_json import UpstreamJsonError, response_json_object
 
 log = logging.getLogger(__name__)
+
+GIT_BROKER_TIMEOUT_SEC = bounded_float_env(
+    "CONTEXT_FABRIC_GIT_BROKER_TIMEOUT_SEC",
+    default=20.0,
+    min_value=1.0,
+    max_value=300.0,
+    logger=log,
+)
 
 
 def _git_broker_enabled() -> bool:
@@ -76,7 +85,7 @@ async def broker_git_credential(
     }
     url = f"{settings.iam_base_url.rstrip('/')}/internal/git/credentials/issue"
     try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
+        async with httpx.AsyncClient(timeout=GIT_BROKER_TIMEOUT_SEC) as client:
             resp = await client.post(url, json=payload, headers={"Authorization": f"Bearer {service_jwt}"})
     except httpx.HTTPError as exc:
         log.warning("git broker: IAM issue unreachable for op=%s: %s", operation, exc)
