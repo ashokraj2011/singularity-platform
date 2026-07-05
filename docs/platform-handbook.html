@@ -1157,6 +1157,11 @@ failures still fall back to the already assembled prompt and fresh-session
 history behavior with a visible context compiler warning. The follow-up
 memory-history fallback fetch uses <code>CONTEXT_FABRIC_MEMORY_HISTORY_TIMEOUT_SEC</code>,
 default <code>10</code>, bounded <code>1..300</code>.</p>
+<p>Context Fabric&#39;s post-response memory persistence remains best-effort but now
+has explicit deadlines: <code>CONTEXT_FABRIC_MEMORY_WRITE_TIMEOUT_SEC</code>, default <code>10</code>,
+bounded <code>1..300</code>, for user/assistant message writes, and
+<code>CONTEXT_FABRIC_MEMORY_SUMMARY_TIMEOUT_SEC</code>, default <code>20</code>, bounded <code>1..300</code>, for
+the rolling-summary trigger.</p>
 <p>Platform Web&#39;s Runtime + LLM settings route bounds status fan-out calls with
 <code>LLM_SETTINGS_FETCH_TIMEOUT_SEC</code>, default <code>5</code>, bounded <code>1..300</code>. Model catalog
 mutations forwarded to LLM Gateway use <code>LLM_SETTINGS_WRITE_TIMEOUT_SEC</code>, default

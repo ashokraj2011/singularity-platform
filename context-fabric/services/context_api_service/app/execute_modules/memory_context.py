@@ -27,11 +27,37 @@ Deferred:
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 import httpx
 
 from ..config import settings
+from ..env_config import bounded_float_value
+
+_DEFAULT_MEMORY_WRITE_TIMEOUT_SEC = 10.0
+_DEFAULT_MEMORY_SUMMARY_TIMEOUT_SEC = 20.0
+_MAX_SERVICE_BOUNDARY_TIMEOUT_SEC = 300.0
+
+
+def memory_write_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv("CONTEXT_FABRIC_MEMORY_WRITE_TIMEOUT_SEC", str(_DEFAULT_MEMORY_WRITE_TIMEOUT_SEC)),
+        default=_DEFAULT_MEMORY_WRITE_TIMEOUT_SEC,
+        min_value=1.0,
+        max_value=_MAX_SERVICE_BOUNDARY_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_MEMORY_WRITE_TIMEOUT_SEC",
+    )
+
+
+def memory_summary_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv("CONTEXT_FABRIC_MEMORY_SUMMARY_TIMEOUT_SEC", str(_DEFAULT_MEMORY_SUMMARY_TIMEOUT_SEC)),
+        default=_DEFAULT_MEMORY_SUMMARY_TIMEOUT_SEC,
+        min_value=1.0,
+        max_value=_MAX_SERVICE_BOUNDARY_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_MEMORY_SUMMARY_TIMEOUT_SEC",
+    )
 
 
 def _summary_every_default(limits: dict[str, Any]) -> int:
@@ -83,7 +109,7 @@ async def persist_turn_and_maybe_summarise(
     summary_every = _summary_every_default(limits or {})
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=memory_write_timeout_sec()) as client:
             await client.post(
                 f"{base}/memory/messages",
                 json={
@@ -111,7 +137,7 @@ async def persist_turn_and_maybe_summarise(
                     "force": False,
                     "min_messages_since_last_summary": summary_every,
                 },
-                timeout=20.0,
+                timeout=memory_summary_timeout_sec(),
             )
     except Exception:
         # Best-effort. Memory write is a soft signal; an outage here must
