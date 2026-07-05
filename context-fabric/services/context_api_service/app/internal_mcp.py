@@ -24,6 +24,7 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .config import settings
+from .env_config import bounded_float_env
 from .git_broker import broker_git_credential
 from .governed.grant import grant_enabled, mint_tool_grant
 from .governed.phase_state import Phase
@@ -35,6 +36,28 @@ log = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/internal/mcp", tags=["internal-mcp"])
+
+INTERNAL_MCP_IAM_TIMEOUT_SEC = bounded_float_env(
+    "CONTEXT_FABRIC_INTERNAL_MCP_IAM_TIMEOUT_SEC",
+    default=10.0,
+    min_value=1.0,
+    max_value=300.0,
+    logger=log,
+)
+SERVER_TOOL_INVOKE_TIMEOUT_SEC = bounded_float_env(
+    "CONTEXT_FABRIC_SERVER_TOOL_INVOKE_TIMEOUT_SEC",
+    default=120.0,
+    min_value=1.0,
+    max_value=3600.0,
+    logger=log,
+)
+MCP_RESOURCE_FETCH_TIMEOUT_SEC = bounded_float_env(
+    "CONTEXT_FABRIC_MCP_RESOURCE_FETCH_TIMEOUT_SEC",
+    default=10.0,
+    min_value=1.0,
+    max_value=300.0,
+    logger=log,
+)
 
 
 class ServerToolCallRequest(BaseModel):
@@ -185,7 +208,11 @@ def _operational_policy_for(tool_name: str, body: OperationalToolGrantRequest) -
     return policy, phase
 
 
-async def _iam_get(url: str, params: Optional[dict[str, str]] = None, timeout: float = 10.0) -> httpx.Response:
+async def _iam_get(
+    url: str,
+    params: Optional[dict[str, str]] = None,
+    timeout: float = INTERNAL_MCP_IAM_TIMEOUT_SEC,
+) -> httpx.Response:
     token = await get_iam_service_token()
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.get(url, params=params, headers={"Authorization": f"Bearer {token or ''}"})
@@ -274,7 +301,7 @@ async def call_server_tool(
     }
 
     service_jwt = await get_iam_service_token()
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=SERVER_TOOL_INVOKE_TIMEOUT_SEC) as client:
         try:
             resp = await client.post(
                 f"{settings.tool_service_url.rstrip('/')}/api/v1/tools/invoke",
@@ -333,7 +360,7 @@ async def list_mcp_servers_for_capability(
         params["status"] = status
 
     try:
-        resp = await _iam_get(url, params=params, timeout=10.0)
+        resp = await _iam_get(url, params=params, timeout=INTERNAL_MCP_IAM_TIMEOUT_SEC)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"IAM unreachable: {exc}")
     if resp.status_code != 200:
@@ -380,7 +407,7 @@ async def _fetch_mcp_server(server_id: str) -> dict[str, Any]:
         return default_record
 
     url = f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{server_id}"
-    resp = await _iam_get(url, timeout=10.0)
+    resp = await _iam_get(url, timeout=INTERNAL_MCP_IAM_TIMEOUT_SEC)
     if resp.status_code == 404:
         raise HTTPException(status_code=404, detail="mcp server not found")
     if resp.status_code != 200:
@@ -442,7 +469,7 @@ async def list_code_changes_for_call(
     if not base or not bearer:
         raise HTTPException(status_code=502, detail="resolved MCP server is missing base_url or bearer_token")
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=MCP_RESOURCE_FETCH_TIMEOUT_SEC) as client:
         try:
             resp = await client.get(
                 _mcp_resource_url(base, "/resources/code-changes"),
@@ -488,7 +515,7 @@ async def get_code_change(
     server = await _fetch_mcp_server(server_id)
     base   = (server.get("base_url") or "").rstrip("/")
     bearer = server.get("bearer_token")
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=MCP_RESOURCE_FETCH_TIMEOUT_SEC) as client:
         try:
             resp = await client.get(
                 _mcp_resource_url(base, f"/resources/code-changes/{change_id}"),
@@ -519,7 +546,7 @@ async def get_mcp_server(
 
     url = f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{server_id}"
     try:
-        resp = await _iam_get(url, timeout=10.0)
+        resp = await _iam_get(url, timeout=INTERNAL_MCP_IAM_TIMEOUT_SEC)
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"IAM unreachable: {exc}")
     if resp.status_code == 404:

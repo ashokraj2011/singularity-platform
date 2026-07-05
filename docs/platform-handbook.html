@@ -1124,6 +1124,13 @@ service.</p>
 calls with <code>SYSTEM_PROMPT_HTTP_TIMEOUT_SEC</code>, default <code>10</code>, bounded <code>1..300</code>.
 Cached prompts remain stale-OK on Composer outage, but cold-start fetches now
 fail on an operator-controlled deadline instead of hanging on a fixed timeout.</p>
+<p>Context Fabric&#39;s internal MCP service routes bound each outbound leg separately:
+IAM MCP registry lookups use <code>CONTEXT_FABRIC_INTERNAL_MCP_IAM_TIMEOUT_SEC</code>,
+default <code>10</code>, bounded <code>1..300</code>; SERVER tool-service delegation uses
+<code>CONTEXT_FABRIC_SERVER_TOOL_INVOKE_TIMEOUT_SEC</code>, default <code>120</code>, bounded
+<code>1..3600</code>; MCP code-change resource hydration uses
+<code>CONTEXT_FABRIC_MCP_RESOURCE_FETCH_TIMEOUT_SEC</code>, default <code>10</code>, bounded
+<code>1..300</code>.</p>
 <p>Platform Web&#39;s Runtime + LLM settings route bounds status fan-out calls with
 <code>LLM_SETTINGS_FETCH_TIMEOUT_SEC</code>, default <code>5</code>, bounded <code>1..300</code>. Model catalog
 mutations forwarded to LLM Gateway use <code>LLM_SETTINGS_WRITE_TIMEOUT_SEC</code>, default
