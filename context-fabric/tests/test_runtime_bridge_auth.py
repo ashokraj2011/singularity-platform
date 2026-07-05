@@ -60,6 +60,14 @@ def test_hs256_runtime_jwt_requires_numeric_expiry():
         )
 
 
+def test_hs256_runtime_jwt_rejects_non_ascii_signing_input_as_jwt_error():
+    header = _b64({"alg": "HS256", "typ": "JWT"})
+    token = f"{header}.é.signature"
+
+    with pytest.raises(laptop_bridge.JWTError, match="malformed JWT"):
+        laptop_bridge._verify_hs256_jwt(token, "test-secret")
+
+
 def test_hs256_runtime_jwt_rejects_excessive_expiry(monkeypatch):
     monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TOKEN_TTL_SEC", raising=False)
     module = importlib.reload(laptop_bridge)

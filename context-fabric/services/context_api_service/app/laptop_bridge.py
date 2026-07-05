@@ -72,7 +72,10 @@ def _verify_hs256_jwt(token: str, secret: str) -> dict[str, Any]:
         raise JWTError("bad header")
     if header.get("alg") != "HS256":
         raise JWTError(f"unsupported alg: {header.get('alg')}")
-    signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
+    try:
+        signing_input = f"{header_b64}.{payload_b64}".encode("ascii")
+    except UnicodeEncodeError:
+        raise JWTError("malformed JWT") from None
     expected = hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
     try:
         actual = _b64url_decode(sig_b64)
