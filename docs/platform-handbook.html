@@ -1100,7 +1100,9 @@ not silently enable fail-open. Context Fabric waits for the runtime&#39;s first 
 <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TOKEN_TTL_SEC</code>, default <code>31536000</code>, bounded
 <code>3600..31536000</code>; runtime hello/heartbeat health metadata uses
 <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES</code>, default <code>65536</code>, bounded
-<code>1024..2097152</code>; runtime frame dispatch uses
+<code>1024..2097152</code>; malformed/unmatched inbound runtime frames are capped by
+<code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES</code>, default <code>10</code>, bounded
+<code>1..1000</code>; runtime frame dispatch uses
 <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC</code>, default <code>180</code>, bounded
 <code>1..7200</code>; stale runtime reaping uses
 <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC</code>, default <code>90</code>, bounded

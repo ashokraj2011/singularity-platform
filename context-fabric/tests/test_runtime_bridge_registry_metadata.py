@@ -419,6 +419,34 @@ def test_deliver_response_normalizes_malformed_runtime_error():
     _run(_case())
 
 
+def test_deliver_response_reports_whether_request_was_pending():
+    async def _case():
+        registry = LaptopRegistry()
+        conn = ActiveConnection(
+            user_id="user-a",
+            device_id="runtime-a",
+            device_name="runtime",
+            ws=object(),  # type: ignore[arg-type]
+            connected_at=1.0,
+            last_seen_at=1.0,
+            supported_frame_types=["tool-run"],
+        )
+        await registry.register(conn)
+        fut = asyncio.get_running_loop().create_future()
+        conn.pending["req-4"] = fut
+
+        delivered = await registry.deliver_response("user-a", "runtime-a", "req-4", {"ok": True}, None)
+        unknown = await registry.deliver_response("user-a", "runtime-a", "missing", {"ok": True}, None)
+        wrong_conn = await registry.deliver_response("user-a", "missing-runtime", "req-4", {"ok": True}, None)
+
+        assert delivered is True
+        assert await fut == {"ok": True}
+        assert unknown is False
+        assert wrong_conn is False
+
+    _run(_case())
+
+
 def test_outbound_runtime_frame_size_is_checked_before_send(monkeypatch):
     monkeypatch.setattr(lr, "MAX_PAYLOAD_BYTES", 180)
 

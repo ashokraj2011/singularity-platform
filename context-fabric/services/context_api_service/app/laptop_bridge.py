@@ -146,6 +146,8 @@ _MAX_RUNTIME_TOKEN_TTL_SEC_CAP = 365 * 24 * 60 * 60
 _DEFAULT_MAX_RUNTIME_HEALTH_BYTES = 64 * 1024
 _MIN_RUNTIME_HEALTH_BYTES = 1024
 _MAX_RUNTIME_HEALTH_BYTES_CAP = 2 * 1024 * 1024
+_DEFAULT_MAX_RUNTIME_INVALID_FRAMES = 10
+_MAX_RUNTIME_INVALID_FRAMES_CAP = 1000
 _DEFAULT_HEARTBEAT_SWEEP_SEC = 30
 _MIN_HEARTBEAT_SWEEP_SEC = 1
 _MAX_HEARTBEAT_SWEEP_SEC = 300
@@ -168,6 +170,13 @@ _MAX_RUNTIME_HEALTH_BYTES = bounded_int_env(
     default=_DEFAULT_MAX_RUNTIME_HEALTH_BYTES,
     min_value=_MIN_RUNTIME_HEALTH_BYTES,
     max_value=_MAX_RUNTIME_HEALTH_BYTES_CAP,
+    logger=log,
+)
+_MAX_RUNTIME_INVALID_FRAMES = bounded_int_env(
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES",
+    default=_DEFAULT_MAX_RUNTIME_INVALID_FRAMES,
+    min_value=1,
+    max_value=_MAX_RUNTIME_INVALID_FRAMES_CAP,
     logger=log,
 )
 HEARTBEAT_SWEEP_SEC = bounded_int_env(
@@ -598,6 +607,10 @@ def _runtime_health_metadata(raw: Any) -> tuple[dict[str, Any] | None, bool]:
     return raw, False
 
 
+def _runtime_invalid_frame_limit_exceeded(invalid_frames: int) -> bool:
+    return invalid_frames >= _MAX_RUNTIME_INVALID_FRAMES
+
+
 @router.websocket("/api/runtime-bridge/connect")
 @router.websocket("/api/laptop-bridge/connect")
 async def runtime_connect(ws: WebSocket) -> None:
@@ -739,6 +752,23 @@ async def runtime_connect(ws: WebSocket) -> None:
         }))
 
         last_rev_check = time.monotonic()
+        invalid_frames = 0
+
+        async def _note_invalid_frame(reason: str) -> bool:
+            nonlocal invalid_frames
+            invalid_frames += 1
+            if _runtime_invalid_frame_limit_exceeded(invalid_frames):
+                log.warning(
+                    "closing runtime after too many invalid frames user=%s runtime=%s count=%s reason=%s",
+                    user_id,
+                    runtime_id,
+                    invalid_frames,
+                    reason,
+                )
+                await ws.close(code=4400, reason="too many invalid runtime frames")
+                return True
+            return False
+
         while True:
             raw = await ws.receive_text()
             raw_size = _runtime_frame_size(raw)
@@ -757,6 +787,8 @@ async def runtime_connect(ws: WebSocket) -> None:
                     log.warning("bad JSON frame from user=%s runtime=%s", user_id, runtime_id)
                 else:
                     log.warning("non-object frame from user=%s runtime=%s", user_id, runtime_id)
+                if await _note_invalid_frame(frame_err or "bad-frame"):
+                    break
                 continue
             ftype = frame.get("type")
             if ftype == "heartbeat":
@@ -765,6 +797,7 @@ async def runtime_connect(ws: WebSocket) -> None:
                     log.warning("closing runtime with oversized health user=%s runtime=%s", user_id, runtime_id)
                     await ws.close(code=1009, reason="runtime health too large")
                     break
+                invalid_frames = 0
                 await REGISTRY.heartbeat(user_id, runtime_id, health)
                 # Finding #7 — re-check revocation for this live connection, throttled to
                 # REVOCATION_RECHECK_SEC. Only a confirmed revocation disconnects; an
@@ -783,15 +816,23 @@ async def runtime_connect(ws: WebSocket) -> None:
                         user_id,
                         runtime_id,
                     )
+                    if await _note_invalid_frame("invalid-response-request-id"):
+                        break
                     continue
-                await REGISTRY.deliver_response(
+                delivered = await REGISTRY.deliver_response(
                     user_id=user_id, device_id=runtime_id,
                     request_id=request_id,
                     payload=frame.get("payload"),
                     error=frame.get("error"),
                 )
+                if delivered:
+                    invalid_frames = 0
+                elif await _note_invalid_frame("unknown-response-request-id"):
+                    break
             else:
                 log.debug("unhandled frame type=%s from user=%s", ftype, user_id)
+                if await _note_invalid_frame(f"unhandled:{ftype}"):
+                    break
 
     except WebSocketDisconnect:
         log.info("runtime disconnected user=%s runtime=%s", user_id, runtime_id)

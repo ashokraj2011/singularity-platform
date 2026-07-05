@@ -217,6 +217,59 @@ def test_runtime_health_metadata_env_uses_bounded_helper(monkeypatch):
     ) == 2 * 1024 * 1024
 
 
+def test_runtime_invalid_frame_env_defaults_fallbacks_and_clamps(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES", raising=False)
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_INVALID_FRAMES == 10
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES", "bad")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_INVALID_FRAMES == 10
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES", "0")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_INVALID_FRAMES == 10
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES", "3")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_INVALID_FRAMES == 3
+    assert module._runtime_invalid_frame_limit_exceeded(2) is False
+    assert module._runtime_invalid_frame_limit_exceeded(3) is True
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES", "999999")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_INVALID_FRAMES == 1000
+
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES", raising=False)
+    importlib.reload(laptop_bridge)
+
+
+def test_runtime_invalid_frame_env_uses_bounded_helper(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES", raising=False)
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES",
+        default=10,
+        min_value=1,
+        max_value=1000,
+    ) == 10
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES", "0")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES",
+        default=10,
+        min_value=1,
+        max_value=1000,
+    ) == 10
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES", "999999")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES",
+        default=10,
+        min_value=1,
+        max_value=1000,
+    ) == 1000
+
+
 def test_runtime_bridge_jwt_size_env_defaults_fallbacks_and_clamps(monkeypatch):
     monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES", raising=False)
     module = importlib.reload(laptop_bridge)
@@ -1304,6 +1357,7 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TOKEN_TTL_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_INVALID_FRAMES" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH" in source
@@ -1316,6 +1370,7 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "_MAX_RUNTIME_JWT_LEN = bounded_int_env(" in source
     assert "_MAX_RUNTIME_TOKEN_TTL_SEC = bounded_int_env(" in source
     assert "_MAX_RUNTIME_HEALTH_BYTES = bounded_int_env(" in source
+    assert "_MAX_RUNTIME_INVALID_FRAMES = bounded_int_env(" in source
     assert "HEARTBEAT_SWEEP_SEC = bounded_int_env(" in source
     assert 'REVOCATION_FAIL_OPEN = _bool_env("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN"' in source
     assert "_MAX_RUNTIME_CAPABILITY_TAGS = bounded_int_env(" in source
@@ -1335,6 +1390,9 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "_runtime_health_metadata(hello.get(\"health\"))" in source
     assert "_runtime_health_metadata(frame.get(\"health\"))" in source
     assert "runtime health too large" in source
+    assert "_runtime_invalid_frame_limit_exceeded(invalid_frames)" in source
+    assert "too many invalid runtime frames" in source
+    assert "delivered = await REGISTRY.deliver_response(" in source
     assert "\n_MAX_RUNTIME_JWT_LEN = 16 * 1024" not in source
     assert "\nHEARTBEAT_SWEEP_SEC = 30" not in source
     assert "\n_MAX_RUNTIME_CAPABILITY_TAGS = 32" not in source

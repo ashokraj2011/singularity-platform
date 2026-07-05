@@ -783,15 +783,15 @@ class LaptopRegistry:
         return response, conn
 
     async def deliver_response(self, user_id: str, device_id: str, request_id: str,
-                               payload: Any, error: Any) -> None:
+                               payload: Any, error: Any) -> bool:
         async with self._lock:
             conn = self._lookup(user_id, device_id)
         if conn is None:
             log.warning("response for unknown conn user=%s device=%s req=%s", user_id, device_id, request_id)
-            return
+            return False
         fut = conn.pending.pop(request_id, None)
         if fut is None or fut.done():
-            return
+            return False
         oversized = _oversized_response_part(payload=payload, error=error)
         if oversized is not None:
             field, size = oversized
@@ -800,7 +800,7 @@ class LaptopRegistry:
                 message=f"runtime response {field} exceeded {MAX_PAYLOAD_BYTES} bytes",
                 details={"field": field, "bytes": size, "max_bytes": MAX_PAYLOAD_BYTES},
             ))
-            return
+            return True
         error_obj = _normalize_runtime_error(error)
         if error_obj:
             fut.set_exception(LaptopInvokeError(
@@ -810,6 +810,7 @@ class LaptopRegistry:
             ))
         else:
             fut.set_result(payload)
+        return True
 
     # ── housekeeping ───────────────────────────────────────────────────────
     async def reap_stale(self) -> None:
