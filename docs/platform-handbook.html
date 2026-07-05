@@ -1162,6 +1162,9 @@ has explicit deadlines: <code>CONTEXT_FABRIC_MEMORY_WRITE_TIMEOUT_SEC</code>, de
 bounded <code>1..300</code>, for user/assistant message writes, and
 <code>CONTEXT_FABRIC_MEMORY_SUMMARY_TIMEOUT_SEC</code>, default <code>20</code>, bounded <code>1..300</code>, for
 the rolling-summary trigger.</p>
+<p>Context Fabric&#39;s post-invoke MCP event backfill is also best-effort and uses
+<code>CONTEXT_FABRIC_MCP_EVENT_DRAIN_TIMEOUT_SEC</code>, default <code>15</code>, bounded <code>1..300</code>,
+before falling back to whatever the live WebSocket subscriber already captured.</p>
 <p>Platform Web&#39;s Runtime + LLM settings route bounds status fan-out calls with
 <code>LLM_SETTINGS_FETCH_TIMEOUT_SEC</code>, default <code>5</code>, bounded <code>1..300</code>. Model catalog
 mutations forwarded to LLM Gateway use <code>LLM_SETTINGS_WRITE_TIMEOUT_SEC</code>, default

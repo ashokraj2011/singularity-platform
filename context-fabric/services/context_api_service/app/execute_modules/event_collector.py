@@ -24,11 +24,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import httpx
 
 from .. import events_store
+from ..env_config import bounded_float_value
 from ..response_json import response_json_object
+
+_DEFAULT_MCP_EVENT_DRAIN_TIMEOUT_SEC = 15.0
+_MAX_SERVICE_BOUNDARY_TIMEOUT_SEC = 300.0
+
+
+def mcp_event_drain_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv("CONTEXT_FABRIC_MCP_EVENT_DRAIN_TIMEOUT_SEC", str(_DEFAULT_MCP_EVENT_DRAIN_TIMEOUT_SEC)),
+        default=_DEFAULT_MCP_EVENT_DRAIN_TIMEOUT_SEC,
+        min_value=1.0,
+        max_value=_MAX_SERVICE_BOUNDARY_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_MCP_EVENT_DRAIN_TIMEOUT_SEC",
+    )
 
 
 async def drain_mcp_events(
@@ -40,7 +55,7 @@ async def drain_mcp_events(
     our events_store. Best-effort: failures here don't fail the /execute
     response (the call already succeeded by the time we drain)."""
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=mcp_event_drain_timeout_sec()) as client:
             resp = await client.get(
                 f"{mcp_base_url.rstrip('/')}/mcp/events",
                 params={"trace_id": trace_id, "limit": 1000},
