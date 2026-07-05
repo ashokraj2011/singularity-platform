@@ -8,8 +8,9 @@ import { AppSwitcher } from "@/components/AppSwitcher";
 import { LogoutButton } from "@/components/LogoutButton";
 import { RequireSession } from "@/components/RequireSession";
 import { useEffect, useState } from "react";
-import { Bell, Play, RadioTower, Search, Settings } from "lucide-react";
+import { Play, RadioTower, Search, Settings } from "lucide-react";
 import { CommandPalette } from "@/components/CommandPalette";
+import { NotificationCenter } from "@/components/NotificationCenter";
 import { apiPath, assertValidApiResponse, authHeaders, readResponseBody } from "@/lib/api";
 import { StatusPill, type UiState } from "@/components/ui/primitives";
 
@@ -169,30 +170,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               }}>⌘K</kbd>
             </button>
             <AppSwitcher />
-            <button
+            <NotificationCenter />
+            <Link
+              href="/settings"
               style={{
                 width: 32, height: 32, borderRadius: 10,
                 border: "1px solid var(--color-outline-variant)",
                 background: "transparent", cursor: "pointer",
                 display: "flex", alignItems: "center", justifyContent: "center",
-                color: "var(--color-outline)", transition: "all 0.15s",
-              }}
-              aria-label="Notifications"
-            >
-              <Bell size={15} />
-            </button>
-            <button
-              style={{
-                width: 32, height: 32, borderRadius: 10,
-                border: "1px solid var(--color-outline-variant)",
-                background: "transparent", cursor: "pointer",
-                display: "flex", alignItems: "center", justifyContent: "center",
+                textDecoration: "none",
                 color: "var(--color-outline)", transition: "all 0.15s",
               }}
               aria-label="Settings"
+              title="Settings"
             >
               <Settings size={15} />
-            </button>
+            </Link>
             <LogoutButton />
           </div>
         </header>

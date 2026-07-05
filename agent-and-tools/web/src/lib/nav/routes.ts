@@ -15,7 +15,7 @@ import {
   LayoutDashboard, Wrench, Play, Users, GitBranch, Layers, ScrollText,
   ShieldCheck, Activity, Brain, DollarSign, Cpu, WandSparkles, Bot, Inbox,
   Network, Route, Workflow, Zap, Database, FileText, Globe, Link2, Package,
-  Puzzle, ClipboardCheck, BookOpen,
+  Puzzle, ClipboardCheck, BookOpen, Settings,
 } from "lucide-react";
 
 export type NavGroup =
@@ -126,6 +126,7 @@ export const ROUTES: RouteMeta[] = [
   // Governance and FinOps
   { id: "engine", label: "Engine", href: "/engine", group: "Governance and FinOps", icon: Zap, priority: "primary", surfaceType: "governance" },
   { id: "llm-settings", label: "Runtime + LLM", href: "/llm-settings", group: "Governance and FinOps", icon: Cpu, priority: "journey", surfaceType: "governance", statusLabel: "Runtime" },
+  { id: "settings", label: "Platform Settings", href: "/settings", group: "Governance and FinOps", icon: Settings, priority: "secondary", surfaceType: "governance", statusLabel: "Settings", description: "Runtime, source, notifications, workflow defaults, and security settings.", keywords: ["settings", "notifications", "runtime", "llm", "git", "security"] },
   { id: "audit", label: "Audit", href: "/audit", group: "Governance and FinOps", icon: ShieldCheck, priority: "primary", surfaceType: "governance" },
   { id: "cost", label: "Cost", href: "/cost", group: "Governance and FinOps", icon: DollarSign, priority: "primary", surfaceType: "governance" },
   { id: "audit-curation", label: "Eval Curation", href: "/audit/curation", group: "Governance and FinOps", icon: ClipboardCheck, advanced: true, priority: "admin", surfaceType: "governance" },
