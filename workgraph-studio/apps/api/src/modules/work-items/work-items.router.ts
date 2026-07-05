@@ -162,6 +162,8 @@ const createSchema = z.object({
 
 const startTargetSchema = z.object({
   childWorkflowTemplateId: z.string().uuid().optional(),
+  // Optional per-run model chosen at launch (a gateway catalog alias).
+  modelAlias: z.string().max(120).optional(),
 }).default({})
 
 const routeSchemaBase = z.object({
@@ -420,6 +422,7 @@ workItemsRouter.post('/:id/targets/:targetId/start', validate(startTargetSchema)
     const body = req.body as z.infer<typeof startTargetSchema>
     const result = await startWorkItemTarget(String(req.params.id), String(req.params.targetId), req.user!.userId, {
       childWorkflowTemplateId: body?.childWorkflowTemplateId,
+      modelAlias: body?.modelAlias,
     })
     res.json(result)
   } catch (err) {

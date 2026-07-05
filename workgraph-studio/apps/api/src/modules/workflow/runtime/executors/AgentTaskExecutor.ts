@@ -229,13 +229,22 @@ export async function activateAgentTask(
     : workflowDefaultGovernanceMode
   const nodeModelAlias = configString('modelAlias')
   const legacyModel = configString('model')
-  const modelSelectionReason = nodeModelAlias && nodeModelAlias !== '__workflow_default__'
-    ? 'node override'
-    : workflowDefaultModelAlias
-      ? 'workflow default'
-      : legacyModel
-        ? 'legacy alias'
-        : 'gateway default alias'
+  // Runtime override: a per-run model chosen at launch, threaded via
+  // context._globals.modelAlias. HIGHEST precedence — a launch-time pick wins
+  // over node/workflow/routing so the operator can switch models per run without
+  // editing the design. '__workflow_default__' means "don't override".
+  const runtimeModelAlias = typeof globals.modelAlias === 'string' && globals.modelAlias.trim() && globals.modelAlias !== '__workflow_default__'
+    ? globals.modelAlias.trim()
+    : ''
+  const modelSelectionReason = runtimeModelAlias
+    ? 'runtime override (launch)'
+    : nodeModelAlias && nodeModelAlias !== '__workflow_default__'
+      ? 'node override'
+      : workflowDefaultModelAlias
+        ? 'workflow default'
+        : legacyModel
+          ? 'legacy alias'
+          : 'gateway default alias'
   // LLM routing: the GOVERNED_AGENT touch point may be wired to a connection (per
   // capability / user / default) in the routing canvas. Applies only when neither
   // the node nor the workflow set an explicit alias. Precedence: node > workflow >
@@ -256,6 +265,8 @@ export async function activateAgentTask(
     ...(nodeModelAlias && nodeModelAlias !== '__workflow_default__' ? { modelAlias: nodeModelAlias } : {}),
     ...(routedModelAlias ? { modelAlias: routedModelAlias } : {}),
     ...(legacyModel && !nodeModelAlias && !workflowDefaultModelAlias && !routedModelAlias ? { modelAlias: legacyModel } : {}),
+    // Highest precedence: per-run launch override (last spread wins).
+    ...(runtimeModelAlias ? { modelAlias: runtimeModelAlias } : {}),
   }
   delete modelOverrides.provider
   delete modelOverrides.model
