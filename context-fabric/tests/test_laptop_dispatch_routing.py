@@ -767,6 +767,70 @@ def test_dispatch_http_invalid_duration_raises_tool_dispatch_error(monkeypatch):
                 ))
 
 
+def test_dispatch_bridge_string_tool_success_raises_tool_dispatch_error():
+    async def bridge_returns_string_success(_kwargs):
+        return (
+            {
+                "result": {"ok": True},
+                "duration_ms": 1,
+                "tool_invocation_id": "ti-string-success",
+                "tool_success": "false",
+                "tool_error": "should not be truthy",
+            },
+            {"device_id": "dev-string-success", "device_name": "test-laptop"},
+        )
+
+    with _patch_registry(bridge_returns_string_success):
+        with pytest.raises(ToolDispatchError, match="laptop tool-run response had invalid tool_success"):
+            _run(dispatch_tool(
+                "read_file",
+                {"path": "a"},
+                laptop_user_id="user-x",
+            ))
+
+
+def test_dispatch_http_string_tool_success_raises_tool_dispatch_error(monkeypatch):
+    monkeypatch.setenv("RUNTIME_HTTP_FALLBACK_ENABLED", "true")
+
+    async def must_not_call(_kwargs):
+        raise AssertionError("registry should not be touched when laptop_user_id is None")
+
+    with _patch_registry(must_not_call):
+        with patch(
+            "context_api_service.app.governed.dispatch.httpx.AsyncClient"
+        ) as mock_client_factory:
+            mock_client = mock_client_factory.return_value.__aenter__.return_value
+            mock_response = type("Resp", (), {
+                "is_success": True,
+                "status_code": 200,
+                "text": "",
+                "json": lambda self: {
+                    "success": True,
+                    "data": {
+                        "result": {"ok": True},
+                        "durationMs": 1,
+                        "toolInvocationId": "ti-http-string-success",
+                        "toolSuccess": "false",
+                        "toolError": "should not be truthy",
+                    },
+                },
+            })()
+
+            async def fake_post(*args, **kwargs):
+                return mock_response
+
+            mock_client.post = fake_post
+
+            with pytest.raises(ToolDispatchError, match="mcp-server tool-run response had invalid toolSuccess"):
+                _run(dispatch_tool(
+                    "read_file",
+                    {"path": "a.py"},
+                    work_item_id="WI-1",
+                    run_context={"traceId": "t1"},
+                    bearer="tok-test",
+                ))
+
+
 # ── M75 Slice 6 — emergency rollback flag ──────────────────────────────────
 
 

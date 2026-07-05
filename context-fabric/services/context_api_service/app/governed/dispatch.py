@@ -125,6 +125,14 @@ def _duration_ms_from_response(value: Any, *, source: str, field: str) -> int:
     return duration_ms
 
 
+def _bool_from_response(value: Any, *, source: str, field: str) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    raise ToolDispatchError(f"{source} tool-run response had invalid {field}: {value!r}")
+
+
 async def dispatch_tool(
     tool_name: str,
     args: dict[str, Any],
@@ -313,7 +321,7 @@ async def dispatch_tool(
         result=data.get("result"),
         duration_ms=_duration_ms_from_response(data.get("durationMs", 0), source="mcp-server", field="durationMs"),
         tool_invocation_id=str(data.get("toolInvocationId", "")),
-        tool_success=bool(data.get("toolSuccess", False)),
+        tool_success=_bool_from_response(data.get("toolSuccess", False), source="mcp-server", field="toolSuccess"),
         tool_error=data.get("toolError"),
         served_by="http",
     )
@@ -418,7 +426,7 @@ async def _dispatch_via_laptop(
         result=body.get("result"),
         duration_ms=_duration_ms_from_response(body.get("duration_ms", 0), source="laptop", field="duration_ms"),
         tool_invocation_id=str(body.get("tool_invocation_id", "")),
-        tool_success=bool(body.get("tool_success", False)),
+        tool_success=_bool_from_response(body.get("tool_success", False), source="laptop", field="tool_success"),
         tool_error=body.get("tool_error"),
         served_by="laptop",
         laptop_device_id=device_id,
