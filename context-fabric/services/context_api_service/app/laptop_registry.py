@@ -20,12 +20,28 @@ from uuid import uuid4
 
 from fastapi import WebSocket
 
-from .env_config import bounded_int_env
+from .env_config import bounded_float_env, bounded_int_env
 
 log = logging.getLogger("laptop-registry")
 
-INVOKE_TIMEOUT_SEC = 180
-HEARTBEAT_TIMEOUT_SEC = 90
+_DEFAULT_INVOKE_TIMEOUT_SEC = 180.0
+_DEFAULT_HEARTBEAT_TIMEOUT_SEC = 90.0
+_MAX_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC = 2.0 * 60.0 * 60.0
+_MAX_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC = 60.0 * 60.0
+INVOKE_TIMEOUT_SEC = bounded_float_env(
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC",
+    default=_DEFAULT_INVOKE_TIMEOUT_SEC,
+    min_value=1.0,
+    max_value=_MAX_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC,
+    logger=log,
+)
+HEARTBEAT_TIMEOUT_SEC = bounded_float_env(
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC",
+    default=_DEFAULT_HEARTBEAT_TIMEOUT_SEC,
+    min_value=1.0,
+    max_value=_MAX_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC,
+    logger=log,
+)
 MAX_PAYLOAD_BYTES = 16 * 1024 * 1024   # I2
 _DEFAULT_MAX_PENDING_REQUESTS_PER_RUNTIME = 32
 _MAX_PENDING_REQUESTS_PER_RUNTIME_CAP = 1024
@@ -788,7 +804,7 @@ class LaptopRegistry:
 
     # ── housekeeping ───────────────────────────────────────────────────────
     async def reap_stale(self) -> None:
-        """R3 — drop connections whose last_seen_at is older than 90s."""
+        """R3 — drop connections whose last_seen_at exceeds the heartbeat window."""
         cutoff = time.time() - HEARTBEAT_TIMEOUT_SEC
         async with self._lock:
             victims: list[tuple[str, str]] = []

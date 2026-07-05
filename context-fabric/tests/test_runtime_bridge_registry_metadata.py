@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+from pathlib import Path
 
 import pytest
 
 from context_api_service.app import laptop_registry as lr
-from context_api_service.app.env_config import bounded_int_env
+from context_api_service.app.env_config import bounded_float_env, bounded_int_env
 from context_api_service.app.laptop_registry import (
     ActiveConnection,
     LaptopRegistry,
@@ -14,8 +16,31 @@ from context_api_service.app.laptop_registry import (
 )
 
 
+_TIMEOUT_ENVS = (
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC",
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC",
+)
+
+
+@pytest.fixture(autouse=True)
+def reset_laptop_registry_module(monkeypatch):
+    yield
+    for name in _TIMEOUT_ENVS:
+        monkeypatch.delenv(name, raising=False)
+    importlib.reload(lr)
+
+
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _reload_with_env(monkeypatch, values: dict[str, str | None]):
+    for name in _TIMEOUT_ENVS:
+        if name in values and values[name] is not None:
+            monkeypatch.setenv(name, values[name] or "")
+        else:
+            monkeypatch.delenv(name, raising=False)
+    return importlib.reload(lr)
 
 
 def test_sanitize_metadata_redacts_nested_secret_shaped_fields():
@@ -178,6 +203,92 @@ def test_bounded_int_env_defaults_and_clamps(monkeypatch):
         min_value=1,
         max_value=1024,
     ) == 1024
+
+
+def test_runtime_bridge_timeout_envs_default_and_fallback(monkeypatch):
+    module = _reload_with_env(monkeypatch, {})
+    assert module.INVOKE_TIMEOUT_SEC == 180.0
+    assert module.HEARTBEAT_TIMEOUT_SEC == 90.0
+
+    module = _reload_with_env(
+        monkeypatch,
+        {
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC": "bad",
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC": "0",
+        },
+    )
+    assert module.INVOKE_TIMEOUT_SEC == 180.0
+    assert module.HEARTBEAT_TIMEOUT_SEC == 90.0
+
+    module = _reload_with_env(
+        monkeypatch,
+        {
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC": "nan",
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC": "inf",
+        },
+    )
+    assert module.INVOKE_TIMEOUT_SEC == 180.0
+    assert module.HEARTBEAT_TIMEOUT_SEC == 90.0
+
+
+def test_runtime_bridge_timeout_envs_accept_and_clamp(monkeypatch):
+    module = _reload_with_env(
+        monkeypatch,
+        {
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC": "1200.5",
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC": "120.25",
+        },
+    )
+    assert module.INVOKE_TIMEOUT_SEC == 1200.5
+    assert module.HEARTBEAT_TIMEOUT_SEC == 120.25
+
+    module = _reload_with_env(
+        monkeypatch,
+        {
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC": "999999",
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC": "999999",
+        },
+    )
+    assert module.INVOKE_TIMEOUT_SEC == 7200.0
+    assert module.HEARTBEAT_TIMEOUT_SEC == 3600.0
+
+
+def test_runtime_bridge_timeout_helpers_match_registry_bounds(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC", raising=False)
+    assert bounded_float_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC",
+        default=180.0,
+        min_value=1.0,
+        max_value=7200.0,
+    ) == 180.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC", "0")
+    assert bounded_float_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC",
+        default=180.0,
+        min_value=1.0,
+        max_value=7200.0,
+    ) == 180.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC", "999999")
+    assert bounded_float_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC",
+        default=180.0,
+        min_value=1.0,
+        max_value=7200.0,
+    ) == 7200.0
+
+
+def test_runtime_bridge_registry_source_uses_bounded_timeout_envs():
+    source = Path("services/context_api_service/app/laptop_registry.py").read_text()
+
+    assert "from .env_config import bounded_float_env, bounded_int_env" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC" in source
+    assert "INVOKE_TIMEOUT_SEC = bounded_float_env(" in source
+    assert "HEARTBEAT_TIMEOUT_SEC = bounded_float_env(" in source
+    assert "\nINVOKE_TIMEOUT_SEC = 180" not in source
+    assert "\nHEARTBEAT_TIMEOUT_SEC = 90" not in source
 
 
 def test_deliver_response_rejects_oversized_runtime_payload(monkeypatch):
