@@ -230,6 +230,14 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
   if (Object.keys(globals).length > 0) initialContext._globals = globals
   if (Object.keys(vars).length    > 0) initialContext._vars    = vars
 
+  // Runtime model override chosen at launch — a SYSTEM global (not a team var),
+  // so it's threaded explicitly rather than via the team-variable merge above.
+  // AgentTaskExecutor reads _globals.modelAlias as the highest-precedence model.
+  const launchModelAlias = typeof globalsOverrides.modelAlias === 'string' ? globalsOverrides.modelAlias.trim() : ''
+  if (launchModelAlias) {
+    initialContext._globals = { ...((initialContext._globals as Record<string, unknown> | undefined) ?? {}), modelAlias: launchModelAlias }
+  }
+
   // RLS prep — resolved once, used both for the pre-transaction count read below
   // and the run-creation transaction (Slice 3). Was previously computed inline
   // at instance-create time only; hoisted so the SAME value scopes every

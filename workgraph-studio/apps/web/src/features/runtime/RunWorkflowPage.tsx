@@ -196,6 +196,18 @@ function StartWorkflowDialog({
   onStarted: (runId: string) => void
 }) {
   const [selectedWorkItemTarget, setSelectedWorkItemTarget] = useState('')
+  const [modelAlias, setModelAlias] = useState('')
+
+  // Catalog aliases (Copilot/OpenAI/Anthropic/…) to offer as a per-run model override.
+  const connectionsQuery = useQuery<Array<{ alias?: string; label?: string; provider?: string; model?: string }>>({
+    queryKey: ['llm-connections-for-launch'],
+    queryFn: () => api.get('/llm-routing/connections').then(r => {
+      const d = r.data as unknown
+      return (Array.isArray(d) ? d : ((d as { items?: unknown[]; content?: unknown[] })?.items ?? (d as { content?: unknown[] })?.content ?? [])) as Array<{ alias?: string }>
+    }),
+    staleTime: 60_000,
+  })
+  const modelOptions = (connectionsQuery.data ?? []).filter(c => typeof c.alias === 'string' && c.alias)
 
   const workItemsQuery = useQuery<WorkItemRow[]>({
     queryKey: ['start-workflow-workitems', workflow.capabilityId],
@@ -223,6 +235,7 @@ function StartWorkflowDialog({
       }
       return api.post(`/work-items/${selected.item.id}/targets/${selected.target.id}/start`, {
         childWorkflowTemplateId: workflow.id,
+        ...(modelAlias ? { modelAlias } : {}),
       }).then(r => r.data as { childWorkflowInstanceId?: string })
     },
     onSuccess: result => {
@@ -298,6 +311,22 @@ function StartWorkflowDialog({
           <p style={{ ...mutedStyle, marginTop: 8 }}>
             The run receives `_workItem`, `workItemId`, details, budget, urgency, required date, and target capability in context.
           </p>
+
+          <div style={{ marginTop: 16 }}>
+            <h3 style={{ ...sectionTitleStyle, margin: '0 0 8px' }}>Model (optional)</h3>
+            <select value={modelAlias} onChange={event => setModelAlias(event.target.value)} style={inputStyle}>
+              <option value="">Workflow default</option>
+              {modelOptions.map(c => (
+                <option key={c.alias} value={c.alias}>
+                  {c.label ?? c.alias}{c.provider ? ` — ${c.provider}${c.model ? `/${c.model}` : ''}` : ''}
+                </option>
+              ))}
+            </select>
+            <p style={{ ...mutedStyle, marginTop: 6 }}>
+              Overrides the model for every agent stage in this run only. Leave as “Workflow default” to use the designed routing (Copilot/OpenAI/Anthropic per the LLM routing canvas).
+            </p>
+          </div>
+
           <div style={footerStyle}>
             <button style={secondaryButtonStyle} onClick={onClose}>Cancel</button>
             <button style={primaryButtonStyle} disabled={!canStartWorkItem || workItemMut.isPending} onClick={() => workItemMut.mutate()}>
