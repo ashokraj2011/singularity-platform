@@ -117,6 +117,21 @@ export function createMcpServer(capabilityId: string, body: Record<string, unkno
   return identityRequest<IdentityRow>(`/capabilities/${encodeURIComponent(capabilityId)}/mcp-servers`, { method: "POST", body: JSON.stringify(body) });
 }
 
+// Edit an IAM org entity by its identifier (bu_id/team_id/user_id are UUIDs;
+// capability PATCH keys off the capability_id key — the caller passes the right
+// value). Roles have no PATCH endpoint, so they aren't editable here.
+export function updateIdentity(view: IdentityView, id: string, body: Record<string, unknown>): Promise<IdentityRow> {
+  return identityRequest<IdentityRow>(`${pathFor(view)}/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function updateMcpServer(serverId: string, body: Record<string, unknown>): Promise<IdentityRow> {
+  return identityRequest<IdentityRow>(`/mcp-servers/${encodeURIComponent(serverId)}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function deleteMcpServer(serverId: string): Promise<void> {
+  return identityRequest<void>(`/mcp-servers/${encodeURIComponent(serverId)}`, { method: "DELETE" });
+}
+
 export function listCapabilityRelationships(capabilityId: string): Promise<CapabilityRelationshipRow[]> {
   return identityRequest<CapabilityRelationshipRow[]>(`/capabilities/${encodeURIComponent(capabilityId)}/relationships`);
 }

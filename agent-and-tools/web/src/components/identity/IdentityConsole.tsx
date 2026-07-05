@@ -7,9 +7,12 @@ import {
   checkAuthorization,
   createIdentity,
   createMcpServer,
+  deleteMcpServer,
   listCapabilityRelationships,
   listIdentity,
   listMcpServers,
+  updateIdentity,
+  updateMcpServer,
   type AuthzCheckRequest,
   type AuthzCheckResponse,
   type CapabilityRelationshipRow,
@@ -198,6 +201,57 @@ function buildCreateBody(fields: FieldSpec[], values: Record<string, string>): R
   return body;
 }
 
+// Editable fields per entity — a subset of create (keys are immutable, and the
+// BU/Team update schemas are `extra: forbid` so ONLY these keys may be sent).
+// `idKey` is the row field used in the PATCH URL (capability keys off its
+// capability_id, others off the UUID id). Roles are absent — no PATCH endpoint.
+const editForms: Partial<Record<IdentityView, { idKey: string; fields: FieldSpec[] }>> = {
+  "business-units": {
+    idKey: "id",
+    fields: [
+      { key: "name", label: "Name", required: true },
+      { key: "description", label: "Description", textarea: true },
+      { key: "parent_bu_id", label: "Parent BU ID", placeholder: "(optional UUID)" },
+    ],
+  },
+  teams: {
+    idKey: "id",
+    fields: [
+      { key: "name", label: "Name", required: true },
+      { key: "description", label: "Description", textarea: true },
+      { key: "parent_team_id", label: "Parent team ID", placeholder: "(optional UUID)" },
+    ],
+  },
+  users: {
+    idKey: "id",
+    fields: [
+      { key: "display_name", label: "Display name" },
+      { key: "status", label: "Status", placeholder: "active | suspended" },
+      { key: "tags", label: "Tags", placeholder: "comma, separated" },
+    ],
+  },
+  capabilities: {
+    idKey: "capability_id",
+    fields: [
+      { key: "name", label: "Name", required: true },
+      { key: "description", label: "Description", textarea: true },
+      { key: "status", label: "Status", placeholder: "active | suspended" },
+      { key: "visibility", label: "Visibility", placeholder: "private | shared" },
+      { key: "tags", label: "Tags", placeholder: "comma, separated" },
+    ],
+  },
+};
+
+function initialValues(fields: FieldSpec[], row: IdentityRow): Record<string, string> {
+  const v: Record<string, string> = {};
+  for (const f of fields) {
+    const raw = row[f.key];
+    if (raw == null) continue;
+    v[f.key] = Array.isArray(raw) ? raw.join(", ") : String(raw);
+  }
+  return v;
+}
+
 export function IdentityConsole({ view = "dashboard" }: { view?: IdentityView }) {
   // The sub-view comes straight from the route — the global sidebar is the only
   // Identity nav now (no in-page column), so there's no local active-view state.
@@ -291,7 +345,10 @@ function DashboardPanel({ users, audit }: { users: IdentityRow[]; audit: Identit
 function EntityTable({ title, view, rows, loading, onCreated }: { title: string; view: IdentityView; rows: IdentityRow[]; loading?: boolean; onCreated?: () => void }) {
   const tableColumns = columns[view];
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<IdentityRow | null>(null);
   const form = createForms[view];
+  const editable = Boolean(editForms[view]) && Boolean(onCreated);
+  const colCount = tableColumns.length + (editable ? 1 : 0);
   return (
     <section className="card" style={{ overflow: "hidden" }}>
       <div style={{ padding: 18, borderBottom: "1px solid var(--color-outline-variant)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
@@ -306,23 +363,32 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
         </div>
       </div>
       {creating && form && onCreated ? (
-        <CreateEntityModal view={view} onClose={() => setCreating(false)} onCreated={() => { setCreating(false); onCreated(); }} />
+        <EntityFormModal view={view} mode="create" onClose={() => setCreating(false)} onSaved={() => { setCreating(false); onCreated(); }} />
+      ) : null}
+      {editing && editable && onCreated ? (
+        <EntityFormModal view={view} mode="edit" row={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onCreated(); }} />
       ) : null}
       <div style={{ overflowX: "auto" }}>
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50">
               {tableColumns.map((column) => <th key={column.label} className="text-left px-4 py-3 font-medium text-slate-600">{column.label}</th>)}
+              {editable ? <th className="px-4 py-3" /> : null}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {rows.map((row, index) => (
               <tr key={String(row.id ?? index)} className="hover:bg-slate-50">
                 {tableColumns.map((column) => <td key={column.label} className="px-4 py-3 text-slate-700">{formatCell(pick(row, column.keys))}</td>)}
+                {editable ? (
+                  <td className="px-4 py-3 text-right">
+                    <button type="button" onClick={() => setEditing(row)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-primary)", cursor: "pointer" }}>Edit</button>
+                  </td>
+                ) : null}
               </tr>
             ))}
-            {!loading && rows.length === 0 && <tr><td colSpan={tableColumns.length} className="px-4 py-12 text-center text-slate-400">No records found.</td></tr>}
-            {loading && <tr><td colSpan={tableColumns.length} className="px-4 py-12 text-center text-slate-400">Loading...</td></tr>}
+            {!loading && rows.length === 0 && <tr><td colSpan={colCount} className="px-4 py-12 text-center text-slate-400">No records found.</td></tr>}
+            {loading && <tr><td colSpan={colCount} className="px-4 py-12 text-center text-slate-400">Loading...</td></tr>}
           </tbody>
         </table>
       </div>
@@ -330,19 +396,26 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
   );
 }
 
-function CreateEntityModal({ view, onClose, onCreated }: { view: IdentityView; onClose: () => void; onCreated: () => void }) {
-  const spec = createForms[view]!;
-  const [values, setValues] = useState<Record<string, string>>({});
+function EntityFormModal({ view, mode, row, onClose, onSaved }: { view: IdentityView; mode: "create" | "edit"; row?: IdentityRow; onClose: () => void; onSaved: () => void }) {
+  const singular = createForms[view]?.singular ?? titleFor(view);
+  const editSpec = editForms[view];
+  const fields = mode === "edit" ? (editSpec?.fields ?? []) : (createForms[view]?.fields ?? []);
+  const [values, setValues] = useState<Record<string, string>>(() => (mode === "edit" && row ? initialValues(fields, row) : {}));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const missingRequired = spec.fields.some((f) => f.required && !(values[f.key] ?? "").trim());
+  const missingRequired = fields.some((f) => f.required && !(values[f.key] ?? "").trim());
 
   async function submit() {
     setBusy(true);
     setError(null);
     try {
-      await createIdentity(view, buildCreateBody(spec.fields, values));
-      onCreated(); // unmounts this modal + refreshes the list
+      const body = buildCreateBody(fields, values);
+      if (mode === "edit" && row && editSpec) {
+        await updateIdentity(view, String(row[editSpec.idKey] ?? row.id ?? ""), body);
+      } else {
+        await createIdentity(view, body);
+      }
+      onSaved(); // unmounts this modal + refreshes the list
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -353,12 +426,12 @@ function CreateEntityModal({ view, onClose, onCreated }: { view: IdentityView; o
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "6vh 16px", zIndex: 60 }}>
       <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "min(560px, 96vw)", maxHeight: "88vh", overflow: "auto", padding: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-          <h2 style={{ margin: 0, fontSize: 18 }}>New {spec.singular}</h2>
+          <h2 style={{ margin: 0, fontSize: 18 }}>{mode === "edit" ? "Edit" : "New"} {singular}</h2>
           <button type="button" onClick={onClose} aria-label="Close" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--color-outline)", fontSize: 22, lineHeight: 1 }}>×</button>
         </div>
-        <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--color-outline)" }}>Requires super-admin. Fields marked * are required.</p>
+        <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--color-outline)" }}>Requires super-admin. Fields marked * are required.{mode === "edit" ? " Blank fields are left unchanged." : ""}</p>
         <div style={{ display: "grid", gap: 10 }}>
-          {spec.fields.map((f) => (
+          {fields.map((f) => (
             <label key={f.key} style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "var(--color-outline)" }}>
               {f.label}{f.required ? " *" : ""}
               {f.textarea ? (
@@ -373,7 +446,7 @@ function CreateEntityModal({ view, onClose, onCreated }: { view: IdentityView; o
         {error ? <div style={{ marginTop: 12 }}><SmallError error={error} /></div> : null}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
           <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
-          <button type="button" className="btn-primary" onClick={() => void submit()} disabled={busy || missingRequired}>{busy ? "Creating…" : `Create ${spec.singular}`}</button>
+          <button type="button" className="btn-primary" onClick={() => void submit()} disabled={busy || missingRequired}>{busy ? "Saving…" : mode === "edit" ? "Save changes" : `Create ${singular}`}</button>
         </div>
       </div>
     </div>
@@ -388,6 +461,27 @@ function McpServersPanel() {
   const { data: servers, isLoading, mutate } = useSWR(effectiveCapId ? ["mcp-servers", effectiveCapId] : null, () => listMcpServers(effectiveCapId));
   const serverRows: IdentityRow[] = Array.isArray(servers) ? servers : (servers?.items ?? []);
   const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<IdentityRow | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function remove(server: IdentityRow) {
+    const id = String(server.id ?? "");
+    if (!id) return;
+    if (!window.confirm(`Delete MCP server "${valueText(server.name)}"? This cannot be undone.`)) return;
+    setDeletingId(id);
+    setDeleteError(null);
+    try {
+      await deleteMcpServer(id);
+      void mutate();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  const actionBtn = { borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", cursor: "pointer" };
 
   return (
     <div style={{ display: "grid", gap: 16 }}>
@@ -408,6 +502,8 @@ function McpServersPanel() {
         <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--color-outline)" }}>MCP servers are registered per capability. Requires super-admin.</p>
       </section>
 
+      {deleteError ? <SmallError error={deleteError} /> : null}
+
       <section className="card" style={{ overflow: "hidden" }}>
         <div style={{ padding: 18, borderBottom: "1px solid var(--color-outline-variant)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2 style={{ margin: 0, fontSize: 16 }}>Registered MCP servers</h2>
@@ -418,53 +514,83 @@ function McpServersPanel() {
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50">
                 {["Name", "Base URL", "Protocol", "Status"].map((h) => <th key={h} className="text-left px-4 py-3 font-medium text-slate-600">{h}</th>)}
+                <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {serverRows.map((s, index) => (
-                <tr key={String(s.id ?? index)} className="hover:bg-slate-50">
-                  <td className="px-4 py-3 text-slate-700">{valueText(s.name)}</td>
-                  <td className="px-4 py-3 text-slate-700">{valueText(s.base_url)}</td>
-                  <td className="px-4 py-3 text-slate-700">{valueText(s.protocol)}</td>
-                  <td className="px-4 py-3 text-slate-700">{valueText(s.status)}</td>
-                </tr>
-              ))}
-              {!isLoading && serverRows.length === 0 && <tr><td colSpan={4} className="px-4 py-12 text-center text-slate-400">No MCP servers registered for this capability.</td></tr>}
+              {serverRows.map((s, index) => {
+                const id = String(s.id ?? "");
+                return (
+                  <tr key={id || index} className="hover:bg-slate-50">
+                    <td className="px-4 py-3 text-slate-700">{valueText(s.name)}</td>
+                    <td className="px-4 py-3 text-slate-700">{valueText(s.base_url)}</td>
+                    <td className="px-4 py-3 text-slate-700">{valueText(s.protocol)}</td>
+                    <td className="px-4 py-3 text-slate-700">{valueText(s.status)}</td>
+                    <td className="px-4 py-3 text-right" style={{ whiteSpace: "nowrap" }}>
+                      <button type="button" onClick={() => setEditing(s)} style={{ ...actionBtn, border: "1px solid var(--color-outline-variant)", color: "var(--color-primary)" }}>Edit</button>
+                      <button type="button" onClick={() => void remove(s)} disabled={deletingId === id} style={{ ...actionBtn, border: "1px solid rgba(185,28,28,0.28)", color: "#b91c1c", marginLeft: 8 }}>{deletingId === id ? "Deleting…" : "Delete"}</button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!isLoading && serverRows.length === 0 && <tr><td colSpan={5} className="px-4 py-12 text-center text-slate-400">No MCP servers registered for this capability.</td></tr>}
             </tbody>
           </table>
         </div>
       </section>
 
       {creating && effectiveCapId ? (
-        <CreateMcpServerModal capabilityId={effectiveCapId} onClose={() => setCreating(false)} onCreated={() => { setCreating(false); void mutate(); }} />
+        <McpServerFormModal mode="create" capabilityId={effectiveCapId} onClose={() => setCreating(false)} onSaved={() => { setCreating(false); void mutate(); }} />
+      ) : null}
+      {editing ? (
+        <McpServerFormModal mode="edit" server={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); void mutate(); }} />
       ) : null}
     </div>
   );
 }
 
-function CreateMcpServerModal({ capabilityId, onClose, onCreated }: { capabilityId: string; onClose: () => void; onCreated: () => void }) {
-  const [values, setValues] = useState<Record<string, string>>({ protocol: "MCP_HTTP" });
+function McpServerFormModal({ mode, capabilityId, server, onClose, onSaved }: { mode: "create" | "edit"; capabilityId?: string; server?: IdentityRow; onClose: () => void; onSaved: () => void }) {
+  const isEdit = mode === "edit";
+  const [values, setValues] = useState<Record<string, string>>((): Record<string, string> => (isEdit && server ? {
+    name: String(server.name ?? ""),
+    base_url: String(server.base_url ?? ""),
+    protocol: String(server.protocol ?? "MCP_HTTP"),
+    protocol_version: server.protocol_version != null ? String(server.protocol_version) : "",
+    description: server.description != null ? String(server.description) : "",
+    status: server.status != null ? String(server.status) : "",
+    tags: Array.isArray(server.tags) ? (server.tags as unknown[]).join(", ") : "",
+    bearer_token: "",
+  } : { protocol: "MCP_HTTP" }));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const set = (k: string) => (v: string) => setValues((prev) => ({ ...prev, [k]: v }));
   const name = (values.name ?? "").trim();
   const baseUrl = (values.base_url ?? "").trim();
   const token = (values.bearer_token ?? "").trim();
-  const invalid = !name || !baseUrl || token.length < 8;
+  // Create requires a token (≥8). Edit keeps the current token unless a new one (≥8) is entered.
+  const tokenInvalid = isEdit ? token.length > 0 && token.length < 8 : token.length < 8;
+  const invalid = !name || !baseUrl || tokenInvalid;
 
   async function submit() {
     setBusy(true);
     setError(null);
     try {
-      const body: Record<string, unknown> = { name, base_url: baseUrl, bearer_token: token, protocol: values.protocol || "MCP_HTTP" };
+      const body: Record<string, unknown> = { name, base_url: baseUrl, protocol: values.protocol || "MCP_HTTP" };
+      if (token) body.bearer_token = token;
       const desc = (values.description ?? "").trim();
       const ver = (values.protocol_version ?? "").trim();
       const tags = (values.tags ?? "").trim();
+      const status = (values.status ?? "").trim();
       if (desc) body.description = desc;
       if (ver) body.protocol_version = ver;
       if (tags) body.tags = tags.split(",").map((t) => t.trim()).filter(Boolean);
-      await createMcpServer(capabilityId, body);
-      onCreated();
+      if (isEdit && status) body.status = status;
+      if (isEdit && server) {
+        await updateMcpServer(String(server.id ?? ""), body);
+      } else if (capabilityId) {
+        await createMcpServer(capabilityId, body);
+      }
+      onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -475,17 +601,17 @@ function CreateMcpServerModal({ capabilityId, onClose, onCreated }: { capability
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "6vh 16px", zIndex: 60 }}>
       <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "min(560px, 96vw)", maxHeight: "88vh", overflow: "auto", padding: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-          <h2 style={{ margin: 0, fontSize: 18 }}>New MCP server</h2>
+          <h2 style={{ margin: 0, fontSize: 18 }}>{isEdit ? "Edit" : "New"} MCP server</h2>
           <button type="button" onClick={onClose} aria-label="Close" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--color-outline)", fontSize: 22, lineHeight: 1 }}>×</button>
         </div>
-        <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--color-outline)" }}>Registered under the selected capability. Requires super-admin. * = required.</p>
+        <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--color-outline)" }}>{isEdit ? "Registered under this capability." : "Registered under the selected capability."} Requires super-admin. * = required.</p>
         <div style={{ display: "grid", gap: 10 }}>
           <IdentityInput label="Name *" value={values.name ?? ""} onChange={set("name")} placeholder="primary-mcp" />
           <IdentityInput label="Base URL *" value={values.base_url ?? ""} onChange={set("base_url")} placeholder="https://mcp.example.com" />
           <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "var(--color-outline)" }}>
-            Bearer token *
+            {isEdit ? "Bearer token" : "Bearer token *"}
             <input type="password" value={values.bearer_token ?? ""} onChange={(e) => set("bearer_token")(e.target.value)} placeholder="min 8 characters" style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: "9px 11px", fontSize: 13, color: "var(--color-text)", fontWeight: 500 }} />
-            <span style={{ fontWeight: 500, color: "var(--color-outline)", fontSize: 11 }}>Stored server-side for context-fabric → MCP auth.</span>
+            <span style={{ fontWeight: 500, color: "var(--color-outline)", fontSize: 11 }}>{isEdit ? "Leave blank to keep the current token." : "Stored server-side for context-fabric → MCP auth."}</span>
           </label>
           <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "var(--color-outline)" }}>
             Protocol
@@ -494,6 +620,7 @@ function CreateMcpServerModal({ capabilityId, onClose, onCreated }: { capability
               <option value="MCP_WS">MCP_WS</option>
             </select>
           </label>
+          {isEdit ? <IdentityInput label="Status" value={values.status ?? ""} onChange={set("status")} placeholder="active | suspended" /> : null}
           <IdentityInput label="Protocol version" value={values.protocol_version ?? ""} onChange={set("protocol_version")} placeholder="(optional)" />
           <IdentityInput label="Description" value={values.description ?? ""} onChange={set("description")} placeholder="(optional)" />
           <IdentityInput label="Tags" value={values.tags ?? ""} onChange={set("tags")} placeholder="comma, separated" />
@@ -501,7 +628,7 @@ function CreateMcpServerModal({ capabilityId, onClose, onCreated }: { capability
         {error ? <div style={{ marginTop: 12 }}><SmallError error={error} /></div> : null}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
           <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
-          <button type="button" className="btn-primary" onClick={() => void submit()} disabled={busy || invalid}>{busy ? "Registering…" : "Register MCP server"}</button>
+          <button type="button" className="btn-primary" onClick={() => void submit()} disabled={busy || invalid}>{busy ? "Saving…" : isEdit ? "Save changes" : "Register MCP server"}</button>
         </div>
       </div>
     </div>
