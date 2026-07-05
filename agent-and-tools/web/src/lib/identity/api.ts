@@ -13,7 +13,8 @@ export type IdentityView =
   | "permissions"
   | "sharing-grants"
   | "audit"
-  | "authz-check";
+  | "authz-check"
+  | "mcp-servers";
 
 export type PageResponse<T> = {
   items: T[];
@@ -105,6 +106,15 @@ export const CREATABLE_VIEWS: IdentityView[] = ["business-units", "teams", "user
 
 export function createIdentity(view: IdentityView, body: Record<string, unknown>): Promise<IdentityRow> {
   return identityRequest<IdentityRow>(pathFor(view), { method: "POST", body: JSON.stringify(body) });
+}
+
+// MCP servers are registered per capability (POST/GET /capabilities/{id}/mcp-servers).
+export function listMcpServers(capabilityId: string): Promise<PageResponse<IdentityRow> | IdentityRow[]> {
+  return identityRequest(`/capabilities/${encodeURIComponent(capabilityId)}/mcp-servers`);
+}
+
+export function createMcpServer(capabilityId: string, body: Record<string, unknown>): Promise<IdentityRow> {
+  return identityRequest<IdentityRow>(`/capabilities/${encodeURIComponent(capabilityId)}/mcp-servers`, { method: "POST", body: JSON.stringify(body) });
 }
 
 export function listCapabilityRelationships(capabilityId: string): Promise<CapabilityRelationshipRow[]> {

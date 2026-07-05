@@ -114,6 +114,7 @@ export const ROUTES: RouteMeta[] = [
   { id: "identity-roles", label: "Roles", href: "/identity/roles", group: "Identity and Access", icon: ShieldCheck, priority: "primary", surfaceType: "identity" },
   { id: "identity-permissions", label: "Permissions", href: "/identity/permissions", group: "Identity and Access", icon: ShieldCheck, priority: "secondary", surfaceType: "identity" },
   { id: "identity-capabilities", label: "Capabilities", href: "/identity/capabilities", group: "Identity and Access", icon: GitBranch, priority: "secondary", surfaceType: "identity" },
+  { id: "identity-mcp-servers", label: "MCP Servers", href: "/identity/mcp-servers", group: "Identity and Access", icon: Network, advanced: true, description: "Register the MCP tool servers available to each capability.", keywords: ["mcp", "server", "tool", "registry", "capability"] },
   { id: "identity-audit", label: "Identity Audit", href: "/identity/audit", group: "Identity and Access", icon: FileText, priority: "secondary", surfaceType: "identity" },
   { id: "identity-business-units", label: "Business Units", href: "/identity/business-units", group: "Identity and Access", icon: Layers, advanced: true },
   { id: "identity-capability-graph", label: "Capability Graph", href: "/identity/capability-graph", group: "Identity and Access", icon: Route, advanced: true },
