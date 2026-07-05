@@ -927,6 +927,12 @@ bounded `1..300`, for user/assistant message writes, and
 `CONTEXT_FABRIC_MEMORY_SUMMARY_TIMEOUT_SEC`, default `20`, bounded `1..300`, for
 the rolling-summary trigger.
 
+The folded/standalone Context Memory summarizer also bounds its MCP-backed LLM
+call with `CONTEXT_MEMORY_SUMMARIZER_MCP_TIMEOUT_SEC`, default `120`, bounded
+`1..3600`. The same value is sent as the MCP `limits.timeoutSec` and used for
+the HTTP transport deadline, so the summarizer cannot wait longer than the run
+budget it declares.
+
 Context Fabric's post-invoke MCP event backfill is also best-effort and uses
 `CONTEXT_FABRIC_MCP_EVENT_DRAIN_TIMEOUT_SEC`, default `15`, bounded `1..300`,
 before falling back to whatever the live WebSocket subscriber already captured.

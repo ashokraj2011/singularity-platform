@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Any
 import httpx
@@ -9,8 +10,11 @@ import httpx
 from context_fabric_shared.token_counter import count_text_tokens
 from context_fabric_shared import get_system_prompt
 from .config import settings
+from .env_config import bounded_float_value
 
 _logger = logging.getLogger(__name__)
+_DEFAULT_SUMMARIZER_MCP_TIMEOUT_SEC = 120.0
+_MAX_SUMMARIZER_MCP_TIMEOUT_SEC = 3600.0
 
 # M37.2 — Fallback values used only when prompt-composer is unreachable on
 # cold start. The seeded SystemPrompt content is identical, so behavior is
@@ -42,6 +46,20 @@ SUMMARY_SCHEMA_KEYS = [
     "next_best_actions",
     "durable_learning",
 ]
+
+
+def summarizer_mcp_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv(
+            "CONTEXT_MEMORY_SUMMARIZER_MCP_TIMEOUT_SEC",
+            str(_DEFAULT_SUMMARIZER_MCP_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_SUMMARIZER_MCP_TIMEOUT_SEC,
+        min_value=1.0,
+        max_value=_MAX_SUMMARIZER_MCP_TIMEOUT_SEC,
+        logger=_logger,
+        name="CONTEXT_MEMORY_SUMMARIZER_MCP_TIMEOUT_SEC",
+    )
 
 
 def fallback_summary(messages: list[dict]) -> dict[str, Any]:
@@ -135,6 +153,7 @@ async def summarize_with_llm(messages: list[dict], agent_id: str | None = None) 
     compact = "\n".join([f"{m['role']}: {m['content']}" for m in messages[-40:]])
     schema_keys_text = str(SUMMARY_SCHEMA_KEYS)
     system_msg, prompt = await _resolve_summarizer_prompts(schema_keys_text, compact)
+    timeout_sec = summarizer_mcp_timeout_sec()
     payload = {
         "systemPrompt": system_msg,
         "message": prompt,
@@ -149,7 +168,7 @@ async def summarize_with_llm(messages: list[dict], agent_id: str | None = None) 
         },
         "limits": {
             "maxSteps": 1,
-            "timeoutSec": 120,
+            "timeoutSec": timeout_sec,
             "compressToolResults": True,
             "includeLocalTools": False,
         },
@@ -161,7 +180,7 @@ async def summarize_with_llm(messages: list[dict], agent_id: str | None = None) 
         headers = {"content-type": "application/json"}
         if settings.mcp_bearer_token:
             headers["authorization"] = f"Bearer {settings.mcp_bearer_token}"
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=timeout_sec) as client:
             resp = await client.post(
                 settings.mcp_server_url.rstrip("/") + "/mcp/invoke",
                 json=payload,

@@ -1168,6 +1168,11 @@ has explicit deadlines: <code>CONTEXT_FABRIC_MEMORY_WRITE_TIMEOUT_SEC</code>, de
 bounded <code>1..300</code>, for user/assistant message writes, and
 <code>CONTEXT_FABRIC_MEMORY_SUMMARY_TIMEOUT_SEC</code>, default <code>20</code>, bounded <code>1..300</code>, for
 the rolling-summary trigger.</p>
+<p>The folded/standalone Context Memory summarizer also bounds its MCP-backed LLM
+call with <code>CONTEXT_MEMORY_SUMMARIZER_MCP_TIMEOUT_SEC</code>, default <code>120</code>, bounded
+<code>1..3600</code>. The same value is sent as the MCP <code>limits.timeoutSec</code> and used for
+the HTTP transport deadline, so the summarizer cannot wait longer than the run
+budget it declares.</p>
 <p>Context Fabric&#39;s post-invoke MCP event backfill is also best-effort and uses
 <code>CONTEXT_FABRIC_MCP_EVENT_DRAIN_TIMEOUT_SEC</code>, default <code>15</code>, bounded <code>1..300</code>,
 before falling back to whatever the live WebSocket subscriber already captured.</p>
