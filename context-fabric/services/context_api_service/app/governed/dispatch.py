@@ -111,6 +111,20 @@ class ToolDispatchResult:
     laptop_device_name: str | None = None
 
 
+def _duration_ms_from_response(value: Any, *, source: str, field: str) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        raise ToolDispatchError(f"{source} tool-run response had invalid {field}: {value!r}")
+    try:
+        duration_ms = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ToolDispatchError(f"{source} tool-run response had invalid {field}: {value!r}") from exc
+    if duration_ms < 0:
+        raise ToolDispatchError(f"{source} tool-run response had invalid {field}: {value!r}")
+    return duration_ms
+
+
 async def dispatch_tool(
     tool_name: str,
     args: dict[str, Any],
@@ -297,7 +311,7 @@ async def dispatch_tool(
 
     return ToolDispatchResult(
         result=data.get("result"),
-        duration_ms=int(data.get("durationMs", 0)),
+        duration_ms=_duration_ms_from_response(data.get("durationMs", 0), source="mcp-server", field="durationMs"),
         tool_invocation_id=str(data.get("toolInvocationId", "")),
         tool_success=bool(data.get("toolSuccess", False)),
         tool_error=data.get("toolError"),
@@ -402,7 +416,7 @@ async def _dispatch_via_laptop(
     # both flow into the same ToolDispatchResult shape.
     return ToolDispatchResult(
         result=body.get("result"),
-        duration_ms=int(body.get("duration_ms", 0)),
+        duration_ms=_duration_ms_from_response(body.get("duration_ms", 0), source="laptop", field="duration_ms"),
         tool_invocation_id=str(body.get("tool_invocation_id", "")),
         tool_success=bool(body.get("tool_success", False)),
         tool_error=body.get("tool_error"),
