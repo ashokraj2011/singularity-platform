@@ -1196,7 +1196,12 @@ The live MCP event WebSocket subscriber uses
 <code>CONTEXT_FABRIC_MCP_EVENT_STREAM_RECV_TIMEOUT_SEC</code>, default <code>0.5</code>, bounded
 <code>0.1..60</code>, for idle receive polls, and
 <code>CONTEXT_FABRIC_MCP_EVENT_STREAM_CLOSE_TIMEOUT_SEC</code>, default <code>2</code>, bounded
-<code>0.1..60</code>, for graceful WebSocket close.</p>
+<code>0.1..60</code>, for graceful WebSocket close.
+The <code>/execute</code> and <code>/execute/resume</code> caller-side subscriber cleanup waits use
+<code>CONTEXT_FABRIC_EVENT_SUBSCRIBER_STOP_TIMEOUT_SEC</code>, default <code>1</code>, bounded
+<code>0.1..60</code>; <code>CONTEXT_FABRIC_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC</code>, default <code>0.5</code>,
+bounded <code>0..60</code>; and <code>CONTEXT_FABRIC_EVENT_SUBSCRIBER_DRAIN_TIMEOUT_SEC</code>,
+default <code>2</code>, bounded <code>0.1..60</code>.</p>
 <p>Context Fabric&#39;s Runtime Bridge direct HTTP debug fallback to MCP is explicit-only
 (<code>RUNTIME_HTTP_FALLBACK_ENABLED=true</code>) and bounds finish-branch/worktree write
 calls with <code>CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC</code>, default <code>180</code>,

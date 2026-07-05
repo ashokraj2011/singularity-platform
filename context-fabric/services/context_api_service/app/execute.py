@@ -96,9 +96,13 @@ _DEFAULT_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC = 10.0
 _DEFAULT_TOOL_DISCOVERY_TIMEOUT_SEC = 10.0
 _DEFAULT_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC = 60.0
 _DEFAULT_MEMORY_HISTORY_TIMEOUT_SEC = 10.0
+_DEFAULT_EVENT_SUBSCRIBER_STOP_TIMEOUT_SEC = 1.0
+_DEFAULT_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC = 0.5
+_DEFAULT_EVENT_SUBSCRIBER_DRAIN_TIMEOUT_SEC = 2.0
 _MIN_MCP_INVOKE_TIMEOUT_SEC = 1.0
 _MAX_MCP_INVOKE_TIMEOUT_SEC = 2.0 * 60.0 * 60.0
 _MAX_SERVICE_BOUNDARY_TIMEOUT_SEC = 300.0
+_MAX_EVENT_SUBSCRIBER_WAIT_SEC = 60.0
 _MAX_DEEP_REASONING_BUDGET_TOKENS = 32_768
 
 
@@ -175,6 +179,45 @@ def _memory_history_timeout_sec() -> float:
         ),
         default=_DEFAULT_MEMORY_HISTORY_TIMEOUT_SEC,
         name="CONTEXT_FABRIC_MEMORY_HISTORY_TIMEOUT_SEC",
+    )
+
+
+def _event_subscriber_stop_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv(
+            "CONTEXT_FABRIC_EVENT_SUBSCRIBER_STOP_TIMEOUT_SEC",
+            str(_DEFAULT_EVENT_SUBSCRIBER_STOP_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_EVENT_SUBSCRIBER_STOP_TIMEOUT_SEC,
+        min_value=0.1,
+        max_value=_MAX_EVENT_SUBSCRIBER_WAIT_SEC,
+        name="CONTEXT_FABRIC_EVENT_SUBSCRIBER_STOP_TIMEOUT_SEC",
+    )
+
+
+def _event_subscriber_trailing_grace_sec() -> float:
+    return bounded_float_value(
+        os.getenv(
+            "CONTEXT_FABRIC_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC",
+            str(_DEFAULT_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC),
+        ),
+        default=_DEFAULT_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC,
+        min_value=0.0,
+        max_value=_MAX_EVENT_SUBSCRIBER_WAIT_SEC,
+        name="CONTEXT_FABRIC_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC",
+    )
+
+
+def _event_subscriber_drain_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv(
+            "CONTEXT_FABRIC_EVENT_SUBSCRIBER_DRAIN_TIMEOUT_SEC",
+            str(_DEFAULT_EVENT_SUBSCRIBER_DRAIN_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_EVENT_SUBSCRIBER_DRAIN_TIMEOUT_SEC,
+        min_value=0.1,
+        max_value=_MAX_EVENT_SUBSCRIBER_WAIT_SEC,
+        name="CONTEXT_FABRIC_EVENT_SUBSCRIBER_DRAIN_TIMEOUT_SEC",
     )
 
 
@@ -1081,14 +1124,14 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
         # error up to the caller (don't masquerade as a 502 below).
         stop_subscriber.set()
         try:
-            await asyncio.wait_for(subscriber_task, timeout=1.0)
+            await asyncio.wait_for(subscriber_task, timeout=_event_subscriber_stop_timeout_sec())
         except Exception:
             pass
         raise
     except httpx.HTTPStatusError as exc:
         stop_subscriber.set()
         try:
-            await asyncio.wait_for(subscriber_task, timeout=1.0)
+            await asyncio.wait_for(subscriber_task, timeout=_event_subscriber_stop_timeout_sec())
         except Exception:
             pass
         try:
@@ -1119,7 +1162,7 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
         # Stop the subscriber and discard its result; failure path goes to drain.
         stop_subscriber.set()
         try:
-            await asyncio.wait_for(subscriber_task, timeout=1.0)
+            await asyncio.wait_for(subscriber_task, timeout=_event_subscriber_stop_timeout_sec())
         except Exception:
             pass
         err_msg = str(exc) if str(exc).strip() else f"Internal error: {type(exc).__name__}"
@@ -1130,11 +1173,11 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
     # Give the subscriber up to 500ms to drain trailing events that may
     # arrive AFTER /mcp/invoke returns (the run.event marker often lands
     # microseconds after the HTTP response goes out).
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(_event_subscriber_trailing_grace_sec())
     stop_subscriber.set()
     live_persisted = 0
     try:
-        live_persisted = await asyncio.wait_for(subscriber_task, timeout=2.0)
+        live_persisted = await asyncio.wait_for(subscriber_task, timeout=_event_subscriber_drain_timeout_sec())
     except Exception:
         pass
 
@@ -1703,18 +1746,18 @@ async def execute_resume(req: ResumeRequest, x_service_token: Optional[str] = He
         if subscriber_task:
             stop_subscriber.set()
             try:
-                await asyncio.wait_for(subscriber_task, timeout=1.0)
+                await asyncio.wait_for(subscriber_task, timeout=_event_subscriber_stop_timeout_sec())
             except Exception:
                 pass
         raise HTTPException(status_code=502, detail=f"MCP resume failed: {exc!s}")
 
     # Grace + drain.
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(_event_subscriber_trailing_grace_sec())
     live_persisted = 0
     if subscriber_task:
         stop_subscriber.set()
         try:
-            live_persisted = await asyncio.wait_for(subscriber_task, timeout=2.0)
+            live_persisted = await asyncio.wait_for(subscriber_task, timeout=_event_subscriber_drain_timeout_sec())
         except Exception:
             pass
     drained = 0

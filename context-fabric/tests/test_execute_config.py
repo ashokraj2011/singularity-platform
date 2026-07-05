@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from context_api_service.app import execute
 
 
@@ -115,6 +117,84 @@ def test_memory_history_timeout_env_is_bounded(monkeypatch):
 
     monkeypatch.setenv("CONTEXT_FABRIC_MEMORY_HISTORY_TIMEOUT_SEC", "999999")
     assert execute._memory_history_timeout_sec() == 300.0
+
+
+def test_event_subscriber_stop_timeout_env_is_bounded(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_STOP_TIMEOUT_SEC", raising=False)
+    assert execute._event_subscriber_stop_timeout_sec() == 1.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_STOP_TIMEOUT_SEC", "bad")
+    assert execute._event_subscriber_stop_timeout_sec() == 1.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_STOP_TIMEOUT_SEC", "nan")
+    assert execute._event_subscriber_stop_timeout_sec() == 1.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_STOP_TIMEOUT_SEC", "0")
+    assert execute._event_subscriber_stop_timeout_sec() == 1.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_STOP_TIMEOUT_SEC", "12.5")
+    assert execute._event_subscriber_stop_timeout_sec() == 12.5
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_STOP_TIMEOUT_SEC", "999999")
+    assert execute._event_subscriber_stop_timeout_sec() == 60.0
+
+
+def test_event_subscriber_trailing_grace_env_is_bounded(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC", raising=False)
+    assert execute._event_subscriber_trailing_grace_sec() == 0.5
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC", "bad")
+    assert execute._event_subscriber_trailing_grace_sec() == 0.5
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC", "nan")
+    assert execute._event_subscriber_trailing_grace_sec() == 0.5
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC", "-1")
+    assert execute._event_subscriber_trailing_grace_sec() == 0.5
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC", "0")
+    assert execute._event_subscriber_trailing_grace_sec() == 0.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC", "12.5")
+    assert execute._event_subscriber_trailing_grace_sec() == 12.5
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC", "999999")
+    assert execute._event_subscriber_trailing_grace_sec() == 60.0
+
+
+def test_event_subscriber_drain_timeout_env_is_bounded(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_DRAIN_TIMEOUT_SEC", raising=False)
+    assert execute._event_subscriber_drain_timeout_sec() == 2.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_DRAIN_TIMEOUT_SEC", "bad")
+    assert execute._event_subscriber_drain_timeout_sec() == 2.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_DRAIN_TIMEOUT_SEC", "nan")
+    assert execute._event_subscriber_drain_timeout_sec() == 2.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_DRAIN_TIMEOUT_SEC", "0")
+    assert execute._event_subscriber_drain_timeout_sec() == 2.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_DRAIN_TIMEOUT_SEC", "12.5")
+    assert execute._event_subscriber_drain_timeout_sec() == 12.5
+
+    monkeypatch.setenv("CONTEXT_FABRIC_EVENT_SUBSCRIBER_DRAIN_TIMEOUT_SEC", "999999")
+    assert execute._event_subscriber_drain_timeout_sec() == 60.0
+
+
+def test_execute_event_subscriber_waits_use_bounded_helpers():
+    source = Path(__file__).resolve().parents[1] / "services/context_api_service/app/execute.py"
+    text = source.read_text()
+
+    assert "CONTEXT_FABRIC_EVENT_SUBSCRIBER_STOP_TIMEOUT_SEC" in text
+    assert "CONTEXT_FABRIC_EVENT_SUBSCRIBER_TRAILING_GRACE_SEC" in text
+    assert "CONTEXT_FABRIC_EVENT_SUBSCRIBER_DRAIN_TIMEOUT_SEC" in text
+    assert "asyncio.wait_for(subscriber_task, timeout=_event_subscriber_stop_timeout_sec())" in text
+    assert "asyncio.sleep(_event_subscriber_trailing_grace_sec())" in text
+    assert "asyncio.wait_for(subscriber_task, timeout=_event_subscriber_drain_timeout_sec())" in text
+    assert "asyncio.wait_for(subscriber_task, timeout=1.0)" not in text
+    assert "asyncio.wait_for(subscriber_task, timeout=2.0)" not in text
+    assert "asyncio.sleep(0.5)" not in text
 
 
 def test_deep_reasoning_budget_env_is_bounded(monkeypatch):
