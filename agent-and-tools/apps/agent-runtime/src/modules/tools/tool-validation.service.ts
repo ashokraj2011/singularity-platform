@@ -49,7 +49,12 @@ export const toolValidationService = {
     if (!scopeResolution.allowed) return deny(scopeResolution.reason, contract.riskLevel);
 
     const grants = await prisma.toolGrant.findMany({
-      where: { toolId: tool.id, status: "ACTIVE", OR: scopeResolution.filters as never },
+      where: {
+        toolId: tool.id,
+        status: "ACTIVE",
+        toolPolicy: { status: "ACTIVE" },
+        OR: scopeResolution.filters as never,
+      },
     });
 
     // 5. Filter by workflow phase + environment (null on grant means "any")

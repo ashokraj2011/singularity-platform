@@ -30,6 +30,8 @@ from app.git.schemas import (
     IssueCredentialRequest,
     IssueCredentialResponse,
     RepositoryGrantOut,
+    UpdateConnectionRequest,
+    UpdateRepositoryGrantRequest,
 )
 from app.models import (
     GitCredentialIssuance,
@@ -81,6 +83,15 @@ def _grant_out(g: GitRepositoryGrant) -> RepositoryGrantOut:
         id=g.id, tenantId=g.tenant_id, subjectType=g.subject_type, subjectId=g.subject_id,
         repo=g.repo, operations=list(g.operations or []), status=g.status,
     )
+
+
+def _clean_status(value: Optional[str], allowed: set[str], label: str) -> Optional[str]:
+    if value is None:
+        return None
+    status = value.strip().lower()
+    if status not in allowed:
+        raise HTTPException(status_code=400, detail=f"{label} status must be one of {', '.join(sorted(allowed))}")
+    return status
 
 
 # ── Internal: issue a short-lived git credential ───────────────────────────
@@ -217,6 +228,69 @@ async def list_connections(
     return [_conn_out(c) for c in rows.scalars().all()]
 
 
+@router.patch("/git/connections/{connection_id}", response_model=ConnectionOut)
+async def update_connection(
+    connection_id: str,
+    body: UpdateConnectionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(require_super_admin),
+) -> ConnectionOut:
+    row = await db.get(GitProviderConnection, connection_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="git connection not found")
+
+    changes: dict[str, object] = {}
+    if body.appId is not None:
+        row.app_id = body.appId
+        changes["app_id"] = body.appId
+    if body.installationId is not None:
+        row.installation_id = body.installationId
+        changes["installation_id"] = body.installationId
+    if body.accountLogin is not None:
+        row.account_login = body.accountLogin or None
+        changes["account_login"] = row.account_login
+    if body.provider is not None:
+        row.provider = body.provider
+        changes["provider"] = body.provider
+    if body.privateKey is not None:
+        github_app.assert_plaintext_storage_allowed()
+        row.private_key = body.privateKey
+        changes["private_key_rotated"] = True
+    status = _clean_status(body.status, {"active", "suspended", "revoked"}, "connection")
+    if status is not None:
+        row.status = status
+        changes["status"] = status
+
+    await record_event(
+        db, event_type="git_connection_updated", actor_user_id=current_user.id,
+        target_type="git_connection", target_id=row.id,
+        payload={"tenant_id": row.tenant_id, "changes": changes},
+    )
+    await db.commit()
+    await db.refresh(row)
+    return _conn_out(row)
+
+
+@router.delete("/git/connections/{connection_id}", response_model=ConnectionOut)
+async def delete_connection(
+    connection_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(require_super_admin),
+) -> ConnectionOut:
+    row = await db.get(GitProviderConnection, connection_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="git connection not found")
+    out = _conn_out(row)
+    await record_event(
+        db, event_type="git_connection_deleted", actor_user_id=current_user.id,
+        target_type="git_connection", target_id=row.id,
+        payload={"tenant_id": row.tenant_id, "app_id": row.app_id, "account_login": row.account_login},
+    )
+    await db.delete(row)
+    await db.commit()
+    return out
+
+
 # ── Admin: repository grants ───────────────────────────────────────────────
 @router.post("/git/repository-grants", response_model=RepositoryGrantOut, status_code=201)
 async def create_repository_grant(
@@ -257,3 +331,56 @@ async def list_repository_grants(
         q = q.where(GitRepositoryGrant.tenant_id == tenantId)
     rows = await db.execute(q)
     return [_grant_out(g) for g in rows.scalars().all()]
+
+
+@router.patch("/git/repository-grants/{grant_id}", response_model=RepositoryGrantOut)
+async def update_repository_grant(
+    grant_id: str,
+    body: UpdateRepositoryGrantRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(require_super_admin),
+) -> RepositoryGrantOut:
+    row = await db.get(GitRepositoryGrant, grant_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="repository grant not found")
+
+    changes: dict[str, object] = {}
+    if body.operations is not None:
+        operations = sorted({str(op).strip().lower() for op in body.operations if str(op).strip()})
+        if not operations:
+            raise HTTPException(status_code=400, detail="operations cannot be empty")
+        row.operations = operations
+        changes["operations"] = operations
+    status = _clean_status(body.status, {"active", "suspended", "revoked"}, "repository grant")
+    if status is not None:
+        row.status = status
+        changes["status"] = status
+
+    await record_event(
+        db, event_type="git_repository_grant_updated", actor_user_id=current_user.id,
+        target_type="git_repository_grant", target_id=row.id,
+        payload={"tenant_id": row.tenant_id, "repo": row.repo, "changes": changes},
+    )
+    await db.commit()
+    await db.refresh(row)
+    return _grant_out(row)
+
+
+@router.delete("/git/repository-grants/{grant_id}", response_model=RepositoryGrantOut)
+async def delete_repository_grant(
+    grant_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(require_super_admin),
+) -> RepositoryGrantOut:
+    row = await db.get(GitRepositoryGrant, grant_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="repository grant not found")
+    out = _grant_out(row)
+    await record_event(
+        db, event_type="git_repository_grant_deleted", actor_user_id=current_user.id,
+        target_type="git_repository_grant", target_id=row.id,
+        payload={"tenant_id": row.tenant_id, "repo": row.repo, "subject": f"{row.subject_type}:{row.subject_id}"},
+    )
+    await db.delete(row)
+    await db.commit()
+    return out

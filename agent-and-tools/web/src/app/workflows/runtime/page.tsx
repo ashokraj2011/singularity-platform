@@ -1,5 +1,5 @@
-import { LegacyInboxRoute } from "@/components/workflows/LegacyWorkgraphAdminRoute";
+import { redirect } from "next/navigation";
 
 export default function WorkflowRuntimePage() {
-  return <LegacyInboxRoute />;
+  redirect("/runs");
 }

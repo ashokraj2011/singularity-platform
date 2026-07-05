@@ -178,9 +178,8 @@ export async function GET(request: NextRequest) {
       ["agents-ui", "Agents", "/agents", "Agent Studio, capabilities, tools, prompt profiles, and runtime receipts.", 34, 34],
       ["workflows-ui", "Workflows", "/workflows", "Workflow authoring, planner, runs, inbox, artifacts, and live runtime views.", 50, 34],
       ["workbench-ui", "Workbench", "/workbench", "Workbench Neo cockpit, governance, theater, and implementation artifacts.", 66, 34],
-      ["foundry-ui", "Foundry", "/foundry", "SDLC generation cockpit, repositories, gaps, change plans, and verification.", 82, 34],
-      ["identity-ui", "Identity", "/identity", "IAM users, teams, roles, permissions, variables, and audits.", 18, 48],
-      ["llm-settings-ui", "LLM Routing", "/llm-settings", "Dial-in status for Context Fabric, MCP runtime, and LLM Gateway.", 34, 48],
+      ["identity-ui", "Identity", "/identity", "IAM users, teams, roles, permissions, variables, and audits.", 82, 34],
+      ["llm-settings-ui", "LLM Routing", "/llm-settings", "Dial-in status for Context Fabric, MCP runtime, and LLM Gateway.", 18, 48],
     ].map(([id, label, route, description, x, y]) => staticNode({
       id: String(id),
       label: String(label),

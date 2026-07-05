@@ -29,6 +29,10 @@ for (const [method, action] of [
   ["createContract", "Creating a tool contract"],
   ["createPolicy", "Creating a tool policy"],
   ["createGrant", "Creating a tool grant"],
+  ["updatePolicy", "Updating a tool policy"],
+  ["deletePolicy", "Archiving a tool policy"],
+  ["updateGrant", "Updating a tool grant"],
+  ["deleteGrant", "Archiving a tool grant"],
 ] as const) {
   assert.match(
     service,
@@ -59,6 +63,30 @@ assert.match(
   controller,
   /toolService\.createGrant\(req\.body, req\.user\)/,
   "tool grant creation should pass the authenticated actor to the service guard",
+);
+
+assert.match(
+  controller,
+  /toolService\.updatePolicy\(req\.params\.id, req\.body, req\.user\)/,
+  "tool policy updates should pass the authenticated actor to the service guard",
+);
+
+assert.match(
+  controller,
+  /toolService\.deletePolicy\(req\.params\.id, req\.user\)/,
+  "tool policy archival should pass the authenticated actor to the service guard",
+);
+
+assert.match(
+  controller,
+  /toolService\.updateGrant\(req\.params\.id, req\.body, req\.user\)/,
+  "tool grant updates should pass the authenticated actor to the service guard",
+);
+
+assert.match(
+  controller,
+  /toolService\.deleteGrant\(req\.params\.id, req\.user\)/,
+  "tool grant archival should pass the authenticated actor to the service guard",
 );
 
 assert.match(

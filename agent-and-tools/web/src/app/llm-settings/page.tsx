@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, Cpu, RadioTower, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Cpu, Pencil, RadioTower, RefreshCw, ShieldCheck, WandSparkles, XCircle } from "lucide-react";
 import { apiPath, assertValidApiResponse, authHeaders, readResponseBody, responseMessage } from "@/lib/api";
 import { asBoolean, asRow, asRowArray, asString, asStringArray } from "@/lib/row";
 import { CopyButton } from "@/components/ui/CopyButton";
@@ -64,6 +64,9 @@ type ModelRow = {
   supportsTools?: boolean;
   costTier?: string;
   description?: string;
+  maxOutputTokens?: number;
+  inputPricePerMtok?: number;
+  outputPricePerMtok?: number;
   warnings?: string[];
 };
 
@@ -192,6 +195,9 @@ function normalizeModelRow(value: unknown): ModelRow | null {
     supportsTools: asBoolean(row.supportsTools ?? row.supports_tools),
     costTier: asString(row.costTier ?? row.cost_tier) || undefined,
     description: asString(row.description) || undefined,
+    maxOutputTokens: typeof row.maxOutputTokens === "number" ? row.maxOutputTokens : (typeof row.max_output_tokens === "number" ? row.max_output_tokens : undefined),
+    inputPricePerMtok: typeof row.inputPricePerMtok === "number" ? row.inputPricePerMtok : (typeof row.input_price_per_mtok === "number" ? row.input_price_per_mtok : undefined),
+    outputPricePerMtok: typeof row.outputPricePerMtok === "number" ? row.outputPricePerMtok : (typeof row.output_price_per_mtok === "number" ? row.output_price_per_mtok : undefined),
     warnings: asStringArray(row.warnings, 20, 240),
   };
 }
@@ -316,6 +322,7 @@ export default function LlmSettingsPage() {
   // ── Add / remove models (writes persist to .singularity/llm-models.json) ──
   const blankForm = { id: "", provider: "anthropic", model: "", label: "", maxOutputTokens: "", costTier: "medium", supportsTools: true, isDefault: false, description: "", inputPricePerMtok: "", outputPricePerMtok: "" };
   const [adding, setAdding] = useState(false);
+  const [editingModelId, setEditingModelId] = useState<string | null>(null);
   const [form, setForm] = useState({ ...blankForm });
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -338,8 +345,9 @@ export default function LlmSettingsPage() {
         inputPricePerMtok: num(form.inputPricePerMtok),
         outputPricePerMtok: num(form.outputPricePerMtok),
       };
-      const res = await fetch(apiPath("/api/llm-settings/models"), {
-        method: "POST",
+      const path = editingModelId ? `/api/llm-settings/models?id=${encodeURIComponent(editingModelId)}` : "/api/llm-settings/models";
+      const res = await fetch(apiPath(path), {
+        method: editingModelId ? "PUT" : "POST",
         headers: { "content-type": "application/json", ...authHeaders() },
         body: JSON.stringify(payload),
       });
@@ -348,12 +356,33 @@ export default function LlmSettingsPage() {
       assertValidApiResponse("/api/llm-settings/models", raw, parseError);
       setForm({ ...blankForm, provider: form.provider });
       setAdding(false);
+      setEditingModelId(null);
       await load();
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Failed to add model");
+      setSaveError(err instanceof Error ? err.message : editingModelId ? "Failed to update model" : "Failed to add model");
     } finally {
       setSaveBusy(false);
     }
+  }
+
+  function editModel(model: ModelRow) {
+    if (!model.id) return;
+    setSaveError(null);
+    setEditingModelId(model.id);
+    setAdding(true);
+    setForm({
+      id: model.id,
+      provider: model.provider ?? "anthropic",
+      model: model.model ?? "",
+      label: model.label ?? "",
+      maxOutputTokens: model.maxOutputTokens ? String(model.maxOutputTokens) : "",
+      costTier: model.costTier ?? "medium",
+      supportsTools: model.supportsTools ?? false,
+      isDefault: Boolean(model.default),
+      description: model.description ?? "",
+      inputPricePerMtok: model.inputPricePerMtok !== undefined ? String(model.inputPricePerMtok) : "",
+      outputPricePerMtok: model.outputPricePerMtok !== undefined ? String(model.outputPricePerMtok) : "",
+    });
   }
 
   async function deleteModel(id: string) {
@@ -702,13 +731,13 @@ export default function LlmSettingsPage() {
         </div>
         <div className="mb-4 flex items-center justify-between gap-3">
           <span className="text-xs text-slate-500">New models persist to <code className="font-mono">.singularity/llm-models.json</code> and reload live.</span>
-          <button className="btn-secondary" onClick={() => { setSaveError(null); setAdding(a => !a); }}>{adding ? "Cancel" : "+ Add model"}</button>
+          <button className="btn-secondary" onClick={() => { setSaveError(null); setAdding(a => !a); setEditingModelId(null); setForm({ ...blankForm }); }}>{adding ? "Cancel" : "+ Add model"}</button>
         </div>
         {adding && (
           <div className="mb-4 rounded border border-slate-200 bg-slate-50 p-4">
             <div className="grid md:grid-cols-3 gap-3 text-sm">
               <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Alias (id) *</span>
-                <input className="border rounded px-2 py-1 font-mono" value={form.id} onChange={e => setForm(f => ({ ...f, id: e.target.value }))} placeholder="claude-sonnet-4-6" /></label>
+                <input className="border rounded px-2 py-1 font-mono disabled:bg-slate-100" disabled={Boolean(editingModelId)} value={form.id} onChange={e => setForm(f => ({ ...f, id: e.target.value }))} placeholder="claude-sonnet-4-6" /></label>
               <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Provider *</span>
                 <select className="border rounded px-2 py-1" value={form.provider} onChange={e => setForm(f => ({ ...f, provider: e.target.value }))}>
                   {(providers.length ? providers.map(p => p.name) : ["anthropic", "openai", "openrouter", "copilot", "mock"]).map(n => <option key={n} value={n}>{n}</option>)}
@@ -733,7 +762,7 @@ export default function LlmSettingsPage() {
             <div className="mt-3 flex items-center gap-4">
               <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.supportsTools} onChange={e => setForm(f => ({ ...f, supportsTools: e.target.checked }))} /> Supports tools</label>
               <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isDefault} onChange={e => setForm(f => ({ ...f, isDefault: e.target.checked }))} /> Set as default</label>
-              <button className="btn-primary ml-auto" disabled={saveBusy || !form.id.trim() || !form.model.trim()} onClick={() => void submitModel()}>{saveBusy ? "Saving…" : "Add model"}</button>
+              <button className="btn-primary ml-auto" disabled={saveBusy || !form.id.trim() || !form.model.trim()} onClick={() => void submitModel()}>{saveBusy ? "Saving…" : editingModelId ? "Save model" : "Add model"}</button>
             </div>
           </div>
         )}
@@ -765,7 +794,14 @@ export default function LlmSettingsPage() {
                   <td className="px-4 py-2">{model.supportsTools ? "Yes" : "No"}</td>
                   <td className="px-4 py-2">{model.costTier ?? "-"}</td>
                   <td className="px-4 py-2 text-xs text-slate-500">{(model.warnings ?? []).join("; ") || "-"}</td>
-                  <td className="px-4 py-2">{model.id && <button className="text-xs text-red-600 hover:underline" onClick={() => void deleteModel(model.id!)}>Remove</button>}</td>
+                  <td className="px-4 py-2">
+                    {model.id && (
+                      <div className="flex flex-wrap gap-2">
+                        <button className="text-xs text-emerald-700 hover:underline inline-flex items-center gap-1" onClick={() => editModel(model)}><Pencil size={12} /> Edit</button>
+                        <button className="text-xs text-red-600 hover:underline" onClick={() => void deleteModel(model.id!)}>Remove</button>
+                      </div>
+                    )}
+                  </td>
                 </tr>
               ))}
               {models.length === 0 && (

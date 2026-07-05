@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import useSWR from "swr";
-import { ShieldCheck, Plus } from "lucide-react";
+import { Archive, Pencil, ShieldCheck, Plus } from "lucide-react";
 import { runtimeApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 
@@ -29,11 +29,14 @@ export default function ToolGrantsPage() {
   const { data: grants, mutate: mutateGrants } = useSWR("runtime-grants", () => runtimeApi.listGrants());
 
   const [policyForm, setPolicyForm] = useState({ name: "", description: "", scopeType: "AGENT_BINDING", scopeId: "" });
+  const [editingPolicyId, setEditingPolicyId] = useState<string | null>(null);
   const [grantForm, setGrantForm] = useState({
     toolPolicyId: "", toolId: "",
     grantScopeType: "AGENT_BINDING", grantScopeId: "",
     workflowPhase: "", environment: "DEV",
   });
+  const [editingGrantId, setEditingGrantId] = useState<string | null>(null);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
   const [validateForm, setValidateForm] = useState({
     agentBindingId: "", capabilityId: "", toolName: "repo.search",
@@ -46,19 +49,103 @@ export default function ToolGrantsPage() {
 
   async function createPolicy() {
     if (!policyForm.name) return;
-    await runtimeApi.createPolicy({ ...policyForm, scopeId: policyForm.scopeId || undefined } as never);
+    if (editingPolicyId) {
+      await runtimeApi.updatePolicy(editingPolicyId, { ...policyForm, scopeId: policyForm.scopeId || undefined } as never);
+    } else {
+      await runtimeApi.createPolicy({ ...policyForm, scopeId: policyForm.scopeId || undefined } as never);
+    }
     setPolicyForm({ name: "", description: "", scopeType: "AGENT_BINDING", scopeId: "" });
+    setEditingPolicyId(null);
     await mutatePolicies();
   }
   async function createGrant() {
     if (!grantForm.toolPolicyId || !grantForm.toolId || !grantForm.grantScopeId) return;
-    await runtimeApi.createGrant({
-      ...grantForm,
-      workflowPhase: grantForm.workflowPhase || undefined,
-      environment: grantForm.environment || undefined,
-    } as never);
-    setGrantForm(g => ({ ...g, grantScopeId: "" }));
+    if (editingGrantId) {
+      await runtimeApi.updateGrant(editingGrantId, {
+        workflowPhase: grantForm.workflowPhase || null,
+        environment: grantForm.environment || null,
+      } as never);
+      setEditingGrantId(null);
+      setGrantForm({
+        toolPolicyId: "", toolId: "",
+        grantScopeType: "AGENT_BINDING", grantScopeId: "",
+        workflowPhase: "", environment: "DEV",
+      });
+    } else {
+      await runtimeApi.createGrant({
+        ...grantForm,
+        workflowPhase: grantForm.workflowPhase || undefined,
+        environment: grantForm.environment || undefined,
+      } as never);
+      setGrantForm(g => ({ ...g, grantScopeId: "" }));
+    }
     await mutateGrants();
+  }
+
+  function editPolicy(policy: Record<string, unknown>) {
+    setEditingPolicyId(String(policy.id ?? ""));
+    setPolicyForm({
+      name: String(policy.name ?? ""),
+      description: String(policy.description ?? ""),
+      scopeType: String(policy.scopeType ?? "AGENT_BINDING"),
+      scopeId: String(policy.scopeId ?? ""),
+    });
+  }
+
+  function editGrant(grant: Record<string, unknown>) {
+    setEditingGrantId(String(grant.id ?? ""));
+    setGrantForm({
+      toolPolicyId: String(grant.toolPolicyId ?? ""),
+      toolId: String(grant.toolId ?? ""),
+      grantScopeType: String(grant.grantScopeType ?? "AGENT_BINDING"),
+      grantScopeId: String(grant.grantScopeId ?? ""),
+      workflowPhase: String(grant.workflowPhase ?? ""),
+      environment: String(grant.environment ?? ""),
+    });
+  }
+
+  async function policyStatus(id: string, status: "ACTIVE" | "INACTIVE") {
+    setActionBusyId(id);
+    try {
+      await runtimeApi.updatePolicy(id, { status } as never);
+      await mutatePolicies();
+      await mutateGrants();
+    } finally {
+      setActionBusyId(null);
+    }
+  }
+
+  async function archivePolicy(id: string) {
+    if (!window.confirm("Archive this tool policy and its active grants?")) return;
+    setActionBusyId(id);
+    try {
+      await runtimeApi.deletePolicy(id);
+      await mutatePolicies();
+      await mutateGrants();
+    } finally {
+      setActionBusyId(null);
+    }
+  }
+
+  async function grantStatus(id: string, status: "ACTIVE" | "INACTIVE") {
+    setActionBusyId(id);
+    try {
+      await runtimeApi.updateGrant(id, { status } as never);
+      await mutateGrants();
+    } finally {
+      setActionBusyId(null);
+    }
+  }
+
+  async function archiveGrant(id: string) {
+    if (!window.confirm("Archive this tool grant? It will no longer authorize tool calls.")) return;
+    setActionBusyId(id);
+    try {
+      await runtimeApi.deleteGrant(id);
+      await mutateGrants();
+    } finally {
+      setActionBusyId(null);
+    }
   }
   async function validateCall() {
     setValidateBusy(true);
@@ -95,25 +182,37 @@ export default function ToolGrantsPage() {
       </div>
 
       <h2 className="font-semibold text-slate-800 mb-3">1. Tool Policies</h2>
-      <div className="card p-4 mb-4 grid grid-cols-5 gap-2 items-end">
+      <div className="card p-4 mb-4 grid grid-cols-6 gap-2 items-end">
         <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm col-span-2"
           placeholder="policy name" value={policyForm.name} onChange={e => setPolicyForm(f => ({ ...f, name: e.target.value }))} />
+        <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
+          placeholder="description" value={policyForm.description} onChange={e => setPolicyForm(f => ({ ...f, description: e.target.value }))} />
         <select className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
           value={policyForm.scopeType} onChange={e => setPolicyForm(f => ({ ...f, scopeType: e.target.value }))}>
           {SCOPE_TYPES.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
           placeholder="scope id" value={policyForm.scopeId} onChange={e => setPolicyForm(f => ({ ...f, scopeId: e.target.value }))} />
-        <button className="btn-primary" onClick={createPolicy}><Plus size={14} /> Create policy</button>
+        <button className="btn-primary" onClick={createPolicy}>{editingPolicyId ? <Pencil size={14} /> : <Plus size={14} />} {editingPolicyId ? "Save policy" : "Create policy"}</button>
+        {editingPolicyId && <button className="btn-secondary" onClick={() => { setEditingPolicyId(null); setPolicyForm({ name: "", description: "", scopeType: "AGENT_BINDING", scopeId: "" }); }}>Cancel edit</button>}
       </div>
       <div className="space-y-2 mb-8">
         {policyList.map(p => (
-          <div key={p.id as string} className="card p-3 text-sm flex items-center gap-3">
+          <div key={p.id as string} className="card p-3 text-sm flex items-center gap-3 flex-wrap">
             <ShieldCheck size={16} className="text-purple-600" />
             <span className="font-medium">{p.name as string}</span>
             <StatusBadge value={p.status as string} />
             <span className="text-xs text-slate-500">{p.scopeType as string}</span>
             <span className="font-mono text-xs text-slate-400">{p.id as string}</span>
+            <span className="ml-auto flex flex-wrap gap-2">
+              <button className="btn-secondary text-xs" disabled={actionBusyId === p.id} onClick={() => editPolicy(p)}><Pencil size={12} /> Edit</button>
+              {p.status === "ACTIVE" ? (
+                <button className="btn-secondary text-xs" disabled={actionBusyId === p.id} onClick={() => void policyStatus(p.id as string, "INACTIVE")}>Suspend</button>
+              ) : (
+                <button className="btn-secondary text-xs" disabled={actionBusyId === p.id} onClick={() => void policyStatus(p.id as string, "ACTIVE")}>Activate</button>
+              )}
+              <button className="btn-secondary text-xs text-red-600" disabled={actionBusyId === p.id} onClick={() => void archivePolicy(p.id as string)}><Archive size={12} /> Archive</button>
+            </span>
           </div>
         ))}
       </div>
@@ -121,22 +220,27 @@ export default function ToolGrantsPage() {
       <h2 className="font-semibold text-slate-800 mb-3">2. Grants</h2>
       <div className="card p-4 mb-4 grid grid-cols-7 gap-2 items-end">
         <select className="px-3 py-2 border border-slate-200 rounded-lg text-sm col-span-2"
+          disabled={Boolean(editingGrantId)}
           value={grantForm.toolPolicyId} onChange={e => setGrantForm(g => ({ ...g, toolPolicyId: e.target.value }))}>
           <option value="">policy…</option>
           {policyList.map(p => <option key={p.id as string} value={p.id as string}>{p.name as string}</option>)}
         </select>
         <select className="px-3 py-2 border border-slate-200 rounded-lg text-sm col-span-2"
+          disabled={Boolean(editingGrantId)}
           value={grantForm.toolId} onChange={e => setGrantForm(g => ({ ...g, toolId: e.target.value }))}>
           <option value="">tool…</option>
           {toolList.map(t => <option key={t.id as string} value={t.id as string}>{(t.namespace as string)}.{(t.name as string)}</option>)}
         </select>
         <select className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
+          disabled={Boolean(editingGrantId)}
           value={grantForm.grantScopeType} onChange={e => setGrantForm(g => ({ ...g, grantScopeType: e.target.value }))}>
           {SCOPE_TYPES.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
+          disabled={Boolean(editingGrantId)}
           placeholder="scope id" value={grantForm.grantScopeId} onChange={e => setGrantForm(g => ({ ...g, grantScopeId: e.target.value }))} />
-        <button className="btn-primary" onClick={createGrant}><Plus size={14} /> Grant</button>
+        <button className="btn-primary" onClick={createGrant}>{editingGrantId ? <Pencil size={14} /> : <Plus size={14} />} {editingGrantId ? "Save grant" : "Grant"}</button>
+        {editingGrantId && <button className="btn-secondary" onClick={() => { setEditingGrantId(null); setGrantForm({ toolPolicyId: "", toolId: "", grantScopeType: "AGENT_BINDING", grantScopeId: "", workflowPhase: "", environment: "DEV" }); }}>Cancel edit</button>}
       </div>
       <div className="grid grid-cols-2 gap-2 mb-1 text-xs text-slate-500 px-3">
         <span>workflow phase + environment (optional, blank = any)</span>
@@ -160,6 +264,15 @@ export default function ToolGrantsPage() {
               {!!g.workflowPhase && <span className="text-xs bg-amber-50 text-amber-700 px-2 py-0.5 rounded">phase: {g.workflowPhase as string}</span>}
               {!!g.environment && <span className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded">env: {g.environment as string}</span>}
               <StatusBadge value={g.status as string} />
+              <span className="ml-auto flex flex-wrap gap-2">
+                <button className="btn-secondary text-xs" disabled={actionBusyId === g.id} onClick={() => editGrant(g)}><Pencil size={12} /> Edit phase</button>
+                {g.status === "ACTIVE" ? (
+                  <button className="btn-secondary text-xs" disabled={actionBusyId === g.id} onClick={() => void grantStatus(g.id as string, "INACTIVE")}>Revoke</button>
+                ) : (
+                  <button className="btn-secondary text-xs" disabled={actionBusyId === g.id} onClick={() => void grantStatus(g.id as string, "ACTIVE")}>Activate</button>
+                )}
+                <button className="btn-secondary text-xs text-red-600" disabled={actionBusyId === g.id} onClick={() => void archiveGrant(g.id as string)}><Archive size={12} /> Archive</button>
+              </span>
             </div>
           );
         })}

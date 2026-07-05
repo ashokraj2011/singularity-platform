@@ -38,6 +38,15 @@ class CreateConnectionRequest(BaseModel):
     provider: str = "github_app"
 
 
+class UpdateConnectionRequest(BaseModel):
+    appId: Optional[str] = None
+    installationId: Optional[str] = None
+    accountLogin: Optional[str] = None
+    privateKey: Optional[str] = None
+    provider: Optional[str] = None
+    status: Optional[str] = None
+
+
 class ConnectionOut(BaseModel):
     # NB: privateKey is intentionally never serialized back.
     id: str
@@ -56,6 +65,11 @@ class CreateRepositoryGrantRequest(BaseModel):
     subjectId: str
     repo: str
     operations: list[str]
+
+
+class UpdateRepositoryGrantRequest(BaseModel):
+    operations: Optional[list[str]] = None
+    status: Optional[str] = None
 
 
 class RepositoryGrantOut(BaseModel):

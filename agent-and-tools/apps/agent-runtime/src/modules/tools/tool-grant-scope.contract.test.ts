@@ -73,8 +73,8 @@ assert.match(
 
 assert.match(
   validation,
-  /const scopeResolution = await resolveRuntimeGrantScopes\(input\);[\s\S]*?where: \{ toolId: tool\.id, status: "ACTIVE", OR: scopeResolution\.filters as never \}/,
-  "runtime validation must resolve live active scopes before reading matching grants",
+  /const scopeResolution = await resolveRuntimeGrantScopes\(input\);[\s\S]*?where: \{[\s\S]*?toolId: tool\.id,[\s\S]*?status: "ACTIVE",[\s\S]*?toolPolicy: \{ status: "ACTIVE" \},[\s\S]*?OR: scopeResolution\.filters as never,[\s\S]*?\}/,
+  "runtime validation must resolve live active scopes and active policies before reading matching grants",
 );
 
 assert.match(

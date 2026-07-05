@@ -100,6 +100,7 @@ export default function RunDetailPage() {
             label="Evidence"
             value="Export handoff"
             detail="Download delivery evidence, Copilot YAML, and runner script when ready."
+            href={`/runs/${encoded}/insights`}
           />
         </div>
       </section>

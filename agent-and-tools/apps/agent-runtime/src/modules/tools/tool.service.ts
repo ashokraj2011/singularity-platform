@@ -186,6 +186,45 @@ export const toolService = {
     return prisma.toolPolicy.findMany({ orderBy: { createdAt: "desc" }, include: { grants: true } });
   },
 
+  async updatePolicy(id: string, input: {
+    name?: string; description?: string | null; scopeType?: string | null; scopeId?: string | null; status?: EntityStatus | string;
+  }, actor?: AuthUser) {
+    requirePlatformAdmin(actor, "Updating a tool policy");
+    const scopeType = normalizedToolPolicyScopeType(input.scopeType);
+    return prisma.$transaction(async (tx) => {
+      const existing = await tx.toolPolicy.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundError("Tool policy not found");
+      const nextScopeType = input.scopeType !== undefined ? scopeType : normalizedToolPolicyScopeType(existing.scopeType);
+      const nextScopeId = input.scopeId !== undefined ? input.scopeId : existing.scopeId;
+      const nextStatus = input.status ?? existing.status;
+      if (nextStatus === "ACTIVE" && nextScopeType && LIFECYCLE_SCOPED_TOOL_POLICY_TYPES.has(nextScopeType)) {
+        if (!nextScopeId) throw new ConflictError("Scoped tool policy requires a scopeId.");
+        await assertGrantScopeWritable(tx, { grantScopeType: nextScopeType, grantScopeId: nextScopeId });
+      }
+      return tx.toolPolicy.update({
+        where: { id },
+        data: {
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(input.scopeType !== undefined ? { scopeType: nextScopeType ?? null } : {}),
+          ...(input.scopeId !== undefined ? { scopeId: input.scopeId || null } : {}),
+          ...(input.status !== undefined ? { status: input.status as EntityStatus } : {}),
+        },
+        include: { grants: true },
+      });
+    });
+  },
+
+  async deletePolicy(id: string, actor?: AuthUser) {
+    requirePlatformAdmin(actor, "Archiving a tool policy");
+    return prisma.$transaction(async (tx) => {
+      const existing = await tx.toolPolicy.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundError("Tool policy not found");
+      await tx.toolGrant.updateMany({ where: { toolPolicyId: id, status: "ACTIVE" }, data: { status: "ARCHIVED" } });
+      return tx.toolPolicy.update({ where: { id }, data: { status: "ARCHIVED" }, include: { grants: true } });
+    });
+  },
+
   async createGrant(input: {
     toolPolicyId: string; toolId: string;
     grantScopeType: "AGENT_TEMPLATE" | "AGENT_BINDING" | "CAPABILITY" | "ROLE" | "WORKFLOW_PHASE" | "TEAM" | "USER";
@@ -213,6 +252,47 @@ export const toolService = {
     return prisma.toolGrant.findMany({
       where: filter ?? {},
       orderBy: { createdAt: "desc" },
+      include: { tool: true, toolPolicy: true },
+    });
+  },
+
+  async updateGrant(id: string, input: {
+    allowedActions?: string[]; deniedActions?: string[];
+    environment?: string | null; workflowPhase?: string | null;
+    requiresApprovalOverride?: boolean | null; status?: EntityStatus | string;
+  }, actor?: AuthUser) {
+    requirePlatformAdmin(actor, "Updating a tool grant");
+    return prisma.$transaction(async (tx) => {
+      const existing = await tx.toolGrant.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundError("Tool grant not found");
+      const nextStatus = input.status ?? existing.status;
+      if (nextStatus === "ACTIVE") {
+        await assertActiveToolForWrite(tx, existing.toolId, "receive active grants");
+        await assertActiveToolPolicyForGrant(tx, existing.toolPolicyId);
+        await assertGrantScopeWritable(tx, existing);
+      }
+      return tx.toolGrant.update({
+        where: { id },
+        data: {
+          ...(input.allowedActions !== undefined ? { allowedActions: (input.allowedActions ?? []) as Prisma.InputJsonValue } : {}),
+          ...(input.deniedActions !== undefined ? { deniedActions: (input.deniedActions ?? []) as Prisma.InputJsonValue } : {}),
+          ...(input.environment !== undefined ? { environment: input.environment || null } : {}),
+          ...(input.workflowPhase !== undefined ? { workflowPhase: input.workflowPhase || null } : {}),
+          ...(input.requiresApprovalOverride !== undefined ? { requiresApprovalOverride: input.requiresApprovalOverride } : {}),
+          ...(input.status !== undefined ? { status: input.status as EntityStatus } : {}),
+        },
+        include: { tool: true, toolPolicy: true },
+      });
+    });
+  },
+
+  async deleteGrant(id: string, actor?: AuthUser) {
+    requirePlatformAdmin(actor, "Archiving a tool grant");
+    const existing = await prisma.toolGrant.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundError("Tool grant not found");
+    return prisma.toolGrant.update({
+      where: { id },
+      data: { status: "ARCHIVED" },
       include: { tool: true, toolPolicy: true },
     });
   },

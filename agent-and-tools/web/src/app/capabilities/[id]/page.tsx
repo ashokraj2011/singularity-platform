@@ -67,7 +67,7 @@ export default function CapabilityDetailPage() {
   const learningActionInFlightRef = useRef(false);
   const [learningAction, setLearningAction] = useState<"sync" | "grounding" | null>(null);
   const localLearningAction = learningAction !== null;
-  const [mutationAction, setMutationAction] = useState<"repo" | "binding" | "knowledge" | null>(null);
+  const [mutationAction, setMutationAction] = useState<"repo" | "repo-delete" | "binding" | "binding-delete" | "knowledge" | "knowledge-delete" | null>(null);
   const [mutationMsg, setMutationMsg] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
@@ -125,6 +125,26 @@ export default function CapabilityDetailPage() {
     }
   }
 
+  async function deleteRepo(repoId: string) {
+    if (mutationActionInFlightRef.current || !repoId) return;
+    if (!window.confirm("Remove this repository from active capability context? Existing evidence remains archived.")) return;
+    mutationActionInFlightRef.current = true;
+    setMutationAction("repo-delete");
+    setMutationError(null);
+    setMutationMsg(null);
+    try {
+      await runtimeApi.deleteRepository(id, repoId);
+      await mutateCap();
+      await mutateGroundingStatus();
+      setMutationMsg("Repository removed from active capability context.");
+    } catch (err) {
+      setMutationError(actionErrorMessage(err, "Remove repository failed"));
+    } finally {
+      mutationActionInFlightRef.current = false;
+      setMutationAction(null);
+    }
+  }
+
   async function addBinding() {
     if (mutationActionInFlightRef.current) return;
     if (!bind.agentTemplateId || !bind.bindingName) {
@@ -154,6 +174,25 @@ export default function CapabilityDetailPage() {
     }
   }
 
+  async function deleteBinding(bindingId: string) {
+    if (mutationActionInFlightRef.current || !bindingId) return;
+    if (!window.confirm("Remove this agent binding from the capability?")) return;
+    mutationActionInFlightRef.current = true;
+    setMutationAction("binding-delete");
+    setMutationError(null);
+    setMutationMsg(null);
+    try {
+      await runtimeApi.deleteBinding(id, bindingId);
+      await mutateCap();
+      setMutationMsg("Agent binding removed.");
+    } catch (err) {
+      setMutationError(actionErrorMessage(err, "Remove agent binding failed"));
+    } finally {
+      mutationActionInFlightRef.current = false;
+      setMutationAction(null);
+    }
+  }
+
   async function addKnowledge() {
     if (mutationActionInFlightRef.current) return;
     if (!know.title || !know.content) {
@@ -172,6 +211,25 @@ export default function CapabilityDetailPage() {
       setMutationMsg("Knowledge artifact added to this capability.");
     } catch (err) {
       setMutationError(actionErrorMessage(err, "Add knowledge artifact failed"));
+    } finally {
+      mutationActionInFlightRef.current = false;
+      setMutationAction(null);
+    }
+  }
+
+  async function deleteKnowledge(artifactId: string) {
+    if (mutationActionInFlightRef.current || !artifactId) return;
+    if (!window.confirm("Archive this knowledge artifact so it is no longer used in active retrieval?")) return;
+    mutationActionInFlightRef.current = true;
+    setMutationAction("knowledge-delete");
+    setMutationError(null);
+    setMutationMsg(null);
+    try {
+      await runtimeApi.deleteKnowledge(id, artifactId);
+      await mutateCap();
+      setMutationMsg("Knowledge artifact archived.");
+    } catch (err) {
+      setMutationError(actionErrorMessage(err, "Archive knowledge artifact failed"));
     } finally {
       mutationActionInFlightRef.current = false;
       setMutationAction(null);
@@ -628,14 +686,25 @@ export default function CapabilityDetailPage() {
               const bindingName = capabilityString(b.bindingName) || `Binding ${index + 1}`;
               const bindingId = capabilityString(b.id) || `${bindingName}-${index}`;
               return (
-                <div key={bindingId} className="card p-4 text-sm">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-slate-800">{bindingName}</span>
-                    <StatusBadge value={capabilityString(b.status) || "unknown"} />
-                    <span className="text-xs text-slate-500">{capabilityString(at.name) || "template pending"}</span>
-                  </div>
-                  <div className="font-mono text-xs text-slate-400">id: {bindingId}</div>
-                </div>
+	                <div key={bindingId} className="card p-4 text-sm">
+	                  <div className="flex items-start justify-between gap-3">
+	                    <div className="min-w-0">
+	                      <div className="flex items-center gap-2 mb-1">
+	                        <span className="font-medium text-slate-800">{bindingName}</span>
+	                        <StatusBadge value={capabilityString(b.status) || "unknown"} />
+	                        <span className="text-xs text-slate-500">{capabilityString(at.name) || "template pending"}</span>
+	                      </div>
+	                      <div className="font-mono text-xs text-slate-400">id: {bindingId}</div>
+	                    </div>
+	                    <button
+	                      className="text-xs text-red-600 hover:underline disabled:text-slate-400"
+	                      disabled={isArchived || mutationAction !== null}
+	                      onClick={() => deleteBinding(bindingId)}
+	                    >
+	                      {mutationAction === "binding-delete" ? "Removing..." : "Remove"}
+	                    </button>
+	                  </div>
+	                </div>
               );
             })}
             {bindings.length === 0 && <p className="text-slate-400 text-sm">No bindings yet.</p>}
@@ -656,15 +725,29 @@ export default function CapabilityDetailPage() {
             </button>
           </div>
           <div className="space-y-2">
-            {repos.map(r => (
-              <div key={r.id as string} className="card p-4 text-sm">
-                <div className="flex items-center gap-2">
-                  <span className="font-medium text-slate-800">{r.repoName as string}</span>
-                  <span className="text-xs text-slate-500">{r.defaultBranch as string}</span>
-                </div>
-                <a href={r.repoUrl as string} className="text-xs text-singularity-600 hover:underline" target="_blank" rel="noreferrer">{r.repoUrl as string}</a>
-              </div>
-            ))}
+	            {repos.map(r => {
+	              const repoId = capabilityString(r.id);
+	              return (
+	                <div key={repoId || capabilityString(r.repoUrl)} className="card p-4 text-sm">
+	                  <div className="flex items-start justify-between gap-3">
+	                    <div className="min-w-0">
+	                      <div className="flex items-center gap-2">
+	                        <span className="font-medium text-slate-800">{r.repoName as string}</span>
+	                        <span className="text-xs text-slate-500">{r.defaultBranch as string}</span>
+	                      </div>
+	                      <a href={r.repoUrl as string} className="text-xs text-singularity-600 hover:underline" target="_blank" rel="noreferrer">{r.repoUrl as string}</a>
+	                    </div>
+	                    <button
+	                      className="text-xs text-red-600 hover:underline disabled:text-slate-400"
+	                      disabled={isArchived || mutationAction !== null || !repoId}
+	                      onClick={() => deleteRepo(repoId)}
+	                    >
+	                      {mutationAction === "repo-delete" ? "Removing..." : "Remove"}
+	                    </button>
+	                  </div>
+	                </div>
+	              );
+	            })}
             {repos.length === 0 && <p className="text-slate-400 text-sm">No repositories attached.</p>}
           </div>
         </div>
@@ -723,9 +806,15 @@ export default function CapabilityDetailPage() {
             </button>
           </div>
           <div className="space-y-2">
-            {know_artifacts.map(a => (
-              <KnowledgeArtifactCard key={a.id as string} artifact={a} />
-            ))}
+	            {know_artifacts.map(a => (
+	              <KnowledgeArtifactCard
+	                key={a.id as string}
+	                artifact={a}
+	                disabled={isArchived || mutationAction !== null}
+	                onRemove={(artifactId) => deleteKnowledge(artifactId)}
+	                removing={mutationAction === "knowledge-delete"}
+	              />
+	            ))}
             {know_artifacts.length === 0 && <p className="text-slate-400 text-sm">No knowledge artifacts.</p>}
           </div>
         </div>
@@ -734,23 +823,40 @@ export default function CapabilityDetailPage() {
   );
 }
 
-function KnowledgeArtifactCard({ artifact }: { artifact: Record<string, unknown> }) {
+function KnowledgeArtifactCard({
+  artifact, disabled, removing, onRemove,
+}: {
+  artifact: Record<string, unknown>;
+  disabled?: boolean;
+  removing?: boolean;
+  onRemove?: (artifactId: string) => void;
+}) {
   const artifactType = String(artifact.artifactType ?? "ARTIFACT");
   const title = String(artifact.title ?? "Knowledge artifact");
   const content = String(artifact.content ?? "");
+  const artifactId = capabilityString(artifact.id);
   const architecture = parseArchitectureArtifact(artifact);
 
   return (
     <div className="card p-4">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">{artifactType}</span>
-        <span className="text-sm font-medium text-slate-800">{title}</span>
-        {artifact.version != null && (
-          <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
-            v{String(artifact.version)}
-          </span>
-        )}
-      </div>
+	      <div className="mb-3 flex flex-wrap items-center gap-2">
+	        <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">{artifactType}</span>
+	        <span className="text-sm font-medium text-slate-800">{title}</span>
+	        {artifact.version != null && (
+	          <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+	            v{String(artifact.version)}
+	          </span>
+	        )}
+	        {onRemove && artifactId ? (
+	          <button
+	            className="ml-auto text-xs text-red-600 hover:underline disabled:text-slate-400"
+	            disabled={disabled || removing}
+	            onClick={() => onRemove(artifactId)}
+	          >
+	            {removing ? "Archiving..." : "Archive"}
+	          </button>
+	        ) : null}
+	      </div>
 
       {architecture ? (
         <div className="space-y-3">

@@ -1790,6 +1790,19 @@ export const capabilityService = {
     return persistCapabilityRepositorySource(capabilityId, input);
   },
 
+  async deleteRepository(capabilityId: string, repoId: string) {
+    await requireActiveCapability(capabilityId);
+    return prisma.$transaction(async (tx) => {
+      await assertActiveCapabilityForWrite(tx, capabilityId);
+      const updated = await tx.capabilityRepository.updateMany({
+        where: { id: repoId, capabilityId, status: "ACTIVE" },
+        data: { status: "ARCHIVED", pollIntervalSec: null },
+      });
+      if (updated.count === 0) throw new NotFoundError("Repository not found");
+      return tx.capabilityRepository.findUniqueOrThrow({ where: { id: repoId } });
+    });
+  },
+
   async bindAgent(capabilityId: string, input: {
     agentTemplateId: string; bindingName: string;
     roleInCapability?: string; promptProfileId?: string;
@@ -1825,6 +1838,19 @@ export const capabilityService = {
     });
   },
 
+  async deleteBinding(capabilityId: string, bindingId: string) {
+    await requireActiveCapability(capabilityId);
+    return prisma.$transaction(async (tx) => {
+      await assertActiveCapabilityForWrite(tx, capabilityId);
+      const updated = await tx.agentCapabilityBinding.updateMany({
+        where: { id: bindingId, capabilityId, status: { not: "ARCHIVED" } },
+        data: { status: "ARCHIVED" },
+      });
+      if (updated.count === 0) throw new NotFoundError("Agent binding not found");
+      return tx.agentCapabilityBinding.findUniqueOrThrow({ where: { id: bindingId }, include: { agentTemplate: true } });
+    });
+  },
+
   async addKnowledge(capabilityId: string, input: {
     artifactType: string; title: string; content: string;
     sourceType?: string; sourceRef?: string; confidence?: number;
@@ -1844,6 +1870,19 @@ export const capabilityService = {
     return prisma.capabilityKnowledgeArtifact.findMany({
       where: input.includeArchived ? { capabilityId } : { capabilityId, status: "ACTIVE" },
       orderBy: { createdAt: "desc" },
+    });
+  },
+
+  async deleteKnowledgeArtifact(capabilityId: string, artifactId: string) {
+    await requireActiveCapability(capabilityId);
+    return prisma.$transaction(async (tx) => {
+      await assertActiveCapabilityForWrite(tx, capabilityId);
+      const updated = await tx.capabilityKnowledgeArtifact.updateMany({
+        where: { id: artifactId, capabilityId, status: "ACTIVE" },
+        data: { status: "ARCHIVED" },
+      });
+      if (updated.count === 0) throw new NotFoundError("Knowledge artifact not found");
+      return tx.capabilityKnowledgeArtifact.findUniqueOrThrow({ where: { id: artifactId } });
     });
   },
 

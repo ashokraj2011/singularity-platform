@@ -30,6 +30,14 @@ export const createPolicySchema = z.object({
   scopeId: z.string().optional(),
 });
 
+export const updatePolicySchema = z.object({
+  name: z.string().min(2).optional(),
+  description: z.string().optional(),
+  scopeType: z.string().optional(),
+  scopeId: z.string().optional(),
+  status: z.enum(["DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"]).optional(),
+});
+
 export const grantSchema = z.object({
   toolPolicyId: z.string().uuid(),
   toolId: z.string().uuid(),
@@ -40,6 +48,15 @@ export const grantSchema = z.object({
   environment: z.string().optional(),
   workflowPhase: z.string().optional(),
   requiresApprovalOverride: z.boolean().optional(),
+});
+
+export const updateGrantSchema = z.object({
+  allowedActions: z.array(z.string()).optional(),
+  deniedActions: z.array(z.string()).optional(),
+  environment: z.string().nullable().optional(),
+  workflowPhase: z.string().nullable().optional(),
+  requiresApprovalOverride: z.boolean().nullable().optional(),
+  status: z.enum(["DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"]).optional(),
 });
 
 export const validateCallSchema = z.object({

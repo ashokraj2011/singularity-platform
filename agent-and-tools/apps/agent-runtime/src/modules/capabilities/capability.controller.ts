@@ -93,11 +93,17 @@ export const capabilityController = {
   async attachRepo(req: Request, res: Response) {
     return ok(res, await capabilityService.attachRepository(req.params.id, req.body), 201);
   },
+  async deleteRepo(req: Request, res: Response) {
+    return ok(res, await capabilityService.deleteRepository(req.params.id, req.params.repoId));
+  },
   async bindAgent(req: Request, res: Response) {
     return ok(res, await capabilityService.bindAgent(req.params.id, req.body, req.user?.user_id), 201);
   },
   async listBindings(req: Request, res: Response) {
     return ok(res, await capabilityService.listBindings(req.params.id));
+  },
+  async deleteBinding(req: Request, res: Response) {
+    return ok(res, await capabilityService.deleteBinding(req.params.id, req.params.bindingId));
   },
   async addKnowledge(req: Request, res: Response) {
     return ok(res, await capabilityService.addKnowledge(req.params.id, req.body), 201);
@@ -105,6 +111,9 @@ export const capabilityController = {
   async listKnowledge(req: Request, res: Response) {
     const includeArchived = String(req.query.includeArchived ?? "").toLowerCase() === "true";
     return ok(res, await capabilityService.listKnowledge(req.params.id, { includeArchived }));
+  },
+  async deleteKnowledge(req: Request, res: Response) {
+    return ok(res, await capabilityService.deleteKnowledgeArtifact(req.params.id, req.params.artifactId));
   },
   async extractSymbols(req: Request, res: Response) {
     const result = await capabilityService.extractRepositorySymbols(

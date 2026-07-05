@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   createRepositoryGrant,
+  deleteRepositoryGrant,
   listRepositoryGrants,
+  updateRepositoryGrant,
   type GitSubjectType,
   type RepositoryGrant,
 } from "@/lib/git/api";
@@ -46,7 +48,9 @@ export function RepositoryGrantsConsole() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState({ ...emptyForm });
   const [operations, setOperations] = useState<Set<string>>(new Set(["read", "clone", "push"]));
+  const [editing, setEditing] = useState<RepositoryGrant | null>(null);
   const [busy, setBusy] = useState(false);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -76,25 +80,75 @@ export function RepositoryGrantsConsole() {
 
   const canSubmit = Boolean(form.tenantId.trim() && form.subjectId.trim() && form.repo.trim() && operations.size > 0);
 
+  function resetForm() {
+    setEditing(null);
+    setForm({ ...emptyForm });
+    setOperations(new Set(["read", "clone", "push"]));
+    setSubmitError(null);
+  }
+
+  function startEdit(grant: RepositoryGrant) {
+    setEditing(grant);
+    setSubmitError(null);
+    setForm({
+      tenantId: grant.tenantId,
+      subjectType: grant.subjectType as GitSubjectType,
+      subjectId: grant.subjectId,
+      repo: grant.repo,
+    });
+    setOperations(new Set(grant.operations));
+  }
+
   async function submit() {
     if (!canSubmit) return;
     setBusy(true);
     setSubmitError(null);
     try {
-      await createRepositoryGrant({
-        tenantId: form.tenantId.trim(),
-        subjectType: form.subjectType,
-        subjectId: form.subjectId.trim(),
-        repo: form.repo.trim(),
-        operations: Array.from(operations),
-      });
-      setForm({ ...emptyForm });
-      setOperations(new Set(["read", "clone", "push"]));
+      if (editing) {
+        await updateRepositoryGrant(editing.id, { operations: Array.from(operations) });
+      } else {
+        await createRepositoryGrant({
+          tenantId: form.tenantId.trim(),
+          subjectType: form.subjectType,
+          subjectId: form.subjectId.trim(),
+          repo: form.repo.trim(),
+          operations: Array.from(operations),
+        });
+      }
+      resetForm();
       await reload();
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function setStatus(grant: RepositoryGrant, status: "active" | "suspended" | "revoked") {
+    setActionBusyId(grant.id);
+    setSubmitError(null);
+    try {
+      await updateRepositoryGrant(grant.id, { status });
+      await reload();
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusyId(null);
+    }
+  }
+
+  async function remove(grant: RepositoryGrant) {
+    if (!window.confirm(`Delete repository grant for ${grant.subjectType}:${grant.subjectId} on ${grant.repo}?`)) return;
+    setActionBusyId(grant.id);
+    setSubmitError(null);
+    try {
+      await deleteRepositoryGrant(grant.id);
+      await reload();
+      if (editing?.id === grant.id) resetForm();
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusyId(null);
     }
   }
 
@@ -108,6 +162,7 @@ export function RepositoryGrantsConsole() {
           <h2 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 800, color: "var(--color-text)" }}>
             Grants {rows.length ? `(${rows.length})` : ""}
           </h2>
+          <FormError message={submitError} />
           {loading ? (
             <p style={{ fontSize: 13, color: "var(--color-outline)" }}>Loading…</p>
           ) : loadError ? (
@@ -137,6 +192,16 @@ export function RepositoryGrantsConsole() {
                       <Chip key={op}>{op}</Chip>
                     ))}
                   </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                    <button className="btn-secondary text-xs" type="button" disabled={actionBusyId === g.id} onClick={() => startEdit(g)}>Edit ops</button>
+                    {g.status === "active" ? (
+                      <button className="btn-secondary text-xs" type="button" disabled={actionBusyId === g.id} onClick={() => void setStatus(g, "suspended")}>Suspend</button>
+                    ) : (
+                      <button className="btn-secondary text-xs" type="button" disabled={actionBusyId === g.id} onClick={() => void setStatus(g, "active")}>Activate</button>
+                    )}
+                    <button className="btn-secondary text-xs" type="button" disabled={actionBusyId === g.id} onClick={() => void setStatus(g, "revoked")}>Revoke</button>
+                    <button className="btn-secondary text-xs" type="button" disabled={actionBusyId === g.id} style={{ color: "#b91c1c" }} onClick={() => void remove(g)}>Delete</button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -144,25 +209,32 @@ export function RepositoryGrantsConsole() {
         </section>
 
         <section className="card" style={{ padding: 18 }}>
-          <h2 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 800, color: "var(--color-text)" }}>Add grant</h2>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", marginBottom: 12 }}>
+            <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: "var(--color-text)" }}>{editing ? "Edit grant operations" : "Add grant"}</h2>
+            {editing ? <button type="button" className="btn-secondary text-xs" onClick={resetForm}>Cancel edit</button> : null}
+          </div>
           <div style={{ display: "grid", gap: 10 }}>
-            <GitField label="Tenant ID" value={form.tenantId} onChange={(v) => setForm({ ...form, tenantId: v })} placeholder="tenant uuid" />
+            <GitField label="Tenant ID" value={form.tenantId} onChange={(v) => setForm({ ...form, tenantId: v })} placeholder="tenant uuid" disabled={Boolean(editing)} />
             <GitSelect
               label="Subject type"
               value={form.subjectType}
               options={SUBJECT_OPTIONS}
               onChange={(v) => setForm({ ...form, subjectType: v })}
+              disabled={Boolean(editing)}
             />
             <GitField
               label="Subject ID"
               value={form.subjectId}
               onChange={(v) => setForm({ ...form, subjectId: v })}
               placeholder={form.subjectType === "user" ? "user uuid" : form.subjectType === "team" ? "team id" : "capability id"}
+              disabled={Boolean(editing)}
             />
-            <GitField label="Repository" value={form.repo} onChange={(v) => setForm({ ...form, repo: v })} placeholder="owner/name" />
+            <GitField label="Repository" value={form.repo} onChange={(v) => setForm({ ...form, repo: v })} placeholder="owner/name" disabled={Boolean(editing)} />
             <GitCheckboxGroup label="Operations" options={OPERATION_OPTIONS} selected={operations} onToggle={toggleOperation} />
-            <FormError message={submitError} />
-            <SubmitButton busy={busy} disabled={!canSubmit} idleLabel="Create grant" busyLabel="Creating…" onClick={() => void submit()} />
+            <p style={{ margin: 0, fontSize: 11, color: "var(--color-outline)" }}>
+              {editing ? "Subject, tenant, and repository are immutable for safety. Delete and recreate the grant to change those fields." : "Use the narrowest operation set that satisfies the workflow."}
+            </p>
+            <SubmitButton busy={busy} disabled={!canSubmit} idleLabel={editing ? "Save operations" : "Create grant"} busyLabel="Saving…" onClick={() => void submit()} />
           </div>
         </section>
       </TwoColumn>

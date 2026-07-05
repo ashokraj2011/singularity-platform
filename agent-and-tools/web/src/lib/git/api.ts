@@ -31,6 +31,15 @@ export type CreateGitConnectionRequest = {
   provider?: string;
 };
 
+export type UpdateGitConnectionRequest = {
+  appId?: string;
+  installationId?: string;
+  accountLogin?: string;
+  privateKey?: string;
+  provider?: string;
+  status?: "active" | "suspended" | "revoked";
+};
+
 export type GitSubjectType = "user" | "team" | "capability";
 
 export type RepositoryGrant = {
@@ -49,6 +58,11 @@ export type CreateRepositoryGrantRequest = {
   subjectId: string;
   repo: string;
   operations: string[];
+};
+
+export type UpdateRepositoryGrantRequest = {
+  operations?: string[];
+  status?: "active" | "suspended" | "revoked";
 };
 
 export class GitBrokerError extends Error {
@@ -97,6 +111,14 @@ export function createGitConnection(body: CreateGitConnectionRequest): Promise<G
   return gitRequest<GitConnection>("/connections", { method: "POST", body: JSON.stringify(body) });
 }
 
+export function updateGitConnection(id: string, body: UpdateGitConnectionRequest): Promise<GitConnection> {
+  return gitRequest<GitConnection>(`/connections/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function deleteGitConnection(id: string): Promise<GitConnection> {
+  return gitRequest<GitConnection>(`/connections/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 export function listRepositoryGrants(tenantId?: string): Promise<RepositoryGrant[]> {
   const qs = tenantId ? `?tenantId=${encodeURIComponent(tenantId)}` : "";
   return gitRequest<RepositoryGrant[]>(`/repository-grants${qs}`);
@@ -104,4 +126,12 @@ export function listRepositoryGrants(tenantId?: string): Promise<RepositoryGrant
 
 export function createRepositoryGrant(body: CreateRepositoryGrantRequest): Promise<RepositoryGrant> {
   return gitRequest<RepositoryGrant>("/repository-grants", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateRepositoryGrant(id: string, body: UpdateRepositoryGrantRequest): Promise<RepositoryGrant> {
+  return gitRequest<RepositoryGrant>(`/repository-grants/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+export function deleteRepositoryGrant(id: string): Promise<RepositoryGrant> {
+  return gitRequest<RepositoryGrant>(`/repository-grants/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

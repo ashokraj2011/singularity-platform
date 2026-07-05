@@ -70,6 +70,7 @@ export function GitField({
   placeholder,
   type = "text",
   mono = false,
+  disabled = false,
 }: {
   label: string;
   value: string;
@@ -77,6 +78,7 @@ export function GitField({
   placeholder?: string;
   type?: string;
   mono?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <label style={labelStyle}>
@@ -84,9 +86,10 @@ export function GitField({
       <input
         value={value}
         type={type}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        style={{ ...controlStyle, fontFamily: mono ? "var(--font-mono, monospace)" : undefined }}
+        style={{ ...controlStyle, fontFamily: mono ? "var(--font-mono, monospace)" : undefined, opacity: disabled ? 0.72 : 1 }}
       />
     </label>
   );
@@ -124,16 +127,18 @@ export function GitSelect<T extends string>({
   value,
   options,
   onChange,
+  disabled = false,
 }: {
   label: string;
   value: T;
   options: { value: T; label: string }[];
   onChange: (value: T) => void;
+  disabled?: boolean;
 }) {
   return (
     <label style={labelStyle}>
       {label}
-      <select value={value} onChange={(e) => onChange(e.target.value as T)} style={controlStyle}>
+      <select value={value} disabled={disabled} onChange={(e) => onChange(e.target.value as T)} style={{ ...controlStyle, opacity: disabled ? 0.72 : 1 }}>
         {options.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}

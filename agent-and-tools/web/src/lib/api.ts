@@ -535,6 +535,10 @@ export const runtimeApi = {
   listPolicies: () => reqEnv<Row[]>(`${RUNTIME_BASE}/tools/policies`),
   createPolicy: (body: Row) =>
     reqEnv<Row>(`${RUNTIME_BASE}/tools/policies`, { method: "POST", body: JSON.stringify(body) }),
+  updatePolicy: (id: string, body: Row) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/tools/policies/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deletePolicy: (id: string) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/tools/policies/${id}`, { method: "DELETE" }),
 
   listGrants: (params?: Record<string, string>) => {
     const qs = params ? "?" + new URLSearchParams(params).toString() : "";
@@ -542,6 +546,10 @@ export const runtimeApi = {
   },
   createGrant: (body: Row) =>
     reqEnv<Row>(`${RUNTIME_BASE}/tools/grants`, { method: "POST", body: JSON.stringify(body) }),
+  updateGrant: (id: string, body: Row) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/tools/grants/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteGrant: (id: string) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/tools/grants/${id}`, { method: "DELETE" }),
 
   validateCall: (body: Row) =>
     reqEnv<Row>(`${RUNTIME_BASE}/tools/validate-call`, { method: "POST", body: JSON.stringify(body) }),
@@ -584,14 +592,20 @@ export const runtimeApi = {
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/sync`, { method: "POST", body: JSON.stringify(body) }),
   attachRepo: (id: string, body: Row) =>
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${id}/repositories`, { method: "POST", body: JSON.stringify(body) }),
+  deleteRepository: (capabilityId: string, repoId: string) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/repositories/${repoId}`, { method: "DELETE" }),
   bindAgent: (id: string, body: Row) =>
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${id}/agent-bindings`, { method: "POST", body: JSON.stringify(body) }),
   listBindings: (id: string) =>
     reqEnv<Row[]>(`${RUNTIME_BASE}/capabilities/${id}/agent-bindings`),
+  deleteBinding: (capabilityId: string, bindingId: string) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/agent-bindings/${bindingId}`, { method: "DELETE" }),
   addKnowledge: (id: string, body: Row) =>
     reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${id}/knowledge-artifacts`, { method: "POST", body: JSON.stringify(body) }),
   listKnowledge: (id: string) =>
     reqEnv<Row[]>(`${RUNTIME_BASE}/capabilities/${id}/knowledge-artifacts`),
+  deleteKnowledge: (capabilityId: string, artifactId: string) =>
+    reqEnv<Row>(`${RUNTIME_BASE}/capabilities/${capabilityId}/knowledge-artifacts/${artifactId}`, { method: "DELETE" }),
   // M14 — code-symbol extraction. Send the file list extracted from the
   // user-picked directory; server walks regex extractor + persists.
   extractRepositorySymbols: (capabilityId: string, repoId: string, files: Array<{ path: string; content: string }>) =>

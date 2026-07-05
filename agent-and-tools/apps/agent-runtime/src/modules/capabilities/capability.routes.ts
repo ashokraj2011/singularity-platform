@@ -57,12 +57,15 @@ capabilityRoutes.post(
 );
 
 capabilityRoutes.post("/:id/repositories", validate(attachRepositorySchema), capabilityController.attachRepo);
+capabilityRoutes.delete("/:id/repositories/:repoId", capabilityController.deleteRepo);
 
 capabilityRoutes.post("/:id/agent-bindings", validate(bindAgentSchema), capabilityController.bindAgent);
 capabilityRoutes.get("/:id/agent-bindings", capabilityController.listBindings);
+capabilityRoutes.delete("/:id/agent-bindings/:bindingId", capabilityController.deleteBinding);
 
 capabilityRoutes.post("/:id/knowledge-artifacts", validate(knowledgeArtifactSchema), capabilityController.addKnowledge);
 capabilityRoutes.get("/:id/knowledge-artifacts", capabilityController.listKnowledge);
+capabilityRoutes.delete("/:id/knowledge-artifacts/:artifactId", capabilityController.deleteKnowledge);
 // M15 — multipart upload (txt/md/pdf). Server extracts text + delegates to addKnowledge.
 capabilityRoutes.post(
   "/:id/knowledge-artifacts/upload",
