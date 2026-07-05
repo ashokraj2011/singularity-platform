@@ -32,7 +32,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, WebSocket, WebSocke
 from pydantic import BaseModel
 
 from .config import settings, is_production_class_env
-from .env_config import bounded_int_env
+from .env_config import bounded_float_value, bounded_int_env
 from .iam_service_token import get_iam_service_token, invalidate_iam_service_token
 from .laptop_registry import (
     REGISTRY,
@@ -148,6 +148,21 @@ REVOCATION_RECHECK_SEC = bounded_int_env(
 # explicitly with RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN={true,false}.
 _rev_fail_open_default = "false" if is_production_class_env() else "true"
 REVOCATION_FAIL_OPEN = os.environ.get("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", _rev_fail_open_default).lower() not in ("0", "false", "no")
+_DEFAULT_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC = 180.0
+_MAX_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC = 3600.0
+
+
+def runtime_http_fallback_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv(
+            "CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC",
+            str(_DEFAULT_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC,
+        min_value=1.0,
+        max_value=_MAX_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC",
+    )
 
 
 def _runtime_bridge_allow_unauthenticated_http() -> bool:
@@ -843,7 +858,7 @@ async def _http_finish_branch(payload: dict[str, Any]) -> dict[str, Any]:
     mcp_url = os.environ.get("MCP_SERVER_URL", "http://mcp-server:7100").rstrip("/")
     bearer = os.environ.get("MCP_BEARER_TOKEN", "")
     try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
+        async with httpx.AsyncClient(timeout=runtime_http_fallback_timeout_sec()) as client:
             resp = await client.post(
                 f"{mcp_url}/mcp/work/finish-branch",
                 headers={"content-type": "application/json", "authorization": f"Bearer {bearer}"},
@@ -927,7 +942,7 @@ async def _http_worktree_write(work_item_code: str, rel_path: str, body: dict[st
     bearer = os.environ.get("MCP_BEARER_TOKEN", "")
     url = f"{mcp_url}/mcp/worktree/{quote(work_item_code, safe='')}/file"
     try:
-        async with httpx.AsyncClient(timeout=180.0) as client:
+        async with httpx.AsyncClient(timeout=runtime_http_fallback_timeout_sec()) as client:
             resp = await client.put(
                 url,
                 params={"path": rel_path},

@@ -924,6 +924,11 @@ Context Fabric's post-invoke MCP event backfill is also best-effort and uses
 `CONTEXT_FABRIC_MCP_EVENT_DRAIN_TIMEOUT_SEC`, default `15`, bounded `1..300`,
 before falling back to whatever the live WebSocket subscriber already captured.
 
+Context Fabric's Runtime Bridge direct HTTP debug fallback to MCP is explicit-only
+(`RUNTIME_HTTP_FALLBACK_ENABLED=true`) and bounds finish-branch/worktree write
+calls with `CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC`, default `180`,
+bounded `1..3600`.
+
 Platform Web's Runtime + LLM settings route bounds status fan-out calls with
 `LLM_SETTINGS_FETCH_TIMEOUT_SEC`, default `5`, bounded `1..300`. Model catalog
 mutations forwarded to LLM Gateway use `LLM_SETTINGS_WRITE_TIMEOUT_SEC`, default

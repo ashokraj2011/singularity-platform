@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
 import json
+from pathlib import Path
 import time
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi import HTTPException
@@ -281,6 +284,26 @@ def test_runtime_bridge_revocation_recheck_env_defaults_and_clamps(monkeypatch):
         min_value=5,
         max_value=86_400,
     ) == 86_400
+
+
+def test_runtime_http_fallback_timeout_env_is_bounded(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC", raising=False)
+    assert laptop_bridge.runtime_http_fallback_timeout_sec() == 180.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC", "bad")
+    assert laptop_bridge.runtime_http_fallback_timeout_sec() == 180.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC", "nan")
+    assert laptop_bridge.runtime_http_fallback_timeout_sec() == 180.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC", "0")
+    assert laptop_bridge.runtime_http_fallback_timeout_sec() == 180.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC", "12.5")
+    assert laptop_bridge.runtime_http_fallback_timeout_sec() == 12.5
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC", "999999")
+    assert laptop_bridge.runtime_http_fallback_timeout_sec() == 3600.0
 
 
 def test_device_token_still_requires_device_id(monkeypatch):
@@ -595,3 +618,88 @@ def test_worktree_file_http_fallback_is_explicit(monkeypatch):
     assert response.status_code == 503
     assert "RUNTIME_NOT_CONNECTED" in response.json()["detail"]
     assert "RUNTIME_HTTP_FALLBACK_ENABLED=true" in response.json()["detail"]
+
+
+class FakeFallbackAsyncClient:
+    timeouts: list[float] = []
+    posts: list[tuple[str, dict[str, str] | None, dict[str, object] | None]] = []
+    puts: list[tuple[str, dict[str, str] | None, dict[str, str] | None, dict[str, object] | None]] = []
+
+    def __init__(self, timeout: float):
+        self.timeouts.append(timeout)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url: str, **kwargs):
+        self.posts.append((url, kwargs.get("headers"), kwargs.get("json")))
+        return httpx.Response(
+            200,
+            json={"success": True, "data": {"output": {"pushed": True}}},
+            request=httpx.Request("POST", url),
+        )
+
+    async def put(self, url: str, **kwargs):
+        self.puts.append((url, kwargs.get("params"), kwargs.get("headers"), kwargs.get("json")))
+        return httpx.Response(
+            200,
+            json={"success": True, "data": {"path": "evidence.txt"}},
+            request=httpx.Request("PUT", url),
+        )
+
+
+def test_runtime_http_finish_branch_fallback_uses_configured_timeout(monkeypatch):
+    FakeFallbackAsyncClient.timeouts = []
+    FakeFallbackAsyncClient.posts = []
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC", "12.5")
+    monkeypatch.setenv("MCP_SERVER_URL", "http://mcp.local")
+    monkeypatch.setenv("MCP_BEARER_TOKEN", "mcp-token")
+    monkeypatch.setattr(laptop_bridge.httpx, "AsyncClient", FakeFallbackAsyncClient)
+
+    result = asyncio.run(laptop_bridge._http_finish_branch({"message": "done"}))
+
+    assert result == {"output": {"pushed": True}}
+    assert FakeFallbackAsyncClient.timeouts == [12.5]
+    assert FakeFallbackAsyncClient.posts == [
+        (
+            "http://mcp.local/mcp/work/finish-branch",
+            {"content-type": "application/json", "authorization": "Bearer mcp-token"},
+            {"message": "done"},
+        )
+    ]
+
+
+def test_runtime_http_worktree_write_fallback_uses_configured_timeout(monkeypatch):
+    FakeFallbackAsyncClient.timeouts = []
+    FakeFallbackAsyncClient.puts = []
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC", "12.5")
+    monkeypatch.setenv("MCP_SERVER_URL", "http://mcp.local")
+    monkeypatch.setenv("MCP_BEARER_TOKEN", "mcp-token")
+    monkeypatch.setattr(laptop_bridge.httpx, "AsyncClient", FakeFallbackAsyncClient)
+
+    result = asyncio.run(
+        laptop_bridge._http_worktree_write("WI-1", "evidence.txt", {"content": "hello"})
+    )
+
+    assert result == {"path": "evidence.txt"}
+    assert FakeFallbackAsyncClient.timeouts == [12.5]
+    assert FakeFallbackAsyncClient.puts == [
+        (
+            "http://mcp.local/mcp/worktree/WI-1/file",
+            {"path": "evidence.txt"},
+            {"content-type": "application/json", "authorization": "Bearer mcp-token"},
+            {"content": "hello"},
+        )
+    ]
+
+
+def test_runtime_http_fallback_uses_bounded_timeout_helper():
+    source_path = Path(__file__).resolve().parents[1] / "services/context_api_service/app/laptop_bridge.py"
+    source = source_path.read_text()
+
+    assert "CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC" in source
+    assert "httpx.AsyncClient(timeout=runtime_http_fallback_timeout_sec())" in source
+    assert "httpx.AsyncClient(timeout=180.0)" not in source
