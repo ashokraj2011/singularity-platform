@@ -43,6 +43,7 @@ const schema = z.object({
   LEARNING_SERVICE_URL: z.string().url().optional(),
   LEARNING_SERVICE_TOKEN: z.string().optional(),
   LEARNING_SERVICE_TIMEOUT_SEC: boundedInt(3, 1, 300),
+  AUDIT_GOV_EMIT_TIMEOUT_SEC: boundedInt(5, 1, 300),
   LEARNING_CONTEXT_ENABLED: z.preprocess(
     (v) => v === undefined ? undefined : String(v).toLowerCase() !== "false",
     z.boolean(),

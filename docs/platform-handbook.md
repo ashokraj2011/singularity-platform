@@ -951,6 +951,11 @@ checks, while `MCP_AUDIT_GOV_EMIT_TIMEOUT_MS` and
 event emission and approval persistence/consume calls. All three are bounded
 `1..300000`, preventing a slow ledger from becoming an implicit unbounded wait.
 
+Prompt Composer's fire-and-forget audit-governance emitter uses
+`AUDIT_GOV_EMIT_TIMEOUT_SEC`, default `5`, bounded `1..300`. Emission failures
+still do not block request handlers, but operators can tune the ledger wait
+without changing source code.
+
 Audit Governance engine workers use the same bounded env helper. Judge and
 lesson extraction LLM timeouts default to `30000` ms and cap at `300000`; the
 diagnosis timeout defaults to `120000` ms and caps at `600000`. The shared

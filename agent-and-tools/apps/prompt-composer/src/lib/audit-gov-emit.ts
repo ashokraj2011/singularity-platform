@@ -5,9 +5,10 @@
  * request handler. Set AUDIT_GOV_URL="" to disable.
  */
 import { logger } from "../config/logger";
+import { env } from "../config/env";
 
 const AUDIT_GOV_URL = process.env.AUDIT_GOV_URL ?? "http://host.docker.internal:8500";
-const TIMEOUT_MS    = 5_000;
+const AUDIT_GOV_EMIT_TIMEOUT_MS = env.AUDIT_GOV_EMIT_TIMEOUT_SEC * 1000;
 const AUDIT_GOV_SERVICE_TOKEN = process.env.AUDIT_GOV_SERVICE_TOKEN ?? "";
 
 function auditHeaders(): Record<string, string> {
@@ -45,7 +46,7 @@ export function emitAuditEvent(input: EmitInput): void {
         method:  "POST",
         headers: auditHeaders(),
         body:    JSON.stringify({ ...input, source_service: input.source_service || "prompt-composer" }),
-        signal:  AbortSignal.timeout(TIMEOUT_MS),
+        signal:  AbortSignal.timeout(AUDIT_GOV_EMIT_TIMEOUT_MS),
       });
       if (!res.ok) {
         // M35.4 — capture raw body for debug, include trace_id
