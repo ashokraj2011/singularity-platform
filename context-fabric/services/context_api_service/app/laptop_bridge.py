@@ -93,8 +93,11 @@ def _verify_hs256_jwt(token: str, secret: str) -> dict[str, Any]:
     exp = claims.get("exp")
     if type(exp) not in (int, float):
         raise JWTError("missing or invalid exp")
-    if now > int(exp):
+    exp_int = int(exp)
+    if now > exp_int:
         raise JWTError("token expired")
+    if exp_int - now > _MAX_RUNTIME_TOKEN_TTL_SEC:
+        raise JWTError("token expiry too far in future")
     return claims
 
 log = logging.getLogger("runtime-bridge")
@@ -134,6 +137,9 @@ _MAX_RUNTIME_REQUEST_ID_LEN_CAP = 1024
 _DEFAULT_MAX_RUNTIME_JWT_LEN = 16 * 1024
 _MIN_RUNTIME_JWT_LEN = 1024
 _MAX_RUNTIME_JWT_LEN_CAP = 128 * 1024
+_DEFAULT_MAX_RUNTIME_TOKEN_TTL_SEC = 365 * 24 * 60 * 60
+_MIN_RUNTIME_TOKEN_TTL_SEC = 60 * 60
+_MAX_RUNTIME_TOKEN_TTL_SEC_CAP = 365 * 24 * 60 * 60
 _DEFAULT_HEARTBEAT_SWEEP_SEC = 30
 _MIN_HEARTBEAT_SWEEP_SEC = 1
 _MAX_HEARTBEAT_SWEEP_SEC = 300
@@ -142,6 +148,13 @@ _MAX_RUNTIME_JWT_LEN = bounded_int_env(
     default=_DEFAULT_MAX_RUNTIME_JWT_LEN,
     min_value=_MIN_RUNTIME_JWT_LEN,
     max_value=_MAX_RUNTIME_JWT_LEN_CAP,
+    logger=log,
+)
+_MAX_RUNTIME_TOKEN_TTL_SEC = bounded_int_env(
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TOKEN_TTL_SEC",
+    default=_DEFAULT_MAX_RUNTIME_TOKEN_TTL_SEC,
+    min_value=_MIN_RUNTIME_TOKEN_TTL_SEC,
+    max_value=_MAX_RUNTIME_TOKEN_TTL_SEC_CAP,
     logger=log,
 )
 HEARTBEAT_SWEEP_SEC = bounded_int_env(

@@ -1096,7 +1096,9 @@ not silently enable fail-open. Context Fabric waits for the runtime&#39;s first 
 <code>hello</code> frame using <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC</code>, default
 <code>10</code>, bounded <code>1..300</code>; runtime JWT admission uses
 <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES</code>, default <code>16384</code>, bounded
-<code>1024..131072</code>; runtime frame dispatch uses
+<code>1024..131072</code>; runtime JWT maximum lifetime uses
+<code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TOKEN_TTL_SEC</code>, default <code>31536000</code>, bounded
+<code>3600..31536000</code>; runtime frame dispatch uses
 <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC</code>, default <code>180</code>, bounded
 <code>1..7200</code>; stale runtime reaping uses
 <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC</code>, default <code>90</code>, bounded
