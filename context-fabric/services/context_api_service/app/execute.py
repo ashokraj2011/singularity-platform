@@ -95,6 +95,7 @@ _DEFAULT_LAPTOP_INVOKE_TIMEOUT_SEC = 240.0
 _DEFAULT_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC = 10.0
 _DEFAULT_TOOL_DISCOVERY_TIMEOUT_SEC = 10.0
 _DEFAULT_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC = 60.0
+_DEFAULT_MEMORY_HISTORY_TIMEOUT_SEC = 10.0
 _MIN_MCP_INVOKE_TIMEOUT_SEC = 1.0
 _MAX_MCP_INVOKE_TIMEOUT_SEC = 2.0 * 60.0 * 60.0
 _MAX_SERVICE_BOUNDARY_TIMEOUT_SEC = 300.0
@@ -163,6 +164,17 @@ def _prompt_composer_compose_timeout_sec() -> float:
         ),
         default=_DEFAULT_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC,
         name="CONTEXT_FABRIC_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC",
+    )
+
+
+def _memory_history_timeout_sec() -> float:
+    return _bounded_service_timeout_value(
+        os.getenv(
+            "CONTEXT_FABRIC_MEMORY_HISTORY_TIMEOUT_SEC",
+            str(_DEFAULT_MEMORY_HISTORY_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_MEMORY_HISTORY_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_MEMORY_HISTORY_TIMEOUT_SEC",
     )
 
 
@@ -837,7 +849,7 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
             msgs = await _get(
                 f"{settings.context_memory_url.rstrip('/')}/memory/messages/{session_id}",
                 params={"limit": max_history},
-                timeout=10.0,
+                timeout=_memory_history_timeout_sec(),
             )
             history = [
                 {"role": m["role"], "content": m["content"]}

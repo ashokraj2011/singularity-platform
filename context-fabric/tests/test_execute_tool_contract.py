@@ -109,6 +109,17 @@ def test_execute_uses_configured_prompt_composer_timeout():
     assert "timeout=60.0" not in compose_block
 
 
+def test_execute_uses_configured_memory_history_timeout():
+    source = inspect.getsource(execute_module.execute)
+    history_start = source.index("/memory/messages/")
+    history_end = source.index("history = [", history_start)
+    history_block = source[history_start:history_end]
+
+    assert "timeout=_memory_history_timeout_sec()" in history_block
+    assert "CONTEXT_FABRIC_MEMORY_HISTORY_TIMEOUT_SEC" in inspect.getsource(execute_module)
+    assert "timeout=10.0" not in history_block
+
+
 def test_execute_requires_effective_capabilities_for_profile_backed_tool_filtering():
     source = inspect.getsource(execute_module.execute)
 

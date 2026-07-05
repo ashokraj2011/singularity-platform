@@ -910,7 +910,9 @@ The same legacy path bounds Prompt Composer prompt assembly with
 Context-memory compilation for that path uses
 `CONTEXT_FABRIC_CONTEXT_COMPILE_TIMEOUT_SEC`, default `20`, bounded `1..300`;
 failures still fall back to the already assembled prompt and fresh-session
-history behavior with a visible context compiler warning.
+history behavior with a visible context compiler warning. The follow-up
+memory-history fallback fetch uses `CONTEXT_FABRIC_MEMORY_HISTORY_TIMEOUT_SEC`,
+default `10`, bounded `1..300`.
 
 Platform Web's Runtime + LLM settings route bounds status fan-out calls with
 `LLM_SETTINGS_FETCH_TIMEOUT_SEC`, default `5`, bounded `1..300`. Model catalog
