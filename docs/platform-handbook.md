@@ -953,6 +953,11 @@ budget it declares.
 Context Fabric's post-invoke MCP event backfill is also best-effort and uses
 `CONTEXT_FABRIC_MCP_EVENT_DRAIN_TIMEOUT_SEC`, default `15`, bounded `1..300`,
 before falling back to whatever the live WebSocket subscriber already captured.
+The live MCP event WebSocket subscriber uses
+`CONTEXT_FABRIC_MCP_EVENT_STREAM_RECV_TIMEOUT_SEC`, default `0.5`, bounded
+`0.1..60`, for idle receive polls, and
+`CONTEXT_FABRIC_MCP_EVENT_STREAM_CLOSE_TIMEOUT_SEC`, default `2`, bounded
+`0.1..60`, for graceful WebSocket close.
 
 Context Fabric's Runtime Bridge direct HTTP debug fallback to MCP is explicit-only
 (`RUNTIME_HTTP_FALLBACK_ENABLED=true`) and bounds finish-branch/worktree write

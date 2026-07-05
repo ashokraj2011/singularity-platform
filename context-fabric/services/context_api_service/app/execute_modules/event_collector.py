@@ -33,7 +33,11 @@ from ..env_config import bounded_float_value
 from ..response_json import response_json_object
 
 _DEFAULT_MCP_EVENT_DRAIN_TIMEOUT_SEC = 15.0
+_DEFAULT_MCP_EVENT_STREAM_RECV_TIMEOUT_SEC = 0.5
+_DEFAULT_MCP_EVENT_STREAM_CLOSE_TIMEOUT_SEC = 2.0
 _MAX_SERVICE_BOUNDARY_TIMEOUT_SEC = 300.0
+_MIN_EVENT_STREAM_TIMEOUT_SEC = 0.1
+_MAX_EVENT_STREAM_TIMEOUT_SEC = 60.0
 
 
 def mcp_event_drain_timeout_sec() -> float:
@@ -43,6 +47,32 @@ def mcp_event_drain_timeout_sec() -> float:
         min_value=1.0,
         max_value=_MAX_SERVICE_BOUNDARY_TIMEOUT_SEC,
         name="CONTEXT_FABRIC_MCP_EVENT_DRAIN_TIMEOUT_SEC",
+    )
+
+
+def mcp_event_stream_recv_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv(
+            "CONTEXT_FABRIC_MCP_EVENT_STREAM_RECV_TIMEOUT_SEC",
+            str(_DEFAULT_MCP_EVENT_STREAM_RECV_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_MCP_EVENT_STREAM_RECV_TIMEOUT_SEC,
+        min_value=_MIN_EVENT_STREAM_TIMEOUT_SEC,
+        max_value=_MAX_EVENT_STREAM_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_MCP_EVENT_STREAM_RECV_TIMEOUT_SEC",
+    )
+
+
+def mcp_event_stream_close_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv(
+            "CONTEXT_FABRIC_MCP_EVENT_STREAM_CLOSE_TIMEOUT_SEC",
+            str(_DEFAULT_MCP_EVENT_STREAM_CLOSE_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_MCP_EVENT_STREAM_CLOSE_TIMEOUT_SEC,
+        min_value=_MIN_EVENT_STREAM_TIMEOUT_SEC,
+        max_value=_MAX_EVENT_STREAM_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_MCP_EVENT_STREAM_CLOSE_TIMEOUT_SEC",
     )
 
 
@@ -107,7 +137,7 @@ async def live_subscribe(
             ws_url,
             subprotocols=[f"bearer.{mcp_bearer}"],
             additional_headers={"Authorization": f"Bearer {mcp_bearer}"},
-            close_timeout=2.0,
+            close_timeout=mcp_event_stream_close_timeout_sec(),
         ) as ws:
             await ws.send(json.dumps({
                 "type": "subscribe.events",
@@ -115,7 +145,7 @@ async def live_subscribe(
             }))
             while not stop_event.is_set():
                 try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
+                    raw = await asyncio.wait_for(ws.recv(), timeout=mcp_event_stream_recv_timeout_sec())
                 except asyncio.TimeoutError:
                     continue
                 except Exception:

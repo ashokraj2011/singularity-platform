@@ -1191,7 +1191,12 @@ the HTTP transport deadline, so the summarizer cannot wait longer than the run
 budget it declares.</p>
 <p>Context Fabric&#39;s post-invoke MCP event backfill is also best-effort and uses
 <code>CONTEXT_FABRIC_MCP_EVENT_DRAIN_TIMEOUT_SEC</code>, default <code>15</code>, bounded <code>1..300</code>,
-before falling back to whatever the live WebSocket subscriber already captured.</p>
+before falling back to whatever the live WebSocket subscriber already captured.
+The live MCP event WebSocket subscriber uses
+<code>CONTEXT_FABRIC_MCP_EVENT_STREAM_RECV_TIMEOUT_SEC</code>, default <code>0.5</code>, bounded
+<code>0.1..60</code>, for idle receive polls, and
+<code>CONTEXT_FABRIC_MCP_EVENT_STREAM_CLOSE_TIMEOUT_SEC</code>, default <code>2</code>, bounded
+<code>0.1..60</code>, for graceful WebSocket close.</p>
 <p>Context Fabric&#39;s Runtime Bridge direct HTTP debug fallback to MCP is explicit-only
 (<code>RUNTIME_HTTP_FALLBACK_ENABLED=true</code>) and bounds finish-branch/worktree write
 calls with <code>CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC</code>, default <code>180</code>,
