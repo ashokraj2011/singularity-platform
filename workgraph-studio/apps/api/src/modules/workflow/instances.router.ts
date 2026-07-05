@@ -1170,6 +1170,11 @@ function buildCopilotWorkflowExport(
     '#   export SINGULARITY_PLATFORM_URL="http://localhost:5180"',
     `#   curl -L "$SINGULARITY_PLATFORM_URL/api/workgraph/workflow-instances/${instance.id}/export/copilot-runner.sh" -H "Authorization: Bearer $SINGULARITY_TOKEN" | bash`,
     '#',
+    "# ANY TOOL: the `stages[].prompt` values are tool-agnostic. Run them in whatever",
+    "# tool you like, then POST your results to `platform.resultEndpoint` in the",
+    "# `resultContract` shape below. PUSH your work to a branch so the platform can",
+    "# verify it in git (see resultContract.verification).",
+    '#',
     'apiVersion: "singularity.dev/v1alpha1"',
     'kind: "CopilotWorkflowRun"',
     'metadata:',
@@ -1185,6 +1190,21 @@ function buildCopilotWorkflowExport(
     '  tokenEnv: "SINGULARITY_TOKEN"',
     'repository:',
     `  url: ${repo ? yamlString(repo) : 'null'}`,
+    // Self-documenting, tool-agnostic post-back contract (reference, not run input).
+    'resultContract:',
+    '  # POST this JSON to platform.resultEndpoint with header: Authorization: Bearer $SINGULARITY_TOKEN',
+    '  source: "<your-tool-name>"          # any identifier, e.g. cursor / manual / claude',
+    '  status: "completed | failed"',
+    '  git:',
+    '    branch: "<branch you pushed to origin>"   # push it — required for git verification',
+    '    commitSha: "<head commit sha>"',
+    '    status: ["<changed file path>", "..."]',
+    '  artifacts:',
+    '    - path: "<repo-relative path>"',
+    '      sha256: "<sha256 of the raw file bytes>"',
+    '      contentBase64: "<base64 of file content>"',
+    '      stageKey: "<one of stages[].key>"',
+    '  verification: "The platform fetches your pushed branch and checks the commit exists + changed-path coverage, then records an advisory verdict on the run. Results with no pushed branch are recorded as UNVERIFIED."',
   )
   if (story) {
     yaml.push('story: |', yamlBlock(story, 2))
