@@ -956,6 +956,11 @@ Prompt Composer's fire-and-forget audit-governance emitter uses
 still do not block request handlers, but operators can tune the ledger wait
 without changing source code.
 
+Context Fabric's audit-governance emitter uses
+`CONTEXT_FABRIC_AUDIT_GOV_EMIT_TIMEOUT_SEC`, default `5`, bounded `1..300`, for
+both best-effort telemetry emits and strict fail-closed governance emits. This
+keeps governed execution from inheriting an unreviewed hardcoded ledger wait.
+
 Audit Governance engine workers use the same bounded env helper. Judge and
 lesson extraction LLM timeouts default to `30000` ms and cap at `300000`; the
 diagnosis timeout defaults to `120000` ms and caps at `600000`. The shared

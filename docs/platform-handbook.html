@@ -1195,6 +1195,10 @@ event emission and approval persistence/consume calls. All three are bounded
 <code>AUDIT_GOV_EMIT_TIMEOUT_SEC</code>, default <code>5</code>, bounded <code>1..300</code>. Emission failures
 still do not block request handlers, but operators can tune the ledger wait
 without changing source code.</p>
+<p>Context Fabric&#39;s audit-governance emitter uses
+<code>CONTEXT_FABRIC_AUDIT_GOV_EMIT_TIMEOUT_SEC</code>, default <code>5</code>, bounded <code>1..300</code>, for
+both best-effort telemetry emits and strict fail-closed governance emits. This
+keeps governed execution from inheriting an unreviewed hardcoded ledger wait.</p>
 <p>Audit Governance engine workers use the same bounded env helper. Judge and
 lesson extraction LLM timeouts default to <code>30000</code> ms and cap at <code>300000</code>; the
 diagnosis timeout defaults to <code>120000</code> ms and caps at <code>600000</code>. The shared

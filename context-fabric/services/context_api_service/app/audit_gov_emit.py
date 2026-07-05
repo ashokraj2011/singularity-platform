@@ -15,11 +15,19 @@ from typing import Any, Optional
 
 import httpx
 
+from .env_config import bounded_float_env
+
 log = logging.getLogger(__name__)
 
 AUDIT_GOV_URL = os.environ.get("AUDIT_GOV_URL", "http://host.docker.internal:8500")
 AUDIT_GOV_SERVICE_TOKEN = os.environ.get("AUDIT_GOV_SERVICE_TOKEN", "")
-TIMEOUT_S = 5.0
+AUDIT_GOV_EMIT_TIMEOUT_SEC = bounded_float_env(
+    "CONTEXT_FABRIC_AUDIT_GOV_EMIT_TIMEOUT_SEC",
+    default=5.0,
+    min_value=1.0,
+    max_value=300.0,
+    logger=log,
+)
 
 
 async def _post(payload: dict[str, Any]) -> None:
@@ -30,7 +38,7 @@ async def _post(payload: dict[str, Any]) -> None:
     if AUDIT_GOV_SERVICE_TOKEN:
         headers["Authorization"] = f"Bearer {AUDIT_GOV_SERVICE_TOKEN}"
     try:
-        async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
+        async with httpx.AsyncClient(timeout=AUDIT_GOV_EMIT_TIMEOUT_SEC) as client:
             res = await client.post(url, json=payload, headers=headers)
             if res.status_code >= 400:
                 log.warning(
@@ -132,7 +140,7 @@ async def emit_audit_event_strict(
     if AUDIT_GOV_SERVICE_TOKEN:
         headers["Authorization"] = f"Bearer {AUDIT_GOV_SERVICE_TOKEN}"
     try:
-        async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
+        async with httpx.AsyncClient(timeout=AUDIT_GOV_EMIT_TIMEOUT_SEC) as client:
             res = await client.post(url, json=body, headers=headers)
             if res.status_code >= 400:
                 raise AuditGovUnavailable(
