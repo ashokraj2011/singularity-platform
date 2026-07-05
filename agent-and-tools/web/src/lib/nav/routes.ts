@@ -42,7 +42,7 @@ export type RouteMeta = {
   /** Primary journey routes render above domain drawers in the sidebar. */
   priority?: "journey" | "primary" | "secondary" | "admin";
   /** Route family for shell/app switcher styling. */
-  surfaceType?: "launch" | "workflow" | "agent" | "operation" | "identity" | "governance" | "knowledge";
+  surfaceType?: "launch" | "workflow" | "agent" | "operation" | "identity" | "governance" | "knowledge" | "runtime";
   /** Optional concise status/lifecycle label for palette and app surfaces. */
   statusLabel?: string;
 };
@@ -126,7 +126,7 @@ export const ROUTES: RouteMeta[] = [
 
   // Governance and FinOps
   { id: "engine", label: "Engine", href: "/engine", group: "Governance and FinOps", icon: Zap, priority: "primary", surfaceType: "governance" },
-  { id: "llm-settings", label: "Runtime + LLM", href: "/llm-settings", group: "Governance and FinOps", icon: Cpu, priority: "journey", surfaceType: "governance", statusLabel: "Runtime" },
+  { id: "llm-settings", label: "Runtime + LLM", href: "/llm-settings", group: "Governance and FinOps", icon: Cpu, priority: "journey", surfaceType: "runtime", statusLabel: "Runtime" },
   { id: "settings", label: "Platform Settings", href: "/settings", group: "Governance and FinOps", icon: Settings, priority: "secondary", surfaceType: "governance", statusLabel: "Settings", description: "Runtime, source, notifications, workflow defaults, and security settings.", keywords: ["settings", "notifications", "runtime", "llm", "git", "security"] },
   { id: "audit", label: "Audit", href: "/audit", group: "Governance and FinOps", icon: ShieldCheck, priority: "primary", surfaceType: "governance" },
   { id: "cost", label: "Cost", href: "/cost", group: "Governance and FinOps", icon: DollarSign, priority: "primary", surfaceType: "governance" },

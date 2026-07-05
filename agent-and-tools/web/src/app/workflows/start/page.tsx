@@ -405,7 +405,7 @@ export default function WorkflowStartPage() {
       <section className="page-hero" style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
           <div>
-            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--color-primary)", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 10 }}>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--accent-workflow)", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 10 }}>
               <Rocket size={15} />
               Guided SDLC Launcher
             </div>
@@ -457,8 +457,8 @@ export default function WorkflowStartPage() {
               className="card-hover"
               style={{
                 textAlign: "left",
-                border: item.id === intentId ? "1px solid rgba(54,135,39,0.45)" : "1px solid var(--color-outline-variant)",
-                background: item.id === intentId ? "rgba(240,253,244,0.82)" : "#fff",
+                border: item.id === intentId ? "1px solid rgba(37,99,235,0.42)" : "1px solid var(--color-outline-variant)",
+                background: item.id === intentId ? "var(--accent-workflow-soft)" : "#fff",
                 borderRadius: 8,
                 padding: 13,
                 cursor: "pointer",

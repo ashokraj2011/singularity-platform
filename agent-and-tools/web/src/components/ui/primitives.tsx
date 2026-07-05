@@ -27,7 +27,7 @@ export function PageHeader({
       <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div className="min-w-0">
           {eyebrow && (
-            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-800">
+            <div className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-blue-800">
               {Icon && <Icon size={13} />}
               {eyebrow}
             </div>
@@ -45,6 +45,8 @@ export function PageHeader({
 const METRIC_TONES = {
   emerald: "border-emerald-200 bg-emerald-50 text-emerald-900",
   blue: "border-blue-200 bg-blue-50 text-blue-900",
+  cyan: "border-cyan-200 bg-cyan-50 text-cyan-900",
+  violet: "border-violet-200 bg-violet-50 text-violet-900",
   amber: "border-amber-200 bg-amber-50 text-amber-900",
   red: "border-red-200 bg-red-50 text-red-900",
   slate: "border-slate-200 bg-slate-50 text-slate-900",
@@ -81,9 +83,9 @@ const STATE_STYLE: Record<UiState, { label: string; cls: string }> = {
   degraded:        { label: "Degraded",      cls: "border-amber-200 bg-amber-50 text-amber-800" },
   blocked:         { label: "Blocked",       cls: "border-red-200 bg-red-50 text-red-700" },
   offline:         { label: "Offline",       cls: "border-slate-200 bg-slate-100 text-slate-600" },
-  guarded:         { label: "Needs auth",    cls: "border-blue-200 bg-blue-50 text-blue-700" },
-  "needs-auth":    { label: "Needs auth",    cls: "border-blue-200 bg-blue-50 text-blue-700" },
-  "needs-runtime": { label: "Needs runtime", cls: "border-violet-200 bg-violet-50 text-violet-700" },
+  guarded:         { label: "Needs auth",    cls: "border-slate-200 bg-slate-50 text-slate-700" },
+  "needs-auth":    { label: "Needs auth",    cls: "border-slate-200 bg-slate-50 text-slate-700" },
+  "needs-runtime": { label: "Needs runtime", cls: "border-cyan-200 bg-cyan-50 text-cyan-700" },
   optional:        { label: "Optional",      cls: "border-slate-200 bg-slate-50 text-slate-500" },
 };
 
@@ -126,18 +128,19 @@ export function PageShell({
 
 export function IconTile({
   icon: Icon,
-  tone = "emerald",
+  tone = "blue",
   size = "md",
   title,
 }: {
   icon: LucideIcon;
-  tone?: "emerald" | "blue" | "violet" | "amber" | "rose" | "slate";
+  tone?: "emerald" | "blue" | "cyan" | "violet" | "amber" | "rose" | "slate";
   size?: "sm" | "md" | "lg";
   title?: string;
 }) {
   const tones = {
     emerald: "bg-emerald-50 text-emerald-700 ring-emerald-100",
     blue: "bg-blue-50 text-blue-700 ring-blue-100",
+    cyan: "bg-cyan-50 text-cyan-700 ring-cyan-100",
     violet: "bg-violet-50 text-violet-700 ring-violet-100",
     amber: "bg-amber-50 text-amber-700 ring-amber-100",
     rose: "bg-rose-50 text-rose-700 ring-rose-100",
@@ -169,7 +172,7 @@ export function PageHero({
   title: string;
   description?: React.ReactNode;
   icon?: LucideIcon;
-  tone?: "emerald" | "blue" | "violet" | "amber" | "rose" | "slate";
+  tone?: "emerald" | "blue" | "cyan" | "violet" | "amber" | "rose" | "slate";
   actions?: React.ReactNode;
   rail?: React.ReactNode;
 }) {
@@ -401,7 +404,7 @@ export function Stepper({ steps }: { steps: Step[] }) {
         const status = step.status ?? "todo";
         const tone =
           status === "done" ? "bg-emerald-600 text-white border-emerald-600"
-          : status === "current" ? "bg-emerald-50 text-emerald-800 border-emerald-300"
+          : status === "current" ? "bg-blue-50 text-blue-800 border-blue-300"
           : "bg-white text-slate-500 border-slate-200";
         return (
           <li key={step.label} className="flex items-center gap-1">
@@ -425,7 +428,7 @@ const PERMISSION_STYLE: Record<PermissionKind, { label: string; cls: string }> =
   read:              { label: "Read-only",      cls: "border-slate-200 bg-slate-50 text-slate-600" },
   invoke:            { label: "Invoke",         cls: "border-blue-200 bg-blue-50 text-blue-700" },
   configure:         { label: "Configure",      cls: "border-amber-200 bg-amber-50 text-amber-800" },
-  edit:              { label: "Edit",           cls: "border-emerald-200 bg-emerald-50 text-emerald-700" },
+  edit:              { label: "Edit",           cls: "border-violet-200 bg-violet-50 text-violet-700" },
   "provider-locked": { label: "Provider locked", cls: "border-slate-200 bg-slate-100 text-slate-500" },
 };
 export function PermissionChip({ kind, label }: { kind: PermissionKind; label?: string }) {

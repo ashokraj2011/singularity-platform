@@ -447,7 +447,7 @@ export default function LlmSettingsPage() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="mb-3 inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
-            <RadioTower size={15} className="text-emerald-700" />
+            <RadioTower size={15} className="text-cyan-700" />
             Runtime + LLM Switchboard
           </div>
           <h1 className="page-header text-3xl font-black text-slate-950">Runtime Bridge and Model Routing</h1>
@@ -475,7 +475,7 @@ export default function LlmSettingsPage() {
           ["Workflows", "model-run frames"],
         ].map(([label, detail]) => (
           <div key={label} className="evidence-step">
-            <span className="grid h-8 w-8 place-items-center rounded-lg bg-emerald-50 text-emerald-700"><RadioTower size={15} /></span>
+            <span className="grid h-8 w-8 place-items-center rounded-lg bg-cyan-50 text-cyan-700"><RadioTower size={15} /></span>
             <span>
               <strong className="block text-[13px] text-slate-900">{label}</strong>
               <span className="text-[11px] text-slate-500">{detail}</span>

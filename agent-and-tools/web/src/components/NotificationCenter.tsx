@@ -79,7 +79,7 @@ function TopbarIconButton({
         height: 32,
         borderRadius: 10,
         border: "1px solid var(--color-outline-variant)",
-        background: open ? "var(--color-surface-container)" : "transparent",
+        background: open ? "var(--color-surface-container)" : "var(--color-surface-low)",
         cursor: "pointer",
         display: "flex",
         alignItems: "center",
@@ -236,7 +236,7 @@ export function NotificationCenter() {
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, padding: 14, borderBottom: "1px solid var(--color-outline-variant)" }}>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 900, color: "var(--color-on-surface)" }}>
-                <Bell size={16} style={{ color: "var(--color-primary)" }} />
+                <Bell size={16} style={{ color: "var(--accent-evidence)" }} />
                 Platform Notifications
               </div>
               <p style={{ margin: "4px 0 0", fontSize: 12, lineHeight: 1.45, color: "var(--color-outline)" }}>
@@ -257,7 +257,7 @@ export function NotificationCenter() {
                 style={{
                   border: "1px solid var(--color-outline-variant)",
                   borderRadius: 999,
-                  background: activeTab === tab ? "var(--color-primary)" : "#fff",
+                  background: activeTab === tab ? "var(--accent-workflow)" : "#fff",
                   color: activeTab === tab ? "#fff" : "var(--color-on-surface-variant)",
                   padding: "5px 9px",
                   fontSize: 11,

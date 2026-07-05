@@ -8,7 +8,7 @@ export default function WorkflowsDomainPage() {
       <section className="page-hero">
         <div style={{ display: "flex", justifyContent: "space-between", gap: 18, alignItems: "flex-end", flexWrap: "wrap" }}>
           <div>
-            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--color-primary)", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 10 }}>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--accent-workflow)", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 10 }}>
               <Workflow size={15} />
               Workflows
             </div>
@@ -34,7 +34,7 @@ export default function WorkflowsDomainPage() {
             const Icon = item.icon;
             return (
               <div key={item.label} className="evidence-step">
-                <span style={{ width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", background: "rgba(54,135,39,0.11)", color: "var(--color-primary)" }}>
+                <span style={{ width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--accent-workflow-soft)", color: "var(--accent-workflow)" }}>
                   <Icon size={16} />
                 </span>
                 <span>
@@ -84,8 +84,8 @@ export default function WorkflowsDomainPage() {
 function ModeCard({ icon: Icon, title, detail, href, primary = false }: { icon: typeof Play; title: string; detail: string; href: string; primary?: boolean }) {
   return (
     <Link href={href} style={{ textDecoration: "none" }}>
-      <article className="card card-hover" style={{ minHeight: 170, padding: 16, borderRadius: 8, boxShadow: "none", borderColor: primary ? "rgba(54,135,39,0.35)" : "var(--color-outline-variant)" }}>
-        <span style={{ width: 38, height: 38, borderRadius: 8, display: "grid", placeItems: "center", color: primary ? "var(--color-primary)" : "#475569", background: primary ? "rgba(54,135,39,0.11)" : "#f1f5f9", marginBottom: 12 }}>
+      <article className="card card-hover" style={{ minHeight: 170, padding: 16, borderRadius: 8, boxShadow: "none", borderColor: primary ? "rgba(37,99,235,0.32)" : "var(--color-outline-variant)" }}>
+        <span style={{ width: 38, height: 38, borderRadius: 8, display: "grid", placeItems: "center", color: primary ? "var(--accent-workflow)" : "#475569", background: primary ? "var(--accent-workflow-soft)" : "#f1f5f9", marginBottom: 12 }}>
           <Icon size={18} />
         </span>
         <h3 style={{ margin: 0, fontSize: 15, fontWeight: 900, color: "var(--color-on-surface)" }}>{title}</h3>
@@ -99,7 +99,7 @@ function GateCard({ icon: Icon, title, detail }: { icon: typeof Play; title: str
   return (
     <article style={{ border: "1px solid var(--color-outline-variant)", background: "#fff", borderRadius: 8, padding: 13 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 9 }}>
-        <span style={{ width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", color: "var(--color-primary)", background: "rgba(54,135,39,0.1)" }}>
+        <span style={{ width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", color: "var(--accent-evidence)", background: "var(--accent-evidence-soft)" }}>
           <Icon size={16} />
         </span>
         <strong style={{ color: "var(--color-on-surface)", fontSize: 13 }}>{title}</strong>

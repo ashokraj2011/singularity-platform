@@ -28,6 +28,12 @@ assert.match(
   "platform-web Next cache cleaner should retry transient ENOTEMPTY/EBUSY removals before failing builds",
 );
 
+assert.match(
+  scriptSource,
+  /SINGULARITY_WEB_FORCE_CLEAN_NEXT[\s\S]*?runningNextServers\(appRoot\)[\s\S]*?process\.exit\(1\)/,
+  "platform-web Next cache cleaner should refuse live repo-owned Next servers to avoid missing dev chunks",
+);
+
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "platform-web-next-cache-"));
 const nextServerDir = path.join(tempRoot, ".next/server/vendor-chunks");
 fs.mkdirSync(nextServerDir, { recursive: true });

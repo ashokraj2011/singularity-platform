@@ -46,7 +46,7 @@ export function AppSwitcher({ currentApp }: { currentApp?: string }) {
           gap: 8,
           borderRadius: 10,
           border: "1px solid var(--color-outline-variant)",
-          background: open ? "var(--color-surface-container)" : "transparent",
+          background: open ? "var(--color-surface-container)" : "var(--color-surface-low)",
           color: "var(--color-on-surface)",
           cursor: "pointer",
           padding: "0 10px",
@@ -55,7 +55,7 @@ export function AppSwitcher({ currentApp }: { currentApp?: string }) {
           transition: "all 0.15s",
         }}
       >
-        <Grid3X3 size={14} style={{ color: "var(--color-primary)" }} />
+        <Grid3X3 size={14} style={{ color: "var(--accent-identity)" }} />
         <span>{current.label}</span>
       </button>
       {open && (
@@ -80,6 +80,7 @@ export function AppSwitcher({ currentApp }: { currentApp?: string }) {
           {links.map(item => {
             const Icon = item.icon;
             const active = item.id === resolvedCurrentApp;
+            const accent = appAccent(item.id);
             // Internal entries stay in this unified Next app. External
             // URLs are still supported for remote/developer surfaces.
             const isExternalApp = item.nativeHref.startsWith("http");
@@ -98,7 +99,7 @@ export function AppSwitcher({ currentApp }: { currentApp?: string }) {
                   borderRadius: 10,
                   padding: "10px",
                   color: "var(--color-on-surface)",
-                  background: active ? "var(--color-primary-dim)" : "transparent",
+                  background: active ? accent.bg : "transparent",
                   textDecoration: "none",
                 }}
               >
@@ -108,8 +109,8 @@ export function AppSwitcher({ currentApp }: { currentApp?: string }) {
                   display: "grid",
                   placeItems: "center",
                   borderRadius: 9,
-                  background: active ? "var(--color-primary)" : "var(--color-surface-container)",
-                  color: active ? "#fff" : "var(--color-primary)",
+                  background: active ? accent.fg : "var(--color-surface-container)",
+                  color: active ? "#fff" : accent.fg,
                   flexShrink: 0,
                 }}>
                   <Icon size={16} />
@@ -128,4 +129,11 @@ export function AppSwitcher({ currentApp }: { currentApp?: string }) {
       )}
     </div>
   );
+}
+
+function appAccent(id: string): { fg: string; bg: string } {
+  if (id === "agent-studio") return { fg: "var(--accent-agent)", bg: "var(--accent-agent-soft)" };
+  if (id === "identity") return { fg: "var(--accent-identity)", bg: "var(--accent-identity-soft)" };
+  if (id === "operations") return { fg: "var(--accent-runtime)", bg: "var(--accent-runtime-soft)" };
+  return { fg: "var(--accent-workflow)", bg: "var(--accent-workflow-soft)" };
 }

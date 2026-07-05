@@ -53,7 +53,9 @@ function NavItem({
   active,
   collapsed,
   statusLabel,
+  surfaceType,
 }: RouteMeta & { active: boolean; collapsed: boolean }) {
+  const accent = surfaceAccent(surfaceType);
   return (
     <Link href={href} className="block" aria-current={active ? "page" : undefined}>
       <motion.div
@@ -72,12 +74,15 @@ function NavItem({
               width: 3,
               height: 22,
               borderRadius: "2px 0 0 2px",
-              background: "var(--brand-green-accent)",
-              boxShadow: "0 0 10px rgba(54,135,39,0.35)",
+              background: accent.fg,
+              boxShadow: `0 0 10px ${accent.glow}`,
             }}
           />
         )}
-        <span className="nav-icon-well">
+        <span
+          className="nav-icon-well"
+          style={active ? { background: accent.bg, color: accent.fg } : undefined}
+        >
           <Icon size={16} />
         </span>
         {!collapsed && (
@@ -88,9 +93,9 @@ function NavItem({
                 style={{
                   marginLeft: "auto",
                   borderRadius: 999,
-                  border: "1px solid rgba(54,135,39,0.18)",
-                  background: "rgba(54,135,39,0.07)",
-                  color: "var(--color-primary)",
+                  border: `1px solid ${accent.border}`,
+                  background: accent.bg,
+                  color: accent.fg,
                   padding: "1px 6px",
                   fontSize: 10,
                   fontWeight: 800,
@@ -104,6 +109,27 @@ function NavItem({
       </motion.div>
     </Link>
   );
+}
+
+function surfaceAccent(surfaceType?: RouteMeta["surfaceType"]): { fg: string; bg: string; border: string; glow: string } {
+  switch (surfaceType) {
+    case "agent":
+      return { fg: "var(--accent-agent)", bg: "var(--accent-agent-soft)", border: "rgba(124,58,237,0.20)", glow: "rgba(124,58,237,0.28)" };
+    case "runtime":
+    case "operation":
+      return { fg: "var(--accent-runtime)", bg: "var(--accent-runtime-soft)", border: "rgba(8,145,178,0.22)", glow: "rgba(8,145,178,0.28)" };
+    case "identity":
+      return { fg: "var(--accent-identity)", bg: "var(--accent-identity-soft)", border: "rgba(71,85,105,0.22)", glow: "rgba(71,85,105,0.24)" };
+    case "governance":
+      return { fg: "var(--accent-evidence)", bg: "var(--accent-evidence-soft)", border: "rgba(217,119,6,0.22)", glow: "rgba(217,119,6,0.28)" };
+    case "workflow":
+      return { fg: "var(--accent-workflow)", bg: "var(--accent-workflow-soft)", border: "rgba(37,99,235,0.22)", glow: "rgba(37,99,235,0.28)" };
+    case "knowledge":
+      return { fg: "var(--accent-runtime)", bg: "var(--accent-runtime-soft)", border: "rgba(8,145,178,0.22)", glow: "rgba(8,145,178,0.28)" };
+    case "launch":
+    default:
+      return { fg: "var(--accent-workflow)", bg: "var(--accent-workflow-soft)", border: "rgba(37,99,235,0.22)", glow: "rgba(37,99,235,0.28)" };
+  }
 }
 
 function SectionHeader({
@@ -340,12 +366,12 @@ export function Sidebar() {
               style={{
                 margin: "3px 0 0",
                 overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
+                whiteSpace: "normal",
                 color: "var(--color-outline)",
-                fontSize: 10,
+                fontSize: 10.5,
                 fontWeight: 800,
-                letterSpacing: "0.08em",
+                letterSpacing: "0.045em",
+                lineHeight: 1.18,
                 textTransform: "uppercase",
               }}
             >
@@ -375,9 +401,9 @@ export function Sidebar() {
       <nav style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "10px 8px" }}>
         <section className={effectiveCollapsed ? "" : "journey-rail"} title="Primary SDLC journey">
           {!effectiveCollapsed && (
-            <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "2px 4px 8px", color: "var(--color-primary)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "2px 4px 8px", color: "var(--accent-workflow)" }}>
               <Sparkles size={14} />
-              <span className="label-xs" style={{ margin: 0, color: "var(--color-primary)" }}>Primary Journey</span>
+              <span className="label-xs" style={{ margin: 0, color: "var(--accent-workflow)" }}>Primary Journey</span>
             </div>
           )}
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>

@@ -96,7 +96,7 @@ export function WorkflowManager({ initialTab = "templates" }: { initialTab?: "te
       <section className="card" style={{ padding: 22, marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
           <div>
-            <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8 }}>Workflow Manager</div>
+            <div className="label-xs" style={{ color: "var(--accent-workflow)", marginBottom: 8 }}>Workflow Manager</div>
             <h1 className="page-header" style={{ marginBottom: 8 }}>Workflows</h1>
             <p style={{ margin: 0, maxWidth: 780, color: "var(--color-outline)", fontSize: 14, lineHeight: 1.55 }}>
               Create workflow templates, edit design graphs, start runs from WorkItems, and inspect live execution.
@@ -228,7 +228,7 @@ export function StartWorkflowCatalog() {
       <section className="card" style={{ padding: 22, marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 12, alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap" }}>
           <div>
-            <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8 }}>Runtime</div>
+            <div className="label-xs" style={{ color: "var(--accent-runtime)", marginBottom: 8 }}>Runtime</div>
             <h1 className="page-header" style={{ marginBottom: 8 }}>Start Workflow</h1>
             <p style={{ color: "var(--color-outline)", fontSize: 14, margin: 0 }}>Choose a published workflow and attach it to an available WorkItem.</p>
           </div>
@@ -246,7 +246,7 @@ export function StartWorkflowCatalog() {
         {workflows.map((workflow) => (
           <article key={workflow.id} className="card card-hover" style={{ padding: 16, minHeight: 178, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
             <div>
-              <span style={iconBox("var(--color-primary)")}><Workflow size={17} /></span>
+              <span style={iconBox("#2563eb")}><Workflow size={17} /></span>
               <h2 style={{ fontSize: 15, fontWeight: 850, margin: "12px 0 5px", color: "var(--color-on-surface)" }}>{workflow.name}</h2>
               <p style={{ fontSize: 12, color: "var(--color-outline)", lineHeight: 1.45, margin: 0 }}>{workflow.description || "No description"}</p>
             </div>
@@ -587,7 +587,7 @@ function Metric({ label, value }: { label: string; value: string | number }) {
 
 function Segment({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button type="button" onClick={onClick} style={{ border: 0, borderRadius: 8, padding: "7px 13px", cursor: "pointer", fontSize: 12, fontWeight: 800, background: active ? "rgba(54,135,39,0.12)" : "transparent", color: active ? "var(--color-primary)" : "var(--color-outline)" }}>
+    <button type="button" onClick={onClick} style={{ border: 0, borderRadius: 8, padding: "7px 13px", cursor: "pointer", fontSize: 12, fontWeight: 800, background: active ? "rgba(37,99,235,0.10)" : "transparent", color: active ? "var(--accent-workflow)" : "var(--color-outline)" }}>
       {children}
     </button>
   );
@@ -629,7 +629,7 @@ function ModalHeader({ eyebrow, title, onClose }: { eyebrow: string; title: stri
   return (
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", marginBottom: 16 }}>
       <div>
-        <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 6 }}>{eyebrow}</div>
+        <div className="label-xs" style={{ color: "var(--accent-workflow)", marginBottom: 6 }}>{eyebrow}</div>
         <h2 style={{ margin: 0, fontSize: 22, fontWeight: 850, color: "var(--color-on-surface)" }}>{title}</h2>
       </div>
       <button type="button" className="btn-secondary" onClick={onClose} aria-label="Close"><X size={15} /></button>
@@ -662,7 +662,8 @@ function iconBox(color: string): React.CSSProperties {
 
 function statusColor(status: unknown): string {
   const value = String(status ?? "").toUpperCase();
-  if (value === "ACTIVE" || value === "COMPLETED") return "#368727";
+  if (value === "ACTIVE") return "#2563eb";
+  if (value === "COMPLETED") return "#168a5b";
   if (value === "PAUSED" || value === "BLOCKED") return "#d97706";
   if (value === "FAILED" || value === "CANCELLED") return "#ba1a1a";
   return "#64748b";

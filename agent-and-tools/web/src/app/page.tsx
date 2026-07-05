@@ -49,7 +49,7 @@ const loop = [
     href: "/work-items",
     icon: ClipboardList,
     detail: "WorkItems, roadmap, and capability context",
-    tone: "#004b8d",
+    tone: "#2563eb",
   },
   {
     label: "Plan",
@@ -57,7 +57,7 @@ const loop = [
     href: "/workflows/start",
     icon: Workflow,
     detail: "Intent, template, runtime checks, and governed run kickoff",
-    tone: "#368727",
+    tone: "#2563eb",
   },
   {
     label: "Assign",
@@ -65,7 +65,7 @@ const loop = [
     href: "/agents/studio",
     icon: Bot,
     detail: "Profiles, skills, tools, prompt policies, and grants",
-    tone: "#6d28d9",
+    tone: "#7c3aed",
   },
   {
     label: "Verify",
@@ -73,7 +73,7 @@ const loop = [
     href: "/runs",
     icon: FileCheck2,
     detail: "Run evidence, governance checks, artifacts, and review",
-    tone: "#0f766e",
+    tone: "#d97706",
   },
   {
     label: "Operate",
@@ -81,7 +81,7 @@ const loop = [
     href: "/operations/readiness",
     icon: Network,
     detail: "Readiness, topology, trust, costs, and infrastructure",
-    tone: "#475569",
+    tone: "#0891b2",
   },
   {
     label: "Audit",
@@ -89,7 +89,7 @@ const loop = [
     href: "/audit",
     icon: ShieldCheck,
     detail: "Contracts, receipts, lifecycle history, and policy proof",
-    tone: "#15803d",
+    tone: "#475569",
   },
   {
     label: "Learn",
@@ -117,8 +117,8 @@ const evidenceLinks = [
 ];
 
 function valueTone(state: CountResult["state"]) {
-  if (state === "live") return "#368727";
-  if (state === "guarded") return "#004b8d";
+  if (state === "live") return "#168a5b";
+  if (state === "guarded") return "#475569";
   return "#b45309";
 }
 
@@ -166,7 +166,7 @@ export default async function SdlcCommandCenterPage() {
     <div style={{ maxWidth: 1440, display: "grid", gap: 18 }}>
       <section style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.35fr) minmax(320px, 0.65fr)", gap: 18, alignItems: "stretch" }}>
         <div className="page-hero">
-          <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--color-primary)", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 10 }}>
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--accent-workflow)", background: "var(--accent-workflow-soft)", border: "1px solid rgba(37,99,235,0.18)", borderRadius: 999, padding: "5px 10px", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 12 }}>
             <Sparkles size={15} />
             Agentic SDLC Command Center
           </div>
@@ -183,7 +183,7 @@ export default async function SdlcCommandCenterPage() {
               ["05", "Evidence", "Export proof"],
             ].map(([step, label, detail]) => (
               <div key={step} className="evidence-step">
-                <span style={{ width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", background: "rgba(54,135,39,0.11)", color: "var(--color-primary)", fontWeight: 900, fontSize: 11 }}>{step}</span>
+                <span style={{ width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--accent-workflow-soft)", color: "var(--accent-workflow)", fontWeight: 900, fontSize: 11 }}>{step}</span>
                 <span>
                   <strong style={{ display: "block", color: "var(--color-on-surface)", fontSize: 13 }}>{label}</strong>
                   <span style={{ display: "block", color: "var(--color-outline)", fontSize: 11, marginTop: 1 }}>{detail}</span>
@@ -202,7 +202,7 @@ export default async function SdlcCommandCenterPage() {
               <h2 style={{ margin: 0, fontSize: 17, fontWeight: 900 }}>Live Signals</h2>
               <p style={{ margin: "3px 0 0", color: "var(--color-outline)", fontSize: 12 }}>Counts update from the running platform APIs.</p>
             </div>
-            <CheckCircle2 size={16} color="var(--color-primary)" />
+            <CheckCircle2 size={16} color="var(--color-success)" />
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
             <Signal label="Agents" result={agents} />
@@ -243,7 +243,7 @@ export default async function SdlcCommandCenterPage() {
                   </div>
                   <h3 style={{ margin: 0, fontSize: 15, fontWeight: 850 }}>{stage.title}</h3>
                   <p style={{ margin: "7px 0 0", color: "var(--color-outline)", fontSize: 12, lineHeight: 1.5 }}>{stage.detail}</p>
-                  <div style={{ marginTop: 13, color: "var(--color-primary)", fontSize: 12, fontWeight: 850, display: "flex", alignItems: "center", gap: 6 }}>
+                  <div style={{ marginTop: 13, color: stage.tone, fontSize: 12, fontWeight: 850, display: "flex", alignItems: "center", gap: 6 }}>
                     Open surface
                     <ArrowRight size={13} />
                   </div>

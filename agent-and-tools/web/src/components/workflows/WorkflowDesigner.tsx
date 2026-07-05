@@ -101,16 +101,16 @@ type WorkflowNodeData = {
 };
 
 const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType; label: string }> = {
-  START: { color: "#368727", Icon: Play, label: "Start" },
+  START: { color: "#2563eb", Icon: Play, label: "Start" },
   END: { color: "#64748b", Icon: Square, label: "End" },
-  HUMAN_TASK: { color: "#16a34a", Icon: User, label: "Human Task" },
-  AGENT_TASK: { color: "#0284c7", Icon: Bot, label: "Agent Task" },
+  HUMAN_TASK: { color: "#d97706", Icon: User, label: "Human Task" },
+  AGENT_TASK: { color: "#7c3aed", Icon: Bot, label: "Agent Task" },
   WORKBENCH_TASK: { color: "#7c3aed", Icon: Braces, label: "Workbench Task" },
-  APPROVAL: { color: "#65a30d", Icon: CheckCircle2, label: "Approval" },
-  DECISION_GATE: { color: "#9333ea", Icon: GitMerge, label: "Decision Gate" },
-  CONSUMABLE_CREATION: { color: "#059669", Icon: Package, label: "Create Artifact" },
+  APPROVAL: { color: "#168a5b", Icon: CheckCircle2, label: "Approval" },
+  DECISION_GATE: { color: "#2563eb", Icon: GitMerge, label: "Decision Gate" },
+  CONSUMABLE_CREATION: { color: "#d97706", Icon: Package, label: "Create Artifact" },
   TOOL_REQUEST: { color: "#ea580c", Icon: Wrench, label: "Tool Request" },
-  GIT_PUSH: { color: "#15803d", Icon: GitBranch, label: "Git Push" },
+  GIT_PUSH: { color: "#475569", Icon: GitBranch, label: "Git Push" },
   POLICY_CHECK: { color: "#475569", Icon: Shield, label: "Policy Check" },
   TIMER: { color: "#ca8a04", Icon: Clock, label: "Timer" },
   SIGNAL_WAIT: { color: "#0891b2", Icon: Radio, label: "Signal Wait" },
@@ -124,7 +124,7 @@ const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType; labe
   DATA_SINK: { color: "#0ea5e9", Icon: Database, label: "Data Sink" },
   RUN_PYTHON: { color: "#3776ab", Icon: Terminal, label: "Run Python" },
   GOVERNANCE_GATE: { color: "#7c3aed", Icon: ShieldCheck, label: "Governance Gate" },
-  VERIFIER: { color: "#0d9488", Icon: BadgeCheck, label: "Verifier" },
+  VERIFIER: { color: "#0891b2", Icon: BadgeCheck, label: "Verifier" },
   EVAL_GATE: { color: "#6366f1", Icon: GitMerge, label: "Eval Gate" },
   WORK_ITEM: { color: "#0284c7", Icon: ClipboardList, label: "Work Item" },
   SET_CONTEXT: { color: "#0891b2", Icon: Braces, label: "Set Context" },
@@ -372,7 +372,7 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
       <section className="card" style={{ padding: 20, marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
           <div style={{ minWidth: 0 }}>
-            <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8 }}>React Flow Workgraph Designer</div>
+            <div className="label-xs" style={{ color: "var(--accent-workflow)", marginBottom: 8 }}>React Flow Workgraph Designer</div>
             <h1 className="page-header" style={{ marginBottom: 8 }}>{template?.name ?? "Workflow"}</h1>
             <p style={{ color: "var(--color-outline)", fontSize: 13, margin: 0, lineHeight: 1.5, maxWidth: 820 }}>
               {template?.description || "Pan, zoom, connect nodes, and drag to persist graph layout."}

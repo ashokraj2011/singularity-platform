@@ -119,13 +119,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 gap: 5,
                 padding: "4px 10px",
                 borderRadius: 20,
-                border: "1px solid rgba(54,135,39,0.18)",
-                background: "rgba(54,135,39,0.06)",
+                border: "1px solid rgba(37,99,235,0.18)",
+                background: "rgba(37,99,235,0.07)",
                 fontSize: 10,
                 fontWeight: 700,
                 textTransform: "uppercase",
                 letterSpacing: "0.14em",
-                color: "var(--color-primary)",
+                color: "var(--accent-workflow)",
               }}
             >
               <span
@@ -133,7 +133,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   width: 6,
                   height: 6,
                   borderRadius: "50%",
-                  background: "var(--color-primary)",
+                  background: "var(--accent-workflow)",
                   flexShrink: 0,
                 }}
               />
@@ -158,7 +158,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 display: "flex", alignItems: "center", gap: 6,
                 height: 32, padding: "0 10px", borderRadius: 10,
                 border: "1px solid var(--color-outline-variant)",
-                background: "transparent", cursor: "pointer",
+                background: "var(--color-surface-low)", cursor: "pointer",
                 color: "var(--color-outline)", fontSize: 12, transition: "all 0.15s",
               }}
             >
@@ -176,7 +176,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               style={{
                 width: 32, height: 32, borderRadius: 10,
                 border: "1px solid var(--color-outline-variant)",
-                background: "transparent", cursor: "pointer",
+                background: "var(--color-surface-low)", cursor: "pointer",
                 display: "flex", alignItems: "center", justifyContent: "center",
                 textDecoration: "none",
                 color: "var(--color-outline)", transition: "all 0.15s",

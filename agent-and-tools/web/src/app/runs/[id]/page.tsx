@@ -23,7 +23,7 @@ export default function RunDetailPage() {
       <section className="page-hero" style={{ padding: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
           <div>
-            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--color-primary)", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 8 }}>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--accent-workflow)", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 8 }}>
               <Activity size={15} />
               Run Cockpit
             </div>
@@ -62,7 +62,7 @@ export default function RunDetailPage() {
             ["Copilot", "YAML handoff"],
           ].map(([label, detail]) => (
             <div key={label} className="evidence-step">
-              <span style={{ width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", background: "rgba(54,135,39,0.11)", color: "var(--color-primary)" }}>
+              <span style={{ width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--accent-workflow-soft)", color: "var(--accent-workflow)" }}>
                 <Activity size={15} />
               </span>
               <span>
@@ -125,7 +125,7 @@ function ActionCard({
   const body = (
     <article className="card-hover" style={{ minHeight: 126, border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 13, background: "#fff" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 10 }}>
-        <span style={{ width: 34, height: 34, borderRadius: 8, display: "grid", placeItems: "center", background: "rgba(54,135,39,0.11)", color: "var(--color-primary)" }}>
+        <span style={{ width: 34, height: 34, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--accent-evidence-soft)", color: "var(--accent-evidence)" }}>
           <Icon size={16} />
         </span>
         <span className="label-xs" style={{ color: "var(--color-outline)" }}>{label}</span>
