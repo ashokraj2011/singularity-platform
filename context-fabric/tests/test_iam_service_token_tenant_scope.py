@@ -1,3 +1,6 @@
+import importlib
+from pathlib import Path
+
 from context_api_service.app import iam_service_token
 from context_api_service.app.config import settings
 import httpx
@@ -39,9 +42,11 @@ def test_validate_iam_service_token_tenant_scope_requires_exact_match(monkeypatc
 class FakeAsyncClient:
     responses: list[httpx.Response] = []
     calls: list[tuple[str, str]] = []
+    timeouts: list[float] = []
 
     def __init__(self, timeout: float):
         self.timeout = timeout
+        self.timeouts.append(timeout)
 
     async def __aenter__(self):
         return self
@@ -68,10 +73,12 @@ async def test_mint_returns_none_when_bootstrap_login_returns_invalid_json(monke
     monkeypatch.setenv("IAM_BOOTSTRAP_PASSWORD", "Admin1234!")
     FakeAsyncClient.responses = [_response(200, "Internal Server Error")]
     FakeAsyncClient.calls = []
+    FakeAsyncClient.timeouts = []
     monkeypatch.setattr(iam_service_token.httpx, "AsyncClient", FakeAsyncClient)
 
     assert await iam_service_token._mint() is None
     assert FakeAsyncClient.calls == [("POST", "http://iam.local/auth/local/login")]
+    assert FakeAsyncClient.timeouts == [iam_service_token.IAM_SERVICE_TOKEN_TIMEOUT_SEC]
 
 
 @pytest.mark.asyncio
@@ -86,6 +93,7 @@ async def test_mint_returns_none_when_service_token_mint_returns_invalid_json(mo
         _response(200, "<html>not json</html>"),
     ]
     FakeAsyncClient.calls = []
+    FakeAsyncClient.timeouts = []
     monkeypatch.setattr(iam_service_token.httpx, "AsyncClient", FakeAsyncClient)
 
     assert await iam_service_token._mint() is None
@@ -93,3 +101,34 @@ async def test_mint_returns_none_when_service_token_mint_returns_invalid_json(mo
         ("POST", "http://iam.local/auth/local/login"),
         ("POST", "http://iam.local/auth/service-token"),
     ]
+    assert FakeAsyncClient.timeouts == [iam_service_token.IAM_SERVICE_TOKEN_TIMEOUT_SEC]
+
+
+def _reload_with_timeout(monkeypatch, value: str | None):
+    if value is None:
+        monkeypatch.delenv("CONTEXT_FABRIC_IAM_SERVICE_TOKEN_TIMEOUT_SEC", raising=False)
+    else:
+        monkeypatch.setenv("CONTEXT_FABRIC_IAM_SERVICE_TOKEN_TIMEOUT_SEC", value)
+    return importlib.reload(iam_service_token)
+
+
+def test_iam_service_token_timeout_is_bounded_env(monkeypatch):
+    assert _reload_with_timeout(monkeypatch, None).IAM_SERVICE_TOKEN_TIMEOUT_SEC == 10.0
+    assert _reload_with_timeout(monkeypatch, "bad").IAM_SERVICE_TOKEN_TIMEOUT_SEC == 10.0
+    assert _reload_with_timeout(monkeypatch, "0").IAM_SERVICE_TOKEN_TIMEOUT_SEC == 10.0
+    assert _reload_with_timeout(monkeypatch, "12.5").IAM_SERVICE_TOKEN_TIMEOUT_SEC == 12.5
+    assert _reload_with_timeout(monkeypatch, "9999").IAM_SERVICE_TOKEN_TIMEOUT_SEC == 300.0
+    monkeypatch.delenv("CONTEXT_FABRIC_IAM_SERVICE_TOKEN_TIMEOUT_SEC", raising=False)
+    importlib.reload(iam_service_token)
+
+
+def test_iam_service_token_mint_uses_bounded_timeout_constant():
+    source = Path("services/context_api_service/app/iam_service_token.py").read_text()
+    assert "from .env_config import bounded_float_env" in source
+    assert "CONTEXT_FABRIC_IAM_SERVICE_TOKEN_TIMEOUT_SEC" in source
+    assert (
+        'IAM_SERVICE_TOKEN_TIMEOUT_SEC = bounded_float_env(\n'
+        '    "CONTEXT_FABRIC_IAM_SERVICE_TOKEN_TIMEOUT_SEC",'
+    ) in source
+    assert "httpx.AsyncClient(timeout=IAM_SERVICE_TOKEN_TIMEOUT_SEC)" in source
+    assert "httpx.AsyncClient(timeout=10.0)" not in source

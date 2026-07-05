@@ -24,6 +24,7 @@ from typing import Optional
 import httpx
 
 from .config import settings
+from .env_config import bounded_float_env
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,13 @@ _SCOPES        = ["read:reference-data", "read:mcp-servers", "publish:events"]
 _SERVICE_NAME  = "context-api"
 _REFRESH_BUFFER = timedelta(hours=24)
 _TTL_HOURS     = 24 * 30
+IAM_SERVICE_TOKEN_TIMEOUT_SEC = bounded_float_env(
+    "CONTEXT_FABRIC_IAM_SERVICE_TOKEN_TIMEOUT_SEC",
+    default=10.0,
+    min_value=1.0,
+    max_value=300.0,
+    logger=log,
+)
 
 _cached_jwt: Optional[str] = None
 _cached_exp: Optional[datetime] = None
@@ -139,7 +147,7 @@ async def _mint() -> Optional[str]:
         return None
     base = settings.iam_base_url.rstrip("/")
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=IAM_SERVICE_TOKEN_TIMEOUT_SEC) as client:
             login = await client.post(f"{base}/auth/local/login",
                                       json={"email": username, "password": password})
             if login.status_code >= 400:

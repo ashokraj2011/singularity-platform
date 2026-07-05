@@ -1115,6 +1115,11 @@ and service-token mint calls with <code>WORKGRAPH_PROXY_TOKEN_MINT_TIMEOUT_SEC</
 default <code>10</code>, bounded <code>1..300</code>. This path is development/local convenience only;
 production-class deployments should still inject a pre-minted
 <code>WORKGRAPH_PROXY_SERVICE_TOKEN</code>.</p>
+<p>Context Fabric&#39;s IAM service-token auto-mint path bounds IAM bootstrap login and
+service-token mint calls with <code>CONTEXT_FABRIC_IAM_SERVICE_TOKEN_TIMEOUT_SEC</code>,
+default <code>10</code>, bounded <code>1..300</code>. This keeps Context Fabric service-boundary
+credential refreshes from waiting indefinitely behind a slow or unavailable IAM
+service.</p>
 <p>Platform Web&#39;s Runtime + LLM settings route bounds status fan-out calls with
 <code>LLM_SETTINGS_FETCH_TIMEOUT_SEC</code>, default <code>5</code>, bounded <code>1..300</code>. Model catalog
 mutations forwarded to LLM Gateway use <code>LLM_SETTINGS_WRITE_TIMEOUT_SEC</code>, default
