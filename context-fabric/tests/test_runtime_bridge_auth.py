@@ -124,6 +124,57 @@ def test_runtime_bridge_jwt_size_env_uses_bounded_helper(monkeypatch):
     ) == 128 * 1024
 
 
+def test_runtime_bridge_heartbeat_sweep_env_defaults_fallbacks_and_clamps(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC", raising=False)
+    module = importlib.reload(laptop_bridge)
+    assert module.HEARTBEAT_SWEEP_SEC == 30
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC", "bad")
+    module = importlib.reload(laptop_bridge)
+    assert module.HEARTBEAT_SWEEP_SEC == 30
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC", "0")
+    module = importlib.reload(laptop_bridge)
+    assert module.HEARTBEAT_SWEEP_SEC == 30
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC", "45")
+    module = importlib.reload(laptop_bridge)
+    assert module.HEARTBEAT_SWEEP_SEC == 45
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC", "999999")
+    module = importlib.reload(laptop_bridge)
+    assert module.HEARTBEAT_SWEEP_SEC == 300
+
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC", raising=False)
+    importlib.reload(laptop_bridge)
+
+
+def test_runtime_bridge_heartbeat_sweep_env_uses_bounded_helper(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC", raising=False)
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC",
+        default=30,
+        min_value=1,
+        max_value=300,
+    ) == 30
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC", "0")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC",
+        default=30,
+        min_value=1,
+        max_value=300,
+    ) == 30
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC", "999999")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC",
+        default=30,
+        min_value=1,
+        max_value=300,
+    ) == 300
+
+
 def test_hs256_runtime_jwt_requires_object_header_and_payload():
     now = int(time.time())
     valid_payload = {
@@ -843,11 +894,14 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC" in source
     assert "_MAX_RUNTIME_JWT_LEN = bounded_int_env(" in source
+    assert "HEARTBEAT_SWEEP_SEC = bounded_int_env(" in source
     assert "httpx.AsyncClient(timeout=runtime_revocation_iam_timeout_sec())" in source
     assert "httpx.AsyncClient(timeout=runtime_http_fallback_timeout_sec())" in source
     assert "asyncio.wait_for(ws.receive_text(), timeout=runtime_hello_timeout_sec())" in source
     assert "asyncio.wait_for(ws.receive_text(), timeout=10)" not in source
     assert "\n_MAX_RUNTIME_JWT_LEN = 16 * 1024" not in source
+    assert "\nHEARTBEAT_SWEEP_SEC = 30" not in source
     assert "httpx.AsyncClient(timeout=5.0)" not in source
     assert "httpx.AsyncClient(timeout=180.0)" not in source

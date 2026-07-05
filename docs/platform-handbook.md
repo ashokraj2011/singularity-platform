@@ -841,7 +841,9 @@ bounded `1..300`; Context Fabric waits for the runtime's first WebSocket
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC`, default `180`, bounded
 `1..7200`; stale runtime reaping uses
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC`, default `90`, bounded
-`1..3600`; runtime inbound/outbound frame size uses
+`1..3600`; the background stale-runtime sweep uses
+`CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC`, default `30`, bounded
+`1..300`; runtime inbound/outbound frame size uses
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES`, default `16777216`, bounded
 `1024..134217728`; and `RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME` defaults to
 `32`, minimum `1`, maximum `1024`.

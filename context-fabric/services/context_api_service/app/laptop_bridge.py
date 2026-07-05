@@ -105,7 +105,6 @@ router = APIRouter()
 # verifies here when JWT_SECRET is unset. ALWAYS override in any real deployment.
 JWT_SECRET = os.environ.get("JWT_SECRET", "changeme_dev_only_min_32_chars_long!!")
 JWT_ALGORITHM = "HS256"
-HEARTBEAT_SWEEP_SEC = 30
 _TRUTHY = {"1", "true", "yes", "on"}
 _KNOWN_RUNTIME_FRAME_TYPES = {
     "invoke",
@@ -128,11 +127,21 @@ _MAX_RUNTIME_REQUEST_ID_LEN = 128
 _DEFAULT_MAX_RUNTIME_JWT_LEN = 16 * 1024
 _MIN_RUNTIME_JWT_LEN = 1024
 _MAX_RUNTIME_JWT_LEN_CAP = 128 * 1024
+_DEFAULT_HEARTBEAT_SWEEP_SEC = 30
+_MIN_HEARTBEAT_SWEEP_SEC = 1
+_MAX_HEARTBEAT_SWEEP_SEC = 300
 _MAX_RUNTIME_JWT_LEN = bounded_int_env(
     "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES",
     default=_DEFAULT_MAX_RUNTIME_JWT_LEN,
     min_value=_MIN_RUNTIME_JWT_LEN,
     max_value=_MAX_RUNTIME_JWT_LEN_CAP,
+    logger=log,
+)
+HEARTBEAT_SWEEP_SEC = bounded_int_env(
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC",
+    default=_DEFAULT_HEARTBEAT_SWEEP_SEC,
+    min_value=_MIN_HEARTBEAT_SWEEP_SEC,
+    max_value=_MAX_HEARTBEAT_SWEEP_SEC,
     logger=log,
 )
 _DEFAULT_REVOCATION_RECHECK_SEC = 300
