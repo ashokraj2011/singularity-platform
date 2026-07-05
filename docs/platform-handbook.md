@@ -904,6 +904,9 @@ Context Fabric's legacy `/execute` Tool Service discovery call uses
 `CONTEXT_FABRIC_TOOL_DISCOVERY_TIMEOUT_SEC`, default `10`, bounded `1..300`.
 Discovery failures still degrade to a visible warning and the mandatory local
 tool set, but slow Tool Service calls no longer rely on a hidden fixed timeout.
+The same legacy path bounds Prompt Composer prompt assembly with
+`CONTEXT_FABRIC_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC`, default `60`, bounded
+`1..300`, before falling back to the raw task prompt with a composer warning.
 
 Platform Web's Runtime + LLM settings route bounds status fan-out calls with
 `LLM_SETTINGS_FETCH_TIMEOUT_SEC`, default `5`, bounded `1..300`. Model catalog

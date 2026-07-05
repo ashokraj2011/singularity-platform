@@ -77,6 +77,26 @@ def test_tool_discovery_timeout_env_is_bounded(monkeypatch):
     assert execute._tool_discovery_timeout_sec() == 300.0
 
 
+def test_prompt_composer_compose_timeout_env_is_bounded(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC", raising=False)
+    assert execute._prompt_composer_compose_timeout_sec() == 60.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC", "bad")
+    assert execute._prompt_composer_compose_timeout_sec() == 60.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC", "nan")
+    assert execute._prompt_composer_compose_timeout_sec() == 60.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC", "0")
+    assert execute._prompt_composer_compose_timeout_sec() == 60.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC", "12.5")
+    assert execute._prompt_composer_compose_timeout_sec() == 12.5
+
+    monkeypatch.setenv("CONTEXT_FABRIC_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC", "999999")
+    assert execute._prompt_composer_compose_timeout_sec() == 300.0
+
+
 def test_deep_reasoning_budget_env_is_bounded(monkeypatch):
     monkeypatch.delenv("DEEP_REASONING_BUDGET_TOKENS", raising=False)
     assert execute._deep_reasoning_budget_tokens() == 0

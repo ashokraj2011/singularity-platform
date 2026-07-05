@@ -98,6 +98,17 @@ def test_execute_discovers_tools_once_before_prompt_composition():
     assert "timeout=10.0" not in discovery_block
 
 
+def test_execute_uses_configured_prompt_composer_timeout():
+    source = inspect.getsource(execute_module.execute)
+    compose_start = source.index("/api/v1/compose-and-respond")
+    compose_end = source.index("data = composed.get", compose_start)
+    compose_block = source[compose_start:compose_end]
+
+    assert "timeout=_prompt_composer_compose_timeout_sec()" in compose_block
+    assert "CONTEXT_FABRIC_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC" in inspect.getsource(execute_module)
+    assert "timeout=60.0" not in compose_block
+
+
 def test_execute_requires_effective_capabilities_for_profile_backed_tool_filtering():
     source = inspect.getsource(execute_module.execute)
 
