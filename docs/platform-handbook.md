@@ -884,6 +884,11 @@ default `10`, bounded `1..300`; SERVER tool-service delegation uses
 `CONTEXT_FABRIC_MCP_RESOURCE_FETCH_TIMEOUT_SEC`, default `10`, bounded
 `1..300`.
 
+Context Fabric's `/execute` runtime resolver bounds IAM MCP runtime registry
+lookups with `CONTEXT_FABRIC_RUNTIME_RESOLVER_IAM_TIMEOUT_SEC`, default `10`,
+bounded `1..300`. This controls the capability-to-runtime selection path before
+falling back to the deployment-wide default MCP runtime.
+
 Platform Web's Runtime + LLM settings route bounds status fan-out calls with
 `LLM_SETTINGS_FETCH_TIMEOUT_SEC`, default `5`, bounded `1..300`. Model catalog
 mutations forwarded to LLM Gateway use `LLM_SETTINGS_WRITE_TIMEOUT_SEC`, default

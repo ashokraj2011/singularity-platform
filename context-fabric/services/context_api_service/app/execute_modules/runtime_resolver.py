@@ -18,20 +18,32 @@ MCP is the execution endpoint. Those are intentionally decoupled.
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Optional
 
 import httpx
 from fastapi import HTTPException
 
 from ..config import settings
+from ..env_config import bounded_float_env
 from ..iam_service_token import get_iam_service_token, invalidate_iam_service_token
 from ..response_json import response_json
+
+log = logging.getLogger(__name__)
+
+RUNTIME_RESOLVER_IAM_TIMEOUT_SEC = bounded_float_env(
+    "CONTEXT_FABRIC_RUNTIME_RESOLVER_IAM_TIMEOUT_SEC",
+    default=10.0,
+    min_value=1.0,
+    max_value=300.0,
+    logger=log,
+)
 
 
 async def _iam_get(
     url: str,
     params: Optional[dict] = None,
-    timeout: float = 30.0,
+    timeout: float = RUNTIME_RESOLVER_IAM_TIMEOUT_SEC,
 ) -> dict:
     """GET an IAM endpoint with the service token; retry once on 401 after
     invalidating the cached token (covers token rotation)."""
@@ -85,7 +97,7 @@ async def resolve_mcp_record(
         servers_resp = await _iam_get(
             f"{settings.iam_base_url.rstrip('/')}/capabilities/{capability_id}/mcp-servers",
             params={"status": "active"},
-            timeout=10.0,
+            timeout=RUNTIME_RESOLVER_IAM_TIMEOUT_SEC,
         )
     except httpx.HTTPError as exc:
         if default_record:
@@ -108,7 +120,7 @@ async def resolve_mcp_record(
     chosen = servers[0]
     full = await _iam_get(
         f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{chosen['id']}",
-        timeout=10.0,
+        timeout=RUNTIME_RESOLVER_IAM_TIMEOUT_SEC,
     )
     full["source"] = "capability"
     return full, warnings
@@ -123,5 +135,5 @@ async def mcp_record_by_id(mcp_server_id: str) -> dict[str, Any]:
         return default_record
     return await _iam_get(
         f"{settings.iam_base_url.rstrip('/')}/mcp-servers/{mcp_server_id}",
-        timeout=10.0,
+        timeout=RUNTIME_RESOLVER_IAM_TIMEOUT_SEC,
     )
