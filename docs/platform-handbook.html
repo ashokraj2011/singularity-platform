@@ -1150,7 +1150,11 @@ Discovery failures still degrade to a visible warning and the mandatory local
 tool set, but slow Tool Service calls no longer rely on a hidden fixed timeout.
 The same legacy path bounds Prompt Composer prompt assembly with
 <code>CONTEXT_FABRIC_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC</code>, default <code>60</code>, bounded
-<code>1..300</code>, before falling back to the raw task prompt with a composer warning.</p>
+<code>1..300</code>, before falling back to the raw task prompt with a composer warning.
+Context-memory compilation for that path uses
+<code>CONTEXT_FABRIC_CONTEXT_COMPILE_TIMEOUT_SEC</code>, default <code>20</code>, bounded <code>1..300</code>;
+failures still fall back to the already assembled prompt and fresh-session
+history behavior with a visible context compiler warning.</p>
 <p>Platform Web&#39;s Runtime + LLM settings route bounds status fan-out calls with
 <code>LLM_SETTINGS_FETCH_TIMEOUT_SEC</code>, default <code>5</code>, bounded <code>1..300</code>. Model catalog
 mutations forwarded to LLM Gateway use <code>LLM_SETTINGS_WRITE_TIMEOUT_SEC</code>, default

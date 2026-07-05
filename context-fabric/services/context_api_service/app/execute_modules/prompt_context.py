@@ -29,13 +29,18 @@ returns (None, warning) so the orchestrator can degrade gracefully.
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, Optional
 
 import httpx
 
 from ..config import settings
+from ..env_config import bounded_float_value
 from ..response_json import response_json_object
 from .response_mapper import int_limit, str_value, trim_text
+
+_DEFAULT_CONTEXT_COMPILE_TIMEOUT_SEC = 20.0
+_MAX_SERVICE_BOUNDARY_TIMEOUT_SEC = 300.0
 
 
 async def _post(
@@ -51,6 +56,16 @@ async def _post(
         resp = await client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         return response_json_object(resp, "legacy execute POST")
+
+
+def context_compile_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv("CONTEXT_FABRIC_CONTEXT_COMPILE_TIMEOUT_SEC", str(_DEFAULT_CONTEXT_COMPILE_TIMEOUT_SEC)),
+        default=_DEFAULT_CONTEXT_COMPILE_TIMEOUT_SEC,
+        min_value=1.0,
+        max_value=_MAX_SERVICE_BOUNDARY_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_CONTEXT_COMPILE_TIMEOUT_SEC",
+    )
 
 
 def context_plan_status(
@@ -284,7 +299,7 @@ async def compile_execute_context(
     compiled = await _post(
         f"{settings.context_memory_url.rstrip('/')}/context/compile",
         payload,
-        timeout=20.0,
+        timeout=context_compile_timeout_sec(),
     )
     messages = [
         {"role": m.get("role"), "content": trim_text(str(m.get("content") or ""), max_chars)}

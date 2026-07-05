@@ -907,6 +907,10 @@ tool set, but slow Tool Service calls no longer rely on a hidden fixed timeout.
 The same legacy path bounds Prompt Composer prompt assembly with
 `CONTEXT_FABRIC_PROMPT_COMPOSER_COMPOSE_TIMEOUT_SEC`, default `60`, bounded
 `1..300`, before falling back to the raw task prompt with a composer warning.
+Context-memory compilation for that path uses
+`CONTEXT_FABRIC_CONTEXT_COMPILE_TIMEOUT_SEC`, default `20`, bounded `1..300`;
+failures still fall back to the already assembled prompt and fresh-session
+history behavior with a visible context compiler warning.
 
 Platform Web's Runtime + LLM settings route bounds status fan-out calls with
 `LLM_SETTINGS_FETCH_TIMEOUT_SEC`, default `5`, bounded `1..300`. Model catalog
