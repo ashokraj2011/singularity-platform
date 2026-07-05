@@ -5,6 +5,7 @@ import useSWR from "swr";
 import { CircleAlert, GitBranch, ShieldCheck, ShieldX, Users } from "lucide-react";
 import {
   checkAuthorization,
+  createIdentity,
   listCapabilityRelationships,
   listIdentity,
   type AuthzCheckRequest,
@@ -121,6 +122,75 @@ const columns: Record<IdentityView, Array<{ label: string; keys: string[] }>> = 
   "authz-check": [],
 };
 
+// ── Create forms ─────────────────────────────────────────────────────────────
+// Field specs per creatable IAM entity. Keys map 1:1 to the IAM create-request
+// bodies (bu_key, name, …); `tags` is parsed comma→array on submit.
+type FieldSpec = { key: string; label: string; required?: boolean; placeholder?: string; textarea?: boolean; hint?: string };
+
+const createForms: Partial<Record<IdentityView, { singular: string; fields: FieldSpec[] }>> = {
+  "business-units": {
+    singular: "Business Unit",
+    fields: [
+      { key: "bu_key", label: "Key", required: true, placeholder: "engineering", hint: "Unique identifier; can't be changed later." },
+      { key: "name", label: "Name", required: true, placeholder: "Engineering" },
+      { key: "description", label: "Description", textarea: true },
+      { key: "parent_bu_id", label: "Parent BU ID", placeholder: "(optional UUID)" },
+      { key: "tags", label: "Tags", placeholder: "comma, separated" },
+    ],
+  },
+  teams: {
+    singular: "Team",
+    fields: [
+      { key: "team_key", label: "Key", required: true, placeholder: "platform-eng" },
+      { key: "name", label: "Name", required: true, placeholder: "Platform Engineering" },
+      { key: "bu_key", label: "Business Unit key", placeholder: "engineering", hint: "Must match an existing Business Unit key — otherwise the team is created with no BU." },
+      { key: "description", label: "Description", textarea: true },
+      { key: "parent_team_id", label: "Parent team ID", placeholder: "(optional UUID)" },
+      { key: "tags", label: "Tags", placeholder: "comma, separated" },
+    ],
+  },
+  users: {
+    singular: "User",
+    fields: [
+      { key: "email", label: "Email", required: true, placeholder: "person@example.com" },
+      { key: "display_name", label: "Display name", placeholder: "Jane Doe" },
+      { key: "auth_provider", label: "Auth provider", placeholder: "(optional)" },
+      { key: "tags", label: "Tags", placeholder: "comma, separated" },
+    ],
+  },
+  roles: {
+    singular: "Role",
+    fields: [
+      { key: "role_key", label: "Key", required: true, placeholder: "reviewer" },
+      { key: "name", label: "Name", required: true, placeholder: "Reviewer" },
+      { key: "description", label: "Description", textarea: true },
+      { key: "role_scope", label: "Scope", placeholder: "capability" },
+    ],
+  },
+  capabilities: {
+    singular: "Capability",
+    fields: [
+      { key: "capability_id", label: "Capability ID", required: true, placeholder: "payments" },
+      { key: "name", label: "Name", required: true, placeholder: "Payments" },
+      { key: "capability_type", label: "Type", required: true, placeholder: "service" },
+      { key: "description", label: "Description", textarea: true },
+      { key: "visibility", label: "Visibility", placeholder: "private" },
+      { key: "owner_bu_key", label: "Owner BU key", placeholder: "(optional)" },
+      { key: "owner_team_key", label: "Owner team key", placeholder: "(optional)" },
+    ],
+  },
+};
+
+function buildCreateBody(fields: FieldSpec[], values: Record<string, string>): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  for (const f of fields) {
+    const raw = (values[f.key] ?? "").trim();
+    if (!raw) continue;
+    body[f.key] = f.key === "tags" ? raw.split(",").map((t) => t.trim()).filter(Boolean) : raw;
+  }
+  return body;
+}
+
 export function IdentityConsole({ view = "dashboard" }: { view?: IdentityView }) {
   // The sub-view comes straight from the route — the global sidebar is the only
   // Identity nav now (no in-page column), so there's no local active-view state.
@@ -132,7 +202,7 @@ export function IdentityConsole({ view = "dashboard" }: { view?: IdentityView })
   const { data: capabilities } = useSWR("identity-capabilities-count", () => listIdentity("capabilities", 25));
   const { data: audit } = useSWR("identity-audit-count", () => listIdentity("audit", 10));
   const listView = activeView === "dashboard" ? null : activeView;
-  const { data: rows, error: rowsError, isLoading } = useSWR(listView ? ["identity-list", listView] : null, () => listIdentity(listView as IdentityView, 100));
+  const { data: rows, error: rowsError, isLoading, mutate: mutateRows } = useSWR(listView ? ["identity-list", listView] : null, () => listIdentity(listView as IdentityView, 100));
   const error = usersError ?? rowsError;
 
   return (
@@ -168,7 +238,7 @@ export function IdentityConsole({ view = "dashboard" }: { view?: IdentityView })
         ) : activeView === "authz-check" ? (
           <AuthzPanel permissions={rows?.items ?? []} />
         ) : (
-          <EntityTable title={titleFor(activeView)} view={activeView} rows={rows?.items ?? []} loading={isLoading} />
+          <EntityTable title={titleFor(activeView)} view={activeView} rows={rows?.items ?? []} loading={isLoading} onCreated={() => void mutateRows()} />
         )}
       </main>
     </div>
@@ -209,14 +279,26 @@ function DashboardPanel({ users, audit }: { users: IdentityRow[]; audit: Identit
   );
 }
 
-function EntityTable({ title, view, rows, loading }: { title: string; view: IdentityView; rows: IdentityRow[]; loading?: boolean }) {
+function EntityTable({ title, view, rows, loading, onCreated }: { title: string; view: IdentityView; rows: IdentityRow[]; loading?: boolean; onCreated?: () => void }) {
   const tableColumns = columns[view];
+  const [creating, setCreating] = useState(false);
+  const form = createForms[view];
   return (
     <section className="card" style={{ overflow: "hidden" }}>
       <div style={{ padding: 18, borderBottom: "1px solid var(--color-outline-variant)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <h2 style={{ margin: 0, fontSize: 16 }}>{title}</h2>
-        <span style={{ color: "var(--color-outline)", fontSize: 12 }}>{loading ? "Loading" : `${rows.length} shown`}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ color: "var(--color-outline)", fontSize: 12 }}>{loading ? "Loading" : `${rows.length} shown`}</span>
+          {form && onCreated ? (
+            <button type="button" className="btn-primary" style={{ padding: "6px 12px", fontSize: 13 }} onClick={() => setCreating(true)}>
+              ＋ New {form.singular}
+            </button>
+          ) : null}
+        </div>
       </div>
+      {creating && form && onCreated ? (
+        <CreateEntityModal view={view} onClose={() => setCreating(false)} onCreated={() => { setCreating(false); onCreated(); }} />
+      ) : null}
       <div style={{ overflowX: "auto" }}>
         <table className="w-full text-sm">
           <thead>
@@ -236,6 +318,56 @@ function EntityTable({ title, view, rows, loading }: { title: string; view: Iden
         </table>
       </div>
     </section>
+  );
+}
+
+function CreateEntityModal({ view, onClose, onCreated }: { view: IdentityView; onClose: () => void; onCreated: () => void }) {
+  const spec = createForms[view]!;
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const missingRequired = spec.fields.some((f) => f.required && !(values[f.key] ?? "").trim());
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      await createIdentity(view, buildCreateBody(spec.fields, values));
+      onCreated(); // unmounts this modal + refreshes the list
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "6vh 16px", zIndex: 60 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "min(560px, 96vw)", maxHeight: "88vh", overflow: "auto", padding: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>New {spec.singular}</h2>
+          <button type="button" onClick={onClose} aria-label="Close" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--color-outline)", fontSize: 22, lineHeight: 1 }}>×</button>
+        </div>
+        <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--color-outline)" }}>Requires super-admin. Fields marked * are required.</p>
+        <div style={{ display: "grid", gap: 10 }}>
+          {spec.fields.map((f) => (
+            <label key={f.key} style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "var(--color-outline)" }}>
+              {f.label}{f.required ? " *" : ""}
+              {f.textarea ? (
+                <textarea value={values[f.key] ?? ""} onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))} placeholder={f.placeholder} rows={3} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: "9px 11px", fontSize: 13, color: "var(--color-text)", fontWeight: 500, resize: "vertical" }} />
+              ) : (
+                <input value={values[f.key] ?? ""} onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))} placeholder={f.placeholder} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: "9px 11px", fontSize: 13, color: "var(--color-text)", fontWeight: 500 }} />
+              )}
+              {f.hint ? <span style={{ fontWeight: 500, color: "var(--color-outline)", fontSize: 11 }}>{f.hint}</span> : null}
+            </label>
+          ))}
+        </div>
+        {error ? <div style={{ marginTop: 12 }}><SmallError error={error} /></div> : null}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="btn-primary" onClick={() => void submit()} disabled={busy || missingRequired}>{busy ? "Creating…" : `Create ${spec.singular}`}</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
