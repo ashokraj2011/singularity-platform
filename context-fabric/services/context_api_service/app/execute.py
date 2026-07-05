@@ -93,6 +93,7 @@ _mcp_record_by_id = _runtime_mod.mcp_record_by_id
 _DEFAULT_MCP_INVOKE_TIMEOUT_SEC = 480.0
 _DEFAULT_LAPTOP_INVOKE_TIMEOUT_SEC = 240.0
 _DEFAULT_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC = 10.0
+_DEFAULT_TOOL_DISCOVERY_TIMEOUT_SEC = 10.0
 _MIN_MCP_INVOKE_TIMEOUT_SEC = 1.0
 _MAX_MCP_INVOKE_TIMEOUT_SEC = 2.0 * 60.0 * 60.0
 _MAX_SERVICE_BOUNDARY_TIMEOUT_SEC = 300.0
@@ -139,6 +140,17 @@ def _agent_profile_resolve_timeout_sec() -> float:
         ),
         default=_DEFAULT_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC,
         name="CONTEXT_FABRIC_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC",
+    )
+
+
+def _tool_discovery_timeout_sec() -> float:
+    return _bounded_service_timeout_value(
+        os.getenv(
+            "CONTEXT_FABRIC_TOOL_DISCOVERY_TIMEOUT_SEC",
+            str(_DEFAULT_TOOL_DISCOVERY_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_TOOL_DISCOVERY_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_TOOL_DISCOVERY_TIMEOUT_SEC",
     )
 
 
@@ -430,7 +442,7 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
                     "limit": 8,
                     "effective_capabilities": effective_capabilities,
                 },
-                timeout=10.0,
+                timeout=_tool_discovery_timeout_sec(),
             )
             for t in discover.get("tools", []):
                 normalized_tool, tool_warnings = _normalize_tool_for_mcp(t)

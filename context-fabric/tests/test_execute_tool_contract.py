@@ -82,6 +82,9 @@ def test_tool_normalization_skips_unnamed_tools():
 
 def test_execute_discovers_tools_once_before_prompt_composition():
     source = inspect.getsource(execute_module.execute)
+    discovery_start = source.index("tools_for_mcp: list")
+    discovery_end = source.index("tools_for_mcp = _merge_mandatory_local_tools", discovery_start)
+    discovery_block = source[discovery_start:discovery_end]
 
     assert '"toolDescriptors": tools_for_mcp' in source
     assert '"tools": tools_for_mcp' in source
@@ -89,6 +92,10 @@ def test_execute_discovers_tools_once_before_prompt_composition():
     assert 'req.limits.get("include_local_tools", False)' in source
     assert source.index("tools_for_mcp: list") < source.index("compose_payload =")
     assert source.index('"toolDescriptors": tools_for_mcp') < source.index('"tools": tools_for_mcp')
+    assert '"effective_capabilities": effective_capabilities' in discovery_block
+    assert "timeout=_tool_discovery_timeout_sec()" in discovery_block
+    assert "CONTEXT_FABRIC_TOOL_DISCOVERY_TIMEOUT_SEC" in inspect.getsource(execute_module)
+    assert "timeout=10.0" not in discovery_block
 
 
 def test_execute_requires_effective_capabilities_for_profile_backed_tool_filtering():

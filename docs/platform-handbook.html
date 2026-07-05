@@ -1144,6 +1144,10 @@ credential rather than logging or leaking token material.</p>
 <code>1..300</code>. In fail-closed governance this deadline controls how long <code>/execute</code>
 waits for the effective capability set before blocking the run; in less strict
 local modes it turns into a visible profile-resolution warning.</p>
+<p>Context Fabric&#39;s legacy <code>/execute</code> Tool Service discovery call uses
+<code>CONTEXT_FABRIC_TOOL_DISCOVERY_TIMEOUT_SEC</code>, default <code>10</code>, bounded <code>1..300</code>.
+Discovery failures still degrade to a visible warning and the mandatory local
+tool set, but slow Tool Service calls no longer rely on a hidden fixed timeout.</p>
 <p>Platform Web&#39;s Runtime + LLM settings route bounds status fan-out calls with
 <code>LLM_SETTINGS_FETCH_TIMEOUT_SEC</code>, default <code>5</code>, bounded <code>1..300</code>. Model catalog
 mutations forwarded to LLM Gateway use <code>LLM_SETTINGS_WRITE_TIMEOUT_SEC</code>, default

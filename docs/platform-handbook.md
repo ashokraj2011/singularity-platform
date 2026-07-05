@@ -900,6 +900,11 @@ Context Fabric resolves profile-backed run capabilities from Agent Runtime with
 waits for the effective capability set before blocking the run; in less strict
 local modes it turns into a visible profile-resolution warning.
 
+Context Fabric's legacy `/execute` Tool Service discovery call uses
+`CONTEXT_FABRIC_TOOL_DISCOVERY_TIMEOUT_SEC`, default `10`, bounded `1..300`.
+Discovery failures still degrade to a visible warning and the mandatory local
+tool set, but slow Tool Service calls no longer rely on a hidden fixed timeout.
+
 Platform Web's Runtime + LLM settings route bounds status fan-out calls with
 `LLM_SETTINGS_FETCH_TIMEOUT_SEC`, default `5`, bounded `1..300`. Model catalog
 mutations forwarded to LLM Gateway use `LLM_SETTINGS_WRITE_TIMEOUT_SEC`, default
