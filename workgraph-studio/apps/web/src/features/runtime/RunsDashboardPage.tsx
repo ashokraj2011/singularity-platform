@@ -137,7 +137,7 @@ export function RunsDashboardPage() {
   }, [runs, statusFilter, workflowFilter, search, workflowById])
 
   return (
-    <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
+    <div style={{ padding: 24 }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
         <div style={{
