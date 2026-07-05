@@ -19,6 +19,7 @@ from context_api_service.app.laptop_registry import (
 _TIMEOUT_ENVS = (
     "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC",
     "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC",
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES",
 )
 
 
@@ -209,26 +210,31 @@ def test_runtime_bridge_timeout_envs_default_and_fallback(monkeypatch):
     module = _reload_with_env(monkeypatch, {})
     assert module.INVOKE_TIMEOUT_SEC == 180.0
     assert module.HEARTBEAT_TIMEOUT_SEC == 90.0
+    assert module.MAX_PAYLOAD_BYTES == 16 * 1024 * 1024
 
     module = _reload_with_env(
         monkeypatch,
         {
             "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC": "bad",
             "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC": "0",
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES": "not-an-int",
         },
     )
     assert module.INVOKE_TIMEOUT_SEC == 180.0
     assert module.HEARTBEAT_TIMEOUT_SEC == 90.0
+    assert module.MAX_PAYLOAD_BYTES == 16 * 1024 * 1024
 
     module = _reload_with_env(
         monkeypatch,
         {
             "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC": "nan",
             "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC": "inf",
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES": "0",
         },
     )
     assert module.INVOKE_TIMEOUT_SEC == 180.0
     assert module.HEARTBEAT_TIMEOUT_SEC == 90.0
+    assert module.MAX_PAYLOAD_BYTES == 16 * 1024 * 1024
 
 
 def test_runtime_bridge_timeout_envs_accept_and_clamp(monkeypatch):
@@ -237,20 +243,24 @@ def test_runtime_bridge_timeout_envs_accept_and_clamp(monkeypatch):
         {
             "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC": "1200.5",
             "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC": "120.25",
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES": "33554432",
         },
     )
     assert module.INVOKE_TIMEOUT_SEC == 1200.5
     assert module.HEARTBEAT_TIMEOUT_SEC == 120.25
+    assert module.MAX_PAYLOAD_BYTES == 32 * 1024 * 1024
 
     module = _reload_with_env(
         monkeypatch,
         {
             "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC": "999999",
             "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC": "999999",
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES": "999999999",
         },
     )
     assert module.INVOKE_TIMEOUT_SEC == 7200.0
     assert module.HEARTBEAT_TIMEOUT_SEC == 3600.0
+    assert module.MAX_PAYLOAD_BYTES == 128 * 1024 * 1024
 
 
 def test_runtime_bridge_timeout_helpers_match_registry_bounds(monkeypatch):
@@ -279,16 +289,45 @@ def test_runtime_bridge_timeout_helpers_match_registry_bounds(monkeypatch):
     ) == 7200.0
 
 
+def test_runtime_bridge_payload_helper_matches_registry_bounds(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES", raising=False)
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES",
+        default=16 * 1024 * 1024,
+        min_value=1024,
+        max_value=128 * 1024 * 1024,
+    ) == 16 * 1024 * 1024
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES", "0")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES",
+        default=16 * 1024 * 1024,
+        min_value=1024,
+        max_value=128 * 1024 * 1024,
+    ) == 16 * 1024 * 1024
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES", "999999999")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES",
+        default=16 * 1024 * 1024,
+        min_value=1024,
+        max_value=128 * 1024 * 1024,
+    ) == 128 * 1024 * 1024
+
+
 def test_runtime_bridge_registry_source_uses_bounded_timeout_envs():
     source = Path("services/context_api_service/app/laptop_registry.py").read_text()
 
     assert "from .env_config import bounded_float_env, bounded_int_env" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES" in source
     assert "INVOKE_TIMEOUT_SEC = bounded_float_env(" in source
     assert "HEARTBEAT_TIMEOUT_SEC = bounded_float_env(" in source
+    assert "MAX_PAYLOAD_BYTES = bounded_int_env(" in source
     assert "\nINVOKE_TIMEOUT_SEC = 180" not in source
     assert "\nHEARTBEAT_TIMEOUT_SEC = 90" not in source
+    assert "\nMAX_PAYLOAD_BYTES = 16 * 1024 * 1024" not in source
 
 
 def test_deliver_response_rejects_oversized_runtime_payload(monkeypatch):

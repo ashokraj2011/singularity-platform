@@ -1095,8 +1095,10 @@ bounded <code>1..300</code>; Context Fabric waits for the runtime&#39;s first We
 <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC</code>, default <code>180</code>, bounded
 <code>1..7200</code>; stale runtime reaping uses
 <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC</code>, default <code>90</code>, bounded
-<code>1..3600</code>; and <code>RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME</code> defaults to <code>32</code>,
-minimum <code>1</code>, maximum <code>1024</code>.
+<code>1..3600</code>; runtime inbound/outbound frame size uses
+<code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES</code>, default <code>16777216</code>, bounded
+<code>1024..134217728</code>; and <code>RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME</code> defaults to
+<code>32</code>, minimum <code>1</code>, maximum <code>1024</code>.
 MCP runtime dial-in timings are schema-validated on the runtime side too:
 <code>MCP_RUNTIME_BRIDGE_HEARTBEAT_MS</code> defaults to <code>30000</code>,
 <code>MCP_RUNTIME_BRIDGE_HANDSHAKE_TIMEOUT_MS</code> defaults to <code>10000</code>,
