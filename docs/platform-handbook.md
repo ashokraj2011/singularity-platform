@@ -747,7 +747,7 @@ Context Fabric's best-effort model metadata and memory capture calls are also bo
 
 Governed turn prompt/code-context sizing is bounded as well. `CF_PROMPT_CAPTURE_MAX_CHARS` defaults to `200000` and clamps between `2000` and `2000000`; `CF_CODE_CONTEXT_DEFAULT_BUDGET` defaults to `7000` and clamps to MCP's accepted `1000..50000` range. `CF_CODE_CONTEXT_WINDOW_FRACTION` and `CF_CODE_CONTEXT_INPUT_FRACTION` fall back on invalid or near-zero values and clamp at `1.0`, preventing broken env from producing negative or oversized code-context requests.
 
-Legacy `/execute` MCP invoke timeouts are bounded too. `CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC` defaults to `480`, malformed, non-finite, or below-1 values fall back to the default, and request-level `limits.timeoutSec` / `timeout_sec` values clamp at `7200`. `DEEP_REASONING_BUDGET_TOKENS` defaults to `0` and clamps at `32768`, so an invalid Anthropic thinking-budget setting disables the feature instead of failing a run.
+Legacy `/execute` MCP invoke timeouts are bounded too. `CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC` defaults to `480`, malformed, non-finite, or below-1 values fall back to the default, and request-level `limits.timeoutSec` / `timeout_sec` values clamp at `7200`. Approval resume dispatch uses `CONTEXT_FABRIC_MCP_RESUME_TIMEOUT_SEC`, default `240`, with the same `1..7200` bounds. `DEEP_REASONING_BUDGET_TOKENS` defaults to `0` and clamps at `32768`, so an invalid Anthropic thinking-budget setting disables the feature instead of failing a run.
 
 The deprecated Context Fabric `/chat/respond` route keeps bounded deadlines while
 it remains available for legacy clients. Its MCP invoke call uses

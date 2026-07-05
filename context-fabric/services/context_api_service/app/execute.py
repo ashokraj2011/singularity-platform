@@ -91,6 +91,7 @@ _resolve_mcp_record = _runtime_mod.resolve_mcp_record
 _mcp_record_by_id = _runtime_mod.mcp_record_by_id
 
 _DEFAULT_MCP_INVOKE_TIMEOUT_SEC = 480.0
+_DEFAULT_MCP_RESUME_TIMEOUT_SEC = 240.0
 _DEFAULT_LAPTOP_INVOKE_TIMEOUT_SEC = 240.0
 _DEFAULT_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC = 10.0
 _DEFAULT_TOOL_DISCOVERY_TIMEOUT_SEC = 10.0
@@ -135,6 +136,13 @@ def _default_mcp_invoke_timeout_sec() -> float:
     return _bounded_timeout_value(
         os.getenv("CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC", str(_DEFAULT_MCP_INVOKE_TIMEOUT_SEC)),
         default=_DEFAULT_MCP_INVOKE_TIMEOUT_SEC,
+    )
+
+
+def _default_mcp_resume_timeout_sec() -> float:
+    return _bounded_timeout_value(
+        os.getenv("CONTEXT_FABRIC_MCP_RESUME_TIMEOUT_SEC", str(_DEFAULT_MCP_RESUME_TIMEOUT_SEC)),
+        default=_DEFAULT_MCP_RESUME_TIMEOUT_SEC,
     )
 
 
@@ -1739,7 +1747,7 @@ async def execute_resume(req: ResumeRequest, x_service_token: Optional[str] = He
             mcp_base_url=mcp_base_url,
             mcp_bearer=mcp_bearer,
             payload=resume_payload,
-            timeout_sec=240.0,
+            timeout_sec=_default_mcp_resume_timeout_sec(),
         )
         mcp_latency_ms = int((time.time() - mcp_started) * 1000)
     except Exception as exc:

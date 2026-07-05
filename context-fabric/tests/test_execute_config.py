@@ -28,6 +28,29 @@ def test_default_mcp_invoke_timeout_env_is_bounded(monkeypatch):
     assert execute._default_mcp_invoke_timeout_sec() == 7200.0
 
 
+def test_default_mcp_resume_timeout_env_is_bounded(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_MCP_RESUME_TIMEOUT_SEC", raising=False)
+    assert execute._default_mcp_resume_timeout_sec() == 240.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_MCP_RESUME_TIMEOUT_SEC", "bad")
+    assert execute._default_mcp_resume_timeout_sec() == 240.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_MCP_RESUME_TIMEOUT_SEC", "nan")
+    assert execute._default_mcp_resume_timeout_sec() == 240.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_MCP_RESUME_TIMEOUT_SEC", "inf")
+    assert execute._default_mcp_resume_timeout_sec() == 240.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_MCP_RESUME_TIMEOUT_SEC", "0")
+    assert execute._default_mcp_resume_timeout_sec() == 240.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_MCP_RESUME_TIMEOUT_SEC", "1200.5")
+    assert execute._default_mcp_resume_timeout_sec() == 1200.5
+
+    monkeypatch.setenv("CONTEXT_FABRIC_MCP_RESUME_TIMEOUT_SEC", "999999")
+    assert execute._default_mcp_resume_timeout_sec() == 7200.0
+
+
 def test_request_timeout_sec_accepts_camel_and_snake_case_but_bounds_values():
     assert execute._request_timeout_sec({}, default=240.0) == 240.0
     assert execute._request_timeout_sec({"timeoutSec": "30.5"}, default=240.0) == 30.5
@@ -195,6 +218,15 @@ def test_execute_event_subscriber_waits_use_bounded_helpers():
     assert "asyncio.wait_for(subscriber_task, timeout=1.0)" not in text
     assert "asyncio.wait_for(subscriber_task, timeout=2.0)" not in text
     assert "asyncio.sleep(0.5)" not in text
+
+
+def test_execute_resume_timeout_uses_bounded_helper():
+    source = Path(__file__).resolve().parents[1] / "services/context_api_service/app/execute.py"
+    text = source.read_text()
+
+    assert "CONTEXT_FABRIC_MCP_RESUME_TIMEOUT_SEC" in text
+    assert "timeout_sec=_default_mcp_resume_timeout_sec()" in text
+    assert "timeout_sec=240.0" not in text
 
 
 def test_deep_reasoning_budget_env_is_bounded(monkeypatch):
