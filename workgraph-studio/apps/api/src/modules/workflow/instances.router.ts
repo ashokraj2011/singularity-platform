@@ -16,6 +16,7 @@ import { promoteWorkbenchToTables } from './lib/promote-workbench'
 import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { getWorkflowBudgetOverview } from './runtime/budget'
+import { buildCopilotResultsVerdict } from './runtime/copilot-results-verify'
 import { analyzeWorkflowInstance } from './formal-verification'
 import { copilotComposeTimeoutMs } from './copilot-compose-config'
 import {
@@ -1421,6 +1422,12 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
     if (!instance) return res.status(404).json({ error: 'run not found' })
     const validNodeIds = new Set(instance.nodes.map(n => n.id))
     const payload = parsed.data
+    // Advisory git-verify: a consistency/completeness verdict computed from the
+    // posted payload (sha256 integrity + changed-path coverage + pushed flag).
+    // Recorded on the receipt + each artifact; artifacts stay UNDER_REVIEW (no
+    // auto promote/block). remoteVerified is false — independent remote-commit
+    // verification via the git broker is a follow-up.
+    const verification = buildCopilotResultsVerdict(payload, new Date().toISOString())
     const eventId = await withTenantDbTransaction(prisma, (tx) => tx.workflowEvent.create({
       data: {
         instanceId: id,
@@ -1436,6 +1443,7 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
       artifactCount: payload.artifacts.length,
       source: payload.source,
       workflowEventId: eventId.id,
+      verificationStatus: verification.status,
     })
     const receipt = await prisma.receipt.create({
       data: {
@@ -1452,7 +1460,8 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
           git: payload.git,
           stages: payload.stages,
           artifactCount: payload.artifacts.length,
-        } as Prisma.InputJsonValue,
+          verification,
+        } as unknown as Prisma.InputJsonValue,
       },
       select: { id: true },
     })
@@ -1489,6 +1498,16 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
               stageKey: artifact.stageKey,
               truncated: artifact.truncated === true,
               receiptId: receipt.id,
+              _verification: {
+                status: verification.status,
+                remoteVerified: verification.remoteVerified,
+                pushed: verification.pushed,
+                shaMatched: artifact.truncated || !artifact.sha256 || !artifact.contentBase64
+                  ? null
+                  : !verification.integrity.mismatched.some(m => m.path === artifact.path),
+                note: verification.note,
+                checkedAt: verification.checkedAt,
+              },
             } as Prisma.InputJsonValue,
             createdById: req.user!.userId,
           },
@@ -1520,6 +1539,7 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
       receiptId: receipt.id,
       artifactsCreated: createdArtifacts.length,
       artifactIds: createdArtifacts,
+      verification,
     })
   } catch (err) {
     next(err)
