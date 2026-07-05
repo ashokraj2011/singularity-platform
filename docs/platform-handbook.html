@@ -1015,6 +1015,12 @@ prompt assembly.</p>
 <p>Context Fabric&#39;s best-effort model metadata and memory capture calls are also bounded. <code>LLM_MODEL_CATALOG_TTL_SEC</code> defaults to <code>300</code> and clamps at <code>86400</code>; <code>LLM_MODEL_CATALOG_TIMEOUT_SEC</code> and <code>CF_CAPTURE_RUN_MEMORY_TIMEOUT_SEC</code> default to <code>5</code> and clamp at <code>300</code>. Invalid or sub-second values fall back to defaults so optional catalog/memory paths stay non-blocking.</p>
 <p>Governed turn prompt/code-context sizing is bounded as well. <code>CF_PROMPT_CAPTURE_MAX_CHARS</code> defaults to <code>200000</code> and clamps between <code>2000</code> and <code>2000000</code>; <code>CF_CODE_CONTEXT_DEFAULT_BUDGET</code> defaults to <code>7000</code> and clamps to MCP&#39;s accepted <code>1000..50000</code> range. <code>CF_CODE_CONTEXT_WINDOW_FRACTION</code> and <code>CF_CODE_CONTEXT_INPUT_FRACTION</code> fall back on invalid or near-zero values and clamp at <code>1.0</code>, preventing broken env from producing negative or oversized code-context requests.</p>
 <p>Legacy <code>/execute</code> MCP invoke timeouts are bounded too. <code>CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC</code> defaults to <code>480</code>, malformed, non-finite, or below-1 values fall back to the default, and request-level <code>limits.timeoutSec</code> / <code>timeout_sec</code> values clamp at <code>7200</code>. <code>DEEP_REASONING_BUDGET_TOKENS</code> defaults to <code>0</code> and clamps at <code>32768</code>, so an invalid Anthropic thinking-budget setting disables the feature instead of failing a run.</p>
+<p>The deprecated Context Fabric <code>/chat/respond</code> route keeps bounded deadlines while
+it remains available for legacy clients. Its MCP invoke call uses
+<code>CONTEXT_FABRIC_CHAT_RESPOND_MCP_TIMEOUT_SEC</code>, default <code>180</code>, bounded
+<code>1..3600</code>, and the best-effort summary update uses
+<code>CONTEXT_FABRIC_CHAT_RESPOND_SUMMARY_TIMEOUT_SEC</code>, default <code>180</code>, bounded
+<code>1..3600</code>.</p>
 <h3 id="94-prompt-composer-api">9.4 Prompt Composer API<a class="anchor" href="#94-prompt-composer-api" aria-label="Link to 9.4 Prompt Composer API">#</a></h3>
 <p>Mounted under <code>http://localhost:3004/api/v1</code>.</p>
 <p>Important endpoints:</p>

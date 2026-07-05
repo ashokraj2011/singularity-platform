@@ -749,6 +749,13 @@ Governed turn prompt/code-context sizing is bounded as well. `CF_PROMPT_CAPTURE_
 
 Legacy `/execute` MCP invoke timeouts are bounded too. `CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC` defaults to `480`, malformed, non-finite, or below-1 values fall back to the default, and request-level `limits.timeoutSec` / `timeout_sec` values clamp at `7200`. `DEEP_REASONING_BUDGET_TOKENS` defaults to `0` and clamps at `32768`, so an invalid Anthropic thinking-budget setting disables the feature instead of failing a run.
 
+The deprecated Context Fabric `/chat/respond` route keeps bounded deadlines while
+it remains available for legacy clients. Its MCP invoke call uses
+`CONTEXT_FABRIC_CHAT_RESPOND_MCP_TIMEOUT_SEC`, default `180`, bounded
+`1..3600`, and the best-effort summary update uses
+`CONTEXT_FABRIC_CHAT_RESPOND_SUMMARY_TIMEOUT_SEC`, default `180`, bounded
+`1..3600`.
+
 ### 9.4 Prompt Composer API
 
 Mounted under `http://localhost:3004/api/v1`.

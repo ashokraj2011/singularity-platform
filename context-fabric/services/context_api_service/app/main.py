@@ -4,11 +4,13 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 import httpx
+import os
 import uuid
 
 from context_fabric_shared.schemas import ContextPolicy
 from context_fabric_shared.http_client import post_json, get_json
 from .config import settings
+from .env_config import bounded_float_value
 from .internal_mcp import router as internal_mcp_router
 from .execute import check_execute_service_token, router as execute_router
 from .response_json import response_json_object
@@ -29,6 +31,36 @@ from services.context_memory_service.app.routes import (
 )
 
 app = FastAPI(title="Context Fabric - Context API Service", version="0.1.0")
+
+_DEFAULT_CHAT_RESPOND_MCP_TIMEOUT_SEC = 180.0
+_DEFAULT_CHAT_RESPOND_SUMMARY_TIMEOUT_SEC = 180.0
+_MAX_CHAT_RESPOND_TIMEOUT_SEC = 3600.0
+
+
+def chat_respond_mcp_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv(
+            "CONTEXT_FABRIC_CHAT_RESPOND_MCP_TIMEOUT_SEC",
+            str(_DEFAULT_CHAT_RESPOND_MCP_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_CHAT_RESPOND_MCP_TIMEOUT_SEC,
+        min_value=1.0,
+        max_value=_MAX_CHAT_RESPOND_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_CHAT_RESPOND_MCP_TIMEOUT_SEC",
+    )
+
+
+def chat_respond_summary_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv(
+            "CONTEXT_FABRIC_CHAT_RESPOND_SUMMARY_TIMEOUT_SEC",
+            str(_DEFAULT_CHAT_RESPOND_SUMMARY_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_CHAT_RESPOND_SUMMARY_TIMEOUT_SEC,
+        min_value=1.0,
+        max_value=_MAX_CHAT_RESPOND_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_CHAT_RESPOND_SUMMARY_TIMEOUT_SEC",
+    )
 
 # M11 follow-up — OpenTelemetry. Must instrument BEFORE include_router so the
 # auto-instrumentation patches every route on registration.
@@ -154,7 +186,7 @@ async def maybe_update_summary(session_id: str, agent_id: str, force: bool = Fal
             return await post_json(
                 f"{settings.context_memory_url.rstrip('/')}/memory/summaries/update",
                 {"session_id": session_id, "agent_id": agent_id, "force": force},
-                timeout=180.0,
+                timeout=chat_respond_summary_timeout_sec(),
             )
         return {"updated": False, "reason": "threshold_not_met", "stats": stats}
     except Exception as e:
@@ -218,6 +250,7 @@ async def chat_respond(
     gw_messages = gateway_messages_from_compiled(compiled.get("messages", []), req.message)
     system_prompt = "\n\n".join(m["content"] for m in gw_messages if m.get("role") == "system") or None
     history = [m for m in gw_messages[:-1] if m.get("role") != "system"]
+    mcp_timeout_sec = chat_respond_mcp_timeout_sec()
     mcp_payload = {
         "history": history,
         "message": req.message,
@@ -233,7 +266,7 @@ async def chat_respond(
         },
         "limits": {
             "maxSteps": 1,
-            "timeoutSec": 180,
+            "timeoutSec": mcp_timeout_sec,
             "compressToolResults": True,
             "includeLocalTools": False,
         },
@@ -246,7 +279,7 @@ async def chat_respond(
     headers = {"content-type": "application/json"}
     if settings.mcp_default_bearer_token:
         headers["authorization"] = f"Bearer {settings.mcp_default_bearer_token}"
-    async with httpx.AsyncClient(timeout=180.0) as client:
+    async with httpx.AsyncClient(timeout=mcp_timeout_sec) as client:
         mcp_http = await client.post(f"{settings.mcp_default_base_url.rstrip('/')}/mcp/invoke", json=mcp_payload, headers=headers)
         mcp_http.raise_for_status()
         mcp_resp = response_json_object(mcp_http, "MCP chat invoke")
