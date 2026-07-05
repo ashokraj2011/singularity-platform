@@ -327,6 +327,92 @@ def test_runtime_frame_list_filters_unknown_blank_and_duplicate_frames():
     ]) == ["tool-run", "model-run"]
 
 
+def test_runtime_capability_tag_env_defaults_fallbacks_and_clamps(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS", raising=False)
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH", raising=False)
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_CAPABILITY_TAGS == 32
+    assert module._MAX_RUNTIME_CAPABILITY_TAG_LEN == 96
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS", "bad")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH", "0")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_CAPABILITY_TAGS == 32
+    assert module._MAX_RUNTIME_CAPABILITY_TAG_LEN == 96
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS", "4")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH", "12")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_CAPABILITY_TAGS == 4
+    assert module._MAX_RUNTIME_CAPABILITY_TAG_LEN == 12
+    assert module._runtime_capability_tag_list(["x" * 20, "a", "b", "c", "d"]) == [
+        "x" * 12,
+        "a",
+        "b",
+        "c",
+    ]
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS", "999999")
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH", "999999")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_CAPABILITY_TAGS == 256
+    assert module._MAX_RUNTIME_CAPABILITY_TAG_LEN == 1024
+
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS", raising=False)
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH", raising=False)
+    importlib.reload(laptop_bridge)
+
+
+def test_runtime_capability_tag_env_uses_bounded_helpers(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS", raising=False)
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS",
+        default=32,
+        min_value=1,
+        max_value=256,
+    ) == 32
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS", "0")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS",
+        default=32,
+        min_value=1,
+        max_value=256,
+    ) == 32
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS", "999999")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS",
+        default=32,
+        min_value=1,
+        max_value=256,
+    ) == 256
+
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH", raising=False)
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH",
+        default=96,
+        min_value=8,
+        max_value=1024,
+    ) == 96
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH", "0")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH",
+        default=96,
+        min_value=8,
+        max_value=1024,
+    ) == 96
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH", "999999")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH",
+        default=96,
+        min_value=8,
+        max_value=1024,
+    ) == 1024
+
+
 def test_runtime_capability_tag_list_canonicalizes_and_bounds_tags():
     long_tag = "x" * 120
     raw = [
@@ -895,13 +981,19 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH" in source
     assert "_MAX_RUNTIME_JWT_LEN = bounded_int_env(" in source
     assert "HEARTBEAT_SWEEP_SEC = bounded_int_env(" in source
+    assert "_MAX_RUNTIME_CAPABILITY_TAGS = bounded_int_env(" in source
+    assert "_MAX_RUNTIME_CAPABILITY_TAG_LEN = bounded_int_env(" in source
     assert "httpx.AsyncClient(timeout=runtime_revocation_iam_timeout_sec())" in source
     assert "httpx.AsyncClient(timeout=runtime_http_fallback_timeout_sec())" in source
     assert "asyncio.wait_for(ws.receive_text(), timeout=runtime_hello_timeout_sec())" in source
     assert "asyncio.wait_for(ws.receive_text(), timeout=10)" not in source
     assert "\n_MAX_RUNTIME_JWT_LEN = 16 * 1024" not in source
     assert "\nHEARTBEAT_SWEEP_SEC = 30" not in source
+    assert "\n_MAX_RUNTIME_CAPABILITY_TAGS = 32" not in source
+    assert "\n_MAX_RUNTIME_CAPABILITY_TAG_LEN = 96" not in source
     assert "httpx.AsyncClient(timeout=5.0)" not in source
     assert "httpx.AsyncClient(timeout=180.0)" not in source

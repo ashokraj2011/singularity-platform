@@ -845,8 +845,11 @@ bounded `1..300`; Context Fabric waits for the runtime's first WebSocket
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC`, default `30`, bounded
 `1..300`; runtime inbound/outbound frame size uses
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES`, default `16777216`, bounded
-`1024..134217728`; and `RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME` defaults to
-`32`, minimum `1`, maximum `1024`.
+`1024..134217728`; runtime capability routing tags use
+`CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS`, default `32`, bounded
+`1..256`, and `CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH`,
+default `96`, bounded `8..1024`; and `RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME`
+defaults to `32`, minimum `1`, maximum `1024`.
 MCP runtime dial-in timings are schema-validated on the runtime side too:
 `MCP_RUNTIME_BRIDGE_HEARTBEAT_MS` defaults to `30000`,
 `MCP_RUNTIME_BRIDGE_HANDSHAKE_TIMEOUT_MS` defaults to `10000`,

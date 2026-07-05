@@ -1101,8 +1101,11 @@ bounded <code>1..300</code>; Context Fabric waits for the runtime&#39;s first We
 <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC</code>, default <code>30</code>, bounded
 <code>1..300</code>; runtime inbound/outbound frame size uses
 <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_PAYLOAD_BYTES</code>, default <code>16777216</code>, bounded
-<code>1024..134217728</code>; and <code>RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME</code> defaults to
-<code>32</code>, minimum <code>1</code>, maximum <code>1024</code>.
+<code>1024..134217728</code>; runtime capability routing tags use
+<code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS</code>, default <code>32</code>, bounded
+<code>1..256</code>, and <code>CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH</code>,
+default <code>96</code>, bounded <code>8..1024</code>; and <code>RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME</code>
+defaults to <code>32</code>, minimum <code>1</code>, maximum <code>1024</code>.
 MCP runtime dial-in timings are schema-validated on the runtime side too:
 <code>MCP_RUNTIME_BRIDGE_HEARTBEAT_MS</code> defaults to <code>30000</code>,
 <code>MCP_RUNTIME_BRIDGE_HANDSHAKE_TIMEOUT_MS</code> defaults to <code>10000</code>,
