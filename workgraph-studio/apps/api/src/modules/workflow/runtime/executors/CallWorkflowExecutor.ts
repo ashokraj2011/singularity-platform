@@ -46,7 +46,17 @@ export async function activateCallWorkflow(
   }
 
   const template = await prisma.workflow.findUnique({ where: { id: templateId } })
-  if (!template) return
+  if (!template) {
+    // A configured CALL_WORKFLOW whose target template no longer exists (deleted,
+    // or a stale/typo'd id) must FAIL the node with a clear reason — the previous
+    // silent `return` left the node ACTIVE forever with no signal to the operator.
+    const { failNode } = await import('../WorkflowRuntime')
+    await failNode(node.instanceId, node.id, {
+      message: `CALL_WORKFLOW target workflow template not found: ${templateId}`,
+      code: 'CALL_WORKFLOW_TEMPLATE_MISSING',
+    }, parent.createdById ?? undefined, parent.tenantId ?? undefined)
+    return
+  }
 
   // ── Idempotency guard ────────────────────────────────────────────────────
   // If a child is already linked and still running, don't spawn another.
