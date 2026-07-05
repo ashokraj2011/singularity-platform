@@ -930,7 +930,10 @@ The same legacy path bounds Prompt Composer prompt assembly with
 `1..300`, before falling back to the raw task prompt with a composer warning.
 Context-memory compilation for that path uses
 `CONTEXT_FABRIC_CONTEXT_COMPILE_TIMEOUT_SEC`, default `20`, bounded `1..300`;
-failures still fall back to the already assembled prompt and fresh-session
+the same legacy path's MCP code-context package build uses
+`CONTEXT_FABRIC_CODE_CONTEXT_BUILD_TIMEOUT_SEC`, default `45`, bounded
+`1..3600`, so larger repositories can tune AST/context selection without source
+edits. Failures still fall back to the already assembled prompt and fresh-session
 history behavior with a visible context compiler warning. The follow-up
 memory-history fallback fetch uses `CONTEXT_FABRIC_MEMORY_HISTORY_TIMEOUT_SEC`,
 default `10`, bounded `1..300`.

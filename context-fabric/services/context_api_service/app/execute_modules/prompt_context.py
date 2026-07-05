@@ -40,7 +40,9 @@ from ..response_json import response_json_object
 from .response_mapper import int_limit, str_value, trim_text
 
 _DEFAULT_CONTEXT_COMPILE_TIMEOUT_SEC = 20.0
+_DEFAULT_CODE_CONTEXT_BUILD_TIMEOUT_SEC = 45.0
 _MAX_SERVICE_BOUNDARY_TIMEOUT_SEC = 300.0
+_MAX_CODE_CONTEXT_BUILD_TIMEOUT_SEC = 3600.0
 
 
 async def _post(
@@ -65,6 +67,19 @@ def context_compile_timeout_sec() -> float:
         min_value=1.0,
         max_value=_MAX_SERVICE_BOUNDARY_TIMEOUT_SEC,
         name="CONTEXT_FABRIC_CONTEXT_COMPILE_TIMEOUT_SEC",
+    )
+
+
+def code_context_build_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv(
+            "CONTEXT_FABRIC_CODE_CONTEXT_BUILD_TIMEOUT_SEC",
+            str(_DEFAULT_CODE_CONTEXT_BUILD_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_CODE_CONTEXT_BUILD_TIMEOUT_SEC,
+        min_value=1.0,
+        max_value=_MAX_CODE_CONTEXT_BUILD_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_CODE_CONTEXT_BUILD_TIMEOUT_SEC",
     )
 
 
@@ -150,7 +165,7 @@ async def build_code_context_package(
         body = await _post(
             url,
             payload,
-            timeout=45.0,  # AST indexing of medium repos lands under this
+            timeout=code_context_build_timeout_sec(),
             headers={"authorization": f"Bearer {mcp_token}"} if mcp_token else None,
         )
         if not body.get("success"):
