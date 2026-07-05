@@ -878,6 +878,15 @@ default `10`, bounded `1..300`. This keeps Context Fabric service-boundary
 credential refreshes from waiting indefinitely behind a slow or unavailable IAM
 service.
 
+Context Fabric strict readiness checks are bounded independently so Operations
+can diagnose slow dependencies without hanging the health request:
+`CONTEXT_FABRIC_STRICT_HEALTH_DB_CONNECT_TIMEOUT_SEC`, default `3`, bounded
+`1..300`; `CONTEXT_FABRIC_STRICT_HEALTH_IAM_TIMEOUT_SEC`, default `3`, bounded
+`1..300`; `CONTEXT_FABRIC_STRICT_HEALTH_IAM_BOOTSTRAP_TIMEOUT_SEC`, default
+`5`, bounded `1..300`; and
+`CONTEXT_FABRIC_STRICT_HEALTH_AUDIT_GOV_TIMEOUT_SEC`, default `3`, bounded
+`1..300`.
+
 Context Fabric's shared SystemPrompt client bounds Prompt Composer fetch/render
 calls with `SYSTEM_PROMPT_HTTP_TIMEOUT_SEC`, default `10`, bounded `1..300`.
 Cached prompts remain stale-OK on Composer outage, but cold-start fetches now

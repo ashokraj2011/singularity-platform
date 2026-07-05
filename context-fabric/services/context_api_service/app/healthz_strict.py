@@ -21,7 +21,33 @@ import httpx
 
 from context_fabric_shared.database import is_postgres_target, resolve_database_target
 from .config import settings
+from .env_config import bounded_float_env, bounded_int_env
 from .response_json import response_json_object
+
+STRICT_HEALTH_DB_CONNECT_TIMEOUT_SEC = bounded_int_env(
+    "CONTEXT_FABRIC_STRICT_HEALTH_DB_CONNECT_TIMEOUT_SEC",
+    default=3,
+    min_value=1,
+    max_value=300,
+)
+STRICT_HEALTH_IAM_TIMEOUT_SEC = bounded_float_env(
+    "CONTEXT_FABRIC_STRICT_HEALTH_IAM_TIMEOUT_SEC",
+    default=3.0,
+    min_value=1.0,
+    max_value=300.0,
+)
+STRICT_HEALTH_IAM_BOOTSTRAP_TIMEOUT_SEC = bounded_float_env(
+    "CONTEXT_FABRIC_STRICT_HEALTH_IAM_BOOTSTRAP_TIMEOUT_SEC",
+    default=5.0,
+    min_value=1.0,
+    max_value=300.0,
+)
+STRICT_HEALTH_AUDIT_GOV_TIMEOUT_SEC = bounded_float_env(
+    "CONTEXT_FABRIC_STRICT_HEALTH_AUDIT_GOV_TIMEOUT_SEC",
+    default=3.0,
+    min_value=1.0,
+    max_value=300.0,
+)
 
 
 @dataclass
@@ -69,7 +95,7 @@ async def _check_store_backend(name: str, postgres_env: str, sqlite_env: str, de
     try:
         import psycopg
 
-        with psycopg.connect(target, connect_timeout=3) as conn:
+        with psycopg.connect(target, connect_timeout=STRICT_HEALTH_DB_CONNECT_TIMEOUT_SEC) as conn:
             conn.execute("SELECT 1")
         return InvariantResult(
             name=f"postgres_reachable_{name}",
@@ -90,7 +116,7 @@ async def _check_iam_reachable() -> InvariantResult:
     if not base:
         return InvariantResult(name="iam_base_reachable", ok=False, reason="IAM_BASE_URL is unset")
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=STRICT_HEALTH_IAM_TIMEOUT_SEC) as client:
             r = await client.get(f"{base}/health")
         if r.status_code != 200:
             return InvariantResult(name="iam_base_reachable", ok=False, reason=f"IAM /health returned {r.status_code}", details={"url": base})
@@ -116,7 +142,7 @@ async def _check_iam_bootstrap_works() -> InvariantResult:
     if not base:
         return InvariantResult(name="iam_bootstrap_creds_set", ok=False, reason="IAM_BASE_URL unset")
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=STRICT_HEALTH_IAM_BOOTSTRAP_TIMEOUT_SEC) as client:
             r = await client.post(f"{base}/auth/local/login", json={"email": user, "password": pw})
         if r.status_code != 200:
             return InvariantResult(name="iam_bootstrap_creds_set", ok=False, reason=f"login failed: {r.status_code} {r.text[:200]}")
@@ -134,7 +160,7 @@ async def _check_audit_gov_reachable() -> InvariantResult:
     if not base:
         return InvariantResult(name="audit_gov_reachable", ok=True, details={"note": "AUDIT_GOV_URL unset — emits become no-ops"})
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(timeout=STRICT_HEALTH_AUDIT_GOV_TIMEOUT_SEC) as client:
             r = await client.get(f"{base}/health")
         if r.status_code != 200:
             return InvariantResult(name="audit_gov_reachable", ok=False, reason=f"audit-gov /health returned {r.status_code}", details={"url": base})

@@ -1126,6 +1126,14 @@ service-token mint calls with <code>CONTEXT_FABRIC_IAM_SERVICE_TOKEN_TIMEOUT_SEC
 default <code>10</code>, bounded <code>1..300</code>. This keeps Context Fabric service-boundary
 credential refreshes from waiting indefinitely behind a slow or unavailable IAM
 service.</p>
+<p>Context Fabric strict readiness checks are bounded independently so Operations
+can diagnose slow dependencies without hanging the health request:
+<code>CONTEXT_FABRIC_STRICT_HEALTH_DB_CONNECT_TIMEOUT_SEC</code>, default <code>3</code>, bounded
+<code>1..300</code>; <code>CONTEXT_FABRIC_STRICT_HEALTH_IAM_TIMEOUT_SEC</code>, default <code>3</code>, bounded
+<code>1..300</code>; <code>CONTEXT_FABRIC_STRICT_HEALTH_IAM_BOOTSTRAP_TIMEOUT_SEC</code>, default
+<code>5</code>, bounded <code>1..300</code>; and
+<code>CONTEXT_FABRIC_STRICT_HEALTH_AUDIT_GOV_TIMEOUT_SEC</code>, default <code>3</code>, bounded
+<code>1..300</code>.</p>
 <p>Context Fabric&#39;s shared SystemPrompt client bounds Prompt Composer fetch/render
 calls with <code>SYSTEM_PROMPT_HTTP_TIMEOUT_SEC</code>, default <code>10</code>, bounded <code>1..300</code>.
 Cached prompts remain stale-OK on Composer outage, but cold-start fetches now
