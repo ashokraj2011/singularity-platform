@@ -842,7 +842,9 @@ not silently enable fail-open. Context Fabric waits for the runtime's first WebS
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES`, default `16384`, bounded
 `1024..131072`; runtime JWT maximum lifetime uses
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TOKEN_TTL_SEC`, default `31536000`, bounded
-`3600..31536000`; runtime frame dispatch uses
+`3600..31536000`; runtime hello/heartbeat health metadata uses
+`CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES`, default `65536`, bounded
+`1024..2097152`; runtime frame dispatch uses
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_INVOKE_TIMEOUT_SEC`, default `180`, bounded
 `1..7200`; stale runtime reaping uses
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_TIMEOUT_SEC`, default `90`, bounded

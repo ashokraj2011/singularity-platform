@@ -158,6 +158,57 @@ def test_runtime_bridge_token_ttl_env_uses_bounded_helper(monkeypatch):
     ) == 365 * 24 * 60 * 60
 
 
+def test_runtime_health_metadata_env_defaults_fallbacks_and_clamps(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES", raising=False)
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_HEALTH_BYTES == 64 * 1024
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES", "bad")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_HEALTH_BYTES == 64 * 1024
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES", "0")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_HEALTH_BYTES == 64 * 1024
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES", "4096")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_HEALTH_BYTES == 4096
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES", "999999999")
+    module = importlib.reload(laptop_bridge)
+    assert module._MAX_RUNTIME_HEALTH_BYTES == 2 * 1024 * 1024
+
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES", raising=False)
+    importlib.reload(laptop_bridge)
+
+
+def test_runtime_health_metadata_env_uses_bounded_helper(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES", raising=False)
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES",
+        default=64 * 1024,
+        min_value=1024,
+        max_value=2 * 1024 * 1024,
+    ) == 64 * 1024
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES", "0")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES",
+        default=64 * 1024,
+        min_value=1024,
+        max_value=2 * 1024 * 1024,
+    ) == 64 * 1024
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES", "999999999")
+    assert bounded_int_env(
+        "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES",
+        default=64 * 1024,
+        min_value=1024,
+        max_value=2 * 1024 * 1024,
+    ) == 2 * 1024 * 1024
+
+
 def test_runtime_bridge_jwt_size_env_defaults_fallbacks_and_clamps(monkeypatch):
     monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES", raising=False)
     module = importlib.reload(laptop_bridge)
@@ -923,6 +974,22 @@ def test_runtime_json_object_accepts_only_json_objects():
         assert err == "not-object"
 
 
+def test_runtime_health_metadata_allows_only_bounded_objects(monkeypatch):
+    monkeypatch.setattr(laptop_bridge, "_MAX_RUNTIME_HEALTH_BYTES", 48)
+
+    accepted, too_large = laptop_bridge._runtime_health_metadata({"provider": "mock", "ready": True})
+    assert accepted == {"provider": "mock", "ready": True}
+    assert too_large is False
+
+    ignored, too_large = laptop_bridge._runtime_health_metadata(["not", "an", "object"])
+    assert ignored is None
+    assert too_large is False
+
+    rejected, too_large = laptop_bridge._runtime_health_metadata({"blob": "x" * 80})
+    assert rejected is None
+    assert too_large is True
+
+
 def test_runtime_revocation_identity_prefers_device_id_then_runtime_id():
     assert laptop_bridge._runtime_revocation_identity({
         "kind": "device",
@@ -1228,6 +1295,7 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_TOKEN_TTL_SEC" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAG_LENGTH" in source
@@ -1239,6 +1307,7 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_REQUEST_ID_LENGTH" in source
     assert "_MAX_RUNTIME_JWT_LEN = bounded_int_env(" in source
     assert "_MAX_RUNTIME_TOKEN_TTL_SEC = bounded_int_env(" in source
+    assert "_MAX_RUNTIME_HEALTH_BYTES = bounded_int_env(" in source
     assert "HEARTBEAT_SWEEP_SEC = bounded_int_env(" in source
     assert 'REVOCATION_FAIL_OPEN = _bool_env("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN"' in source
     assert "_MAX_RUNTIME_CAPABILITY_TAGS = bounded_int_env(" in source
@@ -1255,6 +1324,9 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "asyncio.wait_for(ws.receive_text(), timeout=10)" not in source
     assert 'not in ("0", "false", "no")' not in source
     assert "token expiry too far in future" in source
+    assert "_runtime_health_metadata(hello.get(\"health\"))" in source
+    assert "_runtime_health_metadata(frame.get(\"health\"))" in source
+    assert "runtime health too large" in source
     assert "\n_MAX_RUNTIME_JWT_LEN = 16 * 1024" not in source
     assert "\nHEARTBEAT_SWEEP_SEC = 30" not in source
     assert "\n_MAX_RUNTIME_CAPABILITY_TAGS = 32" not in source

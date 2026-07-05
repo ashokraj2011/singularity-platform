@@ -140,6 +140,9 @@ _MAX_RUNTIME_JWT_LEN_CAP = 128 * 1024
 _DEFAULT_MAX_RUNTIME_TOKEN_TTL_SEC = 365 * 24 * 60 * 60
 _MIN_RUNTIME_TOKEN_TTL_SEC = 60 * 60
 _MAX_RUNTIME_TOKEN_TTL_SEC_CAP = 365 * 24 * 60 * 60
+_DEFAULT_MAX_RUNTIME_HEALTH_BYTES = 64 * 1024
+_MIN_RUNTIME_HEALTH_BYTES = 1024
+_MAX_RUNTIME_HEALTH_BYTES_CAP = 2 * 1024 * 1024
 _DEFAULT_HEARTBEAT_SWEEP_SEC = 30
 _MIN_HEARTBEAT_SWEEP_SEC = 1
 _MAX_HEARTBEAT_SWEEP_SEC = 300
@@ -155,6 +158,13 @@ _MAX_RUNTIME_TOKEN_TTL_SEC = bounded_int_env(
     default=_DEFAULT_MAX_RUNTIME_TOKEN_TTL_SEC,
     min_value=_MIN_RUNTIME_TOKEN_TTL_SEC,
     max_value=_MAX_RUNTIME_TOKEN_TTL_SEC_CAP,
+    logger=log,
+)
+_MAX_RUNTIME_HEALTH_BYTES = bounded_int_env(
+    "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_HEALTH_BYTES",
+    default=_DEFAULT_MAX_RUNTIME_HEALTH_BYTES,
+    min_value=_MIN_RUNTIME_HEALTH_BYTES,
+    max_value=_MAX_RUNTIME_HEALTH_BYTES_CAP,
     logger=log,
 )
 HEARTBEAT_SWEEP_SEC = bounded_int_env(
@@ -570,6 +580,21 @@ def _runtime_json_object(raw: str) -> tuple[dict[str, Any] | None, str | None]:
     return parsed, None
 
 
+def _runtime_json_size_bytes(value: Any) -> int:
+    try:
+        return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return _MAX_RUNTIME_HEALTH_BYTES + 1
+
+
+def _runtime_health_metadata(raw: Any) -> tuple[dict[str, Any] | None, bool]:
+    if raw is None or not isinstance(raw, dict):
+        return None, False
+    if _runtime_json_size_bytes(raw) > _MAX_RUNTIME_HEALTH_BYTES:
+        return None, True
+    return raw, False
+
+
 @router.websocket("/api/runtime-bridge/connect")
 @router.websocket("/api/laptop-bridge/connect")
 async def runtime_connect(ws: WebSocket) -> None:
@@ -670,8 +695,10 @@ async def runtime_connect(ws: WebSocket) -> None:
     capability_tags = _runtime_capability_tag_list(
         claims.get("capability_tags") or claims.get("capabilities")
     )
-    health_raw = hello.get("health")
-    health = health_raw if isinstance(health_raw, dict) else {}
+    health, health_too_large = _runtime_health_metadata(hello.get("health"))
+    if health_too_large:
+        await ws.close(code=1009, reason="runtime health too large")
+        return
     shared = _runtime_claims_shared(claims)
 
     conn = ActiveConnection(
@@ -687,7 +714,7 @@ async def runtime_connect(ws: WebSocket) -> None:
         tenant_id=tenant_id,
         shared=shared,
         capability_tags=capability_tags,
-        health=health,
+        health=health or {},
     )
     await REGISTRY.register(conn)
     log.info(
@@ -730,8 +757,12 @@ async def runtime_connect(ws: WebSocket) -> None:
                 continue
             ftype = frame.get("type")
             if ftype == "heartbeat":
-                health_raw = frame.get("health")
-                await REGISTRY.heartbeat(user_id, runtime_id, health_raw if isinstance(health_raw, dict) else None)
+                health, health_too_large = _runtime_health_metadata(frame.get("health"))
+                if health_too_large:
+                    log.warning("closing runtime with oversized health user=%s runtime=%s", user_id, runtime_id)
+                    await ws.close(code=1009, reason="runtime health too large")
+                    break
+                await REGISTRY.heartbeat(user_id, runtime_id, health)
                 # Finding #7 — re-check revocation for this live connection, throttled to
                 # REVOCATION_RECHECK_SEC. Only a confirmed revocation disconnects; an
                 # unreachable IAM (None) leaves the session up until it can be confirmed.
