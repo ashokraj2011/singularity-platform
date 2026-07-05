@@ -326,6 +326,26 @@ def test_runtime_revocation_iam_timeout_env_is_bounded(monkeypatch):
     assert laptop_bridge.runtime_revocation_iam_timeout_sec() == 300.0
 
 
+def test_runtime_hello_timeout_env_is_bounded(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC", raising=False)
+    assert laptop_bridge.runtime_hello_timeout_sec() == 10.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC", "bad")
+    assert laptop_bridge.runtime_hello_timeout_sec() == 10.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC", "nan")
+    assert laptop_bridge.runtime_hello_timeout_sec() == 10.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC", "0")
+    assert laptop_bridge.runtime_hello_timeout_sec() == 10.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC", "12.5")
+    assert laptop_bridge.runtime_hello_timeout_sec() == 12.5
+
+    monkeypatch.setenv("CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC", "999999")
+    assert laptop_bridge.runtime_hello_timeout_sec() == 300.0
+
+
 def test_device_token_still_requires_device_id(monkeypatch):
     monkeypatch.setattr(laptop_bridge, "JWT_SECRET", "test-secret")
     base_payload = {
@@ -769,7 +789,10 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
 
     assert "CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC" in source
+    assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC" in source
     assert "httpx.AsyncClient(timeout=runtime_revocation_iam_timeout_sec())" in source
     assert "httpx.AsyncClient(timeout=runtime_http_fallback_timeout_sec())" in source
+    assert "asyncio.wait_for(ws.receive_text(), timeout=runtime_hello_timeout_sec())" in source
+    assert "asyncio.wait_for(ws.receive_text(), timeout=10)" not in source
     assert "httpx.AsyncClient(timeout=5.0)" not in source
     assert "httpx.AsyncClient(timeout=180.0)" not in source

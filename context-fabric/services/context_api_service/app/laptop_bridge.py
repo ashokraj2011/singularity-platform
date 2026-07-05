@@ -131,6 +131,8 @@ _MIN_REVOCATION_RECHECK_SEC = 5
 _MAX_REVOCATION_RECHECK_SEC = 24 * 60 * 60
 _DEFAULT_RUNTIME_REVOCATION_IAM_TIMEOUT_SEC = 5.0
 _MAX_RUNTIME_REVOCATION_IAM_TIMEOUT_SEC = 300.0
+_DEFAULT_RUNTIME_HELLO_TIMEOUT_SEC = 10.0
+_MAX_RUNTIME_HELLO_TIMEOUT_SEC = 300.0
 
 
 # Finding #7 — device-revocation enforcement. A revoked device JWT must stop working
@@ -177,6 +179,19 @@ def runtime_revocation_iam_timeout_sec() -> float:
         min_value=1.0,
         max_value=_MAX_RUNTIME_REVOCATION_IAM_TIMEOUT_SEC,
         name="CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC",
+    )
+
+
+def runtime_hello_timeout_sec() -> float:
+    return bounded_float_value(
+        os.getenv(
+            "CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC",
+            str(_DEFAULT_RUNTIME_HELLO_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_RUNTIME_HELLO_TIMEOUT_SEC,
+        min_value=1.0,
+        max_value=_MAX_RUNTIME_HELLO_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC",
     )
 
 
@@ -492,7 +507,7 @@ async def runtime_connect(ws: WebSocket) -> None:
 
     # Wait for hello.
     try:
-        hello_raw = await asyncio.wait_for(ws.receive_text(), timeout=10)
+        hello_raw = await asyncio.wait_for(ws.receive_text(), timeout=runtime_hello_timeout_sec())
     except asyncio.TimeoutError:
         await ws.close(code=4400, reason="hello timeout")
         return

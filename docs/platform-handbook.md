@@ -833,8 +833,10 @@ Runtime Bridge registry/auth knobs use the shared Context Fabric env helper as
 well: `RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC` defaults to `300`, minimum `5`,
 maximum `86400`; each IAM device-revocation lookup uses
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC`, default `5`,
-bounded `1..300`; and `RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME` defaults to
-`32`, minimum `1`, maximum `1024`.
+bounded `1..300`; Context Fabric waits for the runtime's first WebSocket
+`hello` frame using `CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC`, default
+`10`, bounded `1..300`; and `RUNTIME_BRIDGE_MAX_PENDING_PER_RUNTIME` defaults
+to `32`, minimum `1`, maximum `1024`.
 MCP runtime dial-in timings are schema-validated on the runtime side too:
 `MCP_RUNTIME_BRIDGE_HEARTBEAT_MS` defaults to `30000`,
 `MCP_RUNTIME_BRIDGE_HANDSHAKE_TIMEOUT_MS` defaults to `10000`,
