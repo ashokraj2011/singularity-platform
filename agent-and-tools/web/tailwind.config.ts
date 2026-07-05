@@ -7,22 +7,22 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        sans:    ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
-        display: ["'Mulish'", "ui-sans-serif", "system-ui", "sans-serif"],
-        mono:    ["ui-monospace", "'SFMono-Regular'", "Menlo", "monospace"],
+        sans:    ["Hanken Grotesk", "ui-sans-serif", "system-ui", "sans-serif"],
+        display: ["'Source Serif 4'", "Georgia", "'Times New Roman'", "serif"],
+        mono:    ["'JetBrains Mono'", "ui-monospace", "'SFMono-Regular'", "Menlo", "monospace"],
       },
       colors: {
         singularity: {
-          50:  "#f0fdf4",
-          100: "#dcfce7",
-          200: "#bbf7d0",
-          300: "#86efac",
-          400: "#4ade80",
-          500: "#22c55e",
-          600: "#368727",   /* brand primary */
-          700: "#2a6b1f",   /* brand dark */
-          800: "#14532d",
-          900: "#052e16",
+          50:  "#fbf3ee",
+          100: "#f6e2d6",
+          200: "#ecc4ad",
+          300: "#e0a17d",
+          400: "#d07d52",
+          500: "#c15f3c",
+          600: "#a24428",   /* brand primary (oxblood clay) */
+          700: "#7d3319",   /* brand dark */
+          800: "#6f3319",
+          900: "#4e2513",
         },
       },
     },

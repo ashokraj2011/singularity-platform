@@ -348,15 +348,6 @@ export function Sidebar() {
             overflow: "hidden",
           }}
         >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/singularity-mark.png"
-            alt="Singularity"
-            width={40}
-            height={40}
-            style={{ flexShrink: 0, filter: "drop-shadow(0 2px 6px rgba(0,0,0,0.16))", userSelect: "none" }}
-            onError={(e) => { (e.currentTarget as HTMLImageElement).src = "/singularity-logo.png"; }}
-          />
           <div style={{ minWidth: 0, overflow: "hidden" }}>
             <h2 style={{ fontSize: 16, fontWeight: 900, color: "var(--color-on-surface)", letterSpacing: "0.02em", lineHeight: 1.15, margin: 0 }}>
               Singularity
