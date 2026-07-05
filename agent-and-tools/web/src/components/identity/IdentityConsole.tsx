@@ -6,8 +6,10 @@ import { CircleAlert, GitBranch, ShieldCheck, ShieldX, Users } from "lucide-reac
 import {
   checkAuthorization,
   createIdentity,
+  createMcpServer,
   listCapabilityRelationships,
   listIdentity,
+  listMcpServers,
   type AuthzCheckRequest,
   type AuthzCheckResponse,
   type CapabilityRelationshipRow,
@@ -60,6 +62,10 @@ const viewCopy: Record<IdentityView, { title: string; description: string }> = {
   "authz-check": {
     title: "Authorization Check",
     description: "Evaluate whether a user can perform an action on a capability/resource with the current policy graph.",
+  },
+  "mcp-servers": {
+    title: "MCP Servers",
+    description: "Register and review the MCP tool servers available to each capability.",
   },
 };
 
@@ -120,6 +126,7 @@ const columns: Record<IdentityView, Array<{ label: string; keys: string[] }>> = 
     { label: "Created", keys: ["created_at", "createdAt"] },
   ],
   "authz-check": [],
+  "mcp-servers": [],
 };
 
 // ── Create forms ─────────────────────────────────────────────────────────────
@@ -201,7 +208,7 @@ export function IdentityConsole({ view = "dashboard" }: { view?: IdentityView })
   const { data: teams } = useSWR("identity-teams-count", () => listIdentity("teams", 25));
   const { data: capabilities } = useSWR("identity-capabilities-count", () => listIdentity("capabilities", 25));
   const { data: audit } = useSWR("identity-audit-count", () => listIdentity("audit", 10));
-  const listView = activeView === "dashboard" ? null : activeView;
+  const listView = activeView === "dashboard" || activeView === "mcp-servers" ? null : activeView;
   const { data: rows, error: rowsError, isLoading, mutate: mutateRows } = useSWR(listView ? ["identity-list", listView] : null, () => listIdentity(listView as IdentityView, 100));
   const error = usersError ?? rowsError;
 
@@ -237,6 +244,8 @@ export function IdentityConsole({ view = "dashboard" }: { view?: IdentityView })
           <CapabilityGraphPanel capabilities={rows?.items ?? []} loading={isLoading} />
         ) : activeView === "authz-check" ? (
           <AuthzPanel permissions={rows?.items ?? []} />
+        ) : activeView === "mcp-servers" ? (
+          <McpServersPanel />
         ) : (
           <EntityTable title={titleFor(activeView)} view={activeView} rows={rows?.items ?? []} loading={isLoading} onCreated={() => void mutateRows()} />
         )}
@@ -365,6 +374,134 @@ function CreateEntityModal({ view, onClose, onCreated }: { view: IdentityView; o
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
           <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
           <button type="button" className="btn-primary" onClick={() => void submit()} disabled={busy || missingRequired}>{busy ? "Creating…" : `Create ${spec.singular}`}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function McpServersPanel() {
+  const { data: caps } = useSWR("identity-caps-for-mcp", () => listIdentity("capabilities", 200));
+  const capabilities = caps?.items ?? [];
+  const [capId, setCapId] = useState("");
+  const effectiveCapId = capId || String(capabilities[0]?.id ?? "");
+  const { data: servers, isLoading, mutate } = useSWR(effectiveCapId ? ["mcp-servers", effectiveCapId] : null, () => listMcpServers(effectiveCapId));
+  const serverRows: IdentityRow[] = Array.isArray(servers) ? servers : (servers?.items ?? []);
+  const [creating, setCreating] = useState(false);
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <section className="card" style={{ padding: 18 }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap", justifyContent: "space-between" }}>
+          <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "var(--color-outline)", flex: 1, minWidth: 280 }}>
+            Capability
+            <select value={effectiveCapId} onChange={(e) => setCapId(e.target.value)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: "9px 11px", fontSize: 13, fontWeight: 600, color: "var(--color-text)" }}>
+              {capabilities.length === 0 ? <option value="">No capabilities available</option> : null}
+              {capabilities.map((c) => {
+                const id = String(c.id ?? "");
+                return <option key={id} value={id}>{valueText(c.name ?? c.display_name ?? c.capability_id ?? id)}</option>;
+              })}
+            </select>
+          </label>
+          <button type="button" className="btn-primary" disabled={!effectiveCapId} onClick={() => setCreating(true)}>＋ New MCP server</button>
+        </div>
+        <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--color-outline)" }}>MCP servers are registered per capability. Requires super-admin.</p>
+      </section>
+
+      <section className="card" style={{ overflow: "hidden" }}>
+        <div style={{ padding: 18, borderBottom: "1px solid var(--color-outline-variant)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h2 style={{ margin: 0, fontSize: 16 }}>Registered MCP servers</h2>
+          <span style={{ color: "var(--color-outline)", fontSize: 12 }}>{isLoading ? "Loading" : `${serverRows.length} shown`}</span>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50">
+                {["Name", "Base URL", "Protocol", "Status"].map((h) => <th key={h} className="text-left px-4 py-3 font-medium text-slate-600">{h}</th>)}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {serverRows.map((s, index) => (
+                <tr key={String(s.id ?? index)} className="hover:bg-slate-50">
+                  <td className="px-4 py-3 text-slate-700">{valueText(s.name)}</td>
+                  <td className="px-4 py-3 text-slate-700">{valueText(s.base_url)}</td>
+                  <td className="px-4 py-3 text-slate-700">{valueText(s.protocol)}</td>
+                  <td className="px-4 py-3 text-slate-700">{valueText(s.status)}</td>
+                </tr>
+              ))}
+              {!isLoading && serverRows.length === 0 && <tr><td colSpan={4} className="px-4 py-12 text-center text-slate-400">No MCP servers registered for this capability.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {creating && effectiveCapId ? (
+        <CreateMcpServerModal capabilityId={effectiveCapId} onClose={() => setCreating(false)} onCreated={() => { setCreating(false); void mutate(); }} />
+      ) : null}
+    </div>
+  );
+}
+
+function CreateMcpServerModal({ capabilityId, onClose, onCreated }: { capabilityId: string; onClose: () => void; onCreated: () => void }) {
+  const [values, setValues] = useState<Record<string, string>>({ protocol: "MCP_HTTP" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const set = (k: string) => (v: string) => setValues((prev) => ({ ...prev, [k]: v }));
+  const name = (values.name ?? "").trim();
+  const baseUrl = (values.base_url ?? "").trim();
+  const token = (values.bearer_token ?? "").trim();
+  const invalid = !name || !baseUrl || token.length < 8;
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      const body: Record<string, unknown> = { name, base_url: baseUrl, bearer_token: token, protocol: values.protocol || "MCP_HTTP" };
+      const desc = (values.description ?? "").trim();
+      const ver = (values.protocol_version ?? "").trim();
+      const tags = (values.tags ?? "").trim();
+      if (desc) body.description = desc;
+      if (ver) body.protocol_version = ver;
+      if (tags) body.tags = tags.split(",").map((t) => t.trim()).filter(Boolean);
+      await createMcpServer(capabilityId, body);
+      onCreated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "6vh 16px", zIndex: 60 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "min(560px, 96vw)", maxHeight: "88vh", overflow: "auto", padding: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>New MCP server</h2>
+          <button type="button" onClick={onClose} aria-label="Close" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--color-outline)", fontSize: 22, lineHeight: 1 }}>×</button>
+        </div>
+        <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--color-outline)" }}>Registered under the selected capability. Requires super-admin. * = required.</p>
+        <div style={{ display: "grid", gap: 10 }}>
+          <IdentityInput label="Name *" value={values.name ?? ""} onChange={set("name")} placeholder="primary-mcp" />
+          <IdentityInput label="Base URL *" value={values.base_url ?? ""} onChange={set("base_url")} placeholder="https://mcp.example.com" />
+          <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "var(--color-outline)" }}>
+            Bearer token *
+            <input type="password" value={values.bearer_token ?? ""} onChange={(e) => set("bearer_token")(e.target.value)} placeholder="min 8 characters" style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: "9px 11px", fontSize: 13, color: "var(--color-text)", fontWeight: 500 }} />
+            <span style={{ fontWeight: 500, color: "var(--color-outline)", fontSize: 11 }}>Stored server-side for context-fabric → MCP auth.</span>
+          </label>
+          <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "var(--color-outline)" }}>
+            Protocol
+            <select value={values.protocol ?? "MCP_HTTP"} onChange={(e) => set("protocol")(e.target.value)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: "9px 11px", fontSize: 13, color: "var(--color-text)", fontWeight: 500 }}>
+              <option value="MCP_HTTP">MCP_HTTP</option>
+              <option value="MCP_WS">MCP_WS</option>
+            </select>
+          </label>
+          <IdentityInput label="Protocol version" value={values.protocol_version ?? ""} onChange={set("protocol_version")} placeholder="(optional)" />
+          <IdentityInput label="Description" value={values.description ?? ""} onChange={set("description")} placeholder="(optional)" />
+          <IdentityInput label="Tags" value={values.tags ?? ""} onChange={set("tags")} placeholder="comma, separated" />
+        </div>
+        {error ? <div style={{ marginTop: 12 }}><SmallError error={error} /></div> : null}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="btn-primary" onClick={() => void submit()} disabled={busy || invalid}>{busy ? "Registering…" : "Register MCP server"}</button>
         </div>
       </div>
     </div>
