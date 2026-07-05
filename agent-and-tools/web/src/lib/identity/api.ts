@@ -97,6 +97,16 @@ export function checkAuthorization(body: AuthzCheckRequest): Promise<AuthzCheckR
   return identityRequest<AuthzCheckResponse>("/authz/check", { method: "POST", body: JSON.stringify(body) });
 }
 
+// IAM org entities that can be created from the Identity console. Each maps to a
+// POST on its list path (all super-admin gated server-side; a 403 surfaces as an
+// IdentityError in the create form). MCP servers are capability-scoped and live
+// on a separate surface, so they are intentionally not here.
+export const CREATABLE_VIEWS: IdentityView[] = ["business-units", "teams", "users", "roles", "capabilities"];
+
+export function createIdentity(view: IdentityView, body: Record<string, unknown>): Promise<IdentityRow> {
+  return identityRequest<IdentityRow>(pathFor(view), { method: "POST", body: JSON.stringify(body) });
+}
+
 export function listCapabilityRelationships(capabilityId: string): Promise<CapabilityRelationshipRow[]> {
   return identityRequest<CapabilityRelationshipRow[]>(`/capabilities/${encodeURIComponent(capabilityId)}/relationships`);
 }
