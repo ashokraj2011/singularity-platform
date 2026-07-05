@@ -894,6 +894,12 @@ Context Fabric's Git credential broker bounds IAM credential issue calls with
 Git tokens remain in-memory only; timeout failures still degrade to no brokered
 credential rather than logging or leaking token material.
 
+Context Fabric resolves profile-backed run capabilities from Agent Runtime with
+`CONTEXT_FABRIC_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC`, default `10`, bounded
+`1..300`. In fail-closed governance this deadline controls how long `/execute`
+waits for the effective capability set before blocking the run; in less strict
+local modes it turns into a visible profile-resolution warning.
+
 Platform Web's Runtime + LLM settings route bounds status fan-out calls with
 `LLM_SETTINGS_FETCH_TIMEOUT_SEC`, default `5`, bounded `1..300`. Model catalog
 mutations forwarded to LLM Gateway use `LLM_SETTINGS_WRITE_TIMEOUT_SEC`, default

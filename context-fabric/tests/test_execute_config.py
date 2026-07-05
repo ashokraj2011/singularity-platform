@@ -37,6 +37,26 @@ def test_request_timeout_sec_accepts_camel_and_snake_case_but_bounds_values():
     assert execute._request_timeout_sec({"timeoutSec": 999999}, default=240.0) == 7200.0
 
 
+def test_agent_profile_resolve_timeout_env_is_bounded(monkeypatch):
+    monkeypatch.delenv("CONTEXT_FABRIC_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC", raising=False)
+    assert execute._agent_profile_resolve_timeout_sec() == 10.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC", "bad")
+    assert execute._agent_profile_resolve_timeout_sec() == 10.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC", "nan")
+    assert execute._agent_profile_resolve_timeout_sec() == 10.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC", "0")
+    assert execute._agent_profile_resolve_timeout_sec() == 10.0
+
+    monkeypatch.setenv("CONTEXT_FABRIC_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC", "12.5")
+    assert execute._agent_profile_resolve_timeout_sec() == 12.5
+
+    monkeypatch.setenv("CONTEXT_FABRIC_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC", "999999")
+    assert execute._agent_profile_resolve_timeout_sec() == 300.0
+
+
 def test_deep_reasoning_budget_env_is_bounded(monkeypatch):
     monkeypatch.delenv("DEEP_REASONING_BUDGET_TOKENS", raising=False)
     assert execute._deep_reasoning_budget_tokens() == 0

@@ -109,6 +109,54 @@ def test_execute_preserves_provider_manifest_resolution_evidence():
     assert "profile_effective_capabilities" in execute_source
 
 
+def test_profile_resolution_uses_configured_timeout():
+    resolver_source = inspect.getsource(execute_module._resolve_agent_profile_capabilities)
+    module_source = inspect.getsource(execute_module)
+
+    assert "_agent_profile_resolve_timeout_sec()" in resolver_source
+    assert "CONTEXT_FABRIC_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC" in module_source
+    assert "timeout=10.0" not in resolver_source
+
+
+def test_profile_resolution_passes_timeout_and_service_token(monkeypatch):
+    captured: dict = {}
+
+    async def fake_post(url: str, payload: dict, timeout: float = 60.0, headers: dict | None = None) -> dict:
+        captured["url"] = url
+        captured["payload"] = payload
+        captured["timeout"] = timeout
+        captured["headers"] = headers
+        return {
+            "data": {
+                "effectiveCapabilities": [{"capabilityId": "github.issue.read"}],
+                "snapshotHash": "sha256:profile",
+                "providerResolutions": [{"providerId": "github", "manifestVersion": "2026-07-05"}],
+            }
+        }
+
+    async def fake_token():
+        return "service.jwt"
+
+    monkeypatch.setattr(execute_module.settings, "agent_runtime_url", "http://agent-runtime.test")
+    monkeypatch.setenv("CONTEXT_FABRIC_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC", "12.5")
+    monkeypatch.setattr(execute_module, "_post", fake_post)
+    monkeypatch.setattr(execute_module, "get_iam_service_token", fake_token)
+
+    capabilities, snapshot_hash, resolutions = asyncio.run(
+        execute_module._resolve_agent_profile_capabilities("agent-profile-1")
+    )
+
+    assert capabilities == [{"capabilityId": "github.issue.read"}]
+    assert snapshot_hash == "sha256:profile"
+    assert resolutions == [{"providerId": "github", "manifestVersion": "2026-07-05"}]
+    assert captured == {
+        "url": "http://agent-runtime.test/api/v1/agents/profiles/agent-profile-1/resolve",
+        "payload": {},
+        "timeout": 12.5,
+        "headers": {"Authorization": "Bearer service.jwt"},
+    }
+
+
 def test_execute_uses_configured_default_governance_when_omitted():
     execute_source = inspect.getsource(execute_module.execute)
 

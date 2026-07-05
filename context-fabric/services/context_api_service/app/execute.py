@@ -92,8 +92,10 @@ _mcp_record_by_id = _runtime_mod.mcp_record_by_id
 
 _DEFAULT_MCP_INVOKE_TIMEOUT_SEC = 480.0
 _DEFAULT_LAPTOP_INVOKE_TIMEOUT_SEC = 240.0
+_DEFAULT_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC = 10.0
 _MIN_MCP_INVOKE_TIMEOUT_SEC = 1.0
 _MAX_MCP_INVOKE_TIMEOUT_SEC = 2.0 * 60.0 * 60.0
+_MAX_SERVICE_BOUNDARY_TIMEOUT_SEC = 300.0
 _MAX_DEEP_REASONING_BUDGET_TOKENS = 32_768
 
 
@@ -107,6 +109,16 @@ def _bounded_timeout_value(raw: Any, *, default: float) -> float:
     )
 
 
+def _bounded_service_timeout_value(raw: Any, *, default: float, name: str) -> float:
+    return bounded_float_value(
+        raw,
+        default=default,
+        min_value=1.0,
+        max_value=_MAX_SERVICE_BOUNDARY_TIMEOUT_SEC,
+        name=name,
+    )
+
+
 def _request_timeout_sec(limits: dict[str, Any], *, default: float) -> float:
     raw = limits.get("timeoutSec") if "timeoutSec" in limits else limits.get("timeout_sec", default)
     return _bounded_timeout_value(raw, default=default)
@@ -116,6 +128,17 @@ def _default_mcp_invoke_timeout_sec() -> float:
     return _bounded_timeout_value(
         os.getenv("CONTEXT_FABRIC_MCP_INVOKE_TIMEOUT_SEC", str(_DEFAULT_MCP_INVOKE_TIMEOUT_SEC)),
         default=_DEFAULT_MCP_INVOKE_TIMEOUT_SEC,
+    )
+
+
+def _agent_profile_resolve_timeout_sec() -> float:
+    return _bounded_service_timeout_value(
+        os.getenv(
+            "CONTEXT_FABRIC_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC",
+            str(_DEFAULT_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC),
+        ),
+        default=_DEFAULT_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC,
+        name="CONTEXT_FABRIC_AGENT_PROFILE_RESOLVE_TIMEOUT_SEC",
     )
 
 
@@ -284,7 +307,7 @@ async def _resolve_agent_profile_capabilities(
     resolved = await _post(
         f"{base}/agents/profiles/{agent_template_id}/resolve",
         {},
-        timeout=10.0,
+        timeout=_agent_profile_resolve_timeout_sec(),
         headers={"Authorization": f"Bearer {service_token or ''}"},
     )
     data = resolved.get("data") if isinstance(resolved.get("data"), dict) else resolved
