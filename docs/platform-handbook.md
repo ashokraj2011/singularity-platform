@@ -833,7 +833,10 @@ Runtime Bridge registry/auth knobs use the shared Context Fabric env helper as
 well: `RUNTIME_BRIDGE_REVOCATION_RECHECK_SEC` defaults to `300`, minimum `5`,
 maximum `86400`; each IAM device-revocation lookup uses
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC`, default `5`,
-bounded `1..300`; Context Fabric waits for the runtime's first WebSocket
+bounded `1..300`. `RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN` defaults to `false`
+for production-class envs and `true` for local/dev; only explicit
+`1/true/yes/on` and `0/false/no/off` values override that default, so typos do
+not silently enable fail-open. Context Fabric waits for the runtime's first WebSocket
 `hello` frame using `CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC`, default
 `10`, bounded `1..300`; runtime JWT admission uses
 `CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES`, default `16384`, bounded

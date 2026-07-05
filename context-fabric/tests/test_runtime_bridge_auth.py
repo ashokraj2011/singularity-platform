@@ -585,6 +585,57 @@ def test_runtime_bridge_revocation_recheck_env_defaults_and_clamps(monkeypatch):
     ) == 86_400
 
 
+def test_runtime_bridge_bool_env_parses_known_values_and_defaults(monkeypatch):
+    monkeypatch.delenv("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", raising=False)
+    assert laptop_bridge._bool_env("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", default=True) is True
+    assert laptop_bridge._bool_env("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", default=False) is False
+
+    for value in ("1", "true", "TRUE", "yes", "on"):
+        monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", value)
+        assert laptop_bridge._bool_env("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", default=False) is True
+
+    for value in ("0", "false", "FALSE", "no", "off"):
+        monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", value)
+        assert laptop_bridge._bool_env("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", default=True) is False
+
+    monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", "flase")
+    assert laptop_bridge._bool_env("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", default=False) is False
+    assert laptop_bridge._bool_env("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", default=True) is True
+
+
+def test_runtime_bridge_revocation_fail_open_env_defaults_fallbacks_and_overrides(monkeypatch):
+    for name in ("APP_ENV", "ENVIRONMENT", "NODE_ENV", "SINGULARITY_ENV"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", raising=False)
+    module = importlib.reload(laptop_bridge)
+    assert module.REVOCATION_FAIL_OPEN is True
+
+    monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", "false")
+    module = importlib.reload(laptop_bridge)
+    assert module.REVOCATION_FAIL_OPEN is False
+
+    monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", "flase")
+    module = importlib.reload(laptop_bridge)
+    assert module.REVOCATION_FAIL_OPEN is True
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", raising=False)
+    module = importlib.reload(module)
+    assert module.REVOCATION_FAIL_OPEN is False
+
+    monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", "true")
+    module = importlib.reload(module)
+    assert module.REVOCATION_FAIL_OPEN is True
+
+    monkeypatch.setenv("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", "flase")
+    module = importlib.reload(module)
+    assert module.REVOCATION_FAIL_OPEN is False
+
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", raising=False)
+    importlib.reload(laptop_bridge)
+
+
 def test_runtime_http_fallback_timeout_env_is_bounded(monkeypatch):
     monkeypatch.delenv("CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC", raising=False)
     assert laptop_bridge.runtime_http_fallback_timeout_sec() == 180.0
@@ -1089,6 +1140,7 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "CONTEXT_FABRIC_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_REVOCATION_IAM_TIMEOUT_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_HELLO_TIMEOUT_SEC" in source
+    assert "RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_JWT_BYTES" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_HEARTBEAT_SWEEP_SEC" in source
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_CAPABILITY_TAGS" in source
@@ -1101,6 +1153,7 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "CONTEXT_FABRIC_RUNTIME_BRIDGE_MAX_REQUEST_ID_LENGTH" in source
     assert "_MAX_RUNTIME_JWT_LEN = bounded_int_env(" in source
     assert "HEARTBEAT_SWEEP_SEC = bounded_int_env(" in source
+    assert 'REVOCATION_FAIL_OPEN = _bool_env("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN"' in source
     assert "_MAX_RUNTIME_CAPABILITY_TAGS = bounded_int_env(" in source
     assert "_MAX_RUNTIME_CAPABILITY_TAG_LEN = bounded_int_env(" in source
     assert "_MAX_RUNTIME_USER_ID_LEN = bounded_int_env(" in source
@@ -1113,6 +1166,7 @@ def test_runtime_http_fallback_uses_bounded_timeout_helper():
     assert "httpx.AsyncClient(timeout=runtime_http_fallback_timeout_sec())" in source
     assert "asyncio.wait_for(ws.receive_text(), timeout=runtime_hello_timeout_sec())" in source
     assert "asyncio.wait_for(ws.receive_text(), timeout=10)" not in source
+    assert 'not in ("0", "false", "no")' not in source
     assert "\n_MAX_RUNTIME_JWT_LEN = 16 * 1024" not in source
     assert "\nHEARTBEAT_SWEEP_SEC = 30" not in source
     assert "\n_MAX_RUNTIME_CAPABILITY_TAGS = 32" not in source

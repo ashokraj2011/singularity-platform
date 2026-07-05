@@ -106,6 +106,7 @@ router = APIRouter()
 JWT_SECRET = os.environ.get("JWT_SECRET", "changeme_dev_only_min_32_chars_long!!")
 JWT_ALGORITHM = "HS256"
 _TRUTHY = {"1", "true", "yes", "on"}
+_FALSY = {"0", "false", "no", "off"}
 _KNOWN_RUNTIME_FRAME_TYPES = {
     "invoke",
     "tool-run",
@@ -215,6 +216,19 @@ _DEFAULT_RUNTIME_HELLO_TIMEOUT_SEC = 10.0
 _MAX_RUNTIME_HELLO_TIMEOUT_SEC = 300.0
 
 
+def _bool_env(name: str, *, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().lower()
+    if normalized in _TRUTHY:
+        return True
+    if normalized in _FALSY:
+        return False
+    log.warning("invalid boolean env %s=%r; using default=%s", name, raw, default)
+    return default
+
+
 # Finding #7 — device-revocation enforcement. A revoked device JWT must stop working
 # without waiting for its (up-to-365-day) natural expiry, so the bridge asks IAM whether
 # the device row is revoked: once at connect, then periodically for live connections.
@@ -230,8 +244,8 @@ REVOCATION_RECHECK_SEC = bounded_int_env(
 # and fail OPEN only in dev so a local IAM blip doesn't take down dial-in. The
 # periodic recheck still catches the device once IAM recovers. Override
 # explicitly with RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN={true,false}.
-_rev_fail_open_default = "false" if is_production_class_env() else "true"
-REVOCATION_FAIL_OPEN = os.environ.get("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", _rev_fail_open_default).lower() not in ("0", "false", "no")
+_rev_fail_open_default = not is_production_class_env()
+REVOCATION_FAIL_OPEN = _bool_env("RUNTIME_BRIDGE_REVOCATION_FAIL_OPEN", default=_rev_fail_open_default)
 _DEFAULT_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC = 180.0
 _MAX_RUNTIME_HTTP_FALLBACK_TIMEOUT_SEC = 3600.0
 
