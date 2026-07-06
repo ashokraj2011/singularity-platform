@@ -82,10 +82,10 @@ const statusTone: Record<string, string> = {
   FAILED: "#b91c1c",
   GUARD_REJECTED: "#b91c1c",
   GAPS_DETECTED: "#b45309",
-  STARTED: "#2563eb",
-  GENERATED: "#2563eb",
-  DISPATCHED: "#2563eb",
-  PENDING: "#64748b",
+  STARTED: "#4b6ba8",
+  GENERATED: "#4b6ba8",
+  DISPATCHED: "#4b6ba8",
+  PENDING: "#8a857a",
 };
 
 function tabForView(view: FoundryView): DetailTab {
@@ -158,7 +158,7 @@ export function FoundryConsole({ view = "runs" }: { view?: FoundryView }) {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(100px, 1fr))", gap: 8, minWidth: 320 }}>
             <Metric label="Runs" value={runPage?.total ?? runs.length ?? 0} />
             <Metric label="Open Gaps" value={run?.counts.openGaps ?? "-"} tone="#b45309" />
-            <Metric label="LLM Tasks" value={run?.counts.openLlmTasks ?? "-"} tone="#2563eb" />
+            <Metric label="LLM Tasks" value={run?.counts.openLlmTasks ?? "-"} tone="#4b6ba8" />
           </div>
         </div>
       </section>
@@ -431,7 +431,7 @@ function RunHeader({ run }: { run: RunDetail }) {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(100px, 1fr))", gap: 8, minWidth: 320 }}>
           <Metric label="Artifacts" value={run.counts.artifacts} />
           <Metric label="Gaps" value={`${run.counts.openGaps}/${run.counts.gaps}`} tone={run.counts.openGaps > 0 ? "#b45309" : "#15803d"} />
-          <Metric label="Tasks" value={`${run.counts.openLlmTasks}/${run.counts.llmTasks}`} tone={run.counts.openLlmTasks > 0 ? "#2563eb" : "#15803d"} />
+          <Metric label="Tasks" value={`${run.counts.openLlmTasks}/${run.counts.llmTasks}`} tone={run.counts.openLlmTasks > 0 ? "#4b6ba8" : "#15803d"} />
         </div>
       </div>
     </section>
@@ -446,7 +446,7 @@ function VerificationPanel({ run, onChanged }: { run: RunDetail; onChanged: () =
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
           <Metric label="Run status" value={run.status} tone={statusTone[run.status]} />
           <Metric label="Open gaps" value={`${run.counts.openGaps}/${run.counts.gaps}`} tone={run.counts.openGaps > 0 ? "#b45309" : "#15803d"} />
-          <Metric label="Open LLM tasks" value={`${run.counts.openLlmTasks}/${run.counts.llmTasks}`} tone={run.counts.openLlmTasks > 0 ? "#2563eb" : "#15803d"} />
+          <Metric label="Open LLM tasks" value={`${run.counts.openLlmTasks}/${run.counts.llmTasks}`} tone={run.counts.openLlmTasks > 0 ? "#4b6ba8" : "#15803d"} />
           <Metric label="Receipt" value={run.receipt?.receiptHash ? shortId(run.receipt.receiptHash) : "missing"} tone={run.receipt?.receiptHash ? "#15803d" : "#b45309"} />
         </div>
       </section>
@@ -739,7 +739,7 @@ function TaskPane({ task, onChanged }: { task: LlmTaskRow; onChanged: () => void
         rows={14}
         disabled={resolved}
         placeholder="Paste a unified diff here, or dispatch the LLM task."
-        style={{ width: "100%", border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12 }}
+        style={{ width: "100%", border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 12, fontFamily: "var(--font-mono)", fontSize: 12 }}
       />
     </div>
   );
@@ -845,7 +845,7 @@ function Fact({ label, value }: { label: string; value: unknown }) {
 }
 
 function StatusPill({ value }: { value?: string }) {
-  const tone = statusTone[value ?? ""] ?? "#64748b";
+  const tone = statusTone[value ?? ""] ?? "#8a857a";
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, border: `1px solid ${tone}33`, color: tone, background: `${tone}12`, borderRadius: 999, padding: "3px 8px", fontSize: 11, fontWeight: 850, textTransform: "uppercase" }}>
       <span style={{ width: 6, height: 6, borderRadius: 999, background: tone }} />
@@ -858,7 +858,7 @@ function ErrorBanner({ error }: { error: unknown }) {
   if (isFoundryUnavailable(error)) {
     return (
       <section className="card" style={{ padding: 18, marginBottom: 18, borderColor: "rgba(37,99,235,0.22)", background: "rgba(239,246,255,0.82)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#1d4ed8", fontWeight: 850 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#4b6ba8", fontWeight: 850 }}>
           <ShieldCheck size={16} />
           Workgraph code generation route is unavailable.
         </div>
@@ -901,7 +901,7 @@ function EmptyPanel({ label }: { label: string }) {
 function severityColor(severity: GapRow["severity"]) {
   if (severity === "critical" || severity === "high") return "#b91c1c";
   if (severity === "medium") return "#b45309";
-  return "#64748b";
+  return "#8a857a";
 }
 
 function labelForTab(tab: DetailTab) {

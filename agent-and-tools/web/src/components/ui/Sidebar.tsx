@@ -330,7 +330,12 @@ export function Sidebar() {
           alignItems: "center",
           justifyContent: effectiveCollapsed ? "center" : "space-between",
           gap: effectiveCollapsed ? 0 : 12,
-          padding: effectiveCollapsed ? "14px 10px" : "16px 14px 12px",
+          // Match the topbar height (52px) exactly so the sidebar-header divider
+          // lines up with the topbar's bottom border. box-sizing:border-box (from
+          // Tailwind preflight) means the 1px border is included in the 52px.
+          height: 52,
+          boxSizing: "border-box",
+          padding: effectiveCollapsed ? "0 10px" : "0 14px",
           borderBottom: "1px solid rgba(106,116,134,0.14)",
           flexShrink: 0,
         }}

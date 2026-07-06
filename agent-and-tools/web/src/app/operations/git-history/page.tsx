@@ -255,7 +255,7 @@ export default function GitHistoryExplainerPage() {
         .vscode-textarea {
           min-height: 88px;
           resize: vertical;
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+          font-family: var(--font-mono);
         }
         .vscode-input:focus,
         .vscode-textarea:focus,
@@ -341,7 +341,7 @@ export default function GitHistoryExplainerPage() {
           overflow: auto;
           min-width: 0;
           padding: 14px 0;
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 12px;
           line-height: 1.7;
         }
@@ -399,7 +399,7 @@ export default function GitHistoryExplainerPage() {
           padding: 12px;
           overflow: auto;
           white-space: pre-wrap;
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+          font-family: var(--font-mono);
           font-size: 12px;
           line-height: 1.6;
         }

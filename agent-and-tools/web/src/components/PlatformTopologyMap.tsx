@@ -249,13 +249,13 @@ function statusMeta(status: TopologyStatus, ok: boolean | null) {
     return { label: "Live", tone: "#047857", bg: "#ecfdf5", border: "#a7f3d0", dot: "active" };
   }
   if (status === "unconfigured") {
-    return { label: "Not configured", tone: "#64748b", bg: "#f8fafc", border: "#cbd5e1", dot: "" };
+    return { label: "Not configured", tone: "#8a857a", bg: "#f6f3eb", border: "#ded8ca", dot: "" };
   }
   if (status === "degraded") {
     return { label: "Degraded", tone: "#92400e", bg: "#fffbeb", border: "#fde68a", dot: "warning" };
   }
   if (status === "unknown") {
-    return { label: "Unknown", tone: "#475569", bg: "#f8fafc", border: "#cbd5e1", dot: "" };
+    return { label: "Unknown", tone: "#6e6555", bg: "#f6f3eb", border: "#ded8ca", dot: "" };
   }
   return { label: "Offline", tone: "#991b1b", bg: "#fef2f2", border: "#fecaca", dot: "error" };
 }
@@ -263,7 +263,7 @@ function statusMeta(status: TopologyStatus, ok: boolean | null) {
 function edgeColor(status: TopologyStatus) {
   if (status === "live") return "#10b981";
   if (status === "degraded") return "#d97706";
-  if (status === "unconfigured" || status === "unknown") return "#94a3b8";
+  if (status === "unconfigured" || status === "unknown") return "#a89f90";
   return "#dc2626";
 }
 
@@ -319,7 +319,7 @@ export function PlatformTopologyMap() {
               <path d="M0,0 L6,3 L0,6 Z" fill="#10b981" />
             </marker>
             <marker id="topology-arrow-muted" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-              <path d="M0,0 L6,3 L0,6 Z" fill="#94a3b8" />
+              <path d="M0,0 L6,3 L0,6 Z" fill="#a89f90" />
             </marker>
             <marker id="topology-arrow-warn" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
               <path d="M0,0 L6,3 L0,6 Z" fill="#d97706" />
@@ -372,7 +372,7 @@ function Metric({ label, value, ok }: { label: string; value: unknown; ok: boole
     <article className="topology-metric">
       <div className="label-xs" style={{ color: "var(--color-outline)" }}>{label}</div>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
-        {ok ? <CheckCircle2 size={16} color="#047857" /> : <Activity size={16} color="#64748b" />}
+        {ok ? <CheckCircle2 size={16} color="#047857" /> : <Activity size={16} color="#8a857a" />}
         <strong>{String(value)}</strong>
       </div>
     </article>

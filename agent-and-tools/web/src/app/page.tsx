@@ -49,7 +49,7 @@ const loop = [
     href: "/work-items",
     icon: ClipboardList,
     detail: "WorkItems, roadmap, and capability context",
-    tone: "#2563eb",
+    tone: "#4b6ba8",
   },
   {
     label: "Plan",
@@ -57,7 +57,7 @@ const loop = [
     href: "/workflows/start",
     icon: Workflow,
     detail: "Intent, template, runtime checks, and governed run kickoff",
-    tone: "#2563eb",
+    tone: "#4b6ba8",
   },
   {
     label: "Assign",
@@ -81,7 +81,7 @@ const loop = [
     href: "/operations/readiness",
     icon: Network,
     detail: "Readiness, topology, trust, costs, and infrastructure",
-    tone: "#0891b2",
+    tone: "#2f8085",
   },
   {
     label: "Audit",
@@ -89,7 +89,7 @@ const loop = [
     href: "/audit",
     icon: ShieldCheck,
     detail: "Contracts, receipts, lifecycle history, and policy proof",
-    tone: "#475569",
+    tone: "#6e6555",
   },
   {
     label: "Learn",
@@ -117,8 +117,8 @@ const evidenceLinks = [
 ];
 
 function valueTone(state: CountResult["state"]) {
-  if (state === "live") return "#168a5b";
-  if (state === "guarded") return "#475569";
+  if (state === "live") return "#2f7d57";
+  if (state === "guarded") return "#6e6555";
   return "#b45309";
 }
 

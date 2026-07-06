@@ -243,7 +243,7 @@ export function NotificationCenter() {
                 Actionable SDLC, runtime, security, and setup signals.
               </p>
             </div>
-            <button type="button" className="btn-secondary" style={{ width: 30, height: 30, padding: 0, justifyContent: "center" }} onClick={() => setOpen(false)} aria-label="Close notifications">
+            <button type="button" className="btn-secondary" style={{ width: 32, height: 32, padding: 0, justifyContent: "center" }} onClick={() => setOpen(false)} aria-label="Close notifications">
               <X size={14} />
             </button>
           </div>
@@ -293,7 +293,7 @@ export function NotificationCenter() {
                   const style = severityStyle(item.severity);
                   const isRead = state[item.id]?.read === true;
                   return (
-                    <article key={item.id} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 10, padding: 11, background: isRead ? "#fff" : "#f8fafc" }}>
+                    <article key={item.id} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 10, padding: 11, background: isRead ? "#fff" : "#f6f3eb" }}>
                       <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr)", gap: 10 }}>
                         <span style={{ width: 34, height: 34, borderRadius: 9, display: "grid", placeItems: "center", background: style.box, color: style.icon }}>
                           <Icon size={17} />
@@ -317,16 +317,16 @@ export function NotificationCenter() {
                             </code>
                           )}
                           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
-                            <Link className="btn-primary" href={item.href} style={{ height: 28, padding: "0 9px", fontSize: 11 }} onClick={() => updateLocalState(item.id, { read: true })}>
+                            <Link className="btn-primary" href={item.href} style={{ height: 32, padding: "0 9px", fontSize: 11 }} onClick={() => updateLocalState(item.id, { read: true })}>
                               {item.actionLabel}
                             </Link>
-                            <button type="button" className="btn-secondary" style={{ height: 28, padding: "0 9px", fontSize: 11 }} onClick={() => updateLocalState(item.id, { read: true })}>
+                            <button type="button" className="btn-secondary" style={{ height: 32, padding: "0 9px", fontSize: 11 }} onClick={() => updateLocalState(item.id, { read: true })}>
                               Mark read
                             </button>
-                            <button type="button" className="btn-secondary" style={{ height: 28, padding: "0 9px", fontSize: 11 }} onClick={() => updateLocalState(item.id, { snoozedUntil: Date.now() + 4 * 60 * 60 * 1000, read: true })}>
+                            <button type="button" className="btn-secondary" style={{ height: 32, padding: "0 9px", fontSize: 11 }} onClick={() => updateLocalState(item.id, { snoozedUntil: Date.now() + 4 * 60 * 60 * 1000, read: true })}>
                               Snooze 4h
                             </button>
-                            <button type="button" className="btn-secondary" style={{ height: 28, padding: "0 9px", fontSize: 11 }} onClick={() => updateLocalState(item.id, { resolved: true, read: true })}>
+                            <button type="button" className="btn-secondary" style={{ height: 32, padding: "0 9px", fontSize: 11 }} onClick={() => updateLocalState(item.id, { resolved: true, read: true })}>
                               Resolve
                             </button>
                           </div>
@@ -339,11 +339,11 @@ export function NotificationCenter() {
             )}
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: 12, borderTop: "1px solid var(--color-outline-variant)", background: "#f8fafc" }}>
-            <button type="button" className="btn-secondary" style={{ height: 30, padding: "0 9px", fontSize: 11 }} onClick={markAllRead}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: 12, borderTop: "1px solid var(--color-outline-variant)", background: "#f6f3eb" }}>
+            <button type="button" className="btn-secondary" style={{ height: 32, padding: "0 9px", fontSize: 11 }} onClick={markAllRead}>
               Mark all read
             </button>
-            <Link href="/settings?section=notifications" className="btn-secondary" style={{ height: 30, padding: "0 9px", fontSize: 11 }} onClick={() => setOpen(false)}>
+            <Link href="/settings?section=notifications" className="btn-secondary" style={{ height: 32, padding: "0 9px", fontSize: 11 }} onClick={() => setOpen(false)}>
               <Wrench size={13} />
               Notification settings
             </Link>
