@@ -408,8 +408,21 @@ export default function LlmSettingsPage() {
   const connectedRuntimes = normalizeRuntimeRows(runtimeBridgeEnvelope.connected);
   const runtimeConnected = connectedRuntimes.length > 0;
   const runtimeHealthRows = connectedRuntimes.map(runtime => runtime.health);
-  const runtimeProviderRows = runtimeHealthRows.flatMap(health => asProviderRows(health.llm_providers));
-  const runtimeModelRows = runtimeHealthRows.flatMap(health => asModelRows(health.llm_models));
+  // Multiple runtimes can each report the same provider/model catalog (they dial
+  // into the same gateway), so flatMapping across runtimes yields duplicates —
+  // which collide on the React `key` and double the rows. Dedupe by identity,
+  // keeping the first (a provider marked ready by any runtime stays ready).
+  const seenProvider = new Set<string>();
+  const runtimeProviderRows = runtimeHealthRows
+    .flatMap(health => asProviderRows(health.llm_providers))
+    .filter(row => (seenProvider.has(row.name) ? false : (seenProvider.add(row.name), true)));
+  const seenModel = new Set<string>();
+  const runtimeModelRows = runtimeHealthRows
+    .flatMap(health => asModelRows(health.llm_models))
+    .filter(row => {
+      const key = String(row.id ?? `${row.provider}-${row.model}`);
+      return seenModel.has(key) ? false : (seenModel.add(key), true);
+    });
   const runtimeProviderHealth = runtimeHealthRows.find(health => asProviderRows(health.llm_providers).length > 0) ?? {};
   const gatewayConfig = asRow(providerData.config);
   const directProviders = asProviderRows(providerData.providers);
