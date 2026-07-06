@@ -98,7 +98,7 @@ async function assertGrantScopeWritable(
 }
 
 async function lockToolContractVersionSequence(client: ToolDbClient, toolId: string): Promise<void> {
-  await client.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`tool-contract:${toolId}`}))`;
+  await client.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`tool-contract:${toolId}`}))`;
 }
 
 export const toolService = {

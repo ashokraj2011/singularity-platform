@@ -2094,7 +2094,7 @@ export const capabilityService = {
     if (!sourceKey) throw new Error("Repository source identity is incomplete.");
     return prisma.$transaction(async (tx) => {
       await assertActiveCapabilityForWrite(tx, capabilityId);
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
       await assertNoActiveRepositorySourceDuplicate(tx, nextIdentity, repoId);
       const updated = await tx.capabilityRepository.updateMany({
         where: { id: repoId, capabilityId, status: "ACTIVE" },
@@ -2156,7 +2156,7 @@ export const capabilityService = {
     if (!sourceKey) throw new Error("Knowledge source identity is incomplete.");
     return prisma.$transaction(async (tx) => {
       await assertActiveCapabilityForWrite(tx, capabilityId);
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
       await assertNoActiveKnowledgeSourceDuplicate(tx, nextIdentity, sourceId);
       const updated = await tx.capabilityKnowledgeSource.updateMany({
         where: { id: sourceId, capabilityId, status: "ACTIVE" },
@@ -3551,7 +3551,7 @@ async function persistCapabilityRepositorySource(
 
   return prisma.$transaction(async (tx) => {
     await assertActiveCapabilityForWrite(tx, capabilityId);
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
     const existing = await findActiveRepositorySource(tx, { capabilityId, repoUrl, defaultBranch, repositoryType });
     if (!existing) {
       return tx.capabilityRepository.create({
@@ -3591,7 +3591,7 @@ async function persistCapabilityKnowledgeSource(
 
   return prisma.$transaction(async (tx) => {
     await assertActiveCapabilityForWrite(tx, capabilityId);
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
     const existing = await findActiveKnowledgeSource(tx, { capabilityId, url, artifactType });
     if (!existing) {
       return tx.capabilityKnowledgeSource.create({
@@ -3636,7 +3636,7 @@ async function persistCapabilityCodeSymbol(input: Prisma.CapabilityCodeSymbolUnc
 
   return prisma.$transaction(async (tx) => {
     await assertActiveCapabilityForWrite(tx, String(input.capabilityId ?? ""), "Cannot record code symbols for an archived capability.");
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${symbolKey}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${symbolKey}))`;
     const existing = await tx.capabilityCodeSymbol.findFirst({
       where: {
         repositoryId: input.repositoryId,
@@ -3672,7 +3672,7 @@ async function persistCapabilityLearningCandidate(input: Prisma.CapabilityLearni
 
   return prisma.$transaction(async (tx) => {
     await assertActiveCapabilityForWrite(tx, capabilityId, "Cannot record learning candidate for an archived capability.");
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${candidateKey}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${candidateKey}))`;
     const existingRows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT id
       FROM "CapabilityLearningCandidate"
@@ -3803,7 +3803,7 @@ async function persistCapabilityAgentTemplate(input: Prisma.AgentTemplateUncheck
         context: "agent template default tool policy",
       });
     }
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${templateKey}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${templateKey}))`;
     const existingRows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       SELECT id
       FROM "AgentTemplate"
@@ -3868,7 +3868,7 @@ async function persistAgentCapabilityBinding(input: Prisma.AgentCapabilityBindin
 
   return prisma.$transaction(async (tx) => {
     await assertActiveCapabilityForWrite(tx, String(input.capabilityId ?? ""), "Cannot persist agent binding for an archived capability.");
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${bindingKey}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${bindingKey}))`;
     const existing = await tx.agentCapabilityBinding.findFirst({
       where: {
         capabilityId: input.capabilityId,
@@ -3931,7 +3931,7 @@ async function ensureCodeSymbolEmbedding(input: {
   const vectorLiteral = toVectorLiteral(embedded.vector);
 
   return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${embeddingKey}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${embeddingKey}))`;
     const activeRows = await tx.$queryRaw<Array<{ capabilityStatus: string }>>(Prisma.sql`
       SELECT c.status AS "capabilityStatus"
       FROM "CapabilityCodeSymbol" s
@@ -4019,7 +4019,7 @@ async function persistKnowledgeArtifactWithClient(
   });
 
   if (sourceKey) {
-    await client.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
+    await client.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
   }
 
   const existingRows = sourceKey
@@ -4781,7 +4781,7 @@ type CapabilityDbClient = typeof prisma | Prisma.TransactionClient;
 
 async function lockCapabilityNaturalKey(client: CapabilityDbClient, input: CapabilityIdentityInput): Promise<void> {
   const key = capabilityNaturalKey(input);
-  await client.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+  await client.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
 }
 
 async function assertNoActiveCapabilityDuplicate(
