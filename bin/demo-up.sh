@@ -29,7 +29,10 @@ fi
 
 LOG_DIR="$ROOT/logs"
 SANDBOX="/tmp/todoapp-demo"
-TODOAPP_REPO="https://github.com/ashokraj2011/todoapp"
+# Sample repo for the OPTIONAL code-change demo (bin/demo-todoapp.sh). Override to
+# your own fork; if it can't be cloned, the boot continues (the workflow demo
+# doesn't need it).  TODOAPP_REPO=https://github.com/you/todoapp ./bin/demo-up.sh
+TODOAPP_REPO="${TODOAPP_REPO:-https://github.com/<your-org>/todoapp}"
 CAP_IAM_UUID="11111111-2222-3333-4444-555555555555"   # seeded IAM "default-demo"
 MCP_BEARER="demo-bearer-token-must-be-min-16-chars"
 
@@ -101,18 +104,25 @@ ok "Postgres on 5432 is up"
 # the operator has explicitly reconfigured .singularity for Copilot.
 LLM_GATEWAY_URL="${LLM_GATEWAY_URL:-http://localhost:8001}"
 
-# ── 2. Prep todoapp sandbox ────────────────────────────────────────────────
-if [ ! -d "$SANDBOX/.git" ]; then
-  info "cloning todoapp into $SANDBOX …"
+# ── 2. Prep todoapp sandbox (OPTIONAL — only for the code-change demo) ──────
+todoapp_ok=0
+[ -d "$SANDBOX/.git" ] && todoapp_ok=1
+if [ "$todoapp_ok" = 0 ]; then
+  info "cloning todoapp into $SANDBOX (optional)…"
   rm -rf "$SANDBOX" 2>/dev/null
-  git clone --quiet "$TODOAPP_REPO" "$SANDBOX"
+  git clone --quiet "$TODOAPP_REPO" "$SANDBOX" 2>/dev/null && todoapp_ok=1
 fi
-( cd "$SANDBOX" && \
-  git config user.email "demo@singularity.local" && \
-  git config user.name  "Singularity Demo" && \
-  git checkout main >/dev/null 2>&1 && \
-  git branch | grep -vE '^\* main$|^  main$' | xargs -I{} git branch -D {} >/dev/null 2>&1 || true )
-ok "todoapp sandbox ready at $SANDBOX (on main)"
+if [ "$todoapp_ok" = 1 ]; then
+  ( cd "$SANDBOX" && \
+    git config user.email "demo@singularity.local" && \
+    git config user.name  "Singularity Demo" && \
+    git checkout main >/dev/null 2>&1 && \
+    git branch | grep -vE '^\* main$|^  main$' | xargs -I{} git branch -D {} >/dev/null 2>&1 || true )
+  ok "todoapp sandbox ready at $SANDBOX (on main)"
+else
+  mkdir -p "$SANDBOX"                    # keep MCP_SANDBOX_ROOT valid downstream
+  warn "todoapp clone skipped — set TODOAPP_REPO=<your fork> for the code-change demo; the workflow demo is unaffected"
+fi
 
 # ── 2.5 Clean slate — kill EVERY stale singularity process first ─────────────
 # Repeated/aborted boots leave orphaned dial-in mcp-server runtimes behind. They

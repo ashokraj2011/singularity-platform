@@ -244,8 +244,8 @@ export function classifyPushError(error: string): PushBlockedCode {
   // M70.8 — GitHub-specific "token authenticated, scope insufficient"
   // path. The error string from `git push` to GitHub when the PAT
   // lacks Contents: Write looks like:
-  //   remote: Permission to ashokraj2011/RuleEngine.git denied to ashokraj2011.
-  //   fatal: unable to access 'https://github.com/ashokraj2011/RuleEngine.git/': The requested URL returned error: 403
+  //   remote: Permission to example-org/RuleEngine.git denied to example-org.
+  //   fatal: unable to access 'https://github.com/example-org/RuleEngine.git/': The requested URL returned error: 403
   // The pre-M70.8 classifier looked for the contiguous string
   // "permission denied" — but GitHub's wording is "Permission to X
   // denied to Y", which doesn't match. So we fell through to the

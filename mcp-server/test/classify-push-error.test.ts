@@ -26,8 +26,8 @@ describe("M70.8 — push error classifier", () => {
     it("detects the GitHub 'Permission to X/Y denied to Z' shape", () => {
       const err = [
         "Command failed: git push --dry-run -u origin sg/foo/bar",
-        "remote: Permission to ashokraj2011/RuleEngine.git denied to ashokraj2011.",
-        "fatal: unable to access 'https://github.com/ashokraj2011/RuleEngine.git/': The requested URL returned error: 403",
+        "remote: Permission to example-org/RuleEngine.git denied to example-org.",
+        "fatal: unable to access 'https://github.com/example-org/RuleEngine.git/': The requested URL returned error: 403",
       ].join("\n");
       expect(classifyPushError(err)).toBe("GIT_AUTH_INSUFFICIENT_SCOPE");
     });
