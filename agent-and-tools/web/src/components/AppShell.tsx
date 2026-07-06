@@ -121,10 +121,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 borderRadius: 20,
                 border: "1px solid rgba(37,99,235,0.18)",
                 background: "rgba(37,99,235,0.07)",
-                fontSize: 10,
+                fontSize: 11,
                 fontWeight: 700,
                 textTransform: "uppercase",
-                letterSpacing: "0.14em",
                 color: "var(--accent-workflow)",
               }}
             >
@@ -156,7 +155,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               title="Search pages (⌘K)"
               style={{
                 display: "flex", alignItems: "center", gap: 6,
-                height: 32, padding: "0 10px", borderRadius: 10,
+                height: 32, padding: "0 10px", borderRadius: 8,
                 border: "1px solid var(--color-outline-variant)",
                 background: "var(--color-surface-low)", cursor: "pointer",
                 color: "var(--color-outline)", fontSize: 12, transition: "all 0.15s",
@@ -174,7 +173,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Link
               href="/settings"
               style={{
-                width: 32, height: 32, borderRadius: 10,
+                width: 32, height: 32, borderRadius: 8,
                 border: "1px solid var(--color-outline-variant)",
                 background: "var(--color-surface-low)", cursor: "pointer",
                 display: "flex", alignItems: "center", justifyContent: "center",

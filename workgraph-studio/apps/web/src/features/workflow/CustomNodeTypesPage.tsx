@@ -6,6 +6,7 @@ import {
   Box, Star, Briefcase, Zap, Settings, Users, Database, Globe,
   Mail, Phone, Calendar, Clock, CheckCircle, AlertTriangle,
   FileText, Search, Filter, Cpu, Shield, Activity,
+  Workflow,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 
@@ -58,11 +59,38 @@ const ICON_OPTIONS: { name: string; Icon: React.ElementType }[] = [
 
 const ICON_MAP: Record<string, React.ElementType> = Object.fromEntries(ICON_OPTIONS.map(o => [o.name, o.Icon]))
 
+const WORKFLOW_BLUE = '#2563eb'
+const WORKFLOW_BLUE_SOFT = 'rgba(37,99,235,0.10)'
+const WORKFLOW_BLUE_BORDER = 'rgba(37,99,235,0.22)'
+
 const COLOR_PRESETS = [
-  '#22c55e', '#38bdf8', '#a3e635', '#c084fc', '#fb923c',
-  '#f43f5e', '#facc15', '#06b6d4', '#8b5cf6', '#34d399',
-  '#f87171', '#64748b', '#a78bfa', '#fbbf24', '#4ade80',
+  '#2563eb', '#7c3aed', '#0891b2', '#047857', '#d97706',
+  '#be123c', '#475569', '#0f766e', '#4f46e5', '#b45309',
+  '#334155', '#64748b',
 ]
+
+const BASE_TYPE_ACCENTS: Record<string, string> = {
+  HUMAN_TASK: '#2563eb',
+  AGENT_TASK: '#7c3aed',
+  APPROVAL: '#be123c',
+  TOOL_REQUEST: '#0891b2',
+  GIT_PUSH: '#2563eb',
+  CONSUMABLE_CREATION: '#d97706',
+  POLICY_CHECK: '#047857',
+  TIMER: '#475569',
+  SIGNAL_WAIT: '#0f766e',
+}
+
+function accentForBaseType(baseType: string): string {
+  return BASE_TYPE_ACCENTS[baseType] ?? WORKFLOW_BLUE
+}
+
+function rgba(hex: string, alpha: number): string {
+  const clean = hex.replace('#', '')
+  if (!/^[0-9a-f]{6}$/i.test(clean)) return `rgba(37,99,235,${alpha})`
+  const value = Number.parseInt(clean, 16)
+  return `rgba(${(value >> 16) & 255}, ${(value >> 8) & 255}, ${value & 255}, ${alpha})`
+}
 
 function emptyField(): FieldDef {
   return { key: '', label: '', placeholder: '', multiline: false }
@@ -73,7 +101,7 @@ function defaultDraft(): Omit<CustomNodeType, 'id' | 'createdAt' | 'isActive'> {
     name: '',
     label: '',
     description: '',
-    color: '#38bdf8',
+    color: WORKFLOW_BLUE,
     icon: 'Box',
     baseType: 'HUMAN_TASK',
     fields: [],
@@ -92,13 +120,16 @@ function FieldRow({
 }) {
   return (
     <div style={{
-      display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto auto', gap: 8, alignItems: 'center',
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(132px, 1fr))',
+      gap: 8,
+      alignItems: 'end',
       padding: '8px 12px', borderRadius: 8,
       background: 'var(--color-surface-container)',
       border: '1px solid var(--color-outline-variant)',
     }}>
       <div>
-        <p style={{ fontSize: 9, fontWeight: 600, color: 'var(--color-outline)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 4 }}>Key</p>
+        <p style={{ fontSize: 9, fontWeight: 600, color: 'var(--color-outline)', textTransform: 'uppercase', marginBottom: 4 }}>Key</p>
         <input
           value={field.key}
           onChange={e => onChange({ ...field, key: e.target.value })}
@@ -107,7 +138,7 @@ function FieldRow({
         />
       </div>
       <div>
-        <p style={{ fontSize: 9, fontWeight: 600, color: 'var(--color-outline)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 4 }}>Label</p>
+        <p style={{ fontSize: 9, fontWeight: 600, color: 'var(--color-outline)', textTransform: 'uppercase', marginBottom: 4 }}>Label</p>
         <input
           value={field.label}
           onChange={e => onChange({ ...field, label: e.target.value })}
@@ -116,7 +147,7 @@ function FieldRow({
         />
       </div>
       <div>
-        <p style={{ fontSize: 9, fontWeight: 600, color: 'var(--color-outline)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 4 }}>Placeholder</p>
+        <p style={{ fontSize: 9, fontWeight: 600, color: 'var(--color-outline)', textTransform: 'uppercase', marginBottom: 4 }}>Placeholder</p>
         <input
           value={field.placeholder}
           onChange={e => onChange({ ...field, placeholder: e.target.value })}
@@ -125,18 +156,32 @@ function FieldRow({
         />
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
-        <p style={{ fontSize: 9, fontWeight: 600, color: 'var(--color-outline)', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Multi</p>
+        <p style={{ fontSize: 9, fontWeight: 600, color: 'var(--color-outline)', textTransform: 'uppercase' }}>Multi</p>
         <input
           type="checkbox"
           checked={field.multiline}
           onChange={e => onChange({ ...field, multiline: e.target.checked })}
-          style={{ accentColor: '#368727', width: 14, height: 14, cursor: 'pointer' }}
+          style={{ accentColor: WORKFLOW_BLUE, width: 14, height: 14, cursor: 'pointer' }}
         />
       </div>
       <button
         onClick={onDelete}
-        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-outline)', padding: 4, display: 'flex', marginTop: 16 }}
-        onMouseEnter={e => ((e.currentTarget as HTMLButtonElement).style.color = '#ef4444')}
+        title="Remove field"
+        style={{
+          background: 'none',
+          border: '1px solid var(--color-outline-variant)',
+          borderRadius: 8,
+          cursor: 'pointer',
+          color: 'var(--color-outline)',
+          padding: 8,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          justifySelf: 'start',
+          minWidth: 36,
+          minHeight: 36,
+        }}
+        onMouseEnter={e => ((e.currentTarget as HTMLButtonElement).style.color = '#be123c')}
         onMouseLeave={e => ((e.currentTarget as HTMLButtonElement).style.color = 'var(--color-outline)')}
       >
         <Trash2 size={13} />
@@ -157,19 +202,20 @@ function NodeTypeCard({
   const [expanded, setExpanded] = useState(false)
   const Icon = ICON_MAP[type.icon] ?? Box
   const base = BASE_TYPES.find(b => b.value === type.baseType)
+  const accent = accentForBaseType(type.baseType)
+  const customColor = type.color || accent
 
   return (
     <div style={{
-      borderRadius: 12, border: '1px solid var(--color-outline-variant)',
-      background: 'white', overflow: 'hidden',
-      boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+      borderRadius: 8, border: '1px solid var(--color-outline-variant)',
+      background: 'var(--color-surface)', overflow: 'hidden',
+      boxShadow: '0 1px 2px rgba(15,23,42,0.05)',
       transition: 'box-shadow 0.15s',
     }}
-      onMouseEnter={e => ((e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 16px rgba(0,0,0,0.1)')}
-      onMouseLeave={e => ((e.currentTarget as HTMLDivElement).style.boxShadow = '0 1px 4px rgba(0,0,0,0.06)')}
+      onMouseEnter={e => ((e.currentTarget as HTMLDivElement).style.boxShadow = '0 10px 30px rgba(15,23,42,0.08)')}
+      onMouseLeave={e => ((e.currentTarget as HTMLDivElement).style.boxShadow = '0 1px 2px rgba(15,23,42,0.05)')}
     >
-      {/* Color accent bar */}
-      <div style={{ height: 4, background: type.color }} />
+      <div style={{ height: 3, background: rgba(accent, 0.28) }} />
 
       <div style={{ padding: '14px 16px' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
@@ -177,15 +223,15 @@ function NodeTypeCard({
             onClick={onEdit}
             title="Edit node type"
             style={{
-              width: 40, height: 40, borderRadius: 10, flexShrink: 0,
+              width: 40, height: 40, borderRadius: 8, flexShrink: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: `${type.color}18`, border: `1px solid ${type.color}30`,
+              background: rgba(accent, 0.10), border: `1px solid ${rgba(accent, 0.22)}`,
               cursor: 'pointer', transition: 'background 0.12s',
             }}
-            onMouseEnter={e => ((e.currentTarget as HTMLDivElement).style.background = `${type.color}30`)}
-            onMouseLeave={e => ((e.currentTarget as HTMLDivElement).style.background = `${type.color}18`)}
+            onMouseEnter={e => ((e.currentTarget as HTMLDivElement).style.background = rgba(accent, 0.16))}
+            onMouseLeave={e => ((e.currentTarget as HTMLDivElement).style.background = rgba(accent, 0.10))}
           >
-            <Icon style={{ width: 18, height: 18, color: type.color }} />
+            <Icon style={{ width: 18, height: 18, color: accent }} />
           </div>
           <div style={{ flex: 1, minWidth: 0, cursor: 'pointer' }} onClick={onEdit}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -195,6 +241,12 @@ function NodeTypeCard({
                 background: 'rgba(0,0,0,0.05)', color: 'var(--color-outline)',
                 fontFamily: 'monospace', textTransform: 'uppercase',
               }}>{type.name}</span>
+              <span title={`Palette color ${customColor}`} style={{
+                width: 12, height: 12, borderRadius: 4,
+                background: customColor,
+                border: '1px solid rgba(15,23,42,0.14)',
+                boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.55)',
+              }} />
             </div>
             {type.description && (
               <p style={{ fontSize: 11, color: 'var(--color-outline)', marginTop: 3, lineHeight: 1.5 }}>{type.description}</p>
@@ -202,9 +254,9 @@ function NodeTypeCard({
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
               <span style={{
                 fontSize: 9, fontWeight: 600, padding: '2px 8px', borderRadius: 20,
-                background: 'var(--color-surface-container)',
-                color: 'var(--color-outline)',
-                border: '1px solid var(--color-outline-variant)',
+                background: rgba(accent, 0.08),
+                color: accent,
+                border: `1px solid ${rgba(accent, 0.18)}`,
               }}>
                 {base?.label ?? type.baseType}
               </span>
@@ -222,11 +274,11 @@ function NodeTypeCard({
             >
               {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             </button>
-            <button onClick={onEdit} style={{ ...iconBtnStyle, color: '#368727', width: 'auto', padding: '0 10px', gap: 4, display: 'flex', alignItems: 'center' }} title="Edit">
+            <button onClick={onEdit} style={{ ...iconBtnStyle, color: WORKFLOW_BLUE, width: 'auto', padding: '0 10px', gap: 4, display: 'flex', alignItems: 'center' }} title="Edit">
               <Edit2 size={13} />
               <span style={{ fontSize: 11, fontWeight: 600 }}>Edit</span>
             </button>
-            <button onClick={onDelete} style={{ ...iconBtnStyle, color: '#ef4444' }} title="Delete">
+            <button onClick={onDelete} style={{ ...iconBtnStyle, color: '#be123c' }} title="Delete">
               <Trash2 size={14} />
             </button>
           </div>
@@ -242,15 +294,15 @@ function NodeTypeCard({
               style={{ overflow: 'hidden' }}
             >
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--color-outline-variant)' }}>
-                <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-outline)', marginBottom: 8 }}>
+                <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-outline)', marginBottom: 8 }}>
                   Custom fields
                 </p>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {(type.fields as FieldDef[]).map((f, i) => (
                     <span key={i} style={{
                       fontSize: 10, padding: '3px 8px', borderRadius: 6,
-                      background: `${type.color}12`, color: type.color,
-                      border: `1px solid ${type.color}25`,
+                      background: 'var(--color-surface-container)', color: 'var(--color-outline)',
+                      border: '1px solid var(--color-outline-variant)',
                       fontFamily: 'monospace',
                     }}>
                       {f.key}
@@ -310,6 +362,7 @@ function DesignerPanel({
   const canSave = draft.label.trim().length > 0 && draft.name.trim().length > 0
 
   const IconPreview = ICON_MAP[draft.icon] ?? Box
+  const baseAccent = accentForBaseType(draft.baseType)
 
   return (
     <div style={{
@@ -325,8 +378,8 @@ function DesignerPanel({
         transition={{ duration: 0.18 }}
         style={{
           width: '100%', maxWidth: 780, maxHeight: '90vh',
-          borderRadius: 16, background: 'white',
-          boxShadow: '0 24px 80px rgba(0,0,0,0.3)',
+          borderRadius: 8, background: 'var(--color-surface)',
+          boxShadow: '0 24px 80px rgba(15,23,42,0.24)',
           display: 'flex', flexDirection: 'column',
           overflow: 'hidden',
         }}
@@ -339,12 +392,12 @@ function DesignerPanel({
         }}>
           {/* Live preview chip */}
           <div style={{
-            width: 44, height: 44, borderRadius: 12, flexShrink: 0,
+            width: 44, height: 44, borderRadius: 8, flexShrink: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: `${draft.color}18`, border: `1px solid ${draft.color}40`,
+            background: rgba(baseAccent, 0.10), border: `1px solid ${rgba(baseAccent, 0.22)}`,
             transition: 'all 0.2s',
           }}>
-            <IconPreview style={{ width: 20, height: 20, color: draft.color }} />
+            <IconPreview style={{ width: 20, height: 20, color: baseAccent }} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <h2 style={{ fontSize: 15, fontWeight: 700, color: 'var(--color-on-surface)', margin: 0 }}>
@@ -366,7 +419,7 @@ function DesignerPanel({
         <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
 
           {/* Identity row */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
             <div>
               <label style={labelStyle}>Display name</label>
               <input
@@ -409,19 +462,19 @@ function DesignerPanel({
             <p style={{ fontSize: 11, color: 'var(--color-outline)', marginBottom: 8 }}>
               Determines the runtime behaviour. Custom fields appear in the node inspector.
             </p>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
               {BASE_TYPES.map(bt => (
                 <button
                   key={bt.value}
                   onClick={() => setField('baseType', bt.value)}
                   style={{
-                    padding: '8px 10px', borderRadius: 10, border: '1.5px solid',
-                    borderColor: draft.baseType === bt.value ? '#368727' : 'var(--color-outline-variant)',
-                    background: draft.baseType === bt.value ? 'rgba(54,135,39,0.08)' : 'var(--color-surface-container)',
+                    padding: '8px 10px', borderRadius: 8, border: '1.5px solid',
+                    borderColor: draft.baseType === bt.value ? WORKFLOW_BLUE_BORDER : 'var(--color-outline-variant)',
+                    background: draft.baseType === bt.value ? WORKFLOW_BLUE_SOFT : 'var(--color-surface-container)',
                     cursor: 'pointer', textAlign: 'left', transition: 'all 0.12s',
                   }}
                 >
-                  <p style={{ fontSize: 11, fontWeight: 600, color: draft.baseType === bt.value ? '#368727' : 'var(--color-on-surface)', margin: 0 }}>{bt.label}</p>
+                  <p style={{ fontSize: 11, fontWeight: 600, color: draft.baseType === bt.value ? WORKFLOW_BLUE : 'var(--color-on-surface)', margin: 0 }}>{bt.label}</p>
                   <p style={{ fontSize: 9, color: 'var(--color-outline)', marginTop: 2, lineHeight: 1.4 }}>{bt.hint}</p>
                 </button>
               ))}
@@ -432,16 +485,16 @@ function DesignerPanel({
           <div>
             <label style={{
               display: 'flex', alignItems: 'flex-start', gap: 10,
-              padding: '12px 14px', borderRadius: 10,
-              border: `1.5px solid ${draft.supportsForms ? 'rgba(56,189,248,0.4)' : 'var(--color-outline-variant)'}`,
-              background: draft.supportsForms ? 'rgba(56,189,248,0.06)' : 'var(--color-surface-container)',
+              padding: '12px 14px', borderRadius: 8,
+              border: `1.5px solid ${draft.supportsForms ? 'rgba(8,145,178,0.28)' : 'var(--color-outline-variant)'}`,
+              background: draft.supportsForms ? 'rgba(8,145,178,0.08)' : 'var(--color-surface-container)',
               cursor: 'pointer', transition: 'all 0.12s',
             }}>
               <input
                 type="checkbox"
                 checked={draft.supportsForms}
                 onChange={e => setField('supportsForms', e.target.checked)}
-                style={{ marginTop: 2, accentColor: '#38bdf8', width: 14, height: 14 }}
+                style={{ marginTop: 2, accentColor: '#0891b2', width: 14, height: 14 }}
               />
               <div>
                 <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--color-on-surface)', margin: 0 }}>
@@ -457,7 +510,7 @@ function DesignerPanel({
           </div>
 
           {/* Color + Icon */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16 }}>
             <div>
               <label style={labelStyle}>Color</label>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
@@ -467,9 +520,9 @@ function DesignerPanel({
                     onClick={() => setField('color', c)}
                     style={{
                       width: 26, height: 26, borderRadius: 6, background: c, border: '2px solid',
-                      borderColor: draft.color === c ? 'var(--color-on-surface)' : 'transparent',
+                      borderColor: draft.color === c ? WORKFLOW_BLUE : 'transparent',
                       cursor: 'pointer', transition: 'transform 0.1s',
-                      boxShadow: draft.color === c ? '0 0 0 2px white, 0 0 0 4px ' + c : 'none',
+                      boxShadow: draft.color === c ? `0 0 0 2px white, 0 0 0 4px ${rgba(WORKFLOW_BLUE, 0.22)}` : 'none',
                     }}
                     title={c}
                   />
@@ -493,13 +546,13 @@ function DesignerPanel({
                     title={name}
                     style={{
                       width: 32, height: 32, borderRadius: 8, border: '1.5px solid',
-                      borderColor: draft.icon === name ? draft.color : 'var(--color-outline-variant)',
-                      background: draft.icon === name ? `${draft.color}15` : 'var(--color-surface-container)',
+                      borderColor: draft.icon === name ? baseAccent : 'var(--color-outline-variant)',
+                      background: draft.icon === name ? rgba(baseAccent, 0.10) : 'var(--color-surface-container)',
                       cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
                       transition: 'all 0.12s',
                     }}
                   >
-                    <Icon style={{ width: 14, height: 14, color: draft.icon === name ? draft.color : 'var(--color-outline)' }} />
+                    <Icon style={{ width: 14, height: 14, color: draft.icon === name ? baseAccent : 'var(--color-outline)' }} />
                   </button>
                 ))}
               </div>
@@ -519,8 +572,8 @@ function DesignerPanel({
                 onClick={addField}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
-                  borderRadius: 8, border: '1px solid rgba(54,135,39,0.3)',
-                  background: 'rgba(54,135,39,0.08)', color: '#368727',
+                  borderRadius: 8, border: `1px solid ${WORKFLOW_BLUE_BORDER}`,
+                  background: WORKFLOW_BLUE_SOFT, color: WORKFLOW_BLUE,
                   fontSize: 11, fontWeight: 600, cursor: 'pointer',
                 }}
               >
@@ -530,7 +583,7 @@ function DesignerPanel({
 
             {draft.fields.length === 0 ? (
               <div style={{
-                padding: '20px', borderRadius: 10, textAlign: 'center',
+                padding: '20px', borderRadius: 8, textAlign: 'center',
                 border: '1.5px dashed var(--color-outline-variant)',
                 background: 'var(--color-surface-container)',
               }}>
@@ -565,7 +618,7 @@ function DesignerPanel({
             disabled={!canSave || saving}
             style={{
               padding: '7px 20px', borderRadius: 8, border: 'none',
-              background: canSave && !saving ? '#368727' : '#9ca3af',
+              background: canSave && !saving ? WORKFLOW_BLUE : '#9ca3af',
               color: '#fff', cursor: canSave && !saving ? 'pointer' : 'not-allowed',
               fontSize: 13, fontWeight: 600,
               display: 'flex', alignItems: 'center', gap: 6,
@@ -613,46 +666,53 @@ export function CustomNodeTypesPage() {
   })
 
   return (
-    <div style={{ padding: '28px 32px', minHeight: '100%', background: 'var(--color-surface)' }}>
+    <div style={{ display: 'grid', gap: 18 }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 28 }}>
+      <section className="page-hero" style={{ padding: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 18, flexWrap: 'wrap' }}>
         <div>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: WORKFLOW_BLUE, fontSize: 11, fontWeight: 850, textTransform: 'uppercase', marginBottom: 10 }}>
+            <Workflow size={15} />
+            Workflow palette
+          </div>
           <h1 style={{
-            fontSize: 20, fontWeight: 700, color: 'var(--color-on-surface)',
-            fontFamily: "'Mulish', sans-serif", margin: 0,
+            fontSize: 28, fontWeight: 900, color: 'var(--color-on-surface)',
+            margin: 0,
           }}>Node Type Designer</h1>
-          <p style={{ fontSize: 13, color: 'var(--color-outline)', marginTop: 4 }}>
-            Create reusable custom node types that appear in the Workflow Manager palette.
+          <p style={{ fontSize: 14, color: 'var(--color-outline)', marginTop: 8, maxWidth: 720, lineHeight: 1.6 }}>
+            Create reusable custom node types that appear in the Workflow Manager palette without breaking the platform visual system.
           </p>
         </div>
         <button
           onClick={() => setShowDesigner(true)}
           style={{
             display: 'flex', alignItems: 'center', gap: 8, padding: '8px 18px',
-            borderRadius: 10, border: 'none',
-            background: '#368727', color: '#fff',
+            borderRadius: 8, border: 'none',
+            background: WORKFLOW_BLUE, color: '#fff',
             fontSize: 13, fontWeight: 600, cursor: 'pointer',
-            boxShadow: '0 2px 8px rgba(54,135,39,0.3)',
+            boxShadow: `0 10px 26px ${rgba(WORKFLOW_BLUE, 0.22)}`,
           }}
         >
           <Plus size={14} /> New node type
         </button>
       </div>
+      </section>
 
       {/* How it works banner */}
       <div style={{
-        padding: '12px 16px', borderRadius: 10, marginBottom: 24,
-        background: 'rgba(54,135,39,0.06)', border: '1px solid rgba(54,135,39,0.18)',
+        padding: '12px 16px', borderRadius: 8,
+        background: WORKFLOW_BLUE_SOFT, border: `1px solid ${WORKFLOW_BLUE_BORDER}`,
         display: 'flex', alignItems: 'flex-start', gap: 12,
       }}>
         <div style={{
           width: 32, height: 32, borderRadius: 8, flexShrink: 0,
-          background: 'rgba(54,135,39,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: 'var(--color-surface)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          border: `1px solid ${WORKFLOW_BLUE_BORDER}`,
         }}>
-          <Box size={16} style={{ color: '#368727' }} />
+          <Box size={16} style={{ color: WORKFLOW_BLUE }} />
         </div>
         <div>
-          <p style={{ fontSize: 12, fontWeight: 600, color: '#368727', marginBottom: 3 }}>How it works</p>
+          <p style={{ fontSize: 12, fontWeight: 700, color: WORKFLOW_BLUE, marginBottom: 3 }}>How it works</p>
           <p style={{ fontSize: 11, color: 'var(--color-outline)', lineHeight: 1.6 }}>
             Custom node types appear in the Workflow Manager palette alongside built-in types.
             Each type maps to a <strong>base executor</strong> (Human Task, Tool Request, etc.) that handles runtime behaviour.
@@ -663,17 +723,17 @@ export function CustomNodeTypesPage() {
 
       {/* Grid */}
       {isLoading ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
-          {[1, 2, 3].map(i => <div key={i} className="skeleton" style={{ height: 120, borderRadius: 12 }} />)}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
+          {[1, 2, 3].map(i => <div key={i} className="skeleton" style={{ height: 120, borderRadius: 8 }} />)}
         </div>
       ) : types.length === 0 ? (
         <div style={{
-          padding: '60px 32px', borderRadius: 16, textAlign: 'center',
+          padding: '56px 28px', borderRadius: 8, textAlign: 'center',
           border: '2px dashed var(--color-outline-variant)',
           background: 'var(--color-surface-container)',
         }}>
-          <div style={{ width: 52, height: 52, borderRadius: 14, background: 'rgba(54,135,39,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
-            <Box size={24} style={{ color: '#368727' }} />
+          <div style={{ width: 52, height: 52, borderRadius: 8, background: WORKFLOW_BLUE_SOFT, border: `1px solid ${WORKFLOW_BLUE_BORDER}`, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
+            <Box size={24} style={{ color: WORKFLOW_BLUE }} />
           </div>
           <p style={{ fontSize: 15, fontWeight: 600, color: 'var(--color-on-surface)', marginBottom: 6 }}>No custom node types yet</p>
           <p style={{ fontSize: 12, color: 'var(--color-outline)', marginBottom: 18 }}>
@@ -682,15 +742,15 @@ export function CustomNodeTypesPage() {
           <button
             onClick={() => setShowDesigner(true)}
             style={{
-              padding: '8px 20px', borderRadius: 10, border: 'none',
-              background: '#368727', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              padding: '8px 20px', borderRadius: 8, border: 'none',
+              background: WORKFLOW_BLUE, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer',
             }}
           >
             Create your first node type
           </button>
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
           {types.map(type => (
             <NodeTypeCard
               key={type.id}

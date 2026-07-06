@@ -170,7 +170,7 @@ export default async function SdlcCommandCenterPage() {
             <Sparkles size={15} />
             Agentic SDLC Command Center
           </div>
-          <h1 className="page-header" style={{ margin: 0, fontSize: 40, lineHeight: 1.05, letterSpacing: "-0.01em" }}>Paste Story. Launch Workflow. Export Evidence.</h1>
+          <h1 className="page-header" style={{ margin: 0, fontSize: 40, lineHeight: 1.08 }}>Paste Story. Launch Workflow. Export Evidence.</h1>
           <p style={{ margin: "10px 0 0", maxWidth: 900, color: "var(--color-outline)", fontSize: 14, lineHeight: 1.6 }}>
             The primary path is simple: split a story into WorkItems, choose the SDLC intent, launch the seeded workflow, watch the run cockpit, and hand off evidence or Copilot YAML.
           </p>

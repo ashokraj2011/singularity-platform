@@ -27,12 +27,12 @@ export function PageHeader({
       <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div className="min-w-0">
           {eyebrow && (
-            <div className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.16em] text-blue-800">
+            <div className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-[11px] font-bold uppercase text-blue-800">
               {Icon && <Icon size={13} />}
               {eyebrow}
             </div>
           )}
-          <h1 className="mt-3 text-2xl font-bold tracking-tight text-slate-950 sm:text-3xl">{title}</h1>
+          <h1 className="mt-3 text-2xl font-bold text-slate-950 sm:text-3xl">{title}</h1>
           {description && <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{description}</p>}
         </div>
         {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
@@ -56,9 +56,9 @@ export function MetricTile({
   label, value, tone = "slate", icon: Icon,
 }: { label: string; value: React.ReactNode; tone?: keyof typeof METRIC_TONES; icon?: LucideIcon }) {
   return (
-    <div className={`rounded-xl border px-3 py-2 ${METRIC_TONES[tone]}`}>
+    <div className={`rounded-lg border px-3 py-2 ${METRIC_TONES[tone]}`}>
       <div className="flex items-center justify-between gap-2">
-        <div className="text-[10px] font-bold uppercase tracking-[0.16em] opacity-70">{label}</div>
+        <div className="text-[11px] font-bold uppercase opacity-70">{label}</div>
         {Icon && <Icon size={15} className="opacity-70" />}
       </div>
       <div className="mt-1 text-2xl font-bold leading-none">{value}</div>
@@ -149,7 +149,7 @@ export function IconTile({
   const sizes = {
     sm: "h-8 w-8 rounded-lg",
     md: "h-10 w-10 rounded-lg",
-    lg: "h-12 w-12 rounded-xl",
+    lg: "h-12 w-12 rounded-lg",
   } as const;
   const iconSize = size === "lg" ? 22 : size === "md" ? 18 : 15;
   return (
@@ -181,12 +181,12 @@ export function PageHero({
       <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
         <div className="min-w-0">
           {eyebrow && (
-            <div className="mb-3 inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
+            <div className="mb-3 inline-flex items-center gap-2 text-[11px] font-black uppercase text-slate-500">
               {icon && <IconTile icon={icon} tone={tone} size="sm" />}
               {eyebrow}
             </div>
           )}
-          <h1 className="text-3xl font-black tracking-tight text-slate-950 sm:text-4xl">{title}</h1>
+          <h1 className="text-3xl font-black text-slate-950 sm:text-4xl">{title}</h1>
           {description && <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">{description}</p>}
           {rail && <div className="mt-5">{rail}</div>}
         </div>
@@ -325,7 +325,7 @@ export function StatusCard({
   children?: React.ReactNode;
 }) {
   return (
-    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+    <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
         <div className="flex items-center gap-2">
@@ -343,7 +343,7 @@ export function EmptyState({
   title, hint, icon: Icon = Inbox,
 }: { title: string; hint?: React.ReactNode; icon?: LucideIcon }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-6 py-10 text-center">
+    <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/60 px-6 py-10 text-center">
       <Icon size={22} className="text-slate-400" />
       <div className="text-sm font-semibold text-slate-700">{title}</div>
       {hint && <div className="max-w-md text-xs text-slate-500">{hint}</div>}
@@ -384,7 +384,7 @@ export function JsonPreview({ value, maxHeight = 320 }: { value: unknown; maxHei
 export function CommandBlock({ command, label }: { command: string; label?: string }) {
   return (
     <div>
-      {label && <div className="mb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">{label}</div>}
+      {label && <div className="mb-1 text-[11px] font-bold uppercase text-slate-500">{label}</div>}
       <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-900 px-3 py-2">
         <code className="min-w-0 flex-1 overflow-x-auto whitespace-pre text-[12px] text-slate-100" style={{ fontFamily: "var(--font-mono, ui-monospace, monospace)" }}>
           {command}

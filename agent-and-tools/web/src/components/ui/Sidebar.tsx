@@ -349,7 +349,7 @@ export function Sidebar() {
           }}
         >
           <div style={{ minWidth: 0, overflow: "hidden" }}>
-            <h2 style={{ fontSize: 16, fontWeight: 900, color: "var(--color-on-surface)", letterSpacing: "0.02em", lineHeight: 1.15, margin: 0 }}>
+            <h2 style={{ fontSize: 16, fontWeight: 900, color: "var(--color-on-surface)", lineHeight: 1.15, margin: 0 }}>
               Singularity
             </h2>
             <p
@@ -359,11 +359,10 @@ export function Sidebar() {
                 overflow: "hidden",
                 whiteSpace: "normal",
                 color: "var(--color-outline)",
-                fontSize: 10.5,
+                fontSize: 11,
                 fontWeight: 800,
-                letterSpacing: "0.045em",
-                lineHeight: 1.18,
-                textTransform: "uppercase",
+                lineHeight: 1.2,
+                textTransform: "none",
               }}
             >
               Agentic SDLC Command Center

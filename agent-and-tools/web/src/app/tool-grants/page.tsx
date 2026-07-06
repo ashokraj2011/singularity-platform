@@ -4,6 +4,9 @@ import useSWR from "swr";
 import { Archive, Pencil, ShieldCheck, Plus } from "lucide-react";
 import { runtimeApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { IconTile, MetricStrip, PageHero } from "@/components/ui/primitives";
+import { ToolVisualChip, ToolVisualMark } from "@/components/tools/ToolVisualMark";
+import { toolGrantVisual, toolVisualFor } from "@/lib/toolVisuals";
 
 const SCOPE_TYPES = ["AGENT_TEMPLATE", "AGENT_BINDING", "CAPABILITY", "ROLE", "WORKFLOW_PHASE", "TEAM", "USER"];
 
@@ -173,13 +176,27 @@ export default function ToolGrantsPage() {
   const toolList = (tools ?? []) as Record<string, unknown>[];
   const policyList = (policies ?? []) as Record<string, unknown>[];
   const grantList = (grants ?? []) as Record<string, unknown>[];
+  const grantVisual = toolGrantVisual();
+  const activePolicyCount = policyList.filter(policy => String(policy.status ?? "").toUpperCase() === "ACTIVE").length;
+  const activeGrantCount = grantList.filter(grant => String(grant.status ?? "").toUpperCase() === "ACTIVE").length;
 
   return (
-    <div>
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-slate-900">Tool Grants</h1>
-        <p className="text-slate-500 mt-1">Authorization for who can run which tool, in which context.</p>
-      </div>
+    <div className="space-y-6">
+      <PageHero
+        eyebrow="Tool Authorization"
+        title="Tool Grants"
+        icon={grantVisual.icon}
+        tone={grantVisual.tone}
+        description="Control who can run each tool, which capability or workflow phase can use it, and when validation should block a call."
+      />
+
+      <MetricStrip
+        items={[
+          { label: "Runtime tools", value: toolList.length, icon: toolVisualFor({ tool_name: "runtime mcp tool registry" }).icon, state: toolList.length > 0 ? "ready" : "waiting" },
+          { label: "Active policies", value: activePolicyCount, icon: ShieldCheck, state: activePolicyCount > 0 ? "ready" : "optional" },
+          { label: "Active grants", value: activeGrantCount, icon: grantVisual.icon, state: activeGrantCount > 0 ? "ready" : "optional" },
+        ]}
+      />
 
       <h2 className="font-semibold text-slate-800 mb-3">1. Tool Policies</h2>
       <div className="card p-4 mb-4 grid grid-cols-6 gap-2 items-end">
@@ -199,7 +216,7 @@ export default function ToolGrantsPage() {
       <div className="space-y-2 mb-8">
         {policyList.map(p => (
           <div key={p.id as string} className="card p-3 text-sm flex items-center gap-3 flex-wrap">
-            <ShieldCheck size={16} className="text-purple-600" />
+            <IconTile icon={ShieldCheck} tone="amber" size="sm" title="Policy" />
             <span className="font-medium">{p.name as string}</span>
             <StatusBadge value={p.status as string} />
             <span className="text-xs text-slate-500">{p.scopeType as string}</span>
@@ -256,9 +273,12 @@ export default function ToolGrantsPage() {
       <div className="space-y-2 mb-8">
         {grantList.map(g => {
           const t = g.tool as Record<string, unknown> | undefined;
+          const visual = toolVisualFor(t);
           return (
             <div key={g.id as string} className="card p-3 text-sm flex items-center gap-3 flex-wrap">
+              <ToolVisualMark visual={visual} size="sm" />
               <span className="font-mono text-xs">{t ? `${t.namespace}.${t.name}` : "—"}</span>
+              <ToolVisualChip visual={visual} />
               <span className="text-xs bg-slate-100 px-2 py-0.5 rounded">{g.grantScopeType as string}</span>
               <span className="font-mono text-xs text-slate-500">{g.grantScopeId as string}</span>
               {!!g.workflowPhase && <span className="text-xs bg-amber-50 text-amber-700 px-2 py-0.5 rounded">phase: {g.workflowPhase as string}</span>}
