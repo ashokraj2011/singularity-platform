@@ -43,6 +43,7 @@ DEEP_PATTERNS=(
   "singularity-platform/singularity-iam-service"
   "singularity-platform/context-fabric"
   "singularity-platform/audit-governance-service"
+  "singularity-platform/pseudo-iam-service"
   "copilot-cli-server.js"
 )
 # Never kill these even if their args mention the repo (editors, pagers, VCS, this CLI).

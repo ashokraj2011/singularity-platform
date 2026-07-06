@@ -106,6 +106,58 @@ fi
   git branch | grep -vE '^\* main$|^  main$' | xargs -I{} git branch -D {} >/dev/null 2>&1 || true )
 ok "todoapp sandbox ready at $SANDBOX (on main)"
 
+# ── 2.5 Clean slate — kill EVERY stale singularity process first ─────────────
+# Repeated/aborted boots leave orphaned dial-in mcp-server runtimes behind. They
+# hold NO listening port (they dial OUT to the runtime bridge over WebSocket), so
+# port-based teardown (demo-down.sh) never reaps them — and they keep reporting
+# stale LLM/provider state to the bridge, which blocks launches ("provider
+# blocked by allowlist") in ways that are maddening to debug. We also stop Docker
+# gateways that fight the bare-metal stack over :8001/:8085. Postgres (:5432),
+# Docker itself, editors, and this shell are always spared.
+clean_slate() {
+  info "clean slate: reaping stale singularity processes + Docker gateways…"
+  # 1) Docker singularity/edge-gateway containers
+  if command -v docker >/dev/null 2>&1; then
+    for c in $(docker ps -q 2>/dev/null); do
+      name=$(docker inspect --format '{{.Name}}' "$c" 2>/dev/null)
+      case "$name" in *singularity*|*sing-*) docker stop "$c" >/dev/null 2>&1 || true ;; esac
+    done
+  fi
+  # 2) Pattern-kill processes from ANY singularity-platform clone + the copilot
+  #    bridge — this is what catches the port-less orphaned dial-in runtimes.
+  local pats=(
+    "singularity-platform/mcp-server" "singularity-platform/agent-and-tools"
+    "singularity-platform/workgraph-studio" "singularity-platform/context-fabric"
+    "singularity-platform/audit-governance-service" "singularity-platform/pseudo-iam-service"
+    "singularity-platform/singularity-iam-service" "copilot-cli-server.js"
+  )
+  local safe='vim|nvim|emacs|nano|less|more|tail|git|grep|rg|fzf|ripgrep|man|ssh|Code|Cursor|Electron|claude|node-gyp'
+  local pat p comm
+  for pat in "${pats[@]}"; do
+    for p in $(pgrep -f "$pat" 2>/dev/null); do
+      [ "$p" = "$$" ] && continue
+      [ "$p" = "$PPID" ] && continue
+      comm=$(ps -p "$p" -o comm= 2>/dev/null | sed 's#.*/##')
+      printf '%s' "$comm" | grep -qiE "^(${safe})$" && continue
+      kill -9 "$p" 2>/dev/null || true
+    done
+  done
+  # 3) Free any remaining listeners on Singularity ports (never :5432 / Docker).
+  local port c
+  for port in 3000 3001 3002 3003 3004 4141 5180 7100 8000 8001 8080 8100 8101 8500; do
+    for p in $(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null); do
+      c=$(ps -p "$p" -o comm= 2>/dev/null)
+      case "$c" in *docker*|*Docker*|*vpnkit*) continue ;; esac
+      kill -9 "$p" 2>/dev/null || true
+    done
+  done
+  # 4) Drop stale bare-metal PID files so the next boot doesn't chase dead PIDs.
+  rm -f "$ROOT/.pids" "$ROOT/.pids.runtime" 2>/dev/null || true
+  sleep 2
+  ok "clean slate ready — no stale runtimes remain"
+}
+clean_slate
+
 # ── 3. Bring up platform apps + local runtime infra ────────────────────────
 info "booting platform apps via bin/bare-metal-apps.sh up …"
 "$SCRIPT_DIR/bare-metal-apps.sh" up ashokraj postgres localhost 5432 2>&1 | tail -20
