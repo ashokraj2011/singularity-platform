@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 import { seedArtifactTemplates } from './seed-artifact-templates'
 import { seedDemoWorkflows } from './seed-demo-workflows'
+import { seedHumanWorkflows } from './seed-human-workflows'
 
 const prisma = new PrismaClient()
 
@@ -287,6 +288,10 @@ async function main() {
   // Demo workflows: SDLC + bug-fix workbench loops, sample workflows, routing
   // policies, and one completed blueprint session with artifacts.
   await seedDemoWorkflows(prisma)
+
+  // Human-only workflows (no agents): Access Request approval loop + full
+  // Change Request loop (branching, parallel Security/CAB review, timer, forms).
+  await seedHumanWorkflows(prisma)
 
   // M42.0 — Feature-flag defaults for the Singularity Code Foundry.
   // Code Foundry is part of the core Platform Web surface, so local/demo
