@@ -33,39 +33,106 @@ import { WorkbenchStageCanvas } from './WorkbenchStageCanvas'
 
 // ─── Node visual map ──────────────────────────────────────────────────────────
 
+// Color encodes INTENT DOMAIN (agent / governance / data / integration / …);
+// shape (see NODE_SHAPE below) encodes the node's ROLE in the pipeline
+// (terminal / gate / guard / parallel / event / task). Keeping the two axes
+// orthogonal makes a graph scannable: hue = "what kind of work", silhouette =
+// "how it behaves in the flow".
+const DOMAIN = {
+  start:       '#16a34a',  // entry — green (go)
+  end:         '#64748b',  // exit — slate (stop)
+  agent:       '#7c3aed',  // AI / agent work — violet
+  human:       '#d97706',  // needs a person — amber
+  governance:  '#9333ea',  // approval / policy / quality gate — purple
+  decision:    '#2563eb',  // routing / branching / parallel — blue
+  data:        '#0d9488',  // artifact / data / context — teal
+  integration: '#ea580c',  // external side-effect (tool / git / python) — orange
+  signal:      '#0891b2',  // signal / timer / event I/O — cyan
+  error:       '#dc2626',  // failure handling — red
+} as const
+
 const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType }> = {
-  START:               { color: '#368727', Icon: Play },
-  END:                 { color: '#64748b', Icon: Square },
-  HUMAN_TASK:          { color: '#22c55e', Icon: User },
-  AGENT_TASK:          { color: '#38bdf8', Icon: Bot },
-  WORKBENCH_TASK:      { color: '#ffb786', Icon: Braces },
-  APPROVAL:            { color: '#a3e635', Icon: CheckCircle },
-  DECISION_GATE:       { color: '#c084fc', Icon: GitMerge },
-  CONSUMABLE_CREATION: { color: '#34d399', Icon: Package },
-  TOOL_REQUEST:        { color: '#fb923c', Icon: Wrench },
-  GIT_PUSH:            { color: '#22c55e', Icon: GitBranch },
-  POLICY_CHECK:        { color: '#94a3b8', Icon: Shield },
-  EVAL_GATE:           { color: '#c0c1ff', Icon: Activity },
-  VERIFIER:            { color: '#7c3aed', Icon: Shield },
-  GOVERNANCE_GATE:     { color: '#9333ea', Icon: Shield },
-  TIMER:               { color: '#facc15', Icon: Clock },
-  SIGNAL_WAIT:         { color: '#06b6d4', Icon: Radio },
-  SIGNAL_EMIT:         { color: '#0891b2', Icon: RadioTower },
-  CALL_WORKFLOW:       { color: '#8b5cf6', Icon: Workflow },
-  WORK_ITEM:           { color: '#7c3aed', Icon: Network },
-  FOREACH:             { color: '#f43f5e', Icon: Repeat },
-  PARALLEL_FORK:       { color: '#f97316', Icon: GitFork },
-  PARALLEL_JOIN:       { color: '#d946ef', Icon: GitMerge },
-  INCLUSIVE_GATEWAY:   { color: '#a78bfa', Icon: Shuffle },
-  EVENT_GATEWAY:       { color: '#fbbf24', Icon: Zap },
-  DATA_SINK:           { color: '#0ea5e9', Icon: Database },
-  SET_CONTEXT:         { color: '#84cc16', Icon: SlidersHorizontal },
-  ERROR_CATCH:         { color: '#ef4444', Icon: ShieldAlert },
-  RUN_PYTHON:          { color: '#3776ab', Icon: Terminal },
-  EVENT_EMIT:          { color: '#0d9488', Icon: Send },
-  SCHEDULED_START:     { color: '#2563eb', Icon: Calendar },
-  EVENT_TRIGGER_START: { color: '#f59e0b', Icon: Zap },
-  SERVER_TIME_INIT:    { color: '#0ea5e9', Icon: Clock },
+  // entry / exit
+  START:               { color: DOMAIN.start, Icon: Play },
+  END:                 { color: DOMAIN.end,   Icon: Square },
+  SCHEDULED_START:     { color: DOMAIN.start, Icon: Calendar },
+  EVENT_TRIGGER_START: { color: DOMAIN.start, Icon: Zap },
+  SERVER_TIME_INIT:    { color: DOMAIN.start, Icon: Clock },
+  // agent / AI work
+  AGENT_TASK:          { color: DOMAIN.agent, Icon: Bot },
+  WORKBENCH_TASK:      { color: DOMAIN.agent, Icon: Braces },
+  // human
+  HUMAN_TASK:          { color: DOMAIN.human, Icon: User },
+  // governance / approval / quality gates
+  APPROVAL:            { color: DOMAIN.governance, Icon: CheckCircle },
+  GOVERNANCE_GATE:     { color: DOMAIN.governance, Icon: Shield },
+  POLICY_CHECK:        { color: DOMAIN.governance, Icon: Shield },
+  VERIFIER:            { color: DOMAIN.governance, Icon: Shield },
+  EVAL_GATE:           { color: DOMAIN.governance, Icon: Activity },
+  // decision / routing / parallel
+  DECISION_GATE:       { color: DOMAIN.decision, Icon: GitMerge },
+  INCLUSIVE_GATEWAY:   { color: DOMAIN.decision, Icon: Shuffle },
+  EVENT_GATEWAY:       { color: DOMAIN.decision, Icon: Zap },
+  PARALLEL_FORK:       { color: DOMAIN.decision, Icon: GitFork },
+  PARALLEL_JOIN:       { color: DOMAIN.decision, Icon: GitMerge },
+  FOREACH:             { color: DOMAIN.decision, Icon: Repeat },
+  // data / artifact / context
+  CONSUMABLE_CREATION: { color: DOMAIN.data, Icon: Package },
+  DATA_SINK:           { color: DOMAIN.data, Icon: Database },
+  SET_CONTEXT:         { color: DOMAIN.data, Icon: SlidersHorizontal },
+  // integration / side-effect
+  TOOL_REQUEST:        { color: DOMAIN.integration, Icon: Wrench },
+  GIT_PUSH:            { color: DOMAIN.integration, Icon: GitBranch },
+  RUN_PYTHON:          { color: DOMAIN.integration, Icon: Terminal },
+  CALL_WORKFLOW:       { color: DOMAIN.integration, Icon: Workflow },
+  WORK_ITEM:           { color: DOMAIN.integration, Icon: Network },
+  // signals / time / events
+  TIMER:               { color: DOMAIN.signal, Icon: Clock },
+  SIGNAL_WAIT:         { color: DOMAIN.signal, Icon: Radio },
+  SIGNAL_EMIT:         { color: DOMAIN.signal, Icon: RadioTower },
+  EVENT_EMIT:          { color: DOMAIN.signal, Icon: Send },
+  // error handling
+  ERROR_CATCH:         { color: DOMAIN.error, Icon: ShieldAlert },
+}
+
+// ─── Node shape map ─────────────────────────────────────────────────────────
+// Shape encodes the node's ROLE in the flow, independent of its domain colour.
+type NodeShape = 'terminal' | 'gate' | 'guard' | 'parallel' | 'event' | 'task'
+
+const NODE_SHAPE: Record<string, NodeShape> = {
+  START: 'terminal', END: 'terminal',
+  SCHEDULED_START: 'event', EVENT_TRIGGER_START: 'event', SERVER_TIME_INIT: 'event',
+  DECISION_GATE: 'gate', INCLUSIVE_GATEWAY: 'gate', EVENT_GATEWAY: 'gate',
+  APPROVAL: 'guard', GOVERNANCE_GATE: 'guard', POLICY_CHECK: 'guard', VERIFIER: 'guard', EVAL_GATE: 'guard',
+  PARALLEL_FORK: 'parallel', PARALLEL_JOIN: 'parallel', FOREACH: 'parallel',
+  TIMER: 'event', SIGNAL_WAIT: 'event', SIGNAL_EMIT: 'event', EVENT_EMIT: 'event',
+  // all task-like node types (AGENT_TASK, TOOL_REQUEST, GIT_PUSH, …) fall through to 'task'
+}
+
+// Silhouette for each role: the card's corner radius plus the icon-well shape
+// (clip-path for angular roles, border-radius for rounded ones). `bordered`
+// tells the renderer whether a 1px outline can be drawn (clip-path + border
+// don't compose cleanly, so clipped shapes rely on a stronger fill instead).
+function nodeShapeStyle(shape: NodeShape): {
+  cardRadius: number
+  wellClip?: string
+  wellRadius?: string | number
+  bordered: boolean
+} {
+  switch (shape) {
+    case 'terminal':  // capsule card + circular well
+      return { cardRadius: 22, wellRadius: '50%', bordered: true }
+    case 'gate':      // sharp card + diamond well
+      return { cardRadius: 3, wellClip: 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)', bordered: false }
+    case 'guard':     // sharp card + hexagon well (shield-like)
+      return { cardRadius: 3, wellClip: 'polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%)', bordered: false }
+    case 'parallel':  // rounded card + chevron/arrow well
+      return { cardRadius: 10, wellClip: 'polygon(0% 0%, 72% 0%, 100% 50%, 72% 100%, 0% 100%, 26% 50%)', bordered: false }
+    case 'event':     // rounded card + circular well
+      return { cardRadius: 16, wellRadius: '50%', bordered: true }
+    default:          // task — rounded card + rounded-square well
+      return { cardRadius: 10, wellRadius: 10, bordered: true }
+  }
 }
 
 const NODE_LABELS: Record<string, string> = {
@@ -717,6 +784,8 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
     vis = { color: customColor, Icon: CustomIcon }
   }
   const { color, Icon } = vis
+  const shapeRole: NodeShape = data.nodeType === 'CUSTOM' ? 'task' : (NODE_SHAPE[data.nodeType] ?? 'task')
+  const shape = nodeShapeStyle(shapeRole)
 
   const statusColor = NODE_STATUS_COLOR[data.status] ?? '#475569'
   const showStatus  = data.status && data.status !== 'PENDING'
@@ -754,7 +823,7 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
     <div
       style={{
         background: cardBg, border: cardBdr,
-        borderRadius: 8, minWidth: 260, maxWidth: 300,
+        borderRadius: shape.cardRadius, minWidth: 260, maxWidth: 300,
         boxShadow: shadow,
         backdropFilter: isLight ? 'none' : 'blur(20px)',
         overflow: 'visible', transition: 'border-color 0.15s, box-shadow 0.15s',
@@ -762,18 +831,26 @@ function WGNode({ data, selected, id }: NodeProps<NodeData>) {
       }}
     >
       {/* Accent strip */}
-      <div style={{ height: 3, background: `linear-gradient(90deg, ${color}, ${color}55, transparent)`, borderTopLeftRadius: 8, borderTopRightRadius: 8 }} />
+      <div style={{ height: 3, background: `linear-gradient(90deg, ${color}, ${color}55, transparent)`, borderTopLeftRadius: shape.cardRadius, borderTopRightRadius: shape.cardRadius }} />
 
       <Handle type="target" position={Position.Left}
         style={{ background: color, width: 12, height: 12, border: `3px solid ${cardBg}`, left: -6, top: '50%' }} />
 
       {/* ── Header ── */}
       <div style={{ padding: '14px 14px 10px', display: 'flex', alignItems: 'flex-start', gap: 11 }}>
-        <div style={{
-          width: 40, height: 40, borderRadius: 8, flexShrink: 0,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: `${color}16`, border: `1.5px solid ${color}30`,
-        }}>
+        <div
+          title={`${NODE_LABELS[data.nodeType] ?? data.nodeType} · ${shapeRole}`}
+          style={{
+            width: 40, height: 40, flexShrink: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            // clip-path roles (gate/guard/parallel) can't carry a clean border,
+            // so they lean on a stronger fill; rounded roles keep the outline.
+            background: shape.wellClip ? `${color}26` : `${color}16`,
+            ...(shape.wellClip
+              ? { clipPath: shape.wellClip }
+              : { borderRadius: shape.wellRadius, border: `1.5px solid ${color}30` }),
+          }}
+        >
           <Icon style={{ width: 16, height: 16, color }} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>

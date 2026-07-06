@@ -193,7 +193,7 @@ export function EventHorizonChat() {
 
   // M37.4 — fetch the EventHorizonAction catalog once on first mount.
   useEffect(() => {
-    fetch(apiPath("/api/event-horizon/actions?surface=capability-admin"))
+    fetch(apiPath("/api/event-horizon/actions?surface=capability-admin"), { headers: authHeaders() })
       .then(async (r) => {
         if (!r.ok) return [];
         const { raw, parsed, parseError } = await readResponseBody(r);
