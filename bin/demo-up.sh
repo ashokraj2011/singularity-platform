@@ -160,7 +160,11 @@ fi
   "$PYBIN" -m pip install --quiet -r "$ROOT/context-fabric/services/context_api_service/requirements.txt" >/dev/null 2>&1 \
     || warn "context-api pip install had warnings — see if it still boots"
 }
-(cd "$ROOT/context-fabric/services/context_api_service" && nohup env \
+# Run from the context-fabric ROOT with the fully-qualified module path, exactly
+# like bin/bare-metal.sh does — main.py does `from services.context_memory_service…`,
+# which only resolves when `context-fabric/` (the parent of `services/`) is the cwd.
+# Running from inside context_api_service/ with `app.main:app` breaks that import.
+(cd "$ROOT/context-fabric" && nohup env \
    PYTHONPATH="$SHARED:${PYTHONPATH:-}" \
    CONTEXT_FABRIC_DATABASE_URL="$CONTEXT_FABRIC_DATABASE_URL" \
    IAM_BOOTSTRAP_USERNAME="$BOOTSTRAP_EMAIL" \
@@ -169,7 +173,7 @@ fi
    MCP_SERVER_URL="${MCP_SERVER_URL:-http://localhost:7100}" \
    MCP_BEARER_TOKEN="$MCP_BEARER" \
    AUDIT_GOV_URL="${AUDIT_GOV_URL:-http://localhost:8500}" \
-   "$PYBIN" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+   "$PYBIN" -m uvicorn services.context_api_service.app.main:app --host 0.0.0.0 --port 8000 \
    > "$LOG_DIR/context-api.log" 2>&1 &)
 ok "context-api relaunched (python: $PYBIN)"
 
