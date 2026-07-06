@@ -37,6 +37,24 @@ type LoadedProviderConfig = {
 export const SUPPORTED_PROVIDERS: SupportedProvider[] = ["mock", "openai", "openrouter", "anthropic", "copilot"];
 
 let cached: LoadedProviderConfig | null = null;
+let cachedKey = "";
+
+// Cache key = "env-json" / "none" / "<resolved path>:<mtimeMs>". Including the
+// file mtime means editing the provider config (e.g. `bin/llm-use-copilot.sh`
+// enabling copilot + adding it to allowedProviders) is picked up WITHOUT a
+// restart. Previously this was cached for the whole PROCESS LIFETIME, so a
+// running mcp-server kept serving the stale allowlist and reported "copilot
+// blocked by provider allowlist" long after the config was fixed — forcing a
+// full runtime restart. The model catalog (model-catalog.ts) already hot-reloads
+// this way; the provider allowlist now matches it.
+function currentConfigCacheKey(): string {
+  if (config.MCP_LLM_PROVIDER_CONFIG_JSON?.trim()) return "env-json";
+  const raw = config.MCP_LLM_PROVIDER_CONFIG_PATH?.trim();
+  if (!raw) return "none";
+  const p = path.resolve(raw);
+  try { return `${p}:${fs.statSync(p).mtimeMs}`; }
+  catch { return `${p}:missing`; }
+}
 
 function readConfigSource(): unknown {
   if (config.MCP_LLM_PROVIDER_CONFIG_JSON?.trim()) {
@@ -54,7 +72,9 @@ function settingsFor(provider: SupportedProvider): ProviderSettings | undefined 
 }
 
 export function loadProviderConfig(): LoadedProviderConfig {
-  if (cached) return cached;
+  const key = currentConfigCacheKey();
+  if (cached && key === cachedKey) return cached;
+  cachedKey = key;
   const warnings: string[] = [];
   try {
     const raw = readConfigSource();
