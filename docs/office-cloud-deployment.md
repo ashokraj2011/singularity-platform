@@ -25,7 +25,7 @@ the bridge — the box holds no laptop address.
 #     to your office network/VPN only; put TLS in front if possible.
 
 # A2. Clone + the one shared secret
-git clone https://github.com/ashokraj2011/singularity-platform.git && cd singularity-platform
+git clone https://github.com/<your-org>/singularity-platform.git && cd singularity-platform
 export JWT_SECRET='<ONE strong 32+ char secret>'   # signs+verifies device keys — set on EVERY compose run
 
 # A3. Bring up the box — base + the CLOUD overlay (NOT laptop-direct;
@@ -62,7 +62,7 @@ Python 3.11+ binary; the launchers rebuild a stale `.venv` that was created
 with Python 3.9.
 
 ```bash
-git clone https://github.com/ashokraj2011/singularity-platform.git && cd singularity-platform
+git clone https://github.com/<your-org>/singularity-platform.git && cd singularity-platform
 export SINGULARITY_PYTHON="$(brew --prefix python@3.11 2>/dev/null)/bin/python3.11"  # macOS/Homebrew example
 export JWT_SECRET='<ONE strong 32+ char secret>'     # the script respects it (and passes it to IAM + context-api)
 PREFER_LAPTOP_LLM=true bin/bare-metal-apps.sh up <db_user> [db_password] [db_host] [db_port]
@@ -87,7 +87,7 @@ npm install -g @github/copilot
 copilot                      # complete the GitHub device login once
 
 # B2. Clone + build the runner + the desktop app
-git clone https://github.com/ashokraj2011/singularity-platform.git && cd singularity-platform
+git clone https://github.com/<your-org>/singularity-platform.git && cd singularity-platform
 cd mcp-server && npm install && npm run build
 cd ../clients/singularity-desktop && npm install
 npm start                    # launch from a terminal so the runner inherits PATH (finds `copilot`)

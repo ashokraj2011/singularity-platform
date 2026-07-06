@@ -30,7 +30,7 @@ git status --short
 
 bin/clone-and-test-deployments.sh \
   --target /Users/ashokraj/Downloads/singularity-platform-deploy-test \
-  --source https://github.com/ashokraj2011/singularity-platform \
+  --source https://github.com/<your-org>/singularity-platform \
   --ref main \
   --reset-target
 ```

@@ -19,7 +19,7 @@ Singularity runs **two independent LLM execution paths** that coexist by design:
 ## 0. Fresh clone + boot
 
 ```bash
-git clone https://github.com/ashokraj2011/singularity-platform.git
+git clone https://github.com/<your-org>/singularity-platform.git
 cd singularity-platform
 
 # Primary local dev path — boots all backend services + the unified Platform Web

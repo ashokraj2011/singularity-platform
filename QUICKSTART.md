@@ -26,7 +26,7 @@ brew services start postgresql@16
 ## 1 · Clone
 
 ```bash
-git clone https://github.com/ashokraj2011/singularity-platform.git ~/singularity
+git clone https://github.com/<your-org>/singularity-platform.git ~/singularity
 cd ~/singularity
 ```
 

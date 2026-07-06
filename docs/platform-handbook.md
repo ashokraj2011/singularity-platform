@@ -1264,7 +1264,7 @@ Keep these ports available:
 ### 10.2 Clone
 
 ```bash
-git clone https://github.com/ashokraj2011/singularity-platform.git
+git clone https://github.com/<your-org>/singularity-platform.git
 cd singularity-platform
 ```
 

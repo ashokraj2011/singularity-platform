@@ -6,7 +6,7 @@
 
 An enterprise AI-agent platform composed of independently-deployable backend services: identity, agent registry, prompt composition, LLM cost optimization, workflow orchestration, an Agent Execution Runtime, a single central LLM gateway, a federated lookup + receipt + event-bus platform layer, and one unified `platform-web` frontend.
 
-> **Published as a monorepo**: `https://github.com/ashokraj2011/singularity-platform`
+> **Published as a monorepo**: `https://github.com/<your-org>/singularity-platform`
 
 For the full architecture, capability, component, connection, installation, configuration, and operations guide, start with [docs/README.md](./docs/README.md), the [Singularity Platform Handbook](./docs/platform-handbook.md), or the [HTML handbook](./docs/platform-handbook.html).
 
@@ -23,7 +23,7 @@ For the full architecture, capability, component, connection, installation, conf
 
 ### 1. Clone
 ```bash
-git clone https://github.com/ashokraj2011/singularity-platform.git
+git clone https://github.com/<your-org>/singularity-platform.git
 cd singularity-platform
 ```
 
