@@ -73,12 +73,23 @@ const ARTIFACT_FORMATS = ['MARKDOWN', 'TEXT', 'JSON', 'CODE'] as const
 
 const NODE_W = 230
 
+// Colour = the stage's intent domain, aligned with the workflow-node palette
+// (governance=purple, side-effect=orange, data=teal, passive=slate, agent=violet)
+// so the workbench canvas speaks the same visual language as the main designer.
 function stageAccent(s: StageView): string {
-  if (s.contextPolicy === 'CODE_EDIT' || s.toolPolicy === 'MUTATION') return '#2563eb'
-  if (s.contextPolicy === 'STORY_ONLY' || s.toolPolicy === 'NONE') return '#64748b'
-  if (s.contextPolicy === 'VERIFY_ONLY' || s.toolPolicy === 'VERIFICATION') return '#16a34a'
-  if (s.contextPolicy === 'EVIDENCE_REVIEW') return '#7c3aed'
-  return '#0ea5e9'
+  if (s.contextPolicy === 'EVIDENCE_REVIEW') return '#9333ea'                                // review / governance
+  if (s.contextPolicy === 'VERIFY_ONLY' || s.toolPolicy === 'VERIFICATION') return '#9333ea' // quality gate — governance
+  if (s.contextPolicy === 'CODE_EDIT' || s.toolPolicy === 'MUTATION') return '#ea580c'        // mutates the repo — side-effect
+  if (s.contextPolicy === 'REPO_READ_ONLY' || s.toolPolicy === 'READ_ONLY') return '#0d9488'  // reads context — data
+  if (s.contextPolicy === 'STORY_ONLY' || s.toolPolicy === 'NONE') return '#64748b'           // passive / planning
+  return '#7c3aed'                                                                             // agent work (default)
+}
+// Corner radius = the stage's role, echoing the node designer: governance/verify
+// stages read as angular gates, terminal stages as capsules, agent work as rounded.
+function stageRadius(s: StageView): number {
+  if (s.terminal) return 22
+  if (s.contextPolicy === 'EVIDENCE_REVIEW' || s.contextPolicy === 'VERIFY_ONLY' || s.toolPolicy === 'VERIFICATION') return 3
+  return 10
 }
 function policyText(s: StageView): string {
   const tool = s.toolPolicy === 'NONE' ? 'no tools' : s.toolPolicy === 'READ_ONLY' ? 'read-only' : s.toolPolicy === 'MUTATION' ? 'mutation' : 'verification'
@@ -100,7 +111,7 @@ function StageNode({ data }: NodeProps<StageNodeData>) {
     <div
       onClick={() => data.onClick?.(s.stageKey)}
       style={{
-        width: NODE_W, borderRadius: 10, background: '#fff',
+        width: NODE_W, borderRadius: stageRadius(s), background: '#fff',
         border: `1.5px solid ${s.terminal ? '#16a34a' : accent}`,
         boxShadow: '0 1px 3px rgba(15,23,42,0.10)', overflow: 'hidden', cursor: 'pointer',
       }}
@@ -129,14 +140,14 @@ function ApprovalNode({ data }: NodeProps<StageNodeData>) {
   const s = data.stage
   return (
     <div onClick={() => data.onClick?.(s.stageKey)} style={{ width: 176, height: 108, position: 'relative', cursor: 'pointer' }}>
-      <Handle type="target" position={Position.Top} style={{ background: '#7c3aed' }} />
-      <div style={{ position: 'absolute', inset: 0, background: s.terminal ? '#ecfdf5' : '#f5f3ff', border: `1.5px solid ${s.terminal ? '#16a34a' : '#7c3aed'}`, clipPath: 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)', boxShadow: '0 1px 3px rgba(15,23,42,0.10)' }} />
+      <Handle type="target" position={Position.Top} style={{ background: '#9333ea' }} />
+      <div style={{ position: 'absolute', inset: 0, background: s.terminal ? '#ecfdf5' : '#faf5ff', border: `1.5px solid ${s.terminal ? '#16a34a' : '#9333ea'}`, clipPath: 'polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%)', boxShadow: '0 1px 3px rgba(15,23,42,0.10)' }} />
       <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: '0 38px' }}>
-        <span style={{ fontSize: 9, fontWeight: 800, color: '#7c3aed', letterSpacing: '0.04em' }}>✓ APPROVAL</span>
+        <span style={{ fontSize: 9, fontWeight: 800, color: '#9333ea', letterSpacing: '0.04em' }}>✓ APPROVAL</span>
         <span style={{ fontSize: 11, fontWeight: 800, color: '#0f172a', lineHeight: 1.12, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const }}>{s.label}</span>
-        <span style={{ fontSize: 8.5, color: '#7c3aed', fontFamily: 'ui-monospace, monospace' }}>{s.agentRole}</span>
+        <span style={{ fontSize: 8.5, color: '#9333ea', fontFamily: 'ui-monospace, monospace' }}>{s.agentRole}</span>
       </div>
-      <Handle type="source" position={Position.Bottom} style={{ background: '#7c3aed' }} />
+      <Handle type="source" position={Position.Bottom} style={{ background: '#9333ea' }} />
     </div>
   )
 }
