@@ -429,7 +429,13 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
                       {view === "users" ? (
                         <button type="button" onClick={() => setManaging(row)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-on-surface-variant)", cursor: "pointer" }}>Teams &amp; roles</button>
                       ) : null}
-                      <button type="button" onClick={() => setEditing(row)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-primary)", cursor: "pointer" }}>Edit</button>
+                      {view === "capabilities" ? (
+                        // Capabilities have a dedicated full-screen editor (owner, agents,
+                        // architecture, lifecycle) — send Edit there instead of the flat modal.
+                        <Link href={`/capabilities/${encodeURIComponent(String(row.capability_id ?? row.id ?? ""))}`} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-primary)", cursor: "pointer", textDecoration: "none" }}>Edit</Link>
+                      ) : (
+                        <button type="button" onClick={() => setEditing(row)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-primary)", cursor: "pointer" }}>Edit</button>
+                      )}
                     </div>
                   </td>
                 ) : null}
