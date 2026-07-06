@@ -358,7 +358,7 @@ export function Sidebar() {
               Singularity
             </h2>
             <p
-              title="Agentic SDLC Command Center"
+              title="Software Lifecycle Command Center"
               style={{
                 margin: "3px 0 0",
                 overflow: "hidden",
@@ -370,7 +370,7 @@ export function Sidebar() {
                 textTransform: "none",
               }}
             >
-              Agentic SDLC Command Center
+              Software Lifecycle Command Center
             </p>
           </div>
         </div>

@@ -168,7 +168,7 @@ export default async function SdlcCommandCenterPage() {
         <div className="page-hero">
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--accent-workflow)", background: "var(--accent-workflow-soft)", border: "1px solid rgba(37,99,235,0.18)", borderRadius: 999, padding: "5px 10px", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 12 }}>
             <Sparkles size={15} />
-            Agentic SDLC Command Center
+            Software Lifecycle Command Center
           </div>
           <h1 className="page-header" style={{ margin: 0, fontSize: 40, lineHeight: 1.08 }}>Paste Story. Launch Workflow. Export Evidence.</h1>
           <p style={{ margin: "10px 0 0", maxWidth: 900, color: "var(--color-outline)", fontSize: 14, lineHeight: 1.6 }}>
