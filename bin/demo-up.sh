@@ -147,6 +147,19 @@ PGPASSWORD=postgres psql -h localhost -p 5432 -U ashokraj -d postgres -tAc \
   PGPASSWORD=postgres createdb -h localhost -p 5432 -U ashokraj singularity_context_fabric
 CONTEXT_FABRIC_DATABASE_URL="${CONTEXT_FABRIC_DATABASE_URL:-postgresql://ashokraj:postgres@localhost:5432/singularity_context_fabric}"
 SHARED="$ROOT/context-fabric/shared"
+# Use the SAME .venv Python bare-metal set up — it has the context-fabric deps.
+# A bare `python3` here picks up conda/base and fails with ModuleNotFoundError.
+PYBIN="$ROOT/.venv/bin/python"
+if [ ! -x "$PYBIN" ]; then
+  warn ".venv Python not found — falling back to python3 (context-api may be missing deps)"
+  PYBIN="$(command -v python3)"
+fi
+# Belt-and-suspenders: make sure context-api's deps are present in that interpreter.
+"$PYBIN" -c "import uvicorn, fastapi" >/dev/null 2>&1 || {
+  info "installing context-api python deps into $(dirname "$(dirname "$PYBIN")")…"
+  "$PYBIN" -m pip install --quiet -r "$ROOT/context-fabric/services/context_api_service/requirements.txt" >/dev/null 2>&1 \
+    || warn "context-api pip install had warnings — see if it still boots"
+}
 (cd "$ROOT/context-fabric/services/context_api_service" && nohup env \
    PYTHONPATH="$SHARED:${PYTHONPATH:-}" \
    CONTEXT_FABRIC_DATABASE_URL="$CONTEXT_FABRIC_DATABASE_URL" \
@@ -156,13 +169,18 @@ SHARED="$ROOT/context-fabric/shared"
    MCP_SERVER_URL="${MCP_SERVER_URL:-http://localhost:7100}" \
    MCP_BEARER_TOKEN="$MCP_BEARER" \
    AUDIT_GOV_URL="${AUDIT_GOV_URL:-http://localhost:8500}" \
-   python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+   "$PYBIN" -m uvicorn app.main:app --host 0.0.0.0 --port 8000 \
    > "$LOG_DIR/context-api.log" 2>&1 &)
-ok "context-api relaunched"
+ok "context-api relaunched (python: $PYBIN)"
 
 # ── 7. Start pseudo-iam (bare-metal already started Platform Web) ──────────
 info "booting pseudo-iam (8101)…"
-
+# pseudo-iam-service isn't in bare-metal's auto-install list, so a fresh clone
+# has no node_modules here — install them before first boot or it 000s.
+if [ ! -d "$ROOT/pseudo-iam-service/node_modules" ]; then
+  info "installing pseudo-iam deps (first run)…"
+  ( cd "$ROOT/pseudo-iam-service" && npm install >/dev/null 2>&1 ) || warn "pseudo-iam npm install had warnings"
+fi
 (cd "$ROOT/pseudo-iam-service" && nohup env PORT=8101 JWT_SECRET="$JWT_SECRET" npm run dev > "$LOG_DIR/pseudo-iam.log" 2>&1 &)
 ok "pseudo-iam launched"
 

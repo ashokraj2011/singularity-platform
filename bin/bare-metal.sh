@@ -1154,9 +1154,16 @@ JSON
   # ── 4. Push schemas + seed ────────────────────────────────────────────────
   info "applying agent-runtime schema…"
   ( cd agent-and-tools/apps/agent-runtime \
-    && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma db push --skip-generate >/dev/null 2>&1 \
-    && DISABLE_ERD=true DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate >/dev/null 2>&1 ) \
+    && DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma db push --skip-generate >/dev/null 2>&1 ) \
     || warn "agent-runtime schema push had warnings"
+  # Generate the Prisma client INDEPENDENTLY of the db push above. `prisma
+  # generate` needs no database; chaining it after db push with && meant a push
+  # failure silently skipped generate, leaving the service with no client — it
+  # then crashes at boot with "Cannot find module '../../generated/prisma-client'".
+  # A generate failure is fatal to the service, so make it loud (err, not warn).
+  ( cd agent-and-tools/apps/agent-runtime \
+    && DISABLE_ERD=true DATABASE_URL="$DATABASE_URL_AGENT_TOOLS" npx prisma generate >/dev/null 2>&1 ) \
+    || err "agent-runtime 'prisma generate' FAILED — the service will NOT boot. Fix: (cd agent-and-tools/apps/agent-runtime && DISABLE_ERD=true npx prisma generate)"
 
   # Prisma db push cannot express partial unique indexes, reconciliation
   # updates, or idempotent operational cleanup. Apply those raw SQL migrations
@@ -1198,9 +1205,12 @@ JSON
   # `prisma generate` (no DDL on agent-runtime's DB).
   info "applying prompt-composer schema (DB: singularity_composer)…"
   ( cd agent-and-tools/apps/prompt-composer \
-    && DATABASE_URL="$DATABASE_URL_COMPOSER" npx prisma db push --schema=prisma/schema.prisma --skip-generate >/dev/null 2>&1 \
-    && DATABASE_URL="$DATABASE_URL_COMPOSER" npx prisma generate --schema=prisma/schema.prisma >/dev/null 2>&1 ) \
+    && DATABASE_URL="$DATABASE_URL_COMPOSER" npx prisma db push --schema=prisma/schema.prisma --skip-generate >/dev/null 2>&1 ) \
     || warn "prompt-composer owned schema push had warnings"
+  # Generate independently of db push (see agent-runtime note above).
+  ( cd agent-and-tools/apps/prompt-composer \
+    && DATABASE_URL="$DATABASE_URL_COMPOSER" npx prisma generate --schema=prisma/schema.prisma >/dev/null 2>&1 ) \
+    || err "prompt-composer 'prisma generate' FAILED — the service will NOT boot. Fix: (cd agent-and-tools/apps/prompt-composer && npx prisma generate --schema=prisma/schema.prisma)"
 
   info "seeding prompt-composer base prompt profiles…"
   ( cd agent-and-tools/apps/prompt-composer \
