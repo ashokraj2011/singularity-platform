@@ -3,8 +3,10 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { Activity, Download, FileCheck2, GitBranch, Package, ShieldCheck, Workflow } from "lucide-react";
+import useSWR from "swr";
+import { Activity, Download, FileCheck2, GitBranch, Network, Package, ShieldCheck, Workflow } from "lucide-react";
 import { workbenchNeoUrl } from "@/lib/workbenchLaunch";
+import { workgraphApi } from "@/lib/api";
 
 const RunSurfaceRoute = dynamic(
   () => import("@/components/workflows/RunSurfaceRoute").then((module) => module.RunSurfaceRoute),
@@ -104,8 +106,41 @@ export default function RunDetailPage() {
           />
         </div>
       </section>
+      <RunTraceStrip runId={id} />
       <RunSurfaceRoute />
     </div>
+  );
+}
+
+function RunTraceStrip({ runId }: { runId: string }) {
+  const { data } = useSWR(
+    runId ? ["run-trust-trace", runId] : null,
+    () => workgraphApi.trustTrace(runId),
+    { refreshInterval: 15000 },
+  );
+  const traceIds = Array.isArray(data?.traceIds) ? data.traceIds.filter(Boolean).slice(0, 8) : [];
+  if (traceIds.length === 0) return null;
+  return (
+    <section className="data-panel" style={{ padding: 14 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", gap: 9, alignItems: "center" }}>
+          <span style={{ width: 34, height: 34, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--accent-evidence-soft)", color: "var(--accent-evidence)" }}>
+            <Network size={16} />
+          </span>
+          <div>
+            <div style={{ color: "var(--color-on-surface)", fontSize: 14, fontWeight: 800 }}>Platform trace cockpit</div>
+            <div style={{ color: "var(--color-outline)", fontSize: 12 }}>Open the unified evidence timeline for node-level execution traces.</div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {traceIds.map((traceId) => (
+            <Link key={traceId} className="btn-secondary" href={`/audit/trace/${encodeURIComponent(traceId)}`}>
+              <Network size={13} /> {traceId.length > 34 ? `${traceId.slice(0, 31)}...` : traceId}
+            </Link>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 

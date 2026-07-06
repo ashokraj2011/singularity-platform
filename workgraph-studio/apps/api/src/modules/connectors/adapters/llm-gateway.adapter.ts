@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { traceIdFromParts } from '@workgraph/shared-types'
 import type { ConnectorAdapter, OperationDef } from '../connector-adapter'
 import { assertEventTargetUrlAllowed } from '../../../lib/eventbus/target-url-policy'
 import { contextFabricClient } from '../../../lib/context-fabric/client'
@@ -122,7 +123,7 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
       selected?.content ?? String(p.prompt ?? 'Continue.'),
     )
     const response = await contextFabricClient.executeGovernedTurn({
-      trace_id: `connector-llm-${Date.now()}`,
+      trace_id: traceIdFromParts(['connector-llm', Date.now()]),
       run_context: {
         source_type: 'workgraph-llm-gateway-connector',
         workflow_node_id: 'connector-llm-gateway',
@@ -183,7 +184,7 @@ export class LlmGatewayAdapter implements ConnectorAdapter {
     const r = await client.post('/mcp/embed', {
       ...(modelAlias ? { modelAlias } : {}),
       input,
-      runContext: { traceId: `connector-emb-${Date.now()}` },
+      runContext: { traceId: traceIdFromParts(['connector-emb', Date.now()]) },
     })
     const data = r.data?.data ?? {}
     return {

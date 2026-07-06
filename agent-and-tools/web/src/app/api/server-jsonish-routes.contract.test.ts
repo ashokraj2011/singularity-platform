@@ -23,6 +23,7 @@ const eventHorizonActions = read("src/app/api/event-horizon/actions/route.ts");
 const workgraphProxy = read("src/app/api/workgraph/[...path]/route.ts");
 const composerProxy = read("src/app/api/composer/[...path]/route.ts");
 const runtimeInfrastructure = read("src/app/api/runtime-infrastructure/route.ts");
+const platformTrace = read("src/app/api/traces/[traceId]/route.ts");
 
 assert.match(
   helper,
@@ -54,6 +55,7 @@ for (const [label, source] of [
   ["workgraph proxy", workgraphProxy],
   ["composer proxy", composerProxy],
   ["runtime infrastructure", runtimeInfrastructure],
+  ["platform trace", platformTrace],
 ] as const) {
   assert.match(source, /readJsonish/, `${label} should use readJsonish for upstream bodies`);
 }
@@ -329,6 +331,36 @@ assert.doesNotMatch(
   runtimeInfrastructure,
   /JSON\.parse\(text\)|await res\.text\(\)/,
   "Runtime infrastructure health probes should not hand-parse upstream response text",
+);
+
+assert.match(
+  platformTrace,
+  /const FETCH_TIMEOUT_MS = boundedSecondsEnv\("PLATFORM_TRACE_FETCH_TIMEOUT_SEC", 6, 1, 300\) \* 1000;/,
+  "Platform trace route should expose a bounded source fan-out timeout knob",
+);
+
+assert.match(
+  platformTrace,
+  /\/api\/workgraph\/receipts\?trace_id=\$\{encoded\}/,
+  "Platform trace route should merge Workgraph receipt timelines by trace_id",
+);
+
+assert.match(
+  platformTrace,
+  /\/api\/audit-gov\/traces\/\$\{encoded\}\/timeline\?limit=1000/,
+  "Platform trace route should merge audit-governance trace timelines",
+);
+
+assert.match(
+  platformTrace,
+  /warnings\.push\(shortSourceFailure\("Workgraph receipts"/,
+  "Platform trace route should warn, not fail, when Workgraph receipts are unavailable",
+);
+
+assert.match(
+  platformTrace,
+  /correlation: collectCorrelation\(traceId, timeline\)/,
+  "Platform trace route should return primary correlation ids collected from source payloads",
 );
 
 console.log("server jsonish route contract tests passed");

@@ -1,4 +1,5 @@
 import { Prisma, type WorkflowNode, type WorkflowInstance } from '@prisma/client'
+import { workflowNodeTraceId } from '@workgraph/shared-types'
 import { prisma } from '../../../../lib/prisma'
 import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { resolveCapabilityRepo } from '../../../../lib/agent-and-tools/capability-repo'
@@ -203,7 +204,11 @@ export async function activateAgentTask(
       ?? configString('sourceUri')
   }
 
-  const traceId = `wf-${instance.id}-${node.id}-${run.id.slice(0, 8)}`
+  const traceId = workflowNodeTraceId({
+    workflowInstanceId: instance.id,
+    workflowNodeId: node.id,
+    runId: run.id,
+  })
   await prisma.agentRunOutput.create({
     data: {
       runId: run.id,

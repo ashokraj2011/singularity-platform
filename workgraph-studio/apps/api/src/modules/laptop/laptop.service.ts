@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Prisma } from '@prisma/client'
+import { traceIdFromParts } from '@workgraph/shared-types'
 import { prisma } from '../../lib/prisma'
 import { withTenantDbTransaction, currentTenantIdForDb } from '../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../lib/audit'
@@ -224,7 +225,7 @@ export async function startLaptopInvocation(workItemId: string, actorId: string,
     mode,
   })
 
-  const traceId = `laptop-${invocationId}`
+  const traceId = traceIdFromParts(['laptop', invocationId])
   // Request-scoped (laptop.router) — tenantId defaults to the request tenant via ALS.
   const run = await withTenantDbTransaction(prisma, (tx) => tx.agentRun.create({
     data: {
@@ -361,7 +362,7 @@ export async function recordLaptopHeartbeat(invocationId: string, actorId: strin
     laptopInvocationId: invocationId,
     actorId,
     client: invocation.client,
-    traceId: `laptop-${invocationId}`,
+    traceId: traceIdFromParts(['laptop', invocationId]),
   })
   return invocation
 }
@@ -406,7 +407,7 @@ export async function completeLaptopInvocation(invocationId: string, actorId: st
     laptopInvocationId: invocationId,
     actorId,
     status,
-    traceId: `laptop-${invocationId}`,
+    traceId: traceIdFromParts(['laptop', invocationId]),
   })
   return invocation
 }
@@ -428,7 +429,7 @@ export async function createLaptopQuestion(invocationId: string, actorId: string
     laptopInvocationId: invocationId,
     questionId: question.id,
     actorId,
-    traceId: `laptop-${invocationId}`,
+    traceId: traceIdFromParts(['laptop', invocationId]),
   })
   return question
 }
@@ -461,7 +462,7 @@ export async function answerLaptopQuestion(questionId: string, actorId: string, 
     laptopInvocationId: question.invocationId,
     questionId,
     actorId,
-    traceId: `laptop-${question.invocationId}`,
+    traceId: traceIdFromParts(['laptop', question.invocationId]),
   })
   return updated
 }
@@ -522,7 +523,7 @@ export function startLaptopHeartbeatWatchdog(): void {
           agentRunId: invocation.agentRunId,
           laptopInvocationId: invocation.id,
           reason: 'heartbeat_timeout',
-          traceId: `laptop-${invocation.id}`,
+          traceId: traceIdFromParts(['laptop', invocation.id]),
         })
       }
     })().catch(err => {

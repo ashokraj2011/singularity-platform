@@ -1,5 +1,6 @@
 import { Router, type Router as ExpressRouter } from 'express'
 import { z } from 'zod'
+import { traceIdFromParts } from '@workgraph/shared-types'
 import { config } from '../../config'
 import { contextFabricClient, type ExecuteRequest } from '../../lib/context-fabric/client'
 // M36.4 — system_prompt now resolved from prompt-composer SystemPrompt table
@@ -153,16 +154,19 @@ eventHorizonRouter.post('/chat', async (req, res) => {
   // LLM routing: the CHAT touch point may be wired to a specific connection (per
   // user / capability / default) in the routing canvas; fall back to the env default.
   const routedAlias = await resolveLlmRouting('CHAT', { userId: req.user?.userId, capabilityId })
+  const now = Date.now()
+  const traceId = traceIdFromParts(['event-horizon', body.sessionId, now], ':')
+  const sessionTraceId = traceIdFromParts(['event-horizon', body.sessionId], ':')
   const executeReq: ExecuteRequest = {
-    trace_id: `event-horizon:${body.sessionId}:${Date.now()}`,
-    idempotency_key: `event-horizon:${body.sessionId}:${Date.now()}`,
+    trace_id: traceId,
+    idempotency_key: traceId,
     run_context: {
       workflow_instance_id: `event-horizon-${body.sessionId}`,
       workflow_node_id: 'event-horizon-chat',
-      agent_run_id: `event-horizon-${Date.now()}`,
+      agent_run_id: traceIdFromParts(['event-horizon', now]),
       capability_id: capabilityId,
       user_id: req.user?.userId,
-      trace_id: `event-horizon:${body.sessionId}`,
+      trace_id: sessionTraceId,
     },
     // M36.4 — system prompt now lives in prompt-composer's SystemPrompt table
     // under the key "event-horizon.system". Edit + re-seed to change behavior.

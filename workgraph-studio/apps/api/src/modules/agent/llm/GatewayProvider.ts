@@ -1,5 +1,6 @@
 import { config } from '../../../config'
 import { contextFabricClient } from '../../../lib/context-fabric/client'
+import { traceIdFromParts } from '@workgraph/shared-types'
 import type { LLMProvider, LLMRequest, LLMResponse } from './LLMProvider'
 
 /**
@@ -33,7 +34,7 @@ export class GatewayProvider implements LLMProvider {
     }
 
     const response = await contextFabricClient.executeGovernedTurn({
-      trace_id: `legacy-agent-run-${Date.now()}`,
+      trace_id: traceIdFromParts(['legacy-agent-run', Date.now()]),
       run_context: {
         source_type: 'workgraph-legacy-agent-run',
         workflow_node_id: 'legacy-agent-run',

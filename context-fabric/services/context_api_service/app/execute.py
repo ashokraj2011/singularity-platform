@@ -303,6 +303,15 @@ def _assert_row_tenant_visible(rec: Optional[dict]) -> None:
         raise HTTPException(status_code=404, detail="not found")
 
 
+def _normalize_trace_id(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    trace_id = value.strip()
+    if not trace_id or "\x00" in trace_id or len(trace_id) > 300:
+        return None
+    return trace_id
+
+
 # ── Request/Response models ───────────────────────────────────────────────
 
 class RunContext(BaseModel):
@@ -435,7 +444,9 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
     check_execute_service_token(x_service_token)
     cf_call_id = str(uuid.uuid4())
     started_at = datetime.now(timezone.utc).isoformat()
-    trace_id = req.trace_id or req.run_context.trace_id or str(uuid.uuid4())
+    incoming_trace_id = _normalize_trace_id(req.trace_id) or _normalize_trace_id(req.run_context.trace_id)
+    trace_id_generated = incoming_trace_id is None
+    trace_id = incoming_trace_id or str(uuid.uuid4())
     governance_mode = _governance_mode(
         req.governance_mode or settings.default_governance_mode,
         fallback=settings.default_governance_mode,
@@ -825,6 +836,7 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
                 "correlation": {
                     "cfCallId": cf_call_id,
                     "traceId": trace_id,
+                    "traceIdGenerated": trace_id_generated,
                     "sessionId": session_id,
                     "promptAssemblyId": prompt_assembly_id,
                     "llmCallIds": [],
@@ -1304,6 +1316,7 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
         "correlation": {
             "cfCallId": cf_call_id,
             "traceId": trace_id,
+            "traceIdGenerated": trace_id_generated,
             "sessionId": session_id,
             "promptAssemblyId": prompt_assembly_id,
             "mcpServerId": mcp_server_id,
@@ -2547,7 +2560,13 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
     from .governed.placement import llm_laptop_target, runtime_capability_tags, runtime_tenant_target
 
     rc = req.run_context or {}
-    trace_id = req.trace_id or rc.get("trace_id")
+    incoming_trace_id = (
+        _normalize_trace_id(req.trace_id)
+        or _normalize_trace_id(rc.get("trace_id"))
+        or _normalize_trace_id(rc.get("traceId"))
+    )
+    trace_id_generated = incoming_trace_id is None
+    trace_id = incoming_trace_id or str(uuid.uuid4())
     cap = rc.get("capability_id") or rc.get("capabilityId")
     overlay = req.governance_overlay if isinstance(req.governance_overlay, dict) else None
     overlay_hash = overlay.get("overlayHash") if overlay else None
@@ -2620,6 +2639,7 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
         "correlation": {
             "cfCallId": f"governed-turn:{trace_id}",
             "traceId": trace_id,
+            "traceIdGenerated": trace_id_generated,
             "modelAlias": resp.model_alias,
             "governanceMode": governance_mode,
             "executionPosture": "governed",

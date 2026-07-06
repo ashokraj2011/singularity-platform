@@ -1,4 +1,5 @@
 import { BlueprintStage, Prisma, type ApprovalRequest, type WorkflowInstance, type WorkflowNode } from '@prisma/client'
+import { workflowNodeTraceId } from '@workgraph/shared-types'
 import { config } from '../../../../config'
 import { prisma } from '../../../../lib/prisma'
 import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
@@ -536,7 +537,11 @@ async function callMcpFinishWorkBranch(args: {
   // or tenant is absent, leaving the legacy static-token push path intact).
   const brokerIdentity = await resolveGitBrokerIdentity(args.instance, args.node, args.actorId)
   const runContext = {
-    traceId: `git-push-${args.instance.id}-${args.node.id}`,
+    traceId: workflowNodeTraceId({
+      prefix: 'git-push',
+      workflowInstanceId: args.instance.id,
+      workflowNodeId: args.node.id,
+    }),
     runId: args.instance.id,
     workflowInstanceId: args.instance.id,
     nodeId: args.node.id,

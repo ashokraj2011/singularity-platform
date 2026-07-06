@@ -1,4 +1,5 @@
 import { context, propagation, trace, isSpanContextValid, type Context } from '@opentelemetry/api'
+import { traceHeaders } from '@workgraph/shared-types'
 
 type HeaderBag = Record<string, string>
 
@@ -15,9 +16,5 @@ export function tracingHeaders(existing: HeaderBag = {}, appTraceId?: string | n
     headers.traceparent = `00-${spanContext.traceId}-${spanContext.spanId}-${traceFlagsHex(spanContext.traceFlags)}`
   }
 
-  if (appTraceId?.trim()) {
-    headers['x-singularity-trace-id'] = appTraceId.trim()
-  }
-
-  return headers
+  return traceHeaders(headers, appTraceId)
 }

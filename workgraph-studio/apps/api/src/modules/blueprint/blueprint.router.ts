@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
+import { traceIdFromParts } from '@workgraph/shared-types'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -1618,7 +1619,7 @@ blueprintRouter.get('/sessions/:id/stages/:stageKey/loop-trace', async (req, res
     const session = await prisma.blueprintSession.findUnique({ where: { id: req.params.id } })
     if (!session) throw new NotFoundError('BlueprintSession', req.params.id)
     assertBlueprintAccess(session, req.user!.userId)
-    const traceId = `blueprint-${session.id}-${req.params.stageKey}`
+    const traceId = traceIdFromParts(['blueprint', session.id, req.params.stageKey])
     const trace = await synthesizeLoopTrace(traceId)
     res.json(trace)
   } catch (err) { next(err) }
@@ -6039,7 +6040,7 @@ async function runLoopStageExecute(
   // them empty and this function rebuilds all the run_context/policy correctly.
   resume?: { phaseState?: Record<string, unknown> | null; decision?: string; reason?: string },
 ): Promise<CodingRunResult> {
-  const traceId = `blueprint-${session.id}-${stage.key}`
+  const traceId = traceIdFromParts(['blueprint', session.id, stage.key])
   const state = readLoopState(session)
   const executionConfig = state.executionConfig
   const modelAlias = stageModelAlias(executionConfig, stage.key, stage.label)

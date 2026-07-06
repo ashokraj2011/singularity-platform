@@ -15,6 +15,7 @@
  * aggregateUsage) are exported so they unit-test without the LLM or the DB.
  */
 import { z } from 'zod'
+import { traceIdFromParts } from '@workgraph/shared-types'
 import { contextFabricClient, type ExecuteResponse } from '../../lib/context-fabric/client'
 import { listCapabilityRelationships, getCapability } from '../../lib/iam/client'
 import { prisma } from '../../lib/prisma'
@@ -415,8 +416,9 @@ export async function converse(input: ConverseInput, actorId: string): Promise<C
   const goal = input.messages.find((m) => m.role === 'user')?.content ?? ''
   const currentPlan = input.plan ?? []
 
+  const plannerTraceId = traceIdFromParts(['planner', home], ':')
   const base = {
-    trace_id: `planner:${home}`,
+    trace_id: plannerTraceId,
     run_context: runCtx,
     system_prompt: plannerSystemPrompt(maxItems),
     model_overrides: { temperature: 0.3, maxOutputTokens: 3500 },
@@ -482,7 +484,7 @@ export async function converse(input: ConverseInput, actorId: string): Promise<C
   let critic: CriticResult | null = null
   try {
     const rc = await contextFabricClient.executeGovernedTurn({
-      trace_id: `planner-critic:${home}`,
+      trace_id: traceIdFromParts(['planner-critic', home], ':'),
       run_context: runCtx,
       system_prompt: criticPrompt(),
       task: criticTask(goal, sanitized.milestones, caps),

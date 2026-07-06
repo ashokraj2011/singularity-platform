@@ -438,6 +438,10 @@ export const workgraphApi = {
     if (!runId) throw new Error("WorkItem started but no child workflow run id was returned.");
     return { id: runId, workItem: routed };
   },
+  trustTrace: (workflowInstanceId: string) =>
+    req<{ traceIds: string[]; timeline?: unknown[] }>(
+      `${WORKGRAPH_BASE}/workflow-instances/${encodeURIComponent(workflowInstanceId)}/trust-trace`,
+    ),
 };
 
 export const runtimeApi = {
@@ -911,4 +915,42 @@ export type TraceTimelineRow = {
   capability_id: string | null;
   tenant_id: string | null;
   payload: Record<string, unknown>;
+};
+
+export type PlatformTraceTimelineRow = TraceTimelineRow & {
+  eventType?: string;
+  correlation?: Record<string, unknown>;
+};
+
+export type PlatformTraceResponse = {
+  traceId: string;
+  generatedAt: string;
+  sources: {
+    workgraphReceipts: number;
+    contextFabricReceipts: number;
+    mcpReceipts: number;
+    auditEvents: number;
+    total: number;
+  };
+  warnings: string[];
+  correlation: {
+    traceId: string;
+    cfCallId?: string;
+    promptAssemblyId?: string;
+    mcpInvocationId?: string;
+    modelCallId?: string;
+    agentRunId?: string;
+    workflowInstanceId?: string;
+    workflowNodeId?: string;
+    workItemId?: string;
+    tenantId?: string;
+    userId?: string;
+    otelTraceId?: string;
+  };
+  timeline: PlatformTraceTimelineRow[];
+};
+
+export const traceApi = {
+  get: (traceId: string) =>
+    req<PlatformTraceResponse>(`/api/traces/${encodeURIComponent(traceId)}`),
 };

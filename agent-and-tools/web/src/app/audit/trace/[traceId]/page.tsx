@@ -22,20 +22,20 @@
 import { use, useMemo } from "react";
 import useSWR from "swr";
 import Link from "next/link";
-import { auditGovApi, type TraceTimelineRow } from "@/lib/api";
-import { ArrowLeft, AlertTriangle, ShieldCheck, Activity } from "lucide-react";
+import { traceApi, type PlatformTraceTimelineRow } from "@/lib/api";
+import { ArrowLeft, AlertTriangle, ShieldCheck, Activity, Boxes, FileText, RadioTower, Cpu } from "lucide-react";
 
 export default function TraceTimelinePage({ params }: { params: Promise<{ traceId: string }> }) {
   const { traceId } = use(params);
   const decoded = decodeURIComponent(traceId);
 
   const { data, error, isLoading } = useSWR(
-    decoded ? `audit-trace-${decoded}` : null,
-    () => auditGovApi.traceTimeline(decoded, 1_000),
+    decoded ? `platform-trace-${decoded}` : null,
+    () => traceApi.get(decoded),
   );
 
-  const events: TraceTimelineRow[] = useMemo(() => {
-    const items = data?.items ?? [];
+  const events: PlatformTraceTimelineRow[] = useMemo(() => {
+    const items = data?.timeline ?? [];
     return [...items].sort((a, b) => (a.ts < b.ts ? -1 : 1));
   }, [data]);
 
@@ -65,7 +65,18 @@ export default function TraceTimelinePage({ params }: { params: Promise<{ traceI
       </Link>
 
       <h1 className="text-2xl font-bold text-slate-900">Trace timeline</h1>
-      <code className="text-xs text-slate-500 font-mono break-all">{decoded}</code>
+      <div className="mt-1 grid gap-1 text-xs text-slate-500">
+        <div>
+          <span className="font-semibold text-slate-600">Platform trace id</span>{" "}
+          <code className="font-mono break-all">{decoded}</code>
+        </div>
+        {data?.correlation.otelTraceId && (
+          <div>
+            <span className="font-semibold text-slate-600">OTel trace id</span>{" "}
+            <code className="font-mono break-all">{data.correlation.otelTraceId}</code>
+          </div>
+        )}
+      </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-5">
         <Tile icon={Activity}      label="Events"    value={counts.total} />
@@ -73,6 +84,38 @@ export default function TraceTimelinePage({ params }: { params: Promise<{ traceI
         <Tile icon={AlertTriangle} label="Warnings"  value={counts.warns}   highlight={counts.warns > 0 ? "amber" : undefined} />
         <Tile icon={ShieldCheck}   label="High risk" value={counts.highRisk} highlight={counts.highRisk > 0 ? "amber" : undefined} />
       </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+        <Tile icon={FileText} label="Workgraph" value={data?.sources.workgraphReceipts ?? 0} />
+        <Tile icon={RadioTower} label="Context Fabric" value={data?.sources.contextFabricReceipts ?? 0} />
+        <Tile icon={Cpu} label="MCP" value={data?.sources.mcpReceipts ?? 0} />
+        <Tile icon={Boxes} label="Audit" value={data?.sources.auditEvents ?? 0} />
+      </div>
+
+      {data?.warnings?.length ? (
+        <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <div className="font-semibold">Trace source warnings</div>
+          <ul className="mt-1 list-disc pl-5 space-y-0.5">
+            {data.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+          </ul>
+        </div>
+      ) : null}
+
+      {data?.correlation && (
+        <div className="mb-5 rounded-lg border border-slate-200 bg-white p-3">
+          <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold mb-2">Correlation</div>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(data.correlation)
+              .filter(([, value]) => typeof value === "string" && value.trim())
+              .map(([key, value]) => (
+                <span key={key} className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] text-slate-700">
+                  <span className="font-semibold text-slate-500">{key}</span>{" "}
+                  <code className="font-mono">{String(value)}</code>
+                </span>
+              ))}
+          </div>
+        </div>
+      )}
 
       {isLoading && <p className="text-sm text-slate-400">Loading trace…</p>}
       {error && <p className="text-sm text-red-600">Failed to load: {(error as Error).message}</p>}

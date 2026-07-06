@@ -5,6 +5,7 @@ re-assembly) + governed audit + 'governed' posture. For single-shot callers
 (prompt-composer compose-and-respond, contracts replay, event-horizon chat).
 """
 import asyncio
+from uuid import UUID
 
 from context_api_service.app import execute as execute_mod
 from context_api_service.app.governed import llm_client as llm_mod
@@ -73,6 +74,13 @@ def test_no_system_prompt_sends_only_user_message(monkeypatch):
     req = execute_mod.GovernedSingleTurnRequest(trace_id="t2", task="hi", system_prompt="")
     _out, captured = _run_turn(req, monkeypatch)
     assert captured["messages"] == [{"role": "user", "content": "hi"}]
+
+
+def test_missing_trace_gets_generated_uuid(monkeypatch):
+    req = execute_mod.GovernedSingleTurnRequest(task="hi", system_prompt="")
+    out, _ = _run_turn(req, monkeypatch)
+    UUID(out["correlation"]["traceId"])
+    assert out["correlation"]["traceIdGenerated"] is True
 
 
 def test_token_usage_rolled_up(monkeypatch):

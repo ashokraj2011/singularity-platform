@@ -12,7 +12,7 @@
  * gateway directly. Caller falls back to the RAW (JSON-layer) cache mode
  * on null.
  */
-import { llmRespond } from "@agentandtools/shared";
+import { llmRespond, traceIdFromParts } from "@agentandtools/shared";
 import { logger } from "../../config/logger";
 import type { RetrievedChunk } from "./retrieval";
 import { llmCapsuleCompilerConfig } from "./llm-capsule-compiler.config";
@@ -81,7 +81,7 @@ export async function compileCapsuleViaLlm(
         ],
         temperature: 0,
         max_output_tokens: 800,
-        trace_id: `capsule-compile-${Date.now()}`,
+        trace_id: traceIdFromParts(["capsule-compile", Date.now()]),
       }),
       new Promise<never>((_, rej) =>
         setTimeout(() => rej(new Error("capsule compile timeout")), TIMEOUT_MS),

@@ -26,6 +26,7 @@
 import { Router, Request, Response, NextFunction } from 'express'
 import { z } from 'zod'
 import { createHash } from 'node:crypto'
+import { traceIdFromParts } from '@workgraph/shared-types'
 import { config } from '../../config'
 import { contextFabricClient } from '../../lib/context-fabric/client'
 import { promptComposerAuthHeaders } from '../../lib/prompt-composer/client'
@@ -313,7 +314,8 @@ contractsRouter.post('/:contractId/replay', async (req: Request, res: Response, 
     if (!contract) {
       return res.status(404).json({ error: 'contract bundle empty' })
     }
-    const traceId = `contract-replay-${req.params.contractId}-${Date.now()}`
+    const now = Date.now()
+    const traceId = traceIdFromParts(['contract-replay', req.params.contractId, now])
     const systemPrompt = renderFrozenReplayPrompt({ ...contract, id: req.params.contractId })
     const original = await loadOriginalRunResponse(req, body.originalRunId)
 
@@ -326,7 +328,7 @@ contractsRouter.post('/:contractId/replay', async (req: Request, res: Response, 
       run_context: {
         workflow_instance_id: body.workflowInstanceId ?? `replay-${req.params.contractId}`,
         workflow_node_id: 'contract-replay',
-        agent_run_id: `replay-${Date.now()}`,
+        agent_run_id: traceIdFromParts(['replay', now]),
         agent_template_id: body.agentTemplateId,
         capability_id: body.capabilityId,
         trace_id: traceId,

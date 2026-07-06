@@ -1,4 +1,5 @@
 import { type WorkflowInstance, type WorkflowNode } from '@prisma/client'
+import { workflowNodeTraceId } from '@workgraph/shared-types'
 import { config } from '../../../../config'
 import { redactSecrets } from '../../../../lib/redact'
 import { requestOperationalMcpToolGrant } from './mcpToolGrant'
@@ -200,7 +201,11 @@ export async function activateRunPython(
     max_output_chars: 12_000,
   }
   const runContext = {
-    traceId: `run-python-${instance.id}-${node.id}`,
+    traceId: workflowNodeTraceId({
+      prefix: 'run-python',
+      workflowInstanceId: instance.id,
+      workflowNodeId: node.id,
+    }),
     runId: instance.id,
     workflowInstanceId: instance.id,
     nodeId: node.id,

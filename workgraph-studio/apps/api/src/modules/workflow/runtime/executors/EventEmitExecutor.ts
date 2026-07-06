@@ -1,4 +1,5 @@
 import { type WorkflowInstance, type WorkflowNode } from '@prisma/client'
+import { requireTraceId } from '@workgraph/shared-types'
 import { config } from '../../../../config'
 import { redactSecrets } from '../../../../lib/redact'
 import { publishEvent, type EventEnvelope } from '../../../../lib/eventbus/publisher'
@@ -130,7 +131,7 @@ async function emitEventbus(node: WorkflowNode, instance: WorkflowInstance, msg:
   const envelope: EventEnvelope = {
     kind: 'workflow_event',
     source_service: 'workgraph-api',
-    trace_id: instance.id,
+    trace_id: requireTraceId(instance.id, 'workflowInstanceId'),
     subject: { kind: 'WorkflowInstance', id: instance.id },
     status: 'emitted',
     correlation: { nodeId: node.id, key: msg.key ?? null },
