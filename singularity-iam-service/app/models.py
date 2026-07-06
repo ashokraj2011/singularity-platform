@@ -102,7 +102,7 @@ class Team(Base):
     team_key: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(String)
-    bu_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.business_units.id"))
+    bu_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.business_units.id", ondelete="SET NULL"))
     parent_team_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.teams.id"), nullable=True)
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     tags: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
@@ -159,8 +159,8 @@ class Capability(Base):
     # guard at the routing boundary (they govern; they don't receive delivery work).
     is_governing: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     visibility: Mapped[str] = mapped_column(String, nullable=False, server_default="private")
-    owner_bu_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.business_units.id"))
-    owner_team_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.teams.id"))
+    owner_bu_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.business_units.id", ondelete="SET NULL"))
+    owner_team_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.teams.id", ondelete="SET NULL"))
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     tags: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     created_by: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.users.id"))
@@ -179,10 +179,10 @@ class CapabilityRelationship(Base):
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     source_capability_id: Mapped[str] = mapped_column(
-        String, ForeignKey("iam.capabilities.capability_id"), nullable=False
+        String, ForeignKey("iam.capabilities.capability_id", ondelete="CASCADE"), nullable=False
     )
     target_capability_id: Mapped[str] = mapped_column(
-        String, ForeignKey("iam.capabilities.capability_id"), nullable=False
+        String, ForeignKey("iam.capabilities.capability_id", ondelete="CASCADE"), nullable=False
     )
     relationship_type: Mapped[str] = mapped_column(String, nullable=False)
     inheritance_policy: Mapped[str] = mapped_column(String, nullable=False, server_default="none")
@@ -202,10 +202,10 @@ class CapabilitySharingGrant(Base):
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     provider_capability_id: Mapped[str] = mapped_column(
-        String, ForeignKey("iam.capabilities.capability_id"), nullable=False
+        String, ForeignKey("iam.capabilities.capability_id", ondelete="CASCADE"), nullable=False
     )
     consumer_capability_id: Mapped[str] = mapped_column(
-        String, ForeignKey("iam.capabilities.capability_id"), nullable=False
+        String, ForeignKey("iam.capabilities.capability_id", ondelete="CASCADE"), nullable=False
     )
     grant_type: Mapped[str] = mapped_column(String, nullable=False)
     allowed_permissions: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
@@ -239,10 +239,10 @@ class GovernanceAttachment(Base):
     )
     # Denormalized for fast resolution (== relationship.source / .target).
     capability_id: Mapped[str] = mapped_column(
-        String, ForeignKey("iam.capabilities.capability_id"), nullable=False
+        String, ForeignKey("iam.capabilities.capability_id", ondelete="CASCADE"), nullable=False
     )  # governed operational capability
     governing_capability_id: Mapped[str] = mapped_column(
-        String, ForeignKey("iam.capabilities.capability_id"), nullable=False
+        String, ForeignKey("iam.capabilities.capability_id", ondelete="CASCADE"), nullable=False
     )  # governing capability (authority)
     mode: Mapped[str] = mapped_column(String, nullable=False, server_default="ADVISORY")  # ADVISORY|REQUIRED|BLOCKING
     scope: Mapped[str] = mapped_column(String, nullable=False, server_default="ALL")       # ALL|WORK_ITEM_TYPE|WORKFLOW_TYPE|WORKFLOW|STAGE
@@ -275,11 +275,11 @@ class CapabilityMembership(Base):
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
     capability_id: Mapped[str] = mapped_column(
-        String, ForeignKey("iam.capabilities.capability_id"), nullable=False
+        String, ForeignKey("iam.capabilities.capability_id", ondelete="CASCADE"), nullable=False
     )
-    user_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.users.id"))
-    team_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.teams.id"))
-    role_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.roles.id"), nullable=False)
+    user_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.users.id", ondelete="CASCADE"))
+    team_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.teams.id", ondelete="CASCADE"))
+    role_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.roles.id", ondelete="CASCADE"), nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, server_default="active")
     granted_by: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.users.id"))
     valid_from: Mapped[Optional[datetime]] = mapped_column(_tstz(), default=_now)

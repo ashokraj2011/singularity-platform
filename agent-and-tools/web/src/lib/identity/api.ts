@@ -136,6 +136,57 @@ export function listCapabilityRelationships(capabilityId: string): Promise<Capab
   return identityRequest<CapabilityRelationshipRow[]>(`/capabilities/${encodeURIComponent(capabilityId)}/relationships`);
 }
 
+// ── Relationship operations ──────────────────────────────────────────────────
+// user↔team membership, user↔role assignment, and capability members. All hit
+// the IAM service's first-class relationship endpoints through the same /api/iam
+// proxy — used by the identity console's create-time pickers and the membership
+// management panels. List endpoints may return a bare array or a {items:[]} page,
+// so callers normalize with `asRows()`.
+
+export type MembershipRow = Record<string, unknown> & { id?: string };
+
+/** Normalize a list endpoint that may return `T[]` or `{items:T[]}`. */
+export function asRows(value: unknown): MembershipRow[] {
+  if (Array.isArray(value)) return value as MembershipRow[];
+  if (value && typeof value === "object" && Array.isArray((value as { items?: unknown }).items)) {
+    return (value as { items: MembershipRow[] }).items;
+  }
+  return [];
+}
+
+// user ↔ role
+export function listUserRoles(userId: string): Promise<unknown> {
+  return identityRequest(`/users/${encodeURIComponent(userId)}/roles`);
+}
+export function assignUserRole(userId: string, roleKey: string): Promise<unknown> {
+  return identityRequest(`/users/${encodeURIComponent(userId)}/roles`, { method: "POST", body: JSON.stringify({ role_key: roleKey }) });
+}
+export function revokeUserRole(userId: string, roleKey: string): Promise<void> {
+  return identityRequest<void>(`/users/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleKey)}`, { method: "DELETE" });
+}
+
+// user ↔ team
+export function listUserTeams(userId: string): Promise<unknown> {
+  return identityRequest(`/users/${encodeURIComponent(userId)}/teams`);
+}
+export function listTeamMembers(teamId: string): Promise<unknown> {
+  return identityRequest(`/teams/${encodeURIComponent(teamId)}/members`);
+}
+export function addTeamMember(teamId: string, userId: string, membershipType = "member"): Promise<unknown> {
+  return identityRequest(`/teams/${encodeURIComponent(teamId)}/members`, { method: "POST", body: JSON.stringify({ user_id: userId, membership_type: membershipType }) });
+}
+export function removeTeamMember(teamId: string, userId: string): Promise<void> {
+  return identityRequest<void>(`/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(userId)}`, { method: "DELETE" });
+}
+
+// capability ↔ user/team (role-scoped)
+export function listCapabilityMembers(capabilityId: string): Promise<unknown> {
+  return identityRequest(`/capabilities/${encodeURIComponent(capabilityId)}/members`);
+}
+export function addCapabilityMember(capabilityId: string, body: { user_id?: string; team_id?: string; role_key: string }): Promise<unknown> {
+  return identityRequest(`/capabilities/${encodeURIComponent(capabilityId)}/members`, { method: "POST", body: JSON.stringify(body) });
+}
+
 function pathFor(view: IdentityView): string {
   if (view === "users" || view === "dashboard") return "/users";
   if (view === "teams") return "/teams";

@@ -1,9 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
+import Link from "next/link";
 import useSWR from "swr";
 import { CircleAlert, GitBranch, ShieldCheck, ShieldX, Users } from "lucide-react";
 import {
+  addTeamMember,
+  asRows,
+  assignUserRole,
   checkAuthorization,
   createIdentity,
   createMcpServer,
@@ -11,6 +15,10 @@ import {
   listCapabilityRelationships,
   listIdentity,
   listMcpServers,
+  listUserRoles,
+  listUserTeams,
+  removeTeamMember,
+  revokeUserRole,
   updateIdentity,
   updateMcpServer,
   type AuthzCheckRequest,
@@ -135,7 +143,18 @@ const columns: Record<IdentityView, Array<{ label: string; keys: string[] }>> = 
 // ── Create forms ─────────────────────────────────────────────────────────────
 // Field specs per creatable IAM entity. Keys map 1:1 to the IAM create-request
 // bodies (bu_key, name, …); `tags` is parsed comma→array on submit.
-type FieldSpec = { key: string; label: string; required?: boolean; placeholder?: string; textarea?: boolean; hint?: string };
+// A dropdown sourced from live IAM data. `valueKey` is the row field used as the
+// submitted value (e.g. "bu_key"); `labelKeys` build the human label.
+type OptionSpec = { view: IdentityView; valueKey: string; labelKeys: string[] };
+// A relationship field is NOT part of the entity body — after the entity is
+// saved we call `apply(entityId, value)` once per selected value (e.g. add the
+// new user to a team, or assign each chosen role). `multi` renders a multiselect.
+type RelationSpec = OptionSpec & { multi?: boolean; apply: (entityId: string, value: string) => Promise<unknown> };
+type FieldSpec = {
+  key: string; label: string; required?: boolean; placeholder?: string; textarea?: boolean; hint?: string;
+  select?: OptionSpec;     // dropdown whose value is written into the create/edit body
+  relation?: RelationSpec; // dropdown/multiselect wired to a relationship endpoint after save
+};
 
 const createForms: Partial<Record<IdentityView, { singular: string; fields: FieldSpec[] }>> = {
   "business-units": {
@@ -153,7 +172,7 @@ const createForms: Partial<Record<IdentityView, { singular: string; fields: Fiel
     fields: [
       { key: "team_key", label: "Key", required: true, placeholder: "platform-eng" },
       { key: "name", label: "Name", required: true, placeholder: "Platform Engineering" },
-      { key: "bu_key", label: "Business Unit key", placeholder: "engineering", hint: "Must match an existing Business Unit key — otherwise the team is created with no BU." },
+      { key: "bu_key", label: "Business Unit", placeholder: "— none —", hint: "Owning business unit.", select: { view: "business-units", valueKey: "bu_key", labelKeys: ["name", "bu_key"] } },
       { key: "description", label: "Description", textarea: true },
       { key: "parent_team_id", label: "Parent team ID", placeholder: "(optional UUID)" },
       { key: "tags", label: "Tags", placeholder: "comma, separated" },
@@ -164,7 +183,9 @@ const createForms: Partial<Record<IdentityView, { singular: string; fields: Fiel
     fields: [
       { key: "email", label: "Email", required: true, placeholder: "person@example.com" },
       { key: "display_name", label: "Display name", placeholder: "Jane Doe" },
-      { key: "auth_provider", label: "Auth provider", placeholder: "(optional)" },
+      { key: "auth_provider", label: "Auth provider", placeholder: "local", hint: "How the user signs in (local, oidc, …)." },
+      { key: "team_id", label: "Team", hint: "Adds the new user to this team.", relation: { view: "teams", valueKey: "id", labelKeys: ["name", "team_key"], apply: (userId, teamId) => addTeamMember(teamId, userId) } },
+      { key: "role_keys", label: "Platform roles", hint: "Roles granted to the user (multi-select).", relation: { view: "roles", valueKey: "role_key", labelKeys: ["name", "role_key"], multi: true, apply: (userId, roleKey) => assignUserRole(userId, roleKey) } },
       { key: "tags", label: "Tags", placeholder: "comma, separated" },
     ],
   },
@@ -185,20 +206,31 @@ const createForms: Partial<Record<IdentityView, { singular: string; fields: Fiel
       { key: "capability_type", label: "Type", required: true, placeholder: "service" },
       { key: "description", label: "Description", textarea: true },
       { key: "visibility", label: "Visibility", placeholder: "private" },
-      { key: "owner_bu_key", label: "Owner BU key", placeholder: "(optional)" },
-      { key: "owner_team_key", label: "Owner team key", placeholder: "(optional)" },
+      { key: "owner_bu_key", label: "Owner business unit", placeholder: "— none —", select: { view: "business-units", valueKey: "bu_key", labelKeys: ["name", "bu_key"] } },
+      { key: "owner_team_key", label: "Owner team", placeholder: "— none —", select: { view: "teams", valueKey: "team_key", labelKeys: ["name", "team_key"] } },
     ],
   },
 };
 
-function buildCreateBody(fields: FieldSpec[], values: Record<string, string>): Record<string, unknown> {
+function buildCreateBody(fields: FieldSpec[], values: Record<string, string | string[]>): Record<string, unknown> {
   const body: Record<string, unknown> = {};
   for (const f of fields) {
-    const raw = (values[f.key] ?? "").trim();
+    if (f.relation) continue; // relationship fields are applied after save, not in the body
+    const val = values[f.key];
+    const raw = (typeof val === "string" ? val : "").trim();
     if (!raw) continue;
     body[f.key] = f.key === "tags" ? raw.split(",").map((t) => t.trim()).filter(Boolean) : raw;
   }
   return body;
+}
+
+// First non-empty labelKey value on a row, for dropdown option text.
+function optionText(row: IdentityRow, labelKeys: string[]): string {
+  for (const k of labelKeys) {
+    const v = row[k];
+    if (v != null && String(v).trim()) return String(v);
+  }
+  return "(unnamed)";
 }
 
 // Editable fields per entity — a subset of create (keys are immutable, and the
@@ -346,6 +378,7 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
   const tableColumns = columns[view];
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<IdentityRow | null>(null);
+  const [managing, setManaging] = useState<IdentityRow | null>(null);
   const form = createForms[view];
   const editable = Boolean(editForms[view]) && Boolean(onCreated);
   const colCount = tableColumns.length + (editable ? 1 : 0);
@@ -355,7 +388,14 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
         <h2 style={{ margin: 0, fontSize: 16 }}>{title}</h2>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ color: "var(--color-outline)", fontSize: 12 }}>{loading ? "Loading" : `${rows.length} shown`}</span>
-          {form && onCreated ? (
+          {view === "capabilities" ? (
+            // Creating a capability means onboarding it (agent team + learning +
+            // starter workflow), not registering a bare IAM record — so route to
+            // the Bootstrap Capability factory instead of the quick-create modal.
+            <Link href="/capabilities" className="btn-primary" style={{ padding: "6px 12px", fontSize: 13, textDecoration: "none" }}>
+              ＋ Onboard Capability
+            </Link>
+          ) : form && onCreated ? (
             <button type="button" className="btn-primary" style={{ padding: "6px 12px", fontSize: 13 }} onClick={() => setCreating(true)}>
               ＋ New {form.singular}
             </button>
@@ -367,6 +407,9 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
       ) : null}
       {editing && editable && onCreated ? (
         <EntityFormModal view={view} mode="edit" row={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); onCreated(); }} />
+      ) : null}
+      {managing && view === "users" ? (
+        <ManageUserModal user={managing} onClose={() => setManaging(null)} />
       ) : null}
       <div style={{ overflowX: "auto" }}>
         <table className="w-full text-sm">
@@ -382,7 +425,12 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
                 {tableColumns.map((column) => <td key={column.label} className="px-4 py-3 text-slate-700">{formatCell(pick(row, column.keys))}</td>)}
                 {editable ? (
                   <td className="px-4 py-3 text-right">
-                    <button type="button" onClick={() => setEditing(row)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-primary)", cursor: "pointer" }}>Edit</button>
+                    <div style={{ display: "inline-flex", gap: 6, justifyContent: "flex-end" }}>
+                      {view === "users" ? (
+                        <button type="button" onClick={() => setManaging(row)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-on-surface-variant)", cursor: "pointer" }}>Teams &amp; roles</button>
+                      ) : null}
+                      <button type="button" onClick={() => setEditing(row)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-primary)", cursor: "pointer" }}>Edit</button>
+                    </div>
                   </td>
                 ) : null}
               </tr>
@@ -396,24 +444,77 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
   );
 }
 
+const fieldInputStyle: CSSProperties = { border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: "9px 11px", fontSize: 13, color: "var(--color-text)", fontWeight: 500, background: "#fff", width: "100%" };
+
 function EntityFormModal({ view, mode, row, onClose, onSaved }: { view: IdentityView; mode: "create" | "edit"; row?: IdentityRow; onClose: () => void; onSaved: () => void }) {
   const singular = createForms[view]?.singular ?? titleFor(view);
   const editSpec = editForms[view];
   const fields = mode === "edit" ? (editSpec?.fields ?? []) : (createForms[view]?.fields ?? []);
-  const [values, setValues] = useState<Record<string, string>>(() => (mode === "edit" && row ? initialValues(fields, row) : {}));
+  const [values, setValues] = useState<Record<string, string | string[]>>(() => (mode === "edit" && row ? initialValues(fields, row) : {}));
+  const [options, setOptions] = useState<Record<string, { value: string; label: string }[]>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const missingRequired = fields.some((f) => f.required && !(values[f.key] ?? "").trim());
+  const missingRequired = fields.some((f) => f.required && !(typeof values[f.key] === "string" ? (values[f.key] as string) : "").trim());
+
+  // Load dropdown/relationship options from live IAM data so operators pick real
+  // entities instead of typing keys that may not exist.
+  useEffect(() => {
+    let cancelled = false;
+    const sourced = fields.filter((f) => f.select || f.relation);
+    if (sourced.length === 0) return;
+    void Promise.all(sourced.map(async (f) => {
+      const spec = (f.select ?? f.relation)!;
+      try {
+        const page = await listIdentity(spec.view, 200);
+        const opts = (page.items ?? [])
+          .map((r) => ({ value: String(r[spec.valueKey] ?? ""), label: optionText(r, spec.labelKeys) }))
+          .filter((o) => o.value);
+        return [f.key, opts] as const;
+      } catch {
+        return [f.key, [] as { value: string; label: string }[]] as const;
+      }
+    })).then((entries) => { if (!cancelled) setOptions(Object.fromEntries(entries)); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, mode]);
+
+  function setScalar(key: string, v: string) { setValues((prev) => ({ ...prev, [key]: v })); }
+  function toggleMulti(key: string, v: string) {
+    setValues((prev) => {
+      const cur = Array.isArray(prev[key]) ? (prev[key] as string[]) : [];
+      return { ...prev, [key]: cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v] };
+    });
+  }
 
   async function submit() {
     setBusy(true);
     setError(null);
     try {
       const body = buildCreateBody(fields, values);
+      let entityId = mode === "edit" && row ? String(row[editSpec?.idKey ?? "id"] ?? row.id ?? "") : "";
       if (mode === "edit" && row && editSpec) {
-        await updateIdentity(view, String(row[editSpec.idKey] ?? row.id ?? ""), body);
+        await updateIdentity(view, entityId, body);
       } else {
-        await createIdentity(view, body);
+        const created = await createIdentity(view, body);
+        entityId = String((created && (created.id ?? (created as Record<string, unknown>).user_id)) ?? "");
+      }
+      // Apply relationship fields (add-to-team, assign-roles) once the entity exists.
+      const relations = fields.filter((f) => f.relation);
+      if (relations.length && entityId) {
+        const failures: string[] = [];
+        for (const f of relations) {
+          const raw = values[f.key];
+          const vals = Array.isArray(raw) ? raw : (typeof raw === "string" && raw ? [raw] : []);
+          for (const v of vals) {
+            try { await f.relation!.apply(entityId, v); }
+            catch (e) { failures.push(`${f.label} "${v}": ${e instanceof Error ? e.message : String(e)}`); }
+          }
+        }
+        if (failures.length) {
+          setError(`${singular} saved, but some links failed:\n${failures.join("\n")}`);
+          setBusy(false);
+          return; // keep the modal open so the operator can see what didn't wire
+        }
       }
       onSaved(); // unmounts this modal + refreshes the list
     } catch (err) {
@@ -431,22 +532,158 @@ function EntityFormModal({ view, mode, row, onClose, onSaved }: { view: Identity
         </div>
         <p style={{ margin: "0 0 14px", fontSize: 12, color: "var(--color-outline)" }}>Requires super-admin. Fields marked * are required.{mode === "edit" ? " Blank fields are left unchanged." : ""}</p>
         <div style={{ display: "grid", gap: 10 }}>
-          {fields.map((f) => (
-            <label key={f.key} style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "var(--color-outline)" }}>
-              {f.label}{f.required ? " *" : ""}
-              {f.textarea ? (
-                <textarea value={values[f.key] ?? ""} onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))} placeholder={f.placeholder} rows={3} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: "9px 11px", fontSize: 13, color: "var(--color-text)", fontWeight: 500, resize: "vertical" }} />
-              ) : (
-                <input value={values[f.key] ?? ""} onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))} placeholder={f.placeholder} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: "9px 11px", fontSize: 13, color: "var(--color-text)", fontWeight: 500 }} />
-              )}
-              {f.hint ? <span style={{ fontWeight: 500, color: "var(--color-outline)", fontSize: 11 }}>{f.hint}</span> : null}
-            </label>
-          ))}
+          {fields.map((f) => {
+            const opts = options[f.key] ?? [];
+            const isDropdown = Boolean(f.select || (f.relation && !f.relation.multi));
+            const isMulti = Boolean(f.relation?.multi);
+            const cur = values[f.key];
+            return (
+              <label key={f.key} style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "var(--color-outline)" }}>
+                {f.label}{f.required ? " *" : ""}
+                {isMulti ? (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 8, minHeight: 40 }}>
+                    {opts.length === 0
+                      ? <span style={{ fontWeight: 500, color: "var(--color-outline)", fontSize: 12 }}>No options available.</span>
+                      : opts.map((o) => {
+                          const on = Array.isArray(cur) && cur.includes(o.value);
+                          return (
+                            <button type="button" key={o.value} onClick={() => toggleMulti(f.key, o.value)}
+                              style={{ border: `1px solid ${on ? "var(--color-primary)" : "var(--color-outline-variant)"}`, background: on ? "var(--color-primary-dim)" : "#fff", color: on ? "var(--color-primary)" : "var(--color-on-surface-variant)", borderRadius: 999, padding: "4px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                              {on ? "✓ " : ""}{o.label}
+                            </button>
+                          );
+                        })}
+                  </div>
+                ) : isDropdown ? (
+                  <select value={typeof cur === "string" ? cur : ""} onChange={(e) => setScalar(f.key, e.target.value)} style={fieldInputStyle}>
+                    <option value="">{f.placeholder ?? "— none —"}</option>
+                    {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                ) : f.textarea ? (
+                  <textarea value={typeof cur === "string" ? cur : ""} onChange={(e) => setScalar(f.key, e.target.value)} placeholder={f.placeholder} rows={3} style={{ ...fieldInputStyle, resize: "vertical" }} />
+                ) : (
+                  <input value={typeof cur === "string" ? cur : ""} onChange={(e) => setScalar(f.key, e.target.value)} placeholder={f.placeholder} style={fieldInputStyle} />
+                )}
+                {f.hint ? <span style={{ fontWeight: 500, color: "var(--color-outline)", fontSize: 11 }}>{f.hint}</span> : null}
+              </label>
+            );
+          })}
         </div>
-        {error ? <div style={{ marginTop: 12 }}><SmallError error={error} /></div> : null}
+        {error ? <div style={{ marginTop: 12, whiteSpace: "pre-wrap" }}><SmallError error={error} /></div> : null}
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
           <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
           <button type="button" className="btn-primary" onClick={() => void submit()} disabled={busy || missingRequired}>{busy ? "Saving…" : mode === "edit" ? "Save changes" : `Create ${singular}`}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Defensive extractors — the IAM list endpoints for a user's teams/roles may
+// return membership rows or entity rows, so we read the id/key under a few names.
+function teamRowId(r: Record<string, unknown>): string { return String(r.id ?? r.team_id ?? r.teamId ?? ""); }
+function teamRowLabel(r: Record<string, unknown>): string { return String(r.name ?? r.team_name ?? r.team_key ?? teamRowId(r)); }
+function roleRowKey(r: Record<string, unknown>): string { return String(r.role_key ?? r.key ?? r.roleKey ?? ""); }
+function roleRowLabel(r: Record<string, unknown>): string { return String(r.name ?? r.role_name ?? roleRowKey(r)); }
+
+// Manage a user's team memberships and platform-role assignments after creation.
+// Add/remove wire directly to the IAM relationship endpoints; the list refreshes
+// after each change so the operator always sees the true state.
+function ManageUserModal({ user, onClose }: { user: IdentityRow; onClose: () => void }) {
+  const userId = String(user.id ?? "");
+  const userLabel = String(user.display_name ?? user.name ?? user.email ?? userId);
+  const [teams, setTeams] = useState<Record<string, unknown>[]>([]);
+  const [roles, setRoles] = useState<Record<string, unknown>[]>([]);
+  const [teamOpts, setTeamOpts] = useState<{ value: string; label: string }[]>([]);
+  const [roleOpts, setRoleOpts] = useState<{ value: string; label: string }[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  async function refresh() {
+    const [t, r] = await Promise.all([listUserTeams(userId), listUserRoles(userId)]);
+    setTeams(asRows(t)); setRoles(asRows(r));
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [t, r, teamsPage, rolesPage] = await Promise.all([
+          listUserTeams(userId), listUserRoles(userId),
+          listIdentity("teams", 200), listIdentity("roles", 200),
+        ]);
+        if (cancelled) return;
+        setTeams(asRows(t)); setRoles(asRows(r));
+        setTeamOpts((teamsPage.items ?? []).map((x) => ({ value: String(x.id ?? ""), label: optionText(x, ["name", "team_key"]) })).filter((o) => o.value));
+        setRoleOpts((rolesPage.items ?? []).map((x) => ({ value: String(x.role_key ?? x.key ?? ""), label: optionText(x, ["name", "role_key"]) })).filter((o) => o.value));
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [userId]);
+
+  async function run(fn: () => Promise<unknown>) {
+    setBusy(true); setError(null);
+    try { await fn(); await refresh(); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  }
+
+  const currentTeamIds = new Set(teams.map(teamRowId));
+  const currentRoleKeys = new Set(roles.map(roleRowKey));
+  const addableTeams = teamOpts.filter((o) => !currentTeamIds.has(o.value));
+  const addableRoles = roleOpts.filter((o) => !currentRoleKeys.has(o.value));
+
+  const chip = (label: string, onRemove: () => void) => (
+    <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--color-outline-variant)", background: "var(--color-surface-low)", borderRadius: 999, padding: "3px 6px 3px 10px", fontSize: 12, fontWeight: 700, color: "var(--color-on-surface)" }}>
+      {label}
+      <button type="button" disabled={busy} onClick={onRemove} aria-label={`Remove ${label}`} style={{ border: "none", background: "none", cursor: "pointer", color: "var(--color-outline)", fontSize: 15, lineHeight: 1, padding: 0 }}>×</button>
+    </span>
+  );
+
+  const addPicker = (options: { value: string; label: string }[], onAdd: (v: string) => void, placeholder: string) => (
+    <select value="" disabled={busy || options.length === 0} onChange={(e) => { if (e.target.value) onAdd(e.target.value); }} style={{ ...fieldInputStyle, maxWidth: 260 }}>
+      <option value="">{options.length === 0 ? "— nothing to add —" : placeholder}</option>
+      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  );
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "6vh 16px", zIndex: 60 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "min(560px, 96vw)", maxHeight: "88vh", overflow: "auto", padding: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>Manage {userLabel}</h2>
+          <button type="button" onClick={onClose} aria-label="Close" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--color-outline)", fontSize: 22, lineHeight: 1 }}>×</button>
+        </div>
+        <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--color-outline)" }}>Teams and platform roles for this user. Changes apply immediately (super-admin).</p>
+
+        {loading ? <p style={{ fontSize: 13, color: "var(--color-outline)" }}>Loading…</p> : (
+          <div style={{ display: "grid", gap: 18 }}>
+            <section>
+              <div className="label-xs" style={{ marginBottom: 8 }}>Teams</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                {teams.length === 0 ? <span style={{ fontSize: 12, color: "var(--color-outline)" }}>Not a member of any team.</span>
+                  : teams.map((t) => chip(teamRowLabel(t), () => void run(() => removeTeamMember(teamRowId(t), userId))))}
+              </div>
+              {addPicker(addableTeams, (v) => void run(() => addTeamMember(v, userId)), "Add to team…")}
+            </section>
+            <section>
+              <div className="label-xs" style={{ marginBottom: 8 }}>Platform roles</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                {roles.length === 0 ? <span style={{ fontSize: 12, color: "var(--color-outline)" }}>No roles assigned.</span>
+                  : roles.map((r) => chip(roleRowLabel(r), () => void run(() => revokeUserRole(userId, roleRowKey(r)))))}
+              </div>
+              {addPicker(addableRoles, (v) => void run(() => assignUserRole(userId, v)), "Assign role…")}
+            </section>
+          </div>
+        )}
+        {error ? <div style={{ marginTop: 14 }}><SmallError error={error} /></div> : null}
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 18 }}>
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>Done</button>
         </div>
       </div>
     </div>
