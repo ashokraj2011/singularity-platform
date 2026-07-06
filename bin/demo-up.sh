@@ -129,7 +129,9 @@ clean_slate() {
     "singularity-platform/mcp-server" "singularity-platform/agent-and-tools"
     "singularity-platform/workgraph-studio" "singularity-platform/context-fabric"
     "singularity-platform/audit-governance-service" "singularity-platform/pseudo-iam-service"
-    "singularity-platform/singularity-iam-service" "copilot-cli-server.js"
+    "singularity-platform/singularity-iam-service"
+    "singularity-platform/.venv"      # the python interpreter for gateway/context/iam
+    "copilot-cli-server.js"
   )
   local safe='vim|nvim|emacs|nano|less|more|tail|git|grep|rg|fzf|ripgrep|man|ssh|Code|Cursor|Electron|claude|node-gyp'
   local pat p comm
