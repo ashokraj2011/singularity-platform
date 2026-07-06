@@ -1208,9 +1208,14 @@ JSON
     && DATABASE_URL="$DATABASE_URL_COMPOSER" npx prisma db push --schema=prisma/schema.prisma --skip-generate >/dev/null 2>&1 ) \
     || warn "prompt-composer owned schema push had warnings"
   # Generate independently of db push (see agent-runtime note above).
+  # DISABLE_ERD=true: the schema declares prisma-erd-generator (erd_png) which
+  # shells out to mermaid-cli → puppeteer/chromium. That isn't installed on a
+  # fresh clone, so the PNG step exits non-zero and makes `prisma generate` look
+  # fatal even though the Prisma CLIENT generated fine. Disabling the ERD docs
+  # keeps client generation (all boot needs) and avoids the false failure.
   ( cd agent-and-tools/apps/prompt-composer \
-    && DATABASE_URL="$DATABASE_URL_COMPOSER" npx prisma generate --schema=prisma/schema.prisma >/dev/null 2>&1 ) \
-    || err "prompt-composer 'prisma generate' FAILED — the service will NOT boot. Fix: (cd agent-and-tools/apps/prompt-composer && npx prisma generate --schema=prisma/schema.prisma)"
+    && DISABLE_ERD=true DATABASE_URL="$DATABASE_URL_COMPOSER" npx prisma generate --schema=prisma/schema.prisma >/dev/null 2>&1 ) \
+    || err "prompt-composer 'prisma generate' FAILED — the service will NOT boot. Fix: (cd agent-and-tools/apps/prompt-composer && DISABLE_ERD=true npx prisma generate --schema=prisma/schema.prisma)"
 
   info "seeding prompt-composer base prompt profiles…"
   ( cd agent-and-tools/apps/prompt-composer \
@@ -1219,7 +1224,7 @@ JSON
 
   info "generating composer's runtime-reader client (read-only against singularity)…"
   ( cd agent-and-tools/apps/prompt-composer \
-    && DATABASE_URL_RUNTIME_READ="$DATABASE_URL_RUNTIME_READ" npx prisma generate --schema=prisma/runtime-read.prisma >/dev/null 2>&1 ) \
+    && DISABLE_ERD=true DATABASE_URL_RUNTIME_READ="$DATABASE_URL_RUNTIME_READ" npx prisma generate --schema=prisma/runtime-read.prisma >/dev/null 2>&1 ) \
     || warn "prompt-composer runtime-reader generate had warnings"
 
   info "applying workgraph-api schema…"
@@ -1233,7 +1238,7 @@ JSON
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260619123000_tenant_rls_policy_scaffold/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260626120000_node_attempt_fence_and_blueprint_key/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260701120000_add_tenant_id_to_standalone_tables/migration.sql >/dev/null 2>&1 \
-    && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma generate >/dev/null 2>&1 ) \
+    && DISABLE_ERD=true DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma generate >/dev/null 2>&1 ) \
     || warn "workgraph schema push had warnings"
 
   info "provisioning Workgraph non-bypass app role…"
