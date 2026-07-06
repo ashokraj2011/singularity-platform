@@ -164,7 +164,7 @@ async function lockCapabilityTemplateName(
 ): Promise<void> {
   const lockKey = capabilityAgentTemplateKey({ capabilityId, name });
   if (!lockKey) return;
-  await client.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+  await client.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
 }
 
 async function assertNoActiveCapabilityTemplateNameConflict(
@@ -279,7 +279,7 @@ async function persistProfileUploadedArtifact(
   });
   if (!artifactKey) throw new AppError("Uploaded document source identity is incomplete.", 400);
 
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${artifactKey}))`;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${artifactKey}))`;
   const existingRows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT id
     FROM "CapabilityKnowledgeArtifact"
@@ -348,7 +348,7 @@ async function persistProfileKnowledgeSource(
   const sourceKey = capabilityKnowledgeSourceKey({ capabilityId, url, artifactType });
   if (!sourceKey) throw new AppError("URL document source identity is incomplete.", 400);
 
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
   const existingRows = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT id
     FROM "CapabilityKnowledgeSource"
@@ -399,7 +399,7 @@ async function persistAgentSkill(
   const skillKey = agentSkillKey({ name, skillType, promptLayerId });
   if (!skillKey) throw new AppError("Agent skill name and type are required.", 400, "AGENT_SKILL_IDENTITY_INVALID");
 
-  await client.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${skillKey}))`;
+  await client.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${skillKey}))`;
   const existingRows = await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT id
     FROM "AgentSkill"
@@ -452,7 +452,7 @@ async function persistAgentSkillSource(
   const sourceKey = agentSkillSourceKey({ skillId, sourceType, sourceRef, capabilityId });
   if (!sourceKey) throw new AppError("Agent skill source identity is incomplete.", 400, "AGENT_SKILL_SOURCE_IDENTITY_INVALID");
 
-  await client.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
+  await client.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${sourceKey}))`;
   const existingRows = await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT id
     FROM "AgentSkillSource"
@@ -522,7 +522,7 @@ async function persistAgentTemplateSkill(
   const linkKey = agentTemplateSkillKey({ agentTemplateId, skillId, sourceType, sourceRef, capabilityId });
   if (!linkKey) throw new AppError("Agent template skill binding identity is incomplete.", 400, "AGENT_TEMPLATE_SKILL_IDENTITY_INVALID");
 
-  await client.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${linkKey}))`;
+  await client.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${linkKey}))`;
   const existingRows = await client.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT id
     FROM "AgentTemplateSkill"
