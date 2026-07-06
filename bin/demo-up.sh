@@ -33,6 +33,14 @@ TODOAPP_REPO="https://github.com/ashokraj2011/todoapp"
 CAP_IAM_UUID="11111111-2222-3333-4444-555555555555"   # seeded IAM "default-demo"
 MCP_BEARER="demo-bearer-token-must-be-min-16-chars"
 
+# Postgres connection — auto-detects THIS machine's user (not hardcoded), so the
+# demo works on any laptop. Override on a different setup, e.g.:
+#   DB_USER=postgres DB_PASS=secret DB_HOST=localhost DB_PORT=5432 ./bin/demo-up.sh
+DB_USER="${DB_USER:-${PGUSER:-$USER}}"
+DB_PASS="${DB_PASS:-${PGPASSWORD:-postgres}}"
+DB_HOST="${DB_HOST:-localhost}"
+DB_PORT="${DB_PORT:-5432}"
+
 C_BLUE=$'\033[1;34m'; C_GREEN=$'\033[1;32m'; C_YELLOW=$'\033[1;33m'
 C_RED=$'\033[1;31m';  C_DIM=$'\033[2m';      C_END=$'\033[0m'
 info()  { echo -e "${C_BLUE}▸${C_END} $*"; }
@@ -162,7 +170,7 @@ clean_slate
 
 # ── 3. Bring up platform apps + local runtime infra ────────────────────────
 info "booting platform apps via bin/bare-metal-apps.sh up …"
-"$SCRIPT_DIR/bare-metal-apps.sh" up ashokraj postgres localhost 5432 2>&1 | tail -20
+"$SCRIPT_DIR/bare-metal-apps.sh" up "$DB_USER" "$DB_PASS" "$DB_HOST" "$DB_PORT" 2>&1 | tail -20
 info "booting runtime infra via bin/bare-metal-runtime.sh up …"
 "$SCRIPT_DIR/bare-metal-runtime.sh" up 2>&1 | tail -20
 
@@ -171,7 +179,7 @@ info "booting runtime infra via bin/bare-metal-runtime.sh up …"
 
 # ── 4. Apply audit-gov schema (bare-metal sometimes skips this on a fresh DB) ──
 info "ensuring audit-gov schema is present…"
-PGPASSWORD=postgres psql -h localhost -p 5432 -U ashokraj -d audit_governance \
+PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d audit_governance \
   -f audit-governance-service/db/init.sql >/dev/null 2>&1 || \
   warn "audit-gov init.sql had warnings (likely already applied)"
 
@@ -196,10 +204,10 @@ ok "mcp-server relaunched"
 info "swapping context-api to use IAM bootstrap creds + Postgres store…"
 free_non_docker_port 8000
 sleep 1
-PGPASSWORD=postgres psql -h localhost -p 5432 -U ashokraj -d postgres -tAc \
+PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d postgres -tAc \
   "SELECT 1 FROM pg_database WHERE datname='singularity_context_fabric'" | grep -q 1 || \
-  PGPASSWORD=postgres createdb -h localhost -p 5432 -U ashokraj singularity_context_fabric
-CONTEXT_FABRIC_DATABASE_URL="${CONTEXT_FABRIC_DATABASE_URL:-postgresql://ashokraj:postgres@localhost:5432/singularity_context_fabric}"
+  PGPASSWORD="$DB_PASS" createdb -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" singularity_context_fabric
+CONTEXT_FABRIC_DATABASE_URL="${CONTEXT_FABRIC_DATABASE_URL:-postgresql://${DB_USER}:${DB_PASS}@${DB_HOST}:${DB_PORT}/singularity_context_fabric}"
 SHARED="$ROOT/context-fabric/shared"
 # Use the SAME .venv Python bare-metal set up — it has the context-fabric deps.
 # A bare `python3` here picks up conda/base and fails with ModuleNotFoundError.
