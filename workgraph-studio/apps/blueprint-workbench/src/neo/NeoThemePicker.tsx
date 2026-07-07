@@ -35,10 +35,12 @@ export interface NeoLook {
 const STORAGE_KEY = 'workbench-neo-look'
 const LEGACY_KEY  = 'workbench-neo-theme'  // M41.4 — color only
 
-const DEFAULT_LOOK: NeoLook = { color: 'indigo', mode: 'dark', font: 'default' }
+// Default = light + warm clay so the embedded cockpit matches the platform
+// (agent-and-tools globals.css). Dark + the other color themes stay one click away.
+const DEFAULT_LOOK: NeoLook = { color: 'indigo', mode: 'light', font: 'default' }
 
 const COLORS: { id: NeoColor; label: string; swatch: string; tagline: string }[] = [
-  { id: 'indigo',     label: 'Indigo',     swatch: '#6366f1', tagline: 'Default — indigo + emerald.' },
+  { id: 'indigo',     label: 'Platform',   swatch: '#a24428', tagline: 'Default — warm clay, matches the platform.' },
   { id: 'nightshade', label: 'Nightshade', swatch: '#a855f7', tagline: 'High-energy purple + magenta.' },
   { id: 'ocean',      label: 'Ocean',      swatch: '#0ea5e9', tagline: 'Calm blue + teal.' },
   { id: 'forest',     label: 'Forest',     swatch: '#16a34a', tagline: 'Warm natural greens.' },
