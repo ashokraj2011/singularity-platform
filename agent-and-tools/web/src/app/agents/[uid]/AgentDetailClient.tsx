@@ -1,9 +1,9 @@
 "use client";
 import { useState } from "react";
 import useSWR from "swr";
-import { agentApi } from "@/lib/api";
+import { agentApi, runtimeApi } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { Plus, Zap, RotateCcw, CheckCircle, XCircle } from "lucide-react";
+import { Plus, Zap, RotateCcw, CheckCircle, XCircle, Wrench } from "lucide-react";
 
 export default function AgentDetailClient({ uid }: { uid: string }) {
   const { data: agent, mutate: mutateAgent } = useSWR(`agent-${uid}`, () => agentApi.get(uid));
@@ -11,7 +11,7 @@ export default function AgentDetailClient({ uid }: { uid: string }) {
   const { data: candidatesData, mutate: mutateCandidates } = useSWR(`candidates-${uid}`, () => agentApi.listCandidates(uid));
   const { data: profilesData } = useSWR(`profiles-${uid}`, () => agentApi.listLearningProfileVersions(uid));
 
-  const [tab, setTab] = useState<"versions" | "learning" | "audit">("versions");
+  const [tab, setTab] = useState<"versions" | "tools" | "learning" | "audit">("versions");
   const [showNewVersion, setShowNewVersion] = useState(false);
   const [vForm, setVForm] = useState({ system_prompt: "", change_reason: "" });
   const [creating, setCreating] = useState(false);
@@ -62,15 +62,17 @@ export default function AgentDetailClient({ uid }: { uid: string }) {
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 border-b border-slate-200">
-        {(["versions", "learning", "audit"] as const).map((t) => (
+        {(["versions", "tools", "learning", "audit"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors capitalize ${
               tab === t ? "border-singularity-600 text-singularity-700" : "border-transparent text-slate-500 hover:text-slate-800"
             }`}>
-            {t === "learning" ? "Learning" : t === "audit" ? "Audit" : "Versions"}
+            {t === "learning" ? "Learning" : t === "audit" ? "Audit" : t === "tools" ? "Tools" : "Versions"}
           </button>
         ))}
       </div>
+
+      {tab === "tools" && <ToolsTab uid={uid} />}
 
       {/* Versions tab */}
       {tab === "versions" && (
@@ -226,6 +228,111 @@ function AuditPanel({ uid }: { uid: string }) {
         })}
         {events.length === 0 && <p className="text-slate-400 text-sm">No audit events.</p>}
       </div>
+    </div>
+  );
+}
+
+// Tools & Skills editor for an agent — attach a tool from the catalog, or create a
+// new one and attach it. Binds AgentTemplateSkill rows (the agent's effective
+// capability set), via runtimeApi (POST /agents/templates/:id/skills).
+function ToolsTab({ uid }: { uid: string }) {
+  const { data: sources, error: srcErr, mutate: mutateSources } = useSWR(`agent-tools-${uid}`, () => runtimeApi.getAgentProfileSources(uid));
+  const { data: catalog } = useSWR("skills-catalog", () => runtimeApi.listSkills());
+  const [pick, setPick] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
+  const [ns, setNs] = useState({ name: "", skillType: "tool", description: "" });
+
+  // Parse current skill bindings defensively across possible response shapes.
+  const raw = (sources ?? {}) as Record<string, unknown>;
+  const dataObj = (raw.data ?? {}) as Record<string, unknown>;
+  const bindings: Record<string, unknown>[] =
+    Array.isArray(raw) ? raw as Record<string, unknown>[]
+    : Array.isArray(raw.bindings) ? raw.bindings as Record<string, unknown>[]
+    : Array.isArray(raw.skills) ? raw.skills as Record<string, unknown>[]
+    : Array.isArray(dataObj.bindings) ? dataObj.bindings as Record<string, unknown>[]
+    : [];
+  const skills = (Array.isArray(catalog) ? catalog : []) as Record<string, unknown>[];
+  const boundIds = new Set(bindings.map(b => String(b.skillId ?? b.id ?? "")));
+  const available = skills.filter(s => !boundIds.has(String(s.id ?? "")));
+
+  async function addFromCatalog() {
+    if (!pick) return;
+    setBusy(true); setErr("");
+    try { await runtimeApi.attachSkillToTemplate(uid, pick); setPick(""); await mutateSources(); }
+    catch (e) { setErr(`Add failed: ${(e as Error).message}`); }
+    finally { setBusy(false); }
+  }
+  async function createAndAdd(e: React.FormEvent) {
+    e.preventDefault();
+    if (!ns.name.trim()) return;
+    setBusy(true); setErr("");
+    try {
+      const created = await runtimeApi.createSkill({ name: ns.name.trim(), skillType: ns.skillType.trim() || "tool", ...(ns.description.trim() ? { description: ns.description.trim() } : {}) }) as Record<string, unknown>;
+      const skillId = String(created?.id ?? (created?.data as Record<string, unknown>)?.id ?? "");
+      if (skillId) await runtimeApi.attachSkillToTemplate(uid, skillId);
+      setShowCreate(false); setNs({ name: "", skillType: "tool", description: "" }); await mutateSources();
+    } catch (e) { setErr(`Create failed: ${(e as Error).message}`); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-slate-800 flex items-center gap-2"><Wrench size={16} /> Tools &amp; Skills</h2>
+        <button className="btn-secondary" onClick={() => setShowCreate(v => !v)}><Plus size={15} /> New tool</button>
+      </div>
+      {err && <p className="text-sm text-red-600">{err}</p>}
+
+      <div className="card p-4">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-3">Attached tools</div>
+        {srcErr ? (
+          <p className="text-sm text-amber-700">Couldn&apos;t load this agent&apos;s tools — common/platform agents need admin access to view their skills.</p>
+        ) : bindings.length === 0 ? (
+          <p className="text-sm text-slate-400">No tools attached yet — add one below.</p>
+        ) : (
+          <ul className="space-y-2">
+            {bindings.map((b, i) => (
+              <li key={String(b.skillId ?? b.id ?? i)} className="flex items-center gap-2 text-sm">
+                <Wrench size={13} className="text-slate-400" />
+                <span className="font-medium text-slate-800">{String(b.skillName ?? b.name ?? b.skillId ?? "skill")}</span>
+                {!!b.skillType && <span className="text-xs text-slate-400">· {String(b.skillType)}</span>}
+                {!!b.sourceType && <span className="text-xs text-slate-400">· {String(b.sourceType)}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="card p-4 space-y-3">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Add a tool from the catalog</div>
+        <div className="flex gap-2">
+          <select value={pick} onChange={e => setPick(e.target.value)} className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm">
+            <option value="">Select a tool…</option>
+            {available.map(s => <option key={String(s.id)} value={String(s.id)}>{String(s.name ?? s.id)}{s.skillType ? ` (${String(s.skillType)})` : ""}</option>)}
+          </select>
+          <button className="btn-primary" onClick={addFromCatalog} disabled={!pick || busy}>{busy ? "Adding…" : "Add"}</button>
+        </div>
+      </div>
+
+      {showCreate && (
+        <form onSubmit={createAndAdd} className="card p-4 space-y-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Create a new tool and attach it</div>
+          <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="Tool name (e.g. formal_verify)" value={ns.name} onChange={e => setNs(f => ({ ...f, name: e.target.value }))} />
+          <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="Type (tool, knowledge, …)" value={ns.skillType} onChange={e => setNs(f => ({ ...f, skillType: e.target.value }))} />
+          <input className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="Description (optional)" value={ns.description} onChange={e => setNs(f => ({ ...f, description: e.target.value }))} />
+          <div className="flex gap-2">
+            <button type="submit" className="btn-primary" disabled={!ns.name.trim() || busy}>{busy ? "Saving…" : "Create & attach"}</button>
+            <button type="button" className="btn-secondary" onClick={() => setShowCreate(false)}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      <p className="text-xs text-slate-400">
+        Attaching a tool binds it to this agent&apos;s effective capability set, so its governed runs may invoke it. Removing a
+        tool and attaching provider-manifest / GitHub skill sources here are the next step (need small agent-runtime endpoints).
+      </p>
     </div>
   );
 }
