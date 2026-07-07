@@ -74,6 +74,30 @@ async function main() {
     { role: "BUSINESS_ANALYST", profileRole: "PRODUCT_OWNER", name: "Business Analyst Role Contract", content: "You are a Business Analyst Agent. Extract business rules, process impact, domain vocabulary, acceptance details, and open questions from approved capability sources." },
   ];
 
+  // ── Copilot executor grant ────────────────────────────────────────────────
+  // The SDLC (Copilot CLI) workflow's AGENT_TASK nodes bind these common role
+  // templates and dispatch the `copilot_execute` tool. The MCP effective-capability
+  // gate (mcp-server/src/mcp/effective-capability.ts) only allows a tool the agent
+  // PROFILE actually grants — resolved from AgentTemplateSkill bindings by
+  // resolveProfile(). With no `copilot_execute` skill bound, that set is empty and
+  // the gate denies copilot_execute for EVERY capability ("effective capability set
+  // required"). Seed the skill once and bind it (invoke) to each common role
+  // template below, so any capability's governed Copilot run is authorized — the
+  // SDLC copilot workflow is capability-independent and reuses these templates, so
+  // this covers onboarded capabilities too (no per-capability wiring needed).
+  const COPILOT_EXECUTE_SKILL_ID = "5ce00000-0000-0000-0000-0000000000ce";
+  await prisma.agentSkill.upsert({
+    where: { id: COPILOT_EXECUTE_SKILL_ID },
+    update: { name: "copilot_execute", skillType: "tool", status: "ACTIVE" },
+    create: {
+      id: COPILOT_EXECUTE_SKILL_ID,
+      name: "copilot_execute",
+      skillType: "tool",
+      description:
+        "Dispatch the Copilot CLI executor (copilot_execute) on the connected runtime. Bound to the common SDLC role templates so governed Copilot phases are authorized to invoke it.",
+    },
+  });
+
   for (const rc of roleContracts) {
     const profileRole = (rc.profileRole ?? rc.role) as keyof typeof IDS.profiles;
     const profileId = IDS.profiles[profileRole];
@@ -99,6 +123,24 @@ async function main() {
         // capabilityId stays NULL — these are common-library baselines.
         // baseTemplateId stays NULL — they are roots of the derivation tree.
         lockedReason: "common platform baseline",
+      },
+    });
+
+    // Bind copilot_execute (read+invoke) to this common role template so the
+    // governed Copilot SDLC phases can dispatch it. Deterministic id per template
+    // keeps it idempotent across re-seeds.
+    const copilotLinkId = `5ce00000-0000-0000-0000-0000000000${templateId.slice(-2)}`;
+    await prisma.agentTemplateSkill.upsert({
+      where: { id: copilotLinkId },
+      update: { isDefault: true, permissions: ["read", "invoke"], sourceType: "local", readOnly: false },
+      create: {
+        id: copilotLinkId,
+        agentTemplateId: templateId,
+        skillId: COPILOT_EXECUTE_SKILL_ID,
+        isDefault: true,
+        sourceType: "local",
+        permissions: ["read", "invoke"],
+        readOnly: false,
       },
     });
   }
