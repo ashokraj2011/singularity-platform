@@ -982,7 +982,7 @@ export async function startWorkItemTarget(
   workItemId: string,
   targetId: string,
   userId: string,
-  options: { childWorkflowTemplateId?: string; modelAlias?: string } = {},
+  options: { childWorkflowTemplateId?: string; modelAlias?: string; sourceRef?: string } = {},
 ) {
   const target = await prisma.workItemTarget.findFirst({
     where: { id: targetId, workItemId },
@@ -1046,8 +1046,14 @@ export async function startWorkItemTarget(
         name: `${target.workItem.workCode} · ${target.workItem.title}`,
         vars,
         createdById: userId,
-        // Per-run model chosen at launch → threaded as a system global.
-        globals: options.modelAlias ? { modelAlias: options.modelAlias } : undefined,
+        // Per-run choices made at launch → threaded as system globals, read by the
+        // executors (modelAlias by AgentTask, sourceRef by Workbench/AgentTask).
+        globals: (() => {
+          const g: Record<string, unknown> = {}
+          if (options.modelAlias) g.modelAlias = options.modelAlias
+          if (options.sourceRef && options.sourceRef.trim()) g.sourceRef = options.sourceRef.trim()
+          return Object.keys(g).length ? g : undefined
+        })(),
       })
     } catch (err) {
       // Release the reservation so a later retry can start this target.

@@ -345,6 +345,13 @@ export async function activateAgentTask(
     ? workItemRef.workCode.trim()
     : undefined
 
+  // Branch to clone for this run: a launch-time pick (globals.sourceRef, set by
+  // the Start dialog) wins over a node-config ref. Passed to CF as run_context
+  // source_ref; without it the materializer blindly defaults to `main`.
+  const sourceRefChoice = (typeof globals.sourceRef === 'string' && globals.sourceRef.trim())
+    ? globals.sourceRef.trim()
+    : (configString('sourceRef') ?? undefined)
+
   const executeReq: ExecuteRequest = {
     trace_id: traceId,
     idempotency_key: run.id,
@@ -378,7 +385,7 @@ export async function activateAgentTask(
       // §13.4 working-dir: clone the resolved repo (work-item var → capability's
       // linked repo → node default) into the work-item sandbox so Copilot runs in
       // the TARGET repo. Resolved above as `copilotRepo`.
-      ...(copilotRepo ? { source_type: configString('sourceType') ?? 'github', source_uri: copilotRepo } : {}),
+      ...(copilotRepo ? { source_type: configString('sourceType') ?? 'github', source_uri: copilotRepo, ...(sourceRefChoice ? { source_ref: sourceRefChoice } : {}) } : {}),
     },
     task,
     vars,
