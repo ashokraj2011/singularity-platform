@@ -88,7 +88,8 @@ function targetTemplateStatus(target: WorkItemTargetForDiagnostics, template?: W
       template,
     }
   }
-  if (!template.capabilityId || template.capabilityId !== target.targetCapabilityId) {
+  // Common (null) templates are capability-independent → usable by any WorkItem target.
+  if (template.capabilityId && template.capabilityId !== target.targetCapabilityId) {
     return {
       state: 'invalid',
       reason: 'CAPABILITY_MISMATCH',

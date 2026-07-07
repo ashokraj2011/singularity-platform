@@ -357,7 +357,9 @@ async function assertPlannerWorkflowTemplateLaunchable(
 
   await assertPlannerAssignmentsActive(homeId, milestones, callerToken)
   const targetCapabilityIds = new Set(flattenTasks(milestones).map((task) => task.capabilityId))
-  if (!workflow.capabilityId || !targetCapabilityIds.has(workflow.capabilityId)) {
+  // A common (capabilityId=null) template is capability-INDEPENDENT and launchable
+  // under ANY capability; only a capability-SCOPED template must match a target.
+  if (workflow.capabilityId && !targetCapabilityIds.has(workflow.capabilityId)) {
     const targets = [...targetCapabilityIds].join(', ')
     throw new ValidationError(
       `Workflow template ${workflowTemplateId} belongs to capability ${workflow.capabilityId ?? 'none'}, ` +

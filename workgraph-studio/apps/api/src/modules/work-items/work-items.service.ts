@@ -952,7 +952,8 @@ async function assertStartableWorkItemTemplate(args: {
   if (!template || template.archivedAt || String(template.status ?? '').trim().toUpperCase() === 'ARCHIVED') {
     throw new ValidationError(`Workflow template ${args.templateId} is not available for this WorkItem target`)
   }
-  if (!template.capabilityId || template.capabilityId !== args.targetCapabilityId) {
+  // Common (null) templates are capability-independent → usable by any WorkItem target.
+  if (template.capabilityId && template.capabilityId !== args.targetCapabilityId) {
     throw new ValidationError(
       `Workflow template ${args.templateId} belongs to capability ${template.capabilityId ?? 'none'}, ` +
       `but this WorkItem target belongs to capability ${args.targetCapabilityId}`,
