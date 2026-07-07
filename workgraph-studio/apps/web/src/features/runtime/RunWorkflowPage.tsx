@@ -198,6 +198,7 @@ function StartWorkflowDialog({
   const [selectedWorkItemTarget, setSelectedWorkItemTarget] = useState('')
   const [modelAlias, setModelAlias] = useState('')
   const [sourceRef, setSourceRef] = useState('')
+  const [cloneDir, setCloneDir] = useState('')
 
   // Catalog aliases (Copilot/OpenAI/Anthropic/…) to offer as a per-run model override.
   const connectionsQuery = useQuery<Array<{ alias?: string; label?: string; provider?: string; model?: string }>>({
@@ -249,6 +250,7 @@ function StartWorkflowDialog({
         childWorkflowTemplateId: workflow.id,
         ...(modelAlias ? { modelAlias } : {}),
         ...(sourceRef.trim() ? { sourceRef: sourceRef.trim() } : {}),
+        ...(cloneDir.trim() ? { cloneDir: cloneDir.trim() } : {}),
       }).then(r => r.data as { childWorkflowInstanceId?: string })
     },
     onSuccess: result => {
@@ -360,6 +362,20 @@ function StartWorkflowDialog({
                 ? `${branchOptions.length} branch${branchOptions.length === 1 ? '' : 'es'} from ${branchRepoLabel ?? 'the connected repo'} — pick one or type any ref. `
                 : 'Type a branch/ref (configure a GitHub connector to auto-list them). '}
               The run clones this and bases its <code>wi/&lt;code&gt;</code> work branch on it. Blank = the workflow’s configured branch (or repo default).
+            </p>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <h3 style={{ ...sectionTitleStyle, margin: '0 0 8px' }}>Clone into folder (optional)</h3>
+            <input
+              type="text"
+              value={cloneDir}
+              onChange={event => setCloneDir(event.target.value)}
+              placeholder="e.g. my-checkout"
+              style={inputStyle}
+            />
+            <p style={{ ...mutedStyle, marginTop: 6 }}>
+              Folder name the repo is cloned into on the runtime. Resolved <strong>inside</strong> the runtime’s managed workspaces root (not an arbitrary path). Blank = the default per-work-item folder.
             </p>
           </div>
 

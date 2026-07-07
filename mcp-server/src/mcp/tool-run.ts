@@ -173,6 +173,10 @@ export const ToolRunSchema = z.object({
       // with this branch so every stage attempt shares its history.
       workitemBranch: z.string().optional(),
       workitem_branch: z.string().optional(),
+      // S1c — operator-chosen "clone into" folder from the launch dialog. Resolved
+      // under the managed workitem-workspaces root (see workspaceRootForRunContext).
+      cloneDir: z.string().optional(),
+      clone_dir: z.string().optional(),
       // M92.B (2026-05-27) — Story Intake / no-repo short-circuit. When
       // context-fabric's StageExecutionPolicy says `repo_access=false`
       // (canonical case: PRODUCT_OWNER intake — STORY_ONLY context_policy
@@ -383,6 +387,8 @@ export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promis
     workflowInstanceId:
       body.run_context.workflowInstanceId ?? body.run_context.workflow_instance_id,
     workspaceRoot: body.run_context.workspaceRoot,
+    // S1c — launch-chosen clone folder (resolved under the managed root).
+    targetDir: body.run_context.cloneDir ?? body.run_context.clone_dir,
     attemptId,
   });
 

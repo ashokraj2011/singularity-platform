@@ -25,6 +25,11 @@ export interface WorkspaceRootRequest {
   workItemId?: string;
   workItemCode?: string;
   branchName?: string;
+  // S1c — operator-chosen "clone into" folder from the launch dialog. A plain
+  // name or relative path; resolved UNDER the managed workitem-workspaces root
+  // (never an arbitrary FS path) and shared by every stage of the run. Takes
+  // precedence over the derived per-workitem root when set.
+  targetDir?: string;
   workspaceRoot?: string;
   // (2026-06-02 M81 cross-stage fix) The long-lived workitem branch
   // `wi/<workItemCode>` that workgraph-api stamps onto EVERY stage of a run.
@@ -184,6 +189,16 @@ function workItemCodeFromBranch(branch: string | undefined): string {
 export function workspaceRootForRunContext(req: WorkspaceRootRequest): string {
   const explicit = safeExplicitWorkspaceRoot(req.workspaceRoot);
   if (explicit) return explicit;
+
+  // S1c — operator-chosen clone folder (launch "clone into" field). Resolved
+  // under the managed workitem-workspaces root via safeWorkspaceSegment, so a
+  // plain name lands in a safe, predictable place and every stage of the run
+  // shares it — same isolation as the default per-workitem root, just a chosen
+  // directory name. NOTE: two runs given the same targetDir share the folder.
+  const targetDir = req.targetDir?.trim();
+  if (targetDir) {
+    return path.join(workItemWorkspacesRoot(), safeWorkspaceSegment(targetDir, "clone"));
+  }
 
   // (2026-06-02 M81 cross-stage fix) Resolve the workitem code from EITHER the
   // explicit `workItemCode` OR the `wi/<code>` workitem branch. workgraph-api
