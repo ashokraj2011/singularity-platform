@@ -139,6 +139,69 @@ consumablesRouter.post('/:id/versions', validate(createVersionSchema), async (re
   }
 })
 
+// PATCH /:id/content — human-edit an agent-generated document's content.
+// Writes formData.content, snapshots a new version for audit, and RE-OPENS the
+// governance gate: the prior verification verdict is dropped (the content changed,
+// so it no longer applies) and an UNDER_REVIEW / APPROVED consumable falls back to
+// DRAFT so the edit must be re-verified before it can be approved/published again.
+// Blocked once terminal (PUBLISHED / CONSUMED / SUPERSEDED) — supersede to fork a
+// new editable version instead.
+const editContentSchema = z.object({ content: z.string(), note: z.string().max(500).optional() })
+const EDIT_LOCKED_STATUSES = new Set(['PUBLISHED', 'CONSUMED', 'SUPERSEDED'])
+consumablesRouter.patch('/:id/content', validate(editContentSchema), async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    const { content, note } = req.body as z.infer<typeof editContentSchema>
+    const existing = await withTenantDbTransaction(prisma, async () => {
+      const found = await prisma.consumable.findUnique({
+        where: { id },
+        include: { versions: { orderBy: { version: 'desc' }, take: 1 } },
+      })
+      if (!found) throw new NotFoundError('Consumable', id)
+      await assertConsumableTenant(req, id)
+      return found
+    })
+    if (EDIT_LOCKED_STATUSES.has(String(existing.status))) {
+      return res.status(409).json({
+        error: `Cannot edit a ${existing.status} document — supersede it to create a new editable version.`,
+      })
+    }
+    const prevForm = (existing.formData ?? {}) as Record<string, unknown>
+    const { _verification: _staleVerdict, ...restForm } = prevForm
+    void _staleVerdict
+    const nextForm = { ...restForm, content }
+    const reopen = existing.status === 'UNDER_REVIEW' || existing.status === 'APPROVED'
+    const nextVersion = (existing.versions[0]?.version ?? 0) + 1
+    const updated = await withTenantDbTransaction(prisma, async () => {
+      await assertConsumableTenant(req, id)
+      await prisma.consumableVersion.create({
+        data: {
+          consumableId: id,
+          version: nextVersion,
+          payload: { ...nextForm, _editedBy: req.user!.userId, _editNote: note ?? null } as unknown as Prisma.InputJsonValue,
+          createdById: req.user!.userId,
+        },
+      })
+      return prisma.consumable.update({
+        where: { id },
+        data: {
+          formData: nextForm as Prisma.InputJsonValue,
+          currentVersion: nextVersion,
+          ...(reopen ? { status: 'DRAFT' as never } : {}),
+        },
+      })
+    })
+    const eventId = await logEvent('ConsumableEdited', 'Consumable', id, req.user!.userId)
+    await createReceipt('ConsumableEdited', 'Consumable', id, {
+      consumableId: id, version: nextVersion, reopened: reopen, editedBy: req.user!.userId, note: note ?? null,
+    }, eventId)
+    await publishOutbox('Consumable', id, 'ConsumableEdited', { consumableId: id, version: nextVersion, reopened: reopen })
+    res.json(updated)
+  } catch (err) {
+    next(err)
+  }
+})
+
 async function transitionStatus(
   consumableId: string,
   newStatus: string,

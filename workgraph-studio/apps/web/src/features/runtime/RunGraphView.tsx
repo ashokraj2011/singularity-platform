@@ -28,7 +28,7 @@ import { unwrapList } from '../../lib/unwrap'
 import {
   ArrowLeft, List, AlertCircle,
   RotateCw, FileText, MessageSquare, X, Check, Ban, Send, ExternalLink,
-  ShieldCheck, CornerUpLeft, Library, Download, Maximize2, Activity, Copy,
+  ShieldCheck, CornerUpLeft, Library, Download, Maximize2, Activity, Copy, Pencil,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { MarkdownView } from './MarkdownView'
@@ -185,6 +185,8 @@ type Verdict = { passed: boolean; findings: string[]; rationale?: string; method
 type Consumable = { id: string; name?: string; status?: string; nodeId?: string; createdAt?: string; updatedAt?: string; formData?: { content?: string; _verification?: Verdict } }
 // Render markdown for everything except source-code files (which stay as code).
 const isCodeArtifact = (name?: string) => /\.(java|ts|tsx|js|jsx|py|json|xml|ya?ml|sql|sh|go|rs|c|cpp|h|html|css|toml|gradle)$/i.test(name ?? '')
+// Terminal statuses are immutable (supersede to fork a new editable version); everything else is editable.
+const canEditConsumable = (status?: string) => !['PUBLISHED', 'CONSUMED', 'SUPERSEDED'].includes(String(status ?? '').toUpperCase())
 // /consumables paginates as { content: [...] } (toPageResponse); tolerate content
 // (real key), items (legacy), or a bare array.
 // List unwrapping lives in lib/unwrap (one shared helper for every API shape).
@@ -450,6 +452,21 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
   // Artifact expand/download (parity with the workbench cockpit + the other run panels).
   const [expandedConsumableId, setExpandedConsumableId] = useState<string | null>(null)
   const expandedConsumable = visibleConsumables.find(c => c.id === expandedConsumableId)
+  // Inline edit-and-save of a document's content. Save re-opens the governance gate
+  // (server clears the verdict; APPROVED/UNDER_REVIEW → DRAFT).
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const saveEditMut = useMutation({
+    mutationFn: ({ id, content }: { id: string; content: string }) =>
+      api.patch(`/consumables/${id}/content`, { content }).then(r => r.data),
+    onSuccess: () => {
+      toast.success('Saved — verification re-opened for this document')
+      qc.invalidateQueries({ queryKey: ['run-graph-consumables'] })
+      qc.invalidateQueries({ queryKey: ['run-graph-all-consumables'] })
+      setEditingId(null)
+    },
+    onError: (e) => toast.error(errText(e, 'save failed')),
+  })
 
   // Resizable review drawer. Width is persisted in localStorage so it survives
   // re-selecting a node (this panel remounts per selectedNode) and page reloads.
@@ -564,27 +581,52 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
           visibleConsumables.length === 0
             ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No artifacts produced yet.</div>
             : <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {visibleConsumables.map(c => (
+                {visibleConsumables.map(c => {
+                  const content = c.formData?.content?.toString() ?? ''
+                  const editable = canEditConsumable(c.status)
+                  const isEditing = editingId === c.id
+                  return (
                   <div key={c.id} style={{ border: '1px solid #e2e8f0', borderRadius: 9, overflow: 'hidden' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 10px', background: '#f8fafc', fontSize: 11.5, fontWeight: 700, color: '#334155' }}>
                       <FileText size={12} />
                       <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name ?? 'Artifact'} {c.status ? <span style={{ fontWeight: 600, color: '#94a3b8' }}>· {c.status}</span> : null}</span>
-                      {c.formData?.content ? (
+                      {!isEditing ? (
                         <>
-                          <button onClick={() => downloadConsumable(c)} title="Download" style={artifactIconBtn}><Download size={12} /></button>
-                          <button onClick={() => setExpandedConsumableId(c.id)} title="Expand to full screen" style={artifactIconBtn}><Maximize2 size={12} /></button>
+                          {editable && <button onClick={() => { setEditingId(c.id); setDraft(content) }} title="Edit" style={artifactIconBtn}><Pencil size={12} /></button>}
+                          {content ? (
+                            <>
+                              <button onClick={() => downloadConsumable(c)} title="Download" style={artifactIconBtn}><Download size={12} /></button>
+                              <button onClick={() => setExpandedConsumableId(c.id)} title="Expand to full screen" style={artifactIconBtn}><Maximize2 size={12} /></button>
+                            </>
+                          ) : null}
                         </>
                       ) : null}
                     </div>
-                    {c.formData?.content && (
+                    {isEditing ? (
+                      <div style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <textarea
+                          value={draft}
+                          onChange={e => setDraft(e.target.value)}
+                          rows={14}
+                          spellCheck={false}
+                          style={{ width: '100%', boxSizing: 'border-box', fontSize: 11.5, lineHeight: 1.5, fontFamily: 'ui-monospace, monospace', color: '#334155', border: '1px solid #cbd5e1', borderRadius: 7, padding: 9, resize: 'vertical' }}
+                        />
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ flex: 1, fontSize: 10.5, color: '#94a3b8', lineHeight: 1.4 }}>Saving snapshots a new version and re-opens verification for this document.</span>
+                          <button onClick={() => setEditingId(null)} disabled={saveEditMut.isPending} style={{ ...footBtn, flex: 'none', padding: '5px 11px', fontSize: 11, background: 'transparent', color: '#64748b', border: '1px solid #e2e8f0' }}>Cancel</button>
+                          <button onClick={() => saveEditMut.mutate({ id: c.id, content: draft })} disabled={saveEditMut.isPending || draft === content} style={{ ...footBtn, flex: 'none', padding: '5px 11px', fontSize: 11, opacity: (saveEditMut.isPending || draft === content) ? 0.6 : 1 }}>{saveEditMut.isPending ? 'Saving…' : 'Save'}</button>
+                        </div>
+                      </div>
+                    ) : content ? (
                       <div style={{ margin: 0, padding: 10, fontSize: 11.5, lineHeight: 1.5, color: '#334155', maxHeight: 320, overflow: 'auto' }}>
                         {isCodeArtifact(c.name)
-                          ? <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'ui-monospace, monospace' }}>{c.formData.content.toString()}</pre>
-                          : <MarkdownView source={c.formData.content.toString()} />}
+                          ? <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'ui-monospace, monospace' }}>{content}</pre>
+                          : <MarkdownView source={content} />}
                       </div>
-                    )}
+                    ) : null}
                   </div>
-                ))}
+                  )
+                })}
               </div>
         )}
         {activeTab === 'chat' && <ChatRefine instanceId={instanceId} node={node} busy={busy} onRestart={onRestart} />}
