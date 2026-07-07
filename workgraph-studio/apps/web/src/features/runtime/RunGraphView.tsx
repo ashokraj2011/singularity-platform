@@ -449,6 +449,33 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
   // Artifact expand/download (parity with the workbench cockpit + the other run panels).
   const [expandedConsumableId, setExpandedConsumableId] = useState<string | null>(null)
   const expandedConsumable = visibleConsumables.find(c => c.id === expandedConsumableId)
+
+  // Resizable review drawer. Width is persisted in localStorage so it survives
+  // re-selecting a node (this panel remounts per selectedNode) and page reloads.
+  const [panelWidth, setPanelWidth] = useState<number>(() => {
+    if (typeof window === 'undefined') return 380
+    const saved = Number(window.localStorage.getItem('runDrawerWidth'))
+    return Number.isFinite(saved) && saved >= 320 && saved <= 2400 ? saved : 380
+  })
+  const startPanelResize = (startX: number) => {
+    const startWidth = panelWidth
+    const onMove = (ev: MouseEvent) => {
+      // Drawer is anchored to the right, so dragging LEFT widens it.
+      const next = Math.min(Math.max(startWidth + (startX - ev.clientX), 320), Math.round(window.innerWidth * 0.9))
+      setPanelWidth(next)
+      try { window.localStorage.setItem('runDrawerWidth', String(next)) } catch { /* ignore */ }
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
   const downloadConsumable = (c: typeof visibleConsumables[number]) => {
     const text = c.formData?.content?.toString() ?? ''
     if (!text) return
@@ -471,7 +498,14 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
     : null
 
   return (
-    <div style={{ width: 380, flexShrink: 0, background: '#fff', borderLeft: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+    <div style={{ width: panelWidth, flexShrink: 0, background: '#fff', borderLeft: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative' }}>
+      {/* Drag handle on the left edge — resize the review drawer; double-click resets. */}
+      <div
+        onMouseDown={(e) => { e.preventDefault(); startPanelResize(e.clientX) }}
+        onDoubleClick={() => { setPanelWidth(380); try { window.localStorage.setItem('runDrawerWidth', '380') } catch { /* ignore */ } }}
+        title="Drag to resize · double-click to reset"
+        style={{ position: 'absolute', left: -3, top: 0, bottom: 0, width: 7, cursor: 'col-resize', zIndex: 20 }}
+      />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid #e2e8f0' }}>
         <span style={{ color: s.color, display: 'flex' }}><s.Icon size={16} /></span>
         <div style={{ flex: 1, minWidth: 0 }}>
