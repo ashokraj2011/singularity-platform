@@ -6,6 +6,7 @@ import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { createReceipt, logEvent, publishOutbox } from '../../../../lib/audit'
 import { redactSecrets } from '../../../../lib/redact'
 import { requestOperationalMcpToolGrant } from './mcpToolGrant'
+import { openPullRequestForRun } from './RaisePrExecutor'
 import { resolveCapabilityRepo } from '../../../../lib/agent-and-tools/capability-repo'
 import { resolveRuntimeTenantId } from '../../../../lib/runtime-tenant'
 import { readUpstreamJsonBody, upstreamSnippet } from '../../../../lib/upstream-json'
@@ -47,6 +48,13 @@ type GitPushOutput = {
     // NEVER the token. Present only when the broker minted a credential for this
     // push; absent means the legacy static token was used.
     gitCredentialMetadata?: Record<string, unknown>
+    // S4a — GIT_PUSH "open PR" flag. When node.config.openPr is set, after a
+    // successful push we open a PR cloud-side via the shared connector helper.
+    // The outcome is recorded here; a PR hiccup is NON-FATAL — the push already
+    // succeeded and the node still advances.
+    pullRequestUrl?: string | null
+    pullRequestNumber?: number | null
+    prError?: string
   }
 }
 
@@ -848,6 +856,34 @@ export async function activateGitPush(
     nodeId: node.id,
     output: safeOutput,
   })
+
+  // S4a — optional "open PR" after a successful push. Cloud-side via the shared
+  // connector helper (same one the RAISE_PR node uses). NON-FATAL: the outcome is
+  // recorded on the output + its own event, but a PR failure never un-does the
+  // push, which has already succeeded and will advance the run.
+  if (cfgBool(node, 'openPr', false)) {
+    const globals = isRecord(context._globals) ? context._globals : {}
+    const vars = isRecord(context._vars) ? context._vars : {}
+    const head = output.gitPush.branch ?? branchName
+    const base = cfgString(node, 'prBase') ?? stringAt(globals, 'sourceRef') ?? 'main'
+    const repoUrl = cfgString(node, 'repoUrl') ?? stringAt(vars, 'repoUrl') ?? stringAt(globals, 'repoUrl')
+    const title = cfgString(node, 'prTitle') ?? `${workItemCode ?? workItemId ?? 'Delivery'}: automated delivery`
+    const body = cfgString(node, 'prBody')
+      ?? `Opened automatically after the Git Push for ${workItemCode ?? instance.id}.\n\nHead: \`${head ?? '(unknown)'}\` → Base: \`${base}\`.`
+    if (!head) {
+      output.gitPush.prError = 'open PR skipped: the pushed branch name could not be resolved.'
+    } else {
+      const pr = await openPullRequestForRun({ head, base, title, body, repoUrl })
+      if (pr.ok) {
+        output.gitPush.pullRequestUrl = pr.url ?? null
+        output.gitPush.pullRequestNumber = pr.number ?? null
+        await logEvent('GitPushPrOpened', 'WorkflowNode', node.id, actorId, { instanceId: instance.id, head, base, url: pr.url, number: pr.number })
+      } else {
+        output.gitPush.prError = pr.reason
+        await logEvent('GitPushPrFailed', 'WorkflowNode', node.id, actorId, { instanceId: instance.id, head, base, reason: pr.reason })
+      }
+    }
+  }
 
   return { pushed: true, output }
 }

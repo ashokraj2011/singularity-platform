@@ -293,6 +293,11 @@ const GIT_PUSH_NODE_CONFIG = {
   requireApproval: true,
   branchName: '',
   message: '',
+  // S4a — after a successful push, optionally open a PR (cloud-side, via the
+  // GitHub connector). prBase defaults to the run's cloned branch then `main`.
+  openPr: false,
+  prBase: '',
+  prTitle: '',
 }
 
 const SCHEDULED_START_NODE_CONFIG = {
