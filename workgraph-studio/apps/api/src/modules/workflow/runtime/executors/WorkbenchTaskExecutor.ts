@@ -31,6 +31,14 @@ export async function activateWorkbenchTask(
       }
     }
   }
+  // A branch/ref chosen at launch (globals.sourceRef, set by the Start dialog)
+  // always wins over the capability default and the design-time ref — otherwise
+  // the pick would be silently dropped by the capability merge above, and an
+  // empty design ref leaves the runtime to blindly guess `main`.
+  const launchSourceRef = firstString(asObject(context._globals).sourceRef)
+  if (launchSourceRef) {
+    runtimeInputs = { ...runtimeInputs, sourceRef: launchSourceRef }
+  }
   const renderedWorkbench = renderValue(workbench, {
     instance: {
       vars: asObject(context._vars),
@@ -175,6 +183,9 @@ function deriveRuntimeInputs(context: JsonObject, workbench: JsonObject): Runtim
       globals.repoUrl,
       workbench.sourceUri,
     ),
+    // Branch/ref to clone. A launch-time pick (globals.sourceRef) or a run var
+    // wins here; if none, the capability default / design ref fills in below.
+    sourceRef: firstString(globals.sourceRef, vars.sourceRef, vars.branch, vars.sourceBranch),
   }
 }
 

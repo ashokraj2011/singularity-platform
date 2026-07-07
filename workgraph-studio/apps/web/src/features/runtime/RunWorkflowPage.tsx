@@ -197,6 +197,7 @@ function StartWorkflowDialog({
 }) {
   const [selectedWorkItemTarget, setSelectedWorkItemTarget] = useState('')
   const [modelAlias, setModelAlias] = useState('')
+  const [sourceRef, setSourceRef] = useState('')
 
   // Catalog aliases (Copilot/OpenAI/Anthropic/…) to offer as a per-run model override.
   const connectionsQuery = useQuery<Array<{ alias?: string; label?: string; provider?: string; model?: string }>>({
@@ -236,6 +237,7 @@ function StartWorkflowDialog({
       return api.post(`/work-items/${selected.item.id}/targets/${selected.target.id}/start`, {
         childWorkflowTemplateId: workflow.id,
         ...(modelAlias ? { modelAlias } : {}),
+        ...(sourceRef.trim() ? { sourceRef: sourceRef.trim() } : {}),
       }).then(r => r.data as { childWorkflowInstanceId?: string })
     },
     onSuccess: result => {
@@ -324,6 +326,20 @@ function StartWorkflowDialog({
             </select>
             <p style={{ ...mutedStyle, marginTop: 6 }}>
               Overrides the model for every agent stage in this run only. Leave as “Workflow default” to use the designed routing (Copilot/OpenAI/Anthropic per the LLM routing canvas).
+            </p>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <h3 style={{ ...sectionTitleStyle, margin: '0 0 8px' }}>Branch to clone (optional)</h3>
+            <input
+              type="text"
+              value={sourceRef}
+              onChange={event => setSourceRef(event.target.value)}
+              placeholder="e.g. main, develop, or a feature branch"
+              style={inputStyle}
+            />
+            <p style={{ ...mutedStyle, marginTop: 6 }}>
+              The branch this run clones and bases its <code>wi/&lt;code&gt;</code> work branch on. Leave blank to use the workflow’s configured branch (or the repo default).
             </p>
           </div>
 

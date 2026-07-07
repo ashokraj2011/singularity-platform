@@ -165,6 +165,10 @@ const startTargetSchema = z.object({
   childWorkflowTemplateId: z.string().uuid().optional(),
   // Optional per-run model chosen at launch (a gateway catalog alias).
   modelAlias: z.string().max(120).optional(),
+  // Optional per-run git branch/ref chosen at launch — the branch the run clones
+  // and bases its wi/<code> work branch on. Empty → the designed/capability
+  // default (which, when itself empty, makes the runtime blindly guess `main`).
+  sourceRef: z.string().max(200).optional(),
 }).default({})
 
 const routeSchemaBase = z.object({
@@ -424,6 +428,7 @@ workItemsRouter.post('/:id/targets/:targetId/start', validate(startTargetSchema)
     const result = await startWorkItemTarget(String(req.params.id), String(req.params.targetId), req.user!.userId, {
       childWorkflowTemplateId: body?.childWorkflowTemplateId,
       modelAlias: body?.modelAlias,
+      sourceRef: body?.sourceRef,
     })
     res.json(result)
   } catch (err) {
