@@ -28,7 +28,7 @@ import { unwrapList } from '../../lib/unwrap'
 import {
   ArrowLeft, List, AlertCircle,
   RotateCw, FileText, MessageSquare, X, Check, Ban, Send, ExternalLink,
-  ShieldCheck, CornerUpLeft, Library, Download, Maximize2, Activity,
+  ShieldCheck, CornerUpLeft, Library, Download, Maximize2, Activity, Copy,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { MarkdownView } from './MarkdownView'
@@ -209,7 +209,7 @@ function useAllConsumables(instanceId: string, live: boolean) {
   })
 }
 
-type PanelTab = 'form' | 'log' | 'questions' | 'artifacts' | 'chat'
+type PanelTab = 'form' | 'log' | 'questions' | 'prompt' | 'artifacts' | 'chat'
 // Consumable name AgentTaskExecutor stores parsed Copilot clarifying questions under.
 const COPILOT_QUESTIONS_NAME = '_copilot_questions'
 type CopilotQuestion = { id: string; question: string; options?: string[] }
@@ -437,12 +437,13 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
   // Chat (refine) is copilot-only; non-agent nodes get Log + Artifacts. Questions
   // appears only when Copilot asked some; Form leads when input is needed.
   const baseTabs: PanelTab[] = isAgent
-    ? (questions.length ? ['log', 'questions', 'artifacts', 'chat'] : ['log', 'artifacts', 'chat'])
+    ? (questions.length ? ['log', 'questions', 'prompt', 'artifacts', 'chat'] : ['log', 'prompt', 'artifacts', 'chat'])
     : ['log', 'artifacts']
   const tabs: PanelTab[] = showForm ? ['form', ...baseTabs] : baseTabs
   const activeTab: PanelTab =
     (tab === 'form' && !showForm) ? 'log'
     : (tab === 'chat' && !isAgent) ? 'log'
+    : (tab === 'prompt' && !isAgent) ? 'log'
     : (tab === 'questions' && questions.length === 0) ? 'log'
     : tab
 
@@ -514,6 +515,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
         </div>
         <button onClick={onClose} style={{ ...topBtn, padding: 6 }}><X size={14} /></button>
       </div>
+      <IoContract node={node} />
       <div style={{ display: 'flex', gap: 4, padding: '8px 10px', borderBottom: '1px solid #f1f5f9' }}>
         {tabs.map(t => {
           const isQ = t === 'questions'
@@ -586,6 +588,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
               </div>
         )}
         {activeTab === 'chat' && <ChatRefine instanceId={instanceId} node={node} busy={busy} onRestart={onRestart} />}
+        {activeTab === 'prompt' && <PromptView instanceId={instanceId} node={node} />}
       </div>
       {sendBackOpen && sendBackTargets.length > 0 && (
         <div style={{ borderTop: '1px solid #e2e8f0', padding: '8px 8px', maxHeight: 170, overflow: 'auto', background: '#f8fafc' }}>
@@ -686,6 +689,92 @@ function nextStepTone(tone: 'amber' | 'green' | 'muted'): CSSProperties {
   if (tone === 'amber') return { background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e' }
   if (tone === 'green') return { background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534' }
   return { background: '#f8fafc', border: '1px solid #e2e8f0', color: '#64748b' }
+}
+
+// The node's artifact IN/OUT contract (config.inputArtifacts / outputArtifacts):
+// what this phase READS from upstream and WRITES for downstream — the visible
+// data-flow of the delivery pipeline. Read-only; renders nothing for nodes with
+// no declared artifacts.
+function IoContract({ node }: { node: RunGraphNodeData }) {
+  const cfg = (node.config ?? {}) as Record<string, unknown>
+  const list = (v: unknown) => (Array.isArray(v) ? (v as unknown[]).filter((a): a is Record<string, unknown> => Boolean(a) && typeof a === 'object') : [])
+  const reads = list(cfg.inputArtifacts)
+  const writes = list(cfg.outputArtifacts)
+  if (!reads.length && !writes.length) return null
+  const chip = (a: Record<string, unknown>, tone: 'in' | 'out') => {
+    const label = String(a.name || a.artifactType || (tone === 'in' ? 'input' : 'output'))
+    const optional = a.required === false
+    const st = tone === 'in'
+      ? { color: '#4b6ba8', borderColor: '#cdd8ec', background: '#eef1f8' }
+      : { color: '#a24428', borderColor: '#e6cabf', background: '#f8ece7' }
+    return (
+      <span key={`${tone}-${label}`} title={[String(a.description || ''), optional ? '(optional)' : ''].filter(Boolean).join(' ')}
+        style={{ fontSize: 10.5, fontWeight: 600, padding: '2px 8px', borderRadius: 6, border: '1px solid', ...st, opacity: optional ? 0.75 : 1 }}>
+        {label}{optional ? ' ?' : ''}
+      </span>
+    )
+  }
+  const row = (label: string, items: Record<string, unknown>[], tone: 'in' | 'out') => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 9, fontWeight: 800, color: '#94a3b8', letterSpacing: 0.5, width: 42, flexShrink: 0 }}>{label}</span>
+      {items.length ? items.map(a => chip(a, tone)) : <span style={{ fontSize: 11, color: '#cbd5e1' }}>—</span>}
+    </div>
+  )
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 14px', borderBottom: '1px solid #f1f5f9', background: '#fcfcfd' }}>
+      {reads.length > 0 && row('READS', reads, 'in')}
+      {writes.length > 0 && row('WRITES', writes, 'out')}
+    </div>
+  )
+}
+
+// "The prompt used" — the FULL composed prompt (role contract + repo world model +
+// work item + task) this phase's agent runs, fetched on demand (the same composition
+// the Copilot handoff export builds). Works for pending AND completed phases; a
+// degraded flag warns when it fell back toward the raw task.
+function PromptView({ instanceId, node }: { instanceId: string; node: RunGraphNodeData }) {
+  const [copied, setCopied] = useState(false)
+  const q = useQuery({
+    queryKey: ['run-node-prompt', instanceId, node.id],
+    queryFn: () => api.get(`/workflow-instances/${instanceId}/nodes/${node.id}/composed-prompt`).then(r => r.data as {
+      composable: boolean; prompt?: string; degraded?: boolean; warning?: string; role?: string; stageKey?: string; reason?: string
+    }),
+    staleTime: 30_000,
+  })
+  const copy = (text: string) => {
+    navigator.clipboard?.writeText(text)
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) })
+      .catch(() => { /* clipboard blocked — ignore */ })
+  }
+  if (q.isLoading) return <div style={{ fontSize: 12, color: '#94a3b8' }}>Composing the prompt…</div>
+  if (q.isError) return <div style={{ fontSize: 12, color: '#b91c1c' }}>Couldn&apos;t load the prompt. {errText(q.error, 'request failed')}</div>
+  const d = q.data
+  if (!d || d.composable === false) {
+    return <div style={{ fontSize: 12, color: '#94a3b8' }}>{d?.reason ?? 'No composed prompt for this phase.'}</div>
+  }
+  const prompt = d.prompt ?? ''
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+        <div style={{ flex: 1, fontSize: 11, color: '#64748b', lineHeight: 1.45 }}>
+          The full prompt this phase&apos;s agent runs{d.role ? ` · role ${d.role}` : ''} — role contract + repo world model + work item + task.
+        </div>
+        <button onClick={() => copy(prompt)} disabled={!prompt}
+          style={{ ...footBtn, flex: 'none', padding: '5px 10px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 5, opacity: prompt ? 1 : 0.5 }}>
+          <Copy size={12} /> {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      {d.degraded && (
+        <div style={{ display: 'flex', gap: 7, padding: '8px 10px', borderRadius: 8, background: '#fffbeb', border: '1px solid #fde68a', fontSize: 11, color: '#92400e', lineHeight: 1.4 }}>
+          <AlertCircle size={13} style={{ flexShrink: 0, marginTop: 1 }} color="#d97706" />
+          <span>Composed with a fallback{d.warning ? ` — ${d.warning}` : ' — the repo world model or composer was unavailable, so this is closer to the raw task than the fully grounded prompt.'}</span>
+        </div>
+      )}
+      <pre style={{ margin: 0, fontSize: 11.5, lineHeight: 1.55, color: '#334155', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'ui-monospace, monospace', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 9, padding: 12 }}>
+        {prompt || 'The composer returned an empty prompt.'}
+      </pre>
+    </div>
+  )
 }
 
 function ChatRefine({ instanceId, node, busy, onRestart }: {

@@ -65,38 +65,76 @@ const eid = (n: number) => `3b300000-0000-0000-0000-0000000000${n.toString(16).p
 
 type Json = Record<string, unknown>
 
-interface Phase { key: string; label: string; agent: string; role: string; task: string }
+// ── Artifact IN/OUT contract ────────────────────────────────────────────────
+// Each phase declares the documents it READS (from upstream phases) and WRITES.
+// `type` is the stable machine key: it is the runtime binding path (deliverables.<type>)
+// AND the git filename base for the per-agent folder layout
+// (deliverables/<work-id>/<agent-role>/<type>.md) added in a later slice.
+// `name` is the human label shown in the designer + run view.
+interface ArtifactSpec { type: string; name: string }
+const A = {
+  requirements:   { type: 'requirements',    name: 'Requirements & Acceptance' },
+  design:         { type: 'design',           name: 'Design Document' },
+  implementation: { type: 'implementation',   name: 'Implementation' },
+  testReport:     { type: 'test-report',      name: 'Test Report' },
+  risk:           { type: 'risk-assessment',  name: 'Risk Assessment' },
+  release:        { type: 'release-plan',     name: 'Release & Rollback Plan' },
+} as const
+
+interface Phase { key: string; label: string; agent: string; role: string; task: string; reads?: ArtifactSpec[]; writes?: ArtifactSpec[] }
 const PHASES: Phase[] = [
   {
     key: 'REQUIREMENTS', label: 'Requirements (Copilot)', agent: PRODUCT_OWNER_AGENT, role: 'PRODUCT_OWNER',
     task: 'Write a clear Requirements & Acceptance spec for this work item:\n\n{{instance.vars.story}}\n\n' +
       'List functional requirements, acceptance criteria, and edge cases. Save it as REQUIREMENTS.md at the repo root.',
+    writes: [A.requirements],
   },
   {
     key: 'DESIGN', label: 'Design (Copilot)', agent: ARCHITECT_AGENT, role: 'ARCHITECT',
     task: 'Produce a Design Document (and an ADR if a significant decision is involved) for:\n\n{{instance.vars.story}}\n\n' +
       'Cover components, data flow, and risks. Save it as DESIGN.md at the repo root.',
+    reads: [A.requirements], writes: [A.design],
   },
   {
     key: 'DEVELOP', label: 'Develop (Copilot)', agent: DEVELOPER_AGENT, role: 'DEVELOPER',
     task: 'Implement this change end-to-end in the repository:\n\n{{instance.vars.story}}\n\n' +
       'Make the actual code edits, ADD or EXTEND unit tests for the new behavior, and run the tests until they pass.',
+    reads: [A.requirements, A.design], writes: [A.implementation],
   },
   {
     key: 'QA', label: 'QA (Copilot)', agent: QA_AGENT, role: 'QA',
     task: 'Run the project test suite for the implemented change and write a concise Test Report ' +
       '(scope, results, coverage) as TEST_REPORT.md at the repo root.',
+    reads: [A.design, A.implementation], writes: [A.testReport],
   },
   {
     key: 'SECURITY', label: 'Security Review (Copilot)', agent: SECURITY_AGENT, role: 'SECURITY',
     task: 'Review the implemented change for security risks (input validation, authz, secrets, dependencies) ' +
       'and write a Risk Assessment as RISK_ASSESSMENT.md at the repo root.',
+    reads: [A.design, A.implementation], writes: [A.risk],
   },
   {
     key: 'RELEASE', label: 'Release Readiness (Copilot)', agent: DEVOPS_AGENT, role: 'DEVOPS',
     task: 'Write a Release & Rollback plan and a short Ops Runbook for this change as RELEASE.md at the repo root.',
+    reads: [A.testReport, A.risk], writes: [A.release],
   },
 ]
+
+// Emit the ArtifactDef[] shape the designer (NodeInspector) + runtime
+// (WorkflowRuntime.applyOutputBindings) already understand.
+function artifactDefs(specs: ArtifactSpec[] | undefined, direction: 'INPUT' | 'OUTPUT'): Json {
+  const prefix = direction === 'INPUT' ? 'in' : 'out'
+  return (specs ?? []).map((s) => ({
+    id: `${prefix}-${s.type}`,
+    name: s.name,
+    artifactType: s.type,
+    direction,
+    format: 'MARKDOWN',
+    required: true,
+    description: '',
+    bindingPath: `deliverables.${s.type}`,
+  })) as unknown as Json
+}
 
 async function upsertNode(n: { id: string; nodeType: string; label: string; config?: Json; x: number }) {
   const config = n.config ?? {}
@@ -173,7 +211,7 @@ async function main(): Promise<void> {
       // so the copilot prompt names the role (e.g. "acting as the DEVELOPER").
       // governanceMode + useGovernedExecutor → the node runs the GOVERNED loop
       // (governance overlay + audit), connected to its role agent template.
-      config: { agentTemplateId: phase.agent, task: phase.task, executor: 'copilot', governanceMode: GOVERNANCE_MODE, useGovernedExecutor: true, ...(PREFER_LAPTOP ? { preferLaptop: true } : {}), governedStageKey: phase.key, governedAgentRole: phase.role, ...(DEFAULT_REPO ? { sourceType: 'github', sourceUri: DEFAULT_REPO } : {}) },
+      config: { agentTemplateId: phase.agent, task: phase.task, executor: 'copilot', governanceMode: GOVERNANCE_MODE, useGovernedExecutor: true, ...(PREFER_LAPTOP ? { preferLaptop: true } : {}), governedStageKey: phase.key, governedAgentRole: phase.role, inputArtifacts: artifactDefs(phase.reads, 'INPUT'), outputArtifacts: artifactDefs(phase.writes, 'OUTPUT'), ...(DEFAULT_REPO ? { sourceType: 'github', sourceUri: DEFAULT_REPO } : {}) },
     })
   }
   // Verifier gate before the push: run the verifier agent on EVERY document the
