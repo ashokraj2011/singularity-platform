@@ -158,6 +158,10 @@ type FieldSpec = {
   key: string; label: string; required?: boolean; placeholder?: string; textarea?: boolean; hint?: string;
   select?: OptionSpec;     // dropdown whose value is written into the create/edit body
   relation?: RelationSpec; // dropdown/multiselect wired to a relationship endpoint after save
+  // Free-text input + a <datalist> of suggestions = the distinct `key` values
+  // across existing `view` rows. Used for the permission "category" field, which
+  // is a free string (no categories table) — suggest existing ones, allow new.
+  datalist?: { view: IdentityView; key: string };
 };
 
 const createForms: Partial<Record<IdentityView, { singular: string; fields: FieldSpec[] }>> = {
@@ -206,7 +210,7 @@ const createForms: Partial<Record<IdentityView, { singular: string; fields: Fiel
     singular: "Permission",
     fields: [
       { key: "permission_key", label: "Key", required: true, placeholder: "workflow:review", hint: "Immutable action key that code/policies match on. Convention: resource:action. A new key doesn't gate anything until something checks it." },
-      { key: "category", label: "Category", placeholder: "workflow", hint: "Groups the key in the catalog (e.g. workflow, agent, tool)." },
+      { key: "category", label: "Category", placeholder: "workflow", hint: "Groups the key in the catalog. Pick an existing one or type a new one.", datalist: { view: "permissions", key: "category" } },
       { key: "description", label: "Description", textarea: true },
     ],
   },
@@ -290,7 +294,7 @@ const editForms: Partial<Record<IdentityView, { idKey: string; fields: FieldSpec
   permissions: {
     idKey: "permission_key",
     fields: [
-      { key: "category", label: "Category", placeholder: "workflow" },
+      { key: "category", label: "Category", placeholder: "workflow", datalist: { view: "permissions", key: "category" } },
       { key: "description", label: "Description", textarea: true },
     ],
   },
@@ -521,11 +525,23 @@ function EntityFormModal({ view, mode, row, onClose, onSaved }: { view: Identity
   // entities instead of typing keys that may not exist.
   useEffect(() => {
     let cancelled = false;
-    const sourced = fields.filter((f) => f.select || f.relation);
+    const sourced = fields.filter((f) => f.select || f.relation || f.datalist);
     if (sourced.length === 0) return;
     void Promise.all(sourced.map(async (f) => {
-      const spec = (f.select ?? f.relation)!;
       try {
+        // datalist: suggestions = the distinct values of `key` across `view` rows.
+        if (f.datalist) {
+          const page = await listIdentity(f.datalist.view, 300);
+          const seen = new Set<string>();
+          const opts: { value: string; label: string }[] = [];
+          for (const r of page.items ?? []) {
+            const v = String(r[f.datalist.key] ?? "").trim();
+            if (v && !seen.has(v)) { seen.add(v); opts.push({ value: v, label: v }); }
+          }
+          opts.sort((a, b) => a.value.localeCompare(b.value));
+          return [f.key, opts] as const;
+        }
+        const spec = (f.select ?? f.relation)!;
         const page = await listIdentity(spec.view, 200);
         const opts = (page.items ?? [])
           .map((r) => ({ value: String(r[spec.valueKey] ?? ""), label: optionText(r, spec.labelKeys) }))
@@ -620,6 +636,13 @@ function EntityFormModal({ view, mode, row, onClose, onSaved }: { view: Identity
                     <option value="">{f.placeholder ?? "— none —"}</option>
                     {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
+                ) : f.datalist ? (
+                  <>
+                    <input list={`dl-${f.key}`} value={typeof cur === "string" ? cur : ""} onChange={(e) => setScalar(f.key, e.target.value)} placeholder={f.placeholder} style={fieldInputStyle} />
+                    <datalist id={`dl-${f.key}`}>
+                      {opts.map((o) => <option key={o.value} value={o.value} />)}
+                    </datalist>
+                  </>
                 ) : f.textarea ? (
                   <textarea value={typeof cur === "string" ? cur : ""} onChange={(e) => setScalar(f.key, e.target.value)} placeholder={f.placeholder} rows={3} style={{ ...fieldInputStyle, resize: "vertical" }} />
                 ) : (
