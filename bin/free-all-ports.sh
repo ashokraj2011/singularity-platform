@@ -45,6 +45,11 @@ DEEP_PATTERNS=(
   "singularity-platform/audit-governance-service"
   "singularity-platform/pseudo-iam-service"
   "singularity-platform/.venv"
+  # Python CF services launched via `python -m uvicorn <module>` — the repo path
+  # isn't in argv, but the module path is, so match on that to catch orphans that
+  # no longer hold :8000/:8001 (e.g. after a crash or a killed parent).
+  "services.context_api_service.app"
+  "services.llm_gateway_service.app"
   "copilot-cli-server.js"
 )
 # Never kill these even if their args mention the repo (editors, pagers, VCS, this CLI).
