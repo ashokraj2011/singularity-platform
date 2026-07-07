@@ -49,6 +49,7 @@ enum NodeType {
   EVENT_EMIT
   VERIFIER
   GOVERNANCE_GATE
+  RAISE_PR
 }
 
 enum ExecutionLocation {
