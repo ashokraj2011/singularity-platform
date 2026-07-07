@@ -65,7 +65,7 @@ export default function CapabilityDetailPage() {
   const [archiving, setArchiving] = useState(false);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const learningActionInFlightRef = useRef(false);
-  const [learningAction, setLearningAction] = useState<"sync" | "grounding" | null>(null);
+  const [learningAction, setLearningAction] = useState<"sync" | "grounding" | "distill" | null>(null);
   const localLearningAction = learningAction !== null;
   const [mutationAction, setMutationAction] = useState<"repo" | "repo-delete" | "binding" | "binding-delete" | "knowledge" | "knowledge-delete" | null>(null);
   const [mutationMsg, setMutationMsg] = useState<string | null>(null);
@@ -261,6 +261,35 @@ export default function CapabilityDetailPage() {
     }
   }
 
+  // Rebuild the DISTILLED world model only (the Tier-2 grounding the copilot prompt
+  // falls back to) from already-ingested repo symbols + README — NO learning worker,
+  // no repo re-index. So it works even when the laptop code-context bridge is down,
+  // which is exactly when Tier-1's live world model is unavailable. 409 = nothing
+  // ingested yet, surfaced as guidance rather than a hard error.
+  async function redistillOnly() {
+    if (learningActionInFlightRef.current || serverLearningBusy) return;
+    learningActionInFlightRef.current = true;
+    setLearningAction("distill");
+    setRefreshError(null);
+    setRefreshMsg(null);
+    setRefreshResult(null);
+    try {
+      const stats = await runtimeApi.redistillWorldModel(id);
+      await mutateCap();
+      await mutateGroundingStatus();
+      setRefreshResult(asObject(stats));
+      setRefreshMsg("World model re-distilled from the ingested repository symbols + README. It now grounds the copilot prompts (Tier-2) even without the laptop runtime.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Rebuild world model failed";
+      setRefreshError(/409|nothing to distill/i.test(msg)
+        ? "Nothing to distill yet — approve + ingest a repository source first (Sync sources / Refresh grounding), then rebuild the world model."
+        : msg);
+    } finally {
+      learningActionInFlightRef.current = false;
+      setLearningAction(null);
+    }
+  }
+
   // Refresh repository grounding only. Source sync is a separate action below so
   // a content sync cannot accidentally leave durable grounding stuck in RUNNING.
   async function refreshLearning() {
@@ -429,6 +458,16 @@ export default function CapabilityDetailPage() {
                   : "Refresh the durable repository profile and re-distill the world model for this capability"}
               >
                 <RefreshCw size={14} className={(learningAction === "grounding" || serverLearningBusy) ? "animate-spin" : undefined} /> {learningAction === "grounding" ? "Refreshing..." : serverLearningBusy ? "Worker running..." : "Refresh grounding"}
+              </button>
+              <button
+                className="btn-secondary text-xs"
+                disabled={learningBusy}
+                onClick={redistillOnly}
+                title={serverLearningBusy
+                  ? learningBusyTitle
+                  : "Rebuild the distilled world model from already-ingested repo symbols + README — grounds the copilot prompts (Tier-2) even when the laptop runtime is offline"}
+              >
+                <Sparkles size={14} className={learningAction === "distill" ? "animate-spin" : undefined} /> {learningAction === "distill" ? "Rebuilding..." : serverLearningBusy ? "Worker running..." : "Rebuild world model"}
               </button>
               <button className="btn-secondary text-xs" onClick={beginEdit}>
                 <Pencil size={14} /> Edit details
