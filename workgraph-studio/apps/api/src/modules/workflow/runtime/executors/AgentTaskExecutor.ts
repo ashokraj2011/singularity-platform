@@ -380,6 +380,12 @@ export async function activateAgentTask(
       branch_name: configString('branchName') ?? (workCode ? `work/${workCode}` : undefined),
       // S1c — launch-chosen clone folder (resolved under the runtime's managed root).
       ...(cloneDirChoice ? { clone_dir: cloneDirChoice } : {}),
+      // Stage IN/OUT document contract (the node's declared artifact defs) → the
+      // prompt composer lists the input documents to read (with paths) and the
+      // output documents to produce (with format), so the agent knows exactly what
+      // it consumes and what it must produce.
+      ...(Array.isArray(cfg.inputArtifacts) && cfg.inputArtifacts.length ? { input_artifacts: cfg.inputArtifacts } : {}),
+      ...(Array.isArray(cfg.outputArtifacts) && cfg.outputArtifacts.length ? { output_artifacts: cfg.outputArtifacts } : {}),
       // §13.4 — when node.config.executor === 'copilot', CF dispatches the
       // copilot_execute tool to the laptop mcp-server instead of the LLM loop.
       // Both the flag and the task ride run_context because the governed-stage
