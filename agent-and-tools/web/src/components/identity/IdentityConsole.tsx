@@ -13,6 +13,7 @@ import {
   createIdentity,
   createMcpServer,
   deleteMcpServer,
+  deletePermission,
   listCapabilityRelationships,
   listIdentity,
   listMcpServers,
@@ -124,7 +125,7 @@ const columns: Record<IdentityView, Array<{ label: string; keys: string[] }>> = 
   permissions: [
     { label: "Permission", keys: ["name", "permission_key"] },
     { label: "Key", keys: ["permission_key", "key"] },
-    { label: "Scope", keys: ["scope", "resource_type"] },
+    { label: "Category", keys: ["category", "scope", "resource_type"] },
     { label: "Description", keys: ["description"] },
   ],
   "sharing-grants": [
@@ -201,6 +202,14 @@ const createForms: Partial<Record<IdentityView, { singular: string; fields: Fiel
       { key: "role_scope", label: "Scope", placeholder: "capability" },
     ],
   },
+  permissions: {
+    singular: "Permission",
+    fields: [
+      { key: "permission_key", label: "Key", required: true, placeholder: "workflow:review", hint: "Immutable action key that code/policies match on. Convention: resource:action. A new key doesn't gate anything until something checks it." },
+      { key: "category", label: "Category", placeholder: "workflow", hint: "Groups the key in the catalog (e.g. workflow, agent, tool)." },
+      { key: "description", label: "Description", textarea: true },
+    ],
+  },
   capabilities: {
     singular: "Capability",
     fields: [
@@ -273,6 +282,16 @@ const editForms: Partial<Record<IdentityView, { idKey: string; fields: FieldSpec
       { key: "status", label: "Status", placeholder: "active | suspended" },
       { key: "visibility", label: "Visibility", placeholder: "private | shared" },
       { key: "tags", label: "Tags", placeholder: "comma, separated" },
+    ],
+  },
+  // Only the human-facing metadata is editable — the permission_key is the
+  // enforcement anchor (immutable server-side), so it isn't offered as a field.
+  // PATCH targets /permissions/{permission_key}, hence idKey.
+  permissions: {
+    idKey: "permission_key",
+    fields: [
+      { key: "category", label: "Category", placeholder: "workflow" },
+      { key: "description", label: "Description", textarea: true },
     ],
   },
 };
@@ -382,6 +401,8 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<IdentityRow | null>(null);
   const [managing, setManaging] = useState<IdentityRow | null>(null);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<string | null>(null);
   const form = createForms[view];
   const editable = Boolean(editForms[view]) && Boolean(onCreated);
   // Views with a per-row management modal (relationship editing) rather than a
@@ -390,6 +411,19 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
   // (roles have no PATCH endpoint, so `editable` is false for them).
   const manageable = view === "users" || view === "roles";
   const colCount = tableColumns.length + (editable || manageable ? 1 : 0);
+
+  // Permission catalog delete. IAM blocks (409) if the key is still granted to a
+  // role, so surface that message inline rather than as a silent failure.
+  async function removePermission(row: IdentityRow) {
+    const key = String(row.permission_key ?? row.key ?? "");
+    if (!key || !onCreated) return;
+    if (!window.confirm(`Delete permission "${key}"? It is removed from the catalog. Keys shipped in the default seed reappear on the next IAM restart.`)) return;
+    setDeletingKey(key); setRowError(null);
+    try { await deletePermission(key); onCreated(); }
+    catch (e) { setRowError(e instanceof Error ? e.message : String(e)); }
+    finally { setDeletingKey(null); }
+  }
+
   return (
     <section className="card" style={{ overflow: "hidden" }}>
       <div style={{ padding: 18, borderBottom: "1px solid var(--color-outline-variant)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
@@ -422,6 +456,7 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
       {managing && view === "roles" ? (
         <ManageRolePermissionsModal role={managing} onClose={() => setManaging(null)} />
       ) : null}
+      {rowError ? <div style={{ padding: "10px 18px 0" }}><SmallError error={rowError} /></div> : null}
       <div style={{ overflowX: "auto" }}>
         <table className="w-full text-sm">
           <thead>
@@ -452,6 +487,9 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
                         <Link href={`/capabilities/${encodeURIComponent(String(row.capability_id ?? row.id ?? ""))}`} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-primary)", cursor: "pointer", textDecoration: "none" }}>Edit</Link>
                       ) : editable ? (
                         <button type="button" onClick={() => setEditing(row)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-primary)", cursor: "pointer" }}>Edit</button>
+                      ) : null}
+                      {view === "permissions" && onCreated ? (
+                        <button type="button" disabled={deletingKey === String(row.permission_key ?? row.key ?? "")} onClick={() => void removePermission(row)} style={{ border: "1px solid rgba(185,28,28,0.28)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "#b91c1c", cursor: "pointer" }}>{deletingKey === String(row.permission_key ?? row.key ?? "") ? "Deleting…" : "Delete"}</button>
                       ) : null}
                     </div>
                   </td>

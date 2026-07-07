@@ -5,7 +5,10 @@ from app.database import get_db
 from app.models import Role, Permission, RolePermission, User
 from app.auth.deps import require_reference_read, require_super_admin
 from app.schemas import PageResponse
-from app.roles.schemas import RoleOut, PermissionOut, CreateRoleRequest, AssignPermissionRequest
+from app.roles.schemas import (
+    RoleOut, PermissionOut, CreateRoleRequest, AssignPermissionRequest,
+    CreatePermissionRequest, UpdatePermissionRequest,
+)
 from app.audit.service import record_event
 from datetime import datetime, timezone
 
@@ -38,6 +41,95 @@ async def list_permissions(
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
     items = (await db.execute(q.order_by(Permission.permission_key).offset((page - 1) * size).limit(size))).scalars().all()
     return PageResponse(items=[_perm_out(p) for p in items], total=total, page=page, size=size)
+
+
+@router.post("/permissions", response_model=PermissionOut, status_code=201)
+async def create_permission(
+    body: CreatePermissionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_super_admin),
+):
+    """Register a new permission key in the catalog.
+
+    Note: the catalog is the *vocabulary* of access; a newly-registered key does
+    not gate anything until code or a governance policy checks it. What this does
+    give you immediately is a key you can bundle into roles.
+    """
+    key = (body.permission_key or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="permission_key is required")
+    existing = (await db.execute(select(Permission).where(Permission.permission_key == key))).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Permission '{key}' already exists")
+    perm = Permission(
+        permission_key=key,
+        category=(body.category or None),
+        description=(body.description or None),
+    )
+    db.add(perm)
+    await db.flush()
+    await record_event(db, actor_user_id=current_user.id, event_type="permission_created",
+                       target_type="permission", target_id=perm.id, payload={"permission_key": key})
+    await db.commit()
+    await db.refresh(perm)
+    return _perm_out(perm)
+
+
+@router.patch("/permissions/{permission_key}", response_model=PermissionOut)
+async def update_permission(
+    permission_key: str, body: UpdatePermissionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_super_admin),
+):
+    """Edit a permission's human-facing metadata (category/description). The key
+    itself is immutable — it is the anchor code/policies match on; to change a key,
+    delete and recreate it (and update whatever checks it)."""
+    perm = (await db.execute(select(Permission).where(Permission.permission_key == permission_key))).scalar_one_or_none()
+    if not perm:
+        raise HTTPException(status_code=404, detail="Permission not found")
+    if body.category is not None:
+        perm.category = body.category.strip() or None
+    if body.description is not None:
+        perm.description = body.description.strip() or None
+    await record_event(db, actor_user_id=current_user.id, event_type="permission_updated",
+                       target_type="permission", target_id=perm.id, payload={"permission_key": perm.permission_key})
+    await db.commit()
+    await db.refresh(perm)
+    return _perm_out(perm)
+
+
+@router.delete("/permissions/{permission_key}", status_code=204)
+async def delete_permission(
+    permission_key: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_super_admin),
+):
+    """Delete a permission from the catalog.
+
+    Blocked while the permission is still granted to any role: the FK would CASCADE
+    and silently strip the grant from those roles (a surprise privilege change), so
+    the operator must unbind it in the role editor first. Note: keys shipped in the
+    default seed reappear on the next IAM restart."""
+    perm = (await db.execute(select(Permission).where(Permission.permission_key == permission_key))).scalar_one_or_none()
+    if not perm:
+        raise HTTPException(status_code=404, detail="Permission not found")
+    bound_roles = (await db.execute(
+        select(Role.role_key)
+        .join(RolePermission, RolePermission.role_id == Role.id)
+        .where(RolePermission.permission_id == perm.id)
+        .order_by(Role.role_key)
+    )).scalars().all()
+    if bound_roles:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Permission is granted to role(s): {', '.join(bound_roles)}. Remove it from those roles first.",
+        )
+    perm_id = perm.id
+    await db.delete(perm)
+    await record_event(db, actor_user_id=current_user.id, event_type="permission_deleted",
+                       target_type="permission", target_id=perm_id, payload={"permission_key": permission_key})
+    await db.commit()
+    return None
 
 
 # ---- Roles ----

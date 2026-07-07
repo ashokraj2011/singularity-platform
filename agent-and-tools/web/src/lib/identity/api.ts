@@ -102,7 +102,7 @@ export function checkAuthorization(body: AuthzCheckRequest): Promise<AuthzCheckR
 // POST on its list path (all super-admin gated server-side; a 403 surfaces as an
 // IdentityError in the create form). MCP servers are capability-scoped and live
 // on a separate surface, so they are intentionally not here.
-export const CREATABLE_VIEWS: IdentityView[] = ["business-units", "teams", "users", "roles", "capabilities"];
+export const CREATABLE_VIEWS: IdentityView[] = ["business-units", "teams", "users", "roles", "permissions", "capabilities"];
 
 export function createIdentity(view: IdentityView, body: Record<string, unknown>): Promise<IdentityRow> {
   return identityRequest<IdentityRow>(pathFor(view), { method: "POST", body: JSON.stringify(body) });
@@ -122,6 +122,14 @@ export function createMcpServer(capabilityId: string, body: Record<string, unkno
 // value). Roles have no PATCH endpoint, so they aren't editable here.
 export function updateIdentity(view: IdentityView, id: string, body: Record<string, unknown>): Promise<IdentityRow> {
   return identityRequest<IdentityRow>(`${pathFor(view)}/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+// Delete a permission key from the catalog. IAM blocks this (409) while the key
+// is still granted to any role, so the caller should surface that message.
+// Create/edit go through createIdentity/updateIdentity("permissions", …) — only
+// delete has no generic entry point, hence this dedicated helper.
+export function deletePermission(permissionKey: string): Promise<void> {
+  return identityRequest<void>(`/permissions/${encodeURIComponent(permissionKey)}`, { method: "DELETE" });
 }
 
 export function updateMcpServer(serverId: string, body: Record<string, unknown>): Promise<IdentityRow> {
