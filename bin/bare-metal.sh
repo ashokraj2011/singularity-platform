@@ -1339,8 +1339,16 @@ SQL
   ensure_platform_web_service_token || true
 
   info "applying SQL seed data…"
-  ( "$ROOT/seed/apply.sh" "$db_user" "$db_pass" "$db_host" "$db_port" >/dev/null 2>&1 ) \
-    || warn "seed/apply.sh had warnings — run it manually: seed/apply.sh $db_user"
+  # Capture to a log and surface real failures — do NOT >/dev/null them. A failed
+  # seed here (schema not ready, constraint drift) otherwise stays invisible and
+  # shows up later as missing capabilities / grounding blocked / empty IAM data.
+  if ( "$ROOT/seed/apply.sh" "$db_user" "$db_pass" "$db_host" "$db_port" ) >"$LOG_DIR/seed-apply.log" 2>&1; then
+    ok "SQL seed data applied  → logs/seed-apply.log"
+  else
+    warn "seed/apply.sh FAILED — some seed data is missing (capabilities/grounding/IAM demo data may misbehave). Last lines of logs/seed-apply.log:"
+    tail -n 25 "$LOG_DIR/seed-apply.log" | sed 's/^/  │ /' >&2 || true
+    warn "re-run manually: seed/apply.sh $db_user"
+  fi
 
   boot audit-gov        "cd audit-governance-service  && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8500 AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" npm run dev"
   sleep 2

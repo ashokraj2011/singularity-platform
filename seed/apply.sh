@@ -20,10 +20,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PGPASSWORD="$DB_PASS"
 
 run() {
-  local db="$1" file="$2"
+  local db="$1" file="$2" out rc=0
   echo "▸ $file → $db"
-  psql -v ON_ERROR_STOP=1 -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$db" -f "$SCRIPT_DIR/$file" \
-    2>&1 | grep -vE "^(SET|BEGIN|COMMIT|INSERT|UPDATE|NOTICE|DO)" || true
+  # Capture output so we can inspect psql's REAL exit status. The old form piped
+  # straight into `grep … || true`, so the pipeline's status was grep's and the
+  # `|| true` forced success — a failed seed (ON_ERROR_STOP=1 → psql exit 3) was
+  # silently swallowed and this script still reported success. `|| rc=$?` keeps
+  # set -e from aborting on the assignment so we can report the real error.
+  out="$(psql -v ON_ERROR_STOP=1 -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$db" -f "$SCRIPT_DIR/$file" 2>&1)" || rc=$?
+  printf '%s\n' "$out" | grep -vE "^(SET|BEGIN|COMMIT|INSERT|UPDATE|NOTICE|DO)" || true
+  if [ "$rc" -ne 0 ]; then
+    echo "✗ $file FAILED against $db (psql exit $rc) — see output above" >&2
+    return "$rc"
+  fi
 }
 
 run singularity_iam  00-iam.sql
