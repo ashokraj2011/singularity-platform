@@ -61,7 +61,8 @@ async function assertRoutingPolicyWorkflowStartable(capabilityId: string, workfl
       `Use a main workflow with a CALL_WORKFLOW node to invoke this workbench.`,
     )
   }
-  if (!workflow.capabilityId || workflow.capabilityId !== capabilityId) {
+  // Common (null) templates are capability-independent → usable by any routing policy.
+  if (workflow.capabilityId && workflow.capabilityId !== capabilityId) {
     throw new ValidationError(
       `Workflow ${workflowId} belongs to capability ${workflow.capabilityId ?? 'none'}, ` +
       `but this routing policy belongs to capability ${capabilityId}.`,
@@ -108,7 +109,8 @@ function routingPolicyWorkflowStatus(policy: {
       template: workflow,
     }
   }
-  if (!workflow.capabilityId || workflow.capabilityId !== policy.capabilityId) {
+  // Common (null) templates are capability-independent → usable by any routing policy.
+  if (workflow.capabilityId && workflow.capabilityId !== policy.capabilityId) {
     return {
       state: 'invalid',
       reason: 'CAPABILITY_MISMATCH',
