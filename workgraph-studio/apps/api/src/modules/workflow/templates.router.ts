@@ -1261,7 +1261,11 @@ workflowTemplatesRouter.get('/gallery', async (req, res, next) => {
       where: {
         archivedAt: null,
         profile: 'main',
-        ...(capabilityId ? { capabilityId } : {}),
+        // A capability-scoped gallery must ALSO surface common (capabilityId=null)
+        // templates — those are capability-independent workflows (e.g. the Copilot
+        // SDLC flow) meant to run on ANY capability. Filtering `{ capabilityId }`
+        // exactly would hide them from every capability but their (nonexistent) owner.
+        ...(capabilityId ? { OR: [{ capabilityId }, { capabilityId: null }] } : {}),
       },
       select: {
         id: true,
