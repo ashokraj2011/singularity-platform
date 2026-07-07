@@ -384,7 +384,7 @@ export async function activateAgentTask(
       // prompt composer lists the input documents to read (with paths) and the
       // output documents to produce (with format), so the agent knows exactly what
       // it consumes and what it must produce.
-      ...(Array.isArray(cfg.inputArtifacts) && cfg.inputArtifacts.length ? { input_artifacts: cfg.inputArtifacts } : {}),
+      ...(Array.isArray(cfg.inputArtifacts) && cfg.inputArtifacts.length ? { input_artifacts: enrichInputArtifactsWithContent(cfg.inputArtifacts as unknown[], instanceContext) } : {}),
       ...(Array.isArray(cfg.outputArtifacts) && cfg.outputArtifacts.length ? { output_artifacts: cfg.outputArtifacts } : {}),
       // §13.4 — when node.config.executor === 'copilot', CF dispatches the
       // copilot_execute tool to the laptop mcp-server instead of the LLM loop.
@@ -752,6 +752,33 @@ async function failRun(runId: string, code: string, message: string, tenantId?: 
  * latest LLM_RESPONSE output from each prior AgentRun on this instance.
  * Keys are the prior nodes' nodeIds.
  */
+// Resolve an upstream deliverable's content from the binding namespace —
+// applyOutputBindings writes each stage's output to context.deliverables.<type>.
+function deliverableContent(context: Record<string, unknown>, artifactType: unknown): string | undefined {
+  const deliverables = isRecord(context.deliverables) ? context.deliverables : {}
+  const v = deliverables[String(artifactType ?? '')]
+  if (typeof v === 'string' && v.trim()) return v
+  if (isRecord(v)) {
+    for (const k of ['content', 'markdown', 'text', 'body']) {
+      const inner = v[k]
+      if (typeof inner === 'string' && inner.trim()) return inner
+    }
+  }
+  return undefined
+}
+
+// Enrich a node's INPUT artifact defs with the produced upstream document content
+// (when available) so the composed prompt can INLINE it — self-contained even when
+// the world model / repo read is unavailable. Best-effort: no match ⇒ def forwarded
+// as-is (the agent reads the file at the def's path).
+function enrichInputArtifactsWithContent(defs: unknown[], context: Record<string, unknown>): unknown[] {
+  return defs.map((d) => {
+    if (!isRecord(d)) return d
+    const content = deliverableContent(context, d.artifactType)
+    return content ? { ...d, content } : d
+  })
+}
+
 async function collectPriorOutputs(
   instanceId: string,
   currentNodeId: string,

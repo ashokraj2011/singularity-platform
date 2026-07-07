@@ -1345,7 +1345,7 @@ async function loadCopilotExportData(id: string, opts: { fromPhase?: string } = 
     const cfg = nodeCfgById.get(nodeId) ?? {}
     return {
       ...runContext,
-      ...(Array.isArray(cfg.inputArtifacts) && cfg.inputArtifacts.length ? { input_artifacts: cfg.inputArtifacts } : {}),
+      ...(Array.isArray(cfg.inputArtifacts) && cfg.inputArtifacts.length ? { input_artifacts: withInputDocContent(cfg.inputArtifacts, instance.context) } : {}),
       ...(Array.isArray(cfg.outputArtifacts) && cfg.outputArtifacts.length ? { output_artifacts: cfg.outputArtifacts } : {}),
     }
   }
@@ -1446,6 +1446,32 @@ workflowInstancesRouter.get('/:id/export/copilot-runner.sh', async (req, res, ne
 // "The prompt used": the FULL agent prompt (role contract + repo world model +
 // work-item + task) a phase's agent runs — the SAME composition the Copilot
 // handoff export builds (composeCopilotStagePrompt → CF /compose-copilot-prompt).
+// Enrich a node's INPUT artifact defs with the upstream document content produced
+// so far (from the deliverables binding namespace, context.deliverables.<type>), so
+// the composed prompt / Prompt tab can INLINE it. Best-effort: no match ⇒ def
+// unchanged (the prompt shows the file path for the agent to read).
+function withInputDocContent(defs: unknown, instanceContext: unknown): unknown {
+  if (!Array.isArray(defs)) return defs
+  const ctx = (instanceContext && typeof instanceContext === 'object') ? instanceContext as Record<string, unknown> : {}
+  const deliverables = (ctx.deliverables && typeof ctx.deliverables === 'object') ? ctx.deliverables as Record<string, unknown> : {}
+  const resolve = (t: unknown): string | undefined => {
+    const v = deliverables[String(t ?? '')]
+    if (typeof v === 'string' && v.trim()) return v
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      for (const k of ['content', 'markdown', 'text', 'body']) {
+        const inner = (v as Record<string, unknown>)[k]
+        if (typeof inner === 'string' && inner.trim()) return inner
+      }
+    }
+    return undefined
+  }
+  return defs.map(d => {
+    if (!d || typeof d !== 'object') return d
+    const content = resolve((d as Record<string, unknown>).artifactType)
+    return content ? { ...d, content } : d
+  })
+}
+
 // Recomposed on demand so it works for pending AND completed phases; `degraded`
 // marks a fallback to the raw task when the composer/world-model is unavailable.
 async function composeNodePrompt(id: string, nodeId: string, tenantId?: string) {
@@ -1502,7 +1528,7 @@ async function composeNodePrompt(id: string, nodeId: string, tenantId?: string) 
     // Stage IN/OUT document contract → the composer lists the input documents to
     // read (with paths) + the outputs to produce (with format), so the Prompt tab
     // shows them exactly as the run will.
-    ...(Array.isArray(nodeCfg.inputArtifacts) && nodeCfg.inputArtifacts.length ? { input_artifacts: nodeCfg.inputArtifacts } : {}),
+    ...(Array.isArray(nodeCfg.inputArtifacts) && nodeCfg.inputArtifacts.length ? { input_artifacts: withInputDocContent(nodeCfg.inputArtifacts, instance.context) } : {}),
     ...(Array.isArray(nodeCfg.outputArtifacts) && nodeCfg.outputArtifacts.length ? { output_artifacts: nodeCfg.outputArtifacts } : {}),
   }
   const composed = await composeCopilotStagePrompt({

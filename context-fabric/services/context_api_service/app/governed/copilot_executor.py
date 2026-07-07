@@ -154,11 +154,22 @@ async def _fetch_distilled_world_model(capability_id: str, bearer: str | None) -
     return _render_distilled_world_model(wm, artifacts)
 
 
-def _artifact_line(a: dict[str, Any], *, verb: str) -> str:
-    """One bullet for an artifact def: name (format) — <verb> `path` — description."""
+def _fenced(content: str, lang: str = "markdown") -> str:
+    """Fence a block, bounded so a big upstream doc can't blow up the prompt."""
+    body = content.strip()
+    if len(body) > 8000:
+        body = body[:8000].rstrip() + "\n\n… (truncated — open the file for the full document)"
+    return f"```{lang}\n{body}\n```"
+
+
+def _artifact_line(a: dict[str, Any], *, verb: str, vars: dict[str, Any] | None) -> str:
+    """One bullet for an artifact def: name (format) — <verb> `path` — description.
+    Prefers the real file `path` over the logical `bindingPath`, and interpolates
+    {{instance.vars.*}} in it so the agent gets the concrete path."""
     name = str(a.get("name") or a.get("id") or "document").strip()
     fmt = str(a.get("format") or "").strip()
-    path = str(a.get("bindingPath") or a.get("path") or "").strip()
+    raw_path = str(a.get("path") or a.get("bindingPath") or "").strip()
+    path = interpolate_task(raw_path, vars or {}) if raw_path else ""
     desc = str(a.get("description") or "").strip()
     bits = [f"- **{name}**"]
     if fmt:
@@ -173,31 +184,50 @@ def _artifact_line(a: dict[str, Any], *, verb: str) -> str:
     return line
 
 
-def _render_artifact_contract(run_context: dict[str, Any] | None) -> list[str]:
-    """Render the stage's IN/OUT document contract (from run_context.input_artifacts /
-    output_artifacts) as prompt sections: which documents to READ (inputs, with their
-    repo paths) and which to PRODUCE (outputs, with format + save path). Empty when the
-    node declares no artifacts."""
+def _render_artifact_contract(run_context: dict[str, Any] | None, vars: dict[str, Any] | None) -> list[str]:
+    """Render the stage's IN/OUT document contract as prompt sections. For inputs:
+    the real path + the upstream document's CONTENT inlined when available (so the
+    stage is self-contained even if the world model / repo read is unavailable). For
+    outputs: the real save path + a MARKDOWN template to follow. Empty when the node
+    declares no artifacts."""
     rc = run_context or {}
     parts: list[str] = []
+
     inputs = rc.get("input_artifacts")
     if isinstance(inputs, list) and inputs:
-        lines = [_artifact_line(a, verb="read") for a in inputs if isinstance(a, dict)]
-        if lines:
+        blocks: list[str] = []
+        for a in inputs:
+            if not isinstance(a, dict):
+                continue
+            blocks.append(_artifact_line(a, verb="read", vars=vars))
+            content = a.get("content")
+            if isinstance(content, str) and content.strip():
+                blocks.append(_fenced(content))
+        if blocks:
             parts.append(
                 "## Input documents (read these first)\n"
-                "Upstream stages of this workflow produced these. Open and read each file in the "
-                "repository before you start — they are the inputs to your work.\n"
-                + "\n".join(lines)
+                "These were produced by upstream stages of this workflow — they are the inputs to "
+                "your work. When a document's content is included below, use it directly; otherwise "
+                "open the file at the given path in the repository.\n"
+                + "\n".join(blocks)
             )
+
     outputs = rc.get("output_artifacts")
     if isinstance(outputs, list) and outputs:
-        lines = [_artifact_line(a, verb="save as") for a in outputs if isinstance(a, dict)]
-        if lines:
+        blocks: list[str] = []
+        for a in outputs:
+            if not isinstance(a, dict):
+                continue
+            blocks.append(_artifact_line(a, verb="save as", vars=vars))
+            template = a.get("template")
+            if isinstance(template, str) and template.strip():
+                blocks.append("Follow this template:\n" + _fenced(template))
+        if blocks:
             parts.append(
                 "## Documents to produce\n"
-                "Produce each of these as a real file in the repository, in the stated format:\n"
-                + "\n".join(lines)
+                "Produce each of these as a real file in the repository, in the stated format. Where "
+                "a template is given, follow its structure.\n"
+                + "\n".join(blocks)
             )
     return parts
 
@@ -289,7 +319,7 @@ async def compose_copilot_prompt(
     # Stage IN/OUT document contract — the documents this stage READS (inputs, with
     # their repo paths) and must PRODUCE (outputs, with format). Empty when the node
     # declares no artifacts, so non-SDLC prompts are unchanged.
-    parts.extend(_render_artifact_contract(run_context))
+    parts.extend(_render_artifact_contract(run_context, vars))
     # Clarifying-questions protocol. When Copilot has to assume something to
     # proceed (most common in the requirements stage), it lists the open
     # questions in a `## Questions` block at the END of its reply. mcp-server's
