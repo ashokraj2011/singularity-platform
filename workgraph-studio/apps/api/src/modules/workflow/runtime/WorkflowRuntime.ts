@@ -14,6 +14,7 @@ import { activateDecisionGate } from './executors/DecisionGateExecutor'
 import { activateConsumableCreation } from './executors/ConsumableCreationExecutor'
 import { activateToolRequest } from './executors/ToolRequestExecutor'
 import { activateGitPush } from './executors/GitPushExecutor'
+import { activateRaisePr } from './executors/RaisePrExecutor'
 import { activatePolicyCheck } from './executors/PolicyCheckExecutor'
 import { activateEvalGate } from './executors/EvalGateExecutor'
 import { activateRunPython } from './executors/RunPythonExecutor'
@@ -612,6 +613,20 @@ async function executeServerNode(
         await degradeNodeToBlocked(instance, node, err, actorId)
       }
       if (pushResult?.pushed) await advance(instance.id, node.id, pushResult.output, actorId, undefined, tenantId)
+      break
+    }
+    case 'RAISE_PR': {
+      // Cloud-side PR open (via the GitHub connector). Mirror GIT_PUSH's degrade
+      // guard: a PR hiccup (missing branch, dup PR, no connector) must never
+      // hard-fail the run — activateRaisePr throws a clean reason, we block the
+      // node (recoverable: retry / skip), and only advance once the PR opens.
+      let prResult: Awaited<ReturnType<typeof activateRaisePr>> | null = null
+      try {
+        prResult = await activateRaisePr(node, instance, actorId)
+      } catch (err) {
+        await degradeNodeToBlocked(instance, node, err, actorId)
+      }
+      if (prResult?.raised) await advance(instance.id, node.id, prResult.output, actorId, undefined, tenantId)
       break
     }
     case 'POLICY_CHECK': {
