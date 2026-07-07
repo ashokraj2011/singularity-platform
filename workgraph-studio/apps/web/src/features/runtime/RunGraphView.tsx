@@ -779,21 +779,18 @@ function PromptView({ instanceId, node }: { instanceId: string; node: RunGraphNo
   const qc = useQueryClient()
   const [copied, setCopied] = useState(false)
   const [editing, setEditing] = useState(false)
-  const [taskDraft, setTaskDraft] = useState('')
-  const cfg = (node.config ?? {}) as Record<string, unknown>
-  const currentTask = String((cfg._taskOverride as string) || (cfg.task as string) || '')
-  const overridden = Boolean(cfg._taskOverride)
+  const [promptDraft, setPromptDraft] = useState('')
   const q = useQuery({
     queryKey: ['run-node-prompt', instanceId, node.id],
     queryFn: () => api.get(`/workflow-instances/${instanceId}/nodes/${node.id}/composed-prompt`).then(r => r.data as {
-      composable: boolean; prompt?: string; degraded?: boolean; warning?: string; role?: string; stageKey?: string; reason?: string
+      composable: boolean; prompt?: string; degraded?: boolean; warning?: string; role?: string; stageKey?: string; reason?: string; overridden?: boolean
     }),
     staleTime: 30_000,
   })
-  const saveTaskMut = useMutation({
-    mutationFn: (task: string) => api.post(`/workflow-instances/${instanceId}/nodes/${node.id}/task`, { task }).then(r => r.data),
+  const savePromptMut = useMutation({
+    mutationFn: (prompt: string) => api.post(`/workflow-instances/${instanceId}/nodes/${node.id}/prompt`, { prompt }).then(r => r.data),
     onSuccess: () => {
-      toast.success('Task updated — re-running the phase')
+      toast.success('Prompt updated — re-running the phase')
       qc.invalidateQueries({ queryKey: ['run-node-prompt', instanceId, node.id] })
       qc.invalidateQueries({ queryKey: ['run-instance', instanceId] })
       setEditing(false)
@@ -816,13 +813,13 @@ function PromptView({ instanceId, node }: { instanceId: string; node: RunGraphNo
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.45 }}>
-          Edit this phase&apos;s <strong>task</strong>. The role, work item, and repo world model are added automatically around it — saving re-runs the phase.
+          Edit the full prompt below — the agent runs it <strong>verbatim</strong> (composition is skipped, so keep the role, work item, and world model you want). Saving re-runs the phase.
         </div>
-        <textarea value={taskDraft} onChange={e => setTaskDraft(e.target.value)} rows={14} spellCheck={false}
+        <textarea value={promptDraft} onChange={e => setPromptDraft(e.target.value)} rows={20} spellCheck={false}
           style={{ width: '100%', boxSizing: 'border-box', fontSize: 11.5, lineHeight: 1.5, fontFamily: 'ui-monospace, monospace', color: '#334155', border: '1px solid #cbd5e1', borderRadius: 7, padding: 9, resize: 'vertical' }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-          <button onClick={() => setEditing(false)} disabled={saveTaskMut.isPending} style={{ ...footBtn, flex: 'none', padding: '5px 11px', fontSize: 11, background: 'transparent', color: '#64748b', border: '1px solid #e2e8f0' }}>Cancel</button>
-          <button onClick={() => saveTaskMut.mutate(taskDraft)} disabled={saveTaskMut.isPending || !taskDraft.trim() || taskDraft === currentTask} style={{ ...footBtn, flex: 'none', padding: '5px 11px', fontSize: 11, opacity: (saveTaskMut.isPending || !taskDraft.trim() || taskDraft === currentTask) ? 0.6 : 1 }}>{saveTaskMut.isPending ? 'Saving…' : 'Save & re-run'}</button>
+          <button onClick={() => setEditing(false)} disabled={savePromptMut.isPending} style={{ ...footBtn, flex: 'none', padding: '5px 11px', fontSize: 11, background: 'transparent', color: '#64748b', border: '1px solid #e2e8f0' }}>Cancel</button>
+          <button onClick={() => savePromptMut.mutate(promptDraft)} disabled={savePromptMut.isPending || !promptDraft.trim() || promptDraft === prompt} style={{ ...footBtn, flex: 'none', padding: '5px 11px', fontSize: 11, opacity: (savePromptMut.isPending || !promptDraft.trim() || promptDraft === prompt) ? 0.6 : 1 }}>{savePromptMut.isPending ? 'Saving…' : 'Save & re-run'}</button>
         </div>
       </div>
     )
@@ -833,20 +830,18 @@ function PromptView({ instanceId, node }: { instanceId: string; node: RunGraphNo
         <div style={{ flex: 1, fontSize: 11, color: '#64748b', lineHeight: 1.45 }}>
           The full prompt this phase&apos;s agent runs{d.role ? ` · role ${d.role}` : ''} — role contract + repo world model + work item + task.
         </div>
-        {currentTask && (
-          <button onClick={() => { setTaskDraft(currentTask); setEditing(true) }} title="Edit this phase's task and re-run"
-            style={{ ...footBtn, flex: 'none', padding: '5px 10px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 5 }}>
-            <Pencil size={12} /> Edit task
-          </button>
-        )}
+        <button onClick={() => { setPromptDraft(prompt); setEditing(true) }} disabled={!prompt} title="Edit this prompt and re-run the phase"
+          style={{ ...footBtn, flex: 'none', padding: '5px 10px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 5, opacity: prompt ? 1 : 0.5 }}>
+          <Pencil size={12} /> Edit prompt
+        </button>
         <button onClick={() => copy(prompt)} disabled={!prompt}
           style={{ ...footBtn, flex: 'none', padding: '5px 10px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 5, opacity: prompt ? 1 : 0.5 }}>
           <Copy size={12} /> {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
-      {overridden && (
+      {d.overridden && (
         <div style={{ fontSize: 10.5, color: '#0284c7', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 7, padding: '6px 9px' }}>
-          This phase is running an edited task (overrides the workflow default).
+          This phase is running an edited prompt (overrides the composed default). Edit again to change it.
         </div>
       )}
       {d.degraded && (

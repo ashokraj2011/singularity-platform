@@ -630,23 +630,23 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/refine', async (req, res, next)
   }
 })
 
-// Edit an agent phase's TASK/instruction at runtime, then re-run it. Sets
-// config._taskOverride, which AgentTaskExecutor prefers over the seeded task; the
-// composer still wraps it with the role + work item + repo world model, so grounding
-// is preserved. Used by the run-graph Prompt tab "Edit task".
-workflowInstancesRouter.post('/:id/nodes/:nodeId/task', async (req, res, next) => {
+// Edit an agent phase's PROMPT at runtime, then re-run it. Sets config._promptOverride,
+// which AgentTaskExecutor forwards to CF as run_context.prompt_override; CF's
+// compose_copilot_prompt then returns it VERBATIM (skips composition — the operator
+// edited the fully-composed prompt they saw). Used by the run-graph Prompt tab.
+workflowInstancesRouter.post('/:id/nodes/:nodeId/prompt', async (req, res, next) => {
   try {
     const id = req.params.id as string
     const nodeId = req.params.nodeId as string
-    const task = typeof req.body?.task === 'string' ? req.body.task.trim() : ''
-    if (!task) return res.status(400).json({ error: 'task is required' })
+    const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : ''
+    if (!prompt) return res.status(400).json({ error: 'prompt is required' })
     await assertInstancePermission(req.user!.userId, id, 'edit')
     const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } }), resolveTenantFromRequest(req))
     if (!node) return res.status(404).json({ error: 'node not found in this run' })
-    const config = { ...((node.config ?? {}) as Record<string, unknown>), _taskOverride: task }
+    const config = { ...((node.config ?? {}) as Record<string, unknown>), _promptOverride: prompt }
     await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({ where: { id: nodeId }, data: { config: config as Prisma.InputJsonValue } }), resolveTenantFromRequest(req))
     const result = await restartNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
-    res.json({ ...result, taskOverridden: true })
+    res.json({ ...result, promptOverridden: true })
   } catch (err) {
     next(err)
   }
@@ -1457,6 +1457,23 @@ async function composeNodePrompt(id: string, nodeId: string, tenantId?: string) 
       nodeId,
       composable: false as const,
       reason: 'This phase has no composed prompt — only agent (Copilot) task phases run one.',
+    }
+  }
+
+  // Runtime prompt override (Prompt tab "Edit prompt") — return it verbatim so the tab
+  // reflects exactly what the phase will run and re-editing pre-fills the override.
+  const nodeCfg = (nodes.find(n => n.id === nodeId)?.config ?? {}) as Record<string, unknown>
+  const promptOverride = typeof nodeCfg._promptOverride === 'string' ? nodeCfg._promptOverride : ''
+  if (promptOverride.trim()) {
+    return {
+      nodeId,
+      composable: true as const,
+      stageKey: stage.key,
+      role: stage.role,
+      label: stage.label,
+      prompt: promptOverride,
+      degraded: false,
+      overridden: true as const,
     }
   }
 
