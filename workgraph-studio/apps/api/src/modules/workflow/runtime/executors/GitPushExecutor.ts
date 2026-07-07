@@ -580,6 +580,11 @@ async function callMcpFinishWorkBranch(args: {
   // mcp-server. Fall back to direct mcp HTTP here only when CF is unconfigured /
   // unreachable / errors (debug + back-compat).
   const cfUrl = config.CONTEXT_FABRIC_URL?.replace(/\/$/, '')
+  // Capture WHY the CF path failed — it's the correct hybrid route (CF relays to the
+  // laptop mcp that holds the repo + local git creds), so its failure is the real,
+  // actionable cause. Without this it was swallowed and the block showed only the
+  // fallback's generic "fetch failed".
+  let cfFailure = 'Context Fabric not configured (CONTEXT_FABRIC_URL unset)'
   if (cfUrl) {
     let cfResp: Response | null = null
     try {
@@ -588,8 +593,8 @@ async function callMcpFinishWorkBranch(args: {
         headers: { 'content-type': 'application/json', 'X-Service-Token': config.CONTEXT_FABRIC_SERVICE_TOKEN ?? '' },
         body: JSON.stringify(payload),
       })
-    } catch {
-      // CF unreachable — fall through to direct mcp HTTP.
+    } catch (cfErr) {
+      cfFailure = `Context Fabric unreachable at ${cfUrl}: ${(cfErr as Error).message}`
     }
     if (cfResp?.ok) {
       const parsed = await readJsonObjectResponse(cfResp, 'Context Fabric finish-branch')
@@ -597,16 +602,33 @@ async function callMcpFinishWorkBranch(args: {
       // CF returns { tool_invocation, output }; callers read body.data.*.
       return { success: true, data: parsed.body }
     }
-    // CF reachable but errored — fall through to direct mcp HTTP.
+    if (cfResp) {
+      // CF reachable but errored (commonly: no laptop runtime connected to the bridge
+      // for the finish-branch frame). Record the reason, then try the direct fallback.
+      const parsed = await readJsonObjectResponse(cfResp, 'Context Fabric finish-branch')
+      const detail = 'error' in parsed ? parsed.error : parsed.raw
+      cfFailure = `Context Fabric finish-branch HTTP ${cfResp.status}: ${redactSecrets(String(detail)).slice(0, 300)}`
+    }
   }
-  const response = await fetch(`${config.MCP_SERVER_URL.replace(/\/$/, '')}/mcp/work/finish-branch`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${config.MCP_BEARER_TOKEN}`,
-    },
-    body: JSON.stringify(payload),
-  })
+  let response: Response
+  try {
+    response = await fetch(`${config.MCP_SERVER_URL.replace(/\/$/, '')}/mcp/work/finish-branch`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${config.MCP_BEARER_TOKEN}`,
+      },
+      body: JSON.stringify(payload),
+    })
+  } catch (mcpErr) {
+    // Both relays failed. Surface the CF reason (actionable) alongside the fallback
+    // error, so the block is a diagnosis instead of a bare "fetch failed".
+    throw new Error(redactSecrets(
+      `push relay unreachable. Context Fabric path: [${cfFailure}]. ` +
+      `Direct mcp fallback (${config.MCP_SERVER_URL}): ${(mcpErr as Error).message} ` +
+      `— in a cloud+laptop split, pushes must go via Context Fabric to the connected laptop runtime.`,
+    ))
+  }
   const parsed = await readJsonObjectResponse(response, 'MCP finish-branch')
   if (!response.ok) {
     throw new Error(redactSecrets(`MCP /work/finish-branch failed (${response.status}): ${parsed.raw}`))
