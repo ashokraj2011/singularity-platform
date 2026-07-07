@@ -515,6 +515,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
         </div>
         <button onClick={onClose} style={{ ...topBtn, padding: 6 }}><X size={14} /></button>
       </div>
+      <IoContract node={node} />
       <div style={{ display: 'flex', gap: 4, padding: '8px 10px', borderBottom: '1px solid #f1f5f9' }}>
         {tabs.map(t => {
           const isQ = t === 'questions'
@@ -688,6 +689,43 @@ function nextStepTone(tone: 'amber' | 'green' | 'muted'): CSSProperties {
   if (tone === 'amber') return { background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e' }
   if (tone === 'green') return { background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534' }
   return { background: '#f8fafc', border: '1px solid #e2e8f0', color: '#64748b' }
+}
+
+// The node's artifact IN/OUT contract (config.inputArtifacts / outputArtifacts):
+// what this phase READS from upstream and WRITES for downstream — the visible
+// data-flow of the delivery pipeline. Read-only; renders nothing for nodes with
+// no declared artifacts.
+function IoContract({ node }: { node: RunGraphNodeData }) {
+  const cfg = (node.config ?? {}) as Record<string, unknown>
+  const list = (v: unknown) => (Array.isArray(v) ? (v as unknown[]).filter((a): a is Record<string, unknown> => Boolean(a) && typeof a === 'object') : [])
+  const reads = list(cfg.inputArtifacts)
+  const writes = list(cfg.outputArtifacts)
+  if (!reads.length && !writes.length) return null
+  const chip = (a: Record<string, unknown>, tone: 'in' | 'out') => {
+    const label = String(a.name || a.artifactType || (tone === 'in' ? 'input' : 'output'))
+    const optional = a.required === false
+    const st = tone === 'in'
+      ? { color: '#4b6ba8', borderColor: '#cdd8ec', background: '#eef1f8' }
+      : { color: '#a24428', borderColor: '#e6cabf', background: '#f8ece7' }
+    return (
+      <span key={`${tone}-${label}`} title={[String(a.description || ''), optional ? '(optional)' : ''].filter(Boolean).join(' ')}
+        style={{ fontSize: 10.5, fontWeight: 600, padding: '2px 8px', borderRadius: 6, border: '1px solid', ...st, opacity: optional ? 0.75 : 1 }}>
+        {label}{optional ? ' ?' : ''}
+      </span>
+    )
+  }
+  const row = (label: string, items: Record<string, unknown>[], tone: 'in' | 'out') => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 9, fontWeight: 800, color: '#94a3b8', letterSpacing: 0.5, width: 42, flexShrink: 0 }}>{label}</span>
+      {items.length ? items.map(a => chip(a, tone)) : <span style={{ fontSize: 11, color: '#cbd5e1' }}>—</span>}
+    </div>
+  )
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 14px', borderBottom: '1px solid #f1f5f9', background: '#fcfcfd' }}>
+      {reads.length > 0 && row('READS', reads, 'in')}
+      {writes.length > 0 && row('WRITES', writes, 'out')}
+    </div>
+  )
 }
 
 // "The prompt used" — the FULL composed prompt (role contract + repo world model +
