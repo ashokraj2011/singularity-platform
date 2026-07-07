@@ -90,7 +90,9 @@ async function upsertNode(n: { id: string; nodeType: string; label: string; conf
 async function upsertEdge(e: { id: string; sourceNodeId: string; targetNodeId: string }) {
   await (prisma as any).workflowDesignEdge.upsert({
     where: { id: e.id },
-    update: { edgeType: 'SEQUENTIAL' as any },
+    // Re-point endpoints on re-seed too (see seed-sdlc-copilot upsertEdge): repointing
+    // E1 (START→…) to START→CREATE_BRANCH requires updating the endpoints, not just edgeType.
+    update: { edgeType: 'SEQUENTIAL' as any, sourceNodeId: e.sourceNodeId, targetNodeId: e.targetNodeId },
     create: { id: e.id, workflowId: WF_ID, sourceNodeId: e.sourceNodeId, targetNodeId: e.targetNodeId, edgeType: 'SEQUENTIAL' as any },
   })
 }

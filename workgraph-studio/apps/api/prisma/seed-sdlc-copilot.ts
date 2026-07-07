@@ -152,7 +152,11 @@ async function upsertNode(n: { id: string; nodeType: string; label: string; conf
 async function upsertEdge(e: { id: string; from: string; to: string }) {
   await (prisma as any).workflowDesignEdge.upsert({
     where: { id: e.id },
-    update: { edgeType: 'SEQUENTIAL' },
+    // Re-point endpoints on re-seed too — the positional edge ids (eid(i)) shift
+    // when a node is inserted into `order` (e.g. CREATE_BRANCH at the front), so an
+    // update that only touched edgeType left existing edges pointing at their OLD
+    // nodes and orphaned the inserted node.
+    update: { edgeType: 'SEQUENTIAL', sourceNodeId: e.from, targetNodeId: e.to },
     create: { id: e.id, workflowId: WF_ID, sourceNodeId: e.from, targetNodeId: e.to, edgeType: 'SEQUENTIAL' },
   })
 }
