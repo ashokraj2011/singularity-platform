@@ -90,13 +90,15 @@
 
     --color-primary:             #368727;
     --color-primary-dark:        #006F34;
-    --color-primary-dim:         rgba(54, 135, 39, 0.12);
-    --color-primary-glow:        rgba(54, 135, 39, 0.28);
-    --color-primary-hover-border: rgba(54, 135, 39, 0.36);
+    /* Soft fills + borders stay NEUTRAL so panels (sidebar, journey rail, active
+       items, cards) read as WHITE — green is reserved for solid accents + text. */
+    --color-primary-dim:         rgba(15, 23, 42, 0.05);
+    --color-primary-glow:        rgba(15, 23, 42, 0.10);
+    --color-primary-hover-border: rgba(15, 23, 42, 0.12);
     --color-focus-ring:          rgba(54, 135, 39, 0.18);
 
     --color-secondary:           #006F34;
-    --color-secondary-dim:       rgba(54, 135, 39, 0.10);
+    --color-secondary-dim:       rgba(15, 23, 42, 0.05);
 
     --accent-workflow:           #0A4F8F;
     --accent-workflow-soft:      #e8f1f8;
