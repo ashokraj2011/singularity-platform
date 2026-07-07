@@ -39,6 +39,16 @@ const CT_OUTCOME_REPORT = '20000000-0000-0000-0000-000000000009' // OutcomeRepor
 type AnyPrisma = PrismaClient
 type Json = Record<string, unknown>
 
+// Compact ArtifactDef builder for per-node IN/OUT documents (the shape the run-view
+// READS/WRITES strip + WorkflowRuntime.applyOutputBindings understand).
+function aDef(name: string, artifactType: string, direction: 'INPUT' | 'OUTPUT', required = true, format: 'JSON' | 'MARKDOWN' | 'TEXT' = 'JSON'): Json {
+  return {
+    id: `${direction === 'INPUT' ? 'in' : 'out'}-${artifactType}`,
+    name, artifactType, direction, format, required, description: '',
+    bindingPath: `deliverables.${artifactType}`,
+  }
+}
+
 // ── Form widget builders ─────────────────────────────────────────────────────
 // Mirrors FormWidget in apps/web/src/features/forms/widgets/types.ts. Widgets
 // render on HUMAN_TASK / APPROVAL / CONSUMABLE_CREATION nodes at run time.
@@ -152,6 +162,7 @@ export async function seedHumanWorkflows(prisma: AnyPrisma) {
       id: nReq, workflowId: wfId, phaseId, nodeType: 'HUMAN_TASK', label: 'Submit access request', positionX: 300, positionY: 200,
       config: {
         ...HUMAN_ASSIGN,
+        outputArtifacts: [aDef('Access Request Form', 'access-request', 'OUTPUT')],
         formWidgets: [
           heading('a2-h', 'Access request details'),
           instructions('a2-i', 'Fill in what access you need and why. A manager will review this before anything is granted.'),
@@ -169,6 +180,8 @@ export async function seedHumanWorkflows(prisma: AnyPrisma) {
       id: nApp, workflowId: wfId, phaseId, nodeType: 'APPROVAL', label: 'Manager approval', positionX: 540, positionY: 200,
       config: {
         ...HUMAN_ASSIGN,
+        inputArtifacts: [aDef('Access Request Form', 'access-request', 'INPUT')],
+        outputArtifacts: [aDef('Manager Decision', 'manager-decision', 'OUTPUT')],
         formWidgets: [
           heading('a3-h', 'Manager decision'),
           instructions('a3-i', 'Review the request above, then approve or reject with a note.'),
@@ -182,6 +195,8 @@ export async function seedHumanWorkflows(prisma: AnyPrisma) {
       id: nRec, workflowId: wfId, phaseId, nodeType: 'CONSUMABLE_CREATION', label: 'Record access grant', positionX: 780, positionY: 200,
       config: {
         ...HUMAN_ASSIGN,
+        inputArtifacts: [aDef('Manager Decision', 'manager-decision', 'INPUT')],
+        outputArtifacts: [aDef('Access Grant Record', 'access-grant', 'OUTPUT')],
         consumableTypeId: CT_APPROVAL_DECISION,
         formWidgets: [
           heading('a4-h', 'Access grant record'),
@@ -242,6 +257,7 @@ export async function seedHumanWorkflows(prisma: AnyPrisma) {
       id: nIntake, workflowId: wfId, phaseId, nodeType: 'HUMAN_TASK', label: 'Submit change request', positionX: 260, positionY: 320,
       config: {
         ...HUMAN_ASSIGN,
+        outputArtifacts: [aDef('Change Request', 'change-request', 'OUTPUT')],
         formWidgets: [
           heading('b2-h', 'Change request'),
           instructions('b2-i', 'Describe the change, its risk, and how you would roll it back. Low-risk changes are fast-tracked; anything else goes to Security + CAB review.'),
@@ -268,6 +284,8 @@ export async function seedHumanWorkflows(prisma: AnyPrisma) {
       id: nSec, workflowId: wfId, phaseId, nodeType: 'HUMAN_TASK', label: 'Security review', positionX: 1060, positionY: 360,
       config: {
         ...HUMAN_ASSIGN,
+        inputArtifacts: [aDef('Change Request', 'change-request', 'INPUT')],
+        outputArtifacts: [aDef('Security Findings', 'security-findings', 'OUTPUT')],
         formWidgets: [
           heading('b6-h', 'Security review'),
           longText('b6-find', 'security_findings', 'Security findings', true, 4),
@@ -281,6 +299,8 @@ export async function seedHumanWorkflows(prisma: AnyPrisma) {
       id: nCab, workflowId: wfId, phaseId, nodeType: 'HUMAN_TASK', label: 'Change Advisory Board review', positionX: 1060, positionY: 520,
       config: {
         ...HUMAN_ASSIGN,
+        inputArtifacts: [aDef('Change Request', 'change-request', 'INPUT')],
+        outputArtifacts: [aDef('CAB Decision', 'cab-decision', 'OUTPUT')],
         formWidgets: [
           heading('b7-h', 'CAB review'),
           select('b7-dec', 'cab_decision', 'CAB decision', ['Approve', 'Approve with conditions', 'Reject'], true),
@@ -291,12 +311,18 @@ export async function seedHumanWorkflows(prisma: AnyPrisma) {
     })
     await upsertNode(prisma, {
       id: nJoin, workflowId: wfId, phaseId, nodeType: 'PARALLEL_JOIN', label: 'Consolidate reviews', positionX: 1280, positionY: 440,
-      config: { expected_joins: 2 },
+      config: {
+        expected_joins: 2,
+        inputArtifacts: [aDef('Security Findings', 'security-findings', 'INPUT'), aDef('CAB Decision', 'cab-decision', 'INPUT')],
+        outputArtifacts: [aDef('Consolidated Review', 'review-consolidation', 'OUTPUT')],
+      },
     })
     await upsertNode(prisma, {
       id: nApp, workflowId: wfId, phaseId, nodeType: 'APPROVAL', label: 'Final change approval', positionX: 1480, positionY: 320,
       config: {
         ...HUMAN_ASSIGN,
+        inputArtifacts: [aDef('Change Request', 'change-request', 'INPUT'), aDef('Consolidated Review', 'review-consolidation', 'INPUT', false)],
+        outputArtifacts: [aDef('Final Approval', 'final-approval', 'OUTPUT')],
         formWidgets: [
           heading('b9-h', 'Final approval'),
           instructions('b9-i', 'Authorize the change to proceed to its scheduled window, or reject it.'),
@@ -314,6 +340,8 @@ export async function seedHumanWorkflows(prisma: AnyPrisma) {
       id: nRec, workflowId: wfId, phaseId, nodeType: 'CONSUMABLE_CREATION', label: 'Record change outcome', positionX: 1880, positionY: 320,
       config: {
         ...HUMAN_ASSIGN,
+        inputArtifacts: [aDef('Final Approval', 'final-approval', 'INPUT')],
+        outputArtifacts: [aDef('Change Outcome', 'change-outcome', 'OUTPUT')],
         consumableTypeId: CT_OUTCOME_REPORT,
         formWidgets: [
           heading('bb-h', 'Change outcome'),

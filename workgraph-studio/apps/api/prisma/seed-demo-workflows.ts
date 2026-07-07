@@ -55,6 +55,7 @@ const SDLC_LOOP = {
       description: 'Use the accepted story plus read-only repo evidence to produce a solution design and implementation contract.',
       next: 'develop', allowedSendBackTo: ['intake'], required: true, approvalRequired: true,
       contextPolicy: 'REPO_READ_ONLY', repoAccess: true, toolPolicy: 'READ_ONLY',
+      consumes: [{ stageDependsOn: 'intake', artifactKind: 'story_brief', required: true }, { stageDependsOn: 'intake', artifactKind: 'acceptance_contract', required: true }],
       expectedArtifacts: [
         { kind: 'solution_architecture', title: 'Solution architecture', required: true, format: 'MARKDOWN' },
         { kind: 'approved_spec_draft', title: 'Approved spec draft', required: true, format: 'MARKDOWN' },
@@ -71,6 +72,7 @@ const SDLC_LOOP = {
       description: 'Produce the implementation, file changes, and code-change evidence (commits on the work branch).',
       next: 'qa', allowedSendBackTo: ['intake', 'design'], required: true, approvalRequired: true,
       contextPolicy: 'CODE_EDIT', repoAccess: true, toolPolicy: 'MUTATION',
+      consumes: [{ stageDependsOn: 'design', artifactKind: 'solution_architecture', required: true }, { stageDependsOn: 'design', artifactKind: 'approved_spec_draft', required: true }],
       expectedArtifacts: [
         { kind: 'developer_task_pack', title: 'Developer task pack', required: true, format: 'MARKDOWN' },
         { kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence', required: true, format: 'MARKDOWN' },
@@ -87,6 +89,7 @@ const SDLC_LOOP = {
       description: 'Verify the change against acceptance criteria, run/inspect tests, build the traceability matrix, decide on handoff.',
       next: null, terminal: true, allowedSendBackTo: ['design', 'develop'], required: true, approvalRequired: true,
       contextPolicy: 'VERIFY_ONLY', repoAccess: true, toolPolicy: 'VERIFICATION',
+      consumes: [{ stageDependsOn: 'develop', artifactKind: 'actual_code_change', required: true }, { stageDependsOn: 'intake', artifactKind: 'acceptance_contract', required: true }],
       expectedArtifacts: [
         { kind: 'verification_receipt', title: 'Verification receipt', required: true, format: 'MARKDOWN' },
         { kind: 'traceability_matrix', title: 'Traceability matrix', required: true, format: 'MARKDOWN' },
@@ -127,6 +130,7 @@ const BUGFIX_LOOP = {
       description: 'Apply the smallest correct fix for the root cause, with code-change evidence on the work branch.',
       next: 'verify', allowedSendBackTo: ['repro'], required: true, approvalRequired: true,
       contextPolicy: 'CODE_EDIT', repoAccess: true, toolPolicy: 'MUTATION',
+      consumes: [{ stageDependsOn: 'repro', artifactKind: 'root_cause', required: true }, { stageDependsOn: 'repro', artifactKind: 'repro_report', required: true }],
       expectedArtifacts: [
         { kind: 'fix_summary', title: 'Fix summary', required: true, format: 'MARKDOWN' },
         { kind: 'actual_code_change', title: 'Actual MCP/git code-change evidence', required: true, format: 'MARKDOWN' },
@@ -143,6 +147,7 @@ const BUGFIX_LOOP = {
       description: 'Confirm the fix resolves the defect and runs the regression suite without new failures.',
       next: null, terminal: true, allowedSendBackTo: ['fix'], required: true, approvalRequired: true,
       contextPolicy: 'VERIFY_ONLY', repoAccess: true, toolPolicy: 'VERIFICATION',
+      consumes: [{ stageDependsOn: 'fix', artifactKind: 'actual_code_change', required: true }, { stageDependsOn: 'fix', artifactKind: 'fix_summary', required: true }],
       expectedArtifacts: [
         { kind: 'verification_receipt', title: 'Verification receipt', required: true, format: 'MARKDOWN' },
         { kind: 'regression_check', title: 'Regression check', required: true, format: 'MARKDOWN' },
@@ -160,6 +165,15 @@ const BUGFIX_LOOP = {
 // ── small upsert helpers ─────────────────────────────────────────────────────
 type AnyPrisma = PrismaClient
 type Json = Record<string, unknown>
+
+// Compact ArtifactDef builder for per-node IN/OUT documents on plain (non-workbench) nodes.
+function aDef(name: string, artifactType: string, direction: 'INPUT' | 'OUTPUT', required = true, format: 'JSON' | 'MARKDOWN' | 'TEXT' = 'JSON'): Json {
+  return {
+    id: `${direction === 'INPUT' ? 'in' : 'out'}-${artifactType}`,
+    name, artifactType, direction, format, required, description: '',
+    bindingPath: `deliverables.${artifactType}`,
+  }
+}
 
 async function upsertNode(prisma: AnyPrisma, n: {
   id: string; workflowId: string; phaseId?: string; nodeType: string; label: string;
@@ -325,8 +339,8 @@ export async function seedDemoWorkflows(prisma: AnyPrisma) {
       graphSnapshot: { nodes: [n1, n2, n3, n4].map(id => ({ id })) }, phaseId, phaseName: 'Main',
     })
     await upsertNode(prisma, { id: n1, workflowId: wfId, phaseId, nodeType: 'START', label: 'Start', positionX: 80, positionY: 160 })
-    await upsertNode(prisma, { id: n2, workflowId: wfId, phaseId, nodeType: 'AGENT_TASK', label: 'Draft summary', config: { agentId: 'a0000000-0000-0000-0000-000000000005' }, positionX: 300, positionY: 160 })
-    await upsertNode(prisma, { id: n3, workflowId: wfId, phaseId, nodeType: 'APPROVAL', label: 'Approve', config: { assignmentMode: 'TEAM_QUEUE', teamId: TEAM_ID }, positionX: 540, positionY: 160 })
+    await upsertNode(prisma, { id: n2, workflowId: wfId, phaseId, nodeType: 'AGENT_TASK', label: 'Draft summary', config: { agentId: 'a0000000-0000-0000-0000-000000000005', outputArtifacts: [aDef('Summary Draft', 'summary-draft', 'OUTPUT', true, 'MARKDOWN')] }, positionX: 300, positionY: 160 })
+    await upsertNode(prisma, { id: n3, workflowId: wfId, phaseId, nodeType: 'APPROVAL', label: 'Approve', config: { assignmentMode: 'TEAM_QUEUE', teamId: TEAM_ID, inputArtifacts: [aDef('Summary Draft', 'summary-draft', 'INPUT', true, 'MARKDOWN')], outputArtifacts: [aDef('Approval Decision', 'approval-decision', 'OUTPUT')] }, positionX: 540, positionY: 160 })
     await upsertNode(prisma, { id: n4, workflowId: wfId, phaseId, nodeType: 'END', label: 'End', positionX: 780, positionY: 160 })
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000030', workflowId: wfId, sourceNodeId: n1, targetNodeId: n2 })
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000031', workflowId: wfId, sourceNodeId: n2, targetNodeId: n3 })
@@ -344,7 +358,7 @@ export async function seedDemoWorkflows(prisma: AnyPrisma) {
     })
     await upsertNode(prisma, { id: n1, workflowId: wfId, phaseId, nodeType: 'START', label: 'Start', positionX: 80, positionY: 160 })
     await upsertNode(prisma, { id: n2, workflowId: wfId, phaseId, nodeType: 'DECISION_GATE', label: 'Risk gate', config: { expression: 'context.risk == "low"' }, positionX: 300, positionY: 160 })
-    await upsertNode(prisma, { id: n3, workflowId: wfId, phaseId, nodeType: 'HUMAN_TASK', label: 'Manual review', config: { assignmentMode: 'TEAM_QUEUE', teamId: TEAM_ID }, positionX: 540, positionY: 280 })
+    await upsertNode(prisma, { id: n3, workflowId: wfId, phaseId, nodeType: 'HUMAN_TASK', label: 'Manual review', config: { assignmentMode: 'TEAM_QUEUE', teamId: TEAM_ID, outputArtifacts: [aDef('Review Decision', 'review-decision', 'OUTPUT')] }, positionX: 540, positionY: 280 })
     await upsertNode(prisma, { id: n4, workflowId: wfId, phaseId, nodeType: 'END', label: 'End', positionX: 780, positionY: 160 })
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000040', workflowId: wfId, sourceNodeId: n1, targetNodeId: n2 })
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000041', workflowId: wfId, sourceNodeId: n2, targetNodeId: n4, edgeType: 'CONDITIONAL', condition: { expression: 'low_risk' }, label: 'low risk' })
@@ -362,7 +376,7 @@ export async function seedDemoWorkflows(prisma: AnyPrisma) {
       graphSnapshot: { nodes: [n1, n2, n3].map(id => ({ id })) }, phaseId, phaseName: 'Main',
     })
     await upsertNode(prisma, { id: n1, workflowId: wfId, phaseId, nodeType: 'START', label: 'Epic intake', positionX: 80, positionY: 160 })
-    await upsertNode(prisma, { id: n2, workflowId: wfId, phaseId, nodeType: 'CALL_WORKFLOW', label: 'Dispatch story → SDLC', config: { workflowId: '30000000-0000-0000-0000-000000000010' }, positionX: 320, positionY: 160 })
+    await upsertNode(prisma, { id: n2, workflowId: wfId, phaseId, nodeType: 'CALL_WORKFLOW', label: 'Dispatch story → SDLC', config: { workflowId: '30000000-0000-0000-0000-000000000010', outputArtifacts: [aDef('SDLC Results', 'sdlc-pack', 'OUTPUT')] }, positionX: 320, positionY: 160 })
     await upsertNode(prisma, { id: n3, workflowId: wfId, phaseId, nodeType: 'END', label: 'End', positionX: 600, positionY: 160 })
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000050', workflowId: wfId, sourceNodeId: n1, targetNodeId: n2 })
     await upsertEdge(prisma, { id: '33000000-0000-0000-0000-000000000051', workflowId: wfId, sourceNodeId: n2, targetNodeId: n3 })
