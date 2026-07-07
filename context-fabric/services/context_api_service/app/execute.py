@@ -330,6 +330,11 @@ class RunContext(BaseModel):
     source_type: Optional[str] = None
     source_uri: Optional[str] = None
     source_ref: Optional[str] = None
+    # S1c — operator-chosen "clone into" folder from the launch dialog. Forwarded
+    # to the mcp-server tool-run run_context so the workbench path honors it too
+    # (the copilot AGENT_TASK path sets it directly); the materializer resolves it
+    # under its managed workspaces root.
+    clone_dir: Optional[str] = None
     effective_capabilities: list[dict[str, Any]] = Field(default_factory=list)
     profile_snapshot_hash: Optional[str] = None
     profile_provider_resolutions: list[dict[str, Any]] = Field(default_factory=list)
@@ -978,6 +983,7 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
             "sourceType": req.run_context.source_type,
             "sourceUri": req.run_context.source_uri,
             "sourceRef": req.run_context.source_ref,
+            "cloneDir": req.run_context.clone_dir,
             "effectiveCapabilities": effective_capabilities,
             "effectiveCapabilitiesRequired": effective_capabilities_required,
             "profileSnapshotHash": profile_snapshot_hash,

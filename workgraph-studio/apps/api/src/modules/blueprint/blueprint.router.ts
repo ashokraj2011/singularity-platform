@@ -6301,7 +6301,12 @@ async function runLoopStageExecute(
       workitem_branch: usesRepoContext ? workbenchWorkitemBranch(session, linkedWorkItem) : undefined,
       source_type: usesRepoContext ? session.sourceType.toLowerCase() : undefined,
       source_uri: usesRepoContext ? session.sourceUri : undefined,
-      source_ref: usesRepoContext ? session.sourceRef ?? undefined : undefined,
+      // S1a — a branch chosen at launch (instance globals, surfaced by
+      // workflowWorkItemContext) wins over the session's design-time ref; S1c does
+      // the same for the operator's clone-into folder. CF forwards clone_dir to the
+      // mcp-server run_context, where the materializer resolves it under its root.
+      source_ref: usesRepoContext ? (linkedWorkItem.sourceRef ?? session.sourceRef ?? undefined) : undefined,
+      clone_dir: usesRepoContext ? linkedWorkItem.cloneDir : undefined,
       // M75 Slice 4 — opt-in laptop bridge routing for governed stages.
       // The legacy AgentTaskExecutor path reads this from cfg.preferLaptop
       // on the workflow node; the governed coding stage doesn't have a
@@ -6338,7 +6343,7 @@ function jsonStringField(root: unknown, key: string): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-async function workflowWorkItemContext(workflowInstanceId?: string | null): Promise<{ workItemId?: string; workItemCode?: string }> {
+async function workflowWorkItemContext(workflowInstanceId?: string | null): Promise<{ workItemId?: string; workItemCode?: string; cloneDir?: string; sourceRef?: string }> {
   const instanceId = typeof workflowInstanceId === 'string' && workflowInstanceId.trim()
     ? workflowInstanceId.trim()
     : undefined
@@ -6348,6 +6353,7 @@ async function workflowWorkItemContext(workflowInstanceId?: string | null): Prom
     select: { context: true },
   }))
   const context = isRecord(instance?.context) ? instance.context : {}
+  const globals = isRecord(context._globals) ? context._globals : {}
   const workItem = isRecord(context._workItem)
     ? context._workItem
     : isRecord(context.workItem)
@@ -6356,6 +6362,11 @@ async function workflowWorkItemContext(workflowInstanceId?: string | null): Prom
   return {
     workItemId: jsonStringField(workItem, 'id') ?? jsonStringField(context, 'workItemId'),
     workItemCode: jsonStringField(workItem, 'workCode') ?? jsonStringField(context, 'workItemCode'),
+    // S1c / S1a — launch-time globals so the workbench governed run_context can
+    // honor the operator's clone-into folder + branch pick. Both are set on the
+    // instance globals at start; the session's own source config is the fallback.
+    cloneDir: jsonStringField(globals, 'cloneDir'),
+    sourceRef: jsonStringField(globals, 'sourceRef'),
   }
 }
 
