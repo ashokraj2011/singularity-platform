@@ -44,6 +44,7 @@ export type StartPreviewInput = {
 
 const FETCH_TIMEOUT_MS = boundedSecondsEnv("START_PREVIEW_FETCH_TIMEOUT_SEC", 4, 1, 300) * 1000;
 const FALLBACK_STORY = "As a product owner, I want a governed SDLC workflow that turns a story into WorkItems, launches implementation, captures tests, and exports delivery evidence.";
+const DEFAULT_DEMO_CAPABILITY_ID = "11111111-2222-3333-4444-555555555555";
 
 function authHeaders(req: NextRequest): HeadersInit {
   const auth = req.headers.get("authorization");
@@ -249,10 +250,15 @@ export async function buildStartPreview(req: NextRequest, input: StartPreviewInp
   const requestedCapability = requestedCapabilityId
     ? capabilities.find((capability) => stringValue(capability.id) === requestedCapabilityId)
     : undefined;
+  const workflowTemplate = record(selectedIntent.workflowTemplate);
+  const workflowCapabilityId = stringValue(workflowTemplate.capabilityId);
+  const workflowCapability = workflowCapabilityId
+    ? launchableCapabilities.find((capability) => stringValue(capability.id) === workflowCapabilityId)
+    : undefined;
+  const demoCapability = launchableCapabilities.find((capability) => stringValue(capability.id) === DEFAULT_DEMO_CAPABILITY_ID);
   const selectedCapability = requestedCapabilityId
     ? launchableCapabilities.find((capability) => stringValue(capability.id) === requestedCapabilityId) ?? {}
-    : launchableCapabilities[0] ?? {};
-  const workflowTemplate = record(selectedIntent.workflowTemplate);
+    : workflowCapability ?? demoCapability ?? launchableCapabilities[0] ?? {};
   const health = record(healthRes.data);
   const healthSummary = record(health.summary);
   const connectedRuntimeCount = Number(healthSummary.connectedRuntimeCount ?? 0);
@@ -322,6 +328,14 @@ export async function buildStartPreview(req: NextRequest, input: StartPreviewInp
         : "Selected capability is not available for launch. It may be archived, deleted, or hidden by your session scope.",
       severity: "blocked",
       fixRoute: "/capabilities",
+    });
+  } else if (stringValue(selectedCapability.id) && workflowCapabilityId && stringValue(selectedCapability.id) !== workflowCapabilityId) {
+    blockers.unshift({
+      id: "workflow-capability-mismatch",
+      label: "Capability",
+      message: "Selected capability does not match the seeded workflow template capability. Choose the template capability or pick a matching workflow.",
+      severity: "blocked",
+      fixRoute: "/workflows/start",
     });
   } else if (!stringValue(selectedCapability.id) && capabilitiesNeedUserSession) {
     blockers.unshift({

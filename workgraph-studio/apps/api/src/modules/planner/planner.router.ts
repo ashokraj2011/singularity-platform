@@ -6,12 +6,19 @@
  *   POST /api/planner/commit   — create a WorkItem for every task; each lands in
  *                                its target capability's inbox.
  */
-import { Router } from 'express'
+import { Router, type Request } from 'express'
 import { z } from 'zod'
 import { validate } from '../../middleware/validate'
 import { converse, commitRoadmap, launchRoadmap, chatMessageSchema, milestoneSchema } from './planner.service'
 
 export const plannerRouter: Router = Router()
+
+function callerBearerToken(req: Request): string | undefined {
+  const auth = req.headers.authorization ?? ''
+  if (!auth.startsWith('Bearer ')) return undefined
+  const token = auth.slice('Bearer '.length).trim()
+  return token || undefined
+}
 
 const converseSchema = z.object({
   capabilityId: z.string().uuid(),
@@ -21,10 +28,14 @@ const converseSchema = z.object({
   maxItems: z.coerce.number().int().min(1).max(40).optional(),
 })
 
-plannerRouter.post('/converse', validate(converseSchema), async (req, res) => {
-  const body = req.body as z.infer<typeof converseSchema>
-  const result = await converse(body, req.user!.userId)
-  res.json(result)
+plannerRouter.post('/converse', validate(converseSchema), async (req, res, next) => {
+  try {
+    const body = req.body as z.infer<typeof converseSchema>
+    const result = await converse(body, req.user!.userId, callerBearerToken(req))
+    res.json(result)
+  } catch (err) {
+    next(err)
+  }
 })
 
 const commitSchema = z.object({
@@ -32,10 +43,14 @@ const commitSchema = z.object({
   milestones: z.array(milestoneSchema).min(1).max(12),
 })
 
-plannerRouter.post('/commit', validate(commitSchema), async (req, res) => {
-  const body = req.body as z.infer<typeof commitSchema>
-  const result = await commitRoadmap(body, req.user!.userId)
-  res.status(201).json(result)
+plannerRouter.post('/commit', validate(commitSchema), async (req, res, next) => {
+  try {
+    const body = req.body as z.infer<typeof commitSchema>
+    const result = await commitRoadmap(body, req.user!.userId, callerBearerToken(req))
+    res.status(201).json(result)
+  } catch (err) {
+    next(err)
+  }
 })
 
 const launchSchema = z.object({
@@ -52,8 +67,12 @@ const launchSchema = z.object({
   message: 'Provide a planner roadmap or a story with at least 8 characters.',
 })
 
-plannerRouter.post('/launch', validate(launchSchema), async (req, res) => {
-  const body = req.body as z.infer<typeof launchSchema>
-  const result = await launchRoadmap(body, req.user!.userId)
-  res.status(201).json(result)
+plannerRouter.post('/launch', validate(launchSchema), async (req, res, next) => {
+  try {
+    const body = req.body as z.infer<typeof launchSchema>
+    const result = await launchRoadmap(body, req.user!.userId, callerBearerToken(req))
+    res.status(201).json(result)
+  } catch (err) {
+    next(err)
+  }
 })

@@ -19,8 +19,20 @@ assert.match(
 
 assert.match(
   shared,
-  /const requestedCapabilityId = stringValue\(input\.capabilityId\)[\s\S]*?const selectedCapability = requestedCapabilityId[\s\S]*?launchableCapabilities\.find[\s\S]*?\?\? \{\}[\s\S]*?: launchableCapabilities\[0\] \?\? \{\}/,
-  "start preview should not silently fall back when a requested capability id is not launchable",
+  /const workflowCapabilityId = stringValue\(workflowTemplate\.capabilityId\)[\s\S]*?const workflowCapability = workflowCapabilityId[\s\S]*?launchableCapabilities\.find[\s\S]*?const demoCapability = launchableCapabilities\.find/,
+  "start preview should inspect the workflow-owned capability before choosing a default capability",
+);
+
+assert.match(
+  shared,
+  /const selectedCapability = requestedCapabilityId[\s\S]*?launchableCapabilities\.find[\s\S]*?\?\? \{\}[\s\S]*?: workflowCapability \?\? demoCapability \?\? launchableCapabilities\[0\] \?\? \{\}/,
+  "start preview should prefer the workflow capability, then the seeded demo capability, before the first active capability",
+);
+
+assert.match(
+  shared,
+  /id: "workflow-capability-mismatch"[\s\S]*?Selected capability does not match the seeded workflow template capability/,
+  "start preview should block manual capability/template mismatches before planner launch",
 );
 
 assert.match(

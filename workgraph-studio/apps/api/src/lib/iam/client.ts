@@ -415,6 +415,44 @@ export type CapabilityCacheRow = {
   isGoverning?: boolean
 }
 
+type IamCapabilityPayload = {
+  id?: string
+  capability_id?: string
+  name?: string
+  capability_type?: string
+  status?: string
+  is_governing?: boolean
+}
+
+async function cacheIamCapability(capabilityId: string, cap: IamCapabilityPayload): Promise<CapabilityCacheRow | null> {
+  const id = String(cap.id ?? capabilityId).trim()
+  const name = String(cap.name ?? '').trim()
+  if (!id || !name) return null
+  const isGov = Boolean(cap.is_governing)
+  try {
+    const upserted = await prisma.capability.upsert({
+      where:  { id },
+      create: { id, name, type: cap.capability_type ?? null, status: cap.status ?? null, isGoverning: isGov },
+      update: { name, type: cap.capability_type ?? null, status: cap.status ?? null, isGoverning: isGov, syncedAt: new Date() },
+    })
+    return { id: upserted.id, name: upserted.name, type: upserted.type, status: upserted.status, isGoverning: upserted.isGoverning }
+  } catch {
+    // Cache table may not exist yet (added in Phase B migration). Return live.
+    return { id, name, type: cap.capability_type ?? null, status: cap.status ?? null, isGoverning: isGov }
+  }
+}
+
+async function findCapabilityByUuidOrSlug(capabilityId: string, callerToken?: string): Promise<IamCapabilityPayload | null> {
+  const res = await iamFetch('/capabilities?page=1&size=500', { token: callerToken }).catch(() => null)
+  if (!res || !res.ok) return null
+  const body = await readIamJson<{ items?: IamCapabilityPayload[] } | IamCapabilityPayload[]>(
+    res,
+    '/capabilities?page=1&size=500',
+  ).catch(() => null)
+  const items = Array.isArray(body) ? body : Array.isArray(body?.items) ? body.items : []
+  return items.find((item) => item.id === capabilityId || item.capability_id === capabilityId) ?? null
+}
+
 export async function getCapability(capabilityId: string, callerToken?: string): Promise<CapabilityCacheRow | null> {
   // Try local cache first
   const cached = await prisma.capability.findUnique({ where: { id: capabilityId } }).catch(() => null)
@@ -423,25 +461,17 @@ export async function getCapability(capabilityId: string, callerToken?: string):
   }
   // Pull from IAM
   const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}`, { token: callerToken }).catch(() => null)
-  if (!res || !res.ok) return null
-  const cap = await readIamJson<{ id: string; name: string; capability_type?: string; status?: string; is_governing?: boolean }>(
-    res,
-    `/capabilities/${capabilityId}`,
-  ).catch(() => null)
-  if (!cap?.id || !cap.name) return null
-  const isGov = Boolean(cap.is_governing)
-  // Upsert into cache
-  try {
-    const upserted = await prisma.capability.upsert({
-      where:  { id: cap.id },
-      create: { id: cap.id, name: cap.name, type: cap.capability_type ?? null, status: cap.status ?? null, isGoverning: isGov },
-      update: { name: cap.name, type: cap.capability_type ?? null, status: cap.status ?? null, isGoverning: isGov, syncedAt: new Date() },
-    })
-    return { id: upserted.id, name: upserted.name, type: upserted.type, status: upserted.status, isGoverning: upserted.isGoverning }
-  } catch {
-    // Cache table may not exist yet (added in Phase B migration). Return live.
-    return { id: cap.id, name: cap.name, type: cap.capability_type ?? null, status: cap.status ?? null, isGoverning: isGov }
+  if (res?.ok) {
+    const cap = await readIamJson<IamCapabilityPayload>(res, `/capabilities/${capabilityId}`).catch(() => null)
+    const row = cap ? await cacheIamCapability(capabilityId, cap) : null
+    if (row) return row
   }
+
+  // IAM's direct lookup is keyed by capability_id/slug in some deployments,
+  // while Workgraph templates often store the IAM UUID. Fall back to the list
+  // endpoint and match either shape so seeded UUIDs like default-demo resolve.
+  const listed = await findCapabilityByUuidOrSlug(capabilityId, callerToken)
+  return listed ? cacheIamCapability(capabilityId, listed) : null
 }
 
 // ── Capability Governance Model (G2) ─────────────────────────────────────────

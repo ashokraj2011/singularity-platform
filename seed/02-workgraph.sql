@@ -41,6 +41,32 @@ ON CONFLICT (id) DO UPDATE SET
   source = EXCLUDED.source,
   "updatedAt" = now();
 
+-- ── IAM capability mirror cache ──────────────────────────────────────────
+-- Planner launch validates workflow-owned capability UUIDs locally first.
+-- IAM's public lookup is slug-keyed for default-demo, so the demo seed must
+-- keep Workgraph's UUID cache warm for fresh bare-metal/demo launches.
+INSERT INTO capabilities_cache
+  (id, name, type, status, "isGoverning", "syncedAt")
+VALUES
+  ('11111111-2222-3333-4444-555555555555',
+   'Default Demo Capability',
+   'platform_capability',
+   'active',
+   false,
+   now()),
+  ('e4ff5b14-743a-46b8-8aab-7409e9b3a7fe',
+   'CCRE',
+   'platform_capability',
+   'active',
+   false,
+   now())
+ON CONFLICT (id) DO UPDATE SET
+  name = EXCLUDED.name,
+  type = EXCLUDED.type,
+  status = EXCLUDED.status,
+  "isGoverning" = EXCLUDED."isGoverning",
+  "syncedAt" = now();
+
 -- ── Default Workflow template ────────────────────────────────────────────
 INSERT INTO workflow_templates
   (id, name, description, status, "currentVersion", "teamId", "capabilityId",

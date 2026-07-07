@@ -307,8 +307,8 @@ function capabilityStatus(capability: Awaited<ReturnType<typeof getCapability>>)
   return String(capability?.status ?? 'ACTIVE').trim().toUpperCase()
 }
 
-async function assertPlannerCapabilityActive(capabilityId: string): Promise<AssignableCapability> {
-  const capability = await getCapability(capabilityId)
+async function assertPlannerCapabilityActive(capabilityId: string, callerToken?: string): Promise<AssignableCapability> {
+  const capability = await getCapability(capabilityId, callerToken)
   if (!capability) throw new ValidationError(`Capability ${capabilityId} is not available to the planner.`)
   const status = capabilityStatus(capability)
   if (status !== 'ACTIVE') {
@@ -317,8 +317,8 @@ async function assertPlannerCapabilityActive(capabilityId: string): Promise<Assi
   return { id: capabilityId, name: capability.name ?? 'Home capability' }
 }
 
-async function assertPlannerAssignmentsActive(homeId: string, milestones: Milestone[]): Promise<void> {
-  const caps = await resolveAssignableCapabilities(homeId, true)
+async function assertPlannerAssignmentsActive(homeId: string, milestones: Milestone[], callerToken?: string): Promise<void> {
+  const caps = await resolveAssignableCapabilities(homeId, true, callerToken)
   const allowed = new Set(caps.map((capability) => capability.id))
   const invalid = flattenTasks(milestones).filter((task) => !allowed.has(task.capabilityId))
   if (invalid.length > 0) {
@@ -331,6 +331,7 @@ async function assertPlannerWorkflowTemplateLaunchable(
   homeId: string,
   milestones: Milestone[],
   workflowTemplateId?: string | null,
+  callerToken?: string,
 ): Promise<void> {
   if (!workflowTemplateId) return
   const workflow = await prisma.workflow.findUnique({
@@ -354,7 +355,7 @@ async function assertPlannerWorkflowTemplateLaunchable(
     )
   }
 
-  await assertPlannerAssignmentsActive(homeId, milestones)
+  await assertPlannerAssignmentsActive(homeId, milestones, callerToken)
   const targetCapabilityIds = new Set(flattenTasks(milestones).map((task) => task.capabilityId))
   if (!workflow.capabilityId || !targetCapabilityIds.has(workflow.capabilityId)) {
     const targets = [...targetCapabilityIds].join(', ')
@@ -365,15 +366,15 @@ async function assertPlannerWorkflowTemplateLaunchable(
   }
 }
 
-export async function resolveAssignableCapabilities(homeId: string, allowChildren: boolean): Promise<AssignableCapability[]> {
-  const home = await assertPlannerCapabilityActive(homeId)
+export async function resolveAssignableCapabilities(homeId: string, allowChildren: boolean, callerToken?: string): Promise<AssignableCapability[]> {
+  const home = await assertPlannerCapabilityActive(homeId, callerToken)
   const list: AssignableCapability[] = [home]
   if (!allowChildren) return list
-  const rels = await listCapabilityRelationships(homeId).catch(() => [])
+  const rels = await listCapabilityRelationships(homeId, callerToken).catch(() => [])
   const childIds = [...new Set(rels.filter((r) => r.relationship_type === CHILD_RELATIONSHIP).map((r) => r.target_capability_id))]
   for (const id of childIds) {
     if (id === homeId) continue
-    const cap = await getCapability(id).catch(() => null)
+    const cap = await getCapability(id, callerToken).catch(() => null)
     if (!cap || cap.isGoverning || capabilityStatus(cap) !== 'ACTIVE') continue
     list.push({ id, name: cap.name ?? id })
   }
@@ -406,10 +407,10 @@ export interface ConverseResult {
   raw?: string
 }
 
-export async function converse(input: ConverseInput, actorId: string): Promise<ConverseResult> {
+export async function converse(input: ConverseInput, actorId: string, callerToken?: string): Promise<ConverseResult> {
   const maxItems = Math.min(Math.max(input.maxItems ?? 16, 1), 40)
   const allowChildren = input.allowChildren !== false
-  const caps = await resolveAssignableCapabilities(input.capabilityId, allowChildren)
+  const caps = await resolveAssignableCapabilities(input.capabilityId, allowChildren, callerToken)
   const allowed = new Set(caps.map((c) => c.id))
   const home = input.capabilityId
   const runCtx = { capability_id: home, user_id: actorId, surface: 'planner' }
@@ -515,9 +516,9 @@ export interface CommitInput {
   milestones: Milestone[]
 }
 
-export async function commitRoadmap(input: CommitInput, actorId: string) {
+export async function commitRoadmap(input: CommitInput, actorId: string, callerToken?: string) {
   const home = input.capabilityId
-  await assertPlannerAssignmentsActive(home, input.milestones)
+  await assertPlannerAssignmentsActive(home, input.milestones, callerToken)
   const tasks = flattenTasks(input.milestones)
   const results = await Promise.allSettled(
     tasks.map((t) => {
@@ -679,15 +680,15 @@ async function summarizeWorkflowInstance(id?: string | null) {
   }))
 }
 
-export async function launchRoadmap(input: LaunchInput, actorId: string) {
+export async function launchRoadmap(input: LaunchInput, actorId: string, callerToken?: string) {
   const intent = getSdlcIntent(input.intent)
   const milestones = input.plan?.length
     ? input.plan
     : input.milestones?.length
       ? input.milestones
       : localLaunchMilestones(input.story ?? '', input.capabilityId)
-  await assertPlannerWorkflowTemplateLaunchable(input.capabilityId, milestones, input.workflowTemplateId)
-  const commit = await commitRoadmap({ capabilityId: input.capabilityId, milestones }, actorId)
+  await assertPlannerWorkflowTemplateLaunchable(input.capabilityId, milestones, input.workflowTemplateId, callerToken)
+  const commit = await commitRoadmap({ capabilityId: input.capabilityId, milestones }, actorId, callerToken)
   const warnings: string[] = []
   let routedWorkItem: unknown = null
   let launchTarget: LaunchTarget | null = null
