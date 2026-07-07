@@ -344,6 +344,12 @@ class RunContext(BaseModel):
     # {summary, diff, changedPaths} receipt as a FINALIZED stage result. Set by
     # the node/stage config (workgraph AGENT_TASK config.executor).
     executor: Optional[str] = None
+    # Stage IN/OUT document contract (the workflow node's declared artifact defs).
+    # compose_copilot_prompt renders these as "input documents to read" (with paths)
+    # and "documents to produce" (with format), so the agent's prompt states exactly
+    # what it consumes and must produce. Small metadata only (no doc bodies).
+    input_artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    output_artifacts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ExecuteRequest(BaseModel):

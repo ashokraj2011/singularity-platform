@@ -1338,13 +1338,24 @@ async function loadCopilotExportData(id: string, opts: { fromPhase?: string } = 
     source_type: 'github',
     source_uri: computed.repo || undefined,
   }
+  // Per-stage IN/OUT document contract — each phase declares its own artifacts, so
+  // the composer can list this stage's inputs to read + outputs to produce.
+  const nodeCfgById = new Map(nodes.map(n => [n.id, (n.config ?? {}) as Record<string, unknown>]))
+  const stageRunContext = (nodeId: string): Record<string, unknown> => {
+    const cfg = nodeCfgById.get(nodeId) ?? {}
+    return {
+      ...runContext,
+      ...(Array.isArray(cfg.inputArtifacts) && cfg.inputArtifacts.length ? { input_artifacts: cfg.inputArtifacts } : {}),
+      ...(Array.isArray(cfg.outputArtifacts) && cfg.outputArtifacts.length ? { output_artifacts: cfg.outputArtifacts } : {}),
+    }
+  }
 
   // Compose the FULL prompt for every runnable phase. Bounded fan-out: each
   // compose triggers a CF repo world-model build, so cap concurrency.
   const composedByNodeId = new Map<string, string>()
   const composedPrompts = await mapLimit(todoStages, 4, s =>
     composeCopilotStagePrompt({
-      task: s.prompt, stageKey: s.key, agentRole: s.role, capabilityId, vars: computed.vars, runContext,
+      task: s.prompt, stageKey: s.key, agentRole: s.role, capabilityId, vars: computed.vars, runContext: stageRunContext(s.nodeId),
     }),
   )
   // Finding #11 — record which stages fell back to the raw task so the caller can warn the
@@ -1488,6 +1499,11 @@ async function composeNodePrompt(id: string, nodeId: string, tenantId?: string) 
     work_item_code: computed.workCode || undefined,
     source_type: 'github',
     source_uri: computed.repo || undefined,
+    // Stage IN/OUT document contract → the composer lists the input documents to
+    // read (with paths) + the outputs to produce (with format), so the Prompt tab
+    // shows them exactly as the run will.
+    ...(Array.isArray(nodeCfg.inputArtifacts) && nodeCfg.inputArtifacts.length ? { input_artifacts: nodeCfg.inputArtifacts } : {}),
+    ...(Array.isArray(nodeCfg.outputArtifacts) && nodeCfg.outputArtifacts.length ? { output_artifacts: nodeCfg.outputArtifacts } : {}),
   }
   const composed = await composeCopilotStagePrompt({
     task: stage.prompt, stageKey: stage.key, agentRole: stage.role, capabilityId, vars: computed.vars, runContext,
