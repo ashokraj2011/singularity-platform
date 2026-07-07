@@ -172,6 +172,9 @@ const startTargetSchema = z.object({
   // Optional per-run "clone into" folder — a name resolved under the runtime's
   // managed workspaces root (never an arbitrary FS path).
   cloneDir: z.string().max(200).optional(),
+  // Optional: push the working-tree code to wi/<code> via the runtime after each
+  // phase's artifacts are finalized (S3). Opt-in; rides the dial-in bridge.
+  pushEachPhase: z.boolean().optional(),
 }).default({})
 
 const routeSchemaBase = z.object({
@@ -433,6 +436,7 @@ workItemsRouter.post('/:id/targets/:targetId/start', validate(startTargetSchema)
       modelAlias: body?.modelAlias,
       sourceRef: body?.sourceRef,
       cloneDir: body?.cloneDir,
+      pushEachPhase: body?.pushEachPhase,
     })
     res.json(result)
   } catch (err) {

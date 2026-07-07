@@ -645,6 +645,41 @@ async function callMcpFinishWorkBranch(args: {
   return parsed.body
 }
 
+/**
+ * S3 — per-phase working-tree push. A thin, NON-THROWING wrapper over
+ * callMcpFinishWorkBranch so a stage/artifact-completion hook can push the
+ * wi/<code> working tree through the runtime WITHOUT the terminal GIT_PUSH node's
+ * evidence/blocking machinery. Returns { ok:false, error } instead of throwing —
+ * callers fire it fire-and-forget; a push failure (commonly: the dial-in bridge
+ * is down) must never disturb the transition it reacts to.
+ */
+export async function pushWorkBranchForStage(args: {
+  instance: WorkflowInstance
+  node: WorkflowNode
+  workItemId?: string
+  workItemCode?: string
+  branchName?: string
+  message: string
+  actorId?: string
+}): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await callMcpFinishWorkBranch({
+      instance: args.instance,
+      node: args.node,
+      remote: 'origin',
+      message: args.message,
+      workItemId: args.workItemId,
+      workItemCode: args.workItemCode,
+      branchName: args.branchName,
+      approvalStatus: 'NOT_REQUIRED',
+      actorId: args.actorId,
+    })
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 export async function activateGitPush(
   node: WorkflowNode,
   instance: WorkflowInstance,

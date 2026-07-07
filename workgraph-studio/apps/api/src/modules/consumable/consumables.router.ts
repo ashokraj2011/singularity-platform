@@ -7,7 +7,7 @@ import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
-import { commitDeliverableConsumable } from '../workflow/lib/commit-deliverable'
+import { commitDeliverableConsumable, pushCodeForConsumable } from '../workflow/lib/commit-deliverable'
 import { type Verdict, runVerification } from './verify.service'
 import {
   assertConsumableTenant,
@@ -228,6 +228,14 @@ async function transitionStatus(
   if (newStatus === 'APPROVED' || newStatus === 'PUBLISHED') {
     void commitDeliverableConsumable(consumableId).catch((err) =>
       logEvent('DeliverableCommitFailed', 'Consumable', consumableId, actorId, {
+        reason: err instanceof Error ? err.message : String(err),
+      }),
+    )
+    // S3 — optionally also push the working-tree CODE via the laptop runtime
+    // (opt-in globals.pushEachPhase). Fire-and-forget + non-fatal: rides the
+    // dial-in bridge and no-ops (logged) while it's down.
+    void pushCodeForConsumable(consumableId).catch((err) =>
+      logEvent('PhaseCodePushFailed', 'Consumable', consumableId, actorId, {
         reason: err instanceof Error ? err.message : String(err),
       }),
     )

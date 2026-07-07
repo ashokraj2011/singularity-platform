@@ -1,6 +1,7 @@
 import { prisma } from '../../../lib/prisma'
 import { logEvent } from '../../../lib/audit'
 import { buildAdapter } from '../../connectors/connector.service'
+import { pushWorkBranchForStage } from '../runtime/executors/GitPushExecutor'
 
 type JsonObject = Record<string, unknown>
 const isRecord = (v: unknown): v is JsonObject => Boolean(v && typeof v === 'object' && !Array.isArray(v))
@@ -77,5 +78,46 @@ export async function commitDeliverableConsumable(consumableId: string): Promise
     path,
     commitSha: result?.commitSha,
     branchCreated: result?.created,
+  })
+}
+
+/**
+ * S3 — the runtime counterpart to commitDeliverableConsumable: when a deliverable
+ * is finalized, optionally push the wi/<code> WORKING TREE (code changes) through
+ * the laptop runtime, so a phase's *code* — not just its documents — lands on the
+ * branch. Opt-in via globals.pushEachPhase (a launch toggle); best-effort +
+ * fire-and-forget. Rides the dial-in bridge, so it no-ops (logged) while the
+ * bridge is down — the cloud doc-commit path (above) is unaffected.
+ */
+export async function pushCodeForConsumable(consumableId: string): Promise<void> {
+  const consumable = await prisma.consumable.findUnique({
+    where: { id: consumableId },
+    include: { instance: true },
+  })
+  if (!consumable || !consumable.instance || !consumable.nodeId) return
+
+  const ctx = asObject(consumable.instance.context)
+  const globals = asObject(ctx._globals)
+  if (globals.pushEachPhase !== true) return // opt-in only
+
+  const vars = asObject(ctx._vars)
+  const workCode = str(vars.workCode) ?? str(vars.workItemCode)
+  if (!workCode) return
+
+  const node = await prisma.workflowNode.findUnique({ where: { id: consumable.nodeId } })
+  if (!node) return
+
+  const result = await pushWorkBranchForStage({
+    instance: consumable.instance,
+    node,
+    workItemCode: workCode,
+    branchName: `wi/${workCode}`,
+    message: `Per-phase push: ${consumable.name}`,
+  })
+  await logEvent(result.ok ? 'PhaseCodePushed' : 'PhaseCodePushFailed', 'Consumable', consumableId, undefined, {
+    instanceId: consumable.instanceId,
+    branch: `wi/${workCode}`,
+    ok: result.ok,
+    error: result.error,
   })
 }
