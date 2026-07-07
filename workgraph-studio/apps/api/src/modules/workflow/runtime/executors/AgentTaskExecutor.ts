@@ -352,6 +352,12 @@ export async function activateAgentTask(
     ? globals.sourceRef.trim()
     : (configString('sourceRef') ?? undefined)
 
+  // S1c — launch-chosen "clone into" folder. Passed to the runtime as
+  // run_context.clone_dir; the materializer resolves it under its managed root.
+  const cloneDirChoice = (typeof globals.cloneDir === 'string' && globals.cloneDir.trim())
+    ? globals.cloneDir.trim()
+    : (configString('cloneDir') ?? undefined)
+
   const executeReq: ExecuteRequest = {
     trace_id: traceId,
     idempotency_key: run.id,
@@ -372,6 +378,8 @@ export async function activateAgentTask(
       trace_id: traceId,
       branch_base: configString('branchBase'),
       branch_name: configString('branchName') ?? (workCode ? `work/${workCode}` : undefined),
+      // S1c — launch-chosen clone folder (resolved under the runtime's managed root).
+      ...(cloneDirChoice ? { clone_dir: cloneDirChoice } : {}),
       // §13.4 — when node.config.executor === 'copilot', CF dispatches the
       // copilot_execute tool to the laptop mcp-server instead of the LLM loop.
       // Both the flag and the task ride run_context because the governed-stage

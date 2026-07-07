@@ -982,7 +982,7 @@ export async function startWorkItemTarget(
   workItemId: string,
   targetId: string,
   userId: string,
-  options: { childWorkflowTemplateId?: string; modelAlias?: string; sourceRef?: string } = {},
+  options: { childWorkflowTemplateId?: string; modelAlias?: string; sourceRef?: string; cloneDir?: string } = {},
 ) {
   const target = await prisma.workItemTarget.findFirst({
     where: { id: targetId, workItemId },
@@ -1052,6 +1052,7 @@ export async function startWorkItemTarget(
           const g: Record<string, unknown> = {}
           if (options.modelAlias) g.modelAlias = options.modelAlias
           if (options.sourceRef && options.sourceRef.trim()) g.sourceRef = options.sourceRef.trim()
+          if (options.cloneDir && options.cloneDir.trim()) g.cloneDir = options.cloneDir.trim()
           return Object.keys(g).length ? g : undefined
         })(),
       })

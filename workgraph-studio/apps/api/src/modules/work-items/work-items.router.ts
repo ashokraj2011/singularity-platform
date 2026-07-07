@@ -169,6 +169,9 @@ const startTargetSchema = z.object({
   // and bases its wi/<code> work branch on. Empty → the designed/capability
   // default (which, when itself empty, makes the runtime blindly guess `main`).
   sourceRef: z.string().max(200).optional(),
+  // Optional per-run "clone into" folder — a name resolved under the runtime's
+  // managed workspaces root (never an arbitrary FS path).
+  cloneDir: z.string().max(200).optional(),
 }).default({})
 
 const routeSchemaBase = z.object({
@@ -429,6 +432,7 @@ workItemsRouter.post('/:id/targets/:targetId/start', validate(startTargetSchema)
       childWorkflowTemplateId: body?.childWorkflowTemplateId,
       modelAlias: body?.modelAlias,
       sourceRef: body?.sourceRef,
+      cloneDir: body?.cloneDir,
     })
     res.json(result)
   } catch (err) {
