@@ -199,6 +199,7 @@ function StartWorkflowDialog({
   const [modelAlias, setModelAlias] = useState('')
   const [sourceRef, setSourceRef] = useState('')
   const [cloneDir, setCloneDir] = useState('')
+  const [pushEachPhase, setPushEachPhase] = useState(false)
 
   // Catalog aliases (Copilot/OpenAI/Anthropic/…) to offer as a per-run model override.
   const connectionsQuery = useQuery<Array<{ alias?: string; label?: string; provider?: string; model?: string }>>({
@@ -251,6 +252,7 @@ function StartWorkflowDialog({
         ...(modelAlias ? { modelAlias } : {}),
         ...(sourceRef.trim() ? { sourceRef: sourceRef.trim() } : {}),
         ...(cloneDir.trim() ? { cloneDir: cloneDir.trim() } : {}),
+        ...(pushEachPhase ? { pushEachPhase: true } : {}),
       }).then(r => r.data as { childWorkflowInstanceId?: string })
     },
     onSuccess: result => {
@@ -377,6 +379,23 @@ function StartWorkflowDialog({
             <p style={{ ...mutedStyle, marginTop: 6 }}>
               Folder name the repo is cloned into on the runtime. Resolved <strong>inside</strong> the runtime’s managed workspaces root (not an arbitrary path). Blank = the default per-work-item folder.
             </p>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={pushEachPhase}
+                onChange={event => setPushEachPhase(event.target.checked)}
+                style={{ marginTop: 2 }}
+              />
+              <span>
+                <span style={{ ...sectionTitleStyle, display: 'block' }}>Push code after each phase</span>
+                <span style={{ ...mutedStyle, display: 'block', marginTop: 4 }}>
+                  Pushes the working-tree code to <code>wi/&lt;code&gt;</code> through the laptop runtime as each phase’s artifacts are approved. Requires the runtime bridge to be connected; document commits happen cloud-side regardless.
+                </span>
+              </span>
+            </label>
           </div>
 
           <div style={footerStyle}>
