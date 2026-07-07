@@ -102,7 +102,7 @@ export function checkAuthorization(body: AuthzCheckRequest): Promise<AuthzCheckR
 // POST on its list path (all super-admin gated server-side; a 403 surfaces as an
 // IdentityError in the create form). MCP servers are capability-scoped and live
 // on a separate surface, so they are intentionally not here.
-export const CREATABLE_VIEWS: IdentityView[] = ["business-units", "teams", "users", "roles", "capabilities"];
+export const CREATABLE_VIEWS: IdentityView[] = ["business-units", "teams", "users", "roles", "permissions", "capabilities"];
 
 export function createIdentity(view: IdentityView, body: Record<string, unknown>): Promise<IdentityRow> {
   return identityRequest<IdentityRow>(pathFor(view), { method: "POST", body: JSON.stringify(body) });
@@ -122,6 +122,14 @@ export function createMcpServer(capabilityId: string, body: Record<string, unkno
 // value). Roles have no PATCH endpoint, so they aren't editable here.
 export function updateIdentity(view: IdentityView, id: string, body: Record<string, unknown>): Promise<IdentityRow> {
   return identityRequest<IdentityRow>(`${pathFor(view)}/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+// Delete a permission key from the catalog. IAM blocks this (409) while the key
+// is still granted to any role, so the caller should surface that message.
+// Create/edit go through createIdentity/updateIdentity("permissions", …) — only
+// delete has no generic entry point, hence this dedicated helper.
+export function deletePermission(permissionKey: string): Promise<void> {
+  return identityRequest<void>(`/permissions/${encodeURIComponent(permissionKey)}`, { method: "DELETE" });
 }
 
 export function updateMcpServer(serverId: string, body: Record<string, unknown>): Promise<IdentityRow> {
@@ -163,6 +171,21 @@ export function assignUserRole(userId: string, roleKey: string): Promise<unknown
 }
 export function revokeUserRole(userId: string, roleKey: string): Promise<void> {
   return identityRequest<void>(`/users/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleKey)}`, { method: "DELETE" });
+}
+
+// role ↔ permission — this is where a role gets its *access*. A role is just a
+// named bag of permission keys; assigning permissions here is what makes an
+// "Architect"/"BA"/"admin" role actually grant anything. All three are
+// super-admin gated server-side (IAM /roles/{key}/permissions). The list may
+// return a bare array or a {items:[]} page, so callers normalize with asRows().
+export function listRolePermissions(roleKey: string): Promise<unknown> {
+  return identityRequest(`/roles/${encodeURIComponent(roleKey)}/permissions`);
+}
+export function addRolePermission(roleKey: string, permissionKey: string): Promise<unknown> {
+  return identityRequest(`/roles/${encodeURIComponent(roleKey)}/permissions`, { method: "POST", body: JSON.stringify({ permission_key: permissionKey }) });
+}
+export function removeRolePermission(roleKey: string, permissionKey: string): Promise<void> {
+  return identityRequest<void>(`/roles/${encodeURIComponent(roleKey)}/permissions/${encodeURIComponent(permissionKey)}`, { method: "DELETE" });
 }
 
 // user ↔ team

@@ -35,3 +35,16 @@ class CreateRoleRequest(BaseModel):
 
 class AssignPermissionRequest(BaseModel):
     permission_key: str
+
+
+class CreatePermissionRequest(BaseModel):
+    permission_key: str
+    category: Optional[str] = None
+    description: Optional[str] = None
+
+
+class UpdatePermissionRequest(BaseModel):
+    # The permission_key is the enforcement anchor (code/policies match on it) and
+    # is intentionally immutable — only the human-facing metadata is editable.
+    category: Optional[str] = None
+    description: Optional[str] = None

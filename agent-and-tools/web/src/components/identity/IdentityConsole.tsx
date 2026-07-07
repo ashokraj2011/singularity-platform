@@ -5,6 +5,7 @@ import Link from "next/link";
 import useSWR from "swr";
 import { CircleAlert, GitBranch, ShieldCheck, ShieldX, Users } from "lucide-react";
 import {
+  addRolePermission,
   addTeamMember,
   asRows,
   assignUserRole,
@@ -12,11 +13,14 @@ import {
   createIdentity,
   createMcpServer,
   deleteMcpServer,
+  deletePermission,
   listCapabilityRelationships,
   listIdentity,
   listMcpServers,
+  listRolePermissions,
   listUserRoles,
   listUserTeams,
+  removeRolePermission,
   removeTeamMember,
   revokeUserRole,
   updateIdentity,
@@ -121,7 +125,7 @@ const columns: Record<IdentityView, Array<{ label: string; keys: string[] }>> = 
   permissions: [
     { label: "Permission", keys: ["name", "permission_key"] },
     { label: "Key", keys: ["permission_key", "key"] },
-    { label: "Scope", keys: ["scope", "resource_type"] },
+    { label: "Category", keys: ["category", "scope", "resource_type"] },
     { label: "Description", keys: ["description"] },
   ],
   "sharing-grants": [
@@ -198,6 +202,14 @@ const createForms: Partial<Record<IdentityView, { singular: string; fields: Fiel
       { key: "role_scope", label: "Scope", placeholder: "capability" },
     ],
   },
+  permissions: {
+    singular: "Permission",
+    fields: [
+      { key: "permission_key", label: "Key", required: true, placeholder: "workflow:review", hint: "Immutable action key that code/policies match on. Convention: resource:action. A new key doesn't gate anything until something checks it." },
+      { key: "category", label: "Category", placeholder: "workflow", hint: "Groups the key in the catalog (e.g. workflow, agent, tool)." },
+      { key: "description", label: "Description", textarea: true },
+    ],
+  },
   capabilities: {
     singular: "Capability",
     fields: [
@@ -270,6 +282,16 @@ const editForms: Partial<Record<IdentityView, { idKey: string; fields: FieldSpec
       { key: "status", label: "Status", placeholder: "active | suspended" },
       { key: "visibility", label: "Visibility", placeholder: "private | shared" },
       { key: "tags", label: "Tags", placeholder: "comma, separated" },
+    ],
+  },
+  // Only the human-facing metadata is editable — the permission_key is the
+  // enforcement anchor (immutable server-side), so it isn't offered as a field.
+  // PATCH targets /permissions/{permission_key}, hence idKey.
+  permissions: {
+    idKey: "permission_key",
+    fields: [
+      { key: "category", label: "Category", placeholder: "workflow" },
+      { key: "description", label: "Description", textarea: true },
     ],
   },
 };
@@ -379,9 +401,29 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<IdentityRow | null>(null);
   const [managing, setManaging] = useState<IdentityRow | null>(null);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<string | null>(null);
   const form = createForms[view];
   const editable = Boolean(editForms[view]) && Boolean(onCreated);
-  const colCount = tableColumns.length + (editable ? 1 : 0);
+  // Views with a per-row management modal (relationship editing) rather than a
+  // flat field edit. Users manage teams+roles; roles manage their permission
+  // grants. These render an actions column even when the entity has no PATCH
+  // (roles have no PATCH endpoint, so `editable` is false for them).
+  const manageable = view === "users" || view === "roles";
+  const colCount = tableColumns.length + (editable || manageable ? 1 : 0);
+
+  // Permission catalog delete. IAM blocks (409) if the key is still granted to a
+  // role, so surface that message inline rather than as a silent failure.
+  async function removePermission(row: IdentityRow) {
+    const key = String(row.permission_key ?? row.key ?? "");
+    if (!key || !onCreated) return;
+    if (!window.confirm(`Delete permission "${key}"? It is removed from the catalog. Keys shipped in the default seed reappear on the next IAM restart.`)) return;
+    setDeletingKey(key); setRowError(null);
+    try { await deletePermission(key); onCreated(); }
+    catch (e) { setRowError(e instanceof Error ? e.message : String(e)); }
+    finally { setDeletingKey(null); }
+  }
+
   return (
     <section className="card" style={{ overflow: "hidden" }}>
       <div style={{ padding: 18, borderBottom: "1px solid var(--color-outline-variant)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
@@ -411,31 +453,44 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
       {managing && view === "users" ? (
         <ManageUserModal user={managing} onClose={() => setManaging(null)} />
       ) : null}
+      {managing && view === "roles" ? (
+        <ManageRolePermissionsModal role={managing} onClose={() => setManaging(null)} />
+      ) : null}
+      {rowError ? <div style={{ padding: "10px 18px 0" }}><SmallError error={rowError} /></div> : null}
       <div style={{ overflowX: "auto" }}>
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50">
               {tableColumns.map((column) => <th key={column.label} className="text-left px-4 py-3 font-medium text-slate-600">{column.label}</th>)}
-              {editable ? <th className="px-4 py-3" /> : null}
+              {editable || manageable ? <th className="px-4 py-3" /> : null}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {rows.map((row, index) => (
               <tr key={String(row.id ?? index)} className="hover:bg-slate-50">
                 {tableColumns.map((column) => <td key={column.label} className="px-4 py-3 text-slate-700">{formatCell(pick(row, column.keys))}</td>)}
-                {editable ? (
+                {editable || manageable ? (
                   <td className="px-4 py-3 text-right">
                     <div style={{ display: "inline-flex", gap: 6, justifyContent: "flex-end" }}>
                       {view === "users" ? (
                         <button type="button" onClick={() => setManaging(row)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-on-surface-variant)", cursor: "pointer" }}>Teams &amp; roles</button>
                       ) : null}
+                      {view === "roles" ? (
+                        // Roles have no PATCH endpoint (not `editable`), but their access —
+                        // the permission grants that make a role mean something — is managed
+                        // through a relationship modal, same pattern as user teams/roles.
+                        <button type="button" onClick={() => setManaging(row)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-on-surface-variant)", cursor: "pointer" }}>Permissions</button>
+                      ) : null}
                       {view === "capabilities" ? (
                         // Capabilities have a dedicated full-screen editor (owner, agents,
                         // architecture, lifecycle) — send Edit there instead of the flat modal.
                         <Link href={`/capabilities/${encodeURIComponent(String(row.capability_id ?? row.id ?? ""))}`} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-primary)", cursor: "pointer", textDecoration: "none" }}>Edit</Link>
-                      ) : (
+                      ) : editable ? (
                         <button type="button" onClick={() => setEditing(row)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-primary)", cursor: "pointer" }}>Edit</button>
-                      )}
+                      ) : null}
+                      {view === "permissions" && onCreated ? (
+                        <button type="button" disabled={deletingKey === String(row.permission_key ?? row.key ?? "")} onClick={() => void removePermission(row)} style={{ border: "1px solid rgba(185,28,28,0.28)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "#b91c1c", cursor: "pointer" }}>{deletingKey === String(row.permission_key ?? row.key ?? "") ? "Deleting…" : "Delete"}</button>
+                      ) : null}
                     </div>
                   </td>
                 ) : null}
@@ -591,6 +646,8 @@ function teamRowId(r: Record<string, unknown>): string { return String(r.id ?? r
 function teamRowLabel(r: Record<string, unknown>): string { return String(r.name ?? r.team_name ?? r.team_key ?? teamRowId(r)); }
 function roleRowKey(r: Record<string, unknown>): string { return String(r.role_key ?? r.key ?? r.roleKey ?? ""); }
 function roleRowLabel(r: Record<string, unknown>): string { return String(r.name ?? r.role_name ?? roleRowKey(r)); }
+function permRowKey(p: Record<string, unknown>): string { return String(p.permission_key ?? p.key ?? p.permissionKey ?? ""); }
+function permRowLabel(p: Record<string, unknown>): string { const k = permRowKey(p); const n = String(p.name ?? ""); return n && n !== k ? `${n} · ${k}` : k; }
 
 // Manage a user's team memberships and platform-role assignments after creation.
 // Add/remove wire directly to the IAM relationship endpoints; the list refreshes
@@ -684,6 +741,101 @@ function ManageUserModal({ user, onClose }: { user: IdentityRow; onClose: () => 
                   : roles.map((r) => chip(roleRowLabel(r), () => void run(() => revokeUserRole(userId, roleRowKey(r)))))}
               </div>
               {addPicker(addableRoles, (v) => void run(() => assignUserRole(userId, v)), "Assign role…")}
+            </section>
+          </div>
+        )}
+        {error ? <div style={{ marginTop: 14 }}><SmallError error={error} /></div> : null}
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 18 }}>
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Manage the permission grants on a single role. A role is just a named bag of
+// permission keys; this modal is where an operator gives a role its access —
+// e.g. create a "BA"/"Architect"/"admin" role, then grant it the permissions it
+// needs. Mirrors ManageUserModal's chip+picker relationship pattern, backed by
+// IAM /roles/{key}/permissions (add/remove are super-admin gated server-side).
+function ManageRolePermissionsModal({ role, onClose }: { role: IdentityRow; onClose: () => void }) {
+  const roleKey = roleRowKey(role);
+  const roleLabel = roleRowLabel(role);
+  const [perms, setPerms] = useState<Record<string, unknown>[]>([]);
+  const [permOpts, setPermOpts] = useState<{ value: string; label: string }[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  async function refresh() {
+    const p = await listRolePermissions(roleKey);
+    setPerms(asRows(p));
+  }
+
+  // Load the role's current grants plus the full permission catalog so the
+  // operator picks from real permission keys rather than typing them.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [p, catalog] = await Promise.all([
+          listRolePermissions(roleKey),
+          listIdentity("permissions", 300),
+        ]);
+        if (cancelled) return;
+        setPerms(asRows(p));
+        setPermOpts((catalog.items ?? []).map((x) => ({ value: permRowKey(x), label: permRowLabel(x) })).filter((o) => o.value));
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [roleKey]);
+
+  async function run(fn: () => Promise<unknown>) {
+    setBusy(true); setError(null);
+    try { await fn(); await refresh(); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  }
+
+  const currentKeys = new Set(perms.map(permRowKey));
+  const addablePerms = permOpts.filter((o) => !currentKeys.has(o.value));
+
+  const chip = (label: string, onRemove: () => void) => (
+    <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid var(--color-outline-variant)", background: "var(--color-surface-low)", borderRadius: 999, padding: "3px 6px 3px 10px", fontSize: 12, fontWeight: 700, color: "var(--color-on-surface)" }}>
+      {label}
+      <button type="button" disabled={busy} onClick={onRemove} aria-label={`Remove ${label}`} style={{ border: "none", background: "none", cursor: "pointer", color: "var(--color-outline)", fontSize: 15, lineHeight: 1, padding: 0 }}>×</button>
+    </span>
+  );
+
+  const addPicker = (options: { value: string; label: string }[], onAdd: (v: string) => void, placeholder: string) => (
+    <select value="" disabled={busy || options.length === 0} onChange={(e) => { if (e.target.value) onAdd(e.target.value); }} style={{ ...fieldInputStyle, maxWidth: 320 }}>
+      <option value="">{options.length === 0 ? "— nothing to add —" : placeholder}</option>
+      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  );
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "6vh 16px", zIndex: 60 }}>
+      <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "min(560px, 96vw)", maxHeight: "88vh", overflow: "auto", padding: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>Permissions · {roleLabel}</h2>
+          <button type="button" onClick={onClose} aria-label="Close" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--color-outline)", fontSize: 22, lineHeight: 1 }}>×</button>
+        </div>
+        <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--color-outline)" }}>Access granted by the <strong>{roleKey}</strong> role. Assign these to users (or use as a workflow role) to grant this access. Changes apply immediately (super-admin).</p>
+
+        {loading ? <p style={{ fontSize: 13, color: "var(--color-outline)" }}>Loading…</p> : (
+          <div style={{ display: "grid", gap: 18 }}>
+            <section>
+              <div className="label-xs" style={{ marginBottom: 8 }}>Granted permissions</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                {perms.length === 0 ? <span style={{ fontSize: 12, color: "var(--color-outline)" }}>No permissions granted — this role grants nothing yet.</span>
+                  : perms.map((p) => chip(permRowLabel(p), () => void run(() => removeRolePermission(roleKey, permRowKey(p)))))}
+              </div>
+              {addPicker(addablePerms, (v) => void run(() => addRolePermission(roleKey, v)), "Grant permission…")}
             </section>
           </div>
         )}
