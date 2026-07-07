@@ -81,6 +81,19 @@ const A = {
   release:        { type: 'release-plan',     name: 'Release & Rollback Plan' },
 } as const
 
+// Per-type file layout + a starter markdown template for each deliverable. This is
+// what lets the composed prompt show the REAL save path
+// (deliverables/<code>/<role>/<FILE>.md — not the logical binding key) and a
+// skeleton the agent should follow when producing the document.
+const A_META: Record<string, { folder: string; file: string; template: string }> = {
+  'requirements':    { folder: 'product-owner', file: 'REQUIREMENTS.md',    template: '# Requirements & Acceptance\n\n## Summary\n\n## Functional requirements\n- \n\n## Acceptance criteria\n- \n\n## Edge cases\n- \n\n## Out of scope\n- ' },
+  'design':          { folder: 'architect',     file: 'DESIGN.md',          template: '# Design Document\n\n## Overview\n\n## Components\n\n## Data flow\n\n## Interfaces & contracts\n\n## Risks & trade-offs\n\n## Alternatives considered' },
+  'implementation':  { folder: 'developer',     file: 'IMPLEMENTATION.md',  template: '# Implementation Summary\n\n## What changed\n\n## Why\n\n## Files touched\n- \n\n## Tests added\n- \n\n## How to verify' },
+  'test-report':     { folder: 'qa',            file: 'TEST_REPORT.md',     template: '# Test Report\n\n## Scope\n\n## Results\n\n## Coverage\n\n## Defects & follow-ups\n- ' },
+  'risk-assessment': { folder: 'security',      file: 'RISK_ASSESSMENT.md', template: '# Risk Assessment\n\n## Summary\n\n## Findings\n| Severity | Issue | Recommendation |\n| --- | --- | --- |\n\n## Input validation & authz\n\n## Secrets & dependencies' },
+  'release-plan':    { folder: 'devops',        file: 'RELEASE.md',         template: '# Release & Rollback Plan\n\n## Release steps\n1. \n\n## Rollback steps\n1. \n\n## Monitoring & alerts\n\n## Ops runbook' },
+}
+
 interface Phase { key: string; label: string; agent: string; role: string; task: string; reads?: ArtifactSpec[]; writes?: ArtifactSpec[] }
 const PHASES: Phase[] = [
   {
@@ -125,16 +138,24 @@ const PHASES: Phase[] = [
 // (WorkflowRuntime.applyOutputBindings) already understand.
 function artifactDefs(specs: ArtifactSpec[] | undefined, direction: 'INPUT' | 'OUTPUT'): Json {
   const prefix = direction === 'INPUT' ? 'in' : 'out'
-  return (specs ?? []).map((s) => ({
-    id: `${prefix}-${s.type}`,
-    name: s.name,
-    artifactType: s.type,
-    direction,
-    format: 'MARKDOWN',
-    required: true,
-    description: '',
-    bindingPath: `deliverables.${s.type}`,
-  })) as unknown as Json
+  return (specs ?? []).map((s) => {
+    const m = A_META[s.type]
+    return {
+      id: `${prefix}-${s.type}`,
+      name: s.name,
+      artifactType: s.type,
+      direction,
+      format: 'MARKDOWN',
+      required: true,
+      description: '',
+      bindingPath: `deliverables.${s.type}`,
+      // Real repo file path (interpolated at prompt time) — what the composer shows
+      // the agent, instead of the logical bindingPath.
+      ...(m ? { path: `deliverables/{{instance.vars.workCode}}/${m.folder}/${m.file}` } : {}),
+      // Markdown skeleton the producing stage should follow (OUTPUT only).
+      ...(direction === 'OUTPUT' && m ? { template: m.template } : {}),
+    }
+  }) as unknown as Json
 }
 
 async function upsertNode(n: { id: string; nodeType: string; label: string; config?: Json; x: number }) {
