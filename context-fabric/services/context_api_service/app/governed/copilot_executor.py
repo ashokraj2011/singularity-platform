@@ -18,6 +18,7 @@ Copilot auth already are.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import re
 from typing import Any
 
@@ -100,13 +101,14 @@ async def compose_copilot_prompt(
     optional (mcp/index may be unavailable).
     """
     code_md = ""
+    world_model_reason: str | None = None
     try:
         # Mirror the governed loop (turn.py): do NOT pass mcp_base_url. Transport
         # is placement-driven — when this run is on the user's laptop the builder
         # dispatches over the code-context bridge frame (the repo/worktree is on
         # the laptop); otherwise it POSTs the static MCP_SERVER_URL. Forcing the
         # env var here is what previously left the world model empty.
-        pkg, _reason = await build_code_context_for_governed_turn(
+        pkg, world_model_reason = await build_code_context_for_governed_turn(
             task_text=resolved_task,
             capability_id=capability_id,
             run_context=run_context,
@@ -116,8 +118,11 @@ async def compose_copilot_prompt(
         )
         if pkg:
             code_md = package_markdown(pkg) or ""
-    except Exception:
+            if not code_md.strip():
+                world_model_reason = world_model_reason or "code_context.skipped: package produced empty markdown"
+    except Exception as exc:  # noqa: BLE001 — best-effort; the world model is optional
         code_md = ""
+        world_model_reason = f"code_context exception: {exc}"
 
     description = _work_item_description(vars)
     role = (agent_role or "").strip()
@@ -135,6 +140,21 @@ async def compose_copilot_prompt(
     parts.append(f"## Your task\n{resolved_task.strip()}")
     if code_md.strip():
         parts.append(f"## Repository world model (code context)\n{code_md.strip()}")
+    elif world_model_reason:
+        # Don't SILENTLY drop the section — surface WHY the repo world model is
+        # absent, both in the logs (operator) and inline in the prompt (visible in
+        # the run viewer's Prompt tab), so missing grounding is diagnosable instead
+        # of a mystery. The most common cause on the hybrid setup is
+        # RUNTIME_NOT_CONNECTED (no laptop bridge connected for the code-context frame).
+        logging.getLogger("context_api.compose_copilot").warning(
+            "no repo world model (stage=%s capability=%s): %s",
+            stage_key, capability_id, world_model_reason,
+        )
+        parts.append(
+            "## Repository world model (code context)\n"
+            "_Unavailable for this run — read the repository files directly to build your context._\n"
+            f"_diagnostic: {world_model_reason}_"
+        )
     # Clarifying-questions protocol. When Copilot has to assume something to
     # proceed (most common in the requirements stage), it lists the open
     # questions in a `## Questions` block at the END of its reply. mcp-server's
