@@ -630,6 +630,28 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/refine', async (req, res, next)
   }
 })
 
+// Edit an agent phase's TASK/instruction at runtime, then re-run it. Sets
+// config._taskOverride, which AgentTaskExecutor prefers over the seeded task; the
+// composer still wraps it with the role + work item + repo world model, so grounding
+// is preserved. Used by the run-graph Prompt tab "Edit task".
+workflowInstancesRouter.post('/:id/nodes/:nodeId/task', async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    const nodeId = req.params.nodeId as string
+    const task = typeof req.body?.task === 'string' ? req.body.task.trim() : ''
+    if (!task) return res.status(400).json({ error: 'task is required' })
+    await assertInstancePermission(req.user!.userId, id, 'edit')
+    const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } }), resolveTenantFromRequest(req))
+    if (!node) return res.status(404).json({ error: 'node not found in this run' })
+    const config = { ...((node.config ?? {}) as Record<string, unknown>), _taskOverride: task }
+    await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({ where: { id: nodeId }, data: { config: config as Prisma.InputJsonValue } }), resolveTenantFromRequest(req))
+    const result = await restartNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
+    res.json({ ...result, taskOverridden: true })
+  } catch (err) {
+    next(err)
+  }
+})
+
 // Answer Copilot's clarifying questions, then re-run the node with the answers
 // injected. AgentTaskExecutor appends config._copilotAnswers to the prompt as
 // confirmed decisions. Used by the run-graph "Questions" tab.

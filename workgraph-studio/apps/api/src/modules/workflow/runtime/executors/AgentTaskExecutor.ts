@@ -144,7 +144,9 @@ export async function activateAgentTask(
       .catch(() => null)
     if (launcher?.iamUserId) launcherIamId = launcher.iamUserId
   }
-  const baseTask = configString('task')
+  // Runtime task override (run-graph Prompt tab "Edit task") wins over the seeded
+  // task; composition still adds the role + work item + repo world model around it.
+  const baseTask = configString('_taskOverride') || configString('task')
   // Refine loop: the run-graph Chat "Send feedback" sets _refineFeedback on the
   // node + restarts it; append the note so the re-run addresses it (copilot prompt
   // or governed task alike).
