@@ -9,7 +9,7 @@ export function PlatformThemeProvider({ children }: { children: ReactNode }) {
       attribute="data-theme"
       defaultTheme="current"
       enableSystem={false}
-      themes={["current", "fidelity-green"]}
+      themes={["current", "green"]}
     >
       {children}
     </ThemeProvider>

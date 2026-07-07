@@ -58,7 +58,7 @@ const SETTINGS_KEY = "singularity.platform.settings.v1";
 
 const sections: Array<{ id: SettingsSection; label: string; description: string; icon: LucideIcon }> = [
   { id: "profile", label: "Profile", description: "Signed-in user, shell defaults, and local mode.", icon: User },
-  { id: "appearance", label: "Appearance", description: "Switch between the current palette and Fidelity-style green.", icon: Palette },
+  { id: "appearance", label: "Appearance", description: "Switch between the current palette and enterprise green.", icon: Palette },
   { id: "runtime", label: "Runtime + LLM", description: "MCP dial-in, model provider readiness, and setup commands.", icon: Cpu },
   { id: "source", label: "Git + Source", description: "Repository broker, GitHub connections, and push identity.", icon: GitBranch },
   { id: "notifications", label: "Notifications", description: "Choose which platform signals appear in the bell.", icon: Bell },
@@ -298,7 +298,7 @@ export default function SettingsPage() {
                   </div>
                   <ThemeSwitcher />
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-600">
-                    The Fidelity Green option is an enterprise green/navy palette inspired by the requested visual direction. It does not use official brand assets.
+                    The Green option is an enterprise green/navy palette with white panels. It does not use any official brand assets.
                   </div>
                 </div>
               )}

@@ -81,7 +81,7 @@
     --font-mono: 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
   }
 
-  [data-theme="fidelity-green"] {
+  [data-theme="green"] {
     --brand-forest:             #f7faf7;
     --brand-forest-deep:        #dfe8df;
     --brand-warm-white:         #071829;
@@ -111,17 +111,19 @@
     --accent-governance:         #263947;
     --accent-governance-soft:    #edf3f6;
 
-    --color-surface:             #f2f6f3;
+    /* Enterprise green: green accents on WHITE panels — surfaces stay neutral
+       (not green-tinted) so cards/panels/containers read as white. */
+    --color-surface:             #f4f6f8;
     --color-surface-bright:      #ffffff;
-    --color-surface-container:   #e2eae3;
-    --color-surface-low:         #f8fbf8;
-    --color-surface-high:        #d7e2d8;
+    --color-surface-container:   #ffffff;
+    --color-surface-low:         #fafbfc;
+    --color-surface-high:        #eceef1;
     --color-card:                #ffffff;
 
     --color-on-surface:          #071829;
     --color-on-surface-variant:  #536172;
     --color-outline:             #708093;
-    --color-outline-variant:     #d7e2d8;
+    --color-outline-variant:     #e3e7ec;
 
     --color-success:  #26734a;
     --color-warning:  #b06b00;
@@ -132,12 +134,12 @@
     --shadow-card: 0 1px 2px rgba(10, 34, 64, 0.05), 0 12px 30px rgba(10, 34, 64, 0.08);
     --shadow-lift: 0 20px 48px rgba(10, 34, 64, 0.16);
     --body-background:
-      linear-gradient(180deg, rgba(255,255,255,0.94) 0%, rgba(242,246,243,0) 260px),
+      linear-gradient(180deg, rgba(255,255,255,0.94) 0%, rgba(244,246,248,0) 260px),
       var(--color-surface);
-    --shell-sidebar-background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(242,246,243,0.98) 100%);
+    --shell-sidebar-background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,252,0.98) 100%);
     --shell-topbar-background: rgba(255,255,255,0.92);
     --page-hero-background:
-      linear-gradient(135deg, rgba(255,255,255,0.98), rgba(232,241,232,0.94)),
+      linear-gradient(135deg, rgba(255,255,255,0.98), rgba(244,246,248,0.94)),
       var(--color-surface-bright);
   }
 
