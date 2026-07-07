@@ -328,7 +328,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
         <button onClick={() => downloadCopilotExport('yaml')} style={topBtn} title="Download this run as a Copilot workflow YAML with artifact/metric pushback instructions"><Download size={13} /> Copilot YAML</button>
         <button onClick={() => downloadCopilotExport('runner')} style={topBtn} title="Download an executable script that runs Copilot CLI and posts artifacts/metrics back to the platform"><Download size={13} /> Runner</button>
         <button disabled={!selected} onClick={() => selected && downloadCopilotExport('yaml', selected)} style={{ ...topBtn, opacity: selected ? 1 : 0.45, cursor: selected ? 'pointer' : 'not-allowed' }} title="Select a phase, then download a Copilot handoff YAML starting there: earlier phases inlined as context (full artifacts + diffs), this phase onward as runnable composed prompts to continue on your own Copilot CLI"><Download size={13} /> Handoff from phase</button>
-        <button onClick={() => { setShowCatalog(c => !c); setShowActivity(false); setSelected(null) }} style={{ ...topBtn, ...(showCatalog ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }}><Library size={13} /> Catalog</button>
+        <button onClick={() => { setShowCatalog(c => !c); setShowActivity(false); setSelected(null) }} style={{ ...topBtn, ...(showCatalog ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }} title="All documents this run produced, grouped by agent (mirrors git deliverables/<work-id>/<agent>/) — view or edit each"><Library size={13} /> Documents</button>
         {usesCopilot && (
           <button onClick={() => { setShowActivity(a => !a); setShowCatalog(false); setSelected(null) }} style={{ ...topBtn, ...(showActivity ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }} title="Live governed activity for this copilot run (LLM calls, tools, phases, commits)"><Activity size={13} /> Live activity</button>
         )}
@@ -1074,6 +1074,21 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
   const [verdicts, setVerdicts] = useState<Record<string, Verdict>>({})
   const [forceConfirm, setForceConfirm] = useState<string | null>(null)
   const [openDoc, setOpenDoc] = useState<Consumable | null>(null)
+  // Edit-and-save from the Documents viewer (re-opens the governance gate server-side).
+  const [editingDoc, setEditingDoc] = useState(false)
+  const [docDraft, setDocDraft] = useState('')
+  const saveDocMut = useMutation({
+    mutationFn: ({ id, content }: { id: string; content: string }) =>
+      api.patch(`/consumables/${id}/content`, { content }).then(r => r.data as Consumable),
+    onSuccess: (updated) => {
+      toast.success('Saved — verification re-opened for this document')
+      qc.invalidateQueries({ queryKey: ['run-graph-all-consumables', instanceId] })
+      qc.invalidateQueries({ queryKey: ['run-graph-consumables'] })
+      setEditingDoc(false)
+      if (updated) setOpenDoc(updated)
+    },
+    onError: (e) => toast.error(errText(e, 'save failed')),
+  })
   const approveMut = useMutation({
     mutationFn: ({ cid, force }: { cid: string; force?: boolean }) =>
       api.post(`/consumables/${cid}/approve${force ? '?force=true' : ''}`).then(r => r.data),
@@ -1124,9 +1139,9 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
     <div style={{ width: 400, flexShrink: 0, background: '#fff', borderLeft: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid #e2e8f0' }}>
         <Library size={16} color="#0ea5e9" />
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 700, color: '#0f172a' }}>Artifact Catalog</div>
-          <div style={{ fontSize: 10.5, color: '#94a3b8' }}>{all.length} document{all.length === 1 ? '' : 's'} · by phase</div>
+        <div style={{ flex: 1 }} title="Grouped by agent — mirrors the git layout deliverables/<work-id>/<agent>/. Open a document to view or edit it.">
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: '#0f172a' }}>Documents</div>
+          <div style={{ fontSize: 10.5, color: '#94a3b8' }}>{all.length} document{all.length === 1 ? '' : 's'} · by agent</div>
         </div>
         <button onClick={runVerifyAll} disabled={!!verifyAll || all.length === 0}
           title="Run the verifier agent on every document"
@@ -1192,13 +1207,23 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
         ))}
       </div>
       {openDoc && (
-        <div onClick={() => setOpenDoc(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 24 }}>
+        <div onClick={() => { setOpenDoc(null); setEditingDoc(false) }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 24 }}>
           <div onClick={e => e.stopPropagation()} style={{ width: 'min(840px, 92vw)', maxHeight: '88vh', background: '#fff', borderRadius: 14, display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 12px 48px rgba(0,0,0,0.3)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '13px 16px', borderBottom: '1px solid #e2e8f0' }}>
               <FileText size={15} color="#0ea5e9" />
               <div style={{ flex: 1, fontSize: 14, fontWeight: 700, color: '#0f172a' }}>{openDoc.name ?? 'Artifact'}</div>
-              {(openDoc.updatedAt || openDoc.createdAt) && <span style={{ fontSize: 10.5, color: '#94a3b8' }}>{new Date(openDoc.updatedAt ?? openDoc.createdAt!).toLocaleString()}</span>}
-              <button onClick={() => setOpenDoc(null)} style={{ ...topBtn, padding: 6 }}><X size={15} /></button>
+              {editingDoc ? (
+                <>
+                  <button onClick={() => saveDocMut.mutate({ id: openDoc.id, content: docDraft })} disabled={saveDocMut.isPending || docDraft === (openDoc.formData?.content ?? '')} style={{ ...catBtn, color: '#0284c7', borderColor: '#bae6fd', opacity: (saveDocMut.isPending || docDraft === (openDoc.formData?.content ?? '')) ? 0.6 : 1 }}>{saveDocMut.isPending ? 'Saving…' : 'Save'}</button>
+                  <button onClick={() => setEditingDoc(false)} disabled={saveDocMut.isPending} style={{ ...catBtn, color: '#64748b', borderColor: '#e2e8f0' }}>Cancel</button>
+                </>
+              ) : (
+                <>
+                  {canEditConsumable(openDoc.status) && <button onClick={() => { setDocDraft(openDoc.formData?.content ?? ''); setEditingDoc(true) }} title="Edit" style={{ ...topBtn, padding: 6 }}><Pencil size={14} /></button>}
+                  {(openDoc.updatedAt || openDoc.createdAt) && <span style={{ fontSize: 10.5, color: '#94a3b8' }}>{new Date(openDoc.updatedAt ?? openDoc.createdAt!).toLocaleString()}</span>}
+                </>
+              )}
+              <button onClick={() => { setOpenDoc(null); setEditingDoc(false) }} style={{ ...topBtn, padding: 6 }}><X size={15} /></button>
             </div>
             <div style={{ flex: 1, overflow: 'auto', padding: '18px 22px', minHeight: 0 }}>
               {(() => {
@@ -1215,7 +1240,13 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
                   </div>
                 )
               })()}
-              {isCodeArtifact(openDoc.name)
+              {editingDoc ? (
+                <>
+                  <textarea value={docDraft} onChange={e => setDocDraft(e.target.value)} spellCheck={false}
+                    style={{ width: '100%', boxSizing: 'border-box', minHeight: '52vh', fontSize: 12.5, lineHeight: 1.55, fontFamily: 'ui-monospace, monospace', color: '#334155', border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, resize: 'vertical' }} />
+                  <div style={{ marginTop: 8, fontSize: 10.5, color: '#94a3b8' }}>Saving snapshots a new version and re-opens verification for this document.</div>
+                </>
+              ) : isCodeArtifact(openDoc.name)
                 ? <pre style={{ margin: 0, fontSize: 12.5, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#334155', fontFamily: 'ui-monospace, monospace' }}>{openDoc.formData?.content ?? '(empty)'}</pre>
                 : <MarkdownView source={openDoc.formData?.content ?? '(empty)'} />}
             </div>
