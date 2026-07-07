@@ -165,6 +165,21 @@ export function revokeUserRole(userId: string, roleKey: string): Promise<void> {
   return identityRequest<void>(`/users/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleKey)}`, { method: "DELETE" });
 }
 
+// role ↔ permission — this is where a role gets its *access*. A role is just a
+// named bag of permission keys; assigning permissions here is what makes an
+// "Architect"/"BA"/"admin" role actually grant anything. All three are
+// super-admin gated server-side (IAM /roles/{key}/permissions). The list may
+// return a bare array or a {items:[]} page, so callers normalize with asRows().
+export function listRolePermissions(roleKey: string): Promise<unknown> {
+  return identityRequest(`/roles/${encodeURIComponent(roleKey)}/permissions`);
+}
+export function addRolePermission(roleKey: string, permissionKey: string): Promise<unknown> {
+  return identityRequest(`/roles/${encodeURIComponent(roleKey)}/permissions`, { method: "POST", body: JSON.stringify({ permission_key: permissionKey }) });
+}
+export function removeRolePermission(roleKey: string, permissionKey: string): Promise<void> {
+  return identityRequest<void>(`/roles/${encodeURIComponent(roleKey)}/permissions/${encodeURIComponent(permissionKey)}`, { method: "DELETE" });
+}
+
 // user ↔ team
 export function listUserTeams(userId: string): Promise<unknown> {
   return identityRequest(`/users/${encodeURIComponent(userId)}/teams`);
