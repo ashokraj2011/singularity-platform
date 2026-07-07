@@ -42,6 +42,7 @@ export class GitAdapter implements ConnectorAdapter {
       case 'commentPR':   return this.commentPR(params)
       case 'createBranch': return this.createBranch(params)
       case 'listBranches': return this.listBranches(params)
+      case 'commitFiles': return this.commitFiles(params)
       default: throw new Error(`Unknown Git operation: ${operation}`)
     }
   }
@@ -114,10 +115,67 @@ export class GitAdapter implements ConnectorAdapter {
     return { branches: (r.data as Array<{ name: string }>).map(b => b.name) }
   }
 
+  // Commit one or more files to a branch in a SINGLE commit via the GitHub Git
+  // Data API — creating the branch from `base` when it doesn't exist yet. This is
+  // how per-phase deliverables land on wi/<code> CLOUD-SIDE (no laptop runtime).
+  // Branch names may contain '/' (e.g. wi/WRK-1); those are literal path segments
+  // in the refs API, so the branch is NOT url-encoded here.
+  private async commitFiles(p: Record<string, unknown>): Promise<{ committed: boolean; branch?: string; commitSha?: string; fileCount?: number; created?: boolean; reason?: string }> {
+    if (this.config.provider !== 'github') {
+      throw new Error('commitFiles is currently implemented for GitHub only.')
+    }
+    const { owner, repo } = this.repo(p)
+    const branch = typeof p.branch === 'string' ? p.branch.trim() : ''
+    const base = (typeof p.base === 'string' && p.base.trim()) || 'main'
+    const message = (typeof p.message === 'string' && p.message.trim()) || 'Update deliverables'
+    const files = Array.isArray(p.files)
+      ? (p.files as Array<{ path?: unknown; content?: unknown }>)
+          .map(f => ({ path: String(f.path ?? ''), content: String(f.content ?? '') }))
+          .filter(f => f.path)
+      : []
+    if (!branch) throw new Error('commitFiles requires a branch.')
+    if (files.length === 0) return { committed: false, reason: 'no files to commit' }
+
+    const R = `/repos/${owner}/${repo}`
+    const gh = this.ghClient
+
+    // 1. Resolve the branch head; create it from base when missing.
+    let parentSha: string
+    let created = false
+    try {
+      const ref = await gh.get(`${R}/git/ref/heads/${branch}`)
+      parentSha = (ref.data as { object: { sha: string } }).object.sha
+    } catch {
+      const baseRef = await gh.get(`${R}/git/ref/heads/${base}`)
+      parentSha = (baseRef.data as { object: { sha: string } }).object.sha
+      await gh.post(`${R}/git/refs`, { ref: `refs/heads/${branch}`, sha: parentSha })
+      created = true
+    }
+
+    // 2. Base tree = parent commit's tree; layer the files on top (inline content
+    //    → GitHub creates the blobs for us).
+    const parentCommit = await gh.get(`${R}/git/commits/${parentSha}`)
+    const baseTreeSha = (parentCommit.data as { tree: { sha: string } }).tree.sha
+    const tree = files.map(f => ({ path: f.path, mode: '100644' as const, type: 'blob' as const, content: f.content }))
+    const newTree = await gh.post(`${R}/git/trees`, { base_tree: baseTreeSha, tree })
+
+    // 3. Create the commit and fast-forward the branch ref onto it.
+    const commit = await gh.post(`${R}/git/commits`, {
+      message,
+      tree: (newTree.data as { sha: string }).sha,
+      parents: [parentSha],
+    })
+    const commitSha = (commit.data as { sha: string }).sha
+    await gh.patch(`${R}/git/refs/heads/${branch}`, { sha: commitSha, force: false })
+
+    return { committed: true, branch, commitSha, fileCount: files.length, created }
+  }
+
   listOperations(): OperationDef[] {
     return [
       { id: 'createIssue', label: 'Create Issue', params: [{ key: 'title', label: 'Title', type: 'string', required: true }, { key: 'body', label: 'Body', type: 'text' }] },
       { id: 'listBranches', label: 'List Branches', params: [{ key: 'owner', label: 'Owner', type: 'string' }, { key: 'repo', label: 'Repo', type: 'string' }] },
+      { id: 'commitFiles', label: 'Commit Files', params: [{ key: 'branch', label: 'Branch', type: 'string', required: true }, { key: 'base', label: 'Base Branch', type: 'string' }, { key: 'message', label: 'Commit Message', type: 'string' }] },
       { id: 'openPR', label: 'Open Pull Request', params: [{ key: 'title', label: 'Title', type: 'string', required: true }, { key: 'head', label: 'Head Branch', type: 'string', required: true }, { key: 'base', label: 'Base Branch', type: 'string' }, { key: 'body', label: 'Description', type: 'text' }] },
       { id: 'mergePR', label: 'Merge Pull Request', params: [{ key: 'pullNumber', label: 'PR Number', type: 'number', required: true }] },
       { id: 'commentPR', label: 'Comment on PR', params: [{ key: 'pullNumber', label: 'PR Number', type: 'number', required: true }, { key: 'body', label: 'Comment', type: 'text', required: true }] },

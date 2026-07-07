@@ -7,6 +7,7 @@ import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
+import { commitDeliverableConsumable } from '../workflow/lib/commit-deliverable'
 import { type Verdict, runVerification } from './verify.service'
 import {
   assertConsumableTenant,
@@ -219,6 +220,18 @@ async function transitionStatus(
     }, eventId)
   }
   await publishOutbox('Consumable', consumableId, `Consumable${newStatus}`, { consumableId, status: newStatus })
+
+  // S2 — when a deliverable is finalized, commit it to the run's wi/<code> branch
+  // cloud-side (via the GitHub connector), so each phase's documents land on git as
+  // they're approved. Fire-and-forget + non-fatal: a git failure logs but must never
+  // break the approve/publish transition itself.
+  if (newStatus === 'APPROVED' || newStatus === 'PUBLISHED') {
+    void commitDeliverableConsumable(consumableId).catch((err) =>
+      logEvent('DeliverableCommitFailed', 'Consumable', consumableId, actorId, {
+        reason: err instanceof Error ? err.message : String(err),
+      }),
+    )
+  }
   void consumable
 }
 
