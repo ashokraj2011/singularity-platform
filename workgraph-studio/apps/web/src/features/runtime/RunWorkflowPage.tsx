@@ -210,6 +210,17 @@ function StartWorkflowDialog({
   })
   const modelOptions = (connectionsQuery.data ?? []).filter(c => typeof c.alias === 'string' && c.alias)
 
+  // Best-effort branch list from the configured GIT connector, to populate the
+  // "Branch to clone" picker. Falls back silently to free-text when no connector
+  // is set up (the endpoint returns { branches: [] } rather than erroring).
+  const branchesQuery = useQuery<{ branches?: string[]; connector?: { repo?: string }; reason?: string }>({
+    queryKey: ['launch-source-branches'],
+    queryFn: () => api.get('/connectors/git/branches').then(r => r.data),
+    staleTime: 60_000,
+  })
+  const branchOptions = branchesQuery.data?.branches ?? []
+  const branchRepoLabel = branchesQuery.data?.connector?.repo
+
   const workItemsQuery = useQuery<WorkItemRow[]>({
     queryKey: ['start-workflow-workitems', workflow.capabilityId],
     enabled: Boolean(workflow.capabilityId),
@@ -333,13 +344,22 @@ function StartWorkflowDialog({
             <h3 style={{ ...sectionTitleStyle, margin: '0 0 8px' }}>Branch to clone (optional)</h3>
             <input
               type="text"
+              list="launch-branch-options"
               value={sourceRef}
               onChange={event => setSourceRef(event.target.value)}
               placeholder="e.g. main, develop, or a feature branch"
               style={inputStyle}
             />
+            {branchOptions.length > 0 && (
+              <datalist id="launch-branch-options">
+                {branchOptions.map(b => <option key={b} value={b} />)}
+              </datalist>
+            )}
             <p style={{ ...mutedStyle, marginTop: 6 }}>
-              The branch this run clones and bases its <code>wi/&lt;code&gt;</code> work branch on. Leave blank to use the workflow’s configured branch (or the repo default).
+              {branchOptions.length > 0
+                ? `${branchOptions.length} branch${branchOptions.length === 1 ? '' : 'es'} from ${branchRepoLabel ?? 'the connected repo'} — pick one or type any ref. `
+                : 'Type a branch/ref (configure a GitHub connector to auto-list them). '}
+              The run clones this and bases its <code>wi/&lt;code&gt;</code> work branch on it. Blank = the workflow’s configured branch (or repo default).
             </p>
           </div>
 

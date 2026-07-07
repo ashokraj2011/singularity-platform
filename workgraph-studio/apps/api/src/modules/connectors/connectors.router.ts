@@ -32,6 +32,45 @@ function safe(c: Record<string, unknown>) {
   return rest
 }
 
+// Parse owner/repo from a github/gitlab URL (best-effort).
+function parseOwnerRepo(url: string): { owner?: string; repo?: string } {
+  const m = url.match(/[/:]([^/:]+)\/([^/]+?)(?:\.git)?\/?$/)
+  return m ? { owner: m[1], repo: m[2] } : {}
+}
+
+// GET /api/connectors/git/branches?repoUrl=&owner=&repo=
+// Best-effort branch list from the first configured GIT connector — powers the
+// launch "Branch to clone" picker. NEVER throws: returns { branches: [] } with a
+// reason when no GIT connector is configured or the repo can't be read, so the
+// launch dialog cleanly falls back to free-text branch entry. Registered before
+// the '/:id' routes; '/:id' only matches a single segment so there is no clash.
+connectorsRouter.get('/git/branches', async (req, res) => {
+  try {
+    const connector = await prisma.connector.findFirst({
+      where: { type: 'GIT', archivedAt: null },
+      orderBy: { createdAt: 'desc' },
+    })
+    if (!connector) return res.json({ branches: [], reason: 'No GIT connector is configured.' })
+    const adapter = buildAdapter(connector.type, connector.config as any, connector.credentials as any)
+    const repoUrl = typeof req.query.repoUrl === 'string' ? req.query.repoUrl : undefined
+    const parsed = repoUrl ? parseOwnerRepo(repoUrl) : {}
+    const owner = (typeof req.query.owner === 'string' && req.query.owner) || parsed.owner
+    const repo = (typeof req.query.repo === 'string' && req.query.repo) || parsed.repo
+    const params: Record<string, unknown> = {}
+    if (owner) params.owner = owner
+    if (repo) params.repo = repo
+    const result = await adapter.invoke('listBranches', params) as { branches?: string[] }
+    const cfg = (connector.config ?? {}) as { defaultOwner?: string; defaultRepo?: string }
+    const repoLabel = owner && repo ? `${owner}/${repo}` : [cfg.defaultOwner, cfg.defaultRepo].filter(Boolean).join('/') || undefined
+    res.json({
+      branches: Array.isArray(result?.branches) ? result.branches : [],
+      connector: { id: connector.id, name: connector.name, repo: repoLabel },
+    })
+  } catch (e) {
+    res.json({ branches: [], reason: e instanceof Error ? e.message : String(e) })
+  }
+})
+
 // GET /api/connectors
 connectorsRouter.get('/', async (req, res) => {
   const connectors = await prisma.connector.findMany({
