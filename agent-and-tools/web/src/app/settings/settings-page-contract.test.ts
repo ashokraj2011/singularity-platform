@@ -9,7 +9,7 @@ function read(relativePath: string): string {
 const settings = read("src/app/settings/page.tsx");
 const routes = read("src/lib/nav/routes.ts");
 
-for (const section of ["profile", "runtime", "source", "notifications", "workflows", "security"]) {
+for (const section of ["profile", "appearance", "runtime", "source", "notifications", "workflows", "security"]) {
   assert.match(
     settings,
     new RegExp(`id: "${section}"`),
@@ -27,6 +27,12 @@ assert.match(
   settings,
   /const res = await fetch\(apiPath\("\/api\/adoption\/health"\), \{ cache: "no-store", headers: authHeaders\(\) \}\);[\s\S]*?setHealth\(normalizeHealthSummary\(parsed\)\);/,
   "settings should show live platform health summary instead of static placeholder content",
+);
+
+assert.match(
+  settings,
+  /label: "Appearance"[\s\S]*?<ThemeSwitcher \/>/,
+  "settings should expose a first-class appearance section backed by the shared theme switcher",
 );
 
 assert.match(

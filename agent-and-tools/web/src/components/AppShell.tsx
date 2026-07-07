@@ -13,6 +13,7 @@ import { CommandPalette } from "@/components/CommandPalette";
 import { NotificationCenter } from "@/components/NotificationCenter";
 import { apiPath, assertValidApiResponse, authHeaders, readResponseBody } from "@/lib/api";
 import { StatusPill, type UiState } from "@/components/ui/primitives";
+import { ThemeSwitcher } from "@/components/ui/ThemeSwitcher";
 
 // Routes that render their own full-viewport UX (the blue Blueprint Workbench
 // cockpit, now served in-process) and must NOT be boxed inside the platform-web
@@ -119,12 +120,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 gap: 5,
                 padding: "4px 10px",
                 borderRadius: 20,
-                border: "1px solid rgba(37,99,235,0.18)",
-                background: "rgba(37,99,235,0.07)",
+                border: "1px solid var(--color-primary-hover-border)",
+                background: "var(--color-primary-dim)",
                 fontSize: 11,
                 fontWeight: 700,
                 textTransform: "uppercase",
-                color: "var(--accent-workflow)",
+                color: "var(--color-primary)",
               }}
             >
               <span
@@ -132,7 +133,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   width: 6,
                   height: 6,
                   borderRadius: "50%",
-                  background: "var(--accent-workflow)",
+                  background: "var(--color-primary)",
                   flexShrink: 0,
                 }}
               />
@@ -170,6 +171,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </button>
             <AppSwitcher />
             <NotificationCenter />
+            <ThemeSwitcher compact />
             <Link
               href="/settings"
               style={{
