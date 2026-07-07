@@ -53,6 +53,8 @@ interface StageSpec {
   toolPolicy: string; contextPolicy: string; repoAccess: boolean
   terminal: boolean; approvalRequired: boolean
   expectedArtifacts: ArtifactSpec[]; sendBackTo: string[]
+  // Explicit INPUTS: which upstream stage's artifact (by kind) this stage READS.
+  consumes?: { stageDependsOn: string; artifactKind: string; required?: boolean }[]
   // Per-stage step budget (overrides the runtime default, e.g. 28 for a
   // mutating dev stage). Develop needs more headroom because the agent must
   // implement AND add/run unit tests AND self-review in one stage.
@@ -75,6 +77,7 @@ const SDLC_STAGES: StageSpec[] = [
       { kind: 'design_document', title: 'Design Document', format: 'MARKDOWN', required: true, templateId: 'tmpl-design-document' },
       { kind: 'adr', title: 'Architecture Decision Record', format: 'MARKDOWN', required: false, templateId: 'tmpl-adr' },
     ],
+    consumes: [{ stageDependsOn: 'REQUIREMENTS', artifactKind: 'requirements_spec', required: true }],
     sendBackTo: ['REQUIREMENTS'],
   },
   {
@@ -90,6 +93,11 @@ const SDLC_STAGES: StageSpec[] = [
       // tests for the new behavior AND run them green before this stage completes.
       { kind: 'unit_tests', title: 'Unit Test Cases (added/updated) + passing run', format: 'MARKDOWN', required: true },
     ],
+    consumes: [
+      { stageDependsOn: 'REQUIREMENTS', artifactKind: 'requirements_spec', required: true },
+      { stageDependsOn: 'DESIGN', artifactKind: 'design_document', required: true },
+      { stageDependsOn: 'DESIGN', artifactKind: 'adr', required: false },
+    ],
     sendBackTo: ['REQUIREMENTS', 'DESIGN'],
   },
   {
@@ -97,6 +105,10 @@ const SDLC_STAGES: StageSpec[] = [
     toolPolicy: 'VERIFICATION', contextPolicy: 'VERIFY_ONLY', repoAccess: true, terminal: false, approvalRequired: true,
     expectedArtifacts: [
       { kind: 'test_report', title: 'Test Report', format: 'MARKDOWN', required: true, templateId: 'tmpl-test-report' },
+    ],
+    consumes: [
+      { stageDependsOn: 'DEVELOP', artifactKind: 'actual_code_change', required: true },
+      { stageDependsOn: 'DEVELOP', artifactKind: 'unit_tests', required: true },
     ],
     sendBackTo: ['DESIGN', 'DEVELOP'],
   },
@@ -106,6 +118,11 @@ const SDLC_STAGES: StageSpec[] = [
     expectedArtifacts: [
       { kind: 'risk_assessment', title: 'Risk Assessment', format: 'MARKDOWN', required: true, templateId: 'tmpl-risk-assessment' },
     ],
+    consumes: [
+      { stageDependsOn: 'DESIGN', artifactKind: 'design_document', required: true },
+      { stageDependsOn: 'DEVELOP', artifactKind: 'actual_code_change', required: true },
+      { stageDependsOn: 'QA', artifactKind: 'test_report', required: true },
+    ],
     sendBackTo: ['DESIGN', 'DEVELOP'],
   },
   {
@@ -114,6 +131,11 @@ const SDLC_STAGES: StageSpec[] = [
     expectedArtifacts: [
       { kind: 'release_rollback_plan', title: 'Release & Rollback Plan', format: 'MARKDOWN', required: true, templateId: 'tmpl-release-rollback-plan' },
       { kind: 'ops_runbook', title: 'Operations Runbook', format: 'MARKDOWN', required: false, templateId: 'tmpl-ops-runbook' },
+    ],
+    consumes: [
+      { stageDependsOn: 'DEVELOP', artifactKind: 'actual_code_change', required: true },
+      { stageDependsOn: 'QA', artifactKind: 'test_report', required: true },
+      { stageDependsOn: 'SECURITY', artifactKind: 'risk_assessment', required: true },
     ],
     sendBackTo: ['DEVELOP', 'QA', 'SECURITY'],
   },
@@ -166,6 +188,7 @@ async function main(): Promise<void> {
         next: idx < SDLC_STAGES.length - 1 ? SDLC_STAGES[idx + 1]!.key : undefined,
         terminal: stage.terminal, required: true, approvalRequired: stage.approvalRequired,
         allowedSendBackTo: stage.sendBackTo, toolPolicy: stage.toolPolicy, contextPolicy: stage.contextPolicy, repoAccess: stage.repoAccess,
+        ...(stage.consumes ? { consumes: stage.consumes } : {}),
         ...(stage.limits ? { limits: stage.limits } : {}),
         // templateId rides the JSON loopDefinition → normalizeExpectedArtifacts →
         // renderExpectedArtifacts injects the catalog section skeleton (M102).

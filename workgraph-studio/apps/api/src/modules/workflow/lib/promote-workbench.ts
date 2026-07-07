@@ -61,6 +61,8 @@ interface LegacyStage {
   governancePriority?: number | null
   governanceContributions?: unknown
   expectedArtifacts?: LegacyExpectedArtifact[]
+  // Explicit INPUT edges: artifacts this stage READS from upstream stages (by kind).
+  consumes?: { stageDependsOn: string; artifactKind: string; required?: boolean }[]
   questions?: LegacyQuestion[]
   allowedSendBackTo?: string[]
 }
@@ -150,6 +152,8 @@ export async function promoteWorkbenchToTables(
   })
 
   const stageRowByKey: Record<string, { id: string; ordinal: number }> = {}
+  // stageKey → (artifactKind → WorkbenchExpectedArtifact.id), used to wire consumes edges below.
+  const artifactIdByStageKind: Record<string, Record<string, string>> = {}
   for (const [idx, legacyStage] of loopDef.stages.entries()) {
     if (!legacyStage.key) continue
     const stage = await prisma.workbenchStage.create({
@@ -180,7 +184,7 @@ export async function promoteWorkbenchToTables(
 
     for (const [artIdx, art] of (legacyStage.expectedArtifacts ?? []).entries()) {
       if (!art.kind || !art.title) continue
-      await prisma.workbenchExpectedArtifact.create({
+      const createdArtifact = await prisma.workbenchExpectedArtifact.create({
         data: {
           stageId: stage.id,
           kind: art.kind,
@@ -193,6 +197,7 @@ export async function promoteWorkbenchToTables(
           ordinal: artIdx,
         },
       })
+      ;(artifactIdByStageKind[legacyStage.key] ??= {})[art.kind] = createdArtifact.id
     }
 
     for (const [qIdx, q] of (legacyStage.questions ?? []).entries()) {
@@ -232,6 +237,29 @@ export async function promoteWorkbenchToTables(
       await prisma.workbenchStageEdge.create({
         data: { fromStageId: from.id, toStageId: target.id, kind: 'SEND_BACK' },
       })
+    }
+  }
+
+  // Explicit INPUT edges (consumes): a stage READS specific artifacts produced by an
+  // upstream stage (matched by kind). Best-effort + wrapped — a bad/duplicate consumes
+  // row must never break the core stage/artifact/edge seeding above.
+  for (const legacyStage of loopDef.stages) {
+    if (!legacyStage.key || !Array.isArray(legacyStage.consumes)) continue
+    const consumer = stageRowByKey[legacyStage.key]
+    if (!consumer) continue
+    for (const dep of legacyStage.consumes) {
+      const producerArtifactId = artifactIdByStageKind[dep.stageDependsOn]?.[dep.artifactKind]
+      if (!producerArtifactId) continue
+      try {
+        await prisma.workbenchArtifactConsumes.create({
+          data: {
+            consumerStageId: consumer.id,
+            producerArtifactId,
+            required: dep.required ?? true,
+            inferred: false,
+          },
+        })
+      } catch { /* dup/race — consumes is advisory, never block seeding */ }
     }
   }
 
