@@ -41,6 +41,7 @@ export class GitAdapter implements ConnectorAdapter {
       case 'mergePR':     return this.mergePR(params)
       case 'commentPR':   return this.commentPR(params)
       case 'createBranch': return this.createBranch(params)
+      case 'listBranches': return this.listBranches(params)
       default: throw new Error(`Unknown Git operation: ${operation}`)
     }
   }
@@ -100,9 +101,23 @@ export class GitAdapter implements ConnectorAdapter {
     return r.data
   }
 
+  // Read-only: list the repo's branches. Powers the launch "Branch to clone"
+  // picker (and is a normal connector op). Owner/repo default to the connector's
+  // configured repo when not passed.
+  private async listBranches(p: Record<string, unknown>): Promise<{ branches: string[] }> {
+    const { owner, repo } = this.repo(p)
+    if (this.config.provider === 'github') {
+      const r = await this.ghClient.get(`/repos/${owner}/${repo}/branches`, { params: { per_page: 100 } })
+      return { branches: (r.data as Array<{ name: string }>).map(b => b.name) }
+    }
+    const r = await this.glClient.get(`/projects/${encodeURIComponent(`${owner}/${repo}`)}/repository/branches`, { params: { per_page: 100 } })
+    return { branches: (r.data as Array<{ name: string }>).map(b => b.name) }
+  }
+
   listOperations(): OperationDef[] {
     return [
       { id: 'createIssue', label: 'Create Issue', params: [{ key: 'title', label: 'Title', type: 'string', required: true }, { key: 'body', label: 'Body', type: 'text' }] },
+      { id: 'listBranches', label: 'List Branches', params: [{ key: 'owner', label: 'Owner', type: 'string' }, { key: 'repo', label: 'Repo', type: 'string' }] },
       { id: 'openPR', label: 'Open Pull Request', params: [{ key: 'title', label: 'Title', type: 'string', required: true }, { key: 'head', label: 'Head Branch', type: 'string', required: true }, { key: 'base', label: 'Base Branch', type: 'string' }, { key: 'body', label: 'Description', type: 'text' }] },
       { id: 'mergePR', label: 'Merge Pull Request', params: [{ key: 'pullNumber', label: 'PR Number', type: 'number', required: true }] },
       { id: 'commentPR', label: 'Comment on PR', params: [{ key: 'pullNumber', label: 'PR Number', type: 'number', required: true }, { key: 'body', label: 'Comment', type: 'text', required: true }] },
