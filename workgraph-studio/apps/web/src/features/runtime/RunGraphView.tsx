@@ -398,6 +398,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
   busy: boolean
 }) {
   const s = st(node.status)
+  const qc = useQueryClient()
   const [sendBackOpen, setSendBackOpen] = useState(false)
   const { data: consumables = [] } = useConsumables(instanceId, node.id, live)
   const active = ['ACTIVE', 'RUNNING'].includes((node.status ?? '').toUpperCase())

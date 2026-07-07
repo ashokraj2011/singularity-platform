@@ -8,6 +8,7 @@ import {
   Cpu,
   GitBranch,
   KeyRound,
+  Palette,
   RotateCcw,
   Save,
   Settings,
@@ -21,6 +22,7 @@ import { getIdentityUser, type LoginUser } from "@/lib/identity/session";
 import { asRow, asString } from "@/lib/row";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { DataPanel, MetricStrip, PageHero, PageShell, StatusPill, type UiState } from "@/components/ui/primitives";
+import { ThemeSwitcher } from "@/components/ui/ThemeSwitcher";
 import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   loadNotificationPreferences,
@@ -32,7 +34,7 @@ import {
   type NotificationPreferences,
 } from "@/lib/platformNotifications";
 
-type SettingsSection = "profile" | "runtime" | "source" | "notifications" | "workflows" | "security";
+type SettingsSection = "profile" | "appearance" | "runtime" | "source" | "notifications" | "workflows" | "security";
 
 type LocalSettings = {
   deploymentMode: "docker" | "bare-metal" | "split-runtime";
@@ -56,6 +58,7 @@ const SETTINGS_KEY = "singularity.platform.settings.v1";
 
 const sections: Array<{ id: SettingsSection; label: string; description: string; icon: LucideIcon }> = [
   { id: "profile", label: "Profile", description: "Signed-in user, shell defaults, and local mode.", icon: User },
+  { id: "appearance", label: "Appearance", description: "Switch between the current palette and Fidelity-style green.", icon: Palette },
   { id: "runtime", label: "Runtime + LLM", description: "MCP dial-in, model provider readiness, and setup commands.", icon: Cpu },
   { id: "source", label: "Git + Source", description: "Repository broker, GitHub connections, and push identity.", icon: GitBranch },
   { id: "notifications", label: "Notifications", description: "Choose which platform signals appear in the bell.", icon: Bell },
@@ -208,7 +211,7 @@ export default function SettingsPage() {
           eyebrow="Settings"
           title="Platform Settings"
           icon={Settings}
-          description="One place for runtime setup, source control, notification preferences, workflow defaults, and security routes."
+          description="One place for appearance, runtime setup, source control, notification preferences, workflow defaults, and security routes."
           actions={
             <div className="flex flex-wrap items-center gap-2">
               <StatusPill state={healthState(health)} label={health ? `${health.score}% health` : "Checking"} />
@@ -285,6 +288,21 @@ export default function SettingsPage() {
                 </div>
               )}
 
+              {section === "appearance" && (
+                <div className="space-y-4">
+                  <div>
+                    <div className="label-xs">Platform theme</div>
+                    <p className="mt-1 text-sm leading-6 text-slate-600">
+                      Theme is saved in this browser and applies to the shell, shared controls, cards, focus rings, and page accents.
+                    </p>
+                  </div>
+                  <ThemeSwitcher />
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-600">
+                    The Fidelity Green option is an enterprise green/navy palette inspired by the requested visual direction. It does not use official brand assets.
+                  </div>
+                </div>
+              )}
+
               {section === "runtime" && (
                 <div className="space-y-4">
                   <div className="grid gap-3 md:grid-cols-3">
@@ -345,7 +363,8 @@ export default function SettingsPage() {
                           type="checkbox"
                           checked={prefs[category.id]}
                           onChange={(event) => updatePrefs(category.id, event.target.checked)}
-                          className="h-5 w-5 accent-emerald-700"
+                          className="h-5 w-5"
+                          style={{ accentColor: "var(--color-primary)" }}
                         />
                       </label>
                     ))}

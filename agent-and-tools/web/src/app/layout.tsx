@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/AppShell";
+import { PlatformThemeProvider } from "@/components/ui/PlatformThemeProvider";
 
 export const metadata: Metadata = {
   title: "Singularity Platform",
@@ -12,9 +13,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   // Chrome (sidebar/topbar/padded main) lives in the client AppShell so it can
   // drop to full-bleed for the in-process /workbench cockpit via usePathname().
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>
-        <AppShell>{children}</AppShell>
+        <PlatformThemeProvider>
+          <AppShell>{children}</AppShell>
+        </PlatformThemeProvider>
       </body>
     </html>
   );
