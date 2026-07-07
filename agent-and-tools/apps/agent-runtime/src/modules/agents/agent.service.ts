@@ -1140,7 +1140,22 @@ export const agentService = {
     });
     if (!template) throw new NotFoundError("Agent profile not found");
     if (!template.capabilityId) {
-      requirePlatformAdmin(actor, "Resolving a common agent profile");
+      // Common templates are SHARED platform baselines that capability-independent
+      // workflows bind directly (see workgraph seed-sdlc-copilot). resolveProfile is
+      // the RUNTIME resolution Context-Fabric invokes — with an IAM *service* token —
+      // for every governed AgentTask dispatch. By design service tokens are NEVER
+      // platform-admin (auth.middleware confused-deputy guard strips is_super_admin
+      // from non-user principals), so gating common baselines behind
+      // requirePlatformAdmin made EVERY such dispatch fail closed with an empty
+      // effective-capability set → EFFECTIVE_CAPABILITY_DENIED for copilot_execute
+      // (and every tool), for every capability. Resolving a shared baseline is
+      // read-only and grants nothing on its own — tool invocation is separately
+      // authorized at dispatch (tool grants + MCP effective-capability gate) — so
+      // require only an authenticated caller here. Capability-scoped profiles keep
+      // owner-only resolution below; the tenant-isolation boundary is unchanged.
+      if (!actor?.user_id) {
+        throw new ForbiddenError("Resolving a common agent profile requires authentication");
+      }
     } else {
       requireCapabilityOwner(actor, template.capabilityId, "Resolving an agent profile");
     }
