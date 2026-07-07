@@ -1409,6 +1409,75 @@ workflowInstancesRouter.get('/:id/export/copilot-runner.sh', async (req, res, ne
   }
 })
 
+// ── Composed prompt for one phase ──────────────────────────────────────────
+// "The prompt used": the FULL agent prompt (role contract + repo world model +
+// work-item + task) a phase's agent runs — the SAME composition the Copilot
+// handoff export builds (composeCopilotStagePrompt → CF /compose-copilot-prompt).
+// Recomposed on demand so it works for pending AND completed phases; `degraded`
+// marks a fallback to the raw task when the composer/world-model is unavailable.
+async function composeNodePrompt(id: string, nodeId: string, tenantId?: string) {
+  const [instance, nodes, edges] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+    tx.workflowInstance.findUnique({ where: { id }, select: { id: true, context: true, templateId: true } }),
+    tx.workflowNode.findMany({
+      where: { instanceId: id },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, label: true, nodeType: true, config: true, createdAt: true, status: true, completedAt: true },
+    }),
+    tx.workflowEdge.findMany({ where: { instanceId: id }, select: { sourceNodeId: true, targetNodeId: true } }),
+  ]), tenantId)
+  if (!instance) return { notFound: true as const }
+
+  const exportNodes: CopilotExportNode[] = nodes.map(n => ({ ...n, nodeType: String(n.nodeType), status: String(n.status) }))
+  const computed = copilotStagesFromNodes(instance, exportNodes, edges)
+  const stage = computed.stages.find(s => s.nodeId === nodeId)
+  if (!stage) {
+    return {
+      nodeId,
+      composable: false as const,
+      reason: 'This phase has no composed prompt — only agent (Copilot) task phases run one.',
+    }
+  }
+
+  // Capability id grounds the composed prompt (repo world-model lookup) — same as the export.
+  const workflow = instance.templateId
+    ? await prisma.workflow.findUnique({ where: { id: instance.templateId }, select: { capabilityId: true } })
+    : null
+  const capabilityId = workflow?.capabilityId ?? null
+  const runContext: Record<string, unknown> = {
+    workflow_instance_id: instance.id,
+    capability_id: capabilityId ?? undefined,
+    work_item_code: computed.workCode || undefined,
+    source_type: 'github',
+    source_uri: computed.repo || undefined,
+  }
+  const composed = await composeCopilotStagePrompt({
+    task: stage.prompt, stageKey: stage.key, agentRole: stage.role, capabilityId, vars: computed.vars, runContext,
+  })
+  return {
+    nodeId,
+    composable: true as const,
+    stageKey: stage.key,
+    role: stage.role,
+    label: stage.label,
+    prompt: composed.prompt,
+    degraded: composed.degraded,
+    warning: composed.warning,
+  }
+}
+
+workflowInstancesRouter.get('/:id/nodes/:nodeId/composed-prompt', async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    const nodeId = req.params.nodeId as string
+    await assertInstancePermission(req.user!.userId, id, 'view')
+    const result = await composeNodePrompt(id, nodeId, resolveTenantFromRequest(req))
+    if ('notFound' in result) return res.status(404).json({ error: 'run not found' })
+    res.json(result)
+  } catch (err) {
+    next(err)
+  }
+})
+
 workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, next) => {
   try {
     const id = req.params.id as string
