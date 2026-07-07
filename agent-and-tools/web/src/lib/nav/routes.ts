@@ -98,7 +98,7 @@ export const ROUTES: RouteMeta[] = [
   { id: "workflows-templates", label: "Workflow Manager", href: "/workflows/templates", group: "Workflows", icon: Workflow, priority: "primary", surfaceType: "workflow" },
   { id: "workflows-artifacts", label: "Artifact Studio", href: "/workflows/artifacts", group: "Workflows", icon: ScrollText, priority: "primary", surfaceType: "workflow" },
   { id: "workflows-templates-gallery", label: "Template Gallery", href: "/workflows/templates/gallery", group: "Workflows", icon: GitBranch, advanced: true },
-  { id: "work-items", label: "Work Hub", href: "/work-items", group: "Workflows", icon: Network, advanced: true },
+  { id: "work-items", label: "Work Items", href: "/work-items", group: "Workflows", icon: Network, priority: "primary", surfaceType: "workflow" },
   { id: "workflows-history", label: "Run History", href: "/workflows/history", group: "Workflows", icon: FileText, advanced: true },
   { id: "workflows-runtime", label: "Runtime", href: "/workflows/runtime", group: "Workflows", icon: Zap, advanced: true },
   { id: "workflows-routing-policies", label: "Routing Policies", href: "/workflows/routing-policies", group: "Workflows", icon: Route, advanced: true, description: "Diagnose WorkItem routing rules and stale workflow-template bindings.", keywords: ["routing", "workitem", "policy", "template", "diagnostics"] },
