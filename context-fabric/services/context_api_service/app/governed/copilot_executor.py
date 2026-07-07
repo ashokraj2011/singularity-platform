@@ -173,6 +173,12 @@ async def compose_copilot_prompt(
     "edit the files yourself" instructions. Best-effort: the world model is
     optional (mcp/index may be unavailable).
     """
+    # Runtime prompt override (run-graph Prompt tab "Edit prompt"): the operator edited
+    # the fully-composed prompt, so use it VERBATIM and skip composition — it already
+    # carries the role, work item, and world model they saw on screen.
+    override = (run_context or {}).get("prompt_override")
+    if isinstance(override, str) and override.strip():
+        return override.strip()
     code_md = ""
     world_model_reason: str | None = None
     try:

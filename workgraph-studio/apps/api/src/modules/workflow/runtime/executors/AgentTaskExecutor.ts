@@ -144,9 +144,7 @@ export async function activateAgentTask(
       .catch(() => null)
     if (launcher?.iamUserId) launcherIamId = launcher.iamUserId
   }
-  // Runtime task override (run-graph Prompt tab "Edit task") wins over the seeded
-  // task; composition still adds the role + work item + repo world model around it.
-  const baseTask = configString('_taskOverride') || configString('task')
+  const baseTask = configString('task')
   // Refine loop: the run-graph Chat "Send feedback" sets _refineFeedback on the
   // node + restarts it; append the note so the re-run addresses it (copilot prompt
   // or governed task alike).
@@ -374,6 +372,9 @@ export async function activateAgentTask(
       // receives run_context as a verbatim dict.
       executor: configString('executor'),
       ...(configString('executor') === 'copilot' ? { task } : {}),
+      // Runtime prompt override (run-graph Prompt tab "Edit prompt") — CF uses this
+      // VERBATIM and skips composition (compose_copilot_prompt returns it as-is).
+      ...(configString('_promptOverride') ? { prompt_override: configString('_promptOverride') } : {}),
       // §13.4 working-dir: clone the resolved repo (work-item var → capability's
       // linked repo → node default) into the work-item sandbox so Copilot runs in
       // the TARGET repo. Resolved above as `copilotRepo`.
