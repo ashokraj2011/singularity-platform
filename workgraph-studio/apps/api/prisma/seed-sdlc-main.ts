@@ -40,11 +40,13 @@ const N_END = '32000000-0000-0000-0000-0000000000a2'
 const N_PUSH = '32000000-0000-0000-0000-0000000000a3'
 const N_GATE = '32000000-0000-0000-0000-0000000000a4'
 const N_RAISE_PR = '32000000-0000-0000-0000-0000000000a5'
+const N_CREATE_BRANCH = '32000000-0000-0000-0000-0000000000a6'
 const E1 = '33000000-0000-0000-0000-0000000000a0'
 const E2 = '33000000-0000-0000-0000-0000000000a1'
 const E3 = '33000000-0000-0000-0000-0000000000a2'
 const E4 = '33000000-0000-0000-0000-0000000000a3'
 const E5 = '33000000-0000-0000-0000-0000000000a4'
+const E6 = '33000000-0000-0000-0000-0000000000a5'
 const ROUTE_ID = '34000000-0000-0000-0000-0000000000a0'
 
 type Json = Record<string, unknown>
@@ -110,13 +112,16 @@ async function main() {
     profile: 'main',
     workflowTypeKey: 'SDLC',
     graphSnapshot: {
-      nodes: [{ id: N_START, type: 'START' }, { id: N_CALL, type: 'CALL_WORKFLOW' }, { id: N_GATE, type: 'GOVERNANCE_GATE' }, { id: N_PUSH, type: 'GIT_PUSH' }, { id: N_RAISE_PR, type: 'RAISE_PR' }, { id: N_END, type: 'END' }],
-      edges: [{ from: N_START, to: N_CALL }, { from: N_CALL, to: N_GATE }, { from: N_GATE, to: N_PUSH }, { from: N_PUSH, to: N_RAISE_PR }, { from: N_RAISE_PR, to: N_END }],
+      nodes: [{ id: N_START, type: 'START' }, { id: N_CREATE_BRANCH, type: 'CREATE_BRANCH' }, { id: N_CALL, type: 'CALL_WORKFLOW' }, { id: N_GATE, type: 'GOVERNANCE_GATE' }, { id: N_PUSH, type: 'GIT_PUSH' }, { id: N_RAISE_PR, type: 'RAISE_PR' }, { id: N_END, type: 'END' }],
+      edges: [{ from: N_START, to: N_CREATE_BRANCH }, { from: N_CREATE_BRANCH, to: N_CALL }, { from: N_CALL, to: N_GATE }, { from: N_GATE, to: N_PUSH }, { from: N_PUSH, to: N_RAISE_PR }, { from: N_RAISE_PR, to: N_END }],
     },
     phaseId: PHASE_ID,
     phaseName: 'Main',
   })
   await upsertNode({ id: N_START, nodeType: 'START', label: 'Intake', positionX: 80, positionY: 160 })
+  // Create the work branch (wi/<code>) up-front, cloud-side via the GitHub connector,
+  // so the SDLC loop commits onto it and the push/PR have a branch. Idempotent.
+  await upsertNode({ id: N_CREATE_BRANCH, nodeType: 'CREATE_BRANCH', label: 'Create work branch', config: {}, positionX: 200, positionY: 160 })
   // CALL_WORKFLOW executor resolves the child via config.standard.templateId
   // (or config.templateId) — NOT workflowId. Set standard.templateId so the
   // node both spawns at runtime and renders correctly in NodeInspector.
@@ -135,12 +140,13 @@ async function main() {
   // advance-safe (no governing capability set → SKIPPED); set governingCapabilityId via
   // the inspector to activate (default mode HARD_BLOCK once configured).
   await upsertNode({ id: N_GATE, nodeType: 'GOVERNANCE_GATE', label: 'Governance Gate', config: { mode: 'HARD_BLOCK', governingCapabilityId: '', standard: { mode: 'HARD_BLOCK', governingCapabilityId: '' } }, positionX: 460, positionY: 160 })
-  await upsertEdge({ id: E1, sourceNodeId: N_START, targetNodeId: N_CALL })
+  await upsertEdge({ id: E1, sourceNodeId: N_START, targetNodeId: N_CREATE_BRANCH })
+  await upsertEdge({ id: E6, sourceNodeId: N_CREATE_BRANCH, targetNodeId: N_CALL })
   await upsertEdge({ id: E2, sourceNodeId: N_CALL, targetNodeId: N_GATE })
   await upsertEdge({ id: E4, sourceNodeId: N_GATE, targetNodeId: N_PUSH })
   await upsertEdge({ id: E3, sourceNodeId: N_PUSH, targetNodeId: N_RAISE_PR })
   await upsertEdge({ id: E5, sourceNodeId: N_RAISE_PR, targetNodeId: N_END })
-  console.log(`✓ Main workflow "SDLC Delivery" (${WF_ID}) — START → CALL_WORKFLOW → GOVERNANCE_GATE → GIT_PUSH → RAISE_PR → END`)
+  console.log(`✓ Main workflow "SDLC Delivery" (${WF_ID}) — START → CREATE_BRANCH → CALL_WORKFLOW → GOVERNANCE_GATE → GIT_PUSH → RAISE_PR → END`)
 
   // feature → SDLC → this wrapper, priority 200 (wins over the demo's 100).
   await (prisma as any).workItemRoutingPolicy.upsert({

@@ -82,6 +82,7 @@ const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType }> = 
   SET_CONTEXT:         { color: DOMAIN.data, Icon: SlidersHorizontal },
   // integration / side-effect
   TOOL_REQUEST:        { color: DOMAIN.integration, Icon: Wrench },
+  CREATE_BRANCH:       { color: DOMAIN.integration, Icon: GitBranch },
   GIT_PUSH:            { color: DOMAIN.integration, Icon: GitBranch },
   RAISE_PR:            { color: DOMAIN.integration, Icon: GitMerge },
   RUN_PYTHON:          { color: DOMAIN.integration, Icon: Terminal },
@@ -140,7 +141,7 @@ const NODE_LABELS: Record<string, string> = {
   START: 'Start', END: 'End',
   HUMAN_TASK: 'Human Task', AGENT_TASK: 'Agent Task', WORKBENCH_TASK: 'Workbench Task', APPROVAL: 'Approval',
   DECISION_GATE: 'Decision Gate', CONSUMABLE_CREATION: 'Create Artifact',
-  TOOL_REQUEST: 'Tool Request', GIT_PUSH: 'Git Push', RAISE_PR: 'Raise PR', POLICY_CHECK: 'Policy Check', EVAL_GATE: 'Eval Gate', VERIFIER: 'Verifier', GOVERNANCE_GATE: 'Governance Gate',
+  TOOL_REQUEST: 'Tool Request', CREATE_BRANCH: 'Create Branch', GIT_PUSH: 'Git Push', RAISE_PR: 'Raise PR', POLICY_CHECK: 'Policy Check', EVAL_GATE: 'Eval Gate', VERIFIER: 'Verifier', GOVERNANCE_GATE: 'Governance Gate',
   TIMER: 'Timer', SIGNAL_WAIT: 'Signal Wait', SIGNAL_EMIT: 'Signal Emit',
   CALL_WORKFLOW: 'Sub-workflow', WORK_ITEM: 'Work Item',
   FOREACH: 'For Each', PARALLEL_FORK: 'Parallel Fork', PARALLEL_JOIN: 'Parallel Join',
@@ -337,7 +338,7 @@ const NODE_GROUPS: Array<{ label: string; types: string[] }> = [
   { label: 'Decisions', types: ['DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'FOREACH'] },
   { label: 'Data & Integration', types: ['WORK_ITEM', 'CONSUMABLE_CREATION', 'SET_CONTEXT', 'DATA_SINK', 'EVENT_EMIT'] },
   { label: 'Reliability & Governance', types: ['TIMER', 'POLICY_CHECK', 'EVAL_GATE', 'VERIFIER', 'GOVERNANCE_GATE', 'ERROR_CATCH'] },
-  { label: 'Advanced', types: ['TOOL_REQUEST', 'RUN_PYTHON', 'GIT_PUSH', 'RAISE_PR', 'CALL_WORKFLOW', 'SIGNAL_WAIT', 'SIGNAL_EMIT'] },
+  { label: 'Advanced', types: ['TOOL_REQUEST', 'RUN_PYTHON', 'CREATE_BRANCH', 'GIT_PUSH', 'RAISE_PR', 'CALL_WORKFLOW', 'SIGNAL_WAIT', 'SIGNAL_EMIT'] },
 ]
 
 const TRIGGER_PRESETS = [
@@ -606,6 +607,7 @@ const NODE_DESCRIPTIONS: Record<string, string> = {
   DECISION_GATE: 'Choose one path based on workflow data or prior outputs.',
   CONSUMABLE_CREATION: 'Create a reviewed artifact that downstream steps can use.',
   TOOL_REQUEST: 'Request a governed tool execution.',
+  CREATE_BRANCH: 'Create the work branch (wi/<code>) from the base branch up-front, via the GitHub connector.',
   GIT_PUSH: 'Push an approved WorkItem branch and record commit evidence.',
   RAISE_PR: 'Open a pull request from the work branch (wi/<code>) into the base branch, via the GitHub connector.',
   POLICY_CHECK: 'Check a governance policy before the workflow continues.',
@@ -1197,7 +1199,7 @@ const NODE_HELP_SECTIONS = [
   },
   {
     title: 'Task & Execution',
-    types: ['FOREACH', 'WORK_ITEM', 'CALL_WORKFLOW', 'TOOL_REQUEST', 'RUN_PYTHON', 'GIT_PUSH', 'RAISE_PR', 'POLICY_CHECK', 'EVAL_GATE', 'VERIFIER', 'CONSUMABLE_CREATION'],
+    types: ['FOREACH', 'WORK_ITEM', 'CALL_WORKFLOW', 'TOOL_REQUEST', 'RUN_PYTHON', 'CREATE_BRANCH', 'GIT_PUSH', 'RAISE_PR', 'POLICY_CHECK', 'EVAL_GATE', 'VERIFIER', 'CONSUMABLE_CREATION'],
   },
 ]
 
@@ -1222,6 +1224,7 @@ const NODE_USAGE_TIPS: Record<string, string> = {
   WORK_ITEM:         'Creates a child capability queue item. Parent waits for child outputs and approval.',
   CALL_WORKFLOW:     'Parent workflow pauses until child completes. Child result is in context.',
   TOOL_REQUEST:      'High-risk tools may auto-pause for approval before execution.',
+  CREATE_BRANCH:     'Place at the start. Creates wi/<code> from the base branch cloud-side via the GitHub connector, so the work branch exists before the phases commit to it. Idempotent — safe if the branch already exists.',
   GIT_PUSH:          'Place after an Approval node. It pushes the WorkItem branch through the agent runtime and records branch/commit evidence.',
   RAISE_PR:          'Place at the end (after GIT_PUSH). Opens a PR from wi/<code> into the base branch cloud-side via the GitHub connector — no runtime needed, as long as the branch is already pushed.',
   POLICY_CHECK:      'Use WARN mode during testing — it logs failures without blocking the workflow.',

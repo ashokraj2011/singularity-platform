@@ -167,7 +167,8 @@ async function main(): Promise<void> {
   const N_PUSH = id(PHASES.length + 2)
   const N_RAISE_PR = id(PHASES.length + 3)
   const N_END = id(PHASES.length + 4)
-  const order = [N_START, ...phaseNodeIds, N_VERIFY, N_PUSH, N_RAISE_PR, N_END]
+  const N_CREATE_BRANCH = id(PHASES.length + 5)
+  const order = [N_START, N_CREATE_BRANCH, ...phaseNodeIds, N_VERIFY, N_PUSH, N_RAISE_PR, N_END]
 
   // capabilityId: null → COMMON / platform template. This workflow is
   // capability-INDEPENDENT (each phase resolves the WORK ITEM's capability +
@@ -202,9 +203,14 @@ async function main(): Promise<void> {
   })
 
   await upsertNode({ id: N_START, nodeType: 'START', label: 'Intake', x: 80 })
+  // Create the work branch (wi/<code>) up-front, cloud-side via the GitHub
+  // connector, so every phase commits onto it and the push/PR have a branch.
+  // Idempotent — safe if the runtime already created it. base defaults to the
+  // run's cloned branch (launch pick) then main.
+  await upsertNode({ id: N_CREATE_BRANCH, nodeType: 'CREATE_BRANCH', label: 'Create work branch', x: 80 + 1 * 220, config: {} })
   for (const [i, phase] of PHASES.entries()) {
     await upsertNode({
-      id: phaseNodeIds[i]!, nodeType: 'AGENT_TASK', label: phase.label, x: 80 + (i + 1) * 220,
+      id: phaseNodeIds[i]!, nodeType: 'AGENT_TASK', label: phase.label, x: 80 + (i + 2) * 220,
       // executor:'copilot' → AgentTaskExecutor → run_context.executor → CF dispatches copilot_execute.
       // Capability-independent: no capabilityId pinned → AgentTaskExecutor uses
       // the work item's capability at runtime, and resolves THAT capability's
@@ -220,7 +226,7 @@ async function main(): Promise<void> {
   // run produced (scope:'ALL') and pause the run (BLOCKED, findings in
   // _blockedByVerifier) if any fails the standards. Nothing is pushed unverified.
   await upsertNode({
-    id: N_VERIFY, nodeType: 'VERIFIER', label: 'Verify documents', x: 80 + (PHASES.length + 1) * 220,
+    id: N_VERIFY, nodeType: 'VERIFIER', label: 'Verify documents', x: 80 + (PHASES.length + 2) * 220,
     config: {
       scope: 'ALL', requireDocuments: false,
       criteria: 'The SDLC documents (requirements, design, test report, risk assessment, release/rollback) must be complete, internally consistent with each other, and satisfy the work item\'s acceptance criteria.',
@@ -228,7 +234,7 @@ async function main(): Promise<void> {
     },
   })
   await upsertNode({
-    id: N_PUSH, nodeType: 'GIT_PUSH', label: 'Push to remote', x: 80 + (PHASES.length + 2) * 220,
+    id: N_PUSH, nodeType: 'GIT_PUSH', label: 'Push to remote', x: 80 + (PHASES.length + 3) * 220,
     config: { requireApproval: false, remote: 'origin', standard: { requireApproval: 'false', remote: 'origin' } },
   })
   // Open a PR from the work branch (wi/<code>) into the base branch — cloud-side
@@ -236,16 +242,16 @@ async function main(): Promise<void> {
   // title/body default from the work item. Requires a GIT connector + (one-time)
   // the RAISE_PR enum migration applied before this seed runs.
   await upsertNode({
-    id: N_RAISE_PR, nodeType: 'RAISE_PR', label: 'Raise pull request', x: 80 + (PHASES.length + 3) * 220,
+    id: N_RAISE_PR, nodeType: 'RAISE_PR', label: 'Raise pull request', x: 80 + (PHASES.length + 4) * 220,
     config: {},
   })
-  await upsertNode({ id: N_END, nodeType: 'END', label: 'Done', x: 80 + (PHASES.length + 4) * 220 })
+  await upsertNode({ id: N_END, nodeType: 'END', label: 'Done', x: 80 + (PHASES.length + 5) * 220 })
 
   for (let i = 0; i < order.length - 1; i++) {
     await upsertEdge({ id: eid(i), from: order[i]!, to: order[i + 1]! })
   }
 
-  console.log(`✓ "${WF_NAME}" (${WF_ID}) — START → ${PHASES.map(p => p.key).join(' → ')} → VERIFY → GIT_PUSH → RAISE_PR → END`)
+  console.log(`✓ "${WF_NAME}" (${WF_ID}) — START → CREATE_BRANCH → ${PHASES.map(p => p.key).join(' → ')} → VERIFY → GIT_PUSH → RAISE_PR → END`)
   console.log(`  every phase node: AGENT_TASK, executor='copilot', governanceMode='${GOVERNANCE_MODE}', preferLaptop=${PREFER_LAPTOP} (bridge: laptop dials into CF); + a VERIFIER gate before push`)
 
   // feature → SDLC → this Copilot flow, priority 300. Routing precedence is

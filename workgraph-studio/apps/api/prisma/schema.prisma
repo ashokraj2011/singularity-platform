@@ -50,6 +50,7 @@ enum NodeType {
   VERIFIER
   GOVERNANCE_GATE
   RAISE_PR
+  CREATE_BRANCH
 }
 
 enum ExecutionLocation {
