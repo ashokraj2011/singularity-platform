@@ -265,12 +265,24 @@ export async function buildStartPreview(req: NextRequest, input: StartPreviewInp
     ?? stringValue(selectedIntent.defaultModelAlias)
     ?? null;
   let modelReadiness = resolveModelReadiness(llmRes.data, initialModelAlias);
-  const canAutoFallbackModel = !requestedModelAlias && !modelReadiness.ready && modelReadiness.readyAliases.length > 0;
+  // Auto-correct a non-ready alias to a ready one so a launch never dead-ends on a
+  // catalog default the connected runtime doesn't expose (e.g. "balanced"). This
+  // fires whenever the resolved alias isn't ready — previously it only fired when
+  // the caller sent NO alias, but the client always sends its "balanced" default,
+  // which suppressed the fallback and left the LLM-provider check stuck red even
+  // though a real alias (claude-sonnet-4-6, …) was ready. Prefer the runtime's own
+  // default alias when it's ready, else the first ready alias.
+  const canAutoFallbackModel = !modelReadiness.ready && modelReadiness.readyAliases.length > 0;
   if (canAutoFallbackModel) {
-    modelReadiness = resolveModelReadiness(llmRes.data, modelReadiness.readyAliases[0]);
+    const preferredAlias = modelReadiness.defaultAlias && modelReadiness.readyAliases.includes(modelReadiness.defaultAlias)
+      ? modelReadiness.defaultAlias
+      : modelReadiness.readyAliases[0];
+    modelReadiness = resolveModelReadiness(llmRes.data, preferredAlias);
   }
   const hasReadyAlias = modelReadiness.ready;
-  const demoMode = !hasRuntime || !hasProvider || canAutoFallbackModel;
+  // demoMode reflects a genuine lack of a real runtime/provider — NOT the alias
+  // auto-correction above, which can happen with a fully-ready real runtime.
+  const demoMode = !hasRuntime || !hasProvider;
   const runtimePreference = stringValue(input.runtimePreference)
     ?? (demoMode ? "mock_ok" : stringValue(selectedIntent.runtimePreference) ?? "user_runtime");
   const modelAlias = modelReadiness.alias;
