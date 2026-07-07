@@ -58,6 +58,7 @@ type StartPreview = {
   intents: Array<{ id: string; label: string; description?: string; templateCount?: number; workflowTemplate?: { id?: string; name?: string } }>;
   capabilities: Array<{ id: string; name: string; capabilityType?: string | null; status?: string | null }>;
   blockers: StartBlocker[];
+  warnings: StartBlocker[];
   health?: {
     score?: number;
     summary?: { connectedRuntimeCount?: number; readyProviderCount?: number; seededIntentCount?: number };
@@ -158,6 +159,8 @@ function normalizeStartPreview(value: unknown, fallbackStory: string): StartPrev
   const readiness = asRow(row.modelReadiness);
   const health = asRow(row.health);
   const summary = asRow(health.summary);
+  const normalizedBlockers = asRowArray(row.blockers).map(normalizeBlocker);
+  const normalizedWarnings = asRowArray(row.warnings).map(normalizeBlocker);
   return {
     story: asString(row.story, fallbackStory),
     recommendation: normalizeRecommendation(row.recommendation),
@@ -197,7 +200,10 @@ function normalizeStartPreview(value: unknown, fallbackStory: string): StartPrev
       capabilityType: nullableString(item.capabilityType),
       status: nullableString(item.status),
     })),
-    blockers: asRowArray(row.blockers).map(normalizeBlocker),
+    blockers: normalizedBlockers,
+    warnings: normalizedWarnings.length
+      ? normalizedWarnings
+      : normalizedBlockers.filter((blocker) => blocker.severity === "warning"),
     health: {
       score: asNumber(health.score),
       summary: {
@@ -293,7 +299,9 @@ export default function StartPage() {
 
   const recommendation = preview?.recommendation;
   const blockingIssues = (preview?.blockers ?? []).filter((item) => item.severity === "blocked");
-  const warningIssues = (preview?.blockers ?? []).filter((item) => item.severity === "warning");
+  const warningIssues = preview?.warnings?.length
+    ? preview.warnings
+    : (preview?.blockers ?? []).filter((item) => item.severity === "warning");
   const canLaunch = Boolean(
     story.trim().length >= 8
     && (capabilityId || recommendation?.capabilityId)

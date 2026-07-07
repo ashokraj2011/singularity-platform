@@ -71,6 +71,7 @@ type StartPreview = {
   intents: GalleryItem[];
   capabilities: Capability[];
   blockers: StartBlocker[];
+  warnings: StartBlocker[];
   health?: AdoptionHealth;
   catalog?: { referenceOnly?: boolean; authRequired?: boolean; message?: string | null };
 };
@@ -202,12 +203,17 @@ function normalizeRecommendation(value: unknown): StartRecommendation {
 function normalizeStartPreview(value: unknown, fallbackStoryText: string): StartPreview {
   const row = asRow(value);
   const catalog = asRow(row.catalog);
+  const normalizedBlockers = asRowArray(row.blockers).map(normalizeBlocker);
+  const normalizedWarnings = asRowArray(row.warnings).map(normalizeBlocker);
   return {
     story: asString(row.story, fallbackStoryText),
     recommendation: normalizeRecommendation(row.recommendation),
     intents: asRowArray(row.intents).map(normalizeGalleryItem),
     capabilities: asRowArray(row.capabilities).map(normalizeCapability),
-    blockers: asRowArray(row.blockers).map(normalizeBlocker),
+    blockers: normalizedBlockers,
+    warnings: normalizedWarnings.length
+      ? normalizedWarnings
+      : normalizedBlockers.filter((blocker) => blocker.severity === "warning"),
     health: normalizeAdoptionHealth(row.health),
     catalog: {
       referenceOnly: asBoolean(catalog.referenceOnly),
@@ -262,7 +268,7 @@ export default function WorkflowStartPage() {
   const referenceOnlyGallery = Boolean(preview?.catalog?.referenceOnly);
   const blockers = preview?.blockers ?? [];
   const blockingIssues = blockers.filter((blocker) => blocker.severity === "blocked");
-  const warningIssues = blockers.filter((blocker) => blocker.severity === "warning");
+  const warningIssues = preview?.warnings?.length ? preview.warnings : blockers.filter((blocker) => blocker.severity === "warning");
   const selectedIntent = useMemo(() => intents.find((item) => item.id === intentId) ?? intents[0] ?? null, [intentId, intents]);
   const selectedCapability = capabilities.find((capability) => capability.id === capabilityId) ?? null;
   const runtimeConnected = (health?.summary?.connectedRuntimeCount ?? 0) > 0;
@@ -539,7 +545,7 @@ export default function WorkflowStartPage() {
           {loadingPreview && (
             <Panel tone="#2563eb" icon={Loader2} title="Refreshing launch preview" body="Checking capability, workflow template, runtime, and model readiness." />
           )}
-          <Prerequisites checks={prereqChecks} warnings={warningIssues} />
+          <Prerequisites checks={prereqChecks} blockers={blockingIssues} warnings={warningIssues} />
           {!llmReady && requiresRealModel && (
             <Panel
               tone="#b91c1c"
@@ -614,12 +620,16 @@ function Metric({ icon: Icon, label, value, tone }: { icon: LucideIcon; label: s
 
 function Prerequisites({
   checks,
+  blockers,
   warnings,
 }: {
   checks: PrereqCheck[];
+  blockers: StartBlocker[];
   warnings: StartBlocker[];
 }) {
   const allReady = checks.every((check) => check.ok || check.optional);
+  const missingChecks = checks.filter((check) => !check.ok && !check.optional).map((check) => check.label);
+  const footnoteIssues = allReady ? warnings : blockers;
   return (
     <div style={{ display: "grid", gap: 10 }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
@@ -632,20 +642,26 @@ function Prerequisites({
         ))}
       </div>
       {allReady ? (
-        <Panel tone="#047857" icon={CheckCircle2} title="Prerequisites ready" body="Capability, workflow seed, runtime, and LLM provider checks are sufficient to launch." />
+        <Panel
+          tone="#047857"
+          icon={CheckCircle2}
+          title="Prerequisites ready"
+          body={warnings.length ? "Required launch checks are ready. Optional setup notes below do not block launch." : "Capability, workflow seed, runtime, and LLM provider checks are sufficient to launch."}
+          footnote={warnings.slice(0, 2).map((warning) => warning.message).join(" ")}
+        />
       ) : (
         <Panel
           tone="#b45309"
           icon={AlertTriangle}
           title="Prerequisites need attention"
-          body="Resolve the blocked checks above before launching."
+          body={missingChecks.length ? `Resolve required checks before launching: ${missingChecks.join(", ")}.` : "Resolve required launch checks before launching."}
           actions={
             <>
               <Link href="/llm-settings" className="btn-secondary"><Wrench size={14} /> Runtime setup</Link>
               <Link href="/operations/readiness" className="btn-secondary"><ShieldCheck size={14} /> Readiness</Link>
             </>
           }
-          footnote={warnings.slice(0, 2).map((warning) => warning.message).join(" ")}
+          footnote={footnoteIssues.slice(0, 2).map((issue) => issue.message).join(" ")}
         />
       )}
     </div>

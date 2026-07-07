@@ -16,8 +16,14 @@ assert.match(
 
 assert.match(
   page,
-  /function normalizeStartPreview\(value: unknown, fallbackStory: string\): StartPreview[\s\S]*?recommendation: normalizeRecommendation\(row\.recommendation\)[\s\S]*?blockers: asRowArray\(row\.blockers\)\.map\(normalizeBlocker\)/,
+  /function normalizeStartPreview\(value: unknown, fallbackStory: string\): StartPreview[\s\S]*?const normalizedBlockers = asRowArray\(row\.blockers\)\.map\(normalizeBlocker\)[\s\S]*?const normalizedWarnings = asRowArray\(row\.warnings\)\.map\(normalizeBlocker\)[\s\S]*?warnings: normalizedWarnings\.length/,
   "start preview response should be normalized from unknown API data before rendering",
+);
+
+assert.match(
+  page,
+  /const warningIssues = preview\?\.warnings\?\.length[\s\S]*?\? preview\.warnings[\s\S]*?: \(preview\?\.blockers \?\? \[\]\)\.filter/,
+  "start page should prefer first-class preview warnings over deriving warnings from blockers",
 );
 
 assert.match(

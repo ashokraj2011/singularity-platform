@@ -97,7 +97,9 @@ export async function POST(req: NextRequest) {
       blockers: preview.blockers,
       warnings: [
         ...((Array.isArray(record(parsed).warnings) ? record(parsed).warnings : []) as unknown[]).map(String),
-        ...preview.blockers.filter((blocker) => blocker.severity === "warning").map((blocker) => blocker.message),
+        ...(Array.isArray(preview.warnings)
+          ? preview.warnings.map((warning) => warning.message)
+          : preview.blockers.filter((blocker) => blocker.severity === "warning").map((blocker) => blocker.message)),
       ],
     });
   } catch (err) {

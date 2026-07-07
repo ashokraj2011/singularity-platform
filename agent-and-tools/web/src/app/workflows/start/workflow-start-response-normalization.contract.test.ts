@@ -28,8 +28,20 @@ assert.match(
 
 assert.match(
   page,
-  /function normalizeStartPreview\(value: unknown, fallbackStoryText: string\): StartPreview[\s\S]*?intents: asRowArray\(row\.intents\)\.map\(normalizeGalleryItem\)[\s\S]*?blockers: asRowArray\(row\.blockers\)\.map\(normalizeBlocker\)/,
+  /function normalizeStartPreview\(value: unknown, fallbackStoryText: string\): StartPreview[\s\S]*?const normalizedBlockers = asRowArray\(row\.blockers\)\.map\(normalizeBlocker\)[\s\S]*?const normalizedWarnings = asRowArray\(row\.warnings\)\.map\(normalizeBlocker\)[\s\S]*?warnings: normalizedWarnings\.length/,
   "workflow start preview response should be normalized from unknown API data",
+);
+
+assert.match(
+  page,
+  /const warningIssues = preview\?\.warnings\?\.length \? preview\.warnings : blockers\.filter\(\(blocker\) => blocker\.severity === "warning"\)/,
+  "workflow start should treat warning issues separately from hard blockers",
+);
+
+assert.match(
+  page,
+  /body=\{missingChecks\.length \? `Resolve required checks before launching:/,
+  "workflow start prerequisite copy should name required checks instead of blaming optional warnings",
 );
 
 assert.match(

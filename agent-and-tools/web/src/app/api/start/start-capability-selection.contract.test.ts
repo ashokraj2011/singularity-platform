@@ -41,4 +41,22 @@ assert.match(
   "start launch should refuse to launch when preview emits blocked capability prerequisites",
 );
 
+assert.match(
+  shared,
+  /const blockers: StartBlocker\[] = \[[\s\S]*?healthRows\(health, "blocked"\)[\s\S]*?const warnings: StartBlocker\[] = \[[\s\S]*?healthRows\(health, "warning"\)/,
+  "start preview should keep health warnings separate from hard launch blockers",
+);
+
+assert.match(
+  shared,
+  /blockers: \[\.\.\.blockers, \.\.\.warnings\],[\s\S]*?warnings,/,
+  "start preview should return first-class warnings while preserving the legacy blockers envelope",
+);
+
+assert.match(
+  launch,
+  /preview\.warnings\.map\(\(warning\) => warning\.message\)/,
+  "start launch should use first-class preview warnings in launch warnings",
+);
+
 console.log("start capability selection contract tests passed");

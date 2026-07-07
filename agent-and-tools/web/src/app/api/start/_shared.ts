@@ -290,6 +290,8 @@ export async function buildStartPreview(req: NextRequest, input: StartPreviewInp
 
   const blockers: StartBlocker[] = [
     ...healthRows(health, "blocked"),
+  ];
+  const warnings: StartBlocker[] = [
     ...healthRows(health, "warning"),
   ];
   if (!workflowTemplateId && galleryNeedsUserSession) {
@@ -341,7 +343,7 @@ export async function buildStartPreview(req: NextRequest, input: StartPreviewInp
     });
   }
   if (!hasRuntime) {
-    blockers.push({
+    warnings.push({
       id: "runtime-demo-fallback",
       label: "Demo fallback",
       message: "No MCP runtime is connected. The recommended launch is set to mock runtime mode for first-run testing.",
@@ -351,7 +353,7 @@ export async function buildStartPreview(req: NextRequest, input: StartPreviewInp
     });
   }
   if (!hasProvider) {
-    blockers.push({
+    warnings.push({
       id: "llm-demo-fallback",
       label: "Mock model fallback",
       message: "No real LLM provider is ready. The recommended model alias is mock so the fresh-clone path can still be tested.",
@@ -360,7 +362,7 @@ export async function buildStartPreview(req: NextRequest, input: StartPreviewInp
     });
   }
   if (canAutoFallbackModel) {
-    blockers.push({
+    warnings.push({
       id: "llm-model-auto-fallback",
       label: "Default model fallback",
       message: `The configured default model was not ready, so the preview selected ${modelAlias} for demo-safe launch.`,
@@ -423,7 +425,8 @@ export async function buildStartPreview(req: NextRequest, input: StartPreviewInp
       capabilityType: stringValue(capability.capabilityType),
       status: stringValue(capability.status),
     })).filter((capability) => capability.id),
-    blockers,
+    blockers: [...blockers, ...warnings],
+    warnings,
     modelReadiness,
     catalog: {
       referenceOnly: galleryMeta.referenceOnly === true,
