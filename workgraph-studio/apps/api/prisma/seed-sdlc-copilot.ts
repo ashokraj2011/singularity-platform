@@ -165,8 +165,9 @@ async function main(): Promise<void> {
   const phaseNodeIds = PHASES.map((_, i) => id(i + 1))
   const N_VERIFY = id(PHASES.length + 1)
   const N_PUSH = id(PHASES.length + 2)
-  const N_END = id(PHASES.length + 3)
-  const order = [N_START, ...phaseNodeIds, N_VERIFY, N_PUSH, N_END]
+  const N_RAISE_PR = id(PHASES.length + 3)
+  const N_END = id(PHASES.length + 4)
+  const order = [N_START, ...phaseNodeIds, N_VERIFY, N_PUSH, N_RAISE_PR, N_END]
 
   // capabilityId: null → COMMON / platform template. This workflow is
   // capability-INDEPENDENT (each phase resolves the WORK ITEM's capability +
@@ -230,13 +231,21 @@ async function main(): Promise<void> {
     id: N_PUSH, nodeType: 'GIT_PUSH', label: 'Push to remote', x: 80 + (PHASES.length + 2) * 220,
     config: { requireApproval: false, remote: 'origin', standard: { requireApproval: 'false', remote: 'origin' } },
   })
-  await upsertNode({ id: N_END, nodeType: 'END', label: 'Done', x: 80 + (PHASES.length + 3) * 220 })
+  // Open a PR from the work branch (wi/<code>) into the base branch — cloud-side
+  // via the GitHub connector. Base defaults to the run's cloned branch, then main;
+  // title/body default from the work item. Requires a GIT connector + (one-time)
+  // the RAISE_PR enum migration applied before this seed runs.
+  await upsertNode({
+    id: N_RAISE_PR, nodeType: 'RAISE_PR', label: 'Raise pull request', x: 80 + (PHASES.length + 3) * 220,
+    config: {},
+  })
+  await upsertNode({ id: N_END, nodeType: 'END', label: 'Done', x: 80 + (PHASES.length + 4) * 220 })
 
   for (let i = 0; i < order.length - 1; i++) {
     await upsertEdge({ id: eid(i), from: order[i]!, to: order[i + 1]! })
   }
 
-  console.log(`✓ "${WF_NAME}" (${WF_ID}) — START → ${PHASES.map(p => p.key).join(' → ')} → VERIFY → GIT_PUSH → END`)
+  console.log(`✓ "${WF_NAME}" (${WF_ID}) — START → ${PHASES.map(p => p.key).join(' → ')} → VERIFY → GIT_PUSH → RAISE_PR → END`)
   console.log(`  every phase node: AGENT_TASK, executor='copilot', governanceMode='${GOVERNANCE_MODE}', preferLaptop=${PREFER_LAPTOP} (bridge: laptop dials into CF); + a VERIFIER gate before push`)
 
   // feature → SDLC → this Copilot flow, priority 300. Routing precedence is
