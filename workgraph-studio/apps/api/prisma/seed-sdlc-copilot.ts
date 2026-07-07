@@ -86,36 +86,37 @@ const PHASES: Phase[] = [
   {
     key: 'REQUIREMENTS', label: 'Requirements (Copilot)', agent: PRODUCT_OWNER_AGENT, role: 'PRODUCT_OWNER',
     task: 'Write a clear Requirements & Acceptance spec for this work item:\n\n{{instance.vars.story}}\n\n' +
-      'List functional requirements, acceptance criteria, and edge cases. Save it as REQUIREMENTS.md at the repo root.',
+      'List functional requirements, acceptance criteria, and edge cases. Save it as the file deliverables/{{instance.vars.workCode}}/product-owner/REQUIREMENTS.md (create the folders if needed).',
     writes: [A.requirements],
   },
   {
     key: 'DESIGN', label: 'Design (Copilot)', agent: ARCHITECT_AGENT, role: 'ARCHITECT',
     task: 'Produce a Design Document (and an ADR if a significant decision is involved) for:\n\n{{instance.vars.story}}\n\n' +
-      'Cover components, data flow, and risks. Save it as DESIGN.md at the repo root.',
+      'Cover components, data flow, and risks. Save it as the file deliverables/{{instance.vars.workCode}}/architect/DESIGN.md (create the folders if needed).',
     reads: [A.requirements], writes: [A.design],
   },
   {
     key: 'DEVELOP', label: 'Develop (Copilot)', agent: DEVELOPER_AGENT, role: 'DEVELOPER',
     task: 'Implement this change end-to-end in the repository:\n\n{{instance.vars.story}}\n\n' +
-      'Make the actual code edits, ADD or EXTEND unit tests for the new behavior, and run the tests until they pass.',
+      'Make the actual code edits, ADD or EXTEND unit tests for the new behavior, and run the tests until they pass. ' +
+      'Then write a short Implementation summary (what changed and why) as the file deliverables/{{instance.vars.workCode}}/developer/IMPLEMENTATION.md (create the folders if needed).',
     reads: [A.requirements, A.design], writes: [A.implementation],
   },
   {
     key: 'QA', label: 'QA (Copilot)', agent: QA_AGENT, role: 'QA',
     task: 'Run the project test suite for the implemented change and write a concise Test Report ' +
-      '(scope, results, coverage) as TEST_REPORT.md at the repo root.',
+      '(scope, results, coverage) as the file deliverables/{{instance.vars.workCode}}/qa/TEST_REPORT.md (create the folders if needed).',
     reads: [A.design, A.implementation], writes: [A.testReport],
   },
   {
     key: 'SECURITY', label: 'Security Review (Copilot)', agent: SECURITY_AGENT, role: 'SECURITY',
     task: 'Review the implemented change for security risks (input validation, authz, secrets, dependencies) ' +
-      'and write a Risk Assessment as RISK_ASSESSMENT.md at the repo root.',
+      'and write a Risk Assessment as the file deliverables/{{instance.vars.workCode}}/security/RISK_ASSESSMENT.md (create the folders if needed).',
     reads: [A.design, A.implementation], writes: [A.risk],
   },
   {
     key: 'RELEASE', label: 'Release Readiness (Copilot)', agent: DEVOPS_AGENT, role: 'DEVOPS',
-    task: 'Write a Release & Rollback plan and a short Ops Runbook for this change as RELEASE.md at the repo root.',
+    task: 'Write a Release & Rollback plan and a short Ops Runbook for this change as the file deliverables/{{instance.vars.workCode}}/devops/RELEASE.md (create the folders if needed).',
     reads: [A.testReport, A.risk], writes: [A.release],
   },
 ]
