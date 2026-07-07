@@ -129,15 +129,22 @@ async function main(): Promise<void> {
   const N_END = id(PHASES.length + 3)
   const order = [N_START, ...phaseNodeIds, N_VERIFY, N_PUSH, N_END]
 
+  // capabilityId: null → COMMON / platform template. This workflow is
+  // capability-INDEPENDENT (each phase resolves the WORK ITEM's capability +
+  // repo at runtime), so it must NOT be pinned to one capability. A pinned
+  // capabilityId makes the guided-launch `workflow-capability-mismatch` check
+  // (apps/web start preview) block launching it on any OTHER capability — e.g.
+  // a freshly onboarded one — even though the workflow is designed to run on
+  // any capability. Common → selectable + launchable by every capability.
   await (prisma as any).workflow.upsert({
     where: { id: WF_ID },
-    update: { name: WF_NAME, capabilityId: CAPABILITY_ID, teamId: TEAM_ID, profile: 'main', workflowTypeKey: 'SDLC', metadata: { usesCopilot: true } },
+    update: { name: WF_NAME, capabilityId: null, teamId: TEAM_ID, profile: 'main', workflowTypeKey: 'SDLC', metadata: { usesCopilot: true } },
     create: {
       id: WF_ID, name: WF_NAME,
       description: 'SDLC delivered by the GitHub Copilot CLI: one AGENT_TASK (executor=copilot) per phase. ' +
         'context-fabric dispatches copilot_execute to the laptop mcp-server, which runs the Copilot CLI in the work-item workspace.',
       status: 'PUBLISHED', currentVersion: 1, profile: 'main', workflowTypeKey: 'SDLC',
-      teamId: TEAM_ID, capabilityId: CAPABILITY_ID,
+      teamId: TEAM_ID, capabilityId: null,
       // Whole-workflow Copilot opt-in → governed agents route via the COPILOT_SDLC
       // touch point, and the UI shows the COPILOT indicator.
       metadata: { usesCopilot: true },
