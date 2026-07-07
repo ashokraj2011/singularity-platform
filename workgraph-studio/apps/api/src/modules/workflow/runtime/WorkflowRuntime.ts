@@ -15,6 +15,7 @@ import { activateConsumableCreation } from './executors/ConsumableCreationExecut
 import { activateToolRequest } from './executors/ToolRequestExecutor'
 import { activateGitPush } from './executors/GitPushExecutor'
 import { activateRaisePr } from './executors/RaisePrExecutor'
+import { activateCreateBranch } from './executors/CreateBranchExecutor'
 import { activatePolicyCheck } from './executors/PolicyCheckExecutor'
 import { activateEvalGate } from './executors/EvalGateExecutor'
 import { activateRunPython } from './executors/RunPythonExecutor'
@@ -613,6 +614,20 @@ async function executeServerNode(
         await degradeNodeToBlocked(instance, node, err, actorId)
       }
       if (pushResult?.pushed) await advance(instance.id, node.id, pushResult.output, actorId, undefined, tenantId)
+      break
+    }
+    case 'CREATE_BRANCH': {
+      // Cloud-side work-branch creation (via the GitHub connector), typically at
+      // the start of a flow. Same degrade-safe guard as RAISE_PR/GIT_PUSH: a
+      // failure blocks the node (recoverable), never hard-fails the run;
+      // already-exists is treated as success inside the executor.
+      let cbResult: Awaited<ReturnType<typeof activateCreateBranch>> | null = null
+      try {
+        cbResult = await activateCreateBranch(node, instance, actorId)
+      } catch (err) {
+        await degradeNodeToBlocked(instance, node, err, actorId)
+      }
+      if (cbResult?.created) await advance(instance.id, node.id, cbResult.output, actorId, undefined, tenantId)
       break
     }
     case 'RAISE_PR': {
