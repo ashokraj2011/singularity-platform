@@ -19,9 +19,13 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import re
 from typing import Any
 
+import httpx
+
+from ..iam_service_token import get_iam_service_token
 from .code_context import build_code_context_for_governed_turn, package_markdown
 from .dispatch import ToolDispatchError, dispatch_tool
 from .phase_state import Phase, PhaseState
@@ -79,6 +83,75 @@ def _work_item_description(vars: dict[str, Any] | None) -> str:
                 return desc.strip()
     desc = v.get("description")
     return desc.strip() if isinstance(desc, str) else ""
+
+
+def _agent_runtime_base() -> str:
+    base = os.environ.get("AGENT_RUNTIME_URL", "").rstrip("/")
+    if not base:
+        return ""
+    return base if base.endswith("/api/v1") else f"{base}/api/v1"
+
+
+def _render_distilled_world_model(wm: dict[str, Any], artifacts: list[dict[str, Any]]) -> str | None:
+    """Render the distilled CapabilityWorldModel (+ top artifact names) as a compact
+    markdown block — the fallback grounding when the live code-context build is
+    unavailable. Defensive about the exact field shape."""
+    lines: list[str] = []
+    lang = wm.get("primaryLanguage")
+    build = wm.get("buildSystem")
+    stack = " / ".join(str(x) for x in (lang, build) if x)
+    if stack:
+        lines.append(f"- **Stack:** {stack}")
+    readme = str(wm.get("readmeSummary") or "").strip()
+    if readme:
+        lines.append(f"- **Overview:** {readme[:1200]}")
+    entry = wm.get("entrypoints")
+    if isinstance(entry, list) and entry:
+        lines.append("- **Entry points:** " + ", ".join(str(e) for e in entry[:8]))
+    conv = wm.get("codeConventions")
+    if isinstance(conv, list) and conv:
+        lines.append("- **Conventions:** " + "; ".join(str(c) for c in conv[:6]))
+    names = [str(a.get("name") or a.get("title") or a.get("path") or "").strip() for a in artifacts]
+    names = [n for n in names if n]
+    if names:
+        lines.append("- **Knowledge artifacts:** " + ", ".join(names[:8]))
+    text = "\n".join(lines).strip()
+    return text or None
+
+
+async def _fetch_distilled_world_model(capability_id: str, bearer: str | None) -> str | None:
+    """Fallback grounding: fetch the capability's DISTILLED world model + top
+    knowledge artifacts from agent-runtime and render markdown. Best-effort — returns
+    None on any error so the prompt still composes."""
+    base = _agent_runtime_base()
+    if not base or not capability_id:
+        return None
+    token = bearer or (await get_iam_service_token())
+    headers = {"authorization": f"Bearer {token or ''}"}
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            wm_resp = await client.get(f"{base}/capabilities/{capability_id}/world-model", headers=headers)
+            if wm_resp.status_code != 200:
+                return None
+            wm_body = wm_resp.json()
+            wm = wm_body.get("data") if isinstance(wm_body, dict) else None
+            if not isinstance(wm, dict):
+                return None
+            artifacts: list[dict[str, Any]] = []
+            try:
+                a_resp = await client.get(f"{base}/capabilities/{capability_id}/knowledge-artifacts", headers=headers)
+                if a_resp.status_code == 200:
+                    a_body = a_resp.json()
+                    data: Any = a_body.get("data") if isinstance(a_body, dict) else a_body
+                    if isinstance(data, dict):
+                        data = data.get("items") or data.get("artifacts") or []
+                    if isinstance(data, list):
+                        artifacts = [x for x in data if isinstance(x, dict)]
+            except Exception:  # noqa: BLE001 — artifacts are optional
+                artifacts = []
+    except Exception:  # noqa: BLE001 — best-effort fallback
+        return None
+    return _render_distilled_world_model(wm, artifacts)
 
 
 async def compose_copilot_prompt(
@@ -140,21 +213,25 @@ async def compose_copilot_prompt(
     parts.append(f"## Your task\n{resolved_task.strip()}")
     if code_md.strip():
         parts.append(f"## Repository world model (code context)\n{code_md.strip()}")
-    elif world_model_reason:
-        # Don't SILENTLY drop the section — surface WHY the repo world model is
-        # absent, both in the logs (operator) and inline in the prompt (visible in
-        # the run viewer's Prompt tab), so missing grounding is diagnosable instead
-        # of a mystery. The most common cause on the hybrid setup is
-        # RUNTIME_NOT_CONNECTED (no laptop bridge connected for the code-context frame).
-        logging.getLogger("context_api.compose_copilot").warning(
-            "no repo world model (stage=%s capability=%s): %s",
-            stage_key, capability_id, world_model_reason,
-        )
-        parts.append(
-            "## Repository world model (code context)\n"
-            "_Unavailable for this run — read the repository files directly to build your context._\n"
-            f"_diagnostic: {world_model_reason}_"
-        )
+    else:
+        # Live code-context build unavailable → fall back to the capability's DISTILLED
+        # world model (stack + README + key artifacts) so the prompt is STILL grounded
+        # even when the laptop code-context bridge isn't serving a live index. Only if
+        # that's also empty do we surface the diagnostic (logs + inline) instead of
+        # silently dropping the section.
+        fallback_md = await _fetch_distilled_world_model(capability_id, bearer) if capability_id else None
+        if fallback_md:
+            parts.append(f"## Repository world model (capability knowledge)\n{fallback_md}")
+        elif world_model_reason:
+            logging.getLogger("context_api.compose_copilot").warning(
+                "no repo world model (stage=%s capability=%s): %s",
+                stage_key, capability_id, world_model_reason,
+            )
+            parts.append(
+                "## Repository world model (code context)\n"
+                "_Unavailable for this run — read the repository files directly to build your context._\n"
+                f"_diagnostic: {world_model_reason}_"
+            )
     # Clarifying-questions protocol. When Copilot has to assume something to
     # proceed (most common in the requirements stage), it lists the open
     # questions in a `## Questions` block at the END of its reply. mcp-server's
