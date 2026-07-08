@@ -3,6 +3,7 @@ import type { WorkflowInstance, WorkflowNode } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
 import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { logEvent, createReceipt, publishOutbox } from '../../../lib/audit'
+import { dispatchExternalWebhook } from './external-webhook'
 import { recordRunLearning } from '../../../lib/learning/record-run-learning'
 import { ValidationError } from '../../../lib/errors'
 import { resolveNextNodes, isComplete } from './GraphTraverser'
@@ -316,6 +317,45 @@ export async function advance(
   }
 }
 
+// EXTERNAL-location webhook: POST a just-queued pending execution to the node's
+// webhookUrl and take the result from the HTTP response (synchronous), then complete
+// the row + advance. On failure → failNode. No webhookUrl → leave the row on the queue
+// for a poll-runner. Reuses the existing complete/advance contract — no bearer-less
+// callback endpoint. SSRF-guarded (public-only) inside dispatchExternalWebhook.
+async function runExternalWebhookNode(
+  node: WorkflowNode,
+  instance: WorkflowInstance,
+  pendingExecutionId: string,
+  context: Record<string, unknown>,
+  attempt: number,
+  tenantId?: string,
+): Promise<void> {
+  const outcome = await dispatchExternalWebhook({
+    node: { id: node.id, nodeType: node.nodeType, config: node.config },
+    instanceId: instance.id,
+    pendingExecutionId,
+    context,
+  })
+  if (outcome.kind === 'skipped') return // no webhookUrl → poll-runner fallback
+  if (outcome.kind === 'error') {
+    await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.update({
+      where: { id: pendingExecutionId },
+      data: { completedAt: new Date(), error: outcome.error },
+    }), tenantId)
+    await failNode(instance.id, node.id, { message: outcome.error, code: 'EXTERNAL_WEBHOOK_FAILED' }, undefined, tenantId)
+    return
+  }
+  await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.update({
+    where: { id: pendingExecutionId },
+    data: { completedAt: new Date(), result: outcome.result as Prisma.InputJsonValue },
+  }), tenantId)
+  await logEvent('ExternalWebhookCompleted', 'WorkflowNode', node.id, undefined, { instanceId: instance.id, pendingExecutionId })
+  const advanceCtx = (outcome.result && typeof outcome.result === 'object' && !Array.isArray(outcome.result))
+    ? (outcome.result as Record<string, unknown>)
+    : { result: outcome.result }
+  await advance(instance.id, node.id, advanceCtx, undefined, attempt, tenantId)
+}
+
 async function activateDownstream(
   instance: WorkflowInstance,
   completedNode: WorkflowNode,
@@ -364,7 +404,7 @@ async function activateDownstream(
     // ── Execution location gate ─────────────────────────────────────────
     if (nextNode.executionLocation !== 'SERVER') {
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h default
-      await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.create({
+      const pending = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.create({
         data: {
           instanceId: instance.id,
           nodeId: nextNode.id,
@@ -375,6 +415,11 @@ async function activateDownstream(
         },
       }), tenantId)
       await logEvent('NodePendingExecution', 'WorkflowNode', nextNode.id, undefined, { instanceId: instance.id, location: nextNode.executionLocation } as any)
+      // EXTERNAL nodes with a webhookUrl are dispatched to the provider synchronously
+      // now; everything else waits on the queue for a poll-runner to claim it.
+      if (nextNode.executionLocation === 'EXTERNAL') {
+        await runExternalWebhookNode(nextNode, instance, pending.id, context, nextNode.attempt, tenantId)
+      }
       continue
     }
 
@@ -841,7 +886,7 @@ async function executeActivatedNode(
 ): Promise<void> {
   if (node.executionLocation !== 'SERVER') {
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
-    await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.create({
+    const pending = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.create({
       data: {
         instanceId: instance.id,
         nodeId: node.id,
@@ -855,6 +900,11 @@ async function executeActivatedNode(
       instanceId: instance.id,
       location: node.executionLocation,
     } as any)
+    // EXTERNAL nodes with a webhookUrl are dispatched to the provider synchronously
+    // now; everything else waits on the queue for a poll-runner to claim it.
+    if (node.executionLocation === 'EXTERNAL') {
+      await runExternalWebhookNode(node, instance, pending.id, context, node.attempt, instance.tenantId ?? undefined)
+    }
     return
   }
 
