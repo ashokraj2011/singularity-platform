@@ -230,6 +230,27 @@ function useAllConsumables(instanceId: string, live: boolean) {
 type PanelTab = 'form' | 'log' | 'questions' | 'prompt' | 'artifacts' | 'chat'
 // Consumable name AgentTaskExecutor stores parsed Copilot clarifying questions under.
 const COPILOT_QUESTIONS_NAME = '_copilot_questions'
+
+function consumableText(c: Consumable): string {
+  return (c.formData?.content ?? '').toString()
+}
+
+function isVisibleDocumentConsumable(c: Consumable): boolean {
+  return c.name !== COPILOT_QUESTIONS_NAME && consumableText(c).trim().length > 0
+}
+
+function consumableTime(c: Consumable): number {
+  const raw = c.updatedAt ?? c.createdAt
+  if (!raw) return 0
+  const ms = new Date(raw).getTime()
+  return Number.isFinite(ms) ? ms : 0
+}
+
+function sortConsumablesByNameThenTime(a: Consumable, b: Consumable): number {
+  const byName = (a.name ?? '').localeCompare(b.name ?? '')
+  return byName || consumableTime(b) - consumableTime(a)
+}
+
 type CopilotQuestion = { id: string; question: string; options?: string[] }
 // Interactive node types that collect a widget form from the user at runtime.
 type FillKind = 'task' | 'approval' | 'consumable'
@@ -456,8 +477,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
     ? new Date((node as { completedAt?: string }).completedAt as string).getTime() + 2000
     : Number.MAX_SAFE_INTEGER
   const stageDocs = useMemo(() => allRunDocs
-    .filter(c => c.name !== COPILOT_QUESTIONS_NAME)
-    .filter(c => (c.formData?.content ?? '').toString().trim())
+    .filter(isVisibleDocumentConsumable)
     .filter(c => (c.createdAt ? new Date(c.createdAt).getTime() : 0) <= stageCutoff)
     .sort((a, b) => (a.createdAt ? new Date(a.createdAt).getTime() : 0) - (b.createdAt ? new Date(b.createdAt).getTime() : 0)),
     [allRunDocs, stageCutoff])
@@ -1323,22 +1343,38 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
   // Verify all → run the agent across every document, sequentially (each is an LLM
   // call), updating verdicts as they land.
   const [verifyAll, setVerifyAll] = useState<{ done: number; total: number } | null>(null)
+  const documents = useMemo(
+    () => all.filter(isVisibleDocumentConsumable).slice().sort(sortConsumablesByNameThenTime),
+    [all],
+  )
   const runVerifyAll = async () => {
-    if (verifyAll || all.length === 0) return
-    setVerifyAll({ done: 0, total: all.length })
-    for (let i = 0; i < all.length; i++) {
+    if (verifyAll || documents.length === 0) return
+    setVerifyAll({ done: 0, total: documents.length })
+    for (let i = 0; i < documents.length; i++) {
       try {
-        const d = await api.post(`/consumables/${all[i].id}/verify`).then(r => r.data)
-        setVerdicts(v => ({ ...v, [all[i].id]: { passed: !!d?.passed, findings: d?.findings ?? [], rationale: d?.rationale } }))
+        const d = await api.post(`/consumables/${documents[i].id}/verify`).then(r => r.data)
+        setVerdicts(v => ({ ...v, [documents[i].id]: { passed: !!d?.passed, findings: d?.findings ?? [], rationale: d?.rationale } }))
       } catch { /* skip this doc, keep going */ }
-      setVerifyAll({ done: i + 1, total: all.length })
+      setVerifyAll({ done: i + 1, total: documents.length })
     }
     setVerifyAll(null)
     qc.invalidateQueries({ queryKey: ['run-graph-all-consumables', instanceId] })
   }
-  const groups = phases
-    .map(p => ({ phase: p, docs: all.filter(c => c.nodeId === p.id).slice().sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '')) }))
-    .filter(g => g.docs.length > 0)
+  const groups = useMemo(() => {
+    const phaseIds = new Set(phases.map(p => p.id))
+    const known = phases
+      .map(p => ({ phase: p, docs: documents.filter(c => c.nodeId === p.id).slice().sort(sortConsumablesByNameThenTime) }))
+      .filter(g => g.docs.length > 0)
+    const unlinked = documents
+      .filter(c => !c.nodeId || !phaseIds.has(c.nodeId))
+      .slice()
+      .sort(sortConsumablesByNameThenTime)
+    if (unlinked.length === 0) return known
+    return [
+      ...known,
+      { phase: { id: '__unlinked_documents__', label: 'Other generated documents' }, docs: unlinked },
+    ]
+  }, [documents, phases])
 
   return (
     <div style={{ width: 400, flexShrink: 0, background: '#fff', borderLeft: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -1346,11 +1382,11 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
         <Library size={16} color="#0ea5e9" />
         <div style={{ flex: 1 }} title="Grouped by agent — mirrors the git layout deliverables/<work-id>/<agent>/. Open a document to view or edit it.">
           <div style={{ fontSize: 13.5, fontWeight: 700, color: '#0f172a' }}>Documents</div>
-          <div style={{ fontSize: 10.5, color: '#94a3b8' }}>{all.length} document{all.length === 1 ? '' : 's'} · by agent</div>
+          <div style={{ fontSize: 10.5, color: '#94a3b8' }}>{documents.length} document{documents.length === 1 ? '' : 's'} · by agent</div>
         </div>
-        <button onClick={runVerifyAll} disabled={!!verifyAll || all.length === 0}
+        <button onClick={runVerifyAll} disabled={!!verifyAll || documents.length === 0}
           title="Run the verifier agent on every document"
-          style={{ ...topBtn, padding: '5px 9px', fontSize: 11, color: '#7c3aed', borderColor: '#ddd6fe', opacity: (!!verifyAll || all.length === 0) ? 0.6 : 1 }}>
+          style={{ ...topBtn, padding: '5px 9px', fontSize: 11, color: '#7c3aed', borderColor: '#ddd6fe', opacity: (!!verifyAll || documents.length === 0) ? 0.6 : 1 }}>
           <ShieldCheck size={12} /> {verifyAll ? `Verifying ${verifyAll.done}/${verifyAll.total}…` : 'Verify all'}
         </button>
         <button onClick={onClose} style={{ ...topBtn, padding: 6 }}><X size={14} /></button>
