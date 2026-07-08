@@ -1,9 +1,33 @@
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
 import type { ToolHandler } from "./registry";
 import { config } from "../config";
 import { resolveSandboxedPath } from "../workspace/sandbox";
 import { log } from "../shared/log";
+
+// Recursively collect *.md files under a directory (bounded), for the deliverables
+// fallback capture. Never throws — an unreadable dir just yields fewer files.
+function walkMarkdownFiles(root: string, cap: number): string[] {
+  const out: string[] = [];
+  const stack: string[] = [root];
+  while (stack.length && out.length < cap) {
+    const dir = stack.pop()!;
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (out.length >= cap) break;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) stack.push(full);
+      else if (e.isFile() && e.name.toLowerCase().endsWith(".md")) out.push(full);
+    }
+  }
+  return out;
+}
 
 /**
  * §13.4 — "mcp invokes Copilot". context-fabric dispatches this tool to
@@ -160,6 +184,29 @@ export const copilotExecuteTool: ToolHandler = {
         const content = readFileSync(resolveSandboxedPath(p), "utf8");
         if (content.trim() && content.length <= 200_000) { artifacts.push({ path: p, content }); capturedPaths.add(p); }
       } catch { /* not produced this run, or outside the sandbox — skip */ }
+    }
+
+    // Last-resort fallback: nothing captured (git showed clean AND the declared
+    // paths didn't match what Copilot actually wrote). Walk the SDLC deliverables
+    // convention (deliverables/**/*.md) under the sandbox so the produced docs still
+    // surface instead of only the summary. Only runs when we'd otherwise have zero
+    // artifacts, so it can't duplicate already-captured files.
+    if (artifacts.length === 0) {
+      try {
+        const sandboxRoot = resolveSandboxedPath(".");
+        const deliverablesRoot = resolveSandboxedPath("deliverables");
+        for (const abs of walkMarkdownFiles(deliverablesRoot, 25)) {
+          try {
+            const content = readFileSync(abs, "utf8");
+            if (!content.trim() || content.length > 200_000) continue;
+            const rel = path.relative(sandboxRoot, abs).split(path.sep).join("/");
+            artifacts.push({ path: rel, content });
+          } catch { /* skip unreadable file */ }
+        }
+        if (artifacts.length) {
+          log.info({ count: artifacts.length }, "copilot_execute: captured deliverables via glob fallback");
+        }
+      } catch { /* no deliverables/ dir — nothing to fall back to */ }
     }
 
     // Check in: commit this phase's changes onto the work-item branch so the
