@@ -28,7 +28,7 @@ import { unwrapList } from '../../lib/unwrap'
 import {
   ArrowLeft, List, AlertCircle,
   RotateCw, FileText, MessageSquare, X, Check, Ban, Send, ExternalLink,
-  ShieldCheck, CornerUpLeft, Library, Download, Maximize2, Activity, Copy, Pencil,
+  ShieldCheck, CornerUpLeft, Library, Download, Maximize2, Activity, Copy, Pencil, UserPlus,
   Play, Radio,
 } from 'lucide-react'
 import { api } from '../../lib/api'
@@ -272,6 +272,13 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
     onSuccess: () => { toast.success('Stage completed — workflow advancing'); invalidate() },
     onError: (e) => toast.error(errText(e, 'Complete & advance failed')),
   })
+  // Take over the run: reassign ownership to you (your runtime drives it + clones the
+  // work branch if it's not local) and resume if paused.
+  const takeOverMut = useMutation({
+    mutationFn: () => api.post(`/workflow-instances/${instanceId}/take-over`).then(r => r.data as { alreadyOwner?: boolean }),
+    onSuccess: (d) => { toast.success(d?.alreadyOwner ? 'You already own this run' : 'Took over — the run resumes under your runtime'); invalidate() },
+    onError: (e) => toast.error(errText(e, 'Take over failed')),
+  })
   // Manual start — trigger a node gated with startMode=manual that is ACTIVE and awaiting start.
   const startMut = useMutation({
     mutationFn: (nodeId: string) => api.post(`/workflow-instances/${instanceId}/nodes/${nodeId}/start`).then(r => r.data),
@@ -358,6 +365,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
         {usesCopilot && (
           <button onClick={() => { setShowActivity(a => !a); setShowCatalog(false); setSelected(null) }} style={{ ...topBtn, ...(showActivity ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }} title="Live governed activity for this copilot run (LLM calls, tools, phases, commits)"><Activity size={13} /> Live activity</button>
         )}
+        <button onClick={() => takeOverMut.mutate()} disabled={takeOverMut.isPending} style={topBtn} title="Take over this run: reassign it to you so your runtime drives it (clones the work branch wi/<code> if it isn't local) and resume it if paused"><UserPlus size={13} /> {takeOverMut.isPending ? 'Taking over…' : 'Take over'}</button>
         <button onClick={onTimeline} style={topBtn}><List size={13} /> Timeline</button>
       </div>
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
