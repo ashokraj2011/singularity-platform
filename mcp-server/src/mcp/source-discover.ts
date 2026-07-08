@@ -111,6 +111,20 @@ export async function fetchGitHubTree(repoUrl: string, branch: string): Promise<
   }));
 }
 
+// List the repo's branches via the GitHub API — same auth as fetchGitHubTree (the
+// runtime's own token). Powers the launch "Branch to clone" picker over the bridge,
+// so no separate connector is needed. Returns up to 100 branch names.
+export async function fetchGitHubBranches(repoUrl: string): Promise<string[]> {
+  const { owner, repo } = parseGitHubRepo(repoUrl);
+  const url = `https://api.github.com/repos/${owner}/${repo}/branches?per_page=100`;
+  const resp = await fetchWithTimeout(url, { headers: githubHeaders({ accept: "application/vnd.github+json" }) });
+  if (!resp.ok) {
+    throw new AppError(`GitHub branch lookup failed (${resp.status})`, 502, "UPSTREAM_ERROR");
+  }
+  const body = await readGitHubJson<Array<{ name?: string }>>(resp, "GitHub branch lookup");
+  return (Array.isArray(body) ? body : []).map(b => b?.name ?? "").filter(Boolean);
+}
+
 // Reusable single-file fetch (see fetchGitHubTree). A missing/forbidden file is
 // non-fatal for discovery — returns "" rather than throwing.
 export async function fetchGitHubFile(repoUrl: string, branch: string, path: string): Promise<string> {
