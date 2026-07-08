@@ -169,6 +169,13 @@ const startTargetSchema = z.object({
   // and bases its wi/<code> work branch on. Empty → the designed/capability
   // default (which, when itself empty, makes the runtime blindly guess `main`).
   sourceRef: z.string().max(200).optional(),
+  // Optional per-run source mode. 'github' (default) clones the resolved repo;
+  // 'local_dir' points the run at an existing checkout on the runtime (sourceUri),
+  // validated against the runtime's MCP_ALLOWED_LOCAL_SOURCE_ROOTS.
+  sourceType: z.string().max(40).optional(),
+  // The source location: a repo URL for github, or a local path for local_dir.
+  // Empty → the capability's linked repo / node default (github only).
+  sourceUri: z.string().max(500).optional(),
   // Optional per-run "clone into" folder — a name resolved under the runtime's
   // managed workspaces root (never an arbitrary FS path).
   cloneDir: z.string().max(200).optional(),
@@ -435,6 +442,8 @@ workItemsRouter.post('/:id/targets/:targetId/start', validate(startTargetSchema)
       childWorkflowTemplateId: body?.childWorkflowTemplateId,
       modelAlias: body?.modelAlias,
       sourceRef: body?.sourceRef,
+      sourceType: body?.sourceType,
+      sourceUri: body?.sourceUri,
       cloneDir: body?.cloneDir,
       pushEachPhase: body?.pushEachPhase,
     })

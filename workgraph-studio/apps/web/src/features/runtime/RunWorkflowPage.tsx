@@ -197,9 +197,12 @@ function StartWorkflowDialog({
 }) {
   const [selectedWorkItemTarget, setSelectedWorkItemTarget] = useState('')
   const [modelAlias, setModelAlias] = useState('')
+  const [sourceMode, setSourceMode] = useState<'github' | 'local_dir'>('github')
   const [sourceRef, setSourceRef] = useState('')
+  const [localPath, setLocalPath] = useState('')
   const [cloneDir, setCloneDir] = useState('')
   const [pushEachPhase, setPushEachPhase] = useState(false)
+  const isLocalSource = sourceMode === 'local_dir'
 
   // Catalog aliases (Copilot/OpenAI/Anthropic/…) to offer as a per-run model override.
   const connectionsQuery = useQuery<Array<{ alias?: string; label?: string; provider?: string; model?: string }>>({
@@ -263,8 +266,14 @@ function StartWorkflowDialog({
       return api.post(`/work-items/${selected.item.id}/targets/${selected.target.id}/start`, {
         childWorkflowTemplateId: workflow.id,
         ...(modelAlias ? { modelAlias } : {}),
-        ...(sourceRef.trim() ? { sourceRef: sourceRef.trim() } : {}),
-        ...(cloneDir.trim() ? { cloneDir: cloneDir.trim() } : {}),
+        // Local-directory run: point the runtime at an existing checkout (no clone,
+        // no branch, no clone-dir). Otherwise the github defaults ride through.
+        ...(isLocalSource
+          ? (localPath.trim() ? { sourceType: 'local_dir', sourceUri: localPath.trim() } : {})
+          : {
+              ...(sourceRef.trim() ? { sourceRef: sourceRef.trim() } : {}),
+              ...(cloneDir.trim() ? { cloneDir: cloneDir.trim() } : {}),
+            }),
         ...(pushEachPhase ? { pushEachPhase: true } : {}),
       }).then(r => r.data as { childWorkflowInstanceId?: string })
     },
@@ -358,41 +367,98 @@ function StartWorkflowDialog({
           </div>
 
           <div style={{ marginTop: 16 }}>
-            <h3 style={{ ...sectionTitleStyle, margin: '0 0 8px' }}>Branch to clone (optional)</h3>
-            <input
-              type="text"
-              list="launch-branch-options"
-              value={sourceRef}
-              onChange={event => setSourceRef(event.target.value)}
-              placeholder="e.g. main, develop, or a feature branch"
-              style={inputStyle}
-            />
-            {branchOptions.length > 0 && (
-              <datalist id="launch-branch-options">
-                {branchOptions.map(b => <option key={b} value={b} />)}
-              </datalist>
-            )}
+            <h3 style={{ ...sectionTitleStyle, margin: '0 0 8px' }}>Source</h3>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {([
+                { key: 'github', label: 'GitHub repo' },
+                { key: 'local_dir', label: 'Local directory' },
+              ] as const).map(opt => {
+                const active = sourceMode === opt.key
+                return (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setSourceMode(opt.key)}
+                    style={{
+                      flex: 1,
+                      padding: '8px 10px',
+                      borderRadius: 10,
+                      border: `1px solid ${active ? 'rgba(124,58,237,0.55)' : '#e2e8f0'}`,
+                      background: active ? 'rgba(124,58,237,0.10)' : '#fff',
+                      color: active ? '#6d28d9' : '#475569',
+                      fontWeight: active ? 900 : 600,
+                      fontSize: 13,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                )
+              })}
+            </div>
             <p style={{ ...mutedStyle, marginTop: 6 }}>
-              {branchOptions.length > 0
-                ? `${branchOptions.length} branch${branchOptions.length === 1 ? '' : 'es'} from ${branchRepoLabel ?? 'the linked repo'}${branchSource === 'runtime' ? ' (via the connected runtime)' : ''} — pick one or type any ref. `
-                : 'Type a branch/ref (branches auto-list when a runtime is connected or a GitHub connector is configured). '}
-              The run clones this and bases its <code>wi/&lt;code&gt;</code> work branch on it. Blank = the workflow’s configured branch (or repo default).
+              {isLocalSource
+                ? 'Run against an existing checkout already on the runtime — no clone. The runtime only allows paths inside its configured MCP_ALLOWED_LOCAL_SOURCE_ROOTS.'
+                : 'Clone the capability’s linked repo (or the work-item repo) and work on a branch.'}
             </p>
           </div>
 
-          <div style={{ marginTop: 16 }}>
-            <h3 style={{ ...sectionTitleStyle, margin: '0 0 8px' }}>Clone into folder (optional)</h3>
-            <input
-              type="text"
-              value={cloneDir}
-              onChange={event => setCloneDir(event.target.value)}
-              placeholder="e.g. my-checkout"
-              style={inputStyle}
-            />
-            <p style={{ ...mutedStyle, marginTop: 6 }}>
-              Folder name the repo is cloned into on the runtime. Resolved <strong>inside</strong> the runtime’s managed workspaces root (not an arbitrary path). Blank = the default per-work-item folder.
-            </p>
-          </div>
+          {isLocalSource ? (
+            <div style={{ marginTop: 16 }}>
+              <h3 style={{ ...sectionTitleStyle, margin: '0 0 8px' }}>Local directory path</h3>
+              <input
+                type="text"
+                value={localPath}
+                onChange={event => setLocalPath(event.target.value)}
+                placeholder="e.g. /Users/me/code/my-project"
+                style={inputStyle}
+              />
+              <p style={{ ...mutedStyle, marginTop: 6 }}>
+                Absolute path on the runtime host. Must resolve inside an allowed root
+                (<code>MCP_ALLOWED_LOCAL_SOURCE_ROOTS</code>), else the run is rejected. The run
+                operates on this directory in place; push-after-phase needs it to be a git checkout with a remote.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div style={{ marginTop: 16 }}>
+                <h3 style={{ ...sectionTitleStyle, margin: '0 0 8px' }}>Branch to clone (optional)</h3>
+                <input
+                  type="text"
+                  list="launch-branch-options"
+                  value={sourceRef}
+                  onChange={event => setSourceRef(event.target.value)}
+                  placeholder="e.g. main, develop, or a feature branch"
+                  style={inputStyle}
+                />
+                {branchOptions.length > 0 && (
+                  <datalist id="launch-branch-options">
+                    {branchOptions.map(b => <option key={b} value={b} />)}
+                  </datalist>
+                )}
+                <p style={{ ...mutedStyle, marginTop: 6 }}>
+                  {branchOptions.length > 0
+                    ? `${branchOptions.length} branch${branchOptions.length === 1 ? '' : 'es'} from ${branchRepoLabel ?? 'the linked repo'}${branchSource === 'runtime' ? ' (via the connected runtime)' : ''} — pick one or type any ref. `
+                    : 'Type a branch/ref (branches auto-list when a runtime is connected or a GitHub connector is configured). '}
+                  The run clones this and bases its <code>wi/&lt;code&gt;</code> work branch on it. Blank = the workflow’s configured branch (or repo default).
+                </p>
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <h3 style={{ ...sectionTitleStyle, margin: '0 0 8px' }}>Clone into folder (optional)</h3>
+                <input
+                  type="text"
+                  value={cloneDir}
+                  onChange={event => setCloneDir(event.target.value)}
+                  placeholder="e.g. my-checkout"
+                  style={inputStyle}
+                />
+                <p style={{ ...mutedStyle, marginTop: 6 }}>
+                  Folder name the repo is cloned into on the runtime. Resolved <strong>inside</strong> the runtime’s managed workspaces root (not an arbitrary path). Blank = the default per-work-item folder.
+                </p>
+              </div>
+            </>
+          )}
 
           <div style={{ marginTop: 16 }}>
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
