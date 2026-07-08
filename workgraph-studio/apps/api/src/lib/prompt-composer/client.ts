@@ -45,6 +45,7 @@ export interface ComposeRequest {
     instanceId: string
     nodeId: string
     phaseId?: string
+    traceId?: string
     vars?: Record<string, unknown>
     globals?: Record<string, unknown>
     priorOutputs?: Record<string, unknown>
@@ -56,6 +57,7 @@ export interface ComposeRequest {
     extraContext?: string
   }
   modelOverrides?: {
+    modelAlias?: string
     provider?: string
     model?: string
     temperature?: number

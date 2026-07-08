@@ -4,6 +4,14 @@ import { prisma } from '../../../../lib/prisma'
 import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import { recordWorkflowLlmUsage } from '../budget'
+import {
+  DirectLlmHarnessError,
+  runDirectLlmHarness,
+  type DirectLlmChatResult,
+  type DirectLlmHarnessOptions,
+  type DirectLlmHarnessPhase,
+  type DirectLlmProviderRequest,
+} from './DirectLlmHarness'
 
 type DirectLlmOutput = {
   directLlm: {
@@ -17,6 +25,7 @@ type DirectLlmOutput = {
     artifactId?: string
     reviewRequired?: boolean
     bypassedRuntimeFabric: true
+    harness?: Record<string, unknown>
     usage?: {
       inputTokens?: number
       outputTokens?: number
@@ -31,14 +40,6 @@ type DirectLlmResult =
   | { passed: true; reviewRequired: boolean; output: DirectLlmOutput }
   | { passed: false; output: DirectLlmOutput }
 
-type ChatResult = {
-  content: string
-  inputTokens?: number
-  outputTokens?: number
-  totalTokens?: number
-  providerRequestId?: string
-}
-
 type ResolvedDirectLlmConfig = {
   provider: string
   model: string
@@ -52,6 +53,7 @@ type ResolvedDirectLlmConfig = {
   timeoutMs: number
   reviewRequired: boolean
   outputPath?: string
+  harness: DirectLlmHarnessOptions
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -62,6 +64,21 @@ function cfgValue(node: WorkflowNode, key: string): unknown {
   const cfg = isRecord(node.config) ? node.config : {}
   const standard = isRecord(cfg.standard) ? cfg.standard : {}
   return cfg[key] ?? standard[key]
+}
+
+function harnessValue(node: WorkflowNode, key: string): unknown {
+  const cfg = isRecord(node.config) ? node.config : {}
+  const standard = isRecord(cfg.standard) ? cfg.standard : {}
+  const harness = isRecord(cfg.harness)
+    ? cfg.harness
+    : isRecord(cfg.directLlmHarness)
+      ? cfg.directLlmHarness
+      : isRecord(standard.harness)
+        ? standard.harness
+        : isRecord(standard.directLlmHarness)
+          ? standard.directLlmHarness
+          : {}
+  return harness[key] ?? cfg[key] ?? standard[key]
 }
 
 function cfgString(node: WorkflowNode, ...keys: string[]): string | undefined {
@@ -87,6 +104,52 @@ function cfgBool(node: WorkflowNode, key: string, fallback: boolean): boolean {
     if (['false', '0', 'no', 'n'].includes(v)) return false
   }
   return fallback
+}
+
+function harnessString(node: WorkflowNode, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = harnessValue(node, key)
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return undefined
+}
+
+function harnessNumber(node: WorkflowNode, key: string, fallback: number): number {
+  const value = harnessValue(node, key)
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(n) ? n : fallback
+}
+
+function harnessBool(node: WorkflowNode, key: string, fallback: boolean): boolean {
+  const value = harnessValue(node, key)
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase()
+    if (['true', '1', 'yes', 'y'].includes(v)) return true
+    if (['false', '0', 'no', 'n'].includes(v)) return false
+  }
+  return fallback
+}
+
+function harnessStringArray(node: WorkflowNode, key: string, fallback: string[] = []): string[] {
+  const value = harnessValue(node, key)
+  if (Array.isArray(value)) return value.map(item => String(item).trim()).filter(Boolean)
+  if (typeof value === 'string') return value.split(',').map(item => item.trim()).filter(Boolean)
+  return fallback
+}
+
+function harnessJsonObject(node: WorkflowNode, key: string): Record<string, unknown> | undefined {
+  const value = harnessValue(node, key)
+  if (isRecord(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value)
+      return isRecord(parsed) ? parsed : undefined
+    } catch {
+      return undefined
+    }
+  }
+  return undefined
 }
 
 function nestedLookup(root: Record<string, unknown>, path: string): unknown {
@@ -130,6 +193,46 @@ function normalizeProvider(provider: string): string {
   return p || 'openai_compatible'
 }
 
+const HARNESS_PHASES = new Set<DirectLlmHarnessPhase>([
+  'PLAN',
+  'EXPLORE',
+  'ACT',
+  'VERIFY',
+  'REPAIR',
+  'SELF_REVIEW',
+  'FINALIZE',
+])
+
+function normalizeHarnessPhases(values: string[]): DirectLlmHarnessPhase[] {
+  const phases = values
+    .map(value => value.trim().toUpperCase())
+    .filter((value): value is DirectLlmHarnessPhase => HARNESS_PHASES.has(value as DirectLlmHarnessPhase))
+  return phases.length ? Array.from(new Set(phases)) : ['PLAN', 'SELF_REVIEW']
+}
+
+function resolveHarnessOptions(node: WorkflowNode): DirectLlmHarnessOptions {
+  const agentTemplateId = harnessString(node, 'agentTemplateId', 'profileId', 'templateId')
+  const loopEnabled = harnessBool(node, 'loopEnabled', harnessBool(node, 'useLoop', false))
+  const validationRaw = (harnessString(node, 'validationMode') ?? 'soft').toLowerCase()
+  const validationMode = validationRaw === 'hard' || validationRaw === 'off' ? validationRaw : 'soft'
+  return {
+    enabled: harnessBool(node, 'enabled', true),
+    composeWithPromptComposer: harnessBool(node, 'composeWithPromptComposer', Boolean(agentTemplateId)),
+    agentTemplateId,
+    agentBindingId: harnessString(node, 'agentBindingId'),
+    capabilityId: harnessString(node, 'capabilityId', 'governingCapabilityId'),
+    promptProfileKey: harnessString(node, 'promptProfileKey'),
+    loopEnabled,
+    loopStageKey: harnessString(node, 'loopStageKey', 'stageKey') ?? 'loop.stage',
+    loopAgentRole: harnessString(node, 'loopAgentRole', 'agentRole'),
+    loopPhases: normalizeHarnessPhases(harnessStringArray(node, 'loopPhases', loopEnabled ? ['PLAN', 'SELF_REVIEW'] : [])),
+    maxTurns: Math.min(Math.max(Math.trunc(harnessNumber(node, 'maxTurns', loopEnabled ? 3 : 1)), 1), 12),
+    requiredOutputIncludes: harnessStringArray(node, 'requiredOutputIncludes'),
+    outputJsonSchema: harnessJsonObject(node, 'outputJsonSchema'),
+    validationMode,
+  }
+}
+
 async function resolveDirectLlmConfig(
   node: WorkflowNode,
   instance: WorkflowInstance,
@@ -154,12 +257,13 @@ async function resolveDirectLlmConfig(
 
   const maxTokens = Math.min(Math.max(cfgNumber(node, 'maxTokens', 1200), 1), 32_000)
   const timeoutMs = Math.min(Math.max(cfgNumber(node, 'timeoutMs', cfgNumber(node, 'timeoutSec', 120) * 1000), 1_000), 600_000)
+  const modelAlias = alias ?? connection?.alias ?? undefined
   return {
     config: {
       provider,
       model,
       baseUrl,
-      modelAlias: alias ?? connection?.alias ?? undefined,
+      modelAlias,
       credentialEnv,
       systemPrompt: cfgString(node, 'systemPrompt'),
       prompt: interpolate(task, instance, node),
@@ -168,6 +272,7 @@ async function resolveDirectLlmConfig(
       timeoutMs,
       reviewRequired: cfgBool(node, 'reviewRequired', false),
       outputPath: cfgString(node, 'outputPath', 'artifactName'),
+      harness: resolveHarnessOptions(node),
     },
   }
 }
@@ -192,7 +297,7 @@ async function parseJsonResponse(response: Response, source: string): Promise<Re
   return data
 }
 
-async function callOpenAiCompatible(args: ResolvedDirectLlmConfig, apiKey?: string): Promise<ChatResult> {
+async function callOpenAiCompatible(args: DirectLlmProviderRequest, apiKey?: string): Promise<DirectLlmChatResult> {
   const baseUrl = (args.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '')
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (apiKey) headers.authorization = `Bearer ${apiKey}`
@@ -225,7 +330,7 @@ async function callOpenAiCompatible(args: ResolvedDirectLlmConfig, apiKey?: stri
   }
 }
 
-async function callAnthropic(args: ResolvedDirectLlmConfig, apiKey?: string): Promise<ChatResult> {
+async function callAnthropic(args: DirectLlmProviderRequest, apiKey?: string): Promise<DirectLlmChatResult> {
   const baseUrl = (args.baseUrl ?? 'https://api.anthropic.com').replace(/\/$/, '')
   const response = await fetch(`${baseUrl}/v1/messages`, {
     method: 'POST',
@@ -261,7 +366,7 @@ async function callAnthropic(args: ResolvedDirectLlmConfig, apiKey?: string): Pr
   }
 }
 
-async function callProvider(args: ResolvedDirectLlmConfig): Promise<ChatResult> {
+async function callProvider(args: DirectLlmProviderRequest): Promise<DirectLlmChatResult> {
   if (args.provider === 'mock') {
     return {
       content: `Mock direct LLM response for ${args.modelAlias ?? args.model}:\n\n${args.prompt.slice(0, 2000)}`,
@@ -272,6 +377,9 @@ async function callProvider(args: ResolvedDirectLlmConfig): Promise<ChatResult> 
     }
   }
 
+  if ((args.provider === 'copilot' || args.provider === 'github_copilot') && !args.baseUrl) {
+    throw new Error('Direct Copilot LLM requires an OpenAI-compatible Copilot bridge baseUrl; no default public Copilot chat URL is assumed.')
+  }
   const apiKey = args.credentialEnv ? process.env[args.credentialEnv] : undefined
   if (!apiKey) {
     throw new Error(`Missing API key env var ${args.credentialEnv ?? '(none configured)'} for direct LLM provider ${args.provider}.`)
@@ -412,6 +520,7 @@ export async function activateDirectLlmTask(
             maxTokens: llm.maxTokens,
             timeoutMs: llm.timeoutMs,
             reviewRequired: llm.reviewRequired,
+            harness: llm.harness,
             bypassedRuntimeFabric: true,
           } as Prisma.InputJsonValue,
         },
@@ -429,17 +538,34 @@ export async function activateDirectLlmTask(
   })
   await publishOutbox('AgentRun', run.id, 'DirectLlmRunStarted', { runId: run.id, nodeId: node.id })
 
-  let chat: ChatResult
+  let chat: DirectLlmChatResult
+  let harnessReceipt: Record<string, unknown> | undefined
+  let harnessReviewRequired = false
   try {
-    chat = await callProvider(llm)
+    const harness = await runDirectLlmHarness({
+      llm,
+      options: llm.harness,
+      node,
+      instance,
+      traceId,
+      callProvider,
+    })
+    chat = harness.chat
+    harnessReceipt = harness.receipt as unknown as Record<string, unknown>
+    harnessReviewRequired = harness.reviewRequired
   } catch (err) {
     const message = (err as Error).message
+    const code = err instanceof DirectLlmHarnessError ? err.code : 'DIRECT_LLM_PROVIDER_ERROR'
     await prisma.agentRunOutput.create({
       data: {
         runId: run.id,
         outputType: 'ERROR',
         rawContent: message,
-        structuredPayload: { errorCode: 'DIRECT_LLM_PROVIDER_ERROR', traceId } as Prisma.InputJsonValue,
+        structuredPayload: {
+          errorCode: code,
+          traceId,
+          ...(err instanceof DirectLlmHarnessError ? { harness: err.details } : {}),
+        } as Prisma.InputJsonValue,
       },
     })
     await withTenantDbTransaction(prisma, (tx) => tx.agentRun.update({
@@ -449,11 +575,13 @@ export async function activateDirectLlmTask(
     await logEvent('DirectLlmRunFailed', 'AgentRun', run.id, actorId, {
       nodeId: node.id,
       instanceId: instance.id,
+      code,
       error: message,
     })
     await publishOutbox('AgentRun', run.id, 'DirectLlmRunFailed', { runId: run.id })
-    return failed('DIRECT_LLM_PROVIDER_ERROR', message)
+    return failed(code, message)
   }
+  const reviewRequired = llm.reviewRequired || harnessReviewRequired
 
   const usage = {
     inputTokens: chat.inputTokens,
@@ -471,8 +599,9 @@ export async function activateDirectLlmTask(
     bypassedRuntimeFabric: true,
     bypassedContextFabric: true,
     bypassedMcp: true,
-    reviewRequired: llm.reviewRequired,
+    reviewRequired,
     usage,
+    harness: harnessReceipt,
   }
 
   await prisma.agentRunOutput.create({
@@ -499,7 +628,7 @@ export async function activateDirectLlmTask(
     runId: run.id,
     content: chat.content,
     payload: correlation,
-    reviewRequired: llm.reviewRequired,
+    reviewRequired,
     name: llm.outputPath,
   })
   if (artifactId) correlation.artifactId = artifactId
@@ -513,7 +642,7 @@ export async function activateDirectLlmTask(
   await withTenantDbTransaction(prisma, (tx) => tx.agentRun.update({
     where: { id: run.id },
     data: {
-      status: llm.reviewRequired ? 'AWAITING_REVIEW' : 'APPROVED',
+      status: reviewRequired ? 'AWAITING_REVIEW' : 'APPROVED',
       completedAt: new Date(),
       modelCallId: chat.providerRequestId,
     },
@@ -543,13 +672,14 @@ export async function activateDirectLlmTask(
     nodeId: node.id,
     instanceId: instance.id,
     modelCallId: chat.providerRequestId,
-    reviewRequired: llm.reviewRequired,
+    reviewRequired,
     usage,
+    harness: harnessReceipt,
   })
   await publishOutbox('AgentRun', run.id, 'DirectLlmRunCompleted', {
     runId: run.id,
     nodeId: node.id,
-    reviewRequired: llm.reviewRequired,
+    reviewRequired,
   })
 
   return {
@@ -565,8 +695,9 @@ export async function activateDirectLlmTask(
         traceId,
         agentRunId: run.id,
         artifactId,
-        reviewRequired: llm.reviewRequired,
+        reviewRequired,
         bypassedRuntimeFabric: true,
+        harness: harnessReceipt,
         usage,
       },
     },

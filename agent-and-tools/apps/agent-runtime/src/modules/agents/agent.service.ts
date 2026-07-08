@@ -205,6 +205,10 @@ function snapshotTemplate(template: TemplateSnapshotSource) {
 const CAPABILITY_PERMISSIONS = ["read", "invoke", "configure", "edit"] as const;
 type CapabilityPermission = typeof CAPABILITY_PERMISSIONS[number];
 const PERMISSION_SET = new Set<string>(CAPABILITY_PERMISSIONS);
+const PROMPT_IMMUTABLE_SOURCE_TYPES = ["url_document", "uploaded_document"] as const;
+const PROMPT_IMMUTABLE_SOURCE_SET = new Set<string>(PROMPT_IMMUTABLE_SOURCE_TYPES);
+
+type ProfileSkillBindingInput = CreateAgentProfileInput["skillBindings"][number];
 
 function uniquePermissions(values: unknown, fallback: CapabilityPermission[]): CapabilityPermission[] {
   if (!Array.isArray(values)) return fallback;
@@ -230,7 +234,7 @@ function normalizeBindingPermissions(binding: {
   readOnly?: boolean;
   providerLocked?: boolean;
 }): { permissions: CapabilityPermission[]; readOnly: boolean; providerLocked: boolean } {
-  const providerLocked = binding.sourceType === "url_document" || binding.sourceType === "uploaded_document"
+  const providerLocked = PROMPT_IMMUTABLE_SOURCE_SET.has(binding.sourceType)
     ? true
     : Boolean(binding.providerLocked);
   const external = binding.sourceType !== "local";
@@ -243,6 +247,63 @@ function normalizeBindingPermissions(binding: {
 
 function normalizeSourceRef(binding: { sourceType: string; sourceRef?: string; providerManifestUrl?: string; url?: string; fileName?: string }): string | undefined {
   return binding.sourceRef ?? binding.providerManifestUrl ?? binding.url ?? binding.fileName;
+}
+
+async function assertReadableSourceBackedBinding(binding: ProfileSkillBindingInput): Promise<void> {
+  const sourceRef = normalizeSourceRef(binding);
+  if (binding.sourceType === "url_document") {
+    if (!sourceRef) {
+      throw new AppError("URL document skills require a URL source reference.", 400, "AGENT_SOURCE_URL_REQUIRED");
+    }
+    await assertAgentSourceUrlAllowed(sourceRef, { allowPrivateUrls: env.AGENT_SOURCE_ALLOW_PRIVATE_URLS });
+  }
+  if (binding.sourceType === "uploaded_document" && !sourceRef) {
+    throw new AppError("Uploaded document skills require a file source reference.", 400, "AGENT_SOURCE_FILE_REQUIRED");
+  }
+}
+
+function promptPatchChangesTemplate(
+  existing: Pick<TemplateSnapshotSource, "instructions" | "basePromptProfileId">,
+  patch: Partial<Pick<UpdateAgentTemplateInput, "instructions" | "basePromptProfileId">>,
+): boolean {
+  return (
+    (patch.instructions !== undefined && (patch.instructions ?? null) !== (existing.instructions ?? null)) ||
+    (patch.basePromptProfileId !== undefined && (patch.basePromptProfileId ?? null) !== (existing.basePromptProfileId ?? null))
+  );
+}
+
+function snapshotPromptChangesTemplate(
+  existing: Pick<TemplateSnapshotSource, "instructions" | "basePromptProfileId">,
+  snapshot: Partial<Pick<TemplateSnapshotSource, "instructions" | "basePromptProfileId">>,
+): boolean {
+  return (
+    (snapshot.instructions ?? null) !== (existing.instructions ?? null) ||
+    (snapshot.basePromptProfileId ?? null) !== (existing.basePromptProfileId ?? null)
+  );
+}
+
+async function assertPromptMutableForSourceBackedTemplate(
+  client: AgentDbClient,
+  agentTemplateId: string,
+): Promise<void> {
+  const immutableSource = await client.agentTemplateSkill.findFirst({
+    where: {
+      agentTemplateId,
+      sourceType: { in: [...PROMPT_IMMUTABLE_SOURCE_TYPES] },
+      OR: [{ readOnly: true }, { providerLocked: true }],
+    },
+    select: { sourceType: true, sourceRef: true },
+  });
+  if (!immutableSource) return;
+  throw new AppError(
+    "Prompt instructions/profile cannot be changed for URL or uploaded-document backed agent profiles. Create a new profile if the prompt needs to change.",
+    409,
+    "AGENT_PROFILE_PROMPT_IMMUTABLE",
+    {
+      sourceType: immutableSource.sourceType,
+      sourceRef: immutableSource.sourceRef,
+    },
+  );
 }
 
 function shortHash(input: string): string {
@@ -914,6 +975,9 @@ export const agentService = {
     }
 
     const dedupedBindings = dedupeProfileSkillBindings(bindings);
+    for (const binding of dedupedBindings) {
+      await assertReadableSourceBackedBinding(binding);
+    }
 
     return prisma.$transaction(async (tx) => {
       await assertAgentCapabilityWritable(tx, input.capabilityId, "Cannot create an agent profile for an archived capability");
@@ -1363,6 +1427,10 @@ export const agentService = {
       requireCapabilityOwner(actor, existing.capabilityId, "Editing a capability agent template");
     }
     const { changeSummary, ...data } = patch;
+    const promptChanged = promptPatchChangesTemplate(existing, data);
+    if (promptChanged) {
+      await assertPromptMutableForSourceBackedTemplate(prisma, id);
+    }
     const nextStatus = data.status ?? existing.status;
     const nextName = data.name ?? existing.name;
     if (existing.capabilityId && nextStatus !== "ARCHIVED") {
@@ -1375,6 +1443,9 @@ export const agentService = {
       }
     }
     const result = await prisma.$transaction(async (tx) => {
+      if (promptChanged) {
+        await assertPromptMutableForSourceBackedTemplate(tx, id);
+      }
       if (existing.capabilityId && nextStatus !== "ARCHIVED") {
         await assertAgentCapabilityWritable(tx, existing.capabilityId, "Cannot edit an agent template for an archived capability");
         await assertNoActiveCapabilityTemplateNameConflict(tx, {
@@ -1454,6 +1525,10 @@ export const agentService = {
     if (!snapshot.name || !snapshot.roleType || !snapshot.status) {
       throw new AppError("Agent template version snapshot is incomplete and cannot be restored.", 409, "TEMPLATE_VERSION_INVALID");
     }
+    const promptChanged = snapshotPromptChangesTemplate(existing, snapshot);
+    if (promptChanged) {
+      await assertPromptMutableForSourceBackedTemplate(prisma, id);
+    }
     const restoredName = snapshot.name;
     const restoredCapabilityId = snapshot.capabilityId ?? null;
     if (restoredCapabilityId !== (existing.capabilityId ?? null)) {
@@ -1481,6 +1556,9 @@ export const agentService = {
       }
     }
     const restoredResult = await prisma.$transaction(async (tx) => {
+      if (promptChanged) {
+        await assertPromptMutableForSourceBackedTemplate(tx, id);
+      }
       if (restoredCapabilityId && restoredStatus !== "ARCHIVED") {
         await assertAgentCapabilityWritable(tx, restoredCapabilityId, "Cannot restore an agent template for an archived capability");
         await assertNoActiveCapabilityTemplateNameConflict(tx, {

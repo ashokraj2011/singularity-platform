@@ -414,7 +414,7 @@ const NODE_META: Record<string, {
   },
   DIRECT_LLM_TASK: {
     label: 'Direct LLM Task', color: '#0ea5e9', Icon: Cpu,
-    description: 'Calls an LLM directly from the WorkGraph API process. This bypasses Context Fabric, MCP, prompt composition, and runtime bridge routing.',
+    description: 'Calls an LLM directly from the WorkGraph API process. The optional harness can assemble prompts through Prompt Composer and run bounded CF-compatible phases, while the model call still bypasses Context Fabric and MCP.',
     standardFields: [
       { key: 'modelAlias',    label: 'Connection alias', placeholder: 'Optional LLM connection alias' },
       { key: 'provider',      label: 'Provider',         placeholder: 'mock | openai_compatible | openai | anthropic' },
@@ -427,6 +427,17 @@ const NODE_META: Record<string, {
       { key: 'temperature',   label: 'Temperature',      placeholder: '0.2' },
       { key: 'reviewRequired', label: 'Review required', placeholder: 'false' },
       { key: 'outputPath',    label: 'Artifact name',    placeholder: 'Direct LLM Output' },
+      { key: 'agentTemplateId', label: 'Prompt agent template', placeholder: 'optional template uuid for Prompt Composer preview' },
+      { key: 'capabilityId', label: 'Capability', placeholder: 'optional capability uuid for prompt grounding' },
+      { key: 'composeWithPromptComposer', label: 'Use Prompt Composer', placeholder: 'true when agentTemplateId is set' },
+      { key: 'loopEnabled', label: 'Use phase loop', placeholder: 'false | true' },
+      { key: 'loopStageKey', label: 'Loop stage key', placeholder: 'loop.stage' },
+      { key: 'loopAgentRole', label: 'Loop agent role', placeholder: 'DEVELOPER | QA | ARCHITECT' },
+      { key: 'loopPhases', label: 'Loop phases', placeholder: 'PLAN,SELF_REVIEW' },
+      { key: 'maxTurns', label: 'Max loop turns', placeholder: '3' },
+      { key: 'validationMode', label: 'Validation mode', placeholder: 'off | soft | hard' },
+      { key: 'requiredOutputIncludes', label: 'Required output text', placeholder: 'comma-separated strings' },
+      { key: 'outputJsonSchema', label: 'Output JSON schema', placeholder: '{"type":"object","required":["summary"]}', multiline: true },
     ],
   },
   WORKBENCH_TASK: {

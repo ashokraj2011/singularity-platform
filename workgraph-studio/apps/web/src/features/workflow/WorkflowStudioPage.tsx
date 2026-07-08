@@ -1348,7 +1348,7 @@ const NODE_HELP_SECTIONS = [
 const NODE_USAGE_TIPS: Record<string, string> = {
   HUMAN_TASK:        'Set a due date and assignee. Use role field to filter by team role.',
   AGENT_TASK:        'Downstream nodes read output via output.agentResponse. Requires human review in v1.',
-  DIRECT_LLM_TASK:   'Use only for explicit server-side model calls. Secrets are env-var names; this bypasses CF/MCP governance.',
+  DIRECT_LLM_TASK:   'Use for explicit server-side model calls. Enable the harness for Prompt Composer preview, CF-compatible phases, validation, and evidence; the model call still bypasses CF/MCP.',
   WORKBENCH_TASK:    'Opens a modal workbench loop and completes only after the final pack is approved.',
   APPROVAL:          'Set Min Approvals > 1 for committee gates. Use Escalate To for timeout handling.',
   DECISION_GATE:     'Write JS expressions like output.score > 0.8 or context.status == "active".',
