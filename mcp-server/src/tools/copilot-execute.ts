@@ -147,66 +147,77 @@ export const copilotExecuteTool: ToolHandler = {
       return { success: false, output: null, error: `copilot CLI exited ${res.code}: ${(res.stderr || "").slice(0, 500)}` };
     }
 
-    // Capture the code-change evidence from the now-mutated workspace.
+    // Resolve the git repo root. `git status` paths are repo-root-relative, and the
+    // Copilot CLI sometimes `cd`s to the repo root, so a deliverable can land THERE
+    // rather than under the sandbox cwd (a nested .singularity/workitems/<code> dir).
+    // We capture against BOTH roots.
+    let repoRoot = cwd;
+    try {
+      const top = (await spawnCapture("git", ["rev-parse", "--show-toplevel"], cwd, GIT_HASH_TIMEOUT_MS)).stdout.trim();
+      if (top) repoRoot = top;
+    } catch { /* not a git repo — stick with cwd */ }
+
+    // Capture the code-change evidence. `-uall` lists untracked FILES individually —
+    // the default collapses a freshly-created dir to "dir/", which HID new
+    // deliverables/ docs (they showed as an unreadable "deliverables/" entry).
     let diff = "";
     let changedPaths: string[] = [];
     try {
       diff = (await spawnCapture("git", ["diff"], cwd, GIT_WRITE_TIMEOUT_MS)).stdout;
-      const porcelain = (await spawnCapture("git", ["status", "--porcelain"], cwd, GIT_WRITE_TIMEOUT_MS)).stdout;
+      const porcelain = (await spawnCapture("git", ["status", "--porcelain", "-uall"], cwd, GIT_WRITE_TIMEOUT_MS)).stdout;
       changedPaths = porcelain.split("\n").map((l) => l.slice(3).trim()).filter(Boolean);
     } catch (err) {
       log.warn({ err: (err as Error).message }, "copilot_execute: git diff capture failed");
     }
 
-    // Capture produced file CONTENT (the actual artifacts — REQUIREMENTS.md etc.)
-    // so the platform can store + show each doc per phase, not just the summary.
-    const artifacts: Array<{ path: string; content: string }> = [];
-    const capturedPaths = new Set<string>();
-    for (const p of changedPaths.slice(0, 25)) {
-      if (!p || p.endsWith("/")) continue;
-      try {
-        const content = readFileSync(resolveSandboxedPath(p), "utf8");
-        if (content.length <= 200_000) { artifacts.push({ path: p, content }); capturedPaths.add(p); }
-      } catch { /* deleted, binary, or a directory — skip */ }
-    }
-
-    // Also capture the DECLARED deliverable paths directly. SDLC stages write docs
-    // (deliverables/<code>/<role>/*.md) that may live OUTSIDE the git working tree,
-    // so `git status --porcelain` never surfaces them → the summary was all that got
-    // stored. Reading the known output paths makes capture git-independent. Deduped
-    // against changedPaths; each is resolved under the sandbox root.
+    // Capture produced-file CONTENT (REQUIREMENTS.md etc.) so the platform shows the
+    // real document, not just the summary. Each candidate is resolved against the
+    // repo root THEN the sandbox cwd; the display path keeps the deliverables/… tail.
     const expectedPaths = Array.isArray(args.expected_paths)
       ? (args.expected_paths as unknown[]).map(String).filter(Boolean)
       : [];
-    for (const p of expectedPaths.slice(0, 25)) {
-      if (!p || p.endsWith("/") || capturedPaths.has(p)) continue;
-      try {
-        const content = readFileSync(resolveSandboxedPath(p), "utf8");
-        if (content.trim() && content.length <= 200_000) { artifacts.push({ path: p, content }); capturedPaths.add(p); }
-      } catch { /* not produced this run, or outside the sandbox — skip */ }
+    const expectedSet = new Set(expectedPaths);
+    const artifacts: Array<{ path: string; content: string }> = [];
+    const capturedDisplay = new Set<string>();
+    const displayPathFor = (abs: string, base: string): string => {
+      const i = abs.lastIndexOf("/deliverables/");
+      return i >= 0 ? abs.slice(i + 1) : path.relative(base, abs).split(path.sep).join("/");
+    };
+    const consider = (rel: string): void => {
+      if (!rel || rel.endsWith("/")) return;
+      for (const base of [repoRoot, cwd]) {
+        const abs = path.resolve(base, rel);
+        if (!abs.startsWith(base)) continue; // no escaping the root
+        try {
+          const content = readFileSync(abs, "utf8");
+          if (!content.trim() || content.length > 200_000) return;
+          const display = displayPathFor(abs, base);
+          if (!capturedDisplay.has(display)) { artifacts.push({ path: display, content }); capturedDisplay.add(display); }
+          return;
+        } catch { /* try the next base */ }
+      }
+    };
+    // From git: only deliverables + declared outputs (skip audit logs / other noise).
+    for (const p of changedPaths.slice(0, 200)) {
+      if (/(^|\/)deliverables\//.test(p) || expectedSet.has(p)) consider(p);
     }
+    // Declared output paths directly (in case the copilot committed them git-clean).
+    for (const p of expectedPaths.slice(0, 25)) consider(p);
 
-    // Last-resort fallback: nothing captured (git showed clean AND the declared
-    // paths didn't match what Copilot actually wrote). Walk the SDLC deliverables
-    // convention (deliverables/**/*.md) under the sandbox so the produced docs still
-    // surface instead of only the summary. Only runs when we'd otherwise have zero
-    // artifacts, so it can't duplicate already-captured files.
+    // Last-resort fallback: still nothing captured — walk deliverables/ under both
+    // roots so the produced docs surface instead of only the summary.
     if (artifacts.length === 0) {
-      try {
-        const sandboxRoot = resolveSandboxedPath(".");
-        const deliverablesRoot = resolveSandboxedPath("deliverables");
-        for (const abs of walkMarkdownFiles(deliverablesRoot, 25)) {
+      for (const base of [repoRoot, cwd]) {
+        for (const abs of walkMarkdownFiles(path.join(base, "deliverables"), 25)) {
           try {
             const content = readFileSync(abs, "utf8");
             if (!content.trim() || content.length > 200_000) continue;
-            const rel = path.relative(sandboxRoot, abs).split(path.sep).join("/");
-            artifacts.push({ path: rel, content });
+            const display = displayPathFor(abs, base);
+            if (!capturedDisplay.has(display)) { artifacts.push({ path: display, content }); capturedDisplay.add(display); }
           } catch { /* skip unreadable file */ }
         }
-        if (artifacts.length) {
-          log.info({ count: artifacts.length }, "copilot_execute: captured deliverables via glob fallback");
-        }
-      } catch { /* no deliverables/ dir — nothing to fall back to */ }
+      }
+      if (artifacts.length) log.info({ count: artifacts.length }, "copilot_execute: captured deliverables via glob fallback");
     }
 
     // Check in: commit this phase's changes onto the work-item branch so the
