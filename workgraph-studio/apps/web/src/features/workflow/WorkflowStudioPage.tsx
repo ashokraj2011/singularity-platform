@@ -1224,7 +1224,7 @@ const NODE_USAGE_TIPS: Record<string, string> = {
   WORK_ITEM:         'Creates a child capability queue item. Parent waits for child outputs and approval.',
   CALL_WORKFLOW:     'Parent workflow pauses until child completes. Child result is in context.',
   TOOL_REQUEST:      'High-risk tools may auto-pause for approval before execution.',
-  CREATE_BRANCH:     'Place at the start. Creates wi/<code> from the base branch cloud-side via the GitHub connector, so the work branch exists before the phases commit to it. Idempotent — safe if the branch already exists.',
+  CREATE_BRANCH:     'Place at the start. Best-effort: pre-creates wi/<code> from the base branch cloud-side via the GitHub connector so it exists before the phases commit. Advisory — it never blocks the run (the runtime also creates the branch on clone); idempotent if it already exists.',
   GIT_PUSH:          'Place after an Approval node. It pushes the WorkItem branch through the agent runtime and records branch/commit evidence.',
   RAISE_PR:          'Place at the end (after GIT_PUSH). Opens a PR from wi/<code> into the base branch cloud-side via the GitHub connector — no runtime needed, as long as the branch is already pushed.',
   POLICY_CHECK:      'Use WARN mode during testing — it logs failures without blocking the workflow.',

@@ -617,17 +617,19 @@ async function executeServerNode(
       break
     }
     case 'CREATE_BRANCH': {
-      // Cloud-side work-branch creation (via the GitHub connector), typically at
-      // the start of a flow. Same degrade-safe guard as RAISE_PR/GIT_PUSH: a
-      // failure blocks the node (recoverable), never hard-fails the run;
-      // already-exists is treated as success inside the executor.
+      // ADVISORY cloud-side branch pre-creation (via the GitHub connector) at the
+      // start of a flow. It must NEVER block the run — the branch is also created by
+      // the runtime materializer on clone + the per-phase commit. activateCreateBranch
+      // records the outcome (created / already-exists / skipped-with-reason) and we
+      // advance regardless. Only a truly UNEXPECTED throw (e.g. a DB error) degrades
+      // the node to BLOCKED via the guard.
       let cbResult: Awaited<ReturnType<typeof activateCreateBranch>> | null = null
       try {
         cbResult = await activateCreateBranch(node, instance, actorId)
       } catch (err) {
         await degradeNodeToBlocked(instance, node, err, actorId)
       }
-      if (cbResult?.created) await advance(instance.id, node.id, cbResult.output, actorId, undefined, tenantId)
+      if (cbResult) await advance(instance.id, node.id, cbResult.output, actorId, undefined, tenantId)
       break
     }
     case 'RAISE_PR': {
