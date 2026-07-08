@@ -30,7 +30,7 @@ export async function activateCreateBranch(
   node: WorkflowNode,
   instance: WorkflowInstance,
   _actorId: string | null,
-): Promise<{ created: boolean; output?: JsonObject }> {
+): Promise<{ output: JsonObject }> {
   const config = asObject(node.config)
   const context = asObject(instance.context)
   const vars = asObject(context._vars)
@@ -39,19 +39,28 @@ export async function activateCreateBranch(
 
   const workCode = str(workItem.workCode) ?? str(vars.workCode) ?? str(vars.workItemCode)
   const branch = str(config.branchName) ?? (workCode ? `wi/${workCode}` : undefined)
-  if (!branch) {
-    throw new Error('CREATE_BRANCH: no branch — the run has no work-item code and no branchName is configured on the node.')
-  }
-  // Base: node config wins, else the branch this run cloned (launch pick), else main.
   const fromBranch = str(config.base) ?? str(config.fromBranch) ?? str(globals.sourceRef) ?? 'main'
   const repoUrl = str(config.repoUrl) ?? str(vars.repoUrl) ?? str(vars.sourceUri) ?? str(globals.repoUrl)
 
+  // ADVISORY node: best-effort pre-creation of wi/<code> cloud-side, but it must
+  // NEVER block the run — the branch is also created by the runtime materializer on
+  // clone and by the per-phase commit. So a missing connector / API error is
+  // recorded (output + event) and the run advances. (RAISE_PR at the end blocks;
+  // creating the branch up-front is only a convenience.)
+  const skipped = async (reason: string): Promise<{ output: JsonObject }> => {
+    await logEvent('WorkBranchSkipped', 'WorkflowNode', node.id, undefined, { instanceId: instance.id, branch, fromBranch, reason })
+    return { output: { workBranchCreated: false, workBranch: branch ?? null, fromBranch, reason } }
+  }
+
+  if (!branch) {
+    return skipped('no work-item code and no branchName configured — the branch is created downstream once a work item is resolved.')
+  }
   const connector = await prisma.connector.findFirst({
     where: { type: 'GIT', archivedAt: null },
     orderBy: { createdAt: 'desc' },
   })
   if (!connector) {
-    throw new Error('CREATE_BRANCH: no GIT connector is configured — add one at Connectors to create branches cloud-side.')
+    return skipped('no GIT connector configured — add one at Connectors to pre-create the branch; the runtime still creates it on first clone.')
   }
   const cfg = asObject(connector.config) as { defaultOwner?: string; defaultRepo?: string }
   const parsed = repoUrl ? parseOwnerRepo(repoUrl) : {}
@@ -67,17 +76,18 @@ export async function activateCreateBranch(
       ...(repo ? { repo } : {}),
     })
     await logEvent('WorkBranchCreated', 'WorkflowNode', node.id, undefined, { instanceId: instance.id, branch, fromBranch })
-    return { created: true, output: { workBranch: branch, fromBranch, branchExisted: false } }
+    return { output: { workBranchCreated: true, workBranch: branch, fromBranch, branchExisted: false } }
   } catch (e) {
     const anyErr = e as { response?: { data?: { message?: string } }; message?: string }
     const msg = anyErr?.response?.data?.message ?? anyErr?.message ?? String(e)
-    // Idempotent: an already-existing branch (GitHub "Reference already exists") is
-    // success — the branch is there, which is all this node needs to guarantee.
+    // Idempotent: an already-existing branch is success.
     if (/already exists/i.test(msg)) {
       await logEvent('WorkBranchExists', 'WorkflowNode', node.id, undefined, { instanceId: instance.id, branch, fromBranch })
-      return { created: true, output: { workBranch: branch, fromBranch, branchExisted: true } }
+      return { output: { workBranchCreated: true, workBranch: branch, fromBranch, branchExisted: true } }
     }
+    // Non-fatal (bad token, repo/base not found, …): record + advance — the branch
+    // still gets created by the materializer on clone.
     await logEvent('WorkBranchCreateFailed', 'WorkflowNode', node.id, undefined, { instanceId: instance.id, branch, fromBranch, reason: msg })
-    throw new Error(`CREATE_BRANCH: ${msg} (branch=${branch} from ${fromBranch})`)
+    return skipped(msg)
   }
 }
