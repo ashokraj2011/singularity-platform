@@ -281,7 +281,11 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
     const isFormNode = !!n && kind !== null
       && ['ACTIVE', 'RUNNING'].includes((n.status ?? '').toUpperCase())
       && ((Array.isArray(w) && w.length > 0) || kind === 'approval')
-    setTab(isFormNode ? 'form' : 'log')
+    // A COMPLETED agent stage opens to Documents (the produced deliverables) rather
+    // than the execution log — the docs are what the operator wants to see. Active
+    // stages still open to the live log.
+    const isDoneAgent = n?.nodeType === 'AGENT_TASK' && !['ACTIVE', 'RUNNING'].includes((n.status ?? '').toUpperCase())
+    setTab(isFormNode ? 'form' : isDoneAgent ? 'artifacts' : 'log')
   }, [nodes])
 
   const positions = useMemo(() => layout(nodes, edges), [nodes, edges])
@@ -412,6 +416,21 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
   const visibleConsumables = consumables.filter(c => c.name !== COPILOT_QUESTIONS_NAME)
   const latest = visibleConsumables[visibleConsumables.length - 1]
   const isAgent = node.nodeType === 'AGENT_TASK'
+
+  // "Documents produced through this stage" — every run deliverable (from ANY node)
+  // created up to when THIS stage completed, so the panel shows the cumulative set
+  // (upstream inputs + this stage's output), not just files this run freshly changed.
+  // A not-yet-completed stage shows everything produced so far.
+  const { data: allRunDocs = [] } = useAllConsumables(instanceId, live)
+  const stageCutoff = (node as { completedAt?: string }).completedAt
+    ? new Date((node as { completedAt?: string }).completedAt as string).getTime() + 2000
+    : Number.MAX_SAFE_INTEGER
+  const stageDocs = useMemo(() => allRunDocs
+    .filter(c => c.name !== COPILOT_QUESTIONS_NAME)
+    .filter(c => (c.formData?.content ?? '').toString().trim())
+    .filter(c => (c.createdAt ? new Date(c.createdAt).getTime() : 0) <= stageCutoff)
+    .sort((a, b) => (a.createdAt ? new Date(a.createdAt).getTime() : 0) - (b.createdAt ? new Date(b.createdAt).getTime() : 0)),
+    [allRunDocs, stageCutoff])
   const sendBackTargets = completedNodes.filter(c => c.id !== node.id)
   const isInteractive = INTERACTIVE_TYPES.has(node.nodeType)
   const callWorkflowChildId = typeof node.config?._childInstanceId === 'string' ? node.config._childInstanceId : ''
@@ -452,7 +471,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
 
   // Artifact expand/download (parity with the workbench cockpit + the other run panels).
   const [expandedConsumableId, setExpandedConsumableId] = useState<string | null>(null)
-  const expandedConsumable = visibleConsumables.find(c => c.id === expandedConsumableId)
+  const expandedConsumable = stageDocs.find(c => c.id === expandedConsumableId) ?? visibleConsumables.find(c => c.id === expandedConsumableId)
   // Inline edit-and-save of a document's content. Save re-opens the governance gate
   // (server clears the verdict; APPROVED/UNDER_REVIEW → DRAFT).
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -544,7 +563,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
               borderColor: activeTab === t ? (isQ ? '#f59e0b' : '#0ea5e9') : 'transparent',
               background: activeTab === t ? (isQ ? '#fffbeb' : '#f0f9ff') : 'transparent',
               color: activeTab === t ? (isQ ? '#b45309' : '#0284c7') : (isQ ? '#b45309' : '#64748b'),
-            }}>{isQ ? `Questions (${questions.length})` : t}</button>
+            }}>{isQ ? `Questions (${questions.length})` : t === 'artifacts' ? 'Documents' : t}</button>
           )
         })}
       </div>
@@ -579,10 +598,11 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
         )}
         {activeTab === 'questions' && <CopilotQuestions instanceId={instanceId} node={node} questions={questions} busy={busy} onRestart={onRestart} />}
         {activeTab === 'artifacts' && (
-          visibleConsumables.length === 0
-            ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No artifacts produced yet.</div>
+          stageDocs.length === 0
+            ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No documents produced yet.</div>
             : <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {visibleConsumables.map(c => {
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Documents produced through this stage ({stageDocs.length})</div>
+                {stageDocs.map(c => {
                   const content = c.formData?.content?.toString() ?? ''
                   const editable = canEditConsumable(c.status)
                   const isEditing = editingId === c.id
