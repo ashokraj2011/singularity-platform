@@ -237,7 +237,9 @@ async function main(): Promise<void> {
   // run's cloned branch (launch pick) then main.
   // interactive:true → the run pauses at this node and asks the operator for the base
   // branch to start work from (+ source mode / local dir) before creating wi/<code>.
-  await upsertNode({ id: N_CREATE_BRANCH, nodeType: 'CREATE_BRANCH', label: 'Create work branch', x: 80 + 1 * 220, config: { startMode: 'manual', interactive: true } })
+  // No startMode:'manual' — the interactive form IS the gate; adding manual would make
+  // the operator click Start AND then fill the form (a redundant double-gate).
+  await upsertNode({ id: N_CREATE_BRANCH, nodeType: 'CREATE_BRANCH', label: 'Create work branch', x: 80 + 1 * 220, config: { interactive: true } })
   for (const [i, phase] of PHASES.entries()) {
     await upsertNode({
       id: phaseNodeIds[i]!, nodeType: 'AGENT_TASK', label: phase.label, x: 80 + (i + 2) * 220,

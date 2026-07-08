@@ -613,6 +613,15 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
           instanceId={instanceId}
           nodeId={node.id}
           capabilityId={(node.config?.capabilityId as string | undefined) ?? undefined}
+          initial={(() => {
+            const g = ((runContext?._globals ?? {}) as Record<string, unknown>)
+            return {
+              baseBranch: typeof g.sourceRef === 'string' ? g.sourceRef : undefined,
+              cloneDir: typeof g.cloneDir === 'string' ? g.cloneDir : undefined,
+              sourceType: typeof g.sourceType === 'string' ? g.sourceType : undefined,
+              sourceUri: typeof g.sourceUri === 'string' ? g.sourceUri : undefined,
+            }
+          })()}
           onDone={() => qc.invalidateQueries({ queryKey: ['run-instance', instanceId] })}
         />
       )}
@@ -1083,13 +1092,18 @@ function unwrapEntity(d: unknown): { id: string; formData?: Record<string, unkno
 }
 // Interactive CREATE_BRANCH form — choose the base branch to start work from (+ the
 // source mode / local dir), then create the wi/<code> work branch and continue.
-function CreateBranchForm({ instanceId, nodeId, capabilityId, onDone }: {
-  instanceId: string; nodeId: string; capabilityId?: string; onDone: () => void
+function CreateBranchForm({ instanceId, nodeId, capabilityId, initial, onDone }: {
+  instanceId: string; nodeId: string; capabilityId?: string
+  initial?: { baseBranch?: string; cloneDir?: string; sourceType?: string; sourceUri?: string }
+  onDone: () => void
 }) {
-  const [baseBranch, setBaseBranch] = useState('')
-  const [sourceMode, setSourceMode] = useState<'github' | 'local_dir'>('github')
-  const [localPath, setLocalPath] = useState('')
-  const [cloneDir, setCloneDir] = useState('')
+  // Pre-fill from any values chosen at launch (globals) so the operator confirms/tweaks
+  // instead of re-typing — one place to set it, here, mid-run.
+  const initLocal = (initial?.sourceType ?? '').toLowerCase().includes('local')
+  const [baseBranch, setBaseBranch] = useState(initial?.baseBranch ?? '')
+  const [sourceMode, setSourceMode] = useState<'github' | 'local_dir'>(initLocal ? 'local_dir' : 'github')
+  const [localPath, setLocalPath] = useState(initLocal ? (initial?.sourceUri ?? '') : '')
+  const [cloneDir, setCloneDir] = useState(initial?.cloneDir ?? '')
   const branchesQuery = useQuery<{ branches?: string[]; repo?: string; connector?: { repo?: string } }>({
     queryKey: ['cb-branches', instanceId, capabilityId ?? ''],
     queryFn: () => api.get('/connectors/git/branches', { params: capabilityId ? { capabilityId } : {} }).then(r => r.data),
