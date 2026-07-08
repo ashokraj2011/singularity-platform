@@ -4,6 +4,7 @@ import { prisma } from '../../../../lib/prisma'
 import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { resolveCapabilityRepo } from '../../../../lib/agent-and-tools/capability-repo'
 import { resolveLlmRouting } from '../../../llm-routing/resolve'
+import { pushWorkBranchForStage } from './GitPushExecutor'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import {
   contextFabricClient, type ExecuteRequest, ContextFabricError,
@@ -623,13 +624,39 @@ export async function activateAgentTask(
   // per-phase artifact with the FULL content, so the UI shows the doc itself —
   // not just the agent summary. Keyed by name (the path) + node (= workId/phase).
   const producedFiles = (result.workspace as { artifacts?: Array<{ path: string; content: string }> } | null | undefined)?.artifacts ?? []
+  let producedAny = false
   for (const art of producedFiles.slice(0, 25)) {
     if (art?.path && art?.content?.trim()) {
+      producedAny = true
       await createAgentOutputArtifact({
         instance, node, runId: run.id, content: art.content, name: art.path,
         payload: { artifactKind: 'produced_file', path: art.path },
       }).catch(() => undefined)
     }
+  }
+
+  // Per-phase push: commit + push THIS phase's work (the deliverables the copilot
+  // already committed locally + any code) to origin wi/<code> right now — not only at
+  // the terminal GIT_PUSH. Uses the runtime finish-branch push (approvalStatus:
+  // NOT_REQUIRED, so it's NOT code-gated like the GIT_PUSH node). Copilot phases only;
+  // fire-and-forget + non-fatal (no-ops with a logged reason when the bridge/creds
+  // are down), so a push hiccup never fails the stage.
+  if (producedAny && configString('executor') === 'copilot') {
+    const phaseLabel = configString('governedStageKey') ?? node.label ?? 'phase'
+    void pushWorkBranchForStage({
+      instance,
+      node,
+      workItemId: realWorkItemId,
+      workItemCode: workCode,
+      message: `${phaseLabel}: deliverables`,
+      actorId,
+    }).then((r) => {
+      if (!r.ok) {
+        void logEvent('PhasePushSkipped', 'WorkflowNode', node.id, instance.createdById ?? undefined, {
+          instanceId: instance.id, reason: r.error,
+        })
+      }
+    }).catch(() => undefined)
   }
 
   // Copilot clarifying questions — parse the "## Questions" block Copilot was
