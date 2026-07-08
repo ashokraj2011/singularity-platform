@@ -29,6 +29,7 @@ import {
   ArrowLeft, List, AlertCircle,
   RotateCw, FileText, MessageSquare, X, Check, Ban, Send, ExternalLink,
   ShieldCheck, CornerUpLeft, Library, Download, Maximize2, Activity, Copy, Pencil,
+  Play, Radio,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { MarkdownView } from './MarkdownView'
@@ -109,6 +110,7 @@ type CardData = RunGraphNodeData & {
   onSelect: (id: string, tab?: PanelTab) => void
   onRestart: (id: string) => void
   onApprove: (id: string) => void
+  onStart: (id: string) => void
   busy: boolean
 }
 function RunGraphNode({ data }: NodeProps<CardData>) {
@@ -116,6 +118,11 @@ function RunGraphNode({ data }: NodeProps<CardData>) {
   const active = ['ACTIVE', 'RUNNING'].includes((data.status ?? '').toUpperCase())
   const isAgent = data.nodeType === 'AGENT_TASK'
   const isInteractive = INTERACTIVE_TYPES.has(data.nodeType)
+  // Per-node start gate: a manual/event node sits ACTIVE + _awaitingStart until triggered.
+  const std = (data.config?.standard && typeof data.config.standard === 'object' ? data.config.standard as Record<string, unknown> : {})
+  const startMode = String(data.config?.startMode ?? std.startMode ?? 'auto').toLowerCase()
+  const startSignal = String(data.config?.startSignal ?? std.startSignal ?? '')
+  const awaitingStart = active && data.config?._awaitingStart === true
   const btn = (label: string, Icon: typeof RotateCw, onClick: () => void, tone?: 'approve' | 'reject') => (
     <button
       onClick={(e) => { e.stopPropagation(); onClick() }}
@@ -147,7 +154,7 @@ function RunGraphNode({ data }: NodeProps<CardData>) {
         <span style={{ color: s.color, display: 'flex' }}><s.Icon size={16} /></span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{data.label}</div>
-          <div style={{ fontSize: 9.5, fontWeight: 600, color: s.color, letterSpacing: 0.3 }}>{data.nodeType} · {s.label}</div>
+          <div style={{ fontSize: 9.5, fontWeight: 600, color: s.color, letterSpacing: 0.3 }}>{data.nodeType} · {awaitingStart ? (startMode === 'event' ? 'awaiting signal' : 'awaiting start') : s.label}</div>
         </div>
       </div>
       <div style={{ margin: '0 11px 9px', padding: '6px 8px', borderRadius: 7, background: 'rgba(15,23,42,0.04)', minHeight: 30 }}>
@@ -155,13 +162,22 @@ function RunGraphNode({ data }: NodeProps<CardData>) {
         <LiveLogPeek instanceId={data.config._instanceId as string} nodeId={data.id} active={active} />
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 5, padding: '0 11px 11px' }}>
-        {isAgent && active && (
+        {awaitingStart && startMode === 'manual' && btn('Start', Play, () => data.onStart(data.id), 'approve')}
+        {awaitingStart && startMode === 'event' && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', borderRadius: 7,
+            border: '1px dashed rgba(6,182,212,0.5)', background: 'rgba(6,182,212,0.08)', color: '#0e7490', fontSize: 10.5, fontWeight: 700,
+          }}>
+            <Radio size={12} /> Awaiting signal{startSignal ? `: ${startSignal}` : ''}
+          </div>
+        )}
+        {isAgent && active && !awaitingStart && (
           <>
             {btn('Approve', Check, () => data.onApprove(data.id), 'approve')}
             {btn('Reject', Ban, () => data.onSelect(data.id, 'chat'), 'reject')}
           </>
         )}
-        {isInteractive && active && btn('Open', ExternalLink, () => data.onSelect(data.id))}
+        {isInteractive && active && !awaitingStart && btn('Open', ExternalLink, () => data.onSelect(data.id))}
         {btn(active ? 'Restart' : 'Restart stage', RotateCw, () => data.onRestart(data.id))}
         <div style={{ display: 'flex', gap: 5 }}>
           {/* Chat = copilot refine — agent stages only. */}
@@ -256,6 +272,12 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
     onSuccess: () => { toast.success('Stage completed — workflow advancing'); invalidate() },
     onError: (e) => toast.error(errText(e, 'Complete & advance failed')),
   })
+  // Manual start — trigger a node gated with startMode=manual that is ACTIVE and awaiting start.
+  const startMut = useMutation({
+    mutationFn: (nodeId: string) => api.post(`/workflow-instances/${instanceId}/nodes/${nodeId}/start`).then(r => r.data),
+    onSuccess: () => { toast.success('Stage started'); invalidate() },
+    onError: (e) => toast.error(errText(e, 'Start failed')),
+  })
 
   // Export the run as a portable Copilot workflow + executable local runner.
   const downloadCopilotExport = useCallback(async (kind: 'yaml' | 'runner', fromPhase?: string) => {
@@ -297,7 +319,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
   const completedNodes = useMemo(
     () => orderedPhases.filter(p => (nodes.find(x => x.id === p.id)?.status ?? '').toUpperCase() === 'COMPLETED'),
     [orderedPhases, nodes])
-  const busyId = restartMut.isPending ? restartMut.variables : approveMut.isPending ? approveMut.variables : null
+  const busyId = restartMut.isPending ? restartMut.variables : approveMut.isPending ? approveMut.variables : startMut.isPending ? startMut.variables : null
 
   const rfNodes: Node<CardData>[] = useMemo(() => nodes.map(n => ({
     id: n.id,
@@ -307,10 +329,10 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
       ...n,
       config: { ...n.config, _instanceId: instanceId },
       selected: selected === n.id,
-      onSelect, onRestart: restartMut.mutate, onApprove: approveMut.mutate,
+      onSelect, onRestart: restartMut.mutate, onApprove: approveMut.mutate, onStart: startMut.mutate,
       busy: busyId === n.id,
     },
-  })), [nodes, positions, selected, instanceId, onSelect, restartMut.mutate, approveMut.mutate, busyId])
+  })), [nodes, positions, selected, instanceId, onSelect, restartMut.mutate, approveMut.mutate, startMut.mutate, busyId])
 
   const rfEdges: Edge[] = useMemo(() => edges.map(e => ({
     id: e.id,

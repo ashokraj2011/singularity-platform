@@ -236,6 +236,12 @@ export type NodeConfig = {
   teamId?:       string   // TEAM_QUEUE  → IAM team id
   roleKey?:      string   // ROLE_BASED  → IAM role key (scoped to template's capability)
   skillKey?:     string   // SKILL_BASED → IAM skill key
+  // ── Start gate (auto / manual / event) ───────────────────────────────────
+  // How the node begins once the flow reaches it. 'auto' (default) runs it
+  // immediately; 'manual' waits for an operator to click Start in the run view;
+  // 'event' waits for a signal named `startSignal` (POST /:id/signals/:name).
+  startMode?: 'auto' | 'manual' | 'event'
+  startSignal?: string    // event mode → the signal name that starts this node
 }
 
 export type NodeData = {
@@ -964,6 +970,8 @@ export function normalizeConfig(raw: unknown): NodeConfig {
     teamId:       typeof r.teamId       === 'string' ? r.teamId       : undefined,
     roleKey:      typeof r.roleKey      === 'string' ? r.roleKey      : undefined,
     skillKey:     typeof r.skillKey     === 'string' ? r.skillKey     : undefined,
+    startMode:    r.startMode === 'manual' || r.startMode === 'event' || r.startMode === 'auto' ? r.startMode : undefined,
+    startSignal:  typeof r.startSignal  === 'string' ? r.startSignal  : undefined,
   }
 }
 
@@ -3526,6 +3534,61 @@ export function NodeInspector({
             {/* CONFIG — standard fields + design-time KV */}
             {tab === 'Config' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {/* Start gate — auto / manual / event (all node types except START/END) */}
+                {node.data.nodeType !== 'START' && node.data.nodeType !== 'END' && (
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                      <Play size={11} style={{ color }} />
+                      <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color }}>
+                        Start behaviour
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {([
+                        { key: 'auto', label: 'Auto', hint: 'Runs when the flow reaches it' },
+                        { key: 'manual', label: 'Manual', hint: 'Waits for a Start click in the run' },
+                        { key: 'event', label: 'Event', hint: 'Waits for a signal' },
+                      ] as const).map(opt => {
+                        const active = (config.startMode ?? 'auto') === opt.key
+                        return (
+                          <button
+                            key={opt.key}
+                            type="button"
+                            title={opt.hint}
+                            onClick={() => setConfig(c => ({ ...c, startMode: opt.key }))}
+                            style={{
+                              flex: 1, padding: '8px 6px', borderRadius: 9, cursor: 'pointer',
+                              border: `1px solid ${active ? color : 'rgba(148,163,184,0.32)'}`,
+                              background: active ? `${color}14` : '#fff',
+                              color: active ? color : '#475569',
+                              fontWeight: active ? 800 : 600, fontSize: 12,
+                            }}
+                          >
+                            {opt.label}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    {config.startMode === 'event' && (
+                      <div style={{ marginTop: 10 }}>
+                        <FieldLabel>Start signal name</FieldLabel>
+                        <NeoInput
+                          value={config.startSignal ?? ''}
+                          onChange={v => setConfig(c => ({ ...c, startSignal: v }))}
+                          placeholder="e.g. approved_to_build"
+                        />
+                        <p style={{ fontSize: 10, color: '#64748b', marginTop: 5 }}>
+                          The node waits ACTIVE until <code>POST /workflow-instances/&lt;id&gt;/signals/{config.startSignal || '<name>'}</code> arrives.
+                        </p>
+                      </div>
+                    )}
+                    {config.startMode === 'manual' && (
+                      <p style={{ fontSize: 10, color: '#64748b', marginTop: 8 }}>
+                        The node waits until an operator clicks <strong>Start</strong> on it in the run view.
+                      </p>
+                    )}
+                  </div>
+                )}
                 {/* Standard fields */}
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
