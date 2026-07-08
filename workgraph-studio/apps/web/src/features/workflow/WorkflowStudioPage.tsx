@@ -1377,7 +1377,7 @@ function ToolBtn({
 
 // ─── API types ─────────────────────────────────────────────────────────────────
 
-type ApiNode = { id: string; label: string; nodeType: string; status: string; positionX: number; positionY: number; config?: NodeConfig }
+type ApiNode = { id: string; label: string; nodeType: string; status: string; positionX: number; positionY: number; config?: NodeConfig; executionLocation?: string }
 type ApiEdge = { id: string; sourceNodeId: string; targetNodeId: string; edgeType: string; label?: string; condition?: Record<string, unknown> | null }
 type WorkflowTriggerRecord = {
   id: string
@@ -2637,7 +2637,10 @@ export function WorkflowStudioPage() {
       position: { x: n.positionX, y: n.positionY },
       // Design nodes don't carry a runtime status — synthesise PENDING so
       // the visual layer stays consistent.
-      data: { label: n.label, nodeType: n.nodeType, status: n.status ?? 'PENDING', config: n.config },
+      // Seed config.executionLocation from the authoritative node COLUMN so the
+      // inspector shows where the node actually runs (the runtime reads the column,
+      // not config). Editing it lifts back to the column on save (handleInspectorSave).
+      data: { label: n.label, nodeType: n.nodeType, status: n.status ?? 'PENDING', config: { ...(n.config ?? {}), executionLocation: n.executionLocation ?? (n.config as NodeConfig | undefined)?.executionLocation ?? 'SERVER' } as NodeConfig },
     })))
   }, [nodesData, setRfNodes])
 
@@ -2740,7 +2743,7 @@ export function WorkflowStudioPage() {
   })
 
   const patchNode = useMutation({
-    mutationFn: ({ nodeId, ...payload }: { nodeId: string; label?: string; positionX?: number; positionY?: number; config?: NodeConfig }) => {
+    mutationFn: ({ nodeId, ...payload }: { nodeId: string; label?: string; positionX?: number; positionY?: number; config?: NodeConfig; executionLocation?: string }) => {
       const url = isDesignMode
         ? `/workflow-templates/${designWorkflowId}/design/nodes/${nodeId}`
         : `/workflow-instances/${runInstanceId}/nodes/${nodeId}`
@@ -2965,7 +2968,11 @@ export function WorkflowStudioPage() {
   }, [])
 
   const handleInspectorSave = useCallback((nodeId: string, label: string, config: NodeConfig) => {
-    patchNode.mutate({ nodeId, label, config }, {
+    // Lift executionLocation out of config into the top-level field so it persists
+    // to the node COLUMN (the runtime's source of truth). Untouched nodes carry the
+    // column value here (seeded on load), so this never flips a node's location.
+    const executionLocation = typeof config.executionLocation === 'string' ? config.executionLocation : undefined
+    patchNode.mutate({ nodeId, label, config, ...(executionLocation ? { executionLocation } : {}) }, {
       onSuccess: () => {
         setRfNodes(nds => nds.map(n => n.id === nodeId ? { ...n, data: { ...n.data, label, config } } : n))
         setSelectedNode(prev => prev?.id === nodeId ? { ...prev, data: { ...prev.data, label, config } } : prev)

@@ -71,6 +71,7 @@ const createNodeSchema = z.object({
 const updateNodeSchema = z.object({
   label: z.string().min(1).optional(),
   config: z.record(z.unknown()).optional(),
+  executionLocation: z.enum(['SERVER', 'CLIENT', 'EDGE', 'EXTERNAL']).optional(),
   positionX: z.number().optional(),
   positionY: z.number().optional(),
   phaseId: z.string().uuid().nullable().optional(),
