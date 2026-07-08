@@ -1111,7 +1111,7 @@ function CreateBranchForm({ instanceId, nodeId, capabilityId, initial, onDone }:
   const [sourceMode, setSourceMode] = useState<'github' | 'local_dir'>(initLocal ? 'local_dir' : 'github')
   const [localPath, setLocalPath] = useState(initLocal ? (initial?.sourceUri ?? '') : '')
   const [cloneDir, setCloneDir] = useState(initial?.cloneDir ?? '')
-  const branchesQuery = useQuery<{ branches?: string[]; repo?: string; connector?: { repo?: string } }>({
+  const branchesQuery = useQuery<{ branches?: string[]; repo?: string; connector?: { repo?: string }; reason?: string }>({
     queryKey: ['cb-branches', instanceId, capabilityId ?? ''],
     queryFn: () => api.get('/connectors/git/branches', { params: capabilityId ? { capabilityId } : {} }).then(r => r.data),
     staleTime: 60_000,
@@ -1138,7 +1138,7 @@ function CreateBranchForm({ instanceId, nodeId, capabilityId, initial, onDone }:
       <div style={{ marginBottom: 10 }}>
         <p style={labelStyle}>Repository (from capability)</p>
         <div style={{ ...inputStyle, background: '#f8fafc', color: repoUrl ? '#0f172a' : '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={repoUrl ?? undefined}>
-          {branchesQuery.isLoading ? 'Resolving…' : (repoUrl || 'Not resolved — the capability has no linked repo / GIT connector')}
+          {branchesQuery.isLoading ? 'Resolving…' : (repoUrl || (branchesQuery.data?.reason ? `Not resolved — ${branchesQuery.data.reason}` : 'Not resolved — the capability has no linked repo / GIT connector'))}
         </div>
       </div>
       <div style={{ marginBottom: 10 }}>
