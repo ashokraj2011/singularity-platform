@@ -119,6 +119,9 @@ connectorsRouter.get('/git/branches', async (req, res) => {
     if (!connector) {
       return res.json({
         branches: [],
+        // Surface the capability's repo even when we can't list its branches, so the
+        // UI can still show which repo the run targets.
+        ...(repoUrl ? { repo: repoUrl } : {}),
         reason: runtimeReason
           ? `No connected runtime (${runtimeReason}) and no GIT connector is configured.`
           : 'No GIT connector is configured.',
@@ -137,12 +140,14 @@ connectorsRouter.get('/git/branches', async (req, res) => {
     res.json({
       branches: Array.isArray(result?.branches) ? result.branches : [],
       source: 'connector',
+      // Prefer the capability's actual repo URL when known; else the connector label.
+      ...(repoUrl ? { repo: repoUrl } : {}),
       connector: { id: connector.id, name: connector.name, repo: repoLabel },
       ...(runtimeReason ? { runtimeReason } : {}),
     })
   } catch (e) {
     const connErr = e instanceof Error ? e.message : String(e)
-    res.json({ branches: [], reason: [runtimeReason, connErr].filter(Boolean).join('; ') })
+    res.json({ branches: [], ...(repoUrl ? { repo: repoUrl } : {}), reason: [runtimeReason, connErr].filter(Boolean).join('; ') })
   }
 })
 
