@@ -747,12 +747,38 @@ async function executeServerNode(
       break
     }
     case 'CREATE_BRANCH': {
-      // ADVISORY cloud-side branch pre-creation (via the GitHub connector) at the
-      // start of a flow. It must NEVER block the run — the branch is also created by
-      // the runtime materializer on clone + the per-phase commit. activateCreateBranch
-      // records the outcome (created / already-exists / skipped-with-reason) and we
-      // advance regardless. Only a truly UNEXPECTED throw (e.g. a DB error) degrades
-      // the node to BLOCKED via the guard.
+      // Interactive mode (config.interactive): pause here and let the operator pick
+      // the BASE branch to start work from (+ local/clone dir) before the work branch
+      // is created. The node sits ACTIVE + _awaitingBranchInput until
+      // POST /nodes/:id/create-branch supplies the input (provideCreateBranchInput),
+      // which writes the choices into globals and re-runs this case with
+      // _branchInputProvided set. Non-interactive → the original advisory behavior.
+      const cbCfg = (node.config ?? {}) as Record<string, unknown>
+      if (cbCfg.interactive === true && cbCfg._branchInputProvided !== true) {
+        await withTenantDbTransaction(prisma, async (tx) => {
+          await tx.workflowNode.update({
+            where: { id: node.id },
+            data: { config: { ...cbCfg, _awaitingBranchInput: true } as Prisma.InputJsonValue },
+          })
+          await tx.workflowMutation.create({
+            data: {
+              instanceId: instance.id,
+              nodeId: node.id,
+              mutationType: 'NODE_AWAITING_BRANCH_INPUT',
+              beforeState: { status: node.status } as Prisma.InputJsonValue,
+              afterState: { status: 'ACTIVE', awaiting: 'branch-input' } as Prisma.InputJsonValue,
+              performedById: actorId,
+            },
+          })
+        }, tenantId)
+        await logEvent('CreateBranchAwaitingInput', 'WorkflowNode', node.id, actorId, { instanceId: instance.id })
+        await publishOutbox('WorkflowNode', node.id, 'CreateBranchAwaitingInput', { instanceId: instance.id, nodeId: node.id })
+        break // wait for the operator's branch choice
+      }
+      // ADVISORY cloud-side branch pre-creation (via the GitHub connector). It must
+      // NEVER block the run — the branch is also created by the runtime materializer
+      // on clone + the per-phase commit. activateCreateBranch records the outcome and
+      // we advance regardless; a truly UNEXPECTED throw degrades the node to BLOCKED.
       let cbResult: Awaited<ReturnType<typeof activateCreateBranch>> | null = null
       try {
         cbResult = await activateCreateBranch(node, instance, actorId)
@@ -1000,6 +1026,58 @@ export async function triggerEventStartNodes(
     if (result.started) started.push(node.id)
   }
   return started
+}
+
+// Interactive CREATE_BRANCH: the operator supplied the base branch (+ local/clone dir)
+// via POST /nodes/:id/create-branch. Persist the choices into globals (so the
+// materializer + downstream stages use them), mark input provided, and re-run the node
+// so it creates the work branch and advances. Atomic on _awaitingBranchInput.
+export async function provideCreateBranchInput(
+  instanceId: string,
+  nodeId: string,
+  input: { baseBranch?: string; cloneDir?: string; sourceType?: string; sourceUri?: string },
+  actorId?: string,
+  tenantId?: string,
+): Promise<{ ok: boolean; reason?: string }> {
+  const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findFirst({ where: { id: nodeId, instanceId } }), tenantId)
+  if (!node || node.nodeType !== 'CREATE_BRANCH') throw new ValidationError('Not a CREATE_BRANCH node in this run')
+  const cfg = (node.config ?? {}) as Record<string, unknown>
+  if (node.status !== 'ACTIVE' || cfg._awaitingBranchInput !== true) {
+    return { ok: false, reason: 'This branch step is not awaiting input (already provided, or not reached).' }
+  }
+  const s = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
+  const baseBranch = s(input.baseBranch)
+  const cloneDir = s(input.cloneDir)
+  const sourceType = s(input.sourceType)
+  const sourceUri = s(input.sourceUri)
+  // Atomic claim: flip _awaitingBranchInput → false (+ mark provided) only if still set.
+  const claim = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.updateMany({
+    where: { id: nodeId, status: 'ACTIVE', config: { path: ['_awaitingBranchInput'], equals: true } },
+    data: { config: { ...cfg, _awaitingBranchInput: false, _branchInputProvided: true } as Prisma.InputJsonValue },
+  }), tenantId)
+  if (claim.count !== 1) return { ok: false, reason: 'Branch input was already provided.' }
+  // Persist the operator's choices into globals — the same keys the launch dialog uses,
+  // so the materializer + downstream stages pick them up.
+  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }), tenantId)
+  const ctx = (instance.context ?? {}) as Record<string, unknown>
+  const globals = (ctx._globals && typeof ctx._globals === 'object' && !Array.isArray(ctx._globals)) ? ctx._globals as Record<string, unknown> : {}
+  const nextGlobals = {
+    ...globals,
+    ...(baseBranch ? { sourceRef: baseBranch } : {}),
+    ...(cloneDir ? { cloneDir } : {}),
+    ...(sourceType ? { sourceType } : {}),
+    ...(sourceUri ? { sourceUri } : {}),
+  }
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
+    where: { id: instanceId },
+    data: { context: { ...ctx, _globals: nextGlobals } as Prisma.InputJsonValue },
+  }), tenantId)
+  await logEvent('CreateBranchInputProvided', 'WorkflowNode', nodeId, actorId, { instanceId, baseBranch, cloneDir, sourceType })
+  // Re-run the node now that input is provided → creates the work branch + advances.
+  const refreshedNode = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findUniqueOrThrow({ where: { id: nodeId } }), tenantId)
+  const refreshedInstance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }), tenantId)
+  await executeServerNode(refreshedNode, refreshedInstance, (refreshedInstance.context ?? {}) as Record<string, unknown>, actorId)
+  return { ok: true }
 }
 
 export async function restartNode(

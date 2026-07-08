@@ -477,6 +477,9 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
   // Human-task / approval / data-collection: render the widget form inline when
   // the node is active and has a form, instead of pointing at the Timeline view.
   const fillKind = fillKindFor(node.nodeType)
+  // Interactive CREATE_BRANCH: paused mid-run to ask the operator for the base branch
+  // (+ local/clone dir) before creating the work branch.
+  const awaitingBranchInput = active && node.nodeType === 'CREATE_BRANCH' && node.config?._awaitingBranchInput === true
   const formWidgets = (node.config?.formWidgets as FormWidget[] | undefined) ?? []
   // Approvals render their decision controls even with no widget form, so an
   // operator approves/rejects HERE instead of being bounced to the Timeline.
@@ -605,7 +608,15 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
           )}
         </div>
       )}
-      {active && isInteractive && !showForm && (
+      {awaitingBranchInput && (
+        <CreateBranchForm
+          instanceId={instanceId}
+          nodeId={node.id}
+          capabilityId={(node.config?.capabilityId as string | undefined) ?? undefined}
+          onDone={() => qc.invalidateQueries({ queryKey: ['run-instance', instanceId] })}
+        />
+      )}
+      {active && isInteractive && !awaitingBranchInput && !showForm && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 14px 0', padding: '9px 11px', borderRadius: 9, background: '#fffbeb', border: '1px solid #fde68a' }}>
           <AlertCircle size={14} color="#d97706" style={{ flexShrink: 0 }} />
           <div style={{ flex: 1, fontSize: 11.5, color: '#92400e', lineHeight: 1.4 }}>This stage needs input ({node.nodeType.replace(/_/g, ' ').toLowerCase()}). Complete it in the Timeline view.</div>
@@ -1070,6 +1081,73 @@ function BlockReasonBody({ info }: { info: unknown }) {
 function unwrapEntity(d: unknown): { id: string; formData?: Record<string, unknown>; attachments?: any[] } | null {
   return unwrapList<{ id: string; formData?: Record<string, unknown>; attachments?: any[] }>(d)[0] ?? null
 }
+// Interactive CREATE_BRANCH form — choose the base branch to start work from (+ the
+// source mode / local dir), then create the wi/<code> work branch and continue.
+function CreateBranchForm({ instanceId, nodeId, capabilityId, onDone }: {
+  instanceId: string; nodeId: string; capabilityId?: string; onDone: () => void
+}) {
+  const [baseBranch, setBaseBranch] = useState('')
+  const [sourceMode, setSourceMode] = useState<'github' | 'local_dir'>('github')
+  const [localPath, setLocalPath] = useState('')
+  const [cloneDir, setCloneDir] = useState('')
+  const branchesQuery = useQuery<{ branches?: string[]; repo?: string; connector?: { repo?: string } }>({
+    queryKey: ['cb-branches', instanceId, capabilityId ?? ''],
+    queryFn: () => api.get('/connectors/git/branches', { params: capabilityId ? { capabilityId } : {} }).then(r => r.data),
+    staleTime: 60_000,
+  })
+  const branches = branchesQuery.data?.branches ?? []
+  const repoLabel = (branchesQuery.data?.repo ?? branchesQuery.data?.connector?.repo)?.replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '')
+  const submit = useMutation({
+    mutationFn: () => api.post(`/workflow-instances/${instanceId}/nodes/${nodeId}/create-branch`, {
+      ...(baseBranch.trim() ? { baseBranch: baseBranch.trim() } : {}),
+      ...(sourceMode === 'local_dir'
+        ? (localPath.trim() ? { sourceType: 'local_dir', sourceUri: localPath.trim() } : {})
+        : (cloneDir.trim() ? { cloneDir: cloneDir.trim() } : {})),
+    }).then(r => r.data),
+    onSuccess: () => { toast.success('Work branch created — continuing'); onDone() },
+    onError: (e) => toast.error(errText(e, 'Create branch failed')),
+  })
+  const inputStyle: CSSProperties = { width: '100%', boxSizing: 'border-box', padding: '7px 9px', borderRadius: 7, border: '1px solid #cbd5e1', fontSize: 12, outline: 'none' }
+  const labelStyle: CSSProperties = { fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#64748b', margin: '0 0 4px' }
+  const hint: CSSProperties = { fontSize: 10, color: '#64748b', marginTop: 4 }
+  return (
+    <div style={{ margin: '10px 14px 0', padding: 12, borderRadius: 10, background: '#f0f9ff', border: '1px solid #bae6fd' }}>
+      <div style={{ fontSize: 12, fontWeight: 800, color: '#0369a1', marginBottom: 8 }}>Create work branch — choose where to start</div>
+      <div style={{ marginBottom: 10 }}>
+        <p style={labelStyle}>Start work from branch</p>
+        <input list="cb-branch-list" value={baseBranch} onChange={e => setBaseBranch(e.target.value)} placeholder={branches.length ? 'pick or type a branch' : 'e.g. main'} style={inputStyle} />
+        {branches.length > 0 && <datalist id="cb-branch-list">{branches.map(b => <option key={b} value={b} />)}</datalist>}
+        <p style={hint}>{branches.length > 0 ? `${branches.length} branch${branches.length === 1 ? '' : 'es'}${repoLabel ? ` from ${repoLabel}` : ''}. ` : ''}The <code>wi/&lt;code&gt;</code> work branch is cut from this. Blank = main.</p>
+      </div>
+      <div style={{ marginBottom: 10 }}>
+        <p style={labelStyle}>Source</p>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {(['github', 'local_dir'] as const).map(m => (
+            <button key={m} type="button" onClick={() => setSourceMode(m)} style={{ flex: 1, padding: 6, borderRadius: 7, border: `1px solid ${sourceMode === m ? '#0ea5e9' : '#cbd5e1'}`, background: sourceMode === m ? '#e0f2fe' : '#fff', color: sourceMode === m ? '#0369a1' : '#475569', fontWeight: sourceMode === m ? 800 : 600, fontSize: 11.5, cursor: 'pointer' }}>
+              {m === 'github' ? 'GitHub repo' : 'Local directory'}
+            </button>
+          ))}
+        </div>
+      </div>
+      {sourceMode === 'local_dir' ? (
+        <div style={{ marginBottom: 10 }}>
+          <p style={labelStyle}>Local directory path</p>
+          <input value={localPath} onChange={e => setLocalPath(e.target.value)} placeholder="/Users/me/code/my-project" style={inputStyle} />
+          <p style={hint}>Absolute path on the runtime (inside MCP_ALLOWED_LOCAL_SOURCE_ROOTS).</p>
+        </div>
+      ) : (
+        <div style={{ marginBottom: 10 }}>
+          <p style={labelStyle}>Clone into folder (optional)</p>
+          <input value={cloneDir} onChange={e => setCloneDir(e.target.value)} placeholder="e.g. my-checkout" style={inputStyle} />
+        </div>
+      )}
+      <button onClick={() => submit.mutate()} disabled={submit.isPending} style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #0284c7', background: '#0ea5e9', color: '#fff', fontWeight: 800, fontSize: 12, cursor: submit.isPending ? 'default' : 'pointer', opacity: submit.isPending ? 0.6 : 1 }}>
+        {submit.isPending ? 'Creating…' : 'Create branch & continue'}
+      </button>
+    </div>
+  )
+}
+
 function NodeFormFill({ instanceId, nodeId, runName, kind, widgets }: {
   instanceId: string; nodeId: string; runName: string; kind: FillKind; widgets: FormWidget[]
 }) {

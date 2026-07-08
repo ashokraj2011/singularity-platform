@@ -235,7 +235,9 @@ async function main(): Promise<void> {
   // connector, so every phase commits onto it and the push/PR have a branch.
   // Idempotent — safe if the runtime already created it. base defaults to the
   // run's cloned branch (launch pick) then main.
-  await upsertNode({ id: N_CREATE_BRANCH, nodeType: 'CREATE_BRANCH', label: 'Create work branch', x: 80 + 1 * 220, config: { startMode: 'manual' } })
+  // interactive:true → the run pauses at this node and asks the operator for the base
+  // branch to start work from (+ source mode / local dir) before creating wi/<code>.
+  await upsertNode({ id: N_CREATE_BRANCH, nodeType: 'CREATE_BRANCH', label: 'Create work branch', x: 80 + 1 * 220, config: { startMode: 'manual', interactive: true } })
   for (const [i, phase] of PHASES.entries()) {
     await upsertNode({
       id: phaseNodeIds[i]!, nodeType: 'AGENT_TASK', label: phase.label, x: 80 + (i + 2) * 220,
