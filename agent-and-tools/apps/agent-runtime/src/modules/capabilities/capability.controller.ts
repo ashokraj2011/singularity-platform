@@ -90,6 +90,12 @@ export const capabilityController = {
       }, req.user?.user_id),
     );
   },
+  // GET /capabilities/:id/repositories — all linked repos (any status), ACTIVE
+  // first. Unlike GET /:id (ACTIVE-filtered), this lets callers resolve a repo
+  // URL even while indexing is still in progress.
+  async listRepositories(req: Request, res: Response) {
+    return ok(res, await capabilityService.listRepositories(req.params.id));
+  },
   async attachRepo(req: Request, res: Response) {
     return ok(res, await capabilityService.attachRepository(req.params.id, req.body), 201);
   },

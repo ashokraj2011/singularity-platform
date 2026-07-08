@@ -1334,6 +1334,32 @@ export const capabilityService = {
     return cap;
   },
 
+  // List a capability's linked repositories regardless of status (ACTIVE, plus
+  // any still bootstrapping/failed). Unlike get()/list()/architectureDiagram —
+  // which all filter to status:"ACTIVE" — this returns every linked repo so
+  // callers that only need the repo URL (branch picker, repo resolution) can
+  // find one even before indexing completes. ACTIVE repos sort first.
+  async listRepositories(id: string) {
+    const cap = await prisma.capability.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        repositories: {
+          orderBy: { createdAt: "asc" },
+          select: {
+            id: true, repoName: true, repoUrl: true,
+            defaultBranch: true, repositoryType: true, status: true,
+          },
+        },
+      },
+    });
+    if (!cap) throw new NotFoundError("Capability not found");
+    const repositories = [...cap.repositories].sort(
+      (a, b) => (String(a.status) === "ACTIVE" ? 0 : 1) - (String(b.status) === "ACTIVE" ? 0 : 1),
+    );
+    return { capabilityId: cap.id, repositories };
+  },
+
   async groundingStatus(id: string) {
     return buildCapabilityGroundingStatus(id);
   },

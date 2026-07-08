@@ -56,6 +56,7 @@ capabilityRoutes.post(
   capabilityController.runLearningWorker,
 );
 
+capabilityRoutes.get("/:id/repositories", capabilityController.listRepositories);
 capabilityRoutes.post("/:id/repositories", validate(attachRepositorySchema), capabilityController.attachRepo);
 capabilityRoutes.delete("/:id/repositories/:repoId", capabilityController.deleteRepo);
 
