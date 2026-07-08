@@ -1,4 +1,4 @@
-import { listRuntimeCapabilities } from './client'
+import { listRuntimeCapabilities, getRuntimeCapability } from './client'
 
 /**
  * §13.4 working-dir — resolve a capability's primary repo (from agent-runtime).
@@ -15,14 +15,24 @@ import { listRuntimeCapabilities } from './client'
  * (CF brokers nothing when `repo` is absent), leaving the legacy path intact.
  */
 export async function resolveCapabilityRepo(capabilityId: string): Promise<string | undefined> {
-  try {
-    const caps = await listRuntimeCapabilities()
-    const cap = caps.find((c) => String((c as Record<string, unknown>).id ?? '') === capabilityId) as Record<string, unknown> | undefined
+  const repoFrom = (cap: Record<string, unknown> | null | undefined): string | undefined => {
     const repos = Array.isArray(cap?.repositories) ? (cap!.repositories as Array<Record<string, unknown>>) : []
+    // Prefer an ACTIVE repo; fall back to the first linked one (a freshly-attached
+    // repo may still be bootstrapping — better to offer it than to say "not resolved").
     const primary = repos.find((r) => String(r?.status ?? '').toUpperCase() === 'ACTIVE') ?? repos[0]
     const url = typeof primary?.repoUrl === 'string' ? primary.repoUrl
       : typeof primary?.url === 'string' ? primary.url : undefined
     return url && url.trim() ? url.trim() : undefined
+  }
+  // 1) Direct by-id detail — a findUnique on agent-runtime, NOT subject to the list's
+  //    scoping, so it resolves capabilities the list wouldn't return.
+  const fromDetail = repoFrom((await getRuntimeCapability(capabilityId)) as Record<string, unknown> | null)
+  if (fromDetail) return fromDetail
+  // 2) Fall back to the list scan (back-compat / if the detail endpoint is unavailable).
+  try {
+    const caps = await listRuntimeCapabilities()
+    const cap = caps.find((c) => String((c as Record<string, unknown>).id ?? '') === capabilityId) as Record<string, unknown> | undefined
+    return repoFrom(cap)
   } catch {
     return undefined
   }
