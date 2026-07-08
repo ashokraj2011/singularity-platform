@@ -31,7 +31,7 @@ import { buildCodeContextPackage, type BuildCodeContextRequest } from "../mcp/co
 // HTTP /mcp/source/tree + /mcp/source/file routes use, run with the laptop's
 // LOCAL GITHUB_TOKEN so cloud-side capability bootstrap can discover a repo
 // through the user's laptop runtime.
-import { fetchGitHubTree, fetchGitHubFile } from "../mcp/source-discover";
+import { fetchGitHubTree, fetchGitHubFile, fetchGitHubBranches } from "../mcp/source-discover";
 // Finish a work branch over the bridge — the same runFinishWorkBranch the
 // platform's HTTP /mcp/work/finish-branch route calls, run against the laptop's
 // LOCAL worktree so CF can finalize/push from a dial-in runtime.
@@ -546,7 +546,17 @@ export class LaptopRelayClient {
       }
       this.inflight++;
       try {
-        const { repoUrl, branch } = frame.payload;
+        const { repoUrl, branch, listBranches } = frame.payload;
+        // Reuse the (already-allowed) source-tree frame to also list branches — a
+        // `listBranches` flag returns { branches } instead of the file tree, so the
+        // launch "Branch to clone" picker works over the bridge with no new frame
+        // type (which would require re-minting the runtime token) and no connector.
+        if (listBranches) {
+          log.info({ request_id: frame.request_id, repoUrl }, "[laptop-relay] running source-tree (branches)");
+          const branches = await fetchGitHubBranches(repoUrl);
+          this.send({ type: "response", request_id: frame.request_id, payload: { branches } });
+          return;
+        }
         log.info({ request_id: frame.request_id, repoUrl }, "[laptop-relay] running source-tree");
         const tree = await fetchGitHubTree(repoUrl, branch);
         this.send({ type: "response", request_id: frame.request_id, payload: { tree } });

@@ -3,6 +3,7 @@ import type { WorkflowInstance, WorkflowNode } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
 import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { logEvent, createReceipt, publishOutbox } from '../../../lib/audit'
+import { dispatchExternalWebhook } from './external-webhook'
 import { recordRunLearning } from '../../../lib/learning/record-run-learning'
 import { ValidationError } from '../../../lib/errors'
 import { resolveNextNodes, isComplete } from './GraphTraverser'
@@ -316,6 +317,45 @@ export async function advance(
   }
 }
 
+// EXTERNAL-location webhook: POST a just-queued pending execution to the node's
+// webhookUrl and take the result from the HTTP response (synchronous), then complete
+// the row + advance. On failure → failNode. No webhookUrl → leave the row on the queue
+// for a poll-runner. Reuses the existing complete/advance contract — no bearer-less
+// callback endpoint. SSRF-guarded (public-only) inside dispatchExternalWebhook.
+async function runExternalWebhookNode(
+  node: WorkflowNode,
+  instance: WorkflowInstance,
+  pendingExecutionId: string,
+  context: Record<string, unknown>,
+  attempt: number,
+  tenantId?: string,
+): Promise<void> {
+  const outcome = await dispatchExternalWebhook({
+    node: { id: node.id, nodeType: node.nodeType, config: node.config },
+    instanceId: instance.id,
+    pendingExecutionId,
+    context,
+  })
+  if (outcome.kind === 'skipped') return // no webhookUrl → poll-runner fallback
+  if (outcome.kind === 'error') {
+    await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.update({
+      where: { id: pendingExecutionId },
+      data: { completedAt: new Date(), error: outcome.error },
+    }), tenantId)
+    await failNode(instance.id, node.id, { message: outcome.error, code: 'EXTERNAL_WEBHOOK_FAILED' }, undefined, tenantId)
+    return
+  }
+  await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.update({
+    where: { id: pendingExecutionId },
+    data: { completedAt: new Date(), result: outcome.result as Prisma.InputJsonValue },
+  }), tenantId)
+  await logEvent('ExternalWebhookCompleted', 'WorkflowNode', node.id, undefined, { instanceId: instance.id, pendingExecutionId })
+  const advanceCtx = (outcome.result && typeof outcome.result === 'object' && !Array.isArray(outcome.result))
+    ? (outcome.result as Record<string, unknown>)
+    : { result: outcome.result }
+  await advance(instance.id, node.id, advanceCtx, undefined, attempt, tenantId)
+}
+
 async function activateDownstream(
   instance: WorkflowInstance,
   completedNode: WorkflowNode,
@@ -364,7 +404,7 @@ async function activateDownstream(
     // ── Execution location gate ─────────────────────────────────────────
     if (nextNode.executionLocation !== 'SERVER') {
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h default
-      await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.create({
+      const pending = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.create({
         data: {
           instanceId: instance.id,
           nodeId: nextNode.id,
@@ -375,8 +415,17 @@ async function activateDownstream(
         },
       }), tenantId)
       await logEvent('NodePendingExecution', 'WorkflowNode', nextNode.id, undefined, { instanceId: instance.id, location: nextNode.executionLocation } as any)
+      // EXTERNAL nodes with a webhookUrl are dispatched to the provider synchronously
+      // now; everything else waits on the queue for a poll-runner to claim it.
+      if (nextNode.executionLocation === 'EXTERNAL') {
+        await runExternalWebhookNode(nextNode, instance, pending.id, context, nextNode.attempt, tenantId)
+      }
       continue
     }
+
+    // Per-node start gate: a manual/event node stays ACTIVE awaiting its trigger
+    // (manual click or matching signal) instead of executing now.
+    if (await gateNodeStart(nextNode, instance, actorId)) continue
 
     await executeServerNode(nextNode, instance, context, actorId)
 
@@ -436,10 +485,11 @@ export async function startInstance(
     // START nodes are pass-through: advance immediately so downstream activates.
     if (node.nodeType === 'START') {
       await advance(instanceId, node.id, (instance.context ?? {}) as Record<string, unknown>, actorId, undefined, tenantId)
-    } else {
+    } else if (!(await gateNodeStart(node, instance, actorId))) {
       // Finding #4 — a non-START entry node (root AGENT_TASK / HUMAN_TASK / WORKBENCH_TASK,
       // etc.) is executable; dispatch it via the same execution-location gate downstream
       // activation uses, instead of leaving it ACTIVE but never run, which stalls the run.
+      // Unless it's gated (manual/event start) — then it waits ACTIVE for its trigger.
       await executeActivatedNode(node, instance, (instance.context ?? {}) as Record<string, unknown>, actorId)
     }
   }
@@ -562,6 +612,86 @@ function executableNodeType(node: WorkflowNode): string {
   const cfg = (node.config ?? {}) as Record<string, unknown>
   const baseType = typeof cfg._baseType === 'string' ? cfg._baseType : ''
   return baseType && baseType !== 'CUSTOM' ? baseType : 'HUMAN_TASK'
+}
+
+// ─── Per-node start gate (auto / manual / event) ───────────────────────────────
+// A node can be configured in the designer (config.startMode) to NOT auto-execute
+// when the flow reaches it:
+//   • auto  (default): run immediately when reached — the original behavior.
+//   • manual: stay ACTIVE until a human triggers POST /nodes/:id/start.
+//   • event : stay ACTIVE until a signal named config.startSignal arrives
+//             (POST /:id/signals/:name — the same channel SIGNAL_WAIT uses).
+// This rides the existing "ACTIVE while awaiting external action" pattern that
+// APPROVAL / HUMAN_TASK / SIGNAL_WAIT already use — no new node status, no migration.
+export type NodeStartMode = 'auto' | 'manual' | 'event'
+
+// Read a config key from the top level OR the designer's `standard` sub-object —
+// mirrors AgentTaskExecutor.configString, since the designer may store either place.
+function nodeConfigString(node: Pick<WorkflowNode, 'config'>, key: string): string {
+  const cfg = (node.config ?? {}) as Record<string, unknown>
+  const direct = cfg[key]
+  if (typeof direct === 'string' && direct.trim()) return direct.trim()
+  const std = (cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard))
+    ? (cfg.standard as Record<string, unknown>)[key]
+    : undefined
+  return typeof std === 'string' && std.trim() ? std.trim() : ''
+}
+
+export function nodeStartMode(node: Pick<WorkflowNode, 'config'>): NodeStartMode {
+  const raw = nodeConfigString(node, 'startMode').toLowerCase()
+  if (raw === 'manual') return 'manual'
+  if (raw === 'event') return 'event'
+  return 'auto'
+}
+
+function nodeStartSignal(node: Pick<WorkflowNode, 'config'>): string {
+  return nodeConfigString(node, 'startSignal')
+}
+
+// START/END are structural routing nodes — they never "run", so they are never
+// gated (gating them would strand the entry/exit of the graph).
+function isGateableNodeType(nodeType: string): boolean {
+  return nodeType !== 'START' && nodeType !== 'END'
+}
+
+// If the node's start mode is manual/event, mark it "awaiting start" and return
+// true so the caller SKIPS execution — the node is already ACTIVE (claimed by the
+// activation path) and stays there until its trigger fires. Returns false for auto
+// nodes (execute normally). `_awaitingStart` on config is the trigger-eligibility +
+// UI marker; the trigger clears it (single-execution guard).
+async function gateNodeStart(
+  node: WorkflowNode,
+  instance: WorkflowInstance,
+  actorId?: string,
+): Promise<boolean> {
+  const mode = nodeStartMode(node)
+  if (mode === 'auto' || !isGateableNodeType(node.nodeType)) return false
+  const cfg = (node.config ?? {}) as Record<string, unknown>
+  const startSignal = nodeStartSignal(node)
+  const tenantId = instance.tenantId ?? undefined
+  await withTenantDbTransaction(prisma, async (tx) => {
+    await tx.workflowNode.update({
+      where: { id: node.id },
+      data: { config: { ...cfg, _awaitingStart: true } as Prisma.InputJsonValue },
+    })
+    await tx.workflowMutation.create({
+      data: {
+        instanceId: instance.id,
+        nodeId: node.id,
+        mutationType: 'NODE_AWAITING_START',
+        beforeState: { status: node.status } as Prisma.InputJsonValue,
+        afterState: { status: 'ACTIVE', startMode: mode, startSignal: startSignal || undefined } as Prisma.InputJsonValue,
+        performedById: actorId,
+      },
+    })
+  }, tenantId)
+  await logEvent('NodeAwaitingStart', 'WorkflowNode', node.id, actorId, {
+    instanceId: instance.id, nodeType: node.nodeType, startMode: mode, startSignal: startSignal || undefined,
+  } as any)
+  await publishOutbox('WorkflowNode', node.id, 'NodeAwaitingStart', {
+    instanceId: instance.id, nodeId: node.id, startMode: mode, startSignal: startSignal || undefined,
+  })
+  return true
 }
 
 async function executeServerNode(
@@ -756,7 +886,7 @@ async function executeActivatedNode(
 ): Promise<void> {
   if (node.executionLocation !== 'SERVER') {
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
-    await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.create({
+    const pending = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.create({
       data: {
         instanceId: instance.id,
         nodeId: node.id,
@@ -770,10 +900,106 @@ async function executeActivatedNode(
       instanceId: instance.id,
       location: node.executionLocation,
     } as any)
+    // EXTERNAL nodes with a webhookUrl are dispatched to the provider synchronously
+    // now; everything else waits on the queue for a poll-runner to claim it.
+    if (node.executionLocation === 'EXTERNAL') {
+      await runExternalWebhookNode(node, instance, pending.id, context, node.attempt, instance.tenantId ?? undefined)
+    }
     return
   }
 
   await executeServerNode(node, instance, context, actorId)
+}
+
+// Trigger a node that is ACTIVE and awaiting a manual/event start (gateNodeStart).
+// Single-execution is guaranteed by an atomic claim on config._awaitingStart
+// (true→false via updateMany with a JSON-path where) — only the caller that flips
+// it wins and goes on to execute; concurrent/duplicate triggers get { started:false }.
+export async function startAwaitingNode(
+  instanceId: string,
+  nodeId: string,
+  actorId?: string,
+  tenantId?: string,
+  extraContext?: Record<string, unknown>,
+): Promise<{ started: boolean; nodeId: string; reason?: string }> {
+  const node = await withTenantDbTransaction(
+    prisma,
+    (tx) => tx.workflowNode.findFirst({ where: { id: nodeId, instanceId } }),
+    tenantId,
+  )
+  if (!node) throw new ValidationError('Node not found in this run')
+  const mode = nodeStartMode(node)
+  if (mode === 'auto') {
+    return { started: false, nodeId, reason: 'This node is not gated for manual/event start (startMode=auto).' }
+  }
+  const cfg = (node.config ?? {}) as Record<string, unknown>
+  // Atomic single-execution claim — the JSON-path guard means a second concurrent
+  // trigger (double-click, duplicate signal) matches zero rows and is a no-op.
+  const claim = await withTenantDbTransaction(
+    prisma,
+    (tx) => tx.workflowNode.updateMany({
+      where: { id: nodeId, status: 'ACTIVE', config: { path: ['_awaitingStart'], equals: true } },
+      data: { config: { ...cfg, _awaitingStart: false } as Prisma.InputJsonValue },
+    }),
+    tenantId,
+  )
+  if (claim.count !== 1) {
+    return { started: false, nodeId, reason: 'Node is not awaiting start (already started, not yet reached, or completed).' }
+  }
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowMutation.create({
+    data: {
+      instanceId,
+      nodeId,
+      mutationType: 'NODE_START_TRIGGERED',
+      beforeState: { _awaitingStart: true } as Prisma.InputJsonValue,
+      afterState: { startMode: mode, trigger: actorId ? 'manual' : 'event' } as Prisma.InputJsonValue,
+      performedById: actorId,
+    },
+  }), tenantId)
+  await logEvent('NodeStartTriggered', 'WorkflowNode', nodeId, actorId, { instanceId, startMode: mode } as any)
+  const instance = await withTenantDbTransaction(
+    prisma,
+    (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }),
+    tenantId,
+  )
+  const refreshed = await withTenantDbTransaction(
+    prisma,
+    (tx) => tx.workflowNode.findUniqueOrThrow({ where: { id: nodeId } }),
+    tenantId,
+  )
+  const baseContext = (instance.context ?? {}) as Record<string, unknown>
+  const context = extraContext ? { ...baseContext, ...extraContext } : baseContext
+  await executeServerNode(refreshed, instance, context, actorId)
+  return { started: true, nodeId }
+}
+
+// Event-based start: an incoming signal (POST /:id/signals/:name) executes every
+// ACTIVE node awaiting start whose startMode=event and startSignal matches. Returns
+// the ids that actually started. Called alongside the SIGNAL_WAIT advance path.
+export async function triggerEventStartNodes(
+  instanceId: string,
+  signalName: string,
+  payload?: Record<string, unknown>,
+  actorId?: string,
+  tenantId?: string,
+): Promise<string[]> {
+  const candidates = await withTenantDbTransaction(
+    prisma,
+    (tx) => tx.workflowNode.findMany({
+      where: { instanceId, status: 'ACTIVE', config: { path: ['_awaitingStart'], equals: true } },
+    }),
+    tenantId,
+  )
+  const started: string[] = []
+  for (const node of candidates) {
+    if (nodeStartMode(node) !== 'event') continue
+    if (nodeStartSignal(node) !== signalName) continue
+    const result = await startAwaitingNode(instanceId, node.id, actorId, tenantId, {
+      _signal: { name: signalName, payload: payload ?? {} },
+    })
+    if (result.started) started.push(node.id)
+  }
+  return started
 }
 
 export async function restartNode(

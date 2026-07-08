@@ -1,7 +1,8 @@
 import cron from 'node-cron'
 import { prisma } from '../../../lib/prisma'
 import { adminPrisma } from '../../../lib/admin-prisma'
-import { advance } from './WorkflowRuntime'
+import { advance, failNode } from './WorkflowRuntime'
+import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 
 // RLS prep — TimerSweep's discovery queries below scan ACROSS EVERY TENANT in
@@ -119,6 +120,50 @@ export function startTimerSweep(): void {
       }
     } catch (err) {
       console.error('Deadline sweep error:', err)
+    }
+
+    // ─── Pending-execution expiry ──────────────────────────────────────
+    // A non-SERVER node queues a pending_executions row for a runner (poll-runner)
+    // to claim + complete. If no runner ever does — none deployed, or it died — the
+    // row expires (expiresAt, 24h default). Fail those nodes so a missing runner
+    // surfaces as a real node failure instead of an eternal ACTIVE. A runner
+    // completion clears the row (completedAt) before this fires, so only genuinely
+    // stuck rows match.
+    try {
+      const expired = await sweepReader.pendingExecution.findMany({
+        where: { completedAt: null, expiresAt: { lt: now } },
+        include: {
+          node: { select: { status: true } },
+          instance: { select: { status: true, tenantId: true } },
+        },
+        take: 100,
+      })
+
+      for (const row of expired) {
+        const tenantId = row.instance?.tenantId ?? undefined
+        const reason = `No runner completed this ${row.location} node before it expired at ${row.expiresAt.toISOString()}.`
+        try {
+          // Mark the row done first so it isn't re-swept, then fail the node if it's
+          // still the ACTIVE one waiting on this row (skip stale rows whose node or
+          // run already moved on).
+          await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.update({
+            where: { id: row.id },
+            data: { completedAt: now, error: reason },
+          }), tenantId)
+          if (row.instance?.status === 'ACTIVE' && row.node?.status === 'ACTIVE') {
+            await failNode(row.instanceId, row.nodeId, { message: reason, code: 'PENDING_EXECUTION_EXPIRED' }, undefined, tenantId)
+          }
+          await logEvent('PendingExecutionExpired', 'WorkflowNode', row.nodeId, undefined, {
+            instanceId: row.instanceId,
+            pendingExecutionId: row.id,
+            location: row.location,
+          })
+        } catch (err) {
+          console.error('Pending-execution expiry failed:', err)
+        }
+      }
+    } catch (err) {
+      console.error('Pending-execution expiry sweep error:', err)
     }
   })
   console.log('Timer + SLA sweep started')

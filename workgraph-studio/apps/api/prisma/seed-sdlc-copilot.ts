@@ -227,12 +227,15 @@ async function main(): Promise<void> {
     create: { id: PHASE_ID, workflowId: WF_ID, name: 'SDLC', displayOrder: 0 },
   })
 
+  // Every executable node in this flow is gated with startMode:'manual' — the
+  // operator explicitly clicks Start (run view) to advance each phase, so the
+  // Copilot SDLC never auto-runs stage-to-stage. START/END stay auto (structural).
   await upsertNode({ id: N_START, nodeType: 'START', label: 'Intake', x: 80 })
   // Create the work branch (wi/<code>) up-front, cloud-side via the GitHub
   // connector, so every phase commits onto it and the push/PR have a branch.
   // Idempotent — safe if the runtime already created it. base defaults to the
   // run's cloned branch (launch pick) then main.
-  await upsertNode({ id: N_CREATE_BRANCH, nodeType: 'CREATE_BRANCH', label: 'Create work branch', x: 80 + 1 * 220, config: {} })
+  await upsertNode({ id: N_CREATE_BRANCH, nodeType: 'CREATE_BRANCH', label: 'Create work branch', x: 80 + 1 * 220, config: { startMode: 'manual' } })
   for (const [i, phase] of PHASES.entries()) {
     await upsertNode({
       id: phaseNodeIds[i]!, nodeType: 'AGENT_TASK', label: phase.label, x: 80 + (i + 2) * 220,
@@ -244,7 +247,7 @@ async function main(): Promise<void> {
       // so the copilot prompt names the role (e.g. "acting as the DEVELOPER").
       // governanceMode + useGovernedExecutor → the node runs the GOVERNED loop
       // (governance overlay + audit), connected to its role agent template.
-      config: { agentTemplateId: phase.agent, task: phase.task, executor: 'copilot', governanceMode: GOVERNANCE_MODE, useGovernedExecutor: true, ...(PREFER_LAPTOP ? { preferLaptop: true } : {}), governedStageKey: phase.key, governedAgentRole: phase.role, inputArtifacts: artifactDefs(phase.reads, 'INPUT'), outputArtifacts: artifactDefs(phase.writes, 'OUTPUT'), ...(DEFAULT_REPO ? { sourceType: 'github', sourceUri: DEFAULT_REPO } : {}) },
+      config: { startMode: 'manual', agentTemplateId: phase.agent, task: phase.task, executor: 'copilot', governanceMode: GOVERNANCE_MODE, useGovernedExecutor: true, ...(PREFER_LAPTOP ? { preferLaptop: true } : {}), governedStageKey: phase.key, governedAgentRole: phase.role, inputArtifacts: artifactDefs(phase.reads, 'INPUT'), outputArtifacts: artifactDefs(phase.writes, 'OUTPUT'), ...(DEFAULT_REPO ? { sourceType: 'github', sourceUri: DEFAULT_REPO } : {}) },
     })
   }
   // Verifier gate before the push: run the verifier agent on EVERY document the
@@ -253,6 +256,7 @@ async function main(): Promise<void> {
   await upsertNode({
     id: N_VERIFY, nodeType: 'VERIFIER', label: 'Verify documents', x: 80 + (PHASES.length + 2) * 220,
     config: {
+      startMode: 'manual',
       scope: 'ALL', requireDocuments: false,
       criteria: 'The SDLC documents (requirements, design, test report, risk assessment, release/rollback) must be complete, internally consistent with each other, and satisfy the work item\'s acceptance criteria.',
       standard: { scope: 'ALL', requireDocuments: 'false' },
@@ -260,7 +264,7 @@ async function main(): Promise<void> {
   })
   await upsertNode({
     id: N_PUSH, nodeType: 'GIT_PUSH', label: 'Push to remote', x: 80 + (PHASES.length + 3) * 220,
-    config: { requireApproval: false, remote: 'origin', standard: { requireApproval: 'false', remote: 'origin' } },
+    config: { startMode: 'manual', requireApproval: false, remote: 'origin', standard: { requireApproval: 'false', remote: 'origin' } },
   })
   // Open a PR from the work branch (wi/<code>) into the base branch — cloud-side
   // via the GitHub connector. Base defaults to the run's cloned branch, then main;
@@ -268,7 +272,7 @@ async function main(): Promise<void> {
   // the RAISE_PR enum migration applied before this seed runs.
   await upsertNode({
     id: N_RAISE_PR, nodeType: 'RAISE_PR', label: 'Raise pull request', x: 80 + (PHASES.length + 4) * 220,
-    config: {},
+    config: { startMode: 'manual' },
   })
   await upsertNode({ id: N_END, nodeType: 'END', label: 'Done', x: 80 + (PHASES.length + 5) * 220 })
 

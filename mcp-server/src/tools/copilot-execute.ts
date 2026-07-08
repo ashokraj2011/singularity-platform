@@ -72,6 +72,11 @@ export const copilotExecuteTool: ToolHandler = {
         timeout_ms: { type: "number", description: "Max milliseconds for the CLI run, capped by MCP_COPILOT_EXECUTE_MAX_TIMEOUT_MS." },
         commit: { type: "boolean", description: "Commit the resulting changes onto the work-item branch (default true)." },
         commit_message: { type: "string", description: "Commit message; defaults to 'copilot: <first line of task>'." },
+        expected_paths: {
+          type: "array",
+          items: { type: "string" },
+          description: "Declared output-artifact paths (deliverables the stage should produce). Captured directly even if git-status doesn't see them (e.g. written outside the git tree).",
+        },
       },
       required: ["task"],
     },
@@ -132,12 +137,29 @@ export const copilotExecuteTool: ToolHandler = {
     // Capture produced file CONTENT (the actual artifacts — REQUIREMENTS.md etc.)
     // so the platform can store + show each doc per phase, not just the summary.
     const artifacts: Array<{ path: string; content: string }> = [];
+    const capturedPaths = new Set<string>();
     for (const p of changedPaths.slice(0, 25)) {
       if (!p || p.endsWith("/")) continue;
       try {
         const content = readFileSync(resolveSandboxedPath(p), "utf8");
-        if (content.length <= 200_000) artifacts.push({ path: p, content });
+        if (content.length <= 200_000) { artifacts.push({ path: p, content }); capturedPaths.add(p); }
       } catch { /* deleted, binary, or a directory — skip */ }
+    }
+
+    // Also capture the DECLARED deliverable paths directly. SDLC stages write docs
+    // (deliverables/<code>/<role>/*.md) that may live OUTSIDE the git working tree,
+    // so `git status --porcelain` never surfaces them → the summary was all that got
+    // stored. Reading the known output paths makes capture git-independent. Deduped
+    // against changedPaths; each is resolved under the sandbox root.
+    const expectedPaths = Array.isArray(args.expected_paths)
+      ? (args.expected_paths as unknown[]).map(String).filter(Boolean)
+      : [];
+    for (const p of expectedPaths.slice(0, 25)) {
+      if (!p || p.endsWith("/") || capturedPaths.has(p)) continue;
+      try {
+        const content = readFileSync(resolveSandboxedPath(p), "utf8");
+        if (content.trim() && content.length <= 200_000) { artifacts.push({ path: p, content }); capturedPaths.add(p); }
+      } catch { /* not produced this run, or outside the sandbox — skip */ }
     }
 
     // Check in: commit this phase's changes onto the work-item branch so the

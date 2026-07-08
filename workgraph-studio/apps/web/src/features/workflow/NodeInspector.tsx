@@ -236,6 +236,12 @@ export type NodeConfig = {
   teamId?:       string   // TEAM_QUEUE  → IAM team id
   roleKey?:      string   // ROLE_BASED  → IAM role key (scoped to template's capability)
   skillKey?:     string   // SKILL_BASED → IAM skill key
+  // ── Start gate (auto / manual / event) ───────────────────────────────────
+  // How the node begins once the flow reaches it. 'auto' (default) runs it
+  // immediately; 'manual' waits for an operator to click Start in the run view;
+  // 'event' waits for a signal named `startSignal` (POST /:id/signals/:name).
+  startMode?: 'auto' | 'manual' | 'event'
+  startSignal?: string    // event mode → the signal name that starts this node
 }
 
 export type NodeData = {
@@ -680,7 +686,9 @@ function normalizeAgentRoleInput(value: string) {
 }
 
 function emptyConfig(): NodeConfig {
-  return { description: '', standard: {}, designKV: [], runtimeKV: [], inputArtifacts: [], outputArtifacts: [], executionLocation: 'CLIENT' }
+  // SERVER matches the Prisma column default — only SERVER runs end-to-end today;
+  // CLIENT/EDGE/EXTERNAL require an external runner (see the Execution location field).
+  return { description: '', standard: {}, designKV: [], runtimeKV: [], inputArtifacts: [], outputArtifacts: [], executionLocation: 'SERVER' }
 }
 
 function defaultWorkbenchConfig(): WorkbenchConfig {
@@ -929,7 +937,7 @@ export function normalizeConfig(raw: unknown): NodeConfig {
     compensationConfig,
     formWidgets: Array.isArray(r.formWidgets) ? r.formWidgets as FormWidget[] : undefined,
     attachments: Array.isArray(r.attachments) ? r.attachments as Attachment[] : [],
-    executionLocation: typeof r.executionLocation === 'string' ? r.executionLocation : 'CLIENT',
+    executionLocation: typeof r.executionLocation === 'string' ? r.executionLocation : 'SERVER',
     sinkConfig: (r.sinkConfig && typeof r.sinkConfig === 'object' && !Array.isArray(r.sinkConfig))
       ? {
           kind: (r.sinkConfig as any).kind ?? 'CONNECTOR',
@@ -962,6 +970,8 @@ export function normalizeConfig(raw: unknown): NodeConfig {
     teamId:       typeof r.teamId       === 'string' ? r.teamId       : undefined,
     roleKey:      typeof r.roleKey      === 'string' ? r.roleKey      : undefined,
     skillKey:     typeof r.skillKey     === 'string' ? r.skillKey     : undefined,
+    startMode:    r.startMode === 'manual' || r.startMode === 'event' || r.startMode === 'auto' ? r.startMode : undefined,
+    startSignal:  typeof r.startSignal  === 'string' ? r.startSignal  : undefined,
   }
 }
 
@@ -2327,11 +2337,11 @@ function ToolPicker({ value, onChange, capabilityId }: { value: string; onChange
 // ─── Execution location section ─────────────────────────────────────────
 
 const EXEC_LOCATIONS = ['SERVER', 'CLIENT', 'EDGE', 'EXTERNAL'] as const
-const EXEC_LOC_META: Record<string, { label: string; desc: string; color: string }> = {
-  SERVER:   { label: 'Server',   desc: 'Runs in the WorkGraph API process.',                        color: '#22c55e' },
-  CLIENT:   { label: 'Client',   desc: 'Claimed and executed by the browser/desktop SDK. (default)', color: '#38bdf8' },
-  EDGE:     { label: 'Edge',     desc: 'Claimed by an edge node or on-premise agent.',              color: '#fb923c' },
-  EXTERNAL: { label: 'External', desc: 'Delegated to an external system via PendingExecution poll.', color: '#a78bfa' },
+const EXEC_LOC_META: Record<string, { label: string; desc: string; color: string; requiresRunner?: boolean }> = {
+  SERVER:   { label: 'Server',   desc: 'Runs in the WorkGraph API process. The default and the only location that runs end-to-end today.', color: '#22c55e' },
+  CLIENT:   { label: 'Client',   desc: 'Queued for a browser/desktop runner to claim and execute. Requires a runner — none is built in yet.', color: '#38bdf8', requiresRunner: true },
+  EDGE:     { label: 'Edge',     desc: 'Queued for an edge/on-prem runner to claim. Requires a runner — none is built in yet.',              color: '#fb923c', requiresRunner: true },
+  EXTERNAL: { label: 'External', desc: 'Queued for an external system to poll and complete. Requires a runner — none is built in yet.',       color: '#a78bfa', requiresRunner: true },
 }
 
 // ─── Template picker (CALL_WORKFLOW) ────────────────────────────────────────
@@ -2465,7 +2475,7 @@ function ExecutionLocationSection({
   location: string | undefined
   onChange: (loc: string) => void
 }) {
-  const current = location ?? 'CLIENT'
+  const current = location ?? 'SERVER'
   const accentColor = '#06b6d4'
   return (
     <div>
@@ -2489,12 +2499,25 @@ function ExecutionLocationSection({
                 cursor: 'pointer', textAlign: 'left', transition: 'all 0.12s',
               }}
             >
-              <p style={{ fontSize: 10, fontWeight: 700, color: active ? m.color : '#94a3b8', marginBottom: 2 }}>{m.label}</p>
+              <p style={{ fontSize: 10, fontWeight: 700, color: active ? m.color : '#94a3b8', marginBottom: 2 }}>
+                {m.label}{m.requiresRunner ? ' · needs runner' : ''}
+              </p>
               <p style={{ fontSize: 9, color: '#475569', lineHeight: 1.4 }}>{m.desc}</p>
             </button>
           )
         })}
       </div>
+      {EXEC_LOC_META[current]?.requiresRunner && (
+        <div style={{
+          marginTop: 8, padding: '7px 9px', borderRadius: 8,
+          border: '1px solid rgba(217,119,6,0.3)', background: 'rgba(217,119,6,0.08)',
+          fontSize: 9.5, color: '#b45309', lineHeight: 1.45,
+        }}>
+          <strong>{EXEC_LOC_META[current].label}</strong> nodes are queued as pending executions but nothing runs them
+          out of the box — the node stays ACTIVE until a custom runner claims and completes it via the
+          pending-execution API. Use <strong>Server</strong> unless you have a runner deployed.
+        </div>
+      )}
     </div>
   )
 }
@@ -3511,6 +3534,61 @@ export function NodeInspector({
             {/* CONFIG — standard fields + design-time KV */}
             {tab === 'Config' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {/* Start gate — auto / manual / event (all node types except START/END) */}
+                {node.data.nodeType !== 'START' && node.data.nodeType !== 'END' && (
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                      <Play size={11} style={{ color }} />
+                      <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color }}>
+                        Start behaviour
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      {([
+                        { key: 'auto', label: 'Auto', hint: 'Runs when the flow reaches it' },
+                        { key: 'manual', label: 'Manual', hint: 'Waits for a Start click in the run' },
+                        { key: 'event', label: 'Event', hint: 'Waits for a signal' },
+                      ] as const).map(opt => {
+                        const active = (config.startMode ?? 'auto') === opt.key
+                        return (
+                          <button
+                            key={opt.key}
+                            type="button"
+                            title={opt.hint}
+                            onClick={() => setConfig(c => ({ ...c, startMode: opt.key }))}
+                            style={{
+                              flex: 1, padding: '8px 6px', borderRadius: 9, cursor: 'pointer',
+                              border: `1px solid ${active ? color : 'rgba(148,163,184,0.32)'}`,
+                              background: active ? `${color}14` : '#fff',
+                              color: active ? color : '#475569',
+                              fontWeight: active ? 800 : 600, fontSize: 12,
+                            }}
+                          >
+                            {opt.label}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    {config.startMode === 'event' && (
+                      <div style={{ marginTop: 10 }}>
+                        <FieldLabel>Start signal name</FieldLabel>
+                        <NeoInput
+                          value={config.startSignal ?? ''}
+                          onChange={v => setConfig(c => ({ ...c, startSignal: v }))}
+                          placeholder="e.g. approved_to_build"
+                        />
+                        <p style={{ fontSize: 10, color: '#64748b', marginTop: 5 }}>
+                          The node waits ACTIVE until <code>POST /workflow-instances/&lt;id&gt;/signals/{config.startSignal || '<name>'}</code> arrives.
+                        </p>
+                      </div>
+                    )}
+                    {config.startMode === 'manual' && (
+                      <p style={{ fontSize: 10, color: '#64748b', marginTop: 8 }}>
+                        The node waits until an operator clicks <strong>Start</strong> on it in the run view.
+                      </p>
+                    )}
+                  </div>
+                )}
                 {/* Standard fields */}
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>

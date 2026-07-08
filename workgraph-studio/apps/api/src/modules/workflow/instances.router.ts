@@ -1,4 +1,5 @@
 import { Router, type Request } from 'express'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { config } from '../../config'
@@ -11,7 +12,7 @@ import { NotFoundError, ValidationError } from '../../lib/errors'
 import { mapLimit } from '../../lib/map-limit'
 import { readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
-import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, restartNode, forceCompleteNode, startInstance } from './runtime/WorkflowRuntime'
+import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, restartNode, forceCompleteNode, startInstance, startAwaitingNode, triggerEventStartNodes } from './runtime/WorkflowRuntime'
 import { promoteWorkbenchToTables } from './lib/promote-workbench'
 import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
@@ -70,6 +71,7 @@ const createNodeSchema = z.object({
 const updateNodeSchema = z.object({
   label: z.string().min(1).optional(),
   config: z.record(z.unknown()).optional(),
+  executionLocation: z.enum(['SERVER', 'CLIENT', 'EDGE', 'EXTERNAL']).optional(),
   positionX: z.number().optional(),
   positionY: z.number().optional(),
   phaseId: z.string().uuid().nullable().optional(),
@@ -574,7 +576,27 @@ workflowInstancesRouter.post('/:id/signals/:name', validate(signalSchema), async
     for (const node of matched) {
       await advance(id, node.id, { _signal: { name: signalName, payload, correlationKey } }, req.user!.userId)
     }
-    res.json({ advancedNodeIds: matched.map(n => n.id), signalName })
+    // Event-based node start: the same signal also STARTS any ACTIVE node that was
+    // gated with startMode=event + startSignal===name (see WorkflowRuntime gate). This
+    // is how "attach a signal to a node" fires without a separate SIGNAL_WAIT node.
+    const startedNodeIds = await triggerEventStartNodes(id, signalName, payload, req.user!.userId, resolveTenantFromRequest(req))
+    res.json({ advancedNodeIds: matched.map(n => n.id), startedNodeIds, signalName })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Manually start a node that is ACTIVE and awaiting a manual start (startMode=manual).
+// The gate left it ACTIVE without executing; this triggers its executor. Idempotent —
+// a second call after it already started returns { started:false } (409), never a
+// duplicate run.
+workflowInstancesRouter.post('/:id/nodes/:nodeId/start', async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    const nodeId = req.params.nodeId as string
+    const result = await startAwaitingNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
+    if (!result.started) return res.status(409).json(result)
+    res.json(result)
   } catch (err) {
     next(err)
   }
@@ -1146,6 +1168,11 @@ function buildCopilotWorkflowExport(
   extras: { fromPhase?: string; composedByNodeId?: Map<string, string>; completedByNodeId?: Map<string, CompletedPhaseData> } = {},
 ) {
   const { repo, story, workCode } = computed
+  // The run's work branch (wi/<code>) + the base it's cut from — so the export tells
+  // an external tool exactly which branch to clone/checkout and push back to.
+  const exportGlobals = (((instance.context ?? {}) as Record<string, unknown>)._globals ?? {}) as Record<string, unknown>
+  const baseBranch = String(exportGlobals.sourceRef ?? 'main')
+  const workBranch = workCode ? `wi/${workCode}` : ''
   const composed = extras.composedByNodeId ?? new Map<string, string>()
   const completedData = extras.completedByNodeId ?? new Map<string, CompletedPhaseData>()
   // Split: stages before `fromPhase` are DONE context; `fromPhase` onward is the
@@ -1177,6 +1204,8 @@ function buildCopilotWorkflowExport(
     },
     repository: {
       url: repo || null,
+      branch: workBranch || null,
+      baseBranch,
     },
     story,
     stages,
@@ -1192,6 +1221,13 @@ function buildCopilotWorkflowExport(
     '#   export SINGULARITY_TOKEN="<platform bearer token>"',
     '#   export SINGULARITY_PLATFORM_URL="http://localhost:5180"',
     `#   curl -L "$SINGULARITY_PLATFORM_URL/api/workgraph/workflow-instances/${instance.id}/export/copilot-runner.sh" -H "Authorization: Bearer $SINGULARITY_TOKEN" | bash`,
+    '#',
+    "# Work on THIS run's branch — clone the repo and check out the work branch",
+    '# (create it from the base if it does not exist yet), then push it back:',
+    `#   git clone ${repo || '<repo-url>'} && cd "$(basename ${repo || '<repo-url>'} .git)"`,
+    `#   git fetch origin ${workBranch || '<work-branch>'} && git checkout ${workBranch || '<work-branch>'} \\`,
+    `#     || git checkout -b ${workBranch || '<work-branch>'} ${baseBranch}`,
+    `#   # …run the stages…  then:  git push -u origin ${workBranch || '<work-branch>'}`,
     '#',
     "# ANY TOOL: the `stages[].prompt` values are tool-agnostic. Run them in whatever",
     "# tool you like, then POST your results to `platform.resultEndpoint` in the",
@@ -1213,13 +1249,15 @@ function buildCopilotWorkflowExport(
     '  tokenEnv: "SINGULARITY_TOKEN"',
     'repository:',
     `  url: ${repo ? yamlString(repo) : 'null'}`,
+    `  branch: ${workBranch ? yamlString(workBranch) : 'null'}          # the run's work branch — clone + checkout this, push back to it`,
+    `  baseBranch: ${yamlString(baseBranch)}   # branch the work branch is cut from`,
     // Self-documenting, tool-agnostic post-back contract (reference, not run input).
     'resultContract:',
     '  # POST this JSON to platform.resultEndpoint with header: Authorization: Bearer $SINGULARITY_TOKEN',
     '  source: "<your-tool-name>"          # any identifier, e.g. cursor / manual / claude',
     '  status: "completed | failed"',
     '  git:',
-    '    branch: "<branch you pushed to origin>"   # push it — required for git verification',
+    `    branch: ${workBranch ? yamlString(workBranch) : '"<branch you pushed to origin>"'}   # push this branch — required for git verification`,
     '    commitSha: "<head commit sha>"',
     '    status: ["<changed file path>", "..."]',
     '  artifacts:',
@@ -2189,7 +2227,10 @@ workflowInstancesRouter.get('/:id/pending-executions', async (req, res, next) =>
       include: { node: { select: { nodeType: true, label: true, config: true } } },
       orderBy: { createdAt: 'asc' },
     }), resolveTenantFromRequest(req))
-    res.json(pending)
+    // Never leak claimToken here — it is the capability secret handed out ONLY at
+    // /claim, and required at /complete. Exposing it in a list would let any poller
+    // complete/overwrite another runner's work.
+    res.json(pending.map(({ claimToken: _claimToken, ...rest }) => rest))
   } catch (err) { next(err) }
 })
 
@@ -2222,39 +2263,68 @@ workflowInstancesRouter.get('/pending-executions/poll', async (req, res, next) =
       : pendingRaw
     const shaped = pending.map(exec => {
       const { context: _context, tenantId: _tenantId, ...instance } = exec.instance
-      return { ...exec, instance }
+      // Strip claimToken — it is minted and revealed ONLY at /claim (see below).
+      const { claimToken: _claimToken, ...rest } = exec
+      return { ...rest, instance }
     })
     res.json(shaped)
   } catch (err) { next(err) }
 })
 
 // POST /api/workflow-instances/pending-executions/:execId/claim
+// Atomic claim: exactly one runner can take an unclaimed, uncompleted, unexpired
+// row (updateMany → count===1 wins; everyone else gets 409). A fresh claimToken is
+// minted here and returned ONLY to the winner — it is the capability the runner must
+// present at /complete, so a second runner that saw the same row via /poll cannot
+// claim it or complete another runner's work.
 workflowInstancesRouter.post('/pending-executions/:execId/claim', async (req, res, next) => {
   try {
     await assertPendingExecutionTenant(req, req.params.execId)
-    const exec = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.update({
-      where: { id: req.params.execId, completedAt: null },
-      data: { claimedAt: new Date(), claimedBy: req.user?.userId },
-    }), resolveTenantFromRequest(req))
-    res.json(exec)
+    const tenant = resolveTenantFromRequest(req)
+    const claimToken = randomUUID()
+    const claimed = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.updateMany({
+      where: { id: req.params.execId, claimedAt: null, completedAt: null, expiresAt: { gt: new Date() } },
+      data: { claimedAt: new Date(), claimedBy: req.user?.userId, claimToken },
+    }), tenant)
+    if (claimed.count !== 1) {
+      return res.status(409).json({ error: 'Pending execution is already claimed, completed, or expired.' })
+    }
+    const exec = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.findUnique({
+      where: { id: req.params.execId },
+    }), tenant)
+    res.json(exec) // includes the fresh claimToken — the runner keeps it for /complete
   } catch (err) { next(err) }
 })
 
 // POST /api/workflow-instances/pending-executions/:execId/complete
+// Token-gated + single-shot: only the holder of the matching claimToken can complete,
+// and only once (completedAt: null). A wrong/absent token, an unclaimed row, or an
+// already-completed row matches nothing → 409 — never an overwrite or a double-advance.
 workflowInstancesRouter.post('/pending-executions/:execId/complete', async (req, res, next) => {
   try {
     await assertPendingExecutionTenant(req, req.params.execId)
-    const { result, error } = req.body as { result?: Record<string, unknown>; error?: string }
-    const exec = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.update({
-      where: { id: req.params.execId },
+    const { result, error, claimToken } = req.body as { result?: Record<string, unknown>; error?: string; claimToken?: string }
+    if (!claimToken || typeof claimToken !== 'string') {
+      throw new ValidationError('claimToken is required to complete a pending execution (obtain it from /claim).')
+    }
+    const tenant = resolveTenantFromRequest(req)
+    const done = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.updateMany({
+      where: { id: req.params.execId, claimToken, completedAt: null },
       data: { completedAt: new Date(), result: result as any, error },
-    }), resolveTenantFromRequest(req))
+    }), tenant)
+    if (done.count !== 1) {
+      return res.status(409).json({ error: 'Pending execution is not claimed with this token, or is already completed.' })
+    }
+    const exec = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.findUnique({
+      where: { id: req.params.execId },
+    }), tenant)
+    if (!exec) return res.status(409).json({ error: 'Pending execution not found after completion.' })
     if (!error) {
       // Advance the workflow from this node. Finding #7 — pass the attempt this pending
       // execution was dispatched under so a result from a superseded attempt is rejected.
-      await advance(exec.instanceId, exec.nodeId, result ?? {}, req.user?.userId, exec.attempt, resolveTenantFromRequest(req))
+      await advance(exec.instanceId, exec.nodeId, result ?? {}, req.user?.userId, exec.attempt, tenant)
     } else {
-      await failNode(exec.instanceId, exec.nodeId, { message: error }, req.user?.userId, resolveTenantFromRequest(req))
+      await failNode(exec.instanceId, exec.nodeId, { message: error }, req.user?.userId, tenant)
     }
     res.json(exec)
   } catch (err) { next(err) }

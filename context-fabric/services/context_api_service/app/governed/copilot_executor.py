@@ -184,6 +184,25 @@ def _artifact_line(a: dict[str, Any], *, verb: str, vars: dict[str, Any] | None)
     return line
 
 
+def _expected_output_paths(run_context: dict[str, Any] | None, vars: dict[str, Any] | None) -> list[str]:
+    """Concrete (interpolated) file paths for the stage's declared OUTPUT artifacts.
+    Passed to copilot_execute so it captures the produced deliverables directly — even
+    when they're written outside the git working tree, which git-status capture misses
+    (that's why the run view showed only the summary, not the actual documents)."""
+    rc = run_context or {}
+    outputs = rc.get("output_artifacts")
+    paths: list[str] = []
+    if isinstance(outputs, list):
+        for a in outputs:
+            if not isinstance(a, dict):
+                continue
+            raw = str(a.get("path") or a.get("bindingPath") or "").strip()
+            resolved = interpolate_task(raw, vars or {}) if raw else ""
+            if resolved:
+                paths.append(resolved)
+    return paths
+
+
 def _render_artifact_contract(run_context: dict[str, Any] | None, vars: dict[str, Any] | None) -> list[str]:
     """Render the stage's IN/OUT document contract as prompt sections. For inputs:
     the real path + the upstream document's CONTENT inlined when available (so the
@@ -370,7 +389,7 @@ async def run_stage_via_copilot(
     try:
         disp = await dispatch_tool(
             "copilot_execute",
-            {"task": prompt_for_copilot},
+            {"task": prompt_for_copilot, "expected_paths": _expected_output_paths(run_context, vars)},
             work_item_id=work_item_id,
             run_context=run_context,
             bearer=bearer,
