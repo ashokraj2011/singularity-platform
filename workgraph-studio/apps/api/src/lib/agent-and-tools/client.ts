@@ -225,6 +225,29 @@ export async function listRuntimeCapabilities(
   return []
 }
 
+// Fetch ONE capability by id (agent-runtime detail endpoint). Unlike the list, this
+// is a direct by-id lookup — not subject to list scoping — so it finds a capability
+// (and its ACTIVE repositories) even when the list wouldn't return it. Returns null
+// on 404 / any error (callers fall back to the list scan).
+export async function getRuntimeCapability(
+  capabilityId: string,
+  authHeader?: string,
+): Promise<RuntimeCapability | null> {
+  try {
+    const body = await proxyGet(
+      config.AGENT_RUNTIME_URL,
+      `api/v1/capabilities/${encodeURIComponent(capabilityId)}`,
+      {},
+      authHeader,
+    )
+    const root = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
+    const data = (root.data ?? body) as unknown
+    return data && typeof data === 'object' ? (data as RuntimeCapability) : null
+  } catch {
+    return null
+  }
+}
+
 export async function listAgentTemplates(
   authHeader?: string,
   query: { scope?: 'common' | 'capability' | 'all'; capabilityId?: string; limit?: number } = {},
