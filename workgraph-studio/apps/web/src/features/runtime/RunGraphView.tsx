@@ -612,7 +612,14 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
         <CreateBranchForm
           instanceId={instanceId}
           nodeId={node.id}
-          capabilityId={(node.config?.capabilityId as string | undefined) ?? undefined}
+          capabilityId={(() => {
+            // The run's capability (work item's target/parent), not the CREATE_BRANCH
+            // node — that's how the server resolves the repo URL + its branches.
+            const v = ((runContext?._vars ?? {}) as Record<string, unknown>)
+            const fromVars = [v.parentCapabilityId, v.targetCapabilityId, v.capabilityId]
+              .find((x): x is string => typeof x === 'string' && x.trim().length > 0)
+            return fromVars ?? (node.config?.capabilityId as string | undefined) ?? undefined
+          })()}
           initial={(() => {
             const g = ((runContext?._globals ?? {}) as Record<string, unknown>)
             return {
@@ -1110,7 +1117,8 @@ function CreateBranchForm({ instanceId, nodeId, capabilityId, initial, onDone }:
     staleTime: 60_000,
   })
   const branches = branchesQuery.data?.branches ?? []
-  const repoLabel = (branchesQuery.data?.repo ?? branchesQuery.data?.connector?.repo)?.replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '')
+  const repoUrl = branchesQuery.data?.repo ?? branchesQuery.data?.connector?.repo
+  const repoLabel = repoUrl?.replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '')
   const submit = useMutation({
     mutationFn: () => api.post(`/workflow-instances/${instanceId}/nodes/${nodeId}/create-branch`, {
       ...(baseBranch.trim() ? { baseBranch: baseBranch.trim() } : {}),
@@ -1128,9 +1136,22 @@ function CreateBranchForm({ instanceId, nodeId, capabilityId, initial, onDone }:
     <div style={{ margin: '10px 14px 0', padding: 12, borderRadius: 10, background: '#f0f9ff', border: '1px solid #bae6fd' }}>
       <div style={{ fontSize: 12, fontWeight: 800, color: '#0369a1', marginBottom: 8 }}>Create work branch — choose where to start</div>
       <div style={{ marginBottom: 10 }}>
+        <p style={labelStyle}>Repository (from capability)</p>
+        <div style={{ ...inputStyle, background: '#f8fafc', color: repoUrl ? '#0f172a' : '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={repoUrl ?? undefined}>
+          {branchesQuery.isLoading ? 'Resolving…' : (repoUrl || 'Not resolved — the capability has no linked repo / GIT connector')}
+        </div>
+      </div>
+      <div style={{ marginBottom: 10 }}>
         <p style={labelStyle}>Start work from branch</p>
-        <input list="cb-branch-list" value={baseBranch} onChange={e => setBaseBranch(e.target.value)} placeholder={branches.length ? 'pick or type a branch' : 'e.g. main'} style={inputStyle} />
-        {branches.length > 0 && <datalist id="cb-branch-list">{branches.map(b => <option key={b} value={b} />)}</datalist>}
+        {branches.length > 0 ? (
+          <select value={baseBranch} onChange={e => setBaseBranch(e.target.value)} style={inputStyle}>
+            <option value="">main (default)</option>
+            {baseBranch && !branches.includes(baseBranch) && <option value={baseBranch}>{baseBranch}</option>}
+            {branches.map(b => <option key={b} value={b}>{b}</option>)}
+          </select>
+        ) : (
+          <input value={baseBranch} onChange={e => setBaseBranch(e.target.value)} placeholder="e.g. main" style={inputStyle} />
+        )}
         <p style={hint}>{branches.length > 0 ? `${branches.length} branch${branches.length === 1 ? '' : 'es'}${repoLabel ? ` from ${repoLabel}` : ''}. ` : ''}The <code>wi/&lt;code&gt;</code> work branch is cut from this. Blank = main.</p>
       </div>
       <div style={{ marginBottom: 10 }}>
