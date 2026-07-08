@@ -14,7 +14,7 @@ import { listRuntimeCapabilities, getRuntimeCapability, listRuntimeCapabilityRep
  * configured sourceUri, or — for the broker — simply skip credential issuance
  * (CF brokers nothing when `repo` is absent), leaving the legacy path intact.
  */
-export async function resolveCapabilityRepo(capabilityId: string): Promise<string | undefined> {
+export async function resolveCapabilityRepo(capabilityId: string, authHeader?: string): Promise<string | undefined> {
   const repoFrom = (cap: Record<string, unknown> | null | undefined): string | undefined => {
     const repos = Array.isArray(cap?.repositories) ? (cap!.repositories as Array<Record<string, unknown>>) : []
     // Prefer an ACTIVE repo; fall back to the first linked one (a freshly-attached
@@ -27,17 +27,17 @@ export async function resolveCapabilityRepo(capabilityId: string): Promise<strin
   // 1) Direct by-id detail — a findUnique on agent-runtime, NOT subject to the list's
   //    scoping, so it resolves capabilities the list wouldn't return. (repos here are
   //    ACTIVE-filtered server-side.)
-  const fromDetail = repoFrom((await getRuntimeCapability(capabilityId)) as Record<string, unknown> | null)
+  const fromDetail = repoFrom((await getRuntimeCapability(capabilityId, authHeader)) as Record<string, unknown> | null)
   if (fromDetail) return fromDetail
   // 2) Repositories endpoint — returns ALL linked repos (any status). This is the only
   //    path that resolves a repo whose status isn't ACTIVE yet (still bootstrapping),
   //    which both the detail and the list omit.
-  const repos = await listRuntimeCapabilityRepositories(capabilityId)
+  const repos = await listRuntimeCapabilityRepositories(capabilityId, authHeader)
   const fromRepos = repoFrom({ repositories: repos } as Record<string, unknown>)
   if (fromRepos) return fromRepos
   // 3) Fall back to the list scan (back-compat / if the newer endpoints are unavailable).
   try {
-    const caps = await listRuntimeCapabilities()
+    const caps = await listRuntimeCapabilities(authHeader)
     const cap = caps.find((c) => String((c as Record<string, unknown>).id ?? '') === capabilityId) as Record<string, unknown> | undefined
     return repoFrom(cap)
   } catch {

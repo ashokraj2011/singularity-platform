@@ -6,6 +6,10 @@ function source(file: string): string {
   return readFileSync(path.resolve(__dirname, '..', file), 'utf8')
 }
 
+function repoSource(file: string): string {
+  return readFileSync(path.resolve(__dirname, '../../../..', file), 'utf8')
+}
+
 describe('Workgraph -> agent-and-tools service auth contract', () => {
   it('uses the caller bearer when present and a Workgraph service JWT otherwise', () => {
     const client = source('src/lib/agent-and-tools/client.ts')
@@ -23,6 +27,19 @@ describe('Workgraph -> agent-and-tools service auth contract', () => {
 
     expect(client).toContain('const authorization = await resolvedAgentToolsAuthHeader(authHeader)')
     expect(assignments.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('forwards caller auth through capability repository resolution', () => {
+    const resolver = source('src/lib/agent-and-tools/capability-repo.ts')
+    const connectors = source('src/modules/connectors/connectors.router.ts')
+
+    expect(resolver).toContain('resolveCapabilityRepo(capabilityId: string, authHeader?: string)')
+    expect(resolver).toContain('getRuntimeCapability(capabilityId, authHeader)')
+    expect(resolver).toContain('listRuntimeCapabilityRepositories(capabilityId, authHeader)')
+    expect(resolver).toContain('listRuntimeCapabilities(authHeader)')
+    expect(connectors).toContain('resolveCapabilityRepo(capabilityId, req.headers.authorization)')
+    expect(connectors).toContain('req.user?.id ?? req.user?.userId')
+    expect(connectors).toContain('req.user?.iamUserId')
   })
 
   it('normalizes Agent Runtime and Tool Service response bodies through the shared parser', () => {
@@ -44,5 +61,25 @@ describe('Workgraph -> agent-and-tools service auth contract', () => {
 
     expect(config).toContain('set IAM_SERVICE_TOKEN or IAM_BOOTSTRAP_USERNAME/IAM_BOOTSTRAP_PASSWORD')
     expect(config).toContain('Prompt Composer, agent-and-tools, and IAM')
+  })
+
+  it('starts bare-metal Workgraph with IAM bootstrap credentials for service-token minting', () => {
+    const bareMetal = repoSource('bin/bare-metal.sh')
+
+    expect(bareMetal).toContain('boot workgraph-api')
+    expect(bareMetal).toContain('IAM_BOOTSTRAP_USERNAME=\\"$LOCAL_SUPER_ADMIN_EMAIL\\"')
+    expect(bareMetal).toContain('IAM_BOOTSTRAP_PASSWORD=\\"$LOCAL_SUPER_ADMIN_PASSWORD\\"')
+    expect(bareMetal).toContain('IAM_SERVICE_TOKEN=\\"${IAM_SERVICE_TOKEN:-}\\"')
+    expect(bareMetal).toContain('IAM_SERVICE_TOKEN_TENANT_IDS=\\"$IAM_SERVICE_TOKEN_TENANT_IDS\\"')
+  })
+
+  it('keeps demo-up MCP relaunch wired to laptop Git credentials', () => {
+    const demoUp = repoSource('bin/demo-up.sh')
+
+    expect(demoUp).toContain('if [ -f "$ROOT/.env.laptop" ]; then')
+    expect(demoUp).toContain('GITHUB_TOKEN="${GITHUB_TOKEN:-}"')
+    expect(demoUp).toContain('GH_TOKEN="${GH_TOKEN:-}"')
+    expect(demoUp).toContain('MCP_GIT_AUTH_MODE="${MCP_GIT_AUTH_MODE:-}"')
+    expect(demoUp).toContain('MCP_GIT_PUSH_ENABLED="${MCP_GIT_PUSH_ENABLED:-}"')
   })
 })

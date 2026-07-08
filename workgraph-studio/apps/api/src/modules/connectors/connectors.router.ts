@@ -49,22 +49,33 @@ function parseOwnerRepo(url: string): { owner?: string; repo?: string } {
 // caller can fall back to the connector path and surface why the runtime path didn't
 // apply.
 async function listBranchesViaRuntime(
-  req: { user?: { id?: string } },
+  req: { user?: { id?: string; userId?: string; iamUserId?: string } },
   repoUrl: string,
 ): Promise<{ branches?: string[]; reason?: string }> {
   const cfUrl = config.CONTEXT_FABRIC_URL?.replace(/\/$/, '')
   if (!cfUrl) return { reason: 'Context Fabric not configured (CONTEXT_FABRIC_URL unset).' }
-  const localId = req.user?.id
+  if (req.user?.iamUserId) {
+    return listBranchesForIamUser(cfUrl, req.user.iamUserId, repoUrl)
+  }
+  const localId = req.user?.id ?? req.user?.userId
   if (!localId) return { reason: 'No authenticated session user for the runtime match.' }
   const u = await prisma.user
     .findUnique({ where: { id: localId }, select: { iamUserId: true } })
     .catch(() => null)
   if (!u?.iamUserId) return { reason: 'Session user has no linked IAM id (runtime match needs it).' }
+  return listBranchesForIamUser(cfUrl, u.iamUserId, repoUrl)
+}
+
+async function listBranchesForIamUser(
+  cfUrl: string,
+  iamUserId: string,
+  repoUrl: string,
+): Promise<{ branches?: string[]; reason?: string }> {
   try {
     const resp = await fetch(`${cfUrl}/api/runtime-bridge/source/branches`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'X-Service-Token': config.CONTEXT_FABRIC_SERVICE_TOKEN ?? '' },
-      body: JSON.stringify({ user_id: u.iamUserId, repoUrl }),
+      body: JSON.stringify({ user_id: iamUserId, repoUrl }),
     })
     if (!resp.ok) {
       // 503 = no laptop runtime advertising the source frame is connected → fall back
@@ -122,13 +133,13 @@ connectorsRouter.get('/git/branches', async (req, res) => {
   }
   const repoUrl = explicitRepoUrl
     ?? contextRepo
-    ?? (capabilityId ? await resolveCapabilityRepo(capabilityId).catch(() => undefined) : undefined)
+    ?? (capabilityId ? await resolveCapabilityRepo(capabilityId, req.headers.authorization).catch(() => undefined) : undefined)
   // 1) Preferred: the connected runtime (its own token, over the CF bridge). An empty
   //    list from a successful call is authoritative; only a reason (not connected /
   //    unreachable) falls through to the connector path.
   let runtimeReason: string | undefined
   if (repoUrl) {
-    const rt = await listBranchesViaRuntime(req as { user?: { id?: string } }, repoUrl)
+    const rt = await listBranchesViaRuntime(req as { user?: { id?: string; userId?: string; iamUserId?: string } }, repoUrl)
     if (rt.branches) return res.json({ branches: rt.branches, source: 'runtime', repo: repoUrl })
     runtimeReason = rt.reason
   } else {

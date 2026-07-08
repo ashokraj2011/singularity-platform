@@ -23,6 +23,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
+if [ -f "$ROOT/.env.laptop" ]; then
+  while IFS='=' read -r _k _v; do
+    case "$_k" in ''|\#*) continue ;; esac
+    [ -z "${!_k:-}" ] && export "$_k=$_v"
+  done < "$ROOT/.env.laptop"
+fi
+
 if [ "${1:-}" = "down" ]; then
   exec "$SCRIPT_DIR/demo-down.sh"
 fi
@@ -206,6 +213,10 @@ sleep 1
    MCP_LLM_PROVIDER_CONFIG_PATH="$ROOT/.singularity/llm-providers.json" \
    MCP_LLM_MODEL_CATALOG_PATH="$ROOT/.singularity/llm-models.json" \
    AUDIT_GOV_URL="${AUDIT_GOV_URL:-http://localhost:8500}" \
+   GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
+   GH_TOKEN="${GH_TOKEN:-}" \
+   MCP_GIT_AUTH_MODE="${MCP_GIT_AUTH_MODE:-}" \
+   MCP_GIT_PUSH_ENABLED="${MCP_GIT_PUSH_ENABLED:-}" \
    MAX_AGENT_STEPS=8 \
    npm run dev > "$LOG_DIR/mcp-server.log" 2>&1 &)
 ok "mcp-server relaunched"
