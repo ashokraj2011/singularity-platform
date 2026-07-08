@@ -1,4 +1,5 @@
 import { Router, type Request } from 'express'
+import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { config } from '../../config'
@@ -2131,7 +2132,10 @@ workflowInstancesRouter.get('/:id/pending-executions', async (req, res, next) =>
       include: { node: { select: { nodeType: true, label: true, config: true } } },
       orderBy: { createdAt: 'asc' },
     }), resolveTenantFromRequest(req))
-    res.json(pending)
+    // Never leak claimToken here — it is the capability secret handed out ONLY at
+    // /claim, and required at /complete. Exposing it in a list would let any poller
+    // complete/overwrite another runner's work.
+    res.json(pending.map(({ claimToken: _claimToken, ...rest }) => rest))
   } catch (err) { next(err) }
 })
 
@@ -2164,39 +2168,68 @@ workflowInstancesRouter.get('/pending-executions/poll', async (req, res, next) =
       : pendingRaw
     const shaped = pending.map(exec => {
       const { context: _context, tenantId: _tenantId, ...instance } = exec.instance
-      return { ...exec, instance }
+      // Strip claimToken — it is minted and revealed ONLY at /claim (see below).
+      const { claimToken: _claimToken, ...rest } = exec
+      return { ...rest, instance }
     })
     res.json(shaped)
   } catch (err) { next(err) }
 })
 
 // POST /api/workflow-instances/pending-executions/:execId/claim
+// Atomic claim: exactly one runner can take an unclaimed, uncompleted, unexpired
+// row (updateMany → count===1 wins; everyone else gets 409). A fresh claimToken is
+// minted here and returned ONLY to the winner — it is the capability the runner must
+// present at /complete, so a second runner that saw the same row via /poll cannot
+// claim it or complete another runner's work.
 workflowInstancesRouter.post('/pending-executions/:execId/claim', async (req, res, next) => {
   try {
     await assertPendingExecutionTenant(req, req.params.execId)
-    const exec = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.update({
-      where: { id: req.params.execId, completedAt: null },
-      data: { claimedAt: new Date(), claimedBy: req.user?.userId },
-    }), resolveTenantFromRequest(req))
-    res.json(exec)
+    const tenant = resolveTenantFromRequest(req)
+    const claimToken = randomUUID()
+    const claimed = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.updateMany({
+      where: { id: req.params.execId, claimedAt: null, completedAt: null, expiresAt: { gt: new Date() } },
+      data: { claimedAt: new Date(), claimedBy: req.user?.userId, claimToken },
+    }), tenant)
+    if (claimed.count !== 1) {
+      return res.status(409).json({ error: 'Pending execution is already claimed, completed, or expired.' })
+    }
+    const exec = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.findUnique({
+      where: { id: req.params.execId },
+    }), tenant)
+    res.json(exec) // includes the fresh claimToken — the runner keeps it for /complete
   } catch (err) { next(err) }
 })
 
 // POST /api/workflow-instances/pending-executions/:execId/complete
+// Token-gated + single-shot: only the holder of the matching claimToken can complete,
+// and only once (completedAt: null). A wrong/absent token, an unclaimed row, or an
+// already-completed row matches nothing → 409 — never an overwrite or a double-advance.
 workflowInstancesRouter.post('/pending-executions/:execId/complete', async (req, res, next) => {
   try {
     await assertPendingExecutionTenant(req, req.params.execId)
-    const { result, error } = req.body as { result?: Record<string, unknown>; error?: string }
-    const exec = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.update({
-      where: { id: req.params.execId },
+    const { result, error, claimToken } = req.body as { result?: Record<string, unknown>; error?: string; claimToken?: string }
+    if (!claimToken || typeof claimToken !== 'string') {
+      throw new ValidationError('claimToken is required to complete a pending execution (obtain it from /claim).')
+    }
+    const tenant = resolveTenantFromRequest(req)
+    const done = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.updateMany({
+      where: { id: req.params.execId, claimToken, completedAt: null },
       data: { completedAt: new Date(), result: result as any, error },
-    }), resolveTenantFromRequest(req))
+    }), tenant)
+    if (done.count !== 1) {
+      return res.status(409).json({ error: 'Pending execution is not claimed with this token, or is already completed.' })
+    }
+    const exec = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.findUnique({
+      where: { id: req.params.execId },
+    }), tenant)
+    if (!exec) return res.status(409).json({ error: 'Pending execution not found after completion.' })
     if (!error) {
       // Advance the workflow from this node. Finding #7 — pass the attempt this pending
       // execution was dispatched under so a result from a superseded attempt is rejected.
-      await advance(exec.instanceId, exec.nodeId, result ?? {}, req.user?.userId, exec.attempt, resolveTenantFromRequest(req))
+      await advance(exec.instanceId, exec.nodeId, result ?? {}, req.user?.userId, exec.attempt, tenant)
     } else {
-      await failNode(exec.instanceId, exec.nodeId, { message: error }, req.user?.userId, resolveTenantFromRequest(req))
+      await failNode(exec.instanceId, exec.nodeId, { message: error }, req.user?.userId, tenant)
     }
     res.json(exec)
   } catch (err) { next(err) }
