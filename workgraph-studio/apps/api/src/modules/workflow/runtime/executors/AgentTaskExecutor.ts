@@ -192,17 +192,41 @@ export async function activateAgentTask(
     return
   }
 
-  // §13.4 working-dir — resolve the repo a copilot node clones into its sandbox.
-  // Precedence: work-item `repoUrl` var (per item) → the capability's LINKED repo
-  // (agent-runtime) → node.config.sourceUri (workflow default). Without one,
-  // Copilot runs in an empty dir.
-  let copilotRepo: string | undefined
+  // §13.4 working-dir — resolve the source a copilot node materializes into its
+  // sandbox. Two modes:
+  //   • github (default): work-item `repoUrl` var (per item) → the capability's
+  //     LINKED repo (agent-runtime) → node.config.sourceUri, cloned at the branch.
+  //   • local directory: a launch-time override (globals.sourceType=local_dir +
+  //     globals.sourceUri=<path>) points the run at an EXISTING checkout on the
+  //     runtime instead of cloning — for iterating on local code. The runtime
+  //     validates the path against MCP_ALLOWED_LOCAL_SOURCE_ROOTS (source-materializer).
+  // Launch overrides (globals, set by the Start dialog) win over node config.
+  const LOCAL_SOURCE_TYPES = ['local', 'local_dir', 'local-directory', 'filesystem', 'dir']
+  const launchSourceType = (typeof globals.sourceType === 'string' && globals.sourceType.trim())
+    ? globals.sourceType.trim().toLowerCase()
+    : undefined
+  const launchSourceUri = (typeof globals.sourceUri === 'string' && globals.sourceUri.trim())
+    ? globals.sourceUri.trim()
+    : undefined
+  let copilotSourceType: string | undefined
+  let copilotSourceUri: string | undefined
   if (configString('executor') === 'copilot') {
-    const fromVar = typeof vars.repoUrl === 'string' && vars.repoUrl.trim() ? vars.repoUrl.trim() : undefined
-    copilotRepo = fromVar
-      ?? (capabilityId ? await resolveCapabilityRepo(capabilityId) : undefined)
-      ?? configString('sourceUri')
+    if (launchSourceType && LOCAL_SOURCE_TYPES.includes(launchSourceType) && launchSourceUri) {
+      // Local-directory run: the source IS the path — no clone, no branch.
+      copilotSourceType = launchSourceType
+      copilotSourceUri = launchSourceUri
+    } else {
+      const fromVar = typeof vars.repoUrl === 'string' && vars.repoUrl.trim() ? vars.repoUrl.trim() : undefined
+      const repo = fromVar
+        ?? (capabilityId ? await resolveCapabilityRepo(capabilityId) : undefined)
+        ?? configString('sourceUri')
+      if (repo) {
+        copilotSourceType = launchSourceType ?? configString('sourceType') ?? 'github'
+        copilotSourceUri = repo
+      }
+    }
   }
+  const copilotSourceIsLocal = !!copilotSourceType && LOCAL_SOURCE_TYPES.includes(copilotSourceType)
 
   const traceId = workflowNodeTraceId({
     workflowInstanceId: instance.id,
@@ -396,10 +420,15 @@ export async function activateAgentTask(
       // Runtime prompt override (run-graph Prompt tab "Edit prompt") — CF uses this
       // VERBATIM and skips composition (compose_copilot_prompt returns it as-is).
       ...(configString('_promptOverride') ? { prompt_override: configString('_promptOverride') } : {}),
-      // §13.4 working-dir: clone the resolved repo (work-item var → capability's
-      // linked repo → node default) into the work-item sandbox so Copilot runs in
-      // the TARGET repo. Resolved above as `copilotRepo`.
-      ...(copilotRepo ? { source_type: configString('sourceType') ?? 'github', source_uri: copilotRepo, ...(sourceRefChoice ? { source_ref: sourceRefChoice } : {}) } : {}),
+      // §13.4 working-dir: materialize the resolved source into the sandbox so
+      // Copilot runs in the TARGET code — a github clone at the chosen branch, or an
+      // existing local directory on the runtime. A local dir has no branch to clone,
+      // so source_ref is omitted for it. Resolved above.
+      ...(copilotSourceUri ? {
+        source_type: copilotSourceType ?? 'github',
+        source_uri: copilotSourceUri,
+        ...(sourceRefChoice && !copilotSourceIsLocal ? { source_ref: sourceRefChoice } : {}),
+      } : {}),
     },
     task,
     vars,

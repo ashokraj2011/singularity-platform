@@ -982,7 +982,7 @@ export async function startWorkItemTarget(
   workItemId: string,
   targetId: string,
   userId: string,
-  options: { childWorkflowTemplateId?: string; modelAlias?: string; sourceRef?: string; cloneDir?: string; pushEachPhase?: boolean } = {},
+  options: { childWorkflowTemplateId?: string; modelAlias?: string; sourceRef?: string; sourceType?: string; sourceUri?: string; cloneDir?: string; pushEachPhase?: boolean } = {},
 ) {
   const target = await prisma.workItemTarget.findFirst({
     where: { id: targetId, workItemId },
@@ -1052,6 +1052,8 @@ export async function startWorkItemTarget(
           const g: Record<string, unknown> = {}
           if (options.modelAlias) g.modelAlias = options.modelAlias
           if (options.sourceRef && options.sourceRef.trim()) g.sourceRef = options.sourceRef.trim()
+          if (options.sourceType && options.sourceType.trim()) g.sourceType = options.sourceType.trim()
+          if (options.sourceUri && options.sourceUri.trim()) g.sourceUri = options.sourceUri.trim()
           if (options.cloneDir && options.cloneDir.trim()) g.cloneDir = options.cloneDir.trim()
           if (options.pushEachPhase) g.pushEachPhase = true
           return Object.keys(g).length ? g : undefined
