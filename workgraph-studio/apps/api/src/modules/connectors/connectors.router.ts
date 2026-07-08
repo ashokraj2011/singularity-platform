@@ -94,10 +94,34 @@ connectorsRouter.get('/git/branches', async (req, res) => {
   const explicitRepoUrl = typeof req.query.repoUrl === 'string' && req.query.repoUrl.trim()
     ? req.query.repoUrl.trim()
     : undefined
-  const capabilityId = typeof req.query.capabilityId === 'string' && req.query.capabilityId.trim()
+  let capabilityId = typeof req.query.capabilityId === 'string' && req.query.capabilityId.trim()
     ? req.query.capabilityId.trim()
     : undefined
+  // instanceId (run-aware) — resolve the repo the SAME way the executor does, from the
+  // run's own context: an explicit repoUrl var → the capability's linked repo. This is
+  // the reliable path for the mid-run Create-branch form (the client can't always name
+  // the right capabilityId var).
+  const instanceId = typeof req.query.instanceId === 'string' && req.query.instanceId.trim()
+    ? req.query.instanceId.trim()
+    : undefined
+  let contextRepo: string | undefined
+  if (instanceId) {
+    const inst = await prisma.workflowInstance.findUnique({
+      where: { id: instanceId },
+      select: { context: true, template: { select: { capabilityId: true } } },
+    }).catch(() => null)
+    const ctx = (inst?.context ?? {}) as Record<string, unknown>
+    const vars = (ctx._vars && typeof ctx._vars === 'object' ? ctx._vars : {}) as Record<string, unknown>
+    const globals = (ctx._globals && typeof ctx._globals === 'object' ? ctx._globals : {}) as Record<string, unknown>
+    const pick = (...vals: unknown[]) => vals.find((x): x is string => typeof x === 'string' && x.trim().length > 0)?.trim()
+    contextRepo = pick(vars.repoUrl, vars.sourceUri, globals.repoUrl, globals.sourceUri)
+    // Capability from the run's vars, else the workflow template's owning capability.
+    capabilityId = capabilityId
+      ?? pick(vars.parentCapabilityId, vars.targetCapabilityId, vars.capabilityId)
+      ?? (typeof inst?.template?.capabilityId === 'string' ? inst.template.capabilityId : undefined)
+  }
   const repoUrl = explicitRepoUrl
+    ?? contextRepo
     ?? (capabilityId ? await resolveCapabilityRepo(capabilityId).catch(() => undefined) : undefined)
   // 1) Preferred: the connected runtime (its own token, over the CF bridge). An empty
   //    list from a successful call is authoritative; only a reason (not connected /
@@ -108,7 +132,9 @@ connectorsRouter.get('/git/branches', async (req, res) => {
     if (rt.branches) return res.json({ branches: rt.branches, source: 'runtime', repo: repoUrl })
     runtimeReason = rt.reason
   } else {
-    runtimeReason = 'no repo resolved (pass repoUrl or a capabilityId with a linked repo)'
+    runtimeReason = capabilityId
+      ? `capability ${capabilityId} has no ACTIVE linked repository in agent-runtime (or the capability isn't found there)`
+      : 'no repo resolved — the run has no repoUrl var and no capability with a linked repo'
   }
   // 2) Fallback: first configured GIT connector.
   try {

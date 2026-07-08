@@ -1113,7 +1113,11 @@ function CreateBranchForm({ instanceId, nodeId, capabilityId, initial, onDone }:
   const [cloneDir, setCloneDir] = useState(initial?.cloneDir ?? '')
   const branchesQuery = useQuery<{ branches?: string[]; repo?: string; connector?: { repo?: string }; reason?: string }>({
     queryKey: ['cb-branches', instanceId, capabilityId ?? ''],
-    queryFn: () => api.get('/connectors/git/branches', { params: capabilityId ? { capabilityId } : {} }).then(r => r.data),
+    // Pass instanceId so the server resolves the repo from the RUN's context (repoUrl
+    // var → capability's linked repo) — reliable even when the capability var name varies.
+    queryFn: () => api.get('/connectors/git/branches', {
+      params: { instanceId, ...(capabilityId ? { capabilityId } : {}) },
+    }).then(r => r.data),
     staleTime: 60_000,
   })
   const branches = branchesQuery.data?.branches ?? []
