@@ -1146,6 +1146,11 @@ function buildCopilotWorkflowExport(
   extras: { fromPhase?: string; composedByNodeId?: Map<string, string>; completedByNodeId?: Map<string, CompletedPhaseData> } = {},
 ) {
   const { repo, story, workCode } = computed
+  // The run's work branch (wi/<code>) + the base it's cut from — so the export tells
+  // an external tool exactly which branch to clone/checkout and push back to.
+  const exportGlobals = (((instance.context ?? {}) as Record<string, unknown>)._globals ?? {}) as Record<string, unknown>
+  const baseBranch = String(exportGlobals.sourceRef ?? 'main')
+  const workBranch = workCode ? `wi/${workCode}` : ''
   const composed = extras.composedByNodeId ?? new Map<string, string>()
   const completedData = extras.completedByNodeId ?? new Map<string, CompletedPhaseData>()
   // Split: stages before `fromPhase` are DONE context; `fromPhase` onward is the
@@ -1177,6 +1182,8 @@ function buildCopilotWorkflowExport(
     },
     repository: {
       url: repo || null,
+      branch: workBranch || null,
+      baseBranch,
     },
     story,
     stages,
@@ -1192,6 +1199,13 @@ function buildCopilotWorkflowExport(
     '#   export SINGULARITY_TOKEN="<platform bearer token>"',
     '#   export SINGULARITY_PLATFORM_URL="http://localhost:5180"',
     `#   curl -L "$SINGULARITY_PLATFORM_URL/api/workgraph/workflow-instances/${instance.id}/export/copilot-runner.sh" -H "Authorization: Bearer $SINGULARITY_TOKEN" | bash`,
+    '#',
+    "# Work on THIS run's branch — clone the repo and check out the work branch",
+    '# (create it from the base if it does not exist yet), then push it back:',
+    `#   git clone ${repo || '<repo-url>'} && cd "$(basename ${repo || '<repo-url>'} .git)"`,
+    `#   git fetch origin ${workBranch || '<work-branch>'} && git checkout ${workBranch || '<work-branch>'} \\`,
+    `#     || git checkout -b ${workBranch || '<work-branch>'} ${baseBranch}`,
+    `#   # …run the stages…  then:  git push -u origin ${workBranch || '<work-branch>'}`,
     '#',
     "# ANY TOOL: the `stages[].prompt` values are tool-agnostic. Run them in whatever",
     "# tool you like, then POST your results to `platform.resultEndpoint` in the",
@@ -1213,13 +1227,15 @@ function buildCopilotWorkflowExport(
     '  tokenEnv: "SINGULARITY_TOKEN"',
     'repository:',
     `  url: ${repo ? yamlString(repo) : 'null'}`,
+    `  branch: ${workBranch ? yamlString(workBranch) : 'null'}          # the run's work branch — clone + checkout this, push back to it`,
+    `  baseBranch: ${yamlString(baseBranch)}   # branch the work branch is cut from`,
     // Self-documenting, tool-agnostic post-back contract (reference, not run input).
     'resultContract:',
     '  # POST this JSON to platform.resultEndpoint with header: Authorization: Bearer $SINGULARITY_TOKEN',
     '  source: "<your-tool-name>"          # any identifier, e.g. cursor / manual / claude',
     '  status: "completed | failed"',
     '  git:',
-    '    branch: "<branch you pushed to origin>"   # push it — required for git verification',
+    `    branch: ${workBranch ? yamlString(workBranch) : '"<branch you pushed to origin>"'}   # push this branch — required for git verification`,
     '    commitSha: "<head commit sha>"',
     '    status: ["<changed file path>", "..."]',
     '  artifacts:',
