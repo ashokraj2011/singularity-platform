@@ -737,6 +737,7 @@ type CopilotExportNode = {
   completedAt?: Date | null
 }
 
+type CopilotArtifactRef = { name: string; format?: string; path?: string; description?: string; template?: string }
 type CopilotExportStage = {
   key: string
   nodeId: string
@@ -745,6 +746,10 @@ type CopilotExportStage = {
   role: string
   prompt: string
   status?: string
+  // The stage's IN/OUT document contract (declared artifact defs, paths interpolated)
+  // so an external tool knows WHERE to read inputs from and WHAT/where/format to produce.
+  reads: CopilotArtifactRef[]
+  produces: CopilotArtifactRef[]
 }
 
 function yamlString(value: unknown): string {
@@ -1163,6 +1168,22 @@ function copilotStagesFromNodes(
   const repo = String(vars.repoUrl ?? nodes.map(cfgOf).find(c => c.sourceUri)?.sourceUri ?? '')
   const story = String(vars.story ?? vars.workItemDescription ?? '')
   const workCode = String(vars.workCode ?? '')
+  // Map a node's artifact defs → the export's IN/OUT contract, interpolating the real
+  // save path so a reader knows exactly where each doc lives / must be written.
+  const artifactRefs = (defs: unknown, opts: { withTemplate: boolean }): CopilotArtifactRef[] => {
+    if (!Array.isArray(defs)) return []
+    return defs
+      .filter((a): a is Record<string, unknown> => Boolean(a) && typeof a === 'object' && !Array.isArray(a))
+      .map((a) => {
+        const rawPath = String(a.path ?? a.bindingPath ?? '').trim()
+        const ref: CopilotArtifactRef = { name: String(a.name ?? a.id ?? 'document') }
+        if (a.format) ref.format = String(a.format)
+        if (rawPath) ref.path = interpolate(rawPath)
+        if (typeof a.description === 'string' && a.description.trim()) ref.description = a.description
+        if (opts.withTemplate && typeof a.template === 'string' && a.template.trim()) ref.template = a.template
+        return ref
+      })
+  }
   const stages: CopilotExportStage[] = topologicalCopilotNodes(nodes, edges)
     .map((n): CopilotExportStage | null => {
       const c = cfgOf(n)
@@ -1179,10 +1200,26 @@ function copilotStagesFromNodes(
         role: String(c.governedAgentRole ?? ''),
         prompt: task,
         status: n.status,
+        reads: artifactRefs(c.inputArtifacts, { withTemplate: false }),
+        produces: artifactRefs(c.outputArtifacts, { withTemplate: true }),
       }
     })
     .filter((stage): stage is CopilotExportStage => Boolean(stage))
   return { stages, repo, story, workCode, vars }
+}
+
+// Render an artifact contract (reads / produces / documents) as YAML lines. `pad` is
+// the indent of each list item's leading "- ".
+function artifactRefYaml(refs: CopilotArtifactRef[], pad: string): string[] {
+  const out: string[] = []
+  for (const r of refs) {
+    out.push(`${pad}- name: ${yamlString(r.name)}`)
+    if (r.format) out.push(`${pad}  format: ${yamlString(r.format)}`)
+    if (r.path) out.push(`${pad}  path: ${yamlString(r.path)}`)
+    if (r.description) out.push(`${pad}  description: ${yamlString(r.description)}`)
+    if (r.template) { out.push(`${pad}  template: |`); out.push(yamlBlock(r.template, pad.length + 4)) }
+  }
+  return out
 }
 
 function buildCopilotWorkflowExport(
@@ -1236,9 +1273,14 @@ function buildCopilotWorkflowExport(
   const script = buildCopilotRunnerScript(workflow)
   const yaml: string[] = [
     '# Singularity -> Copilot handoff. Continue this SDLC on your own Copilot CLI:',
-    '#   `completed` = phases already done (full artifacts + diffs), for context.',
+    '#   `completed` = phases already done — full artifact content + diffs, and',
+    '#                 `documents[]` = where each produced doc lives on the branch.',
     '#   `stages`    = phases to run, starting at the phase you exported from;',
     '#                 run each:  copilot -p "<prompt>" --allow-all   (in order).',
+    '#                 each stage lists `reads[]` (input docs + paths to open) and',
+    '#                 `produces[]` (docs to write: name, format, save-path, template).',
+    '#   Documents live at each stage\'s produces[].path on repository.branch',
+    '#   (deliverables/<workItem>/<role>/…) — read/write the real files there.',
     '#',
     '# Or drive it end-to-end from a cloned repo:',
     '#   export SINGULARITY_TOKEN="<platform bearer token>"',
@@ -1331,6 +1373,12 @@ function buildCopilotWorkflowExport(
           if (o.diff) { yaml.push('        diff: |'); yaml.push(yamlBlock(o.diff, 10)) }
         }
       }
+      // Where each produced document lives on the branch (path + format), so a reader
+      // can open the actual file, not just the inlined content above.
+      if (stage.produces.length) {
+        yaml.push('    documents:')
+        yaml.push(...artifactRefYaml(stage.produces.map(p => ({ name: p.name, format: p.format, path: p.path })), '      '))
+      }
     }
   }
   yaml.push('stages:')
@@ -1343,6 +1391,16 @@ function buildCopilotWorkflowExport(
       yaml.push(`    label: ${yamlString(stage.label)}`)
       yaml.push(`    nodeType: ${yamlString(stage.nodeType)}`)
       if (stage.role) yaml.push(`    role: ${yamlString(stage.role)}`)
+      // Input documents this stage reads (produced by earlier stages) — name/format/path.
+      if (stage.reads.length) {
+        yaml.push('    reads:')
+        yaml.push(...artifactRefYaml(stage.reads, '      '))
+      }
+      // Output documents this stage must produce — name/format/save-path + a template.
+      if (stage.produces.length) {
+        yaml.push('    produces:')
+        yaml.push(...artifactRefYaml(stage.produces, '      '))
+      }
       yaml.push('    copilot:')
       yaml.push('      command: "copilot"')
       yaml.push('      args: ["-p", "<prompt>", "--allow-all"]')
