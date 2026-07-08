@@ -11,7 +11,7 @@ import { NotFoundError, ValidationError } from '../../lib/errors'
 import { mapLimit } from '../../lib/map-limit'
 import { readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
-import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, restartNode, forceCompleteNode, startInstance } from './runtime/WorkflowRuntime'
+import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, restartNode, forceCompleteNode, startInstance, startAwaitingNode, triggerEventStartNodes } from './runtime/WorkflowRuntime'
 import { promoteWorkbenchToTables } from './lib/promote-workbench'
 import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
@@ -574,7 +574,27 @@ workflowInstancesRouter.post('/:id/signals/:name', validate(signalSchema), async
     for (const node of matched) {
       await advance(id, node.id, { _signal: { name: signalName, payload, correlationKey } }, req.user!.userId)
     }
-    res.json({ advancedNodeIds: matched.map(n => n.id), signalName })
+    // Event-based node start: the same signal also STARTS any ACTIVE node that was
+    // gated with startMode=event + startSignal===name (see WorkflowRuntime gate). This
+    // is how "attach a signal to a node" fires without a separate SIGNAL_WAIT node.
+    const startedNodeIds = await triggerEventStartNodes(id, signalName, payload, req.user!.userId, resolveTenantFromRequest(req))
+    res.json({ advancedNodeIds: matched.map(n => n.id), startedNodeIds, signalName })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Manually start a node that is ACTIVE and awaiting a manual start (startMode=manual).
+// The gate left it ACTIVE without executing; this triggers its executor. Idempotent —
+// a second call after it already started returns { started:false } (409), never a
+// duplicate run.
+workflowInstancesRouter.post('/:id/nodes/:nodeId/start', async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    const nodeId = req.params.nodeId as string
+    const result = await startAwaitingNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
+    if (!result.started) return res.status(409).json(result)
+    res.json(result)
   } catch (err) {
     next(err)
   }
