@@ -1530,7 +1530,12 @@ cmd_smoke() {
     "http://localhost:5180/identity|200,304|20"
   )
   if [ -z "$SKIP_LOCAL_RUNTIME" ]; then
-    checks+=("http://localhost:8001/health|200,304|5" "http://localhost:7100/health|200,304|5")
+    checks+=("http://localhost:8001/health|200,304|5")
+    if [ "${RUNTIME_HTTP_FALLBACK_ENABLED:-false}" = "true" ]; then
+      checks+=("http://localhost:7100/health|200,304|5")
+    else
+      echo "${C_DIM}MCP runtime is in dial-in mode; skipping direct :7100 HTTP health. Verify with runtime bridge status.${C_END}"
+    fi
   fi
   if [ -n "$BARE_METAL_FULL" ]; then
     checks+=("http://localhost:8002/health|200,304|5")
