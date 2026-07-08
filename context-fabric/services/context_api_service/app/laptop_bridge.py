@@ -948,6 +948,12 @@ class _SourceFileReq(BaseModel):
     path: str
 
 
+class _SourceBranchesReq(BaseModel):
+    user_id: str
+    tenant_id: Optional[str] = None
+    repoUrl: str
+
+
 async def _dispatch_source(
     *, op: str, user_id: str, tenant_id: Optional[str], request_body: dict[str, Any]
 ) -> dict[str, Any]:
@@ -994,6 +1000,23 @@ async def runtime_source_file(
         user_id=req.user_id,
         tenant_id=req.tenant_id,
         request_body={"repoUrl": req.repoUrl, "branch": req.branch, "path": req.path},
+    )
+
+
+@router.post("/api/runtime-bridge/source/branches")
+async def runtime_source_branches(
+    req: _SourceBranchesReq,
+    x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
+) -> dict[str, Any]:
+    # List the repo's branches on the runtime (its own token), so the launch
+    # "Branch to clone" picker works over the bridge with no connector. Reuses the
+    # allowed `source-tree` frame with a listBranches flag → returns { branches }.
+    check_runtime_bridge_service_token(x_service_token)
+    return await _dispatch_source(
+        op="tree",
+        user_id=req.user_id,
+        tenant_id=req.tenant_id,
+        request_body={"repoUrl": req.repoUrl, "listBranches": True},
     )
 
 
