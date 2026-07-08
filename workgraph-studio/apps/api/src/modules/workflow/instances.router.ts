@@ -12,7 +12,7 @@ import { NotFoundError, ValidationError } from '../../lib/errors'
 import { mapLimit } from '../../lib/map-limit'
 import { readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
-import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, restartNode, forceCompleteNode, startInstance, startAwaitingNode, triggerEventStartNodes } from './runtime/WorkflowRuntime'
+import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, restartNode, forceCompleteNode, startInstance, startAwaitingNode, triggerEventStartNodes, provideCreateBranchInput } from './runtime/WorkflowRuntime'
 import { promoteWorkbenchToTables } from './lib/promote-workbench'
 import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
@@ -596,6 +596,29 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/start', async (req, res, next) 
     const nodeId = req.params.nodeId as string
     const result = await startAwaitingNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
     if (!result.started) return res.status(409).json(result)
+    res.json(result)
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Interactive CREATE_BRANCH: supply the operator's chosen base branch (+ local/clone
+// dir) for a CREATE_BRANCH node that paused awaiting input (config.interactive). The
+// choices are written to globals and the work branch is created from the chosen base,
+// then the run advances. 409 if the node isn't awaiting input.
+const createBranchInputSchema = z.object({
+  baseBranch: z.string().max(200).optional(),
+  cloneDir: z.string().max(200).optional(),
+  sourceType: z.string().max(40).optional(),
+  sourceUri: z.string().max(500).optional(),
+}).default({})
+workflowInstancesRouter.post('/:id/nodes/:nodeId/create-branch', validate(createBranchInputSchema), async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    const nodeId = req.params.nodeId as string
+    const body = req.body as z.infer<typeof createBranchInputSchema>
+    const result = await provideCreateBranchInput(id, nodeId, body, req.user!.userId, resolveTenantFromRequest(req))
+    if (!result.ok) return res.status(409).json(result)
     res.json(result)
   } catch (err) {
     next(err)
