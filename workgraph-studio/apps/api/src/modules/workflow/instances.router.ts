@@ -1767,6 +1767,64 @@ workflowInstancesRouter.post('/:id/resume', async (req, res, next) => {
   }
 })
 
+// Take over a run: reassign ownership to the acting user so THEIR runtime drives it
+// (dial-in routing + git creds key on the owner), then resume if paused. The new
+// owner's runtime materializes wi/<workCode> from origin (M81 continuity) — cloning
+// the work branch when it isn't present locally — so work resumes on any machine.
+// The original creator is preserved in context._globals.originalCreatedById for audit.
+workflowInstancesRouter.post('/:id/take-over', async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    const userId = req.user!.userId
+    await assertInstancePermission(userId, id, 'edit')
+    const tenantId = resolveTenantFromRequest(req)
+    const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id } }), tenantId)
+    if (instance.createdById === userId) {
+      return res.json({ id, ownerId: userId, alreadyOwner: true, status: instance.status })
+    }
+    const ctx = (instance.context ?? {}) as Record<string, unknown>
+    const globals = (ctx._globals && typeof ctx._globals === 'object' && !Array.isArray(ctx._globals))
+      ? ctx._globals as Record<string, unknown>
+      : {}
+    const previousOwnerId = instance.createdById ?? null
+    const nextContext = {
+      ...ctx,
+      _globals: {
+        ...globals,
+        // Preserve the ORIGINAL creator once (audit + "who started it").
+        ...(globals.originalCreatedById ? {} : { originalCreatedById: previousOwnerId }),
+        takenOverAt: new Date().toISOString(),
+      },
+    }
+    await withTenantDbTransaction(prisma, async (tx) => {
+      await tx.workflowInstance.update({
+        where: { id },
+        data: { createdById: userId, context: nextContext as Prisma.InputJsonValue },
+      })
+      await tx.workflowMutation.create({
+        data: {
+          instanceId: id,
+          mutationType: 'INSTANCE_OWNER_CHANGE',
+          beforeState: { createdById: previousOwnerId } as Prisma.InputJsonValue,
+          afterState: { createdById: userId } as Prisma.InputJsonValue,
+          performedById: userId,
+        },
+      })
+    }, tenantId)
+    await logEvent('WorkflowTakenOver', 'WorkflowInstance', id, userId, { previousOwnerId })
+    // Resume if paused so the new owner's runtime picks it up right away.
+    if (instance.status === 'PAUSED') {
+      await resumeInstance(id, userId, tenantId)
+    }
+    const refreshed = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({
+      where: { id }, select: { id: true, status: true, createdById: true },
+    }), tenantId)
+    res.json({ id, ownerId: refreshed.createdById, previousOwnerId, status: refreshed.status })
+  } catch (err) {
+    next(err)
+  }
+})
+
 workflowInstancesRouter.post('/:id/cancel', validate(cancelSchema), async (req, res, next) => {
   try {
     const id = req.params.id as string
