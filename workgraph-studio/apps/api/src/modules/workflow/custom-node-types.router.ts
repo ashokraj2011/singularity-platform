@@ -20,8 +20,8 @@ const createSchema = z.object({
   color: z.string().default('#64748b'),
   icon: z.string().default('Box'),
   baseType: z.enum([
-    'HUMAN_TASK', 'AGENT_TASK', 'APPROVAL', 'DECISION_GATE',
-    'CONSUMABLE_CREATION', 'TOOL_REQUEST', 'GIT_PUSH', 'POLICY_CHECK', 'EVAL_GATE',
+    'HUMAN_TASK', 'AGENT_TASK', 'DIRECT_LLM_TASK', 'APPROVAL', 'DECISION_GATE',
+    'CONSUMABLE_CREATION', 'TOOL_REQUEST', 'CREATE_BRANCH', 'GIT_PUSH', 'RAISE_PR', 'POLICY_CHECK', 'EVAL_GATE', 'VERIFIER', 'GOVERNANCE_GATE',
     'TIMER', 'SIGNAL_WAIT', 'CALL_WORKFLOW', 'WORK_ITEM', 'FOREACH',
   ]).default('HUMAN_TASK'),
   fields: z.array(fieldDefSchema).default([]),

@@ -10,6 +10,7 @@ import { resolveNextNodes, isComplete } from './GraphTraverser'
 import { activateHumanTask } from './executors/HumanTaskExecutor'
 import { activateWorkbenchTask } from './executors/WorkbenchTaskExecutor'
 import { activateAgentTask } from './executors/AgentTaskExecutor'
+import { activateDirectLlmTask } from './executors/DirectLlmTaskExecutor'
 import { activateApproval } from './executors/ApprovalExecutor'
 import { activateDecisionGate } from './executors/DecisionGateExecutor'
 import { activateConsumableCreation } from './executors/ConsumableCreationExecutor'
@@ -272,8 +273,16 @@ export async function advance(
   // 3 + 4. Resolve next nodes and activate them
   await activateDownstream(mergedInstance, completedNode, mergedContext, actorId)
 
-  // 5. Check for instance completion
-  if (await isComplete(instance)) {
+  // 5. Check for instance completion. Re-read the instance after downstream
+  // routing because branch/path validation may pause the run (for example a
+  // decision gate with no matching/default branch). A paused/blocked run must
+  // not be auto-promoted to COMPLETED just because it has no active nodes.
+  const completionCandidate = await withTenantDbTransaction(
+    prisma,
+    (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }),
+    tenantId,
+  )
+  if (completionCandidate.status === 'ACTIVE' && await isComplete(completionCandidate)) {
     const completedAt = new Date()
     // Finding #3 — atomically claim the terminal transition; only the caller whose update
     // actually flips the status (count === 1) runs the completion side effects, so two
@@ -539,14 +548,23 @@ function reachableDownstreamNodeIds(startNodeId: string, edges: { sourceNodeId: 
 
 function clearBlockedContext(context: Record<string, unknown>, nodeType?: string): Record<string, unknown> {
   const next = { ...context }
-  const knownKeys = ['_blockedByGitPush', '_blockedByPolicyCheck', '_blockedByEvalGate', '_blockedByGovernanceGate']
+  const knownKeys = [
+    '_blockedByGitPush',
+    '_blockedByPolicyCheck',
+    '_blockedByEvalGate',
+    '_blockedByGovernanceGate',
+    '_blockedByVerifier',
+    '_blockedByPathStall',
+  ]
   for (const key of knownKeys) {
     if (
       !nodeType ||
       (nodeType === 'GIT_PUSH' && key === '_blockedByGitPush') ||
       (nodeType === 'POLICY_CHECK' && key === '_blockedByPolicyCheck') ||
       (nodeType === 'EVAL_GATE' && key === '_blockedByEvalGate') ||
-      (nodeType === 'GOVERNANCE_GATE' && key === '_blockedByGovernanceGate')
+      (nodeType === 'GOVERNANCE_GATE' && key === '_blockedByGovernanceGate') ||
+      (nodeType === 'VERIFIER' && key === '_blockedByVerifier') ||
+      (['DECISION_GATE', 'INCLUSIVE_GATEWAY'].includes(nodeType) && key === '_blockedByPathStall')
     ) {
       delete next[key]
     }
@@ -718,6 +736,19 @@ async function executeServerNode(
     case 'AGENT_TASK':
       await activateAgentTask(node, instance)
       break
+    case 'DIRECT_LLM_TASK': {
+      const result = await activateDirectLlmTask(node, instance, actorId)
+      if (result.passed && !result.reviewRequired) {
+        await advance(instance.id, node.id, { ...context, ...result.output }, actorId, undefined, tenantId)
+      } else if (!result.passed) {
+        await failNode(instance.id, node.id, {
+          message: result.output.directLlm.error ?? 'DIRECT_LLM_TASK node failed',
+          code: result.output.directLlm.code ?? 'DIRECT_LLM_TASK_FAILED',
+          details: result.output.directLlm,
+        }, actorId)
+      }
+      break
+    }
     case 'APPROVAL':
       await activateApproval(node, instance, actorId)
       break
@@ -781,7 +812,7 @@ async function executeServerNode(
       // we advance regardless; a truly UNEXPECTED throw degrades the node to BLOCKED.
       let cbResult: Awaited<ReturnType<typeof activateCreateBranch>> | null = null
       try {
-        cbResult = await activateCreateBranch(node, instance, actorId)
+        cbResult = await activateCreateBranch(node, instance, actorId ?? null)
       } catch (err) {
         await degradeNodeToBlocked(instance, node, err, actorId)
       }
@@ -795,11 +826,11 @@ async function executeServerNode(
       // node (recoverable: retry / skip), and only advance once the PR opens.
       let prResult: Awaited<ReturnType<typeof activateRaisePr>> | null = null
       try {
-        prResult = await activateRaisePr(node, instance, actorId)
+        prResult = await activateRaisePr(node, instance, actorId ?? null)
       } catch (err) {
         await degradeNodeToBlocked(instance, node, err, actorId)
       }
-      if (prResult?.raised) await advance(instance.id, node.id, prResult.output, actorId, undefined, tenantId)
+      if (prResult?.raised && prResult.output) await advance(instance.id, node.id, prResult.output, actorId, undefined, tenantId)
       break
     }
     case 'POLICY_CHECK': {

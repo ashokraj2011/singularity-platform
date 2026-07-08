@@ -27,7 +27,7 @@ import type { UploadedDocument } from '../../lib/uploadAttachment'
 const CUSTOM_NODE_ICONS: Record<string, React.ElementType> = {
   Box, Bot, User, CheckCircle, GitMerge, Package, Wrench, Shield, GitBranch,
   Star, Briefcase, Database, Globe, Mail, Phone, Calendar, AlertTriangle, Search, Filter, Activity,
-  Clock, Radio, RadioTower, Workflow, Repeat, Shuffle, Zap, RotateCcw,
+  Clock, Radio, RadioTower, Workflow, Repeat, Shuffle, Zap, RotateCcw, Cpu,
   GitFork, ShieldAlert, SlidersHorizontal, Network,
 }
 
@@ -412,6 +412,23 @@ const NODE_META: Record<string, {
       { key: 'maxTokens',       label: 'Max tokens',        placeholder: '4096' },
     ],
   },
+  DIRECT_LLM_TASK: {
+    label: 'Direct LLM Task', color: '#0ea5e9', Icon: Cpu,
+    description: 'Calls an LLM directly from the WorkGraph API process. This bypasses Context Fabric, MCP, prompt composition, and runtime bridge routing.',
+    standardFields: [
+      { key: 'modelAlias',    label: 'Connection alias', placeholder: 'Optional LLM connection alias' },
+      { key: 'provider',      label: 'Provider',         placeholder: 'mock | openai_compatible | openai | anthropic' },
+      { key: 'baseUrl',       label: 'Base URL',         placeholder: 'https://api.openai.com/v1 or compatible endpoint' },
+      { key: 'model',         label: 'Model',            placeholder: 'gpt-4o-mini | claude-3-5-sonnet-latest' },
+      { key: 'credentialEnv', label: 'Credential env',   placeholder: 'OPENAI_API_KEY | ANTHROPIC_API_KEY' },
+      { key: 'systemPrompt',  label: 'System prompt',    placeholder: 'You are a concise SDLC assistant.', multiline: true },
+      { key: 'task',          label: 'Task prompt',      placeholder: 'Summarize {{vars.story}} and produce acceptance criteria', multiline: true },
+      { key: 'maxTokens',     label: 'Max tokens',       placeholder: '1200' },
+      { key: 'temperature',   label: 'Temperature',      placeholder: '0.2' },
+      { key: 'reviewRequired', label: 'Review required', placeholder: 'false' },
+      { key: 'outputPath',    label: 'Artifact name',    placeholder: 'Direct LLM Output' },
+    ],
+  },
   WORKBENCH_TASK: {
     label: 'Workbench Task', color: '#ffb786', Icon: Braces,
     description: 'Opens a modal-ready workbench loop. The workflow waits here until the final implementation pack is approved.',
@@ -422,11 +439,21 @@ const NODE_META: Record<string, {
   },
   GOVERNANCE_GATE: {
     label: 'Governance Gate', color: '#9333ea', Icon: Shield,
-    description: 'Resolves the governing controls (IAM overlay) for a capability, checks them against run evidence + active waivers, then passes / warns / blocks. Instructions are managed centrally by the governing body; the node only references a governing capability.',
+    description: 'Checks documents, artifacts, code diffs, formal verification, standards, or IAM governance overlays. It can hard block, soft warn, request manual review, or open an automatic waiver route.',
     standardFields: [
       { key: 'governingCapabilityId', label: 'Governing capability', placeholder: 'IAM capability uuid (the governing body)' },
-      { key: 'mode', label: 'Mode', placeholder: 'HARD_BLOCK | SOFT_WARN | AUTOMATIC' },
+      { key: 'mode', label: 'Mode', placeholder: 'HARD_BLOCK | SOFT_WARN | MANUAL_REVIEW | AUTOMATIC' },
       { key: 'failClosedOnResolveError', label: 'Fail closed if unresolved', placeholder: 'true' },
+      { key: 'materializeEvidence', label: 'Materialize evidence pack', placeholder: 'false' },
+      { key: 'requiredArtifacts', label: 'Required artifacts', placeholder: 'design, test-report, release-notes' },
+      { key: 'runFormalVerifier', label: 'Run formal verifier', placeholder: 'false' },
+      { key: 'diffValidation', label: 'Diff vs design contract JSON', placeholder: '{"requireTests":true,"forbiddenPaths":["infra/*"],"requiredPathPatterns":["src/*"]}', multiline: true },
+      { key: 'standardName', label: 'Standard name', placeholder: 'Architecture Decision Standard' },
+      { key: 'standardText', label: 'Standard text', placeholder: 'The document must include risks, interfaces, rollback, and tests.', multiline: true },
+      { key: 'documentKey', label: 'Document context key', placeholder: '_standardDocument or designDocument' },
+      { key: 'predicate', label: 'Context predicate JSON', placeholder: '{"path":"metrics.coverage","op":"gte","value":80}', multiline: true },
+      { key: 'gateControls', label: 'Advanced local controls JSON', placeholder: '[{"controlKey":"SEC_REVIEW","mode":"BLOCKING","binding":{"type":"receipt","evidenceKey":"SEC_REVIEW"}}]', multiline: true },
+      { key: 'controlBindings', label: 'Advanced bindings JSON', placeholder: '{"FORMAL_VERIFICATION":{"type":"formal"}}', multiline: true },
       { key: 'preSatisfiedControls', label: 'Pre-satisfied controls', placeholder: 'comma-separated controlKeys (optional)' },
     ],
   },
@@ -3293,7 +3320,7 @@ function BranchesTab({
         }}>
           <AlertTriangle size={11} style={{ color: '#f59e0b', flexShrink: 0, marginTop: 1 }} />
           <p style={{ fontSize: 10, color: '#fbbf24', lineHeight: 1.5 }}>
-            No default branch. If no condition matches at runtime, the workflow will stall and emit a <code style={{ fontFamily: 'monospace' }}>PathStall</code> audit event. Mark one branch as default to define a fallback.
+            No default branch. If no condition matches at runtime, the run pauses with a <code style={{ fontFamily: 'monospace' }}>PathStall</code> block. Mark one branch as default to define a fallback.
           </p>
         </div>
       )}
@@ -3616,12 +3643,14 @@ export function NodeInspector({
                         const isPriority         = f.key === 'priority'
                         const isModelAlias       = f.key === 'modelAlias'
                         const isGovernanceMode   = f.key === 'governanceMode'
+                        const isGovernanceGateMode = node.data.nodeType === 'GOVERNANCE_GATE' && f.key === 'mode'
                         const isPolicyEngine     = node.data.nodeType === 'POLICY_CHECK' && f.key === 'engine'
                         const isFormalProfile    = node.data.nodeType === 'POLICY_CHECK' && f.key === 'profile'
                         const isEvalScope        = node.data.nodeType === 'EVAL_GATE' && f.key === 'scope'
                         const isTriggerType      = node.data.nodeType === 'START' && f.key === 'triggerType'
                         const isBooleanFlag      = (node.data.nodeType === 'EVAL_GATE' && f.key === 'blockOnMissingEvidence')
                           || (node.data.nodeType === 'GIT_PUSH' && f.key === 'requireApproval')
+                          || (node.data.nodeType === 'GOVERNANCE_GATE' && ['failClosedOnResolveError', 'materializeEvidence', 'runFormalVerifier'].includes(f.key))
                         const isVariableAwareNumber = f.key === 'maxConcurrency' || f.key === 'expectedBranches'
                         const cfgCapabilityId    = (config.standard.capabilityId as string | undefined) ?? null
                         return (
@@ -3690,6 +3719,21 @@ export function NodeInspector({
                                   <option key={value} value={value}>{label}</option>
                                 ))}
                               </select>
+                            ) : isGovernanceGateMode ? (
+                              <select
+                                value={config.standard[f.key] ?? 'HARD_BLOCK'}
+                                onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
+                                style={standardFieldSelectStyle()}
+                              >
+                                {[
+                                  ['HARD_BLOCK', 'Hard block'],
+                                  ['SOFT_WARN', 'Soft warning'],
+                                  ['MANUAL_REVIEW', 'Manual review'],
+                                  ['AUTOMATIC', 'Automatic waiver route'],
+                                ].map(([value, label]) => (
+                                  <option key={value} value={value}>{label}</option>
+                                ))}
+                              </select>
                             ) : isPolicyEngine ? (
                               <select
                                 value={config.standard[f.key] ?? 'local_allow'}
@@ -3738,10 +3782,22 @@ export function NodeInspector({
                                 style={standardFieldSelectStyle()}
                               >
                                 <option value="true">
-                                  {node.data.nodeType === 'GIT_PUSH' ? 'Require approved gate' : 'Block when evidence is missing'}
+                                  {node.data.nodeType === 'GIT_PUSH'
+                                    ? 'Require approved gate'
+                                    : node.data.nodeType === 'GOVERNANCE_GATE' && f.key === 'runFormalVerifier'
+                                      ? 'Run formal verifier'
+                                      : node.data.nodeType === 'GOVERNANCE_GATE' && f.key === 'materializeEvidence'
+                                        ? 'Materialize evidence pack'
+                                        : 'Enabled'}
                                 </option>
                                 <option value="false">
-                                  {node.data.nodeType === 'GIT_PUSH' ? 'Allow autonomous push' : 'Allow missing evidence'}
+                                  {node.data.nodeType === 'GIT_PUSH'
+                                    ? 'Allow autonomous push'
+                                    : node.data.nodeType === 'GOVERNANCE_GATE' && f.key === 'runFormalVerifier'
+                                      ? 'Skip formal verifier'
+                                      : node.data.nodeType === 'GOVERNANCE_GATE' && f.key === 'materializeEvidence'
+                                        ? 'Do not materialize evidence pack'
+                                        : 'Disabled'}
                                 </option>
                               </select>
                             ) : isTemplatePicker ? (

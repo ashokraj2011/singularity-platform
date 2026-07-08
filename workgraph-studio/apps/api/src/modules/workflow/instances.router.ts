@@ -61,7 +61,16 @@ const createInstanceSchema = z.object({
 
 const createNodeSchema = z.object({
   phaseId: z.string().uuid().optional(),
-  nodeType: z.enum(['HUMAN_TASK', 'AGENT_TASK', 'WORKBENCH_TASK', 'APPROVAL', 'DECISION_GATE', 'CONSUMABLE_CREATION', 'TOOL_REQUEST', 'GIT_PUSH', 'POLICY_CHECK', 'EVAL_GATE', 'VERIFIER', 'TIMER', 'SIGNAL_WAIT', 'CALL_WORKFLOW', 'WORK_ITEM', 'FOREACH', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'CUSTOM']),
+  nodeType: z.enum([
+    'START', 'END',
+    'HUMAN_TASK', 'AGENT_TASK', 'DIRECT_LLM_TASK', 'WORKBENCH_TASK',
+    'APPROVAL', 'DECISION_GATE', 'CONSUMABLE_CREATION', 'TOOL_REQUEST',
+    'CREATE_BRANCH', 'GIT_PUSH', 'RAISE_PR', 'POLICY_CHECK', 'EVAL_GATE',
+    'VERIFIER', 'GOVERNANCE_GATE', 'TIMER', 'SIGNAL_WAIT', 'SIGNAL_EMIT',
+    'CALL_WORKFLOW', 'WORK_ITEM', 'FOREACH', 'PARALLEL_FORK', 'PARALLEL_JOIN',
+    'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'CUSTOM', 'DATA_SINK', 'SET_CONTEXT',
+    'ERROR_CATCH', 'RUN_PYTHON', 'EVENT_EMIT',
+  ]),
   label: z.string().min(1),
   config: z.record(z.unknown()).default({}),
   positionX: z.number().default(0),
@@ -853,8 +862,12 @@ def now_iso():
 def run_git(args, cwd):
     return subprocess.run(["git", *args], cwd=str(cwd), text=True, capture_output=True)
 
+def git_text(args, cwd):
+    proc = run_git(args, cwd)
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
 def status_entries(cwd):
-    proc = run_git(["status", "--porcelain"], cwd)
+    proc = run_git(["status", "--porcelain", "--untracked-files=all"], cwd)
     entries = []
     for line in proc.stdout.splitlines():
         if not line.strip():
@@ -930,6 +943,15 @@ def add_artifact(artifacts, artifact):
     if not artifact:
         return
     artifacts[artifact["path"]] = artifact
+
+def declared_output_paths(stage):
+    out = []
+    for item in stage.get("produces") or []:
+        if isinstance(item, dict):
+            path = str(item.get("path") or "").strip()
+            if path and not is_probably_secret(path):
+                out.append(path.replace("\\\\", "/"))
+    return out
 
 def post_results(platform_url, token, run_id, payload):
     endpoint = platform_url.rstrip("/") + "/api/workgraph/workflow-instances/" + urllib.parse.quote(run_id) + "/export/copilot-results"
@@ -1010,13 +1032,19 @@ def main():
             if not is_probably_secret(p) and (include_untracked or p not in untracked)
         ]
         skipped = [p for p in candidate if p not in changed]
-        for path in changed[:max_artifacts]:
-            add_artifact(artifacts, file_artifact(cwd, path, stage_key, node_id, max_artifact_bytes))
+        declared_outputs = declared_output_paths(stage)
+        uploaded_paths = []
+        for path in sorted(set(changed + declared_outputs))[:max_artifacts]:
+            artifact = file_artifact(cwd, path, stage_key, node_id, max_artifact_bytes)
+            add_artifact(artifacts, artifact)
+            if artifact:
+                uploaded_paths.append(artifact["path"])
         try:
             rel_log_path = str(log_path.relative_to(cwd)).replace("\\\\", "/")
         except ValueError:
             rel_log_path = str(log_path)
         add_artifact(artifacts, file_artifact(cwd, rel_log_path, stage_key, node_id, max_artifact_bytes))
+        reported_changed = sorted(set(changed + uploaded_paths))
         status = "completed" if proc.returncode == 0 else "failed"
         if status == "failed":
             overall_status = "failed"
@@ -1030,13 +1058,13 @@ def main():
             "durationMs": duration_ms,
             "exitCode": proc.returncode,
             "logPath": rel_log_path,
-            "changedFiles": changed,
+            "changedFiles": reported_changed,
             "skippedFiles": skipped,
             "metrics": {
                 "promptChars": len(prompt),
                 "stdoutChars": len(proc.stdout),
                 "stderrChars": len(proc.stderr),
-                "changedFileCount": len(changed),
+                "changedFileCount": len(reported_changed),
             },
         })
         if proc.returncode != 0 and not continue_on_error:
@@ -1050,6 +1078,9 @@ def main():
         "workflow": metadata,
         "git": {
             "workDir": str(cwd),
+            "branch": git_text(["rev-parse", "--abbrev-ref", "HEAD"], cwd) or None,
+            "commitSha": git_text(["rev-parse", "HEAD"], cwd) or None,
+            "changedFiles": [p for p in status_paths(cwd) if not is_probably_secret(p)],
             "status": [p for p in status_paths(cwd) if not is_probably_secret(p)],
         },
         "metrics": {
@@ -1162,10 +1193,34 @@ function copilotStagesFromNodes(
   nodes: CopilotExportNode[],
   edges: Array<{ sourceNodeId: string; targetNodeId: string }>,
 ): { stages: CopilotExportStage[]; repo: string; story: string; workCode: string; vars: Record<string, unknown> } {
-  const vars = (((instance.context ?? {}) as Record<string, unknown>)._vars ?? {}) as Record<string, unknown>
+  const context = ((instance.context ?? {}) as Record<string, unknown>)
+  const vars = (context._vars ?? {}) as Record<string, unknown>
+  const globals = (context._globals ?? {}) as Record<string, unknown>
   const cfgOf = (n: { config: unknown }) => (n.config ?? {}) as Record<string, unknown>
   const interpolate = (s: string) => s.replace(/\{\{\s*instance\.vars\.(\w+)\s*\}\}/g, (_m, k) => String(vars[k] ?? ''))
-  const repo = String(vars.repoUrl ?? nodes.map(cfgOf).find(c => c.sourceUri)?.sourceUri ?? '')
+  const firstString = (...values: unknown[]): string => {
+    for (const value of values) {
+      if (typeof value === 'string' && value.trim()) return value.trim()
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const nested = (value as Record<string, unknown>).url
+        if (typeof nested === 'string' && nested.trim()) return nested.trim()
+      }
+    }
+    return ''
+  }
+  const repo = firstString(
+    vars.repoUrl,
+    vars.repositoryUrl,
+    vars.sourceUri,
+    globals.repoUrl,
+    globals.repositoryUrl,
+    globals.sourceUri,
+    context.repoUrl,
+    context.repositoryUrl,
+    context.sourceUri,
+    context.repository,
+    nodes.map(cfgOf).find(c => c.sourceUri)?.sourceUri,
+  )
   const story = String(vars.story ?? vars.workItemDescription ?? '')
   const workCode = String(vars.workCode ?? '')
   // Map a node's artifact defs → the export's IN/OUT contract, interpolating the real
@@ -1231,8 +1286,14 @@ function buildCopilotWorkflowExport(
   // The run's work branch (wi/<code>) + the base it's cut from — so the export tells
   // an external tool exactly which branch to clone/checkout and push back to.
   const exportGlobals = (((instance.context ?? {}) as Record<string, unknown>)._globals ?? {}) as Record<string, unknown>
-  const baseBranch = String(exportGlobals.sourceRef ?? 'main')
-  const workBranch = workCode ? `wi/${workCode}` : ''
+  const exportContext = ((instance.context ?? {}) as Record<string, unknown>)
+  const exportVars = (exportContext._vars ?? {}) as Record<string, unknown>
+  const baseBranch = String(exportGlobals.sourceRef ?? exportContext.fromBranch ?? exportVars.baseBranch ?? 'main')
+  const workBranch = String(exportContext.workBranch ?? exportVars.workBranch ?? (workCode ? `wi/${workCode}` : ''))
+  const preflightWarnings = [
+    ...(repo ? [] : ['Repository URL is missing. Clone/open the target repository manually, or link an ACTIVE repository to the capability before exporting.']),
+    ...(workBranch ? [] : ['Work branch is missing. Create or choose a branch before running the handoff.']),
+  ]
   const composed = extras.composedByNodeId ?? new Map<string, string>()
   const completedData = extras.completedByNodeId ?? new Map<string, CompletedPhaseData>()
   // Split: stages before `fromPhase` are DONE context; `fromPhase` onward is the
@@ -1266,6 +1327,10 @@ function buildCopilotWorkflowExport(
       url: repo || null,
       branch: workBranch || null,
       baseBranch,
+    },
+    preflight: {
+      status: preflightWarnings.length ? 'needs-attention' : 'ready',
+      warnings: preflightWarnings,
     },
     story,
     stages,
@@ -1316,6 +1381,10 @@ function buildCopilotWorkflowExport(
     `  url: ${repo ? yamlString(repo) : 'null'}`,
     `  branch: ${workBranch ? yamlString(workBranch) : 'null'}          # the run's work branch — clone + checkout this, push back to it`,
     `  baseBranch: ${yamlString(baseBranch)}   # branch the work branch is cut from`,
+    'preflight:',
+    `  status: ${yamlString(preflightWarnings.length ? 'needs-attention' : 'ready')}`,
+    '  warnings:',
+    ...(preflightWarnings.length ? preflightWarnings.map(w => `    - ${yamlString(w)}`) : ['    []']),
     // Self-documenting, tool-agnostic post-back contract (reference, not run input).
     'resultContract:',
     '  # POST this JSON to platform.resultEndpoint with header: Authorization: Bearer $SINGULARITY_TOKEN',
@@ -1324,7 +1393,8 @@ function buildCopilotWorkflowExport(
     '  git:',
     `    branch: ${workBranch ? yamlString(workBranch) : '"<branch you pushed to origin>"'}   # push this branch — required for git verification`,
     '    commitSha: "<head commit sha>"',
-    '    status: ["<changed file path>", "..."]',
+    '    changedFiles: ["<changed file path>", "..."]',
+    '    status: ["<changed file path>", "..."]  # legacy alias accepted by the platform',
     '  artifacts:',
     '    - path: "<repo-relative path>"',
     '      sha256: "<sha256 of the raw file bytes>"',

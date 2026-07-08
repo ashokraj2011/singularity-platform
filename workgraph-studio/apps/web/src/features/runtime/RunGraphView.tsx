@@ -51,6 +51,8 @@ export interface RunGraphNodeData {
   label: string
   status: string
   config: Record<string, unknown>
+  positionX?: number
+  positionY?: number
   createdAt?: string
 }
 export interface RunGraphEdgeData {
@@ -58,18 +60,43 @@ export interface RunGraphEdgeData {
   sourceNodeId: string
   targetNodeId: string
   edgeType: string
+  label?: string | null
+  condition?: Record<string, unknown> | null
 }
 
 // Status visuals come from the shared runtime palette (one source of truth for
 // graph / timeline / dashboard).
 const st = runStatusVisual
 
+function savedPosition(node: RunGraphNodeData): { x: number; y: number } | null {
+  const x = typeof node.positionX === 'number' ? node.positionX : node.config?.positionX
+  const y = typeof node.positionY === 'number' ? node.positionY : node.config?.positionY
+  if (typeof x === 'number' && typeof y === 'number') return { x, y }
+  return null
+}
+
+function runEdgeLabel(edge: RunGraphEdgeData): string | undefined {
+  const condition = edge.condition ?? {}
+  if (typeof condition.label === 'string' && condition.label.trim()) return condition.label.trim()
+  if (condition.isDefault === true) return 'else'
+  const conditions = Array.isArray(condition.conditions) ? condition.conditions : []
+  const first = conditions[0] as Record<string, unknown> | undefined
+  if (first && typeof first.left === 'string' && typeof first.op === 'string') {
+    const right = ['exists', 'not_exists'].includes(first.op) ? '' : ` ${String(first.right ?? '')}`
+    return `${first.left} ${first.op}${right}`.trim()
+  }
+  return typeof edge.label === 'string' && edge.label.trim() ? edge.label.trim() : undefined
+}
+
 // ─── Layout: layered columns by topological depth (horizontal flow) ──────────
 function layout(nodes: RunGraphNodeData[], edges: RunGraphEdgeData[]): Map<string, { x: number; y: number }> {
   const pos = new Map<string, { x: number; y: number }>()
-  const haveSaved = nodes.length > 0 && nodes.every(n => typeof n.config?.positionX === 'number' && typeof n.config?.positionY === 'number')
+  const haveSaved = nodes.length > 0 && nodes.every(n => savedPosition(n) !== null)
   if (haveSaved) {
-    for (const n of nodes) pos.set(n.id, { x: n.config.positionX as number, y: n.config.positionY as number })
+    for (const n of nodes) {
+      const saved = savedPosition(n)
+      if (saved) pos.set(n.id, saved)
+    }
     return pos
   }
   const incoming = new Map<string, number>()
@@ -116,7 +143,7 @@ type CardData = RunGraphNodeData & {
 function RunGraphNode({ data }: NodeProps<CardData>) {
   const s = st(data.status)
   const active = ['ACTIVE', 'RUNNING'].includes((data.status ?? '').toUpperCase())
-  const isAgent = data.nodeType === 'AGENT_TASK'
+  const isAgent = data.nodeType === 'AGENT_TASK' || data.nodeType === 'DIRECT_LLM_TASK'
   const isInteractive = INTERACTIVE_TYPES.has(data.nodeType)
   // Per-node start gate: a manual/event node sits ACTIVE + _awaitingStart until triggered.
   const std = (data.config?.standard && typeof data.config.standard === 'object' ? data.config.standard as Record<string, unknown> : {})
@@ -334,7 +361,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
     // A COMPLETED agent stage opens to Documents (the produced deliverables) rather
     // than the execution log — the docs are what the operator wants to see. Active
     // stages still open to the live log.
-    const isDoneAgent = n?.nodeType === 'AGENT_TASK' && !['ACTIVE', 'RUNNING'].includes((n.status ?? '').toUpperCase())
+    const isDoneAgent = (n?.nodeType === 'AGENT_TASK' || n?.nodeType === 'DIRECT_LLM_TASK') && !['ACTIVE', 'RUNNING'].includes((n.status ?? '').toUpperCase())
     setTab(isFormNode ? 'form' : isDoneAgent ? 'artifacts' : 'log')
   }, [nodes])
 
@@ -366,8 +393,22 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
     id: e.id,
     source: e.sourceNodeId,
     target: e.targetNodeId,
+    label: runEdgeLabel(e),
     animated: live,
-    style: { stroke: '#94a3b8', strokeWidth: 1.5 },
+    style: {
+      stroke: e.condition?.isDefault === true ? '#f59e0b' : e.edgeType === 'CONDITIONAL' ? '#0ea5e9' : '#94a3b8',
+      strokeWidth: e.edgeType === 'CONDITIONAL' ? 2 : 1.5,
+      ...(e.condition?.isDefault === true ? { strokeDasharray: '6 4' } : {}),
+    },
+    labelStyle: {
+      fill: e.condition?.isDefault === true ? '#92400e' : '#334155',
+      fontSize: 10,
+      fontWeight: 800,
+      textTransform: 'uppercase',
+      letterSpacing: '0.08em',
+    },
+    labelBgStyle: { fill: '#fff', fillOpacity: 0.92 },
+    labelBgPadding: [6, 3],
   })), [edges, live])
 
   const nodeTypes = useMemo(() => ({ runCard: RunGraphNode }), [])
@@ -466,7 +507,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
   }, [consumables])
   const visibleConsumables = consumables.filter(c => c.name !== COPILOT_QUESTIONS_NAME)
   const latest = visibleConsumables[visibleConsumables.length - 1]
-  const isAgent = node.nodeType === 'AGENT_TASK'
+  const isAgent = node.nodeType === 'AGENT_TASK' || node.nodeType === 'DIRECT_LLM_TASK'
 
   // "Documents produced through this stage" — every run deliverable (from ANY node)
   // created up to when THIS stage completed, so the panel shows the cumulative set
@@ -1090,9 +1131,30 @@ function BlockReasonBody({ info }: { info: unknown }) {
     const blocked = o.blocked as Array<{ controlKey?: string; reason?: string; mode?: string }>
     const satisfied = Array.isArray(o.satisfied) ? (o.satisfied as string[]) : []
     const waived = Array.isArray(o.waived) ? (o.waived as string[]) : []
+    const checks = Array.isArray(o.checks)
+      ? o.checks as Array<{ controlKey?: string; status?: string; bindingType?: string; reason?: string }>
+      : []
     return (
       <div>
         {o.note ? <div style={{ marginBottom: 4 }}>{String(o.note)}</div> : null}
+        {checks.length > 0 && (
+          <div style={{ display: 'grid', gap: 4, marginBottom: 6 }}>
+            {checks.slice(0, 8).map((check, i) => {
+              const status = String(check.status ?? 'MISSING').toUpperCase()
+              const tone = status === 'SATISFIED' ? '#16a34a' : status === 'WAIVED' ? '#7c3aed' : status === 'BLOCKED' ? '#dc2626' : '#d97706'
+              return (
+                <div key={`${check.controlKey ?? 'check'}-${i}`} style={{
+                  display: 'flex', alignItems: 'center', gap: 6, padding: '3px 6px', borderRadius: 6,
+                  background: 'rgba(15,23,42,0.04)', border: '1px solid rgba(148,163,184,0.25)',
+                }}>
+                  <span style={{ fontSize: 8, fontWeight: 900, color: tone, minWidth: 64 }}>{status}</span>
+                  <span style={{ fontSize: 10, fontWeight: 800, color: '#334155', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{check.controlKey ?? 'control'}</span>
+                  {check.bindingType && <span style={{ fontSize: 8.5, color: '#64748b' }}>{check.bindingType}</span>}
+                </div>
+              )
+            })}
+          </div>
+        )}
         {blocked.length > 0 && (
           <ul style={{ margin: 0, paddingLeft: 16 }}>
             {blocked.map((b, i) => (

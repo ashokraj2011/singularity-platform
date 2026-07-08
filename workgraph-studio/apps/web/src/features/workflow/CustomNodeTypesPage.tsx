@@ -38,6 +38,7 @@ type CustomNodeType = {
 const BASE_TYPES = [
   { value: 'HUMAN_TASK',           label: 'Human Task',       hint: 'Creates a task assigned to a person' },
   { value: 'AGENT_TASK',           label: 'Agent Task',       hint: 'Delegates to an AI agent' },
+  { value: 'DIRECT_LLM_TASK',      label: 'Direct LLM Task',  hint: 'Calls an LLM directly from WorkGraph API' },
   { value: 'APPROVAL',             label: 'Approval',         hint: 'Requires an explicit approval decision' },
   { value: 'TOOL_REQUEST',         label: 'Tool Request',     hint: 'Calls an external tool/API' },
   { value: 'GIT_PUSH',             label: 'Git Push',         hint: 'Pushes approved WorkItem branches through MCP' },
@@ -72,6 +73,7 @@ const COLOR_PRESETS = [
 const BASE_TYPE_ACCENTS: Record<string, string> = {
   HUMAN_TASK: '#2563eb',
   AGENT_TASK: '#7c3aed',
+  DIRECT_LLM_TASK: '#0ea5e9',
   APPROVAL: '#be123c',
   TOOL_REQUEST: '#0891b2',
   GIT_PUSH: '#2563eb',

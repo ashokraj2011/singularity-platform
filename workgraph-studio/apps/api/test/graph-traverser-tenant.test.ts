@@ -17,6 +17,9 @@ import type { WorkflowEdge, WorkflowInstance, WorkflowNode } from '@prisma/clien
 const allExecuteRawCalls: { sql: string; values: unknown[] }[] = []
 const findUniqueMock = vi.fn()
 const countMock = vi.fn()
+const updateNodeMock = vi.fn()
+const updateInstanceMock = vi.fn()
+const createMutationMock = vi.fn()
 const executeRawMock = vi.fn().mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
   allExecuteRawCalls.push({ sql: String(strings[0]), values })
   return Promise.resolve(1)
@@ -30,6 +33,13 @@ const fakeTx = {
   workflowNode: {
     findUnique: findUniqueMock,
     count: countMock,
+    update: updateNodeMock,
+  },
+  workflowInstance: {
+    update: updateInstanceMock,
+  },
+  workflowMutation: {
+    create: createMutationMock,
   },
 }
 
@@ -68,6 +78,9 @@ beforeEach(() => {
   allExecuteRawCalls.length = 0
   findUniqueMock.mockReset()
   countMock.mockReset()
+  updateNodeMock.mockReset()
+  updateInstanceMock.mockReset()
+  createMutationMock.mockReset()
   executeRawMock.mockClear()
 })
 
@@ -114,6 +127,47 @@ describe('GraphTraverser tenant scoping (RLS prep)', () => {
       where: { instanceId: 'inst-1', status: { in: ['PENDING', 'ACTIVE'] } },
     })
     expect(setConfigCallsFor('tenant-xyz')).toHaveLength(1)
+  })
+
+  it('blocks and pauses a decision gate when no branch matches and no default exists', async () => {
+    const instance = makeInstance('tenant-stall')
+    const completed = makeNode({ nodeType: 'DECISION_GATE', label: 'Route by risk' })
+    const edge = makeEdge({
+      edgeType: 'CONDITIONAL',
+      condition: {
+        conditions: [{ left: 'risk', op: '==', right: 'low' }],
+      },
+    })
+
+    const next = await resolveNextNodes(instance, completed, [edge], { risk: 'high' })
+
+    expect(next).toEqual([])
+    expect(updateNodeMock).toHaveBeenCalledWith({
+      where: { id: 'node-completed' },
+      data: { status: 'BLOCKED', completedAt: expect.any(Date) },
+    })
+    expect(updateInstanceMock).toHaveBeenCalledWith({
+      where: { id: 'inst-1' },
+      data: expect.objectContaining({
+        status: 'PAUSED',
+        context: expect.objectContaining({
+          risk: 'high',
+          _blockedByPathStall: expect.objectContaining({
+            code: 'PATH_STALL',
+            sourceNodeLabel: 'Route by risk',
+            outgoingEdgeIds: ['edge-1'],
+          }),
+        }),
+      }),
+    })
+    expect(createMutationMock).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        instanceId: 'inst-1',
+        nodeId: 'node-completed',
+        mutationType: 'PATH_STALL_BLOCKED',
+      }),
+    })
+    expect(setConfigCallsFor('tenant-stall')).toHaveLength(1)
   })
 
   it('a tenant-less instance (tenantId: null) does not set app.tenant_id — unchanged today, until later slices source a tenant', async () => {

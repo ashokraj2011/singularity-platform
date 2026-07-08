@@ -23,6 +23,17 @@ describe('buildCopilotResultsVerdict (advisory git-verify)', () => {
     expect(v.coverage.artifactsNotInDelta).toEqual([])
   })
 
+  it('accepts git.changedFiles as the preferred changed-file field', () => {
+    const content = '# generated doc\n'
+    const v = buildCopilotResultsVerdict({
+      git: { branch: 'sg/feat', commitSha: 'abc123', changedFiles: ['deliverables/REQ.md'] },
+      artifacts: [{ path: 'deliverables/REQ.md', sha256: sha(content), contentBase64: b64(content) }],
+    }, NOW)
+    expect(v.status).toBe('PASSED')
+    expect(v.coverage.reportedChangedFiles).toBe(1)
+    expect(v.coverage.artifactsNotInDelta).toEqual([])
+  })
+
   it('INCOMPLETE — posted content does not match its reported sha256', () => {
     const v = buildCopilotResultsVerdict({
       git: { branch: 'sg/feat', status: ['src/x.ts'] },

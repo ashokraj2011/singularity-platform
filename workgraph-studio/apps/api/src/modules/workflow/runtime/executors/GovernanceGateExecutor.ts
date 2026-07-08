@@ -1,11 +1,11 @@
 import { Prisma, type WorkflowInstance, type WorkflowNode } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
 import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
-import { logEvent, publishOutbox } from '../../../../lib/audit'
+import { createReceipt, logEvent, publishOutbox } from '../../../../lib/audit'
 import { resolveGovernance, type GovernanceResolveContext } from '../../../../lib/iam/client'
 import { activeWaiverControlKeys } from '../../../governance/governance.router'
 import { evaluateGovernanceBlock, decideGateStatus, type GovernanceBlock, type GovernanceOverlay } from './governance/evaluateBlock'
-import { resolveSatisfiedControls, makeEvidenceChecker, bindingsFromOverlay, type BindingMap, type ControlBinding } from './governance/resolveSatisfiedControls'
+import { resolveSatisfiedControls, makeEvidenceChecker, bindingsFromOverlay, controlsReferenced, type BindingMap, type ControlBinding } from './governance/resolveSatisfiedControls'
 import { materializeRunEvidence } from './governance/materializeEvidencePack'
 
 /**
@@ -24,8 +24,18 @@ import { materializeRunEvidence } from './governance/materializeEvidencePack'
  * formal / artifact / diff bindings + the AUTOMATIC approval-waiver route.)
  */
 
-type GateMode = 'HARD_BLOCK' | 'SOFT_WARN' | 'AUTOMATIC'
+type GateMode = 'HARD_BLOCK' | 'SOFT_WARN' | 'AUTOMATIC' | 'MANUAL_REVIEW'
 type GateStatus = 'PASSED' | 'WARNED' | 'BLOCKED' | 'APPROVAL_REQUESTED' | 'SKIPPED'
+
+type GateCheckStatus = 'SATISFIED' | 'WAIVED' | 'BLOCKED' | 'MISSING'
+type GateCheck = {
+  controlKey: string
+  status: GateCheckStatus
+  mode?: string
+  reason?: string
+  bindingType?: string
+  source: 'context' | 'binding' | 'waiver' | 'missing'
+}
 
 type GovernanceGateOutput = {
   governanceGate: {
@@ -39,6 +49,10 @@ type GovernanceGateOutput = {
     blocked: GovernanceBlock[]
     findings: GovernanceBlock[]
     evidenceRefs: string[]
+    checks: GateCheck[]
+    localControlCount?: number
+    overlayControlCount?: number
+    formalVerifierUsed?: boolean
     note?: string
     waiverRequestIds?: string[]
     approvalRequestId?: string
@@ -67,6 +81,18 @@ function cfgBool(node: WorkflowNode, key: string, fallback: boolean): boolean {
   return fallback
 }
 
+function cfgJson(node: WorkflowNode, key: string): unknown {
+  const value = cfgValue(node, key)
+  if (typeof value !== 'string') return value
+  const text = value.trim()
+  if (!text) return undefined
+  try {
+    return JSON.parse(text)
+  } catch {
+    return value
+  }
+}
+
 function asStringArray(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(String).map(s => s.trim()).filter(Boolean)
   if (typeof value === 'string') return value.split(',').map(s => s.trim()).filter(Boolean)
@@ -75,6 +101,14 @@ function asStringArray(value: unknown): string[] {
 
 function cfgStringArray(node: WorkflowNode, key: string): string[] {
   return asStringArray(cfgValue(node, key))
+}
+
+export function normalizeGovernanceGateMode(value: string | undefined): GateMode {
+  const raw = String(value ?? 'HARD_BLOCK').trim().toUpperCase()
+  if (['SOFT', 'SOFT_WARN', 'WARN', 'WARNING'].includes(raw)) return 'SOFT_WARN'
+  if (['AUTO', 'AUTOMATIC', 'AUTO_WAIVER'].includes(raw)) return 'AUTOMATIC'
+  if (['MANUAL', 'MANUAL_REVIEW', 'HUMAN_REVIEW', 'HUMAN_APPROVAL', 'HUMAN_APPROVAL_REQUIRED'].includes(raw)) return 'MANUAL_REVIEW'
+  return 'HARD_BLOCK'
 }
 
 function ctxStr(context: Record<string, unknown>, ...keys: string[]): string | undefined {
@@ -97,13 +131,170 @@ function collectSatisfied(context: Record<string, unknown>, node: WorkflowNode):
 
 /** v2 control→evidence bindings from node config (`controlBindings`); v3 moves these into the overlay. */
 function readBindingMap(node: WorkflowNode): BindingMap {
-  const raw = cfgValue(node, 'controlBindings')
+  const raw = cfgJson(node, 'controlBindings')
   if (!isRecord(raw)) return {}
   const out: BindingMap = {}
   for (const [k, v] of Object.entries(raw)) {
     if (isRecord(v) && typeof v.type === 'string') out[k] = v as unknown as ControlBinding
   }
   return out
+}
+
+type LocalGateControl = {
+  controlKey: string
+  mode?: string
+  reason?: string
+  stageKey?: string
+  binding?: ControlBinding
+}
+
+function toLocalControl(value: unknown): LocalGateControl | null {
+  if (typeof value === 'string' && value.trim()) return { controlKey: value.trim(), mode: 'BLOCKING' }
+  if (!isRecord(value)) return null
+  const controlKey =
+    typeof value.controlKey === 'string' ? value.controlKey.trim()
+    : typeof value.evidenceKey === 'string' ? value.evidenceKey.trim()
+    : typeof value.key === 'string' ? value.key.trim()
+    : ''
+  if (!controlKey) return null
+  const rawBinding = isRecord(value.binding)
+    ? value.binding
+    : typeof value.type === 'string'
+      ? value
+      : undefined
+  return {
+    controlKey,
+    mode: typeof value.mode === 'string' ? value.mode : 'BLOCKING',
+    reason: typeof value.reason === 'string' ? value.reason : undefined,
+    stageKey: typeof value.stageKey === 'string' ? value.stageKey : undefined,
+    binding: rawBinding && typeof rawBinding.type === 'string' ? rawBinding as unknown as ControlBinding : undefined,
+  }
+}
+
+export function localControlsFromConfig(node: WorkflowNode): LocalGateControl[] {
+  const raw = cfgJson(node, 'gateControls') ?? cfgJson(node, 'controls') ?? cfgJson(node, 'requiredControls')
+  const controls = Array.isArray(raw) ? raw.map(toLocalControl).filter((c): c is LocalGateControl => Boolean(c)) : []
+
+  for (const artifact of cfgStringArray(node, 'requiredArtifacts')) {
+    const key = `ARTIFACT:${artifact}`
+    controls.push({
+      controlKey: key,
+      mode: 'BLOCKING',
+      reason: `required artifact '${artifact}' was not approved or published`,
+      binding: { type: 'artifact', artifactName: artifact },
+    })
+  }
+
+  if (cfgBool(node, 'runFormalVerifier', false)) {
+    controls.push({
+      controlKey: 'FORMAL_VERIFICATION',
+      mode: 'BLOCKING',
+      reason: 'formal verifier found an unsafe workflow condition or could not prove the gate safe',
+      binding: { type: 'formal' },
+    })
+  }
+
+  const diffValidation = cfgJson(node, 'diffValidation')
+  if (isRecord(diffValidation)) {
+    controls.push({
+      controlKey: 'DIFF_VS_DESIGN',
+      mode: 'BLOCKING',
+      reason: 'code diff does not satisfy the design contract',
+      binding: { type: 'diff', diffValidation },
+    })
+  }
+
+  const standardText = cfgString(node, 'standardText')
+  const standardName = cfgString(node, 'standardName')
+  const documentKey = cfgString(node, 'documentKey')
+  if (standardText || standardName || documentKey) {
+    controls.push({
+      controlKey: `STANDARD:${standardName ?? 'document'}`,
+      mode: 'BLOCKING',
+      reason: 'document does not conform to the configured standard',
+      binding: { type: 'standard', standardName, standardText, documentKey },
+    })
+  }
+
+  const predicate = cfgJson(node, 'predicate')
+  if (isRecord(predicate)) {
+    controls.push({
+      controlKey: cfgString(node, 'predicateControlKey') ?? 'CUSTOM_PREDICATE',
+      mode: 'BLOCKING',
+      reason: 'custom predicate did not pass',
+      binding: { type: 'predicate', predicate: predicate as unknown as ControlBinding['predicate'] },
+    })
+  }
+
+  return controls
+}
+
+export function localOverlayFromControls(controls: LocalGateControl[]): { overlay: GovernanceOverlay | null; bindings: BindingMap } {
+  if (controls.length === 0) return { overlay: null, bindings: {} }
+  const requiredEvidence = controls.map(c => ({
+    evidenceKey: c.controlKey,
+    mode: String(c.mode ?? 'BLOCKING').toUpperCase(),
+    stageKey: c.stageKey,
+    reason: c.reason,
+  }))
+  const bindings: BindingMap = {}
+  for (const control of controls) if (control.binding) bindings[control.controlKey] = control.binding
+  return {
+    overlay: {
+      effectiveMode: 'BLOCKING',
+      requiredEvidence,
+      blockingControls: [],
+      overlayHash: `local:${controls.map(c => c.controlKey).sort().join('|')}`,
+    },
+    bindings,
+  }
+}
+
+function mergeOverlays(localOverlay: GovernanceOverlay | null, resolvedOverlay: GovernanceOverlay | null): GovernanceOverlay | null {
+  if (!localOverlay && !resolvedOverlay) return null
+  if (!localOverlay) return resolvedOverlay
+  if (!resolvedOverlay) return localOverlay
+  return {
+    ...localOverlay,
+    ...resolvedOverlay,
+    effectiveMode: resolvedOverlay.effectiveMode ?? localOverlay.effectiveMode,
+    requiredEvidence: [
+      ...(localOverlay.requiredEvidence ?? []),
+      ...(resolvedOverlay.requiredEvidence ?? []),
+    ],
+    blockingControls: [
+      ...(localOverlay.blockingControls ?? []),
+      ...(resolvedOverlay.blockingControls ?? []),
+    ],
+    controlBindings: {
+      ...(isRecord(localOverlay.controlBindings) ? localOverlay.controlBindings : {}),
+      ...(isRecord(resolvedOverlay.controlBindings) ? resolvedOverlay.controlBindings : {}),
+    },
+  }
+}
+
+function gateChecks(
+  overlay: GovernanceOverlay | null,
+  bindings: BindingMap,
+  satisfied: ReadonlySet<string>,
+  waived: ReadonlySet<string>,
+  blocked: GovernanceBlock[],
+): GateCheck[] {
+  const blockedByKey = new Map(blocked.map(b => [b.controlKey, b]))
+  return controlsReferenced(overlay).map(controlKey => {
+    const block = blockedByKey.get(controlKey)
+    const binding = bindings[controlKey]
+    if (waived.has(controlKey)) {
+      return { controlKey, status: 'WAIVED', bindingType: binding?.type, source: 'waiver' }
+    }
+    if (satisfied.has(controlKey)) {
+      return { controlKey, status: 'SATISFIED', bindingType: binding?.type, source: binding ? 'binding' : 'context' }
+    }
+    if (block) {
+      return { controlKey, status: 'BLOCKED', mode: block.mode, reason: block.reason, bindingType: binding?.type, source: binding ? 'binding' : 'missing' }
+    }
+    return { controlKey, status: 'MISSING', bindingType: binding?.type, source: binding ? 'binding' : 'missing' }
+  })
 }
 
 /** APPROVED, unexpired waivers scoped to this specific node (complements work-item waivers). */
@@ -181,7 +372,15 @@ async function blockNode(
       },
     }),
   ]), tenantId)
-  await logEvent(eventType, 'WorkflowNode', node.id, actorId, { instanceId: instance.id, output })
+  const eventId = await logEvent(eventType, 'WorkflowNode', node.id, actorId, { instanceId: instance.id, output })
+  await createReceipt('GOVERNANCE_GATE_EVIDENCE', 'WorkflowNode', node.id, {
+    instanceId: instance.id,
+    nodeId: node.id,
+    status: output.governanceGate.status,
+    mode: output.governanceGate.mode,
+    checks: output.governanceGate.checks,
+    blocked: output.governanceGate.blocked,
+  }, eventId).catch(() => undefined)
   await publishOutbox('WorkflowNode', node.id, eventType, { instanceId: instance.id, nodeId: node.id, output })
 }
 
@@ -193,7 +392,15 @@ async function emitNonBlock(
   actorId?: string,
 ): Promise<void> {
   const eventType = status === 'WARNED' ? 'GovernanceGateWarned' : 'GovernanceGatePassed'
-  await logEvent(eventType, 'WorkflowNode', node.id, actorId, { instanceId: instance.id, output })
+  const eventId = await logEvent(eventType, 'WorkflowNode', node.id, actorId, { instanceId: instance.id, output })
+  await createReceipt('GOVERNANCE_GATE_EVIDENCE', 'WorkflowNode', node.id, {
+    instanceId: instance.id,
+    nodeId: node.id,
+    status: output.governanceGate.status,
+    mode: output.governanceGate.mode,
+    checks: output.governanceGate.checks,
+    blocked: output.governanceGate.blocked,
+  }, eventId).catch(() => undefined)
   await publishOutbox('WorkflowNode', node.id, eventType, { instanceId: instance.id, nodeId: node.id, output })
 }
 
@@ -258,14 +465,58 @@ async function openWaiverApproval(
   return { waiverIds, approvalId: appr?.id ?? undefined }
 }
 
+async function openManualApproval(
+  instance: WorkflowInstance,
+  node: WorkflowNode,
+  output: GovernanceGateOutput,
+  governingCapabilityId?: string,
+  actorId?: string,
+): Promise<string | undefined> {
+  const tenantId = instance.tenantId ?? undefined
+  const existing = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest
+    .findFirst({
+      where: {
+        instanceId: instance.id,
+        nodeId: node.id,
+        subjectType: 'WorkflowNode',
+        subjectId: node.id,
+        status: 'PENDING',
+      },
+      select: { id: true },
+    }), tenantId)
+    .catch(() => null)
+  if (existing) return existing.id
+  const created = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest
+    .create({
+      data: {
+        instanceId: instance.id,
+        nodeId: node.id,
+        subjectType: 'WorkflowNode',
+        subjectId: node.id,
+        requestedById: actorId ?? instance.createdById ?? 'system',
+        assignmentMode: 'ROLE_BASED',
+        roleKey: 'governance',
+        capabilityId: governingCapabilityId ?? null,
+        formData: {
+          governanceGate: output.governanceGate,
+          message: 'Manual governance review is required before this workflow may proceed.',
+        } as unknown as Prisma.InputJsonValue,
+      },
+    }), tenantId)
+    .catch(() => null)
+  return created?.id
+}
+
 export async function activateGovernanceGate(
   node: WorkflowNode,
   instance: WorkflowInstance,
   actorId?: string,
 ): Promise<{ passed: boolean; output: GovernanceGateOutput }> {
   const context = (isRecord(instance.context) ? instance.context : {}) as Record<string, unknown>
-  const mode = ((cfgString(node, 'mode') ?? 'HARD_BLOCK').toUpperCase() as GateMode)
+  const mode = normalizeGovernanceGateMode(cfgString(node, 'mode'))
   const failClosed = cfgBool(node, 'failClosedOnResolveError', true)
+  const localControls = localControlsFromConfig(node)
+  const local = localOverlayFromControls(localControls)
   const capabilityId =
     cfgString(node, 'governingCapabilityId') ??
     cfgString(node, 'capabilityId') ??
@@ -284,25 +535,32 @@ export async function activateGovernanceGate(
       blocked: [],
       findings: [],
       evidenceRefs: [],
+      checks: [],
+      localControlCount: localControls.length,
       ...over,
     },
   })
 
-  // No governing capability configured → nothing to enforce.
-  if (!capabilityId) {
+  // No governing capability and no local controls configured → nothing to enforce.
+  if (!capabilityId && !local.overlay) {
     const output = baseOut({ status: 'SKIPPED', note: 'no governing capability configured' })
     await emitNonBlock('SKIPPED', instance, node, output, actorId)
     return { passed: true, output }
   }
 
-  const ctx: GovernanceResolveContext = {
-    capability_id: capabilityId,
-    node_id: node.id,
-    workflow_id: workflowId,
-    stage_key: cfgString(node, 'stageKey'),
-    agent_role: cfgString(node, 'agentRole'),
-  }
-  const overlay = (await resolveGovernance(ctx).catch(() => null)) as GovernanceOverlay | null
+  const ctx: GovernanceResolveContext | null = capabilityId
+    ? {
+        capability_id: capabilityId,
+        node_id: node.id,
+        workflow_id: workflowId,
+        stage_key: cfgString(node, 'stageKey'),
+        agent_role: cfgString(node, 'agentRole'),
+      }
+    : null
+  const resolvedOverlay = ctx
+    ? (await resolveGovernance(ctx).catch(() => null)) as GovernanceOverlay | null
+    : null
+  const overlay = mergeOverlays(local.overlay, resolvedOverlay)
 
   // Overlay unresolved (IAM unavailable / no governance attached).
   if (!overlay) {
@@ -323,13 +581,29 @@ export async function activateGovernanceGate(
     return { passed: true, output }
   }
 
-  const overlaySnapshotId = await snapshotOverlay({
-    workItemId,
-    workflowInstanceId: instance.id,
-    workflowNodeId: node.id,
-    governedCapabilityId: capabilityId,
-    overlay,
-  })
+  if (capabilityId && !resolvedOverlay && failClosed && mode === 'HARD_BLOCK') {
+    const blocked: GovernanceBlock[] = [{
+      controlKey: 'GOVERNANCE_RESOLVE',
+      kind: 'control',
+      mode: 'BLOCKING',
+      reason: 'governance overlay could not be resolved (IAM unavailable); failing closed',
+      waivable: false,
+    }]
+    const checks = gateChecks(overlay, { ...readBindingMap(node), ...local.bindings, ...bindingsFromOverlay(overlay) }, new Set(), new Set(), blocked)
+    const output = baseOut({ status: 'BLOCKED', blocked, findings: blocked, checks })
+    await blockNode(instance, node, output, actorId)
+    return { passed: false, output }
+  }
+
+  const overlaySnapshotId = capabilityId
+    ? await snapshotOverlay({
+        workItemId,
+        workflowInstanceId: instance.id,
+        workflowNodeId: node.id,
+        governedCapabilityId: capabilityId,
+        overlay,
+      })
+    : undefined
 
   // Optional: mirror the run's evidence (DB source-of-truth) to the work-item git
   // branch before evaluating, so the EVIDENCE_PACK_* controls verify a freshly
@@ -346,7 +620,7 @@ export async function activateGovernanceGate(
   // v1 base (context-stamped) ∪ v2 evidence-bound controls (receipts/evaluators/formal/artifacts).
   const base = collectSatisfied(context, node)
   // Bindings: node config is the fallback; the IAM overlay (governing body) wins.
-  const bindings = { ...readBindingMap(node), ...bindingsFromOverlay(overlay) }
+  const bindings = { ...readBindingMap(node), ...local.bindings, ...bindingsFromOverlay(overlay) }
   const satisfied = await resolveSatisfiedControls(overlay, bindings, base, makeEvidenceChecker(instance, node, actorId))
   const waivedKeys = [
     ...(workItemId ? await activeWaiverControlKeys(workItemId).catch(() => []) : []),
@@ -357,7 +631,8 @@ export async function activateGovernanceGate(
   const blocked = evaluateGovernanceBlock(overlay, satisfied, waived)
   const effectiveMode = String(overlay.effectiveMode ?? 'ADVISORY').toUpperCase()
 
-  const status = decideGateStatus(blocked, mode) as GateStatus
+  const status = (mode === 'MANUAL_REVIEW' ? 'APPROVAL_REQUESTED' : decideGateStatus(blocked, mode)) as GateStatus
+  const checks = gateChecks(overlay, bindings, satisfied, waived, blocked)
 
   const gate: GovernanceGateOutput['governanceGate'] = {
     status,
@@ -369,13 +644,21 @@ export async function activateGovernanceGate(
     waived: [...waived],
     blocked,
     findings: blocked,
-    evidenceRefs: [],
+    evidenceRefs: checks.map(c => `${c.controlKey}:${c.status}${c.bindingType ? `:${c.bindingType}` : ''}`),
+    checks,
+    localControlCount: localControls.length,
+    overlayControlCount: Math.max(0, controlsReferenced(overlay).length - localControls.length),
+    formalVerifierUsed: checks.some(c => c.bindingType === 'formal'),
   }
 
   if (status === 'APPROVAL_REQUESTED') {
-    const opened = await openWaiverApproval(instance, node, capabilityId, blocked, workItemId, actorId)
-    gate.waiverRequestIds = opened.waiverIds
-    gate.approvalRequestId = opened.approvalId
+    if (mode === 'AUTOMATIC' && capabilityId) {
+      const opened = await openWaiverApproval(instance, node, capabilityId, blocked, workItemId, actorId)
+      gate.waiverRequestIds = opened.waiverIds
+      gate.approvalRequestId = opened.approvalId
+    } else {
+      gate.approvalRequestId = await openManualApproval(instance, node, { governanceGate: gate }, capabilityId, actorId)
+    }
   }
   const output: GovernanceGateOutput = { governanceGate: gate }
 

@@ -702,8 +702,10 @@ function StepCard({
           {isActive && node.nodeType !== 'WORK_ITEM' && node.nodeType !== 'WORKBENCH_TASK' && node.nodeType !== 'CALL_WORKFLOW' && node.nodeType !== 'APPROVAL' && (!fillKind || !hasFormWidgets) && (
             <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.20)' }}>
               <p style={{ fontSize: 11, color: '#0c4a6e' }}>
-                {node.nodeType === 'AGENT_TASK'
-                  ? 'This agent stage runs on its own (e.g. Copilot does the work in the repo), then waits HERE for your review — it does not auto-advance. Click “Artifacts” to see what it produced, then “Complete & advance” to move to the next stage, or “Restart stage” to rework it.'
+                {node.nodeType === 'DIRECT_LLM_TASK'
+                  ? 'This direct LLM stage runs inside WorkGraph API and bypasses Context Fabric/MCP. When review is required, inspect the generated artifact and then complete or restart the stage.'
+                  : node.nodeType === 'AGENT_TASK'
+                    ? 'This agent stage runs on its own (e.g. Copilot does the work in the repo), then waits HERE for your review — it does not auto-advance. Click “Artifacts” to see what it produced, then “Complete & advance” to move to the next stage, or “Restart stage” to rework it.'
                   : 'Waiting for the runtime to advance. HUMAN_TASK / APPROVAL nodes show a form-fill here when they’re claimable; automated nodes complete on their own.'}
               </p>
             </div>
@@ -1648,6 +1650,9 @@ function blockingDetailsForNode(
     node.nodeType === 'GIT_PUSH' ? '_blockedByGitPush' :
     node.nodeType === 'POLICY_CHECK' ? '_blockedByPolicyCheck' :
     node.nodeType === 'EVAL_GATE' ? '_blockedByEvalGate' :
+    node.nodeType === 'GOVERNANCE_GATE' ? '_blockedByGovernanceGate' :
+    node.nodeType === 'VERIFIER' ? '_blockedByVerifier' :
+    ['DECISION_GATE', 'INCLUSIVE_GATEWAY'].includes(node.nodeType) ? '_blockedByPathStall' :
     ''
   const direct = blockKey ? asRecord(context[blockKey]) : {}
   const fallback = Object.entries(context)
@@ -1886,9 +1891,18 @@ const STATUS_VISUAL = RUN_STATUS
 type RunNode = {
   id: string; nodeType: string; label: string; status: string;
   config: Record<string, unknown>;
+  positionX?: number;
+  positionY?: number;
   createdAt?: string;
 }
-type RunEdge = { id: string; sourceNodeId: string; targetNodeId: string; edgeType: string }
+type RunEdge = {
+  id: string
+  sourceNodeId: string
+  targetNodeId: string
+  edgeType: string
+  label?: string | null
+  condition?: Record<string, unknown> | null
+}
 
 type ApprovalRow = {
   id: string

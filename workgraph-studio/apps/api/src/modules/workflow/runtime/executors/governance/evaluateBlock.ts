@@ -13,7 +13,7 @@
 export interface GovernanceOverlay {
   /** Default mode applied to requiredEvidence entries that omit their own. */
   effectiveMode?: string
-  requiredEvidence?: Array<{ evidenceKey?: string; mode?: string; stageKey?: string }>
+  requiredEvidence?: Array<{ evidenceKey?: string; mode?: string; stageKey?: string; reason?: string }>
   blockingControls?: Array<{ controlKey?: string; reason?: string; sourceCapabilityId?: string }>
   /** Stable hash of the resolved overlay; used to snapshot what applied. */
   overlayHash?: string
@@ -49,7 +49,7 @@ export function evaluateGovernanceBlock(
         controlKey: key,
         kind: 'evidence',
         mode,
-        reason: `required evidence '${key}' not satisfied`,
+        reason: ev.reason ?? `required evidence '${key}' not satisfied`,
         stageKey: ev.stageKey,
         waivable: true,
       })

@@ -1572,7 +1572,7 @@ workflowTemplatesRouter.post('/import-bpmn', async (req, res, next) => {
 // ─── BPMN helpers ─────────────────────────────────────────────────────────────
 
 const BPMN_NODE_MAP: Record<string, string> = {
-  HUMAN_TASK: 'userTask', AGENT_TASK: 'serviceTask', WORKBENCH_TASK: 'serviceTask', APPROVAL: 'userTask',
+  HUMAN_TASK: 'userTask', AGENT_TASK: 'serviceTask', DIRECT_LLM_TASK: 'serviceTask', WORKBENCH_TASK: 'serviceTask', APPROVAL: 'userTask',
   TOOL_REQUEST: 'serviceTask', GIT_PUSH: 'serviceTask', POLICY_CHECK: 'serviceTask', EVAL_GATE: 'serviceTask', DATA_SINK: 'serviceTask',
   CONSUMABLE_CREATION: 'serviceTask', CALL_WORKFLOW: 'callActivity', WORK_ITEM: 'serviceTask',
   FOREACH: 'subProcess', TIMER: 'intermediateCatchEvent',

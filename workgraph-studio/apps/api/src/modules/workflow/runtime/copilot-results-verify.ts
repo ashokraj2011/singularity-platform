@@ -62,8 +62,11 @@ export function buildCopilotResultsVerdict(payload: CopilotResultsPayload, check
   const commitSha = str(git.commitSha) ?? str(git.commit_sha)
   const pushed = Boolean(branch || commitSha)
 
-  // Reported changed files: git.status (array) ∪ each stage.changedFiles.
+  // Reported changed files: git.changedFiles / legacy git.status (array) ∪ each
+  // stage.changedFiles. The exporter now writes both names; keep status for
+  // older runner payloads already in the wild.
   const reportedChanged = new Set<string>()
+  if (Array.isArray(git.changedFiles)) for (const f of git.changedFiles) if (typeof f === 'string') reportedChanged.add(f)
   if (Array.isArray(git.status)) for (const f of git.status) if (typeof f === 'string') reportedChanged.add(f)
   for (const s of payload.stages ?? []) for (const f of s.changedFiles ?? []) reportedChanged.add(f)
 

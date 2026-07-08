@@ -15,7 +15,7 @@ import {
   Clock, Radio, RadioTower, Workflow, Repeat, Shuffle, Zap,
   Sun, Moon, Box, X, ArrowLeft, ZoomIn, ZoomOut, Maximize2,
   Star, Briefcase as BriefcaseIcon, Database, Globe, Mail, Phone,
-  Calendar, AlertTriangle, Search, Filter, Activity, Coins,
+  Calendar, AlertTriangle, Search, Filter, Activity, Coins, Cpu,
   SlidersHorizontal, Plus, Trash2, GitFork, ShieldAlert,
   Minimize2, GripVertical, HelpCircle, BookOpen, ChevronDown, Lock, Download, Braces, PenLine, Network, Terminal, Send,
 } from 'lucide-react'
@@ -60,6 +60,7 @@ const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType }> = 
   SERVER_TIME_INIT:    { color: DOMAIN.start, Icon: Clock },
   // agent / AI work
   AGENT_TASK:          { color: DOMAIN.agent, Icon: Bot },
+  DIRECT_LLM_TASK:     { color: DOMAIN.agent, Icon: Cpu },
   WORKBENCH_TASK:      { color: DOMAIN.agent, Icon: Braces },
   // human
   HUMAN_TASK:          { color: DOMAIN.human, Icon: User },
@@ -139,7 +140,7 @@ function nodeShapeStyle(shape: NodeShape): {
 
 const NODE_LABELS: Record<string, string> = {
   START: 'Start', END: 'End',
-  HUMAN_TASK: 'Human Task', AGENT_TASK: 'Agent Task', WORKBENCH_TASK: 'Workbench Task', APPROVAL: 'Approval',
+  HUMAN_TASK: 'Human Task', AGENT_TASK: 'Agent Task', DIRECT_LLM_TASK: 'Direct LLM Task', WORKBENCH_TASK: 'Workbench Task', APPROVAL: 'Approval',
   DECISION_GATE: 'Decision Gate', CONSUMABLE_CREATION: 'Create Artifact',
   TOOL_REQUEST: 'Tool Request', CREATE_BRANCH: 'Create Branch', GIT_PUSH: 'Git Push', RAISE_PR: 'Raise PR', POLICY_CHECK: 'Policy Check', EVAL_GATE: 'Eval Gate', VERIFIER: 'Verifier', GOVERNANCE_GATE: 'Governance Gate',
   TIMER: 'Timer', SIGNAL_WAIT: 'Signal Wait', SIGNAL_EMIT: 'Signal Emit',
@@ -333,7 +334,7 @@ const SERVER_TIME_INIT_NODE_CONFIG = {
 
 const NODE_GROUPS: Array<{ label: string; types: string[] }> = [
   { label: 'Start & Triggers', types: ['START', 'END'] },
-  { label: 'Work & Agents', types: ['AGENT_TASK', 'WORKBENCH_TASK'] },
+  { label: 'Work & Agents', types: ['AGENT_TASK', 'DIRECT_LLM_TASK', 'WORKBENCH_TASK'] },
   { label: 'Human Review', types: ['HUMAN_TASK', 'APPROVAL'] },
   { label: 'Decisions', types: ['DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'FOREACH'] },
   { label: 'Data & Integration', types: ['WORK_ITEM', 'CONSUMABLE_CREATION', 'SET_CONTEXT', 'DATA_SINK', 'EVENT_EMIT'] },
@@ -405,18 +406,77 @@ type WorkflowOutput = {
   outputType?: string
 }
 
+type ValidationEdge = {
+  id?: string
+  source: string
+  target: string
+  edgeType?: string
+  label?: string
+  condition?: Record<string, unknown> | null
+}
+
+const BRANCH_OPS = new Set([
+  '==', '!=', '>', '>=', '<', '<=',
+  'contains', 'not_contains',
+  'in', 'not_in',
+  'exists', 'not_exists',
+  'starts_with', 'ends_with',
+])
+
+function validationField(cfg: Record<string, unknown>, key: string): unknown {
+  const std = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard)
+    ? cfg.standard as Record<string, unknown>
+    : {}
+  return cfg[key] ?? std[key]
+}
+
+function isDefaultBranch(edge: ValidationEdge): boolean {
+  return edge.condition?.isDefault === true
+}
+
+function branchConditions(edge: ValidationEdge): Record<string, unknown>[] {
+  const condition = edge.condition ?? {}
+  if (Array.isArray(condition.conditions)) return condition.conditions.filter(c => c && typeof c === 'object' && !Array.isArray(c)) as Record<string, unknown>[]
+  if (typeof condition.field === 'string' || typeof condition.left === 'string') {
+    return [{
+      left: condition.left ?? condition.field,
+      op: condition.op,
+      right: condition.right ?? condition.value,
+    }]
+  }
+  return []
+}
+
 function validateWorkflow(
   nodes: { id: string; data: { label: string; nodeType: string; config?: Record<string, unknown> } }[],
-  edges: { source: string; target: string }[],
+  edges: ValidationEdge[],
 ): { issues: ValidationIssue[]; outputs: WorkflowOutput[] } {
   const issues: ValidationIssue[] = []
 
-  const outgoing = new Map<string, string[]>()
-  const incoming = new Map<string, string[]>()
+  const byId = new Map(nodes.map(n => [n.id, n]))
+  const outgoing = new Map<string, ValidationEdge[]>()
+  const incoming = new Map<string, ValidationEdge[]>()
   for (const n of nodes) { outgoing.set(n.id, []); incoming.set(n.id, []) }
+  const edgeKeys = new Set<string>()
   for (const e of edges) {
-    outgoing.get(e.source)?.push(e.target)
-    incoming.get(e.target)?.push(e.source)
+    if (!byId.has(e.source)) {
+      issues.push({ severity: 'error', code: 'EDGE_SOURCE_MISSING', message: `An edge references a missing source node (${e.source}).` })
+      continue
+    }
+    if (!byId.has(e.target)) {
+      issues.push({ severity: 'error', code: 'EDGE_TARGET_MISSING', message: `An edge references a missing target node (${e.target}).`, nodeId: e.source })
+      continue
+    }
+    if (e.source === e.target) {
+      issues.push({ severity: 'error', code: 'SELF_LOOP', message: `"${byId.get(e.source)?.data.label ?? e.source}" connects to itself. Self-loops are not supported.`, nodeId: e.source })
+    }
+    const key = `${e.source}->${e.target}`
+    if (edgeKeys.has(key)) {
+      issues.push({ severity: 'warning', code: 'DUPLICATE_EDGE', message: `"${byId.get(e.source)?.data.label ?? e.source}" has duplicate edges to "${byId.get(e.target)?.data.label ?? e.target}". Keep one edge or make the branches distinct.`, nodeId: e.source })
+    }
+    edgeKeys.add(key)
+    outgoing.get(e.source)?.push(e)
+    incoming.get(e.target)?.push(e)
   }
 
   const sourceNodes = nodes.filter(n => SOURCE_NODE_TYPES.has(n.data.nodeType))
@@ -434,6 +494,9 @@ function validateWorkflow(
   }
 
   for (const n of sourceNodes) {
+    if ((incoming.get(n.id) ?? []).length > 0) {
+      issues.push({ severity: 'error', code: 'START_HAS_INCOMING', message: `"${n.data.label}" (Start) has incoming edges. Start nodes must be workflow entry points.`, nodeId: n.id })
+    }
     if ((outgoing.get(n.id) ?? []).length === 0) {
       issues.push({ severity: 'error', code: 'START_NO_OUTGOING', message: `"${n.data.label}" (Start) has no outgoing edges — nothing will execute.`, nodeId: n.id })
     }
@@ -442,6 +505,9 @@ function validateWorkflow(
   for (const n of terminalNodes) {
     if ((incoming.get(n.id) ?? []).length === 0) {
       issues.push({ severity: 'error', code: 'TERMINAL_NO_INCOMING', message: `"${n.data.label}" (${NODE_LABELS[n.data.nodeType] ?? n.data.nodeType}) has no incoming edges — it is unreachable.`, nodeId: n.id })
+    }
+    if ((outgoing.get(n.id) ?? []).length > 0) {
+      issues.push({ severity: 'error', code: 'TERMINAL_HAS_OUTGOING', message: `"${n.data.label}" (${NODE_LABELS[n.data.nodeType] ?? n.data.nodeType}) has outgoing edges. Terminal nodes must end the path.`, nodeId: n.id })
     }
   }
 
@@ -465,7 +531,7 @@ function validateWorkflow(
       const id = queue.shift()!
       if (visited.has(id)) continue
       visited.add(id)
-      for (const next of outgoing.get(id) ?? []) queue.push(next)
+      for (const next of outgoing.get(id) ?? []) queue.push(next.target)
     }
     for (const n of nodes) {
       if (!visited.has(n.id) && !SOURCE_NODE_TYPES.has(n.data.nodeType)) {
@@ -477,10 +543,16 @@ function validateWorkflow(
   // ── Warning rules ──
   for (const n of nodes) {
     const cfg = n.data.config ?? {}
-    const std = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard)
-      ? cfg.standard as Record<string, unknown>
-      : {}
-    const field = (key: string) => cfg[key] ?? std[key]
+    const field = (key: string) => validationField(cfg, key)
+    const executionLocation = String(field('executionLocation') ?? 'SERVER').toUpperCase()
+    if (executionLocation !== 'SERVER') {
+      issues.push({
+        severity: 'warning',
+        code: 'EXECUTION_LOCATION_REQUIRES_RUNNER',
+        message: `"${n.data.label}" runs at ${executionLocation}. It will create a PendingExecution and needs a client/edge/external runner to claim it${executionLocation === 'EXTERNAL' ? ' or a configured webhookUrl' : ''}.`,
+        nodeId: n.id,
+      })
+    }
     if (n.data.nodeType === 'START') {
       const triggerType = String(field('triggerType') ?? 'MANUAL').toUpperCase()
       if (triggerType === 'SCHEDULE' && !field('scheduleCron')) {
@@ -495,6 +567,9 @@ function validateWorkflow(
     }
     if (n.data.nodeType === 'AGENT_TASK' && !field('agentId') && !field('agentTemplateId')) {
       issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Agent Task) has no agent selected.`, nodeId: n.id })
+    }
+    if (n.data.nodeType === 'DIRECT_LLM_TASK' && !field('task') && !field('prompt')) {
+      issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Direct LLM Task) has no task prompt configured.`, nodeId: n.id })
     }
     if (n.data.nodeType === 'WORKBENCH_TASK') {
       for (const message of validateWorkbenchConfig(cfg)) {
@@ -511,9 +586,75 @@ function validateWorkflow(
       issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Signal Emit) has no signal name configured.`, nodeId: n.id })
     }
     if (n.data.nodeType === 'DECISION_GATE') {
-      const outCount = (outgoing.get(n.id) ?? []).length
+      const outgoingBranches = outgoing.get(n.id) ?? []
+      const outCount = outgoingBranches.length
       if (outCount < 2) {
         issues.push({ severity: 'warning', code: 'DECISION_ONE_BRANCH', message: `"${n.data.label}" (Decision Gate) has only ${outCount} outgoing branch — add at least 2 conditional edges.`, nodeId: n.id })
+      }
+      const defaults = outgoingBranches.filter(isDefaultBranch)
+      if (defaults.length === 0 && outgoingBranches.length > 0) {
+        issues.push({ severity: 'warning', code: 'DECISION_NO_DEFAULT', message: `"${n.data.label}" has no default branch. If no condition matches at runtime, the run will pause as a Path Stall.`, nodeId: n.id })
+      }
+      if (defaults.length > 1) {
+        issues.push({ severity: 'error', code: 'MULTIPLE_DEFAULT_BRANCHES', message: `"${n.data.label}" has ${defaults.length} default branches. Keep exactly one fallback branch.`, nodeId: n.id })
+      }
+      for (const edge of outgoingBranches.filter(e => !isDefaultBranch(e))) {
+        const conditions = branchConditions(edge)
+        if (conditions.length === 0) {
+          issues.push({ severity: 'warning', code: 'BRANCH_CONDITION_MISSING', message: `"${n.data.label}" has a conditional branch with no condition. It may never be selected as intended.`, nodeId: n.id })
+          continue
+        }
+        for (const condition of conditions) {
+          const left = String(condition.left ?? '').trim()
+          const op = String(condition.op ?? '').trim()
+          const needsRight = !['exists', 'not_exists'].includes(op)
+          if (!left || !BRANCH_OPS.has(op) || (needsRight && condition.right === undefined)) {
+            issues.push({ severity: 'error', code: 'BRANCH_CONDITION_INVALID', message: `"${n.data.label}" has an invalid branch condition. Use a field path, a supported operator, and a right-side value when required.`, nodeId: n.id })
+          }
+        }
+      }
+    }
+    if (n.data.nodeType === 'INCLUSIVE_GATEWAY') {
+      const outgoingBranches = outgoing.get(n.id) ?? []
+      const defaults = outgoingBranches.filter(isDefaultBranch)
+      if (outgoingBranches.length < 1) {
+        issues.push({ severity: 'error', code: 'INCLUSIVE_NO_BRANCHES', message: `"${n.data.label}" (Inclusive Gateway) needs at least one outgoing branch.`, nodeId: n.id })
+      }
+      if (defaults.length === 0 && outgoingBranches.length > 0) {
+        issues.push({ severity: 'warning', code: 'INCLUSIVE_NO_DEFAULT', message: `"${n.data.label}" has no default branch. If no condition matches at runtime, the run will pause as a Path Stall.`, nodeId: n.id })
+      }
+      if (defaults.length > 1) {
+        issues.push({ severity: 'error', code: 'MULTIPLE_DEFAULT_BRANCHES', message: `"${n.data.label}" has ${defaults.length} default branches. Keep exactly one fallback branch.`, nodeId: n.id })
+      }
+      for (const edge of outgoingBranches.filter(e => !isDefaultBranch(e))) {
+        const conditions = branchConditions(edge)
+        if (conditions.length === 0) {
+          issues.push({ severity: 'warning', code: 'BRANCH_CONDITION_MISSING', message: `"${n.data.label}" has a conditional branch with no condition. It may never be selected as intended.`, nodeId: n.id })
+          continue
+        }
+        for (const condition of conditions) {
+          const left = String(condition.left ?? '').trim()
+          const op = String(condition.op ?? '').trim()
+          const needsRight = !['exists', 'not_exists'].includes(op)
+          if (!left || !BRANCH_OPS.has(op) || (needsRight && condition.right === undefined)) {
+            issues.push({ severity: 'error', code: 'BRANCH_CONDITION_INVALID', message: `"${n.data.label}" has an invalid branch condition. Use a field path, a supported operator, and a right-side value when required.`, nodeId: n.id })
+          }
+        }
+      }
+    }
+    if (n.data.nodeType === 'PARALLEL_FORK') {
+      const outCount = (outgoing.get(n.id) ?? []).length
+      if (outCount < 2) {
+        issues.push({ severity: 'warning', code: 'FORK_ONE_BRANCH', message: `"${n.data.label}" (Parallel Fork) has ${outCount} outgoing branch. Parallel forks are useful with 2 or more branches.`, nodeId: n.id })
+      }
+    }
+    if (n.data.nodeType === 'PARALLEL_JOIN') {
+      const expected = Number(field('expectedBranches') ?? field('expected_joins') ?? 0)
+      const incomingCount = (incoming.get(n.id) ?? []).length
+      if (!Number.isFinite(expected) || expected <= 0) {
+        issues.push({ severity: 'warning', code: 'JOIN_EXPECTED_MISSING', message: `"${n.data.label}" (Parallel Join) should set Expected branches so it knows when to continue.`, nodeId: n.id })
+      } else if (incomingCount > 0 && expected !== incomingCount) {
+        issues.push({ severity: 'warning', code: 'JOIN_EXPECTED_MISMATCH', message: `"${n.data.label}" expects ${expected} branch${expected === 1 ? '' : 'es'} but has ${incomingCount} incoming edge${incomingCount === 1 ? '' : 's'}.`, nodeId: n.id })
       }
     }
   }
@@ -602,6 +743,7 @@ const NODE_DESCRIPTIONS: Record<string, string> = {
   END: 'Finish the workflow and mark the run complete.',
   HUMAN_TASK: 'Ask a person to complete work, review information, or make a decision.',
   AGENT_TASK: 'Assign a focused task to an AI agent with a clear output contract.',
+  DIRECT_LLM_TASK: 'Call an LLM directly from WorkGraph API without Context Fabric or MCP.',
   WORKBENCH_TASK: 'Run a dynamic agent-stage workbench and return the approved final pack.',
   APPROVAL: 'Pause for explicit human approval before continuing.',
   DECISION_GATE: 'Choose one path based on workflow data or prior outputs.',
@@ -1206,6 +1348,7 @@ const NODE_HELP_SECTIONS = [
 const NODE_USAGE_TIPS: Record<string, string> = {
   HUMAN_TASK:        'Set a due date and assignee. Use role field to filter by team role.',
   AGENT_TASK:        'Downstream nodes read output via output.agentResponse. Requires human review in v1.',
+  DIRECT_LLM_TASK:   'Use only for explicit server-side model calls. Secrets are env-var names; this bypasses CF/MCP governance.',
   WORKBENCH_TASK:    'Opens a modal workbench loop and completes only after the final pack is approved.',
   APPROVAL:          'Set Min Approvals > 1 for committee gates. Use Escalate To for timeout handling.',
   DECISION_GATE:     'Write JS expressions like output.score > 0.8 or context.status == "active".',
@@ -2918,10 +3061,32 @@ export function WorkflowStudioPage() {
   }, [])
 
   const onConnect = useCallback((connection: Connection) => {
+    if (!connection.source || !connection.target) return
+    const sourceNode = rfNodes.find(n => n.id === connection.source)
+    const targetNode = rfNodes.find(n => n.id === connection.target)
+    const reject = (issue: ValidationIssue) => {
+      setValidationResult({ issues: [issue], outputs: [] })
+      setValidateOpen(true)
+    }
+    if (connection.source === connection.target) {
+      reject({ severity: 'error', code: 'SELF_LOOP', message: 'A node cannot connect to itself. Add a downstream step or remove the connection.', nodeId: connection.source })
+      return
+    }
+    if (rfEdges.some(edge => edge.source === connection.source && edge.target === connection.target)) {
+      reject({ severity: 'warning', code: 'DUPLICATE_EDGE', message: 'That connection already exists. Edit the existing edge branch condition instead of adding a duplicate.', nodeId: connection.source })
+      return
+    }
+    if (targetNode && SOURCE_NODE_TYPES.has(targetNode.data.nodeType)) {
+      reject({ severity: 'error', code: 'START_HAS_INCOMING', message: 'Start nodes cannot have incoming connections.', nodeId: targetNode.id })
+      return
+    }
+    if (sourceNode && TERMINAL_NODE_TYPES.has(sourceNode.data.nodeType)) {
+      reject({ severity: 'error', code: 'TERMINAL_HAS_OUTGOING', message: `${NODE_LABELS[sourceNode.data.nodeType] ?? sourceNode.data.nodeType} nodes must end the path and cannot connect to another node.`, nodeId: sourceNode.id })
+      return
+    }
     setRfEdges(eds => addEdge({ ...connection, style: { stroke: edgeStroke, strokeWidth: 2 } }, eds))
-    if (connection.source && connection.target) {
+    {
       // Decision nodes auto-get CONDITIONAL edges
-      const sourceNode = rfNodes.find(n => n.id === connection.source)
       const isDecision = sourceNode && ['DECISION_GATE', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY'].includes(sourceNode.data.nodeType)
       addEdgeMutation.mutate({
         sourceNodeId: connection.source,
@@ -2931,7 +3096,6 @@ export function WorkflowStudioPage() {
       // Auto-inherit: seed the target's inputs from the source's outputs, but
       // only when the target has none yet (non-destructive; each stays editable
       // and carries the source's bindingPath so the context wiring is real).
-      const targetNode = rfNodes.find(n => n.id === connection.target)
       if (sourceNode && targetNode) {
         const targetCfg = normalizeConfig(targetNode.data.config)
         const srcOutputs = normalizeConfig(sourceNode.data.config).outputArtifacts
@@ -2947,7 +3111,7 @@ export function WorkflowStudioPage() {
         }
       }
     }
-  }, [setRfEdges, addEdgeMutation, edgeStroke, rfNodes, patchNode, setRfNodes])
+  }, [setRfEdges, addEdgeMutation, edgeStroke, rfNodes, rfEdges, patchNode, setRfNodes])
 
   const onNodeDragStop = useCallback((_: React.MouseEvent, node: Node) => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
@@ -3543,7 +3707,14 @@ export function WorkflowStudioPage() {
                 const result = validateWorkflow(rfNodes.map(n => ({
                   id: n.id,
                   data: { label: n.data.label, nodeType: n.data.nodeType, config: n.data.config as Record<string, unknown> | undefined },
-                })), rfEdges.map(e => ({ source: e.source, target: e.target })))
+                })), rfEdges.map(e => ({
+                  id: e.id,
+                  source: e.source,
+                  target: e.target,
+                  label: typeof e.label === 'string' ? e.label : undefined,
+                  edgeType: (e.data as { edgeType?: string } | undefined)?.edgeType,
+                  condition: (e.data as { condition?: Record<string, unknown> | null } | undefined)?.condition ?? null,
+                })))
                 setValidationResult(result)
                 setValidateOpen(true)
               }}
@@ -4077,7 +4248,14 @@ export function WorkflowStudioPage() {
                           const result = validateWorkflow(rfNodes.map(n => ({
                             id: n.id,
                             data: { label: n.data.label, nodeType: n.data.nodeType, config: n.data.config as Record<string, unknown> | undefined },
-                          })), rfEdges.map(e => ({ source: e.source, target: e.target })))
+                          })), rfEdges.map(e => ({
+                            id: e.id,
+                            source: e.source,
+                            target: e.target,
+                            label: typeof e.label === 'string' ? e.label : undefined,
+                            edgeType: (e.data as { edgeType?: string } | undefined)?.edgeType,
+                            condition: (e.data as { condition?: Record<string, unknown> | null } | undefined)?.condition ?? null,
+                          })))
                           setValidationResult(result)
                           setValidateOpen(true)
                         }}

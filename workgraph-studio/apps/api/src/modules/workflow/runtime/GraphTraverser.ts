@@ -1,4 +1,4 @@
-import type { WorkflowInstance, WorkflowNode, WorkflowEdge } from '@prisma/client'
+import { Prisma, type WorkflowInstance, type WorkflowNode, type WorkflowEdge } from '@prisma/client'
 import { prisma } from '../../../lib/prisma'
 import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { evaluateEdge } from './EdgeEvaluator'
@@ -11,8 +11,8 @@ import { logEvent } from '../../../lib/audit'
  *   DECISION_GATE       — XOR (single branch).  Pick the first matching edge in
  *                         priority order; if none match, fire the edge marked
  *                         `condition.isDefault === true`; if no default exists
- *                         a `PathStall` audit event is emitted and **no**
- *                         downstream edges fire.
+ *                         the source gateway is BLOCKED and the run is PAUSED
+ *                         with `_blockedByPathStall` details.
  *   INCLUSIVE_GATEWAY   — OR (one or more).  Fire all matching edges; if none
  *                         match, fire the default edge if present.
  *   anything else       — Plain fan-out.  Fire all edges that evaluate truthy.
@@ -93,6 +93,58 @@ function expectedJoinCount(cfg: Record<string, unknown>, context: Record<string,
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
 }
 
+async function blockPathStall(
+  instance: WorkflowInstance,
+  completedNode: WorkflowNode,
+  context: Record<string, unknown>,
+  reason: string,
+  edges: EdgeWithMeta[],
+): Promise<void> {
+  const tenantId = instance.tenantId ?? undefined
+  const block = {
+    status: 'BLOCKED',
+    code: 'PATH_STALL',
+    reason,
+    message: reason,
+    sourceNodeId: completedNode.id,
+    sourceNodeLabel: completedNode.label,
+    nodeType: completedNode.nodeType,
+    outgoingEdgeIds: edges.map(e => e.edge.id),
+    retryable: true,
+    fixCommands: [
+      'Open the workflow designer, add a default branch or fix the branch conditions, then restart or force-complete this gate.',
+    ],
+  }
+  await withTenantDbTransaction(prisma, async (tx) => {
+    await tx.workflowNode.update({
+      where: { id: completedNode.id },
+      data: { status: 'BLOCKED', completedAt: new Date() },
+    })
+    await tx.workflowInstance.update({
+      where: { id: instance.id },
+      data: {
+        status: 'PAUSED',
+        context: { ...context, _blockedByPathStall: block } as unknown as Prisma.InputJsonValue,
+      },
+    })
+    await tx.workflowMutation.create({
+      data: {
+        instanceId: instance.id,
+        nodeId: completedNode.id,
+        mutationType: 'PATH_STALL_BLOCKED',
+        beforeState: { status: completedNode.status } as Prisma.InputJsonValue,
+        afterState: block as Prisma.InputJsonValue,
+      },
+    })
+  }, tenantId)
+  await logEvent('PathStallBlocked', 'WorkflowNode', completedNode.id, undefined, {
+    instanceId: instance.id,
+    sourceNodeId: completedNode.id,
+    reason,
+    outgoingEdgeIds: edges.map(e => e.edge.id),
+  })
+}
+
 export async function resolveNextNodes(
   instance: WorkflowInstance,
   completedNode: WorkflowNode,
@@ -117,22 +169,24 @@ export async function resolveNextNodes(
     if (pick) {
       chosen = [pick]
     } else if (meta.length > 0) {
-      // No matching branch + no default → PathStall.  Audit + leave the
-      // workflow in its current state so the caller (failNode/etc) can decide.
-      await logEvent('PathStall', 'WorkflowNode', completedNode.id, undefined, {
-        instanceId: instance.id,
-        sourceNodeId: completedNode.id,
-        reason: 'No matching branch and no default branch on DECISION_GATE',
-      })
+      await blockPathStall(
+        instance,
+        completedNode,
+        context,
+        'No matching branch and no default branch on DECISION_GATE',
+        meta,
+      )
     }
   } else if (completedNode.nodeType === 'INCLUSIVE_GATEWAY') {
     chosen = pickInclusive(meta, context)
     if (chosen.length === 0 && meta.length > 0) {
-      await logEvent('PathStall', 'WorkflowNode', completedNode.id, undefined, {
-        instanceId: instance.id,
-        sourceNodeId: completedNode.id,
-        reason: 'No matching branch and no default branch on INCLUSIVE_GATEWAY',
-      })
+      await blockPathStall(
+        instance,
+        completedNode,
+        context,
+        'No matching branch and no default branch on INCLUSIVE_GATEWAY',
+        meta,
+      )
     }
   } else {
     chosen = pickAllMatching(meta, context)

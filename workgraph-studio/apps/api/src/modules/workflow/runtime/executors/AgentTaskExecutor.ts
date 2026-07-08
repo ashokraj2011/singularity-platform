@@ -649,7 +649,7 @@ export async function activateAgentTask(
       workItemId: realWorkItemId,
       workItemCode: workCode,
       message: `${phaseLabel}: deliverables`,
-      actorId,
+      actorId: instance.createdById ?? undefined,
     }).then((r) => {
       if (!r.ok) {
         void logEvent('PhasePushSkipped', 'WorkflowNode', node.id, instance.createdById ?? undefined, {
