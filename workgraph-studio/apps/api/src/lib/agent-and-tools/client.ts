@@ -248,6 +248,40 @@ export async function getRuntimeCapability(
   }
 }
 
+export type RuntimeCapabilityRepository = {
+  id?: string
+  repoName?: string | null
+  repoUrl?: string | null
+  defaultBranch?: string | null
+  repositoryType?: string | null
+  status?: string | null
+  [k: string]: unknown
+}
+
+// List a capability's linked repositories regardless of status (ACTIVE first).
+// The agent-runtime GET /:id and the list both ACTIVE-filter repos server-side,
+// so this endpoint is the only way to resolve the repo URL of a capability whose
+// repo is still bootstrapping (status !== ACTIVE). Returns [] on any error.
+export async function listRuntimeCapabilityRepositories(
+  capabilityId: string,
+  authHeader?: string,
+): Promise<RuntimeCapabilityRepository[]> {
+  try {
+    const body = await proxyGet(
+      config.AGENT_RUNTIME_URL,
+      `api/v1/capabilities/${encodeURIComponent(capabilityId)}/repositories`,
+      {},
+      authHeader,
+    )
+    const root = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
+    const data = (root.data ?? body) as Record<string, unknown>
+    const repos = (data?.repositories ?? data) as unknown
+    return Array.isArray(repos) ? (repos as RuntimeCapabilityRepository[]) : []
+  } catch {
+    return []
+  }
+}
+
 export async function listAgentTemplates(
   authHeader?: string,
   query: { scope?: 'common' | 'capability' | 'all'; capabilityId?: string; limit?: number } = {},
