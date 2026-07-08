@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
-import { ChevronDown, ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Sparkles, Star } from "lucide-react";
 import {
   advancedRoutes,
   journeyRoutes,
@@ -13,6 +13,7 @@ import {
   type RouteMeta,
   type SidebarSection,
 } from "@/lib/nav/routes";
+import { useFavorites } from "@/lib/nav/favorites";
 
 const menuSections = sidebarSections();
 const journeyItems = journeyRoutes();
@@ -47,6 +48,7 @@ function parseStoredOpenGroups(raw: string | null): Record<string, boolean> {
 }
 
 function NavItem({
+  id,
   label,
   href,
   icon: Icon,
@@ -56,6 +58,9 @@ function NavItem({
   surfaceType,
 }: RouteMeta & { active: boolean; collapsed: boolean }) {
   const accent = surfaceAccent(surfaceType);
+  const { isFavorite, toggleFavorite } = useFavorites();
+  const [hovered, setHovered] = useState(false);
+  const favorite = isFavorite(id);
   return (
     <Link href={href} className="block" aria-current={active ? "page" : undefined}>
       <motion.div
@@ -63,6 +68,8 @@ function NavItem({
         className={`nav-item${active ? " active" : ""}`}
         title={collapsed ? label : undefined}
         style={collapsed ? { padding: "6px", justifyContent: "center" } : undefined}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
       >
         {active && (
           <span
@@ -87,11 +94,10 @@ function NavItem({
         </span>
         {!collapsed && (
           <>
-            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+            <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
             {statusLabel && (
               <span
                 style={{
-                  marginLeft: "auto",
                   borderRadius: 999,
                   border: `1px solid ${accent.border}`,
                   background: accent.bg,
@@ -104,6 +110,36 @@ function NavItem({
                 {statusLabel}
               </span>
             )}
+            <button
+              type="button"
+              aria-label={favorite ? `Remove ${label} from favorites` : `Add ${label} to favorites`}
+              aria-pressed={favorite}
+              title={favorite ? "Remove from favorites" : "Add to favorites"}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleFavorite(id);
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                flexShrink: 0,
+                width: 22,
+                height: 22,
+                marginLeft: 2,
+                padding: 0,
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                color: favorite ? "var(--accent-workflow)" : "var(--color-outline)",
+                // Hover-reveal to keep rows clean; a set favorite stays lit.
+                opacity: favorite ? 1 : hovered ? 0.7 : 0,
+                transition: "opacity 0.12s",
+              }}
+            >
+              <Star size={13} fill={favorite ? "currentColor" : "none"} />
+            </button>
           </>
         )}
       </motion.div>
@@ -182,6 +218,7 @@ export function Sidebar() {
   const [narrowViewport, setNarrowViewport] = useState(false);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const { favoriteRoutes } = useFavorites();
 
   useEffect(() => {
     setCollapsed((current) => parseStoredBoolean(localStorage.getItem("sidebar-collapsed"), current));
@@ -245,6 +282,29 @@ export function Sidebar() {
   const effectiveCollapsed = collapsed || canvasRoute || narrowViewport;
   const sidebarWidth = effectiveCollapsed ? 66 : 264;
   const isActive = (href: string) => activeRoute?.href === href;
+
+  function renderFavorites() {
+    if (favoriteRoutes.length === 0) return null;
+    return (
+      <section
+        className={effectiveCollapsed ? "" : "journey-rail"}
+        title="Your pinned pages"
+        style={{ marginBottom: 8 }}
+      >
+        {!effectiveCollapsed && (
+          <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "2px 4px 8px", color: "var(--accent-workflow)" }}>
+            <Star size={14} fill="currentColor" />
+            <span className="label-xs" style={{ margin: 0, color: "var(--accent-workflow)" }}>Favorites</span>
+          </div>
+        )}
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {favoriteRoutes.map((item) => (
+            <NavItem key={`fav-${item.href}`} {...item} active={isActive(item.href)} collapsed={effectiveCollapsed} />
+          ))}
+        </div>
+      </section>
+    );
+  }
 
   function renderSection(section: SidebarSection, index: number) {
     const items = section.items.filter((item) => !item.advanced && item.priority !== "journey");
@@ -394,6 +454,7 @@ export function Sidebar() {
       </div>
 
       <nav style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "10px 8px" }}>
+        {renderFavorites()}
         <section className={effectiveCollapsed ? "" : "journey-rail"} title="Primary SDLC journey">
           {!effectiveCollapsed && (
             <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "2px 4px 8px", color: "var(--accent-workflow)" }}>
