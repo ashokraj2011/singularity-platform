@@ -24,6 +24,7 @@ import { Router, type Request } from 'express'
 import crypto from 'node:crypto'
 import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
+import { fanOutToWorkItemTriggers } from '../work-items/work-item-event-fanout'
 
 export const incomingEventsRouter: Router = Router()
 
@@ -128,7 +129,22 @@ incomingEventsRouter.post('/', async (req, res) => {
     console.warn('[incoming-events] persist failed:', (err as Error).message)
   })
 
-  // TODO: fan to local handlers (cache invalidation, snapshot refresh).
-  // For now, ack-and-log is enough to prove the wire.
-  return res.status(200).json({ ok: true, recorded_event: eventName, source })
+  // Fan out to WorkItem EVENT triggers so a verified cross-service event actually
+  // starts work (create/attach a WorkItem + route/AUTO_START) instead of being
+  // logged and dropped. Dedup on the upstream outbox id (a true per-delivery id)
+  // makes re-delivery exactly-once. Best-effort: a fan-out failure must not turn a
+  // successfully-received (and logged) event into a 5xx that triggers upstream retries.
+  let workItemIds: string[] = []
+  try {
+    workItemIds = await fanOutToWorkItemTriggers({
+      eventTypeKey: eventName,
+      payload: body.envelope.payload ?? (body.envelope as unknown as Record<string, unknown>),
+      deliveryId: outboxId,
+      sourceEventTypeKey: eventName,
+    })
+  } catch (err) {
+    console.warn('[incoming-events] trigger fan-out failed:', (err as Error).message)
+  }
+
+  return res.status(200).json({ ok: true, recorded_event: eventName, source, workItemIds })
 })
