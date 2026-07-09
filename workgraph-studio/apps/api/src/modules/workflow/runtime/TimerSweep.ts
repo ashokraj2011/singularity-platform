@@ -38,6 +38,20 @@ export function startTimerSweep(): void {
         if (fireAt > now) continue
         if (!node.instance || node.instance.status !== 'ACTIVE') continue
 
+        // Atomic single-fire claim: remove _fireAt so only ONE replica advances
+        // this timer. Every API replica runs this cron, and advance()'s COMPLETED
+        // write isn't status-guarded, so without a claim each due timer fired
+        // once per replica (duplicate context-merge + NodeCompleted/outbox).
+        const claimed = await withTenantDbTransaction(prisma, (tx) => tx.$executeRaw`
+          UPDATE "workflow_nodes"
+          SET config = config - '_fireAt'
+          WHERE id = ${node.id}::uuid
+            AND status = 'ACTIVE'
+            AND config ? '_fireAt'
+            AND (config->>'_fireAt')::timestamptz <= ${now}::timestamptz
+        `, node.instance.tenantId ?? undefined).catch(() => 0)
+        if (claimed !== 1) continue
+
         try {
           await advance(node.instanceId, node.id, { _firedAt: now.toISOString() }, undefined, undefined, node.instance.tenantId ?? undefined)
         } catch (err) {
@@ -104,6 +118,17 @@ export function startTimerSweep(): void {
       for (const row of overdue) {
         const cfg = (row.config ?? {}) as Record<string, unknown>
         const edgeLabel = typeof cfg._deadlineEdge === 'string' ? cfg._deadlineEdge : ''
+        // Atomic single-fire claim (same reasoning as the timer branch): remove
+        // _deadlineFireAt so only one replica fires this deadline.
+        const claimed = await withTenantDbTransaction(prisma, (tx) => tx.$executeRaw`
+          UPDATE "workflow_nodes"
+          SET config = config - '_deadlineFireAt'
+          WHERE id = ${row.id}::uuid
+            AND status = 'ACTIVE'
+            AND config ? '_deadlineFireAt'
+            AND (config->>'_deadlineFireAt')::timestamptz <= ${now}::timestamptz
+        `, row.instanceTenantId ?? undefined).catch(() => 0)
+        if (claimed !== 1) continue
         try {
           await advance(row.instanceId, row.id, {
             _deadlineTriggered: true,
@@ -143,13 +168,14 @@ export function startTimerSweep(): void {
         const tenantId = row.instance?.tenantId ?? undefined
         const reason = `No runner completed this ${row.location} node before it expired at ${row.expiresAt.toISOString()}.`
         try {
-          // Mark the row done first so it isn't re-swept, then fail the node if it's
-          // still the ACTIVE one waiting on this row (skip stale rows whose node or
-          // run already moved on).
-          await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.update({
-            where: { id: row.id },
+          // Atomically claim the row (completedAt: null guard) so only one replica
+          // expires it, then fail the node if it's still the ACTIVE one waiting on
+          // this row (skip stale rows whose node or run already moved on).
+          const expiredClaim = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.updateMany({
+            where: { id: row.id, completedAt: null },
             data: { completedAt: now, error: reason },
           }), tenantId)
+          if (expiredClaim.count !== 1) continue
           if (row.instance?.status === 'ACTIVE' && row.node?.status === 'ACTIVE') {
             await failNode(row.instanceId, row.nodeId, { message: reason, code: 'PENDING_EXECUTION_EXPIRED' }, undefined, tenantId)
           }
