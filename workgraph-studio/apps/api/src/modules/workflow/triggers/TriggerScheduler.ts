@@ -302,6 +302,20 @@ function eventLookbackSince(trigger: { lastFiredAt: Date | null; createdAt: Date
   return anchor.valueOf() > cap.valueOf() ? anchor : cap
 }
 
+// P2 consolidation — decouple the internal trigger bus from the OutboxProcessor.
+// publishOutbox writes outbox_events as PENDING; the OutboxProcessor cron flips
+// PENDING→PROCESSED. This sweep used to read ONLY 'PROCESSED', which made that
+// otherwise-cosmetic cron LOAD-BEARING: if it stops, every EVENT trigger silently
+// stops firing. Reading PENDING∪PROCESSED removes that hidden single-point-of-
+// failure (and cuts up to one processor-tick of latency). Safe because per-event
+// dedup (claimTriggerEvent on the outbox row id / markEventProcessed) makes firing
+// idempotent — a row seen while PENDING is not re-fired once it becomes PROCESSED.
+//
+// Producer note: publishOutbox already DUAL-WRITES the M11.e event_outbox bus, so
+// external webhook subscribers also receive these events. The two buses stay
+// physically separate on the consumer side (this internal trigger sweep vs the
+// dispatcher's external webhook delivery); merging the tables is deferred pending
+// staging validation (in-flight rows + dedup-key compatibility) — see OutboxProcessor.ts.
 async function loadMatchingOutboxEvents(args: {
   since: Date
   lastFiredAt: Date | null
@@ -314,7 +328,7 @@ async function loadMatchingOutboxEvents(args: {
 
   while (matched.length < EVENT_TRIGGER_BATCH_SIZE && scanned < EVENT_TRIGGER_MAX_SCAN) {
     const batch = await prisma.outboxEvent.findMany({
-      where: { createdAt: { gte: args.since }, status: 'PROCESSED' },
+      where: { createdAt: { gte: args.since }, status: { in: ['PENDING', 'PROCESSED'] } },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       take: Math.min(EVENT_TRIGGER_BATCH_SIZE, EVENT_TRIGGER_MAX_SCAN - scanned),
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
