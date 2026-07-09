@@ -44,6 +44,7 @@ import { lookupRouter } from './modules/lookup/lookup.router'
 import { agentStudioRouter } from './modules/agent-studio/agent-studio.router'
 import { receiptsRouter } from './modules/audit/receipts.router'
 import { eventSubscriptionsRouter } from './modules/audit/event-subscriptions.router'
+import { eventIntakeRouter } from './modules/events/event-intake.router'
 import { incomingEventsRouter } from './modules/audit/incoming-events.router'
 import { blueprintRouter } from './modules/blueprint/blueprint.router'
 import { eventHorizonRouter } from './modules/event-horizon/event-horizon.router'
@@ -191,6 +192,10 @@ export function createApp(): Express {
   app.use('/api/events/subscriptions', authMiddleware, eventSubscriptionsRouter)
   // M11.e cross-service inbound — webhook receiver (signature-gated, NOT auth-middleware-gated)
   app.use('/api/events/incoming',     incomingEventsRouter)
+  // P1-9A — canonical authenticated event intake (IAM bearer). Fans an event out
+  // to matching WorkItem EVENT triggers; the non-demo home for the intake
+  // previously reachable only via /api/demo/event-verifier/ingest.
+  app.use('/api/events/ingest',       authMiddleware, eventIntakeRouter)
 
   // M42.0 — admin feature flags (Code Foundry kill switches, etc.). PUT is
   // ADMIN-only inside the router; GET is read-only for any authenticated
