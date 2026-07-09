@@ -1394,6 +1394,34 @@ export async function failNode(
       error: failure,
     })
     await publishOutbox('WorkflowNode', nodeId, 'NodeRetried', { instanceId, nodeId, attempt: attemptsSoFar + 1 })
+
+    // Actually re-run the node. Previously the retry branch stopped here — the
+    // node was left ACTIVE with nothing re-dispatching it, so a configured
+    // retryPolicy made the node (and the whole run) hang forever instead of
+    // retrying. SERVER nodes re-run in-process (bounded recursion: a repeat
+    // failure lands back here and terminates once _attempts hits maxAttempts);
+    // non-SERVER nodes are re-queued for the poll-runner (async, no recursion).
+    // Immediate retry — exponential backoff is a follow-up.
+    const retryCtx = (instance.context ?? {}) as Record<string, unknown>
+    const reactivated = { ...node, status: 'ACTIVE', config: updatedCfg } as WorkflowNode
+    if (node.executionLocation !== 'SERVER') {
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000) // 24h default
+      const pending = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.create({
+        data: {
+          instanceId,
+          nodeId,
+          attempt: node.attempt, // Finding #7 — stamp the current attempt for the stale-result fence.
+          location: node.executionLocation,
+          payload: retryCtx as any,
+          expiresAt,
+        },
+      }), tenantId)
+      if (node.executionLocation === 'EXTERNAL') {
+        await runExternalWebhookNode(reactivated, instance, pending.id, retryCtx, node.attempt, tenantId)
+      }
+    } else {
+      await executeServerNode(reactivated, instance, retryCtx, actorId)
+    }
     return { retried: true, recovered: false, instanceFailed: false }
   }
 
