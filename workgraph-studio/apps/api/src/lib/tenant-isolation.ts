@@ -227,5 +227,10 @@ export async function assertWorkflowNodeTenant(req: Request, nodeId: string): Pr
 }
 
 export function tenantIdForCreate(context: unknown): string | undefined {
-  return resolveTenantFromContext(context)
+  // Fall back to the default tenant so a row created without an explicit tenant
+  // (trigger-spawned runs, unscoped creates) is never stamped tenantId=NULL —
+  // which would make it invisible/frozen under forced RLS (cutover Guards C/D).
+  // Targeted to the create path so resolveTenantFromContext keeps returning
+  // undefined for callers that use it to DETECT an explicit tenant.
+  return resolveTenantFromContext(context) ?? config.WORKGRAPH_DEFAULT_TENANT_ID
 }

@@ -11,6 +11,11 @@ APP_USER="${WORKGRAPH_APP_DB_USER:-workgraph_app}"
 APP_PASSWORD="${WORKGRAPH_APP_DB_PASSWORD:-workgraph_app_secret}"
 ADMIN_USER="${POSTGRES_USER:-workgraph}"
 DB_NAME="${POSTGRES_DB:-workgraph}"
+# Default tenant for the app role (see WORKGRAPH_DEFAULT_TENANT_ID). Set as a
+# role-level `app.tenant_id` so bare (non-withTenantDbTransaction) queries still
+# resolve a tenant under FORCE RLS instead of seeing zero rows; per-request
+# SET LOCAL still overrides it. MUST match the config default + backfill value.
+DEFAULT_TENANT="${WORKGRAPH_DEFAULT_TENANT_ID:-default}"
 
 validate_ident() {
   case "$1" in
@@ -24,6 +29,13 @@ validate_ident() {
 case "$APP_PASSWORD" in
   *"'"*)
     echo "[workgraph-bootstrap] WORKGRAPH_APP_DB_PASSWORD cannot contain a single quote" >&2
+    exit 1
+    ;;
+esac
+
+case "$DEFAULT_TENANT" in
+  *"'"*)
+    echo "[workgraph-bootstrap] WORKGRAPH_DEFAULT_TENANT_ID cannot contain a single quote" >&2
     exit 1
     ;;
 esac
@@ -59,6 +71,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE ${ADMIN_USER} IN SCHEMA public
   GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO ${APP_USER};
 ALTER DEFAULT PRIVILEGES FOR ROLE ${ADMIN_USER} IN SCHEMA public
   GRANT EXECUTE ON FUNCTIONS TO ${APP_USER};
+-- Default tenant for bare connections under FORCE RLS (per-request SET LOCAL overrides).
+ALTER ROLE ${APP_USER} SET app.tenant_id = '${DEFAULT_TENANT}';
 SQL
 
 echo "[workgraph-bootstrap] done."

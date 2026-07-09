@@ -87,6 +87,12 @@ const envSchema = z.object({
   LAPTOP_HEARTBEAT_SWEEP_SEC: z.coerce.number().int().positive().default(60),
   LAPTOP_MCP_TOKEN_TTL_SEC: z.coerce.number().int().positive().default(12 * 60 * 60),
   TENANT_ISOLATION_MODE: z.enum(['off', 'strict']).default('off'),
+  // Fallback tenant stamped on rows created without an explicit tenant (trigger-
+  // spawned runs, seeds, unscoped creates) so no row is left tenantId=NULL under
+  // forced RLS. In a single-tenant deployment every row collapses to this value.
+  // MUST match the backfill migration + the app role's `SET app.tenant_id`
+  // default; if you change it, re-backfill and re-run bootstrap-app-role.sh.
+  WORKGRAPH_DEFAULT_TENANT_ID: z.string().min(1).default('default'),
   EVENT_HORIZON_MODEL_ALIAS: z.string().optional(),
 
   // One-shot LLM calls route through Context Fabric's governed single-turn API.

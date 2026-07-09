@@ -1244,6 +1244,7 @@ JSON
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260626120000_node_attempt_fence_and_blueprint_key/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260701120000_add_tenant_id_to_standalone_tables/migration.sql >/dev/null 2>&1 \
     && DISABLE_ERD=true DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma generate >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260709145000_backfill_null_tenant/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709150000_force_tenant_rls/migration.sql >/dev/null 2>&1 ) \
     || warn "workgraph schema push had warnings"
 
@@ -1268,6 +1269,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE ${db_user} IN SCHEMA public
   GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO ${WORKGRAPH_APP_DB_USER};
 ALTER DEFAULT PRIVILEGES FOR ROLE ${db_user} IN SCHEMA public
   GRANT EXECUTE ON FUNCTIONS TO ${WORKGRAPH_APP_DB_USER};
+-- Default tenant for bare connections under FORCE RLS (per-request SET LOCAL overrides).
+ALTER ROLE ${WORKGRAPH_APP_DB_USER} SET app.tenant_id = '${WORKGRAPH_DEFAULT_TENANT_ID:-default}';
 SQL
 
   # Seed workgraph demo data — agents, the SDLC + bug-fix workbench workflows,
