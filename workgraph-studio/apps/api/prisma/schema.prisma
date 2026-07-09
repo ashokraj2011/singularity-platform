@@ -1060,6 +1060,26 @@ model WorkflowEvent {
   @@map("workflow_events")
 }
 
+// P1-12 — durable signals. An emitted signal is persisted here so a SIGNAL_WAIT
+// that parks AFTER the emit can still consume it (fixes emit-before-wait loss).
+// Instance-scoped; windowed via expiresAt; consumedAt is an atomic single-winner
+// claim (updateMany consumedAt: null -> now). FK-less (instanceId is the scope
+// key) to avoid a WorkflowInstance back-relation; stale rows expire via expiresAt.
+model WorkflowSignal {
+  id             String    @id @default(uuid())
+  instanceId     String
+  signalName     String
+  correlationKey String?
+  payload        Json?
+  emittedAt      DateTime  @default(now())
+  consumedAt     DateTime?
+  expiresAt      DateTime
+
+  @@index([instanceId, signalName, consumedAt])
+  @@index([expiresAt])
+  @@map("workflow_signals")
+}
+
 // ─── CROSS-CAPABILITY WORK ITEMS ──────────────────────────────────────────────
 
 model WorkItem {
