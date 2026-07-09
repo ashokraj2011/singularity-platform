@@ -12,6 +12,16 @@ import { recordOf } from '../../metadata/metadata.service'
 import { tenantIdForCreate } from '../../../lib/tenant-isolation'
 import { startInstance } from '../runtime/WorkflowRuntime'
 
+// Constant-time secret comparison. Hash both sides to a fixed 32-byte digest
+// first so timingSafeEqual never sees unequal lengths (which throws and would
+// also leak the secret length). Returns false for non-strings.
+function secretEquals(a: unknown, b: unknown): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length === 0 || b.length === 0) return false
+  const ha = crypto.createHash('sha256').update(a).digest()
+  const hb = crypto.createHash('sha256').update(b).digest()
+  return crypto.timingSafeEqual(ha, hb)
+}
+
 export const triggersRouter: Router = Router()
 
 const createTriggerSchema = z.object({
@@ -56,24 +66,19 @@ triggersRouter.delete('/:id', async (req, res, next) => {
 export const webhookRouter: Router = Router()
 webhookRouter.post('/:secret', async (req, res, next) => {
   try {
-    const trigger = await prisma.workflowTrigger.findFirst({
-      where: { type: 'WEBHOOK', isActive: true },
-      include: { template: true },
-    })
-    // Find by secret in config (linear scan since secrets are not indexed)
+    // Find by secret in config (linear scan since secrets live in a JSON config
+    // blob, not an indexed column). Constant-time compare to avoid a timing oracle
+    // that could recover a secret byte-by-byte.
     const all = await prisma.workflowTrigger.findMany({
       where: { type: 'WEBHOOK', isActive: true },
       include: { template: true },
     })
-    const match = all.find(t => {
-      const c = (t.config ?? {}) as Record<string, unknown>
-      return c.secret === req.params.secret
-    })
+    const match = all.find(t => secretEquals((t.config as Record<string, unknown> | null)?.secret, req.params.secret))
     if (!match) {
       const workItemTriggers = await prisma.workItemTrigger.findMany({
         where: { triggerType: 'WEBHOOK', isActive: true },
       })
-      const workItemMatch = workItemTriggers.find(t => recordOf(t.scheduleConfig).secret === req.params.secret || recordOf(t.payloadMapping).secret === req.params.secret)
+      const workItemMatch = workItemTriggers.find(t => secretEquals(recordOf(t.scheduleConfig).secret, req.params.secret) || secretEquals(recordOf(t.payloadMapping).secret, req.params.secret))
       if (!workItemMatch || !workItemMatch.capabilityId) {
         res.status(404).json({ code: 'NOT_FOUND', message: 'No matching webhook trigger' })
         return
@@ -175,7 +180,6 @@ webhookRouter.post('/:secret', async (req, res, next) => {
         triggerId: match.id, via: 'WEBHOOK', error: (err as Error).message,
       }),
     )
-    void trigger // suppress unused warning
     res.status(202).json({ instanceId: instance.id })
   } catch (err) { next(err) }
 })
