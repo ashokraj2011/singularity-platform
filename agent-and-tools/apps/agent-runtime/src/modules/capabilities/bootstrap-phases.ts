@@ -62,6 +62,17 @@ export function isAsyncBootstrapEnabled(): boolean {
 }
 
 /**
+ * Auto-grounding (Workstream B) opt-in. When true, bootstrap activates the
+ * non-locked generated agents + materializes the internally-derived knowledge at
+ * onboard, so a capability is usable without the separate manual review step.
+ * Locked gates (Verifier/Security/Governance) + external knowledge still require
+ * review. Default false (preserves the explicit review-then-activate flow).
+ */
+export function isCapabilityAutoGroundEnabled(): boolean {
+  return String(process.env.CAPABILITY_AUTO_GROUND ?? "").toLowerCase() === "true";
+}
+
+/**
  * Read the current phaseProgress map for a run. Returns {} if the
  * row doesn't exist (caller should already have verified existence).
  */

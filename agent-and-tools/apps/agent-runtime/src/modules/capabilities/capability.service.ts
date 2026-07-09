@@ -23,6 +23,7 @@ import { upsertWorldModel } from "./world-model.service";
 import {
   PHASE_KEYS,
   isAsyncBootstrapEnabled,
+  isCapabilityAutoGroundEnabled,
   markPhaseStarted,
   markPhaseCompleted,
   markPhaseFailed,
@@ -660,6 +661,13 @@ export const capabilityService = {
         }
       }
 
+      // B (auto-grounding) — make onboarding yield a usable team: activate the
+      // non-locked agents + materialize internally-derived knowledge now, so the
+      // capability is runnable without the separate manual review step. Locked
+      // gates + external knowledge stay for review. Opt-in via CAPABILITY_AUTO_GROUND.
+      const autoGround = await autoGroundCapability(capability.id, run.id, generatedAgents, userId);
+      if (autoGround.reviewNote) warnings.push(autoGround.reviewNote);
+
       // M61 Slice B — Capture the row first, then stamp phase
       // closures, then return. Previously the original code returned
       // the awaited update directly; we await + assign here so the
@@ -884,6 +892,12 @@ export const capabilityService = {
           reusedLearningCandidateIds.push(persisted.id);
         }
       }
+
+      // B (auto-grounding) — same as the sync path: activate non-locked agents +
+      // materialize internally-derived knowledge at onboard (opt-in). Runs before
+      // the run is marked COMPLETED so the reviewNote lands in `warnings`.
+      const autoGround = await autoGroundCapability(capability.id, run.id, generatedAgents, userId);
+      if (autoGround.reviewNote) warnings.push(autoGround.reviewNote);
 
       await prisma.capabilityBootstrapRun.update({
         where: { id: run.id },
@@ -4590,6 +4604,85 @@ function learningStatusIsStaleRunning(
     : Date.parse(String(stored?.lastAttemptAt ?? ""));
   if (!Number.isFinite(attemptAt)) return true;
   return Date.now() - attemptAt > Math.max(CAPABILITY_LEARNING_RUN_STALE_MS, 60_000);
+}
+
+// B (auto-grounding) — internally-derived knowledge groups safe to materialize
+// without human review. Externally-sourced docs + anything else stay PENDING.
+const SAFE_AUTO_MATERIALIZE_GROUPS = ["agent_team_grounding", "architecture_diagram", "platform_inventory"];
+
+/**
+ * B (auto-grounding) — make onboarding yield a usable, grounded team without the
+ * separate manual review step. Opt-in via CAPABILITY_AUTO_GROUND.
+ *   B1: activate the NON-locked generated agents + bindings. Locked gates
+ *       (Verifier/Security/Governance, activationRequired:true) stay DRAFT for
+ *       explicit human sign-off — we deliberately do NOT call reviewBootstrapRun,
+ *       which force-activates them.
+ *   B2: materialize the internally-derived, low-risk knowledge candidates; external
+ *       docs stay PENDING.
+ * Fail-soft: any failure is logged, never aborts bootstrap. Returns a reviewNote to
+ * surface on the run (what was auto-done + what still needs review).
+ */
+async function autoGroundCapability(
+  capabilityId: string,
+  runId: string,
+  generatedAgents: Array<{ id: string; activationRequired: boolean; locked: boolean; label?: string; key?: string }>,
+  userId?: string,
+): Promise<{ activatedAgents: number; materializedGroups: string[]; reviewNote: string | null }> {
+  const lockedGates = generatedAgents
+    .filter(a => a.locked || a.activationRequired)
+    .map(a => a.label ?? a.key ?? "gate");
+
+  if (!isCapabilityAutoGroundEnabled()) {
+    return {
+      activatedAgents: 0,
+      materializedGroups: [],
+      reviewNote: `Onboarding created ${generatedAgents.length} agent(s) DRAFT and knowledge PENDING — run the bootstrap review to activate agents and materialize knowledge (set CAPABILITY_AUTO_GROUND=true to auto-activate non-locked agents at onboard).`,
+    };
+  }
+
+  // B1 — activate the non-locked agents + their bindings.
+  let activatedAgents = 0;
+  const activateIds = generatedAgents
+    .filter(a => a.activationRequired === false && a.locked === false && typeof a.id === "string")
+    .map(a => a.id);
+  if (activateIds.length > 0) {
+    try {
+      await prisma.agentTemplate.updateMany({
+        where: { capabilityId, id: { in: activateIds }, status: { not: "ARCHIVED" } },
+        data: { status: "ACTIVE" },
+      });
+      await prisma.agentCapabilityBinding.updateMany({
+        where: { capabilityId, agentTemplateId: { in: activateIds }, status: { not: "ARCHIVED" } },
+        data: { status: "ACTIVE" },
+      });
+      activatedAgents = activateIds.length;
+    } catch (err) {
+      console.warn(`[capability.autoGround] capabilityId=${capabilityId} agent activation failed: ${(err as Error).message}`);
+    }
+  }
+
+  // B2 — materialize the internally-derived, low-risk knowledge candidates.
+  const materializedGroups: string[] = [];
+  try {
+    const safeCandidates = await prisma.capabilityLearningCandidate.findMany({
+      where: { bootstrapRunId: runId, status: "PENDING", groupKey: { in: SAFE_AUTO_MATERIALIZE_GROUPS } },
+    });
+    for (const candidate of safeCandidates) {
+      try {
+        await materializeBootstrapLearningCandidate(capabilityId, candidate, userId);
+        if (!materializedGroups.includes(candidate.groupKey)) materializedGroups.push(candidate.groupKey);
+      } catch (err) {
+        console.warn(`[capability.autoGround] materialize ${candidate.groupKey} failed: ${(err as Error).message}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[capability.autoGround] candidate scan failed: ${(err as Error).message}`);
+  }
+
+  const reviewNote = lockedGates.length > 0
+    ? `Auto-grounding activated ${activatedAgents} non-locked agent(s)${materializedGroups.length ? ` and materialized ${materializedGroups.join(", ")}` : ""}. Locked gate(s) still need explicit review before activation: ${lockedGates.join(", ")}.`
+    : `Auto-grounding activated ${activatedAgents} agent(s)${materializedGroups.length ? ` and materialized ${materializedGroups.join(", ")}` : ""}.`;
+  return { activatedAgents, materializedGroups, reviewNote };
 }
 
 async function buildCapabilityGroundingStatus(capabilityId: string) {
