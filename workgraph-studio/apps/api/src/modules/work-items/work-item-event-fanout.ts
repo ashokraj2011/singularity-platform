@@ -23,12 +23,16 @@ export async function fanOutToWorkItemTriggers(args: {
   payload: Record<string, unknown>
   deliveryId?: string | null
   sourceEventTypeKey?: string
+  // Optional narrowing: when set, only triggers on this capability fire (else the
+  // event fans out to every capability's trigger for the event type — pub/sub).
+  capabilityId?: string | null
 }): Promise<string[]> {
   const eventTypeKey = normalizeMetadataKey(args.eventTypeKey)
   if (!eventTypeKey) return []
+  const capabilityId = typeof args.capabilityId === 'string' && args.capabilityId.trim() ? args.capabilityId.trim() : undefined
 
   const triggers = await prisma.workItemTrigger.findMany({
-    where: { triggerType: 'EVENT', isActive: true, eventTypeKey },
+    where: { triggerType: 'EVENT', isActive: true, eventTypeKey, ...(capabilityId ? { capabilityId } : {}) },
   })
 
   const firedWorkItemIds: string[] = []
