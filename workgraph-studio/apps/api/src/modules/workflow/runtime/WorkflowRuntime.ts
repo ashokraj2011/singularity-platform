@@ -1814,15 +1814,46 @@ export async function processStartNodeAttachments(
  * For any `deadline` attachments on the node, record `_deadlineFireAt` and
  * `_deadlineEdge` in the node config so TimerSweep can fire them.
  */
+// P1-12c — default SIGNAL_WAIT timeout. DISABLED (0) by default so a legitimate
+// long wait (e.g. a multi-day approval signal) isn't broken; an operator opts in
+// globally by setting this env, or per-node via config.timeoutMs/standard.timeoutSec.
+const DEFAULT_SIGNAL_WAIT_TIMEOUT_MS = Math.max(0, Number(process.env.WORKFLOW_SIGNAL_WAIT_DEFAULT_TIMEOUT_MS ?? 0))
+
+function signalWaitTimeoutMs(cfg: Record<string, unknown>): number {
+  const std = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard) ? cfg.standard as Record<string, unknown> : {}
+  const fromMs = Number(cfg.timeoutMs ?? std.timeoutMs)
+  if (Number.isFinite(fromMs) && fromMs > 0) return Math.floor(fromMs)
+  const fromSec = Number(cfg.timeoutSec ?? std.timeoutSec)
+  if (Number.isFinite(fromSec) && fromSec > 0) return Math.floor(fromSec * 1000)
+  return DEFAULT_SIGNAL_WAIT_TIMEOUT_MS
+}
+
 async function scheduleDeadlines(node: WorkflowNode, tenantId?: string): Promise<void> {
   const cfg = (node.config ?? {}) as Record<string, unknown>
   const attachments = Array.isArray(cfg.attachments) ? cfg.attachments as AttachmentRaw[] : []
   const deadlines = attachments.filter(a => a.enabled !== false && a.trigger === 'deadline' && a.durationMs && a.durationMs > 0)
-  if (deadlines.length === 0) return
 
-  // Use the attachment with the shortest duration
-  const earliest = deadlines.reduce((min, a) => (a.durationMs! < min.durationMs!) ? a : min)
-  const fireAt = new Date(Date.now() + earliest.durationMs!)
+  let fireAt: Date | null = null
+  let deadlineEdge = ''
+  let attachmentId = ''
+  if (deadlines.length > 0) {
+    // Use the attachment with the shortest duration.
+    const earliest = deadlines.reduce((min, a) => (a.durationMs! < min.durationMs!) ? a : min)
+    fireAt = new Date(Date.now() + earliest.durationMs!)
+    deadlineEdge = earliest.deadlineEdge ?? ''
+    attachmentId = earliest.id ?? ''
+  } else if (String(node.nodeType) === 'SIGNAL_WAIT') {
+    // Bound an otherwise-unbounded SIGNAL_WAIT: a signal that never arrives would
+    // hang the run forever. On fire the (race-safe) deadline sweep advances the
+    // node with _deadlineTriggered so downstream can tell it timed out. Only
+    // applies when no explicit deadline attachment is set (attachment wins).
+    const ms = signalWaitTimeoutMs(cfg)
+    if (ms > 0) {
+      fireAt = new Date(Date.now() + ms)
+      deadlineEdge = typeof cfg.timeoutEdge === 'string' ? cfg.timeoutEdge : ''
+    }
+  }
+  if (!fireAt) return
 
   await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
     where: { id: node.id },
@@ -1830,8 +1861,8 @@ async function scheduleDeadlines(node: WorkflowNode, tenantId?: string): Promise
       config: {
         ...cfg,
         _deadlineFireAt: fireAt.toISOString(),
-        _deadlineEdge: earliest.deadlineEdge ?? '',
-        _deadlineAttachmentId: earliest.id ?? '',
+        _deadlineEdge: deadlineEdge,
+        _deadlineAttachmentId: attachmentId,
       } as unknown as Prisma.InputJsonValue,
     },
   }), tenantId)
