@@ -58,6 +58,26 @@ function sanitizeNodeConfig(raw: unknown): Prisma.InputJsonValue {
   return cfg as Prisma.InputJsonValue
 }
 
+// Seed a PARALLEL_JOIN node's `expected_joins` from the graph topology (the
+// number of incoming PARALLEL_JOIN edges = the branches that must arrive) when
+// the designer set no explicit count. GraphTraverser's join counter defaults to
+// 0 otherwise, so the guard `completed >= expected` never fires and the join —
+// and the whole run — deadlocks. An explicit designer value always wins.
+function seedJoinArity(
+  nodeType: unknown,
+  cfg: Prisma.InputJsonValue,
+  incomingCount: number,
+): Prisma.InputJsonValue {
+  if (String(nodeType) !== 'PARALLEL_JOIN' || incomingCount <= 0) return cfg
+  const obj = (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) ? { ...(cfg as Record<string, unknown>) } : {}
+  const std = (obj.standard && typeof obj.standard === 'object' && !Array.isArray(obj.standard))
+    ? obj.standard as Record<string, unknown> : {}
+  const hasExplicit = obj.expected_joins != null || obj.expectedBranches != null || std.expectedBranches != null
+  if (hasExplicit) return cfg
+  obj.expected_joins = incomingCount
+  return obj as Prisma.InputJsonValue
+}
+
 // ── Snapshot building + content hashing ─────────────────────────────────────
 
 type DesignWithGraph = {
@@ -297,6 +317,16 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
       phaseIdMap.set(p.id, np.id)
     }
 
+    // AND-join arity: count incoming PARALLEL_JOIN edges per target node so each
+    // PARALLEL_JOIN node's `expected_joins` can be seeded from the topology (see
+    // seedJoinArity). Keyed by design node id (design.edges use design ids).
+    const joinIncoming = new Map<string, number>()
+    for (const e of design.edges) {
+      if (e.edgeType === 'PARALLEL_JOIN') {
+        joinIncoming.set(e.targetNodeId, (joinIncoming.get(e.targetNodeId) ?? 0) + 1)
+      }
+    }
+
     // 4c. Nodes (id-mapped, status reset, config sanitized)
     const nodeIdMap = new Map<string, string>()
     for (const n of design.nodes) {
@@ -310,7 +340,7 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
           nodeTypeSnapshot:   n.nodeTypeSnapshot as Prisma.InputJsonValue | undefined,
           label:              n.label,
           status:             'PENDING',
-          config:             sanitizeNodeConfig(n.config),
+          config:             seedJoinArity(n.nodeType, sanitizeNodeConfig(n.config), joinIncoming.get(n.id) ?? 0),
           compensationConfig: (n.compensationConfig ?? undefined) as Prisma.InputJsonValue | undefined,
           executionLocation:  n.executionLocation,
           positionX:          n.positionX,

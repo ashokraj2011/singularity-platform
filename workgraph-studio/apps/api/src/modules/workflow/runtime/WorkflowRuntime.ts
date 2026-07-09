@@ -945,7 +945,13 @@ async function executeServerNode(
       await advance(instance.id, node.id, context, actorId, undefined, tenantId)
       break
     case 'PARALLEL_JOIN':
+      // The join is only reached once GraphTraverser's counter confirms every
+      // branch has arrived (completed_joins >= expected_joins), so once it is
+      // activated it must advance downstream like every other structural node.
+      // Without this advance the join sat ACTIVE forever and the whole run
+      // deadlocked with no marker.
       await activateParallelJoin(node, instance)
+      await advance(instance.id, node.id, context, actorId, undefined, tenantId)
       break
     case 'SIGNAL_EMIT':
       await activateSignalEmit(node, instance)
