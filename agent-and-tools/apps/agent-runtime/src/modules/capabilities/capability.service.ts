@@ -4603,6 +4603,19 @@ async function buildCapabilityGroundingStatus(capabilityId: string) {
   ]);
   if (!capability) throw new NotFoundError("Capability not found");
   const stored = capability.learningStatus;
+  // A3 grounding-health — embedding coverage over ACTIVE knowledge artifacts. Rows
+  // with a NULL vector are invisible to semantic retrieval (it silently degrades to
+  // recency/FTS for them), so surface the gap on the status for operators/UI.
+  const embeddingCoverageRows = await prisma.$queryRawUnsafe<Array<{ total: bigint; missing: bigint }>>(
+    `SELECT count(*)::bigint AS total, count(*) FILTER (WHERE embedding IS NULL)::bigint AS missing
+       FROM "CapabilityKnowledgeArtifact" WHERE "capabilityId" = $1 AND status = 'ACTIVE'`,
+    capabilityId,
+  ).catch(() => [] as Array<{ total: bigint; missing: bigint }>);
+  const embeddingCoverage = {
+    activeArtifacts: Number(embeddingCoverageRows[0]?.total ?? 0),
+    missingEmbeddings: Number(embeddingCoverageRows[0]?.missing ?? 0),
+    degraded: Number(embeddingCoverageRows[0]?.total ?? 0) > 0 && Number(embeddingCoverageRows[0]?.missing ?? 0) > 0,
+  };
   const worldModelStack = stackFromCapabilityWorldModel(capability.worldModel);
   const storedStack = Array.isArray(stored?.lastGoodStack) ? stored.lastGoodStack.map(String).filter(Boolean) : [];
   const staleRunningWorker = learningStatusIsStaleRunning(stored, activeLearningWorker);
@@ -4637,6 +4650,7 @@ async function buildCapabilityGroundingStatus(capabilityId: string) {
       lastRepoProfiles: stored?.lastRepoProfiles ?? [],
       activeLearningWorker,
       diagnostics: stored?.diagnostics ?? learningDiagnostics(sourceState),
+      embeddingCoverage,
       fixCommand: null,
     };
   }
@@ -4673,6 +4687,7 @@ async function buildCapabilityGroundingStatus(capabilityId: string) {
     diagnostics: staleRunningWorker
       ? { ...jsonRecord(learningDiagnostics(sourceState)), staleRunningWorker: true }
       : stored?.diagnostics ?? learningDiagnostics(sourceState),
+    embeddingCoverage,
     fixCommand: ["BLOCKED", "STALE"].includes(derived.status)
       ? `curl -X POST http://localhost:5180/api/runtime/capabilities/${capabilityId}/learning-worker/run -H 'authorization: Bearer <token>' -H 'content-type: application/json' -d '{"syncApprovedSources":false,"refreshRepositoryProfiles":true,"reembed":false}'`
       : null,
