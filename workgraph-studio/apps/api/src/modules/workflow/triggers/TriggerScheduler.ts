@@ -4,7 +4,7 @@ import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 import { createWorkItem } from '../../work-items/work-items.service'
 import { routeWorkItem } from '../../work-items/work-item-routing.service'
-import { findAttachableWorkItemForTrigger, resolveTriggerCorrelationKey, triggerDocumentsFromPayload, triggerStringAt, type TriggerDocument } from '../../work-items/work-item-trigger-attach'
+import { findAttachableWorkItemForTrigger, resolveTriggerCorrelationKey, triggerDocumentsFromPayload, triggerStringAt, claimTriggerEvent, recordTriggerEventWorkItem, type TriggerDocument } from '../../work-items/work-item-trigger-attach'
 import { normalizeMetadataKey, recordOf } from '../../metadata/metadata.service'
 import { tenantIdForCreate } from '../../../lib/tenant-isolation'
 import { startInstance } from '../runtime/WorkflowRuntime'
@@ -126,6 +126,18 @@ async function runWorkItemEventTriggers(): Promise<void> {
           capabilityId: trigger.capabilityId,
         })
         const correlationKey = resolveTriggerCorrelationKey({ payload, payloadMapping: mapping, dedupeKey: trigger.dedupeKey })
+        // P1-7 — durable per-outbox-event dedup. Keyed on the outbox event id (a
+        // true per-delivery id), so a re-scan after a restart can't re-create the
+        // WorkItem — closing the gap left by the in-memory processedEventIds set.
+        if (!attachable) {
+          const claim = await claimTriggerEvent({ triggerId: trigger.id, dedupeValue: matched.id })
+          if (claim.status === 'duplicate') {
+            await prisma.workItemTrigger.update({ where: { id: trigger.id }, data: { lastFiredAt: matched.createdAt } })
+            trigger.lastFiredAt = matched.createdAt
+            markEventProcessed(matched.id)
+            continue
+          }
+        }
         const workItem = attachable?.workItem ?? await createWorkItemFromTrigger(trigger, {
           title,
           description,
@@ -134,6 +146,9 @@ async function runWorkItemEventTriggers(): Promise<void> {
           correlationKey,
           documents,
         }, new Date())
+        if (!attachable) {
+          await recordTriggerEventWorkItem({ triggerId: trigger.id, dedupeValue: matched.id, workItemId: workItem.id })
+        }
         if (attachable) {
           await prisma.workItemEvent.create({
             data: {

@@ -7,7 +7,7 @@ import { validate } from '../../../middleware/validate'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 import { createWorkItem } from '../../work-items/work-items.service'
 import { routeWorkItem } from '../../work-items/work-item-routing.service'
-import { findAttachableWorkItemForTrigger, resolveTriggerCorrelationKey, triggerDocumentsFromPayload } from '../../work-items/work-item-trigger-attach'
+import { findAttachableWorkItemForTrigger, resolveTriggerCorrelationKey, triggerDocumentsFromPayload, claimTriggerEvent, recordTriggerEventWorkItem } from '../../work-items/work-item-trigger-attach'
 import { recordOf } from '../../metadata/metadata.service'
 import { tenantIdForCreate } from '../../../lib/tenant-isolation'
 import { startInstance } from '../runtime/WorkflowRuntime'
@@ -98,6 +98,17 @@ webhookRouter.post('/:secret', async (req, res, next) => {
         payloadMapping: mapping,
         dedupeKey: workItemMatch.dedupeKey,
       })
+      // P1-7 — nothing attachable means we're about to CREATE. Claim the event
+      // first so a concurrent/retried delivery can't create a second WorkItem
+      // (which, under AUTO_START, would double-start a run).
+      if (!attachable) {
+        const claim = await claimTriggerEvent({ triggerId: workItemMatch.id, dedupeValue: correlationKey })
+        if (claim.status === 'duplicate') {
+          await prisma.workItemTrigger.update({ where: { id: workItemMatch.id }, data: { lastFiredAt: new Date() } })
+          res.status(202).json({ workItemId: claim.workItemId, deduped: true })
+          return
+        }
+      }
       const workItem = attachable?.workItem ?? await createWorkItem({
         title,
         description: typeof mapping.description === 'string' ? mapping.description : undefined,
@@ -118,6 +129,9 @@ webhookRouter.post('/:secret', async (req, res, next) => {
         originType: 'CAPABILITY_LOCAL',
         targets: [{ targetCapabilityId: workItemMatch.capabilityId }],
       }, null)
+      if (!attachable) {
+        await recordTriggerEventWorkItem({ triggerId: workItemMatch.id, dedupeValue: correlationKey, workItemId: workItem.id })
+      }
       if (attachable) {
         await prisma.workItemEvent.create({
           data: {

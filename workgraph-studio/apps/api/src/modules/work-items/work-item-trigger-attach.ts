@@ -150,3 +150,65 @@ export async function findAttachableWorkItemForTrigger(args: {
 
   return null
 }
+
+// ── P1-7 inbound-event idempotency ──────────────────────────────────────────
+// Window (ms) after which a claim for the same (trigger, dedupeValue) is treated
+// as stale, so a genuine later recurrence of the same key is allowed through
+// instead of being suppressed forever. Env-overridable; floor 60s.
+const DEDUP_WINDOW_MS = Math.max(60_000, Number(process.env.WORKITEM_EVENT_DEDUP_WINDOW_MS ?? 15 * 60_000))
+
+function isUniqueViolation(err: unknown): boolean {
+  return Boolean(err && typeof err === 'object' && (err as { code?: string }).code === 'P2002')
+}
+
+export type TriggerEventClaim =
+  | { status: 'claimed' }
+  | { status: 'duplicate'; workItemId: string | null }
+
+// Race-safe idempotency claim for an inbound trigger event. Call it ONLY when no
+// existing open WorkItem was attachable (findAttachableWorkItemForTrigger returned
+// null) — i.e. right before creating a new WorkItem.
+//   'claimed'   → first delivery; create + route the WorkItem, then call
+//                 recordTriggerEventWorkItem(...).
+//   'duplicate' → a concurrent or retried delivery within the window already owns
+//                 this event; the caller MUST NOT create another WorkItem (which
+//                 would double-start a run under AUTO_START).
+// With no dedupeValue there is nothing to dedupe on, so it always claims (today's
+// behavior). The unique index on (triggerId, dedupeValue) is the actual race guard.
+export async function claimTriggerEvent(args: {
+  triggerId: string
+  dedupeValue: string | undefined | null
+}): Promise<TriggerEventClaim> {
+  const dedupeValue = typeof args.dedupeValue === 'string' && args.dedupeValue.trim() ? args.dedupeValue.trim() : undefined
+  if (!args.triggerId || !dedupeValue) return { status: 'claimed' }
+  const where = { triggerId_dedupeValue: { triggerId: args.triggerId, dedupeValue } }
+  try {
+    await prisma.workItemEventDedup.create({ data: { triggerId: args.triggerId, dedupeValue } })
+    return { status: 'claimed' }
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err
+    const existing = await prisma.workItemEventDedup.findUnique({ where })
+    const ageMs = existing ? Date.now() - existing.claimedAt.getTime() : Number.MAX_SAFE_INTEGER
+    if (existing && ageMs < DEDUP_WINDOW_MS) {
+      return { status: 'duplicate', workItemId: existing.workItemId ?? null }
+    }
+    // Older than the window (a prior occurrence) → refresh the claim and let this
+    // recurrence proceed. A tie between two post-window deliveries is acceptable.
+    await prisma.workItemEventDedup.update({ where, data: { claimedAt: new Date(), workItemId: null } }).catch(() => {})
+    return { status: 'claimed' }
+  }
+}
+
+// Attach the created WorkItem id to its dedupe claim so a later duplicate delivery
+// can return the same WorkItem instead of nothing. Best-effort.
+export async function recordTriggerEventWorkItem(args: {
+  triggerId: string
+  dedupeValue: string | undefined | null
+  workItemId: string
+}): Promise<void> {
+  const dedupeValue = typeof args.dedupeValue === 'string' && args.dedupeValue.trim() ? args.dedupeValue.trim() : undefined
+  if (!args.triggerId || !dedupeValue) return
+  await prisma.workItemEventDedup
+    .update({ where: { triggerId_dedupeValue: { triggerId: args.triggerId, dedupeValue } }, data: { workItemId: args.workItemId } })
+    .catch(() => {})
+}

@@ -15,6 +15,8 @@ import {
   resolveTriggerCorrelationKey,
   triggerDocumentsFromPayload,
   triggerStringAt,
+  claimTriggerEvent,
+  recordTriggerEventWorkItem,
   type TriggerDocument,
 } from '../work-items/work-item-trigger-attach'
 
@@ -641,6 +643,20 @@ async function createOrAttachWorkItemFromTrigger(args: {
     capabilityId: args.trigger.capabilityId,
   })
 
+  // P1-7 — nothing attachable means we're about to CREATE + AUTO_START. Claim the
+  // event first so a concurrent/retried delivery can't create a second WorkItem
+  // (and start a second run) for the same event.
+  if (!attachable) {
+    const claim = await claimTriggerEvent({ triggerId: args.trigger.id, dedupeValue: correlationKey })
+    if (claim.status === 'duplicate') {
+      await prisma.workItemTrigger.update({ where: { id: args.trigger.id }, data: { lastFiredAt: now } })
+      const existing = claim.workItemId
+        ? await prisma.workItem.findUnique({ where: { id: claim.workItemId }, include: { targets: true } })
+        : null
+      return { workItem: existing, attachedExisting: true, matchedBy: 'dedupe', documents, deduped: true }
+    }
+  }
+
   const workItem = attachable?.workItem ?? await createWorkItem({
     title,
     description,
@@ -677,6 +693,10 @@ async function createOrAttachWorkItemFromTrigger(args: {
     originType: 'CAPABILITY_LOCAL',
     targets: [{ targetCapabilityId: args.trigger.capabilityId }],
   }, null)
+
+  if (!attachable) {
+    await recordTriggerEventWorkItem({ triggerId: args.trigger.id, dedupeValue: correlationKey, workItemId: workItem.id })
+  }
 
   if (attachable) {
     const existingInput = recordOf(attachable.workItem.input)
@@ -895,7 +915,10 @@ eventVerifierDemoRouter.post('/ingest', async (req, res, next) => {
       payload,
       workflowTypeKey,
     })
-    const runId = result.workItem.targets.find(target => target.childWorkflowInstanceId)?.childWorkflowInstanceId
+    // result.workItem is null only in the rare in-flight-duplicate window (a
+    // concurrent delivery claimed the event but hasn't recorded its WorkItem id
+    // yet); optional-chain so the deduped ack doesn't throw.
+    const runId = result.workItem?.targets?.find(target => target.childWorkflowInstanceId)?.childWorkflowInstanceId
     res.status(201).json({
       data: {
         eventTypeKey,
@@ -964,7 +987,10 @@ eventVerifierDemoRouter.post('/simulate', async (req, res, next) => {
       payload,
       workflowTypeKey,
     })
-    const runId = result.workItem.targets.find(target => target.childWorkflowInstanceId)?.childWorkflowInstanceId
+    // result.workItem is null only in the rare in-flight-duplicate window (a
+    // concurrent delivery claimed the event but hasn't recorded its WorkItem id
+    // yet); optional-chain so the deduped ack doesn't throw.
+    const runId = result.workItem?.targets?.find(target => target.childWorkflowInstanceId)?.childWorkflowInstanceId
     res.status(201).json({
       data: {
         eventTypeKey,

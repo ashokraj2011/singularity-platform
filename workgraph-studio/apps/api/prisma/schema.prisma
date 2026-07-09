@@ -1257,6 +1257,24 @@ model WorkItemTrigger {
   @@map("work_item_triggers")
 }
 
+// P1-7 — inbound-event idempotency. One claim row per (triggerId, dedupeValue)
+// makes event -> WorkItem creation race-safe: concurrent or retried deliveries
+// resolving to the same dedupe/correlation value collide on the unique
+// constraint, so only ONE WorkItem is created for the event. Windowed via
+// claimedAt (not a permanent block) so a genuine later recurrence of the same
+// key is not wrongly suppressed; old rows are swept by claimedAt.
+model WorkItemEventDedup {
+  id          String   @id @default(uuid())
+  triggerId   String
+  dedupeValue String
+  workItemId  String?
+  claimedAt   DateTime @default(now())
+
+  @@unique([triggerId, dedupeValue])
+  @@index([claimedAt])
+  @@map("work_item_event_dedup")
+}
+
 // ─── TASKS ────────────────────────────────────────────────────────────────────
 
 model Task {
