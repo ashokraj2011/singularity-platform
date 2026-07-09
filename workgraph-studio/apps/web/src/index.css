@@ -449,6 +449,48 @@
   .node-inspector-modal-content .node-inspector-readable textarea {
     min-height: 9rem;
   }
+
+  .wg-command-center .react-flow__controls {
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid #dbe3e7;
+    box-shadow: 0 12px 28px rgba(15,23,42,0.10);
+  }
+
+  .wg-command-center .react-flow__controls-button {
+    width: 30px;
+    height: 30px;
+    border-bottom-color: #e2e8f0;
+    background: rgba(255,255,255,0.94);
+    color: #475569;
+  }
+
+  .wg-command-center .react-flow__edge.wg-live-edge path {
+    filter: drop-shadow(0 0 5px rgba(22,163,74,0.28));
+  }
+
+  .wg-run-node-card {
+    transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+  }
+
+  .wg-run-node-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 18px 44px rgba(15,23,42,0.14), 0 1px 0 rgba(255,255,255,0.96) inset !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .wg-run-node-card {
+      transition: none;
+    }
+
+    .wg-run-node-card:hover {
+      transform: none;
+    }
+
+    .wg-command-center .react-flow__edge.animated path {
+      animation: none;
+    }
+  }
 }
 
 /* ─── Skeleton ───────────────────────────────────────────────────────────── */

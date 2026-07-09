@@ -1,6 +1,6 @@
 import { LegacyWorkflowsRoute } from "@/components/workflows/LegacyWorkgraphAdminRoute";
 import Link from "next/link";
-import { Activity, ClipboardList, Code2, FileCheck2, GitCompare, Play, Route, ScrollText, ShieldCheck, TestTube2, Workflow } from "lucide-react";
+import { Activity, ClipboardList, Code2, FileCheck2, GitCompare, Play, RadioTower, Route, ScrollText, ShieldCheck, TestTube2, Workflow } from "lucide-react";
 
 export default function WorkflowsDomainPage() {
   return (
@@ -20,6 +20,7 @@ export default function WorkflowsDomainPage() {
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Link className="btn-primary" href="/workflows/planner"><Route size={15} /> Story Planner</Link>
             <Link className="btn-secondary" href="/workflows/start"><Play size={15} /> Guided Launch</Link>
+            <Link className="btn-secondary" href="/workflows/control-plane"><RadioTower size={15} /> Control Plane</Link>
             <Link className="btn-secondary" href="/runs"><Activity size={15} /> Runs</Link>
           </div>
         </div>
@@ -60,6 +61,7 @@ export default function WorkflowsDomainPage() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 12 }}>
           <ModeCard icon={Play} title="Beginner: Guided SDLC Launch" detail="Choose Build Feature, Fix Bug, Refactor, Add Tests, Security Review, or Release Evidence. The launcher validates runtime, LLM, agents, and templates before starting." href="/start" primary />
           <ModeCard icon={Workflow} title="Advanced: Workflow Designer" detail="Open the full workflow manager and React Flow designer for node-level orchestration, custom gates, branches, and manual execution controls." href="/workflows/templates" />
+          <ModeCard icon={RadioTower} title="Workflow Control Plane" detail="Configure WorkGraph LLM aliases, direct-LLM routes, inbound events, webhooks, outbound event bus subscribers, and runner queues." href="/workflows/control-plane" />
           <ModeCard icon={ShieldCheck} title="Governance Gates" detail="Use reusable hard, soft, or automatic gates for design documents, standards, git diffs, tests, approvals, and release evidence." href="/workflows/node-types" />
         </div>
       </section>

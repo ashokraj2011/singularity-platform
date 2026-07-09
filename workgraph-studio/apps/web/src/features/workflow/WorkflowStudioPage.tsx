@@ -363,6 +363,79 @@ const TRIGGER_PRESETS = [
   },
 ]
 
+const WORKFLOW_RECIPE_SHORTCUTS: Array<{
+  label: string
+  description: string
+  nodeType: string
+  visualType?: string
+  payload?: Record<string, unknown>
+}> = [
+  {
+    label: 'Event intake',
+    description: 'Start from an external event, then route by capability/work item data.',
+    nodeType: 'START',
+    visualType: 'EVENT_TRIGGER_START',
+    payload: { label: 'Event Trigger', config: EVENT_TRIGGER_START_NODE_CONFIG },
+  },
+  {
+    label: 'Verifier agent',
+    description: 'Direct LLM call with URL/profile prompt context, structured output, and review.',
+    nodeType: 'DIRECT_LLM_TASK',
+    payload: {
+      label: 'Verifier Agent',
+      config: {
+        llmRoute: 'workgraph',
+        reviewRequired: true,
+        task: 'Validate the provided documents against the linked design/standard and return structured findings.',
+        outputFields: '{"verdict":{"type":"string","enum":["APPROVE","REJECT","SEND_BACK"]},"confidence":{"type":"number"},"findings":{"type":"array","items":{"type":"string"}}}',
+      },
+    },
+  },
+  {
+    label: 'Governance gate',
+    description: 'Hard/soft/manual gate for documents, code diffs, standards, and formal checks.',
+    nodeType: 'GOVERNANCE_GATE',
+    payload: {
+      label: 'Governance Gate',
+      config: {
+        mode: 'MANUAL_REVIEW',
+        failClosedOnResolveError: true,
+        materializeEvidence: true,
+        requiredArtifacts: 'design,implementation,tests',
+      },
+    },
+  },
+  {
+    label: 'Git diff check',
+    description: 'Governance gate preset for validating code changes against design intent.',
+    nodeType: 'GOVERNANCE_GATE',
+    visualType: 'GOVERNANCE_GATE',
+    payload: {
+      label: 'Git Diff Gate',
+      config: {
+        mode: 'HARD_BLOCK',
+        failClosedOnResolveError: true,
+        materializeEvidence: true,
+        runFormalVerifier: false,
+        diffValidation: '{"requireTests":true,"requireDesignTraceability":true,"forbiddenPaths":[],"requiredPathPatterns":["src/**","tests/**"]}',
+      },
+    },
+  },
+  {
+    label: 'Emit status event',
+    description: 'Publish workflow status back to an event bus after review or completion.',
+    nodeType: 'EVENT_EMIT',
+    payload: {
+      label: 'Emit Status Event',
+      config: {
+        sinkType: 'eventbus',
+        eventType: 'workitem.workflow.status',
+        payloadTemplate: '{"workId":"{{vars.workId}}","status":"{{node.status}}","capability":"{{vars.capabilityName}}"}',
+      },
+    },
+  },
+]
+
 // ─── Validation constants ──────────────────────────────────────────────────────
 
 /** Node types that are valid entry points (no required incoming edge). */
@@ -3349,6 +3422,15 @@ export function WorkflowStudioPage() {
       }),
     }))
     .filter(group => group.types.length > 0)
+  const filteredRecipeShortcuts = WORKFLOW_RECIPE_SHORTCUTS.filter(recipe => {
+    if (isWorkbenchProfile && !_WORKBENCH_ALLOWED_NODE_TYPES.has(recipe.nodeType)) {
+      return false
+    }
+    return !nodeSearchTerm
+      || recipe.label.toLowerCase().includes(nodeSearchTerm)
+      || recipe.description.toLowerCase().includes(nodeSearchTerm)
+      || recipe.nodeType.toLowerCase().includes(nodeSearchTerm)
+  })
   // M93 — Trigger presets (Scheduled Start / Event Trigger / Server Time
   // Init) are all main-workflow concepts. A workbench template is
   // never triggered directly — hide the section entirely so the
@@ -3942,6 +4024,64 @@ export function WorkflowStudioPage() {
                   />
                 </div>
                 <div style={{ maxHeight: 'calc(100vh - 230px)', overflowY: 'auto', paddingRight: 2 }}>
+                  {filteredRecipeShortcuts.length > 0 && (
+                    <div style={{ marginBottom: 14 }}>
+                      <div style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        margin: '0 0 8px',
+                      }}>
+                        <p style={{
+                          margin: 0, color: '#0f172a', fontSize: 10, fontWeight: 950,
+                          textTransform: 'uppercase', letterSpacing: '0.12em',
+                        }}>
+                          SDLC recipes
+                        </p>
+                        <span style={{
+                          fontSize: 9, fontWeight: 850, color: '#047857',
+                          background: 'rgba(34,197,94,0.10)', border: '1px solid rgba(34,197,94,0.22)',
+                          borderRadius: 999, padding: '2px 7px',
+                        }}>
+                          guided
+                        </span>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        {filteredRecipeShortcuts.map(recipe => {
+                          const { color, Icon } = NODE_VISUAL[recipe.visualType ?? recipe.nodeType] ?? { color: '#64748b', Icon: Box }
+                          return (
+                            <button
+                              key={recipe.label}
+                              type="button"
+                              onClick={() => createNodeFromPalette(recipe.nodeType, recipe.payload)}
+                              title={recipe.description}
+                              style={{
+                                display: 'flex', alignItems: 'flex-start', gap: 8,
+                                padding: 10, borderRadius: 12, textAlign: 'left',
+                                border: `1px solid ${color}24`, background: `${color}0c`,
+                                cursor: 'pointer', minWidth: 0,
+                              }}
+                            >
+                              <span style={{
+                                width: 30, height: 30, borderRadius: 9, flex: '0 0 auto',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                color, background: '#fff', border: `1px solid ${color}26`,
+                              }}>
+                                <Icon size={14} />
+                              </span>
+                              <span style={{ minWidth: 0 }}>
+                                <span style={{ display: 'block', fontSize: 11.5, fontWeight: 900, color: '#0f172a', lineHeight: 1.2 }}>{recipe.label}</span>
+                                <span style={{
+                                  marginTop: 3, fontSize: 9.5, fontWeight: 650, color: '#64748b', lineHeight: 1.35,
+                                  display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                                }}>
+                                  {recipe.description}
+                                </span>
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
                   {filteredTriggerPresets.length > 0 && (
                     <div style={{ marginBottom: 14 }}>
                       <p style={{
@@ -4036,7 +4176,7 @@ export function WorkflowStudioPage() {
                       </div>
                     </div>
                   )}
-                  {filteredTriggerPresets.length === 0 && filteredNodeGroups.length === 0 && filteredCustomNodeTypes.length === 0 && (
+                  {filteredRecipeShortcuts.length === 0 && filteredTriggerPresets.length === 0 && filteredNodeGroups.length === 0 && filteredCustomNodeTypes.length === 0 && (
                     <p style={{ margin: '18px 8px 10px', color: '#64748b', fontSize: 12, lineHeight: 1.5 }}>
                       No node types match that search.
                     </p>

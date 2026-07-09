@@ -13,7 +13,7 @@
  *   POST /workflow-instances/:id/nodes/:nodeId/restart
  *   POST /workflow-instances/:id/nodes/:nodeId/force-complete   (approve/advance)
  */
-import { useMemo, useState, useCallback, useEffect, type CSSProperties } from 'react'
+import { useMemo, useState, useCallback, useEffect, type CSSProperties, type ElementType } from 'react'
 import { RuntimeWidgetForm } from '../forms/widgets/RuntimeWidgetForm'
 import type { FormWidget } from '../forms/widgets/types'
 import ReactFlow, {
@@ -29,7 +29,8 @@ import {
   ArrowLeft, List, AlertCircle,
   RotateCw, FileText, MessageSquare, X, Check, Ban, Send, ExternalLink,
   ShieldCheck, CornerUpLeft, Library, Download, Maximize2, Activity, Copy, Pencil, UserPlus,
-  Play, Radio,
+  Play, Radio, Bot, Cpu, GitBranch, GitMerge, Package, Wrench, Shield, User, Clock,
+  Database, Workflow, Repeat, Shuffle, Zap, RadioTower, Terminal, Network, Square,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { MarkdownView } from './MarkdownView'
@@ -67,6 +68,129 @@ export interface RunGraphEdgeData {
 // Status visuals come from the shared runtime palette (one source of truth for
 // graph / timeline / dashboard).
 const st = runStatusVisual
+
+const RUN_DOMAIN = {
+  start: '#16a34a',
+  end: '#64748b',
+  agent: '#7c3aed',
+  human: '#d97706',
+  governance: '#9333ea',
+  decision: '#2563eb',
+  data: '#0d9488',
+  integration: '#ea580c',
+  signal: '#0891b2',
+  error: '#dc2626',
+} as const
+
+const RUN_NODE_VISUAL: Record<string, { color: string; Icon: ElementType; domain: string }> = {
+  START: { color: RUN_DOMAIN.start, Icon: Play, domain: 'Trigger' },
+  END: { color: RUN_DOMAIN.end, Icon: Square, domain: 'Finish' },
+  AGENT_TASK: { color: RUN_DOMAIN.agent, Icon: Bot, domain: 'Agent' },
+  DIRECT_LLM_TASK: { color: RUN_DOMAIN.agent, Icon: Cpu, domain: 'Direct LLM' },
+  WORKBENCH_TASK: { color: RUN_DOMAIN.agent, Icon: ShieldCheck, domain: 'Workbench' },
+  HUMAN_TASK: { color: RUN_DOMAIN.human, Icon: User, domain: 'Human' },
+  APPROVAL: { color: RUN_DOMAIN.governance, Icon: Check, domain: 'Approval' },
+  GOVERNANCE_GATE: { color: RUN_DOMAIN.governance, Icon: Shield, domain: 'Governance' },
+  POLICY_CHECK: { color: RUN_DOMAIN.governance, Icon: Shield, domain: 'Policy' },
+  VERIFIER: { color: RUN_DOMAIN.governance, Icon: ShieldCheck, domain: 'Verifier' },
+  EVAL_GATE: { color: RUN_DOMAIN.governance, Icon: Activity, domain: 'Evaluator' },
+  DECISION_GATE: { color: RUN_DOMAIN.decision, Icon: GitMerge, domain: 'Decision' },
+  INCLUSIVE_GATEWAY: { color: RUN_DOMAIN.decision, Icon: Shuffle, domain: 'Gateway' },
+  EVENT_GATEWAY: { color: RUN_DOMAIN.decision, Icon: Zap, domain: 'Event gate' },
+  PARALLEL_FORK: { color: RUN_DOMAIN.decision, Icon: GitBranch, domain: 'Parallel' },
+  PARALLEL_JOIN: { color: RUN_DOMAIN.decision, Icon: GitMerge, domain: 'Join' },
+  FOREACH: { color: RUN_DOMAIN.decision, Icon: Repeat, domain: 'Loop' },
+  CONSUMABLE_CREATION: { color: RUN_DOMAIN.data, Icon: Package, domain: 'Artifact' },
+  DATA_SINK: { color: RUN_DOMAIN.data, Icon: Database, domain: 'Data' },
+  SET_CONTEXT: { color: RUN_DOMAIN.data, Icon: Network, domain: 'Context' },
+  TOOL_REQUEST: { color: RUN_DOMAIN.integration, Icon: Wrench, domain: 'Tool' },
+  CREATE_BRANCH: { color: RUN_DOMAIN.integration, Icon: GitBranch, domain: 'Git' },
+  GIT_PUSH: { color: RUN_DOMAIN.integration, Icon: GitBranch, domain: 'Git' },
+  RAISE_PR: { color: RUN_DOMAIN.integration, Icon: GitMerge, domain: 'Git' },
+  RUN_PYTHON: { color: RUN_DOMAIN.integration, Icon: Terminal, domain: 'Script' },
+  CALL_WORKFLOW: { color: RUN_DOMAIN.integration, Icon: Workflow, domain: 'Workflow' },
+  WORK_ITEM: { color: RUN_DOMAIN.integration, Icon: Network, domain: 'Work item' },
+  TIMER: { color: RUN_DOMAIN.signal, Icon: Clock, domain: 'Timer' },
+  SIGNAL_WAIT: { color: RUN_DOMAIN.signal, Icon: Radio, domain: 'Signal' },
+  SIGNAL_EMIT: { color: RUN_DOMAIN.signal, Icon: RadioTower, domain: 'Signal' },
+  EVENT_EMIT: { color: RUN_DOMAIN.signal, Icon: Send, domain: 'Event' },
+  ERROR_CATCH: { color: RUN_DOMAIN.error, Icon: AlertCircle, domain: 'Error' },
+}
+
+const RUN_NODE_LABELS: Record<string, string> = {
+  START: 'Start',
+  END: 'End',
+  HUMAN_TASK: 'Human Task',
+  AGENT_TASK: 'Agent Task',
+  DIRECT_LLM_TASK: 'Direct LLM',
+  WORKBENCH_TASK: 'Workbench',
+  APPROVAL: 'Approval',
+  DECISION_GATE: 'Decision',
+  CONSUMABLE_CREATION: 'Create Artifact',
+  TOOL_REQUEST: 'Tool Request',
+  CREATE_BRANCH: 'Create Branch',
+  GIT_PUSH: 'Git Push',
+  RAISE_PR: 'Raise PR',
+  POLICY_CHECK: 'Policy Check',
+  EVAL_GATE: 'Eval Gate',
+  VERIFIER: 'Verifier',
+  GOVERNANCE_GATE: 'Governance Gate',
+  TIMER: 'Timer',
+  SIGNAL_WAIT: 'Signal Wait',
+  SIGNAL_EMIT: 'Signal Emit',
+  CALL_WORKFLOW: 'Sub-workflow',
+  WORK_ITEM: 'Work Item',
+  FOREACH: 'For Each',
+  PARALLEL_FORK: 'Parallel Fork',
+  PARALLEL_JOIN: 'Parallel Join',
+  INCLUSIVE_GATEWAY: 'Inclusive Gateway',
+  EVENT_GATEWAY: 'Event Gateway',
+  DATA_SINK: 'Data Sink',
+  SET_CONTEXT: 'Set Context',
+  ERROR_CATCH: 'Error Catch',
+  RUN_PYTHON: 'Run Python',
+  EVENT_EMIT: 'Emit Event',
+}
+
+function runNodeVisual(nodeType: string) {
+  return RUN_NODE_VISUAL[nodeType] ?? { color: '#64748b', Icon: Workflow, domain: 'Workflow' }
+}
+
+function runNodeLabel(nodeType: string) {
+  return RUN_NODE_LABELS[nodeType] ?? nodeType.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, s => s.toUpperCase())
+}
+
+function activeStatus(status: string | null | undefined): boolean {
+  return ['ACTIVE', 'RUNNING'].includes(String(status ?? '').toUpperCase())
+}
+
+function terminalStatus(status: string | null | undefined): boolean {
+  return ['COMPLETED', 'CANCELLED', 'FAILED', 'SKIPPED'].includes(String(status ?? '').toUpperCase())
+}
+
+function configList(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item)) : []
+}
+
+function nodeArtifactCounts(config: Record<string, unknown>) {
+  return {
+    reads: configList(config.inputArtifacts).length,
+    writes: configList(config.outputArtifacts).length,
+  }
+}
+
+function executionRouteLabel(config: Record<string, unknown>, nodeType?: string): string {
+  const standard = config.standard && typeof config.standard === 'object' ? config.standard as Record<string, unknown> : {}
+  const location = String(config.executionLocation ?? standard.executionLocation ?? '').trim()
+  const llmRoute = String(config.llmRoute ?? standard.llmRoute ?? '').trim()
+  const executor = String(config.executor ?? standard.executor ?? '').trim()
+  if (llmRoute) return llmRoute.replace(/[_-]/g, ' ')
+  if (executor) return executor.replace(/[_-]/g, ' ')
+  if (location) return location.toLowerCase()
+  if (nodeType === 'DIRECT_LLM_TASK') return 'workgraph llm'
+  if (nodeType === 'AGENT_TASK') return 'mcp/context'
+  return 'server'
+}
 
 function savedPosition(node: RunGraphNodeData): { x: number; y: number } | null {
   const x = typeof node.positionX === 'number' ? node.positionX : node.config?.positionX
@@ -142,9 +266,15 @@ type CardData = RunGraphNodeData & {
 }
 function RunGraphNode({ data }: NodeProps<CardData>) {
   const s = st(data.status)
-  const active = ['ACTIVE', 'RUNNING'].includes((data.status ?? '').toUpperCase())
+  const active = activeStatus(data.status)
+  const done = terminalStatus(data.status)
   const isAgent = data.nodeType === 'AGENT_TASK' || data.nodeType === 'DIRECT_LLM_TASK'
   const isInteractive = INTERACTIVE_TYPES.has(data.nodeType)
+  const visual = runNodeVisual(data.nodeType)
+  const VIcon = visual.Icon
+  const SIcon = s.Icon
+  const artifactCounts = nodeArtifactCounts(data.config ?? {})
+  const route = executionRouteLabel(data.config ?? {}, data.nodeType)
   // Per-node start gate: a manual/event node sits ACTIVE + _awaitingStart until triggered.
   const std = (data.config?.standard && typeof data.config.standard === 'object' ? data.config.standard as Record<string, unknown> : {})
   const startMode = String(data.config?.startMode ?? std.startMode ?? 'auto').toLowerCase()
@@ -156,10 +286,11 @@ function RunGraphNode({ data }: NodeProps<CardData>) {
       disabled={data.busy}
       style={{
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-        width: '100%', padding: '6px 8px', borderRadius: 7, fontSize: 11, fontWeight: 600, cursor: 'pointer',
+        width: '100%', padding: '6px 8px', borderRadius: 8, fontSize: 11, fontWeight: 800, cursor: 'pointer',
         border: '1px solid', borderColor: tone === 'approve' ? '#16a34a' : tone === 'reject' ? '#dc2626' : '#e2e8f0',
-        background: tone === 'approve' ? '#22c55e' : tone === 'reject' ? '#ef4444' : '#fff',
+        background: tone === 'approve' ? 'linear-gradient(135deg, #22c55e, #16a34a)' : tone === 'reject' ? 'linear-gradient(135deg, #ef4444, #dc2626)' : '#fff',
         color: tone ? '#fff' : '#334155', opacity: data.busy ? 0.6 : 1,
+        boxShadow: tone ? '0 8px 18px rgba(15,23,42,0.12)' : 'none',
       }}
     >
       <Icon size={12} /> {label}
@@ -167,32 +298,61 @@ function RunGraphNode({ data }: NodeProps<CardData>) {
   )
   return (
     <div
+      className="wg-run-node-card"
       onClick={() => data.onSelect(data.id)}
       style={{
-        width: 248, borderRadius: 12, background: s.bg, cursor: 'pointer',
-        border: `1.5px solid ${data.selected ? '#0ea5e9' : s.ring}`,
-        boxShadow: data.selected ? '0 0 0 3px rgba(14,165,233,0.18)' : '0 1px 3px rgba(15,23,42,0.08)',
+        width: 284, borderRadius: 16, background: '#ffffff', cursor: 'pointer',
+        border: `1.5px solid ${data.selected ? visual.color : s.ring}`,
+        boxShadow: data.selected ? `0 0 0 4px ${visual.color}24, 0 18px 42px rgba(15,23,42,0.16)` : '0 12px 30px rgba(15,23,42,0.09), 0 1px 0 rgba(255,255,255,0.96) inset',
         overflow: 'hidden',
+        position: 'relative',
+        opacity: done && !data.selected ? 0.92 : 1,
       }}
     >
-      <Handle type="target" position={Position.Left} style={{ background: s.ring, border: 'none', width: 7, height: 7 }} />
-      <Handle type="source" position={Position.Right} style={{ background: s.ring, border: 'none', width: 7, height: 7 }} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 11px' }}>
-        <span style={{ color: s.color, display: 'flex' }}><s.Icon size={16} /></span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{data.label}</div>
-          <div style={{ fontSize: 9.5, fontWeight: 600, color: s.color, letterSpacing: 0.3 }}>{data.nodeType} · {awaitingStart ? (startMode === 'event' ? 'awaiting signal' : 'awaiting start') : s.label}</div>
+      <div style={{ height: 4, background: `linear-gradient(90deg, ${visual.color}, ${s.color}, transparent)` }} />
+      <Handle type="target" position={Position.Left} style={{ background: visual.color, border: '3px solid #fff', width: 12, height: 12, left: -6 }} />
+      <Handle type="source" position={Position.Right} style={{ background: visual.color, border: '3px solid #fff', width: 12, height: 12, right: -6 }} />
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 13px 8px' }}>
+        <div style={{
+          width: 40, height: 40, borderRadius: 12, flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: visual.color, background: `${visual.color}14`, border: `1px solid ${visual.color}30`,
+        }}>
+          <VIcon size={17} />
         </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 900, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: 0 }}>{data.label}</div>
+          <div style={{ marginTop: 3, display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 9, fontWeight: 900, color: visual.color, letterSpacing: '0.10em', textTransform: 'uppercase' }}>{visual.domain}</span>
+            <span style={{ width: 3, height: 3, borderRadius: 999, background: '#cbd5e1' }} />
+            <span style={{ fontSize: 9, fontWeight: 800, color: '#64748b', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{route}</span>
+          </div>
+        </div>
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          fontSize: 9, fontWeight: 900, color: s.color, padding: '4px 7px', borderRadius: 999,
+          background: s.bg, border: `1px solid ${s.ring}`, letterSpacing: '0.08em', textTransform: 'uppercase',
+        }}>
+          <SIcon size={10} /> {awaitingStart ? (startMode === 'event' ? 'Signal' : 'Start') : s.label}
+        </span>
       </div>
-      <div style={{ margin: '0 11px 9px', padding: '6px 8px', borderRadius: 7, background: 'rgba(15,23,42,0.04)', minHeight: 30 }}>
-        <div style={{ fontSize: 8.5, fontWeight: 700, color: '#94a3b8', letterSpacing: 0.4, marginBottom: 2 }}>LIVE LOG</div>
+
+      <div style={{ padding: '0 13px 9px', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <span style={nodeMiniPill('#475569', '#f8fafc', '#e2e8f0')}>{runNodeLabel(data.nodeType)}</span>
+        {artifactCounts.reads > 0 && <span style={nodeMiniPill('#2563eb', '#eff6ff', '#bfdbfe')}>Reads {artifactCounts.reads}</span>}
+        {artifactCounts.writes > 0 && <span style={nodeMiniPill('#0f766e', '#f0fdfa', '#99f6e4')}>Writes {artifactCounts.writes}</span>}
+      </div>
+
+      <div style={{ margin: '0 13px 10px', padding: '8px 9px', borderRadius: 10, background: active ? '#f8fbff' : '#f8fafc', border: `1px solid ${active ? '#dbeafe' : '#eef2f7'}`, minHeight: 42 }}>
+        <div style={{ fontSize: 8.5, fontWeight: 900, color: '#94a3b8', letterSpacing: '0.13em', marginBottom: 3, textTransform: 'uppercase' }}>{active ? 'Live signal' : 'Last output'}</div>
         <LiveLogPeek instanceId={data.config._instanceId as string} nodeId={data.id} active={active} />
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 5, padding: '0 11px 11px' }}>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '0 13px 13px' }}>
         {awaitingStart && startMode === 'manual' && btn('Start', Play, () => data.onStart(data.id), 'approve')}
         {awaitingStart && startMode === 'event' && (
           <div style={{
-            display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', borderRadius: 7,
+            display: 'flex', alignItems: 'center', gap: 6, padding: '7px 9px', borderRadius: 8,
             border: '1px dashed rgba(6,182,212,0.5)', background: 'rgba(6,182,212,0.08)', color: '#0e7490', fontSize: 10.5, fontWeight: 700,
           }}>
             <Radio size={12} /> Awaiting signal{startSignal ? `: ${startSignal}` : ''}
@@ -214,6 +374,25 @@ function RunGraphNode({ data }: NodeProps<CardData>) {
       </div>
     </div>
   )
+}
+
+function nodeMiniPill(color: string, background: string, border: string): CSSProperties {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    maxWidth: 112,
+    padding: '3px 7px',
+    borderRadius: 999,
+    border: `1px solid ${border}`,
+    background,
+    color,
+    fontSize: 9,
+    fontWeight: 850,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  }
 }
 
 function LiveLogPeek({ instanceId, nodeId, active }: { instanceId: string; nodeId: string; active: boolean }) {
@@ -304,6 +483,8 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
   const [showCatalog, setShowCatalog] = useState(false)
   const [showActivity, setShowActivity] = useState(false)
   const live = !['COMPLETED', 'CANCELLED', 'FAILED'].includes((instanceStatus ?? '').toUpperCase())
+  const { data: allConsumables = [] } = useAllConsumables(instanceId, live)
+  const runDocuments = useMemo(() => allConsumables.filter(isVisibleDocumentConsumable), [allConsumables])
 
   const invalidate = useCallback(() => {
     qc.invalidateQueries({ queryKey: ['run-instance', instanceId] })
@@ -367,14 +548,35 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
 
   const positions = useMemo(() => layout(nodes, edges), [nodes, edges])
   // phases in left→right (execution) order, for the catalog + send-back list
-  const orderedPhases = useMemo(() => nodes.slice().sort((a, b) => {
+  const orderedRunNodes = useMemo(() => nodes.slice().sort((a, b) => {
     const pa = positions.get(a.id) ?? { x: 0, y: 0 }, pb = positions.get(b.id) ?? { x: 0, y: 0 }
     return pa.x - pb.x || pa.y - pb.y
-  }).map(n => ({ id: n.id, label: n.label })), [nodes, positions])
+  }), [nodes, positions])
+  const orderedPhases = useMemo(() => orderedRunNodes.map(n => ({ id: n.id, label: n.label })), [orderedRunNodes])
   const completedNodes = useMemo(
     () => orderedPhases.filter(p => (nodes.find(x => x.id === p.id)?.status ?? '').toUpperCase() === 'COMPLETED'),
     [orderedPhases, nodes])
   const busyId = restartMut.isPending ? restartMut.variables : approveMut.isPending ? approveMut.variables : startMut.isPending ? startMut.variables : null
+  const statusCounts = useMemo(() => ({
+    total: orderedRunNodes.length,
+    completed: orderedRunNodes.filter(n => (n.status ?? '').toUpperCase() === 'COMPLETED').length,
+    active: orderedRunNodes.filter(n => activeStatus(n.status)).length,
+    blocked: orderedRunNodes.filter(n => (n.status ?? '').toUpperCase() === 'BLOCKED').length,
+    failed: orderedRunNodes.filter(n => (n.status ?? '').toUpperCase() === 'FAILED').length,
+  }), [orderedRunNodes])
+  const focusNode = useMemo(() =>
+    orderedRunNodes.find(n => (n.status ?? '').toUpperCase() === 'BLOCKED')
+    ?? orderedRunNodes.find(n => activeStatus(n.status))
+    ?? orderedRunNodes.find(n => (n.status ?? '').toUpperCase() === 'PENDING')
+    ?? orderedRunNodes[orderedRunNodes.length - 1]
+    ?? null,
+    [orderedRunNodes])
+  const nextNode = useMemo(() => {
+    if (!focusNode) return null
+    const idx = orderedRunNodes.findIndex(n => n.id === focusNode.id)
+    return orderedRunNodes.slice(Math.max(idx + 1, 0)).find(n => !terminalStatus(n.status)) ?? null
+  }, [focusNode, orderedRunNodes])
+  const activeNodeIds = useMemo(() => new Set(orderedRunNodes.filter(n => activeStatus(n.status)).map(n => n.id)), [orderedRunNodes])
 
   const rfNodes: Node<CardData>[] = useMemo(() => nodes.map(n => ({
     id: n.id,
@@ -389,49 +591,81 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
     },
   })), [nodes, positions, selected, instanceId, onSelect, restartMut.mutate, approveMut.mutate, startMut.mutate, busyId])
 
-  const rfEdges: Edge[] = useMemo(() => edges.map(e => ({
-    id: e.id,
-    source: e.sourceNodeId,
-    target: e.targetNodeId,
-    label: runEdgeLabel(e),
-    animated: live,
-    style: {
-      stroke: e.condition?.isDefault === true ? '#f59e0b' : e.edgeType === 'CONDITIONAL' ? '#0ea5e9' : '#94a3b8',
-      strokeWidth: e.edgeType === 'CONDITIONAL' ? 2 : 1.5,
-      ...(e.condition?.isDefault === true ? { strokeDasharray: '6 4' } : {}),
-    },
-    labelStyle: {
-      fill: e.condition?.isDefault === true ? '#92400e' : '#334155',
-      fontSize: 10,
-      fontWeight: 800,
-      textTransform: 'uppercase',
-      letterSpacing: '0.08em',
-    },
-    labelBgStyle: { fill: '#fff', fillOpacity: 0.92 },
-    labelBgPadding: [6, 3],
-  })), [edges, live])
+  const rfEdges: Edge[] = useMemo(() => edges.map(e => {
+    const isLiveEdge = live && (activeNodeIds.has(e.sourceNodeId) || activeNodeIds.has(e.targetNodeId))
+    const isConditional = e.edgeType === 'CONDITIONAL'
+    const isDefault = e.condition?.isDefault === true
+    return {
+      id: e.id,
+      source: e.sourceNodeId,
+      target: e.targetNodeId,
+      label: runEdgeLabel(e),
+      animated: isLiveEdge,
+      className: isLiveEdge ? 'wg-live-edge' : undefined,
+      style: {
+        stroke: isLiveEdge ? '#16a34a' : isDefault ? '#f59e0b' : isConditional ? '#0ea5e9' : '#94a3b8',
+        strokeWidth: isLiveEdge ? 2.5 : isConditional ? 2 : 1.5,
+        ...(isDefault ? { strokeDasharray: '6 4' } : {}),
+      },
+      labelStyle: {
+        fill: isDefault ? '#92400e' : '#334155',
+        fontSize: 10,
+        fontWeight: 800,
+        textTransform: 'uppercase',
+        letterSpacing: '0.08em',
+      },
+      labelBgStyle: { fill: '#fff', fillOpacity: 0.94 },
+      labelBgPadding: [6, 3],
+      labelBgBorderRadius: 999,
+    }
+  }), [edges, live, activeNodeIds])
 
   const nodeTypes = useMemo(() => ({ runCard: RunGraphNode }), [])
   const selectedNode = nodes.find(n => n.id === selected) ?? null
 
   return (
-    <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: '#f8fafc', zIndex: 10 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', background: '#fff', borderBottom: '1px solid #e2e8f0', flexShrink: 0 }}>
+    <div className="wg-command-center" style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: 'linear-gradient(180deg, #f7faf9 0%, #eef4f5 100%)', zIndex: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'rgba(255,255,255,0.88)', borderBottom: '1px solid #dbe3e7', flexShrink: 0, backdropFilter: 'blur(18px)' }}>
         <button onClick={onBack} style={topBtn}><ArrowLeft size={13} /> Back</button>
-        <div style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{runName}</div>
-        <span style={{ fontSize: 11, fontWeight: 700, color: st(instanceStatus).color, padding: '3px 9px', borderRadius: 20, background: st(instanceStatus).bg, border: `1px solid ${st(instanceStatus).ring}` }}>{instanceStatus}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 900, color: '#0f172a', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: 0 }}>{runName}</div>
+            <span style={{ fontSize: 10, fontWeight: 900, color: st(instanceStatus).color, padding: '4px 9px', borderRadius: 999, background: st(instanceStatus).bg, border: `1px solid ${st(instanceStatus).ring}`, letterSpacing: '0.10em', textTransform: 'uppercase' }}>{instanceStatus}</span>
+          </div>
+          <div style={{ marginTop: 2, fontSize: 10.5, color: '#64748b', fontWeight: 700 }}>Run cockpit · graph, stage actions, documents, receipts, and handoff exports</div>
+        </div>
+        <MetricPill label="Stages" value={String(statusCounts.total)} tone="#2563eb" />
+        <MetricPill label="Done" value={String(statusCounts.completed)} tone="#16a34a" />
+        {(statusCounts.blocked > 0 || statusCounts.failed > 0) && <MetricPill label={statusCounts.failed > 0 ? 'Failed' : 'Blocked'} value={String(statusCounts.failed || statusCounts.blocked)} tone={statusCounts.failed > 0 ? '#dc2626' : '#d97706'} />}
+        <MetricPill label="Docs" value={String(runDocuments.length)} tone="#0d9488" />
         <button onClick={() => downloadCopilotExport('yaml')} style={topBtn} title="Download this run as a Copilot workflow YAML with artifact/metric pushback instructions"><Download size={13} /> Copilot YAML</button>
         <button onClick={() => downloadCopilotExport('runner')} style={topBtn} title="Download an executable script that runs Copilot CLI and posts artifacts/metrics back to the platform"><Download size={13} /> Runner</button>
-        <button disabled={!selected} onClick={() => selected && downloadCopilotExport('yaml', selected)} style={{ ...topBtn, opacity: selected ? 1 : 0.45, cursor: selected ? 'pointer' : 'not-allowed' }} title="Select a phase, then download a Copilot handoff YAML starting there: earlier phases inlined as context (full artifacts + diffs), this phase onward as runnable composed prompts to continue on your own Copilot CLI"><Download size={13} /> Handoff from phase</button>
-        <button onClick={() => { setShowCatalog(c => !c); setShowActivity(false); setSelected(null) }} style={{ ...topBtn, ...(showCatalog ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }} title="All documents this run produced, grouped by agent (mirrors git deliverables/<work-id>/<agent>/) — view or edit each"><Library size={13} /> Documents</button>
+        <button disabled={!selected} onClick={() => selected && downloadCopilotExport('yaml', selected)} style={{ ...topBtn, opacity: selected ? 1 : 0.45, cursor: selected ? 'pointer' : 'not-allowed' }} title="Select a phase, then download a Copilot handoff YAML starting there: earlier phases inlined as context (full artifacts + diffs), this phase onward as runnable composed prompts to continue on your own Copilot CLI"><Download size={13} /> Handoff</button>
+        <button onClick={() => { setShowCatalog(c => !c); setShowActivity(false); setSelected(null) }} style={{ ...topBtn, ...(showCatalog ? { background: '#ecfeff', borderColor: '#06b6d4', color: '#0e7490' } : {}) }} title="All documents this run produced, grouped by agent (mirrors git deliverables/<work-id>/<agent>/) — view or edit each"><Library size={13} /> Documents</button>
         {usesCopilot && (
-          <button onClick={() => { setShowActivity(a => !a); setShowCatalog(false); setSelected(null) }} style={{ ...topBtn, ...(showActivity ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }} title="Live governed activity for this copilot run (LLM calls, tools, phases, commits)"><Activity size={13} /> Live activity</button>
+          <button onClick={() => { setShowActivity(a => !a); setShowCatalog(false); setSelected(null) }} style={{ ...topBtn, ...(showActivity ? { background: '#f5f3ff', borderColor: '#8b5cf6', color: '#6d28d9' } : {}) }} title="Live governed activity for this copilot run (LLM calls, tools, phases, commits)"><Activity size={13} /> Activity</button>
         )}
         <button onClick={() => takeOverMut.mutate()} disabled={takeOverMut.isPending} style={topBtn} title="Take over this run: reassign it to you so your runtime drives it (clones the work branch wi/<code> if it isn't local) and resume it if paused"><UserPlus size={13} /> {takeOverMut.isPending ? 'Taking over…' : 'Take over'}</button>
         <button onClick={onTimeline} style={topBtn}><List size={13} /> Timeline</button>
       </div>
+      <RunStageRail
+        nodes={orderedRunNodes}
+        selectedId={selected}
+        focusNode={focusNode}
+        nextNode={nextNode}
+        documents={runDocuments.length}
+        onSelect={(nodeId) => onSelect(nodeId)}
+      />
+      {focusNode && (
+        <RunFocusBanner
+          node={focusNode}
+          nextNode={nextNode}
+          selected={selected === focusNode.id}
+          onSelect={() => onSelect(focusNode.id)}
+        />
+      )}
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
           <ReactFlow
             nodes={rfNodes} edges={rfEdges} nodeTypes={nodeTypes}
             fitView fitViewOptions={{ padding: 0.2 }}
@@ -439,7 +673,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
             proOptions={{ hideAttribution: true }}
             onPaneClick={() => setSelected(null)}
           >
-            <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="#e2e8f0" />
+            <Background variant={BackgroundVariant.Dots} gap={22} size={1.1} color="#dbe6e9" />
             <Controls showInteractive={false} />
           </ReactFlow>
         </div>
@@ -471,9 +705,158 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
   )
 }
 
+function MetricPill({ label, value, tone }: { label: string; value: string; tone: string }) {
+  return (
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6,
+      padding: '6px 9px', borderRadius: 999,
+      border: `1px solid ${tone}26`, background: `${tone}0f`, color: tone,
+      fontSize: 10, fontWeight: 900, letterSpacing: '0.08em', textTransform: 'uppercase',
+      whiteSpace: 'nowrap',
+    }}>
+      <strong style={{ fontSize: 12, letterSpacing: 0 }}>{value}</strong>{label}
+    </span>
+  )
+}
+
+function RunStageRail({ nodes, selectedId, focusNode, nextNode, documents, onSelect }: {
+  nodes: RunGraphNodeData[]
+  selectedId: string | null
+  focusNode: RunGraphNodeData | null
+  nextNode: RunGraphNodeData | null
+  documents: number
+  onSelect: (nodeId: string) => void
+}) {
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: '1fr auto',
+      gap: 12,
+      alignItems: 'center',
+      padding: '10px 16px',
+      background: 'rgba(248,250,252,0.90)',
+      borderBottom: '1px solid #dbe3e7',
+      flexShrink: 0,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, overflowX: 'auto', paddingBottom: 1 }}>
+        {nodes.map((node, idx) => {
+          const status = st(node.status)
+          const visual = runNodeVisual(node.nodeType)
+          const VIcon = visual.Icon
+          const selected = selectedId === node.id
+          const focus = focusNode?.id === node.id
+          return (
+            <button
+              key={node.id}
+              onClick={() => onSelect(node.id)}
+              title={`${node.label} · ${runNodeLabel(node.nodeType)} · ${status.label}`}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 7,
+                minWidth: 0,
+                maxWidth: 220,
+                padding: '7px 9px',
+                borderRadius: 999,
+                border: `1px solid ${selected ? visual.color : focus ? status.ring : '#dbe3e7'}`,
+                background: selected ? `${visual.color}12` : focus ? status.bg : '#ffffff',
+                color: selected ? visual.color : '#334155',
+                cursor: 'pointer',
+                boxShadow: selected ? `0 0 0 3px ${visual.color}18` : '0 1px 0 rgba(255,255,255,0.9) inset',
+                flex: '0 0 auto',
+              }}
+            >
+              <span style={{ color: visual.color, display: 'flex' }}><VIcon size={13} /></span>
+              <span style={{ fontSize: 10, fontWeight: 900, color: '#94a3b8' }}>{idx + 1}</span>
+              <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, fontWeight: 850 }}>{node.label}</span>
+              <span style={{ width: 7, height: 7, borderRadius: 999, background: status.color, boxShadow: activeStatus(node.status) ? `0 0 0 4px ${status.color}18` : undefined, flex: '0 0 auto' }} />
+            </button>
+          )
+        })}
+      </div>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10, minWidth: 260,
+        padding: '7px 10px', borderRadius: 12,
+        border: '1px solid #dbe3e7', background: '#ffffff',
+      }}>
+        <div style={{ color: '#0d9488', display: 'flex' }}><Library size={15} /></div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 10, fontWeight: 900, color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Evidence rail</div>
+          <div style={{ fontSize: 11.5, fontWeight: 800, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {documents} document{documents === 1 ? '' : 's'} · next {nextNode?.label ?? 'no pending stage'}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function RunFocusBanner({ node, nextNode, selected, onSelect }: {
+  node: RunGraphNodeData
+  nextNode: RunGraphNodeData | null
+  selected: boolean
+  onSelect: () => void
+}) {
+  const status = st(node.status)
+  const visual = runNodeVisual(node.nodeType)
+  const VIcon = visual.Icon
+  const upper = (node.status ?? '').toUpperCase()
+  const action =
+    upper === 'BLOCKED' ? 'Blocked. Open this stage to see the cause, evidence, and retry or send-back options.'
+    : upper === 'FAILED' ? 'Failed. Open logs and decide whether to retry, send back, or inspect artifacts.'
+    : activeStatus(node.status) && (node.nodeType === 'AGENT_TASK' || node.nodeType === 'DIRECT_LLM_TASK') ? 'Agent is working or waiting for review. Inspect output, answer questions, or approve.'
+    : activeStatus(node.status) ? 'Current stage is active. Open it for required input, logs, or live output.'
+    : upper === 'PENDING' ? 'Waiting for upstream stages to produce required inputs.'
+    : upper === 'COMPLETED' ? 'Completed. Inspect produced evidence and downstream handoff.'
+    : 'Inspect this stage for details.'
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'auto 1fr auto',
+      gap: 12,
+      alignItems: 'center',
+      margin: '10px 16px 0',
+      padding: '12px 14px',
+      borderRadius: 16,
+      border: `1px solid ${upper === 'BLOCKED' || upper === 'FAILED' ? status.ring : '#dbe3e7'}`,
+      background: upper === 'BLOCKED' || upper === 'FAILED' ? status.bg : 'rgba(255,255,255,0.86)',
+      boxShadow: '0 12px 28px rgba(15,23,42,0.07)',
+      flexShrink: 0,
+    }}>
+      <div style={{
+        width: 42, height: 42, borderRadius: 14,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        color: visual.color, background: `${visual.color}14`, border: `1px solid ${visual.color}30`,
+      }}>
+        <VIcon size={18} />
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <span style={{ fontSize: 10, fontWeight: 950, color: status.color, letterSpacing: '0.14em', textTransform: 'uppercase' }}>Current focus</span>
+          <span style={{ width: 3, height: 3, borderRadius: 999, background: '#cbd5e1' }} />
+          <span style={{ fontSize: 10, fontWeight: 900, color: visual.color, letterSpacing: '0.10em', textTransform: 'uppercase' }}>{runNodeLabel(node.nodeType)}</span>
+        </div>
+        <div style={{ marginTop: 3, fontSize: 14, fontWeight: 950, color: '#0f172a', letterSpacing: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.label}</div>
+        <div style={{ marginTop: 3, fontSize: 11.5, color: '#475569', lineHeight: 1.4 }}>
+          {action}{nextNode ? ` Next: ${nextNode.label}.` : ' No downstream stage is waiting.'}
+        </div>
+      </div>
+      <button onClick={onSelect} style={{ ...topBtn, background: selected ? `${visual.color}12` : '#fff', color: selected ? visual.color : '#334155', borderColor: selected ? `${visual.color}45` : '#dbe3e7' }}>
+        Open stage
+      </button>
+    </div>
+  )
+}
+
 const topBtn: CSSProperties = {
   display: 'flex', alignItems: 'center', gap: 5, padding: '6px 11px', borderRadius: 8,
-  border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', color: '#475569', fontSize: 12, fontWeight: 600,
+  border: '1px solid #dbe3e7',
+  background: '#fff',
+  cursor: 'pointer',
+  color: '#475569',
+  fontSize: 12,
+  fontWeight: 800,
+  boxShadow: '0 1px 0 rgba(255,255,255,0.9) inset',
 }
 
 function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, tab, setTab, completedNodes, onClose, onRestart, onApprove, onRestartNode, onOpenTimeline, busy }: {
@@ -494,10 +877,15 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
   busy: boolean
 }) {
   const s = st(node.status)
+  const visual = runNodeVisual(node.nodeType)
+  const VIcon = visual.Icon
+  const SIcon = s.Icon
+  const artifactCounts = nodeArtifactCounts(node.config ?? {})
+  const route = executionRouteLabel(node.config ?? {}, node.nodeType)
   const qc = useQueryClient()
   const [sendBackOpen, setSendBackOpen] = useState(false)
   const { data: consumables = [] } = useConsumables(instanceId, node.id, live)
-  const active = ['ACTIVE', 'RUNNING'].includes((node.status ?? '').toUpperCase())
+  const active = activeStatus(node.status)
   // The parsed Copilot questions ride in a hidden `_copilot_questions` consumable;
   // keep it out of the Log + Artifacts views and surface it in its own tab.
   const questions = useMemo<CopilotQuestion[]>(() => {
@@ -630,7 +1018,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
     : null
 
   return (
-    <div style={{ width: panelWidth, flexShrink: 0, background: '#fff', borderLeft: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative' }}>
+    <div style={{ width: panelWidth, flexShrink: 0, background: '#fbfdfe', borderLeft: '1px solid #dbe3e7', display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', boxShadow: '-16px 0 38px rgba(15,23,42,0.08)' }}>
       {/* Drag handle on the left edge — resize the review drawer; double-click resets. */}
       <div
         onMouseDown={(e) => { e.preventDefault(); startPanelResize(e.clientX) }}
@@ -638,12 +1026,30 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
         title="Drag to resize · double-click to reset"
         style={{ position: 'absolute', left: -3, top: 0, bottom: 0, width: 7, cursor: 'col-resize', zIndex: 20 }}
       />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid #e2e8f0' }}>
-        <span style={{ color: s.color, display: 'flex' }}><s.Icon size={16} /></span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 700, color: '#0f172a' }}>{node.label}</div>
-          <div style={{ fontSize: 10, fontWeight: 600, color: s.color }}>{node.nodeType} · {s.label}</div>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '14px 16px', borderBottom: '1px solid #dbe3e7', background: '#ffffff' }}>
+        <div style={{
+          width: 42, height: 42, borderRadius: 14, flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: visual.color, background: `${visual.color}14`, border: `1px solid ${visual.color}30`,
+        }}>
+          <VIcon size={18} />
         </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14.5, fontWeight: 950, color: '#0f172a', letterSpacing: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.label}</div>
+          <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+            <span style={nodeMiniPill(visual.color, `${visual.color}10`, `${visual.color}28`)}>{runNodeLabel(node.nodeType)}</span>
+            <span style={nodeMiniPill('#475569', '#f8fafc', '#e2e8f0')}>{route}</span>
+            {artifactCounts.reads > 0 && <span style={nodeMiniPill('#2563eb', '#eff6ff', '#bfdbfe')}>Reads {artifactCounts.reads}</span>}
+            {artifactCounts.writes > 0 && <span style={nodeMiniPill('#0f766e', '#f0fdfa', '#99f6e4')}>Writes {artifactCounts.writes}</span>}
+          </div>
+        </div>
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          fontSize: 9, fontWeight: 900, color: s.color, padding: '4px 7px', borderRadius: 999,
+          background: s.bg, border: `1px solid ${s.ring}`, letterSpacing: '0.08em', textTransform: 'uppercase',
+        }}>
+          <SIcon size={10} /> {s.label}
+        </span>
         <button onClick={onClose} style={{ ...topBtn, padding: 6 }}><X size={14} /></button>
       </div>
       <IoContract node={node} />
