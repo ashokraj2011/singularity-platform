@@ -961,9 +961,19 @@ async function executeServerNode(
     case 'TIMER':
       await activateTimer(node, instance)
       break
-    case 'SIGNAL_WAIT':
-      await activateSignalWait(node, instance)
+    case 'SIGNAL_WAIT': {
+      // P1-12 — if a matching signal was already emitted (and persisted) BEFORE
+      // this node parked, consume it and advance now instead of waiting forever
+      // for a live signal that already came and went. Otherwise stay ACTIVE.
+      const sigWait = await activateSignalWait(node, instance)
+      if (sigWait.consumed) {
+        const sigPayload = sigWait.payload && typeof sigWait.payload === 'object' && !Array.isArray(sigWait.payload)
+          ? sigWait.payload as Record<string, unknown>
+          : {}
+        await advance(instance.id, node.id, { ...context, ...sigPayload, _signal: sigWait.signalName }, actorId, undefined, tenantId)
+      }
       break
+    }
     case 'CALL_WORKFLOW':
       await activateCallWorkflow(node, instance)
       break

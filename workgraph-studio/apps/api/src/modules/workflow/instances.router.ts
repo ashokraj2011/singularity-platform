@@ -13,6 +13,7 @@ import { mapLimit } from '../../lib/map-limit'
 import { readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 import { advance, pauseInstance, resumeInstance, cancelInstance, failNode, restartNode, forceCompleteNode, startInstance, startAwaitingNode, triggerEventStartNodes, provideCreateBranchInput } from './runtime/WorkflowRuntime'
+import { persistSignal, markSignalConsumed } from './runtime/signals'
 import { promoteWorkbenchToTables } from './lib/promote-workbench'
 import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
@@ -566,10 +567,16 @@ workflowInstancesRouter.post('/:id/signals/:name', validate(signalSchema), async
     const id = req.params.id as string
     const signalName = req.params.name as string
     const { payload, correlationKey } = req.body as z.infer<typeof signalSchema>
+    const signalTenantId = resolveTenantFromRequest(req)
+
+    // P1-12 durability — persist the signal so a SIGNAL_WAIT that parks AFTER this
+    // call can still consume it (emit-before-wait). Marked consumed below if a
+    // live ACTIVE waiter matches now.
+    const persistedSignalId = await persistSignal({ instanceId: id, signalName, correlationKey, payload: payload as never, tenantId: signalTenantId })
 
     const candidates = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findMany({
       where: { instanceId: id, nodeType: 'SIGNAL_WAIT', status: 'ACTIVE' },
-    }), resolveTenantFromRequest(req))
+    }), signalTenantId)
     const matched = candidates.filter(n => {
       const cfg = (n.config ?? {}) as Record<string, unknown>
       const std = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard)
@@ -585,6 +592,9 @@ workflowInstancesRouter.post('/:id/signals/:name', validate(signalSchema), async
     for (const node of matched) {
       await advance(id, node.id, { _signal: { name: signalName, payload, correlationKey } }, req.user!.userId)
     }
+    // A live waiter already consumed this signal → retire the persisted copy so a
+    // later waiter doesn't re-fire on it. If none matched, it stays claimable.
+    if (matched.length > 0) await markSignalConsumed(persistedSignalId, signalTenantId)
     // Event-based node start: the same signal also STARTS any ACTIVE node that was
     // gated with startMode=event + startSignal===name (see WorkflowRuntime gate). This
     // is how "attach a signal to a node" fires without a separate SIGNAL_WAIT node.
