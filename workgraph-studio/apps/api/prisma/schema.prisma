@@ -911,6 +911,7 @@ model WorkflowInstance {
 
   @@index([templateId])
   @@index([tenantId])
+  @@index([status], map: "ix_workflow_instances_status")
   @@map("workflow_instances")
 }
 
@@ -979,6 +980,7 @@ model WorkflowPhase {
   nodes        WorkflowNode[]
   createdAt    DateTime         @default(now())
 
+  @@index([instanceId], map: "ix_workflow_phases_instance")
   @@map("workflow_phases")
 }
 
@@ -1016,6 +1018,8 @@ model WorkflowNode {
   // fenced out in advance() before it completes the new run.
   attempt            Int                @default(0)
 
+  @@index([instanceId, status], map: "ix_workflow_nodes_instance_status")
+  @@index([nodeType, status], map: "ix_workflow_nodes_type_status")
   @@map("workflow_nodes")
 }
 
@@ -1032,6 +1036,8 @@ model WorkflowEdge {
   target       WorkflowNode     @relation("TargetNode", fields: [targetNodeId], references: [id])
   createdAt    DateTime         @default(now())
 
+  @@index([sourceNodeId], map: "ix_workflow_edges_source")
+  @@index([instanceId], map: "ix_workflow_edges_instance")
   @@map("workflow_edges")
 }
 
@@ -1046,6 +1052,7 @@ model WorkflowMutation {
   instance      WorkflowInstance @relation(fields: [instanceId], references: [id])
   performedAt   DateTime         @default(now())
 
+  @@index([instanceId], map: "ix_workflow_mutations_instance")
   @@map("workflow_mutations")
 }
 
@@ -1057,6 +1064,7 @@ model WorkflowEvent {
   instance   WorkflowInstance @relation(fields: [instanceId], references: [id])
   occurredAt DateTime         @default(now())
 
+  @@index([instanceId, occurredAt], map: "ix_workflow_events_instance_time")
   @@map("workflow_events")
 }
 
@@ -1322,6 +1330,9 @@ model Task {
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
 
+  @@index([tenantId], map: "ix_tasks_tenant")
+  @@index([instanceId], map: "ix_tasks_instance")
+  @@index([status, dueAt], map: "ix_tasks_status_due")
   @@map("tasks")
 }
 
@@ -1428,6 +1439,7 @@ model ApprovalRequest {
   @@index([teamId])
   @@index([roleKey, capabilityId])
   @@index([skillKey])
+  @@index([tenantId], map: "ix_approval_requests_tenant")
   @@map("approval_requests")
 }
 
@@ -1490,6 +1502,7 @@ model Consumable {
   @@index([teamId])
   @@index([roleKey, capabilityId])
   @@index([skillKey])
+  @@index([tenantId], map: "ix_consumables_tenant")
   @@map("consumables")
 }
 
@@ -1590,6 +1603,7 @@ model AgentRun {
   @@index([mcpInvocationId])
   @@index([contextPackageId])
   @@index([modelCallId])
+  @@index([tenantId], map: "ix_agent_runs_tenant")
   @@map("agent_runs")
 }
 
@@ -1857,6 +1871,7 @@ model ToolRun {
   updatedAt      DateTime          @updatedAt
 
   @@unique([toolId, idempotencyKey])
+  @@index([tenantId], map: "ix_tool_runs_tenant")
   @@map("tool_runs")
 }
 
@@ -1983,6 +1998,7 @@ model Document {
   @@index([nodeId])
   @@index([instanceId])
   @@index([kind])
+  @@index([tenantId], map: "ix_documents_tenant")
   @@map("documents")
 }
 
