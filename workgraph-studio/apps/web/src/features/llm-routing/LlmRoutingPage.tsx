@@ -1,5 +1,5 @@
 /**
- * LlmRoutingPage — drag-drop canvas to wire LLM connections to touch points.
+ * LlmRoutingPage — drag-drop canvas to wire WorkGraph LLM connections to touch points.
  *
  * Left column = connections (the gateway catalog's model aliases). Right column =
  * touch points (Copilot SDLC, Workbench, Chat, Governed agents, Audit judge).
@@ -7,8 +7,8 @@
  * rule); delete the edge to unwire. A scope switcher routes per Default / User /
  * Capability — the edges you see + draw apply to the selected scope.
  *
- * Connections carry NO credentials — keys stay on the gateway. This canvas only
- * maps touch points → aliases. Surfaces call /api/llm-routing/resolve at runtime.
+ * Connections carry NO credential values — only the server env var name. WorkGraph
+ * resolves the alias at runtime and reads the key from its process environment.
  */
 import { useMemo, useState, useCallback } from 'react'
 import ReactFlow, {
@@ -21,7 +21,18 @@ import { Cpu, Boxes, Sparkles, Plus, X } from 'lucide-react'
 import { api } from '../../lib/api'
 import { CapabilityPicker, UserPicker } from '../../components/lookup/EntityPickers'
 
-type Connection = { alias: string; label: string; provider: string; model: string; costTier?: string; default?: boolean }
+type Connection = {
+  alias: string
+  label: string
+  provider: string
+  model: string
+  baseUrl?: string | null
+  credentialEnv?: string | null
+  credentialPresent?: boolean
+  credentialStatus?: 'not-required' | 'configured' | 'missing-env-name' | 'missing-env-value'
+  costTier?: string
+  default?: boolean
+}
 type TouchPoint = { key: string; label: string; description: string }
 type Rule = { id: string; touchPoint: string; scopeType: string; scopeId: string; modelAlias: string; enabled: boolean }
 type Scope = 'DEFAULT' | 'USER' | 'CAPABILITY'
@@ -32,6 +43,7 @@ const PROVIDER_COLOR: Record<string, string> = {
 
 function ConnectionNode({ data }: NodeProps<Connection>) {
   const color = PROVIDER_COLOR[data.provider] ?? '#475569'
+  const credentialOk = data.credentialStatus === 'configured' || data.credentialStatus === 'not-required'
   return (
     <div style={{ width: 210, borderRadius: 11, background: '#fff', border: `1.5px solid ${color}`, boxShadow: '0 1px 3px rgba(15,23,42,0.08)', padding: '9px 11px' }}>
       <Handle type="source" position={Position.Right} style={{ background: color, border: 'none', width: 9, height: 9 }} />
@@ -41,6 +53,20 @@ function ConnectionNode({ data }: NodeProps<Connection>) {
           <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{data.label}</div>
           <div style={{ fontSize: 9.5, fontWeight: 600, color }}>{data.provider}{data.costTier ? ` · ${data.costTier}` : ''}</div>
         </div>
+      </div>
+      <div style={{ marginTop: 7, display: 'flex', alignItems: 'center', gap: 5, minWidth: 0 }}>
+        <span style={{
+          maxWidth: 126, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          fontSize: 9.5, fontWeight: 750, color: credentialOk ? '#047857' : '#b45309',
+          background: credentialOk ? '#dcfce7' : '#fef3c7',
+          border: `1px solid ${credentialOk ? '#86efac' : '#fde68a'}`,
+          borderRadius: 999, padding: '2px 6px',
+        }}>
+          {data.credentialEnv || 'env var needed'}
+        </span>
+        <span style={{ fontSize: 9, color: credentialOk ? '#059669' : '#d97706', fontWeight: 800 }}>
+          {credentialOk ? 'ready' : 'missing'}
+        </span>
       </div>
     </div>
   )
@@ -162,8 +188,8 @@ export function LlmRoutingPage() {
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: '#f8fafc' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 18px', background: '#fff', borderBottom: '1px solid #e2e8f0', flexShrink: 0 }}>
         <div>
-          <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a' }}>LLM Gateway Routing</div>
-          <div style={{ fontSize: 11, color: '#94a3b8' }}>Pick a connection from each touch point's dropdown (or drag a connection's handle onto it).</div>
+          <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a' }}>WorkGraph LLM Routing</div>
+          <div style={{ fontSize: 11, color: '#94a3b8' }}>Define multiple provider APIs once, store only env var names, then route touch points to aliases.</div>
         </div>
         <div style={{ flex: 1 }} />
         <button onClick={() => setShowAdd(true)} style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '8px 13px', borderRadius: 8, border: '1px solid #0284c7', background: '#0ea5e9', color: '#fff', cursor: 'pointer', fontSize: 12.5, fontWeight: 700 }}>
@@ -226,8 +252,8 @@ export function LlmRoutingPage() {
                 ['name', 'Display name', 'e.g. GPT-4o (prod)'],
                 ['model', 'Model id', 'e.g. gpt-4o'],
                 ['alias', 'Alias (used at runtime + in routing)', 'e.g. gpt-4o-prod'],
-                ['baseUrl', 'Base URL (optional — provider default if blank)', 'https://api.openai.com'],
-                ['credentialEnv', 'API key env var (on the gateway)', 'OPENAI_API_KEY'],
+                ['baseUrl', 'Base URL (optional — provider default if blank)', 'https://api.openai.com/v1'],
+                ['credentialEnv', 'API key env var (on WorkGraph API server)', 'OPENAI_API_KEY'],
               ] as const).map(([key, label, ph]) => (
                 <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                   <span style={{ fontSize: 11, fontWeight: 700, color: '#475569' }}>{label}</span>
@@ -235,7 +261,9 @@ export function LlmRoutingPage() {
                     style={{ padding: '8px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12.5 }} />
                 </label>
               ))}
-              <div style={{ fontSize: 10.5, color: '#94a3b8', lineHeight: 1.45 }}>The API key is read from the env var on the gateway — the secret is never stored here. The connection is saved to the database (<code>llm_connection</code>) and appears in the palette to wire.</div>
+              <div style={{ fontSize: 10.5, color: '#94a3b8', lineHeight: 1.45 }}>
+                Store only the env var name, for example <code>ANTHROPIC_API_KEY</code>. The actual key must exist in the WorkGraph API server environment and is never stored in the database or sent to the browser.
+              </div>
               <button onClick={() => (form.name && form.model && form.alias) && addConn.mutate(form)} disabled={!form.name || !form.model || !form.alias || addConn.isPending}
                 style={{ marginTop: 4, padding: '9px 12px', borderRadius: 8, border: 'none', background: '#0ea5e9', color: '#fff', fontWeight: 700, fontSize: 13, cursor: 'pointer', opacity: (!form.name || !form.model || !form.alias || addConn.isPending) ? 0.5 : 1 }}>
                 {addConn.isPending ? 'Saving…' : 'Save connection'}

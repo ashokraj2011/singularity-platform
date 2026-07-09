@@ -79,6 +79,34 @@ describe('direct LLM harness', () => {
     expect(result.receipt.warnings).toContain('prompt-composer: preview warning')
   })
 
+  it('passes event document artifacts to prompt-composer preview', async () => {
+    const result = await runDirectLlmHarness({
+      llm,
+      options: options({
+        composeWithPromptComposer: true,
+        agentTemplateId: '00000000-0000-0000-0000-000000000001',
+        artifacts: [{ label: 'Event design doc', role: 'REFERENCE', content: '# Design\nValidate this.' }],
+      }),
+      node,
+      instance,
+      traceId: 'trace-artifact',
+      composePrompt: async ({ options: incomingOptions }) => {
+        expect(incomingOptions.artifacts).toEqual([{ label: 'Event design doc', role: 'REFERENCE', content: '# Design\nValidate this.' }])
+        return {
+          promptAssemblyId: 'assembly-artifact',
+          promptHash: 'hash-artifact',
+          estimatedInputTokens: 20,
+          layersUsed: [],
+          warnings: [],
+          assembled: { systemPrompt: '', message: 'assembled with artifact' },
+        }
+      },
+      callProvider: async request => ({ content: request.prompt, providerRequestId: 'req-artifact' }),
+    })
+
+    expect(result.chat.content).toBe('assembled with artifact')
+  })
+
   it('runs a bounded phase loop using prompt-composer stage prompts', async () => {
     const phases: string[] = []
     const result = await runDirectLlmHarness({
@@ -133,5 +161,28 @@ describe('direct LLM harness', () => {
       name: 'DirectLlmHarnessError',
       code: 'DIRECT_LLM_HARNESS_VALIDATION_FAILED',
     } satisfies Partial<DirectLlmHarnessError>)
+  })
+
+  it('validates a structured object even when the provider wraps it in prose', async () => {
+    const result = await runDirectLlmHarness({
+      llm,
+      options: options({
+        outputJsonSchema: {
+          type: 'object',
+          required: ['verdict'],
+          properties: { verdict: { type: 'string', enum: ['APPROVE', 'REJECT'] } },
+        },
+        validationMode: 'hard',
+      }),
+      node,
+      instance,
+      traceId: 'trace-json',
+      callProvider: async () => ({
+        content: 'Verifier result:\n{"verdict":"APPROVE"}',
+        providerRequestId: 'req-json',
+      }),
+    })
+
+    expect(result.receipt.validation.passed).toBe(true)
   })
 })

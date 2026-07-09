@@ -1,7 +1,7 @@
 import { createHash } from 'crypto'
 import Ajv from 'ajv'
 import type { WorkflowInstance, WorkflowNode } from '@prisma/client'
-import type { ComposeResponse, ResolveStageResponse } from '../../../../lib/prompt-composer/client'
+import type { ComposeArtifact, ComposeResponse, ResolveStageResponse } from '../../../../lib/prompt-composer/client'
 
 export type DirectLlmChatResult = {
   content: string
@@ -46,6 +46,7 @@ export type DirectLlmHarnessOptions = {
   loopPhases: DirectLlmHarnessPhase[]
   maxTurns: number
   requiredOutputIncludes: string[]
+  artifacts?: ComposeArtifact[]
   outputJsonSchema?: Record<string, unknown>
   validationMode: 'off' | 'soft' | 'hard'
 }
@@ -122,9 +123,18 @@ function safeJsonParseObject(value: string): Record<string, unknown> | null {
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
   } catch {
     const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
-    if (!fenced?.[1]) return null
+    if (fenced?.[1]) {
+      try {
+        const parsed = JSON.parse(fenced[1])
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
+      } catch {
+        // Fall through to embedded-object extraction below.
+      }
+    }
+    const embedded = trimmed.match(/\{[\s\S]*\}/)
+    if (!embedded?.[0]) return null
     try {
-      const parsed = JSON.parse(fenced[1])
+      const parsed = JSON.parse(embedded[0])
       return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
     } catch {
       return null
@@ -189,6 +199,7 @@ async function defaultComposePrompt(input: Parameters<ComposePromptFn>[0]): Prom
       globals,
       priorOutputs: {},
     },
+    artifacts: input.options.artifacts ?? [],
     overrides: {
       additionalLayers: [],
       systemPromptAppend: input.llm.systemPrompt,

@@ -12,8 +12,10 @@ import {
   type DirectLlmHarnessPhase,
   type DirectLlmProviderRequest,
 } from './DirectLlmHarness'
+import type { ComposeArtifact } from '../../../../lib/prompt-composer/client'
 
 type DirectLlmOutput = {
+  directLlmFields?: Record<string, unknown> | null
   directLlm: {
     passed: boolean
     provider?: string
@@ -23,9 +25,13 @@ type DirectLlmOutput = {
     traceId?: string
     agentRunId?: string
     artifactId?: string
+    approvalRequestId?: string
     reviewRequired?: boolean
     bypassedRuntimeFabric: true
     harness?: Record<string, unknown>
+    structuredOutput?: Record<string, unknown> | null
+    outputSchema?: Record<string, unknown>
+    outputFields?: Record<string, unknown>
     usage?: {
       inputTokens?: number
       outputTokens?: number
@@ -53,6 +59,9 @@ type ResolvedDirectLlmConfig = {
   timeoutMs: number
   reviewRequired: boolean
   outputPath?: string
+  outputSchema?: Record<string, unknown>
+  outputFields?: Record<string, unknown>
+  inputArtifacts: ComposeArtifact[]
   harness: DirectLlmHarnessOptions
 }
 
@@ -152,6 +161,37 @@ function harnessJsonObject(node: WorkflowNode, key: string): Record<string, unkn
   return undefined
 }
 
+function safeJsonParseObject(value: string): Record<string, unknown> | undefined {
+  const trimmed = value.trim()
+  if (!trimmed) return undefined
+  try {
+    const parsed = JSON.parse(trimmed)
+    return isRecord(parsed) ? parsed : undefined
+  } catch {
+    const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
+    if (fenced?.[1]) {
+      try {
+        const parsed = JSON.parse(fenced[1])
+        return isRecord(parsed) ? parsed : undefined
+      } catch {
+        // Fall through to embedded-object extraction below.
+      }
+    }
+    const embedded = trimmed.match(/\{[\s\S]*\}/)
+    if (!embedded?.[0]) return undefined
+    try {
+      const parsed = JSON.parse(embedded[0])
+      return isRecord(parsed) ? parsed : undefined
+    } catch {
+      return undefined
+    }
+  }
+}
+
+function jsonSafeRecord(value: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>
+}
+
 function nestedLookup(root: Record<string, unknown>, path: string): unknown {
   return path.split('.').filter(Boolean).reduce<unknown>((acc, key) => {
     if (acc && typeof acc === 'object' && !Array.isArray(acc)) return (acc as Record<string, unknown>)[key]
@@ -177,6 +217,195 @@ function interpolate(template: string, instance: WorkflowInstance, node: Workflo
     if (typeof value === 'number' || typeof value === 'boolean') return String(value)
     return JSON.stringify(value)
   })
+}
+
+type OutputFieldSpec = {
+  type?: string
+  description?: string
+  enum?: unknown[]
+  required?: boolean
+  items?: unknown
+  default?: unknown
+  examples?: unknown
+}
+
+function normalizeOutputFields(raw: unknown): Record<string, OutputFieldSpec> | undefined {
+  const value = typeof raw === 'string' && raw.trim()
+    ? safeJsonParseObject(raw)
+    : raw
+  if (!isRecord(value)) return undefined
+  const fields: Record<string, OutputFieldSpec> = {}
+  for (const [key, spec] of Object.entries(value)) {
+    const cleanKey = key.trim()
+    if (!cleanKey) continue
+    if (typeof spec === 'string') {
+      fields[cleanKey] = { type: spec.trim() || 'string', required: true }
+    } else if (isRecord(spec)) {
+      const type = typeof spec.type === 'string' && spec.type.trim() ? spec.type.trim() : 'string'
+      fields[cleanKey] = {
+        type,
+        description: typeof spec.description === 'string' ? spec.description : undefined,
+        enum: Array.isArray(spec.enum) ? spec.enum : undefined,
+        required: typeof spec.required === 'boolean' ? spec.required : true,
+        items: spec.items,
+        default: spec.default,
+        examples: spec.examples,
+      }
+    } else {
+      fields[cleanKey] = { type: 'string', required: true }
+    }
+  }
+  return Object.keys(fields).length ? fields : undefined
+}
+
+function outputSchemaFromFields(fields: Record<string, OutputFieldSpec> | undefined): Record<string, unknown> | undefined {
+  if (!fields || Object.keys(fields).length === 0) return undefined
+  const properties: Record<string, unknown> = {}
+  const required: string[] = []
+  for (const [key, field] of Object.entries(fields)) {
+    const property: Record<string, unknown> = {
+      type: field.type ?? 'string',
+    }
+    if (field.description) property.description = field.description
+    if (field.enum) property.enum = field.enum
+    if (field.items) property.items = field.items
+    if (field.default !== undefined) property.default = field.default
+    if (field.examples !== undefined) property.examples = field.examples
+    properties[key] = property
+    if (field.required !== false) required.push(key)
+  }
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties,
+    required,
+  }
+}
+
+function outputContractPrompt(schema: Record<string, unknown> | undefined, fields: Record<string, OutputFieldSpec> | undefined): string | undefined {
+  if (!schema && !fields) return undefined
+  const fieldLines = fields
+    ? Object.entries(fields).map(([key, field]) => {
+        const parts = [
+          `- ${key}`,
+          `type=${field.type ?? 'string'}`,
+          field.required === false ? 'optional' : 'required',
+          field.description ? `description=${field.description}` : '',
+          field.enum ? `allowed=${JSON.stringify(field.enum)}` : '',
+        ].filter(Boolean)
+        return parts.join('; ')
+      }).join('\n')
+    : ''
+  return [
+    '# Structured Output Contract',
+    'Return ONLY a valid JSON object. Do not include markdown fences, prose, or extra keys outside the schema.',
+    fieldLines ? `Fields to fill:\n${fieldLines}` : undefined,
+    schema ? `JSON Schema:\n${JSON.stringify(schema, null, 2)}` : undefined,
+    'Downstream workflow decision nodes will read these values from directLlmFields and directLlm.structuredOutput.',
+  ].filter(Boolean).join('\n')
+}
+
+function compactJson(value: unknown, limit = 6000): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  return text.length <= limit ? text : `${text.slice(0, limit)}\n...[truncated]`
+}
+
+function normalizeDocumentArtifact(value: unknown, index: number, source = 'event'): ComposeArtifact | null {
+  if (typeof value === 'string' && value.trim()) {
+    const text = value.trim()
+    const isUrl = /^https?:\/\//i.test(text)
+    return {
+      role: 'REFERENCE',
+      label: `${source} document ${index + 1}`,
+      mediaType: isUrl ? 'text/uri-list' : 'text/plain',
+      content: isUrl ? `Document link:\n${text}` : text.slice(0, 12_000),
+      excerpt: text.slice(0, 3_000),
+    }
+  }
+  if (!isRecord(value)) return null
+  const label = [value.label, value.title, value.name, `document ${index + 1}`]
+    .find(item => typeof item === 'string' && item.trim())
+  const url = [value.url, value.href, value.link, value.sourceRef]
+    .find(item => typeof item === 'string' && item.trim())
+  const inline = [value.content, value.text, value.body, value.markdown]
+    .find(item => typeof item === 'string' && item.trim())
+  const excerpt = [value.excerpt, value.summary]
+    .find(item => typeof item === 'string' && item.trim())
+  const content = typeof inline === 'string' && inline.trim()
+    ? inline.trim()
+    : typeof url === 'string' && url.trim()
+      ? `Document link:\n${url.trim()}`
+      : compactJson(value)
+  return {
+    role: 'REFERENCE',
+    label: String(label),
+    mediaType: typeof value.mediaType === 'string' ? value.mediaType : typeof value.mimeType === 'string' ? value.mimeType : undefined,
+    content: content.slice(0, 12_000),
+    excerpt: typeof excerpt === 'string' ? excerpt.slice(0, 3_000) : content.slice(0, 3_000),
+  }
+}
+
+function normalizeDocumentArtifacts(value: unknown, source = 'event'): ComposeArtifact[] {
+  if (value == null) return []
+  const rawItems = Array.isArray(value) ? value : [value]
+  return rawItems
+    .map((item, index) => normalizeDocumentArtifact(item, index, source))
+    .filter((item): item is ComposeArtifact => Boolean(item))
+    .slice(0, 12)
+}
+
+function lookupContextValue(instance: WorkflowInstance, rawPath: string): unknown {
+  const context = isRecord(instance.context) ? instance.context : {}
+  const vars = isRecord(context._vars) ? context._vars : isRecord(context.vars) ? context.vars : {}
+  const globals = isRecord(context._globals) ? context._globals : isRecord(context.globals) ? context.globals : {}
+  const scope: Record<string, unknown> = { context, vars, globals, ...context }
+  return nestedLookup(scope, rawPath.replace(/^\$\.?/, ''))
+}
+
+function eventArtifactsForInstance(instance: WorkflowInstance, node: WorkflowNode): ComposeArtifact[] {
+  const configuredPath = cfgString(node, 'inputDocumentsPath', 'documentsPath', 'eventDocumentsPath')
+  const configured = configuredPath ? normalizeDocumentArtifacts(lookupContextValue(instance, configuredPath), configuredPath) : []
+  const context = isRecord(instance.context) ? instance.context : {}
+  const workItem = isRecord(context._workItem) ? context._workItem : {}
+  const input = isRecord(workItem.input) ? workItem.input : {}
+  const details = isRecord(workItem.details) ? workItem.details : {}
+  const eventPayload = isRecord(input.payload)
+    ? input.payload
+    : isRecord(input.webhookPayload)
+      ? input.webhookPayload
+      : isRecord(context._webhookPayload)
+        ? context._webhookPayload
+        : {}
+  const docs = [
+    ...configured,
+    ...normalizeDocumentArtifacts(input.documents, '_workItem.input.documents'),
+    ...normalizeDocumentArtifacts(details.documents, '_workItem.details.documents'),
+    ...normalizeDocumentArtifacts((eventPayload as Record<string, unknown>).documents, 'event.documents'),
+    ...normalizeDocumentArtifacts((eventPayload as Record<string, unknown>).documentLinks, 'event.documentLinks'),
+    ...normalizeDocumentArtifacts((eventPayload as Record<string, unknown>).documentUrls, 'event.documentUrls'),
+    ...normalizeDocumentArtifacts((eventPayload as Record<string, unknown>).documentUrl, 'event.documentUrl'),
+    ...normalizeDocumentArtifacts((eventPayload as Record<string, unknown>).document, 'event.document'),
+  ]
+  const seen = new Set<string>()
+  return docs.filter(doc => {
+    const key = `${doc.label}|${doc.content ?? ''}|${doc.minioRef ?? ''}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }).slice(0, 12)
+}
+
+function documentPromptSection(artifacts: ComposeArtifact[]): string | undefined {
+  if (artifacts.length === 0) return undefined
+  return [
+    '# Event Documents To Validate',
+    'Use these documents as validation inputs. If a document is only a link, state what can be verified from the link/reference and what requires fetching or access.',
+    ...artifacts.map((artifact, index) => [
+      `## Document ${index + 1}: ${artifact.label}`,
+      artifact.mediaType ? `Media type: ${artifact.mediaType}` : undefined,
+      artifact.content ?? artifact.excerpt,
+    ].filter(Boolean).join('\n')),
+  ].join('\n\n')
 }
 
 function defaultCredentialEnv(provider: string): string | undefined {
@@ -210,7 +439,28 @@ function normalizeHarnessPhases(values: string[]): DirectLlmHarnessPhase[] {
   return phases.length ? Array.from(new Set(phases)) : ['PLAN', 'SELF_REVIEW']
 }
 
-function resolveHarnessOptions(node: WorkflowNode): DirectLlmHarnessOptions {
+function resolveOutputContract(node: WorkflowNode): {
+  outputFields?: Record<string, OutputFieldSpec>
+  outputSchema?: Record<string, unknown>
+} {
+  const outputFields = normalizeOutputFields(
+    harnessValue(node, 'outputFields')
+      ?? harnessValue(node, 'keyValueSchema')
+      ?? harnessValue(node, 'fieldSchema')
+      ?? harnessValue(node, 'structuredFields'),
+  )
+  const configuredSchema = harnessJsonObject(node, 'outputJsonSchema')
+  return {
+    outputFields,
+    outputSchema: configuredSchema ?? outputSchemaFromFields(outputFields),
+  }
+}
+
+function resolveHarnessOptions(
+  node: WorkflowNode,
+  outputSchema: Record<string, unknown> | undefined,
+  artifacts: ComposeArtifact[],
+): DirectLlmHarnessOptions {
   const agentTemplateId = harnessString(node, 'agentTemplateId', 'profileId', 'templateId')
   const loopEnabled = harnessBool(node, 'loopEnabled', harnessBool(node, 'useLoop', false))
   const validationRaw = (harnessString(node, 'validationMode') ?? 'soft').toLowerCase()
@@ -228,7 +478,8 @@ function resolveHarnessOptions(node: WorkflowNode): DirectLlmHarnessOptions {
     loopPhases: normalizeHarnessPhases(harnessStringArray(node, 'loopPhases', loopEnabled ? ['PLAN', 'SELF_REVIEW'] : [])),
     maxTurns: Math.min(Math.max(Math.trunc(harnessNumber(node, 'maxTurns', loopEnabled ? 3 : 1)), 1), 12),
     requiredOutputIncludes: harnessStringArray(node, 'requiredOutputIncludes'),
-    outputJsonSchema: harnessJsonObject(node, 'outputJsonSchema'),
+    artifacts,
+    outputJsonSchema: outputSchema,
     validationMode,
   }
 }
@@ -247,17 +498,24 @@ async function resolveDirectLlmConfig(
   }
 
   const provider = normalizeProvider(
-    cfgString(node, 'provider') ?? connection?.provider ?? (connection?.baseUrl ? 'openai_compatible' : 'mock'),
+    connection?.provider ?? cfgString(node, 'provider') ?? (connection?.baseUrl ? 'openai_compatible' : 'mock'),
   )
-  const model = cfgString(node, 'model') ?? connection?.model ?? (provider === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o-mini')
-  const baseUrl = cfgString(node, 'baseUrl') ?? connection?.baseUrl ?? undefined
-  const credentialEnv = cfgString(node, 'credentialEnv') ?? connection?.credentialEnv ?? defaultCredentialEnv(provider)
+  const model = connection?.model ?? cfgString(node, 'model') ?? (provider === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o-mini')
+  const baseUrl = connection?.baseUrl ?? cfgString(node, 'baseUrl') ?? undefined
+  const credentialEnv = connection?.credentialEnv ?? cfgString(node, 'credentialEnv') ?? defaultCredentialEnv(provider)
   const task = cfgString(node, 'task', 'prompt', 'userPrompt')
   if (!task) return { error: 'DIRECT_LLM_TASK requires a task/prompt.', code: 'DIRECT_LLM_NO_PROMPT' }
 
   const maxTokens = Math.min(Math.max(cfgNumber(node, 'maxTokens', 1200), 1), 32_000)
   const timeoutMs = Math.min(Math.max(cfgNumber(node, 'timeoutMs', cfgNumber(node, 'timeoutSec', 120) * 1000), 1_000), 600_000)
   const modelAlias = alias ?? connection?.alias ?? undefined
+  const inputArtifacts = eventArtifactsForInstance(instance, node)
+  const outputContract = resolveOutputContract(node)
+  const prompt = [
+    interpolate(task, instance, node),
+    documentPromptSection(inputArtifacts),
+    outputContractPrompt(outputContract.outputSchema, outputContract.outputFields),
+  ].map(section => section?.trim()).filter(Boolean).join('\n\n')
   return {
     config: {
       provider,
@@ -266,13 +524,16 @@ async function resolveDirectLlmConfig(
       modelAlias,
       credentialEnv,
       systemPrompt: cfgString(node, 'systemPrompt'),
-      prompt: interpolate(task, instance, node),
+      prompt,
       temperature: cfgNumber(node, 'temperature', 0.2),
       maxTokens,
       timeoutMs,
       reviewRequired: cfgBool(node, 'reviewRequired', false),
       outputPath: cfgString(node, 'outputPath', 'artifactName'),
-      harness: resolveHarnessOptions(node),
+      outputSchema: outputContract.outputSchema,
+      outputFields: outputContract.outputFields,
+      inputArtifacts,
+      harness: resolveHarnessOptions(node, outputContract.outputSchema, inputArtifacts),
     },
   }
 }
@@ -453,6 +714,97 @@ async function createDirectLlmArtifact(args: {
   return created.id
 }
 
+function cfgStringFromRecord(record: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return undefined
+}
+
+async function ensureDirectLlmApprovalRequest(args: {
+  instance: WorkflowInstance
+  node: WorkflowNode
+  actorId?: string
+  runId: string
+  output: DirectLlmOutput
+}): Promise<string> {
+  const tenantId = args.instance.tenantId ?? undefined
+  const existing = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest.findFirst({
+    where: {
+      instanceId: args.instance.id,
+      nodeId: args.node.id,
+      subjectType: 'DirectLlmTask',
+      subjectId: args.node.id,
+      status: 'PENDING',
+    },
+    orderBy: { createdAt: 'desc' },
+  }), tenantId)
+  if (existing) return existing.id
+
+  const cfg = isRecord(args.node.config) ? args.node.config : {}
+  const standard = isRecord(cfg.standard) ? cfg.standard : {}
+  const approvalConfig = { ...standard, ...cfg }
+  const assignedToId = cfgStringFromRecord(approvalConfig, 'assignedToId', 'approverUserId')
+  const teamId = cfgStringFromRecord(approvalConfig, 'teamId')
+  const roleKey = cfgStringFromRecord(approvalConfig, 'roleKey')
+  const skillKey = cfgStringFromRecord(approvalConfig, 'skillKey')
+  const capabilityId = cfgStringFromRecord(approvalConfig, 'capabilityId', 'governingCapabilityId')
+  const assignmentMode = cfgStringFromRecord(approvalConfig, 'assignmentMode')
+    ?? (assignedToId ? 'DIRECT_USER' : teamId ? 'TEAM_QUEUE' : roleKey ? 'ROLE_BASED' : skillKey ? 'SKILL_BASED' : undefined)
+
+  const created = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest.create({
+    data: {
+      instanceId: args.instance.id,
+      tenantId: args.instance.tenantId ?? null,
+      nodeId: args.node.id,
+      subjectType: 'DirectLlmTask',
+      subjectId: args.node.id,
+      requestedById: args.actorId ?? args.instance.createdById ?? 'system',
+      assignedToId,
+      assignmentMode,
+      teamId,
+      roleKey,
+      skillKey,
+      capabilityId,
+      formData: {
+        agentRunId: args.runId,
+        workflowInstanceId: args.instance.id,
+        workflowNodeId: args.node.id,
+        directLlmOutput: jsonSafeRecord(args.output as unknown as Record<string, unknown>),
+      } as Prisma.InputJsonValue,
+    },
+  }), tenantId)
+
+  await prisma.agentRunOutput.create({
+    data: {
+      runId: args.runId,
+      outputType: 'APPROVAL_REQUIRED',
+      rawContent: `Direct LLM output requires approval (${created.id})`,
+      structuredPayload: {
+        approvalRequestId: created.id,
+        workflowInstanceId: args.instance.id,
+        workflowNodeId: args.node.id,
+        directLlmOutput: jsonSafeRecord(args.output as unknown as Record<string, unknown>),
+      } as Prisma.InputJsonValue,
+    },
+  })
+  await logEvent('DirectLlmReviewRequested', 'ApprovalRequest', created.id, args.actorId, {
+    runId: args.runId,
+    nodeId: args.node.id,
+    instanceId: args.instance.id,
+    traceId: args.output.directLlm.traceId,
+  })
+  await publishOutbox('ApprovalRequest', created.id, 'DirectLlmReviewRequested', {
+    requestId: created.id,
+    runId: args.runId,
+    nodeId: args.node.id,
+    instanceId: args.instance.id,
+    traceId: args.output.directLlm.traceId,
+  })
+  return created.id
+}
+
 function failed(code: string, error: string): DirectLlmResult {
   return {
     passed: false,
@@ -508,7 +860,7 @@ export async function activateDirectLlmTask(
       inputs: {
         create: {
           inputType: 'DIRECT_LLM_REQUEST',
-          payload: {
+          payload: jsonSafeRecord({
             provider: llm.provider,
             model: llm.model,
             modelAlias: llm.modelAlias,
@@ -520,9 +872,12 @@ export async function activateDirectLlmTask(
             maxTokens: llm.maxTokens,
             timeoutMs: llm.timeoutMs,
             reviewRequired: llm.reviewRequired,
+            outputFields: llm.outputFields,
+            outputSchema: llm.outputSchema,
+            inputArtifacts: llm.inputArtifacts,
             harness: llm.harness,
             bypassedRuntimeFabric: true,
-          } as Prisma.InputJsonValue,
+          }) as Prisma.InputJsonValue,
         },
       },
     },
@@ -582,6 +937,7 @@ export async function activateDirectLlmTask(
     return failed(code, message)
   }
   const reviewRequired = llm.reviewRequired || harnessReviewRequired
+  const structuredOutput = safeJsonParseObject(chat.content)
 
   const usage = {
     inputTokens: chat.inputTokens,
@@ -602,6 +958,10 @@ export async function activateDirectLlmTask(
     reviewRequired,
     usage,
     harness: harnessReceipt,
+    structuredOutput: structuredOutput ?? null,
+    outputSchema: llm.outputSchema,
+    outputFields: llm.outputFields,
+    inputArtifacts: llm.inputArtifacts,
   }
 
   await prisma.agentRunOutput.create({
@@ -680,26 +1040,43 @@ export async function activateDirectLlmTask(
     runId: run.id,
     nodeId: node.id,
     reviewRequired,
+    traceId,
   })
+
+  const directOutput: DirectLlmOutput = {
+    directLlm: {
+      passed: true,
+      provider: llm.provider,
+      model: llm.model,
+      modelAlias: llm.modelAlias,
+      response: chat.content,
+      traceId,
+      agentRunId: run.id,
+      artifactId,
+      reviewRequired,
+      bypassedRuntimeFabric: true,
+      harness: harnessReceipt,
+      structuredOutput: structuredOutput ?? null,
+      outputSchema: llm.outputSchema,
+      outputFields: llm.outputFields,
+      usage,
+    },
+    directLlmFields: structuredOutput ?? null,
+  }
+
+  if (reviewRequired) {
+    directOutput.directLlm.approvalRequestId = await ensureDirectLlmApprovalRequest({
+      instance,
+      node,
+      actorId,
+      runId: run.id,
+      output: directOutput,
+    })
+  }
 
   return {
     passed: true,
-    reviewRequired: llm.reviewRequired,
-    output: {
-      directLlm: {
-        passed: true,
-        provider: llm.provider,
-        model: llm.model,
-        modelAlias: llm.modelAlias,
-        response: chat.content,
-        traceId,
-        agentRunId: run.id,
-        artifactId,
-        reviewRequired,
-        bypassedRuntimeFabric: true,
-        harness: harnessReceipt,
-        usage,
-      },
-    },
+    reviewRequired,
+    output: directOutput,
   }
 }

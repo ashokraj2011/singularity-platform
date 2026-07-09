@@ -743,7 +743,7 @@ const NODE_DESCRIPTIONS: Record<string, string> = {
   END: 'Finish the workflow and mark the run complete.',
   HUMAN_TASK: 'Ask a person to complete work, review information, or make a decision.',
   AGENT_TASK: 'Assign a focused task to an AI agent with a clear output contract.',
-  DIRECT_LLM_TASK: 'Call an LLM directly from WorkGraph API without Context Fabric or MCP.',
+  DIRECT_LLM_TASK: 'Call an LLM directly from WorkGraph while optionally using a verifier agent profile, URL/document skill context, structured fields to fill, output validation, and human review.',
   WORKBENCH_TASK: 'Run a dynamic agent-stage workbench and return the approved final pack.',
   APPROVAL: 'Pause for explicit human approval before continuing.',
   DECISION_GATE: 'Choose one path based on workflow data or prior outputs.',
@@ -754,7 +754,7 @@ const NODE_DESCRIPTIONS: Record<string, string> = {
   RAISE_PR: 'Open a pull request from the work branch (wi/<code>) into the base branch, via the GitHub connector.',
   POLICY_CHECK: 'Check a governance policy before the workflow continues.',
   EVAL_GATE: 'Run deterministic evaluators and continue only when criteria pass.',
-  VERIFIER: 'Run the verifier agent on the prior stage’s documents; continue only when they meet the standards.',
+  VERIFIER: 'Run the built-in governed verifier on prior stage documents; continue only when they meet the standards.',
   TIMER: 'Wait until a duration or scheduled instant has passed.',
   SIGNAL_WAIT: 'Wait for an external event or signal.',
   SIGNAL_EMIT: 'Publish a signal for other waits or workflows.',
@@ -1348,7 +1348,7 @@ const NODE_HELP_SECTIONS = [
 const NODE_USAGE_TIPS: Record<string, string> = {
   HUMAN_TASK:        'Set a due date and assignee. Use role field to filter by team role.',
   AGENT_TASK:        'Downstream nodes read output via output.agentResponse. Requires human review in v1.',
-  DIRECT_LLM_TASK:   'Use for explicit server-side model calls. Enable the harness for Prompt Composer preview, CF-compatible phases, validation, and evidence; the model call still bypasses CF/MCP.',
+  DIRECT_LLM_TASK:   'Use for direct verifier-agent calls. Attach an agent profile whose URL/document skills define the prompt, set outputFields for values to fill, enable review to pause, then route with DECISION_GATE or emit status with EVENT_EMIT.',
   WORKBENCH_TASK:    'Opens a modal workbench loop and completes only after the final pack is approved.',
   APPROVAL:          'Set Min Approvals > 1 for committee gates. Use Escalate To for timeout handling.',
   DECISION_GATE:     'Write JS expressions like output.score > 0.8 or context.status == "active".',
@@ -1372,7 +1372,7 @@ const NODE_USAGE_TIPS: Record<string, string> = {
   RAISE_PR:          'Place at the end (after GIT_PUSH). Opens a PR from wi/<code> into the base branch cloud-side via the GitHub connector — no runtime needed, as long as the branch is already pushed.',
   POLICY_CHECK:      'Use WARN mode during testing — it logs failures without blocking the workflow.',
   EVAL_GATE:         'Default is strict: current run traces must pass all selected evaluators.',
-  VERIFIER:          'Place AFTER a stage that produces documents. It verifies them against the standards and pauses the run (BLOCKED) if any fail.',
+  VERIFIER:          'Place AFTER a stage that produces documents for the governed verifier. For direct provider calls with profile/URL prompts, use Direct LLM Task.',
   CONSUMABLE_CREATION: 'Produces a reviewed artifact (consumable) that downstream steps can consume.',
 }
 

@@ -4,6 +4,7 @@ import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 import { createWorkItem } from '../../work-items/work-items.service'
 import { routeWorkItem } from '../../work-items/work-item-routing.service'
+import { findAttachableWorkItemForTrigger, resolveTriggerCorrelationKey, triggerDocumentsFromPayload, triggerStringAt, type TriggerDocument } from '../../work-items/work-item-trigger-attach'
 import { normalizeMetadataKey, recordOf } from '../../metadata/metadata.service'
 import { tenantIdForCreate } from '../../../lib/tenant-isolation'
 
@@ -114,14 +115,41 @@ async function runWorkItemEventTriggers(): Promise<void> {
 
       for (const matched of matchedEvents) {
         const payload = recordOf(matched.payload)
-        const title = stringAt(payload, mapping.titlePath) ?? String(mapping.title ?? `${trigger.workItemTypeKey} event work`)
-        const description = stringAt(payload, mapping.descriptionPath) ?? (typeof mapping.description === 'string' ? mapping.description : undefined)
-        const workItem = await createWorkItemFromTrigger(trigger, {
+        const title = triggerStringAt(payload, mapping.titlePath) ?? String(mapping.title ?? `${trigger.workItemTypeKey} event work`)
+        const description = triggerStringAt(payload, mapping.descriptionPath) ?? (typeof mapping.description === 'string' ? mapping.description : undefined)
+        const documents = triggerDocumentsFromPayload({ payload, payloadMapping: mapping })
+        const attachable = await findAttachableWorkItemForTrigger({
+          payload,
+          payloadMapping: mapping,
+          dedupeKey: trigger.dedupeKey,
+          capabilityId: trigger.capabilityId,
+        })
+        const correlationKey = resolveTriggerCorrelationKey({ payload, payloadMapping: mapping, dedupeKey: trigger.dedupeKey })
+        const workItem = attachable?.workItem ?? await createWorkItemFromTrigger(trigger, {
           title,
           description,
-          input: { triggerType: 'EVENT', eventType: matched.eventType, payload },
+          input: { triggerType: 'EVENT', eventType: matched.eventType, payload, triggerCorrelationKey: correlationKey, documents },
           sourceEventTypeKey: matched.eventType,
+          correlationKey,
+          documents,
         }, new Date())
+        if (attachable) {
+          await prisma.workItemEvent.create({
+            data: {
+              workItemId: workItem.id,
+              eventType: 'TRIGGERED',
+              payload: {
+                triggerId: trigger.id,
+                firedAt: matched.createdAt.toISOString(),
+                attachedExisting: true,
+                matchedBy: attachable.matchedBy,
+                sourceEventTypeKey: matched.eventType,
+                triggerCorrelationKey: correlationKey,
+                documents,
+              } as object,
+            },
+          })
+        }
         await prisma.workItemTrigger.update({
           where: { id: trigger.id },
           data: { lastFiredAt: matched.createdAt },
@@ -144,8 +172,9 @@ async function createWorkItemFromTrigger(
     routingMode: 'MANUAL' | 'AUTO_ATTACH' | 'AUTO_START' | 'SCHEDULED_START'
     eventTypeKey: string | null
     payloadMapping: unknown
+    dedupeKey?: string | null
   },
-  seed: { title: string; description?: string; input: Record<string, unknown>; sourceEventTypeKey?: string },
+  seed: { title: string; description?: string; input: Record<string, unknown>; sourceEventTypeKey?: string; correlationKey?: string; documents?: TriggerDocument[] },
   now: Date,
 ) {
   if (!trigger.capabilityId) throw new Error('WorkItem trigger requires capabilityId')
@@ -162,6 +191,8 @@ async function createWorkItemFromTrigger(
       description: seed.description ?? null,
       source: 'work-item-trigger',
       triggerId: trigger.id,
+      triggerCorrelationKey: seed.correlationKey ?? null,
+      documents: seed.documents ?? [],
       firedAt: now.toISOString(),
       input: seed.input,
     },
@@ -172,19 +203,10 @@ async function createWorkItemFromTrigger(
     data: {
       workItemId: workItem.id,
       eventType: 'TRIGGERED',
-      payload: { triggerId: trigger.id, firedAt: now.toISOString() } as object,
+      payload: { triggerId: trigger.id, firedAt: now.toISOString(), documents: seed.documents ?? [] } as object,
     },
   })
   return workItem
-}
-
-function stringAt(root: Record<string, unknown>, rawPath: unknown): string | undefined {
-  if (typeof rawPath !== 'string' || !rawPath.trim()) return undefined
-  const value = rawPath.split('.').filter(Boolean).reduce<unknown>((cur, key) => {
-    if (cur && typeof cur === 'object') return (cur as Record<string, unknown>)[key]
-    return undefined
-  }, root)
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
 async function runScheduleTriggers(): Promise<void> {

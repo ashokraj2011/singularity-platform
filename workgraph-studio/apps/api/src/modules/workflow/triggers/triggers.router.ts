@@ -7,6 +7,7 @@ import { validate } from '../../../middleware/validate'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 import { createWorkItem } from '../../work-items/work-items.service'
 import { routeWorkItem } from '../../work-items/work-item-routing.service'
+import { findAttachableWorkItemForTrigger, resolveTriggerCorrelationKey, triggerDocumentsFromPayload } from '../../work-items/work-item-trigger-attach'
 import { recordOf } from '../../metadata/metadata.service'
 import { tenantIdForCreate } from '../../../lib/tenant-isolation'
 
@@ -78,24 +79,56 @@ webhookRouter.post('/:secret', async (req, res, next) => {
       }
       const mapping = recordOf(workItemMatch.payloadMapping)
       const title = typeof mapping.title === 'string' ? mapping.title : `${workItemMatch.workItemTypeKey} webhook work`
-      const workItem = await createWorkItem({
+      const payload = recordOf(req.body)
+      const documents = triggerDocumentsFromPayload({ payload, payloadMapping: mapping })
+      const attachable = await findAttachableWorkItemForTrigger({
+        payload,
+        payloadMapping: mapping,
+        dedupeKey: workItemMatch.dedupeKey,
+        capabilityId: workItemMatch.capabilityId,
+      })
+      const correlationKey = resolveTriggerCorrelationKey({
+        payload,
+        payloadMapping: mapping,
+        dedupeKey: workItemMatch.dedupeKey,
+      })
+      const workItem = attachable?.workItem ?? await createWorkItem({
         title,
         description: typeof mapping.description === 'string' ? mapping.description : undefined,
         workItemTypeKey: workItemMatch.workItemTypeKey,
         routingMode: workItemMatch.routingMode,
         sourceEventTypeKey: workItemMatch.eventTypeKey ?? 'WEBHOOK',
         parentCapabilityId: workItemMatch.capabilityId,
-        input: { webhookPayload: req.body },
+        input: { webhookPayload: req.body, triggerCorrelationKey: correlationKey, documents },
         details: {
           title,
           description: typeof mapping.description === 'string' ? mapping.description : null,
           source: 'work-item-webhook',
           triggerId: workItemMatch.id,
-          input: { webhookPayload: req.body },
+          triggerCorrelationKey: correlationKey ?? null,
+          documents,
+          input: { webhookPayload: req.body, documents },
         },
         originType: 'CAPABILITY_LOCAL',
         targets: [{ targetCapabilityId: workItemMatch.capabilityId }],
       }, null)
+      if (attachable) {
+        await prisma.workItemEvent.create({
+          data: {
+            workItemId: workItem.id,
+            eventType: 'TRIGGERED',
+            payload: {
+              triggerId: workItemMatch.id,
+              firedAt: new Date().toISOString(),
+              attachedExisting: true,
+              matchedBy: attachable.matchedBy,
+              sourceEventTypeKey: workItemMatch.eventTypeKey ?? 'WEBHOOK',
+              triggerCorrelationKey: correlationKey,
+              documents,
+            } as object,
+          },
+        })
+      }
       await prisma.workItemTrigger.update({ where: { id: workItemMatch.id }, data: { lastFiredAt: new Date() } })
       const routed = await routeWorkItem(workItem.id, null, { routingMode: workItemMatch.routingMode })
       res.status(202).json({ workItemId: routed.id })

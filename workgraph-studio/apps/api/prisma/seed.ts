@@ -343,13 +343,13 @@ async function main() {
     // 4.6 in the model catalog; the actual code edit still runs on the GitHub Copilot
     // CLI via executor=copilot).
     const connections = [
-      { alias: 'claude-sonnet-4-6', name: 'Cloud — Claude Sonnet 4.6',            provider: 'anthropic', model: 'claude-sonnet-4-6' },
-      { alias: 'copilot',           name: 'Copilot SDLC governed LLM (Sonnet 4.6)', provider: 'anthropic', model: 'claude-sonnet-4-6' },
+      { alias: 'claude-sonnet-4-6', name: 'Cloud — Claude Sonnet 4.6',            provider: 'anthropic', model: 'claude-sonnet-4-6', credentialEnv: 'ANTHROPIC_API_KEY' },
+      { alias: 'copilot',           name: 'Copilot SDLC governed LLM (Sonnet 4.6)', provider: 'anthropic', model: 'claude-sonnet-4-6', credentialEnv: 'ANTHROPIC_API_KEY' },
     ]
     for (const c of connections) {
       await prisma.llmConnection.upsert({
         where: { alias: c.alias },
-        update: { name: c.name, provider: c.provider, model: c.model, enabled: true },
+        update: { name: c.name, provider: c.provider, model: c.model, credentialEnv: c.credentialEnv, enabled: true },
         create: { ...c, enabled: true },
       })
     }

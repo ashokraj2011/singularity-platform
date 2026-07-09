@@ -1,8 +1,8 @@
 /**
- * LLM gateway routing — the backbone for the drag-drop "LLM connections by touch
+ * WorkGraph LLM routing — the backbone for the drag-drop "LLM connections by touch
  * point" admin canvas.
  *
- *   GET    /api/llm-routing/connections          available connections (catalog aliases)
+ *   GET    /api/llm-routing/connections          available WorkGraph-owned connection aliases
  *   GET    /api/llm-routing/touch-points         the known surfaces a connection can serve
  *   GET    /api/llm-routing/rules                 all routing rows (for the canvas)
  *   POST   /api/llm-routing/rules                 upsert a rule (touchPoint, scope, alias)
@@ -10,8 +10,8 @@
  *   GET    /api/llm-routing/resolve?touchPoint&userId&capabilityId
  *                                                 → { modelAlias } (USER > CAPABILITY > DEFAULT)
  *
- * Connections come from the gateway model catalog (.singularity/llm-models.json) —
- * credentials never leave the gateway; the canvas only maps touch points → aliases.
+ * Connections are WorkGraph-owned config rows. They store provider, model, base URL,
+ * and credentialEnv (the NAME of the server env var). They never store API key values.
  */
 import { Router, type Router as ExpressRouter } from 'express'
 import { z } from 'zod'
@@ -31,7 +31,57 @@ const TOUCH_POINTS = [
   { key: 'AUDIT_JUDGE',    label: 'AI Audit Judge',       description: 'The governance audit judge.' },
 ] as const
 
-type Connection = { alias: string; label: string; provider: string; model: string; costTier?: string; default?: boolean }
+type Connection = {
+  alias: string
+  label: string
+  provider: string
+  model: string
+  baseUrl?: string | null
+  credentialEnv?: string | null
+  credentialPresent?: boolean
+  credentialStatus?: 'not-required' | 'configured' | 'missing-env-name' | 'missing-env-value'
+  costTier?: string
+  default?: boolean
+}
+
+function credentialStatus(provider: string, credentialEnv?: string | null): Pick<Connection, 'credentialPresent' | 'credentialStatus'> {
+  const normalized = provider.trim().toLowerCase()
+  if (normalized === 'mock' || normalized === 'disabled') {
+    return { credentialPresent: true, credentialStatus: 'not-required' }
+  }
+  if (!credentialEnv?.trim()) {
+    return { credentialPresent: false, credentialStatus: 'missing-env-name' }
+  }
+  return process.env[credentialEnv]
+    ? { credentialPresent: true, credentialStatus: 'configured' }
+    : { credentialPresent: false, credentialStatus: 'missing-env-value' }
+}
+
+function serializeConnection(row: {
+  id?: string
+  alias: string
+  name?: string
+  label?: string
+  provider: string
+  model: string
+  baseUrl?: string | null
+  credentialEnv?: string | null
+  costTier?: string
+  default?: boolean
+}) {
+  return {
+    id: row.id,
+    alias: row.alias,
+    label: row.name ?? row.label ?? row.alias,
+    provider: row.provider,
+    model: row.model,
+    baseUrl: row.baseUrl ?? null,
+    credentialEnv: row.credentialEnv ?? null,
+    ...credentialStatus(row.provider, row.credentialEnv),
+    costTier: row.costTier,
+    default: row.default,
+  }
+}
 
 // Best-effort read of the gateway model catalog. Falls back to a built-in list so
 // the canvas always has something to drag even if the file isn't reachable.
@@ -51,42 +101,51 @@ function loadConnections(): Connection[] {
           label: String(m.label ?? m.id ?? ''),
           provider: String(m.provider ?? ''),
           model: String(m.model ?? ''),
+          baseUrl: typeof m.baseUrl === 'string' ? m.baseUrl : null,
+          credentialEnv: typeof m.credentialEnv === 'string' ? m.credentialEnv : null,
           costTier: m.costTier ? String(m.costTier) : undefined,
           default: Boolean(m.default),
         })).filter(c => c.alias && c.provider !== 'mock' && !/mock|chaos/i.test(`${c.alias} ${c.label}`))
+          .map(serializeConnection)
       }
     } catch { /* try next */ }
   }
   return [
-    { alias: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5',  provider: 'anthropic', model: 'claude-haiku-4-5',  costTier: 'low', default: true },
-    { alias: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', provider: 'anthropic', model: 'claude-sonnet-4-5', costTier: 'medium' },
-    { alias: 'gpt-4o',            label: 'GPT-4o',            provider: 'openai',    model: 'gpt-4o',            costTier: 'medium' },
-    { alias: 'copilot',           label: 'Copilot CLI',       provider: 'copilot',   model: 'copilot',           costTier: 'na' },
+    serializeConnection({ alias: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5',  provider: 'anthropic', model: 'claude-haiku-4-5',  credentialEnv: 'ANTHROPIC_API_KEY', costTier: 'low', default: true }),
+    serializeConnection({ alias: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', provider: 'anthropic', model: 'claude-sonnet-4-5', credentialEnv: 'ANTHROPIC_API_KEY', costTier: 'medium' }),
+    serializeConnection({ alias: 'gpt-4o',            label: 'GPT-4o',            provider: 'openai',    model: 'gpt-4o',            credentialEnv: 'OPENAI_API_KEY', costTier: 'medium' }),
+    serializeConnection({ alias: 'copilot',           label: 'Copilot bridge',    provider: 'copilot',   model: 'copilot',           credentialEnv: 'COPILOT_PROVIDER_API_KEY', costTier: 'na' }),
   ]
 }
 
 // Connections come from the DB (admin-added). If none have been added yet, fall
-// back to the gateway catalog so the palette isn't empty on first use.
+// back to the catalog so the palette isn't empty on first use. Only env var names
+// and presence booleans are returned; never secret values.
 llmRoutingRouter.get('/connections', async (_req, res, next) => {
   try {
     const rows = await prisma.llmConnection.findMany({ where: { enabled: true }, orderBy: { name: 'asc' } })
     if (rows.length > 0) {
       return res.json({
         source: 'db',
-        items: rows.map(r => ({ id: r.id, alias: r.alias, label: r.name, provider: r.provider, model: r.model, baseUrl: r.baseUrl, credentialEnv: r.credentialEnv })),
+        items: rows.map(serializeConnection),
       })
     }
     res.json({ source: 'catalog', items: loadConnections() })
   } catch (e) { next(e) }
 })
 
+const envNameSchema = z.string()
+  .trim()
+  .max(120)
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'credentialEnv must be an environment variable name, not a secret value')
+
 const connSchema = z.object({
-  name: z.string().min(1).max(120),
-  provider: z.string().min(1).max(60),
-  model: z.string().min(1).max(120),
-  alias: z.string().min(1).max(120),
-  baseUrl: z.string().max(300).optional(),
-  credentialEnv: z.string().max(120).optional(),
+  name: z.string().trim().min(1).max(120),
+  provider: z.string().trim().min(1).max(60),
+  model: z.string().trim().min(1).max(120),
+  alias: z.string().trim().min(1).max(120).regex(/^[A-Za-z0-9_.:-]+$/, 'alias may contain letters, numbers, underscore, dash, dot, or colon'),
+  baseUrl: z.preprocess(v => typeof v === 'string' && v.trim() === '' ? undefined : v, z.string().trim().url().max(300).optional()),
+  credentialEnv: z.preprocess(v => typeof v === 'string' && v.trim() === '' ? undefined : v, envNameSchema.optional()),
   enabled: z.boolean().default(true),
 })
 
@@ -99,7 +158,7 @@ llmRoutingRouter.post('/connections', async (req, res, next) => {
       create: { ...b, createdById },
       update: { name: b.name, provider: b.provider, model: b.model, baseUrl: b.baseUrl, credentialEnv: b.credentialEnv, enabled: b.enabled },
     })
-    res.status(201).json(row)
+    res.status(201).json(serializeConnection(row))
   } catch (e) { next(e) }
 })
 

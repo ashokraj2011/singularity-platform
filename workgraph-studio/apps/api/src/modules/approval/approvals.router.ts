@@ -5,7 +5,7 @@ import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
-import { advance } from '../workflow/runtime/WorkflowRuntime'
+import { advance, failNode } from '../workflow/runtime/WorkflowRuntime'
 import { approveBudgetIncreaseFromApproval } from '../workflow/runtime/budget'
 import { activateAgentTask } from '../workflow/runtime/executors/AgentTaskExecutor'
 import { activateApproval } from '../workflow/runtime/executors/ApprovalExecutor'
@@ -24,6 +24,10 @@ import {
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 
 export const approvalsRouter: Router = Router()
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
 
 async function tenantScopedInstanceIds(tenantId: string): Promise<string[]> {
   const rows = await prisma.workflowInstance.findMany({
@@ -319,6 +323,62 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
         await approveWorkItem(approvalRequest.subjectId, userId, decision)
       } else if (decision === 'REJECTED' || decision === 'NEEDS_MORE_INFORMATION') {
         await requestWorkItemRework(approvalRequest.subjectId, userId, undefined, notes ?? conditions)
+      }
+      res.status(201).json(approvalDecision)
+      return
+    }
+
+    if (approvalRequest.subjectType === 'DirectLlmTask') {
+      const form = isRecord(approvalRequest.formData) ? approvalRequest.formData : {}
+      const directLlmOutput = isRecord(form.directLlmOutput) ? form.directLlmOutput : {}
+      const agentRunId = typeof form.agentRunId === 'string' ? form.agentRunId : null
+      const eventPayload = {
+        approvalRequestId: id,
+        decision,
+        agentRunId,
+        instanceId: approvalRequest.instanceId,
+        nodeId: approvalRequest.nodeId,
+        notes,
+        conditions,
+      }
+      if (agentRunId) {
+        await prisma.agentRun.updateMany({
+          where: { id: agentRunId },
+          data: { status: decision === 'APPROVED' || decision === 'APPROVED_WITH_CONDITIONS' ? 'APPROVED' : 'REJECTED' },
+        })
+      }
+      if (
+        (decision === 'APPROVED' || decision === 'APPROVED_WITH_CONDITIONS') &&
+        approvalRequest.nodeId &&
+        approvalRequest.instanceId
+      ) {
+        await publishOutbox('AgentRun', agentRunId ?? id, 'DirectLlmReviewApproved', eventPayload)
+        await advance(approvalRequest.instanceId, approvalRequest.nodeId, {
+          ...directLlmOutput,
+          directLlmReview: {
+            approvalRequestId: id,
+            decision,
+            notes,
+            conditions,
+            decidedBy: userId,
+          },
+        }, userId, undefined, resolveTenantFromRequest(req))
+      } else if (
+        (decision === 'REJECTED' || decision === 'NEEDS_MORE_INFORMATION') &&
+        approvalRequest.nodeId &&
+        approvalRequest.instanceId
+      ) {
+        await publishOutbox('AgentRun', agentRunId ?? id, 'DirectLlmReviewRejected', eventPayload)
+        await failNode(approvalRequest.instanceId, approvalRequest.nodeId, {
+          message: decision === 'NEEDS_MORE_INFORMATION'
+            ? 'Direct LLM output was sent back for more information.'
+            : 'Direct LLM output was rejected by human review.',
+          code: decision === 'NEEDS_MORE_INFORMATION' ? 'DIRECT_LLM_REVIEW_SEND_BACK' : 'DIRECT_LLM_REVIEW_REJECTED',
+          details: {
+            ...eventPayload,
+            directLlmOutput,
+          },
+        }, userId, resolveTenantFromRequest(req))
       }
       res.status(201).json(approvalDecision)
       return
