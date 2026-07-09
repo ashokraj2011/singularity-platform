@@ -1245,7 +1245,8 @@ JSON
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260701120000_add_tenant_id_to_standalone_tables/migration.sql >/dev/null 2>&1 \
     && DISABLE_ERD=true DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma generate >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260709145000_backfill_null_tenant/migration.sql >/dev/null 2>&1 \
-    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709150000_force_tenant_rls/migration.sql >/dev/null 2>&1 ) \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709150000_force_tenant_rls/migration.sql >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709170000_tenant_workitem_family/migration.sql >/dev/null 2>&1 ) \
     || warn "workgraph schema push had warnings"
 
   info "provisioning Workgraph non-bypass app role…"

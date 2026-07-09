@@ -56,6 +56,14 @@ TENANT_TABLES = [
     TenantTable("tool_runs", "instanceId", nullable_instance=True),
     TenantTable("documents", "instanceId", nullable_instance=True),
     TenantTable("pending_executions", "instanceId"),
+    # WorkItem / trigger family — direct-tenant, forced by 20260709170000_tenant_workitem_family.
+    TenantTable("work_items", None, tenant_column="tenantId"),
+    TenantTable("work_item_targets", None, tenant_column="tenantId"),
+    TenantTable("work_item_events", None, tenant_column="tenantId"),
+    TenantTable("work_item_clarifications", None, tenant_column="tenantId"),
+    TenantTable("work_item_routing_policies", None, tenant_column="tenantId"),
+    TenantTable("work_item_triggers", None, tenant_column="tenantId"),
+    TenantTable("workflow_triggers", None, tenant_column="tenantId"),
 ]
 
 
