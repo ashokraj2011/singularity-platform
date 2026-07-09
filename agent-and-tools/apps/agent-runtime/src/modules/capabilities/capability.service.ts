@@ -4787,7 +4787,7 @@ async function buildCapabilityGroundingStatus(capabilityId: string) {
   };
 }
 
-async function refreshRepositoryProfileLearning(capabilityId: string, userId?: string): Promise<RepositoryRefreshResult> {
+export async function refreshRepositoryProfileLearning(capabilityId: string, userId?: string): Promise<RepositoryRefreshResult> {
   const cap = await prisma.capability.findUnique({
     where: { id: capabilityId },
     include: {

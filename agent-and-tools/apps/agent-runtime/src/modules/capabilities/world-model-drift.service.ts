@@ -38,11 +38,13 @@ export type RecordFingerprintResult = {
   autoRefreshTriggered: boolean;
 };
 
-// M99 S4.2 — env gate for the auto-refresh worker. The schema comment has
-// long promised "mismatch triggers a refresh job" but no code implemented
-// it; drift was observational only. When enabled, a drift event now stamps
-// lastAutoRefreshAt so the world model is visibly self-healing. Off by
-// default — ships dark; flip per-deployment once Phase 1/2 are validated.
+// WORLD_MODEL_AUTO_REFRESH_ENABLED — env gate for self-healing on repo drift.
+// Historically drift was observational only, and the first cut of this gate merely
+// stamped lastAutoRefreshAt. As of Workstream C (C1) a drift event, when enabled,
+// now triggers a REAL background re-ground (refreshRepositoryProfileLearning:
+// re-discover repos → re-distill the world model → refresh knowledge) in addition
+// to stamping the marker. Off by default — ships dark; enable per-deployment once
+// the embedding provider (Workstream A) is validated so the re-ground can embed.
 function autoRefreshEnabled(): boolean {
   const raw = (process.env.WORLD_MODEL_AUTO_REFRESH_ENABLED ?? "").trim().toLowerCase();
   return raw !== "" && !["0", "false", "no", "off"].includes(raw);
@@ -110,6 +112,30 @@ export const worldModelDriftService = {
           `[worldModel.autoRefresh] capabilityId=${capabilityId} ` +
           `marked auto-refresh in response to drift`,
         );
+        // C1 — actually RE-GROUND (not just stamp): re-discover repos + re-distill
+        // the world model + refresh the architecture/inventory knowledge in the
+        // background. This closes the "drift detected but nothing rebuilt" gap.
+        // Dynamic import avoids a static cycle with the large capability service;
+        // fire-and-forget keeps the fingerprint endpoint fast. Failures are logged
+        // and the stamped marker still records that a refresh was attempted.
+        void import("./capability.service")
+          .then(({ refreshRepositoryProfileLearning }) =>
+            refreshRepositoryProfileLearning(capabilityId, input.actorId),
+          )
+          .then((result) =>
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[worldModel.autoRefresh] capabilityId=${capabilityId} background re-grounding ` +
+              `completed (profiles=${result?.refreshed ?? 0}, artifacts=${result?.artifacts ?? 0})`,
+            ),
+          )
+          .catch((err) =>
+            // eslint-disable-next-line no-console
+            console.error(
+              `[worldModel.autoRefresh] capabilityId=${capabilityId} background re-grounding ` +
+              `failed: ${(err as Error).message}`,
+            ),
+          );
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error(
