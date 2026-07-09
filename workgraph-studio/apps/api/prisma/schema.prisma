@@ -781,7 +781,9 @@ model WorkflowTrigger {
   lastFiredAt DateTime?
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
+  tenantId    String?     @default("default")
 
+  @@index([tenantId], map: "ix_workflow_triggers_tenant")
   @@index([type, isActive])
   @@map("workflow_triggers")
 }
@@ -1131,7 +1133,9 @@ model WorkItem {
   laptopInvocations       LaptopInvocation[]
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
+  tenantId                String?          @default("default")
 
+  @@index([tenantId], map: "ix_work_items_tenant")
   @@index([workCode])
   @@index([originType])
   @@index([workItemTypeKey])
@@ -1169,7 +1173,9 @@ model WorkItemTarget {
   clarifications          WorkItemClarification[]
   createdAt               DateTime          @default(now())
   updatedAt               DateTime          @updatedAt
+  tenantId                String?           @default("default")
 
+  @@index([tenantId], map: "ix_work_item_targets_tenant")
   @@index([workItemId])
   @@index([targetCapabilityId, status])
   @@index([childWorkflowTemplateId])
@@ -1188,7 +1194,9 @@ model WorkItemEvent {
   workItem   WorkItem        @relation(fields: [workItemId], references: [id], onDelete: Cascade)
   target     WorkItemTarget? @relation(fields: [targetId], references: [id], onDelete: SetNull)
   createdAt  DateTime        @default(now())
+  tenantId   String?         @default("default")
 
+  @@index([tenantId], map: "ix_work_item_events_tenant")
   @@index([workItemId, createdAt])
   @@index([targetId])
   @@index([eventType])
@@ -1211,7 +1219,9 @@ model WorkItemClarification {
   target      WorkItemTarget? @relation(fields: [targetId], references: [id], onDelete: SetNull)
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
+  tenantId    String?        @default("default")
 
+  @@index([tenantId], map: "ix_work_item_clarifications_tenant")
   @@index([workItemId, status])
   @@index([targetId])
   @@map("work_item_clarifications")
@@ -1258,7 +1268,9 @@ model WorkItemRoutingPolicy {
   workItems       WorkItem[]
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
+  tenantId        String?             @default("default")
 
+  @@index([tenantId], map: "ix_work_item_routing_policies_tenant")
   @@index([capabilityId, workItemTypeKey, isActive])
   @@index([workflowTypeKey])
   @@index([workflowId])
@@ -1279,7 +1291,9 @@ model WorkItemTrigger {
   lastFiredAt     DateTime?
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
+  tenantId        String?             @default("default")
 
+  @@index([tenantId], map: "ix_work_item_triggers_tenant")
   @@index([triggerType, isActive])
   @@index([eventTypeKey])
   @@index([capabilityId, workItemTypeKey])
