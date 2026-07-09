@@ -57,7 +57,7 @@ function resolveNumber(value: unknown, ctx: Record<string, unknown>, fallback: n
 export async function activateForeach(
   node: WorkflowNode,
   instance: WorkflowInstance,
-): Promise<void> {
+): Promise<number> {
   const cfg = (node.config ?? {}) as Record<string, unknown>
   const std = readStd(cfg)
   const collectionPath = readString(cfg, 'collectionPath')
@@ -79,12 +79,9 @@ export async function activateForeach(
     },
   }), tenantId)
 
-  // For MVP, mark COMPLETED if collection is empty; otherwise leave ACTIVE for
-  // an external orchestrator to fan out and signal back.
-  if (collection.length === 0) {
-    await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({
-      where: { id: node.id },
-      data: { status: 'COMPLETED', completedAt: new Date() },
-    }), tenantId)
-  }
+  // Return the item count and let the runtime dispatch decide:
+  //   0 items → advance downstream (a no-op loop is not an error).
+  //   >0      → fan-out isn't implemented, so the dispatch fails the node loudly
+  //             instead of leaving it ACTIVE forever (a silent hang).
+  return collection.length
 }

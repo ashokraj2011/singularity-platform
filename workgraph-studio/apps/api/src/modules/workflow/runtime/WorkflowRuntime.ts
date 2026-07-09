@@ -926,15 +926,37 @@ async function executeServerNode(
     case 'WORK_ITEM':
       await activateWorkItem(node, instance, actorId)
       break
-    case 'FOREACH':
-      await activateForeach(node, instance)
+    case 'FOREACH': {
+      const foreachItems = await activateForeach(node, instance)
+      if (foreachItems === 0) {
+        // Empty collection → nothing to iterate; proceed downstream instead of
+        // marking COMPLETED with no advance (which stranded the run).
+        await advance(instance.id, node.id, context, actorId, undefined, tenantId)
+      } else {
+        // Fan-out over a non-empty collection isn't implemented. Fail loudly
+        // with guidance rather than leaving the node ACTIVE forever.
+        await failNode(instance.id, node.id, {
+          message: `FOREACH fan-out is not implemented (collection has ${foreachItems} item(s)). Model iteration with CALL_WORKFLOW per item or a RUN_PYTHON loop.`,
+          code: 'FOREACH_NOT_IMPLEMENTED',
+        }, actorId, tenantId)
+      }
       break
+    }
     case 'INCLUSIVE_GATEWAY':
       await activateInclusiveGateway(node, instance)
       await advance(instance.id, node.id, context, actorId, undefined, tenantId)
       break
     case 'EVENT_GATEWAY':
+      // First-to-fire event routing needs sibling-cancellation to be safe —
+      // otherwise the losing SIGNAL_WAIT/TIMER branches stay ACTIVE and strand
+      // the run anyway. That isn't implemented, so fail loudly with guidance
+      // instead of leaving the gateway ACTIVE forever. activateEventGateway
+      // still records the intent for the audit trail.
       await activateEventGateway(node, instance)
+      await failNode(instance.id, node.id, {
+        message: 'EVENT_GATEWAY (first-to-fire event routing) is not implemented. Model the race as parallel SIGNAL_WAIT/TIMER branches merging into a DECISION_GATE.',
+        code: 'EVENT_GATEWAY_NOT_IMPLEMENTED',
+      }, actorId, tenantId)
       break
     case 'DATA_SINK':
       await activateDataSink(node, instance)
