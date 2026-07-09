@@ -456,6 +456,11 @@ export const composeService = {
       // True when the exact prompt stack was reused from PromptAssembly cache.
       // This is informational and should not count as an execution warning.
       promptAssemblyCacheHit: false as boolean,
+      // A2 (grounding resilience) — flips true when the task embedding call
+      // failed, so semantic retrieval silently fell back to recency/FTS. Already
+      // returned on the response via retrievalStats, so operators/Run Insights
+      // can see "grounding degraded (embeddings down)" instead of guessing.
+      embeddingFailed: false as boolean,
     };
 
     // Build the substitution context once.
@@ -553,6 +558,7 @@ export const composeService = {
             }
           } catch (err) {
             warnings.push(`embedding failed: ${(err as Error).message}`);
+            retrievalStats.embeddingFailed = true;
           }
         }
         // Skip the entire retrieval block on capsule hit.

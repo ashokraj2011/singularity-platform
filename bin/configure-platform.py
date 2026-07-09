@@ -2586,6 +2586,30 @@ def command_doctor(args: argparse.Namespace) -> None:
             first_line = re.sub(r"\x1b\[[0-9;]*m", "", guard_output.splitlines()[0]) if guard_output else "unknown failure"
             record("FAIL", f"Workgraph forced-RLS cutover contract failed: {first_line}", "python3 bin/check-workgraph-forced-rls-cutover.py")
 
+    # Grounding resilience (A1) — the LLM gateway only embeds for openai/openrouter/mock.
+    # If the embedding alias resolves to a non-embedding provider (e.g. the default
+    # anthropic), every embedding 400s and semantic grounding SILENTLY degrades to
+    # recency/FTS. Surface it here (WARN by default; the guard --strict FAILs for prod).
+    embedding_provider_guard = ROOT / "bin/check-embedding-provider.py"
+    if embedding_provider_guard.exists():
+        guard = subprocess.run(
+            ["python3", str(embedding_provider_guard)],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        guard_output = (guard.stdout or guard.stderr or "").strip()
+        first_line = re.sub(r"\x1b\[[0-9;]*m", "", guard_output.splitlines()[0]) if guard_output else ""
+        status = first_line.split(None, 1)[0] if first_line else ""
+        detail = first_line.split(None, 1)[1] if " " in first_line else first_line
+        if status == "OK":
+            record("OK", "Embedding provider is embedding-capable (semantic grounding will work)")
+        elif status == "WARN":
+            record("WARN", f"Embedding provider: {detail}", "python3 bin/check-embedding-provider.py")
+        else:
+            record("FAIL", f"Embedding provider check failed: {detail or 'unknown'}", "python3 bin/check-embedding-provider.py --strict")
+
     forced_rls_enforcement_guard = ROOT / "bin/check-workgraph-forced-rls-enforcement.py"
     rls_enforcement_smoke = os.getenv("SINGULARITY_DOCTOR_RLS_ENFORCEMENT_SMOKE", "").strip().lower() in TRUE_ENV_VALUES
     if forced_rls_enforcement_guard.exists() and (deep_smoke or rls_enforcement_smoke):

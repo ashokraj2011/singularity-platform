@@ -126,6 +126,19 @@
     "outputPricePerMtok": 15.0
   },
   {
+    "id": "embed-mock",
+    "label": "Mock embeddings (deterministic, dev/test)",
+    "provider": "mock",
+    "model": "mock-embed",
+    "default": false,
+    "maxOutputTokens": 0,
+    "supportsTools": false,
+    "costTier": "free",
+    "description": "Deterministic 1536-dim mock embeddings for local dev/test. Set EMBEDDING_MODEL_ALIAS=embed-mock so semantic grounding works out-of-box without an openai/openrouter key (the gateway cannot embed with the default anthropic provider). For real semantic quality, add an openai/openrouter embedding model + credential + allowedProviders and point EMBEDDING_MODEL_ALIAS at it.",
+    "inputPricePerMtok": 0.0,
+    "outputPricePerMtok": 0.0
+  },
+  {
     "id": "mock-fast",
     "label": "Mock — fast happy path",
     "provider": "mock",
