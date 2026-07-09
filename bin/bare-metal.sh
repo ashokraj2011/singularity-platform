@@ -1233,12 +1233,18 @@ JSON
   # — must be psql-applied here too (the Docker path gets these via `prisma migrate deploy`).
   # These migration files are idempotent, so applying them after db push is safe. Add new
   # raw-SQL migrations to this list.
+  # NOTE: 20260709150000_force_tenant_rls (ENABLE/FORCE RLS) is applied LAST — after
+  # `prisma generate` and with --single-transaction. Its preflight guards RAISE + abort
+  # (fail-closed) if the DB isn't ready (NULL-tenant instances, non-BYPASSRLS role, etc.),
+  # so running it last means a guard-abort only trips the `|| warn` — it can't skip client
+  # generation or leave RLS half-forced. It force-applies once blockers B1/B3/B4 are resolved.
   ( cd workgraph-studio/apps/api \
     && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma db push --skip-generate >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260619123000_tenant_rls_policy_scaffold/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260626120000_node_attempt_fence_and_blueprint_key/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260701120000_add_tenant_id_to_standalone_tables/migration.sql >/dev/null 2>&1 \
-    && DISABLE_ERD=true DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma generate >/dev/null 2>&1 ) \
+    && DISABLE_ERD=true DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma generate >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709150000_force_tenant_rls/migration.sql >/dev/null 2>&1 ) \
     || warn "workgraph schema push had warnings"
 
   info "provisioning Workgraph non-bypass app role…"
