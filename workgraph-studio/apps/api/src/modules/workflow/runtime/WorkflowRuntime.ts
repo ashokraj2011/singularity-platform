@@ -632,6 +632,29 @@ function executableNodeType(node: WorkflowNode): string {
   return baseType && baseType !== 'CUSTOM' ? baseType : 'HUMAN_TASK'
 }
 
+function nodeConfigValue(node: WorkflowNode, key: string): unknown {
+  const cfg = (node.config ?? {}) as Record<string, unknown>
+  const standard = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard)
+    ? cfg.standard as Record<string, unknown>
+    : {}
+  return cfg[key] ?? standard[key]
+}
+
+function nodeConfigStringAny(node: WorkflowNode, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = nodeConfigValue(node, key)
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return undefined
+}
+
+function agentTaskUsesWorkGraphLlm(node: WorkflowNode): boolean {
+  const route = nodeConfigStringAny(node, 'llmRoute', 'agentLlmRoute', 'llmExecutionRoute', 'route')
+    ?.toLowerCase()
+    .replace(/[\s-]+/g, '_')
+  return route === 'workgraph' || route === 'workgraph_llm' || route === 'direct' || route === 'direct_llm'
+}
+
 // ─── Per-node start gate (auto / manual / event) ───────────────────────────────
 // A node can be configured in the designer (config.startMode) to NOT auto-execute
 // when the flow reaches it:
@@ -734,7 +757,28 @@ async function executeServerNode(
       await activateWorkbenchTask(node, instance)
       break
     case 'AGENT_TASK':
-      await activateAgentTask(node, instance)
+      if (agentTaskUsesWorkGraphLlm(node)) {
+        const result = await activateDirectLlmTask(node, instance, actorId)
+        if (result.passed && !result.reviewRequired) {
+          await advance(instance.id, node.id, {
+            ...context,
+            ...result.output,
+            agentTask: {
+              llmRoute: 'workgraph',
+              coWork: result.output.directLlm.coWork ?? false,
+              directLlm: result.output.directLlm,
+            },
+          }, actorId, undefined, tenantId)
+        } else if (!result.passed) {
+          await failNode(instance.id, node.id, {
+            message: result.output.directLlm.error ?? 'AGENT_TASK WorkGraph LLM route failed',
+            code: result.output.directLlm.code ?? 'AGENT_TASK_WORKGRAPH_LLM_FAILED',
+            details: result.output.directLlm,
+          }, actorId)
+        }
+      } else {
+        await activateAgentTask(node, instance)
+      }
       break
     case 'DIRECT_LLM_TASK': {
       const result = await activateDirectLlmTask(node, instance, actorId)

@@ -565,11 +565,18 @@ function validateWorkflow(
     if (n.data.nodeType === 'TOOL_REQUEST' && !field('toolId') && !field('toolName')) {
       issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Tool Request) has no tool selected.`, nodeId: n.id })
     }
-    if (n.data.nodeType === 'AGENT_TASK' && !field('agentId') && !field('agentTemplateId')) {
-      issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Agent Task) has no agent selected.`, nodeId: n.id })
+    if (n.data.nodeType === 'AGENT_TASK') {
+      const llmRoute = String(field('llmRoute') ?? 'mcp').toLowerCase().replace(/[\s-]+/g, '_')
+      const usesWorkgraphLlm = ['workgraph', 'workgraph_llm', 'direct', 'direct_llm'].includes(llmRoute)
+      if (usesWorkgraphLlm && !field('task') && !field('prompt') && !field('promptUrl')) {
+        issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Agent Task) uses WorkGraph LLM but has no prompt URL or task prompt configured.`, nodeId: n.id })
+      }
+      if (!usesWorkgraphLlm && !field('agentId') && !field('agentTemplateId')) {
+        issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Agent Task) has no agent selected.`, nodeId: n.id })
+      }
     }
-    if (n.data.nodeType === 'DIRECT_LLM_TASK' && !field('task') && !field('prompt')) {
-      issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Direct LLM Task) has no task prompt configured.`, nodeId: n.id })
+    if (n.data.nodeType === 'DIRECT_LLM_TASK' && !field('task') && !field('prompt') && !field('promptUrl')) {
+      issues.push({ severity: 'warning', code: 'MISSING_CONFIG', message: `"${n.data.label}" (Direct LLM Task) has no prompt URL or task prompt configured.`, nodeId: n.id })
     }
     if (n.data.nodeType === 'WORKBENCH_TASK') {
       for (const message of validateWorkbenchConfig(cfg)) {

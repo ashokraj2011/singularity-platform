@@ -398,7 +398,7 @@ const NODE_META: Record<string, {
   },
   AGENT_TASK: {
     label: 'Agent Task', color: '#38bdf8', Icon: Bot,
-    description: 'Delegates work to an AI agent. Output always requires human review before promotion.',
+    description: 'Delegates work to an AI agent. Default route uses Context Fabric/MCP; WorkGraph LLM route calls a configured LLM directly, can load the prompt from a URL, inject named variables, and pause for co-work review.',
     standardFields: [
       // M10 — capability scopes the agent-template list, the MCP server, and
       // the tool catalog at execute-time. Required.
@@ -407,8 +407,14 @@ const NODE_META: Record<string, {
       // executor snapshots it into a local Agent row at run start.
       { key: 'agentTemplateId', label: 'Agent template',    placeholder: 'agent-template-uuid' },
       { key: 'modelAlias',      label: 'Model',             placeholder: 'Use workflow default' },
+      { key: 'llmRoute',        label: 'LLM route',         placeholder: 'mcp | workgraph' },
+      { key: 'coWork',          label: 'Co-work review',    placeholder: 'false' },
       { key: 'governanceMode',  label: 'Governance mode',   placeholder: 'fail_open' },
-      { key: 'task',            label: 'Task',              placeholder: 'Audit {{instance.vars.module}} for OWASP issues', multiline: true },
+      { key: 'promptUrl',       label: 'Prompt URL',        placeholder: 'https://.../verifier-prompt.md' },
+      { key: 'task',            label: 'Task / fallback prompt', placeholder: 'Audit {{vars.module}} for OWASP issues', multiline: true },
+      { key: 'inputVariables',  label: 'Named input variables', placeholder: '{"story":"vars.story","designDoc":{"path":"directLlmFields.designDoc","required":true}}', multiline: true },
+      { key: 'outputFields',    label: 'Output fields to fill', placeholder: '{"verdict":{"type":"string","enum":["APPROVE","SEND_BACK","BLOCK"]},"summary":"string"}', multiline: true },
+      { key: 'reviewRequired',  label: 'Review required',   placeholder: 'false' },
       { key: 'maxTokens',       label: 'Max tokens',        placeholder: '4096' },
     ],
   },
@@ -422,10 +428,13 @@ const NODE_META: Record<string, {
       { key: 'model',         label: 'Model (ad-hoc fallback)',            placeholder: 'Used only when no alias is configured' },
       { key: 'credentialEnv', label: 'Credential env var (ad-hoc fallback)',   placeholder: 'Env var name only, e.g. OPENAI_API_KEY' },
       { key: 'systemPrompt',  label: 'System prompt',    placeholder: 'You are a concise SDLC assistant.', multiline: true },
+      { key: 'promptUrl',     label: 'Prompt URL',       placeholder: 'https://.../verifier-prompt.md' },
       { key: 'task',          label: 'Task prompt',      placeholder: 'Validate the event documents against the verifier profile and fill the requested fields.', multiline: true },
+      { key: 'inputVariables', label: 'Named input variables', placeholder: '{"story":"vars.story","designDoc":{"path":"directLlmFields.designDoc","required":true}}', multiline: true },
       { key: 'inputDocumentsPath', label: 'Input documents path', placeholder: '_workItem.input.documents or vars.documents' },
       { key: 'maxTokens',     label: 'Max tokens',       placeholder: '1200' },
       { key: 'temperature',   label: 'Temperature',      placeholder: '0.2' },
+      { key: 'coWork', label: 'Co-work review', placeholder: 'false' },
       { key: 'reviewRequired', label: 'Review required', placeholder: 'false' },
       { key: 'outputPath',    label: 'Artifact name',    placeholder: 'Direct LLM Output' },
       { key: 'agentTemplateId', label: 'Agent profile/template', placeholder: 'agent template uuid with local/provider/URL document skills' },
@@ -3660,6 +3669,7 @@ export function NodeInspector({
                         const isCapabilityPicker = f.key === 'capabilityId'
                         const isPriority         = f.key === 'priority'
                         const isModelAlias       = f.key === 'modelAlias'
+                        const isAgentLlmRoute    = node.data.nodeType === 'AGENT_TASK' && f.key === 'llmRoute'
                         const isGovernanceMode   = f.key === 'governanceMode'
                         const isGovernanceGateMode = node.data.nodeType === 'GOVERNANCE_GATE' && f.key === 'mode'
                         const isPolicyEngine     = node.data.nodeType === 'POLICY_CHECK' && f.key === 'engine'
@@ -3667,6 +3677,8 @@ export function NodeInspector({
                         const isEvalScope        = node.data.nodeType === 'EVAL_GATE' && f.key === 'scope'
                         const isTriggerType      = node.data.nodeType === 'START' && f.key === 'triggerType'
                         const isBooleanFlag      = (node.data.nodeType === 'EVAL_GATE' && f.key === 'blockOnMissingEvidence')
+                          || (node.data.nodeType === 'AGENT_TASK' && ['coWork', 'reviewRequired', 'composeWithPromptComposer'].includes(f.key))
+                          || (node.data.nodeType === 'DIRECT_LLM_TASK' && ['reviewRequired', 'coWork', 'loopEnabled', 'composeWithPromptComposer'].includes(f.key))
                           || (node.data.nodeType === 'GIT_PUSH' && f.key === 'requireApproval')
                           || (node.data.nodeType === 'GOVERNANCE_GATE' && ['failClosedOnResolveError', 'materializeEvidence', 'runFormalVerifier'].includes(f.key))
                         const isVariableAwareNumber = f.key === 'maxConcurrency' || f.key === 'expectedBranches'
@@ -3722,6 +3734,15 @@ export function NodeInspector({
                                 value={config.standard[f.key] ?? ''}
                                 onChange={v => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: v } }))}
                               />
+                            ) : isAgentLlmRoute ? (
+                              <select
+                                value={config.standard[f.key] ?? 'mcp'}
+                                onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
+                                style={standardFieldSelectStyle()}
+                              >
+                                <option value="mcp">MCP / Context Fabric route</option>
+                                <option value="workgraph">WorkGraph direct LLM route</option>
+                              </select>
                             ) : isGovernanceMode ? (
                               <select
                                 value={config.standard[f.key] ?? 'fail_open'}
@@ -3795,22 +3816,30 @@ export function NodeInspector({
                               </select>
                             ) : isBooleanFlag ? (
                               <select
-                                value={String(config.standard[f.key] ?? 'true')}
+                                value={String(config.standard[f.key] ?? (['coWork', 'reviewRequired', 'loopEnabled', 'composeWithPromptComposer'].includes(f.key) ? 'false' : 'true'))}
                                 onChange={e => setConfig(c => ({ ...c, standard: { ...c.standard, [f.key]: e.target.value } }))}
                                 style={standardFieldSelectStyle()}
                               >
                                 <option value="true">
                                   {node.data.nodeType === 'GIT_PUSH'
                                     ? 'Require approved gate'
+                                    : node.data.nodeType === 'AGENT_TASK' && f.key === 'coWork'
+                                      ? 'Open co-work approval window'
+                                      : f.key === 'reviewRequired'
+                                        ? 'Require human review'
                                     : node.data.nodeType === 'GOVERNANCE_GATE' && f.key === 'runFormalVerifier'
                                       ? 'Run formal verifier'
-                                      : node.data.nodeType === 'GOVERNANCE_GATE' && f.key === 'materializeEvidence'
+                                    : node.data.nodeType === 'GOVERNANCE_GATE' && f.key === 'materializeEvidence'
                                         ? 'Materialize evidence pack'
                                         : 'Enabled'}
                                 </option>
                                 <option value="false">
                                   {node.data.nodeType === 'GIT_PUSH'
                                     ? 'Allow autonomous push'
+                                    : node.data.nodeType === 'AGENT_TASK' && f.key === 'coWork'
+                                      ? 'Run without co-work pause'
+                                      : f.key === 'reviewRequired'
+                                        ? 'No review pause'
                                     : node.data.nodeType === 'GOVERNANCE_GATE' && f.key === 'runFormalVerifier'
                                       ? 'Skip formal verifier'
                                       : node.data.nodeType === 'GOVERNANCE_GATE' && f.key === 'materializeEvidence'

@@ -353,6 +353,9 @@ if db_up singularity; then
   n=$(psql_q singularity 'select count(*) from "AgentTemplate" where "capabilityId" is null')
   [ "${n:-0}" -ge 8 ] && pass "agent baseline templates ($n)" \
     || fail "agent baseline templates ($n/8)" "(cd agent-and-tools/apps/agent-runtime && DATABASE_URL=$ar_url npm run prisma:seed)"
+  v=$(psql_q singularity "select count(*) from \"AgentTemplate\" where name='Verifier' and \"capabilityId\"='11111111-2222-3333-4444-555555555555' and status <> 'ARCHIVED'")
+  [ "${v:-0}" -ge 1 ] && pass "event Verifier agent profile seeded" \
+    || fail "event Verifier agent profile missing" "bin/seed-event-verifier-demo.py"
 else fail "cannot reach DB 'singularity'" "Postgres / creds"; fi
 
 if db_up workgraph; then
@@ -376,6 +379,10 @@ if db_up workgraph; then
   [ -z "$missing_workflows" ] && pass "SDLC + demo workflow templates seeded (8/8)" \
     || fail "missing workflow seed(s): $(printf '%s' "$missing_workflows" | paste -sd ', ' -)" "$wg_seed_fix"
 
+  event_verifier_workflow=$(psql_q workgraph "select count(*) from workflow_templates where name='Event Verifier · DOCUMENT_REVIEW' and profile='main' and \"workflowTypeKey\"='VERIFIER_DOCUMENT_REVIEW' and \"archivedAt\" is null")
+  [ "${event_verifier_workflow:-0}" -ge 1 ] && pass "event Verifier workflow seeded" \
+    || fail "event Verifier workflow missing" "bin/seed-event-verifier-demo.py"
+
   missing_routes=$(psql_rows workgraph "with expected(id, work_item, type_key) as (values
     ('34000000-0000-0000-0000-000000000001', 'feature', 'SDLC'),
     ('34000000-0000-0000-0000-000000000002', 'bug', 'BUGFIX'),
@@ -391,6 +398,10 @@ if db_up workgraph; then
   order by e.id")
   [ -z "$missing_routes" ] && pass "work-item routing policies point at runnable main workflows" \
     || fail "missing/unrunnable routing policy seed(s): $(printf '%s' "$missing_routes" | paste -sd ', ' -)" "$wg_seed_fix"
+
+  verifier_trigger=$(psql_q workgraph "select count(*) from work_item_triggers where \"triggerType\"='EVENT' and \"eventTypeKey\"='VERIFIER_DOCUMENT_SUBMITTED' and \"capabilityId\"='11111111-2222-3333-4444-555555555555' and \"workItemTypeKey\"='DOCUMENT_REVIEW' and \"routingMode\"='AUTO_START' and \"isActive\"=true")
+  [ "${verifier_trigger:-0}" -ge 1 ] && pass "event Verifier trigger routes document events" \
+    || fail "event Verifier trigger missing" "bin/seed-event-verifier-demo.py"
 
   missing_defs=$(psql_rows workgraph "select w.name
   from workflow_templates w

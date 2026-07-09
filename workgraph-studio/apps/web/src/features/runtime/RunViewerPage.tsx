@@ -30,6 +30,35 @@ function isTerminalRunStatus(status: string | undefined | null): boolean {
   return TERMINAL_RUN_STATUSES.has((status ?? '').toUpperCase())
 }
 
+function runNodeConfigValue(node: RunNode, key: string): unknown {
+  const cfg = asRecord(node.config)
+  const standard = asRecord(cfg.standard)
+  return cfg[key] ?? standard[key]
+}
+
+function runNodeConfigString(node: RunNode, key: string): string {
+  const value = runNodeConfigValue(node, key)
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function runNodeConfigBool(node: RunNode, key: string): boolean {
+  const value = runNodeConfigValue(node, key)
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string') return ['true', '1', 'yes', 'y', 'on'].includes(value.trim().toLowerCase())
+  return false
+}
+
+function isWorkGraphLlmAgentTask(node: RunNode): boolean {
+  if (node.nodeType !== 'AGENT_TASK') return false
+  const route = runNodeConfigString(node, 'llmRoute').toLowerCase().replace(/[\s-]+/g, '_')
+  return route === 'workgraph' || route === 'workgraph_llm' || route === 'direct' || route === 'direct_llm'
+}
+
+function isCoWorkReviewNode(node: RunNode): boolean {
+  return (node.nodeType === 'DIRECT_LLM_TASK' || isWorkGraphLlmAgentTask(node))
+    && (runNodeConfigBool(node, 'coWork') || runNodeConfigBool(node, 'reviewRequired'))
+}
+
 /**
  * Step-by-step run viewer.  Lays out the run as a vertical timeline of steps;
  * the *current* step expands inline with the form-fill panel, completed steps
@@ -698,14 +727,20 @@ function StepCard({
             <ApprovalInlinePanel node={node} instanceId={instanceId} />
           )}
 
+          {isActive && isCoWorkReviewNode(node) && (
+            <ApprovalInlinePanel node={node} instanceId={instanceId} />
+          )}
+
           {/* Active step without form: simple "Mark complete" prompt */}
-          {isActive && node.nodeType !== 'WORK_ITEM' && node.nodeType !== 'WORKBENCH_TASK' && node.nodeType !== 'CALL_WORKFLOW' && node.nodeType !== 'APPROVAL' && (!fillKind || !hasFormWidgets) && (
+          {isActive && node.nodeType !== 'WORK_ITEM' && node.nodeType !== 'WORKBENCH_TASK' && node.nodeType !== 'CALL_WORKFLOW' && node.nodeType !== 'APPROVAL' && !isCoWorkReviewNode(node) && (!fillKind || !hasFormWidgets) && (
             <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: 'rgba(14,165,233,0.06)', border: '1px solid rgba(14,165,233,0.20)' }}>
               <p style={{ fontSize: 11, color: '#0c4a6e' }}>
                 {node.nodeType === 'DIRECT_LLM_TASK'
                   ? 'This direct LLM stage runs inside WorkGraph API and bypasses Context Fabric/MCP. When review is required, inspect the generated artifact and then complete or restart the stage.'
                   : node.nodeType === 'AGENT_TASK'
-                    ? 'This agent stage runs on its own (e.g. Copilot does the work in the repo), then waits HERE for your review — it does not auto-advance. Click “Artifacts” to see what it produced, then “Complete & advance” to move to the next stage, or “Restart stage” to rework it.'
+                    ? isWorkGraphLlmAgentTask(node)
+                      ? 'This agent stage is using the WorkGraph direct LLM route. It bypasses Context Fabric/MCP, uses the configured prompt URL or fallback prompt, and writes structured values for downstream gates.'
+                      : 'This agent stage runs on its own (e.g. Copilot does the work in the repo), then waits HERE for your review — it does not auto-advance. Click “Artifacts” to see what it produced, then “Complete & advance” to move to the next stage, or “Restart stage” to rework it.'
                   : 'Waiting for the runtime to advance. HUMAN_TASK / APPROVAL nodes show a form-fill here when they’re claimable; automated nodes complete on their own.'}
               </p>
             </div>

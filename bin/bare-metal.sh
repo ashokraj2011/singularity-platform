@@ -1408,6 +1408,20 @@ SQL
   sleep 3
 
   boot workgraph-api    "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH_RUNTIME\" WORKGRAPH_RUNTIME_DATABASE_URL=\"$DATABASE_URL_WORKGRAPH_RUNTIME\" WORKGRAPH_DATABASE_URL_ADMIN=\"$DATABASE_URL_WORKGRAPH_ADMIN\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_SERVICE_TOKEN=\"${IAM_SERVICE_TOKEN:-}\" IAM_SERVICE_TOKEN_TENANT_IDS=\"$IAM_SERVICE_TOKEN_TENANT_IDS\" IAM_BOOTSTRAP_USERNAME=\"$LOCAL_SUPER_ADMIN_EMAIL\" IAM_BOOTSTRAP_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" FORMAL_VERIFIER_URL=\"$FORMAL_VERIFIER_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" MCP_TOOL_GRANT_MODE=\"$MCP_TOOL_GRANT_MODE\" DEFAULT_GOVERNANCE_MODE=\"$DEFAULT_GOVERNANCE_MODE\" WORKGRAPH_FORCE_GOVERNED_CODING=\"$WORKGRAPH_FORCE_GOVERNED_CODING\" CONTEXT_FABRIC_GOVERN_SIDE_CALLERS=\"$CONTEXT_FABRIC_GOVERN_SIDE_CALLERS\" WORKGRAPH_INTERNAL_TOKEN=\"$WORKGRAPH_INTERNAL_TOKEN\" WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS=\"$WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS\" WORKGRAPH_INCOMING_EVENT_SECRETS=\"$WORKGRAPH_INCOMING_EVENT_SECRETS\" WORKBENCH_DEFAULT_MODEL_ALIAS=mock AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
+  if [ "${SEED_EVENT_VERIFIER_ENABLED:-true}" != "false" ]; then
+    wait_http agent-runtime "http://localhost:3003/health" 45
+    wait_http workgraph-api "http://localhost:8080/health" 45
+    info "bootstrapping event Verifier workflow…"
+    _ev_sim_arg=""
+    [ "${SEED_EVENT_VERIFIER_SIMULATE:-false}" = "true" ] && _ev_sim_arg="--simulate"
+    if python3 bin/seed-event-verifier-demo.py --quiet --iam-url "$IAM_BASE_URL" --workgraph-url "http://localhost:8080" $_ev_sim_arg; then
+      ok "event Verifier workflow seeded"
+    else
+      warn "event Verifier workflow bootstrap skipped/failed — run: bin/seed-event-verifier-demo.py"
+    fi
+  else
+    dim "event Verifier workflow bootstrap skipped (SEED_EVENT_VERIFIER_ENABLED=false)"
+  fi
   # The unified platform web app owns every UI route on :5180. It proxies backend
   # calls through Next rewrites and keeps users in one shell:
   # /operations, /agents, /agents/studio, /workflows, /workbench, /foundry,

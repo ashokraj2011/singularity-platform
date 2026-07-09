@@ -331,6 +331,8 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
     if (approvalRequest.subjectType === 'DirectLlmTask') {
       const form = isRecord(approvalRequest.formData) ? approvalRequest.formData : {}
       const directLlmOutput = isRecord(form.directLlmOutput) ? form.directLlmOutput : {}
+      const directLlm = isRecord(directLlmOutput.directLlm) ? directLlmOutput.directLlm : {}
+      const workEvent = isRecord(directLlm.workEvent) ? directLlm.workEvent : undefined
       const agentRunId = typeof form.agentRunId === 'string' ? form.agentRunId : null
       const eventPayload = {
         approvalRequestId: id,
@@ -338,6 +340,9 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
         agentRunId,
         instanceId: approvalRequest.instanceId,
         nodeId: approvalRequest.nodeId,
+        ...(workEvent ? { workEvent } : {}),
+        ...(workEvent && typeof workEvent.workId === 'string' ? { workId: workEvent.workId } : {}),
+        ...(workEvent && typeof workEvent.capabilityName === 'string' ? { capabilityName: workEvent.capabilityName } : {}),
         notes,
         conditions,
       }

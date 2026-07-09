@@ -1,9 +1,12 @@
+import { lookup } from 'node:dns/promises'
+import net from 'node:net'
 import { Prisma, type WorkflowInstance, type WorkflowNode } from '@prisma/client'
 import { workflowNodeTraceId } from '@workgraph/shared-types'
 import { prisma } from '../../../../lib/prisma'
 import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import { recordWorkflowLlmUsage } from '../budget'
+import { classifyAddress } from '../../../../lib/ssrf-guard'
 import {
   DirectLlmHarnessError,
   runDirectLlmHarness,
@@ -27,6 +30,10 @@ type DirectLlmOutput = {
     artifactId?: string
     approvalRequestId?: string
     reviewRequired?: boolean
+    coWork?: boolean
+    promptUrl?: string
+    promptVariables?: Array<Record<string, unknown>>
+    workEvent?: Record<string, unknown>
     bypassedRuntimeFabric: true
     harness?: Record<string, unknown>
     structuredOutput?: Record<string, unknown> | null
@@ -58,6 +65,9 @@ type ResolvedDirectLlmConfig = {
   maxTokens: number
   timeoutMs: number
   reviewRequired: boolean
+  coWork: boolean
+  promptUrl?: string
+  promptVariables?: Array<Record<string, unknown>>
   outputPath?: string
   outputSchema?: Record<string, unknown>
   outputFields?: Record<string, unknown>
@@ -217,6 +227,241 @@ function interpolate(template: string, instance: WorkflowInstance, node: Workflo
     if (typeof value === 'number' || typeof value === 'boolean') return String(value)
     return JSON.stringify(value)
   })
+}
+
+type PromptVariableSpec = {
+  name: string
+  path?: string
+  description?: string
+  required?: boolean
+  value?: unknown
+}
+
+type ResolvedPromptVariable = {
+  name: string
+  path: string
+  description?: string
+  required?: boolean
+  missing?: boolean
+  value?: unknown
+}
+
+const DEFAULT_PROMPT_URL_MAX_BYTES = 256_000
+
+function envFlag(name: string, fallback = false): boolean {
+  const value = process.env[name]
+  if (value == null || value === '') return fallback
+  return ['1', 'true', 'yes', 'y', 'on'].includes(value.trim().toLowerCase())
+}
+
+function promptUrlMaxBytes(): number {
+  const raw = Number(process.env.WORKGRAPH_PROMPT_URL_MAX_BYTES)
+  return Number.isFinite(raw) && raw > 0 ? Math.min(Math.trunc(raw), 2_000_000) : DEFAULT_PROMPT_URL_MAX_BYTES
+}
+
+function parseJsonUnknown(value: string): unknown {
+  try {
+    return JSON.parse(value)
+  } catch {
+    return undefined
+  }
+}
+
+function normalizePromptVariableSpecs(raw: unknown): PromptVariableSpec[] {
+  const value = typeof raw === 'string' && raw.trim()
+    ? (parseJsonUnknown(raw.trim()) ?? raw.trim())
+    : raw
+  if (typeof value === 'string') {
+    return value.split(',').map(item => item.trim()).filter(Boolean).map(name => ({ name }))
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap(item => {
+      if (typeof item === 'string' && item.trim()) return [{ name: item.trim() }]
+      if (!isRecord(item)) return []
+      const name = typeof item.name === 'string' && item.name.trim()
+        ? item.name.trim()
+        : typeof item.key === 'string' && item.key.trim()
+          ? item.key.trim()
+          : ''
+      if (!name) return []
+      return [{
+        name,
+        path: typeof item.path === 'string' && item.path.trim() ? item.path.trim() : undefined,
+        description: typeof item.description === 'string' ? item.description : undefined,
+        required: typeof item.required === 'boolean' ? item.required : undefined,
+        value: item.value,
+      }]
+    })
+  }
+  if (isRecord(value)) {
+    return Object.entries(value).flatMap(([name, spec]): PromptVariableSpec[] => {
+      const cleanName = name.trim()
+      if (!cleanName) return []
+      if (typeof spec === 'string' && spec.trim()) return [{ name: cleanName, path: spec.trim() }]
+      if (isRecord(spec)) {
+        return [{
+          name: cleanName,
+          path: typeof spec.path === 'string' && spec.path.trim() ? spec.path.trim() : undefined,
+          description: typeof spec.description === 'string' ? spec.description : undefined,
+          required: typeof spec.required === 'boolean' ? spec.required : undefined,
+          value: spec.value,
+        }]
+      }
+      return [{ name: cleanName, value: spec }]
+    })
+  }
+  return []
+}
+
+function valueForPrompt(value: unknown, limit = 4000): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  return text.length <= limit ? text : `${text.slice(0, limit)}\n...[truncated]`
+}
+
+function resolvePromptVariables(node: WorkflowNode, instance: WorkflowInstance): {
+  variables: ResolvedPromptVariable[]
+  section?: string
+} {
+  const specs = normalizePromptVariableSpecs(
+    cfgValue(node, 'inputVariables')
+      ?? cfgValue(node, 'promptVariables')
+      ?? cfgValue(node, 'variables')
+      ?? harnessValue(node, 'inputVariables')
+      ?? harnessValue(node, 'promptVariables'),
+  )
+  if (specs.length === 0) return { variables: [] }
+  const variables = specs.map(spec => {
+    const path = spec.path ?? spec.name
+    const value = spec.value !== undefined ? spec.value : lookupContextValue(instance, path)
+    return {
+      name: spec.name,
+      path,
+      description: spec.description,
+      required: spec.required,
+      missing: value === undefined || value === null || value === '',
+      value,
+    }
+  })
+  return {
+    variables,
+    section: [
+      '# Named Input Variables',
+      'The following named values were resolved by WorkGraph and are part of the task context. Use them when filling the requested output schema.',
+      ...variables.map(variable => [
+        `## ${variable.name}`,
+        variable.description ? `Description: ${variable.description}` : undefined,
+        `Source path: ${variable.path}`,
+        variable.missing
+          ? `Value: ${variable.required ? 'MISSING REQUIRED VALUE' : 'not provided'}`
+          : `Value:\n${valueForPrompt(variable.value)}`,
+      ].filter(Boolean).join('\n')),
+    ].join('\n\n'),
+  }
+}
+
+async function validatePromptUrl(rawUrl: string): Promise<{ ok: true; url: URL } | { ok: false; error: string }> {
+  let url: URL
+  try {
+    url = new URL(rawUrl)
+  } catch {
+    return { ok: false, error: 'Prompt URL is not a valid URL.' }
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return { ok: false, error: `Prompt URL protocol ${url.protocol} is not allowed; use http or https.` }
+  }
+  if (url.username || url.password) {
+    return { ok: false, error: 'Prompt URL must not contain embedded credentials.' }
+  }
+  const allowPrivate = envFlag('WORKGRAPH_ALLOW_PRIVATE_PROMPT_URLS', false)
+  const host = url.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '')
+  if (!host) return { ok: false, error: 'Prompt URL is missing a host.' }
+
+  const ipLiteral = net.isIP(host) ? host : null
+  if (ipLiteral) {
+    const cls = classifyAddress(ipLiteral)
+    if (!allowPrivate && cls !== 'public') {
+      return { ok: false, error: `Prompt URL host resolves to ${cls ?? 'an unknown'} address; set WORKGRAPH_ALLOW_PRIVATE_PROMPT_URLS=true only for trusted local test prompts.` }
+    }
+    return { ok: true, url }
+  }
+  if (!allowPrivate && (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local'))) {
+    return { ok: false, error: 'Prompt URL local hostnames are disabled by default; set WORKGRAPH_ALLOW_PRIVATE_PROMPT_URLS=true for trusted local test prompts.' }
+  }
+  if (!allowPrivate) {
+    let addresses: Array<{ address: string }>
+    try {
+      addresses = await lookup(host, { all: true })
+    } catch (err) {
+      return { ok: false, error: `Prompt URL host could not be resolved: ${(err as Error).message}` }
+    }
+    const internal = addresses.find(entry => classifyAddress(entry.address) !== 'public')
+    if (internal) {
+      return { ok: false, error: `Prompt URL host resolves to a non-public address (${internal.address}); set WORKGRAPH_ALLOW_PRIVATE_PROMPT_URLS=true only for trusted local test prompts.` }
+    }
+  }
+  return { ok: true, url }
+}
+
+async function fetchPromptTemplateFromUrl(rawUrl: string): Promise<
+  | { ok: true; url: string; template: string }
+  | { ok: false; error: string; code: string }
+> {
+  const maxBytes = promptUrlMaxBytes()
+  let current = rawUrl
+  for (let redirect = 0; redirect < 5; redirect++) {
+    const validated = await validatePromptUrl(current)
+    if (!validated.ok) return { ok: false, error: validated.error, code: 'DIRECT_LLM_PROMPT_URL_BLOCKED' }
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 15_000)
+    try {
+      const response = await fetch(validated.url, {
+        method: 'GET',
+        redirect: 'manual',
+        signal: controller.signal,
+        headers: { accept: 'text/plain, text/markdown, application/json;q=0.8, */*;q=0.2' },
+      })
+      const location = response.headers.get('location')
+      if (response.status >= 300 && response.status < 400 && location) {
+        current = new URL(location, validated.url).toString()
+        continue
+      }
+      if (!response.ok) {
+        return { ok: false, error: `Prompt URL returned HTTP ${response.status}.`, code: 'DIRECT_LLM_PROMPT_URL_FETCH_FAILED' }
+      }
+      const lengthHeader = Number(response.headers.get('content-length') ?? '0')
+      if (Number.isFinite(lengthHeader) && lengthHeader > maxBytes) {
+        return { ok: false, error: `Prompt URL content is larger than ${maxBytes} bytes.`, code: 'DIRECT_LLM_PROMPT_URL_TOO_LARGE' }
+      }
+      const text = await response.text()
+      if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+        return { ok: false, error: `Prompt URL content is larger than ${maxBytes} bytes.`, code: 'DIRECT_LLM_PROMPT_URL_TOO_LARGE' }
+      }
+      if (!text.trim()) {
+        return { ok: false, error: 'Prompt URL returned empty content.', code: 'DIRECT_LLM_PROMPT_URL_EMPTY' }
+      }
+      return { ok: true, url: validated.url.toString(), template: text.trim() }
+    } catch (err) {
+      return { ok: false, error: `Prompt URL fetch failed: ${(err as Error).message}`, code: 'DIRECT_LLM_PROMPT_URL_FETCH_FAILED' }
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
+  return { ok: false, error: 'Prompt URL redirected too many times.', code: 'DIRECT_LLM_PROMPT_URL_REDIRECT_LIMIT' }
+}
+
+async function resolvePromptTemplate(node: WorkflowNode): Promise<
+  | { ok: true; template: string; promptUrl?: string }
+  | { ok: false; error: string; code: string }
+> {
+  const promptUrl = cfgString(node, 'promptUrl', 'promptSourceUrl', 'agentPromptUrl', 'promptTemplateUrl')
+  if (promptUrl) {
+    const fetched = await fetchPromptTemplateFromUrl(promptUrl)
+    if (!fetched.ok) return fetched
+    return { ok: true, template: fetched.template, promptUrl: fetched.url }
+  }
+  const inline = cfgString(node, 'task', 'prompt', 'userPrompt')
+  if (!inline) return { ok: false, error: 'DIRECT_LLM_TASK requires a promptUrl or task/prompt.', code: 'DIRECT_LLM_NO_PROMPT' }
+  return { ok: true, template: inline }
 }
 
 type OutputFieldSpec = {
@@ -408,6 +653,30 @@ function documentPromptSection(artifacts: ComposeArtifact[]): string | undefined
   ].join('\n\n')
 }
 
+function workEventCorrelation(instance: WorkflowInstance): Record<string, unknown> {
+  const context = isRecord(instance.context) ? instance.context : {}
+  const workItem = isRecord(context._workItem) ? context._workItem : {}
+  const input = isRecord(workItem.input) ? workItem.input : {}
+  const payload = isRecord(input.payload) ? input.payload : {}
+  const details = isRecord(workItem.details) ? workItem.details : {}
+  const firstString = (...values: unknown[]): string | undefined => {
+    for (const value of values) {
+      if (typeof value === 'string' && value.trim()) return value.trim()
+    }
+    return undefined
+  }
+  return {
+    workflowInstanceId: instance.id,
+    workItemId: firstString(workItem.id),
+    workCode: firstString(workItem.workCode),
+    workId: firstString(input.workId, input.externalId, payload.workId, payload.externalId, details.workId, details.externalId),
+    description: firstString(input.description, payload.description, details.description),
+    capabilityId: firstString(workItem.parentCapabilityId, workItem.targetCapabilityId, input.capabilityId, payload.capabilityId),
+    capabilityName: firstString(input.capabilityName, payload.capabilityName, details.capabilityName),
+    eventType: firstString(input.eventType, payload.eventType, details.eventType),
+  }
+}
+
 function defaultCredentialEnv(provider: string): string | undefined {
   const p = provider.toLowerCase()
   if (p === 'anthropic') return 'ANTHROPIC_API_KEY'
@@ -462,7 +731,8 @@ function resolveHarnessOptions(
   artifacts: ComposeArtifact[],
 ): DirectLlmHarnessOptions {
   const agentTemplateId = harnessString(node, 'agentTemplateId', 'profileId', 'templateId')
-  const loopEnabled = harnessBool(node, 'loopEnabled', harnessBool(node, 'useLoop', false))
+  const coWork = harnessBool(node, 'coWork', harnessBool(node, 'cowork', false))
+  const loopEnabled = harnessBool(node, 'loopEnabled', harnessBool(node, 'useLoop', coWork))
   const validationRaw = (harnessString(node, 'validationMode') ?? 'soft').toLowerCase()
   const validationMode = validationRaw === 'hard' || validationRaw === 'off' ? validationRaw : 'soft'
   return {
@@ -503,16 +773,20 @@ async function resolveDirectLlmConfig(
   const model = connection?.model ?? cfgString(node, 'model') ?? (provider === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o-mini')
   const baseUrl = connection?.baseUrl ?? cfgString(node, 'baseUrl') ?? undefined
   const credentialEnv = connection?.credentialEnv ?? cfgString(node, 'credentialEnv') ?? defaultCredentialEnv(provider)
-  const task = cfgString(node, 'task', 'prompt', 'userPrompt')
-  if (!task) return { error: 'DIRECT_LLM_TASK requires a task/prompt.', code: 'DIRECT_LLM_NO_PROMPT' }
+  const promptTemplate = await resolvePromptTemplate(node)
+  if (!promptTemplate.ok) return { error: promptTemplate.error, code: promptTemplate.code }
 
   const maxTokens = Math.min(Math.max(cfgNumber(node, 'maxTokens', 1200), 1), 32_000)
   const timeoutMs = Math.min(Math.max(cfgNumber(node, 'timeoutMs', cfgNumber(node, 'timeoutSec', 120) * 1000), 1_000), 600_000)
   const modelAlias = alias ?? connection?.alias ?? undefined
   const inputArtifacts = eventArtifactsForInstance(instance, node)
   const outputContract = resolveOutputContract(node)
+  const promptVariables = resolvePromptVariables(node, instance)
+  const coWork = cfgBool(node, 'coWork', cfgBool(node, 'cowork', false))
+  const reviewRequired = coWork || cfgBool(node, 'reviewRequired', false)
   const prompt = [
-    interpolate(task, instance, node),
+    interpolate(promptTemplate.template, instance, node),
+    promptVariables.section,
     documentPromptSection(inputArtifacts),
     outputContractPrompt(outputContract.outputSchema, outputContract.outputFields),
   ].map(section => section?.trim()).filter(Boolean).join('\n\n')
@@ -528,7 +802,10 @@ async function resolveDirectLlmConfig(
       temperature: cfgNumber(node, 'temperature', 0.2),
       maxTokens,
       timeoutMs,
-      reviewRequired: cfgBool(node, 'reviewRequired', false),
+      reviewRequired,
+      coWork,
+      promptUrl: promptTemplate.promptUrl,
+      promptVariables: promptVariables.variables.map(variable => jsonSafeRecord(variable as unknown as Record<string, unknown>)),
       outputPath: cfgString(node, 'outputPath', 'artifactName'),
       outputSchema: outputContract.outputSchema,
       outputFields: outputContract.outputFields,
@@ -794,6 +1071,7 @@ async function ensureDirectLlmApprovalRequest(args: {
     nodeId: args.node.id,
     instanceId: args.instance.id,
     traceId: args.output.directLlm.traceId,
+    workEvent: args.output.directLlm.workEvent,
   })
   await publishOutbox('ApprovalRequest', created.id, 'DirectLlmReviewRequested', {
     requestId: created.id,
@@ -801,6 +1079,7 @@ async function ensureDirectLlmApprovalRequest(args: {
     nodeId: args.node.id,
     instanceId: args.instance.id,
     traceId: args.output.directLlm.traceId,
+    workEvent: args.output.directLlm.workEvent,
   })
   return created.id
 }
@@ -828,6 +1107,7 @@ export async function activateDirectLlmTask(
   const resolved = await resolveDirectLlmConfig(node, instance)
   if ('error' in resolved) return failed(resolved.code, resolved.error)
   const llm = resolved.config
+  const workEvent = workEventCorrelation(instance)
 
   const traceId = workflowNodeTraceId({
     prefix: 'direct-llm',
@@ -872,6 +1152,10 @@ export async function activateDirectLlmTask(
             maxTokens: llm.maxTokens,
             timeoutMs: llm.timeoutMs,
             reviewRequired: llm.reviewRequired,
+            coWork: llm.coWork,
+            promptUrl: llm.promptUrl,
+            promptVariables: llm.promptVariables,
+            workEvent,
             outputFields: llm.outputFields,
             outputSchema: llm.outputSchema,
             inputArtifacts: llm.inputArtifacts,
@@ -890,8 +1174,11 @@ export async function activateDirectLlmTask(
     model: llm.model,
     modelAlias: llm.modelAlias,
     bypassedRuntimeFabric: true,
+    coWork: llm.coWork,
+    promptUrl: llm.promptUrl,
+    ...workEvent,
   })
-  await publishOutbox('AgentRun', run.id, 'DirectLlmRunStarted', { runId: run.id, nodeId: node.id })
+  await publishOutbox('AgentRun', run.id, 'DirectLlmRunStarted', { runId: run.id, nodeId: node.id, traceId, ...workEvent })
 
   let chat: DirectLlmChatResult
   let harnessReceipt: Record<string, unknown> | undefined
@@ -932,8 +1219,9 @@ export async function activateDirectLlmTask(
       instanceId: instance.id,
       code,
       error: message,
+      ...workEvent,
     })
-    await publishOutbox('AgentRun', run.id, 'DirectLlmRunFailed', { runId: run.id })
+    await publishOutbox('AgentRun', run.id, 'DirectLlmRunFailed', { runId: run.id, nodeId: node.id, traceId, code, error: message, ...workEvent })
     return failed(code, message)
   }
   const reviewRequired = llm.reviewRequired || harnessReviewRequired
@@ -956,6 +1244,10 @@ export async function activateDirectLlmTask(
     bypassedContextFabric: true,
     bypassedMcp: true,
     reviewRequired,
+    coWork: llm.coWork,
+    promptUrl: llm.promptUrl,
+    promptVariables: llm.promptVariables,
+    workEvent,
     usage,
     harness: harnessReceipt,
     structuredOutput: structuredOutput ?? null,
@@ -1035,12 +1327,14 @@ export async function activateDirectLlmTask(
     reviewRequired,
     usage,
     harness: harnessReceipt,
+    ...workEvent,
   })
   await publishOutbox('AgentRun', run.id, 'DirectLlmRunCompleted', {
     runId: run.id,
     nodeId: node.id,
     reviewRequired,
     traceId,
+    ...workEvent,
   })
 
   const directOutput: DirectLlmOutput = {
@@ -1054,11 +1348,15 @@ export async function activateDirectLlmTask(
       agentRunId: run.id,
       artifactId,
       reviewRequired,
+      coWork: llm.coWork,
+      promptUrl: llm.promptUrl,
+      promptVariables: llm.promptVariables,
       bypassedRuntimeFabric: true,
       harness: harnessReceipt,
       structuredOutput: structuredOutput ?? null,
       outputSchema: llm.outputSchema,
       outputFields: llm.outputFields,
+      workEvent,
       usage,
     },
     directLlmFields: structuredOutput ?? null,

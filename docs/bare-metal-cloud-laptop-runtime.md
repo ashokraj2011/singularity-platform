@@ -130,6 +130,65 @@ environment files.
 is not the Copilot CLI model credential. The Copilot CLI uses its own local
 login/subscription state.
 
+## Combined Server + Runtime Setup Script
+
+For local testing, office laptops, or a small server/runtime box, use the
+combined operator wrapper:
+
+```bash
+bin/setup-mcp-server.sh \
+  --iam-user-id <iam-user-id> \
+  --jwt-secret '<same-generated-secret-as-server>' \
+  --github-token "$GITHUB_TOKEN" \
+  --anthropic-api-key "$ANTHROPIC_API_KEY" \
+  --provider anthropic
+```
+
+The wrapper writes server-side Runtime Bridge defaults to `.env.local`, writes
+runtime-only settings to `.env.laptop`, writes provider secrets to
+`.env.llm-secrets`, then delegates to `bin/mcp-runtime-setup.sh connect` to
+start local `llm-gateway` plus the MCP runtime.
+
+Before running it, or when a runtime does not connect, use the no-side-effect
+checker:
+
+```bash
+bin/check-mcp-server-setup.sh --provider anthropic
+bin/check-mcp-server-setup.sh --provider copilot
+```
+
+It reports missing binaries, `.env.local` / `.env.laptop` / `.env.llm-secrets`,
+runtime JWT or user/secret inputs, Context Fabric status-token readiness,
+provider keys, Git token readiness, Context Fabric reachability, Runtime Bridge
+status, and whether local `llm-gateway` / MCP debug health endpoints are up.
+
+Use it in split mode when the server is remote and only MCP+LLM should run on
+the current machine:
+
+```bash
+bin/setup-mcp-server.sh \
+  --runtime-only \
+  --context-fabric-url https://platform.example.com \
+  --runtime-token "$SINGULARITY_RUNTIME_TOKEN" \
+  --github-token "$GITHUB_TOKEN" \
+  --openai-api-key "$OPENAI_API_KEY" \
+  --provider openai
+```
+
+Use it for Copilot through the bundled OpenAI-compatible bridge:
+
+```bash
+bin/setup-mcp-server.sh \
+  --iam-user-id <iam-user-id> \
+  --jwt-secret '<same-generated-secret-as-server>' \
+  --github-token "$GITHUB_TOKEN" \
+  --provider copilot \
+  --start-copilot-bridge
+```
+
+Use `--server-only` when you only want to stamp the server `.env.local` Runtime
+Bridge defaults and print the runtime command for another machine.
+
 ## Cloud Setup
 
 Run this on the cloud/server.

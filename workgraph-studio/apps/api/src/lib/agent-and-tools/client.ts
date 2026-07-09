@@ -197,6 +197,44 @@ export type AgentTemplate = {
   [k: string]: unknown
 }
 
+export type AgentProfileSkillBindingInput = {
+  sourceType: 'local' | 'provider_manifest' | 'url_document' | 'uploaded_document'
+  skillId?: string
+  name?: string
+  description?: string
+  skillType?: string
+  promptLayerId?: string
+  sourceRef?: string
+  providerManifestUrl?: string
+  url?: string
+  fileName?: string
+  permissions?: Array<'read' | 'invoke' | 'configure' | 'edit'>
+  readOnly?: boolean
+  providerLocked?: boolean
+  isDefault?: boolean
+  metadata?: Record<string, unknown>
+}
+
+export type CreateAgentProfileInput = {
+  capabilityId: string
+  name: string
+  roleType: 'ARCHITECT' | 'DEVELOPER' | 'QA' | 'GOVERNANCE' | 'BUSINESS_ANALYST' | 'PRODUCT_OWNER' | 'DEVOPS' | 'SECURITY'
+  description?: string
+  instructions?: string
+  basePromptProfileId?: string
+  defaultToolPolicyId?: string
+  skillBindings?: AgentProfileSkillBindingInput[]
+}
+
+export type AgentProfileCreateResult = {
+  profile?: AgentTemplate
+  template?: AgentTemplate
+  skillBindings?: unknown[]
+  sourceArtifacts?: unknown[]
+  effectivePermissions?: Array<Record<string, unknown>>
+  [k: string]: unknown
+}
+
 export type RuntimeCapability = {
   id: string
   name: string
@@ -306,6 +344,46 @@ export async function listAgentTemplates(
     return (data as { items: AgentTemplate[] }).items
   }
   return []
+}
+
+export async function createAgentProfile(
+  input: CreateAgentProfileInput,
+  files: Array<{ filename: string; content: string | Uint8Array; contentType?: string }> = [],
+  authHeader?: string,
+): Promise<AgentProfileCreateResult> {
+  const url = new URL('api/v1/agents/profiles', config.AGENT_RUNTIME_URL.replace(/\/?$/, '/'))
+  const headers: Record<string, string> = { accept: 'application/json' }
+  const authorization = await resolvedAgentToolsAuthHeader(authHeader)
+  if (authorization) headers.authorization = authorization
+
+  const form = new FormData()
+  form.set('profile', JSON.stringify(input))
+  for (const file of files) {
+    const blob = new Blob([file.content], { type: file.contentType ?? 'text/plain' })
+    form.append('files', blob, file.filename)
+  }
+
+  let res: Response
+  try {
+    res = await fetch(url, { method: 'POST', headers, body: form })
+  } catch (err) {
+    throw new AgentAndToolsError(
+      `agent-and-tools fetch failed (${url}): ${(err as Error).message}`,
+      502,
+    )
+  }
+
+  const bodyOut = await readAgentToolsBody(res)
+  if (!res.ok) {
+    throw new AgentAndToolsError(
+      `agent-and-tools ${res.status} on POST /agents/profiles`,
+      res.status,
+      agentToolsDetail(bodyOut),
+    )
+  }
+  if (bodyOut.parseError) throw agentToolsInvalidJsonError('POST /agents/profiles', bodyOut)
+  const root = (bodyOut.data && typeof bodyOut.data === 'object' ? bodyOut.data : {}) as Record<string, unknown>
+  return (root.data ?? bodyOut.data) as AgentProfileCreateResult
 }
 
 export async function getAgentTemplate(
