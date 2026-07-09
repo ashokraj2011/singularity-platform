@@ -7,6 +7,7 @@ import { routeWorkItem } from '../../work-items/work-item-routing.service'
 import { findAttachableWorkItemForTrigger, resolveTriggerCorrelationKey, triggerDocumentsFromPayload, triggerStringAt, type TriggerDocument } from '../../work-items/work-item-trigger-attach'
 import { normalizeMetadataKey, recordOf } from '../../metadata/metadata.service'
 import { tenantIdForCreate } from '../../../lib/tenant-isolation'
+import { startInstance } from '../runtime/WorkflowRuntime'
 
 const EVENT_LOOKBACK_CAP_MS = 24 * 60 * 60 * 1000
 const EVENT_TRIGGER_BATCH_SIZE = 200
@@ -455,4 +456,14 @@ async function spawnInstance(
   await publishOutbox('WorkflowInstance', instance.id, 'WorkflowTriggered', {
     instanceId: instance.id, triggerId,
   })
+  // Actually start the run. Previously the trigger created a DRAFT instance and
+  // stopped — SCHEDULE/EVENT-triggered runs piled up in DRAFT doing nothing, with
+  // no error surfaced. Fire-and-forget so a start failure doesn't abort the sweep
+  // (the DRAFT instance remains for inspection and the error is logged); the
+  // trigger's lastFiredAt was already bumped so it won't re-fire next tick.
+  void startInstance(instance.id, undefined, instance.tenantId ?? undefined).catch((err) =>
+    logEvent('WorkflowTriggerStartFailed', 'WorkflowInstance', instance.id, undefined, {
+      triggerId, templateId, error: (err as Error).message,
+    }),
+  )
 }

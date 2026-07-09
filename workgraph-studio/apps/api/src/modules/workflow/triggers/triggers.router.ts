@@ -10,6 +10,7 @@ import { routeWorkItem } from '../../work-items/work-item-routing.service'
 import { findAttachableWorkItemForTrigger, resolveTriggerCorrelationKey, triggerDocumentsFromPayload } from '../../work-items/work-item-trigger-attach'
 import { recordOf } from '../../metadata/metadata.service'
 import { tenantIdForCreate } from '../../../lib/tenant-isolation'
+import { startInstance } from '../runtime/WorkflowRuntime'
 
 export const triggersRouter: Router = Router()
 
@@ -166,6 +167,14 @@ webhookRouter.post('/:secret', async (req, res, next) => {
       instanceId: instance.id,
       triggerId: match.id,
     })
+    // Actually start the run (previously left DRAFT and never started, so
+    // webhook-triggered runs did nothing). Fire-and-forget so the webhook acks
+    // fast; a start failure is logged and the instance remains for inspection.
+    void startInstance(instance.id, undefined, instance.tenantId ?? undefined).catch((err) =>
+      logEvent('WorkflowTriggerStartFailed', 'WorkflowInstance', instance.id, undefined, {
+        triggerId: match.id, via: 'WEBHOOK', error: (err as Error).message,
+      }),
+    )
     void trigger // suppress unused warning
     res.status(202).json({ instanceId: instance.id })
   } catch (err) { next(err) }
