@@ -705,6 +705,7 @@ model Workflow {
   permissions    WorkflowPermission[]
   instances      WorkflowInstance[]
   runSnapshots   RunSnapshot[]
+  workItemTargetsAsTemplate WorkItemTarget[] @relation("WorkItemTargetTemplate")
   createdAt      DateTime              @default(now())
   updatedAt      DateTime              @updatedAt
 
@@ -1032,8 +1033,8 @@ model WorkflowEdge {
   condition    Json?
   label        String?
   instance     WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
-  source       WorkflowNode     @relation("SourceNode", fields: [sourceNodeId], references: [id])
-  target       WorkflowNode     @relation("TargetNode", fields: [targetNodeId], references: [id])
+  source       WorkflowNode     @relation("SourceNode", fields: [sourceNodeId], references: [id], onDelete: Cascade)
+  target       WorkflowNode     @relation("TargetNode", fields: [targetNodeId], references: [id], onDelete: Cascade)
   createdAt    DateTime         @default(now())
 
   @@index([sourceNodeId], map: "ix_workflow_edges_source")
@@ -1163,6 +1164,7 @@ model WorkItemTarget {
   completedAt             DateTime?
   workItem                WorkItem          @relation(fields: [workItemId], references: [id], onDelete: Cascade)
   childWorkflowInstance   WorkflowInstance? @relation("WorkItemChildInstance", fields: [childWorkflowInstanceId], references: [id], onDelete: SetNull)
+  childWorkflowTemplate   Workflow?         @relation("WorkItemTargetTemplate", fields: [childWorkflowTemplateId], references: [id], onDelete: SetNull)
   events                  WorkItemEvent[]
   clarifications          WorkItemClarification[]
   createdAt               DateTime          @default(now())
