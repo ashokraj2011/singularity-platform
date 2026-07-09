@@ -403,6 +403,16 @@ export async function activateAgentTask(
       trace_id: traceId,
       branch_base: configString('branchBase'),
       branch_name: configString('branchName') ?? (workCode ? `work/${workCode}` : undefined),
+      // M81 P4 — the long-lived per-work-item branch. The laptop materializer
+      // (ensureWorkspaceSource → alignWorkitemBranch) checks the worktree out to
+      // THIS branch, so every stage's commits land on it and finish_work_branch
+      // pushes it — and RAISE_PR, which opens the PR from wi/<workCode>, finds
+      // the commits. Without it the governed run materialized a DETACHED HEAD and
+      // RAISE_PR saw an empty branch (empty PR / NO_COMMIT_TO_PUSH). mcp-server
+      // already reads workitem_branch (snake_case) on tool-run; the governed path
+      // just never sent it (only the workbench path did). Must equal RaisePrExecutor's
+      // `wi/${workCode}` derivation — both read the run's work-item code.
+      workitem_branch: workCode ? `wi/${workCode}` : undefined,
       // S1c — launch-chosen clone folder (resolved under the runtime's managed root).
       ...(cloneDirChoice ? { clone_dir: cloneDirChoice } : {}),
       // Stage IN/OUT document contract (the node's declared artifact defs) → the
