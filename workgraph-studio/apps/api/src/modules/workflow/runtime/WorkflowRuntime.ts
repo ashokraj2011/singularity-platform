@@ -154,6 +154,15 @@ function applyGlobalAssignments(context: Record<string, unknown>, node: Workflow
   }
 }
 
+// Runaway/loop guard: the maximum number of node completions (advance calls) a
+// single run may accumulate. A cyclic graph (e.g. a DECISION_GATE that keeps
+// routing back to an upstream node) would otherwise advance forever — recursing
+// until the process stack overflows or the DB thrashes. Past this cap the run is
+// failed with a clear marker. Set far above any legitimate run (each node
+// completes ~once, and fan-out iteration runs in separate child instances with
+// their own counters); env-overridable for genuine outliers.
+const MAX_ADVANCE_STEPS = Math.max(100, Number(process.env.WORKFLOW_MAX_ADVANCE_STEPS ?? 5000))
+
 export async function advance(
   instanceId: string,
   completedNodeId: string,
@@ -238,7 +247,7 @@ export async function advance(
   // row, RE-READ the freshest context (not the stale snapshot from the top of advance()),
   // merge, and persist inside one short transaction so two parallel branch completions
   // can't clobber each other's output (lost update). Node execution stays OUTSIDE the lock.
-  const { mergedContext, queued } = await withTenantDbTransaction(prisma, async (tx) => {
+  const { mergedContext, queued, steps } = await withTenantDbTransaction(prisma, async (tx) => {
     const rows = await tx.$queryRaw<Array<{ context: unknown; status: string }>>`
       SELECT "context", "status" FROM "workflow_instances" WHERE "id" = ${instanceId} FOR UPDATE`
     const fresh = (rows[0]?.context ?? {}) as Record<string, unknown>
@@ -246,6 +255,11 @@ export async function advance(
     const merged: Record<string, unknown> = { ...fresh, ...output }
     applyOutputBindings(merged, completedNode, output)
     applyGlobalAssignments(merged, completedNode)
+    // Runaway/loop guard — count node completions on this run (checked after the
+    // merge, see MAX_ADVANCE_STEPS). Persisted in context so it survives across
+    // the async re-entry paths that drive a run.
+    const stepCount = Number((fresh._steps as number | undefined) ?? 0) + 1
+    merged._steps = stepCount
     // Gate: if the instance is not ACTIVE, queue this advance; resume() replays it.
     const isQueued = status !== 'ACTIVE'
     if (isQueued) {
@@ -259,7 +273,7 @@ export async function advance(
       where: { id: instanceId },
       data: { context: merged as unknown as Prisma.InputJsonValue },
     })
-    return { mergedContext: merged, queued: isQueued }
+    return { mergedContext: merged, queued: isQueued, steps: stepCount }
   }, tenantId)
 
   // Finding #6 — fire on_complete attachments AFTER the merged context is persisted, with
@@ -269,6 +283,36 @@ export async function advance(
   await processAttachments(completedNode, mergedInstance, 'on_complete', actorId)
 
   if (queued) return
+
+  // Runaway/loop guard — a cyclic graph would advance forever. Past the cap, fail
+  // the run with a clear marker + event instead of looping until the process
+  // stack overflows or the DB thrashes. Checked here (not when queued) so it only
+  // trips on genuine forward progress.
+  if (steps > MAX_ADVANCE_STEPS) {
+    await withTenantDbTransaction(prisma, async (tx) => {
+      await tx.workflowInstance.updateMany({
+        where: { id: instanceId, status: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } },
+        data: { status: 'FAILED', completedAt: new Date() },
+      })
+      await tx.workflowMutation.create({
+        data: {
+          instanceId,
+          nodeId: completedNodeId,
+          mutationType: 'RUN_STEP_LIMIT_EXCEEDED',
+          beforeState: { status: 'ACTIVE' } as unknown as Prisma.InputJsonValue,
+          afterState: { status: 'FAILED', steps, limit: MAX_ADVANCE_STEPS } as unknown as Prisma.InputJsonValue,
+          performedById: actorId,
+        },
+      })
+    }, tenantId)
+    await logEvent('WorkflowRunStepLimitExceeded', 'WorkflowInstance', instanceId, actorId, {
+      instanceId, steps, limit: MAX_ADVANCE_STEPS, lastNodeId: completedNodeId,
+    })
+    await publishOutbox('WorkflowInstance', instanceId, 'WorkflowFailed', {
+      instanceId, reason: 'STEP_LIMIT_EXCEEDED', steps, limit: MAX_ADVANCE_STEPS,
+    })
+    return
+  }
 
   // 3 + 4. Resolve next nodes and activate them
   await activateDownstream(mergedInstance, completedNode, mergedContext, actorId)
