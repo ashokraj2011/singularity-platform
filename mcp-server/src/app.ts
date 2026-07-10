@@ -24,7 +24,8 @@ import { buildCodeContextPackage, getStoredPackageSlices } from "./mcp/code-cont
 // call that carries a capability_id. No-op when AGENT_RUNTIME_URL is
 // unset.
 import { computeRepoFingerprint, reportFingerprintToAgentRuntime, reportAstIndexBuiltToAgentRuntime } from "./mcp/repo-fingerprint";
-import { statsForIndex } from "./workspace/ast-index";
+import { statsForIndex, indexWorkspace } from "./workspace/ast-index";
+import { ensureWorkspaceSource } from "./workspace/source-materializer";
 import { listConfiguredProviders, ensureFreshGatewayStatus, llmEmbed } from "./llm/client";
 import { modelCatalogResponse } from "./llm/model-catalog";
 import { configuredDefaultModel, configuredDefaultProvider, providerConfigSummary } from "./llm/provider-config";
@@ -258,6 +259,69 @@ app.post("/mcp/code-context/build", requireMcpScope("resources:read"), async (re
     });
   }
   res.json({ success: true, data: pkg, requestId: res.locals.requestId });
+});
+
+// D3 — eager CENTRAL grounding. Clone the capability's repo into the sandbox and
+// build the AST index HERE (a central runner) instead of waiting for a lazy build on
+// a laptop runtime's first workflow run. Reuses the same materializer + indexer +
+// world-model callbacks the per-workitem code-context path uses, so code grounding no
+// longer depends on the laptop/dial-in bridge. Re-running re-clones + re-indexes.
+app.post("/mcp/source/ground", requireMcpScope("resources:read"), async (req, res) => {
+  const parsed = z.object({
+    capability_id: z.string().min(1, "capability_id is required"),
+    source_uri: z.string().min(1, "source_uri is required"),
+    source_ref: z.string().optional(),
+    source_type: z.string().optional(),
+    // Brokered short-lived, repo-scoped READ credential. Absent -> the materializer
+    // falls back to the static GITHUB_TOKEN (fine for public repos / single-tenant).
+    git_token: z.string().optional(),
+    trace_id: z.string().optional(),
+  }).safeParse(req.body);
+  if (!parsed.success) {
+    throw new AppError("invalid /mcp/source/ground payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
+  }
+  const { capability_id, source_uri, source_ref, source_type, git_token } = parsed.data;
+
+  const materialized = await ensureWorkspaceSource({
+    sourceType: source_type ?? "git",
+    sourceUri: source_uri,
+    sourceRef: source_ref ?? "main",
+    ...(git_token ? { gitToken: git_token } : {}),
+  });
+  if (!materialized?.checkedOut) {
+    return res.json({
+      success: true,
+      data: { grounded: false, reason: materialized ? "source not checked out" : "auto-checkout disabled (MCP_AUTO_CHECKOUT_SOURCE)" },
+      requestId: res.locals.requestId,
+    });
+  }
+
+  const stats = await indexWorkspace("onboard-central-grounding");
+
+  // Report back to agent-runtime's CapabilityWorldModel: stamp astIndexedAt + the
+  // repo fingerprint (drift baseline) — same fire-and-forget callbacks as
+  // /mcp/code-context/build. Never block the response on a slow/down peer.
+  const agentRuntimeUrl = config.AGENT_RUNTIME_URL;
+  if (agentRuntimeUrl) {
+    setImmediate(() => {
+      try {
+        const fp = computeRepoFingerprint(config.MCP_SANDBOX_ROOT);
+        if (fp.fingerprint) void reportFingerprintToAgentRuntime(agentRuntimeUrl, capability_id, fp);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(`[source/ground fingerprint] ${(err as Error).message}`);
+      }
+      void reportAstIndexBuiltToAgentRuntime(agentRuntimeUrl, capability_id, stats.indexedFiles)
+        // eslint-disable-next-line no-console
+        .catch((err) => console.warn(`[source/ground ast-index-built] ${(err as Error).message}`));
+    });
+  }
+
+  res.json({
+    success: true,
+    data: { grounded: true, indexedFiles: stats.indexedFiles, headSha: materialized.headSha },
+    requestId: res.locals.requestId,
+  });
 });
 
 // (#10) Selective slice fetch — return stashed slice content for a package built

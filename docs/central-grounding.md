@@ -23,10 +23,24 @@ workspace** half — plus the transport that landed with this workstream.
   index (`find_symbol` / `get_symbol`). Resolves the confusing empty-result behaviour of
   the central-code-embeddings-vs-lexical-AST bifurcation.
 
-## Remaining: eager central materialization at onboard (D3 — needs a central runner)
+## Eager central materialization at onboard (D3 — implemented, opt-in)
 
-Today the code half of grounding (the AST index) is built **lazily on the runtime**
-(often the laptop) on the first workflow run. To make it central and eager:
+Previously the code half of grounding (the AST index) was built **lazily on the runtime**
+(often the laptop) on the first workflow run. It is now wired to run centrally + eagerly at
+onboard, opt-in via `GROUND_CODE_AT_ONBOARD`:
+
+**How it's wired (shipped):**
+- mcp-server endpoint **`POST /mcp/source/ground`** (`mcp-server/src/app.ts`): clone via
+  `ensureWorkspaceSource` (brokered or static token) → `indexWorkspace` (AST index) →
+  fire-and-forget `reportFingerprintToAgentRuntime` + `reportAstIndexBuiltToAgentRuntime`
+  callbacks (stamp `astIndexedAt` + the drift baseline) — the same materializer/indexer/
+  report path the per-workitem `code-context/build` uses.
+- agent-runtime trigger (`capability.service.ts` `triggerCentralCodeGrounding`, gated by
+  `GROUND_CODE_AT_ONBOARD`, fired fire-and-forget from both bootstrap paths): POSTs the
+  capability's primary non-local repo to `MCP_SERVER_URL/mcp/source/ground` — DIRECT to a
+  central mcp-server, not the CF/laptop bridge.
+
+The mechanism it reuses:
 
 **Reuse — do not rebuild (all present):**
 - Sandbox clone: `mcp-server/src/workspace/source-materializer.ts` (`sandboxRoot()`,
@@ -54,9 +68,9 @@ step (`capability.service.ts` bootstrap).
 - **Runtime location:** the sandbox MUST run on a central runner, or the laptop
   dependency remains.
 
-**Why it's not implemented here:** it is a cross-service orchestration change
-(agent-runtime bootstrap → central runner → materializer/indexer) that needs a live
-central runner + brokered-credential wiring to build and validate. It is documented here
-rather than shipped blind. **Bonus once built:** a central-owned clone enables
-scheduled/webhook re-clone + re-index, which strengthens Workstream C (freshness) beyond
-the laptop model.
+**Validation status:** esbuild-verified only — there is no live central mcp-server + broker
+in the build env, so the end-to-end (clone → index → callbacks) must be exercised on a
+central runner before relying on it. For it to be truly "central", `MCP_SERVER_URL` must
+point at a central mcp-server (not a laptop dial-in) and `MCP_AUTO_CHECKOUT_SOURCE` must be
+on. **Bonus:** a central-owned clone enables scheduled/webhook re-clone + re-index, which
+strengthens Workstream C (freshness) beyond the laptop model.
