@@ -14,6 +14,28 @@ Conventions: `$WG_ADMIN` = the workgraph **admin** DB URL (`DATABASE_URL_WORKGRA
 `$WG_APP` = the non-bypass **app** DB URL. `$API` = the platform-web API base (e.g.
 `http://localhost:5180`). Adjust mount prefixes for your deployment.
 
+### Where to run these — the services are Docker-internal
+Only the web tier (`platform-web` :5180, `edge-gateway`) is published to the host. The
+**workgraph DB** (`wg-postgres`, :5434), the **LLM gateway** (`llm-gateway`), the
+**agent-runtime**, `context-api`, and **mcp-server** are on the compose network and are
+*not* reachable from `localhost` — so run the `psql`/`curl` checks below **inside the
+network**, not from your shell. Two ways:
+
+```bash
+# psql into the workgraph DB (substitute your admin/superuser role; the DB is `workgraph`):
+docker compose exec wg-postgres psql -U <admin-role> -d workgraph -c "…"     # or: ./singularity.sh psql workgraph
+
+# curl an internal service by its compose name+port (from a container that has curl, e.g. agent-runtime):
+docker compose exec agent-runtime sh -lc 'curl -sS http://llm-gateway:<port>/v1/embeddings …'
+docker compose exec agent-runtime sh -lc 'curl -sS http://mcp-server:7100/mcp/source/ground …'
+```
+`./singularity.sh` is the compose wrapper (`./singularity.sh logs api` == `docker compose logs
+-f workgraph-api`). Get exact ports/roles from `docker-compose.yml`. The `$WG_ADMIN` /
+`$LLM_GATEWAY_URL` / `$MCP_SERVER_URL` in the steps below then resolve to those **internal**
+targets (e.g. `http://llm-gateway:<port>`), not `localhost`. Everything here is read-only
+except where a step explicitly applies FORCE / onboards — do those only on a real staging
+environment, never a prod stack.
+
 ---
 
 ## Part 1 — RLS cutover (highest risk; do first)
