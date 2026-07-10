@@ -24,6 +24,7 @@ import {
   PHASE_KEYS,
   isAsyncBootstrapEnabled,
   isCapabilityAutoGroundEnabled,
+  isGroundCodeAtOnboardEnabled,
   markPhaseStarted,
   markPhaseCompleted,
   markPhaseFailed,
@@ -667,6 +668,8 @@ export const capabilityService = {
       // gates + external knowledge stay for review. Opt-in via CAPABILITY_AUTO_GROUND.
       const autoGround = await autoGroundCapability(capability.id, run.id, generatedAgents, userId);
       if (autoGround.reviewNote) warnings.push(autoGround.reviewNote);
+      // D3 — eager central code grounding (clone + AST index server-side) at onboard.
+      void triggerCentralCodeGrounding(capability.id);
 
       // M61 Slice B — Capture the row first, then stamp phase
       // closures, then return. Previously the original code returned
@@ -898,6 +901,8 @@ export const capabilityService = {
       // the run is marked COMPLETED so the reviewNote lands in `warnings`.
       const autoGround = await autoGroundCapability(capability.id, run.id, generatedAgents, userId);
       if (autoGround.reviewNote) warnings.push(autoGround.reviewNote);
+      // D3 — eager central code grounding (clone + AST index server-side) at onboard.
+      void triggerCentralCodeGrounding(capability.id);
 
       await prisma.capabilityBootstrapRun.update({
         where: { id: run.id },
@@ -4683,6 +4688,53 @@ async function autoGroundCapability(
     ? `Auto-grounding activated ${activatedAgents} non-locked agent(s)${materializedGroups.length ? ` and materialized ${materializedGroups.join(", ")}` : ""}. Locked gate(s) still need explicit review before activation: ${lockedGates.join(", ")}.`
     : `Auto-grounding activated ${activatedAgents} agent(s)${materializedGroups.length ? ` and materialized ${materializedGroups.join(", ")}` : ""}.`;
   return { activatedAgents, materializedGroups, reviewNote };
+}
+
+// D3 — a clone+index server-side can take minutes; agent-runtime fires this
+// fire-and-forget so onboard never blocks on it.
+const CENTRAL_CODE_GROUNDING_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * D3 — eager CENTRAL code grounding at onboard. Tells the (central) mcp-server to
+ * clone the capability's primary repo + build the AST index server-side, so code
+ * grounding doesn't wait for a lazy build on a laptop runtime's first workflow run.
+ * Opt-in via GROUND_CODE_AT_ONBOARD. Posts DIRECTLY to MCP_SERVER_URL (a central
+ * mcp-server), NOT the CF/laptop bridge. Fire-and-forget + fail-soft: never blocks
+ * or aborts onboard. Brokered creds are optional — the materializer falls back to
+ * the static GITHUB_TOKEN (fine for public repos / single-tenant).
+ */
+async function triggerCentralCodeGrounding(capabilityId: string): Promise<void> {
+  if (!isGroundCodeAtOnboardEnabled()) return;
+  const base = (process.env.MCP_SERVER_URL ?? "").replace(/\/+$/, "");
+  if (!base || base === "mock") return;
+  try {
+    const cap = await prisma.capability.findUnique({
+      where: { id: capabilityId },
+      include: { repositories: { where: { status: "ACTIVE" }, orderBy: { createdAt: "asc" } } },
+    });
+    const repo = cap?.repositories.find(r =>
+      r.repoUrl && !r.repoUrl.startsWith("local://") && String(r.repositoryType ?? "").toUpperCase() !== "LOCAL",
+    );
+    if (!repo) return;
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    const token = process.env.MCP_BEARER_TOKEN ?? "";
+    if (token) headers.authorization = `Bearer ${token}`;
+    const res = await fetch(`${base}/mcp/source/ground`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        capability_id: capabilityId,
+        source_uri: repo.repoUrl,
+        source_ref: repo.defaultBranch ?? "main",
+      }),
+      signal: AbortSignal.timeout(CENTRAL_CODE_GROUNDING_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      console.warn(`[capability.centralCodeGrounding] capabilityId=${capabilityId} /mcp/source/ground HTTP ${res.status}`);
+    }
+  } catch (err) {
+    console.warn(`[capability.centralCodeGrounding] capabilityId=${capabilityId} failed: ${(err as Error).message}`);
+  }
 }
 
 async function buildCapabilityGroundingStatus(capabilityId: string) {

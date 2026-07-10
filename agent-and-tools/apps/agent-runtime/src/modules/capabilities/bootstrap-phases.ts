@@ -73,6 +73,17 @@ export function isCapabilityAutoGroundEnabled(): boolean {
 }
 
 /**
+ * D3 — eager CENTRAL code grounding at onboard. When true, bootstrap tells the
+ * (central) mcp-server to clone the capability's repo + build the AST index
+ * server-side at onboard, instead of waiting for a lazy build on a laptop
+ * runtime's first workflow run. Requires MCP_SERVER_URL to point at a central
+ * mcp-server. Default false.
+ */
+export function isGroundCodeAtOnboardEnabled(): boolean {
+  return String(process.env.GROUND_CODE_AT_ONBOARD ?? "").toLowerCase() === "true";
+}
+
+/**
  * Read the current phaseProgress map for a run. Returns {} if the
  * row doesn't exist (caller should already have verified existence).
  */
