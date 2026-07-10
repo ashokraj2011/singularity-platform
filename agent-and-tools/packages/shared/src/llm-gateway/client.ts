@@ -1,14 +1,19 @@
 /**
  * MCP-routed LLM client (TypeScript).
  *
- * EVERY non-MCP service that needs an LLM call must use MCP. Provider keys
- * and gateway URLs live outside caller services; MCP is the only gateway
- * client. The only allowed fallback is the deterministic in-process `mock`
- * mode, activated by setting `MCP_SERVER_URL=mock` in unit tests.
+ * By default every non-MCP service routes LLM calls through MCP (provider keys +
+ * gateway URLs live outside caller services; MCP is the gateway client). Two
+ * opt-outs: (1) `MCP_SERVER_URL=mock` — deterministic in-process mock for tests;
+ * (2) D1 direct-to-gateway — set `LLM_GATEWAY_URL` (+ `LLM_GATEWAY_BEARER`) to skip
+ * the mcp relay and call the central LLM gateway over HTTP directly, so grounding
+ * embeddings/LLM calls don't depend on the mcp/laptop dial-in bridge. Secrets stay
+ * centralized at the gateway either way — do NOT put provider keys in callers.
  *
  * Env contract (every consumer service):
  *   MCP_SERVER_URL      optional — http://mcp-server:7100 | mock
  *   MCP_BEARER_TOKEN    optional — service token for MCP auth
+ *   LLM_GATEWAY_URL     optional — http://llm-gateway:8080 (D1: bypass the relay)
+ *   LLM_GATEWAY_BEARER  optional — gateway bearer for the direct path
  *
  * M35.4 — request shapes are Zod-validated before POST. A malformed request
  * (no messages, wrong role, etc.) fails fast in the calling service.
@@ -98,6 +103,26 @@ function mcpTimeoutMs(): number {
   const raw = process.env.MCP_TIMEOUT_SEC;
   const n = raw ? Number(raw) : 240;
   return Math.max(1, n) * 1000;
+}
+
+// ── D1 — direct-to-gateway transport (grounding without the mcp relay) ─────────
+// When LLM_GATEWAY_URL is set, embeddings/LLM calls go straight to the central LLM
+// gateway over HTTP instead of relaying through mcp-server, so grounding no longer
+// depends on the mcp/laptop dial-in bridge. Secrets stay centralized at the gateway
+// (LLM_GATEWAY_BEARER) — never spread provider keys to callers. Unset → the mcp
+// relay (default). Mock mode still wins. The gateway's /v1/embeddings and
+// /v1/chat/completions responses are wire-identical to EmbeddingsResponse /
+// ChatCompletionResponse, so the direct path is a passthrough.
+function gatewayDirectUrl(): string | undefined {
+  const raw = process.env.LLM_GATEWAY_URL?.trim();
+  return raw ? raw.replace(/\/$/, "") : undefined;
+}
+
+function gatewayDirectHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const bearer = process.env.LLM_GATEWAY_BEARER?.trim() || process.env.LLM_GATEWAY_TOKEN?.trim();
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
+  return headers;
 }
 
 function splitMessages(messages: ChatCompletionRequest["messages"]): {
@@ -208,6 +233,19 @@ export async function llmRespond(req: ChatCompletionRequest): Promise<ChatComple
       `MCP-routed LLM request invalid: tools provided (${req.tools.length}) but messages is empty — the model has nothing to act on`,
     );
   }
+  const directUrl = gatewayDirectUrl();
+  if (directUrl && mcpUrl() !== MOCK_SENTINEL) {
+    // D1 — direct-to-gateway (skip the mcp relay). Wire-identical response shape.
+    const res = await fetch(`${directUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: gatewayDirectHeaders(),
+      body: JSON.stringify(req),
+      signal: AbortSignal.timeout(mcpTimeoutMs()),
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`LLM gateway /v1/chat/completions -> ${res.status}: ${text.slice(0, 500)}`);
+    return parseMcpEnvelope(text, "LLM gateway /v1/chat/completions") as unknown as ChatCompletionResponse;
+  }
   const data = await invokeMcp(req);
   const inputTokens = data.tokensUsed?.input ?? data.modelUsage?.inputTokens ?? 0;
   const outputTokens = data.tokensUsed?.output ?? data.modelUsage?.outputTokens ?? 0;
@@ -234,6 +272,19 @@ export async function llmEmbed(req: EmbeddingsRequest): Promise<EmbeddingsRespon
   if (mcpUrl() === MOCK_SENTINEL) {
     const { mockHandle } = await import("./mock-handler");
     return mockHandle("embeddings", req) as Promise<EmbeddingsResponse>;
+  }
+  const directUrl = gatewayDirectUrl();
+  if (directUrl) {
+    // D1 — direct-to-gateway (skip the mcp relay). Wire-identical response shape.
+    const res = await fetch(`${directUrl}/v1/embeddings`, {
+      method: "POST",
+      headers: gatewayDirectHeaders(),
+      body: JSON.stringify({ input: req.input, ...(req.model_alias ? { model_alias: req.model_alias } : {}) }),
+      signal: AbortSignal.timeout(mcpTimeoutMs()),
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`LLM gateway /v1/embeddings -> ${res.status}: ${text.slice(0, 500)}`);
+    return parseMcpEnvelope(text, "LLM gateway /v1/embeddings") as unknown as EmbeddingsResponse;
   }
   const headers: Record<string, string> = { "content-type": "application/json" };
   const bearer = mcpBearer();

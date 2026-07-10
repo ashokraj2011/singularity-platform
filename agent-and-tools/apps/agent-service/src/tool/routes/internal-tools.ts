@@ -139,6 +139,27 @@ internalToolsRoutes.post("/search_symbols", async (req: Request, res: Response) 
     summary: r.summary, language: r.language,
     cosineSimilarity: Number(r.cosine_similarity), ageDays: Number(r.age_days), finalScore: 0,
   })), take);
+  if (hits.length === 0) {
+    // D2 — central code embeddings are off by default (EXTRACTOR_MODE=off), so this
+    // table is normally empty; code grounding lives in the runtime's local AST index
+    // (find_symbol / get_symbol), not here. Distinguish "no symbols indexed" from
+    // "no match" so an empty result doesn't read as broken.
+    const populated = await query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM "CapabilityCodeEmbedding" e
+         JOIN "CapabilityCodeSymbol" s ON s.id = e."symbolId"
+        WHERE s."capabilityId" = $1 AND e.embedding IS NOT NULL`,
+      [capability_id],
+    );
+    const indexed = Number(populated[0]?.n ?? 0);
+    return res.json({
+      query: q,
+      count: 0,
+      hits: [],
+      note: indexed === 0
+        ? "No central code embeddings for this capability — central code indexing is off by default; code grounding uses the runtime's local AST index (use find_symbol / get_symbol there)."
+        : "No symbol matched the query.",
+    });
+  }
   res.json({ query: q, count: hits.length, hits });
 });
 
