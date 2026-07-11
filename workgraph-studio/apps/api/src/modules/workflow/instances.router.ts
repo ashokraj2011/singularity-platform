@@ -867,6 +867,9 @@ type CopilotExportStage = {
   role: string
   prompt: string
   status?: string
+  // For the external (SIGNAL_WAIT-barrier) variant: the signal a completed phase
+  // POSTs back to advance its parked barrier. Absent for server-run copilot nodes.
+  signalName?: string
   // The stage's IN/OUT document contract (declared artifact defs, paths interpolated)
   // so an external tool knows WHERE to read inputs from and WHAT/where/format to produce.
   reads: CopilotArtifactRef[]
@@ -1083,6 +1086,26 @@ def post_results(platform_url, token, run_id, payload):
     except urllib.error.HTTPError as err:
         return err.code, err.read().decode("utf-8", errors="replace")
 
+def post_signal(platform_url, token, run_id, signal_name, payload):
+    # External SIGNAL_WAIT-barrier variant: advance the phase's parked barrier.
+    # No-op for server-run exports (their stages carry no signalName).
+    endpoint = platform_url.rstrip("/") + "/api/workgraph/workflow-instances/" + urllib.parse.quote(run_id) + "/signals/" + urllib.parse.quote(signal_name)
+    body = json.dumps({"payload": payload}, separators=(",", ":")).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint,
+        data=body,
+        method="POST",
+        headers={
+            "content-type": "application/json",
+            "authorization": "Bearer " + token,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as res:
+            return res.status, res.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as err:
+        return err.code, err.read().decode("utf-8", errors="replace")
+
 def main():
     metadata = WORKFLOW["metadata"]
     stages = WORKFLOW.get("stages", [])
@@ -1098,6 +1121,7 @@ def main():
     max_artifact_bytes = env_int("COPILOT_ARTIFACT_MAX_BYTES", 262144, 1, 5 * 1024 * 1024)
     max_artifacts = env_int("COPILOT_ARTIFACT_MAX_FILES", 40, 1, 200)
     include_untracked = os.environ.get("COPILOT_INCLUDE_UNTRACKED", "0").lower() in ("1", "true", "yes")
+    push_results = os.environ.get("SINGULARITY_PUSH_RESULTS", "0").lower() in ("1", "true", "yes")
     cwd = pathlib.Path(os.environ.get("WORK_DIR", os.getcwd())).resolve()
     out_dir = pathlib.Path(os.environ.get("COPILOT_OUTPUT_DIR", str(cwd / ".singularity" / "copilot-runs" / run_id))).resolve()
     prompt_dir = out_dir / "prompts"
@@ -1179,6 +1203,22 @@ def main():
                 "changedFileCount": len(reported_changed),
             },
         })
+        # External variant: release this phase's SIGNAL_WAIT barrier as soon as it
+        # succeeds. Signals are durable + per-phase-unique, so firing eagerly here
+        # (the CLI is non-interactive) is safe — each is consumed by its barrier when
+        # it activates, after the human approves the prior phase.
+        signal_name = str(stage.get("signalName") or "").strip()
+        if push_results and signal_name and status == "completed":
+            s_code, s_body = post_signal(platform_url, token, run_id, signal_name, {
+                "stageKey": stage_key,
+                "nodeId": node_id,
+                "status": status,
+                "changedFiles": reported_changed,
+            })
+            if s_code >= 300:
+                print("[singularity] signal " + signal_name + " failed: HTTP " + str(s_code) + " " + s_body[:300], file=sys.stderr)
+            else:
+                print("[singularity] signalled " + signal_name + " (HTTP " + str(s_code) + ")")
         if proc.returncode != 0 and not continue_on_error:
             break
 
@@ -1206,7 +1246,7 @@ def main():
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "copilot-results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    if os.environ.get("SINGULARITY_PUSH_RESULTS", "0").lower() in ("1", "true", "yes"):
+    if push_results:
         code, body = post_results(platform_url, token, run_id, payload)
         (out_dir / "platform-response.json").write_text(body, encoding="utf-8")
         if code >= 300:
@@ -1359,6 +1399,10 @@ function copilotStagesFromNodes(
       const executor = String(c.executor ?? '').toLowerCase()
       const isCopilot = executor === 'copilot' || n.nodeType === 'AGENT_TASK'
       if (!isCopilot) return null
+      const std = c.standard && typeof c.standard === 'object' && !Array.isArray(c.standard)
+        ? c.standard as Record<string, unknown>
+        : {}
+      const signalName = String(c.signalName ?? std.signalName ?? '').trim()
       return {
         key: String(c.governedStageKey ?? n.label ?? n.id),
         nodeId: n.id,
@@ -1367,6 +1411,7 @@ function copilotStagesFromNodes(
         role: String(c.governedAgentRole ?? ''),
         prompt: task,
         status: n.status,
+        ...(signalName ? { signalName } : {}),
         reads: artifactRefs(c.inputArtifacts, { withTemplate: false }),
         produces: artifactRefs(c.outputArtifacts, { withTemplate: true }),
       }
@@ -1433,6 +1478,9 @@ function buildCopilotWorkflowExport(
     },
     platform: {
       resultEndpoint: `/api/workgraph/workflow-instances/${instance.id}/export/copilot-results`,
+      // External (SIGNAL_WAIT-barrier) variant: base path the runner appends
+      // `/<stage.signalName>` to, to advance each phase's parked barrier.
+      signalEndpoint: `/api/workgraph/workflow-instances/${instance.id}/signals`,
       tokenEnv: 'SINGULARITY_TOKEN',
     },
     repository: {
@@ -1476,6 +1524,12 @@ function buildCopilotWorkflowExport(
     "# `resultContract` shape below. PUSH your work to a branch so the platform can",
     "# verify it in git (see resultContract.verification).",
     '#',
+    "# EXTERNAL (SIGNAL_WAIT) runs: a stage with a `signalName` is a parked barrier.",
+    '# When that phase is done, POST {} to `platform.signalEndpoint`/<signalName> (Bearer',
+    '# $SINGULARITY_TOKEN) to advance it — the embedded runner does this automatically when',
+    '# SINGULARITY_PUSH_RESULTS=1. A phase with a review gate waits for a human before the',
+    '# next barrier opens (durable signals are matched as each barrier activates).',
+    '#',
     'apiVersion: "singularity.dev/v1alpha1"',
     'kind: "CopilotWorkflowRun"',
     'metadata:',
@@ -1488,6 +1542,10 @@ function buildCopilotWorkflowExport(
   yaml.push(
     'platform:',
     `  resultEndpoint: ${yamlString(`/api/workgraph/workflow-instances/${instance.id}/export/copilot-results`)}`,
+    // For the external SIGNAL_WAIT-barrier variant: POST an empty/summary body to
+    // `signalEndpoint/<stage.signalName>` to advance that phase's parked barrier.
+    // Harmless for server-run exports (no stage carries a signalName).
+    `  signalEndpoint: ${yamlString(`/api/workgraph/workflow-instances/${instance.id}/signals`)}`,
     '  tokenEnv: "SINGULARITY_TOKEN"',
     'repository:',
     `  url: ${repo ? yamlString(repo) : 'null'}`,
@@ -1573,6 +1631,9 @@ function buildCopilotWorkflowExport(
       yaml.push(`    label: ${yamlString(stage.label)}`)
       yaml.push(`    nodeType: ${yamlString(stage.nodeType)}`)
       if (stage.role) yaml.push(`    role: ${yamlString(stage.role)}`)
+      // External variant: signal to POST (to platform.signalEndpoint/<signalName>)
+      // when this phase's work is done, to release its SIGNAL_WAIT barrier.
+      if (stage.signalName) yaml.push(`    signalName: ${yamlString(stage.signalName)}`)
       // Input documents this stage reads (produced by earlier stages) — name/format/path.
       if (stage.reads.length) {
         yaml.push('    reads:')
