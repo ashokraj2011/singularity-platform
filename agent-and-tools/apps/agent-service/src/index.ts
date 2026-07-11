@@ -31,6 +31,7 @@ import { startSelfRegistration as startToolSelfRegistration } from "./tool/lib/p
 import { seedCoreToolkit } from "./tool/lib/seed-core-tools";
 import { ensureToolSchema } from "./tool/lib/ensure-tool-schema";
 import { ensureEventBusSchema } from "./lib/eventbus/ensure-eventbus-schema";
+import { ensureAgentSchema } from "./lib/agent/ensure-agent-schema";
 
 dotenv.config();
 
@@ -86,10 +87,11 @@ app.get("/healthz/strict", async (_req, res) => {
 // adds the bootstrap view that those invariants don't cover (dispatchers).
 type BootStep = "pending" | "ok" | "failed";
 const bootstrapState: Record<
-  "eventBusSchema" | "agentDispatcher" | "toolDispatcher" | "learningSchema" | "coreToolkit",
+  "eventBusSchema" | "agentSchema" | "agentDispatcher" | "toolDispatcher" | "learningSchema" | "coreToolkit",
   BootStep
 > = {
   eventBusSchema: "pending",
+  agentSchema: "pending",
   agentDispatcher: "pending",
   toolDispatcher: "pending",
   learningSchema: "pending",
@@ -102,12 +104,18 @@ app.get("/ready", async (_req, res) => {
   const b = bootstrapState;
   // A dispatcher still "pending" does NOT block readiness — its start promise
   // may stay unresolved while the drain loop runs. Only a hard "failed" blocks.
-  // learningSchema must reach "ok" (not covered by the invariants); the seed is
-  // also covered by the invariants' >=10-core-tools check.
+  // agentSchema + learningSchema must reach "ok": the raw agent.* / learning.*
+  // tables they self-heal are not covered by the invariants, and the agent CRUD
+  // + learning routes 500 until those tables exist. The seed is also covered by
+  // the invariants' >=10-core-tools check.
   const failed = Object.entries(b)
     .filter(([, v]) => v === "failed")
     .map(([k]) => k);
-  const ok = invariants.ok && failed.length === 0 && b.learningSchema === "ok";
+  const ok =
+    invariants.ok &&
+    failed.length === 0 &&
+    b.agentSchema === "ok" &&
+    b.learningSchema === "ok";
   res.status(ok ? 200 : 503).json({
     ok,
     service: "singularity-agent-resource-service",
@@ -180,6 +188,24 @@ void ensureEventBusSchema()
         bootstrapState.toolDispatcher = "failed";
         console.warn(`[eventbus] tool dispatcher failed to start: ${(err as Error).message}`);
       });
+  });
+
+// Ensure the raw `agent` schema exists (idempotent self-heal). The agent CRUD,
+// versioning, and learning routes read raw agent.* tables (agent.agents,
+// agent_versions, agent_learning_profiles, learning_candidates,
+// learning_profile_deltas, agent_audit_events) that come from
+// packages/db/init.sql — which runs ONLY as a Docker fresh-volume entrypoint. On
+// bare-metal (Prisma db push creates only public.*) or an existing volume that
+// predates a table, those tables are missing and the first agent/learning call
+// 500s with `relation "agent.agents" does not exist`. Mirrors
+// ensureEventBusSchema()/ensureToolSchema()/ensureLearningSchema().
+void ensureAgentSchema()
+  .then(() => {
+    bootstrapState.agentSchema = "ok";
+  })
+  .catch((err) => {
+    bootstrapState.agentSchema = "failed";
+    console.warn(`[agent-resource-service] agent schema bootstrap failed: ${(err as Error).message}`);
   });
 
 // M11.a — self-register both logical capability sets (no-op if env unset). Both
