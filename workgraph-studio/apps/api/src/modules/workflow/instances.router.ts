@@ -392,6 +392,64 @@ workflowInstancesRouter.post('/:id/phases', validate(createPhaseSchema), async (
   }
 })
 
+// WF-4 run-level explainability — an at-a-glance trust/health summary for a run:
+// node health (stuck-recovered, retried, failed, governance-blocked) + the Part-B
+// verification verdicts on the run's consumables. Complements the per-node
+// decisionRecord (GET /:id/nodes/:nodeId). Read-only, tenant-scoped.
+workflowInstancesRouter.get('/:id/trust-summary', async (req, res, next) => {
+  try {
+    const tenantId = resolveTenantFromRequest(req)
+    const instanceId = req.params.id as string
+    const [instance, nodes, consumables] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+      tx.workflowInstance.findFirst({ where: { id: instanceId }, select: { id: true, status: true } }),
+      tx.workflowNode.findMany({ where: { instanceId }, select: { id: true, nodeType: true, status: true, config: true } }),
+      tx.consumable.findMany({ where: { instanceId }, select: { id: true, status: true, formData: true } }),
+    ]), tenantId)
+    if (!instance) {
+      res.status(404).json({ error: 'Instance not found' })
+      return
+    }
+
+    const asRec = (v: unknown): Record<string, unknown> =>
+      (v && typeof v === 'object' && !Array.isArray(v)) ? (v as Record<string, unknown>) : {}
+    let stuckRecovered = 0, retried = 0, failed = 0, blocked = 0, governanceBlocked = 0, active = 0
+    const byStatus: Record<string, number> = {}
+    for (const n of nodes) {
+      byStatus[n.status] = (byStatus[n.status] ?? 0) + 1
+      const cfg = asRec(n.config)
+      if (cfg._stuckSweptAttempt !== undefined) stuckRecovered++
+      if (Number(cfg._attempts ?? 0) > 0) retried++
+      if (n.status === 'FAILED') failed++
+      if (n.status === 'BLOCKED') blocked++
+      if (n.status === 'ACTIVE') active++
+      if (cfg._blockedByGovernanceGate !== undefined) governanceBlocked++
+    }
+
+    const verdicts: Record<string, number> = {}
+    let unverified = 0
+    for (const c of consumables) {
+      const v = asRec(c.formData)._verification
+      const status = (v && typeof v === 'object' && !Array.isArray(v))
+        ? String((v as Record<string, unknown>).status ?? 'UNKNOWN') : null
+      if (status) verdicts[status] = (verdicts[status] ?? 0) + 1
+      else unverified++
+    }
+
+    const needsAttention = failed > 0 || blocked > 0 || governanceBlocked > 0
+      || Object.keys(verdicts).some(k => /FAIL|ERROR/i.test(k))
+
+    res.json({
+      instanceId,
+      status: instance.status,
+      needsAttention,
+      nodes: { total: nodes.length, active, failed, blocked, byStatus },
+      reliability: { stuckRecovered, retried },
+      governance: { awaitingApproval: governanceBlocked },
+      verification: { verdicts, unverifiedConsumables: unverified },
+    })
+  } catch (err) { next(err) }
+})
+
 workflowInstancesRouter.get('/:id/nodes', async (req, res, next) => {
   try {
     const nodes = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findMany({
