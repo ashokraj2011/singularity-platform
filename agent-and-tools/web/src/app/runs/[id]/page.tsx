@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import useSWR from "swr";
-import { Activity, Download, FileCheck2, GitBranch, Network, Package, ShieldCheck, Workflow } from "lucide-react";
+import { Activity, Download, FileCheck2, GitBranch, Network, Package, ShieldCheck, TerminalSquare, Workflow } from "lucide-react";
 import { workbenchNeoUrl } from "@/lib/workbenchLaunch";
 import { workgraphApi } from "@/lib/api";
 
@@ -52,6 +52,9 @@ export default function RunDetailPage() {
             </Link>
             <Link className="btn-secondary" href={`/runs/${encoded}/insights`}>
               <ShieldCheck size={14} /> Insights
+            </Link>
+            <Link className="btn-secondary" href="/operations/logs">
+              <TerminalSquare size={14} /> Logs
             </Link>
           </div>
         </div>
@@ -134,9 +137,14 @@ function RunTraceStrip({ runId }: { runId: string }) {
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           {traceIds.map((traceId) => (
-            <Link key={traceId} className="btn-secondary" href={`/audit/trace/${encodeURIComponent(traceId)}`}>
-              <Network size={13} /> {traceId.length > 34 ? `${traceId.slice(0, 31)}...` : traceId}
-            </Link>
+            <span key={traceId} style={{ display: "inline-flex", gap: 5 }}>
+              <Link className="btn-secondary" href={`/audit/trace/${encodeURIComponent(traceId)}`}>
+                <Network size={13} /> {traceId.length > 34 ? `${traceId.slice(0, 31)}...` : traceId}
+              </Link>
+              <Link className="btn-secondary" href={`/operations/logs?trace_id=${encodeURIComponent(traceId)}`} title="Open logs for this platform trace">
+                <TerminalSquare size={13} /> Logs
+              </Link>
+            </span>
           ))}
         </div>
       </div>

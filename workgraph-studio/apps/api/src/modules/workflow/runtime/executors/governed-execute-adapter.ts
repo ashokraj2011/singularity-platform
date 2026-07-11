@@ -143,6 +143,10 @@ export function governedStageRespToExecuteResp(
     }
   }
   const finishReason = stopReasonToFinishReason(resp.stop_reason)
+  const lastLlm = resp.turns.at(-1)?.llm
+  const executionPosture = lastLlm?.llm_route === 'context-fabric-direct'
+    ? 'context-fabric-direct'
+    : 'governed'
   // APPROVAL_PENDING is a HUMAN-gate pause, not a completion. Mapping it to
   // COMPLETED made governed agent tasks silently skip approvalRequired gates;
   // surface it as WAITING_APPROVAL so callers (AgentTaskExecutor) pause + persist
@@ -186,14 +190,14 @@ export function governedStageRespToExecuteResp(
       promptAssemblyId: null,
       mcpServerId: null,
       mcpInvocationId: null,
-      modelAlias: resp.turns.at(-1)?.llm?.model_alias ?? null,
+      modelAlias: lastLlm?.model_alias ?? null,
       llmCallIds: [],
       toolInvocationIds,
       artifactIds: [],
       codeChangeIds: [],
       contextPlanHash: null,
       governanceMode,
-      executionPosture: 'governed' as const,
+      executionPosture,
       workspaceBranch: null,
       workspaceCommitSha: copilotCommitSha,
       changedPaths: copilotChangedPaths,
@@ -202,9 +206,9 @@ export function governedStageRespToExecuteResp(
       astIndexedSymbols: null,
     },
     modelUsage: {
-      provider: resp.turns.at(-1)?.llm?.provider ?? 'unknown',
-      model: resp.turns.at(-1)?.llm?.model ?? 'unknown',
-      modelAlias: resp.turns.at(-1)?.llm?.model_alias ?? null,
+      provider: lastLlm?.provider ?? 'unknown',
+      model: lastLlm?.model ?? 'unknown',
+      modelAlias: lastLlm?.model_alias ?? null,
       inputTokens: resp.totals.input_tokens,
       outputTokens: resp.totals.output_tokens,
       estimatedCost: 0,

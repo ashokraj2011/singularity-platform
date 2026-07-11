@@ -1,0 +1,58 @@
+data_dir: /var/lib/vector
+
+sources:
+  docker:
+    type: docker_logs
+    docker_host: unix:///var/run/docker.sock
+    exclude_containers:
+      - singularity-log-collector
+
+transforms:
+  normalize:
+    type: remap
+    inputs: [docker]
+    source: |
+      original_message = to_string(.message) ?? ""
+      parsed, parse_error = parse_json(original_message)
+      if parse_error == null && is_object(parsed) {
+        . = merge!(., parsed)
+      }
+      if !exists(.timestamp) { .timestamp = now() }
+      .service = to_string(.label."com.docker.compose.service") ?? to_string(.container_name) ?? "docker"
+      .host = to_string(.host) ?? get_hostname!()
+      .message = to_string(.message) ?? to_string(.msg) ?? original_message
+      level_text = downcase(to_string(.level) ?? "")
+      if level_text == "" {
+        .level = if .stream == "stderr" { "error" } else { "info" }
+      } else if includes(["trace", "debug", "info", "warn", "error", "fatal", "audit"], level_text) {
+        .level = level_text
+      } else {
+        .level = "info"
+      }
+      .environment = get_env_var("SINGULARITY_ENV") ?? "development"
+
+sinks:
+  singularity_log_lake:
+    type: http
+    inputs: [normalize]
+    uri: ${AUDIT_GOV_URL}/api/v1/logs
+    method: post
+    auth:
+      strategy: bearer
+      token: ${AUDIT_GOV_SERVICE_TOKEN}
+    encoding:
+      codec: json
+    batch:
+      max_events: 1
+      timeout_secs: 1
+    buffer:
+      type: disk
+      max_size: 536870912
+      when_full: block
+    request:
+      retry_attempts: 20
+      retry_initial_backoff_secs: 1
+      retry_max_duration_secs: 3600
+      timeout_secs: 15
+    healthcheck:
+      enabled: false

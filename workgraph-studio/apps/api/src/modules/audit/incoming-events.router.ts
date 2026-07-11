@@ -24,6 +24,7 @@ import { Router, type Request } from 'express'
 import crypto from 'node:crypto'
 import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
+import { runWithTenantDbContext } from '../../lib/tenant-db-context'
 import { fanOutToWorkItemTriggers } from '../work-items/work-item-event-fanout'
 
 export const incomingEventsRouter: Router = Router()
@@ -32,6 +33,7 @@ interface EventEnvelope {
   receipt_id?:    string
   kind?:          string
   source_service: string
+  tenant_id?: string | null
   trace_id?:      string | null
   subject:        { kind: string; id: string }
   actor?:         { kind: string; id: string | null } | null
@@ -110,22 +112,34 @@ incomingEventsRouter.post('/', async (req, res) => {
     return res.status(401).json({ code: 'BAD_SIGNATURE', message: 'HMAC verification failed' })
   }
 
+  const tenantId = body.envelope.tenant_id
+    ?? (typeof body.envelope.correlation?.tenantId === 'string' ? body.envelope.correlation.tenantId : undefined)
+    ?? (typeof body.envelope.payload?.tenantId === 'string' ? body.envelope.payload.tenantId : undefined)
+  if (config.TENANT_ISOLATION_MODE === 'strict' && !tenantId) {
+    return res.status(403).json({ code: 'MISSING_EVENT_TENANT', message: 'Strict tenant isolation requires envelope.tenant_id' })
+  }
+
   // Persist into workgraph audit log so the unified /api/receipts timeline
   // surfaces inbound cross-service events alongside local ones.
-  await prisma.eventLog.create({
+  await runWithTenantDbContext(tenantId, () => prisma.eventLog.create({
     data: {
       eventType:  `incoming.${eventName}`,
       entityType: body.envelope.subject?.kind ?? 'unknown',
       entityId:   body.envelope.subject?.id ?? outboxId ?? 'unknown',
       actorId:    null,
+      traceId:    body.envelope.trace_id ?? undefined,
+      tenantId,
       payload: {
         source_service: source,
         event_name:     eventName,
         outbox_id:      outboxId,
+        trace_id:       body.envelope.trace_id ?? null,
+        traceId:        body.envelope.trace_id ?? null,
+        tenant_id:      tenantId ?? null,
         envelope:       body.envelope,
       } as object,
     },
-  }).catch((err) => {
+  })).catch((err) => {
     console.warn('[incoming-events] persist failed:', (err as Error).message)
   })
 
@@ -136,12 +150,13 @@ incomingEventsRouter.post('/', async (req, res) => {
   // successfully-received (and logged) event into a 5xx that triggers upstream retries.
   let workItemIds: string[] = []
   try {
-    workItemIds = await fanOutToWorkItemTriggers({
+    workItemIds = await runWithTenantDbContext(tenantId, () => fanOutToWorkItemTriggers({
       eventTypeKey: eventName,
       payload: body.envelope.payload ?? (body.envelope as unknown as Record<string, unknown>),
       deliveryId: outboxId,
       sourceEventTypeKey: eventName,
-    })
+      traceId: body.envelope.trace_id,
+    }))
   } catch (err) {
     console.warn('[incoming-events] trigger fan-out failed:', (err as Error).message)
   }

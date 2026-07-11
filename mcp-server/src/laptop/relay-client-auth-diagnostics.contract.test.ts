@@ -48,6 +48,18 @@ assert.match(
 );
 
 assert.match(
+  relayClientSource,
+  /git_credential_strategy:[\s\S]*?git_push_local_prerequisites_ready:[\s\S]*?git_push_warnings:/,
+  "runtime heartbeats should expose non-secret Git strategy and actionable readiness",
+);
+
+assert.match(
+  relayClientSource,
+  /const gitPushEnabled = config\.MCP_GIT_PUSH_ENABLED;/,
+  "runtime Git readiness must use the parsed boolean config instead of Boolean('false')",
+);
+
+assert.match(
   diagnosticSource,
   /RUNTIME_TOKEN_MAX_BYTES = 16 \* 1024[\s\S]*?decodeJwtObject\(parts\[0\][\s\S]*?decodeJwtObject\(parts\[1\][\s\S]*?stringClaim\(payload\.runtime_id, 128\)/,
   "runtime token diagnostics should bound token size and decode object claims without logging the token value",

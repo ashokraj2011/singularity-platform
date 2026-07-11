@@ -260,7 +260,7 @@ export type CodeContextFrame = z.infer<typeof CodeContextFrame>;
 export const SourceTreeFrame = z.object({
   type:        z.literal("source-tree"),
   request_id:  RequestId,
-  payload:     z.object({ repoUrl: z.string(), branch: z.string().default("main") }),
+  payload:     z.object({ repoUrl: z.string(), branch: z.string().default("main"), listBranches: z.boolean().optional() }),
   deadline_ms: z.number().int().positive().optional(),
 });
 export type SourceTreeFrame = z.infer<typeof SourceTreeFrame>;

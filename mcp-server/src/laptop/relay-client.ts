@@ -44,6 +44,7 @@ import { ensureFreshGatewayStatus, listConfiguredProviders } from "../llm/client
 import { modelCatalogResponse } from "../llm/model-catalog";
 import { configuredDefaultModel, configuredDefaultProvider } from "../llm/provider-config";
 import { readUpstreamJsonBody, upstreamSnippet } from "../lib/upstream-json";
+import { gitBrokerEnforce, runtimeClaims, staticGitToken } from "../lib/runtime-claims";
 import { runtimeTokenDiagnostic } from "./runtime-token-diagnostic";
 import { config } from "../config";
 import {
@@ -747,10 +748,32 @@ function redactUrl(raw: string): string {
 }
 
 async function runtimeHealthSnapshot(): Promise<Record<string, unknown>> {
+  const claims = runtimeClaims();
+  const gitToken = staticGitToken();
+  const gitPushEnabled = config.MCP_GIT_PUSH_ENABLED;
+  const brokerEnforced = gitBrokerEnforce();
+  const gitCredentialStrategy = claims.shared
+    ? "iam-brokered"
+    : gitToken
+      ? "local-runtime-token"
+      : "unconfigured";
   const base: Record<string, unknown> = {
     llm_gateway_url_configured: Boolean(process.env.LLM_GATEWAY_URL),
     llm_gateway_url: redactUrl(process.env.LLM_GATEWAY_URL ?? "http://localhost:8001"),
-    git_push_enabled: Boolean(process.env.MCP_GIT_PUSH_ENABLED),
+    runtime_shared: claims.shared,
+    git_push_enabled: gitPushEnabled,
+    git_auth_mode: config.MCP_GIT_AUTH_MODE,
+    git_credential_strategy: gitCredentialStrategy,
+    git_broker_enforced: brokerEnforced,
+    git_static_token_present: Boolean(gitToken),
+    git_static_token_source: gitToken?.source ?? null,
+    git_push_local_prerequisites_ready: gitPushEnabled && (claims.shared ? brokerEnforced && !gitToken : Boolean(gitToken)),
+    git_push_warnings: [
+      ...(!gitPushEnabled ? ["MCP_GIT_PUSH_ENABLED is false."] : []),
+      ...(claims.shared && gitToken ? ["Shared runtime has a process-global Git token; use IAM-brokered per-user credentials."] : []),
+      ...(claims.shared && !brokerEnforced ? ["MCP_GIT_BROKER_ENFORCE is false on a shared runtime."] : []),
+      ...(!claims.shared && !gitToken ? ["No local Git token is configured for this user-owned runtime."] : []),
+    ],
     llm_default_provider: configuredDefaultProvider(),
     llm_default_model: configuredDefaultModel(),
     llm_provider_status_source: "mcp-runtime",

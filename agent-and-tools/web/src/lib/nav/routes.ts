@@ -15,7 +15,7 @@ import {
   LayoutDashboard, Wrench, Play, Users, GitBranch, Layers, ScrollText,
   ShieldCheck, Activity, Brain, DollarSign, Cpu, WandSparkles, Bot, Inbox,
   Network, Route, Workflow, Zap, Database, FileText, Globe, Link2, Package,
-  Puzzle, ClipboardCheck, BookOpen, Settings, Boxes, KeyRound,
+  Puzzle, ClipboardCheck, BookOpen, Settings, Boxes, KeyRound, TerminalSquare,
 } from "lucide-react";
 
 export type NavGroup =
@@ -70,6 +70,7 @@ export const ROUTES: RouteMeta[] = [
   { id: "ops-readiness", label: "Readiness", href: "/operations/readiness", group: "Operations Center", icon: Activity, priority: "primary", surfaceType: "operation" },
   { id: "ops-architecture", label: "Live App Map", href: "/operations/architecture", group: "Operations Center", icon: Network, priority: "primary", surfaceType: "operation" },
   { id: "ops-access-keys", label: "Access Keys", href: "/operations/access-keys", group: "Operations Center", icon: ShieldCheck, priority: "secondary", surfaceType: "operation" },
+  { id: "ops-logs", label: "Log Explorer", href: "/operations/logs", group: "Operations Center", icon: TerminalSquare, priority: "primary", surfaceType: "operation", description: "Search and tail platform service logs with Datadog/Splunk-style filters.", keywords: ["logs", "tail", "splunk", "datadog", "error", "debug", "observability"] },
   { id: "ops-setup", label: "Setup Center", href: "/operations/setup", group: "Operations Center", icon: Wrench, priority: "primary", surfaceType: "operation" },
   { id: "ops-trust", label: "Trust Evidence", href: "/operations/trust", group: "Operations Center", icon: ClipboardCheck, priority: "secondary", surfaceType: "operation" },
   { id: "ops-git-history", label: "Git Change Explainer", href: "/operations/git-history", group: "Operations Center", icon: GitBranch, priority: "secondary", surfaceType: "operation", description: "Explain code changes between dates from git history.", keywords: ["git", "history", "release", "evidence", "changelog", "diff"] },

@@ -6,7 +6,7 @@ const page = fs.readFileSync(path.join(process.cwd(), "src/app/capabilities/[id]
 
 assert.match(
   page,
-  /const mutationActionInFlightRef = useRef\(false\);[\s\S]*?const archiveInFlightRef = useRef\(false\);[\s\S]*?const \[mutationAction, setMutationAction\] = useState<"repo" \| "binding" \| "knowledge" \| null>\(null\);[\s\S]*?const \[mutationMsg, setMutationMsg\][\s\S]*?const \[mutationError, setMutationError\]/,
+  /const mutationActionInFlightRef = useRef\(false\);[\s\S]*?const archiveInFlightRef = useRef\(false\);[\s\S]*?const \[mutationAction, setMutationAction\] = useState<"repo" \| "repo-delete" \| "binding" \| "binding-delete" \| "knowledge" \| "knowledge-delete" \| null>\(null\);[\s\S]*?const \[mutationMsg, setMutationMsg\][\s\S]*?const \[mutationError, setMutationError\]/,
   "capability detail should track controlled feedback for small mutation actions",
 );
 

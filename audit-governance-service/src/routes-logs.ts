@@ -9,10 +9,19 @@
 import { randomUUID } from "node:crypto";
 import { Router, Request, Response } from "express";
 import { z } from "zod";
-import { query } from "./db";
+import { query, queryOne } from "./db";
 import { requireServiceAuth } from "./routes-events";
 import { getLogStorage, StoredLogInput } from "./log-storage";
 import { boundedEnvInteger } from "./env";
+import { redactLogText, redactLogValue } from "./log-redaction";
+import {
+  evaluateLogAlerts,
+  LogAlertRuleInputSchema,
+  logOperationsSummary,
+  processLogExportQueue,
+  queueLogExports,
+  runLogRetentionSweep,
+} from "./log-operations";
 
 export const logsRouter = Router();
 
@@ -25,6 +34,16 @@ const LOG_INGEST_MAX_BATCH = boundedEnvInteger("LOG_INGEST_MAX_BATCH", {
   defaultValue: 500,
   min: 1,
   max: 5_000,
+});
+const LOG_INGEST_MAX_BODY_BYTES = boundedEnvInteger("LOG_INGEST_MAX_BODY_BYTES", {
+  defaultValue: 5 * 1024 * 1024,
+  min: 64 * 1024,
+  max: 10 * 1024 * 1024,
+});
+const LOG_PAYLOAD_MAX_BYTES = boundedEnvInteger("LOG_PAYLOAD_MAX_BYTES", {
+  defaultValue: 128 * 1024,
+  min: 8 * 1024,
+  max: 512 * 1024,
 });
 
 const LogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "audit"]);
@@ -171,13 +190,20 @@ function compactPayload(raw: Record<string, unknown>): Record<string, unknown> {
   for (const [key, value] of Object.entries(raw)) {
     if (!KNOWN_KEYS.has(key) && value !== undefined) extra[key] = value;
   }
-  return { ...extra, ...attributes, ...payload };
+  const safe = redactLogValue({ ...extra, ...attributes, ...payload }) as Record<string, unknown>;
+  const serialized = JSON.stringify(safe);
+  if (Buffer.byteLength(serialized, "utf8") <= LOG_PAYLOAD_MAX_BYTES) return safe;
+  return {
+    _truncated: true,
+    _originalBytes: Buffer.byteLength(serialized, "utf8"),
+    _preview: serialized.slice(0, LOG_PAYLOAD_MAX_BYTES),
+  };
 }
 
 function normalizeLog(raw: unknown): NormalizedLog {
   const parsed = RawLogSchema.parse(raw) as Record<string, unknown>;
   const eventType = firstString(parsed.event_type, parsed.eventType, parsed.kind);
-  const message = firstString(parsed.message, parsed.msg) ?? eventType ?? "";
+  const message = redactLogText(firstString(parsed.message, parsed.msg) ?? eventType ?? "");
   return {
     id: randomUUID(),
     ts: firstString(parsed.ts, parsed.timestamp, parsed.time) ?? new Date().toISOString(),
@@ -213,6 +239,11 @@ function logsFromBody(body: unknown): NormalizedLog[] {
 }
 
 async function ingestLogs(req: Request, res: Response): Promise<void> {
+  const bodyBytes = Buffer.byteLength(JSON.stringify(req.body ?? {}), "utf8");
+  if (bodyBytes > LOG_INGEST_MAX_BODY_BYTES) {
+    res.status(413).json({ error: "log_batch_too_large", max_bytes: LOG_INGEST_MAX_BODY_BYTES });
+    return;
+  }
   const logs = logsFromBody(req.body);
   if (logs.length > LOG_INGEST_MAX_BATCH) {
     res.status(400).json({ error: "batch_too_large", max_batch: LOG_INGEST_MAX_BATCH });
@@ -267,10 +298,19 @@ async function ingestLogs(req: Request, res: Response): Promise<void> {
     ids.push(log.id);
   }
 
+  let exportTargetsQueued = 0;
+  let exportQueueWarning: string | null = null;
+  try {
+    exportTargetsQueued = await queueLogExports(logs);
+  } catch (error) {
+    exportQueueWarning = (error as Error).message;
+  }
+
   res.status(201).json({
     ingested: ids.length,
     ids,
     storage: storage.health(),
+    exports: { targetsQueued: exportTargetsQueued, warning: exportQueueWarning },
   });
 }
 
@@ -505,5 +545,117 @@ logsRouter.get("/logs/health", async (_req: Request, res: Response) => {
     storage: storage.health(),
     ingested_count: row?.count ?? 0,
     newest_ts: row?.newest_ts ?? null,
+    operations: await logOperationsSummary(),
   });
+});
+
+logsRouter.get("/logs/operations", async (_req: Request, res: Response) => {
+  res.json(await logOperationsSummary());
+});
+
+logsRouter.post("/logs/retention/sweep", async (_req: Request, res: Response) => {
+  res.status(202).json(await runLogRetentionSweep());
+});
+
+logsRouter.get("/logs/alert-rules", async (_req: Request, res: Response) => {
+  const items = await query(
+    `SELECT id, name, service, window_minutes AS "windowMinutes",
+            minimum_events AS "minimumEvents", error_rate_threshold AS "errorRateThreshold",
+            max_silence_minutes AS "maxSilenceMinutes", export_target_id AS "exportTargetId",
+            enabled, created_at AS "createdAt", updated_at AS "updatedAt"
+       FROM audit_governance.observability_alert_rules ORDER BY name ASC`,
+  );
+  res.json({ items, total: items.length });
+});
+
+logsRouter.post("/logs/alert-rules", async (req: Request, res: Response) => {
+  const input = LogAlertRuleInputSchema.parse(req.body ?? {});
+  const row = await queryOne(
+    `INSERT INTO audit_governance.observability_alert_rules
+       (name, service, window_minutes, minimum_events, error_rate_threshold,
+        max_silence_minutes, export_target_id, enabled)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+     ON CONFLICT (name) DO UPDATE SET
+       service=EXCLUDED.service, window_minutes=EXCLUDED.window_minutes,
+       minimum_events=EXCLUDED.minimum_events, error_rate_threshold=EXCLUDED.error_rate_threshold,
+       max_silence_minutes=EXCLUDED.max_silence_minutes,
+       export_target_id=EXCLUDED.export_target_id, enabled=EXCLUDED.enabled, updated_at=now()
+     RETURNING id, name, service, window_minutes AS "windowMinutes",
+       minimum_events AS "minimumEvents", error_rate_threshold AS "errorRateThreshold",
+       max_silence_minutes AS "maxSilenceMinutes", export_target_id AS "exportTargetId", enabled`,
+    [input.name, input.service ?? null, input.windowMinutes, input.minimumEvents, input.errorRateThreshold, input.maxSilenceMinutes ?? null, input.exportTargetId ?? null, input.enabled],
+  );
+  res.status(201).json(row);
+});
+
+logsRouter.delete("/logs/alert-rules/:id", async (req: Request, res: Response) => {
+  const deleted = await query<{ id: string }>(`DELETE FROM audit_governance.observability_alert_rules WHERE id=$1 RETURNING id`, [req.params.id]);
+  if (deleted.length === 0) return res.status(404).json({ error: "alert rule not found" });
+  res.status(204).end();
+});
+
+logsRouter.post("/logs/alerts/evaluate", async (_req: Request, res: Response) => {
+  const items = await evaluateLogAlerts();
+  res.status(202).json({ items, total: items.length });
+});
+
+logsRouter.get("/logs/alerts", async (req: Request, res: Response) => {
+  const status = typeof req.query.status === "string" ? req.query.status : null;
+  const items = await query(
+    `SELECT incident.id, incident.rule_id AS "ruleId", rule.name AS "ruleName",
+            incident.status, incident.reason, incident.observed,
+            incident.first_seen_at AS "firstSeenAt", incident.last_seen_at AS "lastSeenAt",
+            incident.acknowledged_at AS "acknowledgedAt", incident.acknowledged_by AS "acknowledgedBy",
+            incident.resolved_at AS "resolvedAt"
+       FROM audit_governance.observability_alert_incidents incident
+       JOIN audit_governance.observability_alert_rules rule ON rule.id=incident.rule_id
+      WHERE ($1::text IS NULL OR incident.status=$1)
+      ORDER BY incident.last_seen_at DESC LIMIT 500`,
+    [status],
+  );
+  res.json({ items, total: items.length });
+});
+
+logsRouter.post("/logs/alerts/:id/acknowledge", async (req: Request, res: Response) => {
+  const actor = typeof req.body?.actor === "string" ? req.body.actor.slice(0, 200) : "operator";
+  const row = await queryOne(
+    `UPDATE audit_governance.observability_alert_incidents
+        SET status='acknowledged', acknowledged_at=now(), acknowledged_by=$2
+      WHERE id=$1 AND status='open'
+      RETURNING id, status, acknowledged_at AS "acknowledgedAt", acknowledged_by AS "acknowledgedBy"`,
+    [req.params.id, actor],
+  );
+  if (!row) return res.status(409).json({ error: "incident is not open or does not exist" });
+  res.json(row);
+});
+
+logsRouter.post("/logs/exports/drain", async (_req: Request, res: Response) => {
+  res.status(202).json(await processLogExportQueue());
+});
+
+logsRouter.get("/logs/exports", async (req: Request, res: Response) => {
+  const status = typeof req.query.status === "string" ? req.query.status : null;
+  const limit = Math.min(Math.max(Number(req.query.limit ?? 200), 1), 500);
+  const items = await query(
+    `SELECT id, target_id AS "targetId", status, attempts,
+            next_attempt_at AS "nextAttemptAt", last_error AS "lastError",
+            created_at AS "createdAt", delivered_at AS "deliveredAt"
+       FROM audit_governance.observability_log_export_queue
+      WHERE ($1::text IS NULL OR status=$1)
+      ORDER BY created_at DESC LIMIT $2`,
+    [status, limit],
+  );
+  res.json({ items, total: items.length });
+});
+
+logsRouter.post("/logs/exports/:id/retry", async (req: Request, res: Response) => {
+  const row = await queryOne(
+    `UPDATE audit_governance.observability_log_export_queue
+        SET status='pending', attempts=0, next_attempt_at=now(), last_error=NULL, delivered_at=NULL
+      WHERE id=$1 AND status='failed'
+      RETURNING id, target_id AS "targetId", status`,
+    [req.params.id],
+  );
+  if (!row) return res.status(409).json({ error: "export delivery is not failed or does not exist" });
+  res.status(202).json(row);
 });

@@ -187,6 +187,7 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
   const [sourceNodeId, setSourceNodeId] = useState("");
   const [targetNodeId, setTargetNodeId] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [nodeConfigText, setNodeConfigText] = useState("{}");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const nodes = graph.nodes;
@@ -195,6 +196,18 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
   const editableName = name || template?.name || "";
   const editableDescription = description || template?.description || "";
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? nodes[0] ?? null;
+  const selectedNodeRoute = useMemo(() => {
+    try {
+      const parsed = JSON.parse(nodeConfigText) as Record<string, unknown>;
+      return typeof parsed?.llmRoute === "string" ? parsed.llmRoute : "";
+    } catch {
+      return "";
+    }
+  }, [nodeConfigText]);
+
+  useEffect(() => {
+    setNodeConfigText(JSON.stringify(selectedNode?.config ?? {}, null, 2));
+  }, [selectedNode?.id]);
 
   const deleteNode = useCallback(async (nodeId: string) => {
     setBusy(nodeId);
@@ -325,6 +338,44 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
       setError((err as Error).message);
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function saveNodeConfig() {
+    if (!selectedNode) return;
+    let config: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(nodeConfigText) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Node config must be a JSON object.");
+      config = parsed as Record<string, unknown>;
+    } catch (err) {
+      setError((err as Error).message);
+      return;
+    }
+    setBusy(`config-${selectedNode.id}`);
+    setError(null);
+    try {
+      await workgraphFetch(`/workflow-templates/${workflowId}/design/nodes/${selectedNode.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ config }),
+      });
+      await reloadGraph();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function setNodeLlmRoute(route: string) {
+    try {
+      const parsed = JSON.parse(nodeConfigText) as Record<string, unknown>;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+      if (route) parsed.llmRoute = route;
+      else delete parsed.llmRoute;
+      setNodeConfigText(JSON.stringify(parsed, null, 2));
+    } catch {
+      // The JSON editor remains the source of truth; don't overwrite invalid text.
     }
   }
 
@@ -484,9 +535,24 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
                   <div><strong>X:</strong> {selectedNode.positionX ?? 0}</div>
                   <div><strong>Y:</strong> {selectedNode.positionY ?? 0}</div>
                 </div>
-                <pre style={{ maxHeight: 270, overflow: "auto", margin: 0, whiteSpace: "pre-wrap", color: "var(--color-outline)", fontSize: 11, background: "var(--color-surface-container)", borderRadius: 8, padding: 10 }}>
-                  {JSON.stringify(selectedNode.config ?? {}, null, 2)}
-                </pre>
+                {(selectedNode.nodeType ?? selectedNode.nodeTypeKey) === "AGENT_TASK" && (
+                  <Field label="LLM route">
+                    <select
+                      style={inputStyle()}
+                      value={selectedNodeRoute}
+                      onChange={(event) => setNodeLlmRoute(event.target.value)}
+                    >
+                      <option value="">Context Fabric governed (default)</option>
+                      <option value="context_fabric_direct">Context Fabric direct (no MCP / LLM Gateway)</option>
+                      <option value="workgraph">WorkGraph direct (no Context Fabric)</option>
+                    </select>
+                  </Field>
+                )}
+                <Field label="Node config JSON">
+                  <textarea value={nodeConfigText} onChange={(event) => setNodeConfigText(event.target.value)} rows={12} style={inputStyle({ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 11, resize: "vertical" })} />
+                </Field>
+                <button className="btn-primary text-xs" type="button" disabled={busy === `config-${selectedNode.id}`} onClick={() => void saveNodeConfig()}><Save size={13} /> Save node config</button>
+                {(selectedNode.nodeType ?? selectedNode.nodeTypeKey) === "AGENT_TASK" && <p style={{ color: "var(--color-outline)", fontSize: 11, lineHeight: 1.45, margin: 0 }}>Direct Context Fabric nodes use provider/model/baseUrl/credentialEnv from this JSON. Put only the credential environment-variable name here, never the key.</p>}
               </div>
             ) : (
               <p style={{ color: "var(--color-outline)", fontSize: 13, margin: 0 }}>Select a node on the canvas.</p>

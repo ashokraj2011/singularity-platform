@@ -13,6 +13,7 @@
 **/.npmrc
 .singularity/config.local.json
 .singularity/ops-doctor.json
+.singularity/log-forwarder-state.json
 .singularity/llm-providers.json
 .singularity/*.env
 .singularity/*.sqlite

@@ -3,7 +3,7 @@ import type { Prisma } from '@prisma/client'
 import { config } from '../config'
 import { ForbiddenError, ValidationError } from './errors'
 import { prisma } from './prisma'
-import { withTenantDbTransaction } from './tenant-db-context'
+import { currentTenantIdForDb, withTenantDbTransaction } from './tenant-db-context'
 
 type JsonRecord = Record<string, unknown>
 
@@ -232,5 +232,5 @@ export function tenantIdForCreate(context: unknown): string | undefined {
   // which would make it invisible/frozen under forced RLS (cutover Guards C/D).
   // Targeted to the create path so resolveTenantFromContext keeps returning
   // undefined for callers that use it to DETECT an explicit tenant.
-  return resolveTenantFromContext(context) ?? config.WORKGRAPH_DEFAULT_TENANT_ID
+  return resolveTenantFromContext(context) ?? currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID
 }

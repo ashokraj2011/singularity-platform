@@ -66,4 +66,22 @@ describe("filesystem log storage", () => {
     const lines = content.trim().split("\n").map((line) => JSON.parse(line));
     expect(lines.map((line) => line.message)).toEqual(["one", "two"]);
   });
+
+  it("prunes only complete day partitions older than the cutoff", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "singularity-logs-prune-"));
+    process.env.LOG_STORAGE_BACKEND = "filesystem";
+    process.env.LOG_STORAGE_PATH = root;
+    resetLogStorageForTests();
+
+    const storage = getLogStorage();
+    await storage.writeBatch([
+      { ts: "2025-12-31T23:59:00.000Z", service: "old-service", level: "info", message: "old" },
+      { ts: "2026-01-02T00:01:00.000Z", service: "new-service", level: "info", message: "new" },
+    ]);
+
+    const result = await storage.pruneBefore(new Date("2026-01-02T00:00:00.000Z"));
+    expect(result).toEqual({ managed: true, deletedPartitions: 1 });
+    await expect(fs.stat(path.join(root, "2025/12/31"))).rejects.toThrow();
+    await expect(fs.stat(path.join(root, "2026/01/02/new-service/logs.ndjson"))).resolves.toBeDefined();
+  });
 });

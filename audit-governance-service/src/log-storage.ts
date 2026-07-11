@@ -28,6 +28,7 @@ export interface LogStorage {
   readonly backend: "filesystem" | "s3";
   writeBatch(records: StoredLogInput[]): Promise<StoredLogPointer[]>;
   health(): LogStorageHealth;
+  pruneBefore(cutoff: Date): Promise<{ managed: boolean; deletedPartitions: number; note?: string }>;
 }
 
 export function sanitizeLogSegment(input: string): string {
@@ -113,6 +114,28 @@ class FilesystemLogStorage implements LogStorage {
 
     return pointers;
   }
+
+  async pruneBefore(cutoff: Date): Promise<{ managed: boolean; deletedPartitions: number }> {
+    let deletedPartitions = 0;
+    let years: Array<import("node:fs").Dirent> = [];
+    try { years = await fs.readdir(this.rootPath, { withFileTypes: true }); } catch { return { managed: true, deletedPartitions }; }
+    for (const year of years.filter((entry) => entry.isDirectory() && /^\d{4}$/.test(entry.name))) {
+      const yearPath = path.join(this.rootPath, year.name);
+      const months = await fs.readdir(yearPath, { withFileTypes: true }).catch(() => []);
+      for (const month of months.filter((entry) => entry.isDirectory() && /^\d{2}$/.test(entry.name))) {
+        const monthPath = path.join(yearPath, month.name);
+        const days = await fs.readdir(monthPath, { withFileTypes: true }).catch(() => []);
+        for (const day of days.filter((entry) => entry.isDirectory() && /^\d{2}$/.test(entry.name))) {
+          const partitionEnd = new Date(Date.UTC(Number(year.name), Number(month.name) - 1, Number(day.name) + 1));
+          if (!Number.isNaN(partitionEnd.getTime()) && partitionEnd <= cutoff) {
+            await fs.rm(path.join(monthPath, day.name), { recursive: true, force: true });
+            deletedPartitions += 1;
+          }
+        }
+      }
+    }
+    return { managed: true, deletedPartitions };
+  }
 }
 
 function hmac(key: Buffer | string, data: string): Buffer {
@@ -185,6 +208,10 @@ class S3LogStorage implements LogStorage {
     }
 
     return pointers;
+  }
+
+  async pruneBefore(_cutoff: Date): Promise<{ managed: boolean; deletedPartitions: number; note: string }> {
+    return { managed: false, deletedPartitions: 0, note: "Configure an S3/MinIO lifecycle rule for LOG_RETENTION_DAYS." };
   }
 
   private async putObject(key: string, body: string): Promise<void> {

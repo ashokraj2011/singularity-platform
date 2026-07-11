@@ -267,5 +267,51 @@ export async function ensureObservabilityLogTables(): Promise<void> {
       WHERE event_type IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_observability_logs_search
       ON audit_governance.observability_logs USING GIN (search_vector);
+
+    CREATE TABLE IF NOT EXISTS audit_governance.observability_log_export_queue (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      target_id       TEXT NOT NULL,
+      payload         JSONB NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'pending',
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_error      TEXT,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      delivered_at    TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_observability_log_export_queue_pending
+      ON audit_governance.observability_log_export_queue(status, next_attempt_at, created_at);
+
+    CREATE TABLE IF NOT EXISTS audit_governance.observability_alert_rules (
+      id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      name                 TEXT NOT NULL UNIQUE,
+      service              TEXT,
+      window_minutes       INTEGER NOT NULL DEFAULT 15,
+      minimum_events       INTEGER NOT NULL DEFAULT 20,
+      error_rate_threshold DOUBLE PRECISION NOT NULL DEFAULT 0.05,
+      max_silence_minutes  INTEGER,
+      export_target_id     TEXT,
+      enabled              BOOLEAN NOT NULL DEFAULT true,
+      created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_governance.observability_alert_incidents (
+      id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      rule_id        UUID NOT NULL REFERENCES audit_governance.observability_alert_rules(id) ON DELETE CASCADE,
+      status         TEXT NOT NULL DEFAULT 'open',
+      reason         TEXT NOT NULL,
+      observed       JSONB NOT NULL DEFAULT '{}'::jsonb,
+      first_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      acknowledged_at TIMESTAMPTZ,
+      acknowledged_by TEXT,
+      resolved_at    TIMESTAMPTZ
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_observability_alert_incidents_open
+      ON audit_governance.observability_alert_incidents(rule_id)
+      WHERE status IN ('open', 'acknowledged');
+    CREATE INDEX IF NOT EXISTS idx_observability_alert_incidents_status
+      ON audit_governance.observability_alert_incidents(status, last_seen_at DESC);
   `);
 }

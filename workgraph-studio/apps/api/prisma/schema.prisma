@@ -1950,10 +1950,14 @@ model EventLog {
   entityType String
   entityId   String
   actorId    String?
+  traceId    String?
+  tenantId   String?
   payload    Json?
   occurredAt DateTime @default(now())
 
   @@index([entityType, entityId])
+  @@index([traceId])
+  @@index([tenantId, occurredAt(sort: Desc)])
   @@index([occurredAt(sort: Desc)])
   @@map("event_log")
 }
@@ -2155,6 +2159,7 @@ model EventOutbox {
   subjectKind   String   // "workflow" | "agent_run" | "approval" | ...
   subjectId     String
   envelope      Json     // full canonical envelope (kind, status, started_at, correlation, ...)
+  tenantId      String?  // tenant owning the event; null is legacy/global
   status        String   @default("pending")  // pending | dispatched | failed
   attempts      Int      @default(0)
   emittedAt     DateTime @default(now())
@@ -2165,6 +2170,7 @@ model EventOutbox {
   @@index([status, emittedAt])
   @@index([eventName])
   @@index([traceId])
+  @@index([tenantId, emittedAt])
   @@map("event_outbox")
 }
 
@@ -2177,11 +2183,13 @@ model EventSubscription {
   isActive      Boolean  @default(true)
   metadata      Json?
   createdById   String?
+  tenantId      String?  // tenant owning the subscription; null is legacy/global
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   deliveries    EventDelivery[]
 
   @@index([isActive, eventPattern])
+  @@index([tenantId, isActive])
   @@map("event_subscriptions")
 }
 
@@ -2487,11 +2495,13 @@ model LlmRouting {
   positionX   Float?
   positionY   Float?
   createdById String?
+  tenantId    String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  @@unique([touchPoint, scopeType, scopeId])
+  @@unique([tenantId, touchPoint, scopeType, scopeId])
   @@index([scopeType, scopeId])
+  @@index([tenantId, enabled])
   @@map("llm_routing")
 }
 
@@ -2505,13 +2515,15 @@ model LlmConnection {
   provider      String
   baseUrl       String?
   model         String
-  alias         String   @unique
+  alias         String
   credentialEnv String?
   enabled       Boolean  @default(true)
   createdById   String?
+  tenantId      String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  @@unique([tenantId, alias])
   @@map("llm_connection")
 }
 

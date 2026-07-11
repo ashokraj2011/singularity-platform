@@ -69,6 +69,8 @@ bin/clone-and-test-deployments.sh \
 
 See [Deployment Test Matrix](./docs/deployment-test-matrix.md) for pushed-clone, dirty-working-tree, bare-metal, and runtime-bridge variants. To test the two LLM execution paths (Anthropic gateway + Copilot CLI), see [Testing Copilot + Anthropic Gateways](./docs/testing-copilot-and-anthropic.md).
 
+For platform-wide logs, trace correlation, the bare-metal log forwarder, and Datadog/Splunk export guidance, see [Observability Log Lake](./docs/observability-log-lake.md). The operator UI is `http://localhost:5180/operations/logs`; a trace-specific cockpit is `/audit/trace/<traceId>`.
+
 In production or hybrid development, point services at remote `llm-gateway` and MCP endpoints instead of starting those profiles locally.
 Operations readiness in `platform-web` separates required core services from optional runtime infrastructure. Open `/operations/readiness` to see core backend health, and the MCP/LLM Gateway/Formal Verifier/audit endpoints as local, remote, unavailable, or not configured without treating every optional runtime as a platform outage. `/foundry` is a first-class route backed by Workgraph, not a separate Code Foundry API container.
 
@@ -795,6 +797,18 @@ standard bare-metal processes and the laptop runs MCP plus LLM Gateway, use the
 [Bare-Metal Cloud With Laptop MCP and LLM runbook](docs/bare-metal-cloud-laptop-runtime.md).
 
 `context-fabric/services/llm_gateway_service` owns provider/model routing. MCP passes model aliases to its local/colocated gateway; only the gateway can hold provider credentials or open provider URLs. Raw provider/model caller overrides are disabled by default with `ALLOW_CALLER_PROVIDER_OVERRIDE=false`.
+
+For a node that must bypass both MCP and the LLM Gateway, set
+`llmRoute: "context_fabric_direct"` on an `AGENT_TASK`. Context Fabric then
+calls the configured Anthropic/OpenAI/OpenAI-compatible provider itself. This
+is an explicit exception to the normal gateway boundary: the node may carry a
+provider, model, base URL, and credential *environment-variable name*, but
+never a secret. The named credential must be in
+`CONTEXT_FABRIC_DIRECT_LLM_ALLOWED_CREDENTIAL_ENVS`; custom provider URLs also
+require `CONTEXT_FABRIC_DIRECT_LLM_ALLOW_CUSTOM_BASE_URLS=true`. Direct mode is
+LLM-only and exposes only the governed phase-submission tool, so MCP tools are
+not silently reachable from this route. Run receipts label it
+`context-fabric-direct`.
 
 The gateway bounds provider timing knobs at startup. Invalid numeric values such
 as `UPSTREAM_TIMEOUT_SEC=bad` fall back to safe defaults; extreme retry delay or

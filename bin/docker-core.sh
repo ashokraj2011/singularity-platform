@@ -95,6 +95,7 @@ load_env() {
   CONTEXT_FABRIC_SERVICE_TOKEN="${CONTEXT_FABRIC_SERVICE_TOKEN:-dev-context-fabric-service-token}"
   AUDIT_GOV_SERVICE_TOKEN="${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}"
   WORKGRAPH_INTERNAL_TOKEN="${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}"
+  WORKGRAPH_EVENT_SECRET_KEY="${WORKGRAPH_EVENT_SECRET_KEY:-dev-workgraph-event-secret-min-32-chars}"
   MCP_BEARER_TOKEN="${MCP_BEARER_TOKEN:-${MCP_DEMO_BEARER_TOKEN:-demo-bearer-token-must-be-min-16-chars}}"
   WORKGRAPH_APP_DB_USER="${WORKGRAPH_APP_DB_USER:-workgraph_app}"
   WORKGRAPH_APP_DB_PASSWORD="${WORKGRAPH_APP_DB_PASSWORD:-workgraph_app_secret}"
@@ -462,6 +463,13 @@ start_audit() {
     -e LLM_GATEWAY_URL="$DOCKER_CORE_LLM_URL" \
     -e LOG_STORAGE_BACKEND="${LOG_STORAGE_BACKEND:-filesystem}" \
     -e LOG_STORAGE_PATH="${LOG_STORAGE_PATH:-/data/singularity-logs}" \
+    -e LOG_INGEST_MAX_BODY_BYTES="${LOG_INGEST_MAX_BODY_BYTES:-5242880}" \
+    -e LOG_PAYLOAD_MAX_BYTES="${LOG_PAYLOAD_MAX_BYTES:-131072}" \
+    -e LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-30}" \
+    -e LOG_EXPORT_TARGETS_JSON="${LOG_EXPORT_TARGETS_JSON:-[]}" \
+    -e LOG_ALERT_EVAL_SEC="${LOG_ALERT_EVAL_SEC:-60}" \
+    -e LOG_DEFAULT_SLO_ENABLED="${LOG_DEFAULT_SLO_ENABLED:-true}" \
+    -e LOG_DEFAULT_SLO_ERROR_RATE="${LOG_DEFAULT_SLO_ERROR_RATE:-0.05}" \
     -e JUDGE_MODEL_ALIAS="${JUDGE_MODEL_ALIAS:-}" \
     -e JUDGE_TIMEOUT_MS="${JUDGE_TIMEOUT_MS:-30000}" \
     -v "$ROOT/audit-governance-service/src:/app/src" \
@@ -620,6 +628,7 @@ start_apps() {
     -e MINIO_SECRET_KEY=workgraph_secret \
     -e MINIO_BUCKET=workgraph-documents \
     -e WORKGRAPH_INTERNAL_TOKEN="$WORKGRAPH_INTERNAL_TOKEN" \
+    -e WORKGRAPH_EVENT_SECRET_KEY="$WORKGRAPH_EVENT_SECRET_KEY" \
     -e WORKGRAPH_INCOMING_EVENT_SECRETS="${WORKGRAPH_INCOMING_EVENT_SECRETS:-{\"agent-runtime\":\"dev-workgraph-incoming-event-secret-min-32-chars\",\"agent-service\":\"dev-workgraph-incoming-event-secret-min-32-chars\",\"tool-service\":\"dev-workgraph-incoming-event-secret-min-32-chars\",\"iam\":\"dev-workgraph-incoming-event-secret-min-32-chars\"}}" \
     -e WORKBENCH_TABLES_AUTHORITATIVE="${WORKBENCH_TABLES_AUTHORITATIVE:-false}" \
     -e WORKBENCH_MULTINODE="${WORKBENCH_MULTINODE:-false}" \

@@ -40,6 +40,7 @@ export interface ExecuteRunContext {
   trace_id?: string
   branch_base?: string
   branch_name?: string
+  workitem_branch?: string
   source_type?: string
   source_uri?: string
   source_ref?: string
@@ -48,6 +49,15 @@ export interface ExecuteRunContext {
   // here too so the governed-stage route (no top-level task) can read it.
   executor?: string
   task?: string
+  // Explicit opt-in for Context Fabric to call a provider directly. This is
+  // intentionally separate from WorkGraph's `llmRoute: workgraph` path.
+  llm_route?: 'context_fabric_direct'
+  direct_llm?: {
+    provider?: string
+    model?: string
+    base_url?: string
+    credential_env?: string
+  }
 }
 
 export interface ExecuteRequest {
@@ -352,6 +362,7 @@ export interface GovernedStageTurn {
     model_alias?: string | null
     estimated_cost?: number | null
     tool_call_count?: number
+    llm_route?: 'context-fabric-direct' | 'gateway-or-runtime' | string
   }
   prompt: {
     binding_id?: string

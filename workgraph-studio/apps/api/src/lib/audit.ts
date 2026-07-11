@@ -3,6 +3,7 @@ import { prisma } from './prisma'
 import { publishEvent } from './eventbus/publisher'
 import { emitAuditEvent } from './audit-gov-emit'
 import { redactSecrets } from './redact'
+import { currentTenantIdForDb } from './tenant-db-context'
 
 /**
  * M11.e — convert legacy PascalCase eventType strings (e.g. "AgentRunCompleted",
@@ -34,8 +35,28 @@ export async function logEvent(
   // [P2] Redact secrets at the audit sink — defense-in-depth so nothing lands in
   // the ledger with a token/key, regardless of whether the caller pre-redacted.
   const safePayload = payload ? redactSecrets(payload) : payload
+  const traceId = typeof safePayload?.traceId === 'string'
+    ? safePayload.traceId
+    : typeof safePayload?.trace_id === 'string'
+      ? safePayload.trace_id
+      : undefined
+  const requestTenantId = currentTenantIdForDb()
+  const tenantId = requestTenantId
+    ?? (typeof safePayload?.tenantId === 'string'
+      ? safePayload.tenantId
+      : typeof safePayload?.tenant_id === 'string'
+        ? safePayload.tenant_id
+        : undefined)
   const event = await prisma.eventLog.create({
-    data: { eventType, entityType, entityId, actorId, payload: safePayload as unknown as Prisma.InputJsonValue },
+    data: {
+      eventType,
+      entityType,
+      entityId,
+      actorId,
+      traceId,
+      tenantId,
+      payload: safePayload as unknown as Prisma.InputJsonValue,
+    },
   })
   return event.id
 }
@@ -64,6 +85,13 @@ export async function publishOutbox(
   // secret reaches any of them regardless of the caller. Non-secret correlation
   // fields (traceId/actorId/capabilityId) are unaffected by the patterns.
   const safe = redactSecrets(payload)
+  const requestTenantId = currentTenantIdForDb()
+  const tenantId = requestTenantId
+    ?? (typeof safe.tenantId === 'string'
+      ? safe.tenantId
+      : typeof safe.tenant_id === 'string'
+        ? safe.tenant_id
+        : undefined)
 
   // Legacy outbox row (kept for back-compat with existing OutboxProcessor).
   await prisma.outboxEvent.create({
@@ -79,6 +107,7 @@ export async function publishOutbox(
       envelope: {
         source_service: 'workgraph-api',
         trace_id:       (safe.traceId as string | undefined) ?? null,
+        tenant_id:      tenantId ?? null,
         subject:        { kind: aggregateToSubjectKind(aggregateType), id: aggregateId },
         actor:          safe.actorId ? { kind: 'user', id: safe.actorId as string } : null,
         status:         'emitted',

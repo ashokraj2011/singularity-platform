@@ -24,6 +24,7 @@ const workgraphProxy = read("src/app/api/workgraph/[...path]/route.ts");
 const composerProxy = read("src/app/api/composer/[...path]/route.ts");
 const runtimeInfrastructure = read("src/app/api/runtime-infrastructure/route.ts");
 const platformTrace = read("src/app/api/traces/[traceId]/route.ts");
+const platformLogs = read("src/app/api/platform-logs/route.ts");
 
 assert.match(
   helper,
@@ -349,6 +350,30 @@ assert.match(
   platformTrace,
   /\/api\/audit-gov\/traces\/\$\{encoded\}\/timeline\?limit=1000/,
   "Platform trace route should merge audit-governance trace timelines",
+);
+
+assert.match(
+  platformTrace,
+  /\/api\/platform-logs\?trace_id=\$\{encoded\}&backend=local&limit=500/,
+  "Platform trace route should merge trace-correlated application logs",
+);
+
+assert.match(
+  platformLogs,
+  /if \(traceId && row\.traceId !== traceId\) return false;/,
+  "Platform logs should support exact application-trace filtering",
+);
+
+assert.match(
+  platformLogs,
+  /x-singularity-trace-id[\s\S]*?trace_id[\s\S]*?traceId/,
+  "Platform logs should recognize the canonical header and JSON trace names",
+);
+
+assert.match(
+  platformLogs,
+  /Bearer \[REDACTED\][\s\S]*?REDACTED_TOKEN/,
+  "Platform logs should redact bearer and provider-token values before returning rows",
 );
 
 assert.match(

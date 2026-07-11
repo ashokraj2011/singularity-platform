@@ -1,0 +1,28 @@
+name: singularity-observability
+
+services:
+  log-collector:
+    image: timberio/vector:0.56.0-alpine
+    container_name: singularity-log-collector
+    restart: unless-stopped
+    environment:
+      AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:?AUDIT_GOV_SERVICE_TOKEN is required}
+      SINGULARITY_ENV: ${SINGULARITY_ENV:-development}
+    command: ["--config", "/etc/vector/vector.yaml"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./vector-docker.yaml:/etc/vector/vector.yaml:ro
+      - vector_data:/var/lib/vector
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+
+volumes:
+  vector_data:

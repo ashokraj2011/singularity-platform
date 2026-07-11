@@ -83,6 +83,13 @@ export async function activateAgentTask(
   }
   const cfgAgentId       = configString('agentId')
   const cfgAgentTemplate = configString('agentTemplateId')
+  const configuredLlmRoute = configString('llmRoute', 'agentLlmRoute', 'llmExecutionRoute', 'route')
+    ?.toLowerCase()
+    .replace(/[\s-]+/g, '_')
+  const contextFabricDirectLlm = configuredLlmRoute === 'context_fabric_direct'
+    || configuredLlmRoute === 'direct_context_fabric'
+    || configuredLlmRoute === 'context_fabric_llm'
+    || configuredLlmRoute === 'cf_direct'
 
   // M10/M11.c — config can carry either the local snapshot id (legacy) OR
   // the upstream agent-and-tools template id. If only the template id is
@@ -428,6 +435,18 @@ export async function activateAgentTask(
       // receives run_context as a verbatim dict.
       executor: configString('executor'),
       ...(configString('executor') === 'copilot' ? { task } : {}),
+      // Explicit per-node route: Context Fabric calls the configured provider
+      // itself. Only the credential env var name crosses the service boundary;
+      // the secret remains in the Context Fabric process environment.
+      ...(contextFabricDirectLlm ? {
+        llm_route: 'context_fabric_direct' as const,
+        direct_llm: {
+          ...(configString('provider') ? { provider: configString('provider') } : {}),
+          ...(configString('model') ? { model: configString('model') } : {}),
+          ...(configString('baseUrl', 'base_url') ? { base_url: configString('baseUrl', 'base_url') } : {}),
+          ...(configString('credentialEnv', 'credential_env') ? { credential_env: configString('credentialEnv', 'credential_env') } : {}),
+        },
+      } : {}),
       // Runtime prompt override (run-graph Prompt tab "Edit prompt") — CF uses this
       // VERBATIM and skips composition (compose_copilot_prompt returns it as-is).
       ...(configString('_promptOverride') ? { prompt_override: configString('_promptOverride') } : {}),
@@ -486,6 +505,7 @@ export async function activateAgentTask(
   const forceGoverned = config.WORKGRAPH_FORCE_GOVERNED_CODING === true
     && cfg.useGovernedExecutor !== false
   const useGoverned = forceGoverned
+    || contextFabricDirectLlm
     || cfg.useGovernedExecutor === true
     || config.CONTEXT_FABRIC_USE_GOVERNED_FOR_NON_BLUEPRINT === true
     // §13.4 — copilot-executor nodes always take the governed route: CF's

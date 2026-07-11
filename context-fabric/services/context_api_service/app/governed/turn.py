@@ -137,6 +137,7 @@ def _sanitize_captured_messages(messages: list[dict]) -> list[dict]:
 from .audit_emit import emit_governed_event
 from . import placement as _placement
 from .llm_client import ChatResponse, ChatToolCall, LLMGatewayError, call_gateway_chat
+from .direct_llm_client import call_direct_chat, is_context_fabric_direct_route
 from .code_context import (
     build_code_context_for_governed_turn,
     package_markdown,
@@ -1078,6 +1079,13 @@ async def run_turn(
         effective_capabilities_required(run_context),
     )
 
+    # Explicit direct route: Context Fabric calls the provider itself and does
+    # not use the runtime bridge, MCP, or LLM gateway. Only the local phase
+    # submission meta-tool is exposed; real tool execution remains an MCP
+    # responsibility and is intentionally unavailable on this route.
+    direct_route = is_context_fabric_direct_route(run_context)
+    call_tools = [tool for tool in tools if tool.get("name") == SUBMIT_PHASE_OUTPUT] if direct_route else tools
+
     # M100 — resolve the effective model alias for THIS phase (a per-phase
     # override wins over the stage-level alias, then the gateway default).
     # Resolved here, ahead of the call, so the token pre-flight can fall back to
@@ -1092,7 +1100,7 @@ async def run_turn(
     # window (so the check still fires in the common case where no explicit input
     # budget is configured). We record the estimate on every request (cost
     # accounting) and warn below when it blows the cap.
-    _token_estimate = _estimate_input_tokens(messages, tools)
+    _token_estimate = _estimate_input_tokens(messages, call_tools)
     _phase_pol = (
         policy.phases.get(state.current_phase)
         if policy is not None and isinstance(getattr(policy, "phases", None), dict)
@@ -1111,7 +1119,8 @@ async def run_turn(
     request_payload: dict[str, Any] = {
         "binding_id": prompt.binding_id,
         "prompt_profile_id": prompt.prompt_profile_id,
-        "tool_count": len(tools),
+        "tool_count": len(call_tools),
+        "llm_route": "context-fabric-direct" if direct_route else "gateway-or-runtime",
         "history_messages": len(history),
         "estimated_input_tokens": _token_estimate["total"],
         "input_token_cap": _input_token_cap,
@@ -1127,7 +1136,7 @@ async def run_turn(
         request_payload["tool_names"] = [
             ((t.get("function") or {}).get("name") if isinstance(t, dict) else None)
             or (t.get("name") if isinstance(t, dict) else None)
-            for t in tools
+            for t in call_tools
         ]
     await emit_governed_event(
         kind="governed.llm_request",
@@ -1162,19 +1171,31 @@ async def run_turn(
         )
 
     # 4. LLM call. (effective_model_alias was resolved above for the pre-flight.)
-    response: ChatResponse = await call_gateway_chat(
-        messages=messages,
-        tools=tools,
-        model_alias=effective_model_alias,
-        bearer=bearer,
-        thinking_budget=thinking_budget,
-        # Placement: when this run opted into laptop LLM (and a laptop is serving
-        # model-run), call_gateway_chat dispatches over the bridge; otherwise it
-        # uses the cloud gateway. None in the common case. See placement.py.
-        laptop_user_id=_placement.llm_laptop_target(run_context),
-        runtime_tenant_id=_placement.runtime_tenant_target(run_context),
-        runtime_capability_tags=_placement.runtime_capability_tags(run_context),
-    )
+    if direct_route:
+        response = await call_direct_chat(
+            messages=messages,
+            tools=call_tools,
+            model_alias=effective_model_alias,
+            run_context=run_context,
+            max_output_tokens=(
+                getattr(_phase_pol, "max_output_tokens", None)
+                if _phase_pol is not None else None
+            ),
+        )
+    else:
+        response = await call_gateway_chat(
+            messages=messages,
+            tools=call_tools,
+            model_alias=effective_model_alias,
+            bearer=bearer,
+            thinking_budget=thinking_budget,
+            # Placement: when this run opted into laptop LLM (and a laptop is serving
+            # model-run), call_gateway_chat dispatches over the bridge; otherwise it
+            # uses the cloud gateway. None in the common case. See placement.py.
+            laptop_user_id=_placement.llm_laptop_target(run_context),
+            runtime_tenant_id=_placement.runtime_tenant_target(run_context),
+            runtime_capability_tags=_placement.runtime_capability_tags(run_context),
+        )
 
     await emit_governed_event(
         kind="governed.llm_response",
@@ -1186,6 +1207,7 @@ async def run_turn(
             "input_tokens": response.input_tokens,
             "output_tokens": response.output_tokens,
             "tool_call_count": len(response.tool_calls),
+            "llm_route": "context-fabric-direct" if direct_route else "gateway-or-runtime",
             "provider": response.provider,
             "model": response.model,
             "model_alias": response.model_alias,
@@ -1307,6 +1329,7 @@ async def run_turn(
                 "model_alias": response.model_alias,
                 "estimated_cost": response.estimated_cost,
                 "tool_call_count": len(response.tool_calls),
+                "llm_route": "context-fabric-direct" if direct_route else "gateway-or-runtime",
                 # M83.r — thinking blocks captured from the LLM response.
                 # stage_driver threads these back into the next assistant
                 # message via ChatMessage.thinking_blocks (required for
@@ -1390,6 +1413,7 @@ async def run_turn(
             "model_alias": response.model_alias,
             "estimated_cost": response.estimated_cost,
             "tool_call_count": len(response.tool_calls),
+            "llm_route": "context-fabric-direct" if direct_route else "gateway-or-runtime",
         },
         prompt={
             "binding_id": prompt.binding_id,

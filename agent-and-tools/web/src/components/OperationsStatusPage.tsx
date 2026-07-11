@@ -644,6 +644,14 @@ function OverviewView({
       state: runtime?.summary.requiredHealthy ? "ready" : "waiting",
     },
     {
+      href: "/operations/logs",
+      icon: TerminalSquare,
+      title: "Log Explorer",
+      value: "Live tail",
+      description: "Search platform logs across services with level, source, and free-text filters.",
+      state: "guarded",
+    },
+    {
       href: "/operations/trust",
       icon: ClipboardCheck,
       title: "Trust Evidence",

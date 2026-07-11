@@ -930,6 +930,7 @@ export type PlatformTraceResponse = {
     contextFabricReceipts: number;
     mcpReceipts: number;
     auditEvents: number;
+    applicationLogs: number;
     total: number;
   };
   warnings: string[];

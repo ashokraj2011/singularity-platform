@@ -3,6 +3,7 @@ import {
   AuthAckFrame,
   HeartbeatFrame,
   RUNTIME_BRIDGE_MAX_CONCURRENT_INVOKES,
+  SourceTreeFrame,
   SUPPORTED_FRAME_TYPES,
 } from "./envelopes";
 
@@ -36,6 +37,11 @@ assert.equal(parsed.health?.llm_gateway_url_configured, true);
 assert.equal((parsed.health?.llm_providers as unknown[]).length, 2);
 
 assert.equal(RUNTIME_BRIDGE_MAX_CONCURRENT_INVOKES, 32);
+assert.equal(SourceTreeFrame.parse({
+  type: "source-tree",
+  request_id: "req-branches",
+  payload: { repoUrl: "https://github.com/acme/repo", listBranches: true },
+}).payload.listBranches, true);
 assert.equal(AuthAckFrame.parse({
   type: "auth.ack",
   user_id: "u1",

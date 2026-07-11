@@ -21,6 +21,7 @@ import { insightsRouter } from './modules/workflow/insights.router'
 import { triggersRouter, webhookRouter } from './modules/workflow/triggers/triggers.router'
 import { customNodeTypesRouter } from './modules/workflow/custom-node-types.router'
 import { workbenchDefinitionsRouter } from './modules/workflow/workbench-definitions.router'
+import { workflowOperationsRouter } from './modules/workflow-operations/workflow-operations.router'
 import { tasksRouter } from './modules/task/tasks.router'
 import { approvalsRouter } from './modules/approval/approvals.router'
 import { consumableTypesRouter } from './modules/consumable/consumable-types.router'
@@ -126,6 +127,7 @@ export function createApp(): Express {
   // M24 — run insights composite (sub-router; same /api/workflow-instances prefix)
   app.use('/api/workflow-instances', authMiddleware, insightsRouter)
   app.use('/api/workflow-triggers', authMiddleware, triggersRouter)
+  app.use('/api/workflow-operations', authMiddleware, workflowOperationsRouter)
   app.use('/api/custom-node-types', authMiddleware, customNodeTypesRouter)
   // M84.s2 — first-class workbench definitions. The :nodeId param
   // identifies the WORKBENCH_TASK WorkflowNode that owns the

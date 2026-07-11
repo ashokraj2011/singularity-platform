@@ -760,7 +760,7 @@ async function resolveDirectLlmConfig(
 ): Promise<{ config: ResolvedDirectLlmConfig } | { error: string; code: string }> {
   const alias = cfgString(node, 'connectionAlias', 'modelAlias', 'llmAlias')
   const connection = alias
-    ? await prisma.llmConnection.findUnique({ where: { alias } }).catch(() => null)
+    ? await prisma.llmConnection.findFirst({ where: { alias, ...(instance.tenantId ? { tenantId: instance.tenantId } : {}) } }).catch(() => null)
     : null
 
   if (alias && connection && !connection.enabled) {

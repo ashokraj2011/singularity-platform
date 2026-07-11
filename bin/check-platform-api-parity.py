@@ -51,6 +51,11 @@ CANONICAL_API_CHECKS = [
     ApiExpectation("code foundry runs", "/api/codegen/runs", USER_API_STATUSES, "object"),
     ApiExpectation("llm settings readiness", "/api/llm-settings", USER_API_STATUSES, "object", ("authToken", "authorization", "Authorization", "apiKey", "api_key", "secret")),
     ApiExpectation("runtime infrastructure readiness", "/api/runtime-infrastructure", USER_API_STATUSES, "object", ("authToken",)),
+    ApiExpectation("adoption health", "/api/adoption/health", USER_API_STATUSES, "object", ("authToken", "claimToken", "apiKey", "secret")),
+    ApiExpectation("platform log explorer", "/api/platform-logs?limit=1", USER_API_STATUSES, "object", ("authorization", "Authorization", "apiKey", "api_key", "secret")),
+    ApiExpectation("platform trace merge", "/api/traces/parity-smoke-trace", USER_API_STATUSES, "object", ("authorization", "Authorization", "apiKey", "api_key", "secret")),
+    ApiExpectation("workflow operations summary", "/api/workgraph/workflow-operations/summary", USER_API_STATUSES, "object", ("claimToken", "credentials", "secret")),
+    ApiExpectation("workflow runner queues", "/api/workgraph/workflow-operations/runners", USER_API_STATUSES, "object", ("claimToken", "credentials", "secret")),
 ]
 
 

@@ -105,7 +105,7 @@ function check(
 
 export async function GET(req: NextRequest) {
   const origin = req.nextUrl.origin;
-  const [runtime, gallery, llm, workgraphHealth, auditHealth, agentTemplates, iamHealth, promptComposerHealth] = await Promise.all([
+  const [runtime, gallery, llm, workgraphHealth, auditHealth, agentTemplates, iamHealth, promptComposerHealth, workflowOperations, platformLogs] = await Promise.all([
     getJson(origin, "/api/runtime-infrastructure", req),
     getJson(origin, "/api/workflow-templates/gallery", req),
     getJson(origin, "/api/llm-settings", req),
@@ -114,6 +114,8 @@ export async function GET(req: NextRequest) {
     getJson(origin, "/api/runtime/agents/templates?scope=common&limit=3", req),
     getJson(origin, "/ops-health/iam", req),
     getJson(origin, "/ops-health/prompt-composer", req),
+    getJson(origin, "/api/workgraph/workflow-operations/summary", req),
+    getJson(origin, "/api/platform-logs?limit=1", req),
   ]);
 
   const runtimeBody = record(runtime.data);
@@ -163,6 +165,22 @@ export async function GET(req: NextRequest) {
   const readyModelAliases = runtimeHealths.flatMap((health) => stringArray(health.llm_ready_model_aliases)).length > 0
     ? runtimeHealths.flatMap((health) => stringArray(health.llm_ready_model_aliases))
     : models.filter(modelReady).map((model) => stringValue(model.id)).filter((id): id is string => Boolean(id));
+
+  const gitReadyRuntime = runtimeHealths.find((health) => health.git_push_local_prerequisites_ready === true);
+  const gitRuntime = gitReadyRuntime ?? runtimeHealths.find((health) => health.git_push_enabled === true) ?? runtimeHealths[0];
+  const gitStrategy = stringValue(gitRuntime?.git_credential_strategy);
+  const gitWarnings = stringArray(gitRuntime?.git_push_warnings);
+
+  const workflowOpsBody = record(workflowOperations.data);
+  const workflowOpsRouting = record(workflowOpsBody.routing);
+  const workflowOpsEventBus = record(workflowOpsBody.eventBus);
+  const workflowOpsRunners = record(workflowOpsBody.runners);
+  const activeTriggers = Number(workflowOpsRouting.activeTriggers ?? 0);
+  const activePolicies = Number(workflowOpsRouting.activePolicies ?? 0);
+  const failedDeliveries = Number(workflowOpsEventBus.failedDeliveries ?? 0);
+  const runnerBacklog = Number(workflowOpsRunners.pending ?? 0);
+  const logsBody = record(platformLogs.data);
+  const logFiles = arrayValue(logsBody.files);
 
   const agentRows = arrayValue(record(agentTemplates.data).items);
   const agentTemplatesNeedUserSession = agentTemplates.status === 401 || agentTemplates.status === 403;
@@ -247,6 +265,22 @@ export async function GET(req: NextRequest) {
       },
     ),
     check(
+      "runner-capacity",
+      "Runner Queues",
+      "runtime",
+      !workflowOperations.ok ? "warning" : runnerBacklog === 0 ? "ready" : "warning",
+      !workflowOperations.ok
+        ? "Runner queue readiness could not be inspected."
+        : runnerBacklog === 0
+          ? "No CLIENT, EDGE, or EXTERNAL execution backlog is waiting for a custom runner."
+          : `${runnerBacklog} non-server execution(s) are waiting for a runner claim.`,
+      {
+        detail: workflowOperations.ok ? undefined : workflowOperations.text,
+        fixCommand: runnerBacklog > 0 ? "Change the node execution location to SERVER or start the matching CLIENT, EDGE, or EXTERNAL runner." : undefined,
+        fixRoute: "/workflows/control-plane?tab=runner-queues",
+      },
+    ),
+    check(
       "llm-provider",
       "LLM Provider",
       "runtime",
@@ -294,6 +328,21 @@ export async function GET(req: NextRequest) {
       },
     ),
     check(
+      "event-workflow-routing",
+      "Event Workflow Routing",
+      "sdlc",
+      !workflowOperations.ok ? "warning" : activeTriggers > 0 && activePolicies > 0 ? "ready" : "warning",
+      !workflowOperations.ok
+        ? "Workflow event operations could not be inspected."
+        : activeTriggers > 0 && activePolicies > 0
+          ? `${activeTriggers} active event trigger(s) and ${activePolicies} routing policy/policies are ready.`
+          : "Event-driven launch needs both an active trigger and an active routing policy.",
+      {
+        detail: workflowOperations.ok ? undefined : workflowOperations.text,
+        fixRoute: "/workflows/control-plane?tab=event-intake",
+      },
+    ),
+    check(
       "agent-studio-seeds",
       "Agent Studio Seeds",
       "sdlc",
@@ -321,14 +370,49 @@ export async function GET(req: NextRequest) {
       },
     ),
     check(
+      "platform-observability",
+      "Platform Logs and Trace Search",
+      "governance",
+      platformLogs.ok && logFiles.length > 0 ? "ready" : platformLogs.ok ? "warning" : "blocked",
+      platformLogs.ok && logFiles.length > 0
+        ? `${logFiles.length} service log source(s) are searchable with trace correlation.`
+        : platformLogs.ok
+          ? "Log Explorer is reachable, but no service log files were discovered."
+          : "Platform Log Explorer is not reachable.",
+      {
+        detail: platformLogs.ok ? textFrom(logsBody.message) || undefined : platformLogs.text,
+        fixCommand: "export SINGULARITY_LOG_DIR=$PWD/logs && bin/bare-metal-apps.sh up",
+        fixRoute: "/operations/logs",
+      },
+    ),
+    check(
+      "event-delivery",
+      "Outbound Event Delivery",
+      "governance",
+      !workflowOperations.ok ? "warning" : failedDeliveries === 0 ? "ready" : "blocked",
+      !workflowOperations.ok
+        ? "Outbound delivery readiness could not be inspected."
+        : failedDeliveries === 0
+          ? "No failed event-bus deliveries need operator recovery."
+          : `${failedDeliveries} outbound event delivery/deliveries require retry.`,
+      {
+        detail: workflowOperations.ok ? undefined : workflowOperations.text,
+        fixRoute: "/workflows/control-plane?tab=event-bus",
+      },
+    ),
+    check(
       "git-push",
       "Git Push / Copilot Handoff",
       "governance",
-      "warning",
-      "Git push readiness depends on the connected MCP runtime token and repository permissions.",
+      gitReadyRuntime ? "ready" : connectedRuntimes.length > 0 ? "warning" : "blocked",
+      gitReadyRuntime
+        ? `Git push prerequisites are ready through ${gitStrategy ?? "the connected runtime"}.`
+        : connectedRuntimes.length > 0
+          ? `The connected runtime is not ready for Git push. ${gitWarnings.join(" ") || "Check push enablement and credential strategy."}`
+          : "Git push requires a connected MCP runtime with local user credentials or IAM-brokered shared-runtime credentials.",
       {
         fixCommand: "bin/mcp-runtime-setup.sh",
-        fixRoute: "/llm-settings",
+        fixRoute: gitStrategy === "iam-brokered" ? "/identity/repository-grants" : "/llm-settings",
       },
     ),
   ];
@@ -353,6 +437,13 @@ export async function GET(req: NextRequest) {
       defaultModelAlias,
       defaultModelReady,
       seededIntentCount: seededTemplateCount,
+      runnerBacklog,
+      activeEventTriggerCount: activeTriggers,
+      activeRoutingPolicyCount: activePolicies,
+      failedDeliveryCount: failedDeliveries,
+      searchableLogSourceCount: logFiles.length,
+      gitPushReady: Boolean(gitReadyRuntime),
+      gitCredentialStrategy: gitStrategy ?? null,
     },
     ready,
     warning,

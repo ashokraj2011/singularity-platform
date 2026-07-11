@@ -169,6 +169,43 @@ function auditTimelineRows(items: unknown[]): TraceTimelineRow[] {
   });
 }
 
+function logTimelineRows(items: unknown[]): TraceTimelineRow[] {
+  return items.map((item, index) => {
+    const row = record(item);
+    const service = firstString(row.service, row.source, "platform-log") ?? "platform-log";
+    const source = firstString(row.source, "platform-log") ?? "platform-log";
+    const ts = timestampValue(row.timestamp);
+    const id = firstString(row.id, `${source}-log-${index}`) ?? `${source}-log-${index}`;
+    const correlation: JsonRecord = {};
+    for (const [key, value] of Object.entries({
+      otelTraceId: row.otelTraceId,
+      workflowInstanceId: row.workflowInstanceId,
+      agentRunId: row.agentRunId,
+    })) {
+      const normalized = stringValue(value);
+      if (normalized) correlation[key] = normalized;
+    }
+    return {
+      id,
+      ts,
+      source: "application_log",
+      service,
+      level: firstString(row.level, "info") ?? "info",
+      event_type: "log",
+      eventType: "log",
+      message: firstString(row.message, "log event") ?? "log event",
+      capability_id: null,
+      tenant_id: null,
+      payload: {
+        source,
+        lineNumber: row.lineNumber ?? null,
+        rawTime: row.rawTime ?? null,
+      },
+      correlation,
+    };
+  });
+}
+
 function collectCorrelation(traceId: string, rows: TraceTimelineRow[]): JsonRecord {
   const correlation: JsonRecord = { traceId };
   for (const row of rows) {
@@ -215,25 +252,31 @@ export async function GET(req: NextRequest, context: { params: Promise<{ traceId
   }
 
   const encoded = encodeURIComponent(traceId);
-  const [receiptsResponse, auditResponse] = await Promise.all([
+  const [receiptsResponse, auditResponse, logsResponse] = await Promise.all([
     getJson(req.nextUrl.origin, `/api/workgraph/receipts?trace_id=${encoded}`, req),
     getJson(req.nextUrl.origin, `/api/audit-gov/traces/${encoded}/timeline?limit=1000`, req),
+    getJson(req.nextUrl.origin, `/api/platform-logs?trace_id=${encoded}&backend=local&limit=500`, req),
   ]);
 
   const warnings: string[] = [];
   const receiptBody = record(receiptsResponse.data);
   const auditBody = record(auditResponse.data);
+  const logsBody = record(logsResponse.data);
   if (!receiptsResponse.ok) warnings.push(shortSourceFailure("Workgraph receipts", receiptsResponse));
   if (!auditResponse.ok) warnings.push(shortSourceFailure("Audit timeline", auditResponse));
+  if (!logsResponse.ok) warnings.push(shortSourceFailure("Platform logs", logsResponse));
 
   const receipts = receiptsResponse.ok ? arrayValue(receiptBody.receipts) : [];
   const auditItems = auditResponse.ok ? arrayValue(auditBody.items) : [];
+  const logItems = logsResponse.ok ? arrayValue(logsBody.items) : [];
   if (receiptsResponse.ok && receipts.length === 0) warnings.push("No Workgraph/Context Fabric/MCP receipts were found for this trace.");
-  if (auditResponse.ok && auditItems.length === 0) warnings.push("No audit-governance events or observability logs were found for this trace.");
+  if (auditResponse.ok && auditItems.length === 0) warnings.push("No audit-governance events were found for this trace.");
+  if (logsResponse.ok && logItems.length === 0) warnings.push("No local application log lines carried this platform trace id.");
 
   const timeline = [
     ...receiptTimelineRows(receipts),
     ...auditTimelineRows(auditItems),
+    ...logTimelineRows(logItems),
   ].sort((left, right) => left.ts.localeCompare(right.ts));
   const receiptSources = record(receiptBody.sources);
   const sources = {
@@ -241,6 +284,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ traceId
     contextFabricReceipts: sourceCount(receiptSources, "context-api"),
     mcpReceipts: sourceCount(receiptSources, "mcp-server"),
     auditEvents: auditItems.length,
+    applicationLogs: logItems.length,
     total: timeline.length,
   };
 

@@ -21,6 +21,7 @@ import { prisma } from '../prisma'
 import { config } from '../../config'
 import { EVENT_CHANNEL } from './publisher'
 import { assertEventTargetUrlAllowed } from './target-url-policy'
+import { openSubscriptionSecret, sealSubscriptionSecret } from './subscription-secret'
 
 const SWEEP_INTERVAL_MS  = 30_000
 const MAX_DELIVERY_TRIES = 5
@@ -29,6 +30,29 @@ const DELIVERY_TIMEOUT_MS = 5_000
 let listenerClient: pg.Client | null = null
 let sweepTimer: NodeJS.Timeout | null = null
 let inFlight = false
+
+export async function migrateLegacySubscriptionSecrets(): Promise<number> {
+  let migrated = 0
+  while (true) {
+    const rows = await prisma.$queryRaw<Array<{ id: string; secret: string }>>`
+      SELECT id, secret
+        FROM "event_subscriptions"
+       WHERE secret IS NOT NULL
+         AND secret NOT LIKE 'enc:v1:%'
+       ORDER BY "createdAt" ASC
+       LIMIT 500
+    `
+    if (rows.length === 0) break
+    for (const row of rows) {
+      await prisma.eventSubscription.update({
+        where: { id: row.id },
+        data: { secret: sealSubscriptionSecret(row.secret) },
+      })
+      migrated += 1
+    }
+  }
+  return migrated
+}
 
 function logSweepFailure(err: unknown): void {
   console.warn('[eventbus] sweep failed:', (err as Error).message)
@@ -43,14 +67,19 @@ function patternToRegex(pattern: string): RegExp {
   return new RegExp(`^${re}$`)
 }
 
-async function findMatchingSubscriptions(eventName: string): Promise<Array<{ id: string; targetUrl: string; secret: string | null }>> {
+async function findMatchingSubscriptions(eventName: string, tenantId: string | null): Promise<Array<{ id: string; targetUrl: string; secret: string | null }>> {
+  const tenantScope = tenantId
+    ? { tenantId }
+    : config.TENANT_ISOLATION_MODE === 'strict'
+      ? { tenantId: null }
+      : {}
   const subs = await prisma.eventSubscription.findMany({
-    where: { isActive: true },
+    where: { isActive: true, ...tenantScope },
     select: { id: true, targetUrl: true, secret: true, eventPattern: true },
   })
   return subs
     .filter((s) => patternToRegex(s.eventPattern).test(eventName))
-    .map(({ id, targetUrl, secret }) => ({ id, targetUrl, secret }))
+    .map(({ id, targetUrl, secret }) => ({ id, targetUrl, secret: openSubscriptionSecret(secret) }))
 }
 
 async function deliverOne(
@@ -118,7 +147,7 @@ async function processOutboxRow(outboxId: string): Promise<void> {
   const row = await prisma.eventOutbox.findUnique({ where: { id: outboxId } })
   if (!row || row.status === 'dispatched') return
 
-  const subs = await findMatchingSubscriptions(row.eventName)
+  const subs = await findMatchingSubscriptions(row.eventName, row.tenantId)
   // Create delivery rows (idempotent via unique [outboxId, subscriptionId]).
   for (const s of subs) {
     await prisma.eventDelivery.upsert({
@@ -174,6 +203,8 @@ async function sweep(): Promise<void> {
 }
 
 export async function startEventDispatcher(): Promise<void> {
+  const migrated = await migrateLegacySubscriptionSecrets()
+  if (migrated > 0) console.log(`[eventbus] encrypted ${migrated} legacy event-subscription secret(s)`)
   // Dedicated client so LISTEN doesn't get returned to a pool.
   listenerClient = new pg.Client({ connectionString: config.DATABASE_URL })
   await listenerClient.connect()

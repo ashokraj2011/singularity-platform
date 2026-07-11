@@ -327,10 +327,21 @@ checks["bare-metal workgraph receives platform governance and grant mode"] = (
 )
 checks["bare-metal workgraph receives internal and incoming-event secrets"] = (
     'provision_secret WORKGRAPH_INCOMING_EVENT_SECRET tokens.workgraphIncomingEventSecret 32' in bare
+    and 'provision_secret WORKGRAPH_EVENT_SECRET_KEY    tokens.workgraphEventSecretKey      32' in bare
     and 'export WORKGRAPH_INCOMING_EVENT_SECRETS=' in bare
     and 'WORKGRAPH_INTERNAL_TOKEN=\\"$WORKGRAPH_INTERNAL_TOKEN\\"' in bare
+    and 'WORKGRAPH_EVENT_SECRET_KEY=\\"$WORKGRAPH_EVENT_SECRET_KEY\\"' in bare
     and 'WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS=\\"$WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS\\"' in bare
     and 'WORKGRAPH_INCOMING_EVENT_SECRETS=\\"$WORKGRAPH_INCOMING_EVENT_SECRETS\\"' in bare
+)
+checks["bare-metal applies event operations tenant hardening migrations"] = (
+    '20260710100000_harden_event_operations_tenant_scope/migration.sql' in bare
+    and '20260710101000_harden_llm_routing_tenant_scope/migration.sql' in bare
+)
+checks["bare-metal forwards bounded local logs to the observability lake"] = (
+    'boot log-forwarder' in bare
+    and 'python3 bin/log-forwarder.py' in bare
+    and '/api/v1/logs/health' in bare
 )
 
 services_block = doctor.split("runtime_services=", 1)[0]

@@ -39,6 +39,7 @@ import { logsRouter } from "./routes-logs";
 import { engineRouter } from "./engine/routes";
 import { startEngineSweep, stopEngineSweep } from "./engine/sweep";
 import { ensureEngineEvalTables, ensureObservabilityLogTables } from "./db";
+import { startLogOperations, stopLogOperations } from "./log-operations";
 
 // M35.1 — production-class envs refuse to start with weak secrets.
 // Mirrors @agentandtools/shared assertProductionSecret (inlined here
@@ -134,10 +135,12 @@ const server = app.listen(PORT, () => {
     console.error("[audit-gov] failed to ensure eval tables", err);
   });
 
-  void ensureObservabilityLogTables().catch((err) => {
-    // eslint-disable-next-line no-console
-    console.error("[audit-gov] failed to ensure observability log tables", err);
-  });
+  void ensureObservabilityLogTables()
+    .then(() => startLogOperations())
+    .catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error("[audit-gov] failed to ensure observability log tables", err);
+    });
 
   // Start the Singularity Engine sweep worker.
   startEngineSweep();
@@ -146,5 +149,6 @@ const server = app.listen(PORT, () => {
 // Graceful shutdown.
 process.on("SIGTERM", () => {
   stopEngineSweep();
+  stopLogOperations();
   server.close();
 });

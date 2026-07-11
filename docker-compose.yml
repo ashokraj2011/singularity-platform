@@ -584,8 +584,9 @@ services:
     container_name: singularity-context-api
     # M65 Slice 2A — compose profiles.
     profiles: [core, full, backend-split]
-    # context-api orchestrates but doesn't call providers or the LLM gateway
-    # directly. LLM traffic routes through MCP.
+    # Normal context-api traffic uses MCP/runtime + the LLM gateway. Explicit
+    # AGENT_TASK nodes with llmRoute=context_fabric_direct may call a provider
+    # directly; the allowlist below keeps that exception intentional.
     environment:
       APP_ENV: ${APP_ENV:-${SINGULARITY_ENV:-development}}
       ENVIRONMENT: ${ENVIRONMENT:-${SINGULARITY_ENV:-${APP_ENV:-development}}}
@@ -606,6 +607,20 @@ services:
       EVENTS_STORE_DB: /app/data/call_log_events.db
       CONTEXT_MEMORY_DB: /app/data/context_memory.db
       SUMMARIZER_MODEL_ALIAS: ${SUMMARIZER_MODEL_ALIAS:-}
+      # Optional direct-provider route for explicitly marked workflow nodes.
+      # Secrets are passed only to Context Fabric's process; node JSON carries
+      # the env var name, never the value.
+      CONTEXT_FABRIC_DIRECT_LLM_PROVIDER: ${CONTEXT_FABRIC_DIRECT_LLM_PROVIDER:-mock}
+      CONTEXT_FABRIC_DIRECT_LLM_MODEL: ${CONTEXT_FABRIC_DIRECT_LLM_MODEL:-mock-fast}
+      CONTEXT_FABRIC_DIRECT_LLM_BASE_URL: ${CONTEXT_FABRIC_DIRECT_LLM_BASE_URL:-}
+      CONTEXT_FABRIC_DIRECT_LLM_ALLOWED_CREDENTIAL_ENVS: ${CONTEXT_FABRIC_DIRECT_LLM_ALLOWED_CREDENTIAL_ENVS:-OPENAI_API_KEY,OPENROUTER_API_KEY,ANTHROPIC_API_KEY,COPILOT_PROVIDER_API_KEY,COPILOT_TOKEN}
+      CONTEXT_FABRIC_DIRECT_LLM_ALLOW_CUSTOM_BASE_URLS: ${CONTEXT_FABRIC_DIRECT_LLM_ALLOW_CUSTOM_BASE_URLS:-false}
+      CONTEXT_FABRIC_DIRECT_LLM_TIMEOUT_SEC: ${CONTEXT_FABRIC_DIRECT_LLM_TIMEOUT_SEC:-300}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      COPILOT_PROVIDER_API_KEY: ${COPILOT_PROVIDER_API_KEY:-}
+      COPILOT_TOKEN: ${COPILOT_TOKEN:-}
       # M65 Slice 1B — METRICS_LEDGER_URL removed. /metrics/dashboard and
       # /sessions/{id}/metrics now proxy to audit-gov (AUDIT_GOV_URL below).
       # If a legacy caller still references this env var the proxy fall-back
@@ -991,6 +1006,7 @@ services:
       MINIO_SECRET_KEY: workgraph_secret
       MINIO_BUCKET: workgraph-documents
       WORKGRAPH_INTERNAL_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}
+      WORKGRAPH_EVENT_SECRET_KEY: ${WORKGRAPH_EVENT_SECRET_KEY:-dev-workgraph-event-secret-min-32-chars}
       WORKGRAPH_INCOMING_EVENT_SECRETS: '${WORKGRAPH_INCOMING_EVENT_SECRETS:-{"agent-runtime":"dev-workgraph-incoming-event-secret-min-32-chars","agent-service":"dev-workgraph-incoming-event-secret-min-32-chars","tool-service":"dev-workgraph-incoming-event-secret-min-32-chars","iam":"dev-workgraph-incoming-event-secret-min-32-chars"}}'
       # M84.s6 — when 'true', the first-class WorkbenchStage tables are the
       # sole source of truth: the legacy loopDefinition JSON-blob write-through

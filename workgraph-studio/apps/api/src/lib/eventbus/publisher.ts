@@ -13,6 +13,7 @@
 
 import { prisma } from '../prisma'
 import { Prisma } from '@prisma/client'
+import { currentTenantIdForDb } from '../tenant-db-context'
 
 export const EVENT_CHANNEL = 'event_outbox_workgraph'
 
@@ -21,6 +22,7 @@ export interface EventEnvelope {
   kind?:          string                 // e.g. "agent_run", "approval"
   source_service: string                 // "workgraph-api"
   trace_id?:      string | null
+  tenant_id?:     string | null
   subject:        { kind: string; id: string }
   actor?:         { kind: string; id: string | null } | null
   status?:        string                 // started | completed | failed | paused | approved | rejected
@@ -37,6 +39,9 @@ export interface PublishOpts {
 }
 
 export async function publishEvent({ eventName, envelope }: PublishOpts): Promise<string> {
+  // Request context is authoritative. An envelope supplied by a caller must
+  // not be able to route an event into another tenant's subscriber set.
+  const tenantId = currentTenantIdForDb() ?? envelope.tenant_id ?? null
   const row = await prisma.eventOutbox.create({
     data: {
       eventName,
@@ -45,6 +50,7 @@ export async function publishEvent({ eventName, envelope }: PublishOpts): Promis
       subjectKind:   envelope.subject.kind,
       subjectId:     envelope.subject.id,
       envelope:      envelope as unknown as Prisma.InputJsonValue,
+      tenantId,
     },
   })
   // NOTIFY with the outbox id as payload so the dispatcher knows which row to pick.

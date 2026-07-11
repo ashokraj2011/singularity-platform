@@ -37,6 +37,7 @@ from .policy_loader import PolicyNotFoundError, StagePolicy, load_stage_policy
 from .stage_execution_policy import StageExecutionPolicy, StageExecutionPolicyError, apply_execution_policy
 from .prompt_resolver import PromptNotFoundError
 from .turn import MinContextUnavailable, SUBMIT_PHASE_OUTPUT, TurnResult, run_turn
+from .direct_llm_client import is_context_fabric_direct_route
 from .verify_synthesis import SyntheticVerifierResult, synthesize_verifier_run
 from .env_config import bounded_float_env, bounded_int_env
 # M99 S1.1 — deterministic pre-ACT localization (platform-driven, gated OFF
@@ -91,6 +92,9 @@ _TRANSIENT_LLM_ERROR_CODES = {
     "LLM_GATEWAY_UNAVAILABLE",
     "LLM_GATEWAY_UPSTREAM_ERROR",
     "LLM_PROVIDER_OVERLOADED",
+    "DIRECT_LLM_TIMEOUT",
+    "DIRECT_LLM_UNAVAILABLE",
+    "DIRECT_LLM_RATE_LIMITED",
 }
 
 
@@ -1901,14 +1905,15 @@ async def run_stage(
     # the gate + sweep + receipt-stash logic is unit-testable without driving
     # the full LLM turn loop. Shadow semantics: additive context only — never
     # blocks, never changes phase; any failure degrades silently.
-    await _maybe_run_localization(
-        state=state,
-        vars=vars,
-        run_context=run_context,
-        bearer=bearer,
-        exec_policy=exec_policy,
-        stage_policy=stage_policy,
-    )
+    if not is_context_fabric_direct_route(run_context):
+        await _maybe_run_localization(
+            state=state,
+            vars=vars,
+            run_context=run_context,
+            bearer=bearer,
+            exec_policy=exec_policy,
+            stage_policy=stage_policy,
+        )
 
     # M99 S1.3 / S2.1 (code-context E1) — git-preflight + auto-baseline now fire
     # at the REAL first-mutation boundary (first ACT entry) INSIDE the loop, not
@@ -1948,21 +1953,22 @@ async def run_stage(
         # run_turn dispatches any mutating tool.
         if not _act_automation_done and state.current_phase is Phase.ACT:
             _act_automation_done = True
-            await _maybe_run_git_preflight(
-                state=state,
-                vars=vars,
-                run_context=run_context,
-                bearer=bearer,
-                exec_policy=exec_policy,
-                stage_policy=stage_policy,
-            )
-            await _maybe_run_auto_baseline(
-                state=state,
-                run_context=run_context,
-                bearer=bearer,
-                exec_policy=exec_policy,
-                stage_policy=stage_policy,
-            )
+            if not is_context_fabric_direct_route(run_context):
+                await _maybe_run_git_preflight(
+                    state=state,
+                    vars=vars,
+                    run_context=run_context,
+                    bearer=bearer,
+                    exec_policy=exec_policy,
+                    stage_policy=stage_policy,
+                )
+                await _maybe_run_auto_baseline(
+                    state=state,
+                    run_context=run_context,
+                    bearer=bearer,
+                    exec_policy=exec_policy,
+                    stage_policy=stage_policy,
+                )
         last_llm_error: LLMGatewayError | None = None
         needs_context_exc: MinContextUnavailable | None = None
         for llm_attempt in range(LLM_RETRY_ATTEMPTS + 1):

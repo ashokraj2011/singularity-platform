@@ -23,7 +23,7 @@ import { use, useMemo } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { traceApi, type PlatformTraceTimelineRow } from "@/lib/api";
-import { ArrowLeft, AlertTriangle, ShieldCheck, Activity, Boxes, FileText, RadioTower, Cpu } from "lucide-react";
+import { ArrowLeft, AlertTriangle, ShieldCheck, Activity, Boxes, FileText, RadioTower, Cpu, TerminalSquare } from "lucide-react";
 
 export default function TraceTimelinePage({ params }: { params: Promise<{ traceId: string }> }) {
   const { traceId } = use(params);
@@ -77,6 +77,11 @@ export default function TraceTimelinePage({ params }: { params: Promise<{ traceI
           </div>
         )}
       </div>
+      <div className="mt-3">
+        <Link href={`/operations/logs?trace_id=${encodeURIComponent(decoded)}`} className="btn-secondary text-xs">
+          <TerminalSquare size={13} /> Open correlated logs
+        </Link>
+      </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 my-5">
         <Tile icon={Activity}      label="Events"    value={counts.total} />
@@ -85,11 +90,12 @@ export default function TraceTimelinePage({ params }: { params: Promise<{ traceI
         <Tile icon={ShieldCheck}   label="High risk" value={counts.highRisk} highlight={counts.highRisk > 0 ? "amber" : undefined} />
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
         <Tile icon={FileText} label="Workgraph" value={data?.sources.workgraphReceipts ?? 0} />
         <Tile icon={RadioTower} label="Context Fabric" value={data?.sources.contextFabricReceipts ?? 0} />
         <Tile icon={Cpu} label="MCP" value={data?.sources.mcpReceipts ?? 0} />
         <Tile icon={Boxes} label="Audit" value={data?.sources.auditEvents ?? 0} />
+        <Tile icon={TerminalSquare} label="Logs" value={data?.sources.applicationLogs ?? 0} />
       </div>
 
       {data?.warnings?.length ? (
@@ -139,7 +145,7 @@ export default function TraceTimelinePage({ params }: { params: Promise<{ traceI
                                       "bg-slate-100 text-slate-600";
           const riskBand = ev.level === "fatal" || ev.level === "error" ? "border-l-red-400" :
             ev.level === "warn" ? "border-l-amber-400" :
-            ev.source === "log" ? "border-l-blue-300" : "border-l-slate-200";
+            ev.source === "log" || ev.source === "application_log" ? "border-l-blue-300" : "border-l-slate-200";
           return (
             <li key={ev.id} className="flex items-start gap-3">
               <div className="w-24 shrink-0 text-right">

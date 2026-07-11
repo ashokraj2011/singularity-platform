@@ -865,6 +865,7 @@ PY
     export "$var=$cur"
   }
   provision_secret WORKGRAPH_INTERNAL_TOKEN      tokens.workgraphInternalToken      32
+  provision_secret WORKGRAPH_EVENT_SECRET_KEY    tokens.workgraphEventSecretKey      32
   provision_secret CONTEXT_FABRIC_SERVICE_TOKEN  tokens.contextFabricServiceToken   32
   provision_secret AUDIT_GOV_SERVICE_TOKEN       tokens.auditGovServiceToken        32
   provision_secret MCP_BEARER_TOKEN              mcpRuntime.bearerToken             24
@@ -919,6 +920,7 @@ export JWT_SECRET="${JWT_SECRET:-$(config_value identity.jwtSecret changeme_dev_
 export LOCAL_SUPER_ADMIN_EMAIL="${LOCAL_SUPER_ADMIN_EMAIL:-$(config_value identity.bootstrapEmail admin@singularity.local)}"
 export LOCAL_SUPER_ADMIN_PASSWORD="${LOCAL_SUPER_ADMIN_PASSWORD:-$(config_value identity.bootstrapPassword Admin1234!)}"
 export WORKGRAPH_INTERNAL_TOKEN="${WORKGRAPH_INTERNAL_TOKEN:-$(config_value tokens.workgraphInternalToken dev-workgraph-internal-token)}"
+export WORKGRAPH_EVENT_SECRET_KEY="${WORKGRAPH_EVENT_SECRET_KEY}"
 export WORKGRAPH_INCOMING_EVENT_SECRET="${WORKGRAPH_INCOMING_EVENT_SECRET}"
 export WORKGRAPH_INCOMING_EVENT_SECRETS='${WORKGRAPH_INCOMING_EVENT_SECRETS}'
 export CONTEXT_FABRIC_SERVICE_TOKEN="${CONTEXT_FABRIC_SERVICE_TOKEN:-$(config_value tokens.contextFabricServiceToken dev-context-fabric-service-token)}"
@@ -1244,6 +1246,8 @@ JSON
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260626120000_node_attempt_fence_and_blueprint_key/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260701120000_add_tenant_id_to_standalone_tables/migration.sql >/dev/null 2>&1 \
     && DISABLE_ERD=true DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma generate >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260710100000_harden_event_operations_tenant_scope/migration.sql >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260710101000_harden_llm_routing_tenant_scope/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260709145000_backfill_null_tenant/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709150000_force_tenant_rls/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709170000_tenant_workitem_family/migration.sql >/dev/null 2>&1 ) \
@@ -1360,8 +1364,11 @@ SQL
     warn "re-run manually: seed/apply.sh $db_user"
   fi
 
-  boot audit-gov        "cd audit-governance-service  && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8500 AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" npm run dev"
-  sleep 2
+  boot audit-gov        "cd audit-governance-service  && DATABASE_URL=\"$DATABASE_URL_AUDIT_GOV\" PORT=8500 AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LOG_INGEST_MAX_BODY_BYTES=\"${LOG_INGEST_MAX_BODY_BYTES:-5242880}\" LOG_PAYLOAD_MAX_BYTES=\"${LOG_PAYLOAD_MAX_BYTES:-131072}\" LOG_RETENTION_DAYS=\"${LOG_RETENTION_DAYS:-30}\" npm run dev"
+  wait_http audit-governance "http://localhost:8500/health" 45
+  if [ "${LOG_FORWARDER_ENABLED:-1}" != "0" ]; then
+    boot log-forwarder "AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" SINGULARITY_LOG_DIR=\"$LOG_DIR\" python3 bin/log-forwarder.py"
+  fi
   # SKIP_LOCAL_RUNTIME=1 — runtime infra is external, remote, or started by
   # bin/bare-metal-runtime.sh.
   if [ "${SKIP_LOCAL_RUNTIME:-0}" != "1" ]; then
@@ -1417,7 +1424,7 @@ SQL
   fi
   sleep 3
 
-  boot workgraph-api    "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH_RUNTIME\" WORKGRAPH_RUNTIME_DATABASE_URL=\"$DATABASE_URL_WORKGRAPH_RUNTIME\" WORKGRAPH_DATABASE_URL_ADMIN=\"$DATABASE_URL_WORKGRAPH_ADMIN\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_SERVICE_TOKEN=\"${IAM_SERVICE_TOKEN:-}\" IAM_SERVICE_TOKEN_TENANT_IDS=\"$IAM_SERVICE_TOKEN_TENANT_IDS\" IAM_BOOTSTRAP_USERNAME=\"$LOCAL_SUPER_ADMIN_EMAIL\" IAM_BOOTSTRAP_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" FORMAL_VERIFIER_URL=\"$FORMAL_VERIFIER_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" MCP_TOOL_GRANT_MODE=\"$MCP_TOOL_GRANT_MODE\" DEFAULT_GOVERNANCE_MODE=\"$DEFAULT_GOVERNANCE_MODE\" WORKGRAPH_FORCE_GOVERNED_CODING=\"$WORKGRAPH_FORCE_GOVERNED_CODING\" CONTEXT_FABRIC_GOVERN_SIDE_CALLERS=\"$CONTEXT_FABRIC_GOVERN_SIDE_CALLERS\" WORKGRAPH_INTERNAL_TOKEN=\"$WORKGRAPH_INTERNAL_TOKEN\" WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS=\"$WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS\" WORKGRAPH_INCOMING_EVENT_SECRETS=\"$WORKGRAPH_INCOMING_EVENT_SECRETS\" WORKBENCH_DEFAULT_MODEL_ALIAS=mock AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
+  boot workgraph-api    "cd workgraph-studio/apps/api && PORT=8080 DATABASE_URL=\"$DATABASE_URL_WORKGRAPH_RUNTIME\" WORKGRAPH_RUNTIME_DATABASE_URL=\"$DATABASE_URL_WORKGRAPH_RUNTIME\" WORKGRAPH_DATABASE_URL_ADMIN=\"$DATABASE_URL_WORKGRAPH_ADMIN\" JWT_SECRET=\"$JWT_SECRET\" AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_SERVICE_TOKEN=\"${IAM_SERVICE_TOKEN:-}\" IAM_SERVICE_TOKEN_TENANT_IDS=\"$IAM_SERVICE_TOKEN_TENANT_IDS\" IAM_BOOTSTRAP_USERNAME=\"$LOCAL_SUPER_ADMIN_EMAIL\" IAM_BOOTSTRAP_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" CONTEXT_MEMORY_URL=\"$CONTEXT_MEMORY_URL\" FORMAL_VERIFIER_URL=\"$FORMAL_VERIFIER_URL\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" MCP_TOOL_GRANT_MODE=\"$MCP_TOOL_GRANT_MODE\" DEFAULT_GOVERNANCE_MODE=\"$DEFAULT_GOVERNANCE_MODE\" WORKGRAPH_FORCE_GOVERNED_CODING=\"$WORKGRAPH_FORCE_GOVERNED_CODING\" CONTEXT_FABRIC_GOVERN_SIDE_CALLERS=\"$CONTEXT_FABRIC_GOVERN_SIDE_CALLERS\" WORKGRAPH_INTERNAL_TOKEN=\"$WORKGRAPH_INTERNAL_TOKEN\" WORKGRAPH_EVENT_SECRET_KEY=\"$WORKGRAPH_EVENT_SECRET_KEY\" WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS=\"$WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS\" WORKGRAPH_INCOMING_EVENT_SECRETS=\"$WORKGRAPH_INCOMING_EVENT_SECRETS\" WORKBENCH_DEFAULT_MODEL_ALIAS=mock AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" npm run dev"
   if [ "${SEED_EVENT_VERIFIER_ENABLED:-true}" != "false" ]; then
     wait_http agent-runtime "http://localhost:3003/health" 45
     wait_http workgraph-api "http://localhost:8080/health" 45
@@ -1548,7 +1555,9 @@ cmd_smoke() {
     "http://localhost:5180/healthz|200,304|10" \
     "http://localhost:5180/|200,304|20" \
     "http://localhost:5180/agents/studio|200,304|20" \
+    "http://localhost:5180/operations/logs|200,304|20" \
     "http://localhost:5180/workflows|200,304|20" \
+    "http://localhost:5180/workflows/control-plane|200,304|20" \
     "http://localhost:5180/workbench|200,304|20" \
     "http://localhost:5180/foundry|200,304|20" \
     "http://localhost:5180/identity|200,304|20"
@@ -1578,6 +1587,16 @@ cmd_smoke() {
       fail=$((fail + 1))
     fi
   done
+  if [ -n "${AUDIT_GOV_SERVICE_TOKEN:-}" ]; then
+    code=$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AUDIT_GOV_SERVICE_TOKEN" "http://localhost:8500/api/v1/logs/health" 2>/dev/null || true)
+    code=${code:-000}
+    if [[ ",200,304," == *",$code,"* ]]; then
+      printf "  ${C_GREEN}%s${C_END}  %s\n" "$code" "http://localhost:8500/api/v1/logs/health"
+    else
+      printf "  ${C_RED}%s${C_END}  %s\n" "$code" "http://localhost:8500/api/v1/logs/health"
+      fail=$((fail + 1))
+    fi
+  fi
   echo
   if [ "$fail" != "0" ]; then
     err "$fail endpoint(s) failing — check logs/"

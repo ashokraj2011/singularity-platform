@@ -347,25 +347,29 @@ async function main() {
       { alias: 'copilot',           name: 'Copilot SDLC governed LLM (Sonnet 4.6)', provider: 'anthropic', model: 'claude-sonnet-4-6', credentialEnv: 'ANTHROPIC_API_KEY' },
     ]
     for (const c of connections) {
-      await prisma.llmConnection.upsert({
-        where: { alias: c.alias },
-        update: { name: c.name, provider: c.provider, model: c.model, credentialEnv: c.credentialEnv, enabled: true },
-        create: { ...c, enabled: true },
-      })
+      const existing = await prisma.llmConnection.findFirst({ where: { alias: c.alias, tenantId: null } })
+      if (existing) {
+        await prisma.llmConnection.update({
+          where: { id: existing.id },
+          data: { name: c.name, provider: c.provider, model: c.model, credentialEnv: c.credentialEnv, enabled: true },
+        })
+      } else {
+        await prisma.llmConnection.create({ data: { ...c, enabled: true, tenantId: null } })
+      }
     }
     const routingDefaults = [
       { touchPoint: 'WORKBENCH',    modelAlias: 'claude-sonnet-4-6' },
       { touchPoint: 'COPILOT_SDLC', modelAlias: 'copilot' },
     ]
     for (const r of routingDefaults) {
-      await prisma.llmRouting.upsert({
-        where: { touchPoint_scopeType_scopeId: { touchPoint: r.touchPoint, scopeType: 'DEFAULT', scopeId: '' } },
-        // Assert the policy DEFAULT (Workbench + Copilot both → Sonnet 4.6). Admins
-        // still override per user/capability — scoped USER/CAPABILITY rules win at
-        // resolve time (USER > CAPABILITY > DEFAULT), and survive re-seed.
-        update: { modelAlias: r.modelAlias, enabled: true },
-        create: { touchPoint: r.touchPoint, scopeType: 'DEFAULT', scopeId: '', modelAlias: r.modelAlias, enabled: true },
-      })
+      const existing = await prisma.llmRouting.findFirst({ where: { tenantId: null, touchPoint: r.touchPoint, scopeType: 'DEFAULT', scopeId: '' } })
+      if (existing) {
+        // Assert the policy DEFAULT (Workbench + Copilot both → Sonnet 4.6).
+        // Admins still override per user/capability and survive re-seed.
+        await prisma.llmRouting.update({ where: { id: existing.id }, data: { modelAlias: r.modelAlias, enabled: true } })
+      } else {
+        await prisma.llmRouting.create({ data: { tenantId: null, touchPoint: r.touchPoint, scopeType: 'DEFAULT', scopeId: '', modelAlias: r.modelAlias, enabled: true } })
+      }
     }
     console.log('  LLM routing seeded: WORKBENCH→claude-sonnet-4-6, COPILOT_SDLC→copilot(=Sonnet 4.6)')
   } catch (e) {

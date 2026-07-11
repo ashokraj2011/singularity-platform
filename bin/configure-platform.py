@@ -117,6 +117,7 @@ CONFIG_KEY_MAP = {
     "tokens.auditGovServiceToken": "AUDIT_GOV_SERVICE_TOKEN",
     "tokens.learningServiceToken": "LEARNING_SERVICE_TOKEN",
     "tokens.workgraphInternalToken": "WORKGRAPH_INTERNAL_TOKEN",
+    "tokens.workgraphEventSecretKey": "WORKGRAPH_EVENT_SECRET_KEY",
     "tokens.workgraphIncomingEventSecrets": "WORKGRAPH_INCOMING_EVENT_SECRETS",
     "tokens.iamServiceTokenTenantIds": "IAM_SERVICE_TOKEN_TENANT_IDS",
     "tokens.workgraphInternalTokenTenantIds": "WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS",
@@ -380,6 +381,7 @@ def config_template(profile: str, args: argparse.Namespace | None = None) -> dic
                 os.getenv("AUDIT_GOV_SERVICE_TOKEN", "dev-audit-gov-service-token"),
             ),
             "workgraphInternalToken": os.getenv("WORKGRAPH_INTERNAL_TOKEN", "dev-workgraph-internal-token"),
+            "workgraphEventSecretKey": os.getenv("WORKGRAPH_EVENT_SECRET_KEY", "dev-workgraph-event-secret-min-32-chars"),
             "workgraphIncomingEventSecrets": os.getenv(
                 "WORKGRAPH_INCOMING_EVENT_SECRETS",
                 json.dumps({
@@ -588,6 +590,7 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
     audit_token = pick("AUDIT_GOV_SERVICE_TOKEN", "audit_token", "AUDIT_GOV_SERVICE_TOKEN", "dev-audit-gov-service-token")
     learning_token = pick("LEARNING_SERVICE_TOKEN", "learning_token", "LEARNING_SERVICE_TOKEN", audit_token)
     workgraph_internal_token = pick("WORKGRAPH_INTERNAL_TOKEN", None, "WORKGRAPH_INTERNAL_TOKEN", "dev-workgraph-internal-token")
+    workgraph_event_secret_key = pick("WORKGRAPH_EVENT_SECRET_KEY", None, "WORKGRAPH_EVENT_SECRET_KEY", "dev-workgraph-event-secret-min-32-chars")
     workgraph_incoming_event_secrets = pick(
         "WORKGRAPH_INCOMING_EVENT_SECRETS",
         None,
@@ -659,6 +662,7 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
         "AUDIT_GOV_SERVICE_TOKEN": audit_token,
         "LEARNING_SERVICE_TOKEN": learning_token,
         "WORKGRAPH_INTERNAL_TOKEN": workgraph_internal_token,
+        "WORKGRAPH_EVENT_SECRET_KEY": workgraph_event_secret_key,
         "WORKGRAPH_INCOMING_EVENT_SECRETS": workgraph_incoming_event_secrets,
         "IAM_SERVICE_TOKEN_TENANT_IDS": pick("IAM_SERVICE_TOKEN_TENANT_IDS", None, "IAM_SERVICE_TOKEN_TENANT_IDS", ""),
         "WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS": pick("WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS", None, "WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS", ""),
@@ -776,6 +780,7 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
                 "AUDIT_GOV_SERVICE_TOKEN",
                 "LEARNING_SERVICE_TOKEN",
                 "WORKGRAPH_INTERNAL_TOKEN",
+                "WORKGRAPH_EVENT_SECRET_KEY",
                 "WORKGRAPH_INCOMING_EVENT_SECRETS",
                 "IAM_SERVICE_TOKEN_TENANT_IDS",
                 "WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS",
@@ -985,6 +990,7 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
             "TOOL_SERVICE_URL": values["TOOL_SERVICE_URL"],
             "AGENT_RUNTIME_URL": values["AGENT_RUNTIME_URL"],
             "WORKGRAPH_INTERNAL_TOKEN": values["WORKGRAPH_INTERNAL_TOKEN"],
+            "WORKGRAPH_EVENT_SECRET_KEY": values["WORKGRAPH_EVENT_SECRET_KEY"],
             "IAM_SERVICE_TOKEN_TENANT_IDS": values["IAM_SERVICE_TOKEN_TENANT_IDS"],
             "WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS": values["WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS"],
             "MINIO_ENDPOINT": "localhost",
@@ -1117,6 +1123,7 @@ def command_rotate_secrets(args: argparse.Namespace) -> None:
     rotate("tokens.auditGovServiceToken", "auditsvc")
     rotate("tokens.learningServiceToken", "learnsvc")
     rotate("tokens.workgraphInternalToken", "wgsvc")
+    rotate("tokens.workgraphEventSecretKey", "wgeventkey")
     incoming_event_secrets = {
         "agent-runtime": strong_secret("wgevt-agent-runtime"),
         "agent-service": strong_secret("wgevt-agent-service"),
@@ -2140,6 +2147,7 @@ def run_production_mode_doctor(record, merged: dict[str, str]) -> None:
     audit_token = live_value("AUDIT_GOV_SERVICE_TOKEN")
     learning_token = live_value("LEARNING_SERVICE_TOKEN", audit_token)
     workgraph_incoming_event_secrets = live_value("WORKGRAPH_INCOMING_EVENT_SECRETS")
+    workgraph_event_secret_key = live_value("WORKGRAPH_EVENT_SECRET_KEY")
     workgraph_proxy_token = live_value("WORKGRAPH_PROXY_SERVICE_TOKEN")
     manifest_signature_mode = live_value("PROVIDER_MANIFEST_SIGNATURE_MODE", "auto").strip().lower()
     default_governance_mode = live_value("DEFAULT_GOVERNANCE_MODE", "fail_open").strip().lower()
@@ -2246,6 +2254,11 @@ def run_production_mode_doctor(record, merged: dict[str, str]) -> None:
         )
     else:
         record("OK", "WORKGRAPH_INCOMING_EVENT_SECRETS configured")
+
+    if len(workgraph_event_secret_key) < 32 or weak_secret_value(workgraph_event_secret_key):
+        record("FAIL", "WORKGRAPH_EVENT_SECRET_KEY must be a rotated 32+ character secret", "./singularity.sh config rotate-secrets")
+    else:
+        record("OK", "WORKGRAPH_EVENT_SECRET_KEY is rotated")
 
     token_checks = [
         ("AUDIT_GOV_SERVICE_TOKEN", audit_token),

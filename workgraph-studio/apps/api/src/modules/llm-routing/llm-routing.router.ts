@@ -13,13 +13,29 @@
  * Connections are WorkGraph-owned config rows. They store provider, model, base URL,
  * and credentialEnv (the NAME of the server env var). They never store API key values.
  */
-import { Router, type Router as ExpressRouter } from 'express'
+import { Router, type Request, type Router as ExpressRouter } from 'express'
 import { z } from 'zod'
 import { readFileSync } from 'node:fs'
 import { resolve as resolvePath } from 'node:path'
 import { prisma } from '../../lib/prisma'
+import { requireTenantFromRequest, resolveTenantFromRequest, tenantIsolationStrict } from '../../lib/tenant-isolation'
+import { isAdminUser } from '../../lib/permissions/admin'
+import { ForbiddenError } from '../../lib/errors'
 
 export const llmRoutingRouter: ExpressRouter = Router()
+
+function tenantFilter(req: Request): { tenantId?: string } {
+  const tenantId = tenantIsolationStrict()
+    ? requireTenantFromRequest(req, 'LLM routing operation')
+    : resolveTenantFromRequest(req)
+  return tenantId ? { tenantId } : {}
+}
+
+async function requireAdmin(req: Request): Promise<void> {
+  if (!req.user?.userId || !(await isAdminUser(req.user.userId))) {
+    throw new ForbiddenError('LLM routing configuration requires an administrator role.')
+  }
+}
 
 // The surfaces that pick a model today (see the LLM routing map). Static list —
 // adding a touch point is a code change because something has to consume it.
@@ -121,9 +137,9 @@ function loadConnections(): Connection[] {
 // Connections come from the DB (admin-added). If none have been added yet, fall
 // back to the catalog so the palette isn't empty on first use. Only env var names
 // and presence booleans are returned; never secret values.
-llmRoutingRouter.get('/connections', async (_req, res, next) => {
+llmRoutingRouter.get('/connections', async (req, res, next) => {
   try {
-    const rows = await prisma.llmConnection.findMany({ where: { enabled: true }, orderBy: { name: 'asc' } })
+    const rows = await prisma.llmConnection.findMany({ where: { enabled: true, ...tenantFilter(req) }, orderBy: { name: 'asc' } })
     if (rows.length > 0) {
       return res.json({
         source: 'db',
@@ -151,26 +167,36 @@ const connSchema = z.object({
 
 llmRoutingRouter.post('/connections', async (req, res, next) => {
   try {
+    await requireAdmin(req)
     const b = connSchema.parse(req.body)
     const createdById = (req as { user?: { userId?: string } }).user?.userId
-    const row = await prisma.llmConnection.upsert({
-      where: { alias: b.alias },
-      create: { ...b, createdById },
-      update: { name: b.name, provider: b.provider, model: b.model, baseUrl: b.baseUrl, credentialEnv: b.credentialEnv, enabled: b.enabled },
-    })
+    const scope = tenantFilter(req)
+    const existing = await prisma.llmConnection.findFirst({ where: { alias: b.alias, ...scope } })
+    const row = existing
+      ? await prisma.llmConnection.update({
+        where: { id: existing.id },
+        data: { name: b.name, provider: b.provider, model: b.model, baseUrl: b.baseUrl, credentialEnv: b.credentialEnv, enabled: b.enabled },
+      })
+      : await prisma.llmConnection.create({ data: { ...b, createdById, ...scope } })
     res.status(201).json(serializeConnection(row))
   } catch (e) { next(e) }
 })
 
 llmRoutingRouter.delete('/connections/:id', async (req, res, next) => {
-  try { await prisma.llmConnection.delete({ where: { id: req.params.id } }); res.status(204).end() }
+  try {
+    await requireAdmin(req)
+    const existing = await prisma.llmConnection.findFirst({ where: { id: req.params.id, ...tenantFilter(req) } })
+    if (!existing) return res.status(404).json({ error: 'LLM connection not found' })
+    await prisma.llmConnection.delete({ where: { id: existing.id } })
+    res.status(204).end()
+  }
   catch (e) { next(e) }
 })
 
 llmRoutingRouter.get('/touch-points', (_req, res) => { res.json({ items: TOUCH_POINTS }) })
 
-llmRoutingRouter.get('/rules', async (_req, res, next) => {
-  try { res.json({ items: await prisma.llmRouting.findMany({ orderBy: [{ touchPoint: 'asc' }, { scopeType: 'asc' }] }) }) }
+llmRoutingRouter.get('/rules', async (req, res, next) => {
+  try { res.json({ items: await prisma.llmRouting.findMany({ where: tenantFilter(req), orderBy: [{ touchPoint: 'asc' }, { scopeType: 'asc' }] }) }) }
   catch (e) { next(e) }
 })
 
@@ -186,23 +212,33 @@ const ruleSchema = z.object({
 
 llmRoutingRouter.post('/rules', async (req, res, next) => {
   try {
+    await requireAdmin(req)
     const b = ruleSchema.parse(req.body)
     const scopeId = b.scopeType === 'DEFAULT' ? '' : b.scopeId
     if (b.scopeType !== 'DEFAULT' && !scopeId) {
       return res.status(400).json({ error: `${b.scopeType} rule requires a scopeId (the user or capability id)` })
     }
     const createdById = (req as { user?: { userId?: string } }).user?.userId
-    const row = await prisma.llmRouting.upsert({
-      where: { touchPoint_scopeType_scopeId: { touchPoint: b.touchPoint, scopeType: b.scopeType, scopeId } },
-      create: { ...b, scopeId, createdById },
-      update: { modelAlias: b.modelAlias, enabled: b.enabled, positionX: b.positionX, positionY: b.positionY },
-    })
+    const scope = tenantFilter(req)
+    const existing = await prisma.llmRouting.findFirst({ where: { touchPoint: b.touchPoint, scopeType: b.scopeType, scopeId, ...scope } })
+    const row = existing
+      ? await prisma.llmRouting.update({
+        where: { id: existing.id },
+        data: { modelAlias: b.modelAlias, enabled: b.enabled, positionX: b.positionX, positionY: b.positionY },
+      })
+      : await prisma.llmRouting.create({ data: { ...b, scopeId, createdById, ...scope } })
     res.status(201).json(row)
   } catch (e) { next(e) }
 })
 
 llmRoutingRouter.delete('/rules/:id', async (req, res, next) => {
-  try { await prisma.llmRouting.delete({ where: { id: req.params.id } }); res.status(204).end() }
+  try {
+    await requireAdmin(req)
+    const existing = await prisma.llmRouting.findFirst({ where: { id: req.params.id, ...tenantFilter(req) } })
+    if (!existing) return res.status(404).json({ error: 'LLM routing rule not found' })
+    await prisma.llmRouting.delete({ where: { id: existing.id } })
+    res.status(204).end()
+  }
   catch (e) { next(e) }
 })
 
@@ -214,7 +250,7 @@ llmRoutingRouter.get('/resolve', async (req, res, next) => {
     const userId = req.query.userId ? String(req.query.userId) : ''
     const capabilityId = req.query.capabilityId ? String(req.query.capabilityId) : ''
     if (!touchPoint) return res.status(400).json({ error: 'touchPoint is required' })
-    const rules = await prisma.llmRouting.findMany({ where: { touchPoint, enabled: true } })
+    const rules = await prisma.llmRouting.findMany({ where: { touchPoint, enabled: true, ...tenantFilter(req) } })
     const pick = (scopeType: string, scopeId: string) => rules.find(r => r.scopeType === scopeType && r.scopeId === scopeId)
     const match =
       (userId && pick('USER', userId)) ||

@@ -2569,6 +2569,7 @@ class GovernedSingleTurnRequest(BaseModel):
 async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")) -> dict[str, Any]:
     check_execute_service_token(x_service_token)
     from .governed.llm_client import call_gateway_chat
+    from .governed.direct_llm_client import call_direct_chat, is_context_fabric_direct_route
     from .governed.placement import llm_laptop_target, runtime_capability_tags, runtime_tenant_target
 
     rc = req.run_context or {}
@@ -2597,30 +2598,46 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
         messages.append({"role": "system", "content": req.system_prompt})
     messages.append({"role": "user", "content": req.task})
 
+    direct_route = is_context_fabric_direct_route(rc)
     try:
-        resp = await call_gateway_chat(
-            messages=messages,
-            model_alias=mo.get("modelAlias") or mo.get("model_alias"),
-            expected_provider=mo.get("expectedProvider") or mo.get("expected_provider") or mo.get("provider"),
-            expected_model=mo.get("expectedModel") or mo.get("expected_model") or mo.get("model"),
-            temperature=mo.get("temperature"),
-            max_output_tokens=(
-                mo.get("maxOutputTokens")
-                or mo.get("max_output_tokens")
-                or limits.get("outputTokenBudget")
-            ),
-            # Placement: route this single turn to the launching user's laptop
-            # when the run opted into laptop LLM and a laptop is serving model-run;
-            # otherwise the cloud gateway. Mirrors turn.py:920. See placement.py.
-            laptop_user_id=llm_laptop_target(rc),
-            runtime_tenant_id=runtime_tenant_target(rc),
-            runtime_capability_tags=runtime_capability_tags(rc),
-        )
+        if direct_route:
+            resp = await call_direct_chat(
+                messages=messages,
+                tools=None,
+                model_alias=mo.get("modelAlias") or mo.get("model_alias"),
+                run_context=rc,
+                temperature=mo.get("temperature"),
+                max_output_tokens=(
+                    mo.get("maxOutputTokens")
+                    or mo.get("max_output_tokens")
+                    or limits.get("outputTokenBudget")
+                ),
+                timeout_sec=limits.get("timeoutSec") or limits.get("timeout_sec"),
+            )
+        else:
+            resp = await call_gateway_chat(
+                messages=messages,
+                model_alias=mo.get("modelAlias") or mo.get("model_alias"),
+                expected_provider=mo.get("expectedProvider") or mo.get("expected_provider") or mo.get("provider"),
+                expected_model=mo.get("expectedModel") or mo.get("expected_model") or mo.get("model"),
+                temperature=mo.get("temperature"),
+                max_output_tokens=(
+                    mo.get("maxOutputTokens")
+                    or mo.get("max_output_tokens")
+                    or limits.get("outputTokenBudget")
+                ),
+                # Placement: route this single turn to the launching user's laptop
+                # when the run opted into laptop LLM and a laptop is serving model-run;
+                # otherwise the cloud gateway. Mirrors turn.py:920. See placement.py.
+                laptop_user_id=llm_laptop_target(rc),
+                runtime_tenant_id=runtime_tenant_target(rc),
+                runtime_capability_tags=runtime_capability_tags(rc),
+            )
     except LLMGatewayError as exc:
         emit_audit_event(
             kind="governed.turn_failed", trace_id=trace_id, capability_id=cap,
             subject_type="governed_turn", severity="error",
-            payload={"posture": "governed_turn", "overlayHash": overlay_hash, "error": str(exc)},
+            payload={"posture": "governed_turn", "llmRoute": "context-fabric-direct" if direct_route else "gateway-or-runtime", "overlayHash": overlay_hash, "error": str(exc)},
         )
         raise HTTPException(status_code=502, detail={"code": "LLM_ERROR", "message": str(exc)})
 
@@ -2633,6 +2650,7 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
             "governanceMode": governance_mode,
             "governanceOverlay": overlay,
             "governanceWaivers": req.governance_waivers,
+            "llmRoute": "context-fabric-direct" if direct_route else "gateway-or-runtime",
             "provider": resp.provider, "model": resp.model, "modelAlias": resp.model_alias,
             "inputTokens": resp.input_tokens, "outputTokens": resp.output_tokens,
         },
@@ -2655,6 +2673,7 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
             "modelAlias": resp.model_alias,
             "governanceMode": governance_mode,
             "executionPosture": "governed",
+            "llmRoute": "context-fabric-direct" if direct_route else "gateway-or-runtime",
             "llmCallIds": [], "toolInvocationIds": [], "artifactIds": [], "codeChangeIds": [],
         },
         "tokensUsed": {"input": resp.input_tokens, "output": resp.output_tokens, "total": total_tokens},
