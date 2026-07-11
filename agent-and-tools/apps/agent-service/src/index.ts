@@ -30,6 +30,7 @@ import { startEventDispatcher as startToolEventDispatcher } from "./tool/lib/eve
 import { startSelfRegistration as startToolSelfRegistration } from "./tool/lib/platform-registry/register";
 import { seedCoreToolkit } from "./tool/lib/seed-core-tools";
 import { ensureToolSchema } from "./tool/lib/ensure-tool-schema";
+import { ensureEventBusSchema } from "./lib/eventbus/ensure-eventbus-schema";
 
 dotenv.config();
 
@@ -85,9 +86,10 @@ app.get("/healthz/strict", async (_req, res) => {
 // adds the bootstrap view that those invariants don't cover (dispatchers).
 type BootStep = "pending" | "ok" | "failed";
 const bootstrapState: Record<
-  "agentDispatcher" | "toolDispatcher" | "learningSchema" | "coreToolkit",
+  "eventBusSchema" | "agentDispatcher" | "toolDispatcher" | "learningSchema" | "coreToolkit",
   BootStep
 > = {
+  eventBusSchema: "pending",
   agentDispatcher: "pending",
   toolDispatcher: "pending",
   learningSchema: "pending",
@@ -143,23 +145,41 @@ app.use("/api/v1/events/subscriptions", eventSubscriptionsRouter);
 
 app.use(errorHandler);
 
-// M11.e — start BOTH dispatchers; they drain separate outboxes
-// (agent.event_outbox / tool.event_outbox), so there is no contention.
-void startEventDispatcher()
+// M11.e — ensure the raw event-bus schema exists (idempotent self-heal), THEN
+// start BOTH dispatchers; they drain separate outboxes (agent.event_outbox /
+// tool.event_outbox), so there is no contention. The dispatchers query those raw
+// tables directly; they come from packages/db/init.sql, which runs ONLY as a
+// Docker fresh-volume entrypoint. On bare-metal (Prisma db push creates only
+// public.*) or an existing volume predating them, the tables are missing and the
+// 30s safety sweep logs `relation "agent.event_outbox" does not exist`. Mirrors
+// ensureToolSchema()/ensureLearningSchema(). Start the dispatchers regardless of
+// the ensure outcome (no regression if it fails); on success the tables now
+// exist so the sweeps no longer error.
+void ensureEventBusSchema()
   .then(() => {
-    bootstrapState.agentDispatcher = "ok";
+    bootstrapState.eventBusSchema = "ok";
   })
   .catch((err) => {
-    bootstrapState.agentDispatcher = "failed";
-    console.warn(`[eventbus] agent dispatcher failed to start: ${(err as Error).message}`);
-  });
-void startToolEventDispatcher()
-  .then(() => {
-    bootstrapState.toolDispatcher = "ok";
+    bootstrapState.eventBusSchema = "failed";
+    console.warn(`[eventbus] event-bus schema bootstrap failed: ${(err as Error).message}`);
   })
-  .catch((err) => {
-    bootstrapState.toolDispatcher = "failed";
-    console.warn(`[eventbus] tool dispatcher failed to start: ${(err as Error).message}`);
+  .finally(() => {
+    void startEventDispatcher()
+      .then(() => {
+        bootstrapState.agentDispatcher = "ok";
+      })
+      .catch((err) => {
+        bootstrapState.agentDispatcher = "failed";
+        console.warn(`[eventbus] agent dispatcher failed to start: ${(err as Error).message}`);
+      });
+    void startToolEventDispatcher()
+      .then(() => {
+        bootstrapState.toolDispatcher = "ok";
+      })
+      .catch((err) => {
+        bootstrapState.toolDispatcher = "failed";
+        console.warn(`[eventbus] tool dispatcher failed to start: ${(err as Error).message}`);
+      });
   });
 
 // M11.a — self-register both logical capability sets (no-op if env unset). Both
