@@ -351,6 +351,63 @@ const STATUS_COLOR: Record<string, string> = {
   BLOCKED:   '#f59e0b',
 }
 
+type TrustSummary = {
+  status: string
+  needsAttention: boolean
+  nodes: { total: number; active: number; failed: number; blocked: number; byStatus: Record<string, number> }
+  reliability: { stuckRecovered: number; retried: number }
+  governance: { awaitingApproval: number }
+  verification: { verdicts: Record<string, number>; unverifiedConsumables: number }
+}
+
+// WF-4 UI — self-contained run trust glance. Owns its own /trust-summary query and
+// renders nothing until data arrives, so it can never affect the rest of the page.
+function RunTrustSummary({ instanceId }: { instanceId: string }) {
+  const { data } = useQuery({
+    queryKey: ['run-trust-summary', instanceId],
+    enabled: !!instanceId,
+    queryFn: async () => (await api.get(`/workflow-instances/${instanceId}/trust-summary`)).data as TrustSummary,
+  })
+  if (!data) return null
+  const tile = (label: string, value: number | string, tone?: 'warn' | 'bad') => (
+    <div key={label} style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: '8px 10px', background: '#fff' }}>
+      <div style={{ fontSize: 9, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.4 }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 600, color: tone === 'bad' ? '#dc2626' : tone === 'warn' ? '#b45309' : '#0f172a' }}>{value}</div>
+    </div>
+  )
+  const verdictEntries = Object.entries(data.verification?.verdicts ?? {})
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>Trust summary</div>
+        <span style={{
+          fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 999,
+          background: data.needsAttention ? '#fef2f2' : '#f0fdf4',
+          color: data.needsAttention ? '#dc2626' : '#16a34a',
+          border: `1px solid ${data.needsAttention ? '#fecaca' : '#bbf7d0'}`,
+        }}>{data.needsAttention ? 'Needs attention' : 'Healthy'}</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8 }}>
+        {tile('Nodes', data.nodes?.total ?? 0)}
+        {tile('Failed', data.nodes?.failed ?? 0, (data.nodes?.failed ?? 0) > 0 ? 'bad' : undefined)}
+        {tile('Blocked', data.nodes?.blocked ?? 0, (data.nodes?.blocked ?? 0) > 0 ? 'warn' : undefined)}
+        {tile('Awaiting approval', data.governance?.awaitingApproval ?? 0, (data.governance?.awaitingApproval ?? 0) > 0 ? 'warn' : undefined)}
+        {tile('Stuck-recovered', data.reliability?.stuckRecovered ?? 0, (data.reliability?.stuckRecovered ?? 0) > 0 ? 'warn' : undefined)}
+        {tile('Retried', data.reliability?.retried ?? 0)}
+      </div>
+      {verdictEntries.length > 0 ? (
+        <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {verdictEntries.map(([k, v]) => (
+            <span key={k} style={{ fontSize: 10, padding: '2px 8px', borderRadius: 6, background: '#f8fafc', border: '1px solid #e2e8f0', color: /FAIL|ERROR/i.test(k) ? '#dc2626' : '#475569' }}>
+              verify: {k} × {v}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function RunInsightsPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = usePlatformNavigate()
@@ -394,6 +451,8 @@ export function RunInsightsPage() {
           cursor: 'pointer', marginBottom: 12,
         }}
       ><ArrowLeft size={12} /> Back</button>
+
+      <RunTrustSummary instanceId={id} />
 
       {/* Header */}
       <div style={{
