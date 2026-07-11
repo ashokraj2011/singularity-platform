@@ -408,14 +408,58 @@ workflowInstancesRouter.get('/:id/nodes', async (req, res, next) => {
 // without re-downloading the whole graph.
 workflowInstancesRouter.get('/:id/nodes/:nodeId', async (req, res, next) => {
   try {
+    const tenantId = resolveTenantFromRequest(req)
+    const instanceId = req.params.id as string
+    const nodeId = req.params.nodeId as string
     const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findFirst({
-      where: { id: req.params.nodeId as string, instanceId: req.params.id as string },
-    }), resolveTenantFromRequest(req))
+      where: { id: nodeId, instanceId },
+    }), tenantId)
     if (!node) {
       res.status(404).json({ error: 'Node not found' })
       return
     }
-    res.json(node)
+
+    // WF-3 explainability — a per-node "decision record": what the node's agent did,
+    // what it produced, and any verification verdict, aggregated from data already
+    // captured (agent_runs / documents / consumables, joined by nodeId). Tool runs are
+    // instance-scoped (no nodeId); the exact composed prompt + grounding layers are at
+    // the composed-prompt endpoint referenced below. So a reviewer can see, per node,
+    // WHAT happened and WHY — the trust surface for autonomous stages.
+    const [agentRuns, documents, consumables] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
+      tx.agentRun.findMany({ where: { nodeId, instanceId } }),
+      tx.document.findMany({ where: { nodeId, instanceId } }),
+      tx.consumable.findMany({ where: { nodeId, instanceId } }),
+    ]), tenantId)
+    const cfg = (node.config ?? {}) as Record<string, unknown>
+    const asRec = (v: unknown): Record<string, unknown> | null =>
+      (v && typeof v === 'object' && !Array.isArray(v)) ? (v as Record<string, unknown>) : null
+    const decisionRecord = {
+      node: {
+        status: node.status,
+        nodeType: node.nodeType,
+        attempt: node.attempt,
+        retryAttempts: cfg._attempts ?? 0,
+        startedAt: node.startedAt,
+        durationMs: node.startedAt ? node.updatedAt.getTime() - node.startedAt.getTime() : null,
+        lastError: cfg._lastError ?? null,
+        stuckRecovered: cfg._stuckSweptAttempt !== undefined,
+      },
+      composedPromptEndpoint: `/api/workflow-instances/${instanceId}/nodes/${nodeId}/composed-prompt`,
+      agentRuns: agentRuns.map((r) => {
+        const rec = r as Record<string, unknown>
+        return { id: rec.id, agentId: rec.agentId ?? null, status: rec.status ?? null, modelCallId: rec.modelCallId ?? null, createdAt: rec.createdAt ?? null }
+      }),
+      artifacts: documents.map((d) => {
+        const rec = d as Record<string, unknown>
+        return { id: rec.id, mimeType: rec.mimeType ?? null, storageKey: rec.storageKey ?? null, createdAt: rec.createdAt ?? null }
+      }),
+      consumables: consumables.map((c) => {
+        const rec = c as Record<string, unknown>
+        const fd = asRec(rec.formData)
+        return { id: rec.id, status: rec.status ?? null, verification: fd?._verification ?? null, createdAt: rec.createdAt ?? null }
+      }),
+    }
+    res.json({ ...node, decisionRecord })
   } catch (err) { next(err) }
 })
 
