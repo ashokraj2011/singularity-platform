@@ -327,46 +327,11 @@ export async function advance(
     tenantId,
   )
   if (completionCandidate.status === 'ACTIVE' && await isComplete(completionCandidate)) {
-    const completedAt = new Date()
-    // Finding #3 — atomically claim the terminal transition; only the caller whose update
-    // actually flips the status (count === 1) runs the completion side effects, so two
-    // converging terminal branches can't double-emit the receipt, outbox event, learning
-    // record, parent CALL_WORKFLOW advance, or WorkItem completion.
-    const claim = await withTenantDbTransaction(
-      prisma,
-      (tx) => tx.workflowInstance.updateMany({
-        where: { id: instanceId, status: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } },
-        data: { status: 'COMPLETED', completedAt },
-      }),
-      tenantId,
-    )
-    if (claim.count === 1) {
-      const eventId = await logEvent('WorkflowCompleted', 'WorkflowInstance', instanceId, actorId)
-      await createReceipt('WORKFLOW_COMPLETED', 'WorkflowInstance', instanceId, {
-        instanceId,
-        completedAt: completedAt.toISOString(),
-      }, eventId)
-      await publishOutbox('WorkflowInstance', instanceId, 'WorkflowCompleted', { instanceId })
-      void recordRunLearning(instanceId, 'COMPLETED', tenantId)
-      const completedInstance = await withTenantDbTransaction(
-        prisma,
-        (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }),
-        tenantId,
-      )
-      await handleWorkItemChildCompletion(completedInstance, actorId)
-
-      // If this instance is a child, advance the parent's CALL_WORKFLOW node. A
-      // child/parent pair are always the same tenant in practice (cloneDesignToRun
-      // propagates tenantId from the spawning context), so reusing this step's
-      // tenantId is correct; if they ever genuinely differ, RLS/withTenantDbTransaction
-      // fail closed (no rows / a clear error) rather than leaking across tenants.
-      if (instance.parentInstanceId && instance.parentNodeId) {
-        const parentCtx = (instance.context ?? {}) as Record<string, unknown>
-        await advance(instance.parentInstanceId, instance.parentNodeId, {
-          _childCompleted: { instanceId, context: parentCtx },
-        }, actorId, undefined, tenantId)
-      }
-    }
+    // Finding #3 — atomically claim the terminal transition (see
+    // finalizeInstanceCompletion): only the caller whose update flips the status
+    // runs the receipt / outbox / learning / WorkItem-child / parent-CALL_WORKFLOW
+    // side-effects, so two converging terminal branches can't double-emit.
+    await finalizeInstanceCompletion(instance, actorId, tenantId)
   }
 }
 
@@ -1651,31 +1616,70 @@ export async function pauseInstance(
   await publishOutbox('WorkflowInstance', instanceId, 'WorkflowPaused', { instanceId })
 }
 
+/**
+ * Shared terminal-completion claim + side-effects for a run that has reached a
+ * complete state. Both advance() and resumeInstance() call this so they can't drift
+ * (resumeInstance previously used a non-atomic update that could double-emit
+ * WorkflowCompleted / the receipt / run-learning AND skipped WorkItem-child + parent
+ * CALL_WORKFLOW handling). The atomic updateMany makes only ONE converging path
+ * (count === 1) run the side-effects. The caller must have already confirmed the
+ * instance is ACTIVE + isComplete(). Returns whether this call claimed completion.
+ */
+async function finalizeInstanceCompletion(
+  instance: WorkflowInstance,
+  actorId?: string,
+  tenantId?: string,
+): Promise<boolean> {
+  const instanceId = instance.id
+  const completedAt = new Date()
+  const claim = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.updateMany({
+    where: { id: instanceId, status: { notIn: ['COMPLETED', 'FAILED', 'CANCELLED'] } },
+    data: { status: 'COMPLETED', completedAt },
+  }), tenantId)
+  if (claim.count !== 1) return false
+  const eventId = await logEvent('WorkflowCompleted', 'WorkflowInstance', instanceId, actorId)
+  await createReceipt('WORKFLOW_COMPLETED', 'WorkflowInstance', instanceId, {
+    instanceId,
+    completedAt: completedAt.toISOString(),
+  }, eventId)
+  await publishOutbox('WorkflowInstance', instanceId, 'WorkflowCompleted', { instanceId })
+  void recordRunLearning(instanceId, 'COMPLETED', tenantId)
+  const completedInstance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }), tenantId)
+  await handleWorkItemChildCompletion(completedInstance, actorId)
+  // If this instance is a child, advance the parent's CALL_WORKFLOW node (same-tenant
+  // in practice; RLS/withTenantDbTransaction fail closed if they ever differ).
+  if (instance.parentInstanceId && instance.parentNodeId) {
+    const parentCtx = (instance.context ?? {}) as Record<string, unknown>
+    await advance(instance.parentInstanceId, instance.parentNodeId, {
+      _childCompleted: { instanceId, context: parentCtx },
+    }, actorId, undefined, tenantId)
+  }
+  return true
+}
+
 export async function resumeInstance(
   instanceId: string,
   actorId?: string,
   // RLS prep — see startInstance's tenantId param comment.
   tenantId?: string,
 ): Promise<void> {
-  const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }), tenantId)
-  if (instance.status !== 'PAUSED') return
-
-  // Reactivate first so queued advances can proceed
-  await withTenantDbTransaction(prisma, async (tx) => {
-    await tx.workflowInstance.update({
-      where: { id: instanceId },
-      data: { status: 'ACTIVE' },
-    })
-    await tx.workflowMutation.create({
-      data: {
-        instanceId,
-        mutationType: 'INSTANCE_STATUS_CHANGE',
-        beforeState: { status: 'PAUSED' },
-        afterState: { status: 'ACTIVE' },
-        performedById: actorId,
-      },
-    })
-  }, tenantId)
+  // Atomically claim PAUSED→ACTIVE so concurrent resume calls (double-click, retry,
+  // multi-replica) can't both drain the pending-advance queue below. Only the caller
+  // whose update flips the status (count === 1) proceeds; the rest return.
+  const resumeClaim = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.updateMany({
+    where: { id: instanceId, status: 'PAUSED' },
+    data: { status: 'ACTIVE' },
+  }), tenantId)
+  if (resumeClaim.count !== 1) return
+  await withTenantDbTransaction(prisma, (tx) => tx.workflowMutation.create({
+    data: {
+      instanceId,
+      mutationType: 'INSTANCE_STATUS_CHANGE',
+      beforeState: { status: 'PAUSED' },
+      afterState: { status: 'ACTIVE' },
+      performedById: actorId,
+    },
+  }), tenantId)
   await logEvent('WorkflowResumed', 'WorkflowInstance', instanceId, actorId)
   await publishOutbox('WorkflowInstance', instanceId, 'WorkflowResumed', { instanceId })
 
@@ -1704,20 +1708,12 @@ export async function resumeInstance(
     await activateDownstream(currentInstance, completedNode, ctx, actorId)
   }
 
-  // Re-check completion
+  // Re-check completion — delegate to the shared atomic finalizer (which also runs
+  // the WorkItem-child + parent CALL_WORKFLOW handling the old inline resume path
+  // skipped, and can't double-emit under concurrent completion).
   const finalInstance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }), tenantId)
   if (finalInstance.status === 'ACTIVE' && (await isComplete(finalInstance))) {
-    await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.update({
-      where: { id: instanceId },
-      data: { status: 'COMPLETED', completedAt: new Date() },
-    }), tenantId)
-    const eventId = await logEvent('WorkflowCompleted', 'WorkflowInstance', instanceId, actorId)
-    await createReceipt('WORKFLOW_COMPLETED', 'WorkflowInstance', instanceId, {
-      instanceId,
-      completedAt: new Date().toISOString(),
-    }, eventId)
-    await publishOutbox('WorkflowInstance', instanceId, 'WorkflowCompleted', { instanceId })
-    void recordRunLearning(instanceId, 'COMPLETED', tenantId)
+    await finalizeInstanceCompletion(finalInstance, actorId, tenantId)
   }
 }
 
