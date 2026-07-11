@@ -1053,6 +1053,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
         <button onClick={onClose} style={{ ...topBtn, padding: 6 }}><X size={14} /></button>
       </div>
       <IoContract node={node} />
+      <NodeDecisionRecord instanceId={instanceId} nodeId={node.id} />
       <div style={{ display: 'flex', gap: 4, padding: '8px 10px', borderBottom: '1px solid #f1f5f9' }}>
         {tabs.map(t => {
           const isQ = t === 'questions'
@@ -1282,6 +1283,55 @@ function nextStepTone(tone: 'amber' | 'green' | 'muted'): CSSProperties {
 // what this phase READS from upstream and WRITES for downstream — the visible
 // data-flow of the delivery pipeline. Read-only; renders nothing for nodes with
 // no declared artifacts.
+type DecisionRecord = {
+  node?: { durationMs?: number | null; retryAttempts?: number; stuckRecovered?: boolean; lastError?: unknown }
+  agentRuns?: unknown[]
+  artifacts?: unknown[]
+  consumables?: Array<{ verification?: unknown }>
+}
+
+// WF-3 UI — per-node decision record in the inspector. Self-contained: fetches the
+// node detail (which carries decisionRecord) and renders nothing until it arrives,
+// so it can't affect the rest of the inspector.
+function NodeDecisionRecord({ instanceId, nodeId }: { instanceId: string; nodeId: string }) {
+  const { data } = useQuery({
+    queryKey: ['node-decision-record', instanceId, nodeId],
+    enabled: !!instanceId && !!nodeId,
+    queryFn: async () => (await api.get(`/workflow-instances/${instanceId}/nodes/${nodeId}`)).data as { decisionRecord?: DecisionRecord },
+  })
+  const dr = data?.decisionRecord
+  if (!dr) return null
+  const row = (label: string, value: string) => (
+    <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11 }}>
+      <span style={{ color: '#94a3b8' }}>{label}</span>
+      <span style={{ color: '#0f172a', fontWeight: 600, textAlign: 'right' }}>{value}</span>
+    </div>
+  )
+  const agentRuns = dr.agentRuns ?? []
+  const artifacts = dr.artifacts ?? []
+  const verified = (dr.consumables ?? []).filter(c => c.verification)
+  const err = dr.node?.lastError
+  const errMsg = typeof err === 'string'
+    ? err
+    : (err && typeof err === 'object' ? String((err as { message?: unknown }).message ?? 'error') : null)
+  return (
+    <div style={{ margin: '0 16px 12px', padding: 10, border: '1px solid #e2e8f0', borderRadius: 8, background: '#ffffff', display: 'grid', gap: 6 }}>
+      <div style={{ fontSize: 10, fontWeight: 800, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Decision record</div>
+      {row('Duration', dr.node?.durationMs != null ? `${Math.round(dr.node.durationMs / 1000)}s` : '—')}
+      {row('Attempts', String(dr.node?.retryAttempts ?? 0))}
+      {row('Agent runs', String(agentRuns.length))}
+      {row('Artifacts', String(artifacts.length))}
+      {verified.length > 0 ? row('Verified', String(verified.length)) : null}
+      {dr.node?.stuckRecovered ? (
+        <div style={{ fontSize: 10, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '3px 6px' }}>Stuck-recovered by the watchdog</div>
+      ) : null}
+      {errMsg ? (
+        <div style={{ fontSize: 10, color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '4px 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{errMsg}</div>
+      ) : null}
+    </div>
+  )
+}
+
 function IoContract({ node }: { node: RunGraphNodeData }) {
   const cfg = (node.config ?? {}) as Record<string, unknown>
   const list = (v: unknown) => (Array.isArray(v) ? (v as unknown[]).filter((a): a is Record<string, unknown> => Boolean(a) && typeof a === 'object') : [])
