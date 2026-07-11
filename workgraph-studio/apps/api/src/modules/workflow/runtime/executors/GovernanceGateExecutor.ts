@@ -5,6 +5,7 @@ import { createReceipt, logEvent, publishOutbox } from '../../../../lib/audit'
 import { resolveGovernance, type GovernanceResolveContext } from '../../../../lib/iam/client'
 import { activeWaiverControlKeys } from '../../../governance/governance.router'
 import { evaluateGovernanceBlock, decideGateStatus, type GovernanceBlock, type GovernanceOverlay } from './governance/evaluateBlock'
+import { evaluateConfidenceGating, type ConfidenceGatingConfig } from './governance/confidenceGating'
 import { resolveSatisfiedControls, makeEvidenceChecker, bindingsFromOverlay, controlsReferenced, type BindingMap, type ControlBinding } from './governance/resolveSatisfiedControls'
 import { materializeRunEvidence } from './governance/materializeEvidencePack'
 
@@ -631,8 +632,29 @@ export async function activateGovernanceGate(
   const blocked = evaluateGovernanceBlock(overlay, satisfied, waived)
   const effectiveMode = String(overlay.effectiveMode ?? 'ADVISORY').toUpperCase()
 
-  const status = (mode === 'MANUAL_REVIEW' ? 'APPROVAL_REQUESTED' : decideGateStatus(blocked, mode)) as GateStatus
+  let status = (mode === 'MANUAL_REVIEW' ? 'APPROVAL_REQUESTED' : decideGateStatus(blocked, mode)) as GateStatus
   const checks = gateChecks(overlay, bindings, satisfied, waived, blocked)
+
+  // Confidence-gated autonomy (opt-in, default inert). SAFETY INVARIANT: this can only
+  // ever convert a MANUAL APPROVAL_REQUESTED into an auto PASS, and ONLY when
+  // blocked.length === 0 — a real governance block (an unsatisfied REQUIRED/BLOCKING
+  // control) can NEVER be auto-approved. The guard lives here in the caller, so the
+  // resolver can't widen it. See docs/confidence-gated-autonomy.md.
+  let autoApprovalEvidence: Record<string, unknown> | null = null
+  if (status === 'APPROVAL_REQUESTED' && blocked.length === 0) {
+    const verdict = evaluateConfidenceGating({
+      config: cfgValue(node, 'confidenceGating') as ConfidenceGatingConfig | undefined,
+      context,
+    })
+    if (verdict.autoApprove) {
+      status = 'PASSED'
+      autoApprovalEvidence = verdict.evidence
+    } else if (verdict.shadowWouldApprove) {
+      await logEvent('GovernanceGateWouldAutoApprove', 'WorkflowNode', node.id, actorId, {
+        instanceId: instance.id, ...verdict.evidence,
+      })
+    }
+  }
 
   const gate: GovernanceGateOutput['governanceGate'] = {
     status,
@@ -650,6 +672,7 @@ export async function activateGovernanceGate(
     overlayControlCount: Math.max(0, controlsReferenced(overlay).length - localControls.length),
     formalVerifierUsed: checks.some(c => c.bindingType === 'formal'),
   }
+  if (autoApprovalEvidence) gate.note = 'auto-approved by confidence-gating'
 
   if (status === 'APPROVAL_REQUESTED') {
     if (mode === 'AUTOMATIC' && capabilityId) {
@@ -668,6 +691,19 @@ export async function activateGovernanceGate(
   if (status === 'BLOCKED' || status === 'APPROVAL_REQUESTED') {
     await blockNode(instance, node, output, actorId)
     return { passed: false, output }
+  }
+  // Confidence-gated auto-approval — record a full-weight audit receipt (same as a human
+  // approval: attributable, queryable). Only reached when the invariant above allowed it.
+  if (autoApprovalEvidence) {
+    await createReceipt('GOVERNANCE_GATE_AUTO_APPROVED', 'WorkflowNode', node.id, {
+      instanceId: instance.id,
+      governingCapabilityId: capabilityId,
+      satisfied: [...satisfied],
+      waived: [...waived],
+      evidence: autoApprovalEvidence,
+    })
+    await logEvent('GovernanceGateAutoApproved', 'WorkflowNode', node.id, actorId, { instanceId: instance.id, ...autoApprovalEvidence })
+    await publishOutbox('WorkflowNode', node.id, 'GovernanceGateAutoApproved', { instanceId: instance.id, nodeId: node.id })
   }
   await emitNonBlock(status === 'WARNED' ? 'WARNED' : 'PASSED', instance, node, output, actorId)
   return { passed: true, output }
