@@ -2,7 +2,10 @@
  * Ensure the `tool` schema exists at boot — idempotent self-heal.
  *
  * The folded-in tool-service routes (/api/v1/tools, executions, discovery,
- * runners) and seedCoreToolkit() read the raw `tool.*` schema. That schema is
+ * runners) and seedCoreToolkit() read the raw `tool.*` schema — the tool
+ * registry, execution ledger, client-runner registry + its job queue
+ * (tool.client_execution_jobs), and the tool audit trail
+ * (tool.tool_audit_events). That schema is
  * created by packages/db/init.sql — but ONLY as a Docker postgres entrypoint
  * (fresh-volume). On bare-metal the agent-tools DB is provisioned by Prisma
  * `db push`, which creates the public.* models (ToolDefinition, …) but NOT the
@@ -111,5 +114,41 @@ export async function ensureToolSchema(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_client_runners_user ON tool.client_runners(user_id);
     CREATE INDEX IF NOT EXISTS idx_client_runners_status ON tool.client_runners(status);
     CREATE INDEX IF NOT EXISTS idx_client_runners_capabilities_gin ON tool.client_runners USING GIN(capabilities);
+
+    CREATE TABLE IF NOT EXISTS tool.client_execution_jobs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tool_execution_id UUID REFERENCES tool.tool_executions(id),
+        assigned_runner_id TEXT REFERENCES tool.client_runners(id),
+        status TEXT NOT NULL DEFAULT 'pending',
+        job_payload JSONB NOT NULL,
+        result_payload JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        error TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_client_jobs_runner
+        ON tool.client_execution_jobs(assigned_runner_id, status);
+    CREATE INDEX IF NOT EXISTS idx_client_jobs_status ON tool.client_execution_jobs(status);
+    CREATE INDEX IF NOT EXISTS idx_client_jobs_payload_gin ON tool.client_execution_jobs USING GIN(job_payload);
+
+    CREATE TABLE IF NOT EXISTS tool.tool_audit_events (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tool_name TEXT,
+        tool_version TEXT,
+        capability_id TEXT,
+        agent_uid TEXT,
+        session_id TEXT,
+        actor_user_id UUID,
+        event_type TEXT NOT NULL,
+        payload JSONB DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tool_audit_tool
+        ON tool.tool_audit_events(tool_name, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_tool_audit_capability
+        ON tool.tool_audit_events(capability_id, created_at DESC);
   `);
 }
