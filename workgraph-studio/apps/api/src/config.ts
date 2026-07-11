@@ -93,6 +93,13 @@ const envSchema = z.object({
   // MUST match the backfill migration + the app role's `SET app.tenant_id`
   // default; if you change it, re-backfill and re-run bootstrap-app-role.sh.
   WORKGRAPH_DEFAULT_TENANT_ID: z.string().min(1).default('default'),
+  // Stuck-run watchdog (durable-execution hardening). A SERVER node whose in-process
+  // execution died leaves the node ACTIVE forever (no timer / pending row / signal
+  // wait to recover it). The watchdog recovers ACTIVE non-wait nodes untouched past
+  // this age (default 30 min): failNode() retries them if retryPolicy attempts remain,
+  // else FAILs so the run surfaces loudly instead of hanging.
+  WORKFLOW_STUCK_NODE_THRESHOLD_MS: z.coerce.number().int().positive().default(1_800_000),
+  WORKFLOW_STUCK_WATCHDOG_ENABLED: z.enum(['true', 'false']).default('true'),
   EVENT_HORIZON_MODEL_ALIAS: z.string().optional(),
 
   // One-shot LLM calls route through Context Fabric's governed single-turn API.
