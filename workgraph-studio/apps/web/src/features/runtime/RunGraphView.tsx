@@ -17,8 +17,8 @@ import { useMemo, useState, useCallback, useEffect, type CSSProperties, type Ele
 import { RuntimeWidgetForm } from '../forms/widgets/RuntimeWidgetForm'
 import type { FormWidget } from '../forms/widgets/types'
 import ReactFlow, {
-  Background, BackgroundVariant, Controls, Handle, Position,
-  type Node, type Edge, type NodeProps,
+  Background, BackgroundVariant, Controls, Handle, Position, Panel, useNodesState,
+  type Edge, type NodeProps,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -578,18 +578,34 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
   }, [focusNode, orderedRunNodes])
   const activeNodeIds = useMemo(() => new Set(orderedRunNodes.filter(n => activeStatus(n.status)).map(n => n.id)), [orderedRunNodes])
 
-  const rfNodes: Node<CardData>[] = useMemo(() => nodes.map(n => ({
-    id: n.id,
-    type: 'runCard',
-    position: positions.get(n.id) ?? { x: 0, y: 0 },
-    data: {
-      ...n,
-      config: { ...n.config, _instanceId: instanceId },
-      selected: selected === n.id,
-      onSelect, onRestart: restartMut.mutate, onApprove: approveMut.mutate, onStart: startMut.mutate,
-      busy: busyId === n.id,
-    },
-  })), [nodes, positions, selected, instanceId, onSelect, restartMut.mutate, approveMut.mutate, startMut.mutate, busyId])
+  // Draggable react-flow nodes (useNodesState) so the user can hand-align the graph.
+  // Rebuilt when the run data changes, PRESERVING any positions the user dragged so a
+  // poll refresh doesn't snap them back to the computed layout.
+  const [rfNodes, setRfNodes, onNodesChange] = useNodesState<CardData>([])
+  useEffect(() => {
+    setRfNodes(prev => {
+      const dragged = new Map(prev.map(p => [p.id, p.position]))
+      return nodes.map(n => ({
+        id: n.id,
+        type: 'runCard',
+        position: dragged.get(n.id) ?? positions.get(n.id) ?? { x: 0, y: 0 },
+        data: {
+          ...n,
+          config: { ...n.config, _instanceId: instanceId },
+          selected: selected === n.id,
+          onSelect, onRestart: restartMut.mutate, onApprove: approveMut.mutate, onStart: startMut.mutate,
+          busy: busyId === n.id,
+        },
+      }))
+    })
+    // onSelect + the *.mutate callbacks are stable; the deps below drive the rebuild.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, positions, selected, instanceId, busyId])
+
+  // "Re-align" — snap every node back to the computed topological layout.
+  const realign = useCallback(() => {
+    setRfNodes(prev => prev.map(n => ({ ...n, position: positions.get(n.id) ?? n.position })))
+  }, [positions, setRfNodes])
 
   const rfEdges: Edge[] = useMemo(() => edges.map(e => {
     const isLiveEdge = live && (activeNodeIds.has(e.sourceNodeId) || activeNodeIds.has(e.targetNodeId))
@@ -668,13 +684,21 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
         <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
           <ReactFlow
             nodes={rfNodes} edges={rfEdges} nodeTypes={nodeTypes}
+            onNodesChange={onNodesChange}
             fitView fitViewOptions={{ padding: 0.2 }}
-            nodesDraggable={false} nodesConnectable={false} elementsSelectable
+            nodesDraggable nodesConnectable={false} elementsSelectable
             proOptions={{ hideAttribution: true }}
             onPaneClick={() => setSelected(null)}
           >
             <Background variant={BackgroundVariant.Dots} gap={22} size={1.1} color="#dbe6e9" />
             <Controls showInteractive={false} />
+            <Panel position="top-right">
+              <button
+                onClick={realign}
+                title="Snap all nodes back to the auto layout"
+                style={{ fontSize: 11, fontWeight: 600, color: '#334155', background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', boxShadow: '0 1px 3px rgba(15,23,42,0.08)' }}
+              >Re-align</button>
+            </Panel>
           </ReactFlow>
         </div>
         {showActivity
