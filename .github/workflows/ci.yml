@@ -89,6 +89,51 @@ jobs:
       - run: cd apps/api && npx prisma generate
       - run: cd apps/api && npx tsc --noEmit
 
+  workgraph-api-integration:
+    name: workgraph-api — integration (real Postgres)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workgraph-studio
+    # Real Postgres so the runtime's raw SQL is exercised for real. The unit suite
+    # mocks prisma, so a `::uuid` cast on the TEXT `workflow_nodes.id` column
+    # (Postgres 42883 `text = uuid`) type-checks + ships yet breaks join/timer/sweep
+    # advancement — this job is the layer that catches that class. See
+    # workgraph-studio/apps/api/test/workflow-runtime.integration.test.ts.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: workgraph
+          POSTGRES_PASSWORD: workgraph
+          POSTGRES_DB: workgraph_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U workgraph"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # startInstance() → prisma reads DATABASE_URL; TEST_DATABASE_URL un-skips the
+      # suite; JWT_SECRET is gated by config.ts at import time (mirrors `npm test`).
+      DATABASE_URL: postgresql://workgraph:workgraph@localhost:5432/workgraph_test
+      TEST_DATABASE_URL: postgresql://workgraph:workgraph@localhost:5432/workgraph_test
+      JWT_SECRET: test-jwt-secret-min-32-chars-long!
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install --no-audit --no-fund
+      - run: cd apps/api && npx prisma generate
+      # Apply the schema to the throwaway CI Postgres (fresh DB → no migration history needed).
+      - run: cd apps/api && npx prisma db push --skip-generate
+      # Scoped to the integration suite (TEST_DATABASE_URL un-skips it). Broadening CI
+      # to the full vitest suite is a follow-up — many existing tests only ever ran
+      # locally against :5434 and haven't been vetted for a clean-DB CI run.
+      - run: cd apps/api && npx vitest run test/workflow-runtime.integration.test.ts
+
   python:
     name: python services — byte-compile
     runs-on: ubuntu-latest
