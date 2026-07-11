@@ -8,6 +8,7 @@ import { prisma } from './lib/prisma'
 import { ensureBucket } from './lib/minio'
 import { startOutboxProcessor } from './modules/audit/outbox/OutboxProcessor'
 import { startTimerSweep } from './modules/workflow/runtime/TimerSweep'
+import { startStuckRunSweep } from './modules/workflow/runtime/StuckRunSweep'
 import { startTriggerScheduler } from './modules/workflow/triggers/TriggerScheduler'
 import { startSelfRegistration } from './lib/platform-registry/register'
 import { startEventDispatcher } from './lib/eventbus/dispatcher'
@@ -31,6 +32,7 @@ async function main() {
   // Start background pollers
   startOutboxProcessor()
   startTimerSweep()
+  startStuckRunSweep()
   startTriggerScheduler()
   startLaptopHeartbeatWatchdog()
 
