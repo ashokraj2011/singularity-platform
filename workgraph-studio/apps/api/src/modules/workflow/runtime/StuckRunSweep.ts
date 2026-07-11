@@ -86,7 +86,7 @@ export function startStuckRunSweep(): void {
             UPDATE "workflow_nodes"
             SET config = jsonb_set(COALESCE(config, '{}'::jsonb), '{_stuckSweptAttempt}',
                                    COALESCE(config->'_attempts', '0'::jsonb))
-            WHERE id = ${row.id}::uuid
+            WHERE id = ${row.id}
               AND status = 'ACTIVE'
               AND "updatedAt" < ${threshold}
               AND COALESCE(config->>'_stuckSweptAttempt', '') IS DISTINCT FROM COALESCE(config->>'_attempts', '0')

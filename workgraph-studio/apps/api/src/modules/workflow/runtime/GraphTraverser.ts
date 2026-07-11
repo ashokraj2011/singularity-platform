@@ -225,7 +225,10 @@ export async function resolveNextNodes(
           '{completed_joins}',
           (COALESCE((config->>'completed_joins')::int, 0) + 1)::text::jsonb
         )
-        WHERE id = ${targetNode.id}::uuid
+        WHERE id = ${targetNode.id}
+        -- workflow_nodes.id is TEXT (String @id), NOT uuid — casting the param to
+        -- ::uuid yields "operator does not exist: text = uuid" and the join never
+        -- increments (breaks PARALLEL_JOIN advancement).
       `
       return tx.workflowNode.findUnique({ where: { id: targetNode.id } })
     }, tenantId)
