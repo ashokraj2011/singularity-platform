@@ -45,7 +45,7 @@ export function startTimerSweep(): void {
         const claimed = await withTenantDbTransaction(prisma, (tx) => tx.$executeRaw`
           UPDATE "workflow_nodes"
           SET config = config - '_fireAt'
-          WHERE id = ${node.id}::uuid
+          WHERE id = ${node.id}
             AND status = 'ACTIVE'
             AND config ? '_fireAt'
             AND (config->>'_fireAt')::timestamptz <= ${now}::timestamptz
@@ -123,7 +123,7 @@ export function startTimerSweep(): void {
         const claimed = await withTenantDbTransaction(prisma, (tx) => tx.$executeRaw`
           UPDATE "workflow_nodes"
           SET config = config - '_deadlineFireAt'
-          WHERE id = ${row.id}::uuid
+          WHERE id = ${row.id}
             AND status = 'ACTIVE'
             AND config ? '_deadlineFireAt'
             AND (config->>'_deadlineFireAt')::timestamptz <= ${now}::timestamptz
