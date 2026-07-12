@@ -750,6 +750,10 @@ function resolveHarnessOptions(
     artifacts,
     outputJsonSchema: outputSchema,
     validationMode,
+    // Adaptive-loop controls: skip remaining phases once the output contract is satisfied, and allow a
+    // bounded VERIFY→REPAIR feedback loop (mirrors the governed loop's max_repair_attempts, hard-capped 3).
+    earlyStop: harnessBool(node, 'earlyStop', true),
+    maxRepairAttempts: Math.min(Math.max(Math.trunc(harnessNumber(node, 'maxRepairAttempts', 3)), 0), 3),
   }
 }
 
