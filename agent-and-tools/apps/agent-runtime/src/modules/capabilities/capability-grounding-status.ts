@@ -90,6 +90,48 @@ export function shouldRecordGroundingAttempt(input: {
   return input.dryRun !== true && input.refreshRepositoryProfiles !== false;
 }
 
+/**
+ * The operator remediation ("fix") command for a capability's grounding status.
+ * Pure so it is unit-testable and never drifts from the runtime routes.
+ *
+ *  - BLOCKED / STALE → re-run repository grounding. Also re-embed the knowledge
+ *    corpus WHEN embeddings are degraded — NULL-vector rows are invisible to
+ *    semantic retrieval, so the previous hard-coded `reembed:false` left the
+ *    surfaced degradation UNrepaired even after the operator ran the "fix".
+ *  - Otherwise (e.g. LEARNED) but embeddings degraded → a targeted backfill of the
+ *    NULL-vector knowledge artifacts via /embeddings/reembed. Previously NO fix was
+ *    surfaced for this silent-degradation case — the status flagged `degraded` with
+ *    no actionable remedy.
+ *  - Fully grounded, embeddings intact → null.
+ *
+ * The default provider's embeddings API is the common cause of `embeddingDegraded`
+ * (the shipped model alias resolves to a provider with no embeddings endpoint);
+ * once a working provider is configured, the returned command backfills the gaps.
+ */
+export function buildGroundingFixCommand(input: {
+  capabilityId: string;
+  status: CapabilityLearningGroundingStatus;
+  embeddingDegraded: boolean;
+  platformBaseUrl?: string;
+}): string | null {
+  const base = (input.platformBaseUrl ?? "http://localhost:5180").replace(/\/+$/, "");
+  const headers = "-H 'authorization: Bearer <token>' -H 'content-type: application/json'";
+  const endpoint = (path: string) => `${base}/api/runtime/capabilities/${input.capabilityId}${path}`;
+  if (input.status === "BLOCKED" || input.status === "STALE") {
+    const body = JSON.stringify({
+      syncApprovedSources: false,
+      refreshRepositoryProfiles: true,
+      reembed: input.embeddingDegraded,
+    });
+    return `curl -X POST ${endpoint("/learning-worker/run")} ${headers} -d '${body}'`;
+  }
+  if (input.embeddingDegraded) {
+    const body = JSON.stringify({ kinds: ["knowledge"] });
+    return `curl -X POST ${endpoint("/embeddings/reembed")} ${headers} -d '${body}'`;
+  }
+  return null;
+}
+
 function normalizeGroundingStatus(value: string): CapabilityLearningGroundingStatus {
   const upper = value.toUpperCase();
   if (upper === "RUNNING" || upper === "LEARNED" || upper === "STALE" || upper === "BLOCKED" || upper === "NOT_CONFIGURED" || upper === "ARCHIVED") {
