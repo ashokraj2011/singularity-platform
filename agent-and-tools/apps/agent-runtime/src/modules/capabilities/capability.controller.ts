@@ -2,6 +2,10 @@ import { Request, Response } from "express";
 import { capabilityService } from "./capability.service";
 import { syncKnowledgeSourceNow, syncRepositoryNow } from "./poll-worker";
 import { ok } from "../../shared/response";
+// Tenant entitlement gate for capability-scoped READS. Mirrors the memory list
+// reads: 403s a capabilityId outside the caller's scope in a tenant-scoped
+// deploy so these routes can't read another tenant's grounding by UUID (IDOR).
+import { assertCapabilityReadScope } from "../memory/memory.tenant-scope";
 // M61 Slice E — repo-fingerprint drift detection. Exposed as a thin
 // REST endpoint so any caller with a workspace on disk (mcp-server,
 // workgraph-api, an operator script) can submit a fingerprint without
@@ -52,9 +56,11 @@ export const capabilityController = {
     return ok(res, await capabilityService.readiness(req.params.id));
   },
   async groundingStatus(req: Request, res: Response) {
+    assertCapabilityReadScope(req.user, req.params.id);
     return ok(res, await capabilityService.groundingStatus(req.params.id));
   },
   async architectureDiagram(req: Request, res: Response) {
+    assertCapabilityReadScope(req.user, req.params.id);
     return ok(res, await capabilityService.architectureDiagram(req.params.id));
   },
   async update(req: Request, res: Response) {
@@ -115,6 +121,7 @@ export const capabilityController = {
     return ok(res, await capabilityService.addKnowledge(req.params.id, req.body), 201);
   },
   async listKnowledge(req: Request, res: Response) {
+    assertCapabilityReadScope(req.user, req.params.id);
     const includeArchived = String(req.query.includeArchived ?? "").toLowerCase() === "true";
     return ok(res, await capabilityService.listKnowledge(req.params.id, { includeArchived }));
   },
@@ -136,6 +143,7 @@ export const capabilityController = {
     return ok(res, updated, 200);
   },
   async listKnowledgeSources(req: Request, res: Response) {
+    assertCapabilityReadScope(req.user, req.params.id);
     return ok(res, await capabilityService.listKnowledgeSources(req.params.id));
   },
   async addKnowledgeSource(req: Request, res: Response) {
@@ -225,6 +233,7 @@ export const capabilityController = {
   //
   // Read-only. Idempotent. Safe to call on every workflow start.
   async getWorldModel(req: Request, res: Response) {
+    assertCapabilityReadScope(req.user, req.params.id);
     const view = await getWorldModel(req.params.id);
     if (!view) return res.status(404).json({ error: "world model not yet generated for this capability" });
     // For a parent / delivery capability, embed its children's world models BY
