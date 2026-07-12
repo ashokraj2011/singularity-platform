@@ -50,7 +50,21 @@ const GIT_HASH_TIMEOUT_MS = config.MCP_WORKTREE_GIT_HASH_TIMEOUT_MS;
 const GIT_WRITE_TIMEOUT_MS = config.MCP_WORKTREE_GIT_WRITE_TIMEOUT_MS;
 const MAX_SUMMARY_CHARS = 16_000;
 const MAX_DIFF_CHARS = 200_000;
+// Advisory blast-radius bound: a run touching more than this many paths (or a diff over
+// MAX_DIFF_CHARS) is flagged `overBudget` on the receipt. The Copilot CLI already ran, so this is
+// a signal for downstream governance/review, not a pre-emptive block.
+const MAX_CHANGED_PATHS = 200;
 const PROCESS_KILL_GRACE_MS = config.MCP_PROCESS_KILL_GRACE_MS;
+
+/**
+ * Build the Copilot CLI argv. `--allow-all` lets the CLI edit files AND run commands unattended;
+ * it is the current default, but can be turned off per-call (`args.allow_all=false`, threaded from a
+ * governed run's `run_context.copilot_allow_all`) to shrink the blast radius. Pure + exported so the
+ * arg contract is unit-testable without spawning a process.
+ */
+export function buildCopilotArgs(task: string, allowAll: boolean): string[] {
+  return allowAll ? ["-p", task, "--allow-all"] : ["-p", task];
+}
 
 interface SpawnResult { code: number | null; stdout: string; stderr: string; timedOut: boolean }
 
@@ -101,6 +115,10 @@ export const copilotExecuteTool: ToolHandler = {
           items: { type: "string" },
           description: "Declared output-artifact paths (deliverables the stage should produce). Captured directly even if git-status doesn't see them (e.g. written outside the git tree).",
         },
+        allow_all: {
+          type: "boolean",
+          description: "Run the CLI with --allow-all so it may edit files and run commands unattended (default true). Set false for a more constrained run; either way the CLI runs the whole coding loop internally with no per-tool governance mid-run.",
+        },
       },
       required: ["task"],
     },
@@ -109,9 +127,12 @@ export const copilotExecuteTool: ToolHandler = {
       properties: {
         summary: { type: "string" },
         changedPaths: { type: "array", items: { type: "string" } },
+        changedPathsCount: { type: "number" },
         diff: { type: "string" },
         diffTruncated: { type: "boolean" },
         diffFullChars: { type: "number" },
+        overBudget: { type: "boolean" },
+        governance: { type: "object" },
       },
     },
     // Mutating + command-executing — the CLI edits files and runs commands.
@@ -124,16 +145,19 @@ export const copilotExecuteTool: ToolHandler = {
     const timeoutMs = typeof args.timeout_ms === "number" && args.timeout_ms > 0
       ? Math.min(Math.floor(args.timeout_ms), MAX_TIMEOUT_MS)
       : DEFAULT_TIMEOUT_MS;
+    // --allow-all is the default (current behaviour); a caller (e.g. a governed run threading
+    // run_context.copilot_allow_all=false) can opt into a more constrained CLI run.
+    const allowAll = args.allow_all !== false;
     const cwd = resolveSandboxedPath(".");
     const started = Date.now();
 
     // Observability: log the exact prompt handed to the Copilot CLI so operators
     // can see what was sent (tail logs/mcp-server.log). Echoed in the output too.
-    log.info({ cwd, promptChars: task.length, prompt: task.slice(0, 2000) }, "copilot_execute → copilot -p (prompt sent)");
+    log.info({ cwd, promptChars: task.length, allowAll, prompt: task.slice(0, 2000) }, "copilot_execute → copilot -p (prompt sent)");
 
     let res: SpawnResult;
     try {
-      res = await spawnCapture(COPILOT_BIN, ["-p", task, "--allow-all"], cwd, timeoutMs);
+      res = await spawnCapture(COPILOT_BIN, buildCopilotArgs(task, allowAll), cwd, timeoutMs);
     } catch (err) {
       return {
         success: false,
@@ -262,6 +286,8 @@ export const copilotExecuteTool: ToolHandler = {
     // partial body. Surface a structured flag + the full length.
     const diffFullChars = diff.length;
     const diffTruncated = diffFullChars > MAX_DIFF_CHARS;
+    const changedPathsOverBudget = changedPaths.length > MAX_CHANGED_PATHS;
+    const overBudget = diffTruncated || changedPathsOverBudget;
     return {
       success: true,
       output: {
@@ -270,10 +296,27 @@ export const copilotExecuteTool: ToolHandler = {
         prompt: truncate(task, MAX_SUMMARY_CHARS),
         summary: truncate(res.stdout.trim(), MAX_SUMMARY_CHARS),
         changedPaths,
+        changedPathsCount: changedPaths.length,
         artifacts,
         diff: truncate(diff, MAX_DIFF_CHARS),
         diffTruncated,
         diffFullChars,
+        overBudget,
+        // Governance reality of this executor: the Copilot CLI ran the ENTIRE think→edit→run loop
+        // internally under `-p [--allow-all]`, so the platform applied NO per-tool governance mid-run.
+        // Stamp that on the receipt so audit doesn't mistake one delegated tool-run for a governed loop.
+        // The levers that DO apply are the prompt, the wall-clock timeout, and this post-hoc size bound.
+        governance: {
+          in_loop: false,
+          approval: "post_hoc",
+          risk_level: "HIGH",
+          allow_all: allowAll,
+          changed_paths_over_budget: changedPathsOverBudget,
+          diff_truncated: diffTruncated,
+          note:
+            "Copilot CLI executed the whole coding loop internally; no per-tool governance was applied " +
+            "mid-run. Levers in effect: prompt, wall-clock timeout, post-hoc diff/size bound.",
+        },
         commitSha,
         timed_out: res.timedOut,
         exit_code: res.code,
