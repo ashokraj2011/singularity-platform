@@ -62,6 +62,7 @@ def parse_copilot_result(result: Any) -> dict[str, Any]:
         {"path": str(a.get("path") or ""), "content": str(a.get("content") or "")}
         for a in raw_artifacts if isinstance(a, dict) and a.get("path")
     ]
+    gov = data.get("governance")
     return {
         "summary": str(data.get("summary") or ""),
         "diff": str(data.get("diff") or ""),
@@ -69,6 +70,10 @@ def parse_copilot_result(result: Any) -> dict[str, Any]:
         "artifacts": artifacts,
         "commit_sha": data.get("commitSha") or data.get("commit_sha"),
         "duration_ms": data.get("duration_ms"),
+        # The mcp-server receipt records that the Copilot CLI ran the whole loop with no per-tool
+        # governance mid-run; carry it through so audit sees the truth (see copilot-execute.ts).
+        "governance": gov if isinstance(gov, dict) else None,
+        "over_budget": bool(data.get("overBudget")),
     }
 
 
@@ -201,6 +206,16 @@ def _expected_output_paths(run_context: dict[str, Any] | None, vars: dict[str, A
             if resolved:
                 paths.append(resolved)
     return paths
+
+
+def _copilot_allow_all(run_context: dict[str, Any] | None) -> bool:
+    """Whether to let the Copilot CLI run with ``--allow-all`` (edit files AND run commands
+    unattended). Defaults True (current behaviour); a governed run can set
+    ``run_context.copilot_allow_all = false`` to shrink the executor's blast radius. Either way
+    the CLI still runs the whole coding loop internally — there is no per-tool governance mid-run."""
+    rc = run_context or {}
+    val = rc.get("copilot_allow_all")
+    return True if val is None else bool(val)
 
 
 def _render_artifact_contract(run_context: dict[str, Any] | None, vars: dict[str, Any] | None) -> list[str]:
@@ -389,7 +404,11 @@ async def run_stage_via_copilot(
     try:
         disp = await dispatch_tool(
             "copilot_execute",
-            {"task": prompt_for_copilot, "expected_paths": _expected_output_paths(run_context, vars)},
+            {
+                "task": prompt_for_copilot,
+                "expected_paths": _expected_output_paths(run_context, vars),
+                "allow_all": _copilot_allow_all(run_context),
+            },
             work_item_id=work_item_id,
             run_context=run_context,
             bearer=bearer,
@@ -429,6 +448,17 @@ async def run_stage_via_copilot(
             "diff": parsed["diff"],
             "commitSha": parsed["commit_sha"],
             "served_by": disp.served_by,
+            # The Copilot CLI ran the whole loop internally — no per-tool governance mid-run. Carry
+            # the mcp-server governance block through (or synthesize it), plus the over-budget signal,
+            # so a delegated tool-run is never mistaken for a governed loop.
+            "governance": parsed["governance"] or {
+                "in_loop": False,
+                "approval": "post_hoc",
+                "risk_level": "HIGH",
+                "allow_all": _copilot_allow_all(run_context),
+                "note": "Copilot CLI executed the whole coding loop internally; no per-tool governance mid-run.",
+            },
+            "over_budget": parsed["over_budget"],
         }
     )
     produced = dict(state.produced_code_changes)
