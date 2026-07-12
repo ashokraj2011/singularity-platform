@@ -376,6 +376,22 @@ run_preflight_check() {
   esac
   echo
 
+  echo "6. Complete environment inventory"
+  local env_status=0
+  local token_present=0
+  [ -n "$runtime_token" ] && token_present=1
+  local env_args=(all --runtime-token-present "$token_present" --split-runtime)
+  [ -n "$context_url" ] && env_args+=(--context-fabric-url "$context_url")
+  [ -n "$bridge_url" ] && env_args+=(--bridge-url "$bridge_url")
+  [ -n "$runtime_id" ] && env_args+=(--runtime-id "$runtime_id")
+  [ -n "$runtime_name" ] && env_args+=(--runtime-name "$runtime_name")
+  [ -n "$workspace" ] && env_args+=(--workspace "$workspace")
+  [ -n "$provider" ] && env_args+=(--provider "$provider")
+  [ -n "$default_model" ] && env_args+=(--default-model "$default_model")
+  "$ROOT/bin/check-deployment-env.sh" "${env_args[@]}" || env_status=$?
+  [ "$env_status" -eq 0 ] || CHECK_FAIL=$((CHECK_FAIL + 1))
+  echo
+
   echo "Summary: OK=$CHECK_PASS WARN=$CHECK_WARN MISSING=$CHECK_FAIL"
   if [ "$CHECK_FAIL" -gt 0 ]; then
     echo "Run the fix commands above, then rerun: bin/setup-mcp-server.sh check"

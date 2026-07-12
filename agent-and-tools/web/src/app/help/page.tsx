@@ -5,6 +5,7 @@ import {
   ShieldCheck, Activity, Network, LifeBuoy, Lightbulb,
 } from "lucide-react";
 import { PageHeader } from "@/components/ui/primitives";
+import { PlatformGuideNodeDirectory } from "@/components/help/PlatformGuideNodeDirectory";
 
 export const metadata: Metadata = {
   title: "User Guide & Help · Singularity Platform",
@@ -22,7 +23,10 @@ const TOC: TocItem[] = [
   { id: "agent-studio", label: "Agent Studio" },
   { id: "capabilities", label: "Capabilities & onboarding" },
   { id: "tools", label: "Tools & grants" },
+  { id: "work-items", label: "WorkItems" },
+  { id: "events", label: "Events & routing" },
   { id: "workflows", label: "Workflows & Workbench" },
+  { id: "workflow-nodes", label: "Workflow node reference" },
   { id: "identity", label: "Identity & access" },
   { id: "governance", label: "Governance & FinOps" },
   { id: "operations", label: "Operations & health" },
@@ -146,6 +150,39 @@ export default function HelpPage() {
         </p>
       </Section>
 
+      <Section id="work-items" icon={GitBranch} title="WorkItems: the business anchor">
+        <p>
+          A <strong>WorkItem</strong> is the durable business record behind a run: a story, incident, request, document review,
+          or external work identifier. It keeps the human meaning of the work separate from the workflow template that executes it.
+          Open <Link href="/work-items" className={linkCls}>WorkItems</Link> to inspect status, routing state, targets, documents,
+          and linked workflow instances.
+        </p>
+        <p><strong>Ways to create one:</strong></p>
+        <ul className="list-disc space-y-2 pl-5">
+          <li><Link href="/workflows/planner" className={linkCls}>Story Planner</Link> turns a story into proposed WorkItems; commit the plan before launch.</li>
+          <li><Link href="/workflows/control-plane?tab=event-intake" className={linkCls}>Inbound event triggers</Link> create or attach a WorkItem using mapped fields such as work id, title, description, and documents.</li>
+          <li>Manual creation uses a WorkItem type, capability, title, description, and routing mode.</li>
+        </ul>
+        <p><strong>Routing modes:</strong> <code>AUTO_START</code> creates/attaches and starts the matching workflow, <code>AUTO_ATTACH</code> routes without starting, <code>MANUAL</code> leaves the next action to an operator, and <code>SCHEDULED_START</code> waits for the scheduler.</p>
+        <p>Use a stable work id or dedupe key for retries. The WorkItem carries documents, trace id, capability, routing policy, and workflow links so a replay does not create an unrelated piece of work.</p>
+      </Section>
+
+      <Section id="events" icon={Activity} title="Events, triggers, and routing">
+        <p>
+          An event becomes workflow work only when an active trigger matches its event type and capability. Configure triggers and routing policies in the
+          <Link href="/workflows/control-plane?tab=event-intake" className={linkCls}> Workflow Control Plane</Link>.
+        </p>
+        <ol className="list-decimal space-y-2 pl-5">
+          <li>Define an <strong>EVENT</strong>, <strong>WEBHOOK</strong>, or <strong>SCHEDULE</strong> trigger with an event key and WorkItem type.</li>
+          <li>Map payload paths to WorkItem fields and choose a routing mode. Use <code>AUTO_START</code> to launch immediately.</li>
+          <li>Match the capability and workflow type in a routing policy. The policy chooses the workflow template and optional runtime/model route.</li>
+          <li>Simulate from the Event Intake tab, or send an authenticated event to <code>/api/events/ingest</code>. Cross-service producers use signed <code>/api/events/incoming</code>.</li>
+          <li>Observe received → matched → routed → running → completed/failed/dead-lettered in Event Intake and Replay Center.</li>
+        </ol>
+        <p><strong>Event payload advice:</strong> include a stable <code>workId</code>, a human-readable <code>description</code>, capability identity, correlation/trace id, and any documents as URLs or full content. Use <code>deliveryId</code> or the configured dedupe key when a producer retries.</p>
+        <p><strong>Outbound events:</strong> Event Emit writes to the platform outbox first, then the configured EventBus/SQS/Kafka/SNS/AMQP delivery. Retrying a delivery does not rerun the workflow; replaying an inbound event does.</p>
+      </Section>
+
       <Section id="workflows" icon={Workflow} title="Workflows & Workbench">
         <p>
           <Link href="/workflows" className={linkCls}>Workflows</Link> is where you plan, launch, and monitor runs —
@@ -156,6 +193,21 @@ export default function HelpPage() {
           A run advances through stages; a <strong>governance gate</strong> can block or pause it pending an approval
           or waiver. The run cockpit shows what blocked it and the evidence behind each decision.
         </p>
+        <p>
+          Start in <Link href="/start" className={linkCls}>Guided Launch</Link> for Build Feature, Fix Bug, Refactor, Add Tests,
+          Security Review, or Release Evidence. Use the advanced <Link href="/workflows/templates" className={linkCls}>template gallery</Link>
+          and React Flow designer when you need custom nodes, branches, event waits, direct LLM routes, or reusable governance gates.
+        </p>
+        <p><strong>Authoring sequence:</strong> create a draft template → add and label nodes → connect sequential or error-boundary edges → configure node JSON → validate with sample context → publish a version → start a run. Published versions are the immutable execution contract; edit a new draft instead of changing a run in progress.</p>
+      </Section>
+
+      <Section id="workflow-nodes" icon={Workflow} title="Workflow node reference">
+        <p>
+          Every node guide below explains purpose, when to use it, execution location, configuration, output, and failure risks.
+          In the designer, choose a node type to see a compact version before adding it; select a node to see the full guidance beside its JSON configuration.
+          Edges matter too: regular sequential edges advance normally, while <code>ERROR_BOUNDARY</code> edges route failures to Error Catch.
+        </p>
+        <PlatformGuideNodeDirectory />
       </Section>
 
       <Section id="identity" icon={Users} title="Identity & access">
@@ -195,6 +247,8 @@ export default function HelpPage() {
           Avoid running two runtimes under the same id (they evict each other). If tool/model dispatch stalls, check
           the runtime registry in Operations.
         </p>
+        <p><strong>Execution locations:</strong> <code>SERVER</code> runs in the WorkGraph API process, <code>CLIENT</code> is claimed by a browser/desktop SDK, <code>EDGE</code> is claimed by an edge or on-premise runner, and <code>EXTERNAL</code> is delegated through the pending-execution protocol. Client, Edge, and External nodes remain pending until a runner claims and completes them; they do not run automatically just because the node was added.</p>
+        <p><strong>LLM choices:</strong> an Agent Task uses the agent profile and its governed route; a Direct LLM Task can call a configured provider without MCP when explicitly selected; a Workbench Task adds a human collaboration surface. Store only credential environment-variable names in workflow configuration.</p>
       </Section>
 
       <Section id="troubleshooting" icon={LifeBuoy} title="Troubleshooting">

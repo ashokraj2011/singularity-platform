@@ -86,13 +86,19 @@ providers.
 ```bash
 singularity-runtime start
 singularity-runtime status
+singularity-runtime doctor
 singularity-runtime logs mcp-server
 singularity-runtime logs llm-gateway
 singularity-runtime stop
-singularity-runtime doctor
 singularity-runtime revoke
 singularity-runtime logout
 ```
+
+`doctor` inventories every client-side variable without printing secret values:
+runtime enrollment, bridge URL, provider keys, Git/Copilot readiness, local
+paths, fallback mode, and required executables. A missing runtime token or
+runtime id is blocking; provider and Git values are conditional warnings until
+the selected workflow needs them.
 
 `start` passes the token to the MCP process in memory and does not write the
 runtime token into the repository's `.singularity/laptop-device-token`. The

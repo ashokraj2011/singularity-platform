@@ -64,7 +64,7 @@ export const ROUTES: RouteMeta[] = [
   { id: "start", label: "Start SDLC Work", href: "/start", group: "Start Here", icon: Play, priority: "journey", surfaceType: "launch", statusLabel: "Start" },
   { id: "home", label: "Command Center", href: "/", group: "Start Here", icon: LayoutDashboard, priority: "primary", surfaceType: "launch" },
   { id: "control-plane", label: "App Catalog", href: "/control-plane", group: "Start Here", icon: Network, priority: "secondary", surfaceType: "operation" },
-  { id: "help", label: "User Guide", href: "/help", group: "Start Here", icon: BookOpen, priority: "secondary", surfaceType: "launch" },
+  { id: "help", label: "Platform Guide", href: "/help", group: "Start Here", icon: BookOpen, priority: "secondary", surfaceType: "launch", description: "Learn WorkItems, workflows, events, runtimes, node options, and troubleshooting.", keywords: ["help", "guide", "docs", "workitem", "event", "node", "workflow", "runbook"] },
 
   // Operations Center
   { id: "ops-readiness", label: "Readiness", href: "/operations/readiness", group: "Operations Center", icon: Activity, priority: "primary", surfaceType: "operation" },

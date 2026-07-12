@@ -52,6 +52,7 @@ Usage:
   bin/docker-core.sh preflight [--with-audit]
   bin/docker-core.sh seed [--with-audit]
   bin/docker-core.sh smoke [--with-audit]
+  bin/docker-core.sh env-check [--strict] [--split-runtime]
   bin/docker-core.sh status
   bin/docker-core.sh logs <service-or-container>
   bin/docker-core.sh down [--with-audit]
@@ -824,6 +825,9 @@ cmd="${1:-}"
 shift || true
 
 case "$cmd" in
+  env-check|check-env)
+    exec "$ROOT/bin/check-deployment-env.sh" server "$@"
+    ;;
   up)
     parse_flags "$@"
     require_docker

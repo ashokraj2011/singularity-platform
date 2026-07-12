@@ -296,12 +296,19 @@ BARE_METAL_DEEP_SMOKE=1 bin/bare-metal-apps.sh smoke  # route/API/browser parity
 BARE_METAL_TRACE_SPINE=1 bin/bare-metal-apps.sh smoke  # also verify trace_id evidence across runtime stores
 bin/bare-metal-apps.sh status     # list platform app PIDs
 bin/bare-metal-apps.sh logs workgraph-api    # tail one platform app service
+bin/bare-metal-apps.sh env-check # inventory server env names and safe posture
 bin/bare-metal-apps.sh down       # stop platform apps + free platform ports
 
 bin/bare-metal-runtime.sh up      # optional local llm-gateway + mcp-server
 bin/bare-metal-runtime.sh smoke   # check :8001 and :7100
+bin/bare-metal-runtime.sh env-check # inventory client/runtime env names
 bin/bare-metal-runtime.sh down    # stop only local runtime infra
 ```
+
+For the unified server-side inventory, use `./singularity.sh env-check` or
+`bin/doctor.sh --env-only`. Add `ENV_CHECK_STRICT=1` to make conditional
+production-boundary misses blocking. These checks show only presence and
+length, never secret values.
 
 Idempotent — re-runs of `up` skip installs and DB creation if they already happened, just re-boots. `bin/bare-metal.sh` remains as a compatibility all-in-one launcher; prefer the split scripts for normal work. Defaults: `db_password` from `$PGPASSWORD` env or `postgres`, `db_host=localhost`, `db_port=5432`.
 

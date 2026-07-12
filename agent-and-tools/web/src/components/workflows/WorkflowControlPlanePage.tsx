@@ -374,6 +374,7 @@ export function WorkflowControlPlanePage() {
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Link className="btn-secondary" href="/workflows/templates"><Workflow size={15} /> Workflow manager</Link>
             <Link className="btn-secondary" href="/workflows/routing-policies"><Route size={15} /> Routing</Link>
+            <Link className="btn-secondary" href="/help#events"><Webhook size={15} /> Event guide</Link>
             <button className="btn-secondary" type="button" onClick={mutateAll}><RefreshCw size={15} /> Refresh</button>
           </div>
         </div>

@@ -32,9 +32,12 @@ import {
   GitBranch,
   GitFork,
   GitMerge,
+  GitPullRequest,
+  HelpCircle,
   Link2,
   Network,
   Package,
+  Puzzle,
   Play,
   Plus,
   Radio,
@@ -54,6 +57,7 @@ import {
 } from "lucide-react";
 import { asRow, asString } from "@/lib/row";
 import { formatDate, shortId, unwrapWorkgraphItems, valueText, workgraphFetch } from "@/lib/workgraph";
+import { NodeHelpCard } from "@/components/workflows/NodeHelpCard";
 
 type WorkflowTemplate = {
   id: string;
@@ -113,6 +117,9 @@ const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType; labe
   CONSUMABLE_CREATION: { color: "#d97706", Icon: Package, label: "Create Artifact" },
   TOOL_REQUEST: { color: "#ea580c", Icon: Wrench, label: "Tool Request" },
   GIT_PUSH: { color: "#475569", Icon: GitBranch, label: "Git Push" },
+  CREATE_BRANCH: { color: "#64748b", Icon: GitBranch, label: "Create Branch" },
+  RAISE_PR: { color: "#0f766e", Icon: GitPullRequest, label: "Raise Pull Request" },
+  CUSTOM: { color: "#64748b", Icon: Puzzle, label: "Custom Node" },
   POLICY_CHECK: { color: "#475569", Icon: Shield, label: "Policy Check" },
   TIMER: { color: "#ca8a04", Icon: Clock, label: "Timer" },
   SIGNAL_WAIT: { color: "#0891b2", Icon: Radio, label: "Signal Wait" },
@@ -157,7 +164,9 @@ const NODE_TYPES = [
   "FOREACH",
   "TOOL_REQUEST",
   "RUN_PYTHON",
+  "CREATE_BRANCH",
   "GIT_PUSH",
+  "RAISE_PR",
   "CALL_WORKFLOW",
   "WORK_ITEM",
   "CONSUMABLE_CREATION",
@@ -417,6 +426,7 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
         <Link href="/workflows/templates" className="btn-secondary"><ArrowLeft size={15} /> Back to workflows</Link>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Link href="/help#workflow-nodes" className="btn-secondary"><HelpCircle size={15} /> Node guide</Link>
           {isWorkbench && <Link href="/workbench" className="btn-secondary"><Braces size={15} /> Workbench</Link>}
           <Link href={`/workflows/templates?run=${workflowId}`} className="btn-primary"><Play size={15} /> Start Workflow</Link>
           <button className="btn-secondary" type="button" onClick={() => { void reloadGraph(); void reloadTemplate(); }}><RefreshCw size={15} /> Refresh</button>
@@ -468,6 +478,7 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
                   {NODE_TYPES.map((type) => <option key={type} value={type}>{nodeTypeLabel(type)}</option>)}
                 </select>
               </Field>
+              <NodeHelpCard nodeType={newNodeType} compact />
               <Field label="Label"><input value={newNodeLabel} onChange={(event) => setNewNodeLabel(event.target.value)} placeholder="Review request" style={inputStyle()} /></Field>
               <button className="btn-primary" type="button" disabled={busy === "node" || !newNodeLabel.trim()} onClick={() => void addNode()}><Plus size={14} /> Add node</button>
             </div>
@@ -530,6 +541,7 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
                     <div style={{ color: "var(--color-outline)", fontSize: 11 }}>{nodeTypeLabel(selectedNode.nodeType ?? selectedNode.nodeTypeKey ?? "NODE")} · {shortId(selectedNode.id)}</div>
                   </div>
                 </div>
+                <NodeHelpCard nodeType={selectedNode.nodeType ?? selectedNode.nodeTypeKey ?? "NODE"} />
                 <button className="btn-secondary text-xs" type="button" disabled={busy === selectedNode.id} onClick={() => void deleteNode(selectedNode.id)}><Trash2 size={13} /> Delete node</button>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 12, color: "var(--color-outline)" }}>
                   <div><strong>X:</strong> {selectedNode.positionX ?? 0}</div>

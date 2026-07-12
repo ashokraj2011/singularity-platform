@@ -19,6 +19,7 @@
 #   ./singularity.sh ls                    list known service names
 #   ./singularity.sh login                 quick smoke: IAM /auth/local/login
 #   ./singularity.sh doctor [git|secrets]  validate config, ports, health, keys
+#   ./singularity.sh env-check [--strict]  inventory server deployment environment
 #   ./singularity.sh tenant-isolation      dry-run/apply Workgraph tenant DB forced-RLS cutover
 #   ./singularity.sh office-copilot-only   configure strict office mode: Copilot only
 #   ./singularity.sh config <command>      configure DBs, keys, endpoints, LLMs, MCP
@@ -151,6 +152,9 @@ cmd=${1:-help}
 shift || true
 
 case "$cmd" in
+  env-check|check-env)
+    exec "$SCRIPT_DIR/bin/check-deployment-env.sh" server "$@"
+    ;;
   up)
     require_compose
     target=""

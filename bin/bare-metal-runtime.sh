@@ -651,6 +651,13 @@ cmd_logs() {
   tail -f "$LOG_DIR/${svc}.log"
 }
 
+cmd_env_check() {
+  if [ -n "${SINGULARITY_RUNTIME_TOKEN:-}" ]; then
+    exec "$ROOT/bin/check-deployment-env.sh" client --runtime-token-present 1
+  fi
+  exec "$ROOT/bin/check-deployment-env.sh" client --runtime-config "$ROOT/.singularity"
+}
+
 cmd="${1:-help}"
 shift || true
 case "$cmd" in
@@ -659,6 +666,7 @@ case "$cmd" in
   smoke)  cmd_smoke ;;
   status) cmd_status ;;
   logs)   cmd_logs "$@" ;;
+  env-check|check-env) cmd_env_check ;;
   help|-h|--help)
     cat <<USAGE
 Singularity bare-metal runtime-infra launcher.
@@ -667,6 +675,7 @@ Singularity bare-metal runtime-infra launcher.
   $0 smoke              check runtime health endpoints
   $0 status             list runtime PIDs
   $0 logs <service>     tail llm-gateway or mcp-server logs
+  $0 env-check          inventory client/runtime environment values
   $0 down               stop runtime PIDs + free :8001 and :7100
 
 Start platform apps separately:

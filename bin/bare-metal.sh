@@ -1707,6 +1707,7 @@ case "$cmd" in
   clean-web-cache|clean-platform-web-cache) clean_platform_web_cache ;;
   reset-db) cmd_reset_db "$@" ;;
   smoke)    cmd_smoke ;;
+  env-check|check-env) exec "$ROOT/bin/check-deployment-env.sh" all "$@" ;;
   status)   cmd_status ;;
   logs)     cmd_logs "$@" ;;
   *)

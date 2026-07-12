@@ -8,16 +8,25 @@
 #   3. Seeds         — baseline agent templates, demo users, SDLC + demo workflows,
 #                      audit risk_level column
 #   4. Auth          — IAM local login works (what every app's session depends on)
+#   5. Deployment env — server boundary tokens, URLs, databases, and security flags
 #
 # Each failure prints a remediation hint. `--fix` applies the SAFE ones
 # (append missing .env.local keys). Seed/service fixes are printed, not run.
 #
 #   bin/doctor.sh           # report
+#   bin/doctor.sh --env-only # report environment names and safe posture only
 #   BOX_ONLY=1 bin/doctor.sh # report with local llm-gateway/MCP treated as remote
 #   bin/doctor.sh --fix     # report + append any missing .env.local keys
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; cd "$ROOT"
-FIX=0; [ "${1:-}" = "--fix" ] && FIX=1
+FIX=0; ENV_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --fix) FIX=1 ;;
+    --env|--env-check|--env-only) ENV_ONLY=1 ;;
+    *) ;;
+  esac
+done
 [ "${BOX_ONLY:-}" = "1" ] || BOX_ONLY=""
 
 C_G=$'\033[32m'; C_Y=$'\033[33m'; C_R=$'\033[31m'; C_B=$'\033[1m'; C_E=$'\033[0m'
@@ -237,6 +246,23 @@ psql_rows(){ psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$1" -tAc "$2" 2>
 db_up(){ psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$1" -tAc 'select 1' >/dev/null 2>&1; }
 
 printf "${C_B}Singularity bare-metal doctor${C_E}  (pg=%s@%s:%s, fix=%s)\n" "$PG_USER" "$PG_HOST" "$PG_PORT" "$FIX"
+
+if [ "$ENV_ONLY" = "1" ]; then
+  env_args=(server)
+  [ -n "$BOX_ONLY" ] && env_args+=(--split-runtime)
+  [ "${ENV_CHECK_STRICT:-0}" = "1" ] && env_args+=(--strict)
+  exec "$ROOT/bin/check-deployment-env.sh" "${env_args[@]}"
+fi
+
+section "0. Deployment environment"
+env_args=(server)
+[ -n "$BOX_ONLY" ] && env_args+=(--split-runtime)
+[ "${ENV_CHECK_STRICT:-0}" = "1" ] && env_args+=(--strict)
+if "$ROOT/bin/check-deployment-env.sh" "${env_args[@]}"; then
+  pass "server environment inventory passed"
+else
+  warn "server environment inventory has missing or unsafe values" "run bin/doctor.sh --env-only or set ENV_CHECK_STRICT=1 to make it blocking"
+fi
 
 # ── 1. Services ──────────────────────────────────────────────────────────────
 section "1. Services"

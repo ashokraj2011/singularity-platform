@@ -281,7 +281,8 @@ cmd_logs() { "$ROOT/bin/mcp-runtime-setup.sh" logs "${1:-mcp-server}"; }
 cmd_doctor() {
   require_cmd curl
   require_cmd node
-  local runtime_id="$(config_value runtime_id)" context_url="$(config_value context_fabric_url)"
+  local runtime_id="$(config_value runtime_id)" context_url="$(config_value context_fabric_url)" runtime_name="$(config_value runtime_name)" workspace="$(config_value workspace)"
+  [ -f "$SECRETS_FILE" ] && { set -a; . "$SECRETS_FILE"; set +a; }
   [ -n "$runtime_id" ] && ok "enrollment: $runtime_id" || warn "not enrolled"
   [ -n "$context_url" ] && ok "Context Fabric URL: $context_url" || warn "Context Fabric URL not configured"
   if [ -n "$context_url" ]; then
@@ -291,6 +292,16 @@ cmd_doctor() {
   fi
   command -v copilot >/dev/null 2>&1 && ok "Copilot CLI: $(copilot --version 2>/dev/null | head -1)" || warn "Copilot CLI not found (only needed for Copilot workflow stages)"
   [ -f "$SECRETS_FILE" ] && ok "local provider configuration present" || warn "no local provider keys configured; mock mode is still available"
+
+  local token_present=0
+  [ -n "$(token_get)" ] && token_present=1
+  local env_args=(client --runtime-token-present "$token_present" --provider "${DEFAULT_PROVIDER:-mock}")
+  [ -n "$context_url" ] && env_args+=(--context-fabric-url "$context_url")
+  [ -n "$runtime_id" ] && env_args+=(--runtime-id "$runtime_id")
+  [ -n "$runtime_name" ] && env_args+=(--runtime-name "$runtime_name")
+  [ -n "$workspace" ] && env_args+=(--workspace "$workspace")
+  [ -n "${DEFAULT_MODEL:-}" ] && env_args+=(--default-model "$DEFAULT_MODEL")
+  "$ROOT/bin/check-deployment-env.sh" "${env_args[@]}"
 }
 
 cmd_revoke() {
