@@ -7,6 +7,7 @@ import { logEvent, publishOutbox } from '../../lib/audit'
 import { ForbiddenError, NotFoundError, ValidationError } from '../../lib/errors'
 import { config } from '../../config'
 import { authzCheck, listCapabilityRelationships, isCapabilityGoverning } from '../../lib/iam/client'
+import { isAdminUser } from '../../lib/permissions/admin'
 import { assertTemplatePermission } from '../../lib/permissions/workflowTemplate'
 import { cloneDesignToRun } from '../workflow/lib/cloneDesignToRun'
 import { getWorkflowBudgetOverview } from '../workflow/runtime/budget'
@@ -395,14 +396,14 @@ export async function activateWorkItem(node: WorkflowNode, instance: WorkflowIns
 async function loadActor(userId: string) {
   return prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, iamUserId: true, roles: { include: { role: { select: { name: true } } } } },
+    select: { id: true, iamUserId: true },
   })
 }
 
 export async function assertCanClaimWorkItemTarget(userId: string, targetCapabilityId: string, resourceId: string): Promise<void> {
   if (config.AUTH_PROVIDER !== 'iam') return
   const actor = await loadActor(userId)
-  const isAdmin = actor?.roles.some(r => ['ADMIN', 'SYSTEM_ADMIN', 'WORKFLOW_ADMIN'].includes(r.role.name)) ?? false
+  const isAdmin = await isAdminUser(userId)
   if (isAdmin) return
   if (!actor?.iamUserId) throw new ForbiddenError('IAM identity is required to claim this WorkItem')
   const result = await authzCheck(actor.iamUserId, targetCapabilityId, 'claim_task', {
@@ -430,7 +431,7 @@ export async function canViewWorkItem(userId: string, workItem: WorkItemViewRow)
   if (workItem.targets.some(t => t.claimedById === userId)) return true
 
   const actor = await loadActor(userId)
-  const isAdmin = actor?.roles.some(r => ['ADMIN', 'SYSTEM_ADMIN', 'WORKFLOW_ADMIN'].includes(r.role.name)) ?? false
+  const isAdmin = await isAdminUser(userId)
   if (isAdmin) return true
   if (!actor?.iamUserId) return false
 

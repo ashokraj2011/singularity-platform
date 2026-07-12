@@ -3,21 +3,28 @@
  * an admin user?" — e.g. mutation of SYSTEM-tagged variables, deletion of
  * org-wide records.
  *
- * The local `Role.name` strings considered admin are kept in sync with the
- * workflow-template permission helper so routers don't drift.
+ * Admin is a permission, not a role-name convention.  The permission key is
+ * configurable so local roles can be renamed or replaced without changing
+ * application code.
  */
 
 import { prisma } from '../prisma'
-
-const ADMIN_ROLE_NAMES = ['ADMIN', 'admin', 'Admin', 'SYSTEM_ADMIN', 'SystemAdmin', 'WORKFLOW_ADMIN', 'WorkflowAdmin']
+import { config } from '../../config'
 
 export async function isAdminUser(userId: string): Promise<boolean> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
-      roles: { include: { role: { select: { name: true } } } },
+      roles: {
+        select: {
+          role: {
+            select: { permissions: { select: { permission: { select: { name: true } } } } },
+          },
+        },
+      },
     },
   })
   if (!user) return false
-  return user.roles.some(ur => ADMIN_ROLE_NAMES.includes(ur.role.name))
+  const required = config.PLATFORM_ADMIN_PERMISSION.trim().toUpperCase()
+  return user.roles.some(ur => ur.role.permissions.some(rp => rp.permission.name.trim().toUpperCase() === required))
 }

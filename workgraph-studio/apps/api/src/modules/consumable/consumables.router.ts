@@ -16,6 +16,7 @@ import {
   tenantIsolationStrict,
 } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
+import { assertCanDecideApproval, approvalPermission } from '../../lib/permissions/approval'
 
 export const consumablesRouter: Router = Router()
 
@@ -267,6 +268,18 @@ consumablesRouter.post('/:id/approve', async (req, res, next) => {
       return found
     })
     if (!existing) return res.status(404).json({ error: 'consumable not found' })
+    await assertCanDecideApproval(
+      req.user!.userId,
+      {
+        assignedToId: existing.assignedToId,
+        assignmentMode: existing.assignmentMode,
+        teamId: existing.teamId,
+        roleKey: existing.roleKey,
+        skillKey: existing.skillKey,
+        capabilityId: existing.capabilityId,
+      },
+      { permissionKey: approvalPermission('consumable'), resourceType: 'Consumable', resourceId: existing.id },
+    )
     // Verify-before-approve gate. Auto-verify: if this document was never
     // verified, run the verifier agent now (and persist the verdict) so every
     // approval has a standards check behind it; then refuse to approve a
@@ -302,6 +315,23 @@ consumablesRouter.post('/:id/approve', async (req, res, next) => {
 
 consumablesRouter.post('/:id/reject', async (req, res, next) => {
   try {
+    const existing = await withTenantDbTransaction(prisma, async () => {
+      await assertConsumableTenant(req, req.params.id)
+      return prisma.consumable.findUnique({ where: { id: req.params.id } })
+    })
+    if (!existing) return res.status(404).json({ error: 'consumable not found' })
+    await assertCanDecideApproval(
+      req.user!.userId,
+      {
+        assignedToId: existing.assignedToId,
+        assignmentMode: existing.assignmentMode,
+        teamId: existing.teamId,
+        roleKey: existing.roleKey,
+        skillKey: existing.skillKey,
+        capabilityId: existing.capabilityId,
+      },
+      { permissionKey: approvalPermission('consumable'), resourceType: 'Consumable', resourceId: existing.id },
+    )
     const c = await withTenantDbTransaction(prisma, async () => {
       await assertConsumableTenant(req, req.params.id)
       await transitionStatus(req.params.id, 'REJECTED', req.user!.userId)

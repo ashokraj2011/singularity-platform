@@ -3,6 +3,11 @@ import { z } from 'zod'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { NotFoundError } from '../../lib/errors'
+import { assertApprovalRequestTenant } from '../../lib/tenant-isolation'
+import {
+  approvalRequestRouting,
+  assertCanDecideApproval,
+} from '../../lib/permissions/approval'
 import {
   answerWorkItemClarification,
   archiveWorkItem,
@@ -475,7 +480,23 @@ workItemsRouter.post('/:id/clarifications/:clarificationId/answer', validate(ans
 
 workItemsRouter.post('/:id/approve', async (req, res, next) => {
   try {
-    const result = await approveWorkItem(String(req.params.id), req.user!.userId, 'APPROVED')
+    const id = String(req.params.id)
+    const item = await prisma.workItem.findUnique({
+      where: { id },
+      select: { parentApprovalRequestId: true, parentCapabilityId: true },
+    })
+    if (!item) throw new NotFoundError('WorkItem', id)
+    const routing = item.parentApprovalRequestId
+      ? await prisma.approvalRequest.findUnique({ where: { id: item.parentApprovalRequestId } })
+      : { capabilityId: item.parentCapabilityId, assignedToId: null, assignmentMode: 'ROLE_BASED', teamId: null, roleKey: null, skillKey: null, dueAt: null }
+    if (!routing) throw new NotFoundError('ApprovalRequest', item.parentApprovalRequestId ?? undefined)
+    if (item.parentApprovalRequestId) await assertApprovalRequestTenant(req, item.parentApprovalRequestId)
+    await assertCanDecideApproval(
+      req.user!.userId,
+      approvalRequestRouting(routing),
+      { resourceType: 'WorkItem', resourceId: id },
+    )
+    const result = await approveWorkItem(id, req.user!.userId, 'APPROVED')
     res.json(result)
   } catch (err) {
     next(err)
@@ -485,7 +506,23 @@ workItemsRouter.post('/:id/approve', async (req, res, next) => {
 workItemsRouter.post('/:id/request-rework', validate(reworkSchema), async (req, res, next) => {
   try {
     const { targetIds, reason } = req.body as z.infer<typeof reworkSchema>
-    const result = await requestWorkItemRework(String(req.params.id), req.user!.userId, targetIds, reason)
+    const id = String(req.params.id)
+    const item = await prisma.workItem.findUnique({
+      where: { id },
+      select: { parentApprovalRequestId: true, parentCapabilityId: true },
+    })
+    if (!item) throw new NotFoundError('WorkItem', id)
+    const routing = item.parentApprovalRequestId
+      ? await prisma.approvalRequest.findUnique({ where: { id: item.parentApprovalRequestId } })
+      : { capabilityId: item.parentCapabilityId, assignedToId: null, assignmentMode: 'ROLE_BASED', teamId: null, roleKey: null, skillKey: null, dueAt: null }
+    if (!routing) throw new NotFoundError('ApprovalRequest', item.parentApprovalRequestId ?? undefined)
+    if (item.parentApprovalRequestId) await assertApprovalRequestTenant(req, item.parentApprovalRequestId)
+    await assertCanDecideApproval(
+      req.user!.userId,
+      approvalRequestRouting(routing),
+      { resourceType: 'WorkItem', resourceId: id },
+    )
+    const result = await requestWorkItemRework(id, req.user!.userId, targetIds, reason)
     res.json(result)
   } catch (err) {
     next(err)

@@ -10,6 +10,7 @@ import { contextFabricClient, ContextFabricError } from '../../lib/context-fabri
 import { governedStageRespToExecuteResp } from '../workflow/runtime/executors/governed-execute-adapter'
 import { assertAgentRunTenant, requireTenantFromRequest, tenantIsolationStrict } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
+import { assertCanDecideApproval, approvalPermission } from '../../lib/permissions/approval'
 
 export const agentRunsRouter: Router = Router()
 
@@ -123,6 +124,20 @@ agentRunsRouter.post('/:id/review', validate(reviewSchema), async (req, res, nex
       const run = await prisma.agentRun.findUnique({ where: { id } })
       if (!run) throw new NotFoundError('AgentRun', id)
       await assertAgentRunTenant(req, id)
+      if (run.status !== 'AWAITING_REVIEW') {
+        throw new ValidationError(`AgentRun ${id} is not AWAITING_REVIEW (current status: ${run.status})`)
+      }
+      const instance = run.instanceId
+        ? await prisma.workflowInstance.findUnique({
+            where: { id: run.instanceId },
+            select: { template: { select: { capabilityId: true } } },
+          })
+        : null
+      await assertCanDecideApproval(
+        userId,
+        { capabilityId: instance?.template?.capabilityId ?? null },
+        { permissionKey: approvalPermission('agent'), resourceType: 'AgentRun', resourceId: id },
+      )
 
       const created = await prisma.agentReview.create({
         data: { runId: id, reviewedById: userId, decision, notes },
@@ -171,6 +186,7 @@ agentRunsRouter.post('/:id/approve', validate(approveSchema), async (req, res, n
             orderBy: { createdAt: 'desc' },
             take: 1,
           },
+          instance: { select: { template: { select: { capabilityId: true } } } },
         },
       })
       if (!found) throw new NotFoundError('AgentRun', id)
@@ -180,6 +196,11 @@ agentRunsRouter.post('/:id/approve', validate(approveSchema), async (req, res, n
     if (run.status !== 'PAUSED') {
       throw new ValidationError(`AgentRun ${id} is not PAUSED (current status: ${run.status})`)
     }
+    await assertCanDecideApproval(
+      userId,
+      { capabilityId: run.instance?.template?.capabilityId ?? null },
+      { permissionKey: approvalPermission('agent'), resourceType: 'AgentRun', resourceId: id },
+    )
     const approvalOutput = run.outputs[0]
     const payload = (approvalOutput?.structuredPayload ?? {}) as Record<string, unknown>
     // Governed pause persists a PhaseState (no usable legacy continuation token —

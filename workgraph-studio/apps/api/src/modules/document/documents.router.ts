@@ -14,6 +14,7 @@ import {
 } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { boundedByteLimit } from '../../lib/env-limits'
+import { isAdminUser } from '../../lib/permissions/admin'
 
 export const documentsRouter: Router = Router()
 
@@ -42,17 +43,6 @@ function detectProvider(url: string): string {
   } catch {
     return 'GENERIC'
   }
-}
-
-const ADMIN_ROLE_NAMES = ['ADMIN', 'admin', 'Admin', 'SYSTEM_ADMIN', 'SystemAdmin', 'WORKFLOW_ADMIN', 'WorkflowAdmin']
-
-async function isUserAdmin(userId: string): Promise<boolean> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { roles: { include: { role: { select: { name: true } } } } },
-  })
-  if (!user) return false
-  return user.roles.some(ur => ADMIN_ROLE_NAMES.includes(ur.role.name))
 }
 
 // ─── List ─────────────────────────────────────────────────────────────────────
@@ -138,7 +128,7 @@ documentsRouter.post('/upload', upload.single('file'), async (req, res, next) =>
         if (!task) throw new NotFoundError('Task', taskId)
         const isAssigned = task.assignments.some(a => a.assignedToId === req.user!.userId)
         const isCreator = task.createdById === req.user!.userId
-        const isAdmin = !isAssigned && !isCreator ? await isUserAdmin(req.user!.userId) : false
+        const isAdmin = !isAssigned && !isCreator ? await isAdminUser(req.user!.userId) : false
         if (!isAssigned && !isAdmin && !isCreator) {
           throw new ForbiddenError('Not allowed to upload attachments to this task')
         }
@@ -244,7 +234,7 @@ documentsRouter.post('/links', async (req, res, next) => {
         if (!task) throw new NotFoundError('Task', taskId)
         const isAssigned = task.assignments.some(a => a.assignedToId === req.user!.userId)
         const isCreator  = task.createdById === req.user!.userId
-        const isAdmin    = !isAssigned && !isCreator ? await isUserAdmin(req.user!.userId) : false
+        const isAdmin    = !isAssigned && !isCreator ? await isAdminUser(req.user!.userId) : false
         if (!isAssigned && !isAdmin && !isCreator) {
           throw new ForbiddenError('Not allowed to attach links to this task')
         }
@@ -296,7 +286,7 @@ documentsRouter.delete('/:id', async (req, res, next) => {
 
       // Only uploader or admin may delete
       const isOwner = found.uploadedById === req.user!.userId
-      const isAdmin = !isOwner ? await isUserAdmin(req.user!.userId) : false
+      const isAdmin = !isOwner ? await isAdminUser(req.user!.userId) : false
       if (!isAdmin && !isOwner) throw new ForbiddenError('Only the uploader or an admin can delete this document')
       return found
     })

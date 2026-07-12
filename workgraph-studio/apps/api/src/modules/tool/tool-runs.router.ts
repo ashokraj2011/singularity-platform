@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { Prisma, Tool, ToolAction } from '@prisma/client'
+import { Prisma, ToolAction } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
@@ -9,6 +9,7 @@ import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 import { executeToolRun } from './gateway/ToolGatewayService'
 import { assertToolRunTenant, requireTenantFromRequest, tenantIsolationStrict } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
+import { assertCanDecideApproval, approvalPermission } from '../../lib/permissions/approval'
 
 export const toolRunsRouter: Router = Router()
 
@@ -61,12 +62,24 @@ toolRunsRouter.post('/:id/approve', validate(approveSchema), async (req, res, ne
       await assertToolRunTenant(req, id)
       const run = await prisma.toolRun.findUnique({
         where: { id },
-        include: { tool: { include: { actions: true } } },
-      }) as (Awaited<ReturnType<typeof prisma.toolRun.findUnique>> & { tool: Tool & { actions: ToolAction[] } }) | null
+        include: {
+          tool: { include: { actions: true } },
+          instance: { include: { template: { select: { capabilityId: true } } } },
+        },
+      })
       if (!run) throw new NotFoundError('ToolRun', id)
       if (run.status !== 'PENDING_APPROVAL') {
         throw new ValidationError(`ToolRun is not pending approval (status: ${run.status})`)
       }
+      await assertCanDecideApproval(
+        userId,
+        { capabilityId: run.instance?.template?.capabilityId ?? null },
+        {
+          permissionKey: approvalPermission('tool'),
+          resourceType: 'ToolRun',
+          resourceId: id,
+        },
+      )
 
       // Record approval
       await prisma.toolRunApproval.create({
@@ -107,8 +120,23 @@ toolRunsRouter.post('/:id/reject', async (req, res, next) => {
     const userId = req.user!.userId
     const updated = await withTenantDbTransaction(prisma, async () => {
       await assertToolRunTenant(req, req.params.id)
-      const run = await prisma.toolRun.findUnique({ where: { id: req.params.id } })
+      const run = await prisma.toolRun.findUnique({
+        where: { id: req.params.id },
+        include: { instance: { include: { template: { select: { capabilityId: true } } } } },
+      })
       if (!run) throw new NotFoundError('ToolRun', req.params.id)
+      if (run.status !== 'PENDING_APPROVAL') {
+        throw new ValidationError(`ToolRun is not pending approval (status: ${run.status})`)
+      }
+      await assertCanDecideApproval(
+        userId,
+        { capabilityId: run.instance?.template?.capabilityId ?? null },
+        {
+          permissionKey: approvalPermission('tool'),
+          resourceType: 'ToolRun',
+          resourceId: req.params.id,
+        },
+      )
 
       await prisma.toolRunApproval.create({
         data: { runId: run.id, approvedById: userId, decision: 'REJECTED', decidedAt: new Date() },

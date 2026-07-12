@@ -10,9 +10,12 @@ import { approveBudgetIncreaseFromApproval } from '../workflow/runtime/budget'
 import { activateAgentTask } from '../workflow/runtime/executors/AgentTaskExecutor'
 import { activateApproval } from '../workflow/runtime/executors/ApprovalExecutor'
 import { approveWorkItem, requestWorkItemRework } from '../work-items/work-items.service'
-import { config } from '../../config'
-import { authzCheck } from '../../lib/iam/client'
-import { loadCallerContext, ROLE_LOOKUP_BUDGET } from '../../lib/iam/callerContext'
+import { ROLE_LOOKUP_BUDGET } from '../../lib/iam/callerContext'
+import {
+  approvalRequestRouting,
+  assertCanDecideApproval,
+  canDecideApproval,
+} from '../../lib/permissions/approval'
 import {
   assertApprovalRequestTenant,
   assertWorkflowInstanceTenant,
@@ -110,9 +113,9 @@ approvalsRouter.get('/', async (req, res, next) => {
 
 /**
  * Resolve PENDING approval requests the caller can act on by *delegated*
- * routing rather than a direct `assignedToId`:
- *   TEAM_QUEUE  → request.teamId ∈ caller's teams
- *   ROLE_BASED  → caller holds the role on request.capabilityId (IAM authz)
+ * routing rather than a direct `assignedToId`.  The same authorization gate
+ * used by POST /:id/decision is applied here so the inbox cannot advertise
+ * requests that the caller will be denied when they click Approve.
  *
  * These rows carry no `assignedToId`, so without read-time resolution they are
  * invisible in every inbox. The work-item parent-approval gate
@@ -123,52 +126,41 @@ approvalsRouter.get('/', async (req, res, next) => {
  * (runtime.router.ts).
  */
 async function resolveDelegatedApprovalIds(userId: string): Promise<string[]> {
-  const ctx = await loadCallerContext(userId)
-
   const candidates = await prisma.approvalRequest.findMany({
     where: {
       status: 'PENDING',
       assignedToId: null,
       OR: [
         { roleKey: { not: null }, capabilityId: { not: null } },
-        ...(ctx.teamIds.length > 0 ? [{ teamId: { in: ctx.teamIds } }] : []),
+        { teamId: { not: null } },
+        { skillKey: { not: null } },
+        { capabilityId: { not: null } },
       ],
     },
-    select: { id: true, roleKey: true, capabilityId: true, teamId: true },
+    select: {
+      id: true,
+      assignedToId: true,
+      assignmentMode: true,
+      teamId: true,
+      roleKey: true,
+      skillKey: true,
+      capabilityId: true,
+      dueAt: true,
+    },
     orderBy: { createdAt: 'desc' },
     take: 200,
   })
 
-  const eligible: string[] = []
-  const roleCandidates: { id: string; capabilityId: string }[] = []
-  for (const c of candidates) {
-    if (c.teamId && ctx.teamIds.includes(c.teamId)) {
-      eligible.push(c.id)
-    } else if (c.roleKey && c.capabilityId) {
-      roleCandidates.push({ id: c.id, capabilityId: c.capabilityId })
-    }
-  }
-
-  if (roleCandidates.length > 0) {
-    if (config.AUTH_PROVIDER === 'iam' && ctx.iamUserId) {
-      const capped = roleCandidates.slice(0, ROLE_LOOKUP_BUDGET)
-      const checks = await Promise.all(
-        capped.map(c =>
-          authzCheck(ctx.iamUserId!, c.capabilityId, 'claim_task', { resourceType: 'ApprovalRequest', resourceId: c.id })
-            .then(r => (r.allowed ? c.id : null))
-            .catch(() => null),
-        ),
-      )
-      for (const id of checks) if (id) eligible.push(id)
-    } else {
-      // Non-IAM mode (local dev / single tenant): surface role-based approvals
-      // rather than stranding them, matching the runtime inbox's work-item
-      // eligibility fallback when IAM is not the authority.
-      for (const c of roleCandidates) eligible.push(c.id)
-    }
-  }
-
-  return eligible
+  const capped = candidates.slice(0, ROLE_LOOKUP_BUDGET)
+  const checks = await Promise.all(capped.map(async (candidate) => {
+    const result = await canDecideApproval(
+      userId,
+      approvalRequestRouting(candidate),
+      { resourceType: 'ApprovalRequest', resourceId: candidate.id },
+    ).catch(() => ({ allowed: false }))
+    return result.allowed ? candidate.id : null
+  }))
+  return checks.filter((id): id is string => Boolean(id))
 }
 
 approvalsRouter.get('/my-approvals', async (req, res, next) => {
@@ -280,14 +272,22 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
       if (found.status !== 'PENDING') {
         throw new ValidationError(`ApprovalRequest cannot be decided from status ${found.status}`)
       }
+      await assertCanDecideApproval(
+        userId,
+        approvalRequestRouting(found),
+        { resourceType: 'ApprovalRequest', resourceId: id },
+      )
 
       const created = await prisma.approvalDecision.create({
         data: { requestId: id, decidedById: userId, decision, conditions, notes },
       })
-      await prisma.approvalRequest.update({
-        where: { id },
+      const transitioned = await prisma.approvalRequest.updateMany({
+        where: { id, status: 'PENDING' },
         data: { status: decision },
       })
+      if (transitioned.count !== 1) {
+        throw new ValidationError('ApprovalRequest was decided by another user; refresh and try again')
+      }
 
       const eventId = await logEvent('ApprovalDecided', 'ApprovalRequest', id, userId, { decision })
       await createReceipt('APPROVAL_DECISION', 'ApprovalRequest', id, {
@@ -401,6 +401,12 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
             subjectId: approvalRequest.subjectId,
             requestedById: userId,
             assignedToId: escalateToId,
+            assignmentMode: 'DIRECT_USER',
+            teamId: approvalRequest.teamId ?? undefined,
+            roleKey: approvalRequest.roleKey ?? undefined,
+            skillKey: approvalRequest.skillKey ?? undefined,
+            capabilityId: approvalRequest.capabilityId ?? undefined,
+            dueAt: approvalRequest.dueAt ?? undefined,
           },
         })
       })
@@ -452,6 +458,14 @@ approvalsRouter.post('/:id/form-submission', validate(approvalFormSubmissionSche
       const found = await prisma.approvalRequest.findUnique({ where: { id } })
       if (!found) throw new NotFoundError('ApprovalRequest', id)
       await assertApprovalRequestTenant(req, id)
+      if (found.status !== 'PENDING') {
+        throw new ValidationError(`ApprovalRequest form cannot be changed from status ${found.status}`)
+      }
+      await assertCanDecideApproval(
+        req.user!.userId,
+        approvalRequestRouting(found),
+        { resourceType: 'ApprovalRequest', resourceId: id },
+      )
 
       const saved = await prisma.approvalRequest.update({
         where: { id },

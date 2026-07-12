@@ -10,6 +10,8 @@ DEFAULT_PERMISSIONS: list[dict] = [
     {"permission_key": "workflow:audit:view",       "category": "workflow"},
     {"permission_key": "workflow:template:create",  "category": "workflow"},
     {"permission_key": "workflow:template:publish", "category": "workflow"},
+    {"permission_key": "governance:approve",         "category": "governance"},
+    {"permission_key": "consumable:approve",        "category": "artifact"},
     # Agent
     {"permission_key": "agent:create",             "category": "agent"},
     {"permission_key": "agent:view",               "category": "agent"},

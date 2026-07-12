@@ -4,6 +4,7 @@ import { ForbiddenError } from '../errors'
 import { logEvent } from '../audit'
 import { authzCheck, IamUnavailableError } from '../iam/client'
 import { config } from '../../config'
+import { isAdminUser } from './admin'
 
 /**
  * Permission helper for workflow templates.
@@ -19,8 +20,6 @@ import { config } from '../../config'
  * The action passed to IAM follows IAM's verbs: `view`, `edit`, `start`.
  */
 
-const ADMIN_ROLE_NAMES = ['ADMIN', 'admin', 'Admin', 'SYSTEM_ADMIN', 'SystemAdmin', 'WORKFLOW_ADMIN', 'WorkflowAdmin']
-
 type TemplateOwnership = {
   id: string
   createdById: string | null
@@ -34,17 +33,14 @@ async function loadActor(userId: string): Promise<{
   teamId: string | null
   isAdmin: boolean
 }> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      id: true,
-      iamUserId: true,
-      teamId: true,
-      roles: { include: { role: { select: { name: true } } } },
-    },
-  })
+  const [user, isAdmin] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, iamUserId: true, teamId: true },
+    }),
+    isAdminUser(userId),
+  ])
   if (!user) return { id: userId, iamUserId: null, teamId: null, isAdmin: false }
-  const isAdmin = user.roles.some(ur => ADMIN_ROLE_NAMES.includes(ur.role.name))
   return { id: user.id, iamUserId: user.iamUserId, teamId: user.teamId, isAdmin }
 }
 

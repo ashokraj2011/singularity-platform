@@ -39,6 +39,16 @@ const envSchema = z.object({
   // 'iam'   → all auth + authz delegated to IAM (production)
   // 'local' → fall back to the built-in HS256 JWT + bcrypt login (offline dev)
   AUTH_PROVIDER: z.enum(['iam', 'local']).default('iam'),
+  // Human approval policy keys.  The values are permission names, not role
+  // names; local deployments resolve them from the permissions/role tables and
+  // IAM deployments resolve them through /authz/check.  Operators can remap a
+  // surface without changing application code.
+  APPROVAL_WORKFLOW_PERMISSION: z.string().min(1).default('workflow:approve'),
+  APPROVAL_AGENT_PERMISSION: z.string().min(1).default('agent:approve'),
+  APPROVAL_TOOL_PERMISSION: z.string().min(1).default('tool:approve_execution'),
+  APPROVAL_GOVERNANCE_PERMISSION: z.string().min(1).default('governance:approve'),
+  APPROVAL_CONSUMABLE_PERMISSION: z.string().min(1).default('consumable:approve'),
+  PLATFORM_ADMIN_PERMISSION: z.string().min(1).default('platform:all'),
   // Base URL for the IAM HTTP API (e.g. http://localhost:8100/api/v1).
   IAM_BASE_URL: z.string().optional(),
   // Long-lived bearer used by workgraph-studio when calling IAM as a service

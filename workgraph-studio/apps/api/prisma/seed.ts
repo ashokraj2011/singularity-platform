@@ -57,6 +57,45 @@ async function main() {
     await prisma.role.upsert({ where: { id: role.id }, update: {}, create: role })
   }
 
+  // Approval is permission-driven. Keep the permission catalog and its local
+  // role bindings in the database so operators can change approvers through
+  // Identity without editing application code.
+  const approvalPermissionData = [
+    { name: 'workflow:approve', resource: 'workflow', action: 'approve', description: 'Approve workflow and WorkItem decisions' },
+    { name: 'agent:approve', resource: 'agent', action: 'approve', description: 'Review and approve agent runs' },
+    { name: 'tool:approve_execution', resource: 'tool', action: 'approve_execution', description: 'Approve tool execution' },
+    { name: 'governance:approve', resource: 'governance', action: 'approve', description: 'Approve governance waivers' },
+    { name: 'consumable:approve', resource: 'consumable', action: 'approve', description: 'Approve generated deliverables' },
+    { name: 'platform:all', resource: 'platform', action: 'all', description: 'Unrestricted local platform permission' },
+  ]
+  const approvalPermissions = new Map<string, { id: string }>()
+  for (const permission of approvalPermissionData) {
+    const row = await prisma.permission.upsert({
+      where: { name: permission.name },
+      update: { resource: permission.resource, action: permission.action, description: permission.description },
+      create: permission,
+      select: { id: true },
+    })
+    approvalPermissions.set(permission.name, row)
+  }
+  const roleBindings: Array<{ roleId: string; permissionName: string }> = [
+    { roleId: '00000000-0000-0000-0000-000000000001', permissionName: 'platform:all' },
+    { roleId: '00000000-0000-0000-0000-000000000004', permissionName: 'workflow:approve' },
+    { roleId: '00000000-0000-0000-0000-000000000004', permissionName: 'governance:approve' },
+    { roleId: '00000000-0000-0000-0000-000000000004', permissionName: 'consumable:approve' },
+    { roleId: '00000000-0000-0000-0000-000000000005', permissionName: 'agent:approve' },
+    { roleId: '00000000-0000-0000-0000-000000000006', permissionName: 'tool:approve_execution' },
+  ]
+  for (const binding of roleBindings) {
+    const permission = approvalPermissions.get(binding.permissionName)
+    if (!permission) continue
+    await prisma.rolePermission.upsert({
+      where: { roleId_permissionId: { roleId: binding.roleId, permissionId: permission.id } },
+      update: {},
+      create: { roleId: binding.roleId, permissionId: permission.id },
+    })
+  }
+
   // Core Skills
   const skillData = [
     { id: '10000000-0000-0000-0000-000000000001', name: 'Data Analysis', description: 'Analyze and interpret data', category: 'Analytics' },

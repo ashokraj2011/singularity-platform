@@ -13,7 +13,7 @@ DEFAULT_ROLES: list[dict] = [
         "system_role": True,
         "permissions": [
             "capability:create", "capability:view", "capability:update",
-            "governance:author",
+            "governance:author", "governance:approve", "consumable:approve",
             "role:create", "role:update", "role:assign", "permission:view", "audit:view",
         ],
     },
@@ -36,7 +36,7 @@ DEFAULT_ROLES: list[dict] = [
             "capability:view", "capability:update",
             "capability:member:add", "capability:member:remove",
             "capability:relationship:create", "capability:sharing_grant:create",
-            "governance:author",
+            "governance:author", "governance:approve", "consumable:approve",
             "workflow:create", "workflow:view", "workflow:update", "workflow:execute", "workflow:approve",
             "agent:create", "agent:view", "agent:update", "agent:execute", "agent:learning:approve",
             "tool:register", "tool:view", "tool:execute",
@@ -66,7 +66,7 @@ DEFAULT_ROLES: list[dict] = [
         "name": "Workflow Approver",
         "role_scope": "capability",
         "system_role": True,
-        "permissions": ["workflow:view", "workflow:approve", "audit:view"],
+        "permissions": ["workflow:view", "workflow:approve", "governance:approve", "consumable:approve", "audit:view"],
     },
     {
         "role_key": "agent_creator",
@@ -80,7 +80,7 @@ DEFAULT_ROLES: list[dict] = [
         "name": "Agent Operator",
         "role_scope": "capability",
         "system_role": True,
-        "permissions": ["agent:view", "agent:execute", "context:llm_handoff:create", "tool:execute"],
+        "permissions": ["agent:view", "agent:execute", "agent:approve", "context:llm_handoff:create", "tool:execute"],
     },
     {
         "role_key": "tool_admin",

@@ -14,8 +14,10 @@ import { Router } from 'express'
 import { z } from 'zod'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
+import { NotFoundError, ValidationError } from '../../lib/errors'
 import { resolveGovernance, type GovernanceResolveContext } from '../../lib/iam/client'
 import { resolveTenantFromRequest } from '../../lib/tenant-isolation'
+import { assertCanDecideApproval, approvalPermission } from '../../lib/permissions/approval'
 
 export const governanceRouter: Router = Router()
 
@@ -162,15 +164,46 @@ governanceRouter.post('/waivers', async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
-// NOTE: waiver approval should be gated to a governing-capability member with the
-// allowed role (per the overlay's waiverRules) via the existing ApprovalRequest —
-// that role check is a follow-up; this records the approver id.
+async function waiverCapabilityId(waiver: {
+  workItemId: string | null
+  workflowInstanceId: string | null
+}): Promise<string | null> {
+  if (waiver.workItemId) {
+    const workItem = await prisma.workItem.findUnique({
+      where: { id: waiver.workItemId },
+      select: { parentCapabilityId: true },
+    })
+    if (workItem?.parentCapabilityId) return workItem.parentCapabilityId
+  }
+  if (waiver.workflowInstanceId) {
+    const instance = await prisma.workflowInstance.findUnique({
+      where: { id: waiver.workflowInstanceId },
+      select: { template: { select: { capabilityId: true } } },
+    })
+    return instance?.template?.capabilityId ?? null
+  }
+  return null
+}
+
 governanceRouter.post('/waivers/:id/approve', async (req, res, next) => {
   try {
-    const actorId = (req as { user?: { id?: string } }).user?.id
+    const actorId = req.user!.userId
+    const existing = await prisma.governanceWaiver.findUnique({ where: { id: req.params.id } })
+    if (!existing) throw new NotFoundError('GovernanceWaiver', req.params.id)
+    if (existing.status !== 'REQUESTED') {
+      throw new ValidationError(`Governance waiver cannot be approved from status ${existing.status}`)
+    }
+    if (existing.expiresAt && existing.expiresAt.getTime() <= Date.now()) {
+      throw new ValidationError('Governance waiver has already expired')
+    }
+    await assertCanDecideApproval(
+      actorId,
+      { capabilityId: await waiverCapabilityId(existing) },
+      { permissionKey: approvalPermission('governance'), resourceType: 'GovernanceWaiver', resourceId: existing.id },
+    )
     const waiver = await prisma.governanceWaiver.update({
       where: { id: req.params.id },
-      data: { status: 'APPROVED', approvedBy: actorId ?? null },
+      data: { status: 'APPROVED', approvedBy: actorId },
     })
     // Auto-resume the GOVERNANCE_GATE that opened this waiver: restartNode re-runs
     // the gate, which now sees the control as waived and proceeds. Best-effort +
@@ -191,9 +224,20 @@ governanceRouter.post('/waivers/:id/approve', async (req, res, next) => {
 
 governanceRouter.post('/waivers/:id/reject', async (req, res, next) => {
   try {
+    const actorId = req.user!.userId
+    const existing = await prisma.governanceWaiver.findUnique({ where: { id: req.params.id } })
+    if (!existing) throw new NotFoundError('GovernanceWaiver', req.params.id)
+    if (existing.status !== 'REQUESTED') {
+      throw new ValidationError(`Governance waiver cannot be rejected from status ${existing.status}`)
+    }
+    await assertCanDecideApproval(
+      actorId,
+      { capabilityId: await waiverCapabilityId(existing) },
+      { permissionKey: approvalPermission('governance'), resourceType: 'GovernanceWaiver', resourceId: existing.id },
+    )
     const waiver = await prisma.governanceWaiver.update({
       where: { id: req.params.id },
-      data: { status: 'REJECTED', approvedBy: (req as { user?: { id?: string } }).user?.id ?? null },
+      data: { status: 'REJECTED', approvedBy: actorId },
     })
     res.json(waiver)
   } catch (err) { next(err) }

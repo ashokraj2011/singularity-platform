@@ -43,6 +43,25 @@ async function reconcileAdminRole(userId: string, isSuperAdmin: boolean | undefi
     update: {},
     create: { name: 'ADMIN', description: 'Mirrored from IAM is_super_admin', isSystemRole: true },
   })
+  // Admin status is permission-driven throughout Workgraph. Keep the mirrored
+  // role connected to the same catalog entry used by local authorization so a
+  // federated super-admin does not depend on a role-name special case.
+  const platformPermission = await prisma.permission.upsert({
+    where: { name: config.PLATFORM_ADMIN_PERMISSION },
+    update: {},
+    create: {
+      name: config.PLATFORM_ADMIN_PERMISSION,
+      resource: 'platform',
+      action: 'all',
+      description: 'Unrestricted platform administration',
+    },
+    select: { id: true },
+  })
+  await prisma.rolePermission.upsert({
+    where: { roleId_permissionId: { roleId: adminRole.id, permissionId: platformPermission.id } },
+    update: {},
+    create: { roleId: adminRole.id, permissionId: platformPermission.id },
+  })
   if (isSuperAdmin) {
     // Create an IAM-sourced binding only when none exists — a pre-existing binding
     // (LOCAL or IAM) is left untouched so we never downgrade a genuine local grant.

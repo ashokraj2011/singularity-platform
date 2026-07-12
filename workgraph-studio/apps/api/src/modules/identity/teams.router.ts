@@ -8,22 +8,9 @@ import { NotFoundError, ForbiddenError } from '../../lib/errors'
 import { logEvent } from '../../lib/audit'
 import { isAdminUser } from '../../lib/permissions/admin'
 
-// ── Admin role detection ─────────────────────────────────────────────────────
-
-const ADMIN_ROLE_NAMES = ['ADMIN', 'admin', 'Admin', 'SYSTEM_ADMIN', 'SystemAdmin', 'WORKFLOW_ADMIN', 'WorkflowAdmin']
-
-async function isUserAdmin(userId: string): Promise<boolean> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { roles: { include: { role: { select: { name: true } } } } },
-  })
-  if (!user) return false
-  return user.roles.some(ur => ADMIN_ROLE_NAMES.includes(ur.role.name))
-}
-
 async function assertCanManageTeamVariables(userId: string, teamId: string): Promise<void> {
   // Admins always allowed.
-  if (await isUserAdmin(userId)) return
+  if (await isAdminUser(userId)) return
   // Otherwise the user must be a member of the team.
   const member = await prisma.teamMember.findFirst({
     where: { teamId, userId },
