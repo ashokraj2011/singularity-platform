@@ -11,6 +11,8 @@
  *   pnpm --filter @agentandtools/prompt-composer run test:contracts
  */
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 
 process.env.DATABASE_URL = process.env.DATABASE_URL ?? "postgres://test:test@localhost:5432/test";
 process.env.RUNTIME_DATABASE_URL = process.env.RUNTIME_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -202,6 +204,30 @@ function testAppendSkipsEmptyLayers() {
   assert.equal(layers.length, 0, "should not push empty layers");
 }
 
+// ── Regression: world model must NOT be gated on a capsule cache MISS ──────
+// CODE_WORLD_MODEL / CODE_AGENT_RULES derive purely from input.worldModel and
+// are NOT stored in the cached capsule, so they must be appended outside/before
+// the `if (!compiledCapsule)` branch — otherwise a hot-path capsule cache HIT
+// silently drops the repo world model even for a fully-grounded request.
+function testWorldModelNotGatedOnCapsuleMiss() {
+  const src = fs.readFileSync(path.join(process.cwd(), "src/modules/compose/compose.service.ts"), "utf8");
+  const appendIdx = src.indexOf("appendWorldModelLayers(layers, input.worldModel)");
+  assert.ok(appendIdx > 0, "compose.service must append the world-model layers");
+  // Exactly one call site — no stray duplicate re-introduced.
+  assert.equal(
+    src.indexOf("appendWorldModelLayers(layers, input.worldModel)", appendIdx + 1),
+    -1,
+    "world-model layers should be appended from exactly one site",
+  );
+  // Match the actual code guard (`... {`), not a prose mention of it in a comment.
+  const capsuleMissGuardIdx = src.indexOf("if (!compiledCapsule) {");
+  assert.ok(capsuleMissGuardIdx > 0, "expected the capsule-miss guard to exist");
+  assert.ok(
+    appendIdx < capsuleMissGuardIdx,
+    "world-model layers must be appended OUTSIDE/BEFORE `if (!compiledCapsule)` so a capsule cache HIT still includes CODE_WORLD_MODEL / CODE_AGENT_RULES",
+  );
+}
+
 // ── Runner ────────────────────────────────────────────────────────────────
 
 const tests: Array<[string, () => void]> = [
@@ -216,6 +242,7 @@ const tests: Array<[string, () => void]> = [
   ["world model — architecture slice truncation", testWorldModelArchitectureSliceTruncation],
   ["append — both layers wired", testAppendWorldModelLayers],
   ["append — skips empty layers", testAppendSkipsEmptyLayers],
+  ["world model — not gated on capsule cache miss (hot-path regression)", testWorldModelNotGatedOnCapsuleMiss],
 ];
 
 let failed = 0;

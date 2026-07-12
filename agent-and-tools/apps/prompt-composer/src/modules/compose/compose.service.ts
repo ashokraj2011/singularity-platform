@@ -505,6 +505,21 @@ export const composeService = {
         const r = renderMustache(capContent, ctx); warnings.push(...r.warnings);
         layers.push({ layerType: "CAPABILITY_CONTEXT", priority: PRIORITY.CAPABILITY_CONTEXT, inclusionReason: "capability scope provided", contentSnapshot: r.rendered, layerHash: sha256(r.rendered) });
 
+        // M61 Slice F — CapabilityWorldModel layers (CODE_AGENT_RULES +
+        // CODE_WORLD_MODEL): ambient capability-wide context — agent rules
+        // (CLAUDE.md, etc.), test/build commands, README summary, package map.
+        // Appended HERE, BEFORE the capsule-cache branch, so they are present on
+        // BOTH a cache miss AND a hit: they derive purely from input.worldModel
+        // (not from semantic retrieval) and are not stored in the cached-capsule
+        // layer set, so the previous `if (!compiledCapsule)` gating silently
+        // dropped the repo world model on every hot-path capsule hit. Layers are
+        // priority-ordered (305/308), so the insertion point does not affect the
+        // final order. Independent of codeContextPackage — non-code stages
+        // (Story Intake, Plan, Design) get these too.
+        if (input.worldModel) {
+          appendWorldModelLayers(layers, input.worldModel);
+        }
+
         // ── M25.5 — Context Compiler cache lookup ──────────────────────────
         // Skip the 3 semantic queries + reranking when a precompiled capsule
         // matches this (capability, agentTemplate, intent, contentRevision).
@@ -770,16 +785,6 @@ export const composeService = {
         // get_ast_slice) instead of paying tokens for top-N on every prompt.
         // Set PROMPT_INCLUDE_CODE_CONTEXT=true to bring back the legacy
         // behaviour for capabilities that pre-date M27.
-        // M61 Slice F — CapabilityWorldModel layers (CODE_AGENT_RULES +
-        // CODE_WORLD_MODEL). Ambient capability-wide context: agent rules
-        // (CLAUDE.md, etc.), test/build commands, README summary, top-level
-        // package map. These render ABOVE the M52 code-context layers so
-        // the agent has the capability profile before the per-task slices.
-        // Independent of codeContextPackage — non-code stages (Story Intake,
-        // Plan, Design) get these too.
-        if (input.worldModel) {
-          appendWorldModelLayers(layers, input.worldModel);
-        }
         // M52 — Code Context Budgeter fast-path. When mcp-server has already
         // built a token-budgeted slice package upstream (via Context Fabric →
         // /mcp/code-context/build), emit 7 deterministic CODE_* layers IN
