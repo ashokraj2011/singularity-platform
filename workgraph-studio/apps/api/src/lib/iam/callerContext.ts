@@ -24,6 +24,7 @@ export type CallerContext = {
   iamUserId: string | null
   teamIds:   string[]
   skillKeys: string[]
+  roleKeys?: string[]
   source:    'local' | 'iam' | 'iam+local'
 }
 
@@ -44,17 +45,22 @@ export async function loadCallerContext(userId: string): Promise<CallerContext> 
     where: { id: userId },
     select: {
       id: true, iamUserId: true, teamId: true, email: true, displayName: true,
+      roles: { select: { role: { select: { name: true } } } },
       skills: { select: { skillId: true, skill: { select: { id: true, name: true } } } },
     },
   })
   if (!user) throw new Error('User not found')
 
   const localTeamIds   = user.teamId ? [user.teamId] : []
-  const localSkillKeys = user.skills.map(us => us.skill.id)
+  // Route configs are human-authored and may use either the stable Skill id or
+  // its key/name. Keep both in the local context so skill-based approvals do
+  // not silently disappear from the approver inbox after a display-name edit.
+  const localSkillKeys = [...new Set(user.skills.flatMap(us => [us.skill.id, us.skill.name]))]
 
   // Default: local mirror.  Override with IAM when configured and reachable.
   let teamIds   = localTeamIds
   let skillKeys = localSkillKeys
+  const roleKeys  = user.roles.map(row => row.role.name)
   let source: 'local' | 'iam' | 'iam+local' = 'local'
 
   if (config.AUTH_PROVIDER === 'iam' && user.iamUserId) {
@@ -86,6 +92,7 @@ export async function loadCallerContext(userId: string): Promise<CallerContext> 
     iamUserId: user.iamUserId,
     teamIds,
     skillKeys,
+    roleKeys,
     source,
   }
 }

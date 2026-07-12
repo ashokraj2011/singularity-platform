@@ -28,6 +28,7 @@ import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   loadNotificationPreferences,
   loadNotificationState,
+  normalizeNotificationPreferences,
   NOTIFICATION_CATEGORIES,
   saveNotificationPreferences,
   saveNotificationState,
@@ -154,6 +155,17 @@ export default function SettingsPage() {
     const requested = query.get("section");
     if (sections.some((item) => item.id === requested)) setSection(requested as SettingsSection);
     setPrefs(loadNotificationPreferences());
+    void fetch(apiPath("/api/workgraph/collaboration/preferences"), { cache: "no-store", headers: authHeaders() })
+      .then((res) => res.ok ? res.json() as Promise<unknown> : null)
+      .then((value) => {
+        const categories = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>).categories : null;
+        if (categories) {
+          const next = normalizeNotificationPreferences(categories);
+          setPrefs(next);
+          saveNotificationPreferences(next);
+        }
+      })
+      .catch(() => undefined);
     setSettings(loadSettings());
     setUser(getIdentityUser());
     setResolvedCount(Object.values(loadNotificationState()).filter((item) => item.resolved || item.snoozedUntil || item.read).length);
@@ -187,6 +199,11 @@ export default function SettingsPage() {
     const next = { ...prefs, [category]: enabled };
     setPrefs(next);
     saveNotificationPreferences(next);
+    void fetch(apiPath("/api/workgraph/collaboration/preferences"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ categories: next }),
+    }).catch(() => undefined);
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1600);
   }

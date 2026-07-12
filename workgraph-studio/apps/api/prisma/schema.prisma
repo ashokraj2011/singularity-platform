@@ -486,6 +486,9 @@ model GovernanceWaiver {
   requestedBy        String?
   approvedBy         String?
   expiresAt          DateTime?
+  revokedBy          String?
+  revokedAt          DateTime?
+  revocationReason   String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @default(now()) @updatedAt
 
@@ -705,6 +708,8 @@ model Workflow {
   permissions    WorkflowPermission[]
   instances      WorkflowInstance[]
   runSnapshots   RunSnapshot[]
+  programSteps   WorkProgramStep[]
+  simulations    WorkflowSimulation[]
   workItemTargetsAsTemplate WorkItemTarget[] @relation("WorkItemTargetTemplate")
   createdAt      DateTime              @default(now())
   updatedAt      DateTime              @updatedAt
@@ -903,6 +908,8 @@ model WorkflowInstance {
   agentRuns         AgentRun[]
   toolRuns          ToolRun[]
   pendingExecutions PendingExecution[]
+  checkpoints       WorkflowCheckpoint[]
+  replays           WorkflowReplay[]
   documents         Document[]
   budget            WorkflowRunBudget?
   startedAt         DateTime?
@@ -1131,6 +1138,9 @@ model WorkItem {
   events                  WorkItemEvent[]
   clarifications          WorkItemClarification[]
   laptopInvocations       LaptopInvocation[]
+  predecessorDependencies WorkItemDependency[] @relation("DependencyPredecessor")
+  successorDependencies   WorkItemDependency[] @relation("DependencySuccessor")
+  programRunSteps         WorkProgramRunStep[]
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
   tenantId                String?          @default("default")
@@ -1150,6 +1160,106 @@ model WorkItem {
   @@index([sourceWorkflowNodeId])
   @@index([status])
   @@map("work_items")
+}
+
+model WorkItemDependency {
+  id             String   @id @default(uuid())
+  predecessorId  String
+  successorId    String
+  dependencyType String   @default("BLOCKS")
+  condition      Json?
+  createdById    String?
+  tenantId       String?  @default("default")
+  predecessor    WorkItem @relation("DependencyPredecessor", fields: [predecessorId], references: [id], onDelete: Cascade)
+  successor      WorkItem @relation("DependencySuccessor", fields: [successorId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now())
+
+  @@unique([predecessorId, successorId])
+  @@index([tenantId])
+  @@index([predecessorId])
+  @@index([successorId])
+  @@map("work_item_dependencies")
+}
+
+model WorkProgram {
+  id           String              @id @default(uuid())
+  name         String
+  description  String?
+  capabilityId String?
+  version      Int                 @default(1)
+  status       String              @default("DRAFT")
+  metadata     Json                @default("{}")
+  createdById  String?
+  tenantId     String?             @default("default")
+  steps        WorkProgramStep[]
+  runs         WorkProgramRun[]
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([tenantId])
+  @@index([capabilityId, status])
+  @@map("work_programs")
+}
+
+model WorkProgramStep {
+  id                 String              @id @default(uuid())
+  programId          String
+  stepKey            String
+  ordinal            Int                 @default(0)
+  titleTemplate      String
+  descriptionTemplate String?
+  workItemTypeKey    String              @default("GENERAL")
+  targetCapabilityId String
+  workflowTemplateId String?
+  routingMode        WorkItemRoutingMode @default(MANUAL)
+  inputMapping       Json                @default("{}")
+  dependsOnKeys      Json                @default("[]")
+  program            WorkProgram         @relation(fields: [programId], references: [id], onDelete: Cascade)
+  workflowTemplate   Workflow?           @relation(fields: [workflowTemplateId], references: [id], onDelete: SetNull)
+  runSteps           WorkProgramRunStep[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@unique([programId, stepKey])
+  @@index([workflowTemplateId])
+  @@index([programId, ordinal])
+  @@map("work_program_steps")
+}
+
+model WorkProgramRun {
+  id          String               @id @default(uuid())
+  programId   String
+  status      String               @default("RUNNING")
+  input       Json                 @default("{}")
+  output      Json?
+  startedById String?
+  tenantId    String?              @default("default")
+  program     WorkProgram          @relation(fields: [programId], references: [id], onDelete: Cascade)
+  steps       WorkProgramRunStep[]
+  startedAt   DateTime             @default(now())
+  completedAt DateTime?
+
+  @@index([tenantId, status])
+  @@index([programId, startedAt])
+  @@map("work_program_runs")
+}
+
+model WorkProgramRunStep {
+  id          String           @id @default(uuid())
+  runId       String
+  stepId      String
+  workItemId  String
+  status      String           @default("QUEUED")
+  output      Json?
+  run         WorkProgramRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  step        WorkProgramStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  workItem    WorkItem         @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  @@unique([runId, stepId])
+  @@index([workItemId])
+  @@map("work_program_run_steps")
 }
 
 model WorkItemTarget {
@@ -1447,7 +1557,15 @@ model ApprovalRequest {
   status         ApprovalStatus     @default(PENDING)
   dueAt          DateTime?
   formData       Json?
+  quorumRequired Int                @default(1)
+  adminOverride  Boolean             @default(true)
+  quorumMetAt    DateTime?
+  escalationPolicy Json              @default("{}")
+  escalationLevel Int               @default(0)
+  nextEscalationAt DateTime?
+  lastEscalatedAt DateTime?
   decisions      ApprovalDecision[]
+  escalations    ApprovalEscalation[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 
@@ -1469,7 +1587,159 @@ model ApprovalDecision {
   request     ApprovalRequest @relation(fields: [requestId], references: [id])
   decidedAt   DateTime        @default(now())
 
+  @@unique([requestId, decidedById])
   @@map("approval_decisions")
+}
+
+model ApprovalEscalation {
+  id             String          @id @default(uuid())
+  requestId      String
+  level          Int
+  targetUserId   String?
+  targetTeamId   String?
+  targetRoleKey  String?
+  targetSkillKey String?
+  reason         String?
+  createdAt      DateTime        @default(now())
+  request        ApprovalRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, level])
+  @@index([targetUserId])
+  @@index([targetTeamId])
+  @@map("approval_escalations")
+}
+
+model PlannerSession {
+  id                String   @id @default(uuid())
+  capabilityId      String
+  createdById       String
+  title             String?
+  story             String?
+  status            String   @default("DRAFT")
+  intent            String?
+  modelAlias        String?
+  runtimePreference String?
+  governancePreset  String?
+  messages          Json     @default("[]")
+  milestones        Json     @default("[]")
+  critic            Json?
+  metadata          Json     @default("{}")
+  version           Int      @default(1)
+  tenantId          String?  @default("default")
+  revisions         PlannerSessionRevision[]
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([tenantId, createdById, updatedAt])
+  @@index([capabilityId, status])
+  @@map("planner_sessions")
+}
+
+model PlannerSessionRevision {
+  id          String         @id @default(uuid())
+  sessionId   String
+  version     Int
+  messages    Json           @default("[]")
+  milestones  Json           @default("[]")
+  response    Json?
+  createdById String?
+  createdAt   DateTime       @default(now())
+  session     PlannerSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, version])
+  @@index([sessionId, createdAt])
+  @@map("planner_session_revisions")
+}
+
+model WorkNotification {
+  id            String   @id @default(uuid())
+  userId        String?
+  teamId        String?
+  tenantId      String?  @default("default")
+  kind          String
+  title         String
+  message       String
+  source        String   @default("PLATFORM")
+  threadKey     String?
+  severity      String   @default("info")
+  status        String   @default("UNREAD")
+  entityType    String?
+  entityId      String?
+  href          String?
+  payload       Json     @default("{}")
+  why           Json     @default("{}")
+  deliveryPolicy Json    @default("{}")
+  dueAt         DateTime?
+  readAt        DateTime?
+  resolvedAt    DateTime?
+  snoozedUntil  DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([tenantId, userId, status, createdAt])
+  @@index([tenantId, teamId, status, createdAt])
+  @@index([entityType, entityId])
+  @@index([tenantId, threadKey, createdAt])
+  @@map("work_notifications")
+}
+
+model WorkflowCheckpoint {
+  id             String           @id @default(uuid())
+  instanceId     String
+  sequence       Int
+  checkpointType String           @default("AUTO")
+  nodeId         String?
+  nodeStates     Json             @default("{}")
+  context        Json             @default("{}")
+  traceId        String?
+  reason         String?
+  createdById    String?
+  replays        WorkflowReplay[]
+  createdAt      DateTime         @default(now())
+  instance       WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@unique([instanceId, sequence])
+  @@index([instanceId, createdAt])
+  @@index([traceId])
+  @@map("workflow_checkpoints")
+}
+
+model WorkflowSimulation {
+  id               String    @id @default(uuid())
+  workflowTemplateId String
+  createdById      String?
+  tenantId         String?   @default("default")
+  status           String    @default("COMPLETED")
+  input            Json      @default("{}")
+  result           Json?
+  traceId          String?
+  error            String?
+  createdAt        DateTime  @default(now())
+  completedAt      DateTime?
+  workflow         Workflow  @relation(fields: [workflowTemplateId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, workflowTemplateId, createdAt])
+  @@index([traceId])
+  @@map("workflow_simulations")
+}
+
+model WorkflowReplay {
+  id           String            @id @default(uuid())
+  instanceId   String
+  checkpointId String?
+  requestedById String?
+  status       String            @default("REQUESTED")
+  input        Json              @default("{}")
+  result       Json?
+  error        String?
+  createdAt    DateTime          @default(now())
+  completedAt  DateTime?
+  instance     WorkflowInstance  @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  checkpoint   WorkflowCheckpoint? @relation(fields: [checkpointId], references: [id], onDelete: SetNull)
+
+  @@index([instanceId, createdAt])
+  @@index([checkpointId])
+  @@map("workflow_replays")
 }
 
 // ─── CONSUMABLES ──────────────────────────────────────────────────────────────
@@ -2742,4 +3012,451 @@ model CodegenReceipt {
 
   @@index([receiptHash])
   @@map("codegen_receipts")
+}
+
+// ─── DURABLE DEBUGGING AND OPERATIONS ───────────────────────────────────────
+
+model WorkflowRunClone {
+  id                 String   @id @default(uuid())
+  sourceInstanceId   String
+  cloneInstanceId    String?
+  sourceCheckpointId String?
+  requestedById      String?
+  tenantId           String?  @default("default")
+  reason             String?
+  status             String   @default("REQUESTED")
+  isolatedContext    Json     @default("{}")
+  createdAt          DateTime @default(now())
+  completedAt        DateTime?
+  error              String?
+
+  @@index([tenantId, sourceInstanceId, createdAt])
+  @@index([cloneInstanceId])
+  @@map("workflow_run_clones")
+}
+
+model WorkflowTemplateMigration {
+  id          String   @id @default(uuid())
+  templateId  String
+  fromVersion Int
+  toVersion   Int
+  nodeMap     Json     @default("{}")
+  status      String   @default("DRAFT")
+  warnings    Json     @default("[]")
+  createdById String?
+  tenantId    String?  @default("default")
+  createdAt   DateTime @default(now())
+  appliedAt   DateTime?
+
+  @@unique([templateId, fromVersion, toVersion])
+  @@index([tenantId, templateId, createdAt])
+  @@map("workflow_template_migrations")
+}
+
+model WorkflowTimeTravelSnapshot {
+  id                 String   @id @default(uuid())
+  instanceId         String
+  checkpointId       String?
+  nodeId             String?
+  tenantId           String?  @default("default")
+  context            Json     @default("{}")
+  nodeStates         Json     @default("{}")
+  routingDecisions   Json     @default("[]")
+  promptReferences   Json     @default("[]")
+  policySnapshot     Json     @default("{}")
+  artifactReferences Json     @default("[]")
+  createdById        String?
+  createdAt          DateTime @default(now())
+
+  @@index([tenantId, instanceId, createdAt])
+  @@index([checkpointId])
+  @@map("workflow_time_travel_snapshots")
+}
+
+model WorkflowCompensationExecution {
+  id           String   @id @default(uuid())
+  instanceId   String
+  nodeId       String
+  actionKey    String
+  tenantId     String?  @default("default")
+  status       String   @default("REQUESTED")
+  config       Json     @default("{}")
+  result       Json?
+  requestedById String?
+  createdAt    DateTime @default(now())
+  completedAt  DateTime?
+  error        String?
+
+  @@index([tenantId, instanceId, createdAt])
+  @@index([nodeId, status])
+  @@map("workflow_compensation_executions")
+}
+
+// ─── COLLABORATION AND NOTIFICATION CONTROL ─────────────────────────────────
+
+model WorkComment {
+  id         String   @id @default(uuid())
+  tenantId   String?  @default("default")
+  entityType String
+  entityId   String
+  authorId   String
+  parentId   String?
+  body       String
+  mentions   Json     @default("[]")
+  status     String   @default("OPEN")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  resolvedAt DateTime?
+  resolvedBy String?
+
+  @@index([tenantId, entityType, entityId, createdAt])
+  @@index([tenantId, authorId, createdAt])
+  @@map("work_comments")
+}
+
+model NotificationPreference {
+  id          String   @id @default(uuid())
+  tenantId    String?  @default("default")
+  userId      String
+  categories  Json     @default("{}")
+  channels    Json     @default("[\"IN_APP\"]")
+  digestMode  String   @default("IMMEDIATE")
+  quietHours  Json     @default("{}")
+  severityMin String   @default("info")
+  timezone    String   @default("UTC")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, userId])
+  @@map("notification_preferences")
+}
+
+model NotificationSubscription {
+  id           String   @id @default(uuid())
+  tenantId     String?  @default("default")
+  userId       String?
+  teamId       String?
+  entityType   String?
+  entityId     String?
+  capabilityId String?
+  workflowId   String?
+  severityMin  String   @default("info")
+  channels     Json     @default("[\"IN_APP\"]")
+  enabled      Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([tenantId, userId, enabled])
+  @@index([tenantId, entityType, entityId])
+  @@index([tenantId, capabilityId, workflowId])
+  @@map("notification_subscriptions")
+}
+
+model NotificationDelivery {
+  id            String   @id @default(uuid())
+  notificationId String
+  tenantId      String?  @default("default")
+  channel       String
+  status        String   @default("PENDING")
+  attempts      Int      @default(0)
+  providerId    String?
+  lastError     String?
+  nextAttemptAt DateTime?
+  deliveredAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([notificationId, channel])
+  @@index([tenantId, status, nextAttemptAt])
+  @@map("notification_deliveries")
+}
+
+model NotificationAudit {
+  id             String   @id @default(uuid())
+  notificationId String
+  tenantId       String?  @default("default")
+  actorId        String?
+  action         String
+  channel        String?
+  details        Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  @@index([tenantId, notificationId, createdAt])
+  @@map("notification_audit")
+}
+
+model OutOfOfficeDelegation {
+  id              String   @id @default(uuid())
+  tenantId        String?  @default("default")
+  principalUserId  String
+  delegateUserId   String
+  startsAt         DateTime
+  endsAt           DateTime
+  reason           String?
+  status           String   @default("ACTIVE")
+  createdById      String?
+  createdAt        DateTime @default(now())
+  revokedAt        DateTime?
+
+  @@index([tenantId, principalUserId, startsAt, endsAt])
+  @@index([tenantId, delegateUserId, status])
+  @@map("out_of_office_delegations")
+}
+
+// ─── ENFORCEABLE GOVERNANCE ─────────────────────────────────────────────────
+
+model GovernancePolicy {
+  id            String   @id @default(uuid())
+  tenantId      String?  @default("default")
+  name          String
+  description   String?
+  capabilityId  String?
+  workflowId    String?
+  workItemTypeKey String?
+  mode          String   @default("ADVISORY")
+  status        String   @default("DRAFT")
+  currentVersion Int     @default(1)
+  createdById   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([tenantId, status, mode])
+  @@index([tenantId, capabilityId, workflowId])
+  @@map("governance_policies")
+}
+
+model GovernancePolicyVersion {
+  id          String   @id @default(uuid())
+  policyId    String
+  tenantId    String?  @default("default")
+  version     Int
+  mode        String
+  rules       Json     @default("[]")
+  snapshot    Json     @default("{}")
+  createdById String?
+  createdAt   DateTime @default(now())
+  activatedAt DateTime?
+
+  @@unique([policyId, version])
+  @@index([tenantId, policyId, createdAt])
+  @@map("governance_policy_versions")
+}
+
+model GovernancePolicyEvaluation {
+  id            String   @id @default(uuid())
+  policyId      String
+  policyVersion Int
+  tenantId      String?  @default("default")
+  instanceId    String?
+  nodeId        String?
+  workItemId    String?
+  mode          String
+  status        String
+  evidence      Json     @default("{}")
+  missing       Json     @default("[]")
+  result        Json     @default("{}")
+  evaluatedById String?
+  createdAt     DateTime @default(now())
+
+  @@index([tenantId, policyId, createdAt])
+  @@index([tenantId, instanceId, nodeId])
+  @@map("governance_policy_evaluations")
+}
+
+// ─── CAPACITY-AWARE PLANNING ────────────────────────────────────────────────
+
+model CapacityCalendar {
+  id          String   @id @default(uuid())
+  tenantId    String?  @default("default")
+  ownerType   String
+  ownerId     String
+  timezone    String   @default("UTC")
+  weeklyHours Json     @default("{}")
+  holidays    Json     @default("[]")
+  wipLimit    Int?
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, ownerType, ownerId])
+  @@map("capacity_calendars")
+}
+
+model CapacityAllocation {
+  id             String   @id @default(uuid())
+  tenantId       String?  @default("default")
+  calendarId     String
+  workItemId     String?
+  programStepId  String?
+  capabilityId   String?
+  skillKey       String?
+  startAt        DateTime
+  endAt          DateTime
+  estimatedHours Float
+  status         String   @default("PLANNED")
+  risk           String   @default("LOW")
+  metadata       Json     @default("{}")
+  createdById    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([tenantId, calendarId, startAt, endAt])
+  @@index([tenantId, workItemId])
+  @@index([tenantId, capabilityId, skillKey])
+  @@map("capacity_allocations")
+}
+
+model PlanningForecast {
+  id            String   @id @default(uuid())
+  tenantId      String?  @default("default")
+  plannerSessionId String?
+  capabilityId  String?
+  scenario      Json     @default("{}")
+  status        String   @default("COMPLETED")
+  result        Json     @default("{}")
+  createdById   String?
+  createdAt     DateTime @default(now())
+
+  @@index([tenantId, plannerSessionId, createdAt])
+  @@map("planning_forecasts")
+}
+
+// ─── RUNTIME PRODUCTIZATION ─────────────────────────────────────────────────
+
+model RuntimePolicy {
+  id              String   @id @default(uuid())
+  tenantId        String?  @default("default")
+  name            String
+  minVersion      String?
+  allowedPaths    Json     @default("[]")
+  consentMode     String   @default("PER_ACTION")
+  autoUpdate      Boolean  @default(true)
+  killSwitch      Boolean  @default(false)
+  enabled         Boolean  @default(true)
+  createdById     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([tenantId, name])
+  @@map("runtime_policies")
+}
+
+model RuntimeDevice {
+  id           String   @id @default(uuid())
+  tenantId     String?  @default("default")
+  userId       String
+  runtimeId    String   @unique
+  deviceName   String
+  platform     String
+  version      String?
+  status       String   @default("ENROLLED")
+  policyId     String?
+  workspaceProfiles Json @default("[]")
+  lastSeenAt   DateTime?
+  revokedAt    DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([tenantId, userId, status])
+  @@index([tenantId, policyId])
+  @@map("runtime_devices")
+}
+
+model RuntimeConsent {
+  id          String   @id @default(uuid())
+  tenantId    String?  @default("default")
+  runtimeId   String
+  userId      String
+  action      String
+  scope       String
+  decision    String
+  reason      String?
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId, runtimeId, createdAt])
+  @@index([tenantId, userId, action, scope])
+  @@map("runtime_consents")
+}
+
+// ─── GROUNDING AND INDEPENDENT VERIFICATION ─────────────────────────────────
+
+model GroundingEvidence {
+  id             String   @id @default(uuid())
+  tenantId       String?  @default("default")
+  instanceId     String?
+  nodeId         String?
+  agentRunId     String?
+  sourceType     String
+  sourceUri      String?
+  contentHash    String?
+  retrievedAt    DateTime @default(now())
+  influenceScore Float?
+  outcome        String?
+  feedback       Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  @@index([tenantId, instanceId, nodeId, retrievedAt])
+  @@index([tenantId, contentHash])
+  @@map("grounding_evidence")
+}
+
+model CodeImpactSnapshot {
+  id          String   @id @default(uuid())
+  tenantId    String?  @default("default")
+  instanceId  String?
+  nodeId      String?
+  workItemId  String?
+  commitSha   String?
+  query       String?
+  provider    String   @default("LEXICAL")
+  files       Json     @default("[]")
+  callGraph   Json     @default("{}")
+  matches     Json     @default("[]")
+  riskScore   Float?
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@index([tenantId, instanceId, createdAt])
+  @@index([tenantId, commitSha])
+  @@map("code_impact_snapshots")
+}
+
+model IndependentVerification {
+  id            String   @id @default(uuid())
+  tenantId      String?  @default("default")
+  instanceId    String?
+  nodeId        String?
+  workItemId    String?
+  commitSha     String?
+  environment   String?
+  command       String
+  status        String   @default("REQUESTED")
+  result        Json     @default("{}")
+  testSummary   Json     @default("{}")
+  coverage      Json     @default("{}")
+  riskScore     Float?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  requestedById String?
+  createdAt     DateTime @default(now())
+
+  @@index([tenantId, instanceId, createdAt])
+  @@index([tenantId, commitSha])
+  @@map("independent_verifications")
+}
+
+model VerificationFinding {
+  id             String   @id @default(uuid())
+  verificationId String
+  tenantId       String?  @default("default")
+  filePath       String?
+  ruleKey        String?
+  severity       String   @default("INFO")
+  message        String
+  evidence       Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  @@index([tenantId, verificationId, severity])
+  @@map("verification_findings")
 }

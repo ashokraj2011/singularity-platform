@@ -1,13 +1,15 @@
-import type { WorkflowNode, WorkflowInstance, ApprovalRequest } from '@prisma/client'
+import { Prisma, type WorkflowNode, type WorkflowInstance, type ApprovalRequest } from '@prisma/client'
 import { prisma } from '../../../../lib/prisma'
 import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
+import { createNotification } from '../../../notifications/notifications.service'
 import {
   resolveAssignmentRouting,
   mirrorTeamQueueRouting,
   buildEntityRoutingFields,
   getTemplateCapabilityId,
 } from '../../../task/lib/assignment'
+import { validateApprovalRouting } from '../../../../lib/permissions/approval'
 
 export async function activateApproval(
   node: WorkflowNode,
@@ -46,10 +48,30 @@ export async function activateApproval(
   ))
 
   const fields = buildEntityRoutingFields(routing)
+  if (cfg.assignmentMode || cfg.assignedToId || cfg.teamId || cfg.roleKey || cfg.skillKey) {
+    try {
+      validateApprovalRouting(fields)
+    } catch (error) {
+      throw new Error(`Approval node ${node.label} has invalid human routing: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  const standard = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard) ? cfg.standard as Record<string, unknown> : {}
+  const quorumRaw = Number(cfg.quorumRequired ?? cfg.approvalQuorum ?? cfg.minVotes ?? standard.quorumRequired ?? standard.approvalQuorum ?? standard.minVotes ?? 1)
+  const quorumRequired = Number.isFinite(quorumRaw) ? Math.min(100, Math.max(1, Math.trunc(quorumRaw))) : 1
+  const adminOverride = cfg.adminOverride !== false
+  const escalationPolicy = cfg.escalationPolicy && typeof cfg.escalationPolicy === 'object' && !Array.isArray(cfg.escalationPolicy)
+    ? cfg.escalationPolicy as Record<string, unknown>
+    : {}
+  const levels = Array.isArray(escalationPolicy.levels) ? escalationPolicy.levels as Array<Record<string, unknown>> : []
+  const firstAfterSeconds = Number(levels[0]?.afterSeconds)
+  const escalateAfterMs = Number.isFinite(firstAfterSeconds) && firstAfterSeconds > 0
+    ? firstAfterSeconds * 1000
+    : Number(cfg.escalateAfterMinutes) > 0 ? Number(cfg.escalateAfterMinutes) * 60_000 : 0
 
   const request = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest.create({
     data: {
       instanceId:     instance.id,
+      tenantId:       instance.tenantId ?? null,
       nodeId:         node.id,
       subjectType:    'WorkflowNode',
       subjectId:      node.id,
@@ -60,6 +82,10 @@ export async function activateApproval(
       roleKey:        fields.roleKey,
       skillKey:       fields.skillKey,
       capabilityId:   fields.capabilityId,
+      quorumRequired,
+      adminOverride,
+      escalationPolicy: escalationPolicy as Prisma.InputJsonValue,
+      ...(escalateAfterMs > 0 ? { nextEscalationAt: new Date(Date.now() + escalateAfterMs) } : {}),
     },
   }), tenantId)
 
@@ -73,5 +99,20 @@ export async function activateApproval(
     capabilityId:   routing.capabilityId,
   })
   await publishOutbox('ApprovalRequest', request.id, 'ApprovalRequested', { requestId: request.id })
+  if (request.assignedToId || request.teamId) {
+    await createNotification({
+      tenantId: instance.tenantId ?? 'default',
+      userId: request.assignedToId ?? undefined,
+      teamId: request.teamId ?? undefined,
+      kind: 'APPROVAL_REQUIRED',
+      title: 'Approval required',
+      message: `Approval is required for ${node.label}. ${quorumRequired > 1 ? `${quorumRequired} approvals are required.` : ''}`.trim(),
+      severity: 'warning',
+      entityType: 'ApprovalRequest',
+      entityId: request.id,
+      href: `/approvals/${request.id}`,
+      payload: { instanceId: instance.id, nodeId: node.id, quorumRequired, skillKey: request.skillKey },
+    }).catch(() => undefined)
+  }
   return request
 }

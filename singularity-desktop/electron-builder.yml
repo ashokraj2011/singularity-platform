@@ -1,0 +1,29 @@
+appId: com.singularity.platform.desktop
+productName: Singularity Desk
+artifactName: Singularity-Desk-${version}-${os}-${arch}.${ext}
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**
+  - electron/**
+  - package.json
+asar: true
+mac:
+  category: public.app-category.developer-tools
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  target:
+    - dmg
+    - zip
+  identity: ${env.CSC_NAME}
+win:
+  target:
+    - nsis
+  signingHashAlgorithms:
+    - sha256
+linux:
+  category: Development
+  target:
+    - AppImage
+publish: null

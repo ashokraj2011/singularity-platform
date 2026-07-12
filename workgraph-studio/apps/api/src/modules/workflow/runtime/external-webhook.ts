@@ -15,7 +15,8 @@
  */
 import { lookup as dnsLookup } from "node:dns/promises";
 import { createHmac } from "node:crypto";
-import { precheckTargetUrl, classifyAddress } from "../../../lib/ssrf-guard";
+import net from "node:net";
+import { classifyAddress } from "../../../lib/ssrf-guard";
 
 export type ExternalWebhookOutcome =
   | { kind: "result"; result: unknown }
@@ -45,26 +46,32 @@ export function externalWebhookUrl(config: unknown): string | undefined {
 // one public + one private address is refused. Exported for unit tests (IP-literal
 // cases resolve synchronously, no DNS).
 export async function guardExternalWebhookUrl(rawUrl: string): Promise<{ ok: true; url: URL } | { ok: false; reason: string }> {
-  const pre = precheckTargetUrl(rawUrl);
-  if (!pre.ok) return { ok: false, reason: pre.reason };
-  if (pre.ipLiteral) {
-    return classifyAddress(pre.ipLiteral) === "public"
-      ? { ok: true, url: pre.url }
-      : { ok: false, reason: `target IP ${pre.ipLiteral} is not a public address` };
+  let url: URL;
+  try { url = new URL(rawUrl); } catch { return { ok: false, reason: "invalid URL" }; }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return { ok: false, reason: `protocol ${url.protocol} not allowed (http/https only)` };
+  }
+  const host = url.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  if (!host) return { ok: false, reason: "missing host" };
+  const ipLiteral = net.isIP(host) ? host : null;
+  if (ipLiteral) {
+    return classifyAddress(ipLiteral) === "public"
+      ? { ok: true, url }
+      : { ok: false, reason: `target IP ${ipLiteral} is not a public address` };
   }
   let addrs: { address: string }[];
   try {
-    addrs = await dnsLookup(pre.host, { all: true });
+    addrs = await dnsLookup(host, { all: true });
   } catch (err) {
-    return { ok: false, reason: `could not resolve host '${pre.host}': ${(err as Error).message}` };
+    return { ok: false, reason: `could not resolve host '${host}': ${(err as Error).message}` };
   }
-  if (addrs.length === 0) return { ok: false, reason: `host '${pre.host}' resolved to no addresses` };
+  if (addrs.length === 0) return { ok: false, reason: `host '${host}' resolved to no addresses` };
   for (const a of addrs) {
     if (classifyAddress(a.address) !== "public") {
-      return { ok: false, reason: `host '${pre.host}' resolves to non-public address ${a.address}` };
+      return { ok: false, reason: `host '${host}' resolves to non-public address ${a.address}` };
     }
   }
-  return { ok: true, url: pre.url };
+  return { ok: true, url };
 }
 
 export async function dispatchExternalWebhook(args: {

@@ -7,6 +7,7 @@ import { prisma } from '../../../../lib/prisma'
 import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../../lib/audit'
 import { runVerification, type Verdict } from '../../../consumable/verify.service'
+import { getUsersBySkill } from '../../../../lib/iam/client'
 
 type VerifierDoc = { id: string; name: string; passed: boolean; findings: string[]; rationale?: string }
 type VerifierOutput = {
@@ -16,6 +17,8 @@ type VerifierOutput = {
     failed: number
     documents: VerifierDoc[]
     note?: string
+    skillKey?: string
+    assignedVerifierId?: string
   }
 }
 
@@ -109,7 +112,28 @@ export async function activateVerifier(
   const nameFilter = cfgStringArray(node, 'documentNames')
   const requireDocuments = cfgBool(node, 'requireDocuments', false)
   const scope = (cfgString(node, 'scope') ?? 'PRIOR').toUpperCase()
-  const userId = actorId ?? 'verifier-node'
+  const skillKey = cfgString(node, 'skillKey')
+  let userId = actorId ?? 'verifier-node'
+  if (skillKey) {
+    const local = await prisma.user.findFirst({
+      where: { isActive: true, skills: { some: { skill: { OR: [{ id: skillKey }, { name: skillKey }] } } } },
+      select: { id: true },
+    })
+    if (local) userId = local.id
+    else {
+      const iamUsers = await getUsersBySkill(skillKey).catch(() => [])
+      const iamUser = iamUsers[0]
+      if (iamUser) {
+        const mirrored = await prisma.user.findFirst({ where: { iamUserId: iamUser.id, isActive: true }, select: { id: true } })
+        if (mirrored) userId = mirrored.id
+      }
+    }
+    if (userId === 'verifier-node') {
+      const output: VerifierOutput = { verifier: { status: 'BLOCKED', total: 0, failed: 0, documents: [], note: `No active verifier is registered for skill ${skillKey}.`, skillKey } }
+      await blockNode(instance, node, output, actorId)
+      return { passed: false, output }
+    }
+  }
   const tenantId = instance.tenantId ?? undefined
 
   const docs = scope === 'ALL'
@@ -125,6 +149,7 @@ export async function activateVerifier(
         failed: 0,
         documents: [],
         note: 'No documents produced by the preceding stage to verify.',
+        ...(skillKey ? { skillKey, assignedVerifierId: userId } : {}),
       },
     }
     if (!passed) await blockNode(instance, node, output, actorId)
@@ -144,7 +169,7 @@ export async function activateVerifier(
   const failed = documents.filter(d => !d.passed).length
   const passed = failed === 0
   const output: VerifierOutput = {
-    verifier: { status: passed ? 'PASSED' : 'BLOCKED', total: documents.length, failed, documents },
+    verifier: { status: passed ? 'PASSED' : 'BLOCKED', total: documents.length, failed, documents, ...(skillKey ? { skillKey, assignedVerifierId: userId } : {}) },
   }
 
   if (!passed) {

@@ -7,8 +7,9 @@
  * and regenerate. On commit, every task becomes a WorkItem in its capability's
  * inbox (home or a child capability).
  *
- * Ephemeral: the roadmap lives in the client session; nothing is persisted until
- * commit. Milestones are visual groupings (no cross-item dependencies yet).
+ * Planner sessions are durable drafts. Each conversational turn is versioned so
+ * a browser refresh, handoff, or later workflow launch can recover the exact
+ * story, roadmap, critic result, and conversation that produced the WorkItems.
  *
  * Pure helpers (extractJsonBlock, parseConverse, sanitizeMilestoneAssignments,
  * findDuplicatePairs, coverageGaps, flattenTasks, priorityToWorkItem, parseCritic,
@@ -24,6 +25,7 @@ import { getSdlcIntent } from '../adoption/sdlcCatalog'
 import { routeWorkItem } from '../work-items/work-item-routing.service'
 import { createWorkItem } from '../work-items/work-items.service'
 import { ValidationError } from '../../lib/errors'
+import { currentTenantIdForDb } from '../../lib/tenant-db-context'
 
 export const PRIORITIES = ['HIGH', 'MEDIUM', 'LOW'] as const
 export type Priority = (typeof PRIORITIES)[number]
@@ -391,11 +393,13 @@ export interface ConverseInput {
   capabilityId: string
   messages: ChatMessage[]
   plan?: Milestone[]
+  sessionId?: string
   allowChildren?: boolean
   maxItems?: number
 }
 
 export interface ConverseResult {
+  sessionId?: string
   reply: string
   needsClarification: boolean
   questions: string[]
@@ -409,7 +413,136 @@ export interface ConverseResult {
   raw?: string
 }
 
+type PlannerSessionPatch = {
+  messages?: ChatMessage[]
+  milestones?: Milestone[]
+  response?: unknown
+  critic?: CriticResult | null
+  status?: string
+  title?: string
+  story?: string
+}
+
+async function ensurePlannerSession(input: ConverseInput, actorId: string): Promise<string> {
+  const tenantId = currentTenantIdForDb() ?? 'default'
+  if (input.sessionId) {
+    const existing = await withTenantDbTransaction(prisma, tx => tx.plannerSession.findFirst({
+      where: { id: input.sessionId, createdById: actorId, tenantId },
+      select: { id: true },
+    }), tenantId)
+    if (!existing) throw new ValidationError('Planner session was not found or belongs to another user')
+    return existing.id
+  }
+  const story = input.messages.find(message => message.role === 'user')?.content?.trim() ?? ''
+  const created = await withTenantDbTransaction(prisma, tx => tx.plannerSession.create({
+    data: {
+      capabilityId: input.capabilityId,
+      createdById: actorId,
+      title: story.slice(0, 160) || 'Untitled planning session',
+      story,
+      messages: input.messages as unknown as object,
+      milestones: (input.plan ?? []) as unknown as object,
+      tenantId,
+    },
+    select: { id: true },
+  }), tenantId)
+  return created.id
+}
+
+export async function createPlannerSession(input: {
+  capabilityId: string
+  title?: string
+  story?: string
+  intent?: string
+  messages?: ChatMessage[]
+  milestones?: Milestone[]
+}, actorId: string, callerToken?: string) {
+  await assertPlannerCapabilityActive(input.capabilityId, callerToken)
+  const tenantId = currentTenantIdForDb() ?? 'default'
+  const created = await withTenantDbTransaction(prisma, async tx => {
+    const session = await tx.plannerSession.create({
+      data: {
+        capabilityId: input.capabilityId,
+        createdById: actorId,
+        title: input.title ?? input.story?.slice(0, 160) ?? 'Untitled planning session',
+        story: input.story,
+        intent: input.intent,
+        messages: (input.messages ?? []) as unknown as object,
+        milestones: (input.milestones ?? []) as unknown as object,
+        tenantId,
+      },
+    })
+    await tx.plannerSessionRevision.create({
+      data: {
+        sessionId: session.id,
+        version: 1,
+        messages: (input.messages ?? []) as unknown as object,
+        milestones: (input.milestones ?? []) as unknown as object,
+        createdById: actorId,
+      },
+    })
+    return session
+  }, tenantId)
+  return created
+}
+
+async function persistPlannerSession(sessionId: string, actorId: string, patch: PlannerSessionPatch): Promise<void> {
+  const tenantId = currentTenantIdForDb() ?? 'default'
+  await withTenantDbTransaction(prisma, async tx => {
+    const current = await tx.plannerSession.findFirst({ where: { id: sessionId, createdById: actorId, tenantId } })
+    if (!current) throw new ValidationError('Planner session was not found or belongs to another user')
+    const version = current.version + 1
+    const messages = patch.messages ?? (current.messages as unknown as ChatMessage[])
+    const milestones = patch.milestones ?? (current.milestones as unknown as Milestone[])
+    await tx.plannerSession.update({
+      where: { id: sessionId },
+      data: {
+        ...(patch.messages ? { messages: patch.messages as unknown as object } : {}),
+        ...(patch.milestones ? { milestones: patch.milestones as unknown as object } : {}),
+        ...(patch.critic !== undefined ? { critic: patch.critic as unknown as object } : {}),
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.title ? { title: patch.title } : {}),
+        ...(patch.story ? { story: patch.story } : {}),
+        version,
+      },
+    })
+    await tx.plannerSessionRevision.create({
+      data: {
+        sessionId,
+        version,
+        messages: messages as unknown as object,
+        milestones: milestones as unknown as object,
+        response: patch.response as object | undefined,
+        createdById: actorId,
+      },
+    })
+  }, tenantId)
+}
+
+export async function listPlannerSessions(actorId: string, limit = 50) {
+  const tenantId = currentTenantIdForDb() ?? 'default'
+  return withTenantDbTransaction(prisma, tx => tx.plannerSession.findMany({
+    where: { createdById: actorId, tenantId },
+    orderBy: { updatedAt: 'desc' },
+    take: Math.min(Math.max(limit, 1), 100),
+  }), tenantId)
+}
+
+export async function getPlannerSession(sessionId: string, actorId: string) {
+  const tenantId = currentTenantIdForDb() ?? 'default'
+  return withTenantDbTransaction(prisma, tx => tx.plannerSession.findFirst({
+    where: { id: sessionId, createdById: actorId, tenantId },
+    include: { revisions: { orderBy: { version: 'desc' }, take: 20 } },
+  }), tenantId)
+}
+
+export async function updatePlannerSession(sessionId: string, actorId: string, patch: PlannerSessionPatch) {
+  await persistPlannerSession(sessionId, actorId, patch)
+  return getPlannerSession(sessionId, actorId)
+}
+
 export async function converse(input: ConverseInput, actorId: string, callerToken?: string): Promise<ConverseResult> {
+  const sessionId = await ensurePlannerSession(input, actorId)
   const maxItems = Math.min(Math.max(input.maxItems ?? 16, 1), 40)
   const allowChildren = input.allowChildren !== false
   const caps = await resolveAssignableCapabilities(input.capabilityId, allowChildren, callerToken)
@@ -443,7 +576,8 @@ export async function converse(input: ConverseInput, actorId: string, callerToke
   }
 
   if (!parsed.ok) {
-    return {
+    const result: ConverseResult = {
+      sessionId,
       reply: "I couldn't produce a valid plan — try rephrasing.",
       needsClarification: false,
       questions: [],
@@ -456,13 +590,20 @@ export async function converse(input: ConverseInput, actorId: string, callerToke
       parseError: parsed.error,
       raw: (responses[responses.length - 1]?.finalResponse ?? '').slice(0, 4000),
     }
+    await persistPlannerSession(sessionId, actorId, {
+      messages: input.messages,
+      response: result,
+      status: 'DRAFT',
+    })
+    return result
   }
 
   const value = parsed.value
 
   // Clarification turn — no plan, no critic.
   if (value.needsClarification || value.milestones.length === 0) {
-    return {
+    const result: ConverseResult = {
+      sessionId,
       reply: value.reply || (value.questions.length ? 'A few questions before I plan:' : 'Tell me a bit more.'),
       needsClarification: value.questions.length > 0,
       questions: value.questions,
@@ -473,6 +614,13 @@ export async function converse(input: ConverseInput, actorId: string, callerToke
       critic: null,
       usage: aggregateUsage(responses),
     }
+    await persistPlannerSession(sessionId, actorId, {
+      messages: input.messages,
+      milestones: [],
+      response: result,
+      status: 'DRAFT',
+    })
+    return result
   }
 
   // 2) Sanitize assignments (never trust model-supplied capability ids).
@@ -500,7 +648,8 @@ export async function converse(input: ConverseInput, actorId: string, callerToke
     critic = { verdict: 'warn', issues: [{ dimension: 'meta', itemRef: 'plan', message: 'Critic call failed; review the roadmap manually.' }] }
   }
 
-  return {
+  const result: ConverseResult = {
+    sessionId,
     reply: value.reply || 'Here is the roadmap.',
     needsClarification: false,
     questions: [],
@@ -511,11 +660,20 @@ export async function converse(input: ConverseInput, actorId: string, callerToke
     critic,
     usage: aggregateUsage(responses),
   }
+  await persistPlannerSession(sessionId, actorId, {
+    messages: input.messages,
+    milestones: sanitized.milestones,
+    critic,
+    response: result,
+    status: 'DRAFT',
+  })
+  return result
 }
 
 export interface CommitInput {
   capabilityId: string
   milestones: Milestone[]
+  sessionId?: string
 }
 
 export async function commitRoadmap(input: CommitInput, actorId: string, callerToken?: string) {
@@ -559,7 +717,13 @@ export async function commitRoadmap(input: CommitInput, actorId: string, callerT
       failed.push({ title: tasks[i].title, error: r.reason instanceof Error ? r.reason.message : String(r.reason) })
     }
   })
-  return { created, failed }
+  if (input.sessionId) {
+    await persistPlannerSession(input.sessionId, actorId, {
+      milestones: input.milestones,
+      status: 'COMMITTED',
+    })
+  }
+  return { created, failed, sessionId: input.sessionId }
 }
 
 export interface LaunchInput {
@@ -572,6 +736,7 @@ export interface LaunchInput {
   modelAlias?: string
   runtimePreference?: string
   governancePreset?: string
+  sessionId?: string
 }
 
 type LaunchTarget = {
@@ -730,7 +895,9 @@ export async function launchRoadmap(input: LaunchInput, actorId: string, callerT
   )
   const workflowInstance = await summarizeWorkflowInstance(launchTarget?.childWorkflowInstanceId ?? null)
 
+  if (input.sessionId) await persistPlannerSession(input.sessionId, actorId, { milestones, status: 'LAUNCHED' })
   return {
+    sessionId: input.sessionId,
     intent,
     workItems: commit.created,
     failedWorkItems: commit.failed,

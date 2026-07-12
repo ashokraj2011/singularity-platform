@@ -13,6 +13,7 @@ import { startTriggerScheduler } from './modules/workflow/triggers/TriggerSchedu
 import { startSelfRegistration } from './lib/platform-registry/register'
 import { startEventDispatcher } from './lib/eventbus/dispatcher'
 import { startLaptopHeartbeatWatchdog } from './modules/laptop/laptop.service'
+import { startApprovalEscalationSweep } from './modules/approval/escalation.service'
 
 async function main() {
   // Verify DB connection
@@ -35,6 +36,7 @@ async function main() {
   startStuckRunSweep()
   startTriggerScheduler()
   startLaptopHeartbeatWatchdog()
+  startApprovalEscalationSweep()
 
   // M11.e — event-bus dispatcher (LISTEN/NOTIFY + safety sweep)
   await startEventDispatcher().catch((err) => {

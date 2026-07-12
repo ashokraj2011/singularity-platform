@@ -8,6 +8,7 @@ import { evaluateGovernanceBlock, decideGateStatus, type GovernanceBlock, type G
 import { evaluateConfidenceGating, type ConfidenceGatingConfig } from './governance/confidenceGating'
 import { resolveSatisfiedControls, makeEvidenceChecker, bindingsFromOverlay, controlsReferenced, type BindingMap, type ControlBinding } from './governance/resolveSatisfiedControls'
 import { materializeRunEvidence } from './governance/materializeEvidencePack'
+import { evaluateActiveGovernancePolicies } from '../../../governance/governance-policy.service'
 
 /**
  * GOVERNANCE_GATE executor (Capability Governance Gate, v1).
@@ -363,9 +364,9 @@ async function blockNode(
       },
     }),
     tx.workflowMutation.create({
-      data: {
-        instanceId: instance.id,
-        nodeId: node.id,
+        data: {
+          instanceId: instance.id,
+          nodeId: node.id,
         mutationType: isApproval ? 'GOVERNANCE_GATE_APPROVAL_REQUESTED' : 'GOVERNANCE_GATE_BLOCKED',
         beforeState: { status: node.status } as Prisma.InputJsonValue,
         afterState: output as unknown as Prisma.InputJsonValue,
@@ -420,16 +421,25 @@ async function openWaiverApproval(
   actorId?: string,
 ): Promise<{ waiverIds: string[]; approvalId?: string }> {
   const tenantId = instance.tenantId ?? undefined
+  const cfg = (node.config ?? {}) as Record<string, unknown>
+  const standard = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard) ? cfg.standard as Record<string, unknown> : {}
+  const quorumRaw = Number(cfg.quorumRequired ?? cfg.approvalQuorum ?? cfg.minVotes ?? standard.quorumRequired ?? standard.approvalQuorum ?? standard.minVotes ?? 1)
+  const quorumRequired = Number.isFinite(quorumRaw) ? Math.min(100, Math.max(1, Math.trunc(quorumRaw))) : 1
+  const adminOverride = cfg.adminOverride !== false
+  const escalationPolicy = cfg.escalationPolicy && typeof cfg.escalationPolicy === 'object' && !Array.isArray(cfg.escalationPolicy)
+    ? cfg.escalationPolicy as Record<string, unknown>
+    : {}
+  const firstAfterSeconds = Array.isArray(escalationPolicy.levels) ? Number((escalationPolicy.levels[0] as Record<string, unknown> | undefined)?.afterSeconds) : 0
   const waiverIds: string[] = []
   for (const b of blocked) {
-    const existing = await prisma.governanceWaiver
-      .findFirst({ where: { workflowNodeId: node.id, controlKey: b.controlKey, status: 'REQUESTED' }, select: { id: true } })
+    const existing = await withTenantDbTransaction(prisma, (tx) => tx.governanceWaiver
+      .findFirst({ where: { workflowNodeId: node.id, controlKey: b.controlKey, status: 'REQUESTED' }, select: { id: true } }), tenantId)
       .catch(() => null)
     if (existing) {
       waiverIds.push(existing.id)
       continue
     }
-    const w = await prisma.governanceWaiver
+    const w = await withTenantDbTransaction(prisma, (tx) => tx.governanceWaiver
       .create({
         data: {
           workflowInstanceId: instance.id,
@@ -440,7 +450,7 @@ async function openWaiverApproval(
           status: 'REQUESTED',
           requestedBy: actorId ?? null,
         },
-      })
+      }), tenantId)
       .catch(() => null)
     if (w) waiverIds.push(w.id)
   }
@@ -452,6 +462,7 @@ async function openWaiverApproval(
     .create({
       data: {
         instanceId: instance.id,
+        tenantId: instance.tenantId ?? null,
         nodeId: node.id,
         subjectType: 'WorkflowNode',
         subjectId: node.id,
@@ -459,6 +470,10 @@ async function openWaiverApproval(
         assignmentMode: 'ROLE_BASED',
         roleKey: 'governance',
         capabilityId: governingCapabilityId,
+        quorumRequired,
+        adminOverride,
+        escalationPolicy: escalationPolicy as Prisma.InputJsonValue,
+        ...(firstAfterSeconds > 0 ? { nextEscalationAt: new Date(Date.now() + firstAfterSeconds * 1000) } : {}),
         formData: { blocked } as unknown as Prisma.InputJsonValue,
       },
     }), tenantId)
@@ -474,6 +489,14 @@ async function openManualApproval(
   actorId?: string,
 ): Promise<string | undefined> {
   const tenantId = instance.tenantId ?? undefined
+  const cfg = (node.config ?? {}) as Record<string, unknown>
+  const standard = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard) ? cfg.standard as Record<string, unknown> : {}
+  const quorumRaw = Number(cfg.quorumRequired ?? cfg.approvalQuorum ?? cfg.minVotes ?? standard.quorumRequired ?? standard.approvalQuorum ?? standard.minVotes ?? 1)
+  const quorumRequired = Number.isFinite(quorumRaw) ? Math.min(100, Math.max(1, Math.trunc(quorumRaw))) : 1
+  const escalationPolicy = cfg.escalationPolicy && typeof cfg.escalationPolicy === 'object' && !Array.isArray(cfg.escalationPolicy)
+    ? cfg.escalationPolicy as Record<string, unknown>
+    : {}
+  const firstAfterSeconds = Array.isArray(escalationPolicy.levels) ? Number((escalationPolicy.levels[0] as Record<string, unknown> | undefined)?.afterSeconds) : 0
   const existing = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest
     .findFirst({
       where: {
@@ -491,6 +514,7 @@ async function openManualApproval(
     .create({
       data: {
         instanceId: instance.id,
+        tenantId: instance.tenantId ?? null,
         nodeId: node.id,
         subjectType: 'WorkflowNode',
         subjectId: node.id,
@@ -498,6 +522,10 @@ async function openManualApproval(
         assignmentMode: 'ROLE_BASED',
         roleKey: 'governance',
         capabilityId: governingCapabilityId ?? null,
+        quorumRequired,
+        adminOverride: cfg.adminOverride !== false,
+        escalationPolicy: escalationPolicy as Prisma.InputJsonValue,
+        ...(firstAfterSeconds > 0 ? { nextEscalationAt: new Date(Date.now() + firstAfterSeconds * 1000) } : {}),
         formData: {
           governanceGate: output.governanceGate,
           message: 'Manual governance review is required before this workflow may proceed.',
@@ -516,14 +544,36 @@ export async function activateGovernanceGate(
   const context = (isRecord(instance.context) ? instance.context : {}) as Record<string, unknown>
   const mode = normalizeGovernanceGateMode(cfgString(node, 'mode'))
   const failClosed = cfgBool(node, 'failClosedOnResolveError', true)
-  const localControls = localControlsFromConfig(node)
-  const local = localOverlayFromControls(localControls)
   const capabilityId =
     cfgString(node, 'governingCapabilityId') ??
     cfgString(node, 'capabilityId') ??
     ctxStr(context, 'capability_id', 'capabilityId', 'governingCapabilityId')
   const workItemId = ctxStr(context, 'workItemId', 'work_item_id')
   const workflowId = ctxStr(context, 'workflowId', 'workflow_id')
+  let policyEvaluationError: string | undefined
+  const policyEvaluation = await evaluateActiveGovernancePolicies({
+    capabilityId,
+    workflowId: workflowId,
+    workItemTypeKey: ctxStr(context, 'workItemTypeKey', 'work_item_type'),
+    evidence: context,
+    actorId: actorId ?? instance.createdById ?? 'system',
+    instanceId: instance.id,
+    nodeId: node.id,
+    workItemId: ctxStr(context, 'workItemId', 'work_item_id'),
+  }).catch((error: unknown) => {
+    policyEvaluationError = error instanceof Error ? error.message : String(error)
+    return { results: [], blocked: [], warned: [] }
+  })
+  const policyControls: LocalGateControl[] = policyEvaluation.blocked.flatMap(item => {
+    const missing = Array.isArray(item.result.missing) ? item.result.missing.map(String) : []
+    return missing.map(key => ({
+      controlKey: `POLICY:${item.policy.id}:${key}`,
+      mode: item.policy.mode,
+      reason: `Governance policy '${item.policy.name}' requires evidence '${key}'`,
+    }))
+  })
+  const localControls = [...localControlsFromConfig(node), ...policyControls]
+  const local = localOverlayFromControls(localControls)
 
   const baseOut = (over: Partial<GovernanceGateOutput['governanceGate']>): GovernanceGateOutput => ({
     governanceGate: {
@@ -541,6 +591,27 @@ export async function activateGovernanceGate(
       ...over,
     },
   })
+
+  // An unavailable policy store must never look like an empty policy set for a
+  // hard gate. Advisory/manual modes retain their configured behavior, but the
+  // failure is kept visible in the gate output for operators and audit readers.
+  if (policyEvaluationError && mode === 'HARD_BLOCK' && failClosed) {
+    const blocked: GovernanceBlock[] = [{
+      controlKey: 'GOVERNANCE_POLICY_RESOLVE',
+      kind: 'control',
+      mode: 'BLOCKING',
+      reason: `active governance policies could not be evaluated: ${policyEvaluationError}`,
+      waivable: false,
+    }]
+    const output = baseOut({
+      status: 'BLOCKED',
+      blocked,
+      findings: blocked,
+      note: 'governance policy evaluation failed; failing closed',
+    })
+    await blockNode(instance, node, output, actorId)
+    return { passed: false, output }
+  }
 
   // No governing capability and no local controls configured → nothing to enforce.
   if (!capabilityId && !local.overlay) {
@@ -624,7 +695,7 @@ export async function activateGovernanceGate(
   const bindings = { ...readBindingMap(node), ...local.bindings, ...bindingsFromOverlay(overlay) }
   const satisfied = await resolveSatisfiedControls(overlay, bindings, base, makeEvidenceChecker(instance, node, actorId))
   const waivedKeys = [
-    ...(workItemId ? await activeWaiverControlKeys(workItemId).catch(() => []) : []),
+    ...(workItemId ? await activeWaiverControlKeys(workItemId, new Date(), instance.tenantId ?? undefined).catch(() => []) : []),
     ...(await nodeScopedWaiverKeys(node.id)),
   ]
   const waived = new Set(waivedKeys)
@@ -673,6 +744,8 @@ export async function activateGovernanceGate(
     formalVerifierUsed: checks.some(c => c.bindingType === 'formal'),
   }
   if (autoApprovalEvidence) gate.note = 'auto-approved by confidence-gating'
+  if (policyEvaluation.warned.length > 0) gate.note = `${gate.note ? `${gate.note}; ` : ''}${policyEvaluation.warned.length} advisory governance policy warning(s)`
+  if (policyEvaluationError) gate.note = `${gate.note ? `${gate.note}; ` : ''}governance policy evaluation failed: ${policyEvaluationError}`
 
   if (status === 'APPROVAL_REQUESTED') {
     if (mode === 'AUTOMATIC' && capabilityId) {

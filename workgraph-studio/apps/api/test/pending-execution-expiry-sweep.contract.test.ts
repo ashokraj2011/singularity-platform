@@ -20,7 +20,7 @@ describe('pending-execution expiry sweep contract', () => {
 
   it('marks the row completed before failing the node (so it is not re-swept)', () => {
     expect(sweep).toMatch(
-      /pendingExecution\.update\(\{[\s\S]*?data: \{ completedAt: now, error: reason \}[\s\S]*?failNode\(/,
+      /pendingExecution\.updateMany\(\{[\s\S]*?data: \{ completedAt: now, error: reason \}[\s\S]*?failNode\(/,
     )
   })
 
@@ -32,6 +32,6 @@ describe('pending-execution expiry sweep contract', () => {
 
   it('uses the cross-tenant sweepReader for discovery but tenant-scoped writes', () => {
     expect(sweep).toMatch(/sweepReader\.pendingExecution\.findMany/)
-    expect(sweep).toMatch(/withTenantDbTransaction\(prisma, \(tx\) => tx\.pendingExecution\.update/)
+    expect(sweep).toMatch(/withTenantDbTransaction\(prisma, \(tx\) => tx\.pendingExecution\.updateMany/)
   })
 })

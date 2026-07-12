@@ -548,6 +548,7 @@ async function blockForBudgetApproval(
     await tx.approvalRequest.create({
       data: {
         instanceId: instance.id,
+        tenantId: instance.tenantId ?? null,
         nodeId: node.id,
         subjectType: 'WorkflowRunBudget',
         subjectId: budgetId,

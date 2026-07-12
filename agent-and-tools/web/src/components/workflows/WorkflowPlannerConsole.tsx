@@ -66,6 +66,7 @@ type CriticIssue = {
 };
 
 type ConverseResult = {
+  sessionId?: string;
   reply: string;
   needsClarification: boolean;
   questions: string[];
@@ -84,11 +85,13 @@ type ConverseResult = {
 };
 
 type CommitResult = {
+  sessionId?: string;
   created: Array<{ id: string; workCode: string; capabilityId: string; milestone: string }>;
   failed: Array<{ title: string; error: string }>;
 };
 
 type LaunchResult = {
+  sessionId?: string;
   intent?: { id?: string; label?: string };
   workItems: CommitResult["created"];
   failedWorkItems: CommitResult["failed"];
@@ -116,6 +119,7 @@ export function WorkflowPlannerConsole() {
   const capabilities = useMemo(() => normalizeCapabilities(capabilityRows), [capabilityRows]);
 
   const [capabilityId, setCapabilityId] = useState("");
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [story, setStory] = useState(starterStory);
   const [allowChildren, setAllowChildren] = useState(true);
   const [maxItems, setMaxItems] = useState(12);
@@ -184,6 +188,7 @@ export function WorkflowPlannerConsole() {
         method: "POST",
         body: JSON.stringify({
           capabilityId: capabilityId.trim(),
+          ...(sessionId ? { sessionId } : {}),
           messages: nextMessages,
           plan: milestones,
           allowChildren,
@@ -191,6 +196,7 @@ export function WorkflowPlannerConsole() {
         }),
       }), capabilityId.trim());
       setLast(result);
+      if (result.sessionId) setSessionId(result.sessionId);
       setMessages([...nextMessages, { role: "assistant", content: result.reply || "Plan updated." }]);
       if (result.milestones.length) setMilestones(result.milestones);
       setStory("");
@@ -201,7 +207,7 @@ export function WorkflowPlannerConsole() {
     }
   }
 
-  function createLocalDraft() {
+  async function createLocalDraft() {
     if (!validCapability) {
       setError("Choose or paste a valid capability UUID before creating a draft.");
       return;
@@ -228,6 +234,16 @@ export function WorkflowPlannerConsole() {
     setCommitResult(null);
     setLaunchResult(null);
     setError(null);
+    try {
+      const persisted = asRow(await workgraphFetch<unknown>("/planner/sessions", {
+        method: "POST",
+        body: JSON.stringify({ capabilityId: capabilityId.trim(), story: text, messages: [{ role: "user", content: text }], milestones: draft }),
+      }));
+      const persistedId = asString(persisted.id);
+      if (persistedId) setSessionId(persistedId);
+    } catch {
+      // Keep the local fallback usable when WorkGraph itself is unavailable.
+    }
   }
 
   async function commitPlan() {
@@ -242,8 +258,9 @@ export function WorkflowPlannerConsole() {
     try {
       const result = normalizeCommitResult(await workgraphFetch<unknown>("/planner/commit", {
         method: "POST",
-        body: JSON.stringify({ capabilityId: capabilityId.trim(), milestones: prepared }),
+        body: JSON.stringify({ capabilityId: capabilityId.trim(), milestones: prepared, ...(sessionId ? { sessionId } : {}) }),
       }));
+      if (result.sessionId) setSessionId(result.sessionId);
       setCommitResult(result);
       setLaunchResult(null);
     } catch (err) {
@@ -268,6 +285,7 @@ export function WorkflowPlannerConsole() {
         method: "POST",
         body: JSON.stringify({
           capabilityId: capabilityId.trim(),
+          ...(sessionId ? { sessionId } : {}),
           intent: "build_feature",
           story: story.trim() || messages.find((message) => message.role === "user")?.content || starterStory,
           plan: prepared.length ? prepared : undefined,
@@ -277,6 +295,7 @@ export function WorkflowPlannerConsole() {
         }),
       }));
       setLaunchResult(result);
+      if (result.sessionId) setSessionId(result.sessionId);
       setCommitResult({ created: result.workItems, failed: result.failedWorkItems });
     } catch (err) {
       setError(`Launch failed: ${errorText(err)}`);
@@ -287,6 +306,7 @@ export function WorkflowPlannerConsole() {
 
   function resetPlan() {
     setStory(starterStory);
+    setSessionId(null);
     setMessages([]);
     setMilestones([]);
     setLast(null);
@@ -398,7 +418,7 @@ export function WorkflowPlannerConsole() {
               {planning ? <Loader2 size={15} className="animate-spin" /> : <Wand2 size={15} />}
               {milestones.length ? "Refine plan" : "Split into WorkItems"}
             </button>
-            <button className="btn-secondary" type="button" disabled={!validCapability || !story.trim()} onClick={createLocalDraft}>
+            <button className="btn-secondary" type="button" disabled={!validCapability || !story.trim()} onClick={() => void createLocalDraft()}>
               <Sparkles size={15} /> Local draft
             </button>
             <button className="btn-secondary" type="button" onClick={resetPlan}>Reset</button>
@@ -779,6 +799,7 @@ function normalizeConverseResult(value: unknown, homeCapabilityId: string): Conv
   const parseError = asString(row.parseError ?? row.parse_error);
   const raw = asString(row.raw);
   return {
+    sessionId: asString(row.sessionId ?? row.session_id) || undefined,
     reply: asString(row.reply ?? row.message ?? row.content, milestones.length ? "Plan updated." : "Planner returned a partial response. Review the story and create a local draft if needed."),
     needsClarification: asBoolean(row.needsClarification ?? row.needs_clarification) || questions.length > 0,
     questions,
@@ -796,6 +817,7 @@ function normalizeConverseResult(value: unknown, homeCapabilityId: string): Conv
 function normalizeCommitResult(value: unknown): CommitResult {
   const row = asRow(value);
   return {
+    sessionId: asString(row.sessionId ?? row.session_id) || undefined,
     created: rowsFrom(row.created ?? row.workItems ?? row.work_items, ["created", "workItems", "work_items"]).map(normalizeCreatedWorkItem),
     failed: rowsFrom(row.failed ?? row.failedWorkItems ?? row.failed_work_items ?? row.errors, ["failed", "errors"]).map(normalizeFailedWorkItem),
   };
@@ -805,6 +827,7 @@ function normalizeLaunchResult(value: unknown): LaunchResult {
   const row = asRow(value);
   const runtime = asRow(row.runtime);
   return {
+    sessionId: asString(row.sessionId ?? row.session_id) || undefined,
     intent: normalizeIntent(row.intent),
     workItems: rowsFrom(row.workItems ?? row.work_items ?? row.created, ["workItems", "work_items", "created"]).map(normalizeCreatedWorkItem),
     failedWorkItems: rowsFrom(row.failedWorkItems ?? row.failed_work_items ?? row.failed, ["failedWorkItems", "failed_work_items", "failed"]).map(normalizeFailedWorkItem),

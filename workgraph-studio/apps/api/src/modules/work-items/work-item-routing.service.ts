@@ -9,6 +9,7 @@ import { normalizeMetadataKey, recordOf } from '../metadata/metadata.service'
 // imports THIS module dynamically (await import), so this static import creates no cycle.
 import { assertCanClaimWorkItemTarget } from './work-items.service'
 import { assertTemplatePermission } from '../../lib/permissions/workflowTemplate'
+import { assertWorkItemDependenciesComplete } from './work-item-dependencies.service'
 
 type RoutingMode = 'MANUAL' | 'AUTO_ATTACH' | 'AUTO_START' | 'SCHEDULED_START'
 
@@ -222,6 +223,12 @@ export async function routeWorkItem(
     ? workItem.targets.find(t => t.id === options.targetId)
     : workItem.targets[0]
   if (!target) throw new ValidationError('WorkItem has no target capability to route')
+
+  // Dependencies are enforced at the routing boundary, so manual routing,
+  // planner launch, event triggers, and the scheduler all share one gate.
+  // A dependent WorkItem may exist in QUEUED state, but it cannot attach or
+  // start a workflow until every BLOCKS predecessor is terminal.
+  await assertWorkItemDependenciesComplete(workItemId, workItem.tenantId)
 
   // Security (finding #3): a real user routing/attaching/starting must be authorized to
   // act in the target capability. Internal automation (WORK_ITEM node, triggers,

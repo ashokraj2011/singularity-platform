@@ -8,6 +8,10 @@
     "dev": "node scripts/dev-electron.cjs",
     "dev:renderer": "vite --host 0.0.0.0 --port 5177 --strictPort",
     "build": "tsc && vite build",
+    "package": "npm run build && npx electron-builder --config electron-builder.yml",
+    "package:mac": "npm run build && npx electron-builder --config electron-builder.yml --mac",
+    "package:win": "npm run build && npx electron-builder --config electron-builder.yml --win",
+    "package:linux": "npm run build && npx electron-builder --config electron-builder.yml --linux",
     "start": "electron .",
     "lint": "tsc --noEmit"
   },

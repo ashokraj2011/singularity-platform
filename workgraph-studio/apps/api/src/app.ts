@@ -55,12 +55,21 @@ import { codegenRouter } from './modules/codegen/codegen.router'
 import { contractsRouter } from './modules/contracts/contracts.router'
 import { workItemsRouter } from './modules/work-items/work-items.router'
 import { plannerRouter } from './modules/planner/planner.router'
+import { workProgramsRouter } from './modules/work-program/work-programs.router'
+import { notificationsRouter } from './modules/notifications/notifications.router'
+import { collaborationRouter } from './modules/notifications/collaboration.router'
+import { workflowLifecycleRouter } from './modules/workflow/lifecycle.router'
+import { workflowDebugRouter } from './modules/workflow/debug.router'
 import { governanceRouter } from './modules/governance/governance.router'
+import { governancePolicyRouter } from './modules/governance/governance-policy.router'
 import { eventVerifierDemoRouter } from './modules/demo/event-verifier.router'
 import { workItemRoutingPoliciesRouter, workItemTriggersRouter } from './modules/work-items/work-item-routing.router'
 import { metadataDefinitionsRouter } from './modules/metadata/metadata.router'
 import { laptopInvocationsRouter, laptopQuestionsRouter, workItemLaptopRouter } from './modules/laptop/laptop.router'
 import { internalArtifactFetchRouter } from './modules/internal/artifact-fetch.router'
+import { capacityRouter } from './modules/planning/capacity.router'
+import { verificationRouter } from './modules/verification/verification.router'
+import { runtimePolicyRouter } from './modules/runtime/runtime-policy.router'
 // M42.0 — admin feature-flag toggles (kill switches for major capabilities).
 // M42.1 — internalFeatureFlagsRouter is the service-token-gated read-only
 // feature-flag mirror for trusted internal workers.
@@ -119,11 +128,14 @@ export function createApp(): Express {
   app.use('/api/permissions', authMiddleware, permissionsRouter)
   // app.use('/api/initiatives', authMiddleware, initiativesRouter) — out of scope
   app.use('/api/workflow-templates', authMiddleware, workflowTemplatesRouter)
+  app.use('/api/workflows', authMiddleware, workflowLifecycleRouter)
+  app.use('/api/workflow-debug', authMiddleware, workflowDebugRouter)
   // Compatibility/BFF alias used by WorkItem and readiness flows.
   // Workflow templates remain the source of truth; this path keeps the
   // operator-facing wording short without creating a second resource model.
   app.use('/api/workflows', authMiddleware, workflowTemplatesRouter)
   app.use('/api/workflow-instances', authMiddleware, workflowInstancesRouter)
+  app.use('/api/workflow-instances', authMiddleware, workflowLifecycleRouter)
   // M24 — run insights composite (sub-router; same /api/workflow-instances prefix)
   app.use('/api/workflow-instances', authMiddleware, insightsRouter)
   app.use('/api/workflow-triggers', authMiddleware, triggersRouter)
@@ -143,7 +155,14 @@ export function createApp(): Express {
   app.use('/api/work-items', authMiddleware, workItemLaptopRouter)
   app.use('/api/work-items', authMiddleware, workItemsRouter)
   app.use('/api/planner', authMiddleware, plannerRouter)
+  app.use('/api/work-programs', authMiddleware, workProgramsRouter)
+  app.use('/api/notifications', authMiddleware, notificationsRouter)
+  app.use('/api/collaboration', authMiddleware, collaborationRouter)
   app.use('/api/governance', authMiddleware, governanceRouter)
+  app.use('/api/governance/policies', authMiddleware, governancePolicyRouter)
+  app.use('/api/planning/capacity', authMiddleware, capacityRouter)
+  app.use('/api/verifications', authMiddleware, verificationRouter)
+  app.use('/api/runtime-policy', authMiddleware, runtimePolicyRouter)
   app.use('/api/demo/event-verifier', authMiddleware, eventVerifierDemoRouter)
   app.use('/api/laptop-invocations', authMiddleware, laptopInvocationsRouter)
   app.use('/api/questions', authMiddleware, laptopQuestionsRouter)

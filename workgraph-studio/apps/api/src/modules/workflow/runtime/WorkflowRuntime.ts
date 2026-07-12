@@ -37,6 +37,7 @@ import { activateVerifier } from './executors/VerifierExecutor'
 import { activateGovernanceGate } from './executors/GovernanceGateExecutor'
 import { activateSetContext } from './executors/SetContextExecutor'
 import { activateErrorCatch } from './executors/ErrorCatchExecutor'
+import { createWorkflowCheckpoint } from '../checkpoint.service'
 
 type PendingAdvance = { nodeId: string }
 // ACTIVE included so an in-flight node can be cancelled + re-sent (the in-flight
@@ -275,6 +276,10 @@ export async function advance(
     })
     return { mergedContext: merged, queued: isQueued, steps: stepCount }
   }, tenantId)
+
+  await createWorkflowCheckpoint(instanceId, actorId, undefined, completedNodeId, tenantId).catch((err) => {
+    console.warn('[workflow-checkpoint] automatic checkpoint failed:', err instanceof Error ? err.message : String(err))
+  })
 
   // Finding #6 — fire on_complete attachments AFTER the merged context is persisted, with
   // the refreshed context, so attachments that read an output binding or a newly-produced
@@ -518,6 +523,9 @@ export async function startInstance(
     instanceId: instance.id,
     startedAt: instance.startedAt?.toISOString(),
   }, eventId)
+  await createWorkflowCheckpoint(instance.id, actorId, 'run-start', undefined, tenantId).catch((err) => {
+    console.warn('[workflow-checkpoint] start checkpoint failed:', err instanceof Error ? err.message : String(err))
+  })
 
   return { id: instance.id, startNodes: startNodes.map(n => n.id) }
 }
@@ -535,6 +543,8 @@ type FailureInfo = {
   message: string
   code?: string
   details?: Record<string, unknown>
+  /** Human/governance decisions can close a node without retrying it. */
+  retryable?: boolean
 }
 
 function reachableDownstreamNodeIds(startNodeId: string, edges: { sourceNodeId: string; targetNodeId: string }[]): string[] {
@@ -1407,7 +1417,7 @@ export async function failNode(
     && failure.code !== undefined
     && policy.nonRetryableErrors.includes(failure.code)
 
-  const canRetry = !isNonRetryable && attemptsSoFar + 1 < maxAttempts
+  const canRetry = failure.retryable !== false && !isNonRetryable && attemptsSoFar + 1 < maxAttempts
 
   if (canRetry) {
     // Increment attempt count, mark ACTIVE (re-activated)

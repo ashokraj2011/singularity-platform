@@ -6,6 +6,7 @@ const path = require('node:path')
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
 const copilotCommand = process.env.COPILOT_CLI_BIN || 'copilot'
 const copilotSessions = new Map()
+const sessionConsents = new Set()
 
 function configPath() {
   return path.join(app.getPath('userData'), 'desk-config.json')
@@ -33,6 +34,45 @@ function execFileText(command, args, cwd) {
       resolve({ ok: !error, stdout: String(stdout || ''), stderr: String(stderr || ''), error: error ? error.message : undefined })
     })
   })
+}
+
+function allowedFolders(config) {
+  return Array.isArray(config?.allowedFolders)
+    ? config.allowedFolders.filter(folder => typeof folder === 'string' && folder.trim()).map(folder => path.resolve(folder))
+    : []
+}
+
+function isWithinRoot(candidate, root) {
+  const relative = path.relative(root, candidate)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+async function authorizeLocalAction(action, cwd) {
+  const config = await getConfig()
+  if (config.killSwitch === true) throw new Error('Local runtime kill switch is enabled in Singularity Desk settings.')
+  const candidate = path.resolve(typeof cwd === 'string' && cwd.trim() ? cwd.trim() : process.cwd())
+  const roots = allowedFolders(config)
+  if (roots.length > 0 && !roots.some(root => isWithinRoot(candidate, root))) {
+    throw new Error(`Workspace is outside the configured allowed folders: ${candidate}`)
+  }
+  const consentMode = config.consentMode || 'PER_ACTION'
+  if (consentMode === 'ALWAYS_ALLOW') return { cwd: candidate, consent: 'always' }
+  const consentKey = `${action}:${candidate}`
+  if (consentMode === 'SESSION' && sessionConsents.has(consentKey)) return { cwd: candidate, consent: 'session' }
+  if (consentMode === 'PER_ACTION' && sessionConsents.has(consentKey)) return { cwd: candidate, consent: 'session' }
+  const choice = await dialog.showMessageBox({
+    type: 'question',
+    title: 'Singularity Desk permission',
+    message: `Allow ${action} in this workspace?`,
+    detail: candidate,
+    buttons: ['Allow once', 'Allow for session', 'Deny'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+  })
+  if (choice.response === 2) throw new Error('Local action denied by the user.')
+  if (choice.response === 1 || consentMode === 'SESSION') sessionConsents.add(consentKey)
+  return { cwd: candidate, consent: choice.response === 1 ? 'session' : 'once' }
 }
 
 async function collectEvidence(workdir, baseRef) {
@@ -152,7 +192,15 @@ app.whenReady().then(() => {
       title: 'Choose repository directory',
       properties: ['openDirectory'],
     })
-    return result.canceled ? null : result.filePaths[0]
+    if (result.canceled) return null
+    const selected = path.resolve(result.filePaths[0])
+    const config = await getConfig()
+    const roots = allowedFolders(config)
+    if (roots.length > 0 && !roots.some(root => isWithinRoot(selected, root))) {
+      await dialog.showMessageBox({ type: 'warning', title: 'Folder not allowed', message: 'Choose a folder inside an allowed workspace.', detail: selected })
+      return null
+    }
+    return selected
   })
 
   ipcMain.handle('desk:open-external', async (_event, url) => {
@@ -173,12 +221,16 @@ app.whenReady().then(() => {
 
   ipcMain.handle('desk:detect-copilot-cli', () => detectCopilotCli())
 
-  ipcMain.handle('desk:evidence:collect', (_event, input) => collectEvidence(input?.workdir, input?.baseRef))
+  ipcMain.handle('desk:evidence:collect', async (_event, input) => {
+    const authorized = await authorizeLocalAction('collect repository evidence', input?.workdir)
+    return collectEvidence(authorized.cwd, input?.baseRef)
+  })
 
   ipcMain.handle('desk:copilot:start', async (event, input) => {
     const sessionId = input?.sessionId || `${Date.now()}-${Math.random().toString(16).slice(2)}`
     const command = input?.command || copilotCommand
-    const cwd = typeof input?.cwd === 'string' && input.cwd.trim() ? input.cwd.trim() : process.cwd()
+    const authorized = await authorizeLocalAction('run Copilot', input?.cwd)
+    const cwd = authorized.cwd
     const args = Array.isArray(input?.args) ? input.args.map(String) : []
     const child = spawn(command, args, {
       cwd,

@@ -5,7 +5,7 @@ import { platformServiceUrl } from "@/lib/platformServices";
 const WORKGRAPH_API_URL = platformServiceUrl("workgraph-api");
 
 async function proxy(req: NextRequest, context: { params: Promise<{ path?: string[] }> }) {
-  const authFailure = await requireVerifiedCallerBearer(req, "Workgraph Code Generation");
+  const authFailure = await requireVerifiedCallerBearer(req, "Code Foundry");
   if (authFailure) return authFailure;
 
   const params = await context.params;

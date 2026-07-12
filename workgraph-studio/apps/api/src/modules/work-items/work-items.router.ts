@@ -3,7 +3,8 @@ import { z } from 'zod'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { NotFoundError } from '../../lib/errors'
-import { assertApprovalRequestTenant } from '../../lib/tenant-isolation'
+import { assertApprovalRequestTenant, resolveTenantFromRequest } from '../../lib/tenant-isolation'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import {
   approvalRequestRouting,
   assertCanDecideApproval,
@@ -25,6 +26,11 @@ import {
   updateWorkItem,
 } from './work-items.service'
 import { routeWorkItem } from './work-item-routing.service'
+import {
+  createWorkItemDependency,
+  deleteWorkItemDependency,
+  listWorkItemDependencies,
+} from './work-item-dependencies.service'
 
 export const workItemsRouter: Router = Router()
 
@@ -314,6 +320,63 @@ workItemsRouter.get('/', async (req, res, next) => {
     }
     const items = await withTargetTemplateDiagnostics(visible)
     res.json({ items, nextCursor: exhausted ? null : nextCursor })
+  } catch (err) {
+    next(err)
+  }
+})
+
+const dependencySchema = z.object({
+  predecessorId: z.string().uuid(),
+  dependencyType: z.string().trim().min(1).max(40).optional(),
+  condition: z.unknown().optional(),
+})
+
+workItemsRouter.get('/:id/dependencies', async (req, res, next) => {
+  try {
+    const tenantHint = resolveTenantFromRequest(req)
+    const workItem = await withTenantDbTransaction(prisma, tx => tx.workItem.findUnique({ where: { id: req.params.id }, include: { targets: true } }), tenantHint)
+    if (!workItem) throw new NotFoundError('WorkItem', req.params.id)
+    await assertCanViewWorkItem(req.user!.userId, workItem)
+    res.json(await listWorkItemDependencies(req.params.id, workItem.tenantId ?? tenantHint ?? 'default'))
+  } catch (err) {
+    next(err)
+  }
+})
+
+workItemsRouter.post('/:id/dependencies', validate(dependencySchema), async (req, res, next) => {
+  try {
+    const tenantHint = resolveTenantFromRequest(req)
+    const successor = await withTenantDbTransaction(prisma, tx => tx.workItem.findUnique({ where: { id: req.params.id }, include: { targets: true } }), tenantHint)
+    if (!successor) throw new NotFoundError('WorkItem', req.params.id)
+    await assertCanViewWorkItem(req.user!.userId, successor)
+    const tenantId = successor.tenantId ?? tenantHint ?? 'default'
+    const predecessor = await withTenantDbTransaction(prisma, tx => tx.workItem.findUnique({ where: { id: req.body.predecessorId }, include: { targets: true } }), tenantId)
+    if (!predecessor) throw new NotFoundError('WorkItem', req.body.predecessorId)
+    await assertCanViewWorkItem(req.user!.userId, predecessor)
+    res.status(201).json(await createWorkItemDependency({
+      predecessorId: req.body.predecessorId,
+      successorId: req.params.id,
+      dependencyType: req.body.dependencyType,
+      condition: req.body.condition,
+      createdById: req.user!.userId,
+      tenantId,
+    }))
+  } catch (err) {
+    next(err)
+  }
+})
+
+workItemsRouter.delete('/:id/dependencies/:dependencyId', async (req, res, next) => {
+  try {
+    const tenantHint = resolveTenantFromRequest(req)
+    const workItem = await withTenantDbTransaction(prisma, tx => tx.workItem.findUnique({ where: { id: req.params.id }, include: { targets: true } }), tenantHint)
+    if (!workItem) throw new NotFoundError('WorkItem', req.params.id)
+    await assertCanViewWorkItem(req.user!.userId, workItem)
+    const tenantId = workItem.tenantId ?? tenantHint ?? 'default'
+    const dependency = await withTenantDbTransaction(prisma, tx => tx.workItemDependency.findFirst({ where: { id: req.params.dependencyId, successorId: req.params.id, tenantId } }), tenantId)
+    if (!dependency) throw new NotFoundError('WorkItemDependency', req.params.dependencyId)
+    await deleteWorkItemDependency(dependency.id, tenantId)
+    res.status(204).end()
   } catch (err) {
     next(err)
   }

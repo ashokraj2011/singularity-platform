@@ -8,7 +8,7 @@ packaged, and released independently from the Workgraph web workspace.
 ## Start In Development
 
 ```bash
-cd /Users/ashokraj/Downloads/backupSingularity/singularity-platform/singularity-desktop
+	cd /Users/ashokraj/Downloads/newdemo/server/singularity-platform/singularity-desktop
 pnpm install
 pnpm dev
 ```
@@ -18,10 +18,25 @@ The Electron renderer runs on `http://127.0.0.1:5188` during development.
 ## Build
 
 ```bash
-cd /Users/ashokraj/Downloads/backupSingularity/singularity-platform/singularity-desktop
+	cd /Users/ashokraj/Downloads/newdemo/server/singularity-platform/singularity-desktop
 pnpm build
 pnpm start
 ```
+
+## Release Packaging
+
+Packaging targets are defined in `electron-builder.yml`:
+
+```bash
+pnpm package:mac     # requires CSC_NAME and the macOS signing keychain
+pnpm package:win    # requires a Windows signing certificate configuration
+pnpm package:linux
+```
+
+The build deliberately fails or produces an unsigned artifact when signing
+credentials are not supplied. Publish only signed artifacts, pin the bundled
+runner version, and enforce a minimum version through the platform runtime
+policy before enabling auto-update for a tenant.
 
 ## Runtime Connections
 
@@ -37,14 +52,20 @@ All of these can be changed in the app Settings screen.
 
 - Renderer code does not get direct shell access.
 - Electron main process owns Copilot process execution, repo picking, local evidence collection, and notifications.
+- Allowed workspace folders are enforced in the Electron main process.
+- Copilot and evidence actions request per-action or session consent and honor the local kill switch.
 - Workbench Neo is embedded as a web surface for v1.
 - Direct Copilot mode is the default local execution path.
 
+The platform can also manage device policy through `/api/runtime-policy`.
+Secrets and runtime JWTs are not stored in workflow configuration.
+
 ## Laptop bridge protocol (M75, 2026-05)
 
-When the desktop app launches a local mcp-server, that mcp-server can
-register with the platform's context-fabric over a WebSocket bridge
-(`POST /laptop/bridge`, then long-lived WS). Two frame types are now
+When the desktop app launches a local mcp-server, that mcp-server dials
+Context Fabric over the canonical runtime WebSocket
+(`/api/runtime-bridge/connect`; `/api/laptop-bridge/connect` remains a
+compatibility alias). Two frame types are now
 in scope:
 
 - `invoke` — legacy, full agent-loop payload runs locally inside

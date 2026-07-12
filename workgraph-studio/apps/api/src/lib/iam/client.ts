@@ -462,7 +462,7 @@ export async function getCapability(capabilityId: string, callerToken?: string):
   // Pull from IAM
   const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}`, { token: callerToken }).catch(() => null)
   if (res?.ok) {
-    const cap = await readIamJson<IamCapabilityPayload>(res, `/capabilities/${capabilityId}`).catch(() => null)
+    const cap = await readIamJson<{ id: string; name: string; capability_id?: string; capability_type?: string; status?: string; is_governing?: boolean }>(res, `/capabilities/${capabilityId}`).catch(() => null)
     const row = cap ? await cacheIamCapability(capabilityId, cap) : null
     if (row) return row
   }
@@ -471,7 +471,8 @@ export async function getCapability(capabilityId: string, callerToken?: string):
   // while Workgraph templates often store the IAM UUID. Fall back to the list
   // endpoint and match either shape so seeded UUIDs like default-demo resolve.
   const listed = await findCapabilityByUuidOrSlug(capabilityId, callerToken)
-  return listed ? cacheIamCapability(capabilityId, listed) : null
+  if (!listed) return null
+  return cacheIamCapability(capabilityId, listed)
 }
 
 // ── Capability Governance Model (G2) ─────────────────────────────────────────

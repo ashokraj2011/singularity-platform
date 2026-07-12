@@ -27,6 +27,7 @@ import {
   unresolvedNotificationCount,
 } from "@/lib/platformNotifications";
 import type { PlatformNotification } from "@/lib/platformNotifications";
+import { asRowArray, asString } from "@/lib/row";
 
 const categoryLabels = Object.fromEntries(NOTIFICATION_CATEGORIES.map((item) => [item.id, item.label])) as Record<NotificationCategory, string>;
 const tabOrder: Array<"action" | NotificationCategory | "all"> = ["action", "workflow", "runtime", "security", "governance", "all"];
@@ -162,7 +163,31 @@ export function NotificationCenter() {
         const { raw, parsed, parseError } = await readResponseBody(res);
         assertValidApiResponse("/api/adoption/health", raw, parseError);
         if (!res.ok) throw new Error("Adoption health failed to load.");
-        setItems(derivePlatformNotifications(parsed));
+        const durableItems: PlatformNotification[] = [];
+        try {
+          const durableRes = await fetch(apiPath("/api/notifications?status=UNREAD&limit=50"), { cache: "no-store", headers: authHeaders() });
+          if (durableRes.ok) {
+            const durableRows = asRowArray(await durableRes.json());
+            for (const row of durableRows) {
+              const severity = asString(row.severity).toLowerCase();
+              const kind = asString(row.kind).toUpperCase();
+              durableItems.push({
+                id: `durable:${asString(row.id)}`,
+                title: asString(row.title, "Work notification"),
+                message: asString(row.message),
+                severity: severity === "error" ? "blocked" : severity === "warning" ? "warning" : "info",
+                category: kind.includes("APPROVAL") ? "workflow" : kind.includes("GOVERNANCE") ? "governance" : "workflow",
+                source: "workgraph",
+                href: asString(row.href, "/runs"),
+                actionLabel: "Open",
+                generatedAt: asString(row.createdAt) || undefined,
+              });
+            }
+          }
+        } catch {
+          // Health notifications remain available if the durable inbox is not migrated yet.
+        }
+        setItems([...durableItems, ...derivePlatformNotifications(parsed)]);
         setError(null);
       } catch (err) {
         if (!cancelled) {
@@ -202,6 +227,17 @@ export function NotificationCenter() {
     const next = { ...state, [id]: { ...(state[id] ?? {}), ...patch } };
     setState(next);
     saveNotificationState(next);
+    if (id.startsWith("durable:")) {
+      const durableId = id.slice("durable:".length);
+      const action = patch.resolved ? "resolve" : patch.snoozedUntil ? "snooze" : patch.read ? "read" : null;
+      if (action) {
+        void fetch(apiPath(`/api/notifications/${durableId}/${action}`), {
+          method: "POST",
+          headers: { ...authHeaders(), "content-type": "application/json" },
+          body: action === "snooze" ? JSON.stringify({ until: new Date(patch.snoozedUntil!).toISOString() }) : undefined,
+        }).catch(() => undefined);
+      }
+    }
   }
 
   function markAllRead() {
@@ -209,6 +245,11 @@ export function NotificationCenter() {
     for (const item of visibleItems) next[item.id] = { ...(next[item.id] ?? {}), read: true };
     setState(next);
     saveNotificationState(next);
+    for (const item of visibleItems) {
+      if (!item.id.startsWith("durable:")) continue;
+      const durableId = item.id.slice("durable:".length);
+      void fetch(apiPath(`/api/notifications/${durableId}/read`), { method: "POST", headers: authHeaders() }).catch(() => undefined);
+    }
   }
 
   return (
