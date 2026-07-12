@@ -46,6 +46,23 @@ function options(overrides: Partial<DirectLlmHarnessOptions> = {}): DirectLlmHar
   }
 }
 
+// Every harness prompt carries a `Direct LLM harness phase: <PHASE>.` marker (see phasePrompt).
+function phaseOf(prompt: string): string {
+  return prompt.match(/Direct LLM harness phase: (\w+)\./)?.[1] ?? 'UNKNOWN'
+}
+
+// Minimal stage response so tests never reach the network-backed default resolver.
+const stageFor = (phase: string) => ({
+  task: `stage ${phase}`,
+  systemPromptAppend: '',
+  extraContext: '',
+  promptProfileId: `profile-${phase}`,
+  bindingId: `binding-${phase}`,
+  stageKey: 'loop.stage',
+  agentRole: null,
+  phase,
+}) as any
+
 describe('direct LLM harness', () => {
   it('uses prompt-composer preview output before making the direct provider call', async () => {
     const seenPrompts: string[] = []
@@ -184,5 +201,118 @@ describe('direct LLM harness', () => {
     })
 
     expect(result.receipt.validation.passed).toBe(true)
+  })
+
+  it('early-stops the loop once the output contract is satisfied at a review phase', async () => {
+    const seen: string[] = []
+    const result = await runDirectLlmHarness({
+      llm,
+      options: options({
+        loopEnabled: true,
+        loopPhases: ['PLAN', 'EXPLORE', 'SELF_REVIEW', 'FINALIZE'],
+        maxTurns: 4,
+        requiredOutputIncludes: ['APPROVED'],
+        validationMode: 'soft',
+      }),
+      node,
+      instance,
+      traceId: 'trace-earlystop',
+      resolveStagePrompt: async ({ phase }) => stageFor(phase),
+      callProvider: async request => {
+        const phase = phaseOf(request.prompt)
+        seen.push(phase)
+        // Contract ('APPROVED') is only met at SELF_REVIEW; earlier phases stay unconverged.
+        return { content: phase === 'SELF_REVIEW' ? 'verdict: APPROVED' : `working on ${phase}`, providerRequestId: `req-${phase}` }
+      },
+    })
+
+    expect(seen).toEqual(['PLAN', 'EXPLORE', 'SELF_REVIEW']) // FINALIZE skipped
+    expect(result.receipt.stopReason).toBe('converged')
+    expect(result.receipt.validation.passed).toBe(true)
+    expect(result.receipt.repairAttempts).toBe(0)
+    expect(result.receipt.warnings.some(warning => warning.includes('early-stop'))).toBe(true)
+  })
+
+  it('runs a bounded VERIFY→REPAIR loop and stops at maxRepairAttempts', async () => {
+    const seen: string[] = []
+    const result = await runDirectLlmHarness({
+      llm,
+      options: options({
+        loopEnabled: true,
+        loopPhases: ['PLAN', 'SELF_REVIEW'],
+        maxTurns: 12,
+        requiredOutputIncludes: ['APPROVED'],
+        validationMode: 'soft',
+        maxRepairAttempts: 3,
+      }),
+      node,
+      instance,
+      traceId: 'trace-repair',
+      resolveStagePrompt: async ({ phase }) => stageFor(phase),
+      callProvider: async request => {
+        seen.push(phaseOf(request.prompt))
+        return { content: 'still no verdict', providerRequestId: `req-${seen.length}` } // never satisfies the contract
+      },
+    })
+
+    expect(seen).toEqual(['PLAN', 'SELF_REVIEW', 'REPAIR', 'REPAIR', 'REPAIR'])
+    expect(result.receipt.turns.filter(turn => turn.phase === 'REPAIR')).toHaveLength(3)
+    expect(seen.length).toBeLessThanOrEqual(12) // never exceeds the turn ceiling
+    expect(result.receipt.stopReason).toBe('repair-exhausted')
+    expect(result.reviewRequired).toBe(true) // soft mode, still failing
+  })
+
+  it('feeds the concrete validation errors and failing output into the REPAIR prompt', async () => {
+    const repairPrompts: string[] = []
+    await runDirectLlmHarness({
+      llm,
+      options: options({
+        loopEnabled: true,
+        loopPhases: ['SELF_REVIEW'],
+        maxTurns: 4,
+        requiredOutputIncludes: ['APPROVED'],
+        validationMode: 'soft',
+        maxRepairAttempts: 1,
+      }),
+      node,
+      instance,
+      traceId: 'trace-feedback',
+      resolveStagePrompt: async ({ phase }) => stageFor(phase),
+      callProvider: async request => {
+        if (phaseOf(request.prompt) === 'REPAIR') repairPrompts.push(request.prompt)
+        return { content: 'first draft, incomplete', providerRequestId: 'r' }
+      },
+    })
+
+    expect(repairPrompts).toHaveLength(1)
+    expect(repairPrompts[0]).toContain('missing required output text: APPROVED')
+    expect(repairPrompts[0]).toContain('Previous output that failed validation:')
+    expect(repairPrompts[0]).toContain('first draft, incomplete')
+  })
+
+  it('with no output contract, runs every planned phase once (no early-stop, no repair)', async () => {
+    const seen: string[] = []
+    const result = await runDirectLlmHarness({
+      llm,
+      options: options({
+        loopEnabled: true,
+        loopPhases: ['PLAN', 'VERIFY', 'SELF_REVIEW'],
+        maxTurns: 5, // > phase count so a clean completion is not mislabeled as turn-cap
+        validationMode: 'soft', // but no requiredOutputIncludes / schema → no contract to converge on
+      }),
+      node,
+      instance,
+      traceId: 'trace-nocontract',
+      resolveStagePrompt: async ({ phase }) => stageFor(phase),
+      callProvider: async request => {
+        seen.push(phaseOf(request.prompt))
+        return { content: 'ok', providerRequestId: 'r' }
+      },
+    })
+
+    expect(seen).toEqual(['PLAN', 'VERIFY', 'SELF_REVIEW'])
+    expect(result.receipt.turns.some(turn => turn.phase === 'REPAIR')).toBe(false)
+    expect(result.receipt.stopReason).toBe('phases-exhausted')
+    expect(result.receipt.repairAttempts).toBe(0)
   })
 })

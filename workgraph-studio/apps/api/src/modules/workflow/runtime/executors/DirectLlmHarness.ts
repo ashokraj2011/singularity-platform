@@ -49,6 +49,11 @@ export type DirectLlmHarnessOptions = {
   artifacts?: ComposeArtifact[]
   outputJsonSchema?: Record<string, unknown>
   validationMode: 'off' | 'soft' | 'hard'
+  // Adaptive-loop controls (loop mode only). Both engage only when an output contract is configured
+  // (validationMode !== 'off' and a required-text or JSON schema is present); otherwise the loop runs
+  // exactly as before — every planned phase once, in order, validating only the final output.
+  earlyStop?: boolean
+  maxRepairAttempts?: number
 }
 
 export type DirectLlmHarnessTurn = {
@@ -80,6 +85,9 @@ export type DirectLlmHarnessReceipt = {
     errors: string[]
   }
   turns: DirectLlmHarnessTurn[]
+  // Why the loop stopped, and how many bounded VERIFY→REPAIR turns it spent (loop mode only).
+  stopReason?: 'converged' | 'phases-exhausted' | 'repair-exhausted' | 'turn-cap'
+  repairAttempts?: number
 }
 
 type ComposePromptFn = (input: {
@@ -236,6 +244,7 @@ function phasePrompt(args: {
   priorTurns: DirectLlmHarnessTurn[]
   priorOutputs: string[]
   stage?: ResolveStageResponse
+  repairFeedback?: { errors: string[]; failingOutput: string }
 }): string {
   const prior = args.priorOutputs.length
     ? `Prior direct harness outputs:\n${args.priorOutputs.map((text, i) => `Turn ${i + 1}:\n${text}`).join('\n\n')}`
@@ -244,12 +253,25 @@ function phasePrompt(args: {
     `Direct LLM harness phase: ${args.phase}.`,
     'This is a direct model call. Do not claim that Context Fabric, MCP, tools, shell commands, or repository writes were executed.',
     'Use the phase discipline from the governed loop: produce a concrete phase result, identify uncertainty, and make the next phase easier to validate.',
-    args.phase === 'FINALIZE' || args.phase === 'SELF_REVIEW'
-      ? 'Return the final answer or review-ready output with clear evidence and residual risks.'
-      : 'Return phase output that can feed the next phase.',
+    args.phase === 'REPAIR'
+      ? 'Revise the previous output so it satisfies the output contract. Fix every listed validation failure and return the corrected final answer only.'
+      : args.phase === 'FINALIZE' || args.phase === 'SELF_REVIEW'
+        ? 'Return the final answer or review-ready output with clear evidence and residual risks.'
+        : 'Return phase output that can feed the next phase.',
   ].join('\n')
 
-  return appendSections(args.stage?.task, args.basePrompt, prior, phaseInstruction) ?? args.basePrompt
+  // On a REPAIR turn, feed the concrete contract failures (and the output that failed) back to the model.
+  const repair = args.repairFeedback
+    ? [
+        'Validation of the previous output FAILED against the output contract. Correct ALL of these problems:',
+        args.repairFeedback.errors.map(error => `- ${error}`).join('\n'),
+        '',
+        'Previous output that failed validation:',
+        args.repairFeedback.failingOutput,
+      ].join('\n')
+    : undefined
+
+  return appendSections(args.stage?.task, args.basePrompt, prior, repair, phaseInstruction) ?? args.basePrompt
 }
 
 export async function runDirectLlmHarness(args: {
@@ -333,14 +355,31 @@ export async function runDirectLlmHarness(args: {
   }
 
   const phases = clampTurns(options.loopPhases.length ? options.loopPhases : ['PLAN', 'SELF_REVIEW'], options.maxTurns)
+  // Hard ceiling on total provider calls this run (planned phases + any REPAIR turns). Reuses
+  // clampTurns' ≤12 bound so REPAIR can never push the loop past the configured turn budget.
+  const ceiling = Math.min(Math.max(options.maxTurns || 1, 1), 12)
+  // Early-stop and VERIFY→REPAIR engage ONLY when there is a real output contract to converge on.
+  // With no contract the loop is byte-for-byte the old behavior: run every planned phase once, in order.
+  const contractConfigured = options.validationMode !== 'off'
+    && (options.requiredOutputIncludes.some(text => text.trim().length > 0) || Boolean(options.outputJsonSchema))
+  const earlyStop = options.earlyStop ?? true
+  const maxRepairAttempts = Math.max(0, Math.trunc(options.maxRepairAttempts ?? 3))
+  const isReviewPhase = (phase: DirectLlmHarnessPhase): boolean =>
+    phase === 'VERIFY' || phase === 'SELF_REVIEW' || phase === 'FINALIZE'
+
   const outputs: string[] = []
   let finalChat: DirectLlmChatResult | null = null
   let aggregateInput = 0
   let aggregateOutput = 0
   let aggregateTotal = 0
+  let repairAttempts = 0
+  let stopReason: DirectLlmHarnessReceipt['stopReason'] = 'phases-exhausted'
 
-  for (let i = 0; i < phases.length; i += 1) {
-    const phase = phases[i]
+  // One provider turn: resolve the stage prompt, call the model, aggregate tokens, validate, record.
+  const runPhase = async (
+    phase: DirectLlmHarnessPhase,
+    repairFeedback?: { errors: string[]; failingOutput: string },
+  ): Promise<{ chat: DirectLlmChatResult; validation: { passed: boolean; errors: string[] } }> => {
     let stage: ResolveStageResponse | undefined
     try {
       stage = await (args.resolveStagePrompt ?? defaultResolveStagePrompt)({
@@ -355,20 +394,18 @@ export async function runDirectLlmHarness(args: {
     }
     const request = {
       ...args.llm,
-      prompt: phasePrompt({ phase, basePrompt, priorTurns: turns, priorOutputs: outputs, stage }),
+      prompt: phasePrompt({ phase, basePrompt, priorTurns: turns, priorOutputs: outputs, stage, repairFeedback }),
       systemPrompt: appendSections(baseSystemPrompt, stage?.systemPromptAppend, stage?.extraContext),
     }
     const chat = await args.callProvider(request)
-    finalChat = chat
     outputs.push(chat.content)
     aggregateInput += chat.inputTokens ?? 0
     aggregateOutput += chat.outputTokens ?? 0
     aggregateTotal += chat.totalTokens ?? ((chat.inputTokens ?? 0) + (chat.outputTokens ?? 0))
-    const validation = i === phases.length - 1
-      ? validateHarnessOutput(chat.content, options)
-      : { passed: true, errors: [] }
+    // Validate after EVERY phase now (was: only the last) — this is what drives early-stop and REPAIR.
+    const validation = validateHarnessOutput(chat.content, options)
     turns.push({
-      index: i + 1,
+      index: turns.length + 1,
       phase,
       promptHash: stableHash(`${request.systemPrompt ?? ''}\n${request.prompt}`),
       promptAssemblyId,
@@ -380,6 +417,43 @@ export async function runDirectLlmHarness(args: {
       validationPassed: validation.passed,
       validationErrors: validation.errors,
     })
+    return { chat, validation }
+  }
+
+  for (let i = 0; i < phases.length && turns.length < ceiling; i += 1) {
+    const phase = phases[i]
+    let { chat, validation } = await runPhase(phase)
+    finalChat = chat
+
+    // Bounded VERIFY→REPAIR: when a review phase fails the contract, feed the concrete errors back into
+    // a REPAIR turn and re-validate. Mirrors the governed loop's max_repair_attempts, capped by `ceiling`.
+    while (
+      contractConfigured
+      && isReviewPhase(phase)
+      && !validation.passed
+      && repairAttempts < maxRepairAttempts
+      && turns.length < ceiling
+    ) {
+      repairAttempts += 1
+      ;({ chat, validation } = await runPhase('REPAIR', { errors: validation.errors, failingOutput: chat.content }))
+      finalChat = chat
+    }
+
+    // Early-stop on convergence: once the output satisfies the contract there is nothing to add, so skip
+    // the remaining planned phases instead of parroting through them.
+    if (contractConfigured && earlyStop && validation.passed) {
+      stopReason = 'converged'
+      if (i < phases.length - 1) {
+        warnings.push(`early-stop: output contract satisfied at ${phase} (turn ${turns.length}); skipped ${phases.length - 1 - i} remaining phase(s)`)
+      }
+      break
+    }
+  }
+
+  // Classify a non-converged stop for the receipt (observability only).
+  if (stopReason === 'phases-exhausted') {
+    if (turns.length >= ceiling) stopReason = 'turn-cap'
+    else if (repairAttempts > 0 && turns[turns.length - 1]?.validationPassed === false) stopReason = 'repair-exhausted'
   }
 
   const finalValidation = turns[turns.length - 1]?.validationPassed === false
@@ -408,6 +482,8 @@ export async function runDirectLlmHarness(args: {
       warnings,
       validation: { mode: options.validationMode, ...finalValidation },
       turns,
+      stopReason,
+      repairAttempts,
     },
     reviewRequired: !finalValidation.passed && options.validationMode === 'soft',
   }
