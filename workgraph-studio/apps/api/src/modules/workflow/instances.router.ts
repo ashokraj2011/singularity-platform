@@ -1106,6 +1106,32 @@ def post_signal(platform_url, token, run_id, signal_name, payload):
     except urllib.error.HTTPError as err:
         return err.code, err.read().decode("utf-8", errors="replace")
 
+def post_progress(platform_url, token, run_id, event):
+    # Live run mirror: a small, content-free progress tick for the run viewer.
+    endpoint = platform_url.rstrip("/") + "/api/workgraph/workflow-instances/" + urllib.parse.quote(run_id) + "/copilot-progress"
+    body = json.dumps(event, separators=(",", ":")).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint,
+        data=body,
+        method="POST",
+        headers={
+            "content-type": "application/json",
+            "authorization": "Bearer " + token,
+        },
+    )
+    with urllib.request.urlopen(req, timeout=15) as res:
+        return res.status, res.read().decode("utf-8", errors="replace")
+
+def emit_progress(enabled, platform_url, token, run_id, event):
+    # Best-effort: the live mirror must NEVER fail or slow the run. Swallow every
+    # error (offline / auth / HTTP) — progress is a nice-to-have side channel.
+    if not enabled:
+        return
+    try:
+        post_progress(platform_url, token, run_id, event)
+    except Exception as err:
+        print("[singularity] progress emit skipped: " + str(err)[:200], file=sys.stderr)
+
 def main():
     metadata = WORKFLOW["metadata"]
     stages = WORKFLOW.get("stages", [])
@@ -1122,6 +1148,10 @@ def main():
     max_artifacts = env_int("COPILOT_ARTIFACT_MAX_FILES", 40, 1, 200)
     include_untracked = os.environ.get("COPILOT_INCLUDE_UNTRACKED", "0").lower() in ("1", "true", "yes")
     push_results = os.environ.get("SINGULARITY_PUSH_RESULTS", "0").lower() in ("1", "true", "yes")
+    # Live run mirror: stream phase-level progress to the platform run viewer.
+    # Defaults ON when pushing results (the connected end-to-end case), OFF for
+    # local-only runs; toggle independently with SINGULARITY_STREAM_PROGRESS.
+    stream_progress = os.environ.get("SINGULARITY_STREAM_PROGRESS", "1" if push_results else "0").lower() in ("1", "true", "yes")
     cwd = pathlib.Path(os.environ.get("WORK_DIR", os.getcwd())).resolve()
     out_dir = pathlib.Path(os.environ.get("COPILOT_OUTPUT_DIR", str(cwd / ".singularity" / "copilot-runs" / run_id))).resolve()
     prompt_dir = out_dir / "prompts"
@@ -1133,6 +1163,13 @@ def main():
     artifacts = {}
     overall_status = "completed"
 
+    emit_progress(stream_progress, platform_url, token, run_id, {
+        "event": "run.started",
+        "message": "Copilot run started",
+        "at": started,
+        "data": {"stageCount": len(stages)},
+    })
+
     for index, stage in enumerate(stages, start=1):
         stage_key = stage.get("key") or f"stage-{index}"
         node_id = stage.get("nodeId")
@@ -1143,6 +1180,16 @@ def main():
         before = set(status_paths(cwd))
         started_ms = int(time.time() * 1000)
         started_at = now_iso()
+        emit_progress(stream_progress, platform_url, token, run_id, {
+            "event": "phase.started",
+            "phase": stage_key,
+            "nodeId": node_id,
+            "status": "running",
+            "message": "Running " + stage_key,
+            "seq": index,
+            "at": started_at,
+            "data": {"index": index, "label": stage.get("label")},
+        })
         args = [copilot_bin, "-p", prompt]
         if allow_all:
             args.append("--allow-all")
@@ -1203,6 +1250,20 @@ def main():
                 "changedFileCount": len(reported_changed),
             },
         })
+        emit_progress(stream_progress, platform_url, token, run_id, {
+            "event": "phase.completed",
+            "phase": stage_key,
+            "nodeId": node_id,
+            "status": status,
+            "seq": index,
+            "at": completed_at,
+            "data": {
+                "durationMs": duration_ms,
+                "exitCode": proc.returncode,
+                "changedFileCount": len(reported_changed),
+                "changedFiles": reported_changed[:50],
+            },
+        })
         # External variant: release this phase's SIGNAL_WAIT barrier as soon as it
         # succeeds. Signals are durable + per-phase-unique, so firing eagerly here
         # (the CLI is non-interactive) is safe — each is consumed by its barrier when
@@ -1244,6 +1305,17 @@ def main():
         "stages": stage_results,
         "artifacts": list(artifacts.values())[:max_artifacts],
     }
+    emit_progress(stream_progress, platform_url, token, run_id, {
+        "event": "run.completed",
+        "status": overall_status,
+        "at": payload["completedAt"],
+        "data": {
+            "stageCount": len(stage_results),
+            "completedStageCount": payload["metrics"]["completedStageCount"],
+            "failedStageCount": payload["metrics"]["failedStageCount"],
+            "artifactCount": len(artifacts),
+        },
+    })
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "copilot-results.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     if push_results:
@@ -1481,6 +1553,9 @@ function buildCopilotWorkflowExport(
       // External (SIGNAL_WAIT-barrier) variant: base path the runner appends
       // `/<stage.signalName>` to, to advance each phase's parked barrier.
       signalEndpoint: `/api/workgraph/workflow-instances/${instance.id}/signals`,
+      // Live run mirror: the runner POSTs phase progress ticks here (it derives
+      // this same path from SINGULARITY_PLATFORM_URL + runId at run time).
+      progressEndpoint: `/api/workgraph/workflow-instances/${instance.id}/copilot-progress`,
       tokenEnv: 'SINGULARITY_TOKEN',
     },
     repository: {
@@ -1530,6 +1605,10 @@ function buildCopilotWorkflowExport(
     '# SINGULARITY_PUSH_RESULTS=1. A phase with a review gate waits for a human before the',
     '# next barrier opens (durable signals are matched as each barrier activates).',
     '#',
+    "# LIVE MIRROR: the runner also POSTs phase-level progress to `platform.progressEndpoint`",
+    '# (SINGULARITY_STREAM_PROGRESS — default on when pushing results) so the platform run',
+    '# viewer animates this run phase-by-phase in real time. Progress carries no file contents.',
+    '#',
     'apiVersion: "singularity.dev/v1alpha1"',
     'kind: "CopilotWorkflowRun"',
     'metadata:',
@@ -1546,6 +1625,9 @@ function buildCopilotWorkflowExport(
     // `signalEndpoint/<stage.signalName>` to advance that phase's parked barrier.
     // Harmless for server-run exports (no stage carries a signalName).
     `  signalEndpoint: ${yamlString(`/api/workgraph/workflow-instances/${instance.id}/signals`)}`,
+    // Live run mirror: the runner streams phase progress ticks here so the
+    // platform run viewer mirrors this laptop run in real time.
+    `  progressEndpoint: ${yamlString(`/api/workgraph/workflow-instances/${instance.id}/copilot-progress`)}`,
     '  tokenEnv: "SINGULARITY_TOKEN"',
     'repository:',
     `  url: ${repo ? yamlString(repo) : 'null'}`,

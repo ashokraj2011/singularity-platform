@@ -1,13 +1,20 @@
 /**
  * CopilotActivityPanel — the run viewer's "live cockpit" for copilot workflows.
  *
- * Polls GET /workflow-instances/:id/copilot-activity (~2s), which folds every governed audit-gov
- * event under the run's trace prefix (wf-<instanceId>), into a colourised chronological feed —
- * the run-viewer analog of the blueprint-workbench LiveCockpit. Poll-based (the backend feed is
- * poll-friendly and fail-soft); exported/handoff runs show an idle empty-state until results post
- * back. Self-contained, dedupes by event id.
+ * Merges TWO live sources into one dedup'd, time-sorted feed:
+ *   1. Governed audit-gov events — GET /workflow-instances/:id/copilot-activity
+ *      (~2.5s poll), folded from the run's trace prefix (wf-<instanceId>): LLM
+ *      calls, tools, commits, phases as the server-side run works.
+ *   2. Live run mirror — off-platform Copilot phase progress over SSE
+ *      (GET .../copilot-progress/events/stream), so an operator running the
+ *      exported playbook on their own machine shows up here phase-by-phase in
+ *      real time. Falls back to polling GET .../copilot-progress if the stream
+ *      drops (mirrors LiveEventsPanel).
+ *
+ * Both sources emit the same row envelope ({ id, kind, timestamp, severity,
+ * payload }), so they render through one path. Self-contained, dedupes by id.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAuthStore } from '../../store/auth.store'
 import { workgraphApiPath } from '../../lib/api'
 import { sharedAuthToken } from '../../lib/sharedAuth'
@@ -23,8 +30,8 @@ type ActivityRow = {
   payload?: Record<string, unknown>
 }
 
-// Governed audit-gov kinds are dotted (governed.tool.*, governed.llm.*, cf.execute.*, git.*).
-// Tint by family so the feed reads at a glance.
+// Governed audit-gov kinds are dotted (governed.tool.*, governed.llm.*, cf.execute.*, git.*);
+// live-mirror progress is copilot.progress.*. Tint by family so the feed reads at a glance.
 function kindTint(kind: string): string {
   const k = kind.toLowerCase()
   if (k.includes('llm') || k.includes('model')) return 'rgba(99,102,241,0.12)'
@@ -32,7 +39,7 @@ function kindTint(kind: string): string {
   if (k.includes('artifact') || k.includes('consumable')) return 'rgba(245,158,11,0.14)'
   if (k.includes('approval') || k.includes('govern')) return 'rgba(239,68,68,0.12)'
   if (k.includes('git') || k.includes('code') || k.includes('commit')) return 'rgba(168,85,247,0.14)'
-  if (k.includes('phase')) return 'rgba(14,165,233,0.12)'
+  if (k.includes('phase') || k.includes('run.')) return 'rgba(14,165,233,0.12)'
   return 'transparent'
 }
 
@@ -60,6 +67,20 @@ export function CopilotActivityPanel({ instanceId }: { instanceId: string }) {
   const [status, setStatus] = useState<'connecting' | 'live' | 'error'>('connecting')
   const seen = useRef<Set<string>>(new Set())
 
+  // Merge fresh rows from either source into one dedup'd, time-sorted feed.
+  const addRows = useCallback((rows: ActivityRow[]) => {
+    const fresh: ActivityRow[] = []
+    for (const ev of rows) {
+      if (!ev?.id || seen.current.has(ev.id)) continue
+      seen.current.add(ev.id)
+      fresh.push(ev)
+    }
+    if (fresh.length) {
+      setEvents(prev => [...prev, ...fresh].sort((a, b) => a.timestamp.localeCompare(b.timestamp)))
+    }
+  }, [])
+
+  // Source 1 — governed audit-gov events (poll ~2.5s), tab-visibility aware.
   useEffect(() => {
     if (!instanceId || !token) return
     let stopped = false
@@ -67,8 +88,7 @@ export function CopilotActivityPanel({ instanceId }: { instanceId: string }) {
 
     async function poll() {
       if (stopped) return
-      // Don't poll while the tab is hidden — cheap reschedule; resume immediately on focus
-      // (visibilitychange below). Keeps background run-viewer tabs from hammering the feed.
+      // Don't poll while the tab is hidden — cheap reschedule; resume on focus.
       if (typeof document !== 'undefined' && document.hidden) {
         timer = setTimeout(poll, 2500)
         return
@@ -80,14 +100,8 @@ export function CopilotActivityPanel({ instanceId }: { instanceId: string }) {
           setStatus('error')
         } else {
           const d = await readJsonResponse<unknown>(r, 'copilot activity')
-          const fresh: ActivityRow[] = []
-          for (const ev of responseEvents<ActivityRow>(d)) {
-            if (seen.current.has(ev.id)) continue
-            seen.current.add(ev.id)
-            fresh.push(ev)
-          }
-          if (fresh.length) setEvents(prev => [...prev, ...fresh].sort((a, b) => a.timestamp.localeCompare(b.timestamp)))
-          setStatus('live')
+          addRows(responseEvents<ActivityRow>(d))
+          setStatus(prev => (prev === 'connecting' ? 'live' : prev))
         }
       } catch {
         setStatus('error')
@@ -107,7 +121,64 @@ export function CopilotActivityPanel({ instanceId }: { instanceId: string }) {
       if (timer) clearTimeout(timer)
       if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [instanceId, token])
+  }, [instanceId, token, addRows])
+
+  // Source 2 — live run mirror: off-platform Copilot phase progress over SSE,
+  // with a poll fallback (mirrors LiveEventsPanel). EventSource can't set an
+  // Authorization header, so the JWT rides as ?access_token (middleware/auth.ts
+  // honours it for /events/stream paths).
+  useEffect(() => {
+    if (!instanceId || !token) return
+    let stopped = false
+    let pollTimer: ReturnType<typeof setTimeout> | undefined
+    let es: EventSource | undefined
+
+    async function poll() {
+      if (stopped) return
+      try {
+        const url = new URL(workgraphApiPath(`/workflow-instances/${instanceId}/copilot-progress`), window.location.origin)
+        const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+        if (r.ok) {
+          const d = await readJsonResponse<unknown>(r, 'copilot progress')
+          addRows(responseEvents<ActivityRow>(d))
+        }
+      } catch {
+        // best-effort — the audit poll keeps the panel alive regardless.
+      }
+      if (!stopped) pollTimer = setTimeout(poll, 3000)
+    }
+
+    const streamUrl = new URL(workgraphApiPath(`/workflow-instances/${instanceId}/copilot-progress/events/stream`), window.location.origin)
+    streamUrl.searchParams.set('access_token', token)
+    streamUrl.searchParams.set('max_ms', '600000')
+    es = new EventSource(streamUrl.toString())
+    es.onopen = () => { if (!stopped) setStatus('live') }
+    es.onmessage = (event) => {
+      if (stopped) return
+      setStatus('live')
+      try {
+        addRows([JSON.parse(event.data) as ActivityRow])
+      } catch {
+        // SSE heartbeats are `:` comments and never reach onmessage; ignore malformed.
+      }
+    }
+    es.addEventListener('done', () => {
+      if (stopped) return
+      es?.close()
+      poll()
+    })
+    es.onerror = () => {
+      if (stopped) return
+      es?.close()
+      poll()
+    }
+
+    return () => {
+      stopped = true
+      if (pollTimer) clearTimeout(pollTimer)
+      if (es) es.close()
+    }
+  }, [instanceId, token, addRows])
 
   return (
     <div style={{ width: 380, flexShrink: 0, background: '#fff', borderLeft: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -115,13 +186,13 @@ export function CopilotActivityPanel({ instanceId }: { instanceId: string }) {
         <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 4, background: status === 'live' ? '#16a34a' : status === 'error' ? '#ef4444' : '#f59e0b' }} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13.5, fontWeight: 700, color: '#0f172a' }}>Live activity</div>
-          <div style={{ fontSize: 10, color: '#64748b' }}>{events.length} governed events · {status}</div>
+          <div style={{ fontSize: 10, color: '#64748b' }}>{events.length} events · {status}</div>
         </div>
       </div>
       <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
         {events.length === 0 ? (
           <div style={{ padding: 18, fontSize: 12, color: '#94a3b8', textAlign: 'center', lineHeight: 1.5 }}>
-            No activity yet. Governed copilot events (LLM calls, tools, phases, commits) stream here as the run works; for exported handoff runs, activity appears once results post back.
+            No activity yet. Governed copilot events (LLM calls, tools, phases, commits) stream here as the run works — including live phase progress from an operator running the exported playbook on their own machine.
           </div>
         ) : events.map(ev => (
           <div key={ev.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 12px', borderBottom: '1px solid #f1f5f9', background: kindTint(ev.kind) }}>

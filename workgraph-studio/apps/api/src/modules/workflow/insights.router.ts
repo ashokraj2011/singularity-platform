@@ -12,7 +12,15 @@
  * for COMPLETED nodes and "running" for everything else.
  */
 import { Router, type Request, type Response } from 'express'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
+import {
+  COPILOT_PROGRESS_EVENT_TYPE,
+  copilotProgressEventSchema,
+  normalizeProgressEvent,
+  toProgressRow,
+  type CopilotProgressPayload,
+} from './runtime/copilot-progress'
 import { promptComposerAuthHeaders } from '../../lib/prompt-composer/client'
 import { config } from '../../config'
 import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
@@ -197,6 +205,126 @@ insightsRouter.get('/:id/copilot-activity', async (req: Request, res: Response, 
       payload: e.payload ?? undefined,
     }))
     res.json({ events, tail_id: events.length ? events[events.length - 1].id : null })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// ── Live run mirror — off-platform Copilot progress (ingest + list + SSE) ─────
+// An exported CopilotWorkflowRun runs each phase on the operator's own machine
+// and POSTs content-free progress ticks here (phase started/completed, run
+// started/completed). Each tick persists as a WorkflowEvent (eventType
+// CopilotRunProgress) and streams to the run viewer over SSE, so the workbench
+// mirrors a laptop run in real time — the DAG that #442's signals advance now
+// lights up phase-by-phase as the work happens. Pure shaping lives in
+// runtime/copilot-progress.ts. Same envelope as /copilot-activity + /events, so
+// the FE CopilotActivityPanel renders these with no new mapping.
+
+/** Auth + tenant gate; returns the run id + its node ids (for nodeId validation). */
+async function loadInstanceForProgress(
+  req: Request,
+  action: 'view' | 'edit',
+): Promise<{ id: string; nodeIds: Set<string> } | null> {
+  const instanceId = String(req.params.id)
+  return withTenantDbTransaction(prisma, async () => {
+    await assertWorkflowInstanceTenant(req, instanceId)
+    const found = await prisma.workflowInstance.findUnique({
+      where: { id: instanceId },
+      select: { id: true, nodes: { select: { id: true } } },
+    })
+    if (!found) return null
+    await assertInstancePermission(req.user!.userId, found.id, action)
+    return { id: found.id, nodeIds: new Set(found.nodes.map(n => n.id)) }
+  })
+}
+
+// Ingest a single progress tick from the exported runner. 'edit' — same
+// permission as the copilot-results post-back (a run mutation).
+insightsRouter.post('/:id/copilot-progress', async (req: Request, res: Response, next) => {
+  try {
+    const parsed = copilotProgressEventSchema.safeParse(req.body)
+    if (!parsed.success) {
+      return res.status(400).json({ code: 'INVALID_PROGRESS_EVENT', issues: parsed.error.flatten() })
+    }
+    const ctx = await loadInstanceForProgress(req, 'edit')
+    if (!ctx) return res.status(404).json({ code: 'NOT_FOUND', message: 'Workflow instance not found' })
+    const payload = normalizeProgressEvent(parsed.data, ctx.nodeIds)
+    const row = await withTenantDbTransaction(prisma, () => prisma.workflowEvent.create({
+      data: {
+        instanceId: ctx.id,
+        eventType: COPILOT_PROGRESS_EVENT_TYPE,
+        payload: payload as unknown as Prisma.InputJsonValue,
+      },
+      select: { id: true, occurredAt: true },
+    }))
+    res.status(201).json({ ok: true, id: row.id, event: toProgressRow(row.id, row.occurredAt, payload) })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Backlog / poll fallback — the full progress timeline for this run.
+insightsRouter.get('/:id/copilot-progress', async (req: Request, res: Response, next) => {
+  try {
+    const ctx = await loadInstanceForProgress(req, 'view')
+    if (!ctx) return res.status(404).json({ code: 'NOT_FOUND', message: 'Workflow instance not found' })
+    const limit = Math.min(Math.max(Number(req.query.limit ?? 200), 1), 500)
+    const rows = await withTenantDbTransaction(prisma, () => prisma.workflowEvent.findMany({
+      where: { instanceId: ctx.id, eventType: COPILOT_PROGRESS_EVENT_TYPE },
+      orderBy: { occurredAt: 'asc' },
+      take: limit,
+      select: { id: true, occurredAt: true, payload: true },
+    }))
+    const events = rows.map(r => toProgressRow(r.id, r.occurredAt, r.payload as unknown as CopilotProgressPayload))
+    res.json({ events, tail_id: events.length ? events[events.length - 1]!.id : null })
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Live SSE mirror. Mirrors /:id/events/stream (seen-set + heartbeat + done) but
+// polls the WorkflowEvent table. Path ends `/events/stream` so the browser
+// EventSource can authenticate via ?access_token (middleware/auth.ts).
+insightsRouter.get('/:id/copilot-progress/events/stream', async (req: Request, res: Response, next) => {
+  try {
+    const ctx = await loadInstanceForProgress(req, 'view')
+    if (!ctx) return res.status(404).json({ code: 'NOT_FOUND', message: 'Workflow instance not found' })
+
+    res.writeHead(200, {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+    })
+    res.write(': connected\n\n')
+
+    const seen = new Set(String(req.query.since_id ?? '').split(',').filter(Boolean))
+    const started = Date.now()
+    const maxMs = Math.min(Number(req.query.max_ms ?? 120_000), 10 * 60_000)
+    const intervalMs = Math.max(Number(req.query.poll_ms ?? 1_500), 500)
+    let closed = false
+    req.on('close', () => { closed = true })
+
+    while (!closed && Date.now() - started < maxMs) {
+      const rows = await withTenantDbTransaction(prisma, () => prisma.workflowEvent.findMany({
+        where: { instanceId: ctx.id, eventType: COPILOT_PROGRESS_EVENT_TYPE },
+        orderBy: { occurredAt: 'asc' },
+        take: 200,
+        select: { id: true, occurredAt: true, payload: true },
+      }))
+      for (const r of rows) {
+        if (seen.has(r.id)) continue
+        seen.add(r.id)
+        const row = toProgressRow(r.id, r.occurredAt, r.payload as unknown as CopilotProgressPayload)
+        // Unnamed data frame so the browser EventSource.onmessage catches it
+        // (a named `event:` would need a per-kind addEventListener). The `id:`
+        // line enables Last-Event-ID resume.
+        res.write(`id: ${row.id}\ndata: ${JSON.stringify(row)}\n\n`)
+      }
+      res.write(': heartbeat\n\n')
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    }
+    sseWrite(res, 'done', { reason: closed ? 'client_closed' : 'timeout' })
+    res.end()
   } catch (err) {
     next(err)
   }
