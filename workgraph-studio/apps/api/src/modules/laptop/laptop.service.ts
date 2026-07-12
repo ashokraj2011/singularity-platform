@@ -8,6 +8,7 @@ import { config } from '../../config'
 import { mergeAgentRunCorrelation } from '../../lib/agent-run-correlation'
 import { ForbiddenError, NotFoundError, ValidationError } from '../../lib/errors'
 import { promptComposerClient } from '../../lib/prompt-composer/client'
+import { getRuntimeCapabilityWorldModel } from '../../lib/agent-and-tools/client'
 import { assertCanViewWorkItem } from '../work-items/work-items.service'
 import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 
@@ -160,9 +161,19 @@ async function composeLaptopPrompt(input: {
     }
   }
   try {
+    // Fetch the capability world model and forward it so the laptop copilot gets
+    // the CODE_WORLD_MODEL / CODE_AGENT_RULES grounding layers — the same repo
+    // world model the server + exported copilots receive (they route through
+    // context-fabric, which fetches it; this path does not, so fetch it here).
+    // Best-effort: null on 404 / 403 / error → knowledge-only grounding, exactly
+    // as before, so this can never fail or slow the invocation start.
+    const worldModel = input.capabilityId
+      ? (await getRuntimeCapabilityWorldModel(input.capabilityId)) ?? undefined
+      : undefined
     const composed = await promptComposerClient.composeAndRespond({
       agentTemplateId: input.agentTemplateId,
       capabilityId: input.capabilityId ?? undefined,
+      worldModel,
       task: input.task,
       workflowContext: {
         instanceId: `laptop-${input.workItemId}`,
