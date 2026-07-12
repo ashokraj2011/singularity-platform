@@ -39,6 +39,7 @@ import {
   buildGroundingFixCommand,
   type CapabilityLearningGroundingStatus,
 } from "./capability-grounding-status";
+import { isBootstrapRunStale, BOOTSTRAP_REAP_ERROR } from "./capability-bootstrap-reaper";
 import {
   capabilityDuplicateConflictMessage,
   capabilityDuplicateWhere,
@@ -982,6 +983,17 @@ export const capabilityService = {
       },
     });
     if (!run || run.capabilityId !== capabilityId) throw new NotFoundError("Capability bootstrap run not found");
+    // Reap a stuck async bootstrap when it is polled (crashed/redeployed worker →
+    // RUNNING forever with no reaper) so the wizard stops spinning and the
+    // operator gets a clear FAILED + retry instead of an infinite spinner.
+    if (isBootstrapRunStale(run)) {
+      const reapedAt = await reapStaleBootstrapRun(run.id);
+      if (reapedAt) {
+        run.status = "FAILED";
+        run.completedAt = reapedAt;
+        (run as { errors: unknown }).errors = [BOOTSTRAP_REAP_ERROR];
+      }
+    }
     const reusedLearningCandidateIds = jsonStringArray(jsonRecord(run.sourceSummary).reusedLearningCandidateIds);
     if (reusedLearningCandidateIds.length === 0) return run;
 
@@ -4618,6 +4630,19 @@ function learningStatusIsStaleRunning(
     : Date.parse(String(stored?.lastAttemptAt ?? ""));
   if (!Number.isFinite(attemptAt)) return true;
   return Date.now() - attemptAt > Math.max(CAPABILITY_LEARNING_RUN_STALE_MS, 60_000);
+}
+
+// Idempotent reclaim of a stale RUNNING bootstrap run (staleness check =
+// isBootstrapRunStale in capability-bootstrap-reaper.ts). updateMany guards
+// against racing a worker that just completed. Returns the completedAt stamp on
+// a successful claim, else null.
+async function reapStaleBootstrapRun(runId: string): Promise<Date | null> {
+  const completedAt = new Date();
+  const claimed = await prisma.capabilityBootstrapRun.updateMany({
+    where: { id: runId, status: "RUNNING" },
+    data: { status: "FAILED", completedAt, errors: [BOOTSTRAP_REAP_ERROR] as unknown as Prisma.InputJsonValue },
+  });
+  return claimed.count === 1 ? completedAt : null;
 }
 
 // B (auto-grounding) — internally-derived knowledge groups safe to materialize
