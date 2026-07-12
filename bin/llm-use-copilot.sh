@@ -70,6 +70,8 @@ ok()   { c "32" "✓ $1"; }
 warn() { c "33" "! $1"; }
 die()  { c "31" "✗ $1"; exit 1; }
 
+die "Copilot gateway mode is retired. Copilot is executed only through an AGENT_TASK with executor=copilot, routed by Context Fabric to the governed copilot_execute MCP tool."
+
 kill_non_docker_port() {
   local port="$1" pids pid cmd
   pids="$(lsof -ti :"$port" 2>/dev/null || true)"

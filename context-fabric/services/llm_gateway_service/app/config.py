@@ -88,7 +88,6 @@ class Settings(BaseSettings):
     openai_api_key:     Optional[str] = None
     openrouter_api_key: Optional[str] = None
     anthropic_api_key:  Optional[str] = None
-    copilot_token:      Optional[str] = None
 
     # Anthropic protocol version (no provider SDK).
     anthropic_version: str = "2023-06-01"
@@ -156,7 +155,6 @@ class Settings(BaseSettings):
         self.openai_api_key     = env.get("OPENAI_API_KEY")     or None
         self.openrouter_api_key = env.get("OPENROUTER_API_KEY") or None
         self.anthropic_api_key  = env.get("ANTHROPIC_API_KEY")  or None
-        self.copilot_token      = env.get("COPILOT_TOKEN")      or None
         self.anthropic_version  = env.get("ANTHROPIC_VERSION", self.anthropic_version)
         self.anthropic_prompt_cache_beta = env.get(
             "ANTHROPIC_PROMPT_CACHE_BETA", self.anthropic_prompt_cache_beta,
@@ -205,7 +203,7 @@ class Settings(BaseSettings):
             env.get("APP_ENV") or env.get("ENVIRONMENT") or env.get("SINGULARITY_ENV") or "development"
         ).lower()
         _has_real_creds = any([
-            self.openai_api_key, self.openrouter_api_key, self.anthropic_api_key, self.copilot_token,
+            self.openai_api_key, self.openrouter_api_key, self.anthropic_api_key,
         ])
         if _has_real_creds and not self.gateway_bearer:
             _msg = (
@@ -225,8 +223,6 @@ class Settings(BaseSettings):
             return self.openrouter_api_key
         if p == "anthropic":
             return self.anthropic_api_key
-        if p == "copilot":
-            return self.copilot_token
         if p == "mock":
             return "mock"  # mock needs no key
         return None

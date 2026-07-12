@@ -444,7 +444,7 @@ export function WorkflowControlPlanePage() {
             </div>
             <FormGrid>
               <Field label="Name"><input style={inputStyle} value={connectionForm.name} onChange={(e) => setConnectionForm({ ...connectionForm, name: e.target.value })} placeholder="Claude Sonnet production" /></Field>
-              <Field label="Provider"><select style={inputStyle} value={connectionForm.provider} onChange={(e) => setConnectionForm({ ...connectionForm, provider: e.target.value, credentialEnv: suggestedEnv(e.target.value) })}>{["anthropic", "openai", "copilot", "openrouter", "mock", "custom"].map((p) => <option key={p}>{p}</option>)}</select></Field>
+              <Field label="Provider"><select style={inputStyle} value={connectionForm.provider} onChange={(e) => setConnectionForm({ ...connectionForm, provider: e.target.value, credentialEnv: suggestedEnv(e.target.value) })}>{["anthropic", "openai", "openrouter", "mock", "custom"].map((p) => <option key={p}>{p}</option>)}</select></Field>
               <Field label="Model"><input style={inputStyle} value={connectionForm.model} onChange={(e) => setConnectionForm({ ...connectionForm, model: e.target.value })} placeholder="claude-sonnet-4-5" /></Field>
               <Field label="Alias"><input style={inputStyle} value={connectionForm.alias} onChange={(e) => setConnectionForm({ ...connectionForm, alias: e.target.value })} placeholder="sonnet-prod" /></Field>
               <Field label="Base URL"><input style={inputStyle} value={connectionForm.baseUrl} onChange={(e) => setConnectionForm({ ...connectionForm, baseUrl: e.target.value })} placeholder="optional OpenAI-compatible URL" /></Field>
@@ -696,7 +696,6 @@ function suggestedEnv(provider: string) {
   const p = provider.toLowerCase();
   if (p === "anthropic") return "ANTHROPIC_API_KEY";
   if (p === "openai") return "OPENAI_API_KEY";
-  if (p === "copilot") return "COPILOT_PROVIDER_API_KEY";
   if (p === "openrouter") return "OPENROUTER_API_KEY";
   return "";
 }
@@ -864,7 +863,7 @@ function EventDetail({ event }: { event: WorkflowOpsEvent | null }) {
       {event.traceId ? (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Link className="btn-secondary text-xs" href={`/audit/trace/${encodeURIComponent(event.traceId)}`}><Waypoints size={13} /> Trace cockpit</Link>
-          <Link className="btn-secondary text-xs" href={`/operations/logs?trace_id=${encodeURIComponent(event.traceId)}`}><Terminal size={13} /> Correlated logs</Link>
+          <Link className="btn-secondary text-xs" href={`/audit?view=logs&trace_id=${encodeURIComponent(event.traceId)}`}><Terminal size={13} /> Correlated logs</Link>
         </div>
       ) : null}
       {event.lastError ? <div style={{ border: "1px solid rgba(185,28,28,0.25)", background: "rgba(254,242,242,0.8)", color: "#991b1b", borderRadius: 8, padding: 10, fontSize: 12 }}>{valueText(event.lastError)}</div> : null}

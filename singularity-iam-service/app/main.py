@@ -26,6 +26,7 @@ from app.mcp_servers.routes import router as mcp_servers_router
 from app.eventbus.routes import router as eventbus_router  # M11.e
 from app.skills.routes import router as skills_router
 from app.devices.routes import router as devices_router  # M26
+from app.devices.enrollment_routes import router as runtime_enrollment_router
 from app.governance.routes import router as governance_router  # Capability Governance Model
 from app.git.routes import router as git_router  # Git credential broker (P0 #2)
 
@@ -140,6 +141,7 @@ app.include_router(mcp_servers_router, prefix=PREFIX)
 app.include_router(skills_router, prefix=PREFIX)
 # M26 — device-token surface (POST /auth/device-token, GET /me/devices, DELETE /devices/:id)
 app.include_router(devices_router, prefix=PREFIX)
+app.include_router(runtime_enrollment_router, prefix=PREFIX)
 # M11.e — event-bus subscription registry. Router itself carries the /api/v1 prefix.
 app.include_router(eventbus_router)
 # Capability Governance Model — governed-by attachments + /governance/resolve.

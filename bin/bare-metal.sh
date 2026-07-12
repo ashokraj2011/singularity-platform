@@ -1253,6 +1253,17 @@ JSON
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709170000_tenant_workitem_family/migration.sql >/dev/null 2>&1 ) \
     || warn "workgraph schema push had warnings"
 
+  # The bare-metal path intentionally uses `prisma db push` because many local
+  # databases predate Prisma migration history. Keep the event-operation
+  # correlation migration independent from the larger hardening chain above:
+  # a later RLS guard or optional hardening step must not prevent the audit
+  # columns required by normal workflow creation from being installed.
+  info "ensuring WorkGraph event correlation columns..."
+  ( cd workgraph-studio/apps/api \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q \
+      -f prisma/migrations/20260710100000_harden_event_operations_tenant_scope/migration.sql >/dev/null 2>&1 ) \
+    || warn "WorkGraph event correlation migration had warnings"
+
   info "provisioning Workgraph non-bypass app role…"
   PGPASSWORD="$db_pass" psql -v ON_ERROR_STOP=1 -h "$db_host" -p "$db_port" -U "$db_user" -d workgraph <<SQL >/dev/null
 DO \$\$

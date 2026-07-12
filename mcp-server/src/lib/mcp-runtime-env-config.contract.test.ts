@@ -424,7 +424,7 @@ assert.match(copilotExecuteSource, /const GIT_WRITE_TIMEOUT_MS = config\.MCP_WOR
 assert.match(copilotExecuteSource, /const PROCESS_KILL_GRACE_MS = config\.MCP_PROCESS_KILL_GRACE_MS;/);
 assert.match(copilotExecuteSource, /Math\.min\(Math\.floor\(args\.timeout_ms\), MAX_TIMEOUT_MS\)/);
 assert.match(copilotExecuteSource, /spawnCapture\("git", \["diff"\], cwd, GIT_WRITE_TIMEOUT_MS\)/);
-assert.match(copilotExecuteSource, /spawnCapture\("git", \["status", "--porcelain"\], cwd, GIT_WRITE_TIMEOUT_MS\)/);
+assert.match(copilotExecuteSource, /spawnCapture\("git", \["status", "--porcelain", "-uall"\], cwd, GIT_WRITE_TIMEOUT_MS\)/);
 assert.match(copilotExecuteSource, /spawnCapture\("git", \["add", "-A"\], cwd, GIT_WRITE_TIMEOUT_MS\)/);
 assert.match(copilotExecuteSource, /cwd, GIT_WRITE_TIMEOUT_MS,\s*\)/);
 assert.match(copilotExecuteSource, /spawnCapture\("git", \["rev-parse", "HEAD"\], cwd, GIT_HASH_TIMEOUT_MS\)/);

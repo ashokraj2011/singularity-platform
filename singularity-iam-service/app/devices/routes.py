@@ -24,8 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import record_event
 from app.audit_gov_emit import emit_audit_event
-from app.auth.deps import require_real_user, require_reference_read
-from app.auth.jwt import create_device_token
+from app.auth.deps import bearer, require_real_user, require_reference_read
+from app.auth.jwt import create_device_token, decode_token
 from app.database import get_db
 from app.devices.schemas import DeviceList, DeviceOut, DeviceTokenRequest, DeviceTokenResponse
 from app.models import User, UserDevice
@@ -228,6 +228,49 @@ async def revoke_device(
             },
         )
     return {"ok": True, "device": _to_out(device).model_dump()}
+
+
+@router.post("/runtime/revoke", status_code=200)
+async def revoke_current_runtime(
+    device_id: str,
+    credentials=Depends(bearer),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_real_user),
+):
+    """Allow an enrolled runtime to revoke its own token without a browser session."""
+    try:
+        claims = decode_token(credentials.credentials)
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Invalid runtime token")
+    if claims.get("kind") != "runtime" or claims.get("device_id") != device_id:
+        raise HTTPException(status_code=403, detail="Runtime can revoke only its own runtime token")
+    q = await db.execute(
+        select(UserDevice).where(
+            UserDevice.user_id == current_user.id,
+            UserDevice.device_id == device_id,
+        )
+    )
+    device = q.scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status_code=404, detail="runtime device not found")
+    if device.revoked_at is None:
+        device.revoked_at = datetime.now(timezone.utc)
+        await record_event(
+            db,
+            actor_user_id=current_user.id,
+            event_type="runtime_revoked_self_service",
+            payload={"device_id": device.device_id, "device_pk": device.id},
+        )
+        await db.commit()
+        emit_audit_event(
+            kind="iam.runtime.revoked",
+            actor_id=current_user.id,
+            subject_type="UserDevice",
+            subject_id=device.id,
+            severity="warn",
+            payload={"user_id": device.user_id, "device_id": device.device_id},
+        )
+    return {"ok": True, "device_id": device.device_id, "revoked": True}
 
 
 @router.get("/internal/devices/status")

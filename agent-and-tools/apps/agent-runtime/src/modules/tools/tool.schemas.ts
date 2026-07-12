@@ -34,7 +34,7 @@ export const updatePolicySchema = z.object({
   name: z.string().min(2).optional(),
   description: z.string().optional(),
   scopeType: z.string().optional(),
-  scopeId: z.string().optional(),
+  scopeId: z.string().nullable().optional(),
   status: z.enum(["DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"]).optional(),
 });
 

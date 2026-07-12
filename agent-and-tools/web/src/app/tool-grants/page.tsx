@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { Archive, Pencil, ShieldCheck, Plus } from "lucide-react";
 import { runtimeApi } from "@/lib/api";
@@ -9,6 +9,8 @@ import { ToolVisualChip, ToolVisualMark } from "@/components/tools/ToolVisualMar
 import { toolGrantVisual, toolVisualFor } from "@/lib/toolVisuals";
 
 const SCOPE_TYPES = ["AGENT_TEMPLATE", "AGENT_BINDING", "CAPABILITY", "ROLE", "WORKFLOW_PHASE", "TEAM", "USER"];
+const TOOL_GRANT_PHASES = ["STORY_INTAKE", "PLAN", "IMPACT_ANALYSIS", "EXPLORE", "ACT", "VERIFY", "REPAIR", "SELF_REVIEW", "FINALIZE", "DESIGN", "DEVELOP", "QA", "RELEASE"];
+const TOOL_GRANT_ENVIRONMENTS = ["DEV", "TEST", "STAGING", "PROD"];
 
 function parseToolInput(raw: string): Record<string, unknown> {
   const text = raw.trim();
@@ -26,20 +28,74 @@ function parseToolInput(raw: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+function rowsFrom(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) return value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"));
+  if (!value || typeof value !== "object") return [];
+  const row = value as Record<string, unknown>;
+  for (const key of ["items", "data", "tools", "policies", "grants", "capabilities", "templates"]) {
+    if (Array.isArray(row[key])) return rowsFrom(row[key]);
+  }
+  return [];
+}
+
+function scopeRows(scopeType: string, capabilities: Record<string, unknown>[], templates: Record<string, unknown>[]): Array<{ id: string; label: string }> {
+  if (scopeType === "CAPABILITY") {
+    return capabilities.map((item) => ({ id: String(item.id), label: `${String(item.name ?? item.label ?? item.id)} · ${String(item.id)}` }));
+  }
+  if (scopeType === "AGENT_TEMPLATE") {
+    return templates.map((item) => ({ id: String(item.id), label: `${String(item.name ?? item.id)} · ${String(item.roleType ?? item.role ?? "agent")}` }));
+  }
+  return [];
+}
+
+function referenceScopeType(scopeType: string): boolean {
+  return scopeType === "CAPABILITY" || scopeType === "AGENT_TEMPLATE";
+}
+
+function requiredPolicyScopeType(scopeType: string): boolean {
+  return scopeType === "CAPABILITY" || scopeType === "AGENT_TEMPLATE" || scopeType === "AGENT_BINDING";
+}
+
+function withCurrentScope(rows: Array<{ id: string; label: string }>, currentId: string): Array<{ id: string; label: string }> {
+  if (!currentId || rows.some((row) => row.id === currentId)) return rows;
+  return [{ id: currentId, label: `${currentId} · current value` }, ...rows];
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error ?? "Unknown request error");
+}
+
+function ReferenceStatus({ loading, error }: { loading: boolean; error?: unknown }) {
+  if (error) {
+    return <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 mb-3 text-sm text-red-700" role="alert">
+      Reference data could not be loaded. Sign in again or check Agent Runtime. {errorText(error)}
+    </div>;
+  }
+  if (loading) {
+    return <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 mb-3 text-sm text-slate-600" role="status">
+      Loading capabilities, agent templates, policies, and runtime tools…
+    </div>;
+  }
+  return null;
+}
+
 export default function ToolGrantsPage() {
-  const { data: tools } = useSWR("runtime-tools", () => runtimeApi.listToolDefs());
-  const { data: policies, mutate: mutatePolicies } = useSWR("runtime-policies", () => runtimeApi.listPolicies());
-  const { data: grants, mutate: mutateGrants } = useSWR("runtime-grants", () => runtimeApi.listGrants());
+  const { data: tools, error: toolsError, isLoading: toolsLoading } = useSWR("runtime-tools", () => runtimeApi.listToolDefs());
+  const { data: policies, error: policiesError, isLoading: policiesLoading, mutate: mutatePolicies } = useSWR("runtime-policies", () => runtimeApi.listPolicies());
+  const { data: grants, error: grantsError, isLoading: grantsLoading, mutate: mutateGrants } = useSWR("runtime-grants", () => runtimeApi.listGrants());
+  const { data: capabilities, error: capabilitiesError, isLoading: capabilitiesLoading } = useSWR("runtime-grant-capabilities", () => runtimeApi.listCapabilities(), { refreshInterval: 30000 });
+  const { data: templates, error: templatesError, isLoading: templatesLoading } = useSWR("runtime-grant-templates", () => runtimeApi.listTemplatesScoped("all"), { refreshInterval: 30000 });
 
   const [policyForm, setPolicyForm] = useState({ name: "", description: "", scopeType: "AGENT_BINDING", scopeId: "" });
   const [editingPolicyId, setEditingPolicyId] = useState<string | null>(null);
   const [grantForm, setGrantForm] = useState({
     toolPolicyId: "", toolId: "",
     grantScopeType: "AGENT_BINDING", grantScopeId: "",
-    workflowPhase: "", environment: "DEV",
+    workflowPhase: "", environment: "",
   });
   const [editingGrantId, setEditingGrantId] = useState<string | null>(null);
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const [validateForm, setValidateForm] = useState({
     agentBindingId: "", capabilityId: "", toolName: "repo.search",
@@ -51,38 +107,49 @@ export default function ToolGrantsPage() {
   const [validateBusy, setValidateBusy] = useState(false);
 
   async function createPolicy() {
-    if (!policyForm.name) return;
-    if (editingPolicyId) {
-      await runtimeApi.updatePolicy(editingPolicyId, { ...policyForm, scopeId: policyForm.scopeId || undefined } as never);
-    } else {
-      await runtimeApi.createPolicy({ ...policyForm, scopeId: policyForm.scopeId || undefined } as never);
+    if (!policyForm.name.trim()) return setFormError("Policy name is required.");
+    if (requiredPolicyScopeType(policyForm.scopeType) && !policyForm.scopeId.trim()) return setFormError(`A ${policyForm.scopeType.toLowerCase().replaceAll("_", " ")} scope is required.`);
+    setFormError(null);
+    try {
+      if (editingPolicyId) {
+        await runtimeApi.updatePolicy(editingPolicyId, { ...policyForm, scopeId: policyForm.scopeId.trim() || null } as never);
+      } else {
+        await runtimeApi.createPolicy({ ...policyForm, scopeId: policyForm.scopeId || undefined } as never);
+      }
+      setPolicyForm({ name: "", description: "", scopeType: "AGENT_BINDING", scopeId: "" });
+      setEditingPolicyId(null);
+      await mutatePolicies();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Could not save tool policy.");
     }
-    setPolicyForm({ name: "", description: "", scopeType: "AGENT_BINDING", scopeId: "" });
-    setEditingPolicyId(null);
-    await mutatePolicies();
   }
   async function createGrant() {
-    if (!grantForm.toolPolicyId || !grantForm.toolId || !grantForm.grantScopeId) return;
-    if (editingGrantId) {
-      await runtimeApi.updateGrant(editingGrantId, {
-        workflowPhase: grantForm.workflowPhase || null,
-        environment: grantForm.environment || null,
-      } as never);
-      setEditingGrantId(null);
-      setGrantForm({
-        toolPolicyId: "", toolId: "",
-        grantScopeType: "AGENT_BINDING", grantScopeId: "",
-        workflowPhase: "", environment: "DEV",
-      });
-    } else {
-      await runtimeApi.createGrant({
-        ...grantForm,
-        workflowPhase: grantForm.workflowPhase || undefined,
-        environment: grantForm.environment || undefined,
-      } as never);
-      setGrantForm(g => ({ ...g, grantScopeId: "" }));
+    if (!grantForm.toolPolicyId || !grantForm.toolId || !grantForm.grantScopeId) return setFormError("Choose a policy, tool, and scope before saving the grant.");
+    setFormError(null);
+    try {
+      if (editingGrantId) {
+        await runtimeApi.updateGrant(editingGrantId, {
+          workflowPhase: grantForm.workflowPhase || null,
+          environment: grantForm.environment || null,
+        } as never);
+        setEditingGrantId(null);
+        setGrantForm({
+          toolPolicyId: "", toolId: "",
+          grantScopeType: "AGENT_BINDING", grantScopeId: "",
+          workflowPhase: "", environment: "",
+        });
+      } else {
+        await runtimeApi.createGrant({
+          ...grantForm,
+          workflowPhase: grantForm.workflowPhase || undefined,
+          environment: grantForm.environment || undefined,
+        } as never);
+        setGrantForm(g => ({ ...g, grantScopeId: "" }));
+      }
+      await mutateGrants();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Could not save tool grant.");
     }
-    await mutateGrants();
   }
 
   function editPolicy(policy: Record<string, unknown>) {
@@ -173,12 +240,20 @@ export default function ToolGrantsPage() {
     }
   }
 
-  const toolList = (tools ?? []) as Record<string, unknown>[];
-  const policyList = (policies ?? []) as Record<string, unknown>[];
-  const grantList = (grants ?? []) as Record<string, unknown>[];
+  const policyList = rowsFrom(policies);
+  const grantList = rowsFrom(grants);
+  const capabilityList = rowsFrom(capabilities);
+  const activeCapabilityList = capabilityList.filter((item) => String(item.status ?? "ACTIVE").toUpperCase() === "ACTIVE");
+  const templateList = rowsFrom(templates).filter((item) => String(item.status ?? "ACTIVE").toUpperCase() !== "ARCHIVED");
+  const activePolicyList = policyList.filter((policy) => String(policy.status ?? "ACTIVE").toUpperCase() === "ACTIVE");
+  const scopeOptions = useMemo(() => withCurrentScope(scopeRows(policyForm.scopeType, activeCapabilityList, templateList), policyForm.scopeId), [activeCapabilityList, policyForm.scopeId, policyForm.scopeType, templateList]);
+  const grantScopeOptions = useMemo(() => withCurrentScope(scopeRows(grantForm.grantScopeType, activeCapabilityList, templateList), grantForm.grantScopeId), [activeCapabilityList, grantForm.grantScopeId, grantForm.grantScopeType, templateList]);
+  const normalizedTools = rowsFrom(tools);
   const grantVisual = toolGrantVisual();
   const activePolicyCount = policyList.filter(policy => String(policy.status ?? "").toUpperCase() === "ACTIVE").length;
   const activeGrantCount = grantList.filter(grant => String(grant.status ?? "").toUpperCase() === "ACTIVE").length;
+  const referenceError = toolsError ?? policiesError ?? grantsError ?? capabilitiesError ?? templatesError;
+  const referenceLoading = toolsLoading || policiesLoading || grantsLoading || capabilitiesLoading || templatesLoading;
 
   return (
     <div className="space-y-6">
@@ -192,24 +267,29 @@ export default function ToolGrantsPage() {
 
       <MetricStrip
         items={[
-          { label: "Runtime tools", value: toolList.length, icon: toolVisualFor({ tool_name: "runtime mcp tool registry" }).icon, state: toolList.length > 0 ? "ready" : "waiting" },
+          { label: "Runtime tools", value: normalizedTools.length, icon: toolVisualFor({ tool_name: "runtime mcp tool registry" }).icon, state: normalizedTools.length > 0 ? "ready" : "waiting" },
           { label: "Active policies", value: activePolicyCount, icon: ShieldCheck, state: activePolicyCount > 0 ? "ready" : "optional" },
           { label: "Active grants", value: activeGrantCount, icon: grantVisual.icon, state: activeGrantCount > 0 ? "ready" : "optional" },
         ]}
       />
 
       <h2 className="font-semibold text-slate-800 mb-3">1. Tool Policies</h2>
+      <ReferenceStatus loading={referenceLoading} error={referenceError} />
+      {formError && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 mb-3 text-sm text-red-700" role="alert">{formError}</div>}
       <div className="card p-4 mb-4 grid grid-cols-6 gap-2 items-end">
         <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm col-span-2"
           placeholder="policy name" value={policyForm.name} onChange={e => setPolicyForm(f => ({ ...f, name: e.target.value }))} />
         <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
           placeholder="description" value={policyForm.description} onChange={e => setPolicyForm(f => ({ ...f, description: e.target.value }))} />
         <select className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
-          value={policyForm.scopeType} onChange={e => setPolicyForm(f => ({ ...f, scopeType: e.target.value }))}>
+          value={policyForm.scopeType} onChange={e => setPolicyForm(f => ({ ...f, scopeType: e.target.value, scopeId: "" }))}>
           {SCOPE_TYPES.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
-        <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
-          placeholder="scope id" value={policyForm.scopeId} onChange={e => setPolicyForm(f => ({ ...f, scopeId: e.target.value }))} />
+        {referenceScopeType(policyForm.scopeType) ? (
+          <select className="px-3 py-2 border border-slate-200 rounded-lg text-sm" disabled={referenceLoading || scopeOptions.length === 0} value={policyForm.scopeId} onChange={e => setPolicyForm(f => ({ ...f, scopeId: e.target.value }))}>
+            <option value="">{referenceLoading ? "Loading scopes…" : scopeOptions.length ? "Choose scope…" : "No active scopes"}</option>{scopeOptions.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+          </select>
+        ) : <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="scope id (optional for global)" value={policyForm.scopeId} onChange={e => setPolicyForm(f => ({ ...f, scopeId: e.target.value }))} />}
         <button className="btn-primary" onClick={createPolicy}>{editingPolicyId ? <Pencil size={14} /> : <Plus size={14} />} {editingPolicyId ? "Save policy" : "Create policy"}</button>
         {editingPolicyId && <button className="btn-secondary" onClick={() => { setEditingPolicyId(null); setPolicyForm({ name: "", description: "", scopeType: "AGENT_BINDING", scopeId: "" }); }}>Cancel edit</button>}
       </div>
@@ -237,38 +317,37 @@ export default function ToolGrantsPage() {
       <h2 className="font-semibold text-slate-800 mb-3">2. Grants</h2>
       <div className="card p-4 mb-4 grid grid-cols-7 gap-2 items-end">
         <select className="px-3 py-2 border border-slate-200 rounded-lg text-sm col-span-2"
-          disabled={Boolean(editingGrantId)}
+          disabled={Boolean(editingGrantId) || policiesLoading || activePolicyList.length === 0}
           value={grantForm.toolPolicyId} onChange={e => setGrantForm(g => ({ ...g, toolPolicyId: e.target.value }))}>
-          <option value="">policy…</option>
-          {policyList.map(p => <option key={p.id as string} value={p.id as string}>{p.name as string}</option>)}
+          <option value="">{policiesLoading ? "Loading policies…" : activePolicyList.length ? "Choose policy…" : "No active policies"}</option>
+          {activePolicyList.map(p => <option key={p.id as string} value={p.id as string}>{p.name as string}</option>)}
         </select>
         <select className="px-3 py-2 border border-slate-200 rounded-lg text-sm col-span-2"
-          disabled={Boolean(editingGrantId)}
+          disabled={Boolean(editingGrantId) || toolsLoading || normalizedTools.length === 0}
           value={grantForm.toolId} onChange={e => setGrantForm(g => ({ ...g, toolId: e.target.value }))}>
-          <option value="">tool…</option>
-          {toolList.map(t => <option key={t.id as string} value={t.id as string}>{(t.namespace as string)}.{(t.name as string)}</option>)}
+          <option value="">{toolsLoading ? "Loading tools…" : normalizedTools.length ? "Choose tool…" : "No active tools"}</option>
+          {normalizedTools.map(t => <option key={String(t.id)} value={String(t.id)}>{String(t.namespace ?? "runtime")}.{String(t.name ?? t.id)}</option>)}
         </select>
         <select className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
           disabled={Boolean(editingGrantId)}
-          value={grantForm.grantScopeType} onChange={e => setGrantForm(g => ({ ...g, grantScopeType: e.target.value }))}>
+          value={grantForm.grantScopeType} onChange={e => setGrantForm(g => ({ ...g, grantScopeType: e.target.value, grantScopeId: "" }))}>
           {SCOPE_TYPES.map(s => <option key={s} value={s}>{s}</option>)}
         </select>
-        <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
-          disabled={Boolean(editingGrantId)}
-          placeholder="scope id" value={grantForm.grantScopeId} onChange={e => setGrantForm(g => ({ ...g, grantScopeId: e.target.value }))} />
+        {referenceScopeType(grantForm.grantScopeType) ? (
+          <select className="px-3 py-2 border border-slate-200 rounded-lg text-sm" disabled={Boolean(editingGrantId) || referenceLoading || grantScopeOptions.length === 0} value={grantForm.grantScopeId} onChange={e => setGrantForm(g => ({ ...g, grantScopeId: e.target.value }))}>
+            <option value="">{referenceLoading ? "Loading scopes…" : grantScopeOptions.length ? "Choose scope…" : "No active scopes"}</option>{grantScopeOptions.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+          </select>
+        ) : <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm" disabled={Boolean(editingGrantId)} placeholder="scope id" value={grantForm.grantScopeId} onChange={e => setGrantForm(g => ({ ...g, grantScopeId: e.target.value }))} />}
         <button className="btn-primary" onClick={createGrant}>{editingGrantId ? <Pencil size={14} /> : <Plus size={14} />} {editingGrantId ? "Save grant" : "Grant"}</button>
-        {editingGrantId && <button className="btn-secondary" onClick={() => { setEditingGrantId(null); setGrantForm({ toolPolicyId: "", toolId: "", grantScopeType: "AGENT_BINDING", grantScopeId: "", workflowPhase: "", environment: "DEV" }); }}>Cancel edit</button>}
+        {editingGrantId && <button className="btn-secondary" onClick={() => { setEditingGrantId(null); setGrantForm({ toolPolicyId: "", toolId: "", grantScopeType: "AGENT_BINDING", grantScopeId: "", workflowPhase: "", environment: "" }); }}>Cancel edit</button>}
       </div>
       <div className="grid grid-cols-2 gap-2 mb-1 text-xs text-slate-500 px-3">
         <span>workflow phase + environment (optional, blank = any)</span>
       </div>
       <div className="card p-4 mb-4 grid grid-cols-2 gap-2">
-        <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
-          placeholder="workflow phase (e.g. IMPACT_ANALYSIS)"
-          value={grantForm.workflowPhase} onChange={e => setGrantForm(g => ({ ...g, workflowPhase: e.target.value }))} />
-        <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
-          placeholder="environment (DEV, STAGING, PROD)"
-          value={grantForm.environment} onChange={e => setGrantForm(g => ({ ...g, environment: e.target.value }))} />
+        <input list="tool-grant-phases" className="px-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="workflow phase (optional)" value={grantForm.workflowPhase} onChange={e => setGrantForm(g => ({ ...g, workflowPhase: e.target.value }))} />
+        <datalist id="tool-grant-phases">{TOOL_GRANT_PHASES.map(phase => <option key={phase} value={phase} />)}</datalist>
+        <select className="px-3 py-2 border border-slate-200 rounded-lg text-sm" value={grantForm.environment} onChange={e => setGrantForm(g => ({ ...g, environment: e.target.value }))}><option value="">Any environment</option>{TOOL_GRANT_ENVIRONMENTS.map(environment => <option key={environment} value={environment}>{environment}</option>)}</select>
       </div>
       <div className="space-y-2 mb-8">
         {grantList.map(g => {
@@ -302,14 +381,19 @@ export default function ToolGrantsPage() {
       <div className="card p-4 mb-4 grid grid-cols-2 gap-2">
         <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="agent binding id (optional)"
           value={validateForm.agentBindingId} onChange={e => setValidateForm(v => ({ ...v, agentBindingId: e.target.value }))} />
-        <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="capability id (optional)"
-          value={validateForm.capabilityId} onChange={e => setValidateForm(v => ({ ...v, capabilityId: e.target.value }))} />
-        <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="tool name e.g. repo.search"
+        <select className="px-3 py-2 border border-slate-200 rounded-lg text-sm" value={validateForm.capabilityId} onChange={e => setValidateForm(v => ({ ...v, capabilityId: e.target.value }))}>
+          <option value="">Any capability</option>
+          {activeCapabilityList.map(capability => <option key={String(capability.id)} value={String(capability.id)}>{String(capability.name ?? capability.label ?? capability.id)}</option>)}
+        </select>
+        <input list="runtime-tool-names" className="px-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="tool name e.g. repo.search"
           value={validateForm.toolName} onChange={e => setValidateForm(v => ({ ...v, toolName: e.target.value }))} />
-        <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="workflow phase"
+        <datalist id="runtime-tool-names">{normalizedTools.map(tool => <option key={String(tool.id)} value={`${String(tool.namespace ?? "runtime")}.${String(tool.name ?? tool.id)}`} />)}</datalist>
+        <input list="tool-grant-phases" className="px-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="workflow phase"
           value={validateForm.workflowPhase} onChange={e => setValidateForm(v => ({ ...v, workflowPhase: e.target.value }))} />
-        <input className="px-3 py-2 border border-slate-200 rounded-lg text-sm" placeholder="environment"
-          value={validateForm.environment} onChange={e => setValidateForm(v => ({ ...v, environment: e.target.value }))} />
+        <select className="px-3 py-2 border border-slate-200 rounded-lg text-sm" value={validateForm.environment} onChange={e => setValidateForm(v => ({ ...v, environment: e.target.value }))}>
+          <option value="">Any environment</option>
+          {TOOL_GRANT_ENVIRONMENTS.map(environment => <option key={environment} value={environment}>{environment}</option>)}
+        </select>
         <textarea rows={3} className="col-span-2 px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono"
           placeholder='{"repositoryId":"...","query":"..."}'
           value={validateForm.input} onChange={e => setValidateForm(v => ({ ...v, input: e.target.value }))} />

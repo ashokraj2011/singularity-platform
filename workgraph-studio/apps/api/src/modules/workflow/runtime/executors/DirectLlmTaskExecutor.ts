@@ -681,13 +681,12 @@ function defaultCredentialEnv(provider: string): string | undefined {
   const p = provider.toLowerCase()
   if (p === 'anthropic') return 'ANTHROPIC_API_KEY'
   if (p === 'openai' || p === 'openai_compatible' || p === 'openai-compatible') return 'OPENAI_API_KEY'
-  if (p === 'copilot' || p === 'github_copilot') return 'COPILOT_PROVIDER_API_KEY'
   return undefined
 }
 
 function normalizeProvider(provider: string): string {
   const p = provider.trim().toLowerCase().replace(/-/g, '_')
-  if (p === 'openai_compatible' || p === 'openai' || p === 'anthropic' || p === 'mock' || p === 'copilot' || p === 'github_copilot') return p
+  if (p === 'openai_compatible' || p === 'openai' || p === 'anthropic' || p === 'mock') return p
   return p || 'openai_compatible'
 }
 
@@ -770,6 +769,12 @@ async function resolveDirectLlmConfig(
   const provider = normalizeProvider(
     connection?.provider ?? cfgString(node, 'provider') ?? (connection?.baseUrl ? 'openai_compatible' : 'mock'),
   )
+  if (provider === 'copilot' || provider === 'github_copilot') {
+    return {
+      error: 'Copilot is available only through the governed copilot_execute MCP path. Configure this node as an AGENT_TASK with executor=copilot.',
+      code: 'COPILOT_CLI_ONLY',
+    }
+  }
   const model = connection?.model ?? cfgString(node, 'model') ?? (provider === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o-mini')
   const baseUrl = connection?.baseUrl ?? cfgString(node, 'baseUrl') ?? undefined
   const credentialEnv = connection?.credentialEnv ?? cfgString(node, 'credentialEnv') ?? defaultCredentialEnv(provider)
@@ -915,9 +920,6 @@ async function callProvider(args: DirectLlmProviderRequest): Promise<DirectLlmCh
     }
   }
 
-  if ((args.provider === 'copilot' || args.provider === 'github_copilot') && !args.baseUrl) {
-    throw new Error('Direct Copilot LLM requires an OpenAI-compatible Copilot bridge baseUrl; no default public Copilot chat URL is assumed.')
-  }
   const apiKey = args.credentialEnv ? process.env[args.credentialEnv] : undefined
   if (!apiKey) {
     throw new Error(`Missing API key env var ${args.credentialEnv ?? '(none configured)'} for direct LLM provider ${args.provider}.`)

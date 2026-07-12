@@ -382,7 +382,7 @@ export async function GET(req: NextRequest) {
       {
         detail: platformLogs.ok ? textFrom(logsBody.message) || undefined : platformLogs.text,
         fixCommand: "export SINGULARITY_LOG_DIR=$PWD/logs && bin/bare-metal-apps.sh up",
-        fixRoute: "/operations/logs",
+        fixRoute: "/audit?view=logs",
       },
     ),
     check(

@@ -78,7 +78,7 @@ export default function TraceTimelinePage({ params }: { params: Promise<{ traceI
         )}
       </div>
       <div className="mt-3">
-        <Link href={`/operations/logs?trace_id=${encodeURIComponent(decoded)}`} className="btn-secondary text-xs">
+        <Link href={`/audit?view=logs&trace_id=${encodeURIComponent(decoded)}`} className="btn-secondary text-xs">
           <TerminalSquare size={13} /> Open correlated logs
         </Link>
       </div>

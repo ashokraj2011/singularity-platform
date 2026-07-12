@@ -75,7 +75,7 @@ Options:
   --runtime-name NAME           Runtime display name
   --workspace PATH              MCP sandbox path
 
-  --provider NAME               mock | anthropic | openai | openrouter | copilot
+  --provider NAME               mock | anthropic | openai | openrouter
   --default-model MODEL         Provider model id
   --github-token TOKEN          Enables MCP git clone/push tools
   --anthropic-api-key KEY       Enables Anthropic provider
@@ -83,11 +83,7 @@ Options:
   --openai-base-url URL         Default https://api.openai.com/v1
   --openrouter-api-key KEY      Enables OpenRouter provider
   --openrouter-base-url URL     Default https://openrouter.ai/api/v1
-  --copilot-token TOKEN         Copilot bridge bearer; default copilot-local with bridge
-  --copilot-base-url URL        Default http://localhost:4141/v1 for provider=copilot
-  --copilot-bin PATH            Default copilot
-  --start-copilot-bridge        Start bin/copilot-cli-server.js on --copilot-port
-  --copilot-port PORT           Default 4141
+  --copilot-bin PATH            Copilot CLI path used by copilot_execute
 
   --server-only                 Only write server .env.local keys
   --runtime-only                Only configure/start MCP + LLM runtime
@@ -471,16 +467,14 @@ if [ -z "$provider" ]; then
   else provider="mock"
   fi
 fi
-case "$provider" in
-  mock|anthropic|openai|openrouter|copilot) ;;
-  *) err "--provider must be mock, anthropic, openai, openrouter, or copilot"; exit 1 ;;
-esac
-
-if [ "$provider" = "copilot" ]; then
-  [ -n "$copilot_base_url" ] || copilot_base_url="http://localhost:${copilot_port}/v1"
-  [ -n "$copilot_token" ] || copilot_token="copilot-local"
-  [ -n "$default_model" ] || default_model="${COPILOT_MODEL:-gpt-4o}"
+if [ "$provider" = "copilot" ] || [ -n "$copilot_base_url" ] || [ -n "$copilot_token" ] || [ "$start_bridge" = "1" ]; then
+  err "Copilot gateway/bridge mode is retired. Use the Copilot CLI through an AGENT_TASK with executor=copilot and the governed copilot_execute MCP tool."
+  exit 1
 fi
+case "$provider" in
+  mock|anthropic|openai|openrouter) ;;
+  *) err "--provider must be mock, anthropic, openai, or openrouter"; exit 1 ;;
+esac
 
 if [ -z "$runtime_token" ] && [ -s "$DEVICE_TOKEN_FILE" ]; then
   runtime_token="$(tr -d '\n' < "$DEVICE_TOKEN_FILE")"

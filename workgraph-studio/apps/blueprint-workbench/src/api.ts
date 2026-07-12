@@ -509,7 +509,36 @@ export type BlueprintSession = {
     decisionAnswers?: DecisionAnswer[]
     decisionAnswersUpdatedAt?: string
     executionConfig?: WorkbenchExecutionConfig
+    workflowContext?: WorkbenchWorkflowContext
     [key: string]: unknown
+  }
+}
+
+export type WorkbenchWorkflowContext = {
+  workflow?: {
+    id?: string
+    name?: string
+    status?: string
+    templateId?: string
+  }
+  story?: string
+  capabilityId?: string
+  workItem?: {
+    id?: string
+    code?: string
+    title?: string
+    description?: string
+    type?: string
+    status?: string
+  }
+  git?: {
+    sourceType?: SourceType
+    repositoryUrl?: string
+    baseRef?: string
+    workBranch?: string
+    cloneDir?: string
+    commitSha?: string
+    changedFiles?: string[]
   }
 }
 
@@ -528,6 +557,10 @@ export type WorkflowInstanceNode = {
 
 export type WorkflowInstanceDetail = {
   id: string
+  name?: string
+  status?: string
+  templateId?: string | null
+  usesCopilot?: boolean
   context?: WorkflowInstanceContext
   nodes?: WorkflowInstanceNode[]
 }
@@ -569,6 +602,7 @@ export type CreateSessionRequest = {
   // paired laptop (docs/deployment-topology.md). Stored on session.metadata.
   preferLaptop?: boolean
   preferLaptopLlm?: boolean
+  workflowContext?: WorkbenchWorkflowContext
   intakeDefaults?: {
     goal?: string
     sourceType?: SourceType

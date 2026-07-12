@@ -148,8 +148,16 @@ const columns: Record<IdentityView, Array<{ label: string; keys: string[] }>> = 
 // Field specs per creatable IAM entity. Keys map 1:1 to the IAM create-request
 // bodies (bu_key, name, …); `tags` is parsed comma→array on submit.
 // A dropdown sourced from live IAM data. `valueKey` is the row field used as the
-// submitted value (e.g. "bu_key"); `labelKeys` build the human label.
-type OptionSpec = { view: IdentityView; valueKey: string; labelKeys: string[] };
+// submitted value (e.g. "bu_key"); `labelKeys` build the human label. Static
+// options are merged with live rows so first-run IAM still has usable choices.
+type OptionSpec = {
+  view: IdentityView;
+  valueKey: string;
+  labelKeys: string[];
+  distinct?: boolean;
+  excludeCurrent?: boolean;
+  staticOptions?: Array<{ value: string; label: string }>;
+};
 // A relationship field is NOT part of the entity body — after the entity is
 // saved we call `apply(entityId, value)` once per selected value (e.g. add the
 // new user to a team, or assign each chosen role). `multi` renders a multiselect.
@@ -164,6 +172,22 @@ type FieldSpec = {
   datalist?: { view: IdentityView; key: string };
 };
 
+const PERMISSION_CATEGORY_OPTIONS = [
+  { value: "workflow", label: "Workflow" },
+  { value: "agent", label: "Agent" },
+  { value: "tool", label: "Tool" },
+  { value: "context", label: "Context" },
+  { value: "model", label: "Model" },
+  { value: "capability", label: "Capability" },
+  { value: "governance", label: "Governance" },
+  { value: "admin", label: "Administration" },
+];
+
+const ROLE_SCOPE_OPTIONS = [
+  { value: "platform", label: "Platform" },
+  { value: "capability", label: "Capability" },
+];
+
 const createForms: Partial<Record<IdentityView, { singular: string; fields: FieldSpec[] }>> = {
   "business-units": {
     singular: "Business Unit",
@@ -171,7 +195,7 @@ const createForms: Partial<Record<IdentityView, { singular: string; fields: Fiel
       { key: "bu_key", label: "Key", required: true, placeholder: "engineering", hint: "Unique identifier; can't be changed later." },
       { key: "name", label: "Name", required: true, placeholder: "Engineering" },
       { key: "description", label: "Description", textarea: true },
-      { key: "parent_bu_id", label: "Parent BU ID", placeholder: "(optional UUID)" },
+      { key: "parent_bu_id", label: "Parent business unit", placeholder: "— none —", hint: "Optional. Stores the selected business unit UUID.", select: { view: "business-units", valueKey: "id", labelKeys: ["name", "bu_key"], excludeCurrent: true } },
       { key: "tags", label: "Tags", placeholder: "comma, separated" },
     ],
   },
@@ -203,14 +227,14 @@ const createForms: Partial<Record<IdentityView, { singular: string; fields: Fiel
       { key: "role_key", label: "Key", required: true, placeholder: "reviewer" },
       { key: "name", label: "Name", required: true, placeholder: "Reviewer" },
       { key: "description", label: "Description", textarea: true },
-      { key: "role_scope", label: "Scope", placeholder: "capability" },
+      { key: "role_scope", label: "Scope", placeholder: "Choose scope", select: { view: "roles", valueKey: "role_scope", labelKeys: ["role_scope"], distinct: true, staticOptions: ROLE_SCOPE_OPTIONS } },
     ],
   },
   permissions: {
     singular: "Permission",
     fields: [
       { key: "permission_key", label: "Key", required: true, placeholder: "workflow:review", hint: "Immutable action key that code/policies match on. Convention: resource:action. A new key doesn't gate anything until something checks it." },
-      { key: "category", label: "Category", placeholder: "workflow", hint: "Groups the key in the catalog. Pick an existing one or type a new one.", datalist: { view: "permissions", key: "category" } },
+      { key: "category", label: "Category", placeholder: "Choose category", hint: "Groups the key in the catalog and follows the platform permission taxonomy.", select: { view: "permissions", valueKey: "category", labelKeys: ["category"], distinct: true, staticOptions: PERMISSION_CATEGORY_OPTIONS } },
       { key: "description", label: "Description", textarea: true },
     ],
   },
@@ -259,7 +283,7 @@ const editForms: Partial<Record<IdentityView, { idKey: string; fields: FieldSpec
     fields: [
       { key: "name", label: "Name", required: true },
       { key: "description", label: "Description", textarea: true },
-      { key: "parent_bu_id", label: "Parent BU ID", placeholder: "(optional UUID)" },
+      { key: "parent_bu_id", label: "Parent business unit", placeholder: "— none —", hint: "Optional. Stores the selected business unit UUID.", select: { view: "business-units", valueKey: "id", labelKeys: ["name", "bu_key"], excludeCurrent: true } },
     ],
   },
   teams: {
@@ -294,7 +318,7 @@ const editForms: Partial<Record<IdentityView, { idKey: string; fields: FieldSpec
   permissions: {
     idKey: "permission_key",
     fields: [
-      { key: "category", label: "Category", placeholder: "workflow", datalist: { view: "permissions", key: "category" } },
+      { key: "category", label: "Category", placeholder: "Choose category", select: { view: "permissions", valueKey: "category", labelKeys: ["category"], distinct: true, staticOptions: PERMISSION_CATEGORY_OPTIONS } },
       { key: "description", label: "Description", textarea: true },
     ],
   },
@@ -542,13 +566,24 @@ function EntityFormModal({ view, mode, row, onClose, onSaved }: { view: Identity
           return [f.key, opts] as const;
         }
         const spec = (f.select ?? f.relation)!;
+        const currentEntityId = mode === "edit" && row
+          ? String(row[editSpec?.idKey ?? "id"] ?? row.id ?? "")
+          : "";
         const page = await listIdentity(spec.view, 200);
-        const opts = (page.items ?? [])
+        const liveOpts = (page.items ?? [])
+          .filter((r) => !(spec.excludeCurrent && currentEntityId && String(r.id ?? "") === currentEntityId))
           .map((r) => ({ value: String(r[spec.valueKey] ?? ""), label: optionText(r, spec.labelKeys) }))
           .filter((o) => o.value);
+        const merged = [...(spec.staticOptions ?? []), ...liveOpts];
+        const seen = new Set<string>();
+        const opts = merged.filter((option) => {
+          if (!option.value || (spec.distinct && seen.has(option.value))) return false;
+          seen.add(option.value);
+          return true;
+        });
         return [f.key, opts] as const;
       } catch {
-        return [f.key, [] as { value: string; label: string }[]] as const;
+        return [f.key, f.select?.staticOptions ?? []] as const;
       }
     })).then((entries) => { if (!cancelled) setOptions(Object.fromEntries(entries)); });
     return () => { cancelled = true; };
@@ -614,6 +649,9 @@ function EntityFormModal({ view, mode, row, onClose, onSaved }: { view: Identity
             const isDropdown = Boolean(f.select || (f.relation && !f.relation.multi));
             const isMulti = Boolean(f.relation?.multi);
             const cur = values[f.key];
+            const dropdownOptions = isDropdown && typeof cur === "string" && cur && !opts.some((o) => o.value === cur)
+              ? [{ value: cur, label: `${cur} (current)` }, ...opts]
+              : opts;
             return (
               <label key={f.key} style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "var(--color-outline)" }}>
                 {f.label}{f.required ? " *" : ""}
@@ -634,7 +672,7 @@ function EntityFormModal({ view, mode, row, onClose, onSaved }: { view: Identity
                 ) : isDropdown ? (
                   <select value={typeof cur === "string" ? cur : ""} onChange={(e) => setScalar(f.key, e.target.value)} style={fieldInputStyle}>
                     <option value="">{f.placeholder ?? "— none —"}</option>
-                    {opts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    {dropdownOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
                 ) : f.datalist ? (
                   <>

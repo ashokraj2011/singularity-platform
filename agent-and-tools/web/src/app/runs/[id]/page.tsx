@@ -53,7 +53,7 @@ export default function RunDetailPage() {
             <Link className="btn-secondary" href={`/runs/${encoded}/insights`}>
               <ShieldCheck size={14} /> Insights
             </Link>
-            <Link className="btn-secondary" href="/operations/logs">
+            <Link className="btn-secondary" href="/audit?view=logs">
               <TerminalSquare size={14} /> Logs
             </Link>
           </div>
@@ -141,7 +141,7 @@ function RunTraceStrip({ runId }: { runId: string }) {
               <Link className="btn-secondary" href={`/audit/trace/${encodeURIComponent(traceId)}`}>
                 <Network size={13} /> {traceId.length > 34 ? `${traceId.slice(0, 31)}...` : traceId}
               </Link>
-              <Link className="btn-secondary" href={`/operations/logs?trace_id=${encodeURIComponent(traceId)}`} title="Open logs for this platform trace">
+              <Link className="btn-secondary" href={`/audit?view=logs&trace_id=${encodeURIComponent(traceId)}`} title="Open logs for this platform trace">
                 <TerminalSquare size={13} /> Logs
               </Link>
             </span>

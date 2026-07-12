@@ -644,7 +644,7 @@ function OverviewView({
       state: runtime?.summary.requiredHealthy ? "ready" : "waiting",
     },
     {
-      href: "/operations/logs",
+      href: "/audit?view=logs",
       icon: TerminalSquare,
       title: "Log Explorer",
       value: "Live tail",

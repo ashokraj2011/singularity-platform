@@ -99,6 +99,10 @@ function serializeConnection(row: {
   }
 }
 
+function isCopilotProvider(provider: string): boolean {
+  return ['copilot', 'github_copilot', 'github-copilot'].includes(provider.trim().toLowerCase())
+}
+
 // Best-effort read of the gateway model catalog. Falls back to a built-in list so
 // the canvas always has something to drag even if the file isn't reachable.
 function loadConnections(): Connection[] {
@@ -121,7 +125,7 @@ function loadConnections(): Connection[] {
           credentialEnv: typeof m.credentialEnv === 'string' ? m.credentialEnv : null,
           costTier: m.costTier ? String(m.costTier) : undefined,
           default: Boolean(m.default),
-        })).filter(c => c.alias && c.provider !== 'mock' && !/mock|chaos/i.test(`${c.alias} ${c.label}`))
+        })).filter(c => c.alias && c.provider !== 'mock' && !isCopilotProvider(c.provider) && !/mock|chaos/i.test(`${c.alias} ${c.label}`))
           .map(serializeConnection)
       }
     } catch { /* try next */ }
@@ -130,7 +134,6 @@ function loadConnections(): Connection[] {
     serializeConnection({ alias: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5',  provider: 'anthropic', model: 'claude-haiku-4-5',  credentialEnv: 'ANTHROPIC_API_KEY', costTier: 'low', default: true }),
     serializeConnection({ alias: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', provider: 'anthropic', model: 'claude-sonnet-4-5', credentialEnv: 'ANTHROPIC_API_KEY', costTier: 'medium' }),
     serializeConnection({ alias: 'gpt-4o',            label: 'GPT-4o',            provider: 'openai',    model: 'gpt-4o',            credentialEnv: 'OPENAI_API_KEY', costTier: 'medium' }),
-    serializeConnection({ alias: 'copilot',           label: 'Copilot bridge',    provider: 'copilot',   model: 'copilot',           credentialEnv: 'COPILOT_PROVIDER_API_KEY', costTier: 'na' }),
   ]
 }
 
@@ -140,10 +143,11 @@ function loadConnections(): Connection[] {
 llmRoutingRouter.get('/connections', async (req, res, next) => {
   try {
     const rows = await prisma.llmConnection.findMany({ where: { enabled: true, ...tenantFilter(req) }, orderBy: { name: 'asc' } })
-    if (rows.length > 0) {
+    const visibleRows = rows.filter(row => !isCopilotProvider(row.provider))
+    if (visibleRows.length > 0) {
       return res.json({
         source: 'db',
-        items: rows.map(serializeConnection),
+        items: visibleRows.map(serializeConnection),
       })
     }
     res.json({ source: 'catalog', items: loadConnections() })
@@ -169,6 +173,9 @@ llmRoutingRouter.post('/connections', async (req, res, next) => {
   try {
     await requireAdmin(req)
     const b = connSchema.parse(req.body)
+    if (isCopilotProvider(b.provider)) {
+      return res.status(400).json({ error: 'Copilot connections are disabled here. Use an AGENT_TASK with executor=copilot through the governed MCP runtime.' })
+    }
     const createdById = (req as { user?: { userId?: string } }).user?.userId
     const scope = tenantFilter(req)
     const existing = await prisma.llmConnection.findFirst({ where: { alias: b.alias, ...scope } })
@@ -214,6 +221,9 @@ llmRoutingRouter.post('/rules', async (req, res, next) => {
   try {
     await requireAdmin(req)
     const b = ruleSchema.parse(req.body)
+    if (b.modelAlias.trim().toLowerCase() === 'copilot') {
+      return res.status(400).json({ error: 'The Copilot model alias is retired. Use the Copilot SDLC touch point with executor=copilot.' })
+    }
     const scopeId = b.scopeType === 'DEFAULT' ? '' : b.scopeId
     if (b.scopeType !== 'DEFAULT' && !scopeId) {
       return res.status(400).json({ error: `${b.scopeType} rule requires a scopeId (the user or capability id)` })

@@ -13,7 +13,10 @@ from typing import Any, Dict, List, Optional
 from .config import settings
 
 
-SUPPORTED_PROVIDERS = ("mock", "openai", "openrouter", "anthropic", "copilot")
+# Copilot is intentionally absent from the gateway provider catalog. Copilot
+# coding stages use the governed `copilot_execute` MCP tool so the CLI runs on
+# the selected runtime and produces the same audited code-change receipt.
+SUPPORTED_PROVIDERS = ("mock", "openai", "openrouter", "anthropic")
 
 
 class ProviderConfigError(Exception):

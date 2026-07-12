@@ -6111,3 +6111,782 @@ body {
 }
 .milestones-toggle input { margin-top: 3px; }
 .milestones-toggle small { color: var(--muted-low); font-weight: 400; }
+
+/* ============================================================
+ * Workbench Neo reference skin
+ *
+ * The Neo cockpit keeps the existing workflow, review, artifact, and live
+ * activity components, but presents them as one calm operating surface:
+ * lifecycle rail, focused stage workspace, and live cockpit.
+ * ============================================================ */
+
+body:has(.neo-cockpit-root.neo-mode-light) {
+  background: #292724;
+  color: #1b1b19;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .app-shell {
+  width: min(1740px, calc(100vw - 32px));
+  min-height: calc(100vh - 32px);
+  margin: 16px auto;
+  overflow: hidden;
+  border: 1px solid #5c5b57;
+  border-radius: 24px;
+  background: #f6f5f2;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .command-header {
+  position: relative;
+  min-height: 70px;
+  grid-template-columns: minmax(250px, 1fr) auto minmax(220px, 1.2fr) auto;
+  gap: 20px;
+  padding: 12px 22px;
+  border-bottom: 1px solid #e1ddd5;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.8);
+  color: #252421;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .brand-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  color: #fff;
+  background: #a5482e;
+  box-shadow: none;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .eyebrow {
+  color: #81776e;
+  letter-spacing: 0.14em;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .command-header h1 {
+  color: #1b1b19;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .command-tabs {
+  gap: 4px;
+  border-bottom: 0;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .command-tabs button {
+  min-height: 36px;
+  padding: 0 13px;
+  border-radius: 8px;
+  color: #766f68;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .command-tabs button:hover {
+  color: #1b1b19;
+  background: #f3efea;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .command-tabs button.active {
+  color: #a5482e;
+  border-bottom: 2px solid #a5482e;
+  background: #fbf8f4;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .metric-pill {
+  min-width: 84px;
+  border-color: #e3ded6;
+  border-radius: 9px;
+  background: #fbfaf8;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .metric-pill span {
+  color: #8b827a;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .metric-pill strong {
+  color: #252421;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .metric-pill.primary strong,
+body:has(.neo-cockpit-root.neo-mode-light) .command-header .metric-pill.warning strong {
+  color: #a5482e;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .topbar-actions .secondary-action,
+body:has(.neo-cockpit-root.neo-mode-light) .topbar-actions .icon-button {
+  border-color: #ded8cf;
+  background: #fff;
+  color: #4f4942;
+  box-shadow: none;
+}
+
+body:has(.neo-cockpit-root.neo-mode-light) .topbar-actions .secondary-action:hover,
+body:has(.neo-cockpit-root.neo-mode-light) .topbar-actions .icon-button:hover {
+  border-color: #c8b7ad;
+  background: #fbf4ef;
+  color: #a5482e;
+}
+
+.neo-cockpit-root.neo-mode-light {
+  --background: #f6f5f2;
+  --surface: #ffffff;
+  --surface-lowest: #f3f1ed;
+  --surface-low: #faf9f7;
+  --surface-container: #ffffff;
+  --surface-high: #f0ece6;
+  --surface-highest: #e5dfd7;
+  --outline: #8c837a;
+  --outline-variant: #e4dfd7;
+  --text: #1c1b19;
+  --muted: #655e57;
+  --muted-low: rgba(101, 94, 87, 0.74);
+  --primary: #a5482e;
+  --primary-container: #a5482e;
+  --on-primary: #ffffff;
+  --secondary: #65758c;
+  --secondary-container: #eef1f4;
+  --tertiary: #b36d16;
+  --tertiary-container: #fbf1df;
+  --danger: #b94737;
+  --danger-container: #f8e7e2;
+  --ok: #2f7a56;
+  --shadow: rgba(67, 59, 50, 0.12);
+  --neo-primary: #a5482e;
+  --neo-primary-rgb: 165, 72, 46;
+  --neo-accent: #a5482e;
+  --neo-accent-rgb: 165, 72, 46;
+  --neo-ok: #2f7a56;
+  --neo-ok-rgb: 47, 122, 86;
+  --neo-info: #387b84;
+  --neo-info-rgb: 56, 123, 132;
+  --neo-attention: #b36d16;
+  --neo-attention-rgb: 179, 109, 22;
+  --neo-danger: #b94737;
+  --neo-danger-rgb: 185, 71, 55;
+  --neo-tool: #7660a0;
+  --neo-tool-rgb: 118, 96, 160;
+}
+
+.neo-cockpit-root.neo-mode-light .loop-shell {
+  min-height: calc(100vh - 70px);
+  padding: 18px;
+  background: #f6f5f2;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-cockpit-shell {
+  grid-template-columns: 268px minmax(0, 1fr) 326px;
+  gap: 0;
+  max-width: 1680px;
+  min-height: calc(100vh - 130px);
+  overflow: hidden;
+  border: 1px solid #e2ddd5;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 12px 34px rgba(67, 59, 50, 0.08);
+}
+
+.neo-cockpit-root.neo-mode-light .neo-loop-rail,
+.neo-cockpit-root.neo-mode-light .neo-cockpit {
+  border: 0;
+  border-radius: 0;
+  background: #faf9f7;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-loop-rail {
+  min-height: 0;
+  padding: 20px 14px 14px;
+  border-right: 1px solid #e7e2da;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-loop-rail > header {
+  padding: 0 8px 16px;
+  border-bottom-color: #e7e2da;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-loop-rail .rail-title,
+.neo-cockpit-root.neo-mode-light .cockpit-title,
+.neo-cockpit-root.neo-mode-light .focus-stage-key {
+  color: #82776f;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-loop-rail .rail-title::before {
+  content: 'LIFECYCLE';
+  display: block;
+  margin-bottom: 7px;
+  color: #a5482e;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-loop-rail .rail-subtitle {
+  color: #332f2b;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.neo-cockpit-root.neo-mode-light .rail-provider-chip,
+.neo-cockpit-root.neo-mode-light .rail-refresh,
+.neo-cockpit-root.neo-mode-light .rail-model-picker > select,
+.neo-cockpit-root.neo-mode-light .rail-phase-row > select {
+  border-color: #ded8cf;
+  background: #fff;
+  color: #5f5851;
+}
+
+.neo-cockpit-root.neo-mode-light .rail-row > button {
+  min-height: 62px;
+  border-color: transparent;
+  border-radius: 12px;
+  padding: 9px 10px;
+  color: #4e4842;
+}
+
+.neo-cockpit-root.neo-mode-light .rail-row > button:hover {
+  background: #f4eee9;
+}
+
+.neo-cockpit-root.neo-mode-light .rail-row.active > button {
+  border-color: #ead4c9;
+  border-left: 4px solid #a5482e;
+  background: #fffaf7;
+  box-shadow: 0 4px 14px rgba(165, 72, 46, 0.08);
+}
+
+.neo-cockpit-root.neo-mode-light .rail-label strong {
+  color: #252320;
+  font-size: 14px;
+}
+
+.neo-cockpit-root.neo-mode-light .rail-label small {
+  color: #8a8179;
+}
+
+.neo-cockpit-root.neo-mode-light .rail-pip {
+  border-color: #ddd6cd;
+  background: #fff;
+}
+
+.neo-cockpit-root.neo-mode-light .rail-connector {
+  background: #e0d8cf;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-center-column {
+  min-width: 0;
+  gap: 18px;
+  padding: 34px 46px 28px;
+  background: #fff;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-milestone-rail {
+  margin: -8px 0 0;
+  border: 0;
+  border-bottom: 1px solid #ece7e0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0 0 14px;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-milestone-rail .ms-row {
+  border-color: #e6e0d8;
+  border-radius: 9px;
+  background: #faf9f7;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-focus {
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  box-shadow: none;
+  padding: 0;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-focus::before {
+  display: none;
+}
+
+.neo-cockpit-root.neo-mode-light .focus-head {
+  gap: 8px;
+  padding-bottom: 4px;
+}
+
+.neo-cockpit-root.neo-mode-light .focus-stage-key {
+  color: #a5482e;
+  font-size: 11px;
+}
+
+.neo-cockpit-root.neo-mode-light .focus-head h2 {
+  max-width: 820px;
+  color: #171716;
+  font-size: clamp(32px, 3.5vw, 48px);
+  font-weight: 800;
+  line-height: 1.02;
+}
+
+.neo-cockpit-root.neo-mode-light .focus-stage-desc {
+  max-width: 760px;
+  margin-top: 2px;
+  color: #6d655d;
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.neo-cockpit-root.neo-mode-light .focus-badges {
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.neo-cockpit-root.neo-mode-light .focus-badge {
+  min-height: 29px;
+  border-color: #e7ded6;
+  background: #fbf7f3;
+  color: #665c54;
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+.neo-cockpit-root.neo-mode-light button.focus-badge.link {
+  color: #a5482e;
+}
+
+.neo-cockpit-root.neo-mode-light .focus-banner {
+  border: 1px solid #e4c5b8;
+  border-left: 4px solid #a5482e;
+  border-radius: 12px;
+  background: #fff8f4;
+  color: #5f4b43;
+  padding: 15px 17px;
+}
+
+.neo-cockpit-root.neo-mode-light .focus-body {
+  max-height: none;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.neo-cockpit-root.neo-mode-light .focus-response,
+.neo-cockpit-root.neo-mode-light .focus-approval-card,
+.neo-cockpit-root.neo-mode-light .focus-sendback,
+.neo-cockpit-root.neo-mode-light .focus-governance-panel,
+.neo-cockpit-root.neo-mode-light .focus-loop-warning {
+  border-color: #e4ded6;
+  background: #fcfbf9;
+  box-shadow: 0 3px 12px rgba(67, 59, 50, 0.04);
+}
+
+.neo-cockpit-root.neo-mode-light .focus-feedback textarea,
+.neo-cockpit-root.neo-mode-light .focus-sendback input,
+.neo-cockpit-root.neo-mode-light .focus-sendback select,
+.neo-cockpit-root.neo-mode-light .focus-sendback textarea {
+  border-color: #ddd6cd;
+  background: #fff;
+  color: #26231f;
+}
+
+.neo-cockpit-root.neo-mode-light .focus-primary {
+  min-height: 48px;
+  border-radius: 9px;
+  background: #a5482e;
+  box-shadow: 0 8px 20px rgba(165, 72, 46, 0.18);
+}
+
+.neo-cockpit-root.neo-mode-light .focus-primary:hover:not(:disabled) {
+  background: #8f3c27;
+  box-shadow: 0 10px 24px rgba(165, 72, 46, 0.22);
+}
+
+.neo-cockpit-root.neo-mode-light .focus-secondary {
+  border-color: #d9d1c9;
+  border-radius: 8px;
+  background: #fff;
+  color: #5f554d;
+}
+
+.neo-cockpit-root.neo-mode-light .focus-secondary:hover:not(:disabled) {
+  border-color: #bf9d8e;
+  background: #fff8f4;
+  color: #a5482e;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-stage-workspace {
+  border-color: #e2dcd4;
+  border-radius: 10px;
+  background: #faf9f7;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-stage-workspace-head {
+  border-bottom-color: #e2dcd4;
+  background: #fff;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-cockpit {
+  min-height: 0;
+  padding: 20px 16px;
+  border-left: 1px solid #e7e2da;
+}
+
+.neo-cockpit-root.neo-mode-light .cockpit-head {
+  padding-bottom: 10px;
+}
+
+.neo-cockpit-root.neo-mode-light .cockpit-status {
+  border-color: #c8e3d2;
+  background: #eef9f1;
+  color: #2f7a56;
+  font-family: inherit;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.neo-cockpit-root.neo-mode-light .cockpit-now {
+  border-color: #e2c8bc;
+  border-radius: 10px;
+  background: #fff8f4;
+}
+
+.neo-cockpit-root.neo-mode-light .cockpit-totals {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.neo-cockpit-root.neo-mode-light .cockpit-metric {
+  min-height: 74px;
+  justify-content: center;
+  border-color: #e5dfd7;
+  border-radius: 11px;
+  background: #fff;
+  padding: 10px 6px;
+  box-shadow: 0 2px 8px rgba(67, 59, 50, 0.04);
+}
+
+.neo-cockpit-root.neo-mode-light .cockpit-metric .metric-value {
+  color: #252320;
+  font-family: inherit;
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.neo-cockpit-root.neo-mode-light .cockpit-metric .metric-label {
+  color: #8b8178;
+  font-size: 9px;
+}
+
+.neo-cockpit-root.neo-mode-light .cockpit-stream {
+  min-height: 180px;
+  max-height: calc(100vh - 420px);
+  padding-top: 6px;
+  border-top: 1px solid #ece7e0;
+}
+
+.neo-cockpit-root.neo-mode-light .cockpit-row {
+  border: 1px solid #ece6df;
+  border-radius: 8px;
+  background: #fff;
+  color: #4d4640;
+  padding: 8px 9px;
+}
+
+.neo-cockpit-root.neo-mode-light .cockpit-row .row-detail,
+.neo-cockpit-root.neo-mode-light .cockpit-row .row-time,
+.neo-cockpit-root.neo-mode-light .cockpit-empty {
+  color: #8c837a;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-bottom-dock {
+  margin: 14px auto 0;
+  max-width: 1680px;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-theme-picker {
+  border-top-color: #e7e2da;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-theme-chip {
+  border-color: #ded8cf;
+  background: #fff;
+  color: #6a625a;
+}
+
+.neo-cockpit-root.neo-mode-light .neo-theme-chip.active {
+  border-color: #a5482e;
+  background: #fff4ee;
+  color: #a5482e;
+}
+
+@media (max-width: 1280px) {
+  .neo-cockpit-root.neo-mode-light .neo-cockpit-shell {
+    grid-template-columns: 230px minmax(0, 1fr) 292px;
+  }
+
+  .neo-cockpit-root.neo-mode-light .neo-center-column {
+    padding: 28px 30px 24px;
+  }
+}
+
+@media (max-width: 1024px) {
+  body:has(.neo-cockpit-root.neo-mode-light) .app-shell {
+    width: 100%;
+    min-height: 100vh;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .neo-cockpit-root.neo-mode-light .neo-cockpit-shell {
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .neo-cockpit-root.neo-mode-light .neo-loop-rail,
+  .neo-cockpit-root.neo-mode-light .neo-cockpit {
+    border: 0;
+  }
+
+  .neo-cockpit-root.neo-mode-light .neo-loop-rail {
+    max-height: none;
+    border-bottom: 1px solid #e7e2da;
+  }
+
+  .neo-cockpit-root.neo-mode-light .neo-loop-rail ol {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 4px;
+  }
+
+  .neo-cockpit-root.neo-mode-light .neo-loop-rail .rail-connector {
+    display: none;
+  }
+
+  .neo-cockpit-root.neo-mode-light .neo-cockpit {
+    border-top: 1px solid #e7e2da;
+  }
+
+  .neo-cockpit-root.neo-mode-light .cockpit-stream {
+    max-height: 360px;
+  }
+}
+
+@media (max-width: 760px) {
+  body:has(.neo-cockpit-root.neo-mode-light) .command-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    padding: 10px 14px;
+  }
+
+  body:has(.neo-cockpit-root.neo-mode-light) .command-tabs,
+  body:has(.neo-cockpit-root.neo-mode-light) .command-metrics {
+    display: none;
+  }
+
+  .neo-cockpit-root.neo-mode-light .loop-shell {
+    padding: 10px;
+  }
+
+  .neo-cockpit-root.neo-mode-light .neo-center-column {
+    padding: 24px 18px 20px;
+  }
+
+  .neo-cockpit-root.neo-mode-light .focus-head h2 {
+    font-size: 34px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .neo-cockpit-root.neo-mode-light *,
+  .neo-cockpit-root.neo-mode-light *::before,
+  .neo-cockpit-root.neo-mode-light *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* The setup/empty state has no .neo-cockpit-root yet. Keep it on the same
+   Workbench visual system as the linked Neo cockpit instead of falling back to
+   the legacy blue/dark shell while a session is being selected or created. */
+body:has(.neo-empty) {
+  background: #292724;
+  color: #1b1b19;
+}
+
+body:has(.neo-empty) .app-shell {
+  width: min(1740px, calc(100vw - 32px));
+  min-height: calc(100vh - 32px);
+  margin: 16px auto;
+  overflow: hidden;
+  border: 1px solid #5c5b57;
+  border-radius: 24px;
+  background: #f6f5f2;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+}
+
+body:has(.neo-empty) .command-header {
+  position: relative;
+  min-height: 70px;
+  grid-template-columns: minmax(250px, 1fr) auto minmax(220px, 1.2fr) auto;
+  gap: 20px;
+  padding: 12px 22px;
+  border-bottom: 1px solid #e1ddd5;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.8);
+  color: #252421;
+}
+
+body:has(.neo-empty) .brand-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  color: #fff;
+  background: #a5482e;
+  box-shadow: none;
+}
+
+body:has(.neo-empty) .eyebrow {
+  color: #81776e;
+  letter-spacing: 0.14em;
+}
+
+body:has(.neo-empty) .command-header h1 {
+  color: #1b1b19;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+body:has(.neo-empty) .command-tabs button {
+  color: #766f68;
+}
+
+body:has(.neo-empty) .command-tabs button:hover,
+body:has(.neo-empty) .command-tabs button.active {
+  color: #a5482e;
+  background: #fbf8f4;
+}
+
+body:has(.neo-empty) .command-tabs button.active {
+  border-bottom-color: #a5482e;
+}
+
+body:has(.neo-empty) .metric-pill {
+  border-color: #e3ded6;
+  background: #fbfaf8;
+}
+
+body:has(.neo-empty) .metric-pill span {
+  color: #8b827a;
+}
+
+body:has(.neo-empty) .metric-pill strong {
+  color: #252421;
+}
+
+body:has(.neo-empty) .topbar-actions .secondary-action,
+body:has(.neo-empty) .topbar-actions .icon-button {
+  border-color: #ded8cf;
+  background: #fff;
+  color: #4f4942;
+  box-shadow: none;
+}
+
+body:has(.neo-empty) .loop-shell {
+  min-height: calc(100vh - 70px);
+  padding: 18px;
+  background: #f6f5f2;
+}
+
+body:has(.neo-empty) .setup-drawer {
+  border-right-color: #e2ddd5;
+  background: #fff;
+  box-shadow: 22px 0 80px rgba(67, 59, 50, 0.18);
+  color: #252421;
+}
+
+body:has(.neo-empty) .drawer-close {
+  border-color: #ded8cf;
+  background: #fbfaf8;
+  color: #6c625a;
+}
+
+body:has(.neo-empty) .setup-panel,
+body:has(.neo-empty) .setup-panel h2,
+body:has(.neo-empty) .setup-panel h3,
+body:has(.neo-empty) .setup-panel strong {
+  color: #252421;
+}
+
+body:has(.neo-empty) .settings-section {
+  border-color: #e5dfd7;
+  background: #fcfbf9;
+}
+
+body:has(.neo-empty) .settings-section-title span,
+body:has(.neo-empty) .muted-hint,
+body:has(.neo-empty) .setup-panel label,
+body:has(.neo-empty) .setup-panel p {
+  color: #716960;
+}
+
+body:has(.neo-empty) .setup-panel input,
+body:has(.neo-empty) .setup-panel textarea,
+body:has(.neo-empty) .setup-panel select {
+  border-color: #ded8cf;
+  background: #fff;
+  color: #252421;
+}
+
+body:has(.neo-empty) .setup-panel .primary-action,
+body:has(.neo-empty) .setup-panel .primary-button {
+  border-color: #a5482e;
+  background: #a5482e;
+  color: #fff;
+  box-shadow: 0 8px 20px rgba(165, 72, 46, 0.18);
+}
+
+body:has(.neo-empty) .empty-workbench {
+  min-height: calc(100vh - 130px);
+  border: 1px solid #e4ded6;
+  border-radius: 16px;
+  background: #fff;
+  color: #716960;
+  box-shadow: 0 12px 34px rgba(67, 59, 50, 0.08);
+}
+
+body:has(.neo-empty) .empty-workbench h2 {
+  color: #1b1b19;
+}
+
+body:has(.neo-empty) .empty-workbench svg {
+  color: #a5482e;
+}
+
+@media (max-width: 1024px) {
+  body:has(.neo-empty) .app-shell {
+    width: 100%;
+    min-height: 100vh;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  body:has(.neo-empty) .command-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    padding: 10px 14px;
+  }
+
+  body:has(.neo-empty) .command-tabs,
+  body:has(.neo-empty) .command-metrics {
+    display: none;
+  }
+
+  body:has(.neo-empty) .loop-shell {
+    padding: 10px;
+  }
+}

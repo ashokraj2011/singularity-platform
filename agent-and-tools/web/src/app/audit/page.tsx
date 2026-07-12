@@ -24,7 +24,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { auditGovApi, runtimeApi, type AuditEventRow, type ObservabilityLogRow } from "@/lib/api";
+import { OperationsLogExplorer } from "@/components/operations/OperationsLogExplorer";
 import {
   Activity, AlertTriangle, CheckCircle, ChevronRight, ChevronLeft,
   Database, FolderSearch, Pause, Play, RefreshCw, Search, ShieldCheck,
@@ -143,6 +145,12 @@ function parseSavedSearches(raw: string | null): SavedSearch[] {
 }
 
 export default function AuditPage() {
+  const searchParams = useSearchParams();
+  if (searchParams.get("view") === "logs") return <OperationsLogExplorer />;
+  return <AuditLedgerPage />;
+}
+
+function AuditLedgerPage() {
   const { data: summary } = useSWR("audit-summary", () => auditGovApi.summary(), { refreshInterval: 5_000 });
   const { data: facets }  = useSWR("audit-facets",  () => auditGovApi.auditFacets(), { refreshInterval: 60_000 });
   const { data: logFacets } = useSWR("audit-log-facets", () => auditGovApi.logFacets(), { refreshInterval: 30_000 });
@@ -373,9 +381,14 @@ export default function AuditPage() {
 
   return (
     <div>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-slate-900">Audit & Activity</h1>
-        <p className="text-slate-500 mt-1">Live system activity across services. Search, filter, tail.</p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">Audit & Activity</h1>
+          <p className="text-slate-500 mt-1">Governance events, approvals, and operational activity in one evidence surface.</p>
+        </div>
+        <Link href="/audit?view=logs" className="btn-secondary text-xs">
+          Open full log explorer
+        </Link>
       </div>
 
       {/* Summary tiles */}

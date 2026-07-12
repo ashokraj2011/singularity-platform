@@ -536,7 +536,7 @@ export default function LlmSettingsPage() {
                 />
                 <CommandBlock
                   label="Keep provider, add credential"
-                  command={`bin/mcp-runtime-setup.sh connect --default-provider ${defaultProvider} --default-model ${defaultModelAlias} --${defaultProvider === "anthropic" ? "anthropic-api-key" : defaultProvider === "openai" ? "openai-api-key" : defaultProvider === "openrouter" ? "openrouter-api-key" : defaultProvider === "copilot" ? "copilot-token" : "openai-api-key"} <token>`}
+                  command={`bin/mcp-runtime-setup.sh connect --default-provider ${defaultProvider} --default-model ${defaultModelAlias} --${defaultProvider === "anthropic" ? "anthropic-api-key" : defaultProvider === "openai" ? "openai-api-key" : defaultProvider === "openrouter" ? "openrouter-api-key" : "openai-api-key"} <token>`}
                 />
               </div>
               {readyAliases.length > 0 && (
@@ -616,11 +616,11 @@ export default function LlmSettingsPage() {
           />
           <CommandBlock
             label="Terminal 2: MCP + LLM runtime"
-            command={"bin/mcp-runtime-setup.sh\n# choose copilot, anthropic, openai-compatible, mock, or disabled\nsource .env.local\ncurl -s -H \"X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN\" http://localhost:8000/api/runtime-bridge/status | jq"}
+            command={"bin/mcp-runtime-setup.sh connect\n# Copilot stages use executor=copilot and the local Copilot CLI;\n# do not configure Copilot as an LLM provider here.\nsource .env.local\ncurl -s -H \"X-Service-Token: $CONTEXT_FABRIC_SERVICE_TOKEN\" http://localhost:8000/api/runtime-bridge/status | jq"}
           />
           <CommandBlock
             label="Copilot runtime mode"
-            command={"export LLM_PROVIDER=copilot\nexport GITHUB_TOKEN=<github_pat_or_copilot_ready_token>\nbin/bare-metal-runtime.sh up"}
+            command={"export GITHUB_TOKEN=<github_pat_for_git_operations>\nexport COPILOT_BIN=$(command -v copilot)\ncopilot --version\nbin/bare-metal-runtime.sh up"}
           />
           <CommandBlock
             label="OpenAI-compatible or Anthropic"
@@ -753,7 +753,7 @@ export default function LlmSettingsPage() {
                 <input className="border rounded px-2 py-1 font-mono disabled:bg-slate-100" disabled={Boolean(editingModelId)} value={form.id} onChange={e => setForm(f => ({ ...f, id: e.target.value }))} placeholder="claude-sonnet-4-6" /></label>
               <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Provider *</span>
                 <select className="border rounded px-2 py-1" value={form.provider} onChange={e => setForm(f => ({ ...f, provider: e.target.value }))}>
-                  {(providers.length ? providers.map(p => p.name) : ["anthropic", "openai", "openrouter", "copilot", "mock"]).map(n => <option key={n} value={n}>{n}</option>)}
+                  {(providers.length ? providers.map(p => p.name) : ["anthropic", "openai", "openrouter", "mock"]).map(n => <option key={n} value={n}>{n}</option>)}
                 </select></label>
               <label className="flex flex-col gap-1"><span className="text-xs text-slate-500">Provider model id *</span>
                 <input className="border rounded px-2 py-1 font-mono" value={form.model} onChange={e => setForm(f => ({ ...f, model: e.target.value }))} placeholder="claude-sonnet-4-6-20250930" /></label>

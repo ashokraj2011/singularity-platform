@@ -23,6 +23,7 @@ import { asRow, asString } from "@/lib/row";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { DataPanel, MetricStrip, PageHero, PageShell, StatusPill, type UiState } from "@/components/ui/primitives";
 import { ThemeSwitcher } from "@/components/ui/ThemeSwitcher";
+import { RuntimeEnrollmentCard } from "@/components/runtime/RuntimeEnrollmentCard";
 import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   loadNotificationPreferences,
@@ -320,6 +321,7 @@ export default function SettingsPage() {
                       <StatusPill state={health?.defaultModelReady ? "ready" : "degraded"} label={health?.defaultModelReady ? "Ready" : "Needs setup"} />
                     </div>
                   </div>
+                  <RuntimeEnrollmentCard />
                   <CommandLine label="Laptop / remote runtime setup" command="bin/mcp-runtime-setup.sh" />
                   <CommandLine label="Two terminal split-runtime test" command={"# terminal 1\nbin/bare-metal-apps.sh up\n\n# terminal 2, laptop or runtime host\nbin/mcp-runtime-setup.sh"} />
                   <div className="flex flex-wrap gap-2">

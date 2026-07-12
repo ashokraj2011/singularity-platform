@@ -30,8 +30,6 @@ _DEFAULT_ALLOWED_CREDENTIAL_ENVS = {
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "ANTHROPIC_API_KEY",
-    "COPILOT_PROVIDER_API_KEY",
-    "COPILOT_TOKEN",
 }
 
 
@@ -70,8 +68,6 @@ def _credential(config: dict[str, Any], provider: str) -> str:
         "openai": "OPENAI_API_KEY",
         "openai_compatible": "OPENAI_API_KEY",
         "openrouter": "OPENROUTER_API_KEY",
-        "copilot": "COPILOT_PROVIDER_API_KEY",
-        "github_copilot": "COPILOT_PROVIDER_API_KEY",
     }
     raw_name = config.get("credential_env") or config.get("credentialEnv") or defaults.get(provider)
     name = str(raw_name or "").strip().upper()
@@ -106,7 +102,13 @@ def _provider_config(
     ).strip().lower().replace("-", "_")
     if provider == "openai-compatible":
         provider = "openai_compatible"
-    allowed = {"mock", "openai", "openai_compatible", "openrouter", "anthropic", "copilot", "github_copilot"}
+    if provider in {"copilot", "github_copilot"}:
+        raise LLMGatewayError(
+            "COPILOT_CLI_ONLY",
+            "Copilot is available only through the governed copilot_execute MCP path; "
+            "use an AGENT_TASK with executor=copilot.",
+        )
+    allowed = {"mock", "openai", "openai_compatible", "openrouter", "anthropic"}
     if provider not in allowed:
         raise LLMGatewayError("DIRECT_LLM_PROVIDER_UNSUPPORTED", f"Unsupported direct LLM provider: {provider}.")
 
@@ -152,8 +154,6 @@ def _ensure_custom_base_url_allowed(base_url: str | None, provider: str) -> str:
         "openai_compatible": "https://api.openai.com/v1",
         "openrouter": "https://openrouter.ai/api/v1",
         "anthropic": "https://api.anthropic.com",
-        "copilot": "",
-        "github_copilot": "",
     }.get(provider, "")
 
 
@@ -300,8 +300,6 @@ async def call_direct_chat(
         return ChatResponse(content=reply, tool_calls=calls, finish_reason="tool_call" if calls else "stop", input_tokens=max(1, len(text) // 4), output_tokens=max(1, len(reply) // 4), latency_ms=1, provider="mock", model=model, model_alias=model_alias or "mock-fast", estimated_cost=0.0)
 
     base_url = _ensure_custom_base_url_allowed(configured_base_url, provider)
-    if provider in {"copilot", "github_copilot"} and not base_url:
-        raise LLMGatewayError("DIRECT_LLM_BASE_URL_MISSING", "Direct Copilot requires an explicit OpenAI-compatible base URL.")
     api_key = _credential({"credential_env": credential_env} if credential_env else {}, provider)
     raw_timeout = timeout_sec if timeout_sec is not None else os.environ.get("CONTEXT_FABRIC_DIRECT_LLM_TIMEOUT_SEC", "300")
     try:

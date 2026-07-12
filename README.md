@@ -773,18 +773,23 @@ Git push credential boundary:
 - Agent Execution Runtime redacts credentialed remotes, GitHub PATs, provider keys, bearer tokens, private keys, and token-shaped values before returning output, writing audit events, or creating receipts.
 - Workgraph shows `COMMITTED_NOT_PUSHED` when the local commit exists but publishing failed; use `Retry push` after fixing credentials so Workbench does not rerun.
 
-Office laptop / Copilot-only setup:
+Office laptop / local runtime setup:
 
 ```bash
-./singularity.sh config init --profile office-copilot-only --force
-# optional if you have a Copilot API token; gh copilot CLI tools work separately
-./singularity.sh config set llm.copilot.token "$COPILOT_TOKEN"
-./singularity.sh config office-copilot-only
-./singularity.sh doctor
-cd mcp-server && npm run build && npx singularity-mcp doctor
+bin/runtime-install.sh
+singularity-runtime enroll --url https://platform.example --code <one-time-code> \
+  --context-fabric-url https://context.example
+export GITHUB_TOKEN=github_pat_...
+export ANTHROPIC_API_KEY=sk-ant-...
+singularity-runtime configure --default-provider anthropic
+singularity-runtime doctor
+singularity-runtime start
 ```
 
-This mode is intentionally strict: generated env files leave `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_COMPATIBLE_API_KEY`, and `OLLAMA_BASE_URL` blank. Workflows still choose model aliases, but the gateway exposes only the `copilot` alias.
+The runtime token is created by IAM through a short-lived browser enrollment
+code and stored in the OS credential store. Copilot uses the governed MCP
+`copilot_execute` path; it is not configured as an LLM Gateway provider. See
+[Singularity Runtime Distribution](docs/singularity-runtime.md).
 
 ### Runtime Bridge and LLM gateway configuration
 
@@ -827,7 +832,6 @@ price fields make estimated cost `null` instead of breaking the request path.
 These generated files are intentionally ignored by git because they are local setup state. Checked-in examples live under:
 
 - `mcp-server/examples/llm-providers.default.json`
-- `mcp-server/examples/llm-providers.copilot-only.json`
 
 The provider config is selected with:
 

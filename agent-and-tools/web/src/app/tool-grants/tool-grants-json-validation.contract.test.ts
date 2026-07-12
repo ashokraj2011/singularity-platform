@@ -34,4 +34,16 @@ assert.doesNotMatch(
   "Tool Grants validation should not silently replace invalid JSON with an empty object",
 );
 
+assert.match(
+  source,
+  /runtime-grant-capabilities[\s\S]*?runtime-grant-templates[\s\S]*?referenceScopeType/,
+  "Tool Grants should load capability and agent-template choices for scoped policies and grants",
+);
+
+assert.match(
+  source,
+  /Reference data could not be loaded[\s\S]*?Loading scopes…[\s\S]*?No active scopes/,
+  "Tool Grants should distinguish reference-data errors, loading, and empty selector states",
+);
+
 console.log("tool grants JSON validation contract tests passed");

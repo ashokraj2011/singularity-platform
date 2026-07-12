@@ -322,6 +322,7 @@ const createSessionSchema = z.object({
   // user's paired laptop. Persisted on session.metadata, read into run_context.
   preferLaptop: z.boolean().optional(),
   preferLaptopLlm: z.boolean().optional(),
+  workflowContext: z.record(z.unknown()).optional(),
   intakeDefaults: intakeDefaultsSchema,
   intakeOverrides: intakeOverridesSchema,
 }).merge(executionSettingsSchema).transform(input => ({
@@ -1191,6 +1192,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
           phaseId: body.phaseId ?? null,
           metadata: {
             ...(initialLoopState as Record<string, unknown>),
+            ...(body.workflowContext ? { workflowContext: body.workflowContext } : {}),
             // Operator placement toggles → read back via readPreferLaptop[Llm]Flag.
             ...(body.preferLaptop !== undefined ? { preferLaptop: body.preferLaptop } : {}),
             ...(body.preferLaptopLlm !== undefined ? { preferLaptopLlm: body.preferLaptopLlm } : {}),

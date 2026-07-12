@@ -48,10 +48,10 @@ done
 
 # ── defaults (overridden by saved answers, then prompts) ─────────────────────
 PG_USER="${USER:-postgres}"; PG_PASS="postgres"; PG_HOST="localhost"; PG_PORT="5432"
-LLM_MODE="mock"                                  # mock | bridge
-LLM_URL="http://localhost:4141/v1"               # OpenAI-compatible base (ends in /v1)
-LLM_MODEL="gpt-4o"                               # safe default; works on virtually all Copilot plans
-LLM_TOKEN="copilot-local"
+LLM_MODE="mock"                                  # mock; Copilot is a governed MCP executor
+LLM_URL=""                                       # retained only for migration of old setup.conf files
+LLM_MODEL=""                                     # retained only for migration of old setup.conf files
+LLM_TOKEN=""                                     # retained only for migration of old setup.conf files
 
 if [ -f "$CONF" ]; then info "loading saved answers from .singularity/setup.conf"; . "$CONF"; fi
 
@@ -73,16 +73,12 @@ ask PG_HOST "host"
 ask PG_PORT "port"
 
 echo
-echo "LLM provider ${C_D}(mock = offline/no key; bridge = an OpenAI-compatible server like copilot-api)${C_E}"
+echo "LLM provider ${C_D}(mock = offline/no key; Copilot stages run through the governed MCP Copilot CLI executor)${C_E}"
 if [ "$ASSUME_YES" != "1" ]; then
-  printf "  use an LLM bridge? [y/N] (current: %s): " "$LLM_MODE"; read -r yn || true
-  case "${yn:-}" in [yY]*) LLM_MODE="bridge" ;; [nN]*) LLM_MODE="mock" ;; "") : ;; esac
+  printf "  configure an OpenAI-compatible LLM bridge? [y/N] (retired; use mock): "; read -r yn || true
+  case "${yn:-}" in [yY]*) warn "LLM bridge mode is retired. Continuing with mock; use executor=copilot through MCP for Copilot stages." ;; esac
 fi
-if [ "$LLM_MODE" = "bridge" ]; then
-  ask LLM_URL   "bridge base URL (must end in /v1)"
-  ask LLM_MODEL "model (gpt-4o is safe; note: copilot-api LISTS claude-*/gpt-5/gemini but your plan may reject them with 'model_not_supported')"
-  ask LLM_TOKEN "token (any value if the bridge ignores auth)"
-fi
+LLM_MODE="mock"
 
 # ── persist answers (gitignored; holds pg password + llm token) ──────────────
 umask 077
@@ -151,31 +147,7 @@ if [ "$BOX_ONLY_MODE" != "1" ]; then
   fi
 fi
 
-# ── 3. point the LLM gateway at the bridge (optional) ────────────────────────
-if [ "$LLM_MODE" = "bridge" ] && [ "$BOX_ONLY_MODE" != "1" ]; then
-  echo
-  info "pointing the LLM gateway at ${LLM_URL} (${LLM_MODEL})…"
-  # llm-use-copilot.sh flips providers + aliases to the bridge and restarts the
-  # gateway through Docker or the split bare-metal runtime PID file. If an older
-  # or partially configured environment reports a non-fatal restart issue, fall
-  # back to a clean runtime restart.
-  if ! bin/llm-use-copilot.sh --base-url "$LLM_URL" --model "$LLM_MODEL" --token "$LLM_TOKEN"; then
-    warn "llm-use-copilot reported an error after writing config — restarting runtime directly"
-    bin/bare-metal-runtime.sh down >/dev/null 2>&1 || true
-    bin/bare-metal-runtime.sh up || warn "runtime restart failed — check logs/llm-gateway.log"
-  fi
-  sleep 4
-  if curl -s -m 4 localhost:8001/llm/providers 2>/dev/null | grep -q '"default_provider": *"copilot"'; then
-    ok "LLM gateway now serving copilot/${LLM_MODEL}"
-  else
-    warn "gateway didn't confirm copilot — check logs/llm-gateway.log and 'curl :8001/llm/providers'"
-  fi
-fi
-if [ "$LLM_MODE" = "bridge" ] && [ "$BOX_ONLY_MODE" = "1" ]; then
-  warn "LLM bridge config saved, but --box-only leaves the local gateway/MCP to the laptop or remote runtime."
-fi
-
-# ── 4. smoke + URLs ──────────────────────────────────────────────────────────
+# ── 3. smoke + URLs ──────────────────────────────────────────────────────────
 echo
 info "platform app smoke check…"
 bin/bare-metal-apps.sh smoke || warn "some platform services aren't healthy yet — give them a few seconds, then re-run 'bin/bare-metal-apps.sh smoke'"

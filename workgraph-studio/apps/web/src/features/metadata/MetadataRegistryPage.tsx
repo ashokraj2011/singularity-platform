@@ -1209,7 +1209,9 @@ const statIconStyle: CSSProperties = {
   width: 38,
   height: 38,
   borderRadius: 12,
-  border: '1px solid',
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: 'transparent',
   display: 'grid',
   placeItems: 'center',
 }
@@ -1295,7 +1297,9 @@ const kindListStyle: CSSProperties = {
 
 const kindButtonStyle: CSSProperties = {
   width: '100%',
-  border: '1px solid transparent',
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: 'transparent',
   background: 'transparent',
   borderRadius: 12,
   padding: 12,
@@ -1393,7 +1397,9 @@ const scrollListStyle: CSSProperties = {
 
 const cardButtonStyle: CSSProperties = {
   width: '100%',
-  border: '1px solid #e2e8f0',
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: '#e2e8f0',
   background: '#fff',
   borderRadius: 13,
   padding: 12,
@@ -1415,7 +1421,9 @@ const definitionIconStyle: CSSProperties = {
   width: 42,
   height: 42,
   borderRadius: 13,
-  border: '1px solid',
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: 'transparent',
   display: 'grid',
   placeItems: 'center',
 }

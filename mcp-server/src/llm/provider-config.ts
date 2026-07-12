@@ -3,7 +3,7 @@ import path from "path";
 import { z } from "zod";
 import { config } from "../config";
 
-export const SupportedProviderSchema = z.enum(["mock", "openai", "openrouter", "anthropic", "copilot"]);
+export const SupportedProviderSchema = z.enum(["mock", "openai", "openrouter", "anthropic"]);
 export type SupportedProvider = z.infer<typeof SupportedProviderSchema>;
 
 const CostTierSchema = z.enum(["mock", "free", "low", "medium", "standard", "high"]);
@@ -34,19 +34,14 @@ type LoadedProviderConfig = {
   warnings: string[];
 };
 
-export const SUPPORTED_PROVIDERS: SupportedProvider[] = ["mock", "openai", "openrouter", "anthropic", "copilot"];
+export const SUPPORTED_PROVIDERS: SupportedProvider[] = ["mock", "openai", "openrouter", "anthropic"];
 
 let cached: LoadedProviderConfig | null = null;
 let cachedKey = "";
 
-// Cache key = "env-json" / "none" / "<resolved path>:<mtimeMs>". Including the
-// file mtime means editing the provider config (e.g. `bin/llm-use-copilot.sh`
-// enabling copilot + adding it to allowedProviders) is picked up WITHOUT a
-// restart. Previously this was cached for the whole PROCESS LIFETIME, so a
-// running mcp-server kept serving the stale allowlist and reported "copilot
-// blocked by provider allowlist" long after the config was fixed — forcing a
-// full runtime restart. The model catalog (model-catalog.ts) already hot-reloads
-// this way; the provider allowlist now matches it.
+// Cache key = "env-json" / "none" / "<resolved path>:<mtimeMs>". Provider
+// policy changes are picked up without restarting MCP. Copilot is not a
+// gateway provider; its only supported execution path is copilot_execute.
 function currentConfigCacheKey(): string {
   if (config.MCP_LLM_PROVIDER_CONFIG_JSON?.trim()) return "env-json";
   const raw = config.MCP_LLM_PROVIDER_CONFIG_PATH?.trim();

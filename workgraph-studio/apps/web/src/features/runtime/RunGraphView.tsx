@@ -641,7 +641,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
 
   return (
     <div className="wg-command-center" style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: 'linear-gradient(180deg, #f7faf9 0%, #eef4f5 100%)', zIndex: 10 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'rgba(255,255,255,0.88)', borderBottom: '1px solid #dbe3e7', flexShrink: 0, backdropFilter: 'blur(18px)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'rgba(255,255,255,0.88)', borderBottom: '1px solid #dbe3e7', flexShrink: 0, minWidth: 0, overflowX: 'auto', backdropFilter: 'blur(18px)' }}>
         <button onClick={onBack} style={topBtn}><ArrowLeft size={13} /> Back</button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
@@ -737,6 +737,7 @@ function MetricPill({ label, value, tone }: { label: string; value: string; tone
       border: `1px solid ${tone}26`, background: `${tone}0f`, color: tone,
       fontSize: 10, fontWeight: 900, letterSpacing: '0.08em', textTransform: 'uppercase',
       whiteSpace: 'nowrap',
+      flexShrink: 0,
     }}>
       <strong style={{ fontSize: 12, letterSpacing: 0 }}>{value}</strong>{label}
     </span>
@@ -836,7 +837,7 @@ function RunFocusBanner({ node, nextNode, selected, onSelect }: {
   return (
     <div style={{
       display: 'grid',
-      gridTemplateColumns: 'auto 1fr auto',
+      gridTemplateColumns: 'auto minmax(0, 1fr) auto',
       gap: 12,
       alignItems: 'center',
       margin: '10px 16px 0',
@@ -874,12 +875,16 @@ function RunFocusBanner({ node, nextNode, selected, onSelect }: {
 
 const topBtn: CSSProperties = {
   display: 'flex', alignItems: 'center', gap: 5, padding: '6px 11px', borderRadius: 8,
-  border: '1px solid #dbe3e7',
+  borderWidth: 1,
+  borderStyle: 'solid',
+  borderColor: '#dbe3e7',
   background: '#fff',
   cursor: 'pointer',
   color: '#475569',
   fontSize: 12,
   fontWeight: 800,
+  whiteSpace: 'nowrap',
+  flexShrink: 0,
   boxShadow: '0 1px 0 rgba(255,255,255,0.9) inset',
 }
 

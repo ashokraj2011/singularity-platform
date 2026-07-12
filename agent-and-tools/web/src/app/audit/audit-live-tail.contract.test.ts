@@ -4,6 +4,19 @@ import path from "node:path";
 
 const source = fs.readFileSync(path.join(process.cwd(), "src/app/audit/page.tsx"), "utf8");
 const tracePage = fs.readFileSync(path.join(process.cwd(), "src/app/audit/trace/[traceId]/page.tsx"), "utf8");
+const logsRoute = fs.readFileSync(path.join(process.cwd(), "src/app/operations/logs/page.tsx"), "utf8");
+
+assert.match(
+  source,
+  /searchParams\.get\("view"\) === "logs"[\s\S]*?OperationsLogExplorer/,
+  "audit should be the canonical surface with a full platform-log view",
+);
+
+assert.match(
+  logsRoute,
+  /params = new URLSearchParams\(\{ view: "logs" \}\)[\s\S]*?redirect\(`\/audit\?\$\{params\.toString\(\)\}`\)/,
+  "legacy operations logs should redirect to the canonical audit log view while preserving filters",
+);
 
 assert.match(
   source,

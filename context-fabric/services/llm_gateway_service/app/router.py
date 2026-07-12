@@ -35,7 +35,6 @@ def _credentials() -> Dict[str, Optional[str]]:
         "openai":     settings.openai_api_key,
         "openrouter": settings.openrouter_api_key,
         "anthropic":  settings.anthropic_api_key,
-        "copilot":    settings.copilot_token,
         "mock":       "mock",
     }
 
@@ -215,7 +214,7 @@ async def chat_completions(
         raise HTTPException(status_code=503, detail=f"provider {provider} is not configured (missing credential)")
 
     try:
-        if provider in ("openai", "openrouter", "copilot"):
+        if provider in ("openai", "openrouter"):
             resp = await openai_provider.respond(
                 req, provider=provider, resolved_model=model, api_key=credential, model_alias=alias,
             )

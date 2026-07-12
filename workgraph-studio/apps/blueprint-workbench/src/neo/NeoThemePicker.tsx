@@ -34,6 +34,7 @@ export interface NeoLook {
 
 const STORAGE_KEY = 'workbench-neo-look'
 const LEGACY_KEY  = 'workbench-neo-theme'  // M41.4 — color only
+const APPEARANCE_MIGRATION_KEY = 'workbench-neo-appearance-v2'
 
 // Default = light + warm clay so the embedded cockpit matches the platform
 // (agent-and-tools globals.css). Dark + the other color themes stay one click away.
@@ -74,11 +75,21 @@ export function loadStoredLook(): NeoLook {
   if (raw) {
     try {
       const parsed = JSON.parse(raw) as Partial<NeoLook>
-      return {
+      const stored: NeoLook = {
         color: isColor(parsed.color) ? parsed.color : DEFAULT_LOOK.color,
         mode:  isMode(parsed.mode)   ? parsed.mode  : DEFAULT_LOOK.mode,
         font:  isFont(parsed.font)   ? parsed.font  : DEFAULT_LOOK.font,
       }
+      // The Neo skin was previously shipped with a dark-first appearance.
+      // Migrate that old default once so existing sessions receive the new
+      // light/clay Workbench treatment; users can still choose Dark afterward.
+      if (!window.localStorage.getItem(APPEARANCE_MIGRATION_KEY)) {
+        const migrated = { ...stored, color: DEFAULT_LOOK.color, mode: DEFAULT_LOOK.mode }
+        window.localStorage.setItem(APPEARANCE_MIGRATION_KEY, '1')
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated))
+        return migrated
+      }
+      return stored
     } catch {
       // fall through
     }
@@ -89,8 +100,10 @@ export function loadStoredLook(): NeoLook {
     const migrated: NeoLook = { ...DEFAULT_LOOK, color: legacy }
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated))
     window.localStorage.removeItem(LEGACY_KEY)
+    window.localStorage.setItem(APPEARANCE_MIGRATION_KEY, '1')
     return migrated
   }
+  window.localStorage.setItem(APPEARANCE_MIGRATION_KEY, '1')
   return DEFAULT_LOOK
 }
 

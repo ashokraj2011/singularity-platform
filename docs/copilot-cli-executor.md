@@ -1,5 +1,11 @@
 # Copilot CLI as executor (§13.4)
 
+> **Canonical route:** Copilot is intentionally supported only as the governed
+> `AGENT_TASK` executor `copilot`: WorkGraph → Context Fabric → Runtime Bridge →
+> MCP `copilot_execute` → GitHub Copilot CLI. Copilot-as-LLM-gateway and
+> Context-Fabric-direct Copilot provider routes are retired; use Anthropic,
+> OpenAI, OpenRouter, or mock for model-provider nodes.
+
 How Singularity runs **governed code stages on the GitHub Copilot CLI** when the
 CLI is the only Copilot access (no `copilot-api` / function-calling). The CLI is
 an *agent* — in `-p --allow-all` it edits files and runs commands itself and
@@ -12,7 +18,7 @@ laptop and captures the result as **auditable evidence**. This is the
 
 | # | What | Where | Status |
 |---|---|---|---|
-| Chat path | OpenAI `/v1/chat/completions` backed by `copilot -p` | `bin/copilot-cli-server.js` | ✅ #161 — for chat/doc stages only |
+| Legacy chat bridge | OpenAI `/v1/chat/completions` backed by `copilot -p` | `bin/copilot-cli-server.js` | retired; not a platform execution path |
 | Slice 1 | run CLI in a git workspace, capture a code-change **receipt** (diff + files + summary) | `bin/copilot-execute.js` | ✅ #164 (proven on RuleEngine) |
 | Slice 2 | attach to a WorkItem → **scoped session token** + platform-assembled prompt → run → `POST /complete` with the receipt | `bin/copilot-execute.js --work-item` | ✅ #165 (invocation `COMPLETED`) |
 | Slice 3 | **heartbeats** every 20s during the run (liveness) | `bin/copilot-execute.js` | ✅ this change |
@@ -21,8 +27,8 @@ laptop and captures the result as **auditable evidence**. This is the
 
 ## Server-orchestrated: CF → MCP → Copilot (the model to build)
 
-Slices 1–3 are the **CLI-driven** model (the laptop/Desktop drives Copilot and reports
-in — the §13.4 sequence diagram). The cleaner model for the platform is
+Slices 1–3 are **manual CLI utilities** kept for migration and local experiments.
+The only platform workflow model is
 **server-orchestrated**: **context-fabric decides, mcp-server invokes the Copilot CLI**,
 result flows back — reusing the CF→MCP→laptop routing already in place (the per-user
 `laptop_user_id` dispatch on `/mcp/tool-run`).

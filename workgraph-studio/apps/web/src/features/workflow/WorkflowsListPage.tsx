@@ -92,6 +92,17 @@ function emptyMeta(): TemplateMetadata {
   }
 }
 
+function workflowCreateErrorMessage(error: unknown): string {
+  const responseData = (error as { response?: { data?: unknown } } | null)?.response?.data
+  if (responseData && typeof responseData === 'object') {
+    const body = responseData as { message?: unknown; error?: unknown; detail?: unknown; code?: unknown }
+    const detail = body.message ?? body.error ?? body.detail ?? body.code
+    if (typeof detail === 'string' && detail.trim()) return detail.trim().slice(0, 240)
+  }
+  if (error instanceof Error && error.message.trim()) return error.message.trim().slice(0, 240)
+  return 'The WorkGraph API rejected the workflow request.'
+}
+
 const STATUS_COLOR: Record<string, string> = {
   DRAFT:     '#6a7486',
   ACTIVE:    '#368727',
@@ -1590,7 +1601,9 @@ export function WorkflowsListPage() {
               </div>
             </div>
             {createWorkflowMut.isError && (
-              <p style={{ fontSize: 11, color: '#dc2626', textAlign: 'center', padding: '0 28px 12px' }}>Failed to create workflow. Please try again.</p>
+              <p style={{ fontSize: 11, color: '#dc2626', textAlign: 'center', padding: '0 28px 12px' }}>
+                Failed to create workflow: {workflowCreateErrorMessage(createWorkflowMut.error)}
+              </p>
             )}
           </div>
         </div>

@@ -101,6 +101,7 @@ import {
   type SourceType,
   type StageAttempt,
   type WorkbenchExecutionConfig,
+  type WorkbenchWorkflowContext,
   type WorkflowInstanceDetail,
   type WorkflowInstanceListItem,
 } from './api'
@@ -143,6 +144,7 @@ const WORKBENCH_ORIGIN = normalizeOrigin(viteEnv.VITE_BLUEPRINT_WORKBENCH_ORIGIN
   ?? window.location.origin
 
 type WorkbenchHydratedDefaults = {
+  workflowContext?: WorkbenchWorkflowContext
   browserRunId?: string
   goal?: string
   goalProvenance?: string
@@ -645,6 +647,10 @@ function WorkbenchSetup({
     enabled: Boolean(workflowDefaults.workflowInstanceId && (!workflowDefaults.goal || !workflowDefaults.sourceUri)),
     retry: false,
   })
+  const workflowHydrated = useMemo(
+    () => hydrateDefaultsFromWorkflow(workflowInstanceQuery.data, workflowDefaults.workflowNodeId) ?? workflowFallbackQuery.data,
+    [workflowDefaults.workflowNodeId, workflowFallbackQuery.data, workflowInstanceQuery.data],
+  )
   const capabilitiesQuery = useQuery({ queryKey: ['capabilities'], queryFn: api.capabilities })
   const capabilities = capabilitiesQuery.data ?? []
   const selectedCapability = capabilities.find(capability => capability.id === capabilityId || capability.capability_id === capabilityId)
@@ -665,7 +671,7 @@ function WorkbenchSetup({
   )
 
   useEffect(() => {
-    const hydrated = hydrateDefaultsFromWorkflow(workflowInstanceQuery.data, workflowDefaults.workflowNodeId) ?? workflowFallbackQuery.data
+    const hydrated = workflowHydrated
     if (!hydrated) return
     if (hydrated.goal) {
       setGoalDefault(hydrated.goal)
@@ -695,7 +701,7 @@ function WorkbenchSetup({
       if (typeof hydrated.loopDefinition.maxLoopsPerStage === 'number') setMaxLoopsPerStage(hydrated.loopDefinition.maxLoopsPerStage)
       if (typeof hydrated.loopDefinition.maxTotalSendBacks === 'number') setMaxTotalSendBacks(hydrated.loopDefinition.maxTotalSendBacks)
     }
-  }, [intakeTouched.goal, intakeTouched.sourceRef, intakeTouched.sourceType, intakeTouched.sourceUri, workflowFallbackQuery.data, workflowInstanceQuery.data, workflowDefaults.workflowNodeId])
+  }, [intakeTouched.goal, intakeTouched.sourceRef, intakeTouched.sourceType, intakeTouched.sourceUri, workflowHydrated])
 
   useEffect(() => {
     if (!capabilitySourceDefault) return
@@ -845,6 +851,10 @@ function WorkbenchSetup({
           </div>
         ))}
       </div>
+
+      {workflowHydrated?.workflowContext && (
+        <WorkflowContextSummary context={workflowHydrated.workflowContext} />
+      )}
 
       {sessions.length > 0 && (
         <label>
@@ -1143,6 +1153,7 @@ function WorkbenchSetup({
           browserRunId: workflowDefaults.browserRunId,
           workflowNodeId: workflowDefaults.workflowNodeId,
           phaseId: workflowDefaults.phaseId,
+          workflowContext: workflowHydrated?.workflowContext,
           intakeDefaults,
           intakeOverrides,
           loopDefinition: loopDefinition
@@ -1155,6 +1166,41 @@ function WorkbenchSetup({
         Start guided delivery
       </button>
     </aside>
+  )
+}
+
+function WorkflowContextSummary({ context }: { context: WorkbenchWorkflowContext }) {
+  const workItem = context.workItem
+  const git = context.git
+  const workflow = context.workflow
+  const rows = [
+    ['Run', workflow?.name || workflow?.id],
+    ['WorkItem', workItem?.code || workItem?.title || workItem?.id],
+    ['Repository', git?.repositoryUrl],
+    ['Base ref', git?.baseRef],
+    ['Work branch', git?.workBranch],
+    ['Commit', git?.commitSha],
+    ['Clone dir', git?.cloneDir],
+    ['Changed files', git?.changedFiles?.length ? `${git.changedFiles.length} file${git.changedFiles.length === 1 ? '' : 's'}` : undefined],
+  ].filter((row): row is [string, string] => Boolean(row[1]))
+  return (
+    <section style={{ margin: '0 0 14px', padding: 12, border: '1px solid rgba(14,165,233,0.22)', borderRadius: 10, background: 'rgba(14,165,233,0.05)' }} aria-label="Workflow run context">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 8, color: '#0369a1', fontSize: 11, fontWeight: 850, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+        <GitBranch size={14} /> Resolved workflow context
+        {workflow?.status && <span style={{ marginLeft: 'auto', color: '#64748b', letterSpacing: 0 }}>{workflow.status}</span>}
+      </div>
+      {context.story && <p style={{ margin: '0 0 10px', color: '#334155', fontSize: 12, lineHeight: 1.45, whiteSpace: 'pre-wrap' }}>{context.story}</p>}
+      {rows.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 7 }}>
+          {rows.map(([label, value]) => (
+            <div key={label} style={{ minWidth: 0 }}>
+              <div style={{ color: '#64748b', fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
+              <div title={value} style={{ color: '#0f172a', fontSize: 11, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -1213,6 +1259,22 @@ function WorkbenchNeo({
     staleTime: 60 * 1000,
   })
   const isCopilotWorkflow = Boolean((copilotInfoQuery.data as { usesCopilot?: boolean } | undefined)?.usesCopilot)
+  const workflowContext = useMemo(() => {
+    if (session?.metadata?.workflowContext) return session.metadata.workflowContext
+    const workflow = copilotInfoQuery.data
+    if (!workflow) return undefined
+    const node = session?.workflowNodeId
+      ? workflow.nodes?.find(item => item.id === session.workflowNodeId)
+      : workflow.nodes?.find(item => asRecord(item.config?.workbench))
+    const rendered = renderWorkflowValue(asRecord(node?.config?.workbench) ?? {}, {
+      context: asRecord(workflow.context) ?? {},
+      vars: asRecord(asRecord(workflow.context)?._vars) ?? {},
+      globals: asRecord(asRecord(workflow.context)?._globals) ?? {},
+      params: asRecord(asRecord(workflow.context)?._params) ?? {},
+    }) as Record<string, unknown>
+    const resolved = goalFromWorkflowContext(asRecord(workflow.context) ?? {}, rendered)
+    return buildWorkbenchWorkflowContext(workflow, asRecord(workflow.context) ?? {}, rendered, { goal: resolved.goal ?? session?.goal })
+  }, [copilotInfoQuery.data, session?.goal, session?.id, session?.metadata?.workflowContext, session?.workflowNodeId])
   const [copilotBannerDismissed, setCopilotBannerDismissed] = useState(false)
   const refreshModels = () => {
     void queryClient.invalidateQueries({ queryKey: ['llm-providers'] })
@@ -1323,6 +1385,7 @@ function WorkbenchNeo({
           </button>
         </div>
       )}
+      {workflowContext && <WorkflowContextSummary context={workflowContext} />}
       <section className={`neo-shell neo-cockpit-shell mode-${cockpitMode}`}>
         <LoopRail
           session={session}
@@ -4590,16 +4653,21 @@ function hydrateDefaultsFromWorkflow(instance: WorkflowInstanceDetail | undefine
     params: asRecord(context._params) ?? {},
   }) as Record<string, unknown>
   const bindings = asRecord(rendered.agentBindings) ?? {}
-  const sourceType = rendered.sourceType === 'github' || rendered.sourceType === 'localdir' ? rendered.sourceType : undefined
-  const gateMode = rendered.gateMode === 'auto' || rendered.gateMode === 'manual' ? rendered.gateMode : undefined
   const resolvedGoal = goalFromWorkflowContext(context, rendered)
+  const workflowContext = buildWorkbenchWorkflowContext(instance, context, rendered, resolvedGoal)
+  const sourceUri = cleanText(rendered.sourceUri) ?? workflowContext?.git?.repositoryUrl
+  const sourceType = rendered.sourceType === 'github' || rendered.sourceType === 'localdir'
+    ? rendered.sourceType
+    : workflowContext?.git?.sourceType
+  const gateMode = rendered.gateMode === 'auto' || rendered.gateMode === 'manual' ? rendered.gateMode : undefined
   return {
+    workflowContext,
     goal: resolvedGoal.goal,
     goalProvenance: resolvedGoal.provenance,
     sourceType,
-    sourceUri: cleanText(rendered.sourceUri),
-    sourceRef: cleanText(rendered.sourceRef),
-    sourceProvenance: cleanText(rendered.sourceUri) ? 'workflow source mapping' : undefined,
+    sourceUri,
+    sourceRef: cleanText(rendered.sourceRef) ?? workflowContext?.git?.baseRef,
+    sourceProvenance: cleanText(rendered.sourceUri) ? 'workflow source mapping' : sourceUri ? 'workflow run context' : undefined,
     capabilityId: cleanText(rendered.capabilityId),
     architectAgentTemplateId: cleanText(bindings.architectAgentTemplateId),
     developerAgentTemplateId: cleanText(bindings.developerAgentTemplateId),
@@ -4609,6 +4677,122 @@ function hydrateDefaultsFromWorkflow(instance: WorkflowInstanceDetail | undefine
       ? rendered.loopDefinition as LoopDefinition
       : undefined,
   }
+}
+
+function buildWorkbenchWorkflowContext(
+  instance: WorkflowInstanceDetail,
+  context: Record<string, unknown>,
+  rendered: Record<string, unknown>,
+  resolvedGoal: { goal?: string },
+): WorkbenchWorkflowContext | undefined {
+  const vars = asRecord(context._vars) ?? {}
+  const globals = asRecord(context._globals) ?? {}
+  const workItem = asRecord(context._workItem) ?? asRecord(context.workItem) ?? asRecord(vars.workItem)
+  const workItemDetails = asRecord(workItem?.details) ?? {}
+  const git = asRecord(context.git) ?? asRecord(vars.git) ?? asRecord(globals.git) ?? {}
+  const workspace = asRecord(context.workspace) ?? asRecord(globals.workspace) ?? asRecord(vars.workspace) ?? {}
+  const repositoryUrl = firstCleanText(
+    rendered.sourceUri,
+    rendered.repositoryUrl,
+    rendered.repoUrl,
+    vars.repoUrl,
+    vars.repositoryUrl,
+    vars.sourceUri,
+    globals.repoUrl,
+    globals.repositoryUrl,
+    globals.sourceUri,
+    git.repositoryUrl,
+    git.repoUrl,
+    asRecord(workItem?.repository)?.url,
+    asRecord(workItemDetails.repository)?.url,
+    context.repositoryUrl,
+    context.repoUrl,
+    context.sourceUri,
+  )
+  const workCode = firstCleanText(workItem?.workCode, workItem?.workItemCode, vars.workCode, vars.workItemCode)
+  const baseRef = firstCleanText(
+    rendered.sourceRef,
+    globals.sourceRef,
+    globals.baseBranch,
+    vars.sourceRef,
+    vars.sourceBranch,
+    vars.baseBranch,
+    git.baseRef,
+    git.baseBranch,
+  )
+  const workBranch = firstCleanText(
+    context.workBranch,
+    context.workspaceBranch,
+    globals.workBranch,
+    globals.branch,
+    vars.workBranch,
+    vars.branch,
+    git.workBranch,
+    workspace.workspaceBranch,
+  ) ?? (workCode ? `wi/${workCode}` : undefined)
+  const commitSha = firstCleanText(
+    context.workspaceCommitSha,
+    context.commitSha,
+    globals.workspaceCommitSha,
+    globals.commitSha,
+    vars.workspaceCommitSha,
+    vars.commitSha,
+    git.commitSha,
+    workspace.workspaceCommitSha,
+    workspace.commitSha,
+  )
+  const changedFiles = firstStringArray(
+    context.changedFiles,
+    context.changed_paths,
+    context.changedPaths,
+    globals.changedFiles,
+    globals.changedPaths,
+    vars.changedFiles,
+    vars.changedPaths,
+    git.changedFiles,
+    git.changedPaths,
+    workspace.changedPaths,
+  )
+  const sourceType: SourceType | undefined = rendered.sourceType === 'github' || rendered.sourceType === 'localdir'
+    ? rendered.sourceType
+    : repositoryUrl && /^https?:\/\/github\.com\//i.test(repositoryUrl) ? 'github' : repositoryUrl ? 'localdir' : undefined
+  const capabilityId = firstCleanText(
+    rendered.capabilityId,
+    context.capabilityId,
+    vars.capabilityId,
+    workItem?.targetCapabilityId,
+  )
+  const result: WorkbenchWorkflowContext = {
+    workflow: {
+      id: instance.id,
+      name: instance.name,
+      status: instance.status,
+      templateId: instance.templateId ?? undefined,
+    },
+    story: resolvedGoal.goal,
+    capabilityId,
+    workItem: workItem ? {
+      id: firstCleanText(workItem.id),
+      code: workCode,
+      title: firstCleanText(workItem.title, workItemDetails.title),
+      description: firstCleanText(workItem.description, workItemDetails.description),
+      type: firstCleanText(workItem.workItemTypeKey, workItem.type, workItemDetails.workItemTypeKey),
+      status: firstCleanText(workItem.status, workItemDetails.status),
+    } : undefined,
+    git: repositoryUrl || baseRef || workBranch || commitSha || changedFiles?.length || sourceType
+      ? {
+        sourceType,
+        repositoryUrl,
+        baseRef,
+        workBranch,
+        cloneDir: firstCleanText(globals.cloneDir, vars.cloneDir, git.cloneDir, context.workspaceRoot, globals.workspaceRoot, workspace.workspaceRoot),
+        commitSha,
+        changedFiles,
+      }
+      : undefined,
+  }
+  const hasContent = Boolean(result.story || result.capabilityId || result.workItem || result.git)
+  return hasContent ? result : undefined
 }
 
 function goalFromWorkflowContext(context: Record<string, unknown>, rendered: Record<string, unknown>): { goal?: string; provenance?: string } {
@@ -4656,6 +4840,15 @@ function firstCleanText(...values: unknown[]): string | undefined {
   for (const value of values) {
     const text = cleanText(value)
     if (text) return text
+  }
+  return undefined
+}
+
+function firstStringArray(...values: unknown[]): string[] | undefined {
+  for (const value of values) {
+    if (!Array.isArray(value)) continue
+    const items = value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map(item => item.trim())
+    if (items.length > 0) return Array.from(new Set(items)).slice(0, 100)
   }
   return undefined
 }

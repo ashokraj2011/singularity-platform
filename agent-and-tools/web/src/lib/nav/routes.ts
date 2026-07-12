@@ -15,7 +15,7 @@ import {
   LayoutDashboard, Wrench, Play, Users, GitBranch, Layers, ScrollText,
   ShieldCheck, Activity, Brain, DollarSign, Cpu, WandSparkles, Bot, Inbox,
   Network, Route, Workflow, Zap, Database, FileText, Globe, Link2, Package,
-  Puzzle, ClipboardCheck, BookOpen, Settings, Boxes, KeyRound, TerminalSquare,
+  Puzzle, ClipboardCheck, BookOpen, Settings, Boxes, KeyRound,
 } from "lucide-react";
 
 export type NavGroup =
@@ -70,7 +70,6 @@ export const ROUTES: RouteMeta[] = [
   { id: "ops-readiness", label: "Readiness", href: "/operations/readiness", group: "Operations Center", icon: Activity, priority: "primary", surfaceType: "operation" },
   { id: "ops-architecture", label: "Live App Map", href: "/operations/architecture", group: "Operations Center", icon: Network, priority: "primary", surfaceType: "operation" },
   { id: "ops-access-keys", label: "Access Keys", href: "/operations/access-keys", group: "Operations Center", icon: ShieldCheck, priority: "secondary", surfaceType: "operation" },
-  { id: "ops-logs", label: "Log Explorer", href: "/operations/logs", group: "Operations Center", icon: TerminalSquare, priority: "primary", surfaceType: "operation", description: "Search and tail platform service logs with Datadog/Splunk-style filters.", keywords: ["logs", "tail", "splunk", "datadog", "error", "debug", "observability"] },
   { id: "ops-setup", label: "Setup Center", href: "/operations/setup", group: "Operations Center", icon: Wrench, priority: "primary", surfaceType: "operation" },
   { id: "ops-trust", label: "Trust Evidence", href: "/operations/trust", group: "Operations Center", icon: ClipboardCheck, priority: "secondary", surfaceType: "operation" },
   { id: "ops-git-history", label: "Git Change Explainer", href: "/operations/git-history", group: "Operations Center", icon: GitBranch, priority: "secondary", surfaceType: "operation", description: "Explain code changes between dates from git history.", keywords: ["git", "history", "release", "evidence", "changelog", "diff"] },
@@ -130,7 +129,7 @@ export const ROUTES: RouteMeta[] = [
   { id: "engine", label: "Engine", href: "/engine", group: "Governance and FinOps", icon: Zap, priority: "primary", surfaceType: "governance" },
   { id: "llm-settings", label: "Runtime + LLM", href: "/llm-settings", group: "Governance and FinOps", icon: Cpu, priority: "journey", surfaceType: "runtime", statusLabel: "Runtime" },
   { id: "settings", label: "Platform Settings", href: "/settings", group: "Governance and FinOps", icon: Settings, priority: "secondary", surfaceType: "governance", statusLabel: "Settings", description: "Runtime, source, notifications, workflow defaults, and security settings.", keywords: ["settings", "notifications", "runtime", "llm", "git", "security"] },
-  { id: "audit", label: "Audit", href: "/audit", group: "Governance and FinOps", icon: ShieldCheck, priority: "primary", surfaceType: "governance" },
+  { id: "audit", label: "Audit & Logs", href: "/audit", group: "Governance and FinOps", icon: ShieldCheck, priority: "primary", surfaceType: "governance", description: "Review governance events, approvals, and raw platform logs from one evidence surface.", keywords: ["audit", "logs", "approvals", "trace", "splunk", "datadog"] },
   { id: "cost", label: "Cost", href: "/cost", group: "Governance and FinOps", icon: DollarSign, priority: "primary", surfaceType: "governance" },
   { id: "audit-curation", label: "Eval Curation", href: "/audit/curation", group: "Governance and FinOps", icon: ClipboardCheck, advanced: true, priority: "admin", surfaceType: "governance" },
 ];

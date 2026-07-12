@@ -498,6 +498,35 @@ class UserDevice(Base):
     revoked_at: Mapped[Optional[datetime]] = mapped_column(_tstz())
 
 
+class RuntimeEnrollment(Base):
+    """Single-use browser-to-runtime enrollment handoff."""
+
+    __tablename__ = "runtime_enrollments"
+    __table_args__ = (
+        Index("idx_runtime_enrollments_code_hash", "code_hash"),
+        Index("idx_runtime_enrollments_user", "user_id"),
+        Index("idx_runtime_enrollments_expires", "expires_at"),
+        {"schema": "iam"},
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    code_hash: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("iam.users.id", ondelete="CASCADE"), nullable=False,
+    )
+    tenant_id: Mapped[Optional[str]] = mapped_column(String)
+    runtime_name: Mapped[str] = mapped_column(String, nullable=False)
+    runtime_scope: Mapped[str] = mapped_column(String, nullable=False, server_default="user")
+    scopes: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    allowed_frame_types: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    capability_tags: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    token_ttl_days: Mapped[int] = mapped_column(Integer, nullable=False, server_default="90")
+    created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
+    expires_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False)
+    used_at: Mapped[Optional[datetime]] = mapped_column(_tstz())
+    used_device_id: Mapped[Optional[str]] = mapped_column(String)
+
+
 # ---------------------------------------------------------------------------
 # Git credential broker (P0 #2) — per-user/tenant short-lived GitHub App tokens
 # for shared/cloud MCP runtimes. v0: GitHub App only; the App private key is

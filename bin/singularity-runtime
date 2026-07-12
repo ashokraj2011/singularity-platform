@@ -1,0 +1,332 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# User-facing runtime launcher. It deliberately consumes a short-lived
+# enrollment code and never asks the user for JWT_SECRET.
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  SOURCE_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  case "$SOURCE" in
+    /*) ;;
+    *) SOURCE="$SOURCE_DIR/$SOURCE" ;;
+  esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
+  DEFAULT_CONFIG_DIR="${HOME}/Library/Application Support/Singularity"
+else
+  DEFAULT_CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/singularity"
+fi
+
+CONFIG_DIR="${SINGULARITY_RUNTIME_CONFIG_DIR:-$DEFAULT_CONFIG_DIR}"
+CONFIG_FILE="$CONFIG_DIR/runtime.json"
+SECRETS_FILE="$CONFIG_DIR/runtime-secrets.env"
+FALLBACK_TOKEN_FILE="$CONFIG_DIR/runtime-token"
+KEYCHAIN_SERVICE="Singularity Runtime"
+
+info() { printf '> %s\n' "$*"; }
+ok() { printf 'OK %s\n' "$*"; }
+warn() { printf 'WARN %s\n' "$*" >&2; }
+die() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'USAGE'
+Singularity Runtime — local MCP + LLM dial-in host
+
+Usage:
+  bin/singularity-runtime enroll --url PLATFORM_WEB_URL [options]
+  bin/singularity-runtime configure [options]
+  bin/singularity-runtime start
+  bin/singularity-runtime status
+  bin/singularity-runtime stop
+  bin/singularity-runtime logs [mcp-server|llm-gateway]
+  bin/singularity-runtime doctor
+  bin/singularity-runtime revoke
+  bin/singularity-runtime logout
+  bin/singularity-runtime update
+
+Enrollment options:
+  --url URL                    Platform Web URL that created the code
+  --code CODE                  One-time code from Platform Settings
+  --context-fabric-url URL     Context Fabric base URL, for example https://cf.example
+  --runtime-name NAME          Name shown in Operations
+  --device-id ID               Stable id; generated when omitted
+
+Configure options:
+  --context-fabric-url URL     Save the Context Fabric base URL
+  --workspace PATH             Local MCP workspace
+  --runtime-name NAME          Display name
+  --github-token TOKEN         Local GitHub token (prefer GITHUB_TOKEN env)
+  --anthropic-api-key KEY      Local Anthropic key (prefer ANTHROPIC_API_KEY env)
+  --openai-api-key KEY         Local OpenAI key (prefer OPENAI_API_KEY env)
+  --openrouter-api-key KEY     Local OpenRouter key (prefer OPENROUTER_API_KEY env)
+  --default-provider NAME      mock | anthropic | openai | openrouter
+  --default-model MODEL        Local model alias
+  --copilot-bin PATH           Copilot CLI path
+
+The runtime token is stored in macOS Keychain or Secret Service when available.
+The fallback file is chmod 600. Copilot is reached only through MCP's governed
+copilot_execute path; it is not configured as an LLM gateway provider.
+USAGE
+}
+
+require_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"; }
+
+config_value() {
+  local key="$1"
+  [ -f "$CONFIG_FILE" ] || return 0
+  CONFIG_FILE="$CONFIG_FILE" CONFIG_KEY="$key" node <<'NODE'
+const fs = require("fs");
+try {
+  const value = JSON.parse(fs.readFileSync(process.env.CONFIG_FILE, "utf8"))[process.env.CONFIG_KEY];
+  if (value !== undefined && value !== null) process.stdout.write(String(value));
+} catch {}
+NODE
+}
+
+write_config() {
+  mkdir -p "$CONFIG_DIR"
+  chmod 700 "$CONFIG_DIR" 2>/dev/null || true
+  CONFIG_FILE="$CONFIG_FILE" node <<'NODE'
+const fs = require("fs");
+const path = process.env.CONFIG_FILE;
+let current = {};
+try { current = JSON.parse(fs.readFileSync(path, "utf8")); } catch {}
+const values = {
+  platform_url: process.env.PLATFORM_URL,
+  context_fabric_url: process.env.CONTEXT_FABRIC_URL,
+  runtime_id: process.env.RUNTIME_ID,
+  device_id: process.env.DEVICE_ID,
+  user_id: process.env.USER_ID,
+  tenant_id: process.env.TENANT_ID,
+  runtime_name: process.env.RUNTIME_NAME,
+  runtime_scope: process.env.RUNTIME_SCOPE,
+  workspace: process.env.WORKSPACE,
+};
+for (const [key, value] of Object.entries(values)) if (value) current[key] = value;
+fs.writeFileSync(path, `${JSON.stringify(current, null, 2)}\n`, { mode: 0o600 });
+try { fs.chmodSync(path, 0o600); } catch {}
+NODE
+}
+
+write_secret() {
+  local key="$1" value="$2"
+  [ -n "$value" ] || return 0
+  mkdir -p "$CONFIG_DIR"
+  touch "$SECRETS_FILE"
+  chmod 600 "$SECRETS_FILE"
+  local tmp="${SECRETS_FILE}.tmp.$$"
+  grep -v "^${key}=" "$SECRETS_FILE" > "$tmp" 2>/dev/null || true
+  printf '%s=%s\n' "$key" "$value" >> "$tmp"
+  mv "$tmp" "$SECRETS_FILE"
+  chmod 600 "$SECRETS_FILE"
+}
+
+new_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then uuidgen | tr '[:upper:]' '[:lower:]'; return; fi
+  node -e 'console.log(require("crypto").randomUUID())'
+}
+
+token_get() {
+  local account="$(config_value runtime_id)"
+  if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] && command -v security >/dev/null 2>&1 && [ -n "$account" ]; then
+    security find-generic-password -s "$KEYCHAIN_SERVICE" -a "$account" -w 2>/dev/null || true
+  elif command -v secret-tool >/dev/null 2>&1 && [ -n "$account" ]; then
+    secret-tool lookup service "$KEYCHAIN_SERVICE" account "$account" 2>/dev/null || true
+  elif [ -s "$FALLBACK_TOKEN_FILE" ]; then
+    tr -d '\n' < "$FALLBACK_TOKEN_FILE"
+  fi
+}
+
+token_set() {
+  local account="$1" token="$2"
+  mkdir -p "$CONFIG_DIR"
+  chmod 700 "$CONFIG_DIR" 2>/dev/null || true
+  if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] && command -v security >/dev/null 2>&1; then
+    security delete-generic-password -s "$KEYCHAIN_SERVICE" -a "$account" >/dev/null 2>&1 || true
+    security add-generic-password -s "$KEYCHAIN_SERVICE" -a "$account" -w "$token" -U >/dev/null
+    rm -f "$FALLBACK_TOKEN_FILE"
+    ok "runtime token stored in macOS Keychain"
+  elif command -v secret-tool >/dev/null 2>&1; then
+    printf '%s' "$token" | secret-tool store --label="Singularity Runtime token" service "$KEYCHAIN_SERVICE" account "$account" >/dev/null
+    rm -f "$FALLBACK_TOKEN_FILE"
+    ok "runtime token stored in Secret Service"
+  else
+    printf '%s\n' "$token" > "$FALLBACK_TOKEN_FILE"
+    chmod 600 "$FALLBACK_TOKEN_FILE"
+    warn "OS keychain unavailable; token stored in $FALLBACK_TOKEN_FILE with mode 600"
+  fi
+}
+
+token_delete() {
+  local account="$(config_value runtime_id)"
+  if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] && command -v security >/dev/null 2>&1 && [ -n "$account" ]; then
+    security delete-generic-password -s "$KEYCHAIN_SERVICE" -a "$account" >/dev/null 2>&1 || true
+  elif command -v secret-tool >/dev/null 2>&1 && [ -n "$account" ]; then
+    secret-tool clear service "$KEYCHAIN_SERVICE" account "$account" >/dev/null 2>&1 || true
+  fi
+  rm -f "$FALLBACK_TOKEN_FILE"
+}
+
+json_field() {
+  local file="$1" key="$2"
+  RESPONSE_FILE="$file" RESPONSE_KEY="$key" node <<'NODE'
+const fs = require("fs");
+try {
+  const body = JSON.parse(fs.readFileSync(process.env.RESPONSE_FILE, "utf8"));
+  const value = body[process.env.RESPONSE_KEY];
+  if (value !== undefined && value !== null) process.stdout.write(String(value));
+} catch {}
+NODE
+}
+
+cmd_enroll() {
+  require_cmd curl
+  require_cmd node
+  local platform_url="" context_url="" code="" runtime_name="" device_id=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --url|--platform-url) platform_url="${2:?missing value}"; shift 2 ;;
+      --code) code="${2:?missing value}"; shift 2 ;;
+      --context-fabric-url|--context-url) context_url="${2:?missing value}"; shift 2 ;;
+      --runtime-name|--device-name) runtime_name="${2:?missing value}"; shift 2 ;;
+      --device-id|--runtime-id) device_id="${2:?missing value}"; shift 2 ;;
+      -h|--help) usage; return 0 ;;
+      *) die "unknown enroll option: $1" ;;
+    esac
+  done
+  [ -n "$platform_url" ] || die "enroll requires --url PLATFORM_WEB_URL"
+  [ -n "$code" ] || die "enroll requires --code from Platform Settings"
+  platform_url="${platform_url%/}"
+  device_id="${device_id:-$(new_uuid)}"
+  local response_file status
+  response_file="$(mktemp "${TMPDIR:-/tmp}/singularity-runtime.XXXXXX")"
+  trap 'rm -f "$response_file"' RETURN
+  export ENROLL_CODE="$code" ENROLL_DEVICE_ID="$device_id" ENROLL_DEVICE_NAME="$runtime_name"
+  status="$(node -e 'const fs=require("fs"); const p={code:process.env.ENROLL_CODE,device_id:process.env.ENROLL_DEVICE_ID}; if(process.env.ENROLL_DEVICE_NAME) p.device_name=process.env.ENROLL_DEVICE_NAME; process.stdout.write(JSON.stringify(p))' | curl -sS -o "$response_file" -w '%{http_code}' --max-time 20 -H 'content-type: application/json' --data-binary @- "${platform_url}/api/runtime-enrollments/exchange")"
+  if [ "$status" != "200" ]; then
+    die "runtime enrollment exchange failed (HTTP $status): $(cat "$response_file")"
+  fi
+  local token runtime_id
+  token="$(json_field "$response_file" access_token)"
+  runtime_id="$(json_field "$response_file" runtime_id)"
+  [ -n "$token" ] && [ -n "$runtime_id" ] || die "enrollment response did not contain a runtime token"
+  PLATFORM_URL="$platform_url" CONTEXT_FABRIC_URL="$context_url" RUNTIME_ID="$runtime_id" DEVICE_ID="$device_id" USER_ID="$(json_field "$response_file" user_id)" TENANT_ID="$(json_field "$response_file" tenant_id)" RUNTIME_NAME="$(json_field "$response_file" runtime_name)" RUNTIME_SCOPE="$(json_field "$response_file" runtime_scope)" WORKSPACE="$(config_value workspace)" write_config
+  token_set "$runtime_id" "$token"
+  ok "runtime enrolled as $runtime_id"
+  [ -n "$context_url" ] || warn "save Context Fabric URL before starting: singularity-runtime configure --context-fabric-url https://context.example"
+  printf '  start: singularity-runtime start\n'
+}
+
+cmd_configure() {
+  local context_url="" workspace="" runtime_name="" github_token="${GITHUB_TOKEN:-}" anthropic_key="${ANTHROPIC_API_KEY:-}" openai_key="${OPENAI_API_KEY:-}" openrouter_key="${OPENROUTER_API_KEY:-}" provider="${DEFAULT_PROVIDER:-}" model="${DEFAULT_MODEL:-}" copilot_bin="${COPILOT_BIN:-}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --context-fabric-url|--context-url) context_url="${2:?missing value}"; shift 2 ;;
+      --workspace) workspace="${2:?missing value}"; shift 2 ;;
+      --runtime-name|--device-name) runtime_name="${2:?missing value}"; shift 2 ;;
+      --github-token|--gh-token) github_token="${2:?missing value}"; shift 2 ;;
+      --anthropic-api-key) anthropic_key="${2:?missing value}"; shift 2 ;;
+      --openai-api-key) openai_key="${2:?missing value}"; shift 2 ;;
+      --openrouter-api-key) openrouter_key="${2:?missing value}"; shift 2 ;;
+      --default-provider) provider="${2:?missing value}"; shift 2 ;;
+      --default-model) model="${2:?missing value}"; shift 2 ;;
+      --copilot-bin) copilot_bin="${2:?missing value}"; shift 2 ;;
+      -h|--help) usage; return 0 ;;
+      *) die "unknown configure option: $1" ;;
+    esac
+  done
+  case "$(printf '%s' "$provider" | tr '[:upper:]' '[:lower:]')" in
+    ""|mock|anthropic|openai|openrouter) ;;
+    copilot|github_copilot) die "Copilot is an MCP copilot_execute runtime, not an LLM Gateway provider" ;;
+    *) die "unsupported provider: $provider" ;;
+  esac
+  PLATFORM_URL="$(config_value platform_url)" CONTEXT_FABRIC_URL="$context_url" RUNTIME_ID="$(config_value runtime_id)" DEVICE_ID="$(config_value device_id)" USER_ID="$(config_value user_id)" TENANT_ID="$(config_value tenant_id)" RUNTIME_NAME="${runtime_name:-$(config_value runtime_name)}" RUNTIME_SCOPE="$(config_value runtime_scope)" WORKSPACE="$workspace" write_config
+  write_secret GITHUB_TOKEN "$github_token"
+  write_secret GH_TOKEN "$github_token"
+  write_secret ANTHROPIC_API_KEY "$anthropic_key"
+  write_secret OPENAI_API_KEY "$openai_key"
+  write_secret OPENROUTER_API_KEY "$openrouter_key"
+  write_secret DEFAULT_PROVIDER "$provider"
+  write_secret DEFAULT_MODEL "$model"
+  write_secret COPILOT_BIN "$copilot_bin"
+  ok "runtime configuration saved under $CONFIG_DIR"
+}
+
+load_runtime_environment() {
+  local context_url="$(config_value context_fabric_url)"
+  [ -n "$context_url" ] || die "Context Fabric URL is not configured; run: singularity-runtime configure --context-fabric-url URL"
+  local token="$(token_get)"
+  [ -n "$token" ] || die "runtime token is missing; enroll again from Platform Settings"
+  [ -f "$SECRETS_FILE" ] && { set -a; . "$SECRETS_FILE"; set +a; }
+  export CONTEXT_FABRIC_URL="$context_url"
+  export RUNTIME_BRIDGE_URL="${RUNTIME_BRIDGE_URL:-}"
+  export SINGULARITY_RUNTIME_TOKEN="$token"
+  export SINGULARITY_RUNTIME_ID="$(config_value runtime_id)"
+  export SINGULARITY_RUNTIME_NAME="$(config_value runtime_name)"
+  export SINGULARITY_TENANT_ID="$(config_value tenant_id)"
+  export MCP_SANDBOX_ROOT="$(config_value workspace)"
+  export SINGULARITY_RUNTIME_TOKEN_PERSIST=false
+}
+
+cmd_start() { load_runtime_environment; exec "$ROOT/bin/mcp-runtime-setup.sh" connect "$@"; }
+cmd_status() { load_runtime_environment; "$ROOT/bin/mcp-runtime-setup.sh" status "$@"; }
+cmd_stop() { "$ROOT/bin/mcp-runtime-setup.sh" down "$@"; }
+cmd_logs() { "$ROOT/bin/mcp-runtime-setup.sh" logs "${1:-mcp-server}"; }
+
+cmd_doctor() {
+  require_cmd curl
+  require_cmd node
+  local runtime_id="$(config_value runtime_id)" context_url="$(config_value context_fabric_url)"
+  [ -n "$runtime_id" ] && ok "enrollment: $runtime_id" || warn "not enrolled"
+  [ -n "$context_url" ] && ok "Context Fabric URL: $context_url" || warn "Context Fabric URL not configured"
+  if [ -n "$context_url" ]; then
+    local code
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${context_url%/}/health" 2>/dev/null || true)"
+    [ "$code" = "200" ] && ok "Context Fabric health: 200" || warn "Context Fabric health: HTTP ${code:-000}"
+  fi
+  command -v copilot >/dev/null 2>&1 && ok "Copilot CLI: $(copilot --version 2>/dev/null | head -1)" || warn "Copilot CLI not found (only needed for Copilot workflow stages)"
+  [ -f "$SECRETS_FILE" ] && ok "local provider configuration present" || warn "no local provider keys configured; mock mode is still available"
+}
+
+cmd_revoke() {
+  require_cmd curl
+  load_runtime_environment
+  local platform_url="$(config_value platform_url)" response_file status
+  [ -n "$platform_url" ] || die "platform URL is not configured"
+  response_file="$(mktemp "${TMPDIR:-/tmp}/singularity-runtime-revoke.XXXXXX")"
+  trap 'rm -f "$response_file"' RETURN
+  status="$(curl -sS -o "$response_file" -w '%{http_code}' --max-time 20 -X POST -H "authorization: Bearer $SINGULARITY_RUNTIME_TOKEN" -H 'content-type: application/json' --data-binary "{\"device_id\":\"$(config_value device_id)\"}" "${platform_url%/}/api/runtime-revoke")"
+  [ "$status" = "200" ] || die "runtime revoke failed (HTTP $status): $(cat "$response_file")"
+  token_delete
+  ok "runtime revoked and local token removed"
+}
+
+cmd_logout() { "$ROOT/bin/mcp-runtime-setup.sh" down >/dev/null 2>&1 || true; token_delete; rm -f "$CONFIG_FILE" "$SECRETS_FILE"; ok "runtime configuration removed from this machine"; }
+
+cmd_update() {
+  [ -d "$ROOT/.git" ] || die "source checkout not found; install a newer signed runtime bundle instead"
+  git -C "$ROOT" pull --ff-only
+  ok "runtime source updated; run singularity-runtime doctor"
+}
+
+command_name="${1:-help}"
+shift || true
+case "$command_name" in
+  enroll) cmd_enroll "$@" ;;
+  configure) cmd_configure "$@" ;;
+  start) cmd_start "$@" ;;
+  status) cmd_status "$@" ;;
+  stop|down) cmd_stop "$@" ;;
+  logs) cmd_logs "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+  revoke) cmd_revoke "$@" ;;
+  logout) cmd_logout "$@" ;;
+  update) cmd_update "$@" ;;
+  help|-h|--help) usage ;;
+  *) die "unknown command: $command_name (run singularity-runtime help)" ;;
+esac

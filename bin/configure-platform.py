@@ -1652,42 +1652,19 @@ def apply_copilot_only(
 
 
 def command_office_copilot_only(args: argparse.Namespace) -> None:
-    """Fence office setups to GitHub Copilot only and clear other provider access."""
-    profile = getattr(args, "profile_name", "office-copilot-only")
-    data = load_local_config() or config_template(profile, args)
-    apply_copilot_only(data, token=args.copilot_token, model=args.copilot_model, profile=profile)
-    write_local_config(data, force=True)
-    args.llm_provider = "copilot"
-    args.llm_model = args.copilot_model
-    args.allowed_llm_providers = "copilot"
-    args.openai_api_key = ""
-    args.openrouter_api_key = ""
-    args.anthropic_api_key = ""
-    args.copilot_base_url = "https://api.githubcopilot.com"
-    command_write(args)
-    args.path = ".singularity/llm-models.json"
-    args.default_alias = "copilot"
-    args.copilot_only = True
-    command_mcp_catalog(args)
-    print("\nOffice Copilot-only mode is active.")
-    print("Non-Copilot provider keys are blanked in generated env files and MCP enforces:")
-    print("  .singularity/llm-providers.json")
-    print("  .singularity/llm-models.json")
-    print("  MCP_ALLOWED_LLM_PROVIDERS=copilot")
-    print("\nIf you only use the GitHub Copilot CLI tools, make sure this passes:")
-    print("  cd mcp-server && npm run build && npx singularity-mcp doctor")
+    raise SystemExit(
+        "office-copilot-only gateway mode is retired. Configure the normal mock/Anthropic/OpenAI gateway "
+        "and run Copilot stages with an AGENT_TASK executor=copilot through the governed MCP runtime."
+    )
 def command_interactive(args: argparse.Namespace) -> None:
     print("Singularity configuration wizard\n")
-    provider = prompt_choice("LLM provider", ["copilot", "openai", "openrouter", "ollama", "mock"], "copilot")
+    provider = prompt_choice("LLM provider", ["openai", "openrouter", "ollama", "mock"], "mock")
     args.llm_provider = provider
-    args.llm_model = input_default("LLM model", "mock-fast" if provider == "mock" else "gpt-4o" if provider == "copilot" else "gpt-4o-mini")
+    args.llm_model = input_default("LLM model", "mock-fast" if provider == "mock" else "gpt-4o-mini")
     if provider == "openai":
         args.openai_api_key = getpass.getpass("OpenAI API key (blank to preserve/env): ").strip() or None
     elif provider == "openrouter":
         args.openrouter_api_key = getpass.getpass("OpenRouter API key (blank to preserve/env): ").strip() or None
-    elif provider == "copilot":
-        args.copilot_token = getpass.getpass("Copilot token (blank if using CLI tools only): ").strip() or None
-        args.allowed_llm_providers = input_default("Restrict MCP to Copilot only? [Y/n]", "Y").lower() != "n" and "copilot" or ""
     args.pseudo_iam = input_default("Use pseudo-IAM? [y/N]", "N").lower().startswith("y")
     args.mcp_bearer_token = input_default("MCP bearer token", "demo-bearer-token-must-be-min-16-chars")
     args.mcp_sandbox_root = input_default("MCP sandbox root", str(ROOT))
@@ -3094,13 +3071,15 @@ def command_mcp_catalog(args: argparse.Namespace) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
 
     default_alias = args.default_alias
-    if args.copilot_only:
-        default_alias = "copilot"
-    if default_alias not in {"mock", "copilot"}:
+    if args.copilot_only or str(default_alias or "").strip().lower() == "copilot":
         raise SystemExit(
-            "Generated model catalogs are restricted to mock or Copilot. "
-            "Use --default-alias mock locally, --copilot-only in office mode, "
-            "or edit .singularity/llm-models.json explicitly for another approved provider."
+            "Copilot model-provider catalogs are retired. Use the governed copilot_execute MCP tool "
+            "with an AGENT_TASK executor=copilot."
+        )
+    if default_alias not in {"mock"}:
+        raise SystemExit(
+            "Generated model catalogs are restricted to mock. "
+            "Copilot stages use executor=copilot through MCP; configure other approved providers explicitly."
         )
     catalog = [
         {

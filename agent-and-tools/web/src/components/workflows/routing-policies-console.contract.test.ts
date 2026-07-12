@@ -26,6 +26,48 @@ assert.match(
 
 assert.match(
   component,
+  /New routing policy/,
+  "Routing policies console should expose a create-policy action",
+);
+
+assert.match(
+  component,
+  /function openCreate\(\)/,
+  "Routing policies console should wire the create-policy action",
+);
+
+assert.match(
+  component,
+  /function openEdit\(policy: RoutingPolicy\)[\s\S]*?function savePolicy\(\)/,
+  "Routing policies console should provide an edit and save path",
+);
+
+assert.match(
+  component,
+  /\["items", "content", "data", "templates"/,
+  "Routing policies console should unwrap paginated workflow-template content",
+);
+
+assert.match(
+  component,
+  /workgraphFetch<Record<string, unknown>>\("\/metadata-definitions", \{[\s\S]*?method: "POST"[\s\S]*?status: "ACTIVE"[\s\S]*?scopeType: "GLOBAL"/,
+  "Routing policies console should create new metadata-backed types through WorkGraph",
+);
+
+assert.match(
+  component,
+  /onOpenTypeCreator\("WORK_ITEM_TYPE"\)[\s\S]*?onOpenTypeCreator\("WORKFLOW_TYPE"\)/,
+  "Routing policy editor should expose creation actions for both type families",
+);
+
+assert.match(
+  component,
+  /function normalizeTypeKey\(value: unknown\): string[\s\S]*?toUpperCase\(\)[\s\S]*?replace\(\/\[\^A-Z0-9\]\+\//,
+  "New metadata type keys should be normalized before they are persisted",
+);
+
+assert.match(
+  component,
   /hasTemplateIssue\(policy\) && <Badge tone="#b91c1c">\{policy\.workflowTemplateStatus\?\.reason \?\? "Template issue"\}<\/Badge>/,
   "Routing policies console should surface per-policy template diagnostic reasons",
 );

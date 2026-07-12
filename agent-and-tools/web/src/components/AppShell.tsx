@@ -15,18 +15,22 @@ import { apiPath, assertValidApiResponse, authHeaders, readResponseBody } from "
 import { StatusPill, type UiState } from "@/components/ui/primitives";
 import { ThemeSwitcher } from "@/components/ui/ThemeSwitcher";
 
-// Routes that render their own full-viewport UX (the blue Blueprint Workbench
-// cockpit, now served in-process) and must NOT be boxed inside the platform-web
-// sidebar/topbar/padded-main chrome. Matched as exact path or `${prefix}/...` so
-// `/workbench` and `/workbench?theater=…` go full-bleed while `/prompt-workbench`
-// (a different, chrome-keeping route) is unaffected.
+// Routes that render their own full-viewport UX (the Blueprint Workbench and
+// the live RunGraph cockpit) must NOT be boxed inside the platform-web
+// sidebar/topbar/padded-main chrome. Keep run artifacts/insights in the normal
+// shell; only the detail cockpit needs its own viewport so its header and
+// action controls cannot sit underneath the platform chrome.
 const FULL_BLEED_PREFIXES = ["/workbench"];
+
+function isRunDetailPath(pathname: string): boolean {
+  return /^\/runs\/[^/]+$/.test(pathname);
+}
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "";
   const fullBleed = FULL_BLEED_PREFIXES.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
-  );
+  ) || isRunDetailPath(pathname);
 
   // ⌘K / Ctrl-K toggles the command palette (sourced from the route registry).
   const [paletteOpen, setPaletteOpen] = useState(false);

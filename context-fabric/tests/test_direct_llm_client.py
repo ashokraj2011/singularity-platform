@@ -49,3 +49,16 @@ def test_direct_provider_rejects_unapproved_credential_env(monkeypatch: pytest.M
                 },
             },
         ))
+
+
+def test_direct_provider_rejects_copilot_cli_alias() -> None:
+    with pytest.raises(LLMGatewayError, match="Copilot is available only through"):
+        asyncio.run(call_direct_chat(
+            messages=[{"role": "user", "content": "implement this change"}],
+            tools=None,
+            model_alias="copilot",
+            run_context={
+                "llm_route": "context_fabric_direct",
+                "direct_llm": {"provider": "copilot", "model": "gpt-4o"},
+            },
+        ))

@@ -41,7 +41,10 @@ Usage:
 
 Connect a laptop/runtime host to cloud Context Fabric and show usable LLMs.
 
-Required for first connect, unless --runtime-token is supplied:
+Required for first connect:
+  --runtime-token JWT          Runtime token from `singularity-runtime enroll`
+
+Legacy development-only minting (avoid for distributed installs):
   --iam-user-id ID             IAM user id / JWT sub that will launch runs
   --jwt-secret SECRET          Shared JWT_SECRET used by cloud Context Fabric
 
@@ -61,12 +64,10 @@ Local tokens and provider keys:
   --anthropic-api-key KEY      Enables Anthropic in local LLM Gateway
   --openai-api-key KEY         Enables OpenAI-compatible provider
   --openrouter-api-key KEY     Enables OpenRouter provider
-  --copilot-token TOKEN        Enables Copilot LLM provider only with --copilot-base-url
-  --copilot-base-url URL       OpenAI-compatible Copilot bridge, e.g. http://localhost:4141/v1
   --copilot-bin PATH           GitHub Copilot CLI path for copilot_execute
 
 Provider/model options:
-  --default-provider NAME      anthropic | openai | openrouter | copilot | mock
+  --default-provider NAME      anthropic | openai | openrouter | mock
   --default-model MODEL        Provider model id
   --openai-base-url URL        Default https://api.openai.com/v1
   --openrouter-base-url URL    Default https://openrouter.ai/api/v1
@@ -80,15 +81,13 @@ Examples:
     --github-token "$GITHUB_TOKEN" \
     --anthropic-api-key "$ANTHROPIC_API_KEY"
 
-  node bin/copilot-cli-server.js --port 4141
+  # Copilot stages use the CLI through the governed copilot_execute MCP tool.
   bin/mcp-runtime-setup.sh connect \
     --context-fabric-url http://cloud.example.com:8000 \
     --iam-user-id "$IAM_USER_ID" \
     --jwt-secret "$JWT_SECRET" \
-    --copilot-token copilot-local \
-    --copilot-base-url http://localhost:4141/v1 \
-    --default-provider copilot \
-    --default-model gpt-4o
+    --github-token "$GITHUB_TOKEN" \
+    --copilot-bin "$(command -v copilot)"
 
 Environment variables with the same names also work and avoid shell history.
 USAGE
@@ -270,12 +269,15 @@ function readJson(path, fallback) {
 
 const cfg = readJson(providersPath, { defaultProvider: "mock", defaultModel: "mock-fast", allowedProviders: ["mock"], providers: {} });
 cfg.providers = cfg.providers && typeof cfg.providers === "object" ? cfg.providers : {};
+// Copilot is an executor, not a gateway provider. Remove any legacy provider
+// entries so a reconnect cannot silently restore the retired route.
+delete cfg.providers.copilot;
+delete cfg.providers.github_copilot;
 
 const present = {
   anthropic: Boolean(process.env.ANTHROPIC_API_KEY),
   openai: Boolean(process.env.OPENAI_API_KEY),
   openrouter: Boolean(process.env.OPENROUTER_API_KEY),
-  copilot: Boolean(process.env.COPILOT_TOKEN && process.env.COPILOT_BASE_URL),
 };
 
 if (present.anthropic) {
@@ -314,22 +316,10 @@ if (present.openrouter) {
   };
 }
 
-if (present.copilot) {
-  cfg.providers.copilot = {
-    enabled: true,
-    baseUrl: process.env.COPILOT_BASE_URL.replace(/\/$/, ""),
-    credentialEnv: "COPILOT_TOKEN",
-    defaultModel: process.env.COPILOT_MODEL || "gpt-4o",
-    supportsTools: true,
-    costTier: "medium",
-    description: "OpenAI-compatible Copilot bridge for laptop LLM Gateway.",
-  };
-}
-
 cfg.providers.mock = cfg.providers.mock || { enabled: true, defaultModel: "mock-fast", supportsTools: true };
 if (cfg.providers.mock.enabled === undefined) cfg.providers.mock.enabled = true;
 
-const order = ["anthropic", "openai", "openrouter", "copilot", "mock"];
+const order = ["anthropic", "openai", "openrouter", "mock"];
 let defaultProvider = (process.env.DEFAULT_PROVIDER || "").toLowerCase();
 if (!defaultProvider) defaultProvider = order.find((name) => present[name]) || cfg.defaultProvider || "mock";
 if (!cfg.providers[defaultProvider] || cfg.providers[defaultProvider].enabled === false) defaultProvider = order.find((name) => cfg.providers[name] && cfg.providers[name].enabled !== false) || "mock";
@@ -654,8 +644,6 @@ cmd_connect() {
       --anthropic-api-key) anthropic_key="${2:?missing value}"; shift 2 ;;
       --openai-api-key) openai_key="${2:?missing value}"; shift 2 ;;
       --openrouter-api-key) openrouter_key="${2:?missing value}"; shift 2 ;;
-      --copilot-token) copilot_token="${2:?missing value}"; shift 2 ;;
-      --copilot-base-url) copilot_base_url="${2:?missing value}"; shift 2 ;;
       --copilot-bin) copilot_bin="${2:?missing value}"; shift 2 ;;
       --default-provider) default_provider="${2:?missing value}"; shift 2 ;;
       --default-model) default_model="${2:?missing value}"; shift 2 ;;
@@ -666,6 +654,11 @@ cmd_connect() {
       *) err "unknown option: $1"; usage; exit 1 ;;
     esac
   done
+
+  if [ -n "$copilot_token" ] || [ -n "$copilot_base_url" ] || [ "${default_provider,,}" = "copilot" ]; then
+    err "Copilot gateway/provider mode is retired. Use an AGENT_TASK with executor=copilot; MCP will run the authenticated Copilot CLI through copilot_execute."
+    exit 1
+  fi
 
   if [ -z "$bridge_url" ]; then
     context_url="${context_url:-http://localhost:8000}"
@@ -697,7 +690,7 @@ cmd_connect() {
     runtime_id="mcp-runtime-${iam_user_id:-$(hostname -s 2>/dev/null || echo local)}"
   fi
 
-  if [ -n "$runtime_token" ]; then
+  if [ -n "$runtime_token" ] && [ "${SINGULARITY_RUNTIME_TOKEN_PERSIST:-true}" != "false" ]; then
     mkdir -p "$(dirname "$DEVICE_TOKEN_FILE")"
     printf '%s\n' "$runtime_token" > "$DEVICE_TOKEN_FILE"
     chmod 600 "$DEVICE_TOKEN_FILE"
