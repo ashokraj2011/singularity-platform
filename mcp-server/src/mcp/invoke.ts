@@ -50,6 +50,7 @@ import {
 // M39 — PII masking helpers. Both sync (regex baseline) and async (regex+NER).
 import { maskPii, maskPiiAsync, unmaskPiiInArgs } from "../security/mask";
 import { indexWorkspace, lastAstStats } from "../workspace/ast-index";
+import { reportAstIndexBuiltToAgentRuntime } from "./repo-fingerprint";
 import { ensureWorkspaceSource, WorkspaceSourceStatus } from "../workspace/source-materializer";
 import {
   gcWorkItemWorkspaces, sandboxRoot, withSandboxRoot, withWorkspaceLock, workspaceRootForRunContext,
@@ -3101,6 +3102,14 @@ export async function executeInvokePayload(rawBody: unknown): Promise<Record<str
     ? await prepareWorkBranch(branchRequest, correlation)
     : null;
   const astStats = branch ? await indexWorkspace("branch_start") : await indexWorkspace("invoke_start");
+  // Stamp CapabilityWorldModel.astIndexedAt for the lazy code-index path.
+  // Bootstrap defers the AST index to "first workflow", and this build — unlike
+  // /mcp/code-context/build and /mcp/source/ground — never reported back, so
+  // astIndexedAt stayed NULL forever even though a local index now exists.
+  // Best-effort, fire-and-forget: never block or fail the run on the callback.
+  if (correlation.capabilityId && config.AGENT_RUNTIME_URL) {
+    void reportAstIndexBuiltToAgentRuntime(config.AGENT_RUNTIME_URL, correlation.capabilityId, astStats.indexedFiles);
+  }
 
   const mergedTools = new Map<string, typeof body.tools[number]>();
   for (const tool of body.tools) mergedTools.set(tool.name, tool);

@@ -56,6 +56,8 @@ import { branchNameForWork, prepareWorkBranch } from "../workspace/git-workspace
 import { withSandboxRoot, workspaceRootForRunContext } from "../workspace/sandbox";
 import { ensureWorkspaceSource } from "../workspace/source-materializer";
 import { indexWorkspace } from "../workspace/ast-index";
+import { reportAstIndexBuiltToAgentRuntime } from "./repo-fingerprint";
+import { config } from "../config";
 
 // M90.C (2026-05-27) — Selective workspace fail-fast.
 //
@@ -494,7 +496,13 @@ export async function runToolByName(body: z.infer<typeof ToolRunSchema>): Promis
         // on the warm path and the upsert per file is the same cost as
         // the first call.
         try {
-          await indexWorkspace("tool_run_bootstrap");
+          const astStats = await indexWorkspace("tool_run_bootstrap");
+          // Stamp CapabilityWorldModel.astIndexedAt for the lazy path — same as
+          // the /mcp/invoke build; a direct tool-run can be the first index build
+          // for this capability. Best-effort, fire-and-forget.
+          if (correlation.capabilityId && config.AGENT_RUNTIME_URL) {
+            void reportAstIndexBuiltToAgentRuntime(config.AGENT_RUNTIME_URL, correlation.capabilityId, astStats.indexedFiles);
+          }
         } catch (err) {
           // eslint-disable-next-line no-console
           console.warn(
