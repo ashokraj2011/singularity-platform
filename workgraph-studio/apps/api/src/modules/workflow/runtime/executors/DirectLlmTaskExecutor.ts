@@ -15,6 +15,12 @@ import {
   type DirectLlmHarnessPhase,
   type DirectLlmProviderRequest,
 } from './DirectLlmHarness'
+import {
+  DirectLlmToolLoopError,
+  runDirectLlmToolLoop,
+  type DirectLlmToolLoopOptions,
+} from './DirectLlmToolLoop'
+import { resolveDirectLlmTools } from './direct-llm-tools'
 import type { ComposeArtifact } from '../../../../lib/prompt-composer/client'
 
 type DirectLlmOutput = {
@@ -73,6 +79,7 @@ type ResolvedDirectLlmConfig = {
   outputFields?: Record<string, unknown>
   inputArtifacts: ComposeArtifact[]
   harness: DirectLlmHarnessOptions
+  toolLoop: DirectLlmToolLoopOptions
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -757,6 +764,27 @@ function resolveHarnessOptions(
   }
 }
 
+// Config for the self-contained direct→LLM TOOL loop (a real model↔tool↔observe loop
+// that runs in workgraph-api with no MCP/CF). Off by default — a node opts in with
+// `toolLoop: true`. Tools come from the read-only allowlist in direct-llm-tools.ts.
+function resolveToolLoopOptions(node: WorkflowNode, outputSchema: Record<string, unknown> | undefined): DirectLlmToolLoopOptions {
+  const enabled = harnessBool(node, 'toolLoop', harnessBool(node, 'directToolLoop', false))
+  const validationRaw = (harnessString(node, 'validationMode') ?? 'soft').toLowerCase()
+  const validationMode = validationRaw === 'hard' || validationRaw === 'off' ? validationRaw : 'soft'
+  const requested = harnessStringArray(node, 'toolLoopTools')
+  const { tools, unknown } = resolveDirectLlmTools(requested.length ? requested : null)
+  return {
+    enabled,
+    maxTurns: Math.min(Math.max(Math.trunc(harnessNumber(node, 'toolLoopMaxTurns', harnessNumber(node, 'maxTurns', 6))), 1), 12),
+    maxToolCallsPerTurn: Math.min(Math.max(Math.trunc(harnessNumber(node, 'maxToolCallsPerTurn', 4)), 1), 16),
+    tools,
+    unknownRequestedTools: unknown,
+    requiredOutputIncludes: harnessStringArray(node, 'requiredOutputIncludes'),
+    outputJsonSchema: outputSchema,
+    validationMode,
+  }
+}
+
 async function resolveDirectLlmConfig(
   node: WorkflowNode,
   instance: WorkflowInstance,
@@ -820,6 +848,7 @@ async function resolveDirectLlmConfig(
       outputFields: outputContract.outputFields,
       inputArtifacts,
       harness: resolveHarnessOptions(node, outputContract.outputSchema, inputArtifacts),
+      toolLoop: resolveToolLoopOptions(node, outputContract.outputSchema),
     },
   }
 }
@@ -1190,20 +1219,42 @@ export async function activateDirectLlmTask(
   let harnessReceipt: Record<string, unknown> | undefined
   let harnessReviewRequired = false
   try {
-    const harness = await runDirectLlmHarness({
-      llm,
-      options: llm.harness,
-      node,
-      instance,
-      traceId,
-      callProvider,
-    })
-    chat = harness.chat
-    harnessReceipt = harness.receipt as unknown as Record<string, unknown>
-    harnessReviewRequired = harness.reviewRequired
+    if (llm.toolLoop.enabled) {
+      // Real, self-contained model↔tool↔observe loop — no MCP, no context-fabric.
+      const loop = await runDirectLlmToolLoop({
+        llm,
+        options: llm.toolLoop,
+        node,
+        instance,
+        traceId,
+        toolContext: {
+          instance,
+          node,
+          requiredOutputIncludes: llm.toolLoop.requiredOutputIncludes,
+          outputJsonSchema: llm.toolLoop.outputJsonSchema,
+        },
+      })
+      chat = loop.chat
+      harnessReceipt = loop.receipt as unknown as Record<string, unknown>
+      harnessReviewRequired = loop.reviewRequired
+    } else {
+      const harness = await runDirectLlmHarness({
+        llm,
+        options: llm.harness,
+        node,
+        instance,
+        traceId,
+        callProvider,
+      })
+      chat = harness.chat
+      harnessReceipt = harness.receipt as unknown as Record<string, unknown>
+      harnessReviewRequired = harness.reviewRequired
+    }
   } catch (err) {
     const message = (err as Error).message
-    const code = err instanceof DirectLlmHarnessError ? err.code : 'DIRECT_LLM_PROVIDER_ERROR'
+    const code = err instanceof DirectLlmHarnessError || err instanceof DirectLlmToolLoopError
+      ? err.code
+      : 'DIRECT_LLM_PROVIDER_ERROR'
     await prisma.agentRunOutput.create({
       data: {
         runId: run.id,
@@ -1213,6 +1264,7 @@ export async function activateDirectLlmTask(
           errorCode: code,
           traceId,
           ...(err instanceof DirectLlmHarnessError ? { harness: err.details } : {}),
+          ...(err instanceof DirectLlmToolLoopError ? { toolLoop: err.details } : {}),
         } as Prisma.InputJsonValue,
       },
     })
