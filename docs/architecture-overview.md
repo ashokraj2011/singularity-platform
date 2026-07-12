@@ -30,6 +30,7 @@ flowchart TD
   PW --> IAM
   PW -. proxies .-> AS
   WG -- AGENT_TASK --> CF
+  WG -- "DIRECT_LLM_TASK · llmRoute=workgraph" --> ANT
   CF --> PC
   CF --> MCP
   CF --> LLM
@@ -45,7 +46,7 @@ flowchart TD
   MCP -. events .-> AG
 ```
 
-Solid = request/exec API · dotted = verify + audit (every service) · `agent-service` (:3001) serves **both** `/api/v1/agents` and `/api/v1/tools` (tool-service merged in). `context-memory` (:8002), `formal-verifier` (:8010), and `prompt-compressor` (:8011, compression profile) are optional and omitted above.
+Solid = request/exec API · dotted = verify + audit (every service) · `agent-service` (:3001) serves **both** `/api/v1/agents` and `/api/v1/tools` (tool-service merged in). `context-memory` (:8002), `formal-verifier` (:8010), and `prompt-compressor` (:8011, compression profile) are optional and omitted above. **`workgraph-api` can also call the provider directly** — the `WG → Anthropic API` edge — for `DIRECT_LLM_TASK` nodes (or `AGENT_TASK` with `config.llmRoute: workgraph|direct`), a raw `fetch` that bypasses Context Fabric, MCP, and the LLM gateway (no tools, no governed loop); see the direct-LLM note under the run sequence below.
 
 ---
 
@@ -109,25 +110,37 @@ sequenceDiagram
   participant MCP as mcp-server :7100
   participant LLM as llm-gateway :8001
   participant AG as audit-gov :8500
+  participant ANT as Anthropic / OpenAI API
 
   U->>PW: open /workbench, start a run
   PW->>WG: POST /api/workgraph/… (start instance)
-  WG->>CF: AGENT_TASK → POST /execute (governed turn)
-  CF->>IAM: verify token + capability (precheck, fail-closed)
-  CF->>PC: POST /compose (assemble prompt + capsule)
-  alt workbench / agent path
-    CF->>LLM: POST /llm/chat → Anthropic (claude-*)
-  else copilot SDLC path
-    CF->>MCP: POST /mcp/tool-run {copilot_execute} → Copilot CLI
+  alt governed — AGENT_TASK (default)
+    WG->>CF: AGENT_TASK → POST /execute (governed turn)
+    CF->>IAM: verify token + capability (precheck, fail-closed)
+    CF->>PC: POST /compose (assemble prompt + capsule)
+    alt workbench / agent path
+      CF->>LLM: POST /llm/chat → Anthropic (claude-*)
+    else copilot SDLC path
+      CF->>MCP: POST /mcp/tool-run {copilot_execute} → Copilot CLI
+    end
+    CF->>MCP: POST /mcp/tool-run (tool calls)
+    CF->>AG: call_log + llm.call.completed + tool-run events
+    CF-->>WG: turn result
+  else direct — DIRECT_LLM_TASK / llmRoute=workgraph (bypass CF + MCP)
+    WG->>ANT: raw fetch POST /v1/messages (no MCP, no tools, no governed loop)
+    ANT-->>WG: completion
   end
-  CF->>MCP: POST /mcp/tool-run (tool calls)
-  CF->>AG: call_log + llm.call.completed + tool-run events
-  CF-->>WG: turn result
   WG-->>PW: status + receipts
   PW-->>U: cockpit update
 ```
 
-The **two LLM paths are mutually exclusive per stage**: workbench + agent runs go through the LLM gateway (Anthropic); copilot-mode SDLC stages are delegated to the Copilot CLI via `mcp-server` and captured as a diff receipt.
+The **two governed LLM paths are mutually exclusive per stage**: workbench + agent runs go through the LLM gateway (Anthropic); copilot-mode SDLC stages are delegated to the Copilot CLI via `mcp-server` and captured as a diff receipt.
+
+### Direct LLM path (non-governed, bypasses MCP + Context Fabric)
+
+There is also a **third, non-governed route**. A `DIRECT_LLM_TASK` node — or an `AGENT_TASK` whose `config.llmRoute` is `workgraph`/`direct` (`agentTaskUsesWorkGraphLlm`) — is executed **entirely inside `workgraph-api`** by `DirectLlmTaskExecutor` (`workgraph-studio/apps/api/src/modules/workflow/runtime/executors/DirectLlmTaskExecutor.ts`). It calls the provider with a raw `fetch` — `https://api.anthropic.com/v1/messages` (or an OpenAI-compatible `/chat/completions`); API key from an **env var** (`credentialEnv`, default `ANTHROPIC_API_KEY`/`OPENAI_API_KEY`), provider/model/baseURL from the `llmConnection` registry or node config — **bypassing Context Fabric, MCP, tool dispatch, and the LLM gateway**. Calls are non-streaming; runs are stamped `bypassedContextFabric`/`bypassedMcp` and stored as a `DIRECT_LLM_OUTPUT` consumable. It does **no** tool discovery or governed phasing; grounding is optional (a prompt-composer *preview* compose with tools disabled, only when an `agentTemplateId` is configured, via `DirectLlmHarness`).
+
+This is distinct from Context Fabric's own env-gated `CONTEXT_FABRIC_DIRECT_LLM_*` mode (which is *CF* calling a provider directly). Use the workgraph direct path for cheap/ungoverned LLM steps where MCP tools + the governed loop aren't needed; use governed `AGENT_TASK` (default) when you want tools, grounding, budgets, and audit.
 
 ---
 

@@ -1,5 +1,7 @@
 # Context Fabric Architecture
 
+> **Note — this is the _governed_ LLM path.** Workgraph can also bypass Context Fabric entirely: a `DIRECT_LLM_TASK` node (or an `AGENT_TASK` with `config.llmRoute: workgraph|direct`) calls the provider directly from `workgraph-api` with a raw `fetch` — no Context Fabric, no MCP, no tools, no governed loop. See the "Direct LLM path" section in [`docs/architecture-overview.md`](../../docs/architecture-overview.md). (Distinct from CF's own env-gated `CONTEXT_FABRIC_DIRECT_LLM_*` mode, which is CF calling a provider directly.)
+
 ## MVP service split
 
 ```text
