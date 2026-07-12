@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { deriveCapabilityGroundingState, shouldRecordGroundingAttempt } from "./capability-grounding-status";
+import { deriveCapabilityGroundingState, shouldRecordGroundingAttempt, buildGroundingFixCommand } from "./capability-grounding-status";
 
 const capabilityService = fs.readFileSync(path.join(process.cwd(), "src/modules/capabilities/capability.service.ts"), "utf8");
 
@@ -119,5 +119,37 @@ assert.equal(
   false,
   "dry runs must not mutate durable grounding status",
 );
+
+// ── buildGroundingFixCommand — the operator remediation command ──
+// BLOCKED, embeddings intact → re-run grounding, reembed:false.
+{
+  const cmd = buildGroundingFixCommand({ capabilityId: "cap-1", status: "BLOCKED", embeddingDegraded: false });
+  assert.ok(cmd?.includes("/capabilities/cap-1/learning-worker/run"), "BLOCKED → learning-worker/run");
+  assert.ok(cmd?.includes('"reembed":false'), "BLOCKED + intact embeddings → reembed:false");
+}
+// BLOCKED, embeddings degraded → the fix now actually re-embeds (was hard-coded false).
+{
+  const cmd = buildGroundingFixCommand({ capabilityId: "cap-1", status: "BLOCKED", embeddingDegraded: true });
+  assert.ok(cmd?.includes('"reembed":true'), "BLOCKED + degraded → reembed:true (the fix repairs the gap)");
+}
+// STALE + degraded → same learning-worker path, reembed:true.
+{
+  const cmd = buildGroundingFixCommand({ capabilityId: "cap-2", status: "STALE", embeddingDegraded: true });
+  assert.ok(cmd?.includes("/learning-worker/run") && cmd.includes('"reembed":true'), "STALE + degraded → reembed:true");
+}
+// LEARNED but degraded → a targeted /embeddings/reembed backfill (previously null — no fix surfaced).
+{
+  const cmd = buildGroundingFixCommand({ capabilityId: "cap-3", status: "LEARNED", embeddingDegraded: true });
+  assert.ok(cmd?.includes("/capabilities/cap-3/embeddings/reembed"), "LEARNED + degraded → embeddings/reembed backfill");
+  assert.ok(cmd?.includes('"kinds":["knowledge"]'), "backfill targets knowledge embeddings");
+}
+// Fully grounded, embeddings intact → no fix.
+assert.equal(buildGroundingFixCommand({ capabilityId: "cap-4", status: "LEARNED", embeddingDegraded: false }), null, "LEARNED + intact → null");
+assert.equal(buildGroundingFixCommand({ capabilityId: "cap-5", status: "NOT_CONFIGURED", embeddingDegraded: false }), null, "NOT_CONFIGURED + intact → null");
+// platformBaseUrl override respected (trailing slash trimmed).
+{
+  const cmd = buildGroundingFixCommand({ capabilityId: "cap-6", status: "BLOCKED", embeddingDegraded: false, platformBaseUrl: "https://platform.example.com/" });
+  assert.ok(cmd?.includes("https://platform.example.com/api/runtime/capabilities/cap-6/"), "base url override respected + trailing slash trimmed");
+}
 
 console.log("capability grounding status contract tests passed");

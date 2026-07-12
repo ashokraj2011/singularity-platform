@@ -36,6 +36,7 @@ import {
   learningMessageForStatus,
   missingRepositoryMessage,
   shouldRecordGroundingAttempt,
+  buildGroundingFixCommand,
   type CapabilityLearningGroundingStatus,
 } from "./capability-grounding-status";
 import {
@@ -4271,8 +4272,16 @@ async function ensureKnowledgeEmbedding(input: {
       input.artifactId,
     );
   } catch (err) {
+    // Fail-loud: the artifact stays persisted with a NULL vector, so it is
+    // INVISIBLE to semantic retrieval (silently degrades to keyword/recency).
+    // Surfaced on grounding-status as embeddingCoverage.degraded with a
+    // /embeddings/reembed fixCommand; common root cause is the default model
+    // alias resolving to a provider with no embeddings endpoint.
     // eslint-disable-next-line no-console
-    console.warn(`[knowledge] embedding failed for ${input.artifactId}: ${(err as Error).message}`);
+    console.warn(
+      `[knowledge] EMBEDDING FAILED artifact=${input.artifactId} — left unembedded, ` +
+        `semantic retrieval degraded (run the grounding-status fixCommand to backfill): ${(err as Error).message}`,
+    );
   }
 }
 
@@ -4833,9 +4842,15 @@ async function buildCapabilityGroundingStatus(capabilityId: string) {
       ? { ...jsonRecord(learningDiagnostics(sourceState)), staleRunningWorker: true }
       : stored?.diagnostics ?? learningDiagnostics(sourceState),
     embeddingCoverage,
-    fixCommand: ["BLOCKED", "STALE"].includes(derived.status)
-      ? `curl -X POST http://localhost:5180/api/runtime/capabilities/${capabilityId}/learning-worker/run -H 'authorization: Bearer <token>' -H 'content-type: application/json' -d '{"syncApprovedSources":false,"refreshRepositoryProfiles":true,"reembed":false}'`
-      : null,
+    // A working remediation: BLOCKED/STALE re-runs grounding (and re-embeds when
+    // embeddings are degraded, instead of the old hard-coded reembed:false that
+    // never repaired the gap); a LEARNED-but-degraded capability now gets a
+    // targeted /embeddings/reembed backfill command it previously lacked.
+    fixCommand: buildGroundingFixCommand({
+      capabilityId,
+      status: derived.status,
+      embeddingDegraded: embeddingCoverage.degraded,
+    }),
   };
 }
 
