@@ -40,6 +40,12 @@ export interface ComposeRequest {
   agentTemplateId: string
   agentBindingId?: string
   capabilityId?: string
+  // Capability world model (agent-runtime CapabilityWorldModel), forwarded as-is
+  // to prompt-composer so it renders the CODE_WORLD_MODEL / CODE_AGENT_RULES
+  // grounding layers (agent rules, test/build commands, README, package map).
+  // The composer adds those layers ONLY when this is present — it never fetches
+  // the world model itself. Optional; omit to skip them.
+  worldModel?: Record<string, unknown>
   task: string
   workflowContext: {
     instanceId: string

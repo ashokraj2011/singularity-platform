@@ -286,6 +286,31 @@ export async function getRuntimeCapability(
   }
 }
 
+// Fetch a capability's world model (agent-runtime CapabilityWorldModel). The
+// response shape matches prompt-composer's ComposeRequest.worldModel, so callers
+// forward it as-is to composeAndRespond to get the CODE_WORLD_MODEL /
+// CODE_AGENT_RULES grounding layers. Returns null on 404 (not yet generated),
+// 403 (out of tenant scope), or any error — best-effort, so grounding degrades
+// gracefully to knowledge-only rather than failing the caller.
+export async function getRuntimeCapabilityWorldModel(
+  capabilityId: string,
+  authHeader?: string,
+): Promise<Record<string, unknown> | null> {
+  try {
+    const body = await proxyGet(
+      config.AGENT_RUNTIME_URL,
+      `api/v1/capabilities/${encodeURIComponent(capabilityId)}/world-model`,
+      {},
+      authHeader,
+    )
+    const root = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
+    const data = (root.data ?? body) as unknown
+    return data && typeof data === 'object' ? (data as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+
 export type RuntimeCapabilityRepository = {
   id?: string
   repoName?: string | null
