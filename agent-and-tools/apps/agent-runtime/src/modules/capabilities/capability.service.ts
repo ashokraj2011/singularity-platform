@@ -76,7 +76,7 @@ import { assertCapabilityNotArchived, requireActiveCapability } from "./capabili
 // M61 Wire B P3 — README distillation + architecture slice worker.
 // Runs after Phase 1 completes (both sync and async paths) and writes
 // readmeSummary + architectureSlice.rootPackages to CapabilityWorldModel.
-import { runBootstrapDistillationPhase } from "./bootstrap-phase3-distill";
+import { runBootstrapDistillationPhase, distillAndUpsertWorldModel } from "./bootstrap-phase3-distill";
 
 const CAPABILITY_LEARNING_RUN_STALE_MS = env.CAPABILITY_LEARNING_RUN_STALE_MS;
 const CAPABILITY_DISCOVERY_FETCH_TIMEOUT_MS = env.CAPABILITY_DISCOVERY_FETCH_TIMEOUT_SEC * 1000;
@@ -4988,6 +4988,32 @@ export async function refreshRepositoryProfileLearning(capabilityId: string, use
       },
     });
   }
+
+  // Drift-completeness: a repo change also stales the DISTILLED world model
+  // (readmeSummary / architectureSlice / codeConventions / entrypoints), the
+  // KNOWLEDGE embeddings, and the code index — not just the language/build facts
+  // + inventory refreshed above. Re-run those so the row isn't stamped
+  // "refreshed" while they stay stale. All best-effort: a failure adds a warning
+  // and never fails the refresh (this runs fire-and-forget from the drift path).
+  try {
+    await distillAndUpsertWorldModel(capabilityId);
+  } catch (err) {
+    warnings.push(`World-model distillation refresh failed: ${(err as Error).message}`);
+  }
+  try {
+    // Backfill knowledge artifacts left with a NULL vector (embedding landmine or
+    // prior failures) so refreshed knowledge is vector-retrievable again.
+    const re = await capabilityService.reembedCapability(capabilityId, { kinds: ["knowledge"] });
+    if (re.knowledge.failed > 0) {
+      warnings.push(`Knowledge re-embed left ${re.knowledge.failed} artifact(s) unembedded (embeddings provider degraded).`);
+    }
+  } catch (err) {
+    warnings.push(`Knowledge re-embed backfill failed: ${(err as Error).message}`);
+  }
+  // Re-index the code centrally when central grounding is enabled (no-op
+  // otherwise; the lazy per-workflow index rebuilds on the next run). Fire-and-
+  // forget so the mcp clone+index doesn't block the refresh — mirrors bootstrap.
+  void triggerCentralCodeGrounding(capabilityId);
 
   return {
     refreshed: profiles.length,
