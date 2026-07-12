@@ -74,3 +74,20 @@ export function resolveCapabilityFilter(scope: MemoryReadScope, requested: strin
   }
   return scope.capabilityIds;
 }
+
+/**
+ * Assert a single-capability READ is inside the caller's tenant scope. Throws
+ * ForbiddenError (→ 403) when this deployment is tenant-scoped
+ * (IAM_SERVICE_TOKEN_TENANT_IDS) and `capabilityId` is outside the caller's
+ * `capability_ids`; a no-op for a global single-box deploy. This is the exact
+ * gate the memory list reads apply (`resolveMemoryReadScope` +
+ * `resolveCapabilityFilter`), lifted for the capability world-model / knowledge
+ * READ routes so those can't be turned into a cross-tenant read of another
+ * tenant's grounding by its capability UUID (IDOR). Every capability route sits
+ * behind `requireAuth`, so `req.user` is always present here; the check only
+ * *adds* the capability-scope constraint, and only when tenant-scoped.
+ */
+export function assertCapabilityReadScope(user: AuthUser | undefined, capabilityId: string): void {
+  // Discard the returned filter (single-id read) — we only want the throw.
+  resolveCapabilityFilter(resolveMemoryReadScope(user), capabilityId);
+}

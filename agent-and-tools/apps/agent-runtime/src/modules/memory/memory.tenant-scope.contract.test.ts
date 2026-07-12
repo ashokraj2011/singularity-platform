@@ -12,6 +12,7 @@ const {
   memoryReadScopeFor,
   resolveMemoryReadScope,
   resolveCapabilityFilter,
+  assertCapabilityReadScope,
 } = require("./memory.tenant-scope") as typeof import("./memory.tenant-scope");
 
 import { ForbiddenError } from "../../shared/errors";
@@ -49,6 +50,15 @@ function main() {
   const fromEnv = resolveMemoryReadScope(userWithCaps(["cap-1"]));
   assert.equal(fromEnv.enforce, true);
   assert.deepEqual(fromEnv.capabilityIds, ["cap-1"]);
+
+  // ── assertCapabilityReadScope — the capability world-model/knowledge READ gate ──
+  // (env above is tenant-scoped, so the gate enforces). In scope → no throw.
+  assertCapabilityReadScope(userWithCaps(["cap-1", "cap-2"]), "cap-1");
+  // Out of scope → 403: the IDOR guard for cross-tenant grounding reads.
+  assert.throws(() => assertCapabilityReadScope(userWithCaps(["cap-1"]), "cap-other"), ForbiddenError);
+  // No user / no in-scope caps → deny (a single-id read of an unentitled capability throws).
+  assert.throws(() => assertCapabilityReadScope(undefined, "cap-x"), ForbiddenError);
+  assert.throws(() => assertCapabilityReadScope(userWithCaps([]), "cap-x"), ForbiddenError);
 
   console.log("agent-runtime memory tenant-scope contract tests passed");
 }
