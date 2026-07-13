@@ -23,7 +23,7 @@ import {
 import { resolveDirectLlmTools } from './direct-llm-tools'
 import type { ComposeArtifact } from '../../../../lib/prompt-composer/client'
 import { validateDirectLlmConfig, type CanonicalDirectLlmConfig } from './direct-llm-config'
-import { resolveLoopStrategyVersion, type LoopStrategyDefinition } from '../../loop-strategy.service'
+import { resolveLoopStrategyVersion, getLoopStrategy, type LoopStrategyDefinition } from '../../loop-strategy.service'
 
 type DirectLlmOutput = {
   directLlmFields?: Record<string, unknown> | null
@@ -88,6 +88,25 @@ type ResolvedDirectLlmConfig = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+// A run-level loop strategy (e.g. chosen by the planner launch and stamped into the run's
+// _vars/_globals) applies to Direct-LLM nodes that don't pin their own. These read it out of
+// the instance context. Pure — unit-tested.
+export function extractRunLoopStrategyId(context: unknown): string | undefined {
+  const ctx = isRecord(context) ? context : {}
+  const globals = isRecord(ctx._globals) ? ctx._globals : isRecord(ctx.globals) ? ctx.globals : {}
+  const vars = isRecord(ctx._vars) ? ctx._vars : isRecord(ctx.vars) ? ctx.vars : {}
+  const id = globals.loopStrategyId ?? vars.loopStrategyId
+  return typeof id === 'string' && id.trim() ? id.trim() : undefined
+}
+
+export function extractRunLoopStrategyVersion(context: unknown): number | undefined {
+  const ctx = isRecord(context) ? context : {}
+  const globals = isRecord(ctx._globals) ? ctx._globals : isRecord(ctx.globals) ? ctx.globals : {}
+  const vars = isRecord(ctx._vars) ? ctx._vars : isRecord(ctx.vars) ? ctx.vars : {}
+  const raw = Number(globals.loopStrategyVersion ?? vars.loopStrategyVersion)
+  return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : undefined
 }
 
 function cfgValue(node: WorkflowNode, key: string): unknown {
@@ -863,7 +882,23 @@ async function resolveDirectLlmConfig(
     }
   }
   let loopStrategy: ResolvedDirectLlmConfig['loopStrategy']
-  const loopRef = directValidation.config.loopStrategy
+  let loopRef = directValidation.config.loopStrategy
+  if (!loopRef) {
+    // Run-level fallback: apply a loop strategy chosen for the whole run (planner launch,
+    // team global, or launch var) to this node, which doesn't pin its own. Resolve the latest
+    // PUBLISHED version when the run didn't pin a specific one. Best-effort — an unknown /
+    // unpublished strategy simply leaves the node un-strategied (its prior behavior).
+    const runStrategyId = extractRunLoopStrategyId(instance.context)
+    if (runStrategyId) {
+      let version = extractRunLoopStrategyVersion(instance.context)
+      if (version === undefined) {
+        const strategy = await getLoopStrategy(runStrategyId).catch(() => null)
+        const published = (strategy?.versions ?? []).filter((v) => v.publishedAt != null)
+        version = published.length ? Math.max(...published.map((v) => v.version)) : undefined
+      }
+      if (version) loopRef = { strategyId: runStrategyId, version }
+    }
+  }
   if (loopRef) {
     try {
       // Runtime execution may happen outside an HTTP request. Resolve the

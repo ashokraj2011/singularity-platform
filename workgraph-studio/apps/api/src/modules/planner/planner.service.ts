@@ -812,6 +812,9 @@ export interface CommitInput {
   capabilityId: string
   milestones: Milestone[]
   sessionId?: string
+  // Run-level loop strategy chosen at launch; stamped on each WorkItem's input so it
+  // reaches the launched run's _vars and applies to Direct-LLM nodes that don't pin one.
+  loopStrategyId?: string
 }
 
 export async function commitRoadmap(input: CommitInput, actorId: string, callerToken?: string) {
@@ -830,6 +833,8 @@ export async function commitRoadmap(input: CommitInput, actorId: string, callerT
           routingMode: 'MANUAL',
           urgency,
           priority,
+          // The run-level loop strategy flows through WorkItem.input → the run's _vars.
+          input: input.loopStrategyId ? { loopStrategyId: input.loopStrategyId } : undefined,
           details: {
             source: 'planner',
             milestone: t.milestone,
@@ -874,6 +879,7 @@ export interface LaunchInput {
   modelAlias?: string
   runtimePreference?: string
   governancePreset?: string
+  loopStrategyId?: string
   sessionId?: string
 }
 
@@ -993,7 +999,7 @@ export async function launchRoadmap(input: LaunchInput, actorId: string, callerT
       ? input.milestones
       : localLaunchMilestones(input.story ?? '', input.capabilityId)
   await assertPlannerWorkflowTemplateLaunchable(input.capabilityId, milestones, input.workflowTemplateId, callerToken)
-  const commit = await commitRoadmap({ capabilityId: input.capabilityId, milestones }, actorId, callerToken)
+  const commit = await commitRoadmap({ capabilityId: input.capabilityId, milestones, loopStrategyId: input.loopStrategyId }, actorId, callerToken)
   const warnings: string[] = []
   let routedWorkItem: unknown = null
   let launchTarget: LaunchTarget | null = null
