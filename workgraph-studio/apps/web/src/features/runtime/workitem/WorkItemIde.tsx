@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { LayoutDashboard, FileText, GitPullRequest, CheckCircle2, Zap, Sun, Moon, ArrowLeft, GitBranch } from 'lucide-react'
 import { api } from '../../../lib/api'
 import { ideTokens, type IdeTheme } from './ideTheme'
-import { SpecStudio } from './SpecStudio'
+import { SpecExplorerEditor } from './SpecExplorerEditor'
 import { SubmissionsStudio } from './SubmissionsStudio'
 import { ReconciliationStudio } from './ReconciliationStudio'
 import { OverviewDashboard } from './OverviewDashboard'
@@ -83,7 +83,7 @@ export function WorkItemIde({ workItemId, workItem, onBack, overviewDetails }: {
               <OverviewDashboard workItemId={workItemId} workItem={workItem} onOpenTab={(t) => setView(t)} />
               {overviewDetails}
             </>)}
-            {view === 'specification' && <SpecStudio workItemId={workItemId} />}
+            {view === 'specification' && <SpecExplorerEditor workItemId={workItemId} />}
             {view === 'submissions' && <SubmissionsStudio workItemId={workItemId} onGotoReconciliation={(runId) => { setFocusRunId(runId); setView('reconciliation') }} />}
             {view === 'reconciliation' && <ReconciliationStudio workItemId={workItemId} focusRunId={focusRunId} />}
           </div>
