@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 from typing import Any, Dict, List, Optional
 
 from .config import settings
@@ -296,8 +299,37 @@ def _persist_catalog(models: List[Dict[str, Any]]) -> None:
     global _loaded_catalog
     path = _catalog_write_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(models, indent=2) + "\n")
+    # Never expose a partially-written catalog to another gateway process. A
+    # temp file in the same directory preserves atomic rename semantics.
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    payload = (json.dumps(models, indent=2) + "\n").encode("utf-8")
+    with temp.open("wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp, path)
     _loaded_catalog = None  # force re-read on next access → the change is live
+
+
+@contextmanager
+def _catalog_lock() -> Iterator[None]:
+    """Serialize catalog mutations across threads and gateway processes."""
+    path = _catalog_write_path().with_name(f".{_catalog_write_path().name}.lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as handle:
+        try:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        try:
+            yield
+        finally:
+            try:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except (ImportError, OSError):
+                pass
 
 
 def _clean_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -305,50 +337,59 @@ def _clean_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def add_model(entry: Dict[str, Any]) -> Dict[str, Any]:
-    clean = _clean_entry(entry)
-    for k in _MODEL_REQUIRED:
-        if not str(clean.get(k) or "").strip():
-            raise ProviderConfigError(f"missing required field: {k}")
-    provider = str(clean["provider"]).lower()
-    if provider not in SUPPORTED_PROVIDERS:
-        raise ProviderConfigError(f"unsupported provider: {provider} (one of {', '.join(SUPPORTED_PROVIDERS)})")
-    clean["provider"] = provider
-    models = list(_load_catalog())
-    if any(m.get("id") == clean["id"] for m in models):
-        raise ProviderConfigError(f"model id already exists: {clean['id']}")
-    if clean.get("default"):
-        for m in models:
-            m["default"] = False
-    models.append(clean)
-    _persist_catalog(models)
-    return clean
+    with _catalog_lock():
+        global _loaded_catalog
+        _loaded_catalog = None
+        clean = _clean_entry(entry)
+        for k in _MODEL_REQUIRED:
+            if not str(clean.get(k) or "").strip():
+                raise ProviderConfigError(f"missing required field: {k}")
+        provider = str(clean["provider"]).lower()
+        if provider not in SUPPORTED_PROVIDERS:
+            raise ProviderConfigError(f"unsupported provider: {provider} (one of {', '.join(SUPPORTED_PROVIDERS)})")
+        clean["provider"] = provider
+        models = list(_load_catalog())
+        if any(m.get("id") == clean["id"] for m in models):
+            raise ProviderConfigError(f"model id already exists: {clean['id']}")
+        if clean.get("default"):
+            for m in models:
+                m["default"] = False
+        models.append(clean)
+        _persist_catalog(models)
+        return clean
 
 
 def update_model(model_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
-    models = list(_load_catalog())
-    idx = next((i for i, m in enumerate(models) if m.get("id") == model_id), -1)
-    if idx < 0:
-        raise ProviderConfigError(f"unknown model id: {model_id}")
-    clean = _clean_entry(patch)
-    clean.pop("id", None)  # id is the immutable key
-    if "provider" in clean:
-        p = str(clean["provider"]).lower()
-        if p not in SUPPORTED_PROVIDERS:
-            raise ProviderConfigError(f"unsupported provider: {p}")
-        clean["provider"] = p
-    if clean.get("default"):
-        for m in models:
-            m["default"] = False
-    models[idx] = {**models[idx], **clean}
-    _persist_catalog(models)
-    return models[idx]
+    with _catalog_lock():
+        global _loaded_catalog
+        _loaded_catalog = None
+        models = list(_load_catalog())
+        idx = next((i for i, m in enumerate(models) if m.get("id") == model_id), -1)
+        if idx < 0:
+            raise ProviderConfigError(f"unknown model id: {model_id}")
+        clean = _clean_entry(patch)
+        clean.pop("id", None)  # id is the immutable key
+        if "provider" in clean:
+            p = str(clean["provider"]).lower()
+            if p not in SUPPORTED_PROVIDERS:
+                raise ProviderConfigError(f"unsupported provider: {p}")
+            clean["provider"] = p
+        if clean.get("default"):
+            for m in models:
+                m["default"] = False
+        models[idx] = {**models[idx], **clean}
+        _persist_catalog(models)
+        return models[idx]
 
 
 def delete_model(model_id: str) -> None:
-    models = list(_load_catalog())
-    if not any(m.get("id") == model_id for m in models):
-        raise ProviderConfigError(f"unknown model id: {model_id}")
-    _persist_catalog([m for m in models if m.get("id") != model_id])
+    with _catalog_lock():
+        global _loaded_catalog
+        _loaded_catalog = None
+        models = list(_load_catalog())
+        if not any(m.get("id") == model_id for m in models):
+            raise ProviderConfigError(f"unknown model id: {model_id}")
+        _persist_catalog([m for m in models if m.get("id") != model_id])
 
 
 def warnings() -> List[str]:

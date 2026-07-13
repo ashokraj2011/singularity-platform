@@ -15,6 +15,7 @@ import { api } from '../../lib/api'
 import { useActiveContextStore } from '../../store/activeContext.store'
 import { CapabilityPicker } from '../../components/lookup/EntityPickers'
 import { useCapabilityLabels } from './useCapabilityLabels'
+import { RuntimeInputsForm, type RuntimeInputValues } from '../workflow/RuntimeInputsForm'
 
 type Workflow = {
   id:             string
@@ -202,6 +203,8 @@ function StartWorkflowDialog({
   const [localPath, setLocalPath] = useState('')
   const [cloneDir, setCloneDir] = useState('')
   const [pushEachPhase, setPushEachPhase] = useState(false)
+  const [runtimeValues, setRuntimeValues] = useState<RuntimeInputValues>({ vars: {}, globals: {}, params: {} })
+  const [runtimeValuesReady, setRuntimeValuesReady] = useState(true)
   const isLocalSource = sourceMode === 'local_dir'
 
   // Catalog aliases (Copilot/OpenAI/Anthropic/…) to offer as a per-run model override.
@@ -265,6 +268,9 @@ function StartWorkflowDialog({
       }
       return api.post(`/work-items/${selected.item.id}/targets/${selected.target.id}/start`, {
         childWorkflowTemplateId: workflow.id,
+        vars: runtimeValues.vars,
+        globals: runtimeValues.globals,
+        params: runtimeValues.params,
         ...(modelAlias ? { modelAlias } : {}),
         // Local-directory run: point the runtime at an existing checkout (no clone,
         // no branch, no clone-dir). Otherwise the github defaults ride through.
@@ -282,7 +288,7 @@ function StartWorkflowDialog({
     },
   })
 
-  const canStartWorkItem = Boolean(selectedWorkItemTarget)
+  const canStartWorkItem = Boolean(selectedWorkItemTarget) && runtimeValuesReady
   const selected = availableWorkItems.find(row => `${row.item.id}:${row.target.id}` === selectedWorkItemTarget)
 
   return (
@@ -350,6 +356,14 @@ function StartWorkflowDialog({
           <p style={{ ...mutedStyle, marginTop: 8 }}>
             The run receives `_workItem`, `workItemId`, details, budget, urgency, required date, and target capability in context.
           </p>
+
+          <RuntimeInputsForm
+            workflowId={workflow.id}
+            initialVars={selected?.item.input ?? {}}
+            values={runtimeValues}
+            onChange={setRuntimeValues}
+            onReadyChange={setRuntimeValuesReady}
+          />
 
           <div style={{ marginTop: 16 }}>
             <h3 style={{ ...sectionTitleStyle, margin: '0 0 8px' }}>Model (optional)</h3>
@@ -593,6 +607,7 @@ type WorkItemRow = {
   title: string
   description?: string | null
   urgency?: string | null
+  input?: Record<string, unknown>
   targets: WorkItemTarget[]
 }
 

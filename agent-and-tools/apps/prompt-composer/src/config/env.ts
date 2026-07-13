@@ -17,6 +17,7 @@ const boundedInt = (defaultValue: number, min: number, max: number) =>
 
 const schema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  AUTH_PROVIDER: z.enum(["iam", "local"]).default("local"),
   PORT: z.coerce.number().default(3004),
   DATABASE_URL: z.string().url(),
   JWT_SECRET: z.string().min(8).default("dev-secret-change-in-prod"),
@@ -62,7 +63,20 @@ if (!parsed.success) {
 
 // M35.1 — refuse to start in prod-class envs with a default JWT_SECRET.
 assertProductionSecret({ name: "JWT_SECRET", value: parsed.data.JWT_SECRET });
+assertProductionSecret({ name: "CONTEXT_FABRIC_SERVICE_TOKEN", value: parsed.data.CONTEXT_FABRIC_SERVICE_TOKEN, minLength: 32, nodeEnv: parsed.data.NODE_ENV });
 assertProductionSecret({ name: "WORKGRAPH_ARTIFACT_FETCH_TOKEN", value: parsed.data.WORKGRAPH_ARTIFACT_FETCH_TOKEN, minLength: 32, nodeEnv: parsed.data.NODE_ENV });
+assertProductionInvariant({
+  name: "AUTH_PROVIDER",
+  ok: parsed.data.AUTH_PROVIDER === "iam",
+  message: "set AUTH_PROVIDER=iam; local JWT verification is development-only",
+  nodeEnv: parsed.data.NODE_ENV,
+});
+assertProductionInvariant({
+  name: "IAM_BASE_URL",
+  ok: Boolean(process.env.IAM_SERVICE_URL || process.env.IAM_BASE_URL),
+  message: "set IAM_SERVICE_URL or IAM_BASE_URL so prompt-composer can validate IAM user tokens",
+  nodeEnv: parsed.data.NODE_ENV,
+});
 assertProductionInvariant({
   name: "AUTH_OPTIONAL",
   ok: parsed.data.AUTH_OPTIONAL !== true,

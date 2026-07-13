@@ -107,10 +107,17 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
   const header = req.headers.authorization;
   if (header?.startsWith("Bearer ")) {
     const token = header.slice(7);
-    try {
-      req.user = principalFromDecoded(jwt.verify(token, env.JWT_SECRET) as AuthUser & { sub?: string; kind?: string }) ?? undefined;
-    } catch {
-      req.user = verifyServiceToken(token) ?? await verifyWithIam(token) ?? undefined;
+    // Service tokens are an explicit machine-to-machine exception. In IAM
+    // mode, all human tokens must be checked live by IAM; never fall back to a
+    // locally signed user JWT after IAM rejects or is unavailable.
+    req.user = verifyServiceToken(token) ?? undefined;
+    if (!req.user && env.AUTH_PROVIDER === "iam") req.user = await verifyWithIam(token) ?? undefined;
+    if (!req.user && env.AUTH_PROVIDER === "local") {
+      try {
+        req.user = principalFromDecoded(jwt.verify(token, env.JWT_SECRET) as AuthUser & { sub?: string; kind?: string }) ?? undefined;
+      } catch {
+        req.user = undefined;
+      }
     }
   }
   next();

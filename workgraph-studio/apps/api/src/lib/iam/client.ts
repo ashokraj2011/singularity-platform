@@ -400,7 +400,13 @@ export async function authzCheck(
     }),
     token: callerToken,
   })
-  if (!res.ok) return { allowed: false, reason: `authz/check returned ${res.status}` }
+  if (!res.ok) {
+    const body = await readIamBody(res)
+    return {
+      allowed: false,
+      reason: `authz/check returned ${res.status}: ${iamBodyPreview(body)}`,
+    }
+  }
   try {
     return await readIamJson<IamAuthzCheckResponse>(res, '/authz/check')
   } catch (err) {
@@ -414,6 +420,8 @@ import { prisma } from '../prisma'
 
 export type CapabilityCacheRow = {
   id:     string
+  /** Canonical IAM row id when id is a federated Agent Runtime alias. */
+  iamId?:  string
   name:   string
   type:   string | null
   status: string | null
@@ -427,6 +435,24 @@ type IamCapabilityPayload = {
   capability_type?: string
   status?: string
   is_governing?: boolean
+  metadata?: Record<string, unknown>
+}
+
+/**
+ * Agent Runtime and IAM are separate stores. During the federation migration
+ * a runtime capability can have a different id from its IAM capability; IAM
+ * records the runtime id in metadata.agentRuntimeCapabilityId. Keep that
+ * alias at this boundary so callers can continue using the id selected by the
+ * runtime catalog while authorization still resolves the IAM-owned record.
+ */
+function runtimeCapabilityIdFromIam(capability: IamCapabilityPayload): string | null {
+  const metadata = capability.metadata
+  if (!metadata || typeof metadata !== 'object') return null
+  for (const key of ['agentRuntimeCapabilityId', 'agent_runtime_capability_id']) {
+    const value = metadata[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
 }
 
 async function cacheIamCapability(capabilityId: string, cap: IamCapabilityPayload): Promise<CapabilityCacheRow | null> {
@@ -455,21 +481,24 @@ async function findCapabilityByUuidOrSlug(capabilityId: string, callerToken?: st
     '/capabilities?page=1&size=500',
   ).catch(() => null)
   const items = Array.isArray(body) ? body : Array.isArray(body?.items) ? body.items : []
-  return items.find((item) => item.id === capabilityId || item.capability_id === capabilityId) ?? null
+  return items.find((item) => item.id === capabilityId || item.capability_id === capabilityId || runtimeCapabilityIdFromIam(item) === capabilityId) ?? null
 }
 
 export async function getCapability(capabilityId: string, callerToken?: string): Promise<CapabilityCacheRow | null> {
-  // Try local cache first
-  const cached = await prisma.capability.findUnique({ where: { id: capabilityId } }).catch(() => null)
-  if (cached) {
-    return { id: cached.id, name: cached.name, type: cached.type, status: cached.status, isGoverning: cached.isGoverning }
-  }
-  // Pull from IAM
+  // IAM is authoritative. The WorkGraph row is only a read-through cache and
+  // must never make an orphaned/local capability look valid when IAM has
+  // revoked or never registered the identity.
   const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}`, { token: callerToken }).catch(() => null)
   if (res?.ok) {
-    const cap = await readIamJson<{ id: string; name: string; capability_id?: string; capability_type?: string; status?: string; is_governing?: boolean }>(res, `/capabilities/${capabilityId}`).catch(() => null)
+    const cap = await readIamJson<{
+      id: string; name: string; capability_id?: string; capability_type?: string;
+      status?: string; is_governing?: boolean; metadata?: Record<string, unknown>
+    }>(res, `/capabilities/${capabilityId}`).catch(() => null)
     const row = cap ? await cacheIamCapability(capabilityId, cap) : null
-    if (row) return row
+    if (cap && row) {
+      const isRuntimeAlias = runtimeCapabilityIdFromIam(cap) === capabilityId && cap.id !== capabilityId
+      return isRuntimeAlias ? { ...row, id: capabilityId, iamId: cap.id } : row
+    }
   }
 
   // IAM's direct lookup is keyed by capability_id/slug in some deployments,
@@ -477,7 +506,13 @@ export async function getCapability(capabilityId: string, callerToken?: string):
   // endpoint and match either shape so seeded UUIDs like default-demo resolve.
   const listed = await findCapabilityByUuidOrSlug(capabilityId, callerToken)
   if (!listed) return null
-  return cacheIamCapability(capabilityId, listed)
+  const row = await cacheIamCapability(capabilityId, listed)
+  if (!row) return null
+
+  // Preserve the caller-facing runtime id while retaining the IAM id for
+  // future consumers that need to compare records across both catalogs.
+  const isRuntimeAlias = runtimeCapabilityIdFromIam(listed) === capabilityId && listed.id !== capabilityId
+  return isRuntimeAlias ? { ...row, id: capabilityId, iamId: listed.id } : row
 }
 
 // ── Capability Governance Model (G2) ─────────────────────────────────────────

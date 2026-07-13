@@ -52,6 +52,7 @@ import { blueprintRouter } from './modules/blueprint/blueprint.router'
 import { eventHorizonRouter } from './modules/event-horizon/event-horizon.router'
 import { llmRoutingRouter } from './modules/llm-routing/llm-routing.router'
 import { loopStrategyRouter } from './modules/workflow/loop-strategy.router'
+import { directLlmToolsRouter } from './modules/workflow/direct-llm-tools.router'
 import { codegenRouter } from './modules/codegen/codegen.router'
 // M40 — ImmutableContract replay + lookup endpoints.
 import { contractsRouter } from './modules/contracts/contracts.router'
@@ -192,9 +193,9 @@ export function createApp(): Express {
   app.use('/api/event-horizon', authMiddleware, eventHorizonRouter)
   app.use('/api/llm-routing', authMiddleware, llmRoutingRouter)
   app.use('/api/loop-strategies', authMiddleware, loopStrategyRouter)
-  // Direct LLM tool catalog is read-only and intentionally exposes only the
-  // in-process allowlist; it never returns credentials or arbitrary endpoints.
-  app.use('/api/direct-llm', authMiddleware, loopStrategyRouter)
+  // Direct LLM tool catalog is read-only. Strategy CRUD remains isolated under
+  // /api/loop-strategies so a catalog lookup can never mutate strategy state.
+  app.use('/api/direct-llm/tools', authMiddleware, directLlmToolsRouter)
   // Workgraph-owned Code Generation / Foundry compatibility surface.
   // Platform Web still calls /api/codegen/*; the backing data now lives in
   // Workgraph instead of a standalone Foundry API container.

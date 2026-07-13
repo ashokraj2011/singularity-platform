@@ -8,6 +8,7 @@ import {
   mirrorTeamQueueRouting,
   buildEntityRoutingFields,
   getTemplateCapabilityId,
+  assertAssignmentResolved,
 } from '../../../task/lib/assignment'
 import { validateApprovalRouting } from '../../../../lib/permissions/approval'
 
@@ -35,27 +36,43 @@ export async function activateApproval(
   // Approvals historically used `approverUserId`; keep that as a fallback for
   // legacy workflows that haven't migrated to the structured assignmentMode.
   const legacyApprover = cfg.approverUserId as string | undefined
+  const standard = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard)
+    ? cfg.standard as Record<string, unknown>
+    : {}
+  const requiredRole = typeof standard.role === 'string' ? standard.role : undefined
+  const configuredRole = (cfg.roleKey as string | undefined) ?? requiredRole
+  const configuredMode = (cfg.assignmentMode as string | undefined)
+    ?? (legacyApprover ? 'DIRECT_USER' : configuredRole ? 'ROLE_BASED' : undefined)
   const routing = await mirrorTeamQueueRouting(resolveAssignmentRouting(
     {
-      assignmentMode: (cfg.assignmentMode as string | undefined) ?? (legacyApprover ? 'DIRECT_USER' : undefined),
+      assignmentMode: configuredMode,
       assignedToId:   (cfg.assignedToId  as string | undefined) ?? legacyApprover,
       teamId:         cfg.teamId   as string | undefined,
-      roleKey:        cfg.roleKey  as string | undefined,
+      roleKey:        configuredRole,
       skillKey:       cfg.skillKey as string | undefined,
     },
     capabilityId,
     (instance.context ?? {}) as Record<string, unknown>,
   ))
+  assertAssignmentResolved({
+    assignmentMode: configuredMode,
+    assignedToId: (cfg.assignedToId as string | undefined) ?? legacyApprover,
+    teamId: cfg.teamId as string | undefined,
+    roleKey: configuredRole,
+    skillKey: cfg.skillKey as string | undefined,
+  }, routing, `Approval "${node.label}"`)
+  if (routing.mode === 'ROLE_BASED' && !routing.roleKey) {
+    throw new Error(`Approval "${node.label}" requires a role. Select a role or provide a runtime placeholder such as {{instance.vars.requiredRole}} before the node activates.`)
+  }
 
   const fields = buildEntityRoutingFields(routing)
-  if (cfg.assignmentMode || cfg.assignedToId || cfg.teamId || cfg.roleKey || cfg.skillKey) {
+  if (configuredMode || cfg.assignedToId || cfg.teamId || configuredRole || cfg.skillKey) {
     try {
       validateApprovalRouting(fields)
     } catch (error) {
       throw new Error(`Approval node ${node.label} has invalid human routing: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
-  const standard = cfg.standard && typeof cfg.standard === 'object' && !Array.isArray(cfg.standard) ? cfg.standard as Record<string, unknown> : {}
   const quorumRaw = Number(cfg.quorumRequired ?? cfg.approvalQuorum ?? cfg.minVotes ?? standard.quorumRequired ?? standard.approvalQuorum ?? standard.minVotes ?? 1)
   const quorumRequired = Number.isFinite(quorumRaw) ? Math.min(100, Math.max(1, Math.trunc(quorumRaw))) : 1
   const adminOverride = cfg.adminOverride !== false

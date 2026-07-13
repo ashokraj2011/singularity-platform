@@ -204,7 +204,7 @@ async function main(): Promise<void> {
   // any capability. Common → selectable + launchable by every capability.
   await (prisma as any).workflow.upsert({
     where: { id: WF_ID },
-    update: { name: WF_NAME, capabilityId: null, teamId: TEAM_ID, profile: 'main', workflowTypeKey: 'SDLC', metadata: { usesCopilot: true } },
+    update: { name: WF_NAME, capabilityId: null, teamId: TEAM_ID, profile: 'main', workflowTypeKey: 'SDLC', metadata: { usesCopilot: true, visibility: 'GLOBAL' } },
     create: {
       id: WF_ID, name: WF_NAME,
       description: 'SDLC delivered by the GitHub Copilot CLI: one AGENT_TASK (executor=copilot) per phase. ' +
@@ -213,7 +213,7 @@ async function main(): Promise<void> {
       teamId: TEAM_ID, capabilityId: null,
       // Whole-workflow Copilot opt-in → governed agents route via the COPILOT_SDLC
       // touch point, and the UI shows the COPILOT indicator.
-      metadata: { usesCopilot: true },
+      metadata: { usesCopilot: true, visibility: 'GLOBAL' },
     },
   })
   await (prisma as any).workflowVersion.upsert({

@@ -29,6 +29,14 @@ type IamMeResponse = {
   capability_ids?: string[];
 };
 
+type DecodedPrincipal = AuthUser & {
+  sub?: string;
+  kind?: string;
+  service_name?: string;
+  scopes?: string[];
+  tenant_ids?: string[];
+};
+
 const IAM_AUTH_VERIFY_TIMEOUT_MS = boundedEnvInteger("IAM_AUTH_VERIFY_TIMEOUT_SEC", {
   defaultValue: 5,
   min: 1,
@@ -46,7 +54,7 @@ function iamApiBase(): string | null {
 // surfaces — reject them here (returns null). is_super_admin is honored ONLY from
 // real user tokens; service tokens are authorized by scope, not by an admin flag
 // (prevents confused-deputy escalation via shared-secret JWTs).
-function principalFromDecoded(decoded: AuthUser & { sub?: string; kind?: string }): AuthUser | null {
+function principalFromDecoded(decoded: DecodedPrincipal): AuthUser | null {
   const kind = typeof decoded.kind === "string" ? decoded.kind.toLowerCase() : "user";
   if (kind === "device" || kind === "runtime") return null;
   const isUser = kind === "user";
@@ -55,6 +63,41 @@ function principalFromDecoded(decoded: AuthUser & { sub?: string; kind?: string 
     user_id: decoded.user_id ?? decoded.sub ?? "",
     is_super_admin: isUser ? decoded.is_super_admin === true : false,
   };
+}
+
+function servicePrincipalFromToken(token: string): AuthUser | null {
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET ?? "dev-secret-change-in-prod") as DecodedPrincipal;
+    if (String(decoded.kind ?? "").toLowerCase() !== "service") return null;
+    const configured = (process.env.IAM_SERVICE_TOKEN_TENANT_IDS ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+    if ((process.env.TENANT_ISOLATION_MODE ?? "").toLowerCase() === "strict" && configured.length === 0) return null;
+    const tokenTenants = Array.isArray(decoded.tenant_ids)
+      ? decoded.tenant_ids.filter((value): value is string => typeof value === "string" && value.trim() !== "")
+      : [];
+    const expected = [...new Set(configured)].sort();
+    const actual = [...new Set(tokenTenants)].sort();
+    if (expected.length > 0 && (expected.length !== actual.length || expected.some((tenant, index) => tenant !== actual[index]))) return null;
+    return {
+      user_id: decoded.sub ?? `service:${decoded.service_name ?? "unknown"}`,
+      email: `${decoded.service_name ?? "service"}@service.local`,
+      roles: ["service"],
+      capability_ids: [],
+      is_super_admin: false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function authenticateToken(token: string): Promise<AuthUser | null> {
+  const service = servicePrincipalFromToken(token);
+  if (service) return service;
+  if ((process.env.AUTH_PROVIDER ?? "local").toLowerCase() === "iam") return verifyWithIam(token);
+  try {
+    return principalFromDecoded(jwt.verify(token, process.env.JWT_SECRET ?? "dev-secret-change-in-prod") as DecodedPrincipal);
+  } catch {
+    return null;
+  }
 }
 
 async function verifyWithIam(token: string): Promise<AuthUser | null> {
@@ -88,12 +131,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return;
   }
   const token = header.slice(7);
-  try {
-    const secret = process.env.JWT_SECRET ?? "dev-secret-change-in-prod";
-    req.user = principalFromDecoded(jwt.verify(token, secret) as AuthUser & { sub?: string; kind?: string }) ?? undefined;
-  } catch {
-    req.user = await verifyWithIam(token) ?? undefined;
-  }
+  req.user = await authenticateToken(token) ?? undefined;
   if (!req.user) {
     res.status(401).json({ error: "Invalid token" });
     return;
@@ -105,12 +143,7 @@ export async function optionalAuth(req: Request, _res: Response, next: NextFunct
   const header = req.headers.authorization;
   if (header?.startsWith("Bearer ")) {
     const token = header.slice(7);
-    try {
-      const secret = process.env.JWT_SECRET ?? "dev-secret-change-in-prod";
-      req.user = principalFromDecoded(jwt.verify(token, secret) as AuthUser & { sub?: string; kind?: string }) ?? undefined;
-    } catch {
-      req.user = await verifyWithIam(token) ?? undefined;
-    }
+    req.user = await authenticateToken(token) ?? undefined;
   }
   next();
 }

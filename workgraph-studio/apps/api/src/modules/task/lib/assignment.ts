@@ -71,18 +71,25 @@ const VALID_MODES: AssignmentMode[] = ['DIRECT_USER', 'TEAM_QUEUE', 'ROLE_BASED'
 // template reference resolved at runtime against the workflow instance's
 // context. Supported reference forms:
 //
-//   {{vars.X}}     → context._vars.X   (template variable, possibly overridden per-instance)
-//   {{globals.X}}  → context._globals.X (team-scoped global)
-//   {{params.X}}   → context._params.X  (legacy alias of vars)
-//   {{output.X}}   → context.X          (any node output merged into context)
-//   {{context.X}}  → context.X          (raw path)
-//   {{X}}          → context.X          (no prefix)
+//   {{vars.X}}            → context._vars.X   (template variable, possibly overridden per-instance)
+//   {{instance.vars.X}}   → context._vars.X   (explicit run-time spelling)
+//   {{globals.X}}         → context._globals.X (team-scoped global)
+//   {{instance.globals.X}}→ context._globals.X
+//   {{params.X}}          → context._params.X  (legacy alias of vars)
+//   {{instance.params.X}} → context._params.X
+//   {{output.X}}          → context.X          (any node output merged into context)
+//   {{event.X}}           → context.event.X
+//   {{workItem.X}}        → context.workItem.X
+//   {{context.X}}         → context.X          (raw path)
+//   {{X}}                 → context.X          (no prefix)
 //
 // A literal (no `{{ }}`) passes through unchanged.
-// An unresolvable reference returns `null`, so the routing falls back gracefully
-// (no Task assignment created, no queue row) — caller can audit / fail-soft.
+// An unresolvable reference returns `null`; the task/approval executors fail
+// closed before persistence so an operator never gets a silently invisible
+// unassigned task.
 
 const TEMPLATE_RE = /^\{\{\s*(.+?)\s*\}\}$/
+const TEMPLATE_GLOBAL_RE = /\{\{\s*([^{}]+?)\s*\}\}/g
 
 function walkPath(root: Record<string, unknown> | undefined, path: string): unknown {
   if (!root) return undefined
@@ -90,6 +97,28 @@ function walkPath(root: Record<string, unknown> | undefined, path: string): unkn
     if (cur && typeof cur === 'object') return (cur as Record<string, unknown>)[key]
     return undefined
   }, root)
+}
+
+function resolveReference(context: Record<string, unknown>, rawRef: string): unknown {
+  let ref = rawRef.trim()
+  // `instance.*` and `runtime.*` are intentionally aliases. They make it
+  // obvious in the designer that the value is supplied by the run, while the
+  // stored context keeps the existing `_vars`/`_globals` contract.
+  if (ref.startsWith('instance.')) ref = ref.slice('instance.'.length)
+  if (ref.startsWith('runtime.')) ref = ref.slice('runtime.'.length)
+
+  if (ref.startsWith('vars.')) return walkPath(context._vars as Record<string, unknown>, ref.slice('vars.'.length))
+  if (ref.startsWith('_vars.')) return walkPath(context._vars as Record<string, unknown>, ref.slice('_vars.'.length))
+  if (ref.startsWith('globals.')) return walkPath(context._globals as Record<string, unknown>, ref.slice('globals.'.length))
+  if (ref.startsWith('_globals.')) return walkPath(context._globals as Record<string, unknown>, ref.slice('_globals.'.length))
+  if (ref.startsWith('params.')) return walkPath(context._params as Record<string, unknown>, ref.slice('params.'.length))
+  if (ref.startsWith('_params.')) return walkPath(context._params as Record<string, unknown>, ref.slice('_params.'.length))
+  if (ref.startsWith('context.')) return walkPath(context, ref.slice('context.'.length))
+  if (ref.startsWith('output.')) return walkPath(context, ref.slice('output.'.length))
+  if (ref.startsWith('event.')) return walkPath(context, ref)
+  if (ref.startsWith('payload.')) return walkPath(context, ref)
+  if (ref.startsWith('workItem.')) return walkPath(context, ref)
+  return walkPath(context, ref)
 }
 
 /**
@@ -102,22 +131,34 @@ export function resolveAssignmentValue(
 ): string | null {
   if (raw === null || raw === undefined || raw === '') return null
   const m = raw.match(TEMPLATE_RE)
-  if (!m) return raw    // literal — pass through
+  if (!m) {
+    // Support a composed label such as `reviewer-{{vars.region}}` as well as
+    // the normal full-value form. IDs and role keys should still use the full
+    // form; this simply avoids making runtime-bound strings unnecessarily
+    // restrictive.
+    if (!raw.includes('{{')) return raw
+    const ctx = context ?? {}
+    let unresolved = false
+    const composed = raw.replace(TEMPLATE_GLOBAL_RE, (_match, ref: string) => {
+      const value = resolveReference(ctx, ref)
+      if (value === null || value === undefined || typeof value === 'object') {
+        unresolved = true
+        return ''
+      }
+      return String(value)
+    })
+    return unresolved ? null : composed
+  }
 
-  const ref = m[1]
-  const ctx = context ?? {}
-  let value: unknown
-  if (ref.startsWith('vars.'))         value = walkPath(ctx._vars    as Record<string, unknown>, ref.slice('vars.'.length))
-  else if (ref.startsWith('globals.')) value = walkPath(ctx._globals as Record<string, unknown>, ref.slice('globals.'.length))
-  else if (ref.startsWith('params.'))  value = walkPath(ctx._params  as Record<string, unknown>, ref.slice('params.'.length))
-  else if (ref.startsWith('output.'))  value = walkPath(ctx, ref.slice('output.'.length))
-  else if (ref.startsWith('context.')) value = walkPath(ctx, ref.slice('context.'.length))
-  else                                 value = walkPath(ctx, ref)
-
+  const value = resolveReference(context ?? {}, m[1])
   if (value === null || value === undefined) return null
   if (typeof value === 'string') return value
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)
   return null
+}
+
+export function isAssignmentTemplate(value: unknown): value is string {
+  return typeof value === 'string' && value.includes('{{')
 }
 
 /**
@@ -134,7 +175,13 @@ export function resolveAssignmentRouting(
   templateCapabilityId: string | null,
   instanceContext?: Record<string, unknown>,
 ): ResolvedRouting {
-  const raw = (cfg.assignmentMode ?? 'DIRECT_USER').toString()
+  const inferredMode = cfg.assignmentMode
+    ?? (cfg.assignedToId ? 'DIRECT_USER'
+      : cfg.teamId ? 'TEAM_QUEUE'
+        : cfg.roleKey ? 'ROLE_BASED'
+          : cfg.skillKey ? 'SKILL_BASED'
+            : 'DIRECT_USER')
+  const raw = inferredMode.toString()
   const mode = (VALID_MODES.includes(raw as AssignmentMode) ? raw : 'DIRECT_USER') as AssignmentMode
 
   const resolve = (v: string | undefined): string | null =>
@@ -148,6 +195,35 @@ export function resolveAssignmentRouting(
     skillKey:     mode === 'SKILL_BASED' ? resolve(cfg.skillKey)     : null,
     // ROLE_BASED *requires* a capability scope; other modes ignore it.
     capabilityId: mode === 'ROLE_BASED'  ? templateCapabilityId       : null,
+  }
+}
+
+/**
+ * Fail before persistence when a configured runtime selector did not resolve.
+ * An unresolved placeholder must never become an unassigned task or an
+ * approval that nobody can see. Empty selectors remain allowed for legacy
+ * designs that intentionally create an operator-visible unassigned task.
+ */
+export function assertAssignmentResolved(
+  cfg: AssignmentConfig,
+  routing: ResolvedRouting,
+  label: string,
+): void {
+  const raw = routing.mode === 'DIRECT_USER' ? cfg.assignedToId
+    : routing.mode === 'TEAM_QUEUE' ? cfg.teamId
+      : routing.mode === 'ROLE_BASED' ? cfg.roleKey
+        : routing.mode === 'SKILL_BASED' ? cfg.skillKey
+          : undefined
+  const resolved = routing.mode === 'DIRECT_USER' ? routing.assignedToId
+    : routing.mode === 'TEAM_QUEUE' ? routing.teamId
+      : routing.mode === 'ROLE_BASED' ? routing.roleKey
+        : routing.mode === 'SKILL_BASED' ? routing.skillKey
+          : undefined
+  if (raw && !resolved) {
+    throw new Error(`${label} assignment value "${raw}" could not be resolved from the workflow instance context. Provide the runtime value before this node activates.`)
+  }
+  if (routing.mode === 'ROLE_BASED' && raw && !routing.capabilityId) {
+    throw new Error(`${label} role routing requires the workflow to have a capability before the task activates.`)
   }
 }
 

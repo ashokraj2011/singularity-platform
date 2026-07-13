@@ -551,6 +551,7 @@ workflowInstancesRouter.get('/:id/nodes/:nodeId', async (req, res, next) => {
 workflowInstancesRouter.post('/:id/nodes', validate(createNodeSchema), async (req, res, next) => {
   try {
     const id = req.params.id as string
+    await assertInstancePermission(req.user!.userId, id, 'edit', resolveTenantFromRequest(req))
     const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.create({
       data: { instanceId: id, ...req.body },
     }), resolveTenantFromRequest(req))
@@ -574,10 +575,12 @@ workflowInstancesRouter.patch('/:id/nodes/:nodeId', validate(updateNodeSchema), 
   try {
     const id = req.params.id as string
     const nodeId = req.params.nodeId as string
+    await assertInstancePermission(req.user!.userId, id, 'edit', resolveTenantFromRequest(req))
     const node = await withTenantDbTransaction(prisma, async (tx) => {
-      const before = await tx.workflowNode.findUnique({ where: { id: nodeId } })
+      const before = await tx.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } })
+      if (!before) throw new NotFoundError('WorkflowNode', nodeId)
       const updated = await tx.workflowNode.update({
-        where: { id: nodeId },
+        where: { id: before.id },
         data: req.body,
       })
       await tx.workflowMutation.create({
@@ -622,8 +625,11 @@ workflowInstancesRouter.patch('/:id/nodes/:nodeId', validate(updateNodeSchema), 
 
 workflowInstancesRouter.delete('/:id/nodes/:nodeId', async (req, res, next) => {
   try {
+    await assertInstancePermission(req.user!.userId, req.params.id, 'edit', resolveTenantFromRequest(req))
     await withTenantDbTransaction(prisma, async (tx) => {
-      await tx.workflowNode.delete({ where: { id: req.params.nodeId } })
+      const node = await tx.workflowNode.findFirst({ where: { id: req.params.nodeId, instanceId: req.params.id } })
+      if (!node) throw new NotFoundError('WorkflowNode', req.params.nodeId)
+      await tx.workflowNode.delete({ where: { id: node.id } })
       await tx.workflowMutation.create({
         data: {
           instanceId: req.params.id,
@@ -641,6 +647,7 @@ workflowInstancesRouter.delete('/:id/nodes/:nodeId', async (req, res, next) => {
 
 workflowInstancesRouter.get('/:id/edges', async (req, res, next) => {
   try {
+    await assertInstancePermission(req.user!.userId, req.params.id, 'view', resolveTenantFromRequest(req))
     const edges = await withTenantDbTransaction(prisma, (tx) => tx.workflowEdge.findMany({ where: { instanceId: req.params.id } }), resolveTenantFromRequest(req))
     res.json(edges)
   } catch (err) {
@@ -650,6 +657,7 @@ workflowInstancesRouter.get('/:id/edges', async (req, res, next) => {
 
 workflowInstancesRouter.post('/:id/edges', validate(createEdgeSchema), async (req, res, next) => {
   try {
+    await assertInstancePermission(req.user!.userId, req.params.id, 'edit', resolveTenantFromRequest(req))
     const edge = await withTenantDbTransaction(prisma, (tx) => tx.workflowEdge.create({
       data: { instanceId: req.params.id, ...req.body },
     }), resolveTenantFromRequest(req))
@@ -667,10 +675,12 @@ const updateEdgeSchema = z.object({
 
 workflowInstancesRouter.patch('/:id/edges/:edgeId', validate(updateEdgeSchema), async (req, res, next) => {
   try {
-    const edge = await withTenantDbTransaction(prisma, (tx) => tx.workflowEdge.update({
-      where: { id: req.params.edgeId as string },
-      data: req.body,
-    }), resolveTenantFromRequest(req))
+    await assertInstancePermission(req.user!.userId, req.params.id, 'edit', resolveTenantFromRequest(req))
+    const edge = await withTenantDbTransaction(prisma, async (tx) => {
+      const existing = await tx.workflowEdge.findFirst({ where: { id: req.params.edgeId as string, instanceId: req.params.id } })
+      if (!existing) throw new NotFoundError('WorkflowEdge', req.params.edgeId)
+      return tx.workflowEdge.update({ where: { id: existing.id }, data: req.body })
+    }, resolveTenantFromRequest(req))
     res.json(edge)
   } catch (err) {
     next(err)
@@ -679,7 +689,12 @@ workflowInstancesRouter.patch('/:id/edges/:edgeId', validate(updateEdgeSchema), 
 
 workflowInstancesRouter.delete('/:id/edges/:edgeId', async (req, res, next) => {
   try {
-    await withTenantDbTransaction(prisma, (tx) => tx.workflowEdge.delete({ where: { id: req.params.edgeId } }), resolveTenantFromRequest(req))
+    await assertInstancePermission(req.user!.userId, req.params.id, 'edit', resolveTenantFromRequest(req))
+    await withTenantDbTransaction(prisma, async (tx) => {
+      const edge = await tx.workflowEdge.findFirst({ where: { id: req.params.edgeId, instanceId: req.params.id } })
+      if (!edge) throw new NotFoundError('WorkflowEdge', req.params.edgeId)
+      await tx.workflowEdge.delete({ where: { id: edge.id } })
+    }, resolveTenantFromRequest(req))
     res.status(204).end()
   } catch (err) {
     next(err)
@@ -2694,7 +2709,17 @@ workflowInstancesRouter.get('/pending-executions/poll', async (req, res, next) =
           .filter(exec => (exec.instance.tenantId ?? resolveTenantFromContext(exec.instance.context)) === requestTenant)
           .slice(0, 50)
       : pendingRaw
-    const shaped = pending.map(exec => {
+    // A tenant boundary is not a runner permission. Filter queued work by the
+    // caller's explicit claim access before returning node configuration.
+    const authorized = (await Promise.all(pending.map(async exec => {
+      try {
+        await assertInstancePermission(req.user!.userId, exec.instanceId, 'claim', requestTenant)
+        return exec
+      } catch {
+        return null
+      }
+    }))).filter((exec): exec is typeof pending[number] => Boolean(exec))
+    const shaped = authorized.map(exec => {
       const { context: _context, tenantId: _tenantId, ...instance } = exec.instance
       // Strip claimToken — it is minted and revealed ONLY at /claim (see below).
       const { claimToken: _claimToken, ...rest } = exec
@@ -2714,6 +2739,11 @@ workflowInstancesRouter.post('/pending-executions/:execId/claim', async (req, re
   try {
     await assertPendingExecutionTenant(req, req.params.execId)
     const tenant = resolveTenantFromRequest(req)
+    const pendingForAuth = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.findUnique({
+      where: { id: req.params.execId }, select: { instanceId: true },
+    }), tenant)
+    if (!pendingForAuth) throw new NotFoundError('PendingExecution', req.params.execId)
+    await assertInstancePermission(req.user!.userId, pendingForAuth.instanceId, 'claim', tenant)
     const claimToken = randomUUID()
     const claimed = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.updateMany({
       where: { id: req.params.execId, claimedAt: null, completedAt: null, expiresAt: { gt: new Date() } },
@@ -2741,6 +2771,11 @@ workflowInstancesRouter.post('/pending-executions/:execId/complete', async (req,
       throw new ValidationError('claimToken is required to complete a pending execution (obtain it from /claim).')
     }
     const tenant = resolveTenantFromRequest(req)
+    const pendingForAuth = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.findUnique({
+      where: { id: req.params.execId }, select: { instanceId: true },
+    }), tenant)
+    if (!pendingForAuth) throw new NotFoundError('PendingExecution', req.params.execId)
+    await assertInstancePermission(req.user!.userId, pendingForAuth.instanceId, 'claim', tenant)
     const done = await withTenantDbTransaction(prisma, (tx) => tx.pendingExecution.updateMany({
       where: { id: req.params.execId, claimToken, completedAt: null },
       data: { completedAt: new Date(), result: result as any, error },

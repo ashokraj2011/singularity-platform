@@ -11,7 +11,7 @@ import { isAdminUser } from './admin'
 export const WORKFLOW_ACTIONS = [
   'view', 'create', 'edit', 'publish', 'delete', 'start', 'pause', 'resume',
   'cancel', 'simulate', 'checkpoint', 'replay', 'route', 'claim', 'approve',
-  'operate', 'audit_view',
+  'operate', 'audit_view', 'event_publish',
 ] as const
 
 export type WorkflowAction = typeof WORKFLOW_ACTIONS[number]
@@ -26,6 +26,12 @@ export type WorkflowResource =
   | 'document'
   | 'approval'
   | 'runner_execution'
+
+// A creator owns the workflow configuration surface. These grants are written
+// at creation time, and the legacy-owner fallback below keeps drafts created
+// before the resource-grant migration editable without bypassing explicit
+// denies or tenant boundaries.
+const WORKFLOW_OWNER_ACTIONS: WorkflowAction[] = ['view', 'edit', 'publish', 'delete']
 
 export type WorkflowAuthorizationDecision = {
   allowed: boolean
@@ -92,6 +98,7 @@ const IAM_PERMISSION_BY_ACTION: Record<WorkflowAction, string> = {
   approve: 'workflow:approve',
   operate: 'workflow:operations:view',
   audit_view: 'workflow:audit:view',
+  event_publish: 'workflow:event:publish',
 }
 
 const LEGACY_ACTION_BY_ACTION: Record<WorkflowAction, string[]> = {
@@ -112,6 +119,7 @@ const LEGACY_ACTION_BY_ACTION: Record<WorkflowAction, string[]> = {
   approve: ['ADMIN'],
   operate: ['ADMIN'],
   audit_view: ['VIEW', 'ADMIN'],
+  event_publish: [],
 }
 
 function isRecord(value: Prisma.JsonValue | null | undefined): value is Prisma.JsonObject {
@@ -249,6 +257,15 @@ async function evaluateTemplate(actor: Actor, template: TemplateOwnership, actio
     return baseDecision({ actor, template, action, allowed: true, source: 'resource_grant', reason: 'An explicit workflow access grant applies.', grants: matching.map(grant => ({ id: grant.id, subjectType: grant.subjectType, subjectId: grant.subjectId, action: grant.action })) })
   }
 
+  // Migrate older drafts lazily. Before WorkflowAccessGrant existed, the
+  // creator was persisted on the workflow but no USER grant was created. Keep
+  // that ownership meaningful for configuration actions while preserving the
+  // explicit-deny check above and requiring normal IAM permissions for start,
+  // replay, approvals, and external side effects.
+  if (template.createdById === actor.id && WORKFLOW_OWNER_ACTIONS.includes(action)) {
+    return baseDecision({ actor, template, action, allowed: true, source: 'creator_ownership', reason: 'Workflow creator ownership.' })
+  }
+
   if (config.AUTH_PROVIDER === 'local' && actor.isAdmin) {
     return baseDecision({ actor, template, action, allowed: true, source: 'local_admin', reason: 'Local development administrator.' })
   }
@@ -300,6 +317,25 @@ async function evaluateTemplate(actor: Actor, template: TemplateOwnership, actio
     }
   }
   return baseDecision({ actor, template, action, allowed: false, source: 'default_deny', reason: 'No matching workflow grant or capability permission.' })
+}
+
+export async function ensureWorkflowOwnerAccess(
+  workflowId: string,
+  tenantId: string,
+  userId: string,
+): Promise<void> {
+  await prisma.workflowAccessGrant.createMany({
+    data: WORKFLOW_OWNER_ACTIONS.map(action => ({
+      workflowId,
+      tenantId,
+      subjectType: 'USER',
+      subjectId: userId,
+      action,
+      effect: 'ALLOW',
+      createdById: userId,
+    })),
+    skipDuplicates: true,
+  })
 }
 
 export async function evaluateTemplatePermission(userId: string, templateId: string, action: WorkflowAction): Promise<WorkflowAuthorizationDecision> {

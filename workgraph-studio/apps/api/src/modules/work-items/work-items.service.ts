@@ -41,6 +41,7 @@ export type CreateWorkItemInput = {
   originType?: 'PARENT_DELEGATED' | 'CAPABILITY_LOCAL'
   priority?: number
   dueAt?: string | Date | null
+  tenantId?: string | null
   targets: WorkItemTargetInput[]
 }
 
@@ -190,6 +191,10 @@ export async function createWorkItem(input: CreateWorkItemInput, actorId?: strin
   const isFutureScheduled = routingMode === 'SCHEDULED_START'
     && ((scheduledAt && scheduledAt.valueOf() > Date.now()) || (notBefore && notBefore.valueOf() > Date.now()))
   const workflowTypeKey = normalizeMetadataKey(input.workflowTypeKey ?? workItemTypeKey)
+  const tenantId = input.tenantId ?? currentTenantIdForDb() ?? (tenantIsolationStrict() ? undefined : config.WORKGRAPH_DEFAULT_TENANT_ID)
+  if (tenantIsolationStrict() && !tenantId) {
+    throw new ValidationError('TENANT_ISOLATION_MODE=strict requires tenantId when creating a WorkItem')
+  }
 
   const workItem = await prisma.workItem.create({
     data: {
@@ -226,6 +231,7 @@ export async function createWorkItem(input: CreateWorkItemInput, actorId?: strin
       detailsLocked: true,
       priority: input.priority ?? Number(typeDefaults.priority ?? 50),
       dueAt,
+      tenantId,
       createdById: actorId ?? undefined,
       targets: {
         create: targets.map(target => ({
@@ -1004,7 +1010,18 @@ export async function startWorkItemTarget(
   workItemId: string,
   targetId: string,
   userId: string,
-  options: { childWorkflowTemplateId?: string; modelAlias?: string; sourceRef?: string; sourceType?: string; sourceUri?: string; cloneDir?: string; pushEachPhase?: boolean } = {},
+  options: {
+    childWorkflowTemplateId?: string
+    modelAlias?: string
+    sourceRef?: string
+    sourceType?: string
+    sourceUri?: string
+    cloneDir?: string
+    pushEachPhase?: boolean
+    vars?: Record<string, unknown>
+    globals?: Record<string, unknown>
+    params?: Record<string, unknown>
+  } = {},
 ) {
   const target = await prisma.workItemTarget.findFirst({
     where: { id: targetId, workItemId },
@@ -1020,6 +1037,7 @@ export async function startWorkItemTarget(
   await assertStartableWorkItemTemplate({ templateId, targetCapabilityId: target.targetCapabilityId })
   const vars = {
     ...asRecord(target.workItem.input),
+    ...(options.vars ?? {}),
     workItemId,
     workCode: target.workItem.workCode,
     workItemTargetId: targetId,
@@ -1071,7 +1089,7 @@ export async function startWorkItemTarget(
         // Per-run choices made at launch → threaded as system globals, read by the
         // executors (modelAlias by AgentTask, sourceRef by Workbench/AgentTask).
         globals: (() => {
-          const g: Record<string, unknown> = {}
+          const g: Record<string, unknown> = { ...(options.globals ?? {}) }
           if (options.modelAlias) g.modelAlias = options.modelAlias
           if (options.sourceRef && options.sourceRef.trim()) g.sourceRef = options.sourceRef.trim()
           if (options.sourceType && options.sourceType.trim()) g.sourceType = options.sourceType.trim()
@@ -1080,6 +1098,7 @@ export async function startWorkItemTarget(
           if (options.pushEachPhase) g.pushEachPhase = true
           return Object.keys(g).length ? g : undefined
         })(),
+        params: options.params,
       })
     } catch (err) {
       // Release the reservation so a later retry can start this target.

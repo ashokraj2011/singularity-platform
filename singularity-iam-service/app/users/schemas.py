@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
@@ -35,3 +35,7 @@ class UpdateUserRequest(BaseModel):
     is_super_admin: Optional[bool] = None
     metadata: Optional[dict] = None
     tags: Optional[list[str]] = None
+
+
+class SetLocalPasswordRequest(BaseModel):
+    password: str = Field(min_length=12, max_length=256)

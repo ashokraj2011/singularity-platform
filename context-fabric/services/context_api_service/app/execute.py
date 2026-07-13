@@ -41,6 +41,7 @@ from .iam_service_token import (
     invalidate_iam_service_token,
     configured_tenant_ids_for_service_token,
 )
+from .laptop_bridge import authorize_runtime_target as _authorize_runtime_target
 from .response_json import response_json_object
 
 # M73 — refactor target modules. Helpers below are thin re-exports of the
@@ -498,6 +499,14 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
         raise HTTPException(status_code=400, detail="run_context.capability_id is required")
     if settings.require_tenant_id and not req.run_context.tenant_id:
         raise HTTPException(status_code=400, detail="run_context.tenant_id is required when REQUIRE_TENANT_ID=true")
+    # X-Service-Token authenticates the calling service. The run context is the
+    # delegated actor and must pass the IAM runtime-dispatch decision before CF
+    # can invoke an MCP/LLM runtime on that actor's behalf.
+    await _authorize_runtime_target(
+        user_id=req.run_context.user_id,
+        tenant_id=req.run_context.tenant_id,
+        capability_id=req.run_context.capability_id,
+    )
 
     effective_capabilities: list[dict[str, Any]] = []
     profile_snapshot_hash: Optional[str] = None
@@ -807,6 +816,7 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
                 "agent_run_id": req.run_context.agent_run_id,
                 "capability_id": req.run_context.capability_id,
                 "tenant_id": req.run_context.tenant_id,
+                "user_id": req.run_context.user_id,
                 "agent_template_id": req.run_context.agent_template_id,
                 "profile_snapshot_hash": profile_snapshot_hash,
                 "profile_provider_resolutions": profile_provider_resolutions,
@@ -1259,6 +1269,7 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
         "agent_run_id": req.run_context.agent_run_id,
         "capability_id": req.run_context.capability_id,
         "tenant_id": req.run_context.tenant_id,
+        "user_id": req.run_context.user_id,
         "agent_template_id": req.run_context.agent_template_id,
         "profile_snapshot_hash": profile_snapshot_hash,
         "profile_provider_resolutions": profile_provider_resolutions,
@@ -1412,6 +1423,7 @@ def _persist_failure(
             "agent_run_id": req.run_context.agent_run_id,
             "capability_id": req.run_context.capability_id,
             "tenant_id": req.run_context.tenant_id,
+            "user_id": req.run_context.user_id,
             "agent_template_id": req.run_context.agent_template_id,
             "profile_snapshot_hash": req.run_context.profile_snapshot_hash,
             "profile_provider_resolutions": req.run_context.profile_provider_resolutions,
@@ -1626,6 +1638,11 @@ async def execute_resume(req: ResumeRequest, x_service_token: Optional[str] = He
         raise HTTPException(status_code=400, detail="cf_call_id or continuation_token required")
     if not rec:
         raise HTTPException(status_code=404, detail="call not found")
+    await _authorize_runtime_target(
+        user_id=rec.get("user_id"),
+        tenant_id=rec.get("tenant_id"),
+        capability_id=rec.get("capability_id"),
+    )
     if rec.get("status") != "WAITING_APPROVAL":
         raise HTTPException(
             status_code=409,
@@ -1967,6 +1984,12 @@ async def execute_governed(req: GovernedStepRequest, x_service_token: Optional[s
     caller is expected to persist before the next turn.
     """
     check_execute_service_token(x_service_token)
+    rc = req.run_context or {}
+    await _authorize_runtime_target(
+        user_id=rc.get("user_id") or rc.get("userId"),
+        tenant_id=rc.get("tenant_id") or rc.get("tenantId"),
+        capability_id=rc.get("capability_id") or rc.get("capabilityId"),
+    )
     # Construct or rehydrate the phase state.
     if req.phase_state:
         try:
@@ -2079,6 +2102,12 @@ class GovernedTurnRequest(BaseModel):
 async def execute_governed_turn(req: GovernedTurnRequest, x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token")) -> dict[str, Any]:
     """Run one governed LLM turn."""
     check_execute_service_token(x_service_token)
+    rc = req.run_context or {}
+    await _authorize_runtime_target(
+        user_id=rc.get("user_id") or rc.get("userId"),
+        tenant_id=rc.get("tenant_id") or rc.get("tenantId"),
+        capability_id=rc.get("capability_id") or rc.get("capabilityId"),
+    )
     if req.phase_state:
         try:
             state = PhaseState.from_dict(req.phase_state)
@@ -2330,11 +2359,16 @@ async def execute_governed_stage(req: GovernedStageRequest, x_service_token: Opt
 async def _execute_governed_stage_impl(req: GovernedStageRequest, x_service_token: Optional[str] = None) -> dict[str, Any]:
     """Run a governed stage end-to-end (multi-turn)."""
     check_execute_service_token(x_service_token)
+    _gov_run_ctx = req.run_context or {}
+    await _authorize_runtime_target(
+        user_id=_gov_run_ctx.get("user_id") or _gov_run_ctx.get("userId"),
+        tenant_id=_gov_run_ctx.get("tenant_id") or _gov_run_ctx.get("tenantId"),
+        capability_id=_gov_run_ctx.get("capability_id") or _gov_run_ctx.get("capabilityId"),
+    )
     # Laptop preflight — when the caller requires the user's laptop bridge but no
     # live bridge is connected, refuse rather than silently falling back to the
     # managed HTTP runtime (governed dispatch.py would otherwise do a silent
     # fallback, running governed tools on the shared runtime in hybrid mode).
-    _gov_run_ctx = req.run_context or {}
     _gov_prefer_laptop = req.prefer_laptop
     if _gov_prefer_laptop is None:
         _gov_prefer_laptop = _gov_run_ctx.get("prefer_laptop")
@@ -2573,6 +2607,11 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
     from .governed.placement import llm_laptop_target, runtime_capability_tags, runtime_tenant_target
 
     rc = req.run_context or {}
+    await _authorize_runtime_target(
+        user_id=rc.get("user_id") or rc.get("userId"),
+        tenant_id=rc.get("tenant_id") or rc.get("tenantId"),
+        capability_id=rc.get("capability_id") or rc.get("capabilityId"),
+    )
     incoming_trace_id = (
         _normalize_trace_id(req.trace_id)
         or _normalize_trace_id(rc.get("trace_id"))

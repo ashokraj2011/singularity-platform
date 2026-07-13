@@ -85,9 +85,18 @@ JWT_EXPIRE_MINUTES=60
 ```
 
 The super-admin account is seeded automatically on first startup by
-[`app/seed/runner.py`](app/seed/runner.py). To create additional local users
-call `POST /api/v1/users` with `auth_provider="local"` then set their
-password via the admin UI or a direct DB update.
+[`app/seed/runner.py`](app/seed/runner.py). To create additional local users,
+create the user with `auth_provider="local"`, then use **Identity → Users →
+Set password**. The UI calls the super-admin-only endpoint below; IAM hashes
+the password and never returns it.
+
+```
+POST /api/v1/users/{user_id}/password
+Authorization: Bearer <super-admin-jwt>
+Content-Type: application/json
+
+{ "password": "a-strong-password-at-least-12-chars" }
+```
 
 ### Code path
 

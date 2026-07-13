@@ -143,6 +143,20 @@ function normalizeRuntimeCapability(cap: RuntimeCapability): Record<string, unkn
   }
 }
 
+function capabilityIdentityKeys(capability: Record<string, unknown>): string[] {
+  const metadata = capability.metadata && typeof capability.metadata === 'object' && !Array.isArray(capability.metadata)
+    ? capability.metadata as Record<string, unknown>
+    : {}
+  return [
+    capability.id,
+    capability.capability_id,
+    metadata.agentRuntimeCapabilityId,
+    metadata.agent_runtime_capability_id,
+  ]
+    .map(value => String(value ?? '').trim())
+    .filter(Boolean)
+}
+
 // ── IAM-backed endpoints ─────────────────────────────────────────────────────
 
 lookupRouter.get('/users', async (req, res) => {
@@ -218,26 +232,47 @@ lookupRouter.get('/capabilities', async (req, res) => {
       is_governing: req.query.is_governing as string | undefined,
     }, authToken(req))
     const iamPage = unwrapIamPage(body, page, size)
-    const itemsById = new Map<string, Record<string, unknown>>()
-    for (const item of iamPage.items as Array<Record<string, unknown>>) {
-      const id = String(item.id ?? item.capability_id ?? '')
-      if (id) itemsById.set(id, { ...item, source: 'iam' })
+    const itemsByIdentity = new Map<string, Record<string, unknown>>()
+    const iamItems = iamPage.items as Array<Record<string, unknown>>
+    for (const item of iamItems) {
+      const canonical = { ...item, source: 'iam', iamCapabilityId: item.id ?? null }
+      for (const key of capabilityIdentityKeys(item)) itemsByIdentity.set(key, canonical)
     }
 
     try {
       const runtimeCaps = await listRuntimeCapabilities(authHeader(req))
       for (const cap of runtimeCaps) {
-        const id = String(cap.id ?? '')
-        if (!id) continue
+        const runtimeId = String(cap.id ?? '').trim()
+        if (!runtimeId) continue
+        const iamRow = capabilityIdentityKeys(cap as unknown as Record<string, unknown>)
+          .map(key => itemsByIdentity.get(key))
+          .find(Boolean)
+        // IAM owns the identity. A runtime projection without a matching IAM
+        // row is intentionally omitted instead of being promoted into the
+        // platform catalog by this lookup endpoint.
+        if (!iamRow) continue
         const normalized = normalizeRuntimeCapability(cap)
-        const existing = itemsById.get(id)
-        itemsById.set(id, existing ? { ...normalized, ...existing, source: `${existing.source ?? 'iam'}+agent-runtime` } : normalized)
+        const hydrated = {
+          ...normalized,
+          ...iamRow,
+          id: runtimeId,
+          iamCapabilityId: iamRow.iamCapabilityId ?? iamRow.id ?? null,
+          runtimeCapabilityId: runtimeId,
+          source: 'iam+agent-runtime',
+          repositories: normalized.repositories,
+          repoUrl: normalized.repoUrl,
+          sourceUri: normalized.sourceUri,
+          sourceType: normalized.sourceType,
+          defaultBranch: normalized.defaultBranch,
+        }
+        for (const key of capabilityIdentityKeys(iamRow)) itemsByIdentity.set(key, hydrated)
+        itemsByIdentity.set(runtimeId, hydrated)
       }
     } catch {
       // Keep IAM-backed lookup usable even if agent-runtime is unavailable.
     }
 
-    let items = Array.from(itemsById.values())
+    let items = Array.from(new Set(itemsByIdentity.values()))
     items = clientFilter(items, req.query.q as string | undefined, (c) => [c.name, c.description, c.capability_type, c.capabilityType, c.id, c.capability_id])
     return res.json(paginate(items, page, size))
   } catch (err) { handleError(err, res) }

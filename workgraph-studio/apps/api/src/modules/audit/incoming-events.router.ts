@@ -88,13 +88,29 @@ function verifySignature(req: Request, body: Buffer | string, secret: string): b
 incomingEventsRouter.post('/', async (req, res) => {
   const body = req.body as IncomingBody | undefined
   const eventName = req.header('x-event-name') ?? body?.event_name
-  const outboxId  = req.header('x-event-outbox-id')
+  const outboxId  = req.header('x-event-outbox-id') ?? body?.envelope?.receipt_id
+  const timestampHeader = req.header('x-event-timestamp')
+  const deployment = (process.env.APP_ENV ?? process.env.ENVIRONMENT ?? process.env.SINGULARITY_ENV ?? config.NODE_ENV ?? 'development').toLowerCase()
+  const productionClass = ['production', 'prod', 'staging', 'perf'].includes(deployment)
   if (!body || !eventName || !body.envelope) {
     return res.status(400).json({ code: 'BAD_REQUEST', message: 'event_name + envelope required' })
   }
   const source = body.envelope.source_service
   if (!source || source === 'unknown') {
     return res.status(400).json({ code: 'BAD_REQUEST', message: 'envelope.source_service is required' })
+  }
+  if (!outboxId) {
+    return res.status(400).json({ code: 'MISSING_EVENT_ID', message: 'x-event-outbox-id or envelope.receipt_id is required for idempotent delivery' })
+  }
+  if (productionClass && !timestampHeader) {
+    return res.status(400).json({ code: 'MISSING_EVENT_TIMESTAMP', message: 'x-event-timestamp is required in production-class deployments' })
+  }
+  if (timestampHeader) {
+    const timestamp = Number(timestampHeader)
+    const timestampMs = Number.isFinite(timestamp) ? (timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp) : NaN
+    if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > 5 * 60_000) {
+      return res.status(401).json({ code: 'STALE_EVENT', message: 'Signed event timestamp is outside the five-minute replay window' })
+    }
   }
 
   // HMAC verify for every source; unconfigured sources are not trusted.
@@ -108,7 +124,11 @@ incomingEventsRouter.post('/', async (req, res) => {
   // The compact fallback covers tests or embedded callers that invoke the router
   // without passing through the app-level raw-body capture middleware.
   const compactFallback = JSON.stringify({ event_name: eventName, envelope: body.envelope })
-  if (!verifySignature(req, requestBodyForSignature(req, compactFallback), secret)) {
+  const exactBody = requestBodyForSignature(req, compactFallback)
+  const signedBody = timestampHeader
+    ? (Buffer.isBuffer(exactBody) ? Buffer.concat([Buffer.from(`${timestampHeader}.`), exactBody]) : `${timestampHeader}.${exactBody}`)
+    : exactBody
+  if (!verifySignature(req, signedBody, secret)) {
     return res.status(401).json({ code: 'BAD_SIGNATURE', message: 'HMAC verification failed' })
   }
 
@@ -121,7 +141,8 @@ incomingEventsRouter.post('/', async (req, res) => {
 
   // Persist into workgraph audit log so the unified /api/receipts timeline
   // surfaces inbound cross-service events alongside local ones.
-  await runWithTenantDbContext(tenantId, () => prisma.eventLog.create({
+  try {
+    await runWithTenantDbContext(tenantId, () => prisma.eventLog.create({
     data: {
       eventType:  `incoming.${eventName}`,
       entityType: body.envelope.subject?.kind ?? 'unknown',
@@ -139,9 +160,11 @@ incomingEventsRouter.post('/', async (req, res) => {
         envelope:       body.envelope,
       } as object,
     },
-  })).catch((err) => {
-    console.warn('[incoming-events] persist failed:', (err as Error).message)
-  })
+    }))
+  } catch (err) {
+    console.error('[incoming-events] persist failed:', (err as Error).message)
+    return res.status(503).json({ code: 'EVENT_PERSISTENCE_FAILED', message: 'Event was authenticated but could not be durably recorded; retryable=true', retryable: true })
+  }
 
   // Fan out to WorkItem EVENT triggers so a verified cross-service event actually
   // starts work (create/attach a WorkItem + route/AUTO_START) instead of being
@@ -158,7 +181,8 @@ incomingEventsRouter.post('/', async (req, res) => {
       traceId: body.envelope.trace_id,
     }))
   } catch (err) {
-    console.warn('[incoming-events] trigger fan-out failed:', (err as Error).message)
+    console.error('[incoming-events] trigger fan-out failed:', (err as Error).message)
+    return res.status(503).json({ code: 'EVENT_FANOUT_FAILED', message: 'Event was recorded but routing did not complete; retryable=true', retryable: true, recorded_event: eventName })
   }
 
   return res.status(200).json({ ok: true, recorded_event: eventName, source, workItemIds })

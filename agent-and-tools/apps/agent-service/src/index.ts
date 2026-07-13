@@ -41,6 +41,22 @@ assertProductionSecret({ name: "MCP_BEARER_TOKEN", value: process.env.MCP_BEARER
 assertProductionSecret({ name: "AUDIT_GOV_SERVICE_TOKEN", value: process.env.AUDIT_GOV_SERVICE_TOKEN, minLength: 32 });
 assertProductionSecret({ name: "CONTEXT_FABRIC_SERVICE_TOKEN", value: process.env.CONTEXT_FABRIC_SERVICE_TOKEN, minLength: 32 });
 assertProductionInvariant({
+  name: "AUTH_PROVIDER",
+  ok: (process.env.AUTH_PROVIDER ?? "local").toLowerCase() === "iam",
+  message: "set AUTH_PROVIDER=iam; local JWT verification is development-only",
+});
+assertProductionInvariant({
+  name: "IAM_BASE_URL",
+  ok: Boolean(process.env.IAM_SERVICE_URL || process.env.IAM_BASE_URL),
+  message: "set IAM_SERVICE_URL or IAM_BASE_URL so agent-service can validate IAM user tokens",
+});
+assertProductionInvariant({
+  name: "IAM_SERVICE_TOKEN_TENANT_IDS",
+  ok: (process.env.TENANT_ISOLATION_MODE ?? "").toLowerCase() !== "strict"
+    || Boolean(process.env.IAM_SERVICE_TOKEN_TENANT_IDS?.split(",").some((value) => value.trim())),
+  message: "set IAM_SERVICE_TOKEN_TENANT_IDS when strict tenant isolation is enabled",
+});
+assertProductionInvariant({
   name: "AUTH_OPTIONAL",
   ok: process.env.AUTH_OPTIONAL !== "true",
   message: "set AUTH_OPTIONAL=false or omit it; production services must require IAM auth",

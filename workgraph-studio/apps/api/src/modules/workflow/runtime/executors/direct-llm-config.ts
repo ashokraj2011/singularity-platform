@@ -362,6 +362,15 @@ export function normalizeDirectLlmConfig(rawValue: unknown, failures: DirectLlmC
   }
   if (config.promptSource === 'INLINE' && !config.task) failures.push({ field: 'task', message: 'inline prompt mode requires a task prompt.' })
   if (config.credentialEnv && !ENV_RE.test(config.credentialEnv)) failures.push({ field: 'credentialEnv', message: 'must be an environment variable name, not a secret.' })
+  if (config.credentialEnv) {
+    const allowedCredentialEnvs = new Set(
+      (process.env.WORKGRAPH_DIRECT_LLM_ALLOWED_CREDENTIAL_ENVS ?? 'OPENAI_API_KEY,OPENROUTER_API_KEY,ANTHROPIC_API_KEY')
+        .split(',').map(value => value.trim()).filter(Boolean),
+    )
+    if (!allowedCredentialEnvs.has(config.credentialEnv)) {
+      failures.push({ field: 'credentialEnv', message: 'is not in the server-managed direct LLM credential allowlist.' })
+    }
+  }
   if (config.maxTokens !== undefined && (!Number.isInteger(config.maxTokens) || config.maxTokens < 1 || config.maxTokens > 32000)) failures.push({ field: 'maxTokens', message: 'must be an integer between 1 and 32,000.' })
   if (config.temperature !== undefined && (!Number.isFinite(config.temperature) || config.temperature < 0 || config.temperature > 2)) failures.push({ field: 'temperature', message: 'must be between 0 and 2.' })
   if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 600000)) failures.push({ field: 'timeoutMs', message: 'must be between 1,000 and 600,000 milliseconds.' })

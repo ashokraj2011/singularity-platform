@@ -46,6 +46,7 @@ def init_db() -> None:
                 agent_run_id TEXT,
                 capability_id TEXT,
                 tenant_id TEXT,
+                user_id TEXT,
                 agent_template_id TEXT,
                 profile_snapshot_hash TEXT,
                 profile_provider_resolutions_json TEXT NOT NULL DEFAULT '[]',
@@ -83,6 +84,7 @@ def init_db() -> None:
             f"{alter_prefix} pending_tool_args_json TEXT",
             f"{alter_prefix} code_change_ids_json TEXT NOT NULL DEFAULT '[]'",
             f"{alter_prefix} tenant_id TEXT",
+            f"{alter_prefix} user_id TEXT",
             f"{alter_prefix} profile_snapshot_hash TEXT",
             f"{alter_prefix} profile_provider_resolutions_json TEXT NOT NULL DEFAULT '[]'",
             f"{alter_prefix} profile_effective_capabilities_json TEXT NOT NULL DEFAULT '[]'",
@@ -155,7 +157,7 @@ def insert(record: dict) -> str:
             """
             INSERT INTO call_log (
                 id, trace_id, workflow_run_id, workflow_node_id, agent_run_id,
-                capability_id, tenant_id, agent_template_id, profile_snapshot_hash,
+                capability_id, tenant_id, user_id, agent_template_id, profile_snapshot_hash,
                 profile_provider_resolutions_json, profile_effective_capabilities_json,
                 session_id,
                 prompt_assembly_id, mcp_server_id, mcp_invocation_id,
@@ -165,7 +167,7 @@ def insert(record: dict) -> str:
                 input_tokens, output_tokens, total_tokens, estimated_cost,
                 started_at, completed_at, error,
                 continuation_token, pending_tool_name, pending_tool_args_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row_id,
@@ -175,6 +177,7 @@ def insert(record: dict) -> str:
                 record.get("agent_run_id"),
                 record.get("capability_id"),
                 record.get("tenant_id"),
+                record.get("user_id"),
                 record.get("agent_template_id"),
                 record.get("profile_snapshot_hash"),
                 provider_resolutions_json,

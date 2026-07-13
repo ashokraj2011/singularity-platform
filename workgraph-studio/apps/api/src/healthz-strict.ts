@@ -13,6 +13,7 @@
  */
 import { prisma } from './lib/prisma'
 import { config } from './config'
+import { minioClient } from './lib/minio'
 
 export interface InvariantResult {
   name: string
@@ -48,6 +49,30 @@ const checks: InvariantCheck[] = [
       return { name: 'workflow_nodes_timing_columns', ok: true }
     } catch (err) {
       return { name: 'workflow_nodes_timing_columns', ok: false, reason: (err as Error).message }
+    }
+  },
+
+  // Artifact/document writes depend on the object store even when the
+  // database and API are healthy. Keep this in readiness so launches do not
+  // reach a later node and fail with an opaque storage error.
+  async () => {
+    try {
+      const exists = await minioClient.bucketExists(config.MINIO_BUCKET)
+      if (!exists) {
+        return {
+          name: 'artifact_store_reachable',
+          ok: false,
+          reason: `MinIO bucket ${config.MINIO_BUCKET} does not exist — run the API bootstrap or create the bucket.`,
+          details: { endpoint: config.MINIO_ENDPOINT, port: config.MINIO_PORT, bucket: config.MINIO_BUCKET },
+        }
+      }
+      return {
+        name: 'artifact_store_reachable',
+        ok: true,
+        details: { endpoint: config.MINIO_ENDPOINT, port: config.MINIO_PORT, bucket: config.MINIO_BUCKET },
+      }
+    } catch (err) {
+      return { name: 'artifact_store_reachable', ok: false, reason: `MinIO unreachable: ${(err as Error).message}` }
     }
   },
 

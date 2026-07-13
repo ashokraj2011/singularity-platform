@@ -378,6 +378,56 @@ def check_runtime_bridge_service_token(provided: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="invalid runtime bridge service token")
 
 
+async def authorize_runtime_target(
+    *,
+    user_id: Optional[str],
+    tenant_id: Optional[str],
+    capability_id: Optional[str] = None,
+) -> None:
+    """Bind an internal bridge request to the user/capability being acted for.
+
+    X-Service-Token authenticates the calling service; it is not permission to
+    impersonate every tenant user. In production the target must also pass IAM
+    authorization for the runtime dispatch action. Development keeps the
+    compatibility path unless explicitly enabled.
+    """
+    required = is_production_class_env() or os.environ.get("RUNTIME_BRIDGE_ACTOR_AUTH_REQUIRED", "false").lower() in _TRUTHY
+    if not required:
+        return
+    if not user_id or not tenant_id:
+        raise HTTPException(status_code=403, detail="runtime bridge actor and tenant context are required")
+    token = await get_iam_service_token()
+    base = _iam_api_base()
+    if not token or not base:
+        raise HTTPException(status_code=503, detail="runtime bridge IAM authorization is unavailable")
+    target_capability = capability_id or "__platform__"
+    try:
+        async with httpx.AsyncClient(timeout=runtime_revocation_iam_timeout_sec()) as client:
+            response = await client.post(
+                f"{base}/authz/check",
+                headers={"authorization": f"Bearer {token}", "content-type": "application/json"},
+                json={
+                    "user_id": user_id,
+                    "capability_id": target_capability,
+                    "action": "workflow:runtime:dispatch",
+                    "resource_type": "RuntimeBridge",
+                    "tenant_id": tenant_id,
+                },
+            )
+            if response.status_code == 401:
+                invalidate_iam_service_token()
+            if response.status_code >= 400:
+                raise HTTPException(status_code=403, detail="IAM denied runtime bridge dispatch")
+            data = response_json_object(response, "IAM runtime bridge authorization")
+    except HTTPException:
+        raise
+    except Exception as err:
+        log.warning("runtime bridge IAM authorization failed user=%s tenant=%s: %s", user_id, tenant_id, err)
+        raise HTTPException(status_code=503, detail="runtime bridge IAM authorization unavailable") from err
+    if data.get("allowed") is not True:
+        raise HTTPException(status_code=403, detail=str(data.get("reason") or "IAM denied runtime bridge dispatch"))
+
+
 def _iam_api_base() -> Optional[str]:
     raw = (getattr(settings, "iam_base_url", "") or "").rstrip("/")
     if not raw:
@@ -981,6 +1031,7 @@ async def runtime_source_tree(
     x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
 ) -> dict[str, Any]:
     check_runtime_bridge_service_token(x_service_token)
+    await authorize_runtime_target(user_id=req.user_id, tenant_id=req.tenant_id)
     return await _dispatch_source(
         op="tree",
         user_id=req.user_id,
@@ -995,6 +1046,7 @@ async def runtime_source_file(
     x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
 ) -> dict[str, Any]:
     check_runtime_bridge_service_token(x_service_token)
+    await authorize_runtime_target(user_id=req.user_id, tenant_id=req.tenant_id)
     return await _dispatch_source(
         op="file",
         user_id=req.user_id,
@@ -1012,6 +1064,7 @@ async def runtime_source_branches(
     # "Branch to clone" picker works over the bridge with no connector. Reuses the
     # allowed `source-tree` frame with a listBranches flag → returns { branches }.
     check_runtime_bridge_service_token(x_service_token)
+    await authorize_runtime_target(user_id=req.user_id, tenant_id=req.tenant_id)
     return await _dispatch_source(
         op="tree",
         user_id=req.user_id,
@@ -1046,6 +1099,11 @@ async def runtime_tool_run(
     check_runtime_bridge_service_token(x_service_token)
     rc = req.run_context or {}
     laptop_user_id = req.laptop_user_id or rc.get("user_id") or rc.get("userId")
+    await authorize_runtime_target(
+        user_id=str(laptop_user_id) if laptop_user_id else None,
+        tenant_id=str(rc.get("tenant_id") or rc.get("tenantId") or "") or None,
+        capability_id=str(rc.get("capability_id") or rc.get("capabilityId") or "") or None,
+    )
     try:
         result = await dispatch_tool(
             req.tool_name,
@@ -1126,6 +1184,11 @@ async def runtime_work_finish_branch(
     }
     rc = req.runContext or {}
     user_id = req.user_id or rc.get("user_id") or rc.get("userId")
+    await authorize_runtime_target(
+        user_id=str(user_id) if user_id else None,
+        tenant_id=str(req.tenant_id or rc.get("tenant_id") or rc.get("tenantId") or "") or None,
+        capability_id=str(rc.get("capability_id") or rc.get("capabilityId") or "") or None,
+    )
     if user_id:
         try:
             # P0 #2 — forward the brokered credential to the chosen runtime ONLY if
@@ -1198,6 +1261,7 @@ async def runtime_worktree_write_file(
     x_service_token: Optional[str] = Header(default=None, alias="X-Service-Token"),
 ) -> dict[str, Any]:
     check_runtime_bridge_service_token(x_service_token)
+    await authorize_runtime_target(user_id=req.user_id, tenant_id=req.tenant_id)
     body_fields: dict[str, Any] = {
         "content": req.content,
         "message": req.message,

@@ -21,7 +21,10 @@ function main() {
   assert.match(auth, /const IAM_AUTH_VERIFY_TIMEOUT_MS = boundedEnvInteger\("IAM_AUTH_VERIFY_TIMEOUT_SEC", \{[\s\S]*?defaultValue: 5,[\s\S]*?min: 1,[\s\S]*?max: 300,[\s\S]*?\}\) \* 1000;/);
   assert.match(auth, /\/me`, \{[\s\S]*?signal: AbortSignal\.timeout\(IAM_AUTH_VERIFY_TIMEOUT_MS\)/);
   assert.doesNotMatch(auth, /fetch\(`\$\{base\}\/me`, \{ headers: \{ Authorization: `Bearer \$\{token\}` \} \}\)/);
-  assert.match(auth, /req\.user = await verifyWithIam\(token\) \?\? undefined/);
+  assert.match(auth, /async function authenticateToken\(token: string\): Promise<AuthUser \| null>/);
+  assert.match(auth, /AUTH_PROVIDER.*iam/);
+  assert.match(auth, /servicePrincipalFromToken\(token\)/);
+  assert.match(auth, /req\.user = await authenticateToken\(token\) \?\? undefined/);
 
   assertRouterAuth("src/routes/agents.ts", "agentRoutes");
   assertRouterAuth("src/routes/versions.ts", "versionRoutes");

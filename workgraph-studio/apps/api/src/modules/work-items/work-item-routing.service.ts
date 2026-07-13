@@ -75,6 +75,9 @@ async function startAttachedTarget(args: {
   workItemId: string
   targetId: string
   actorId?: string | null
+  vars?: Record<string, unknown>
+  globals?: Record<string, unknown>
+  params?: Record<string, unknown>
 }) {
   const target = await prisma.workItemTarget.findFirst({
     where: { id: args.targetId, workItemId: args.workItemId },
@@ -110,6 +113,7 @@ async function startAttachedTarget(args: {
 
   const vars = {
     ...recordOf(target.workItem.input),
+    ...(args.vars ?? {}),
     workItemId: args.workItemId,
     workCode: target.workItem.workCode,
     workItemTargetId: args.targetId,
@@ -128,6 +132,8 @@ async function startAttachedTarget(args: {
         templateId,
         name: `${target.workItem.workCode} · ${target.workItem.title}`,
         vars,
+        globals: args.globals,
+        params: args.params,
         createdById: args.actorId ?? undefined,
       })
     } catch (err) {
@@ -209,6 +215,9 @@ export async function routeWorkItem(
     workflowTypeKey?: string
     routingMode?: RoutingMode
     startNow?: boolean
+    vars?: Record<string, unknown>
+    globals?: Record<string, unknown>
+    params?: Record<string, unknown>
   } = {},
 ) {
   const workItem = await prisma.workItem.findUnique({
@@ -362,7 +371,14 @@ export async function routeWorkItem(
   await publishOutbox('WorkItem', workItemId, 'WorkItemRouted', { workItemId, targetId: target.id, workflowId: workflow.id })
 
   if (options.startNow || mode === 'AUTO_START') {
-    await startAttachedTarget({ workItemId, targetId: target.id, actorId })
+    await startAttachedTarget({
+      workItemId,
+      targetId: target.id,
+      actorId,
+      vars: options.vars,
+      globals: options.globals,
+      params: options.params,
+    })
   }
 
   return prisma.workItem.findUniqueOrThrow({

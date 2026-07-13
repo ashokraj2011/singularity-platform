@@ -116,7 +116,9 @@ async def _deliver_one(d: EventDelivery, sub: EventSubscription, row: EventOutbo
         "x-event-outbox-id": row.id,
     }
     if sub.secret:
-        sig = hmac.new(sub.secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+        timestamp = str(int(_now().timestamp() * 1000))
+        headers["x-event-timestamp"] = timestamp
+        sig = hmac.new(sub.secret.encode(), f"{timestamp}.{body}".encode(), hashlib.sha256).hexdigest()
         headers["x-event-signature"] = f"sha256={sig}"
 
     new_status = "failed"

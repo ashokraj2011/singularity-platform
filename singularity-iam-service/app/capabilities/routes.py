@@ -275,10 +275,20 @@ async def update_capability(
     cap = (await db.execute(select(Capability).where(Capability.capability_id == capability_id))).scalar_one_or_none()
     if not cap:
         raise HTTPException(status_code=404, detail="Capability not found")
-    for field in ("name", "description", "status", "visibility"):
+    for field in ("name", "description", "capability_type", "status", "visibility"):
         val = getattr(body, field)
         if val is not None:
             setattr(cap, field, val)
+    if body.owner_bu_id is not None:
+        business_unit = (await db.execute(select(BusinessUnit).where(BusinessUnit.id == body.owner_bu_id))).scalar_one_or_none()
+        if not business_unit:
+            raise HTTPException(status_code=404, detail="Owner business unit not found")
+        cap.owner_bu_id = business_unit.id
+    if body.owner_team_id is not None:
+        team = (await db.execute(select(Team).where(Team.id == body.owner_team_id))).scalar_one_or_none()
+        if not team:
+            raise HTTPException(status_code=404, detail="Owner team not found")
+        cap.owner_team_id = team.id
     if body.metadata is not None:
         cap.metadata_ = body.metadata
     if body.tags is not None:

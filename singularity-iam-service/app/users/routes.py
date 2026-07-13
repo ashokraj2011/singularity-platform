@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 from app.database import get_db
-from app.models import User, PlatformRoleAssignment, Role
+from app.models import User, LocalCredential, PlatformRoleAssignment, Role
 from app.auth.deps import require_reference_read, require_super_admin
+from app.auth.password import hash_password
 from app.schemas import PageResponse
-from app.users.schemas import UserOut, CreateUserRequest, UpdateUserRequest
+from app.users.schemas import UserOut, CreateUserRequest, UpdateUserRequest, SetLocalPasswordRequest
 from app.audit.service import record_event
 from datetime import datetime, timezone
 from pydantic import BaseModel
@@ -107,6 +108,53 @@ async def update_user(
     await db.commit()
     await db.refresh(user)
     return _to_out(user)
+
+
+@router.post("/{user_id}/password")
+async def set_local_password(
+    user_id: str,
+    body: SetLocalPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_super_admin),
+):
+    """Provision or rotate the password for an IAM local account.
+
+    Passwords are accepted only for this one request, hashed with the same
+    bcrypt helper used by local login, and never returned or written to audit
+    payloads. Setting one deliberately converts the identity to a local
+    account and removes any federated subject binding.
+    """
+    user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.status != "active":
+        raise HTTPException(status_code=409, detail="Cannot set a password for an inactive user")
+
+    credential = (await db.execute(select(LocalCredential).where(LocalCredential.user_id == user_id))).scalar_one_or_none()
+    password_hash = hash_password(body.password)
+    if credential:
+        credential.password_hash = password_hash
+        credential.password_changed_at = datetime.now(timezone.utc)
+    else:
+        db.add(LocalCredential(
+            user_id=user_id,
+            password_hash=password_hash,
+            password_changed_at=datetime.now(timezone.utc),
+        ))
+    user.auth_provider = "local"
+    user.external_subject = None
+    user.is_local_account = True
+    user.updated_at = datetime.now(timezone.utc)
+    await record_event(
+        db,
+        actor_user_id=current_user.id,
+        event_type="local_password_set",
+        target_type="user",
+        target_id=user_id,
+        payload={"auth_provider": "local"},
+    )
+    await db.commit()
+    return {"user_id": user_id, "auth_provider": "local", "is_local_account": True}
 
 
 @router.get("/{user_id}/roles")

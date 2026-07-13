@@ -64,7 +64,7 @@ ROUTE_TENANT_POLICIES: dict[str, str] = {
     "/api/governance/policies governancePolicyRouter": "capability_scoped_authz: governance policy authoring is capability-scoped and authenticated",
     "/api/collaboration collaborationRouter": "tenant_scoped_runtime: collaboration records are tenant-scoped user/workflow activity",
     "/api/demo/event-verifier eventVerifierDemoRouter": "capability_scoped_authz: verifier demo execution is authenticated and capability-scoped",
-    "/api/direct-llm loopStrategyRouter": "tenant_scoped_runtime: direct-LLM loop strategy authoring is tenant-scoped configuration",
+    "/api/direct-llm/tools directLlmToolsRouter": "authenticated_catalog: direct-LLM read-only tool catalog; invocation remains capability/runtime governed",
     "/api/events/ingest eventIntakeRouter": "event_signed_ingress: inbound workflow events are authenticated and tenant-bound before routing",
     "/api/laptop-invocations laptopInvocationsRouter": "capability_scoped_authz: laptop invocation records are protected by authenticated user/device routing",
     "/api/questions laptopQuestionsRouter": "capability_scoped_authz: laptop clarification questions are protected by authenticated user/device routing",

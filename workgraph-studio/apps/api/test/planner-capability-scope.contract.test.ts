@@ -29,7 +29,7 @@ describe('planner capability scope contract', () => {
     expect(service).toMatch(/Workflow template \$\{workflowTemplateId\} is not available for planner launch\./)
     expect(service).toMatch(/workbench-profile template; planner launch requires a main workflow template/)
     expect(service).toMatch(/const targetCapabilityIds = new Set\(flattenTasks\(milestones\)\.map\(\(task\) => task\.capabilityId\)\)/)
-    expect(service).toMatch(/export async function launchRoadmap\(input: LaunchInput, actorId: string, callerToken\?: string\)[\s\S]*?await assertPlannerWorkflowTemplateLaunchable\(input\.capabilityId, milestones, input\.workflowTemplateId, callerToken\)[\s\S]*?const commit = await commitRoadmap\(\{ capabilityId: input\.capabilityId, milestones \}, actorId, callerToken\)/)
+    expect(service).toMatch(/export async function launchRoadmap\(input: LaunchInput, actorId: string, callerToken\?: string\)[\s\S]*?await assertPlannerWorkflowTemplateLaunchable\(input\.capabilityId, milestones, input\.workflowTemplateId, callerToken\)[\s\S]*?const commit = await commitRoadmap\(\{ capabilityId: input\.capabilityId, milestones(?:, loopStrategyId: input\.loopStrategyId)? \}, actorId, callerToken\)/)
   })
 
   it('uses caller IAM tokens and does not crash the API on planner validation errors', () => {
@@ -41,6 +41,8 @@ describe('planner capability scope contract', () => {
   it('resolves IAM capabilities by UUID or slug when the direct lookup is slug-keyed', () => {
     expect(iamClient).toMatch(/async function findCapabilityByUuidOrSlug\(capabilityId: string, callerToken\?: string\)/)
     expect(iamClient).toMatch(/item\.id === capabilityId \|\| item\.capability_id === capabilityId/)
+    expect(iamClient).toMatch(/runtimeCapabilityIdFromIam\(item\) === capabilityId/)
+    expect(iamClient).toMatch(/agentRuntimeCapabilityId/)
     expect(iamClient).toMatch(/const listed = await findCapabilityByUuidOrSlug\(capabilityId, callerToken\)/)
   })
 })

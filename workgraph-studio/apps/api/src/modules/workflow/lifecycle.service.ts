@@ -41,7 +41,18 @@ export async function simulateWorkflow(workflowId: string, actorId: string, inpu
     const step = { nodeId: node.id, label: node.label, nodeType: node.nodeType, executionLocation: node.executionLocation, status: 'WOULD_RUN', requiresApproval, estimatedTokens: nodeTokens, estimatedCost: nodeCost, estimatedDurationSeconds: nodeDuration, sideEffectFree: true }
     steps.push(step)
     if (requiresApproval) {
-      const approval = { nodeId: node.id, label: node.label, reason: 'Human approval required at runtime', assignmentMode: config.assignmentMode ?? config.approvalAssignmentMode ?? 'ROLE_BASED', roleKey: config.roleKey ?? config.approvalRoleKey, skillKey: config.skillKey ?? config.approvalSkillKey }
+      const standard = config.standard && typeof config.standard === 'object' && !Array.isArray(config.standard)
+        ? config.standard as Record<string, unknown>
+        : {}
+      const configuredRole = config.roleKey ?? config.approvalRoleKey ?? standard.role
+      const approval = {
+        nodeId: node.id,
+        label: node.label,
+        reason: 'Human approval required at runtime',
+        assignmentMode: config.assignmentMode ?? config.approvalAssignmentMode ?? 'ROLE_BASED',
+        roleKey: configuredRole,
+        skillKey: config.skillKey ?? config.approvalSkillKey,
+      }
       unresolved.push(approval)
       approvals.push(approval)
     }

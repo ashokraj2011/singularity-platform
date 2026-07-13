@@ -14,6 +14,8 @@ DEFAULT_PERMISSIONS: list[dict] = [
     {"permission_key": "workflow:operations:replay", "category": "workflow"},
     {"permission_key": "workflow:operations:retry_delivery", "category": "workflow"},
     {"permission_key": "workflow:operations:manage_runners", "category": "workflow"},
+    {"permission_key": "workflow:event:publish", "category": "workflow"},
+    {"permission_key": "workflow:runtime:dispatch", "category": "workflow"},
     {"permission_key": "governance:approve",         "category": "governance"},
     {"permission_key": "consumable:approve",        "category": "artifact"},
     # Agent

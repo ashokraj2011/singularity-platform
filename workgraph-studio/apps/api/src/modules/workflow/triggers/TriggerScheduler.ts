@@ -1,6 +1,7 @@
 import cron from 'node-cron'
 import { prisma } from '../../../lib/prisma'
 import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
+import { runWithTenantDbContext } from '../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 import { createWorkItem } from '../../work-items/work-items.service'
 import { routeWorkItem } from '../../work-items/work-item-routing.service'
@@ -8,10 +9,12 @@ import { findAttachableWorkItemForTrigger, resolveTriggerCorrelationKey, trigger
 import { normalizeMetadataKey, recordOf } from '../../metadata/metadata.service'
 import { tenantIdForCreate } from '../../../lib/tenant-isolation'
 import { startInstance } from '../runtime/WorkflowRuntime'
+import { adminPrisma } from '../../../lib/admin-prisma'
 
 const EVENT_LOOKBACK_CAP_MS = 24 * 60 * 60 * 1000
 const EVENT_TRIGGER_BATCH_SIZE = 200
 const EVENT_TRIGGER_MAX_SCAN = 2_000
+const sweepReader = adminPrisma ?? prisma
 
 const processedEventIds = new Set<string>()
 
@@ -41,7 +44,7 @@ export function startTriggerScheduler(): void {
 async function runScheduledWorkItems(): Promise<void> {
   try {
     const now = new Date()
-    const items = await prisma.workItem.findMany({
+    const items = await sweepReader.workItem.findMany({
       where: {
         status: 'SCHEDULED',
         routingMode: 'SCHEDULED_START',
@@ -54,14 +57,27 @@ async function runScheduledWorkItems(): Promise<void> {
       orderBy: [{ scheduledAt: 'asc' }, { notBefore: 'asc' }],
     })
     for (const item of items) {
-      await prisma.workItemEvent.create({
-        data: {
-          workItemId: item.id,
-          eventType: 'TRIGGERED',
-          payload: { trigger: 'server-time', firedAt: now.toISOString() } as object,
-        },
-      })
-      await routeWorkItem(item.id, null, { routingMode: 'SCHEDULED_START', startNow: true })
+      const tenantId = item.tenantId ?? undefined
+      const claim = await withTenantDbTransaction(prisma, tx => tx.workItem.updateMany({
+        where: { id: item.id, status: 'SCHEDULED' },
+        data: { status: 'QUEUED' },
+      }), tenantId)
+      if (claim.count !== 1) continue
+      try {
+        await prisma.workItemEvent.create({
+          data: {
+            workItemId: item.id,
+            eventType: 'TRIGGERED',
+            payload: { trigger: 'server-time', firedAt: now.toISOString() } as object,
+          },
+        })
+        await routeWorkItem(item.id, null, { routingMode: 'SCHEDULED_START', startNow: true })
+      } catch (err) {
+        await withTenantDbTransaction(prisma, tx => tx.workItem.updateMany({
+          where: { id: item.id, status: 'QUEUED' }, data: { status: 'SCHEDULED' },
+        }), tenantId).catch(() => {})
+        throw err
+      }
     }
   } catch (err) {
     console.error('Scheduled WorkItem sweep error:', err)
@@ -70,7 +86,7 @@ async function runScheduledWorkItems(): Promise<void> {
 
 async function runWorkItemScheduleTriggers(): Promise<void> {
   try {
-    const triggers = await prisma.workItemTrigger.findMany({
+    const triggers = await sweepReader.workItemTrigger.findMany({
       where: { triggerType: 'SCHEDULE', isActive: true },
       orderBy: { createdAt: 'asc' },
     })
@@ -84,13 +100,28 @@ async function runWorkItemScheduleTriggers(): Promise<void> {
       if (now.valueOf() - lastFiredMs < 60_000) continue
       if (!matchesCronNow(cronExpr, now, timezone)) continue
 
-      const workItem = await createWorkItemFromTrigger(trigger, {
-        title: String(cfg.title ?? `${trigger.workItemTypeKey} scheduled work`),
-        description: typeof cfg.description === 'string' ? cfg.description : undefined,
-        input: { triggerType: 'SCHEDULE', cron: cronExpr, timezone: timezone ?? 'server-local' },
-      }, now)
-      await prisma.workItemTrigger.update({ where: { id: trigger.id }, data: { lastFiredAt: now } })
-      await routeWorkItem(workItem.id, null, { routingMode: trigger.routingMode })
+      const tenantId = trigger.tenantId ?? undefined
+      const claim = await withTenantDbTransaction(prisma, tx => tx.workItemTrigger.updateMany({
+        where: { id: trigger.id, lastFiredAt: trigger.lastFiredAt },
+        data: { lastFiredAt: now },
+      }), tenantId)
+      if (claim.count !== 1) continue
+
+      try {
+        await runWithTenantDbContext(tenantId, async () => {
+          const workItem = await createWorkItemFromTrigger(trigger, {
+            title: String(cfg.title ?? `${trigger.workItemTypeKey} scheduled work`),
+            description: typeof cfg.description === 'string' ? cfg.description : undefined,
+            input: { triggerType: 'SCHEDULE', cron: cronExpr, timezone: timezone ?? 'server-local', tenantId },
+          }, now)
+          await routeWorkItem(workItem.id, null, { routingMode: trigger.routingMode })
+        })
+      } catch (err) {
+        await withTenantDbTransaction(prisma, tx => tx.workItemTrigger.updateMany({
+          where: { id: trigger.id, lastFiredAt: now }, data: { lastFiredAt: trigger.lastFiredAt },
+        }), tenantId).catch(() => {})
+        throw err
+      }
     }
   } catch (err) {
     console.error('WorkItem schedule trigger error:', err)
@@ -99,7 +130,7 @@ async function runWorkItemScheduleTriggers(): Promise<void> {
 
 async function runWorkItemEventTriggers(): Promise<void> {
   try {
-    const triggers = await prisma.workItemTrigger.findMany({
+    const triggers = await sweepReader.workItemTrigger.findMany({
       where: { triggerType: 'EVENT', isActive: true },
       orderBy: { createdAt: 'asc' },
     })
@@ -115,64 +146,66 @@ async function runWorkItemEventTriggers(): Promise<void> {
       })
 
       for (const matched of matchedEvents) {
-        const payload = recordOf(matched.payload)
-        const title = triggerStringAt(payload, mapping.titlePath) ?? String(mapping.title ?? `${trigger.workItemTypeKey} event work`)
-        const description = triggerStringAt(payload, mapping.descriptionPath) ?? (typeof mapping.description === 'string' ? mapping.description : undefined)
-        const documents = triggerDocumentsFromPayload({ payload, payloadMapping: mapping })
-        const attachable = await findAttachableWorkItemForTrigger({
-          payload,
-          payloadMapping: mapping,
-          dedupeKey: trigger.dedupeKey,
-          capabilityId: trigger.capabilityId,
-        })
-        const correlationKey = resolveTriggerCorrelationKey({ payload, payloadMapping: mapping, dedupeKey: trigger.dedupeKey })
-        // P1-7 — durable per-outbox-event dedup. Keyed on the outbox event id (a
-        // true per-delivery id), so a re-scan after a restart can't re-create the
-        // WorkItem — closing the gap left by the in-memory processedEventIds set.
-        if (!attachable) {
-          const claim = await claimTriggerEvent({ triggerId: trigger.id, dedupeValue: matched.id })
-          if (claim.status === 'duplicate') {
-            await prisma.workItemTrigger.update({ where: { id: trigger.id }, data: { lastFiredAt: matched.createdAt } })
-            trigger.lastFiredAt = matched.createdAt
-            markEventProcessed(matched.id)
-            continue
-          }
-        }
-        const workItem = attachable?.workItem ?? await createWorkItemFromTrigger(trigger, {
-          title,
-          description,
-          input: { triggerType: 'EVENT', eventType: matched.eventType, payload, triggerCorrelationKey: correlationKey, documents },
-          sourceEventTypeKey: matched.eventType,
-          correlationKey,
-          documents,
-        }, new Date())
-        if (!attachable) {
-          await recordTriggerEventWorkItem({ triggerId: trigger.id, dedupeValue: matched.id, workItemId: workItem.id })
-        }
-        if (attachable) {
-          await prisma.workItemEvent.create({
-            data: {
-              workItemId: workItem.id,
-              eventType: 'TRIGGERED',
-              payload: {
-                triggerId: trigger.id,
-                firedAt: matched.createdAt.toISOString(),
-                attachedExisting: true,
-                matchedBy: attachable.matchedBy,
-                sourceEventTypeKey: matched.eventType,
-                triggerCorrelationKey: correlationKey,
-                documents,
-              } as object,
-            },
+        await runWithTenantDbContext(trigger.tenantId ?? undefined, async () => {
+          const payload = recordOf(matched.payload)
+          const title = triggerStringAt(payload, mapping.titlePath) ?? String(mapping.title ?? `${trigger.workItemTypeKey} event work`)
+          const description = triggerStringAt(payload, mapping.descriptionPath) ?? (typeof mapping.description === 'string' ? mapping.description : undefined)
+          const documents = triggerDocumentsFromPayload({ payload, payloadMapping: mapping })
+          const attachable = await findAttachableWorkItemForTrigger({
+            payload,
+            payloadMapping: mapping,
+            dedupeKey: trigger.dedupeKey,
+            capabilityId: trigger.capabilityId,
           })
-        }
-        await prisma.workItemTrigger.update({
-          where: { id: trigger.id },
-          data: { lastFiredAt: matched.createdAt },
+          const correlationKey = resolveTriggerCorrelationKey({ payload, payloadMapping: mapping, dedupeKey: trigger.dedupeKey })
+          // P1-7 — durable per-outbox-event dedup. Keyed on the outbox event id (a
+          // true per-delivery id), so a re-scan after a restart can't re-create the
+          // WorkItem — closing the gap left by the in-memory processedEventIds set.
+          if (!attachable) {
+            const claim = await claimTriggerEvent({ triggerId: trigger.id, dedupeValue: matched.id })
+            if (claim.status === 'duplicate') {
+              await prisma.workItemTrigger.update({ where: { id: trigger.id }, data: { lastFiredAt: matched.createdAt } })
+              trigger.lastFiredAt = matched.createdAt
+              markEventProcessed(matched.id)
+              return
+            }
+          }
+          const workItem = attachable?.workItem ?? await createWorkItemFromTrigger(trigger, {
+            title,
+            description,
+            input: { triggerType: 'EVENT', eventType: matched.eventType, payload, triggerCorrelationKey: correlationKey, documents, tenantId: trigger.tenantId },
+            sourceEventTypeKey: matched.eventType,
+            correlationKey,
+            documents,
+          }, new Date())
+          if (!attachable) {
+            await recordTriggerEventWorkItem({ triggerId: trigger.id, dedupeValue: matched.id, workItemId: workItem.id })
+          }
+          if (attachable) {
+            await prisma.workItemEvent.create({
+              data: {
+                workItemId: workItem.id,
+                eventType: 'TRIGGERED',
+                payload: {
+                  triggerId: trigger.id,
+                  firedAt: matched.createdAt.toISOString(),
+                  attachedExisting: true,
+                  matchedBy: attachable.matchedBy,
+                  sourceEventTypeKey: matched.eventType,
+                  triggerCorrelationKey: correlationKey,
+                  documents,
+                } as object,
+              },
+            })
+          }
+          await prisma.workItemTrigger.update({
+            where: { id: trigger.id },
+            data: { lastFiredAt: matched.createdAt },
+          })
+          trigger.lastFiredAt = matched.createdAt
+          markEventProcessed(matched.id)
+          await routeWorkItem(workItem.id, null, { routingMode: trigger.routingMode })
         })
-        trigger.lastFiredAt = matched.createdAt
-        markEventProcessed(matched.id)
-        await routeWorkItem(workItem.id, null, { routingMode: trigger.routingMode })
       }
     }
   } catch (err) {
@@ -213,6 +246,7 @@ async function createWorkItemFromTrigger(
       input: seed.input,
     },
     originType: 'CAPABILITY_LOCAL',
+    tenantId: typeof seed.input.tenantId === 'string' ? seed.input.tenantId : undefined,
     targets: [{ targetCapabilityId: trigger.capabilityId }],
   }, null)
   await prisma.workItemEvent.create({
@@ -227,7 +261,7 @@ async function createWorkItemFromTrigger(
 
 async function runScheduleTriggers(): Promise<void> {
   try {
-    const triggers = await prisma.workflowTrigger.findMany({
+    const triggers = await sweepReader.workflowTrigger.findMany({
       where: { type: 'SCHEDULE', isActive: true },
       include: { template: true },
     })
@@ -244,14 +278,22 @@ async function runScheduleTriggers(): Promise<void> {
       if (now.valueOf() - lastFiredMs < 60_000) continue
       if (!matchesCronNow(cronExpr, now, timezone)) continue
 
-      await spawnInstance(t.id, t.templateId, t.template.name, {
-        _triggeredAt: now.toISOString(),
-        _trigger: { type: 'SCHEDULE', cron: cronExpr, timezone: timezone ?? 'server-local' },
-      })
-      await prisma.workflowTrigger.update({
-        where: { id: t.id },
-        data: { lastFiredAt: now },
-      })
+      const previousLastFiredAt = t.lastFiredAt
+      const claimed = await withTenantDbTransaction(prisma, tx => tx.workflowTrigger.updateMany({
+        where: { id: t.id, lastFiredAt: t.lastFiredAt }, data: { lastFiredAt: now },
+      }), t.tenantId ?? t.template.tenantId ?? undefined)
+      if (claimed.count !== 1) continue
+      try {
+        await spawnInstance(t.id, t.templateId, t.template.name, {
+          _triggeredAt: now.toISOString(),
+          _trigger: { type: 'SCHEDULE', cron: cronExpr, timezone: timezone ?? 'server-local' },
+        }, t.tenantId ?? t.template.tenantId)
+      } catch (err) {
+        await withTenantDbTransaction(prisma, tx => tx.workflowTrigger.updateMany({
+          where: { id: t.id, lastFiredAt: now }, data: { lastFiredAt: previousLastFiredAt },
+        }), t.tenantId ?? t.template.tenantId ?? undefined).catch(() => {})
+        throw err
+      }
     }
   } catch (err) {
     console.error('Schedule trigger error:', err)
@@ -260,7 +302,7 @@ async function runScheduleTriggers(): Promise<void> {
 
 async function runEventTriggers(): Promise<void> {
   try {
-    const triggers = await prisma.workflowTrigger.findMany({
+    const triggers = await sweepReader.workflowTrigger.findMany({
       where: { type: 'EVENT', isActive: true },
       include: { template: true },
     })
@@ -279,14 +321,22 @@ async function runEventTriggers(): Promise<void> {
       })
 
       for (const matched of matchedEvents) {
-        await spawnInstance(t.id, t.templateId, t.template.name, {
-          _triggeredAt: matched.createdAt.toISOString(),
-          _triggerEvent: { type: matched.eventType, payload: matched.payload },
-        })
-        await prisma.workflowTrigger.update({
-          where: { id: t.id },
-          data: { lastFiredAt: matched.createdAt },
-        })
+        const previousLastFiredAt = t.lastFiredAt
+        const claimed = await withTenantDbTransaction(prisma, tx => tx.workflowTrigger.updateMany({
+          where: { id: t.id, lastFiredAt: t.lastFiredAt }, data: { lastFiredAt: matched.createdAt },
+        }), t.tenantId ?? t.template.tenantId ?? undefined)
+        if (claimed.count !== 1) continue
+        try {
+          await spawnInstance(t.id, t.templateId, t.template.name, {
+            _triggeredAt: matched.createdAt.toISOString(),
+            _triggerEvent: { type: matched.eventType, payload: matched.payload },
+          }, t.tenantId ?? t.template.tenantId)
+        } catch (err) {
+          await withTenantDbTransaction(prisma, tx => tx.workflowTrigger.updateMany({
+            where: { id: t.id, lastFiredAt: matched.createdAt }, data: { lastFiredAt: previousLastFiredAt },
+          }), t.tenantId ?? t.template.tenantId ?? undefined).catch(() => {})
+          throw err
+        }
         t.lastFiredAt = matched.createdAt
         markEventProcessed(matched.id)
       }
@@ -458,6 +508,7 @@ async function spawnInstance(
   templateId: string,
   templateName: string,
   context: Record<string, unknown>,
+  tenantIdHint?: string | null,
 ): Promise<void> {
   // RLS prep — tenantIdForCreate(context) resolves to undefined here today:
   // the SCHEDULE/EVENT trigger contexts built above (_triggeredAt/_trigger/
@@ -469,7 +520,7 @@ async function spawnInstance(
   // TENANT_ISOLATION_MODE=strict) instead of a silent bypass; behavior is
   // otherwise unchanged (tenantId: undefined here is exactly what the bare
   // `prisma.workflowInstance.create` call already did).
-  const tenantId = tenantIdForCreate(context)
+  const tenantId = tenantIdHint ?? tenantIdForCreate(context)
   const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.create({
     data: {
       templateId,

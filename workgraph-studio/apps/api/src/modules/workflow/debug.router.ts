@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { validate } from '../../middleware/validate'
 import { assertWorkflowInstanceTenant, resolveTenantFromRequest } from '../../lib/tenant-isolation'
+import { assertInstancePermission, assertTemplatePermission } from '../../lib/permissions/workflowTemplate'
 import { prisma } from '../../lib/prisma'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import {
@@ -21,6 +22,7 @@ workflowDebugRouter.post('/instances/:id/clone', validate(z.object({
 })), async (req, res, next) => {
   try {
     await assertWorkflowInstanceTenant(req, req.params.id)
+    await assertInstancePermission(req.user!.userId, req.params.id, 'replay', resolveTenantFromRequest(req))
     res.status(201).json(await cloneWorkflowRun({
       instanceId: req.params.id,
       actorId: req.user!.userId,
@@ -34,6 +36,7 @@ workflowDebugRouter.post('/instances/:id/clone', validate(z.object({
 workflowDebugRouter.get('/instances/:id/time-travel', async (req, res, next) => {
   try {
     await assertWorkflowInstanceTenant(req, req.params.id)
+    await assertInstancePermission(req.user!.userId, req.params.id, 'checkpoint', resolveTenantFromRequest(req))
     res.json(await createTimeTravelSnapshot(req.params.id, req.user!.userId, typeof req.query.checkpointId === 'string' ? req.query.checkpointId : undefined, typeof req.query.nodeId === 'string' ? req.query.nodeId : undefined))
   } catch (err) { next(err) }
 })
@@ -41,6 +44,7 @@ workflowDebugRouter.get('/instances/:id/time-travel', async (req, res, next) => 
 workflowDebugRouter.post('/instances/:id/time-travel', validate(z.object({ checkpointId: z.string().uuid().optional(), nodeId: z.string().uuid().optional() })), async (req, res, next) => {
   try {
     await assertWorkflowInstanceTenant(req, req.params.id)
+    await assertInstancePermission(req.user!.userId, req.params.id, 'checkpoint', resolveTenantFromRequest(req))
     res.status(201).json(await createTimeTravelSnapshot(req.params.id, req.user!.userId, req.body.checkpointId, req.body.nodeId))
   } catch (err) { next(err) }
 })
@@ -48,6 +52,7 @@ workflowDebugRouter.post('/instances/:id/time-travel', validate(z.object({ check
 workflowDebugRouter.get('/instances/:id/compensations', async (req, res, next) => {
   try {
     await assertWorkflowInstanceTenant(req, req.params.id)
+    await assertInstancePermission(req.user!.userId, req.params.id, 'operate', resolveTenantFromRequest(req))
     const tenantId = resolveTenantFromRequest(req)
     res.json(await withTenantDbTransaction(prisma, tx => tx.workflowCompensationExecution.findMany({ where: { instanceId: req.params.id }, orderBy: { createdAt: 'desc' }, take: 100 }), tenantId))
   } catch (err) { next(err) }
@@ -69,6 +74,7 @@ workflowDebugRouter.post('/templates/:id/migrations/preview', validate(z.object(
     const tenantId = resolveTenantFromRequest(req)
     const template = await withTenantDbTransaction(prisma, tx => tx.workflow.findUnique({ where: { id: req.params.id }, select: { id: true } }), tenantId)
     if (!template) return res.status(404).json({ error: 'Workflow template not found' })
+    await assertTemplatePermission(req.user!.userId, req.params.id, 'edit')
     res.json(await previewTemplateMigration({ templateId: req.params.id, fromVersion: req.body.fromVersion, toVersion: req.body.toVersion, nodeMap: req.body.nodeMap, actorId: req.user!.userId }))
   } catch (err) { next(err) }
 })
@@ -83,6 +89,7 @@ workflowDebugRouter.post('/templates/:id/migrations', validate(z.object({
     const tenantId = resolveTenantFromRequest(req)
     const template = await withTenantDbTransaction(prisma, tx => tx.workflow.findUnique({ where: { id: req.params.id }, select: { id: true } }), tenantId)
     if (!template) return res.status(404).json({ error: 'Workflow template not found' })
+    await assertTemplatePermission(req.user!.userId, req.params.id, 'edit')
     res.status(201).json(await createTemplateMigration({ templateId: req.params.id, fromVersion: req.body.fromVersion, toVersion: req.body.toVersion, nodeMap: req.body.nodeMap, actorId: req.user!.userId, applyToInFlight: req.body.applyToInFlight }))
   } catch (err) { next(err) }
 })
@@ -90,6 +97,7 @@ workflowDebugRouter.post('/templates/:id/migrations', validate(z.object({
 workflowDebugRouter.get('/templates/:id/migrations', async (req, res, next) => {
   try {
     const tenantId = resolveTenantFromRequest(req)
+    await assertTemplatePermission(req.user!.userId, req.params.id, 'view')
     res.json(await withTenantDbTransaction(prisma, tx => tx.workflowTemplateMigration.findMany({ where: { templateId: req.params.id }, orderBy: { createdAt: 'desc' }, take: 100 }), tenantId))
   } catch (err) { next(err) }
 })

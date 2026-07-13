@@ -13,6 +13,7 @@ import { api } from '../../lib/api'
 import { useActiveContextStore } from '../../store/activeContext.store'
 import { UserPicker, TeamPicker, CapabilityPicker } from '../../components/lookup/EntityPickers'
 import { useCapabilityLabels } from '../runtime/useCapabilityLabels'
+import { RuntimeInputsForm, type RuntimeInputValues } from './RuntimeInputsForm'
 
 type WorkflowInstance = {
   id: string
@@ -366,15 +367,15 @@ export function WorkflowsListPage() {
   const qc = useQueryClient()
   const [tab, setTab] = useState<'instances' | 'templates'>('templates')
   // M93.B — Workflow profile sub-toggle on the Workflows tab.
-  //   'main'      → top-level orchestrations (the default — what most
-  //                 operators want by default; matches the pre-M93 view).
+  //   'main'      → top-level orchestrations.
   //   'workbench' → agent-loop sub-workflows. Discoverable separately so
   //                 the main list isn't cluttered with templates that
   //                 only run nested.
-  //   'all'       → both. Useful for cross-cutting search.
-  // Default 'main' = no behavioural change for existing users; explicit
-  // opt-in to see workbench templates.
-  const [profileTab, setProfileTab] = useState<'main' | 'workbench' | 'all'>('main')
+  //   'all'       → both (the default catalog view).
+  // Default to the complete active catalog. Operators can narrow the list to
+  // main/workbench or a capability explicitly, but an active capability
+  // context must not silently hide seeded workflows from this catalog.
+  const [profileTab, setProfileTab] = useState<'main' | 'workbench' | 'all'>('all')
   const [showArchived, setShowArchived] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<WorkflowInstance | null>(null)
   const [importOpen, setImportOpen] = useState(false)
@@ -383,7 +384,7 @@ export function WorkflowsListPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [createName, setCreateName] = useState('')
   const activeContext = useActiveContextStore(s => s.active)
-  const [capabilityFilter, setCapabilityFilter] = useState<string>(activeContext?.capabilityId ?? '')
+  const [capabilityFilter, setCapabilityFilter] = useState<string>('')
   const [createCapabilityId, setCreateCapabilityId] = useState<string>(activeContext?.capabilityId ?? '')
   const [createTeamId, setCreateTeamId] = useState<string>(activeContext?.teamId ?? '')
   const [createStarter, setCreateStarter] = useState<WorkflowStarter>('EMPTY')
@@ -405,10 +406,6 @@ export function WorkflowsListPage() {
   const [importJsonOpen, setImportJsonOpen] = useState(false)
   const [importJsonText, setImportJsonText] = useState('')
   const importJsonFileRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    setCapabilityFilter(activeContext?.capabilityId ?? '')
-  }, [activeContext?.capabilityId])
 
   const { data: instancesData, isLoading: instancesLoading } = useQuery({
     queryKey: ['workflow-instances', capabilityFilter],
@@ -547,10 +544,13 @@ export function WorkflowsListPage() {
   // is now the only supported runtime input surface for workflow starts.
   const [runOpen, setRunOpen] = useState<WorkflowTemplate | null>(null)
   const startRunMut = useMutation({
-    mutationFn: async ({ workflowId, workItemId, targetId, needsClaim }: { workflowId: string; workItemId: string; targetId: string; needsClaim: boolean }) => {
+    mutationFn: async ({ workflowId, workItemId, targetId, needsClaim, runtimeValues }: { workflowId: string; workItemId: string; targetId: string; needsClaim: boolean; runtimeValues: RuntimeInputValues }) => {
       if (needsClaim) await api.post(`/work-items/${workItemId}/targets/${targetId}/claim`)
       return api.post(`/work-items/${workItemId}/targets/${targetId}/start`, {
         childWorkflowTemplateId: workflowId,
+        vars: runtimeValues.vars,
+        globals: runtimeValues.globals,
+        params: runtimeValues.params,
       }).then(r => r.data as { childWorkflowInstanceId?: string })
     },
     onSuccess: (run) => {
@@ -1109,7 +1109,7 @@ export function WorkflowsListPage() {
           submitting={startRunMut.isPending}
           error={startRunMut.error}
           onCancel={() => setRunOpen(null)}
-          onSubmit={({ workItemId, targetId, needsClaim }) => startRunMut.mutate({ workflowId: runOpen.id, workItemId, targetId, needsClaim })}
+          onSubmit={({ workItemId, targetId, needsClaim, runtimeValues }) => startRunMut.mutate({ workflowId: runOpen.id, workItemId, targetId, needsClaim, runtimeValues })}
         />
       )}
 
@@ -1949,6 +1949,7 @@ type WorkItemRow = {
   urgency?: string | null
   requiredBy?: string | null
   originType?: string | null
+  input?: Record<string, unknown>
   targets: WorkItemTarget[]
 }
 
@@ -1973,11 +1974,13 @@ function RunModal({
   submitting: boolean
   error?:     unknown
   onCancel:   () => void
-  onSubmit:   (input: { workItemId: string; targetId: string; needsClaim: boolean }) => void
+  onSubmit:   (input: { workItemId: string; targetId: string; needsClaim: boolean; runtimeValues: RuntimeInputValues }) => void
 }) {
   const navigate = usePlatformNavigate()
   const { labelForCapability } = useCapabilityLabels()
   const [selectedWorkItemTarget, setSelectedWorkItemTarget] = useState('')
+  const [runtimeValues, setRuntimeValues] = useState<RuntimeInputValues>({ vars: {}, globals: {}, params: {} })
+  const [runtimeValuesReady, setRuntimeValuesReady] = useState(true)
   const workItemsQuery = useQuery<WorkItemRow[]>({
     queryKey: ['workflow-run-workitems', workflow.capabilityId],
     enabled: Boolean(workflow.capabilityId),
@@ -2002,6 +2005,7 @@ function RunModal({
       workItemId: selected.item.id,
       targetId: selected.target.id,
       needsClaim: ['QUEUED', 'REWORK_REQUESTED'].includes(selected.target.status),
+      runtimeValues,
     })
   }
   const errorMessage = mutationErrorMessage(error)
@@ -2114,6 +2118,14 @@ function RunModal({
           </div>
         )}
 
+        <RuntimeInputsForm
+          workflowId={workflow.id}
+          initialVars={selected?.item.input ?? {}}
+          values={runtimeValues}
+          onChange={setRuntimeValues}
+          onReadyChange={setRuntimeValuesReady}
+        />
+
         {errorMessage && (
           <p style={{
             margin: '0 0 12px',
@@ -2145,15 +2157,15 @@ function RunModal({
           </button>
           <button
             onClick={submit}
-            disabled={submitting || !selected}
+            disabled={submitting || !selected || !runtimeValuesReady}
             title="Start the selected WorkItem with this workflow template."
             style={{
               display: 'flex', alignItems: 'center', gap: 5,
               padding: '8px 14px', borderRadius: 8, border: 'none',
               background: 'var(--color-primary)', color: '#fff',
               fontSize: 12, fontWeight: 700,
-              cursor: (submitting || !selected) ? 'default' : 'pointer',
-              opacity: (submitting || !selected) ? 0.6 : 1,
+              cursor: (submitting || !selected || !runtimeValuesReady) ? 'default' : 'pointer',
+              opacity: (submitting || !selected || !runtimeValuesReady) ? 0.6 : 1,
             }}
           >
             <Play size={11} /> {submitting ? 'Starting...' : 'Start from WorkItem'}

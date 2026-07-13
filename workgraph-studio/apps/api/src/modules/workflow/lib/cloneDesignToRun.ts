@@ -23,12 +23,14 @@ import { ValidationError } from '../../../lib/errors'
 import { createWorkflowRunBudgetSnapshot } from '../runtime/budget'
 import { tenantIdForCreate } from '../../../lib/tenant-isolation'
 import { createWorkflowAuthorizationSnapshot, evaluateTemplatePermission } from '../../../lib/permissions/workflowTemplate'
+import { collectRuntimeInputRequirements, missingRuntimeInputs } from './runtime-inputs'
 
 export type CloneOpts = {
   templateId:      string
   name?:           string                    // optional run name
   vars?:           Record<string, unknown>   // override template variable defaults
   globals?:        Record<string, unknown>   // override INSTANCE-scoped team globals
+  params?:         Record<string, unknown>   // launch-time workflow parameters
   budgetOverride?: unknown                    // optional run-level lowering of the template budget
   createdById?:    string
   initiativeId?:   string
@@ -235,6 +237,12 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
       globals[v.key] = v.value
     }
   }
+  // Launch-time globals may be declared only by a node placeholder and not by
+  // a team variable. Keep those values in the run context as well; the
+  // runtime-input contract validates them before a run is created.
+  for (const [key, value] of Object.entries(globalsOverrides)) {
+    if (!(key in globals)) globals[key] = value
+  }
 
   const varDefs: TemplateVarDef[] = Array.isArray(template.variables)
     ? (template.variables as unknown as TemplateVarDef[])
@@ -247,9 +255,22 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
   }
   for (const [k, v] of Object.entries(varsOverrides)) if (!(k in vars)) vars[k] = v
 
+  const params = opts.params ?? {}
+
+  const runtimeInputs = collectRuntimeInputRequirements(
+    design.nodes.map(node => ({ id: node.id, label: node.label, nodeType: node.nodeType, config: node.config })),
+    varDefs,
+  )
+  const missing = missingRuntimeInputs(runtimeInputs.inputs, { vars, globals, params })
+  if (missing.length > 0) {
+    const details = missing.map(input => `${input.reference} (${input.nodes.map(node => node.nodeLabel).join(', ') || 'workflow input'})`).join('; ')
+    throw new ValidationError(`Workflow requires runtime inputs before start: ${details}. Provide them in the start request.`)
+  }
+
   const initialContext: Record<string, unknown> = {}
   if (Object.keys(globals).length > 0) initialContext._globals = globals
   if (Object.keys(vars).length    > 0) initialContext._vars    = vars
+  if (Object.keys(params).length  > 0) initialContext._params   = params
 
   // Runtime model override chosen at launch — a SYSTEM global (not a team var),
   // so it's threaded explicitly rather than via the team-variable merge above.

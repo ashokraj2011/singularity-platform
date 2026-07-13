@@ -97,7 +97,9 @@ async function deliverOne(
     'x-event-outbox-id':  outboxId,
   }
   if (secret) {
-    const sig = crypto.createHmac('sha256', secret).update(body).digest('hex')
+    const timestamp = String(Date.now())
+    headers['x-event-timestamp'] = timestamp
+    const sig = crypto.createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex')
     headers['x-event-signature'] = `sha256=${sig}`
   }
 

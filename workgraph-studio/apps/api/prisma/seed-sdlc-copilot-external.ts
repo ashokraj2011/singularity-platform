@@ -195,14 +195,14 @@ async function main(): Promise<void> {
   // capabilityId: null → COMMON / platform template (capability-INDEPENDENT).
   await (prisma as any).workflow.upsert({
     where: { id: WF_ID },
-    update: { name: WF_NAME, capabilityId: null, teamId: TEAM_ID, profile: 'main', workflowTypeKey: 'SDLC', metadata: { usesCopilot: true, copilotExternal: true } },
+    update: { name: WF_NAME, capabilityId: null, teamId: TEAM_ID, profile: 'main', workflowTypeKey: 'SDLC', metadata: { usesCopilot: true, copilotExternal: true, visibility: 'GLOBAL' } },
     create: {
       id: WF_ID, name: WF_NAME,
       description: 'SDLC delivered by the GitHub Copilot CLI run OFF-platform: each phase is a SIGNAL_WAIT barrier ' +
         'the exported runner signals when it finishes that phase, with a human review gate between phases.',
       status: 'PUBLISHED', currentVersion: 1, profile: 'main', workflowTypeKey: 'SDLC',
       teamId: TEAM_ID, capabilityId: null,
-      metadata: { usesCopilot: true, copilotExternal: true },
+      metadata: { usesCopilot: true, copilotExternal: true, visibility: 'GLOBAL' },
     },
   })
   await (prisma as any).workflowVersion.upsert({

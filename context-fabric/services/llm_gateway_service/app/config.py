@@ -200,7 +200,7 @@ class Settings(BaseSettings):
         # LLM_GATEWAY_BEARER is empty, every request is unauthenticated (see
         # router._check_auth). Fail closed in prod; warn in dev so local runs work.
         _deploy_env = (
-            env.get("APP_ENV") or env.get("ENVIRONMENT") or env.get("SINGULARITY_ENV") or "development"
+            env.get("APP_ENV") or env.get("ENVIRONMENT") or env.get("SINGULARITY_ENV") or env.get("NODE_ENV") or "development"
         ).lower()
         _has_real_creds = any([
             self.openai_api_key, self.openrouter_api_key, self.anthropic_api_key,

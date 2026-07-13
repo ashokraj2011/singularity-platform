@@ -38,6 +38,7 @@ DEFAULT_ROLES: list[dict] = [
             "capability:relationship:create", "capability:sharing_grant:create",
             "governance:author", "governance:approve", "consumable:approve",
             "workflow:create", "workflow:view", "workflow:update", "workflow:delete", "workflow:execute", "workflow:assign", "workflow:approve", "workflow:audit:view", "workflow:template:publish",
+            "workflow:event:publish", "workflow:runtime:dispatch",
             "agent:create", "agent:view", "agent:update", "agent:execute", "agent:learning:approve",
             "tool:register", "tool:view", "tool:execute",
             "context:session:view", "context:token_savings:view",
@@ -59,7 +60,7 @@ DEFAULT_ROLES: list[dict] = [
         "name": "Workflow Executor",
         "role_scope": "capability",
         "system_role": True,
-        "permissions": ["workflow:view", "workflow:execute", "workflow:assign", "context:session:view", "capability:use_shared"],
+        "permissions": ["workflow:view", "workflow:execute", "workflow:assign", "workflow:runtime:dispatch", "context:session:view", "capability:use_shared"],
     },
     {
         "role_key": "workflow_approver",

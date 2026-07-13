@@ -48,7 +48,9 @@ async function deliverOne(
     "x-event-outbox-id": outboxId,
   };
   if (secret) {
-    headers["x-event-signature"] = `sha256=${crypto.createHmac("sha256", secret).update(body).digest("hex")}`;
+    const timestamp = String(Date.now());
+    headers["x-event-timestamp"] = timestamp;
+    headers["x-event-signature"] = `sha256=${crypto.createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`;
   }
 
   let status = "failed";

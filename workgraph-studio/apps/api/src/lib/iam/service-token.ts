@@ -21,7 +21,8 @@
 import { config } from '../../config'
 import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from '../upstream-json'
 
-const SCOPES = ['read:reference-data', 'read:mcp-servers', 'publish:events']
+const SCOPES = ['read:reference-data', 'read:mcp-servers', 'publish:events', 'authz:check']
+const REQUIRED_SCOPES = ['authz:check']
 const SERVICE_NAME = 'workgraph-api'
 const REFRESH_BUFFER_HOURS = 24             // refresh when <24h to expiry
 const TTL_HOURS            = 24 * 30        // mint with 30-day TTL
@@ -73,13 +74,30 @@ function decodePayload(jwt: string): Record<string, unknown> | null {
   } catch { return null }
 }
 
+function hasRequiredServiceScopes(jwt: string): boolean {
+  const payload = decodePayload(jwt)
+  // Explicit human JWTs remain supported for development and legacy setups.
+  if (payload?.kind !== 'service') return true
+  const scopes = Array.isArray(payload.scopes)
+    ? payload.scopes.filter((value): value is string => typeof value === 'string')
+    : []
+  return REQUIRED_SCOPES.every(scope => scopes.includes(scope))
+}
+
 export function configuredTenantIdsForServiceToken(): string[] {
-  return [...new Set(
+  const configured = [...new Set(
     config.IAM_SERVICE_TOKEN_TENANT_IDS
       .split(',')
       .map(value => value.trim())
       .filter(Boolean),
   )].sort()
+  // IAM requires service tokens to name a tenant even in local single-tenant
+  // mode. Keep that path usable when the allowlist is omitted, while strict
+  // production mode still rejects an implicit tenant through the guard below.
+  if (configured.length === 0 && config.TENANT_ISOLATION_MODE !== 'strict') {
+    return [config.WORKGRAPH_DEFAULT_TENANT_ID]
+  }
+  return configured
 }
 
 function sameStringSet(left: string[], right: string[]): boolean {
@@ -170,9 +188,11 @@ async function mint(): Promise<string | undefined> {
 export async function getIamServiceToken(): Promise<string | undefined> {
   // Explicit override wins (operator-set, e.g. for one-off testing).
   if (config.IAM_SERVICE_TOKEN) {
-    return validateIamServiceTokenTenantScope(config.IAM_SERVICE_TOKEN)
-      ? config.IAM_SERVICE_TOKEN
-      : undefined
+    if (!hasRequiredServiceScopes(config.IAM_SERVICE_TOKEN)) {
+      console.warn('[iam-service-token] explicit service token is missing authz:check; attempting bootstrap mint')
+    } else if (validateIamServiceTokenTenantScope(config.IAM_SERVICE_TOKEN)) {
+      return config.IAM_SERVICE_TOKEN
+    }
   }
   if (isFresh(cached)) return cached.jwt
   if (inflight) return inflight

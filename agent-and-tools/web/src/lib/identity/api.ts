@@ -125,6 +125,13 @@ export function updateIdentity(view: IdentityView, id: string, body: Record<stri
   return identityRequest<IdentityRow>(`${pathFor(view)}/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) });
 }
 
+export function setLocalPassword(userId: string, password: string): Promise<{ user_id: string; auth_provider: string; is_local_account: boolean }> {
+  return identityRequest(`/users/${encodeURIComponent(userId)}/password`, {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+}
+
 // Delete a permission key from the catalog. IAM blocks this (409) while the key
 // is still granted to any role, so the caller should surface that message.
 // Create/edit go through createIdentity/updateIdentity("permissions", …) — only

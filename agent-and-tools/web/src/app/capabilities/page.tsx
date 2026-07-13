@@ -17,6 +17,7 @@ import {
   Upload,
 } from "lucide-react";
 import { identityApi, runtimeApi, type IamBusinessUnit, type IamTeam } from "@/lib/api";
+import { createIdentity } from "@/lib/identity/api";
 import { CAPABILITY_ROLE_OPTIONS } from "@/lib/capabilityRoles";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { PageHeader, EmptyState, ErrorState } from "@/components/ui/primitives";
@@ -63,6 +64,7 @@ type WizardCommand = {
 
 type BootstrapForm = {
   name: string;
+  capabilityKey: string;
   appId: string;
   capabilityType: string;
   criticality: string;
@@ -84,6 +86,7 @@ type BootstrapForm = {
 
 const DEFAULT_FORM: BootstrapForm = {
   name: "",
+  capabilityKey: "",
   appId: "",
   capabilityType: "DELIVERY",
   criticality: "MEDIUM",
@@ -145,6 +148,15 @@ const CAPABILITY_TYPE_OPTIONS = [
   { value: "COLLECTION", label: "Collection" },
 ] as const;
 type CapabilityListTab = "active" | "archived";
+
+function capabilityKeyFromName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 100);
+}
 
 export default function CapabilitiesPage() {
   const router = useRouter();
@@ -251,6 +263,12 @@ export default function CapabilitiesPage() {
       setStep(1);
       return;
     }
+    const capabilityKey = capabilityKeyFromName(form.capabilityKey || form.name);
+    if (!capabilityKey) {
+      setError("IAM capability key is required.");
+      setStep(1);
+      return;
+    }
     setCreating(true);
     setError(null);
     try {
@@ -263,7 +281,26 @@ export default function CapabilitiesPage() {
         .split(/\n|,/)
         .map((item) => item.trim())
         .filter(Boolean);
+      // IAM creates the canonical capability identity first. Agent Runtime
+      // only materializes repositories, agents, and knowledge against that
+      // immutable IAM row.
+      const ownerTeam = iamTeams.find(team => team.id === form.ownerTeamId);
+      const businessUnit = iamBusinessUnits.find(unit => unit.id === form.businessUnitId);
+      const iamCapability = await createIdentity("capabilities", {
+        capability_id: capabilityKey,
+        name: form.name.trim(),
+        capability_type: `${(form.capabilityType.trim() || "APPLICATION").toLowerCase()}_capability`,
+        visibility: "private",
+        owner_bu_key: businessUnit?.bu_key,
+        owner_team_key: ownerTeam?.team_key,
+        metadata: { sourceService: "agent-and-tools", createdFrom: "capability-bootstrap" },
+        tags: ["agentic-delivery"],
+      });
+      const iamCapabilityId = String(iamCapability.id ?? "").trim();
+      if (!iamCapabilityId) throw new Error("IAM created the capability without a canonical id.");
+
       const body = {
+        iamCapabilityId,
         name: form.name.trim(),
         appId: form.appId.trim() || undefined,
         capabilityType: form.capabilityType.trim() || "APPLICATION",
@@ -373,11 +410,17 @@ export default function CapabilitiesPage() {
 
           {step === 1 && (
             <div className="space-y-4">
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <Field label="Name *">
                   <input className={FIELD_CLASS} required value={form.name}
-                    onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                    onChange={e => setForm(f => ({ ...f, name: e.target.value, capabilityKey: f.capabilityKey || capabilityKeyFromName(e.target.value) }))}
                     placeholder="Core Common Rule Engine" />
+                </Field>
+                <Field label="IAM capability key *">
+                  <input className={FIELD_CLASS} required value={form.capabilityKey}
+                    onChange={e => setForm(f => ({ ...f, capabilityKey: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-") }))}
+                    placeholder="core-common-rule-engine" />
+                  <p className="mt-1 text-xs text-slate-500">Stable IAM identity used by WorkGraph and Agent Runtime.</p>
                 </Field>
                 <Field label="App ID (optional)">
                   <input className={FIELD_CLASS} value={form.appId}

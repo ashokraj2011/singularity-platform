@@ -13,8 +13,11 @@ that name against an allowlist before reading it.
 from __future__ import annotations
 
 import json
+import asyncio
+import ipaddress
 import os
 import re
+import socket
 import time
 from typing import Any
 from urllib.parse import urlparse
@@ -129,11 +132,53 @@ def _provider_config(
     return provider, model, base_url, str(credential_env).strip() if credential_env else None
 
 
-def _ensure_custom_base_url_allowed(base_url: str | None, provider: str) -> str:
+def _private_address(host: str) -> bool:
+    try:
+        address = ipaddress.ip_address(host)
+        return bool(
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_unspecified
+        )
+    except ValueError:
+        return False
+
+
+async def _resolved_private_address(host: str) -> bool:
+    if _private_address(host) or host.lower() in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise LLMGatewayError("DIRECT_LLM_HOST_UNRESOLVABLE", f"Direct LLM host could not be resolved: {host}") from exc
+    return any(_private_address(str(info[4][0])) for info in infos if info and len(info) > 4 and info[4])
+
+
+async def _ensure_custom_base_url_allowed(base_url: str | None, provider: str) -> str:
     if base_url:
         parsed = urlparse(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise LLMGatewayError("DIRECT_LLM_BASE_URL_INVALID", "Direct LLM base URL must be an http(s) URL with a host.")
+        if parsed.username or parsed.password:
+            raise LLMGatewayError("DIRECT_LLM_BASE_URL_INVALID", "Direct LLM base URLs cannot contain embedded credentials.")
+        host = parsed.hostname.lower().rstrip(".")
+        allowed_hosts = {
+            item.strip().lower().rstrip(".")
+            for item in os.environ.get("CONTEXT_FABRIC_DIRECT_LLM_ALLOWED_HOSTS", "").split(",")
+            if item.strip()
+        }
+        production_class = any(
+            os.environ.get(name, "").strip().lower() in {"production", "prod", "staging", "perf"}
+            for name in ("APP_ENV", "ENVIRONMENT", "NODE_ENV", "SINGULARITY_ENV")
+        )
+        custom_private_allowed = _env_truthy("CONTEXT_FABRIC_DIRECT_LLM_ALLOW_PRIVATE_HOSTS") and not production_class
+        if await _resolved_private_address(host) and not custom_private_allowed:
+            raise LLMGatewayError("DIRECT_LLM_PRIVATE_HOST_BLOCKED", "Direct LLM base URLs may not resolve to private, loopback, link-local, or reserved addresses.")
+        if allowed_hosts and host not in allowed_hosts:
+            raise LLMGatewayError("DIRECT_LLM_HOST_NOT_ALLOWED", f"Direct LLM host is not in CONTEXT_FABRIC_DIRECT_LLM_ALLOWED_HOSTS: {host}")
         known = {
             "openai": "https://api.openai.com/v1",
             "openai_compatible": "https://api.openai.com/v1",
@@ -146,6 +191,11 @@ def _ensure_custom_base_url_allowed(base_url: str | None, provider: str) -> str:
             raise LLMGatewayError(
                 "DIRECT_LLM_BASE_URL_NOT_ALLOWED",
                 "Custom direct LLM base URLs are disabled; set CONTEXT_FABRIC_DIRECT_LLM_ALLOW_CUSTOM_BASE_URLS=true for a trusted endpoint.",
+            )
+        if custom and production_class and not allowed_hosts:
+            raise LLMGatewayError(
+                "DIRECT_LLM_HOST_ALLOWLIST_REQUIRED",
+                "Production direct LLM custom hosts require CONTEXT_FABRIC_DIRECT_LLM_ALLOWED_HOSTS.",
             )
     if base_url:
         return base_url
@@ -299,7 +349,7 @@ async def call_direct_chat(
         reply = "[context-fabric-direct/mock] response"
         return ChatResponse(content=reply, tool_calls=calls, finish_reason="tool_call" if calls else "stop", input_tokens=max(1, len(text) // 4), output_tokens=max(1, len(reply) // 4), latency_ms=1, provider="mock", model=model, model_alias=model_alias or "mock-fast", estimated_cost=0.0)
 
-    base_url = _ensure_custom_base_url_allowed(configured_base_url, provider)
+    base_url = await _ensure_custom_base_url_allowed(configured_base_url, provider)
     api_key = _credential({"credential_env": credential_env} if credential_env else {}, provider)
     raw_timeout = timeout_sec if timeout_sec is not None else os.environ.get("CONTEXT_FABRIC_DIRECT_LLM_TIMEOUT_SEC", "300")
     try:

@@ -175,6 +175,11 @@ const createSchema = z.object({
 
 const startTargetSchema = z.object({
   childWorkflowTemplateId: z.string().uuid().optional(),
+  // Values captured by the run-start form. They are merged over the WorkItem
+  // packet for this run only; the WorkItem itself remains unchanged.
+  vars: z.record(z.unknown()).optional(),
+  globals: z.record(z.unknown()).optional(),
+  params: z.record(z.unknown()).optional(),
   // Optional per-run model chosen at launch (a gateway catalog alias).
   modelAlias: z.string().max(120).optional(),
   // Optional per-run git branch/ref chosen at launch — the branch the run clones
@@ -201,6 +206,9 @@ const routeSchemaBase = z.object({
   workflowId: z.string().uuid().optional(),
   workflowTypeKey: z.string().optional(),
   routingMode: z.enum(['MANUAL', 'AUTO_ATTACH', 'AUTO_START', 'SCHEDULED_START']).optional(),
+  vars: z.record(z.unknown()).optional(),
+  globals: z.record(z.unknown()).optional(),
+  params: z.record(z.unknown()).optional(),
 })
 
 const routeSchema = routeSchemaBase.default({})
@@ -473,6 +481,9 @@ workItemsRouter.post('/:id/start', validate(startWorkItemSchema), async (req, re
       workflowTypeKey: body.workflowTypeKey,
       routingMode: body.routingMode ?? 'AUTO_START',
       startNow: true,
+      vars: body.vars,
+      globals: body.globals,
+      params: body.params,
     })
     res.json(routed)
   } catch (err) {
@@ -509,6 +520,9 @@ workItemsRouter.post('/:id/targets/:targetId/start', validate(startTargetSchema)
     const body = req.body as z.infer<typeof startTargetSchema>
     const result = await startWorkItemTarget(String(req.params.id), String(req.params.targetId), req.user!.userId, {
       childWorkflowTemplateId: body?.childWorkflowTemplateId,
+      vars: body?.vars,
+      globals: body?.globals,
+      params: body?.params,
       modelAlias: body?.modelAlias,
       sourceRef: body?.sourceRef,
       sourceType: body?.sourceType,

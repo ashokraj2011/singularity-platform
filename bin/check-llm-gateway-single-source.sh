@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # M33 — CI guard.
 #
-# Enforces the "single LLM gateway" invariant:
-#   1. Only `context-fabric/services/llm_gateway_service/` opens HTTP to a
-#      provider URL.
-#   2. Only `mcp-server/` may call llm-gateway runtime endpoints; all other
-#      services must call MCP instead.
-#   3. Only the gateway service reads provider API keys (OPENAI_API_KEY,
+# Enforces the governed LLM egress policy:
+#   1. The gateway owns the normal provider route. Explicit Direct LLM nodes
+#      are the only approved exception and may egress from Context Fabric or
+#      WorkGraph through their dedicated clients.
+#   2. MCP owns the normal runtime relay. A small, explicit list of platform
+#      diagnostics/embedding helpers may call the gateway directly.
+#   3. Provider API keys are read only by the gateway or the approved Direct
+#      LLM client; UI labels and setup documentation are not credentials.
+#   4. Only the gateway service reads provider API keys (OPENAI_API_KEY,
 #      ANTHROPIC_API_KEY, OPENROUTER_API_KEY, COPILOT_TOKEN, GOOGLE_API_KEY,
 #      COHERE_API_KEY).
 #   4. No service-side TypeScript / Python file references the legacy
@@ -45,7 +48,16 @@ EXCLUDE_DIRS=(
 #    them in a guard is necessary, not a leak.
 #  - Generated client outputs (dist/, generated/), docs, .env, and this
 #    guard itself are out of scope.
-PATH_FILTER='context-fabric/services/llm_gateway_service/|(^|/)docs/|(^|/)\.singularity/|(^|/)docker-compose\.yml:|(^|/)\.env(\.[^:]*)?:|bin/check-llm-gateway-single-source\.sh:|bin/configure-platform\.py:|mcp-server/src/healthz-strict\.ts:|/dist/|/generated/|\.md:'
+PATH_FILTER='context-fabric/services/llm_gateway_service/|context-fabric/services/context_api_service/app/governed/direct_llm_client\.py|workgraph-studio/apps/api/src/modules/workflow/runtime/executors/DirectLlmTaskExecutor\.ts|workgraph-studio/apps/api/src/modules/workflow/runtime/executors/DirectLlmToolLoop\.ts|(^|/)docs/|(^|/)\.singularity/|(^|/)docker-compose\.yml:|(^|/)\.env(\.[^:]*)?:|bin/check-llm-gateway-single-source\.sh:|bin/configure-platform\.py:|mcp-server/src/healthz-strict\.ts:|(^|/)agent-and-tools/web/src/|(^|/)workgraph-studio/apps/web/src/|(^|/)clients/singularity-desktop/|/dist/|/generated/|\.md:'
+
+# Explicit direct-provider egress is a node-level feature, not a general
+# service escape hatch. Keep this list narrow so a new provider call still
+# fails the guard until it is reviewed and added deliberately.
+DIRECT_PROVIDER_PATHS='context-fabric/services/context_api_service/app/governed/direct_llm_client\.py|workgraph-studio/apps/api/src/modules/workflow/runtime/executors/DirectLlmTaskExecutor\.ts|workgraph-studio/apps/api/src/modules/workflow/runtime/executors/DirectLlmToolLoop\.ts'
+
+# These callers do not own provider credentials; they call the configured
+# gateway for diagnostics/embeddings and are intentionally not MCP relays.
+DIRECT_GATEWAY_PATHS='agent-and-tools/packages/shared/src/llm-gateway/|agent-and-tools/apps/agent-runtime/src/modules/capabilities/bootstrap-phase3-distill\.ts|audit-governance-service/src/engine/|audit-governance-service/test/|tools/capability-harness/|tests/chaos/|context-fabric/services/context_api_service/app/governed/llm_client\.py|context-fabric/services/context_api_service/app/governed/turn\.py|context-fabric/services/context_api_service/app/laptop_registry\.py|bin/copilot-cli-server\.js'
 
 # Lines that are pure comments (// /* * # docstrings) don't introduce a
 # runtime call — strip them when grepping. Be a bit lenient (we strip only
@@ -104,7 +116,7 @@ direct_llm_hits="$(grep -rEn \
   "${EXCLUDE_DIRS[@]}" \
   '/v1/chat/completions|/v1/embeddings|/v1/models/resolve' \
   . 2>/dev/null \
-  | grep -vE 'context-fabric/services/llm_gateway_service/|(^|/)mcp-server/|(^|/)docs/|(^|/)\.singularity/|(^|/)docker-compose\.yml:|(^|/)\.env(\.[^:]*)?:|bin/check-llm-gateway-single-source\.sh:|/dist/|/generated/|\.md:' \
+  | grep -vE "context-fabric/services/llm_gateway_service/|(^|/)mcp-server/|(^|/)docs/|(^|/)\.singularity/|(^|/)\.agent-and-tools/web/src/|(^|/)agent-and-tools/web/src/|(^|/)workgraph-studio/apps/web/src/|(^|/)clients/singularity-desktop/|bin/check-llm-gateway-single-source\.sh:|/dist/|/generated/|\.md:|$DIRECT_GATEWAY_PATHS" \
   | strip_comment_lines || true)"
 set -e
 if [[ -n "$direct_llm_hits" ]]; then
@@ -128,7 +140,7 @@ rm -f /tmp/sg-gateway-fallbacks.$$
 
 header "2. Banned provider credentials"
 run_grep_check "no provider API keys are read outside the gateway" \
-  'OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|COPILOT_TOKEN|GOOGLE_API_KEY|COHERE_API_KEY' \
+  "process\\.env\\.(OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|COPILOT_TOKEN|GOOGLE_API_KEY|COHERE_API_KEY)|process\\.env\\[[[:space:]]*[\\\"'](OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|COPILOT_TOKEN|GOOGLE_API_KEY|COHERE_API_KEY)[\\\"']|os\\.environ(\\.get)?\\([[:space:]]*[\\\"'](OPENAI_API_KEY|ANTHROPIC_API_KEY|OPENROUTER_API_KEY|COPILOT_TOKEN|GOOGLE_API_KEY|COHERE_API_KEY)[\\\"']" \
   || failures=$((failures + 1))
 
 header "3. Banned provider-router env vars"

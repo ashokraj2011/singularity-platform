@@ -488,6 +488,44 @@ async function validatePromptUrl(rawUrl: string): Promise<{ ok: true; url: URL }
   return { ok: true, url }
 }
 
+async function validateDirectLlmBaseUrl(rawUrl: string | undefined, provider: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!rawUrl) return { ok: true }
+  let url: URL
+  try { url = new URL(rawUrl) } catch { return { ok: false, error: 'Direct LLM base URL is not a valid URL.' } }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+    return { ok: false, error: 'Direct LLM base URL must be http/https without embedded credentials.' }
+  }
+  const knownHosts = new Set(['api.openai.com', 'api.anthropic.com', 'openrouter.ai'])
+  const allowedHosts = new Set((process.env.WORKGRAPH_DIRECT_LLM_ALLOWED_HOSTS ?? '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean))
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, '')
+  const custom = !knownHosts.has(hostname)
+  const productionClass = ['production', 'prod', 'staging', 'perf'].includes(
+    (process.env.APP_ENV ?? process.env.ENVIRONMENT ?? process.env.SINGULARITY_ENV ?? process.env.NODE_ENV ?? '').toLowerCase(),
+  )
+  if (custom && !envFlag('WORKGRAPH_ALLOW_CUSTOM_DIRECT_LLM_URLS', false)) {
+    return { ok: false, error: `Custom direct LLM host ${hostname} is disabled; configure WORKGRAPH_ALLOW_CUSTOM_DIRECT_LLM_URLS=true and an explicit host allowlist.` }
+  }
+  if (custom && productionClass && allowedHosts.size === 0) {
+    return { ok: false, error: 'Production direct LLM custom hosts require WORKGRAPH_DIRECT_LLM_ALLOWED_HOSTS.' }
+  }
+  if (custom && allowedHosts.size > 0 && !allowedHosts.has(hostname)) {
+    return { ok: false, error: `Direct LLM host ${hostname} is not in WORKGRAPH_DIRECT_LLM_ALLOWED_HOSTS.` }
+  }
+  const allowPrivate = envFlag('WORKGRAPH_ALLOW_PRIVATE_DIRECT_LLM_URLS', false)
+    && !['production', 'prod', 'staging', 'perf'].includes((process.env.APP_ENV ?? process.env.ENVIRONMENT ?? process.env.SINGULARITY_ENV ?? process.env.NODE_ENV ?? '').toLowerCase())
+  const literalClass = net.isIP(url.hostname) ? classifyAddress(url.hostname) : null
+  if (literalClass && literalClass !== 'public' && !allowPrivate) return { ok: false, error: 'Direct LLM base URL resolves to a private or reserved address.' }
+  if (!literalClass && !allowPrivate) {
+    try {
+      const addresses = await lookup(url.hostname, { all: true })
+      if (addresses.some(address => classifyAddress(address.address) !== 'public')) return { ok: false, error: 'Direct LLM base URL resolves to a private or reserved address.' }
+    } catch (error) {
+      return { ok: false, error: `Direct LLM base URL host could not be resolved: ${(error as Error).message}` }
+    }
+  }
+  return { ok: true }
+}
+
 async function fetchPromptTemplateFromUrl(rawUrl: string): Promise<
   | { ok: true; url: string; template: string }
   | { ok: false; error: string; code: string }
@@ -940,6 +978,8 @@ async function resolveDirectLlmConfig(
   const model = connection?.model ?? cfgString(effectiveNode, 'model') ?? (provider === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o-mini')
   const baseUrl = connection?.baseUrl ?? cfgString(effectiveNode, 'baseUrl') ?? undefined
   const credentialEnv = connection?.credentialEnv ?? cfgString(effectiveNode, 'credentialEnv') ?? defaultCredentialEnv(provider)
+  const baseUrlValidation = await validateDirectLlmBaseUrl(baseUrl, provider)
+  if (!baseUrlValidation.ok) return { error: baseUrlValidation.error, code: 'DIRECT_LLM_BASE_URL_BLOCKED' }
   const promptTemplate = await resolvePromptTemplate(effectiveNode)
   if (!promptTemplate.ok) return { error: promptTemplate.error, code: promptTemplate.code }
 

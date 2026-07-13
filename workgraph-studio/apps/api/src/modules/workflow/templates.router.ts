@@ -8,8 +8,9 @@ import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, publishOutbox } from '../../lib/audit'
-import { assertTemplatePermission, assertWorkflowCreatePermission, canViewTemplate, resolveDefaultTeamId } from '../../lib/permissions/workflowTemplate'
+import { assertTemplatePermission, assertWorkflowCreatePermission, canViewTemplate, ensureWorkflowOwnerAccess, resolveDefaultTeamId } from '../../lib/permissions/workflowTemplate'
 import { getDesignInstanceId } from './lib/cloneDesignToRun'
+import { collectRuntimeInputRequirements } from './lib/runtime-inputs'
 import { validateNodeConfig } from '../lookup/resolver'
 import { listAgentTemplates, type AgentTemplate } from '../../lib/agent-and-tools/client'
 import { normalizeBudgetPolicy } from './runtime/budget'
@@ -179,6 +180,7 @@ workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, re
         profile:      profile ?? 'main',
       },
     })
+    await ensureWorkflowOwnerAccess(template.id, tenantId!, req.user!.userId!)
 
     if (starter === 'CAPABILITY_WORKBENCH_BRIDGE') {
       await createCapabilityWorkbenchBridgeGraph({
@@ -1335,6 +1337,65 @@ workflowTemplatesRouter.get('/gallery', async (req, res, next) => {
   }
 })
 
+// Return the deduplicated launch contract derived from every node in the
+// workflow graph. The UI can collect all node-specific values in one step,
+// while runtime-only references (event/output/context/workItem) remain
+// visible as references but are not incorrectly required before launch.
+workflowTemplatesRouter.get('/:id/runtime-inputs', async (req, res, next) => {
+  try {
+    const id = req.params.id as string
+    await assertTemplatePermission(req.user!.userId, id, 'start')
+    const workflow = await prisma.workflow.findUnique({
+      where: { id },
+      select: { id: true, variables: true, teamId: true, capabilityId: true },
+    })
+    if (!workflow) throw new NotFoundError('WorkflowTemplate', id)
+    const nodes = await prisma.workflowDesignNode.findMany({
+      where: { workflowId: id },
+      select: { id: true, label: true, nodeType: true, config: true },
+    })
+    const variableDefs = Array.isArray(workflow.variables) ? workflow.variables as unknown as Array<{
+      key: string
+      label?: string
+      type?: string
+      defaultValue?: unknown
+      description?: string
+      scope?: string
+    }> : []
+    const contract = collectRuntimeInputRequirements(nodes, variableDefs)
+
+    // A visible team variable is a server-side default. Expose only its
+    // existence, never its value, so the launch form does not ask for it.
+    const visibleGlobalKeys = new Set<string>()
+    if (workflow.teamId) {
+      const teamVars = await prisma.teamVariable.findMany({
+        where: {
+          teamId: workflow.teamId,
+          OR: [
+            { visibility: 'ORG_GLOBAL' },
+            ...(workflow.capabilityId ? [{ visibility: 'CAPABILITY', visibilityScopeId: workflow.capabilityId }] : []),
+            { visibility: 'WORKFLOW', visibilityScopeId: id },
+          ],
+        },
+        select: { key: true },
+      })
+      teamVars.forEach(variable => visibleGlobalKeys.add(variable.key))
+    }
+    const inputs = contract.inputs.map(input => ({
+      ...input,
+      required: input.scope === 'globals' && visibleGlobalKeys.has(input.key) ? false : input.required,
+    }))
+    res.json({
+      templateId: id,
+      inputs,
+      references: contract.references,
+      captureMode: 'workflow_start',
+    })
+  } catch (err) {
+    next(err)
+  }
+})
+
 workflowTemplatesRouter.get('/:id', async (req, res, next) => {
   try {
     await assertTemplatePermission(req.user!.userId, req.params.id, 'view')
@@ -1414,6 +1475,7 @@ workflowTemplatesRouter.post('/import', validate(importTemplateSchema), async (r
         currentVersion: 1,
       },
     })
+    await ensureWorkflowOwnerAccess(template.id, tenantId!, req.user!.userId!)
 
     if (body.latestGraphSnapshot) {
       await prisma.workflowVersion.create({
@@ -1485,6 +1547,7 @@ workflowTemplatesRouter.post('/:id/duplicate', async (req, res, next) => {
         currentVersion: asNewVersion ? (source.currentVersion + 1) : 1,
       },
     })
+    await ensureWorkflowOwnerAccess(copy.id, tenantId!, req.user!.userId!)
 
     if (source.versions[0]) {
       await prisma.workflowVersion.create({
@@ -1596,6 +1659,7 @@ workflowTemplatesRouter.post('/import-bpmn', async (req, res, next) => {
     const template = await prisma.workflow.create({
       data: { name: templateName, createdById: req.user!.userId, teamId, tenantId, currentVersion: 1 },
     })
+    await ensureWorkflowOwnerAccess(template.id, tenantId!, req.user!.userId!)
     await prisma.workflowVersion.create({
       data: { templateId: template.id, version: 1, graphSnapshot: snapshot as any },
     })

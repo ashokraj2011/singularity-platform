@@ -5,6 +5,9 @@ import { normalizeTraceId, traceIdFromParts } from '@workgraph/shared-types'
 import { validate } from '../../middleware/validate'
 import { logEvent } from '../../lib/audit'
 import { fanOutToWorkItemTriggersDetailed } from '../work-items/work-item-event-fanout'
+import { assertCapabilityPermission } from '../../lib/permissions/workflowTemplate'
+import { requireTenantFromRequest, resolveTenantFromRequest } from '../../lib/tenant-isolation'
+import { runWithTenantDbContext } from '../../lib/tenant-db-context'
 
 /**
  * P1-9A — canonical, authenticated event intake.
@@ -23,9 +26,10 @@ export const eventIntakeRouter: Router = Router()
 const ingestSchema = z.object({
   // The business event type; matched (normalized) against active EVENT WorkItemTriggers.
   eventType: z.string().min(1).max(200),
-  // Optional narrowing to one capability's triggers; omit to fan out to all
-  // capabilities subscribed to this event type.
-  capabilityId: z.string().optional(),
+  // User-facing event ingress is capability-scoped. Cross-capability fan-out
+  // belongs on the signed service ingress route so a user cannot inject work
+  // into another capability by guessing an event type.
+  capabilityId: z.string().min(1),
   // Optional caller-supplied per-delivery id for exact-once dedup on retries.
   // Falls back to the trigger's resolved correlation key when omitted.
   deliveryId: z.string().max(200).optional(),
@@ -37,18 +41,27 @@ const ingestSchema = z.object({
 eventIntakeRouter.post('/', validate(ingestSchema), async (req, res, next) => {
   try {
     const body = req.body as z.infer<typeof ingestSchema>
+    const tenantId = requireTenantFromRequest(req, 'workflow event ingestion') ?? resolveTenantFromRequest(req) ?? 'default'
+    await assertCapabilityPermission(
+      req.user!.userId,
+      body.capabilityId,
+      'event_publish',
+      'WorkflowInboundEvent',
+      body.deliveryId,
+      tenantId,
+    )
     const traceId = normalizeTraceId(req.header('x-singularity-trace-id'))
       ?? normalizeTraceId(body.traceId)
       ?? normalizeTraceId(body.trace_id)
       ?? traceIdFromParts(['event', body.deliveryId ?? randomUUID()])
-    const results = await fanOutToWorkItemTriggersDetailed({
-      eventTypeKey: body.eventType,
-      payload: body.payload,
-      deliveryId: body.deliveryId,
-      capabilityId: body.capabilityId,
-      sourceEventTypeKey: body.eventType,
-      traceId,
-    })
+    const results = await runWithTenantDbContext(tenantId, () => fanOutToWorkItemTriggersDetailed({
+        eventTypeKey: body.eventType,
+        payload: body.payload,
+        deliveryId: body.deliveryId,
+        capabilityId: body.capabilityId,
+        sourceEventTypeKey: body.eventType,
+        traceId,
+      }))
     const workItemIds = [...new Set(results.flatMap(result => result.workItemId ? [result.workItemId] : []))]
     const eventStatus =
       results.length === 0 ? 'dead_lettered'

@@ -1,9 +1,44 @@
+import { existsSync } from 'node:fs'
+import path from 'node:path'
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
+import { config as loadDotenv } from 'dotenv'
 import { seedArtifactTemplates } from './seed-artifact-templates'
 import { seedDemoWorkflows } from './seed-demo-workflows'
 import { seedHumanWorkflows } from './seed-human-workflows'
 
+function loadSeedEnvironment() {
+  // Manual seed commands commonly run without the shell having sourced the
+  // platform env file. Load local package settings first, then the repo-level
+  // file used by bare-metal and Docker setup without overriding explicit env.
+  const envFiles = [
+    path.resolve(process.cwd(), '.env'),
+    path.resolve(process.cwd(), '.env.local'),
+    path.resolve(__dirname, '../../../../.env.local'),
+  ]
+  for (const envFile of envFiles) {
+    if (existsSync(envFile)) loadDotenv({ path: envFile, override: false })
+  }
+
+  // The platform keeps separate admin/runtime URLs. Direct Prisma seeding
+  // needs the admin connection so it can apply all seed writes and policies.
+  if (!process.env.DATABASE_URL) {
+    process.env.DATABASE_URL =
+      process.env.DATABASE_URL_WORKGRAPH_ADMIN ||
+      process.env.WORKGRAPH_DATABASE_URL_ADMIN ||
+      process.env.DATABASE_URL_WORKGRAPH ||
+      process.env.WORKGRAPH_RUNTIME_DATABASE_URL ||
+      ''
+  }
+
+  if (!process.env.DATABASE_URL) {
+    throw new Error(
+      'DATABASE_URL is required to seed WorkGraph. Source .env.local or run with DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN".'
+    )
+  }
+}
+
+loadSeedEnvironment()
 const prisma = new PrismaClient()
 
 // Seed identities are overridable via SEED_* env vars; the defaults reproduce the

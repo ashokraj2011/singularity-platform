@@ -70,7 +70,17 @@ export async function resolveOne(kind: string, id: string, req: Request): Promis
         if (UUID_RE.test(id)) {
           const list = await iamProxyGet('/capabilities', { size: 500 }, authToken(req)) as { items?: Array<Record<string, unknown>> } | Array<Record<string, unknown>> | null
           const items = Array.isArray(list) ? list : (list?.items ?? [])
-          const hit = items.find((r) => String(r.id ?? '') === id)
+          const hit = items.find((r) => {
+            const metadata = r.metadata && typeof r.metadata === 'object' && !Array.isArray(r.metadata)
+              ? r.metadata as Record<string, unknown>
+              : {}
+            return [
+              r.id,
+              r.capability_id,
+              metadata.agentRuntimeCapabilityId,
+              metadata.agent_runtime_capability_id,
+            ].some(value => String(value ?? '') === id)
+          })
           return hit ? { kind, id, exists: true, label: hit.name as string | undefined, raw: hit } : { kind, id, exists: false }
         }
         const r = await iamProxyGet(`/capabilities/${encodeURIComponent(id)}`, {}, authToken(req)) as Record<string, unknown> | null
@@ -185,10 +195,15 @@ export function refsForNodeConfig(nodeType: string, config: Record<string, unkno
       break
     case 'HUMAN_TASK':
     case 'APPROVAL': {
-      const mode = config.assignmentMode as string | undefined
+      const standard = config.standard && typeof config.standard === 'object' && !Array.isArray(config.standard)
+        ? config.standard as Record<string, unknown>
+        : {}
+      const requiredRole = config.roleKey ?? standard.role
+      const mode = (config.assignmentMode as string | undefined)
+        ?? (requiredRole ? 'ROLE_BASED' : undefined)
       if (mode === 'DIRECT_USER') push(literalRef('assignedToId', config.assignedToId, 'user'))
       if (mode === 'TEAM_QUEUE')  push(literalRef('teamId',       config.teamId,       'team'))
-      if (mode === 'ROLE_BASED')  push(literalRef('roleKey',      config.roleKey,      'role'))
+      if (mode === 'ROLE_BASED')  push(literalRef('roleKey',      requiredRole,       'role'))
       // SKILL_BASED skipped — IAM has no /skills/:key by-id endpoint yet.
       break
     }

@@ -2,6 +2,9 @@ import { z } from "zod";
 import { agentRoleType } from "../agents/agent.schemas";
 
 export const createCapabilitySchema = z.object({
+  // Capability identity is created by IAM first. Agent Runtime only
+  // materializes the projection using this canonical IAM row id.
+  iamCapabilityId: z.string().uuid(),
   name: z.string().min(2),
   appId: z.string().max(120).optional(),
   parentCapabilityId: z.string().uuid().optional(),

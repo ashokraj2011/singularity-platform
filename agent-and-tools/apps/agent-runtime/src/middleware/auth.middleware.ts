@@ -32,6 +32,15 @@ type IamMeResponse = {
   permissions?: string[];
 };
 
+type DecodedPrincipal = AuthUser & {
+  sub?: string;
+  kind?: string;
+  service_name?: string;
+  scopes?: string[];
+  tenant_ids?: string[];
+  issued_by?: string;
+};
+
 const IAM_AUTH_VERIFY_TIMEOUT_MS = env.IAM_AUTH_VERIFY_TIMEOUT_SEC * 1000;
 
 function iamApiBase(): string | null {
@@ -70,7 +79,7 @@ async function verifyWithIam(token: string): Promise<AuthUser | null> {
 // surfaces — never as a user identity on this REST API. is_super_admin is honored
 // ONLY from real user tokens; service tokens are authorized by scope, not by an
 // admin flag (prevents confused-deputy escalation via shared-secret JWTs).
-function principalFromDecoded(decoded: AuthUser & { sub?: string; kind?: string }): AuthUser | null {
+function principalFromDecoded(decoded: DecodedPrincipal): AuthUser | null {
   const kind = typeof decoded.kind === "string" ? decoded.kind.toLowerCase() : "user";
   if (kind === "device" || kind === "runtime") return null;
   const isUser = kind === "user";
@@ -82,34 +91,63 @@ function principalFromDecoded(decoded: AuthUser & { sub?: string; kind?: string 
   };
 }
 
+function servicePrincipalFromToken(token: string): AuthUser | null {
+  try {
+    const decoded = jwt.verify(token, env.JWT_SECRET) as DecodedPrincipal;
+    if (String(decoded.kind ?? "").toLowerCase() !== "service") return null;
+    const configured = env.IAM_SERVICE_TOKEN_TENANT_IDS.split(",").map((value) => value.trim()).filter(Boolean);
+    if ((process.env.TENANT_ISOLATION_MODE ?? "").toLowerCase() === "strict" && configured.length === 0) return null;
+    const tokenTenants = Array.isArray(decoded.tenant_ids)
+      ? decoded.tenant_ids.filter((value): value is string => typeof value === "string" && value.trim() !== "")
+      : [];
+    const expected = [...new Set(configured)].sort();
+    const actual = [...new Set(tokenTenants)].sort();
+    if (expected.length > 0 && (expected.length !== actual.length || expected.some((tenant, index) => tenant !== actual[index]))) return null;
+    return {
+      user_id: decoded.sub ?? `service:${decoded.service_name ?? "unknown"}`,
+      email: `${decoded.service_name ?? "service"}@service.local`,
+      roles: ["service"],
+      capability_ids: [],
+      permissions: decoded.scopes,
+      is_super_admin: false,
+      is_platform_admin: false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function authenticateToken(token: string): Promise<AuthUser | null> {
+  // Service tokens are explicitly scoped machine principals. They do not go
+  // through IAM /me (which intentionally accepts real users only).
+  const service = servicePrincipalFromToken(token);
+  if (service) return service;
+  if (env.AUTH_PROVIDER === "iam") return verifyWithIam(token);
+  try {
+    return principalFromDecoded(jwt.verify(token, env.JWT_SECRET) as DecodedPrincipal) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function optionalAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
   if (header?.startsWith("Bearer ")) {
     const token = header.slice(7);
-    try {
-      const decoded = jwt.verify(token, env.JWT_SECRET) as AuthUser & { sub?: string; kind?: string };
-      req.user = principalFromDecoded(decoded) ?? undefined;
-    } catch {
-      req.user = await verifyWithIam(token) ?? undefined;
-    }
+    req.user = await authenticateToken(token) ?? undefined;
   }
   next();
 }
 
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
-  if (req.user) {
-    next();
+export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (!req.user) await optionalAuth(req, res, () => undefined);
+  if (!req.user) {
+    res.status(401).json({
+      success: false, data: null,
+      error: { code: "UNAUTHORIZED", message: "Missing or invalid bearer token" },
+      requestId: res.locals.requestId ?? null,
+    });
     return;
   }
-  optionalAuth(req, res, () => {
-    if (!req.user) {
-      res.status(401).json({
-        success: false, data: null,
-        error: { code: "UNAUTHORIZED", message: "Missing or invalid bearer token" },
-        requestId: res.locals.requestId ?? null,
-      });
-      return;
-    }
-    next();
-  });
+  next();
 }

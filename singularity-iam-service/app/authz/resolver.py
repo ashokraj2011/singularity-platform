@@ -11,7 +11,7 @@ from typing import Optional
 from datetime import datetime, timezone
 import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import or_, select
+from sqlalchemy import String, cast, or_, select
 from sqlalchemy.orm import selectinload
 from app.models import (
     User, PlatformRoleAssignment, RolePermission, Permission, Capability, Team,
@@ -189,6 +189,31 @@ class AuthzResult:
         self.policy_version = "iam-authz-v2"
 
 
+async def _resolve_active_capability(
+    db: AsyncSession,
+    capability_ref: str,
+    tenant_id: str,
+) -> tuple[Optional[Capability], Optional[str]]:
+    """Resolve the public capability key and the legacy UUID reference.
+
+    WorkGraph and agent-runtime historically persisted the IAM capability UUID,
+    while IAM relationships and memberships use ``capability_id`` (the public
+    slug). Accepting both here keeps those stores interoperable and ensures all
+    downstream authorization queries use the canonical IAM key.
+    """
+    capability = (await db.execute(
+        select(Capability).where(
+            or_(
+                Capability.capability_id == capability_ref,
+                cast(Capability.id, String) == capability_ref,
+            ),
+            Capability.status == "active",
+            (Capability.tenant_id == tenant_id) | (Capability.tenant_id.is_(None)),
+        )
+    )).scalar_one_or_none()
+    return capability, capability.capability_id if capability else None
+
+
 async def check_authorization(
     db: AsyncSession,
     user_id: str,
@@ -217,14 +242,9 @@ async def check_authorization(
     # Platform checks use a synthetic capability id. They still require the
     # tenant membership above, but do not require a capability row.
     capability = None
+    resolved_capability_id = capability_id
     if not capability_id.startswith("__"):
-        capability = (await db.execute(
-            select(Capability).where(
-                Capability.capability_id == capability_id,
-                Capability.status == "active",
-                (Capability.tenant_id == tenant_id) | (Capability.tenant_id.is_(None)),
-            )
-        )).scalar_one_or_none()
+        capability, resolved_capability_id = await _resolve_active_capability(db, capability_id, tenant_id)
         if not capability:
             return AuthzResult(False, "Capability not found, inactive, or outside the tenant")
 
@@ -238,19 +258,19 @@ async def check_authorization(
         return AuthzResult(True, "Platform permission", permissions=list(platform_perms), source="platform_role")
 
     # 3. Direct capability membership
-    direct_perms, direct_roles = await _get_direct_capability_permissions(db, user_id, capability_id)
+    direct_perms, direct_roles = await _get_direct_capability_permissions(db, user_id, resolved_capability_id)
     if action in direct_perms:
-        return AuthzResult(True, f"User has {', '.join(direct_roles)} role in {capability_id}.",
+        return AuthzResult(True, f"User has {', '.join(direct_roles)} role in {resolved_capability_id}.",
                            roles=direct_roles, permissions=list(direct_perms), source="direct_capability_membership")
 
     # 4. Team capability membership
-    team_perms, team_roles = await _get_team_capability_permissions(db, user_id, capability_id, tenant_id)
+    team_perms, team_roles = await _get_team_capability_permissions(db, user_id, resolved_capability_id, tenant_id)
     if action in team_perms:
-        return AuthzResult(True, f"Team membership grants access to {capability_id}.",
+        return AuthzResult(True, f"Team membership grants access to {resolved_capability_id}.",
                            roles=team_roles, permissions=list(team_perms), source="team_capability_membership")
 
     # 5. Inherited permissions
-    inherited = await _get_inherited_permissions(db, user_id, capability_id, tenant_id)
+    inherited = await _get_inherited_permissions(db, user_id, resolved_capability_id, tenant_id)
     if action in inherited:
         return AuthzResult(True, "Capability relationship inheritance.",
                            permissions=list(inherited), source="capability_relationship_inheritance")
@@ -258,7 +278,7 @@ async def check_authorization(
     # 6. Shared capability access
     if requesting_capability_id:
         shared_ok = await _check_shared_capability_access(
-            db, user_id, capability_id, requesting_capability_id, action, tenant_id
+            db, user_id, resolved_capability_id, requesting_capability_id, action, tenant_id
         )
         if shared_ok:
             return AuthzResult(

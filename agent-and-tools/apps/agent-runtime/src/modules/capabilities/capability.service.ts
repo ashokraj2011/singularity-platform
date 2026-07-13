@@ -10,7 +10,7 @@ import {
   getEmbeddingProvider, REQUIRED_EMBEDDING_DIM, assertDimMatches, toVectorLiteral,
 } from "@agentandtools/shared";
 import { summariseSymbol, fileSnippetFor } from "../../lib/llm/summarise";
-import { syncIamCapabilityReference } from "./iam-capability-reference";
+import { requireIamCapabilityReference, updateIamCapabilityReference } from "./iam-capability-reference";
 // M61 Slice C — Auto-promote CLAUDE.md / AGENTS.md into the
 // CapabilityWorldModel.agentRules JSONB so the prompt-composer's
 // CODE_AGENT_RULES layer (Slice F) can render them directly without
@@ -158,6 +158,7 @@ type BootstrapDocumentInput = {
 };
 
 type BootstrapInput = {
+  iamCapabilityId: string;
   name: string;
   appId?: string;
   parentCapabilityId?: string;
@@ -263,31 +264,19 @@ export const capabilityService = {
   },
 
   async create(input: {
+    iamCapabilityId: string;
     name: string; parentCapabilityId?: string; capabilityType?: string;
     appId?: string; businessUnitId?: string; ownerTeamId?: string; criticality?: string; description?: string;
   }, authHeader?: string) {
+    const iamReference = await requireIamCapabilityReference(input.iamCapabilityId, authHeader);
     const capability = await prisma.$transaction(async (tx) => {
-      await lockCapabilityNaturalKey(tx, input);
-      await assertNoActiveCapabilityDuplicate(tx, input);
-      return tx.capability.create({ data: { ...input, status: "ACTIVE" } });
-    }).catch(err => rethrowCapabilityIdentityConflict(err, input));
-    const warning = await syncIamCapabilityReference(capability, { authHeader });
-    if (warning) console.warn(`[capability] ${warning}`);
-    const governanceWarning = await ensureDefaultGovernanceLimits(capability.id);
-    if (governanceWarning) console.warn(`[capability] ${governanceWarning}`);
-    return capability;
-  },
-
-  async bootstrap(input: BootstrapInput, userId?: string, authHeader?: string) {
-    const warnings: string[] = [];
-    const errors: string[] = [];
-    const requestedChildCapabilityIds = Array.from(new Set(input.childCapabilityIds ?? []));
-    const capability = await prisma.$transaction(async (tx) => {
-      await lockCapabilityNaturalKey(tx, input);
-      await assertNoActiveCapabilityDuplicate(tx, input);
+      const materializedInput = { ...input, name: iamReference.name };
+      await lockCapabilityNaturalKey(tx, materializedInput);
+      await assertNoActiveCapabilityDuplicate(tx, materializedInput);
       return tx.capability.create({
         data: {
-          name: input.name,
+          id: iamReference.id,
+          name: iamReference.name,
           appId: input.appId,
           parentCapabilityId: input.parentCapabilityId,
           capabilityType: input.capabilityType,
@@ -299,16 +288,35 @@ export const capabilityService = {
         },
       });
     }).catch(err => rethrowCapabilityIdentityConflict(err, input));
-    const iamWarning = await syncIamCapabilityReference(capability, {
-      authHeader,
-      ownerUserId: userId,
-      metadata: {
-        bootstrapRunPending: true,
-        childCapabilityIds: requestedChildCapabilityIds,
-        sharedApplications: input.sharedApplications ?? [],
-      },
-    });
-    if (iamWarning) warnings.push(iamWarning);
+    const governanceWarning = await ensureDefaultGovernanceLimits(capability.id);
+    if (governanceWarning) console.warn(`[capability] ${governanceWarning}`);
+    return capability;
+  },
+
+  async bootstrap(input: BootstrapInput, userId?: string, authHeader?: string) {
+    const warnings: string[] = [];
+    const errors: string[] = [];
+    const iamReference = await requireIamCapabilityReference(input.iamCapabilityId, authHeader);
+    const requestedChildCapabilityIds = Array.from(new Set(input.childCapabilityIds ?? []));
+    const capability = await prisma.$transaction(async (tx) => {
+      const materializedInput = { ...input, name: iamReference.name };
+      await lockCapabilityNaturalKey(tx, materializedInput);
+      await assertNoActiveCapabilityDuplicate(tx, materializedInput);
+      return tx.capability.create({
+        data: {
+          id: iamReference.id,
+          name: iamReference.name,
+          appId: input.appId,
+          parentCapabilityId: input.parentCapabilityId,
+          capabilityType: input.capabilityType,
+          businessUnitId: input.businessUnitId,
+          ownerTeamId: input.ownerTeamId,
+          criticality: input.criticality,
+          description: input.description,
+          status: "ACTIVE",
+        },
+      });
+    }).catch(err => rethrowCapabilityIdentityConflict(err, input));
     const governanceWarning = await ensureDefaultGovernanceLimits(capability.id);
     if (governanceWarning) warnings.push(governanceWarning);
 
@@ -333,11 +341,11 @@ export const capabilityService = {
         },
       },
     });
-    // Phase 0 is the synchronous prelude — capability row, IAM sync,
-    // governance defaults, BootstrapRun row. Everything above this
+    // Phase 0 is the synchronous prelude — IAM reference validation,
+    // capability projection, governance defaults, BootstrapRun row. Everything above this
     // point has already completed by the time we get here.
     await markPhaseCompleted(run.id, PHASE_KEYS.P0, {
-      iamWarning: Boolean(iamWarning),
+      iamReferenceId: iamReference.id,
       governanceWarning: Boolean(governanceWarning),
     });
 
@@ -1549,7 +1557,7 @@ export const capabilityService = {
       };
     }
 
-    const input: BootstrapInput = {
+    const input = {
       name: cap.name,
       appId: cap.appId ?? undefined,
       parentCapabilityId: cap.parentCapabilityId ?? undefined,
@@ -1631,6 +1639,14 @@ export const capabilityService = {
       appId: input.appId !== undefined ? input.appId : existing.appId,
       capabilityType: input.capabilityType !== undefined ? input.capabilityType : existing.capabilityType,
     };
+    await updateIamCapabilityReference(id, {
+      ...(input.name !== undefined ? { name: input.name } : {}),
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.capabilityType !== undefined ? { capability_type: input.capabilityType } : {}),
+      ...(input.businessUnitId !== undefined ? { owner_bu_id: input.businessUnitId } : {}),
+      ...(input.ownerTeamId !== undefined ? { owner_team_id: input.ownerTeamId } : {}),
+    }, authHeader);
+
     const updated = identityChanged
       ? await prisma.$transaction(async (tx) => {
           await lockCapabilityNaturalKey(tx, nextIdentity);
@@ -1638,14 +1654,14 @@ export const capabilityService = {
           return tx.capability.update({ where: { id }, data });
         }).catch(err => rethrowCapabilityIdentityConflict(err, nextIdentity, id))
       : await prisma.capability.update({ where: { id }, data });
-    const warning = await syncIamCapabilityReference(updated, { authHeader });
-    if (warning) console.warn(`[capability] ${warning}`);
     return this.get(id);
   },
 
   async archive(id: string, userId?: string, authHeader?: string) {
     const existing = await prisma.capability.findUnique({ where: { id } });
     if (!existing) throw new NotFoundError("Capability not found");
+
+    await updateIamCapabilityReference(id, { status: "archived" }, authHeader);
 
     const result = await prisma.$transaction(async (tx) => {
       const [scopedTemplates, scopedBindings] = await Promise.all([
@@ -1733,8 +1749,6 @@ export const capabilityService = {
         archived: true,
       };
     });
-    const warning = await syncIamCapabilityReference(result.capability, { authHeader });
-    if (warning) console.warn(`[capability] ${warning}`);
     return result;
   },
 
@@ -3004,7 +3018,7 @@ function isPlaceholderArchitectureLayer(layer: { key: string; items: string[] })
 
 function buildCapabilityArchitectureDiagram(
   capability: { name: string; appId?: string | null; capabilityType?: string | null; criticality?: string | null },
-  input: BootstrapInput,
+  input: Pick<BootstrapInput, "repositories" | "documentLinks" | "localFiles" | "sharedApplications" | "criticality">,
   generatedAgents: Array<{ label: string; roleType: string; locked: boolean; learnsFromGit: boolean }>,
   docs: DiscoveryDoc[],
   repositoryProfiles: RepositoryProfile[] = [],
@@ -4809,7 +4823,7 @@ export async function refreshRepositoryProfileLearning(capabilityId: string, use
     ...(buildSystem ? { buildSystem } : {}),
   });
 
-  const input: BootstrapInput = {
+  const input = {
     name: cap.name,
     appId: cap.appId ?? undefined,
     parentCapabilityId: cap.parentCapabilityId ?? undefined,

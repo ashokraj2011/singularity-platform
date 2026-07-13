@@ -924,7 +924,7 @@ export WORKGRAPH_EVENT_SECRET_KEY="${WORKGRAPH_EVENT_SECRET_KEY}"
 export WORKGRAPH_INCOMING_EVENT_SECRET="${WORKGRAPH_INCOMING_EVENT_SECRET}"
 export WORKGRAPH_INCOMING_EVENT_SECRETS='${WORKGRAPH_INCOMING_EVENT_SECRETS}'
 export CONTEXT_FABRIC_SERVICE_TOKEN="${CONTEXT_FABRIC_SERVICE_TOKEN:-$(config_value tokens.contextFabricServiceToken dev-context-fabric-service-token)}"
-export IAM_SERVICE_TOKEN_TENANT_IDS="${IAM_SERVICE_TOKEN_TENANT_IDS:-$(config_value tokens.iamServiceTokenTenantIds "")}"
+export IAM_SERVICE_TOKEN_TENANT_IDS="${IAM_SERVICE_TOKEN_TENANT_IDS:-$(config_value tokens.iamServiceTokenTenantIds default)}"
 export WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS="${WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS:-$(config_value tokens.workgraphInternalTokenTenantIds "")}"
 export WORKGRAPH_PROXY_SERVICE_TOKEN="${WORKGRAPH_PROXY_SERVICE_TOKEN:-$(config_value platform.workgraphProxyServiceToken "")}"
 export PROMPT_COMPOSER_SERVICE_TOKEN="\${PROMPT_COMPOSER_SERVICE_TOKEN:-\$WORKGRAPH_PROXY_SERVICE_TOKEN}"
@@ -937,6 +937,10 @@ export AUTH_OPTIONAL="${AUTH_OPTIONAL:-$(config_value platform.authOptional true
 export REQUIRE_TENANT_ID="${REQUIRE_TENANT_ID:-$(config_value platform.requireTenantId false)}"
 export TENANT_ISOLATION_MODE="${TENANT_ISOLATION_MODE:-$(config_value platform.tenantIsolationMode off)}"
 export WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED="${WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED:-$(config_value platform.workgraphDbTenantIsolationRequired false)}"
+# Bare-metal commonly targets a legacy, non-empty local database without
+# Prisma migration history. Allow the declarative schema sync there by default;
+# production-class runs must opt in explicitly if they need this behavior.
+export WORKGRAPH_DB_PUSH_ACCEPT_DATA_LOSS="${WORKGRAPH_DB_PUSH_ACCEPT_DATA_LOSS:-$([ "${ENVIRONMENT:-development}" = "production" ] && echo false || echo true)}"
 export PROVIDER_MANIFEST_SIGNATURE_MODE="${PROVIDER_MANIFEST_SIGNATURE_MODE:-$(config_value agentRuntime.providerManifestSignatureMode auto)}"
 export PROVIDER_MANIFEST_TRUSTED_KEYS="${PROVIDER_MANIFEST_TRUSTED_KEYS:-$(config_value agentRuntime.providerManifestTrustedKeys "")}"
 export PROVIDER_MANIFEST_MAX_TTL_SECONDS="${PROVIDER_MANIFEST_MAX_TTL_SECONDS:-$(config_value agentRuntime.providerManifestMaxTtlSeconds 2592000)}"
@@ -1241,8 +1245,15 @@ JSON
   # (fail-closed) if the DB isn't ready (NULL-tenant instances, non-BYPASSRLS role, etc.),
   # so running it last means a guard-abort only trips the `|| warn` — it can't skip client
   # generation or leave RLS half-forced. It force-applies once blockers B1/B3/B4 are resolved.
+  WORKGRAPH_PRISMA_PUSH_FLAGS=(--skip-generate)
+  if [ "${WORKGRAPH_DB_PUSH_ACCEPT_DATA_LOSS:-false}" = "true" ] || [ "${WORKGRAPH_DB_PUSH_ACCEPT_DATA_LOSS:-false}" = "1" ]; then
+    WORKGRAPH_PRISMA_PUSH_FLAGS+=(--accept-data-loss)
+    info "using local WorkGraph schema sync for legacy databases (WORKGRAPH_DB_PUSH_ACCEPT_DATA_LOSS=true)"
+  else
+    warn "WorkGraph schema sync will refuse data-loss warnings (set WORKGRAPH_DB_PUSH_ACCEPT_DATA_LOSS=true only for a reviewed local database)"
+  fi
   ( cd workgraph-studio/apps/api \
-    && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma db push --skip-generate >/dev/null 2>&1 \
+    && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npx prisma db push "${WORKGRAPH_PRISMA_PUSH_FLAGS[@]}" >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260619123000_tenant_rls_policy_scaffold/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260626120000_node_attempt_fence_and_blueprint_key/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260701120000_add_tenant_id_to_standalone_tables/migration.sql >/dev/null 2>&1 \
@@ -1251,6 +1262,8 @@ JSON
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260710101000_harden_llm_routing_tenant_scope/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260712120000_p0_durable_journey/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260713100000_roadmap_gap_closure/migration.sql >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260713120000_workflow_authorization_hardening/migration.sql >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260713130000_force_workflow_authorization_rls/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260714100000_direct_llm_loop_strategies/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260709145000_backfill_null_tenant/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709150000_force_tenant_rls/migration.sql >/dev/null 2>&1 \
@@ -1394,9 +1407,9 @@ SQL
   # Phase 4 — tool-service merged into agent-service (one process on :3001 serving
   # both /api/v1/agents and /api/v1/tools). TOOL_SERVER_ENDPOINT_ALLOWLIST carried
   # over from the former tool-service boot.
-  boot agent-service    "cd agent-and-tools/apps/agent-service   && PORT=3001 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" LEARNING_SERVICE_TOKEN=\"$LEARNING_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" TOOL_SERVER_ENDPOINT_ALLOWLIST=\"$TOOL_SERVER_ENDPOINT_ALLOWLIST\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
-  boot agent-runtime    "cd agent-and-tools/apps/agent-runtime   && PORT=3003 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" WORLD_MODEL_DISTILL_MODEL_ALIAS=\"${WORLD_MODEL_DISTILL_MODEL_ALIAS:-claude-haiku-4-5-20251001}\" npm run dev"
-  boot prompt-composer  "cd agent-and-tools/apps/prompt-composer && PORT=3004 DATABASE_URL=\"$DATABASE_URL_COMPOSER\" DATABASE_URL_RUNTIME_READ=\"$DATABASE_URL_RUNTIME_READ\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" LEARNING_SERVICE_TOKEN=\"$LEARNING_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" CAPSULE_COMPILE_MODEL_ALIAS=mock JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+  boot agent-service    "cd agent-and-tools/apps/agent-service   && PORT=3001 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" AUTH_PROVIDER=iam IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_SERVICE_TOKEN_TENANT_IDS=\"$IAM_SERVICE_TOKEN_TENANT_IDS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" LEARNING_SERVICE_TOKEN=\"$LEARNING_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" TOOL_SERVER_ENDPOINT_ALLOWLIST=\"$TOOL_SERVER_ENDPOINT_ALLOWLIST\" JWT_SECRET=\"$JWT_SECRET\" npm run dev"
+  boot agent-runtime    "cd agent-and-tools/apps/agent-runtime   && PORT=3003 DATABASE_URL=\"$DATABASE_URL_AGENT_TOOLS\" AUTH_PROVIDER=iam IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_SERVICE_TOKEN_TENANT_IDS=\"$IAM_SERVICE_TOKEN_TENANT_IDS\" IAM_SERVICE_TOKEN=\"${IAM_SERVICE_TOKEN:-}\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" JWT_SECRET=\"$JWT_SECRET\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" WORLD_MODEL_DISTILL_MODEL_ALIAS=\"${WORLD_MODEL_DISTILL_MODEL_ALIAS:-claude-haiku-4-5-20251001}\" npm run dev"
+  boot prompt-composer  "cd agent-and-tools/apps/prompt-composer && PORT=3004 DATABASE_URL=\"$DATABASE_URL_COMPOSER\" DATABASE_URL_RUNTIME_READ=\"$DATABASE_URL_RUNTIME_READ\" AUTH_PROVIDER=iam IAM_SERVICE_URL=\"$IAM_SERVICE_URL\" IAM_BASE_URL=\"$IAM_BASE_URL\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" CONTEXT_FABRIC_SERVICE_TOKEN=\"$CONTEXT_FABRIC_SERVICE_TOKEN\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" LEARNING_SERVICE_TOKEN=\"$LEARNING_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" CAPSULE_COMPILE_MODEL_ALIAS=mock JWT_SECRET=\"$JWT_SECRET\" npm run dev"
 
   # MCP_SANDBOX_ROOT defaults to /workspace (the Docker mount path); on bare
   # metal that dir can't be created at the FS root, so every workspace tool

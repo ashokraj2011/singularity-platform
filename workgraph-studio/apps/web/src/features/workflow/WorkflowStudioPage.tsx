@@ -2640,6 +2640,7 @@ export function WorkflowStudioPage() {
     message?: string
     data?: Record<string, unknown>
   } | null>(null)
+  const [designerError, setDesignerError] = useState<string | null>(null)
 
   // ── Undo/Redo history ─────────────────────────────────────────────────────
   type HistoryState = { nodes: typeof rfNodes; edges: typeof rfEdges }
@@ -2942,7 +2943,14 @@ export function WorkflowStudioPage() {
         : `/workflow-instances/${runInstanceId}/nodes`
       return api.post(url, payload).then(r => r.data)
     },
-    onSuccess: () => invalidateGraph(),
+    onSuccess: () => {
+      setDesignerError(null)
+      invalidateGraph()
+    },
+    onError: (error: any) => {
+      const payload = error?.response?.data
+      setDesignerError(String(payload?.message ?? payload?.detail ?? error?.message ?? 'The node could not be added.'))
+    },
   })
 
   const deleteNodeMut = useMutation({
@@ -3980,18 +3988,20 @@ export function WorkflowStudioPage() {
           }}
         >
           <button
+            disabled={isReadOnly || addNode.isPending}
             onClick={() => setPaletteOpen(p => !p)}
             title="Add a workflow node"
             style={{
               height: 44, padding: '0 18px', borderRadius: 999,
               border: '1px solid rgba(15,23,42,0.10)',
-              background: '#0f172a', color: '#ffffff',
+              background: isReadOnly || addNode.isPending ? '#cbd5e1' : '#0f172a', color: '#ffffff',
               boxShadow: '0 14px 34px rgba(15,23,42,0.18)',
               display: 'inline-flex', alignItems: 'center', gap: 9,
-              fontSize: 13, fontWeight: 850, cursor: 'pointer',
+              fontSize: 13, fontWeight: 850, cursor: isReadOnly || addNode.isPending ? 'not-allowed' : 'pointer',
             }}
           >
-            <Plus size={16} /> Add node
+            {addNode.isPending ? <RotateCw size={16} className="animate-spin" /> : isReadOnly ? <Lock size={15} /> : <Plus size={16} />}
+            {addNode.isPending ? 'Adding…' : isReadOnly ? 'Design locked' : 'Add node'}
           </button>
 
           <AnimatePresence>
@@ -4187,6 +4197,37 @@ export function WorkflowStudioPage() {
           </AnimatePresence>
         </motion.div>
         )}
+
+        <AnimatePresence>
+          {designerError && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              role="alert"
+              style={{
+                position: 'absolute', top: 78, left: 24, zIndex: 31,
+                maxWidth: 520, display: 'flex', alignItems: 'flex-start', gap: 9,
+                padding: '10px 12px', borderRadius: 12,
+                background: isLight ? '#fff7ed' : '#2a1608',
+                border: `1px solid ${isLight ? '#fed7aa' : '#9a3412'}`,
+                color: isLight ? '#9a3412' : '#fdba74',
+                boxShadow: '0 12px 26px rgba(15,23,42,0.14)',
+              }}
+            >
+              <AlertTriangle size={15} style={{ flex: '0 0 auto', marginTop: 1 }} />
+              <span style={{ fontSize: 11, fontWeight: 700, lineHeight: 1.45 }}>{designerError}</span>
+              <button
+                type="button"
+                aria-label="Dismiss designer error"
+                onClick={() => setDesignerError(null)}
+                style={{ marginLeft: 'auto', border: 0, background: 'transparent', color: 'inherit', cursor: 'pointer', padding: 0 }}
+              >
+                <X size={14} />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* ─── FLOATING TRIGGERS PANEL ─────────────────────────────────────── */}
         <AnimatePresence>

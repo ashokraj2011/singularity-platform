@@ -441,7 +441,7 @@ const NODE_META: Record<string, {
     label: 'Human Task', color: '#22c55e', Icon: User,
     description: 'A task that must be completed by a human. Supports assignment, due dates, and approval gates.',
     standardFields: [
-      { key: 'role',       label: 'Required role',     placeholder: 'analyst' },
+      { key: 'role',       label: 'Required role',     placeholder: 'Select a role or use {{instance.vars.requiredRole}}' },
       { key: 'dueInDays',  label: 'Due in (days)',     placeholder: '3' },
       { key: 'priority',   label: 'Priority',          placeholder: 'MEDIUM' },
     ],
@@ -1783,17 +1783,19 @@ const ASSIGNMENT_MODES: Array<{ value: AssignmentMode; label: string; hint: stri
 ]
 
 function NodeAssignmentSection({
-  config, capabilityId, templateVariables = [], teamGlobals = [], onChange,
+  config, nodeType, capabilityId, templateVariables = [], teamGlobals = [], onChange,
 }: {
   config: NodeConfig
+  nodeType?: string
   capabilityId: string | null   // from the workflow template
   templateVariables?: Array<{ key: string; label?: string; type?: string; description?: string }>
   teamGlobals?:       Array<{ key: string; label?: string; type?: string; description?: string }>
   onChange: (next: NodeConfig) => void
 }) {
-  const mode = config.assignmentMode ?? 'DIRECT_USER'
-  const setField = <K extends keyof NodeConfig>(k: K, v: NodeConfig[K]) =>
-    onChange({ ...config, [k]: v })
+  const mode = config.assignmentMode
+    ?? (nodeType === 'HUMAN_TASK' && typeof config.standard.role === 'string' && config.standard.role.trim()
+      ? 'ROLE_BASED'
+      : 'DIRECT_USER')
   const setMode = (m: AssignmentMode) => {
     // Clear sub-fields that don't apply to the new mode.
     const next: NodeConfig = { ...config, assignmentMode: m }
@@ -1801,6 +1803,10 @@ function NodeAssignmentSection({
     if (m !== 'TEAM_QUEUE')  next.teamId       = undefined
     if (m !== 'ROLE_BASED')  next.roleKey      = undefined
     if (m !== 'SKILL_BASED') next.skillKey     = undefined
+    if (m === 'ROLE_BASED' && nodeType === 'HUMAN_TASK' && !next.roleKey) {
+      const legacyRole = typeof config.standard.role === 'string' ? config.standard.role : ''
+      if (legacyRole) next.roleKey = legacyRole
+    }
     onChange(next)
   }
 
@@ -1824,28 +1830,28 @@ function NodeAssignmentSection({
     examples: string[]
   }> = {
     DIRECT_USER: {
-      label: 'Assignee identifier',
+      label: 'Assignee (user or runtime value)',
       placeholder: '{{vars.assigneeId}}',
       field: 'assignedToId',
-      examples: ['{{vars.assigneeId}}', '{{globals.defaultApprover}}', '{{output.requesterId}}'],
+      examples: ['{{vars.assigneeId}}', '{{instance.vars.approverId}}', '{{output.requesterId}}'],
     },
     TEAM_QUEUE: {
-      label: 'Team identifier',
+      label: 'Team (selected or runtime value)',
       placeholder: '{{vars.teamId}}',
       field: 'teamId',
-      examples: ['{{vars.teamId}}', '{{globals.reviewerTeam}}'],
+      examples: ['{{vars.teamId}}', '{{instance.vars.teamId}}', '{{globals.reviewerTeam}}'],
     },
     ROLE_BASED: {
-      label: 'Role key',
+      label: nodeType === 'HUMAN_TASK' ? 'Required role' : 'Role key',
       placeholder: '{{vars.requiredRole}}',
       field: 'roleKey',
-      examples: ['{{vars.requiredRole}}', '{{globals.defaultRole}}', 'reviewer'],
+      examples: ['{{vars.requiredRole}}', '{{instance.vars.requiredRole}}', '{{globals.defaultRole}}', 'reviewer'],
     },
     SKILL_BASED: {
-      label: 'Skill key',
+      label: 'Skill (selected or runtime value)',
       placeholder: '{{vars.requiredSkill}}',
       field: 'skillKey',
-      examples: ['{{vars.requiredSkill}}', '{{globals.requiredSkill}}', 'react'],
+      examples: ['{{vars.requiredSkill}}', '{{instance.vars.requiredSkill}}', 'react'],
     },
   }
 
@@ -1890,8 +1896,17 @@ function NodeAssignmentSection({
       {mode !== 'AGENT' && (() => {
         const meta = fieldMeta[mode]
         const fieldKey = meta.field
-        const value = (config[fieldKey] as string | undefined) ?? ''
-        const setValue = (v: string | undefined) => setField(fieldKey, v as NodeConfig[typeof fieldKey])
+        const legacyRole = mode === 'ROLE_BASED' && nodeType === 'HUMAN_TASK' && !config.roleKey
+          ? config.standard.role
+          : undefined
+        const value = ((config[fieldKey] as string | undefined) ?? legacyRole) ?? ''
+        const setValue = (v: string | undefined) => {
+          const next = { ...config, [fieldKey]: v as NodeConfig[typeof fieldKey] }
+          if (nodeType === 'HUMAN_TASK' && mode === 'ROLE_BASED') {
+            next.standard = { ...config.standard, role: v ?? '' }
+          }
+          onChange(next)
+        }
         return (
           <div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
@@ -3738,6 +3753,7 @@ export function NodeInspector({
                         const isPriority         = f.key === 'priority'
                         const isModelAlias       = f.key === 'modelAlias'
                         const isAgentLlmRoute    = node.data.nodeType === 'AGENT_TASK' && f.key === 'llmRoute'
+                        const isHumanRequiredRole = node.data.nodeType === 'HUMAN_TASK' && f.key === 'role'
                         const isGovernanceMode   = f.key === 'governanceMode'
                         const isGovernanceGateMode = node.data.nodeType === 'GOVERNANCE_GATE' && f.key === 'mode'
                         const isPolicyEngine     = node.data.nodeType === 'POLICY_CHECK' && f.key === 'engine'
@@ -3780,6 +3796,45 @@ export function NodeInspector({
                                   <option key={value} value={value}>{label}</option>
                                 ))}
                               </select>
+                            ) : isHumanRequiredRole ? (
+                              <>
+                                <PickerOrText
+                                  value={config.standard[f.key] || config.roleKey || ''}
+                                  onChange={v => setConfig(c => {
+                                    const next: NodeConfig = {
+                                      ...c,
+                                      standard: { ...c.standard, [f.key]: v },
+                                      assignmentMode: v ? 'ROLE_BASED' : c.assignmentMode,
+                                      roleKey: v || undefined,
+                                    }
+                                    return next
+                                  })}
+                                  placeholder="{{instance.vars.requiredRole}}"
+                                  inputStyle={standardFieldSelectStyle()}
+                                  picker={write => (
+                                    <RolePicker
+                                      value={config.standard[f.key] || config.roleKey || ''}
+                                      onChange={write}
+                                      placeholder="Select the required role…"
+                                      hint="IAM role key; eligibility is scoped to the workflow capability."
+                                    />
+                                  )}
+                                />
+                                <div style={{ fontSize: 10, color: '#64748b', marginTop: 5, lineHeight: 1.45 }}>
+                                  Select a role, or type a runtime placeholder such as <code style={{ fontFamily: 'monospace' }}>{'{{instance.vars.requiredRole}}'}</code>.
+                                  Provide that value in the run's variables before this task activates.
+                                </div>
+                                <VariableInsertMenu
+                                  templateVariables={templateVariables}
+                                  teamGlobals={teamGlobals}
+                                  onInsert={path => setConfig(c => ({
+                                    ...c,
+                                    standard: { ...c.standard, [f.key]: `{{${path}}}` },
+                                    assignmentMode: 'ROLE_BASED',
+                                    roleKey: `{{${path}}}`,
+                                  }))}
+                                />
+                              </>
                             ) : isCapabilityPicker ? (
                               <CapabilityPicker
                                 value={config.standard[f.key] ?? ''}
@@ -4110,6 +4165,7 @@ export function NodeInspector({
                     <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
                     <NodeAssignmentSection
                       config={config}
+                      nodeType={node.data.nodeType}
                       capabilityId={templateCapabilityId ?? null}
                       templateVariables={templateVariables}
                       teamGlobals={teamGlobals}

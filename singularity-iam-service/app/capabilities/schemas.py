@@ -53,8 +53,11 @@ class CapabilityReferenceRequest(BaseModel):
 class UpdateCapabilityRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    capability_type: Optional[str] = None
     status: Optional[str] = None
     visibility: Optional[str] = None
+    owner_bu_id: Optional[str] = None
+    owner_team_id: Optional[str] = None
     metadata: Optional[dict] = None
     tags: Optional[list[str]] = None
 

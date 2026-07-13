@@ -23,6 +23,7 @@ import {
   removeRolePermission,
   removeTeamMember,
   revokeUserRole,
+  setLocalPassword,
   updateIdentity,
   updateMcpServer,
   type AuthzCheckRequest,
@@ -188,6 +189,11 @@ const ROLE_SCOPE_OPTIONS = [
   { value: "capability", label: "Capability" },
 ];
 
+const AUTH_PROVIDER_OPTIONS = [
+  { value: "local", label: "Local password" },
+  { value: "oidc", label: "OIDC / SSO" },
+];
+
 const createForms: Partial<Record<IdentityView, { singular: string; fields: FieldSpec[] }>> = {
   "business-units": {
     singular: "Business Unit",
@@ -215,7 +221,7 @@ const createForms: Partial<Record<IdentityView, { singular: string; fields: Fiel
     fields: [
       { key: "email", label: "Email", required: true, placeholder: "person@example.com" },
       { key: "display_name", label: "Display name", placeholder: "Jane Doe" },
-      { key: "auth_provider", label: "Auth provider", placeholder: "local", hint: "How the user signs in (local, oidc, …)." },
+      { key: "auth_provider", label: "Auth provider", required: true, placeholder: "Choose provider", hint: "Local users receive a password through the Set password action after creation. OIDC users sign in through configured SSO.", select: { view: "users", valueKey: "auth_provider", labelKeys: ["auth_provider"], distinct: true, staticOptions: AUTH_PROVIDER_OPTIONS } },
       { key: "team_id", label: "Team", hint: "Adds the new user to this team.", relation: { view: "teams", valueKey: "id", labelKeys: ["name", "team_key"], apply: (userId, teamId) => addTeamMember(teamId, userId) } },
       { key: "role_keys", label: "Platform roles", hint: "Roles granted to the user (multi-select).", relation: { view: "roles", valueKey: "role_key", labelKeys: ["name", "role_key"], multi: true, apply: (userId, roleKey) => assignUserRole(userId, roleKey) } },
       { key: "tags", label: "Tags", placeholder: "comma, separated" },
@@ -429,6 +435,7 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<IdentityRow | null>(null);
   const [managing, setManaging] = useState<IdentityRow | null>(null);
+  const [passwordUser, setPasswordUser] = useState<IdentityRow | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
   const form = createForms[view];
@@ -481,6 +488,9 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
       {managing && view === "users" ? (
         <ManageUserModal user={managing} onClose={() => setManaging(null)} />
       ) : null}
+      {passwordUser && view === "users" ? (
+        <SetLocalPasswordModal user={passwordUser} onClose={() => setPasswordUser(null)} />
+      ) : null}
       {managing && view === "roles" ? (
         <ManageRolePermissionsModal role={managing} onClose={() => setManaging(null)} />
       ) : null}
@@ -502,6 +512,9 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
                     <div style={{ display: "inline-flex", gap: 6, justifyContent: "flex-end" }}>
                       {view === "users" ? (
                         <button type="button" onClick={() => setManaging(row)} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "#fff", color: "var(--color-on-surface-variant)", cursor: "pointer" }}>Teams &amp; roles</button>
+                      ) : null}
+                      {view === "users" && isLocalUser(row) ? (
+                        <button type="button" onClick={() => setPasswordUser(row)} style={{ border: "1px solid rgba(54,135,39,0.28)", borderRadius: 7, padding: "4px 10px", fontSize: 12, fontWeight: 700, background: "rgba(54,135,39,0.06)", color: "var(--color-primary)", cursor: "pointer" }}>Set password</button>
                       ) : null}
                       {view === "roles" ? (
                         // Roles have no PATCH endpoint (not `editable`), but their access —
@@ -531,6 +544,10 @@ function EntityTable({ title, view, rows, loading, onCreated }: { title: string;
       </div>
     </section>
   );
+}
+
+function isLocalUser(user: IdentityRow): boolean {
+  return String(user.auth_provider ?? "").toLowerCase() === "local" || user.is_local_account === true;
 }
 
 const fieldInputStyle: CSSProperties = { border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: "9px 11px", fontSize: 13, color: "var(--color-text)", fontWeight: 500, background: "#fff", width: "100%" };
@@ -709,6 +726,64 @@ function roleRowKey(r: Record<string, unknown>): string { return String(r.role_k
 function roleRowLabel(r: Record<string, unknown>): string { return String(r.name ?? r.role_name ?? roleRowKey(r)); }
 function permRowKey(p: Record<string, unknown>): string { return String(p.permission_key ?? p.key ?? p.permissionKey ?? ""); }
 function permRowLabel(p: Record<string, unknown>): string { const k = permRowKey(p); const n = String(p.name ?? ""); return n && n !== k ? `${n} · ${k}` : k; }
+
+function SetLocalPasswordModal({ user, onClose }: { user: IdentityRow; onClose: () => void }) {
+  const userId = String(user.id ?? "");
+  const userLabel = String(user.display_name ?? user.name ?? user.email ?? userId);
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    if (password.length < 12) {
+      setError("Password must be at least 12 characters.");
+      return;
+    }
+    if (password !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await setLocalPassword(userId, password);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "12vh 16px", zIndex: 70 }}>
+      <div onClick={(event) => event.stopPropagation()} className="card" style={{ width: "min(440px, 96vw)", padding: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <h2 style={{ margin: 0, fontSize: 18 }}>Set local password</h2>
+          <button type="button" onClick={onClose} aria-label="Close" style={{ border: "none", background: "none", cursor: "pointer", color: "var(--color-outline)", fontSize: 22, lineHeight: 1 }}>×</button>
+        </div>
+        <p style={{ margin: "0 0 16px", fontSize: 12, color: "var(--color-outline)" }}>
+          Set or rotate the local password for <strong>{userLabel}</strong>. The password is sent to IAM over the authenticated admin session, hashed server-side, and never returned.
+        </p>
+        <div style={{ display: "grid", gap: 10 }}>
+          <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "var(--color-outline)" }}>
+            New password
+            <input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 12 characters" style={fieldInputStyle} />
+          </label>
+          <label style={{ display: "grid", gap: 5, fontSize: 12, fontWeight: 800, color: "var(--color-outline)" }}>
+            Confirm password
+            <input type="password" autoComplete="new-password" value={confirm} onChange={(event) => setConfirm(event.target.value)} placeholder="Repeat the password" style={fieldInputStyle} />
+          </label>
+        </div>
+        {error ? <div style={{ marginTop: 12 }}><SmallError error={error} /></div> : null}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className="btn-primary" onClick={() => void submit()} disabled={busy || !password || !confirm}>{busy ? "Saving…" : "Save password"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // Manage a user's team memberships and platform-role assignments after creation.
 // Add/remove wire directly to the IAM relationship endpoints; the list refreshes
