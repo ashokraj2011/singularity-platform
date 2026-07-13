@@ -1216,6 +1216,8 @@ model WorkItem {
   successorDependencies   WorkItemDependency[] @relation("DependencySuccessor")
   programRunSteps         WorkProgramRunStep[]
   specifications          SpecificationVersion[]
+  developmentTarget       DevelopmentTarget?
+  implementationSubmissions ImplementationSubmission[]
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
   tenantId                String?          @default("default")
@@ -1259,11 +1261,68 @@ model SpecificationVersion {
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt
   workItem         WorkItem            @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  submissions      ImplementationSubmission[]
 
   @@unique([workItemId, version])
   @@index([workItemId, status])
   @@index([tenantId], map: "ix_specification_versions_tenant")
   @@map("specification_versions")
+}
+
+// The approved specification, made developer-ready: which repo/base to build against, which
+// requirements are in scope, and what evidence reconciliation will require. One per Work Item
+// for a single repo (a multi-repo Work Item would later introduce child DevelopmentScopes).
+model DevelopmentTarget {
+  id                     String    @id @default(uuid())
+  workItemId             String    @unique
+  specificationVersionId String
+  repository             String
+  component              String?
+  baseBranch             String
+  baseCommitSha          String
+  requirementIds         Json      @default("[]")
+  requiredEvidence       Json      @default("[]")
+  forbiddenPaths         Json      @default("[]")
+  reconciliationPolicy   Json      @default("{}")
+  dueAt                  DateTime?
+  status                 String    @default("DRAFT")
+  publishedAt            DateTime?
+  tenantId               String?   @default("default")
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId], map: "ix_development_targets_tenant")
+  @@map("development_targets")
+}
+
+// One exact external implementation attempt. Immutable per head commit SHA — a new PR commit
+// creates a new record rather than overwriting, so the reconciliation history is preserved.
+model ImplementationSubmission {
+  id                     String   @id @default(uuid())
+  workItemId             String
+  specificationVersionId String
+  specificationHash      String
+  repository             String
+  baseCommitSha          String
+  headCommitSha          String
+  pullRequestNumber      Int?
+  manifest               Json?
+  claims                 Json     @default("[]")
+  deviations             Json     @default("[]")
+  source                 String
+  status                 String   @default("DISCOVERED")
+  tenantId               String?  @default("default")
+  createdAt              DateTime @default(now())
+
+  specificationVersion SpecificationVersion @relation(fields: [specificationVersionId], references: [id], onDelete: Cascade)
+  workItem             WorkItem             @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@unique([workItemId, repository, headCommitSha])
+  @@index([workItemId, createdAt])
+  @@index([tenantId], map: "ix_implementation_submissions_tenant")
+  @@map("implementation_submissions")
 }
 
 model WorkItemDependency {
