@@ -16,6 +16,7 @@ import {
   approveSpecificationVersion,
 } from './specifications.service'
 import { generateSpecificationDraft } from './spec-generation.service'
+import { generatePseudocode } from './pseudocode-generation.service'
 
 export const specificationsRouter: Router = Router()
 
@@ -38,6 +39,14 @@ const updateSchema = specificationPackageBodySchema.partial().extend({
 
 const approveSchema = z.object({ comment: z.string().trim().max(4000).optional() })
 
+// Spec Studio: generate a pseudo-code module for a draft (optionally scoped to some requirements).
+const generatePseudocodeSchema = z.object({
+  requirementIds: z.array(z.string().trim().min(1)).optional(),
+  language: z.string().trim().max(40).optional(),
+  title: z.string().trim().max(400).optional(),
+  instructions: z.string().trim().max(8000).optional(),
+})
+
 const workItemIdOf = (req: Request) => String(req.params.workItemId)
 const versionIdOf = (req: Request) => String(req.params.versionId)
 
@@ -57,6 +66,13 @@ specificationsRouter.post('/:workItemId/specifications', validate(createDraftSch
 specificationsRouter.post('/:workItemId/specifications/generate', validate(generateSchema), async (req, res, next) => {
   try {
     res.status(201).json(await generateSpecificationDraft(workItemIdOf(req), req.body, req.user!.userId))
+  } catch (err) { next(err) }
+})
+
+// Spec Studio — generate a pseudo-code module and append it to a draft version.
+specificationsRouter.post('/:workItemId/specifications/:versionId/pseudocode/generate', validate(generatePseudocodeSchema), async (req, res, next) => {
+  try {
+    res.status(201).json(await generatePseudocode(workItemIdOf(req), versionIdOf(req), req.body, req.user!.userId))
   } catch (err) { next(err) }
 })
 
