@@ -19,11 +19,11 @@ const workItemIdOf = (req: Request) => String(req.params.workItemId)
 
 // DETERMINISTIC (default) finalizes in-request; DYNAMIC also enqueues a runner job to execute
 // the declared tests and refine the verdicts once it reports back.
-const reconcileSchema = z.object({ mode: z.enum(['DETERMINISTIC', 'DYNAMIC']).optional() })
+const reconcileSchema = z.object({ mode: z.enum(['DETERMINISTIC', 'DYNAMIC', 'SEMANTIC']).optional() })
 
 reconciliationsRouter.post('/:workItemId/submissions/:submissionId/reconcile', validate(reconcileSchema), async (req, res, next) => {
   try {
-    const mode = (req.body?.mode as 'DETERMINISTIC' | 'DYNAMIC' | undefined) ?? 'DETERMINISTIC'
+    const mode = (req.body?.mode as 'DETERMINISTIC' | 'DYNAMIC' | 'SEMANTIC' | undefined) ?? 'DETERMINISTIC'
     const result = await startReconciliation(workItemIdOf(req), String(req.params.submissionId), req.user!.userId, mode)
     res.status(201).json(result)
   } catch (err) { next(err) }
