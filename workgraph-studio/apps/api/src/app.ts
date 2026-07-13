@@ -60,6 +60,7 @@ import { workItemsRouter } from './modules/work-items/work-items.router'
 import { specificationsRouter } from './modules/specifications/specifications.router'
 import { developmentTargetsRouter } from './modules/development-targets/development-targets.router'
 import { submissionsRouter } from './modules/submissions/submissions.router'
+import { githubWebhookRouter } from './modules/submissions/github-webhook.router'
 import { reconciliationsRouter } from './modules/reconciliations/reconciliations.router'
 import { reconciliationJobsRouter } from './modules/reconciliations/reconciliation-jobs.router'
 import { plannerRouter } from './modules/planner/planner.router'
@@ -157,6 +158,8 @@ export function createApp(): Express {
   app.use('/api/workflow-nodes/:nodeId/workbench', authMiddleware, workbenchDefinitionsRouter)
   // Webhook receiver is intentionally unauthenticated; secret-gated.
   app.use('/api/triggers/webhook', webhookRouter)
+  // GitHub webhook — also unauthenticated; gated by the GitHub delivery signature.
+  app.use('/api/webhooks/github', githubWebhookRouter)
   app.use('/api/tasks', authMiddleware, tasksRouter)
   app.use('/api/metadata-definitions', authMiddleware, metadataDefinitionsRouter)
   app.use('/api/work-item-routing-policies', authMiddleware, workItemRoutingPoliciesRouter)
