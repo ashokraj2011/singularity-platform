@@ -36,6 +36,10 @@ export function SpecificationTab({ workItemId }: { workItemId: string }) {
   const [comment, setComment] = useState('')
   const [validation, setValidation] = useState<ValidationResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  const [genOpen, setGenOpen] = useState(false)
+  const [genPrompt, setGenPrompt] = useState('')
+  const [genDocs, setGenDocs] = useState('')
 
   const listQ = useQuery<ListResponse>({
     queryKey: ['spec-versions', workItemId],
@@ -65,12 +69,27 @@ export function SpecificationTab({ workItemId }: { workItemId: string }) {
     qc.invalidateQueries({ queryKey: ['spec-versions', workItemId] })
     qc.invalidateQueries({ queryKey: ['spec-version', workItemId] })
   }
-  const clearAnd = <T,>(fn: () => T) => { setError(null); return fn() }
+  const clearAnd = <T,>(fn: () => T) => { setError(null); setNote(null); return fn() }
 
   const createMut = useMutation({
     mutationFn: (basedOnVersionId?: string) =>
       api.post(`/work-items/${workItemId}/specifications`, basedOnVersionId ? { basedOnVersionId } : {}).then(r => r.data),
     onSuccess: (data: any) => { setSelectedId(data?.version?.id ?? null); setValidation(null); setEditing(false); refetchAll() },
+    onError: (e) => setError(errText(e)),
+  })
+  const generateMut = useMutation({
+    mutationFn: () => api.post(`/work-items/${workItemId}/specifications/generate`, {
+      prompt: genPrompt,
+      documents: genDocs.trim() ? [{ title: 'Pasted context', content: genDocs }] : undefined,
+    }).then(r => r.data),
+    onSuccess: (data: any) => {
+      setGenOpen(false); setGenPrompt(''); setGenDocs(''); setEditing(false); setValidation(null)
+      setSelectedId(data?.specification?.version?.id ?? null)
+      setNote(data?.repaired
+        ? 'Draft generated (auto-repaired one blocking issue). Review before approving.'
+        : `Draft generated${data?.validation?.passed === false ? ' with open issues — run Validate' : ''}. Review before approving.`)
+      refetchAll()
+    },
     onError: (e) => setError(errText(e)),
   })
   const saveMut = useMutation({
@@ -102,6 +121,9 @@ export function SpecificationTab({ workItemId }: { workItemId: string }) {
       {error && (
         <div style={{ ...cardStyle, background: '#fee2e2', border: '1px solid #fecaca', color: '#991b1b', fontSize: 12 }}>{error}</div>
       )}
+      {note && (
+        <div style={{ ...cardStyle, background: '#ecfdf5', border: '1px solid #a7f3d0', color: '#065f46', fontSize: 12 }}>{note}</div>
+      )}
 
       <section style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
         <div>
@@ -112,11 +134,40 @@ export function SpecificationTab({ workItemId }: { workItemId: string }) {
           <button style={secondaryButtonStyle} disabled={!currentId || createMut.isPending} onClick={() => clearAnd(() => createMut.mutate(currentId!))}>
             Draft from current
           </button>
-          <button style={primaryButtonStyle} disabled={createMut.isPending} onClick={() => clearAnd(() => createMut.mutate(undefined))}>
+          <button style={secondaryButtonStyle} disabled={createMut.isPending} onClick={() => clearAnd(() => createMut.mutate(undefined))}>
             {createMut.isPending ? 'Creating…' : 'New draft'}
+          </button>
+          <button style={primaryButtonStyle} onClick={() => { setGenOpen((o) => !o); setError(null); setNote(null) }}>
+            {genOpen ? 'Cancel' : 'Generate with AI'}
           </button>
         </div>
       </section>
+
+      {genOpen && (
+        <section style={cardStyle}>
+          <h4 style={{ ...sectionTitle, fontSize: 13 }}>Generate a draft specification</h4>
+          <span style={mutedText}>Describe what to build; attach any context. The model drafts a versioned spec you review and approve.</span>
+          <textarea
+            style={{ ...inputStyle, minHeight: 90, marginTop: 10, resize: 'vertical' }}
+            placeholder="e.g. A password reset flow: email a signed link, expire it in 30 minutes, rate-limit requests…"
+            value={genPrompt}
+            onChange={(e) => setGenPrompt(e.target.value)}
+          />
+          <textarea
+            style={{ ...inputStyle, minHeight: 90, marginTop: 8, resize: 'vertical', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}
+            placeholder="Optional: paste a PRD, ticket, or notes to ground the spec…"
+            value={genDocs}
+            onChange={(e) => setGenDocs(e.target.value)}
+          />
+          <button
+            style={{ ...primaryButtonStyle, marginTop: 10 }}
+            disabled={!genPrompt.trim() || generateMut.isPending}
+            onClick={() => clearAnd(() => generateMut.mutate())}
+          >
+            {generateMut.isPending ? 'Generating…' : 'Generate draft'}
+          </button>
+        </section>
+      )}
 
       {listQ.isLoading ? (
         <p style={mutedText}>Loading specifications…</p>
