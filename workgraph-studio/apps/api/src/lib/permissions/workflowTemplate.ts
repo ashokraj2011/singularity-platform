@@ -166,10 +166,10 @@ export async function assertInstancePermission(
 export async function resolveDefaultTeamId(userId: string): Promise<string> {
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { teamId: true } })
   if (user?.teamId) return user.teamId
-  const fallback = await prisma.team.findFirst({ where: { name: 'Default' }, select: { id: true } })
+  const fallback = await prisma.team.findFirst({ where: { name: config.DEFAULT_WORKFLOW_TEAM_NAME }, select: { id: true } })
   if (fallback) return fallback.id
   const created = await prisma.team.create({
-    data: { name: 'Default', description: 'Auto-created default team for workflow templates' },
+    data: { name: config.DEFAULT_WORKFLOW_TEAM_NAME, description: 'Auto-created default team for workflow templates' },
     select: { id: true },
   })
   return created.id

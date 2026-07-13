@@ -60,6 +60,10 @@ const envSchema = z.object({
   // TTL (seconds) for the in-memory token-verification cache.
   IAM_VERIFY_CACHE_TTL: z.coerce.number().default(60),
 
+  // Name of the fallback team used when a workflow-template action has no team
+  // context (resolveDefaultTeamId). Overridable so deployments aren't tied to "Default".
+  DEFAULT_WORKFLOW_TEAM_NAME: z.string().default('Default'),
+
   // ── Prompt Composer (M5 — kept for backwards compat; M8 routes through context-fabric) ──
   PROMPT_COMPOSER_URL: z.string().default('http://localhost:3004'),
 

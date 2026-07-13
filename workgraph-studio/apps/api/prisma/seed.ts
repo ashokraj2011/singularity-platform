@@ -6,6 +6,25 @@ import { seedHumanWorkflows } from './seed-human-workflows'
 
 const prisma = new PrismaClient()
 
+// Seed identities are overridable via SEED_* env vars; the defaults reproduce the
+// historical local/dev seed exactly. In a production-class env the default dev
+// passwords are refused so an operator can't accidentally ship them.
+const SEED_ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL || 'admin@workgraph.local'
+const SEED_ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD || 'admin123'
+const SEED_ADMIN_NAME = process.env.SEED_ADMIN_NAME || 'Admin User'
+const SEED_DEMO_EMAIL = process.env.SEED_DEMO_EMAIL || 'demo@workgraph.local'
+const SEED_DEMO_PASSWORD = process.env.SEED_DEMO_PASSWORD || 'demo123'
+const SEED_DEMO_NAME = process.env.SEED_DEMO_NAME || 'Demo User'
+
+const DEFAULT_SEED_PASSWORDS = new Set(['admin123', 'demo123'])
+if (process.env.NODE_ENV === 'production') {
+  for (const [label, value] of [['SEED_ADMIN_PASSWORD', SEED_ADMIN_PASSWORD], ['SEED_DEMO_PASSWORD', SEED_DEMO_PASSWORD]] as const) {
+    if (DEFAULT_SEED_PASSWORDS.has(value)) {
+      throw new Error(`Refusing to seed the default ${label} in a production-class environment; set a strong ${label}.`)
+    }
+  }
+}
+
 async function main() {
   console.log('Seeding database...')
 
@@ -283,13 +302,13 @@ async function main() {
   //  Epic → Story, Approval Pipeline, Branching Review.)
 
   // Seed admin user
-  const adminPasswordHash = await bcrypt.hash('admin123', 12)
+  const adminPasswordHash = await bcrypt.hash(SEED_ADMIN_PASSWORD, 12)
   const admin = await prisma.user.upsert({
-    where: { email: 'admin@workgraph.local' },
+    where: { email: SEED_ADMIN_EMAIL },
     update: {},
     create: {
-      email: 'admin@workgraph.local',
-      displayName: 'Admin User',
+      email: SEED_ADMIN_EMAIL,
+      displayName: SEED_ADMIN_NAME,
       passwordHash: adminPasswordHash,
       teamId: platformTeam.id,
     },
@@ -303,13 +322,13 @@ async function main() {
   })
 
   // Demo user
-  const demoPasswordHash = await bcrypt.hash('demo123', 12)
+  const demoPasswordHash = await bcrypt.hash(SEED_DEMO_PASSWORD, 12)
   const demoUser = await prisma.user.upsert({
-    where: { email: 'demo@workgraph.local' },
+    where: { email: SEED_DEMO_EMAIL },
     update: {},
     create: {
-      email: 'demo@workgraph.local',
-      displayName: 'Demo User',
+      email: SEED_DEMO_EMAIL,
+      displayName: SEED_DEMO_NAME,
       passwordHash: demoPasswordHash,
       teamId: growthTeam.id,
     },
@@ -416,8 +435,8 @@ async function main() {
   }
 
   console.log('Seed complete!')
-  console.log('  Admin: admin@workgraph.local / admin123')
-  console.log('  Demo:  demo@workgraph.local / demo123')
+  console.log(`  Admin: ${SEED_ADMIN_EMAIL} / ${SEED_ADMIN_PASSWORD}`)
+  console.log(`  Demo:  ${SEED_DEMO_EMAIL} / ${SEED_DEMO_PASSWORD}`)
   console.log(`  Feature flags seeded: ${codeFoundryFlags.length} (Code Foundry defaults ON for local/demo)`)
 }
 
