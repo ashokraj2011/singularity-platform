@@ -22,6 +22,8 @@ import {
 } from './DirectLlmToolLoop'
 import { resolveDirectLlmTools } from './direct-llm-tools'
 import type { ComposeArtifact } from '../../../../lib/prompt-composer/client'
+import { validateDirectLlmConfig, type CanonicalDirectLlmConfig } from './direct-llm-config'
+import { resolveLoopStrategyVersion, type LoopStrategyDefinition } from '../../loop-strategy.service'
 
 type DirectLlmOutput = {
   directLlmFields?: Record<string, unknown> | null
@@ -45,6 +47,7 @@ type DirectLlmOutput = {
     structuredOutput?: Record<string, unknown> | null
     outputSchema?: Record<string, unknown>
     outputFields?: Record<string, unknown>
+    loopStrategy?: { strategyId: string; version: number; contentHash?: string }
     usage?: {
       inputTokens?: number
       outputTokens?: number
@@ -80,6 +83,7 @@ type ResolvedDirectLlmConfig = {
   inputArtifacts: ComposeArtifact[]
   harness: DirectLlmHarnessOptions
   toolLoop: DirectLlmToolLoopOptions
+  loopStrategy?: { strategyId: string; version: number; contentHash?: string; definition: LoopStrategyDefinition }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -130,6 +134,62 @@ function cfgBool(node: WorkflowNode, key: string, fallback: boolean): boolean {
     if (['false', '0', 'no', 'n'].includes(v)) return false
   }
   return fallback
+}
+
+function materializeCanonicalConfig(
+  node: WorkflowNode,
+  direct: CanonicalDirectLlmConfig,
+  strategy?: { strategyId: string; version: number; contentHash?: string; definition: LoopStrategyDefinition },
+): WorkflowNode {
+  const original = isRecord(node.config) ? node.config : {}
+  const standard = isRecord(original.standard) ? { ...original.standard } : {}
+  const config: Record<string, unknown> = { ...original, directLlm: direct, standard }
+  const set = (key: string, value: unknown) => { if (value !== undefined) standard[key] = value }
+  set('connectionAlias', direct.connectionAlias)
+  set('modelAlias', direct.connectionAlias)
+  set('provider', direct.provider)
+  set('model', direct.model)
+  set('baseUrl', direct.baseUrl)
+  set('credentialEnv', direct.credentialEnv)
+  set('agentTemplateId', direct.agentTemplateId)
+  set('capabilityId', direct.capabilityId)
+  set('promptProfileKey', direct.promptProfileKey)
+  set('promptUrl', direct.promptUrl)
+  set('task', direct.task ?? (direct.promptSource === 'AGENT_PROFILE' ? 'Execute the selected agent profile task using the supplied workflow context.' : undefined))
+  set('systemPrompt', direct.systemPrompt)
+  set('inputVariables', direct.inputBindings)
+  set('inputDocumentsPath', direct.inputDocumentsPath)
+  set('outputFields', direct.outputContract.fields)
+  set('outputJsonSchema', direct.outputContract.jsonSchema)
+  set('validationMode', direct.outputContract.validationMode)
+  set('maxTokens', direct.maxTokens)
+  set('temperature', direct.temperature)
+  set('timeoutMs', direct.timeoutMs)
+  set('composeWithPromptComposer', direct.composeWithPromptComposer)
+  set('reviewRequired', direct.review.required)
+  set('coWork', direct.review.coWork)
+  set('assignmentMode', direct.review.assignmentMode)
+  set('assignedToId', direct.review.assignedToId)
+  set('teamId', direct.review.teamId)
+  set('roleKey', direct.review.roleKey)
+  set('skillKey', direct.review.skillKey)
+  if (strategy) {
+    set('loopStrategyId', strategy.strategyId)
+    set('loopStrategyVersion', strategy.version)
+    set('loopEnabled', strategy.definition.kind === 'PHASE')
+    set('toolLoop', strategy.definition.kind === 'TOOL')
+    set('loopPhases', strategy.definition.phaseOrder)
+    set('loopStageKey', strategy.definition.loopStageKey)
+    set('loopAgentRole', strategy.definition.loopAgentRole)
+    set('promptProfileKey', strategy.definition.promptProfileKey ?? direct.promptProfileKey)
+    set('maxTurns', strategy.definition.maxTurns)
+    set('toolLoopMaxTurns', strategy.definition.maxTurns)
+    set('earlyStop', strategy.definition.earlyStop)
+    set('maxRepairAttempts', strategy.definition.maxRepairAttempts)
+    set('toolLoopTools', strategy.definition.tools)
+    set('validationFailure', strategy.definition.validationFailure)
+  }
+  return { ...node, config: config as WorkflowNode['config'] }
 }
 
 function harnessString(node: WorkflowNode, ...keys: string[]): string | undefined {
@@ -739,8 +799,10 @@ function resolveHarnessOptions(
   const agentTemplateId = harnessString(node, 'agentTemplateId', 'profileId', 'templateId')
   const coWork = harnessBool(node, 'coWork', harnessBool(node, 'cowork', false))
   const loopEnabled = harnessBool(node, 'loopEnabled', harnessBool(node, 'useLoop', coWork))
-  const validationRaw = (harnessString(node, 'validationMode') ?? 'soft').toLowerCase()
+  const validationRaw = (harnessString(node, 'validationMode') ?? (outputSchema ? 'hard' : 'soft')).toLowerCase()
   const validationMode = validationRaw === 'hard' || validationRaw === 'off' ? validationRaw : 'soft'
+  const failureRaw = (harnessString(node, 'validationFailure') ?? 'REPAIR').toUpperCase()
+  const validationFailure = failureRaw === 'BLOCK' || failureRaw === 'REVIEW' ? failureRaw : 'REPAIR'
   return {
     enabled: harnessBool(node, 'enabled', true),
     composeWithPromptComposer: harnessBool(node, 'composeWithPromptComposer', Boolean(agentTemplateId)),
@@ -757,6 +819,7 @@ function resolveHarnessOptions(
     artifacts,
     outputJsonSchema: outputSchema,
     validationMode,
+    validationFailure,
     // Adaptive-loop controls: skip remaining phases once the output contract is satisfied, and allow a
     // bounded VERIFY→REPAIR feedback loop (mirrors the governed loop's max_repair_attempts, hard-capped 3).
     earlyStop: harnessBool(node, 'earlyStop', true),
@@ -769,8 +832,10 @@ function resolveHarnessOptions(
 // `toolLoop: true`. Tools come from the read-only allowlist in direct-llm-tools.ts.
 function resolveToolLoopOptions(node: WorkflowNode, outputSchema: Record<string, unknown> | undefined): DirectLlmToolLoopOptions {
   const enabled = harnessBool(node, 'toolLoop', harnessBool(node, 'directToolLoop', false))
-  const validationRaw = (harnessString(node, 'validationMode') ?? 'soft').toLowerCase()
+  const validationRaw = (harnessString(node, 'validationMode') ?? (outputSchema ? 'hard' : 'soft')).toLowerCase()
   const validationMode = validationRaw === 'hard' || validationRaw === 'off' ? validationRaw : 'soft'
+  const failureRaw = (harnessString(node, 'validationFailure') ?? 'REVIEW').toUpperCase()
+  const validationFailure = failureRaw === 'BLOCK' || failureRaw === 'REPAIR' ? failureRaw : 'REVIEW'
   const requested = harnessStringArray(node, 'toolLoopTools')
   const { tools, unknown } = resolveDirectLlmTools(requested.length ? requested : null)
   return {
@@ -782,6 +847,7 @@ function resolveToolLoopOptions(node: WorkflowNode, outputSchema: Record<string,
     requiredOutputIncludes: harnessStringArray(node, 'requiredOutputIncludes'),
     outputJsonSchema: outputSchema,
     validationMode,
+    validationFailure,
   }
 }
 
@@ -789,7 +855,36 @@ async function resolveDirectLlmConfig(
   node: WorkflowNode,
   instance: WorkflowInstance,
 ): Promise<{ config: ResolvedDirectLlmConfig } | { error: string; code: string }> {
-  const alias = cfgString(node, 'connectionAlias', 'modelAlias', 'llmAlias')
+  const directValidation = validateDirectLlmConfig(node.config)
+  if (!directValidation.ok) {
+    return {
+      error: directValidation.failures.map(item => `${item.field}: ${item.message}`).join('; '),
+      code: 'DIRECT_LLM_CONFIG_INVALID',
+    }
+  }
+  let loopStrategy: ResolvedDirectLlmConfig['loopStrategy']
+  const loopRef = directValidation.config.loopStrategy
+  if (loopRef) {
+    try {
+      // Runtime execution may happen outside an HTTP request. Resolve the
+      // pinned strategy against the workflow instance tenant explicitly so a
+      // background worker cannot inherit a stale or unrelated request scope.
+      const resolved = await resolveLoopStrategyVersion(loopRef.strategyId, loopRef.version, instance.tenantId ?? undefined)
+      loopStrategy = {
+        strategyId: loopRef.strategyId,
+        version: loopRef.version,
+        contentHash: resolved.version.contentHash,
+        definition: resolved.version.definition as unknown as LoopStrategyDefinition,
+      }
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : 'Pinned loop strategy version is unavailable.',
+        code: 'DIRECT_LLM_LOOP_STRATEGY_UNAVAILABLE',
+      }
+    }
+  }
+  const effectiveNode = materializeCanonicalConfig(node, directValidation.config, loopStrategy)
+  const alias = cfgString(effectiveNode, 'connectionAlias', 'modelAlias', 'llmAlias')
   const connection = alias
     ? await prisma.llmConnection.findFirst({ where: { alias, ...(instance.tenantId ? { tenantId: instance.tenantId } : {}) } }).catch(() => null)
     : null
@@ -799,7 +894,7 @@ async function resolveDirectLlmConfig(
   }
 
   const provider = normalizeProvider(
-    connection?.provider ?? cfgString(node, 'provider') ?? (connection?.baseUrl ? 'openai_compatible' : 'mock'),
+    connection?.provider ?? cfgString(effectiveNode, 'provider') ?? (connection?.baseUrl ? 'openai_compatible' : 'mock'),
   )
   if (provider === 'copilot' || provider === 'github_copilot') {
     return {
@@ -807,20 +902,20 @@ async function resolveDirectLlmConfig(
       code: 'COPILOT_CLI_ONLY',
     }
   }
-  const model = connection?.model ?? cfgString(node, 'model') ?? (provider === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o-mini')
-  const baseUrl = connection?.baseUrl ?? cfgString(node, 'baseUrl') ?? undefined
-  const credentialEnv = connection?.credentialEnv ?? cfgString(node, 'credentialEnv') ?? defaultCredentialEnv(provider)
-  const promptTemplate = await resolvePromptTemplate(node)
+  const model = connection?.model ?? cfgString(effectiveNode, 'model') ?? (provider === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o-mini')
+  const baseUrl = connection?.baseUrl ?? cfgString(effectiveNode, 'baseUrl') ?? undefined
+  const credentialEnv = connection?.credentialEnv ?? cfgString(effectiveNode, 'credentialEnv') ?? defaultCredentialEnv(provider)
+  const promptTemplate = await resolvePromptTemplate(effectiveNode)
   if (!promptTemplate.ok) return { error: promptTemplate.error, code: promptTemplate.code }
 
-  const maxTokens = Math.min(Math.max(cfgNumber(node, 'maxTokens', 1200), 1), 32_000)
-  const timeoutMs = Math.min(Math.max(cfgNumber(node, 'timeoutMs', cfgNumber(node, 'timeoutSec', 120) * 1000), 1_000), 600_000)
+  const maxTokens = Math.min(Math.max(cfgNumber(effectiveNode, 'maxTokens', 1200), 1), 32_000)
+  const timeoutMs = Math.min(Math.max(cfgNumber(effectiveNode, 'timeoutMs', cfgNumber(effectiveNode, 'timeoutSec', 120) * 1000), 1_000), 600_000)
   const modelAlias = alias ?? connection?.alias ?? undefined
-  const inputArtifacts = eventArtifactsForInstance(instance, node)
-  const outputContract = resolveOutputContract(node)
-  const promptVariables = resolvePromptVariables(node, instance)
-  const coWork = cfgBool(node, 'coWork', cfgBool(node, 'cowork', false))
-  const reviewRequired = coWork || cfgBool(node, 'reviewRequired', false)
+  const inputArtifacts = eventArtifactsForInstance(instance, effectiveNode)
+  const outputContract = resolveOutputContract(effectiveNode)
+  const promptVariables = resolvePromptVariables(effectiveNode, instance)
+  const coWork = cfgBool(effectiveNode, 'coWork', cfgBool(effectiveNode, 'cowork', false))
+  const reviewRequired = coWork || cfgBool(effectiveNode, 'reviewRequired', false)
   const prompt = [
     interpolate(promptTemplate.template, instance, node),
     promptVariables.section,
@@ -834,21 +929,22 @@ async function resolveDirectLlmConfig(
       baseUrl,
       modelAlias,
       credentialEnv,
-      systemPrompt: cfgString(node, 'systemPrompt'),
+      systemPrompt: cfgString(effectiveNode, 'systemPrompt'),
       prompt,
-      temperature: cfgNumber(node, 'temperature', 0.2),
+      temperature: cfgNumber(effectiveNode, 'temperature', 0.2),
       maxTokens,
       timeoutMs,
       reviewRequired,
       coWork,
       promptUrl: promptTemplate.promptUrl,
       promptVariables: promptVariables.variables.map(variable => jsonSafeRecord(variable as unknown as Record<string, unknown>)),
-      outputPath: cfgString(node, 'outputPath', 'artifactName'),
+      outputPath: cfgString(effectiveNode, 'outputPath', 'artifactName'),
       outputSchema: outputContract.outputSchema,
       outputFields: outputContract.outputFields,
       inputArtifacts,
-      harness: resolveHarnessOptions(node, outputContract.outputSchema, inputArtifacts),
-      toolLoop: resolveToolLoopOptions(node, outputContract.outputSchema),
+      harness: resolveHarnessOptions(effectiveNode, outputContract.outputSchema, inputArtifacts),
+      toolLoop: resolveToolLoopOptions(effectiveNode, outputContract.outputSchema),
+      loopStrategy,
     },
   }
 }
@@ -1195,6 +1291,7 @@ export async function activateDirectLlmTask(
             outputSchema: llm.outputSchema,
             inputArtifacts: llm.inputArtifacts,
             harness: llm.harness,
+            loopStrategy: llm.loopStrategy,
             bypassedRuntimeFabric: true,
           }) as Prisma.InputJsonValue,
         },
@@ -1211,6 +1308,11 @@ export async function activateDirectLlmTask(
     bypassedRuntimeFabric: true,
     coWork: llm.coWork,
     promptUrl: llm.promptUrl,
+    loopStrategy: llm.loopStrategy ? {
+      strategyId: llm.loopStrategy.strategyId,
+      version: llm.loopStrategy.version,
+      contentHash: llm.loopStrategy.contentHash,
+    } : undefined,
     ...workEvent,
   })
   await publishOutbox('AgentRun', run.id, 'DirectLlmRunStarted', { runId: run.id, nodeId: node.id, traceId, ...workEvent })
@@ -1312,6 +1414,11 @@ export async function activateDirectLlmTask(
     outputSchema: llm.outputSchema,
     outputFields: llm.outputFields,
     inputArtifacts: llm.inputArtifacts,
+    loopStrategy: llm.loopStrategy ? {
+      strategyId: llm.loopStrategy.strategyId,
+      version: llm.loopStrategy.version,
+      contentHash: llm.loopStrategy.contentHash,
+    } : undefined,
   }
 
   await prisma.agentRunOutput.create({
@@ -1408,6 +1515,11 @@ export async function activateDirectLlmTask(
       reviewRequired,
       coWork: llm.coWork,
       promptUrl: llm.promptUrl,
+      loopStrategy: llm.loopStrategy ? {
+        strategyId: llm.loopStrategy.strategyId,
+        version: llm.loopStrategy.version,
+        contentHash: llm.loopStrategy.contentHash,
+      } : undefined,
       promptVariables: llm.promptVariables,
       bypassedRuntimeFabric: true,
       harness: harnessReceipt,

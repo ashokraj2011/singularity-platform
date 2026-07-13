@@ -64,6 +64,7 @@ export type DirectLlmToolLoopOptions = {
   requiredOutputIncludes: string[]
   outputJsonSchema?: Record<string, unknown>
   validationMode: 'off' | 'soft' | 'hard'
+  validationFailure?: 'REPAIR' | 'REVIEW' | 'BLOCK'
 }
 
 export type DirectLlmToolLoopTurn = {
@@ -432,7 +433,7 @@ export async function runDirectLlmToolLoop(args: {
   }
 
   const validation = validateAgainstContract(finalText, options)
-  if (!validation.passed && options.validationMode === 'hard') {
+  if (!validation.passed && (options.validationMode === 'hard' || options.validationFailure === 'BLOCK')) {
     throw new DirectLlmToolLoopError('DIRECT_LLM_TOOL_LOOP_VALIDATION_FAILED', validation.errors.join('; '), { validation, turns })
   }
 
@@ -456,6 +457,6 @@ export async function runDirectLlmToolLoop(args: {
       validation: { mode: options.validationMode, ...validation },
       warnings,
     },
-    reviewRequired: !validation.passed && options.validationMode === 'soft',
+    reviewRequired: !validation.passed && (options.validationMode === 'soft' || options.validationFailure === 'REVIEW'),
   }
 }

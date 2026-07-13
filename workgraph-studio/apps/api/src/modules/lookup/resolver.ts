@@ -16,6 +16,8 @@ import {
   listPromptProfiles,
   AgentAndToolsError,
 } from '../../lib/agent-and-tools/client'
+import { validateDirectLlmConfig } from '../workflow/runtime/executors/direct-llm-config'
+import { resolveLoopStrategyVersion } from '../workflow/loop-strategy.service'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -132,14 +134,22 @@ function literalRef(field: string, value: unknown, kind: RefKind): RefRequiremen
 export function refsForNodeConfig(nodeType: string, config: Record<string, unknown>): RefRequirement[] {
   const refs: RefRequirement[] = []
   const push = (r: RefRequirement | null) => { if (r) refs.push(r) }
+  const direct = config.directLlm && typeof config.directLlm === 'object' && !Array.isArray(config.directLlm)
+    ? config.directLlm as Record<string, unknown>
+    : {}
 
   // Universal: most node configs may carry a capabilityId.
   push(literalRef('capabilityId', config.capabilityId, 'capability'))
+  push(literalRef('directLlm.capabilityId', direct.capabilityId, 'capability'))
 
   switch (nodeType) {
     case 'AGENT_TASK':
       push(literalRef('agentTemplateId', config.agentTemplateId, 'agent-template'))
       push(literalRef('promptProfileId', config.promptProfileId, 'prompt-profile'))
+      break
+    case 'DIRECT_LLM_TASK':
+      push(literalRef('agentTemplateId', config.agentTemplateId ?? direct.agentTemplateId, 'agent-template'))
+      push(literalRef('promptProfileId', config.promptProfileId ?? direct.promptProfileId, 'prompt-profile'))
       break
     case 'WORKBENCH_TASK': {
       const workbench = config.workbench && typeof config.workbench === 'object' && !Array.isArray(config.workbench)
@@ -208,8 +218,6 @@ export async function validateNodeConfig(
 ): Promise<ValidationResult> {
   const cfg = (config ?? {}) as Record<string, unknown>
   const reqs = refsForNodeConfig(nodeType, cfg)
-  if (reqs.length === 0) return { ok: true, failures: [], resolved: [] }
-
   const resolved = await Promise.all(reqs.map((r) => resolveOne(r.kind, r.value, req)))
   const failures: ValidationFailure[] = []
   for (let i = 0; i < reqs.length; i++) {
@@ -222,6 +230,29 @@ export async function validateNodeConfig(
         id:    r.value,
         reason: hit.error ?? 'not-found',
       })
+    }
+  }
+
+  if (nodeType === 'DIRECT_LLM_TASK') {
+    const directValidation = validateDirectLlmConfig(cfg)
+    failures.push(...directValidation.failures.map(item => ({
+      field: item.field,
+      kind: 'direct-llm-config',
+      id: item.field,
+      reason: item.message,
+    })))
+    const loop = directValidation.config.loopStrategy
+    if (loop) {
+      try {
+        await resolveLoopStrategyVersion(loop.strategyId, loop.version)
+      } catch (error) {
+        failures.push({
+          field: 'directLlm.loopStrategy',
+          kind: 'loop-strategy',
+          id: `${loop.strategyId}@${loop.version}`,
+          reason: error instanceof Error ? error.message : 'loop strategy version is unavailable',
+        })
+      }
     }
   }
   return { ok: failures.length === 0, failures, resolved }

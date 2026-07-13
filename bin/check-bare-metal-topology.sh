@@ -338,6 +338,7 @@ checks["bare-metal applies event operations tenant hardening migrations"] = (
     '20260710100000_harden_event_operations_tenant_scope/migration.sql' in bare
     and '20260710101000_harden_llm_routing_tenant_scope/migration.sql' in bare
     and '20260713100000_roadmap_gap_closure/migration.sql' in bare
+    and '20260714100000_direct_llm_loop_strategies/migration.sql' in bare
 )
 checks["bare-metal forwards bounded local logs to the observability lake"] = (
     'boot log-forwarder' in bare

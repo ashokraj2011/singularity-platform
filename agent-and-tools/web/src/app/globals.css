@@ -290,6 +290,66 @@
     transform: translateY(-1px);
   }
 
+  .btn-primary:disabled, .btn-secondary:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+
+  .icon-button {
+    width: 27px;
+    height: 27px;
+    display: inline-grid;
+    place-items: center;
+    border: 1px solid var(--color-outline-variant);
+    border-radius: 6px;
+    background: var(--color-card);
+    color: var(--color-outline);
+    cursor: pointer;
+  }
+  .icon-button:hover:not(:disabled) { color: var(--color-primary); border-color: var(--color-primary-hover-border); background: var(--color-primary-dim); }
+  .icon-button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 8px;
+    border: 1px solid var(--color-outline-variant);
+    border-radius: 999px;
+    color: var(--color-outline);
+    background: var(--color-surface-low);
+    font-size: 10px;
+    font-weight: 750;
+    white-space: nowrap;
+  }
+
+  .info-callout, .success-callout, .warning-callout, .error-state {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .info-callout { color: var(--accent-workflow); background: var(--accent-workflow-soft); border: 1px solid color-mix(in srgb, var(--accent-workflow) 22%, transparent); }
+  .success-callout { color: var(--color-success); background: color-mix(in srgb, var(--color-success) 8%, transparent); border: 1px solid color-mix(in srgb, var(--color-success) 22%, transparent); }
+  .warning-callout { color: var(--color-warning); background: var(--accent-evidence-soft); border: 1px solid color-mix(in srgb, var(--color-warning) 22%, transparent); }
+  .error-state { color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 7%, transparent); border: 1px solid color-mix(in srgb, var(--color-danger) 24%, transparent); }
+
+  .metric-strip {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .metric-strip > div {
+    display: grid;
+    gap: 2px;
+    padding: 10px;
+    border: 1px solid var(--color-outline-variant);
+    border-radius: 8px;
+    background: var(--color-surface-low);
+  }
+  .metric-strip strong { font-size: 16px; color: var(--color-on-surface); }
+  .metric-strip span { color: var(--color-outline); font-size: 10px; }
+
   .control {
     width: 100%;
     min-height: 2.5rem;

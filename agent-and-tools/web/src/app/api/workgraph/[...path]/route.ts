@@ -234,10 +234,10 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path?: strin
     );
   }
 
-  const serviceToken = await getServiceToken();
-  if (!serviceToken.token) {
-    if (serviceToken.failure) {
-      return NextResponse.json(serviceToken.failure, { status: 503 });
+  const serviceTokenResult = await getServiceToken();
+  if (!serviceTokenResult.token) {
+    if (serviceTokenResult.failure) {
+      return NextResponse.json(serviceTokenResult.failure, { status: 503 });
     }
     const error = workgraphProxyTokenError(serverEnv("WORKGRAPH_PROXY_SERVICE_TOKEN"));
     if (error) return NextResponse.json({ code: "PLATFORM_WEB_CREDENTIAL_UNSAFE", message: error }, { status: 503 });
@@ -253,7 +253,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path?: strin
     return first;
   }
   const headers = proxyHeaders(req, WORKGRAPH_API_URL);
-  headers.set("authorization", `Bearer ${serviceToken.token}`);
+  headers.set("authorization", `Bearer ${serviceTokenResult.token}`);
   return proxyRequest(req, upstream, headers, { normalizeTextErrors: true });
 }
 

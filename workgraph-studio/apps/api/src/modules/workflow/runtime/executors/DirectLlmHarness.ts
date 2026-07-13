@@ -49,6 +49,7 @@ export type DirectLlmHarnessOptions = {
   artifacts?: ComposeArtifact[]
   outputJsonSchema?: Record<string, unknown>
   validationMode: 'off' | 'soft' | 'hard'
+  validationFailure?: 'REPAIR' | 'REVIEW' | 'BLOCK'
   // Adaptive-loop controls (loop mode only). Both engage only when an output contract is configured
   // (validationMode !== 'off' and a required-text or JSON schema is present); otherwise the loop runs
   // exactly as before — every planned phase once, in order, validating only the final output.
@@ -333,7 +334,7 @@ export async function runDirectLlmHarness(args: {
       validationPassed: validation.passed,
       validationErrors: validation.errors,
     })
-    if (!validation.passed && options.validationMode === 'hard') {
+    if (!validation.passed && (options.validationMode === 'hard' || options.validationFailure === 'BLOCK')) {
       throw new DirectLlmHarnessError('DIRECT_LLM_HARNESS_VALIDATION_FAILED', validation.errors.join('; '), { validation, turns })
     }
     return {
@@ -350,7 +351,7 @@ export async function runDirectLlmHarness(args: {
         validation: { mode: options.validationMode, ...validation },
         turns,
       },
-      reviewRequired: !validation.passed && options.validationMode === 'soft',
+      reviewRequired: !validation.passed && (options.validationMode === 'soft' || options.validationFailure === 'REVIEW'),
     }
   }
 
@@ -431,6 +432,7 @@ export async function runDirectLlmHarness(args: {
       contractConfigured
       && isReviewPhase(phase)
       && !validation.passed
+      && options.validationFailure !== 'REVIEW'
       && repairAttempts < maxRepairAttempts
       && turns.length < ceiling
     ) {
@@ -459,7 +461,7 @@ export async function runDirectLlmHarness(args: {
   const finalValidation = turns[turns.length - 1]?.validationPassed === false
     ? { passed: false, errors: turns[turns.length - 1]?.validationErrors ?? [] }
     : validateHarnessOutput(finalChat?.content ?? '', options)
-  if (!finalValidation.passed && options.validationMode === 'hard') {
+  if (!finalValidation.passed && (options.validationMode === 'hard' || options.validationFailure === 'BLOCK')) {
     throw new DirectLlmHarnessError('DIRECT_LLM_HARNESS_VALIDATION_FAILED', finalValidation.errors.join('; '), { validation: finalValidation, turns })
   }
 
@@ -485,6 +487,6 @@ export async function runDirectLlmHarness(args: {
       stopReason,
       repairAttempts,
     },
-    reviewRequired: !finalValidation.passed && options.validationMode === 'soft',
+    reviewRequired: !finalValidation.passed && (options.validationMode === 'soft' || options.validationFailure === 'REVIEW'),
   }
 }

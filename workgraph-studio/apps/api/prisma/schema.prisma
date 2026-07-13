@@ -2797,6 +2797,44 @@ model LlmConnection {
   @@map("llm_connection")
 }
 
+// Reusable Direct LLM execution strategies. Definitions are versioned so a
+// published workflow can pin the exact loop behavior it was designed against.
+// tenantId = null is reserved for platform-provided read-only templates.
+model LoopStrategy {
+  id            String               @id @default(uuid())
+  tenantId      String?
+  name          String
+  description   String?
+  kind          String               @default("PHASE") // SINGLE | PHASE | TOOL
+  status        String               @default("DRAFT") // DRAFT | PUBLISHED | ARCHIVED
+  currentVersion Int                 @default(1)
+  createdById   String?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  versions      LoopStrategyVersion[]
+
+  @@index([tenantId, status])
+  @@index([tenantId, kind])
+  @@map("loop_strategies")
+}
+
+model LoopStrategyVersion {
+  id            String       @id @default(uuid())
+  strategyId    String
+  tenantId      String?
+  version       Int
+  definition    Json
+  contentHash   String
+  createdById   String?
+  publishedAt   DateTime?
+  createdAt     DateTime     @default(now())
+  strategy      LoopStrategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+
+  @@unique([strategyId, version])
+  @@index([tenantId, strategyId, version])
+  @@map("loop_strategy_versions")
+}
+
 // ─── CODE GENERATION / FOUNDRY ──────────────────────────────────────────────
 //
 // Workgraph owns SDLC execution evidence, so the former standalone Foundry

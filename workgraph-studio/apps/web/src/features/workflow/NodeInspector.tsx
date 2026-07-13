@@ -23,6 +23,7 @@ import { WidgetListEditor } from '../forms/widgets/WidgetListEditor'
 import { WidgetEditor } from '../forms/widgets/WidgetEditor'
 import { RuntimeWidgetForm, type RuntimeFormSubmitTarget } from '../forms/widgets/RuntimeWidgetForm'
 import type { UploadedDocument } from '../../lib/uploadAttachment'
+import { DirectLlmTaskEditor, directLlmConfigErrors } from './DirectLlmTaskEditor'
 
 const CUSTOM_NODE_ICONS: Record<string, React.ElementType> = {
   Box, Bot, User, CheckCircle, GitMerge, Package, Wrench, Shield, GitBranch,
@@ -89,6 +90,52 @@ export type SinkConfig = {
   // ARTIFACT only
   artifactType?: string
   namePath?: string  // context path for artifact name
+}
+
+export type DirectLlmFieldSpec = {
+  type: 'string' | 'number' | 'integer' | 'boolean' | 'object' | 'array'
+  description?: string
+  required?: boolean
+  enum?: unknown[]
+  items?: Record<string, unknown>
+  default?: unknown
+  examples?: unknown
+}
+
+export type DirectLlmConfig = {
+  connectionAlias?: string
+  provider?: string
+  model?: string
+  baseUrl?: string
+  credentialEnv?: string
+  agentTemplateId?: string
+  capabilityId?: string
+  promptProfileKey?: string
+  promptSource?: 'AGENT_PROFILE' | 'URL' | 'INLINE'
+  promptUrl?: string
+  task?: string
+  systemPrompt?: string
+  inputBindings?: Array<{ name: string; path: string; required: boolean; description?: string }>
+  inputDocumentsPath?: string
+  outputContract?: {
+    fields: Record<string, DirectLlmFieldSpec>
+    jsonSchema?: Record<string, unknown>
+    validationMode: 'hard' | 'soft' | 'off'
+  }
+  review?: {
+    required: boolean
+    coWork: boolean
+    assignmentMode?: string
+    assignedToId?: string
+    teamId?: string
+    roleKey?: string
+    skillKey?: string
+  }
+  loopStrategy?: { strategyId: string; version: number }
+  maxTokens?: number
+  temperature?: number
+  timeoutMs?: number
+  composeWithPromptComposer?: boolean
 }
 
 type LlmModelChoice = {
@@ -226,6 +273,9 @@ export type NodeConfig = {
   globalAssignments?: KVPair[]
   // WORKBENCH_TASK configuration.
   workbench?: WorkbenchConfig
+  // Canonical DIRECT_LLM_TASK configuration. Legacy flat fields remain
+  // mirrored for old workflow snapshots and runtime compatibility.
+  directLlm?: DirectLlmConfig
   // WORK_ITEM target child capability rows.
   targets?: WorkItemTargetConfig[]
   // ── Assignment routing (HUMAN_TASK / APPROVAL / CONSUMABLE_CREATION) ──────
@@ -1006,6 +1056,9 @@ export function normalizeConfig(raw: unknown): NodeConfig {
     assignments: Array.isArray(r.assignments) ? r.assignments as KVPair[] : undefined,
     globalAssignments: Array.isArray(r.globalAssignments) ? r.globalAssignments as KVPair[] : undefined,
     workbench: r.workbench ? normalizeWorkbenchConfig(r.workbench) : undefined,
+    directLlm: r.directLlm && typeof r.directLlm === 'object' && !Array.isArray(r.directLlm)
+      ? r.directLlm as DirectLlmConfig
+      : undefined,
     targets: Array.isArray(r.targets)
       ? (r.targets as Array<Partial<WorkItemTargetConfig>>).map(t => ({
           id: typeof t.id === 'string' ? t.id : uid(),
@@ -3445,7 +3498,11 @@ export function NodeInspector({
     setTab(node.data.nodeType === 'WORKBENCH_TASK' ? 'Workbench' : 'Overview')
   }, [node.id, node.data.nodeType])
 
-  const handleSave = () => onSave(node.id, label, config)
+  const directLlmErrors = node.data.nodeType === 'DIRECT_LLM_TASK' ? directLlmConfigErrors(config) : []
+  const handleSave = () => {
+    if (directLlmErrors.length > 0) return
+    onSave(node.id, label, config)
+  }
   const statusColor = STATUS_COLOR[node.data.status] ?? '#64748b'
   const workbenchErrors = node.data.nodeType === 'WORKBENCH_TASK'
     ? validateWorkbenchBuilder(config.workbench)
@@ -3643,6 +3700,17 @@ export function NodeInspector({
                     )}
                   </div>
                 )}
+                {node.data.nodeType === 'DIRECT_LLM_TASK' ? (
+                  <DirectLlmTaskEditor
+                    key={node.id}
+                    config={config}
+                    onChange={setConfig}
+                    templateVariables={templateVariables}
+                    teamGlobals={teamGlobals}
+                    upstreamOutputs={upstreamOutputs}
+                  />
+                ) : (
+                <>
                 {/* Standard fields */}
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
@@ -3884,6 +3952,8 @@ export function NodeInspector({
                     </div>
                   )}
                 </div>
+                </>
+                )}
 
 	                <div style={{ height: 1, background: 'rgba(148, 163, 184, 0.2)' }} />
 
@@ -4150,7 +4220,7 @@ export function NodeInspector({
       <div style={{ padding: '10px 14px', borderTop: '1px solid rgba(148, 163, 184, 0.2)', flexShrink: 0 }}>
         <button
           onClick={handleSave}
-          disabled={saving || !label.trim() || workbenchErrors.length > 0}
+          disabled={saving || !label.trim() || workbenchErrors.length > 0 || directLlmErrors.length > 0}
           className="workflow-neo-save-btn"
         >
           {saving
