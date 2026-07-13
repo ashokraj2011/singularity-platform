@@ -1,0 +1,24 @@
+{
+  "name": "@workgraph/wgvm-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "wgvm": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "bundle": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "start": "node --import tsx src/index.ts"
+  },
+  "dependencies": {
+    "@workgraph/vm": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.17",
+    "esbuild": "^0.28.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.4.5"
+  }
+}

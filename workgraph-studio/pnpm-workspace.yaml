@@ -2,10 +2,12 @@ packages:
   - 'apps/web'
   - 'apps/blueprint-workbench'
   - 'apps/sgl-cli'
+  - 'apps/wgvm-cli'
   - 'apps/api'
   - 'packages/laptop-sdk'
   - 'packages/shared-types'
   - 'packages/engine'
+  - 'packages/vm'
 allowBuilds:
   '@prisma/client': true
   '@prisma/engines': true
