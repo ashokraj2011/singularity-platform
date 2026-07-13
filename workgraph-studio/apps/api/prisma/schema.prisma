@@ -1375,6 +1375,7 @@ model ReconciliationRun {
   workItem   WorkItem                 @relation(fields: [workItemId], references: [id], onDelete: Cascade)
   verdicts   RequirementVerdict[]
   findings   ReconciliationFinding[]
+  job        ReconciliationJob?
 
   @@index([workItemId, createdAt])
   @@index([submissionId])
@@ -1392,6 +1393,8 @@ model RequirementVerdict {
   claimStatus         String?
   rationale           String?
   evidence            Json                    @default("[]")
+  // true once the verdict is backed by actual test execution (dynamic layer), not just declared evidence.
+  verified            Boolean                 @default(false)
   createdAt           DateTime                @default(now())
 
   reconciliationRun ReconciliationRun @relation(fields: [reconciliationRunId], references: [id], onDelete: Cascade)
@@ -1416,6 +1419,48 @@ model ReconciliationFinding {
 
   @@index([reconciliationRunId])
   @@map("reconciliation_findings")
+}
+
+enum ReconciliationJobStatus {
+  PENDING
+  CLAIMED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// The dynamic (test-execution) layer of reconciliation (spec §15, "Layer 2"). Because running an
+// implementer's declared tests means executing customer code, it MUST NOT run in-request — the
+// deterministic run enqueues one job here, and an out-of-process runner claims it (atomic claim +
+// claimToken fencing, mirroring PendingExecution), checks out the head commit, runs the test plan
+// in isolation, and POSTs results back to refine the run's verdicts from declared to verified.
+model ReconciliationJob {
+  id                  String                  @id @default(uuid())
+  reconciliationRunId String                  @unique
+  workItemId          String
+  submissionId        String
+  status              ReconciliationJobStatus @default(PENDING)
+  repository          String
+  baseCommitSha       String
+  headCommitSha       String
+  testPlan            Json                    @default("[]")
+  claimToken          String?
+  claimedBy           String?
+  claimedAt           DateTime?
+  attempts            Int                     @default(0)
+  result              Json?
+  error               String?
+  tenantId            String?                 @default("default")
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+
+  reconciliationRun ReconciliationRun @relation(fields: [reconciliationRunId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([workItemId])
+  @@index([tenantId], map: "ix_reconciliation_jobs_tenant")
+  @@map("reconciliation_jobs")
 }
 
 model WorkItemDependency {

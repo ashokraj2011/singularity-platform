@@ -5,6 +5,8 @@
  * verdict matrix. The Work Item stays the permanent root.
  */
 import { Router, type Request } from 'express'
+import { z } from 'zod'
+import { validate } from '../../middleware/validate'
 import {
   startReconciliation,
   listReconciliations,
@@ -15,10 +17,14 @@ export const reconciliationsRouter: Router = Router()
 
 const workItemIdOf = (req: Request) => String(req.params.workItemId)
 
-// Kick off a deterministic reconciliation for a specific submission.
-reconciliationsRouter.post('/:workItemId/submissions/:submissionId/reconcile', async (req, res, next) => {
+// DETERMINISTIC (default) finalizes in-request; DYNAMIC also enqueues a runner job to execute
+// the declared tests and refine the verdicts once it reports back.
+const reconcileSchema = z.object({ mode: z.enum(['DETERMINISTIC', 'DYNAMIC']).optional() })
+
+reconciliationsRouter.post('/:workItemId/submissions/:submissionId/reconcile', validate(reconcileSchema), async (req, res, next) => {
   try {
-    const result = await startReconciliation(workItemIdOf(req), String(req.params.submissionId), req.user!.userId)
+    const mode = (req.body?.mode as 'DETERMINISTIC' | 'DYNAMIC' | undefined) ?? 'DETERMINISTIC'
+    const result = await startReconciliation(workItemIdOf(req), String(req.params.submissionId), req.user!.userId, mode)
     res.status(201).json(result)
   } catch (err) { next(err) }
 })
