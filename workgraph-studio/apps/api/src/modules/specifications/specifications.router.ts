@@ -15,12 +15,20 @@ import {
   validateSpecificationVersion,
   approveSpecificationVersion,
 } from './specifications.service'
+import { generateSpecificationDraft } from './spec-generation.service'
 
 export const specificationsRouter: Router = Router()
 
 const createDraftSchema = z.object({
   basedOnVersionId: z.string().uuid().optional(),
   sourceIds: z.array(z.string().trim().min(1)).optional(),
+})
+
+// LLM authoring: a prompt (+ optional attached documents) → a generated DRAFT specification.
+const generateSchema = z.object({
+  prompt: z.string().trim().min(1).max(20000),
+  documents: z.array(z.object({ title: z.string().trim().max(400).optional(), content: z.string().max(200000) })).max(12).optional(),
+  basedOnVersionId: z.string().uuid().optional(),
 })
 
 // Optimistic-concurrency edit: expectedRevision + any subset of the package body sections.
@@ -42,6 +50,13 @@ specificationsRouter.get('/:workItemId/specifications', async (req, res, next) =
 specificationsRouter.post('/:workItemId/specifications', validate(createDraftSchema), async (req, res, next) => {
   try {
     res.status(201).json(await createSpecificationDraft(workItemIdOf(req), req.body, req.user!.userId))
+  } catch (err) { next(err) }
+})
+
+// LLM authoring — generate a DRAFT specification from a prompt + optional documents.
+specificationsRouter.post('/:workItemId/specifications/generate', validate(generateSchema), async (req, res, next) => {
+  try {
+    res.status(201).json(await generateSpecificationDraft(workItemIdOf(req), req.body, req.user!.userId))
   } catch (err) { next(err) }
 })
 
