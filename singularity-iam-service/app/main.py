@@ -13,9 +13,12 @@ import app.models  # noqa: F401
 
 from app.auth.routes import router as auth_router
 from app.auth.deps import require_real_user
-from app.auth.schemas import TokenUserOut
+from app.auth.schemas import TokenUserOut, MeResponse
+from app.authz.resolver import _get_platform_permissions
+from app.database import get_db
 from app.models import User
 from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.users.routes import router as users_router
 from app.org.routes import router as org_router
 from app.capabilities.routes import router as cap_router
@@ -155,11 +158,16 @@ async def health():
     return {"status": "ok", "service": "singularity-iam-service"}
 
 
-@app.get("/api/v1/me", response_model=TokenUserOut)
-async def me(current_user: User = Depends(require_real_user)):
-    return TokenUserOut(
+@app.get("/api/v1/me", response_model=MeResponse)
+async def me(current_user: User = Depends(require_real_user), db: AsyncSession = Depends(get_db)):
+    # Include the caller's effective platform-level permission keys so downstream
+    # services can gate on permissions, not just role-name strings. Additive — the
+    # extra field is ignored by callers that don't read it.
+    permissions = await _get_platform_permissions(db, current_user.id)
+    return MeResponse(
         id=current_user.id,
         email=current_user.email,
         display_name=current_user.display_name,
         is_super_admin=current_user.is_super_admin,
+        permissions=sorted(permissions),
     )

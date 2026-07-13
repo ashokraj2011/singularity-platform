@@ -13,6 +13,13 @@ class TokenUserOut(BaseModel):
     is_super_admin: bool
 
 
+class MeResponse(TokenUserOut):
+    """`/me` — the caller's identity plus their effective PLATFORM-level permission
+    keys, so downstream services can gate on permissions (e.g. ``platform:all``)
+    rather than only role-name strings. Additive: existing consumers ignore it."""
+    permissions: list[str] = []
+
+
 class LoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"

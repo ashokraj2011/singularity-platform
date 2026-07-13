@@ -5,6 +5,7 @@ import { ForbiddenError } from "../../shared/errors";
 import {
   canManageCapability,
   isPlatformAdmin,
+  permissionsOf,
   requireCapabilityOwner,
   requirePlatformAdmin,
   rolesOf,
@@ -19,6 +20,14 @@ assert.equal(isPlatformAdmin({ user_id: "u1", is_platform_admin: true }), true);
 assert.equal(isPlatformAdmin({ user_id: "u1", is_super_admin: true }), true);
 assert.equal(isPlatformAdmin({ user_id: "u1", roles: ["Super-Admin"] }), true);
 assert.equal(isPlatformAdmin({ user_id: "u1", roles: ["developer"] }), false);
+
+// Permission-key indirection (additive): the configured platform-admin permission
+// from IAM /me grants admin, case-insensitively; a non-admin permission does not.
+assert.deepEqual(permissionsOf({ user_id: "u1", permissions: [" Platform:All ", "", "X:Y"] }), ["platform:all", "x:y"]);
+assert.equal(isPlatformAdmin({ user_id: "u1", permissions: ["platform:all"] }), true);
+assert.equal(isPlatformAdmin({ user_id: "u1", permissions: ["Platform:All"] }), true);
+assert.equal(isPlatformAdmin({ user_id: "u1", permissions: ["workflow:approve"] }), false);
+assert.equal(isPlatformAdmin({ user_id: "u1", permissions: [] }), false);
 
 assert.equal(canManageCapability({ user_id: "u1", capability_ids: ["CAP-1"] }, "cap-1"), true);
 assert.equal(canManageCapability({ user_id: "u1", roles: ["capability-owner:CAP-2"] }, "cap-2"), true);
