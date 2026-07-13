@@ -8,8 +8,10 @@ import { specificationPackageBodySchema, emptySpecificationPackageBody } from '.
 import type { DiffValidation } from '../workflow/runtime/executors/governance/diffVsDesign'
 import { reconcile, type ReconciliationInput } from './reconciliation.engine'
 import { buildTestPlan, applyTestResults, type TestResult, type CurrentVerdict } from './reconciliation.dynamic'
+import { runSemanticPass } from './reconciliation.semantic.service'
+import type { SemanticVerdict } from './reconciliation.semantic'
 
-export type ReconciliationMode = 'DETERMINISTIC' | 'DYNAMIC'
+export type ReconciliationMode = 'DETERMINISTIC' | 'DYNAMIC' | 'SEMANTIC'
 
 type WorkItemRef = { id: string; workCode: string; title: string | null; tenantId: string | null }
 
@@ -130,11 +132,42 @@ export async function startReconciliation(workItemId: string, submissionId: stri
     : []
   const willRunDynamic = mode === 'DYNAMIC' && testPlan.length > 0
 
+  // Semantic mode overlays an LLM per-requirement judgment on the deterministic verdicts. Synchronous
+  // (a governed turn, no customer code) and BEST-EFFORT — a failed/empty pass keeps the deterministic
+  // result, so semantic never fails the reconciliation.
+  let finalVerdicts: SemanticVerdict[] = result.verdicts
+  let finalStatus: string = result.status
+  let finalSummary: Record<string, unknown> = result.summary
+  if (mode === 'SEMANTIC') {
+    const inScope = (id: string) => input.scopeRequirementIds.length === 0 || input.scopeRequirementIds.includes(id)
+    const semanticRequirements = body.requirements.filter((r) => inScope(r.id)).map((r) => ({
+      id: r.id,
+      priority: r.priority,
+      statement: (r as any).statement ?? '',
+      acceptanceCriteria: (body.acceptanceCriteria as any[])
+        .filter((a) => (a.requirementIds ?? []).includes(r.id) || ((r as any).acceptanceCriterionIds ?? []).includes(a.id))
+        .map((a) => a.statement ?? a.text ?? a.description ?? a.id)
+        .filter(Boolean),
+    }))
+    const overlay = await runSemanticPass({
+      workItemId,
+      actorId,
+      requirements: semanticRequirements,
+      claims: claims.map((c) => ({ requirementId: c.requirementId, status: c.status, evidence: c.evidence })),
+      verdicts: result.verdicts,
+    })
+    if (overlay) {
+      finalVerdicts = overlay.verdicts
+      finalStatus = overlay.status
+      finalSummary = overlay.summary
+    }
+  }
+
   const runId = randomUUID()
   const traceId = `recon-${runId}`
   const tenantId = workItem.tenantId ?? currentTenantIdForDb() ?? undefined
   const now = new Date()
-  const runStatus = willRunDynamic ? 'RUNNING' : result.status
+  const runStatus = willRunDynamic ? 'RUNNING' : finalStatus
   const runMode = willRunDynamic ? 'DYNAMIC' : mode
 
   const run = await withTenantDbTransaction(prisma, async (tx) => {
@@ -146,21 +179,21 @@ export async function startReconciliation(workItemId: string, submissionId: stri
         specificationVersionId: submission.specificationVersionId,
         specificationHash: spec.contentHash,
         mode: runMode,
-        status: runStatus,
-        summary: result.summary as unknown as Prisma.InputJsonValue,
+        status: runStatus as any,
+        summary: finalSummary as unknown as Prisma.InputJsonValue,
         traceId,
         startedById: actorId,
         completedAt: willRunDynamic ? null : now,
         tenantId: workItem.tenantId,
       },
     })
-    if (result.verdicts.length) {
+    if (finalVerdicts.length) {
       await tx.requirementVerdict.createMany({
-        data: result.verdicts.map((v) => ({
+        data: finalVerdicts.map((v) => ({
           reconciliationRunId: runId,
           requirementId: v.requirementId,
           priority: v.priority,
-          verdict: v.verdict,
+          verdict: v.verdict as any,
           claimStatus: v.claimStatus,
           rationale: v.rationale,
           evidence: v.evidence as unknown as Prisma.InputJsonValue,
@@ -201,17 +234,17 @@ export async function startReconciliation(workItemId: string, submissionId: stri
   await withTenantDbTransaction(prisma, async (tx) => {
     await tx.workItemEvent.create({ data: { workItemId, eventType: 'RECONCILIATION_STARTED', actorId, payload: startedPayload as Prisma.InputJsonValue, tenantId: workItem.tenantId } })
     if (!willRunDynamic) {
-      const completedPayload = { reconciliationRunId: runId, submissionId, status: result.status, summary: result.summary, traceId }
+      const completedPayload = { reconciliationRunId: runId, submissionId, status: finalStatus, summary: finalSummary, traceId }
       await tx.workItemEvent.create({ data: { workItemId, eventType: 'RECONCILIATION_COMPLETED', actorId, payload: completedPayload as Prisma.InputJsonValue, tenantId: workItem.tenantId } })
     }
   }, tenantId)
   if (!willRunDynamic) {
-    const completedPayload = { reconciliationRunId: runId, submissionId, status: result.status, summary: result.summary, traceId }
+    const completedPayload = { reconciliationRunId: runId, submissionId, status: finalStatus, summary: finalSummary, traceId }
     await logEvent('ReconciliationCompleted', 'WorkItem', workItemId, actorId, completedPayload)
     await publishOutbox('WorkItem', workItemId, 'ReconciliationCompleted', completedPayload)
   }
 
-  return { run, verdicts: result.verdicts, findings: result.findings, summary: result.summary, dynamic: willRunDynamic }
+  return { run, verdicts: finalVerdicts, findings: result.findings, summary: finalSummary, dynamic: willRunDynamic, semantic: mode === 'SEMANTIC' }
 }
 
 export async function listReconciliations(workItemId: string, submissionId?: string) {
