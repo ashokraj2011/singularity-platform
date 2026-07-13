@@ -8,7 +8,7 @@ interface RunSummary {
   summary: { total?: number; pass?: number; partial?: number; fail?: number; notApplicable?: number; policyBreach?: boolean }
   _count?: { verdicts: number; findings: number }
 }
-interface Verdict { id: string; requirementId: string; priority: string | null; verdict: string; claimStatus: string | null; rationale: string | null }
+interface Verdict { id: string; requirementId: string; priority: string | null; verdict: string; claimStatus: string | null; rationale: string | null; verified?: boolean }
 interface Finding { id: string; requirementId: string | null; kind: string; severity: string; message: string }
 interface RunDetail extends RunSummary { verdicts: Verdict[]; findings: Finding[]; specificationHash: string | null; traceId: string | null; completedAt: string | null }
 
@@ -84,6 +84,11 @@ export function ReconciliationTab({ workItemId, focusRunId }: { workItemId: stri
                     <span style={mutedText}>{run.mode}</span>
                     {run.completedAt && <span style={mutedText}>· {new Date(run.completedAt).toLocaleString()}</span>}
                   </div>
+                  {run.status === 'RUNNING' && (
+                    <div style={{ ...mutedText, marginTop: 8, color: '#1e40af' }}>
+                      Tests are running via the reconciliation runner — verdicts finalize when it reports back. Refresh to check.
+                    </div>
+                  )}
                   <div style={{ display: 'flex', gap: 14, marginTop: 10, flexWrap: 'wrap', fontSize: 12 }}>
                     <Stat label="Pass" value={run.summary?.pass ?? 0} color="#16a34a" />
                     <Stat label="Partial" value={run.summary?.partial ?? 0} color="#d97706" />
@@ -99,13 +104,16 @@ export function ReconciliationTab({ workItemId, focusRunId }: { workItemId: stri
                   <h4 style={{ ...sectionTitle, fontSize: 13 }}>Requirement verdicts ({run.verdicts.length})</h4>
                   <div style={{ overflowX: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                      <thead><tr>{['Requirement', 'Priority', 'Verdict', 'Claim', 'Rationale'].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
+                      <thead><tr>{['Requirement', 'Priority', 'Verdict', 'Evidence', 'Claim', 'Rationale'].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
                       <tbody>
                         {run.verdicts.map((v) => (
                           <tr key={v.id}>
                             <td style={tdStyle}><strong>{v.requirementId}</strong></td>
                             <td style={tdStyle}>{v.priority ?? '—'}</td>
                             <td style={tdStyle}><span style={badgeStyle('verdict', v.verdict)}>{v.verdict}</span></td>
+                            <td style={tdStyle} title={v.verified ? 'Backed by executed tests' : 'From declared evidence only'}>
+                              {v.verified ? '✓ verified' : 'declared'}
+                            </td>
                             <td style={tdStyle}>{v.claimStatus ?? '—'}</td>
                             <td style={tdStyle}>{v.rationale ?? '—'}</td>
                           </tr>

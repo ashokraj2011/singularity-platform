@@ -78,10 +78,13 @@ export function SubmissionsTab({ workItemId, onGotoReconciliation }: { workItemI
     onError: (e) => setError(errText(e)),
   })
   const reconcileMut = useMutation({
-    mutationFn: (id: string) => api.post(`/work-items/${workItemId}/submissions/${id}/reconcile`).then(r => r.data),
+    mutationFn: ({ id, mode }: { id: string; mode: 'DETERMINISTIC' | 'DYNAMIC' }) =>
+      api.post(`/work-items/${workItemId}/submissions/${id}/reconcile`, { mode }).then(r => r.data),
     onSuccess: (data: any) => {
       const status = data?.run?.status ?? data?.summary?.status
-      setNote(`Reconciliation complete: ${status}.`)
+      setNote(data?.dynamic
+        ? `Tests queued — run is ${status}; verdicts finalize when the runner reports back.`
+        : `Reconciliation complete: ${status}.`)
       qc.invalidateQueries({ queryKey: ['reconciliations', workItemId] })
       if (onGotoReconciliation && data?.run?.id) onGotoReconciliation(data.run.id)
     },
@@ -200,8 +203,11 @@ export function SubmissionsTab({ workItemId, onGotoReconciliation }: { workItemI
             </h4>
             <div style={{ display: 'flex', gap: 8 }}>
               <button style={secondaryButtonStyle} disabled={validateMut.isPending} onClick={() => clearAnd(() => validateMut.mutate(selected.id))}>Validate</button>
-              <button style={primaryButtonStyle} disabled={reconcileMut.isPending} onClick={() => clearAnd(() => reconcileMut.mutate(selected.id))}>
+              <button style={secondaryButtonStyle} disabled={reconcileMut.isPending} onClick={() => clearAnd(() => reconcileMut.mutate({ id: selected.id, mode: 'DETERMINISTIC' }))}>
                 {reconcileMut.isPending ? 'Reconciling…' : 'Reconcile'}
+              </button>
+              <button style={primaryButtonStyle} disabled={reconcileMut.isPending} title="Run the declared tests via the reconciliation runner" onClick={() => clearAnd(() => reconcileMut.mutate({ id: selected.id, mode: 'DYNAMIC' }))}>
+                Reconcile + tests
               </button>
             </div>
           </div>
