@@ -10,6 +10,9 @@ import type { FormWidget } from '../forms/widgets/types'
 import type { UploadedDocument } from '../../lib/uploadAttachment'
 import { useCapabilityLabels } from './useCapabilityLabels'
 import { WorkItemArtifactsPanel } from './WorkItemArtifactsPanel'
+import { SpecificationTab } from './workitem/SpecificationTab'
+import { SubmissionsTab } from './workitem/SubmissionsTab'
+import { ReconciliationTab } from './workitem/ReconciliationTab'
 
 const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
 
@@ -22,6 +25,16 @@ function blueprintWorkbenchOrigin() {
 }
 
 type Kind = 'task' | 'approval' | 'consumable' | 'workitem'
+
+// Spec-to-Reconciliation workspace tabs. Overview keeps the existing WorkItem detail; the other
+// three are the specification → handoff/submissions → reconciliation surfaces (own components).
+type WorkspaceTab = 'overview' | 'specification' | 'submissions' | 'reconciliation'
+const WORKSPACE_TABS: { key: WorkspaceTab; label: string }[] = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'specification', label: 'Specification' },
+  { key: 'submissions', label: 'Submissions' },
+  { key: 'reconciliation', label: 'Reconciliation' },
+]
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
@@ -60,6 +73,21 @@ function WorkItemDetail({ id }: { id: string }) {
   const navigate = usePlatformNavigate()
   const params = useSearchParams()
   const targetId = params.get('targetId')
+  const initialTab = params.get('tab') as WorkspaceTab | null
+  const [tab, setTabState] = useState<WorkspaceTab>(
+    initialTab && WORKSPACE_TABS.some(t => t.key === initialTab) ? initialTab : 'overview',
+  )
+  const [focusRunId, setFocusRunId] = useState<string | null>(null)
+  // Persist the active tab in the URL query (shareable) without a full navigation.
+  const setTab = (t: WorkspaceTab) => {
+    setTabState(t)
+    if (typeof window !== 'undefined') {
+      const url = new URL(window.location.href)
+      if (t === 'overview') url.searchParams.delete('tab')
+      else url.searchParams.set('tab', t)
+      window.history.replaceState(null, '', url.toString())
+    }
+  }
   const [selectedWorkflowByTarget, setSelectedWorkflowByTarget] = useState<Record<string, string>>({})
   const [clarificationByTarget, setClarificationByTarget] = useState<Record<string, string>>({})
   const { labelForCapability } = useCapabilityLabels()
@@ -157,6 +185,25 @@ function WorkItemDetail({ id }: { id: string }) {
         assignmentMode="ROLE_BASED"
       />
 
+      <div style={{ display: 'flex', gap: 4, margin: '4px 0 14px', borderBottom: '1px solid var(--color-outline-variant)' }}>
+        {WORKSPACE_TABS.map(t => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            style={{
+              padding: '8px 14px', border: 'none', background: 'none', cursor: 'pointer',
+              fontSize: 13, fontWeight: tab === t.key ? 800 : 600,
+              color: tab === t.key ? '#8b5cf6' : 'var(--color-outline)',
+              borderBottom: tab === t.key ? '2px solid #8b5cf6' : '2px solid transparent',
+              marginBottom: -1,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'overview' && (<>
       {canDetach && (
         <section style={{
           ...cardStyle,
@@ -426,6 +473,16 @@ function WorkItemDetail({ id }: { id: string }) {
           ))}
         </div>
       </section>
+      </>)}
+
+      {tab === 'specification' && <SpecificationTab workItemId={id} />}
+      {tab === 'submissions' && (
+        <SubmissionsTab
+          workItemId={id}
+          onGotoReconciliation={(runId) => { setFocusRunId(runId); setTab('reconciliation') }}
+        />
+      )}
+      {tab === 'reconciliation' && <ReconciliationTab workItemId={id} focusRunId={focusRunId} />}
     </div>
   )
 }
