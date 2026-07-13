@@ -96,6 +96,7 @@ export const ROUTES: RouteMeta[] = [
   { id: "workflows-inbox", label: "Inbox", href: "/workflows/inbox", group: "Workflows", icon: Inbox, priority: "secondary", surfaceType: "workflow" },
   { id: "runs", label: "Runs", href: "/runs", group: "Workflows", icon: Activity, priority: "journey", surfaceType: "workflow", statusLabel: "Run" },
   { id: "workflows-templates", label: "Workflow Manager", href: "/workflows/templates", group: "Workflows", icon: Workflow, priority: "primary", surfaceType: "workflow" },
+  { id: "workflows-reconciliation", label: "Reconciliation", href: "/workflows/reconciliation", group: "Workflows", icon: ClipboardCheck, priority: "secondary", surfaceType: "workflow", description: "Submissions and reconciliation verdicts across all Work Items.", keywords: ["reconciliation", "submission", "verdict", "spec", "review"] },
   { id: "workflows-control-plane", label: "Control Plane", href: "/workflows/control-plane", group: "Workflows", icon: Cpu, priority: "primary", surfaceType: "workflow", description: "Configure WorkGraph LLM aliases, event intake, webhooks, event-bus subscribers, and runner queues.", keywords: ["llm", "eventbus", "webhook", "trigger", "pending execution", "runner", "direct llm"] },
   { id: "workflows-artifacts", label: "Artifact Studio", href: "/workflows/artifacts", group: "Workflows", icon: ScrollText, priority: "primary", surfaceType: "workflow" },
   { id: "workflows-templates-gallery", label: "Template Gallery", href: "/workflows/templates/gallery", group: "Workflows", icon: GitBranch, advanced: true },

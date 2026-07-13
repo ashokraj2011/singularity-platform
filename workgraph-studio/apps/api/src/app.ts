@@ -63,6 +63,7 @@ import { submissionsRouter } from './modules/submissions/submissions.router'
 import { githubWebhookRouter } from './modules/submissions/github-webhook.router'
 import { reconciliationsRouter } from './modules/reconciliations/reconciliations.router'
 import { reconciliationJobsRouter } from './modules/reconciliations/reconciliation-jobs.router'
+import { reconciliationOverviewRouter } from './modules/reconciliations/reconciliation-overview.router'
 import { plannerRouter } from './modules/planner/planner.router'
 import { workProgramsRouter } from './modules/work-program/work-programs.router'
 import { notificationsRouter } from './modules/notifications/notifications.router'
@@ -170,6 +171,7 @@ export function createApp(): Express {
   app.use('/api/work-items', authMiddleware, submissionsRouter)
   app.use('/api/work-items', authMiddleware, reconciliationsRouter)
   app.use('/api/reconciliation-jobs', authMiddleware, reconciliationJobsRouter)
+  app.use('/api/reconciliation-overview', authMiddleware, reconciliationOverviewRouter)
   app.use('/api/work-items', authMiddleware, workItemsRouter)
   app.use('/api/planner', authMiddleware, plannerRouter)
   app.use('/api/work-programs', authMiddleware, workProgramsRouter)
