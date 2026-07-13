@@ -73,6 +73,7 @@ import {
 } from "./capability-learning-candidate-identity";
 import { collapseCapabilityListDuplicates } from "./capability-list-identity";
 import { assertCapabilityNotArchived, requireActiveCapability } from "./capability-lifecycle";
+import { loadAgentCatalog, type AgentCatalogItem } from "./agent-catalog-config";
 // M61 Wire B P3 — README distillation + architecture slice worker.
 // Runs after Phase 1 completes (both sync and async paths) and writes
 // readmeSummary + architectureSlice.rootPackages to CapabilityWorldModel.
@@ -130,118 +131,11 @@ async function claimCapabilityLearningWorker(capabilityId: string, operation: Ca
   };
 }
 
-const BOOTSTRAP_AGENT_CATALOG = [
-  {
-    key: "product_owner",
-    label: "Product Owner",
-    roleType: "PRODUCT_OWNER",
-    bindingRole: "PRODUCT_OWNER",
-    baseRoleType: "PRODUCT_OWNER",
-    locked: false,
-    activationRequired: false,
-    learnsFromGit: true,
-    grounding: "Learns story shape, domain terms, acceptance contracts, and release scope from approved repo/docs.",
-    description: "Clarifies outcomes, acceptance criteria, user impact, and scope before engineering starts.",
-  },
-  {
-    key: "business_analyst",
-    label: "Business Analyst",
-    roleType: "BUSINESS_ANALYST",
-    bindingRole: "BUSINESS_ANALYST",
-    baseRoleType: "PRODUCT_OWNER",
-    locked: false,
-    activationRequired: false,
-    learnsFromGit: true,
-    grounding: "Learns domain vocabulary, process rules, validation paths, and edge cases from approved sources.",
-    description: "Extracts business rules, constraints, process impact, and open questions.",
-  },
-  {
-    key: "architect",
-    label: "Architect",
-    roleType: "ARCHITECT",
-    bindingRole: "ARCHITECT",
-    baseRoleType: "ARCHITECT",
-    locked: false,
-    activationRequired: false,
-    learnsFromGit: true,
-    grounding: "Learns architecture, dependency boundaries, modules, and code ownership from approved Git/doc signals.",
-    description: "Owns design shape, dependencies, tradeoffs, and implementation plan quality.",
-  },
-  {
-    key: "developer",
-    label: "Developer",
-    roleType: "DEVELOPER",
-    bindingRole: "DEVELOPER",
-    baseRoleType: "DEVELOPER",
-    locked: false,
-    activationRequired: false,
-    learnsFromGit: true,
-    grounding: "Learns build/run conventions, source layout, component patterns, and local MCP AST/code symbols.",
-    description: "Produces implementation tasks, code-change evidence, and handoff notes grounded in the capability codebase.",
-  },
-  {
-    key: "verifier",
-    label: "Verifier",
-    roleType: "QA",
-    bindingRole: "VERIFIER",
-    baseRoleType: "QA",
-    locked: true,
-    activationRequired: true,
-    learnsFromGit: true,
-    grounding: "Learns test strategy, expected behavior, regression risks, and proof requirements from approved sources.",
-    description: "Locked verification gate. Reviews evidence, tests, acceptance criteria, and traceability before completion.",
-  },
-  {
-    key: "qa",
-    label: "QA",
-    roleType: "QA",
-    bindingRole: "QA",
-    baseRoleType: "QA",
-    locked: false,
-    activationRequired: false,
-    learnsFromGit: true,
-    grounding: "Learns existing test layout, quality signals, and regression coverage from approved source context.",
-    description: "Creates QA task packs, regression checks, and release confidence evidence.",
-  },
-  {
-    key: "security",
-    label: "Security",
-    roleType: "SECURITY",
-    bindingRole: "SECURITY",
-    baseRoleType: "SECURITY",
-    locked: true,
-    activationRequired: true,
-    learnsFromGit: true,
-    grounding: "Learns authentication, data handling, secrets, dependency risk, and threat boundaries from approved sources.",
-    description: "Locked security gate. Reviews unsafe tool use, data exposure, authz, dependency risk, and evidence.",
-  },
-  {
-    key: "devops",
-    label: "DevOps",
-    roleType: "DEVOPS",
-    bindingRole: "DEVOPS",
-    baseRoleType: "DEVOPS",
-    locked: false,
-    activationRequired: false,
-    learnsFromGit: true,
-    grounding: "Learns build, deployment, observability, rollback, and environment readiness from approved runbooks.",
-    description: "Owns release readiness, deployability, rollback, and operational evidence.",
-  },
-  {
-    key: "governance",
-    label: "Governance",
-    roleType: "GOVERNANCE",
-    bindingRole: "GOVERNANCE",
-    baseRoleType: "GOVERNANCE",
-    locked: true,
-    activationRequired: true,
-    learnsFromGit: false,
-    grounding: "Grounded to capability identity, owner team, approvals, budget policy, audit receipts, and required evidence.",
-    description: "Locked governance gate. Verifies approvals, budgets, receipts, policy, and promotion readiness.",
-  },
-] as const;
-
-type BootstrapAgentCatalogItem = (typeof BOOTSTRAP_AGENT_CATALOG)[number];
+// The bootstrap agent catalog (the 9 role-agents) and the team presets are now
+// externalized to agent-catalog-config.ts — an env-pointed JSON config with a
+// compiled-in default equal to what used to live here. This alias keeps the
+// local type name used throughout this file.
+type BootstrapAgentCatalogItem = AgentCatalogItem;
 
 const DISCOVERY_FILE_CAP = 60;
 const DISCOVERY_TOTAL_CHAR_CAP = 500_000;
@@ -355,13 +249,16 @@ type ReadinessCategory = {
 
 export const capabilityService = {
   bootstrapAgentCatalog() {
+    const catalog = loadAgentCatalog();
     return {
-      presets: [
-        { key: "minimal", label: "Minimal governed crew", agents: selectBootstrapAgents({ name: "preview", agentPreset: "minimal" }).map(agent => agent.key) },
-        { key: "engineering_core", label: "Engineering core crew", agents: selectBootstrapAgents({ name: "preview", agentPreset: "engineering_core" }).map(agent => agent.key) },
-        { key: "governed_delivery", label: "Full governed delivery crew", agents: selectBootstrapAgents({ name: "preview", agentPreset: "governed_delivery" }).map(agent => agent.key) },
-      ],
-      agents: BOOTSTRAP_AGENT_CATALOG,
+      // Presets come from config now (any custom preset shows up here too), each
+      // normalized to catalog order to match what bootstrap will actually materialize.
+      presets: Object.entries(catalog.presets).map(([key, preset]) => ({
+        key,
+        label: preset.label,
+        agents: catalog.agents.filter(agent => preset.agents.includes(agent.key)).map(agent => agent.key),
+      })),
+      agents: catalog.agents,
     };
   },
 
@@ -2843,21 +2740,18 @@ export function pickPrimaryBuildSystem(profiles: RepositoryProfile[]): string | 
 }
 
 function selectBootstrapAgents(input: BootstrapInput): BootstrapAgentCatalogItem[] {
-  const preset = input.agentPreset ?? "governed_delivery";
-  const presetKeys = new Set(
-    preset === "minimal"
-      ? ["product_owner", "architect", "developer", "verifier", "governance"]
-      : preset === "engineering_core"
-        ? ["product_owner", "business_analyst", "architect", "developer", "verifier", "qa", "security", "devops", "governance"]
-        : BOOTSTRAP_AGENT_CATALOG.map(agent => agent.key),
-  );
+  const catalog = loadAgentCatalog();
+  const preset = input.agentPreset ?? catalog.defaultPreset;
+  // Preset membership comes from config; an unknown preset falls back to the whole catalog.
+  const presetKeys = new Set(catalog.presets[preset]?.agents ?? catalog.agents.map(agent => agent.key));
   for (const key of input.includeAgentKeys ?? []) presetKeys.add(key);
   for (const key of input.excludeAgentKeys ?? []) {
-    const agent = BOOTSTRAP_AGENT_CATALOG.find(item => item.key === key);
+    const agent = catalog.agents.find(item => item.key === key);
+    // Locked activation-required gates cannot be excluded.
     if (agent?.activationRequired) continue;
     presetKeys.delete(key);
   }
-  return BOOTSTRAP_AGENT_CATALOG.filter(agent => presetKeys.has(agent.key));
+  return catalog.agents.filter(agent => presetKeys.has(agent.key));
 }
 
 function capabilityAgentDescription(

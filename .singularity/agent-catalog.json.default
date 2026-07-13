@@ -1,0 +1,153 @@
+{
+  "agents": [
+    {
+      "key": "product_owner",
+      "label": "Product Owner",
+      "roleType": "PRODUCT_OWNER",
+      "bindingRole": "PRODUCT_OWNER",
+      "baseRoleType": "PRODUCT_OWNER",
+      "locked": false,
+      "activationRequired": false,
+      "learnsFromGit": true,
+      "grounding": "Learns story shape, domain terms, acceptance contracts, and release scope from approved repo/docs.",
+      "description": "Clarifies outcomes, acceptance criteria, user impact, and scope before engineering starts."
+    },
+    {
+      "key": "business_analyst",
+      "label": "Business Analyst",
+      "roleType": "BUSINESS_ANALYST",
+      "bindingRole": "BUSINESS_ANALYST",
+      "baseRoleType": "PRODUCT_OWNER",
+      "locked": false,
+      "activationRequired": false,
+      "learnsFromGit": true,
+      "grounding": "Learns domain vocabulary, process rules, validation paths, and edge cases from approved sources.",
+      "description": "Extracts business rules, constraints, process impact, and open questions."
+    },
+    {
+      "key": "architect",
+      "label": "Architect",
+      "roleType": "ARCHITECT",
+      "bindingRole": "ARCHITECT",
+      "baseRoleType": "ARCHITECT",
+      "locked": false,
+      "activationRequired": false,
+      "learnsFromGit": true,
+      "grounding": "Learns architecture, dependency boundaries, modules, and code ownership from approved Git/doc signals.",
+      "description": "Owns design shape, dependencies, tradeoffs, and implementation plan quality."
+    },
+    {
+      "key": "developer",
+      "label": "Developer",
+      "roleType": "DEVELOPER",
+      "bindingRole": "DEVELOPER",
+      "baseRoleType": "DEVELOPER",
+      "locked": false,
+      "activationRequired": false,
+      "learnsFromGit": true,
+      "grounding": "Learns build/run conventions, source layout, component patterns, and local MCP AST/code symbols.",
+      "description": "Produces implementation tasks, code-change evidence, and handoff notes grounded in the capability codebase."
+    },
+    {
+      "key": "verifier",
+      "label": "Verifier",
+      "roleType": "QA",
+      "bindingRole": "VERIFIER",
+      "baseRoleType": "QA",
+      "locked": true,
+      "activationRequired": true,
+      "learnsFromGit": true,
+      "grounding": "Learns test strategy, expected behavior, regression risks, and proof requirements from approved sources.",
+      "description": "Locked verification gate. Reviews evidence, tests, acceptance criteria, and traceability before completion."
+    },
+    {
+      "key": "qa",
+      "label": "QA",
+      "roleType": "QA",
+      "bindingRole": "QA",
+      "baseRoleType": "QA",
+      "locked": false,
+      "activationRequired": false,
+      "learnsFromGit": true,
+      "grounding": "Learns existing test layout, quality signals, and regression coverage from approved source context.",
+      "description": "Creates QA task packs, regression checks, and release confidence evidence."
+    },
+    {
+      "key": "security",
+      "label": "Security",
+      "roleType": "SECURITY",
+      "bindingRole": "SECURITY",
+      "baseRoleType": "SECURITY",
+      "locked": true,
+      "activationRequired": true,
+      "learnsFromGit": true,
+      "grounding": "Learns authentication, data handling, secrets, dependency risk, and threat boundaries from approved sources.",
+      "description": "Locked security gate. Reviews unsafe tool use, data exposure, authz, dependency risk, and evidence."
+    },
+    {
+      "key": "devops",
+      "label": "DevOps",
+      "roleType": "DEVOPS",
+      "bindingRole": "DEVOPS",
+      "baseRoleType": "DEVOPS",
+      "locked": false,
+      "activationRequired": false,
+      "learnsFromGit": true,
+      "grounding": "Learns build, deployment, observability, rollback, and environment readiness from approved runbooks.",
+      "description": "Owns release readiness, deployability, rollback, and operational evidence."
+    },
+    {
+      "key": "governance",
+      "label": "Governance",
+      "roleType": "GOVERNANCE",
+      "bindingRole": "GOVERNANCE",
+      "baseRoleType": "GOVERNANCE",
+      "locked": true,
+      "activationRequired": true,
+      "learnsFromGit": false,
+      "grounding": "Grounded to capability identity, owner team, approvals, budget policy, audit receipts, and required evidence.",
+      "description": "Locked governance gate. Verifies approvals, budgets, receipts, policy, and promotion readiness."
+    }
+  ],
+  "presets": {
+    "minimal": {
+      "label": "Minimal governed crew",
+      "agents": [
+        "product_owner",
+        "architect",
+        "developer",
+        "verifier",
+        "governance"
+      ]
+    },
+    "engineering_core": {
+      "label": "Engineering core crew",
+      "agents": [
+        "product_owner",
+        "business_analyst",
+        "architect",
+        "developer",
+        "verifier",
+        "qa",
+        "security",
+        "devops",
+        "governance"
+      ]
+    },
+    "governed_delivery": {
+      "label": "Full governed delivery crew",
+      "agents": [
+        "product_owner",
+        "business_analyst",
+        "architect",
+        "developer",
+        "verifier",
+        "qa",
+        "security",
+        "devops",
+        "governance"
+      ]
+    }
+  },
+  "defaultPreset": "governed_delivery"
+}
