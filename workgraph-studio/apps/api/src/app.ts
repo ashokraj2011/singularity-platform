@@ -57,6 +57,7 @@ import { codegenRouter } from './modules/codegen/codegen.router'
 // M40 — ImmutableContract replay + lookup endpoints.
 import { contractsRouter } from './modules/contracts/contracts.router'
 import { workItemsRouter } from './modules/work-items/work-items.router'
+import { specificationsRouter } from './modules/specifications/specifications.router'
 import { plannerRouter } from './modules/planner/planner.router'
 import { workProgramsRouter } from './modules/work-program/work-programs.router'
 import { notificationsRouter } from './modules/notifications/notifications.router'
@@ -157,6 +158,7 @@ export function createApp(): Express {
   app.use('/api/work-item-routing-policies', authMiddleware, workItemRoutingPoliciesRouter)
   app.use('/api/work-item-triggers', authMiddleware, workItemTriggersRouter)
   app.use('/api/work-items', authMiddleware, workItemLaptopRouter)
+  app.use('/api/work-items', authMiddleware, specificationsRouter)
   app.use('/api/work-items', authMiddleware, workItemsRouter)
   app.use('/api/planner', authMiddleware, plannerRouter)
   app.use('/api/work-programs', authMiddleware, workProgramsRouter)

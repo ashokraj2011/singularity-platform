@@ -124,6 +124,27 @@ enum WorkItemEventType {
   CANCELLED
   ARCHIVED
   DETACHED
+  SPEC_DRAFT_CREATED
+  SPEC_GENERATED
+  SPEC_VALIDATION_COMPLETED
+  SPEC_REVIEW_REQUESTED
+  SPEC_APPROVED
+  DEVELOPER_PACKAGE_PUBLISHED
+  IMPLEMENTATION_SUBMITTED
+  RECONCILIATION_STARTED
+  RECONCILIATION_COMPLETED
+  CODE_REWORK_REQUESTED
+  SPEC_AMENDMENT_CREATED
+  IMPLEMENTATION_ACCEPTED
+}
+
+enum SpecificationStatus {
+  DRAFT
+  IN_REVIEW
+  CHANGES_REQUESTED
+  APPROVED
+  SUPERSEDED
+  REJECTED
 }
 
 enum WorkItemOriginType {
@@ -1194,6 +1215,7 @@ model WorkItem {
   predecessorDependencies WorkItemDependency[] @relation("DependencyPredecessor")
   successorDependencies   WorkItemDependency[] @relation("DependencySuccessor")
   programRunSteps         WorkProgramRunStep[]
+  specifications          SpecificationVersion[]
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
   tenantId                String?          @default("default")
@@ -1213,6 +1235,35 @@ model WorkItem {
   @@index([sourceWorkflowNodeId])
   @@index([status])
   @@map("work_items")
+}
+
+// A Work Item's specification, versioned. The full structured SpecificationPackage
+// is stored as versioned JSON (`package`); approval freezes it with a canonical
+// `contentHash`. The active approved version is resolved by status=APPROVED + highest
+// version (no denormalized pointer on WorkItem yet — added later for performance).
+model SpecificationVersion {
+  id               String              @id @default(uuid())
+  workItemId       String
+  version          Int
+  revision         Int                 @default(1)
+  status           SpecificationStatus @default(DRAFT)
+  package          Json
+  renderedMarkdown String?
+  contentHash      String?
+  createdById      String?
+  approvedById     String?
+  approvedAt       DateTime?
+  approvalComment  String?
+  supersedesId     String?
+  tenantId         String?             @default("default")
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  workItem         WorkItem            @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@unique([workItemId, version])
+  @@index([workItemId, status])
+  @@index([tenantId], map: "ix_specification_versions_tenant")
+  @@map("specification_versions")
 }
 
 model WorkItemDependency {
