@@ -13,6 +13,9 @@ import {
   milestoneEffortDays,
   totalEffortDays,
   aggregateUsage,
+  summarizeWorldModel,
+  repoContextBlock,
+  documentsBlock,
   type Milestone,
 } from '../src/modules/planner/planner.service'
 
@@ -169,5 +172,63 @@ describe('aggregateUsage', () => {
     expect(u.outputTokens).toBe(60)
     expect(u.estimatedCostUsd).toBeCloseTo(0.012, 4)
     expect(u.calls).toBe(2)
+  })
+})
+
+describe('summarizeWorldModel (repo grounding)', () => {
+  it('distills stack, commands, architecture, conventions, entry points, and known failures', () => {
+    const s = summarizeWorldModel({
+      primaryLanguage: 'TypeScript',
+      buildSystem: 'pnpm',
+      buildCommands: ['pnpm build', { command: 'pnpm -w build' }],
+      testCommands: [{ command: 'pnpm test', description: 'unit' }],
+      runCommands: ['pnpm dev'],
+      architectureSlice: { rootPackages: ['apps/api', 'apps/web'] },
+      codeConventions: [{ rule: 'no default exports' }],
+      entrypoints: [{ path: 'src/index.ts' }],
+      knownFailures: [{ summary: 'flaky e2e on CI' }],
+      readmeSummary: 'ignored for planning',
+    })
+    expect(s?.primaryLanguage).toBe('TypeScript')
+    expect(s?.buildSystem).toBe('pnpm')
+    expect(s?.commands).toEqual(['pnpm build', 'pnpm -w build', 'pnpm test', 'pnpm dev'])
+    expect(s?.architecture).toEqual(['apps/api', 'apps/web'])
+    expect(s?.conventions).toEqual(['no default exports'])
+    expect(s?.entrypoints).toEqual(['src/index.ts'])
+    expect(s?.knownFailures).toEqual(['flaky e2e on CI'])
+  })
+  it('returns undefined for null / empty / signal-less world models', () => {
+    expect(summarizeWorldModel(null)).toBeUndefined()
+    expect(summarizeWorldModel(undefined)).toBeUndefined()
+    expect(summarizeWorldModel({})).toBeUndefined()
+    expect(summarizeWorldModel({ readmeSummary: 'x', astIndexedAt: 'y' })).toBeUndefined()
+  })
+})
+
+describe('repoContextBlock / documentsBlock (prompt grounding)', () => {
+  it('renders REPO CONTEXT only for grounded capabilities', () => {
+    const block = repoContextBlock([
+      { id: 'home', name: 'Home', repo: { primaryLanguage: 'Go', buildSystem: 'make', commands: ['make test'] } },
+      { id: 'child', name: 'Child' },
+    ])
+    expect(block).toContain('REPO CONTEXT')
+    expect(block).toContain('### Home (home)')
+    expect(block).toContain('Stack: Go / make')
+    expect(block).toContain('make test')
+    expect(block).not.toContain('Child')
+  })
+  it('returns empty string when nothing is grounded', () => {
+    expect(repoContextBlock([{ id: 'a', name: 'A' }])).toBe('')
+  })
+  it('renders attached DOCUMENTS, titled and defaulting a missing title', () => {
+    const block = documentsBlock([{ title: 'Spec', content: 'must support SSO' }, { content: 'no title doc' }])
+    expect(block).toContain('DOCUMENTS')
+    expect(block).toContain('### Spec')
+    expect(block).toContain('must support SSO')
+    expect(block).toContain('### Document 2')
+  })
+  it('returns empty string for no documents', () => {
+    expect(documentsBlock()).toBe('')
+    expect(documentsBlock([])).toBe('')
   })
 })

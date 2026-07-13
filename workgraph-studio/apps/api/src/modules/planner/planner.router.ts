@@ -15,6 +15,7 @@ import {
   launchRoadmap,
   chatMessageSchema,
   milestoneSchema,
+  plannerDocumentSchema,
   listPlannerSessions,
   getPlannerSession,
   updatePlannerSession,
@@ -37,6 +38,7 @@ const converseSchema = z.object({
   plan: z.array(milestoneSchema).max(12).optional(),
   allowChildren: z.boolean().optional().default(true),
   maxItems: z.coerce.number().int().min(1).max(40).optional(),
+  documents: z.array(plannerDocumentSchema).max(12).optional(),
 })
 
 plannerRouter.post('/converse', validate(converseSchema), async (req, res, next) => {
