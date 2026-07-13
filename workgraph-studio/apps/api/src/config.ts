@@ -107,6 +107,9 @@ const envSchema = z.object({
   // MUST match the backfill migration + the app role's `SET app.tenant_id`
   // default; if you change it, re-backfill and re-run bootstrap-app-role.sh.
   WORKGRAPH_DEFAULT_TENANT_ID: z.string().min(1).default('default'),
+  // Production deployments must prove forced RLS (or an equivalent tenant
+  // isolation cutover) before the API is allowed to start.
+  WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED: envBool(false),
   // Stuck-run watchdog (durable-execution hardening). A SERVER node whose in-process
   // execution died leaves the node ACTIVE forever (no timer / pending row / signal
   // wait to recover it). The watchdog recovers ACTIVE non-wait nodes untouched past
@@ -253,6 +256,26 @@ function loadConfig() {
     'TENANT_ISOLATION_MODE',
     result.data.TENANT_ISOLATION_MODE === 'strict',
     'set TENANT_ISOLATION_MODE=strict for production-class deployments',
+  )
+  assertProductionInvariantLocal(
+    'REQUIRE_TENANT_ID',
+    String(process.env.REQUIRE_TENANT_ID ?? '').trim().toLowerCase() === 'true',
+    'set REQUIRE_TENANT_ID=true for production-class deployments',
+  )
+  assertProductionInvariantLocal(
+    'AUTH_OPTIONAL',
+    String(process.env.AUTH_OPTIONAL ?? 'false').trim().toLowerCase() !== 'true',
+    'set AUTH_OPTIONAL=false for production-class deployments',
+  )
+  assertProductionInvariantLocal(
+    'WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED',
+    result.data.WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED === true,
+    'set WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED=true after forced RLS/schema isolation is verified',
+  )
+  assertProductionInvariantLocal(
+    'IAM_SERVICE_TOKEN_TENANT_IDS',
+    result.data.IAM_SERVICE_TOKEN_TENANT_IDS.trim().length > 0,
+    'configure an explicit IAM_SERVICE_TOKEN_TENANT_IDS allowlist',
   )
   assertProductionInvariantLocal(
     'DEFAULT_GOVERNANCE_MODE',

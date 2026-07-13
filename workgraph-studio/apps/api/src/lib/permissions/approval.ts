@@ -39,6 +39,8 @@ export type ApprovalAuthorizationOptions = {
   /** A stable resource label for the denial message and audit caller. */
   resourceType?: string
   resourceId?: string
+  /** Tenant boundary forwarded to IAM for every approval decision. */
+  tenantId?: string | null
 }
 
 type LocalActor = {
@@ -256,14 +258,22 @@ export async function canDecideApproval(
     context.iamUserId,
     decisionRouting.capabilityId,
     permissionKey,
-    { resourceType: options.resourceType ?? 'ApprovalRequest', resourceId: options.resourceId },
+    {
+      resourceType: options.resourceType ?? 'ApprovalRequest',
+      resourceId: options.resourceId,
+      tenantId: options.tenantId ?? undefined,
+    },
   ).catch(() => ({ allowed: false, reason: 'IAM authorization check was unavailable' } as IamAuthzCheckResponse))
 
   const adminResult = await authzCheck(
     context.iamUserId,
     decisionRouting.capabilityId,
     config.PLATFORM_ADMIN_PERMISSION,
-    { resourceType: options.resourceType ?? 'ApprovalRequest', resourceId: options.resourceId },
+    {
+      resourceType: options.resourceType ?? 'ApprovalRequest',
+      resourceId: options.resourceId,
+      tenantId: options.tenantId ?? undefined,
+    },
   ).catch(() => ({ allowed: false } as IamAuthzCheckResponse))
   if (!result.allowed && !adminResult.allowed) {
     return { allowed: false, isAdmin: false, reason: result.reason || `IAM denied ${permissionKey}`, source: 'iam' }
@@ -303,6 +313,7 @@ export async function assertCanRequestApproval(
   userId: string,
   capabilityId: string | null | undefined,
   permissionKey: string,
+  tenantId?: string | null,
 ): Promise<void> {
   const actor = await loadLocalActor(userId)
   if (!actor) throw new ForbiddenError('approving user was not found')
@@ -316,9 +327,9 @@ export async function assertCanRequestApproval(
   if (!capabilityId) throw new ForbiddenError('IAM approval requests require a governed capability scope')
   const context = await loadCallerContext(userId)
   if (!context.iamUserId) throw new ForbiddenError('IAM identity is missing for approval request')
-  const result = await authzCheck(context.iamUserId, capabilityId, permissionKey)
+  const result = await authzCheck(context.iamUserId, capabilityId, permissionKey, { tenantId: tenantId ?? undefined })
     .catch(() => ({ allowed: false, reason: 'IAM authorization check was unavailable' } as IamAuthzCheckResponse))
-  const adminResult = await authzCheck(context.iamUserId, capabilityId, config.PLATFORM_ADMIN_PERMISSION)
+  const adminResult = await authzCheck(context.iamUserId, capabilityId, config.PLATFORM_ADMIN_PERMISSION, { tenantId: tenantId ?? undefined })
     .catch(() => ({ allowed: false } as IamAuthzCheckResponse))
   if (!result.allowed && !adminResult.allowed) throw new ForbiddenError(result.reason || `IAM denied ${permissionKey} for approval request`)
 }

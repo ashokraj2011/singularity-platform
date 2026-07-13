@@ -46,6 +46,10 @@ export type IamAuthzCheckResponse = {
   roles?:           string[]
   permissions?:     string[]
   source?:          string
+  decision_id?:     string
+  decisionId?:      string
+  policy_version?:  string
+  tenant_id?:       string
 }
 
 // ── Errors ───────────────────────────────────────────────────────────────────
@@ -381,7 +385,7 @@ export async function authzCheck(
   userId: string,
   capabilityId: string,
   action: string,
-  resource?: { resourceType?: string; resourceId?: string },
+  resource?: { resourceType?: string; resourceId?: string; tenantId?: string },
   callerToken?: string,
 ): Promise<IamAuthzCheckResponse> {
   const res = await iamFetch('/authz/check', {
@@ -392,6 +396,7 @@ export async function authzCheck(
       action,
       resource_type: resource?.resourceType,
       resource_id: resource?.resourceId,
+      tenant_id: resource?.tenantId ?? config.WORKGRAPH_DEFAULT_TENANT_ID,
     }),
     token: callerToken,
   })

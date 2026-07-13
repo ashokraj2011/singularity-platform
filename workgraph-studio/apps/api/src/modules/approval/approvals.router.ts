@@ -123,6 +123,7 @@ approvalsRouter.post('/', validate(createApprovalSchema), async (req, res, next)
         req.user!.userId,
         capabilityId,
         permissionForApprovalSubject(req.body.subjectType),
+        tenantId,
       )
       const created = await tx.approvalRequest.create({
         data: {
@@ -222,7 +223,7 @@ async function resolveDelegatedApprovalIds(userId: string, tenantId?: string, db
     const result = await canDecideApproval(
       userId,
       approvalRequestRouting(candidate),
-      { resourceType: 'ApprovalRequest', resourceId: candidate.id },
+      { resourceType: 'ApprovalRequest', resourceId: candidate.id, tenantId },
     ).catch(() => ({ allowed: false }))
     return result.allowed ? candidate.id : null
   }))
@@ -341,7 +342,7 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
       const eligibility = await assertCanDecideApproval(
         userId,
         approvalRequestRouting(found),
-        { resourceType: 'ApprovalRequest', resourceId: id },
+        { resourceType: 'ApprovalRequest', resourceId: id, tenantId: found.tenantId },
       )
 
       const duplicate = await tx.approvalDecision.findFirst({
@@ -604,7 +605,7 @@ approvalsRouter.post('/:id/form-submission', validate(approvalFormSubmissionSche
       await assertCanDecideApproval(
         req.user!.userId,
         approvalRequestRouting(found),
-        { resourceType: 'ApprovalRequest', resourceId: id },
+        { resourceType: 'ApprovalRequest', resourceId: id, tenantId: found.tenantId },
       )
 
       const saved = await tx.approvalRequest.update({

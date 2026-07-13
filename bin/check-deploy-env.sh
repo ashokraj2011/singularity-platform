@@ -523,7 +523,7 @@ elif (
     emit("FAIL", "WORKGRAPH_PROXY_SERVICE_TOKEN must be minted by IAM for service_name=platform-web")
 else:
     scopes = {scope for scope in workgraph_proxy_payload.get("scopes", []) if isinstance(scope, str)}
-    required_scopes = {"read:reference-data", "read:mcp-servers", "publish:events"}
+    required_scopes = {"read:reference-data", "read:mcp-servers", "publish:events", "authz:check"}
     missing_scopes = sorted(required_scopes - scopes)
     token_tenant_ids = sorted({tenant_id.strip() for tenant_id in workgraph_proxy_payload.get("tenant_ids", []) if isinstance(tenant_id, str) and tenant_id.strip()})
     required_tenant_ids = sorted(set(tenant_token_ids))

@@ -22,6 +22,7 @@ import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { ValidationError } from '../../../lib/errors'
 import { createWorkflowRunBudgetSnapshot } from '../runtime/budget'
 import { tenantIdForCreate } from '../../../lib/tenant-isolation'
+import { createWorkflowAuthorizationSnapshot, evaluateTemplatePermission } from '../../../lib/permissions/workflowTemplate'
 
 export type CloneOpts = {
   templateId:      string
@@ -277,7 +278,7 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
   const versionResult = await ensureVersionForDesign(templateId, design, 'auto')
 
   // ── 4. Clone everything in a single transaction ───────────────────────────
-  return await withTenantDbTransaction<CloneResult>(prisma, async (tx) => {
+  const result = await withTenantDbTransaction<CloneResult>(prisma, async (tx) => {
     // 4a. Create the run instance row, pinned to the design version we just snapshotted
     const run = await tx.workflowInstance.create({
       data: {
@@ -389,6 +390,26 @@ export async function cloneDesignToRun(opts: CloneOpts): Promise<CloneResult> {
       newVersionCreated: versionResult.created,
     }
   }, tenantId)
+
+  // Capture the start-time authorization evidence after the graph clone has
+  // committed. Sensitive runtime actions still perform live authorization;
+  // this record makes the original access decision reproducible.
+  if (opts.createdById) {
+    const decision = await evaluateTemplatePermission(opts.createdById, templateId, 'start')
+    if (decision.allowed) {
+      await createWorkflowAuthorizationSnapshot({
+        instanceId: result.instance.id,
+        workflowId: templateId,
+        tenantId: result.instance.tenantId,
+        actorWorkGraphId: opts.createdById,
+        actorIamUserId: decision.actorIamUserId,
+        capabilityId: decision.capabilityId,
+        runOwnerId: opts.createdById,
+        decision,
+      })
+    }
+  }
+  return result
 }
 
 /**

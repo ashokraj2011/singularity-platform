@@ -20,9 +20,11 @@ from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.authz.resolver import check_authorization
 from app.governance.resolver import MODE_RANK
+from app.models import Capability
 
 # Modes at/above this rank are "enforcing" and require elevated authority.
 ENFORCING_MIN_RANK = MODE_RANK["REQUIRED"]
@@ -96,6 +98,9 @@ async def assert_governance_authority(
         return
 
     required = required_governance_permission(enforcing=enforcing)
+    tenant_id = (await db.execute(
+        select(Capability.tenant_id).where(Capability.capability_id == governed_capability_id)
+    )).scalar_one_or_none() or "default"
     missing: list[str] = []
     for cap_id in sorted({governed_capability_id, governing_capability_id}):
         result = await check_authorization(
@@ -103,6 +108,7 @@ async def assert_governance_authority(
             user_id=str(getattr(u, "id", "") or ""),
             capability_id=cap_id,
             action=required,
+            tenant_id=tenant_id,
         )
         if not result.allowed:
             missing.append(cap_id)

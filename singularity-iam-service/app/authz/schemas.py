@@ -6,6 +6,7 @@ class AuthzCheckRequest(BaseModel):
     user_id: str
     capability_id: str
     action: str
+    tenant_id: str
     resource_type: Optional[str] = None
     resource_id: Optional[str] = None
     requesting_capability_id: Optional[str] = None
@@ -17,6 +18,9 @@ class AuthzCheckResponse(BaseModel):
     roles: list[str] = []
     permissions: list[str] = []
     source: Optional[str] = None
+    decision_id: Optional[str] = None
+    policy_version: str = "iam-authz-v2"
+    tenant_id: Optional[str] = None
 
 
 class BulkCheckRequest(BaseModel):

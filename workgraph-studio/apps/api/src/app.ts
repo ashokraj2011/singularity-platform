@@ -22,6 +22,7 @@ import { triggersRouter, webhookRouter } from './modules/workflow/triggers/trigg
 import { customNodeTypesRouter } from './modules/workflow/custom-node-types.router'
 import { workbenchDefinitionsRouter } from './modules/workflow/workbench-definitions.router'
 import { workflowOperationsRouter } from './modules/workflow-operations/workflow-operations.router'
+import { workflowAuthzRouter } from './modules/authz/workflow-authz.router'
 import { tasksRouter } from './modules/task/tasks.router'
 import { approvalsRouter } from './modules/approval/approvals.router'
 import { consumableTypesRouter } from './modules/consumable/consumable-types.router'
@@ -127,6 +128,7 @@ export function createApp(): Express {
   app.use('/api/roles', authMiddleware, rolesRouter)
   app.use('/api/skills', authMiddleware, skillsRouter)
   app.use('/api/permissions', authMiddleware, permissionsRouter)
+  app.use('/api/authz', authMiddleware, workflowAuthzRouter)
   // app.use('/api/initiatives', authMiddleware, initiativesRouter) — out of scope
   app.use('/api/workflow-templates', authMiddleware, workflowTemplatesRouter)
   app.use('/api/workflows', authMiddleware, workflowLifecycleRouter)

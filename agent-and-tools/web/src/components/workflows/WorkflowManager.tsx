@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
-import { Archive, ArchiveRestore, Copy, Edit3, FileJson, GitBranch, Play, Plus, RefreshCw, Search, Upload, Workflow, X } from "lucide-react";
+import { Archive, ArchiveRestore, Copy, Edit3, FileJson, GitBranch, Play, Plus, RefreshCw, Search, ShieldCheck, Upload, Workflow, X } from "lucide-react";
 import { asBoolean, asRow, asString } from "@/lib/row";
 import { formatDate, shortId, unwrapWorkgraphItems, workgraphFetch, WorkgraphError } from "@/lib/workgraph";
 import { isWorkbenchProfile, workbenchNeoUrl } from "@/lib/workbenchLaunch";
@@ -21,6 +21,17 @@ type WorkflowTemplate = {
   archivedAt?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  metadata?: Record<string, unknown> | null;
+};
+
+type WorkflowAccessGrant = {
+  id?: string;
+  subjectType?: string;
+  subjectId?: string;
+  action?: string;
+  effect?: string;
+  startsAt?: string | null;
+  endsAt?: string | null;
 };
 
 type WorkflowInstance = {
@@ -47,9 +58,12 @@ export function WorkflowManager({ initialTab = "templates" }: { initialTab?: "te
   const [showArchived, setShowArchived] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [runTemplate, setRunTemplate] = useState<WorkflowTemplate | null>(null);
+  const [accessTemplate, setAccessTemplate] = useState<WorkflowTemplate | null>(null);
   const templatesPath = `/workflow-templates?size=100${showArchived ? "&archived=true" : ""}${profile !== "all" ? `&profile=${profile}` : ""}`;
   const { data: templatesData, error: templatesError, isLoading: templatesLoading, mutate: reloadTemplates } = useSWR(templatesPath, fetcher, { refreshInterval: 15000 });
   const { data: runsData, error: runsError, isLoading: runsLoading, mutate: reloadRuns } = useSWR("/workflow-instances?size=100", fetcher, { refreshInterval: 10000 });
+  const accessPath = accessTemplate ? `/workflow-templates/${accessTemplate.id}/access` : null;
+  const { data: accessData, error: accessError, isLoading: accessLoading } = useSWR(accessPath, fetcher);
   const templates = normalizeWorkflowTemplates(templatesData).filter((template) => matches(template, query, ["name", "description", "capabilityId", "workflowTypeKey"]));
   const allRuns = normalizeWorkflowInstances(runsData).filter((run) => !run.isDesign);
   const requestedTemplateId = searchParams.get("templateId");
@@ -169,6 +183,7 @@ export function WorkflowManager({ initialTab = "templates" }: { initialTab?: "te
               </div>
               <div style={{ display: "flex", gap: 7, justifyContent: "flex-end", flexWrap: "wrap" }}>
                 <Link className="btn-secondary text-xs" href={`/workflows/design/${template.id}`}><Edit3 size={13} /> Design</Link>
+                <button className="btn-secondary text-xs" type="button" onClick={() => setAccessTemplate(template)}><ShieldCheck size={13} /> Access</button>
                 <button className="btn-primary text-xs" type="button" disabled={Boolean(template.archivedAt)} onClick={() => setRunTemplate(template)}><Play size={13} /> Run</button>
                 <Link className="btn-secondary text-xs" href={`/runs?templateId=${encodeURIComponent(template.id)}`}>{runCountByTemplate[template.id] ?? 0} runs</Link>
                 <button className="btn-secondary text-xs" type="button" onClick={() => duplicateTemplate(template)}><Copy size={13} /> Duplicate</button>
@@ -213,8 +228,71 @@ export function WorkflowManager({ initialTab = "templates" }: { initialTab?: "te
 
       {createOpen && <CreateWorkflowDialog onClose={() => setCreateOpen(false)} onCreated={(id) => router.push(`/workflows/design/${id}`)} onReload={() => reloadTemplates()} />}
       {runTemplate && <StartWorkflowDialog workflow={runTemplate} onClose={() => setRunTemplate(null)} />}
+      {accessTemplate && <WorkflowAccessPanel template={accessTemplate} data={accessData} error={accessError} loading={accessLoading} onClose={() => setAccessTemplate(null)} />}
     </div>
   );
+}
+
+function WorkflowAccessPanel({
+  template,
+  data,
+  error,
+  loading,
+  onClose,
+}: {
+  template: WorkflowTemplate;
+  data: unknown;
+  error?: unknown;
+  loading: boolean;
+  onClose: () => void;
+}) {
+  const grants = unwrapWorkgraphItems<WorkflowAccessGrant>(data);
+  const metadata = template.metadata ?? {};
+  const visibility = String(metadata.visibility ?? (metadata.globallyAvailable === true ? "GLOBAL" : "PRIVATE"));
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 80, background: "rgba(15,23,42,0.35)", display: "flex", justifyContent: "flex-end" }} onClick={onClose}>
+      <aside className="card" style={{ height: "100%", width: "min(520px, 100%)", borderRadius: 0, padding: 24, overflowY: "auto", boxShadow: "-18px 0 50px rgba(15,23,42,0.16)" }} onClick={(event) => event.stopPropagation()}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <div className="label-xs" style={{ color: "var(--accent-runtime)", marginBottom: 8 }}>Workflow Access</div>
+            <h2 style={{ margin: 0, fontSize: 20, color: "var(--color-on-surface)" }}>{template.name}</h2>
+            <p style={{ margin: "6px 0 0", color: "var(--color-outline)", fontSize: 13 }}>Effective visibility and resource grants for this workflow.</p>
+          </div>
+          <button className="btn-icon" type="button" onClick={onClose} aria-label="Close workflow access"><X size={17} /></button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, marginTop: 20 }}>
+          <AccessFact label="Visibility" value={visibility} />
+          <AccessFact label="Owner" value={template.capabilityId ? "Owning capability" : "Platform workflow"} />
+          <AccessFact label="Capability" value={shortId(template.capabilityId)} />
+          <AccessFact label="Profile" value={template.profile ?? "main"} />
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 24, marginBottom: 8 }}>
+          <h3 style={{ margin: 0, fontSize: 14, color: "var(--color-on-surface)" }}>Explicit grants</h3>
+          <Link className="btn-secondary text-xs" href="/identity/effective-access" onClick={onClose}><ShieldCheck size={13} /> Effective access</Link>
+        </div>
+        {Boolean(error) && <ErrorPanel error={error} />}
+        {loading && <EmptyPanel text="Loading workflow access..." />}
+        {!loading && !error && grants.length === 0 && <EmptyPanel text="No explicit grants. Access is determined by the owning capability and visibility policy." />}
+        {!loading && !error && grants.length > 0 && (
+          <div style={{ display: "grid", gap: 8 }}>
+            {grants.map((grant, index) => (
+              <div key={grant.id ?? `${grant.subjectType}-${grant.subjectId}-${index}`} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 11, background: "var(--color-surface-container-low)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                  <strong style={{ fontSize: 13, color: "var(--color-on-surface)" }}>{grant.subjectType ?? "SUBJECT"}: {grant.subjectId ?? "-"}</strong>
+                  <Badge tone={String(grant.effect).toUpperCase() === "DENY" ? "#b91c1c" : "#047857"}>{grant.effect ?? "ALLOW"}</Badge>
+                </div>
+                <div style={{ marginTop: 5, fontSize: 12, color: "var(--color-outline)" }}>Action: {grant.action ?? "*"}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function AccessFact({ label, value }: { label: string; value: string }) {
+  return <div style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 11, background: "var(--color-surface-container-low)" }}><div className="label-xs" style={{ color: "var(--color-outline)" }}>{label}</div><div style={{ marginTop: 5, fontSize: 13, fontWeight: 750, color: "var(--color-on-surface)", overflowWrap: "anywhere" }}>{value}</div></div>;
 }
 
 export function StartWorkflowCatalog() {
@@ -472,6 +550,7 @@ function normalizeWorkflowTemplate(value: unknown): WorkflowTemplate | null {
     archivedAt: asString(row.archivedAt ?? row.archived_at) || null,
     createdAt: asString(row.createdAt ?? row.created_at) || null,
     updatedAt: asString(row.updatedAt ?? row.updated_at) || null,
+    metadata: row.metadata && typeof row.metadata === "object" && !Array.isArray(row.metadata) ? row.metadata as Record<string, unknown> : null,
   };
 }
 

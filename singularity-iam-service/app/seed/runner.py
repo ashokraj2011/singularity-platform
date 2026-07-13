@@ -2,7 +2,7 @@
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
-from app.models import Permission, Role, RolePermission, User, LocalCredential
+from app.models import Permission, Role, RolePermission, User, LocalCredential, Tenant, UserTenantMembership
 from app.seed.default_permissions import DEFAULT_PERMISSIONS
 from app.seed.default_roles import DEFAULT_ROLES
 from app.seed.catalog_files import (
@@ -21,6 +21,7 @@ async def seed_all(db: AsyncSession) -> None:
     await _seed_permissions(db)
     await _seed_roles(db)
     await _seed_super_admin(db)
+    await _seed_default_tenant_memberships(db)
     await db.commit()
     log.info("Seed complete")
 
@@ -88,3 +89,26 @@ async def _seed_super_admin(db: AsyncSession) -> None:
     db.add(cred)
     await db.flush()
     log.info("Super admin created: %s", email)
+
+
+async def _seed_default_tenant_memberships(db: AsyncSession) -> None:
+    """Keep existing single-tenant/dev installations usable during migration.
+
+    New deployments can create additional tenants and memberships explicitly;
+    legacy users without a membership are placed in the default tenant only.
+    """
+    tenant = (await db.execute(select(Tenant).where(Tenant.id == "default"))).scalar_one_or_none()
+    if not tenant:
+        tenant = Tenant(id="default", name="Default Tenant", status="active")
+        db.add(tenant)
+        await db.flush()
+
+    users = (await db.execute(select(User))).scalars().all()
+    for user in users:
+        existing = (await db.execute(
+            select(UserTenantMembership).where(UserTenantMembership.user_id == user.id)
+        )).scalars().first()
+        if existing:
+            continue
+        db.add(UserTenantMembership(user_id=user.id, tenant_id=tenant.id, is_default=True))
+    await db.flush()

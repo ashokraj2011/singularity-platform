@@ -7,7 +7,7 @@ import { logEvent } from '../../lib/audit'
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../lib/errors'
 import { fanOutToWorkItemTriggersDetailed } from '../work-items/work-item-event-fanout'
 import { requireTenantFromRequest, resolveTenantFromRequest, tenantIsolationStrict } from '../../lib/tenant-isolation'
-import { isAdminUser } from '../../lib/permissions/admin'
+import { assertWorkflowOperationsPermission, canViewWorkflowOperations } from '../../lib/permissions/workflowTemplate'
 
 export const workflowOperationsRouter: Router = Router()
 
@@ -29,10 +29,21 @@ workflowOperationsRouter.use((req, _res, next) => {
   }
 })
 
+workflowOperationsRouter.get('/access-summary', async (req, res, next) => {
+  try {
+    if (!req.user?.userId) throw new ForbiddenError('Authenticated user required for workflow operations.')
+    const actions = ['view', 'replay', 'retry_delivery', 'manage_runners', 'audit_view'] as const
+    const entries = await Promise.all(actions.map(async action => ({
+      action,
+      allowed: await canViewWorkflowOperations(req.user!.userId, action, tenantForOperations(req)),
+    })))
+    res.json({ tenantId: tenantForOperations(req), policyVersion: 'workflow-authz-v1', actions: entries })
+  } catch (err) { next(err) }
+})
+
 async function requireOperationsOperator(req: Request): Promise<void> {
-  if (!req.user?.userId || !(await isAdminUser(req.user.userId))) {
-    throw new ForbiddenError('Workflow operations replay, retry, and requeue actions require an administrator role.')
-  }
+  if (!req.user?.userId) throw new ForbiddenError('Authenticated user required for workflow operations.')
+  await assertWorkflowOperationsPermission(req.user.userId, 'manage_runners', tenantForOperations(req))
 }
 
 const INBOUND_EVENT_TYPES = [
@@ -116,7 +127,7 @@ async function serializeInboundEvent(row: {
   entityId: string
   payload: unknown
   occurredAt: Date
-}, tenantId?: string) {
+}, tenantId?: string, includeSensitive = false) {
   const payload = asRecord(row.payload)
   const triggerResults = triggerResultArray(payload.triggerResults)
   const workItemIds = [...new Set([
@@ -124,6 +135,14 @@ async function serializeInboundEvent(row: {
     ...triggerResults.flatMap(result => stringValue(result.workItemId) ? [stringValue(result.workItemId)!] : []),
   ])]
   const itemMap = await workItemsById(workItemIds, tenantId)
+  const safeTriggerResults = includeSensitive
+    ? triggerResults
+    : triggerResults.map(result => ({
+        triggerId: result.triggerId ?? null,
+        status: result.status ?? null,
+        workItemId: result.workItemId ?? null,
+        workflowInstanceId: result.workflowInstanceId ?? null,
+      }))
   const workItems = workItemIds.flatMap(id => {
     const item = itemMap.get(id)
     if (!item) return []
@@ -147,7 +166,7 @@ async function serializeInboundEvent(row: {
         id: event.id,
         eventType: event.eventType,
         createdAt: event.createdAt,
-        payload: event.payload,
+        payload: includeSensitive ? event.payload : null,
       })),
     }]
   })
@@ -168,21 +187,25 @@ async function serializeInboundEvent(row: {
       ...stringArray(payload.matchedTriggerIds),
       ...triggerResults.map(result => stringValue(result.triggerId)).filter((value): value is string => Boolean(value)),
     ])],
-    triggerResults,
+    triggerResults: safeTriggerResults,
     workItems,
     workItemIds,
     workflowInstanceIds,
-    lastError: payload.lastError ?? triggerResults.find(result => result.error)?.error ?? null,
+    lastError: includeSensitive
+      ? payload.lastError ?? triggerResults.find(result => result.error)?.error ?? null
+      : (payload.lastError || triggerResults.some(result => result.error) ? 'An inbound trigger or routing error occurred; audit access is required for details.' : null),
     replaySourceEventId: payload.replaySourceEventId ?? null,
     replayedFromEventId: payload.replayedFromEventId ?? null,
     traceId: stringValue(payload.traceId) ?? stringValue(payload.trace_id) ?? triggerResults.map(result => stringValue(result.traceId)).find(Boolean) ?? null,
-    rawPayload: payload.payload ?? null,
+    rawPayload: includeSensitive ? payload.payload ?? null : null,
   }
 }
 
 workflowOperationsRouter.get('/summary', async (_req, res, next) => {
   try {
+    if (!_req.user?.userId) throw new ForbiddenError('Authenticated user required for workflow operations.')
     const tenantId = tenantForOperations(_req)
+    await assertWorkflowOperationsPermission(_req.user.userId, 'view', tenantId)
     const tenantWhere = tenantId ? { tenantId } : {}
     const instanceTenantWhere = tenantId ? { instance: { tenantId } } : {}
     const outboxTenantWhere = tenantId ? { outbox: { tenantId } } : {}
@@ -261,7 +284,10 @@ workflowOperationsRouter.get('/summary', async (_req, res, next) => {
 
 workflowOperationsRouter.get('/events', async (req, res, next) => {
   try {
+    if (!req.user?.userId) throw new ForbiddenError('Authenticated user required for workflow operations.')
     const tenantId = tenantForOperations(req)
+    await assertWorkflowOperationsPermission(req.user.userId, 'view', tenantId)
+    const includeSensitive = await canViewWorkflowOperations(req.user.userId, 'audit_view', tenantId)
     const limit = Math.min(200, Math.max(1, Number(req.query.limit ?? 75)))
     const status = stringValue(req.query.status)
     const rows = await prisma.eventLog.findMany({
@@ -269,7 +295,7 @@ workflowOperationsRouter.get('/events', async (req, res, next) => {
       orderBy: { occurredAt: 'desc' },
       take: limit,
     })
-    const items = await Promise.all(rows.map(row => serializeInboundEvent(row, tenantId)))
+    const items = await Promise.all(rows.map(row => serializeInboundEvent(row, tenantId, includeSensitive)))
     res.json({ items: status ? items.filter(item => item.status === status) : items, total: items.length })
   } catch (err) { next(err) }
 })
@@ -281,8 +307,9 @@ const replaySchema = z.object({
 
 workflowOperationsRouter.post('/events/:id/replay', async (req, res, next) => {
   try {
-    await requireOperationsOperator(req)
+    if (!req.user?.userId) throw new ForbiddenError('Authenticated user required for workflow operations.')
     const tenantId = tenantForOperations(req)
+    await assertWorkflowOperationsPermission(req.user.userId, 'replay', tenantId)
     const body = replaySchema.parse(req.body ?? {})
     const row = await prisma.eventLog.findFirst({ where: { id: req.params.id, ...(tenantId ? { tenantId } : {}) } })
     if (!row || !INBOUND_EVENT_TYPES.includes(row.eventType as (typeof INBOUND_EVENT_TYPES)[number])) {
@@ -307,7 +334,7 @@ workflowOperationsRouter.post('/events/:id/replay', async (req, res, next) => {
         return candidatePayload.replaySourceEventId === row.id
       })
       if (replayCandidate) {
-        const replayStatus = (await serializeInboundEvent(replayCandidate)).status
+        const replayStatus = (await serializeInboundEvent(replayCandidate, tenantId)).status
         if (['routed', 'running', 'completed'].includes(replayStatus)) {
           throw new ConflictError(`Event already has an active replay (${replayCandidate.id}, status ${replayStatus}); pass force=true only after reviewing its WorkItem/run state.`)
         }
@@ -347,7 +374,10 @@ workflowOperationsRouter.post('/events/:id/replay', async (req, res, next) => {
 
 workflowOperationsRouter.get('/deliveries', async (req, res, next) => {
   try {
+    if (!req.user?.userId) throw new ForbiddenError('Authenticated user required for workflow operations.')
     const tenantId = tenantForOperations(req)
+    await assertWorkflowOperationsPermission(req.user.userId, 'view', tenantId)
+    const includeSensitive = await canViewWorkflowOperations(req.user.userId, 'audit_view', tenantId)
     const status = stringValue(req.query.status)
     const limit = Math.min(200, Math.max(1, Number(req.query.limit ?? 100)))
     const rows = await prisma.eventDelivery.findMany({
@@ -365,7 +395,9 @@ workflowOperationsRouter.get('/deliveries', async (req, res, next) => {
         status: row.status,
         attempts: row.attempts,
         lastAttemptAt: row.lastAttemptAt,
-        lastError: row.lastError,
+        lastError: includeSensitive
+          ? row.lastError
+          : (row.lastError ? 'Delivery failed; audit access is required for error details.' : null),
         deliveredAt: row.deliveredAt,
         responseStatus: row.responseStatus,
         createdAt: row.createdAt,
@@ -373,7 +405,7 @@ workflowOperationsRouter.get('/deliveries', async (req, res, next) => {
           id: row.subscription.id,
           subscriberId: row.subscription.subscriberId,
           eventPattern: row.subscription.eventPattern,
-          targetUrl: row.subscription.targetUrl,
+          targetUrl: includeSensitive ? row.subscription.targetUrl : null,
           isActive: row.subscription.isActive,
         },
         outbox: {
@@ -385,7 +417,7 @@ workflowOperationsRouter.get('/deliveries', async (req, res, next) => {
           subjectId: row.outbox.subjectId,
           status: row.outbox.status,
           emittedAt: row.outbox.emittedAt,
-          envelope: row.outbox.envelope,
+          envelope: includeSensitive ? row.outbox.envelope : null,
         },
       })),
       total: rows.length,
@@ -395,8 +427,9 @@ workflowOperationsRouter.get('/deliveries', async (req, res, next) => {
 
 workflowOperationsRouter.post('/deliveries/:id/retry', async (req, res, next) => {
   try {
-    await requireOperationsOperator(req)
+    if (!req.user?.userId) throw new ForbiddenError('Authenticated user required for workflow operations.')
     const tenantId = tenantForOperations(req)
+    await assertWorkflowOperationsPermission(req.user.userId, 'retry_delivery', tenantId)
     const row = await prisma.eventDelivery.findFirst({
       where: { id: req.params.id, ...(tenantId ? { outbox: { tenantId } } : {}) },
       include: { outbox: true },
@@ -424,7 +457,10 @@ workflowOperationsRouter.post('/deliveries/:id/retry', async (req, res, next) =>
 
 workflowOperationsRouter.get('/runners', async (_req, res, next) => {
   try {
+    if (!_req.user?.userId) throw new ForbiddenError('Authenticated user required for workflow operations.')
     const tenantId = tenantForOperations(_req)
+    await assertWorkflowOperationsPermission(_req.user.userId, 'view', tenantId)
+    const includeSensitive = await canViewWorkflowOperations(_req.user.userId, 'audit_view', tenantId)
     const instanceTenantWhere = tenantId ? { instance: { tenantId } } : {}
     const now = new Date()
     const queues = await Promise.all(EXECUTION_LOCATIONS.map(async location => {
@@ -457,7 +493,7 @@ workflowOperationsRouter.get('/runners', async (_req, res, next) => {
           claimedAt: item.claimedAt,
           claimedBy: item.claimedBy,
           completedAt: item.completedAt,
-          error: item.error,
+          error: includeSensitive ? item.error : null,
           expiresAt: item.expiresAt,
           createdAt: item.createdAt,
           instance: item.instance,
@@ -475,8 +511,10 @@ const runnerRequeueSchema = z.object({
 
 workflowOperationsRouter.post('/runners/:id/requeue', async (req, res, next) => {
   try {
-    await requireOperationsOperator(req)
+    if (!req.user?.userId) throw new ForbiddenError('Authenticated user required for workflow operations.')
     const tenantId = tenantForOperations(req)
+    await assertWorkflowOperationsPermission(req.user.userId, 'manage_runners', tenantId)
+    const includeSensitive = await canViewWorkflowOperations(req.user.userId, 'audit_view', tenantId)
     const body = runnerRequeueSchema.parse(req.body ?? {})
     const row = await prisma.pendingExecution.findFirst({
       where: { id: req.params.id, ...(tenantId ? { instance: { tenantId } } : {}) },
@@ -514,7 +552,7 @@ workflowOperationsRouter.post('/runners/:id/requeue', async (req, res, next) => 
       claimedAt: updated.claimedAt,
       claimedBy: updated.claimedBy,
       completedAt: updated.completedAt,
-      error: updated.error,
+      error: includeSensitive ? updated.error : null,
       expiresAt: updated.expiresAt,
       createdAt: updated.createdAt,
       instance: updated.instance,

@@ -71,7 +71,8 @@ def test_reference_data_reads_are_scoped_for_service_tokens():
     for route_file, decorators in route_expectations.items():
         text = source(route_file)
         for decorator in decorators:
-            assert_route_uses_dependency(text, decorator, "require_reference_read")
+            dependency = "require_authz_check" if route_file == "app/authz/routes.py" else "require_reference_read"
+            assert_route_uses_dependency(text, decorator, dependency)
 
 
 def test_secret_and_audit_reads_use_dedicated_service_scopes():

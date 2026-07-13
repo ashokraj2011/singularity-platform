@@ -2,9 +2,16 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
+import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { ValidationError } from '../../lib/errors'
 import { validate } from '../../middleware/validate'
 import { normalizeMetadataKey } from '../metadata/metadata.service'
+import {
+  assertCapabilityPermission,
+  assertTemplatePermission,
+  canCapabilityPermission,
+} from '../../lib/permissions/workflowTemplate'
+import { requireTenantFromRequest, resolveTenantFromRequest, tenantIsolationStrict } from '../../lib/tenant-isolation'
 
 export const workItemRoutingPoliciesRouter: Router = Router()
 export const workItemTriggersRouter: Router = Router()
@@ -39,10 +46,14 @@ const workItemTriggerSchema = z.object({
 
 const workItemTriggerPatchSchema = workItemTriggerSchema.partial()
 
-async function assertRoutingPolicyWorkflowStartable(capabilityId: string, workflowId?: string | null): Promise<void> {
+function tenantForRequest(req: import('express').Request): string {
+  return (tenantIsolationStrict() ? requireTenantFromRequest(req, 'work-item routing configuration') : resolveTenantFromRequest(req)) ?? 'default'
+}
+
+async function assertRoutingPolicyWorkflowStartable(capabilityId: string, workflowId?: string | null, tenantId = 'default', userId?: string): Promise<void> {
   if (!workflowId) return
-  const workflow = await prisma.workflow.findUnique({
-    where: { id: workflowId },
+  const workflow = await withTenantDbTransaction(prisma, tx => tx.workflow.findUnique({
+    where: { id: workflowId, tenantId },
     select: {
       id: true,
       name: true,
@@ -51,7 +62,7 @@ async function assertRoutingPolicyWorkflowStartable(capabilityId: string, workfl
       status: true,
       profile: true,
     },
-  })
+  }), tenantId)
   if (!workflow || workflow.archivedAt || String(workflow.status ?? '').trim().toUpperCase() === 'ARCHIVED') {
     throw new ValidationError(`Workflow ${workflowId} is not available for WorkItem routing policies.`)
   }
@@ -68,6 +79,7 @@ async function assertRoutingPolicyWorkflowStartable(capabilityId: string, workfl
       `but this routing policy belongs to capability ${capabilityId}.`,
     )
   }
+  if (userId) await assertTemplatePermission(userId, workflowId, 'start')
 }
 
 function routingPolicyWorkflowStatus(policy: {
@@ -128,6 +140,7 @@ function routingPolicyWorkflowStatus(policy: {
 
 workItemRoutingPoliciesRouter.get('/', async (req, res, next) => {
   try {
+    const tenantId = tenantForRequest(req)
     const { capabilityId, workItemTypeKey, workflowTypeKey, isActive } = req.query as Record<string, string | undefined>
     const where: Prisma.WorkItemRoutingPolicyWhereInput = {}
     if (capabilityId) where.capabilityId = capabilityId
@@ -135,8 +148,8 @@ workItemRoutingPoliciesRouter.get('/', async (req, res, next) => {
     if (workflowTypeKey) where.workflowTypeKey = normalizeMetadataKey(workflowTypeKey)
     if (isActive === 'true' || isActive === '1') where.isActive = true
     if (isActive === 'false' || isActive === '0') where.isActive = false
-    const items = await prisma.workItemRoutingPolicy.findMany({
-      where,
+    const items = await withTenantDbTransaction(prisma, tx => tx.workItemRoutingPolicy.findMany({
+      where: { ...where, tenantId },
       include: {
         workflow: {
           select: {
@@ -151,9 +164,13 @@ workItemRoutingPoliciesRouter.get('/', async (req, res, next) => {
         },
       },
       orderBy: [{ capabilityId: 'asc' }, { priority: 'desc' }, { updatedAt: 'desc' }],
-    })
+    }), tenantId)
+    const visible = await Promise.all(items.map(async item => ({
+      item,
+      allowed: await canCapabilityPermission(req.user!.userId, item.capabilityId, 'view', 'WorkItemRoutingPolicy', item.id, tenantId),
+    })))
     res.json({
-      items: items.map(item => ({
+      items: visible.filter(row => row.allowed).map(({ item }) => ({
         ...item,
         ...(item.workflowId ? { workflowTemplateStatus: routingPolicyWorkflowStatus(item) } : {}),
       })),
@@ -165,9 +182,11 @@ workItemRoutingPoliciesRouter.get('/', async (req, res, next) => {
 
 workItemRoutingPoliciesRouter.post('/', validate(routingPolicySchema), async (req, res, next) => {
   try {
+    const tenantId = tenantForRequest(req)
     const body = req.body as z.infer<typeof routingPolicySchema>
-    await assertRoutingPolicyWorkflowStartable(body.capabilityId, body.workflowId)
-    const policy = await prisma.workItemRoutingPolicy.create({
+    await assertCapabilityPermission(req.user!.userId, body.capabilityId, 'edit', 'WorkItemRoutingPolicy', undefined, tenantId)
+    await assertRoutingPolicyWorkflowStartable(body.capabilityId, body.workflowId, tenantId, req.user!.userId)
+    const policy = await withTenantDbTransaction(prisma, tx => tx.workItemRoutingPolicy.create({
       data: {
         capabilityId: body.capabilityId,
         workItemTypeKey: normalizeMetadataKey(body.workItemTypeKey),
@@ -177,8 +196,9 @@ workItemRoutingPoliciesRouter.post('/', validate(routingPolicySchema), async (re
         priority: body.priority,
         selector: body.selector as Prisma.InputJsonValue,
         isActive: body.isActive,
+        tenantId,
       },
-    })
+    }), tenantId)
     res.status(201).json(policy)
   } catch (err) {
     next(err)
@@ -187,18 +207,22 @@ workItemRoutingPoliciesRouter.post('/', validate(routingPolicySchema), async (re
 
 workItemRoutingPoliciesRouter.patch('/:id', validate(routingPolicyPatchSchema), async (req, res, next) => {
   try {
+    const tenantId = tenantForRequest(req)
     const body = req.body as z.infer<typeof routingPolicyPatchSchema>
-    const current = await prisma.workItemRoutingPolicy.findUnique({
-      where: { id: req.params.id },
+    const current = await withTenantDbTransaction(prisma, tx => tx.workItemRoutingPolicy.findUnique({
+      where: { id: req.params.id, tenantId },
       select: { capabilityId: true, workflowId: true },
-    })
+    }), tenantId)
+    if (!current) throw new ValidationError('Routing policy not found or not accessible')
+    await assertCapabilityPermission(req.user!.userId, current.capabilityId, 'edit', 'WorkItemRoutingPolicy', req.params.id, tenantId)
     const effectiveCapabilityId = body.capabilityId ?? current?.capabilityId
     const effectiveWorkflowId = body.workflowId !== undefined ? body.workflowId : current?.workflowId
     if (effectiveCapabilityId) {
-      await assertRoutingPolicyWorkflowStartable(effectiveCapabilityId, effectiveWorkflowId)
+      await assertCapabilityPermission(req.user!.userId, effectiveCapabilityId, 'edit', 'WorkItemRoutingPolicy', req.params.id, tenantId)
+      await assertRoutingPolicyWorkflowStartable(effectiveCapabilityId, effectiveWorkflowId, tenantId, req.user!.userId)
     }
-    const policy = await prisma.workItemRoutingPolicy.update({
-      where: { id: req.params.id },
+    const policy = await withTenantDbTransaction(prisma, tx => tx.workItemRoutingPolicy.update({
+      where: { id: req.params.id, tenantId },
       data: {
         ...(body.capabilityId !== undefined ? { capabilityId: body.capabilityId } : {}),
         ...(body.workItemTypeKey !== undefined ? { workItemTypeKey: normalizeMetadataKey(body.workItemTypeKey) } : {}),
@@ -209,15 +233,27 @@ workItemRoutingPoliciesRouter.patch('/:id', validate(routingPolicyPatchSchema), 
         ...(body.selector !== undefined ? { selector: body.selector as Prisma.InputJsonValue } : {}),
         ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
       },
-    })
+    }), tenantId)
     res.json(policy)
   } catch (err) {
     next(err)
   }
 })
 
+workItemRoutingPoliciesRouter.delete('/:id', async (req, res, next) => {
+  try {
+    const tenantId = tenantForRequest(req)
+    const current = await withTenantDbTransaction(prisma, tx => tx.workItemRoutingPolicy.findUnique({ where: { id: req.params.id, tenantId }, select: { capabilityId: true } }), tenantId)
+    if (!current) throw new ValidationError('Routing policy not found or not accessible')
+    await assertCapabilityPermission(req.user!.userId, current.capabilityId, 'delete', 'WorkItemRoutingPolicy', req.params.id, tenantId)
+    await withTenantDbTransaction(prisma, tx => tx.workItemRoutingPolicy.delete({ where: { id: req.params.id, tenantId } }), tenantId)
+    res.status(204).end()
+  } catch (err) { next(err) }
+})
+
 workItemTriggersRouter.get('/', async (req, res, next) => {
   try {
+    const tenantId = tenantForRequest(req)
     const { triggerType, eventTypeKey, capabilityId, isActive } = req.query as Record<string, string | undefined>
     const where: Prisma.WorkItemTriggerWhereInput = {}
     if (triggerType && (triggerTypes as readonly string[]).includes(triggerType)) where.triggerType = triggerType as any
@@ -225,8 +261,9 @@ workItemTriggersRouter.get('/', async (req, res, next) => {
     if (capabilityId) where.capabilityId = capabilityId
     if (isActive === 'true' || isActive === '1') where.isActive = true
     if (isActive === 'false' || isActive === '0') where.isActive = false
-    const items = await prisma.workItemTrigger.findMany({ where, orderBy: { createdAt: 'desc' } })
-    res.json({ items })
+    const items = await withTenantDbTransaction(prisma, tx => tx.workItemTrigger.findMany({ where: { ...where, tenantId }, orderBy: { createdAt: 'desc' } }), tenantId)
+    const visible = await Promise.all(items.map(async item => ({ item, allowed: item.capabilityId ? await canCapabilityPermission(req.user!.userId, item.capabilityId, 'view', 'WorkItemTrigger', item.id, tenantId) : false })))
+    res.json({ items: visible.filter(row => row.allowed).map(row => row.item) })
   } catch (err) {
     next(err)
   }
@@ -234,8 +271,11 @@ workItemTriggersRouter.get('/', async (req, res, next) => {
 
 workItemTriggersRouter.post('/', validate(workItemTriggerSchema), async (req, res, next) => {
   try {
+    const tenantId = tenantForRequest(req)
     const body = req.body as z.infer<typeof workItemTriggerSchema>
-    const trigger = await prisma.workItemTrigger.create({
+    if (body.capabilityId) await assertCapabilityPermission(req.user!.userId, body.capabilityId, 'edit', 'WorkItemTrigger', undefined, tenantId)
+    else await assertCapabilityPermission(req.user!.userId, '__platform__', 'create', 'WorkItemTrigger', undefined, tenantId)
+    const trigger = await withTenantDbTransaction(prisma, tx => tx.workItemTrigger.create({
       data: {
         triggerType: body.triggerType,
         eventTypeKey: body.eventTypeKey ? normalizeMetadataKey(body.eventTypeKey) : null,
@@ -246,8 +286,9 @@ workItemTriggersRouter.post('/', validate(workItemTriggerSchema), async (req, re
         payloadMapping: body.payloadMapping as Prisma.InputJsonValue,
         dedupeKey: body.dedupeKey,
         isActive: body.isActive,
+        tenantId,
       },
-    })
+    }), tenantId)
     res.status(201).json(trigger)
   } catch (err) {
     next(err)
@@ -256,9 +297,16 @@ workItemTriggersRouter.post('/', validate(workItemTriggerSchema), async (req, re
 
 workItemTriggersRouter.patch('/:id', validate(workItemTriggerPatchSchema), async (req, res, next) => {
   try {
+    const tenantId = tenantForRequest(req)
     const body = req.body as z.infer<typeof workItemTriggerPatchSchema>
-    const trigger = await prisma.workItemTrigger.update({
-      where: { id: req.params.id },
+    const current = await withTenantDbTransaction(prisma, tx => tx.workItemTrigger.findUnique({ where: { id: req.params.id, tenantId }, select: { capabilityId: true } }), tenantId)
+    if (!current) throw new ValidationError('WorkItem trigger not found or not accessible')
+    const effectiveCapabilityId = body.capabilityId !== undefined ? body.capabilityId : current.capabilityId
+    if (current.capabilityId) await assertCapabilityPermission(req.user!.userId, current.capabilityId, 'edit', 'WorkItemTrigger', req.params.id, tenantId)
+    if (effectiveCapabilityId) await assertCapabilityPermission(req.user!.userId, effectiveCapabilityId, 'edit', 'WorkItemTrigger', req.params.id, tenantId)
+    else await assertCapabilityPermission(req.user!.userId, '__platform__', 'edit', 'WorkItemTrigger', req.params.id, tenantId)
+    const trigger = await withTenantDbTransaction(prisma, tx => tx.workItemTrigger.update({
+      where: { id: req.params.id, tenantId },
       data: {
         ...(body.triggerType !== undefined ? { triggerType: body.triggerType } : {}),
         ...(body.eventTypeKey !== undefined ? { eventTypeKey: body.eventTypeKey ? normalizeMetadataKey(body.eventTypeKey) : null } : {}),
@@ -270,9 +318,21 @@ workItemTriggersRouter.patch('/:id', validate(workItemTriggerPatchSchema), async
         ...(body.dedupeKey !== undefined ? { dedupeKey: body.dedupeKey } : {}),
         ...(body.isActive !== undefined ? { isActive: body.isActive } : {}),
       },
-    })
+    }), tenantId)
     res.json(trigger)
   } catch (err) {
     next(err)
   }
+})
+
+workItemTriggersRouter.delete('/:id', async (req, res, next) => {
+  try {
+    const tenantId = tenantForRequest(req)
+    const current = await withTenantDbTransaction(prisma, tx => tx.workItemTrigger.findUnique({ where: { id: req.params.id, tenantId }, select: { capabilityId: true } }), tenantId)
+    if (!current) throw new ValidationError('WorkItem trigger not found or not accessible')
+    if (current.capabilityId) await assertCapabilityPermission(req.user!.userId, current.capabilityId, 'delete', 'WorkItemTrigger', req.params.id, tenantId)
+    else await assertCapabilityPermission(req.user!.userId, '__platform__', 'delete', 'WorkItemTrigger', req.params.id, tenantId)
+    await withTenantDbTransaction(prisma, tx => tx.workItemTrigger.delete({ where: { id: req.params.id, tenantId } }), tenantId)
+    res.status(204).end()
+  } catch (err) { next(err) }
 })

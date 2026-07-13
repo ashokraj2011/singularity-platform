@@ -187,6 +187,7 @@ _VALID_SCOPES = {
     "read:mcp-servers",      # /mcp-servers (incl. bearer tokens)
     "read:audit",            # /audit-events
     "publish:events",        # /api/v1/events/* (subscribe + emit)
+    "authz:check",           # bounded service-side decisions for a tenant
     "governance:author",     # advisory governance attachment writes
     "governance:enforce",    # REQUIRED/BLOCKING governance writes
     "git:issue-credentials", # /internal/git/credentials/issue (Git broker, P0 #2)

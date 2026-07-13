@@ -26,6 +26,20 @@ def _now() -> datetime:
 # Users
 # ---------------------------------------------------------------------------
 
+class Tenant(Base):
+    __tablename__ = "tenants"
+    __table_args__ = (
+        Index("idx_tenants_status", "status"),
+        {"schema": "iam"},
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="active")
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now, onupdate=_now)
+
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
@@ -54,6 +68,29 @@ class User(Base):
     capability_memberships: Mapped[list["CapabilityMembership"]] = relationship(
         back_populates="user", foreign_keys="CapabilityMembership.user_id"
     )
+    tenant_memberships: Mapped[list["UserTenantMembership"]] = relationship(
+        back_populates="user", foreign_keys="UserTenantMembership.user_id"
+    )
+
+
+class UserTenantMembership(Base):
+    __tablename__ = "user_tenant_memberships"
+    __table_args__ = (
+        UniqueConstraint("user_id", "tenant_id"),
+        Index("idx_user_tenant_memberships_user", "user_id"),
+        Index("idx_user_tenant_memberships_tenant", "tenant_id"),
+        {"schema": "iam"},
+    )
+
+    id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.users.id", ondelete="CASCADE"), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String, ForeignKey("iam.tenants.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, server_default="active")
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
+
+    user: Mapped["User"] = relationship(back_populates="tenant_memberships", foreign_keys=[user_id])
+    tenant: Mapped["Tenant"] = relationship()
 
 
 class LocalCredential(Base):
@@ -104,6 +141,7 @@ class Team(Base):
     description: Mapped[Optional[str]] = mapped_column(String)
     bu_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.business_units.id", ondelete="SET NULL"))
     parent_team_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.teams.id"), nullable=True)
+    tenant_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("iam.tenants.id", ondelete="SET NULL"))
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     tags: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
@@ -159,6 +197,7 @@ class Capability(Base):
     # guard at the routing boundary (they govern; they don't receive delivery work).
     is_governing: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     visibility: Mapped[str] = mapped_column(String, nullable=False, server_default="private")
+    tenant_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("iam.tenants.id", ondelete="SET NULL"))
     owner_bu_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.business_units.id", ondelete="SET NULL"))
     owner_team_id: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.teams.id", ondelete="SET NULL"))
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
@@ -362,6 +401,7 @@ class PlatformRoleAssignment(Base):
     role_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("iam.roles.id", ondelete="CASCADE"), nullable=False
     )
+    tenant_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("iam.tenants.id", ondelete="SET NULL"))
     granted_by: Mapped[Optional[str]] = mapped_column(UUID(as_uuid=False), ForeignKey("iam.users.id"))
     created_at: Mapped[datetime] = mapped_column(_tstz(), nullable=False, default=_now)
 

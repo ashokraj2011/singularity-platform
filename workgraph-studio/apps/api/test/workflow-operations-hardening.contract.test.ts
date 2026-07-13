@@ -22,9 +22,11 @@ describe('workflow operations hardening contract', () => {
     expect(operations).toMatch(/traceIdFromParts\(\['event-replay'/)
   })
 
-  it('requires tenant context in strict mode and admin ownership for mutations', () => {
+  it('requires tenant context in strict mode and explicit operations permissions', () => {
     expect(operations).toMatch(/tenantIsolationStrict\(\)[\s\S]*?requireTenantFromRequest/)
-    expect(operations).toMatch(/requireOperationsOperator[\s\S]*?isAdminUser/)
+    expect(operations).toMatch(/assertWorkflowOperationsPermission\([^\n]+, 'view', tenantId\)/)
+    expect(operations).toMatch(/assertWorkflowOperationsPermission\([^\n]+, 'replay', tenantId\)/)
+    expect(operations).toMatch(/assertWorkflowOperationsPermission\([^\n]+, 'manage_runners', tenantId\)/)
     expect(operations).toMatch(/outbox: \{ tenantId \}/)
     expect(subscriptions).toMatch(/requireAdmin[\s\S]*?isAdminUser/)
     expect(incoming).toMatch(/MISSING_EVENT_TENANT[\s\S]*?runWithTenantDbContext\(tenantId/)
@@ -41,6 +43,13 @@ describe('workflow operations hardening contract', () => {
     expect(subscriptions).toMatch(/sealSubscriptionSecret\(body\.secret\)/)
     expect(subscriptions).toMatch(/subs\.map\(publicSubscription\)/)
     expect(subscriptions).toMatch(/json\(publicSubscription\(sub\)\)/)
+  })
+
+  it('redacts nested event and runner error payloads without audit permission', () => {
+    expect(operations).toMatch(/payload: includeSensitive \? event\.payload : null/)
+    expect(operations).toMatch(/rawPayload: includeSensitive \? payload\.payload \?\? null : null/)
+    expect(operations).toMatch(/Delivery failed; audit access is required for error details/)
+    expect(operations).toMatch(/error: includeSensitive \? updated\.error : null/)
   })
 
   it('automatically seals legacy plaintext subscription secrets before dispatch starts', () => {

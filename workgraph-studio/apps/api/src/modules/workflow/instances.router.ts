@@ -273,13 +273,22 @@ workflowInstancesRouter.get('/', async (req, res, next) => {
         ? { template: { capabilityId: capabilityId.trim() } }
         : {}),
     }
-    const [instances, total] = await withTenantDbTransaction(prisma, () => Promise.all([
+    const [candidates] = await withTenantDbTransaction(prisma, () => Promise.all([
         prisma.workflowInstance.findMany({ where, skip: pg.skip, take: pg.take, orderBy: { createdAt: 'desc' } }),
-        prisma.workflowInstance.count({ where }),
       ]),
       tenantId,
     )
-    res.json(toPageResponse(instances, total, pg))
+    const instances = [] as typeof candidates
+    for (const instance of candidates) {
+      try {
+        await assertInstancePermission(req.user!.userId, instance.id, 'view', tenantId)
+        instances.push(instance)
+      } catch {
+        // List endpoints must filter inaccessible rows instead of leaking their
+        // existence through counts or sparse detail responses.
+      }
+    }
+    res.json(toPageResponse(instances, instances.length, { ...pg, skip: 0 }))
   } catch (err) {
     next(err)
   }
@@ -287,11 +296,14 @@ workflowInstancesRouter.get('/', async (req, res, next) => {
 
 workflowInstancesRouter.get('/:id', async (req, res, next) => {
   try {
+    const tenantId = resolveTenantFromRequest(req)
+    await assertWorkflowInstanceTenant(req, req.params.id)
+    await assertInstancePermission(req.user!.userId, req.params.id, 'view', tenantId)
     const instance = await withTenantDbTransaction(prisma, () => prisma.workflowInstance.findUnique({
         where: { id: req.params.id },
         include: { phases: { orderBy: { displayOrder: 'asc' } }, nodes: true, edges: true },
       }),
-      resolveTenantFromRequest(req),
+      tenantId,
     )
     if (!instance) throw new NotFoundError('WorkflowInstance', req.params.id)
     // Surface the whole-workflow Copilot opt-in (workflow.metadata.usesCopilot) so the
@@ -306,6 +318,21 @@ workflowInstancesRouter.get('/:id', async (req, res, next) => {
   } catch (err) {
     next(err)
   }
+})
+
+workflowInstancesRouter.get('/:id/authorization', async (req, res, next) => {
+  try {
+    await assertWorkflowInstanceTenant(req, req.params.id)
+    await assertInstancePermission(req.user!.userId, req.params.id, 'view')
+    const snapshot = await withTenantDbTransaction(prisma, (tx) => tx.workflowAuthorizationSnapshot.findUnique({
+      where: { instanceId: req.params.id },
+    }), resolveTenantFromRequest(req))
+    if (!snapshot) {
+      res.status(404).json({ code: 'AUTHORIZATION_SNAPSHOT_NOT_FOUND', message: 'This run predates authorization snapshots or was started by internal automation.' })
+      return
+    }
+    res.json(snapshot)
+  } catch (err) { next(err) }
 })
 
 workflowInstancesRouter.get('/:id/budget', async (req, res, next) => {

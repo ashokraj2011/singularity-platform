@@ -104,6 +104,13 @@ async def require_reference_read(current_user: User = Depends(get_current_user))
     return current_user
 
 
+async def require_authz_check(current_user: User = Depends(get_current_user)) -> User:
+    """Permit human self-checks or explicitly scoped service decisions."""
+    if is_service_principal(current_user):
+        assert_super_admin_or_service_scope(current_user, "authz:check")
+    return current_user
+
+
 async def require_git_credential_issue(current_user: User = Depends(get_current_user)) -> User:
     # SERVICE-ONLY (stricter than the reference deps): the Git broker mints + returns
     # live GitHub tokens, so only a service principal carrying the explicit scope may

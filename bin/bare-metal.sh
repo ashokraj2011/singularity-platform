@@ -384,7 +384,7 @@ import json
 import os
 import time
 
-required_scopes = {"read:reference-data", "read:mcp-servers", "publish:events"}
+required_scopes = {"read:reference-data", "read:mcp-servers", "publish:events", "authz:check"}
 token = os.environ.get("TOKEN", "")
 try:
     payload_b64 = token.split(".")[1]
@@ -482,7 +482,7 @@ minted = post_json(
     "/auth/service-token",
     {
         "service_name": "platform-web",
-        "scopes": ["read:reference-data", "read:mcp-servers", "publish:events"],
+        "scopes": ["read:reference-data", "read:mcp-servers", "publish:events", "authz:check"],
         "tenant_ids": tenant_ids,
         "ttl_hours": 24 * 90,
     },
@@ -936,6 +936,7 @@ export SINGULARITY_ENV="${SINGULARITY_ENV:-${APP_ENV:-development}}"
 export AUTH_OPTIONAL="${AUTH_OPTIONAL:-$(config_value platform.authOptional true)}"
 export REQUIRE_TENANT_ID="${REQUIRE_TENANT_ID:-$(config_value platform.requireTenantId false)}"
 export TENANT_ISOLATION_MODE="${TENANT_ISOLATION_MODE:-$(config_value platform.tenantIsolationMode off)}"
+export WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED="${WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED:-$(config_value platform.workgraphDbTenantIsolationRequired false)}"
 export PROVIDER_MANIFEST_SIGNATURE_MODE="${PROVIDER_MANIFEST_SIGNATURE_MODE:-$(config_value agentRuntime.providerManifestSignatureMode auto)}"
 export PROVIDER_MANIFEST_TRUSTED_KEYS="${PROVIDER_MANIFEST_TRUSTED_KEYS:-$(config_value agentRuntime.providerManifestTrustedKeys "")}"
 export PROVIDER_MANIFEST_MAX_TTL_SECONDS="${PROVIDER_MANIFEST_MAX_TTL_SECONDS:-$(config_value agentRuntime.providerManifestMaxTtlSeconds 2592000)}"

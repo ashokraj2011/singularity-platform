@@ -40,6 +40,13 @@ class TenantTable:
 
 
 TENANT_TABLES = [
+    # Template/design reads are currently protected by the WorkGraph
+    # authorization service and explicit tenant predicates. Keep these rows in
+    # the tenant-data audit, but do not claim forced RLS until all legacy
+    # direct-Prisma design paths use withTenantDbTransaction.
+    TenantTable("workflow_templates", None, require_rls=False, tenant_column="tenantId"),
+    TenantTable("workflow_access_grants", None, require_rls=False, tenant_column="tenantId"),
+    TenantTable("workflow_authorization_snapshots", None, tenant_column="tenantId"),
     TenantTable("workflow_instances", None, tenant_column="tenantId"),
     TenantTable("run_snapshots", None, tenant_column="tenantId"),
     TenantTable("workflow_run_budgets", "instanceId"),

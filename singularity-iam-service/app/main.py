@@ -42,7 +42,10 @@ _ADD_COLUMNS = [
     "ALTER TABLE iam.business_units  ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb",
     "ALTER TABLE iam.teams           ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb",
     "ALTER TABLE iam.teams           ADD COLUMN IF NOT EXISTS parent_team_id UUID REFERENCES iam.teams(id)",
+    "ALTER TABLE iam.teams           ADD COLUMN IF NOT EXISTS tenant_id TEXT REFERENCES iam.tenants(id) ON DELETE SET NULL",
     "ALTER TABLE iam.capabilities    ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb",
+    "ALTER TABLE iam.capabilities    ADD COLUMN IF NOT EXISTS tenant_id TEXT REFERENCES iam.tenants(id) ON DELETE SET NULL",
+    "ALTER TABLE iam.platform_role_assignments ADD COLUMN IF NOT EXISTS tenant_id TEXT REFERENCES iam.tenants(id) ON DELETE SET NULL",
     "ALTER TABLE iam.roles           ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb",
     "ALTER TABLE iam.roles           ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'::jsonb",
     # Capability Governance Model — governing-role marker (governance_attachments

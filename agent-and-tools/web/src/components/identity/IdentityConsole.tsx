@@ -1195,7 +1195,7 @@ function GraphNodeLabel({ id, label }: { id: string; label?: string }) {
 }
 
 function AuthzPanel({ permissions }: { permissions: IdentityRow[] }) {
-  const [form, setForm] = useState<AuthzCheckRequest>({ user_id: "", capability_id: "", action: "" });
+  const [form, setForm] = useState<AuthzCheckRequest>({ user_id: "", capability_id: "", action: "", tenant_id: "default" });
   const [result, setResult] = useState<AuthzCheckResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1221,6 +1221,7 @@ function AuthzPanel({ permissions }: { permissions: IdentityRow[] }) {
           <IdentityInput label="User ID" value={form.user_id} onChange={(value) => setForm({ ...form, user_id: value })} placeholder="UUID" />
           <IdentityInput label="Capability ID" value={form.capability_id} onChange={(value) => setForm({ ...form, capability_id: value })} placeholder="capability id" />
           <IdentityInput label="Action" value={form.action} onChange={(value) => setForm({ ...form, action: value })} placeholder="workflow:execute" />
+          <IdentityInput label="Tenant ID" value={form.tenant_id} onChange={(value) => setForm({ ...form, tenant_id: value })} placeholder="tenant id" />
           <IdentityInput label="Resource Type" value={form.resource_type ?? ""} onChange={(value) => setForm({ ...form, resource_type: value })} placeholder="workflow" />
           <IdentityInput label="Resource ID" value={form.resource_id ?? ""} onChange={(value) => setForm({ ...form, resource_id: value })} placeholder="resource id" />
           <IdentityInput label="Requesting Capability ID" value={form.requesting_capability_id ?? ""} onChange={(value) => setForm({ ...form, requesting_capability_id: value })} placeholder="optional" />

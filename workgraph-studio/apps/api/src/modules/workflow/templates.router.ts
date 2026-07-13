@@ -1,13 +1,14 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { Prisma, NodeType } from '@prisma/client'
+import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, publishOutbox } from '../../lib/audit'
-import { assertTemplatePermission, resolveDefaultTeamId } from '../../lib/permissions/workflowTemplate'
+import { assertTemplatePermission, assertWorkflowCreatePermission, canViewTemplate, resolveDefaultTeamId } from '../../lib/permissions/workflowTemplate'
 import { getDesignInstanceId } from './lib/cloneDesignToRun'
 import { validateNodeConfig } from '../lookup/resolver'
 import { listAgentTemplates, type AgentTemplate } from '../../lib/agent-and-tools/client'
@@ -16,6 +17,7 @@ import { resolveTeamIdForWorkflow, tokenFromAuthorizationHeader } from '../../li
 import { analyzeWorkflowTemplate } from './formal-verification'
 import { normalizeMetadataKey, resolveMetadataSnapshot } from '../metadata/metadata.service'
 import { SDLC_INTENTS } from '../adoption/sdlcCatalog'
+import { requireTenantFromRequest, resolveTenantFromRequest, tenantIsolationStrict } from '../../lib/tenant-isolation'
 
 export const workflowTemplatesRouter: Router = Router()
 
@@ -139,6 +141,10 @@ workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, re
     if (starter === 'CAPABILITY_WORKBENCH_BRIDGE' && !capabilityId) {
       throw new ValidationError('Capability is required for the Workbench agent-team approval starter')
     }
+    const tenantId = tenantIsolationStrict()
+      ? requireTenantFromRequest(req, 'workflow template creation')
+      : (resolveTenantFromRequest(req) ?? config.WORKGRAPH_DEFAULT_TENANT_ID)
+    await assertWorkflowCreatePermission(req.user!.userId, capabilityId, tenantId)
     const callerToken = tokenFromAuthorizationHeader(req.headers.authorization)
     const ownerTeamId = teamId
       ? await resolveTeamIdForWorkflow(teamId, callerToken)
@@ -158,6 +164,7 @@ workflowTemplatesRouter.post('/', validate(createTemplateSchema), async (req, re
       data: {
         name, description,
         teamId:       ownerTeamId,
+        tenantId,
         capabilityId: capabilityId ?? null,
         createdById:  req.user!.userId,
         workflowTypeKey,
@@ -1236,17 +1243,23 @@ workflowTemplatesRouter.get('/', async (req, res, next) => {
     const profileFilter = profileRaw
       ? profileRaw.split(',').map(p => p.trim()).filter(Boolean)
       : undefined
+    const tenantId = tenantIsolationStrict()
+      ? requireTenantFromRequest(req, 'workflow template listing')
+      : resolveTenantFromRequest(req)
     const where: Prisma.WorkflowWhereInput = {
       archivedAt: showArchived ? { not: null } : null,
+      ...(tenantId ? { tenantId } : {}),
       ...(capabilityId ? { capabilityId } : {}),
       ...(workflowTypeKey ? { workflowTypeKey } : {}),
       ...(profileFilter && profileFilter.length > 0 ? { profile: { in: profileFilter } } : {}),
     }
-    const [templates, total] = await Promise.all([
-      prisma.workflow.findMany({ where, skip: pg.skip, take: pg.take, orderBy: { name: 'asc' } }),
-      prisma.workflow.count({ where }),
-    ])
-    res.json(toPageResponse(templates, total, pg))
+    const candidates = await withTenantDbTransaction(prisma, tx => tx.workflow.findMany({ where, orderBy: { name: 'asc' } }), tenantId)
+    const visible: typeof candidates = []
+    for (const candidate of candidates) {
+      if (await canViewTemplate(req.user!.userId, candidate.id)) visible.push(candidate)
+    }
+    const templates = visible.slice(pg.skip, pg.skip + pg.take)
+    res.json(toPageResponse(templates, visible.length, pg))
   } catch (err) {
     next(err)
   }
@@ -1257,10 +1270,14 @@ workflowTemplatesRouter.get('/gallery', async (req, res, next) => {
     const capabilityId = typeof req.query.capabilityId === 'string' && req.query.capabilityId.trim()
       ? req.query.capabilityId.trim()
       : undefined
-    const templates = await prisma.workflow.findMany({
+    const tenantId = tenantIsolationStrict()
+      ? requireTenantFromRequest(req, 'workflow template gallery')
+      : resolveTenantFromRequest(req)
+    const candidates = await withTenantDbTransaction(prisma, tx => tx.workflow.findMany({
       where: {
         archivedAt: null,
         profile: 'main',
+        ...(tenantId ? { tenantId } : {}),
         // A capability-scoped gallery must ALSO surface common (capabilityId=null)
         // templates — those are capability-independent workflows (e.g. the Copilot
         // SDLC flow) meant to run on ANY capability. Filtering `{ capabilityId }`
@@ -1281,7 +1298,11 @@ workflowTemplatesRouter.get('/gallery', async (req, res, next) => {
         updatedAt: true,
       },
       orderBy: [{ isDefaultForType: 'desc' }, { name: 'asc' }],
-    })
+    }), tenantId)
+    const templates = [] as typeof candidates
+    for (const candidate of candidates) {
+      if (await canViewTemplate(req.user!.userId, candidate.id)) templates.push(candidate)
+    }
 
     const items = SDLC_INTENTS.map(intent => {
       const ranked = templates
@@ -1316,10 +1337,11 @@ workflowTemplatesRouter.get('/gallery', async (req, res, next) => {
 
 workflowTemplatesRouter.get('/:id', async (req, res, next) => {
   try {
-    const template = await prisma.workflow.findUnique({
+    await assertTemplatePermission(req.user!.userId, req.params.id, 'view')
+    const template = await withTenantDbTransaction(prisma, tx => tx.workflow.findUnique({
       where: { id: req.params.id },
       include: { versions: { orderBy: { version: 'desc' } } },
-    })
+    }), resolveTenantFromRequest(req))
     if (!template) throw new NotFoundError('WorkflowTemplate', req.params.id)
     res.json(template)
   } catch (err) {
@@ -1375,6 +1397,10 @@ const importTemplateSchema = z.object({
 workflowTemplatesRouter.post('/import', validate(importTemplateSchema), async (req, res, next) => {
   try {
     const body = req.body as z.infer<typeof importTemplateSchema>
+    const tenantId = tenantIsolationStrict()
+      ? requireTenantFromRequest(req, 'workflow template import')
+      : (resolveTenantFromRequest(req) ?? config.WORKGRAPH_DEFAULT_TENANT_ID)
+    await assertWorkflowCreatePermission(req.user!.userId, null, tenantId)
     const teamId = await resolveDefaultTeamId(req.user!.userId)
 
     const template = await prisma.workflow.create({
@@ -1384,6 +1410,7 @@ workflowTemplatesRouter.post('/import', validate(importTemplateSchema), async (r
         metadata: body.template.metadata as Prisma.InputJsonValue ?? Prisma.JsonNull,
         createdById: req.user!.userId,
         teamId,
+        tenantId,
         currentVersion: 1,
       },
     })
@@ -1412,7 +1439,7 @@ workflowTemplatesRouter.post('/import', validate(importTemplateSchema), async (r
 
 workflowTemplatesRouter.post('/:id/publish', async (req, res, next) => {
   try {
-    await assertTemplatePermission(req.user!.userId, req.params.id, 'edit')
+    await assertTemplatePermission(req.user!.userId, req.params.id, 'publish')
     const t = await prisma.workflow.update({ where: { id: req.params.id }, data: { status: 'PUBLISHED' } })
     await logEvent('TemplatePublished', 'WorkflowTemplate', t.id, req.user!.userId)
     res.json(t)
@@ -1421,7 +1448,7 @@ workflowTemplatesRouter.post('/:id/publish', async (req, res, next) => {
 
 workflowTemplatesRouter.post('/:id/mark-final', async (req, res, next) => {
   try {
-    await assertTemplatePermission(req.user!.userId, req.params.id, 'edit')
+    await assertTemplatePermission(req.user!.userId, req.params.id, 'publish')
     const t = await prisma.workflow.update({ where: { id: req.params.id }, data: { status: 'FINAL' } })
     await logEvent('TemplateMarkedFinal', 'WorkflowTemplate', t.id, req.user!.userId)
     res.json(t)
@@ -1432,7 +1459,11 @@ workflowTemplatesRouter.post('/:id/mark-final', async (req, res, next) => {
 
 workflowTemplatesRouter.post('/:id/duplicate', async (req, res, next) => {
   try {
-    await assertTemplatePermission(req.user!.userId, req.params.id, 'view')
+    const sourcePermission = await assertTemplatePermission(req.user!.userId, req.params.id, 'view')
+    const tenantId = tenantIsolationStrict()
+      ? requireTenantFromRequest(req, 'workflow template duplication')
+      : (resolveTenantFromRequest(req) ?? config.WORKGRAPH_DEFAULT_TENANT_ID)
+    await assertWorkflowCreatePermission(req.user!.userId, sourcePermission.capabilityId, tenantId)
     const source = await prisma.workflow.findUniqueOrThrow({
       where: { id: req.params.id },
       include: { versions: { orderBy: { version: 'desc' }, take: 1 } },
@@ -1448,6 +1479,7 @@ workflowTemplatesRouter.post('/:id/duplicate', async (req, res, next) => {
         description: source.description,
         teamId,
         createdById: req.user!.userId,
+        tenantId,
         status: 'DRAFT',
         metadata: (source.metadata ?? {}) as any,
         currentVersion: asNewVersion ? (source.currentVersion + 1) : 1,
@@ -1499,7 +1531,7 @@ workflowTemplatesRouter.post('/:id/restore', async (req, res, next) => {
 
 workflowTemplatesRouter.delete('/:id', async (req, res, next) => {
   try {
-    await assertTemplatePermission(req.user!.userId, req.params.id, 'edit')
+    await assertTemplatePermission(req.user!.userId, req.params.id, 'delete')
     await prisma.workflow.delete({ where: { id: req.params.id } })
     await logEvent('TemplateDeleted', 'WorkflowTemplate', req.params.id, req.user!.userId)
     res.status(204).end()
@@ -1555,10 +1587,14 @@ workflowTemplatesRouter.post('/import-bpmn', async (req, res, next) => {
     if (!xml) return res.status(400).json({ error: 'xml is required' })
     const snapshot = bpmnToSnapshot(xml)
     const templateName = name ?? extractBpmnProcessName(xml) ?? 'Imported Workflow'
+    const tenantId = tenantIsolationStrict()
+      ? requireTenantFromRequest(req, 'BPMN workflow template import')
+      : (resolveTenantFromRequest(req) ?? config.WORKGRAPH_DEFAULT_TENANT_ID)
+    await assertWorkflowCreatePermission(req.user!.userId, null, tenantId)
 
     const teamId = await resolveDefaultTeamId(req.user!.userId)
     const template = await prisma.workflow.create({
-      data: { name: templateName, createdById: req.user!.userId, teamId, currentVersion: 1 },
+      data: { name: templateName, createdById: req.user!.userId, teamId, tenantId, currentVersion: 1 },
     })
     await prisma.workflowVersion.create({
       data: { templateId: template.id, version: 1, graphSnapshot: snapshot as any },
@@ -1677,9 +1713,84 @@ const grantPermissionSchema = z.object({
   action: z.enum(['VIEW', 'EDIT', 'START', 'ADMIN']),
 })
 
+const accessGrantSchema = z.object({
+  subjectType: z.enum(['USER', 'IAM_USER', 'TEAM', 'ROLE', 'CAPABILITY']),
+  subjectId: z.string().min(1).max(200),
+  action: z.string().min(1).max(80),
+  effect: z.enum(['ALLOW', 'DENY']).default('ALLOW'),
+  startsAt: z.string().datetime().nullable().optional(),
+  endsAt: z.string().datetime().nullable().optional(),
+  metadata: z.record(z.unknown()).default({}),
+})
+
+workflowTemplatesRouter.get('/:id/access', async (req, res, next) => {
+  try {
+    await assertTemplatePermission(req.user!.userId, req.params.id, 'view')
+    const grants = await prisma.workflowAccessGrant.findMany({
+      where: { workflowId: req.params.id },
+      orderBy: [{ action: 'asc' }, { subjectType: 'asc' }, { subjectId: 'asc' }],
+    })
+    res.json({ items: grants })
+  } catch (err) { next(err) }
+})
+
+workflowTemplatesRouter.put('/:id/access', validate(accessGrantSchema), async (req, res, next) => {
+  try {
+    await assertTemplatePermission(req.user!.userId, req.params.id, 'edit')
+    const template = await prisma.workflow.findUnique({ where: { id: req.params.id }, select: { tenantId: true } })
+    if (!template) throw new NotFoundError('WorkflowTemplate', req.params.id)
+    const body = req.body as z.infer<typeof accessGrantSchema>
+    const grant = await prisma.workflowAccessGrant.upsert({
+      where: {
+        workflowId_subjectType_subjectId_action: {
+          workflowId: req.params.id,
+          subjectType: body.subjectType,
+          subjectId: body.subjectId,
+          action: body.action,
+        },
+      },
+      create: {
+        workflowId: req.params.id,
+        tenantId: template.tenantId,
+        subjectType: body.subjectType,
+        subjectId: body.subjectId,
+        action: body.action,
+        effect: body.effect,
+        startsAt: body.startsAt ? new Date(body.startsAt) : null,
+        endsAt: body.endsAt ? new Date(body.endsAt) : null,
+        createdById: req.user!.userId,
+        metadata: body.metadata as Prisma.InputJsonValue,
+      },
+      update: {
+        tenantId: template.tenantId,
+        effect: body.effect,
+        startsAt: body.startsAt ? new Date(body.startsAt) : null,
+        endsAt: body.endsAt ? new Date(body.endsAt) : null,
+        metadata: body.metadata as Prisma.InputJsonValue,
+      },
+    })
+    await logEvent('WorkflowAccessGrantChanged', 'WorkflowTemplate', req.params.id, req.user!.userId, {
+      grantId: grant.id, subjectType: grant.subjectType, subjectId: grant.subjectId, action: grant.action, effect: grant.effect,
+    })
+    res.json(grant)
+  } catch (err) { next(err) }
+})
+
+workflowTemplatesRouter.delete('/:id/access/:grantId', async (req, res, next) => {
+  try {
+    await assertTemplatePermission(req.user!.userId, req.params.id, 'edit')
+    const grant = await prisma.workflowAccessGrant.findFirst({ where: { id: req.params.grantId, workflowId: req.params.id } })
+    if (!grant) throw new NotFoundError('WorkflowAccessGrant', req.params.grantId)
+    await prisma.workflowAccessGrant.delete({ where: { id: grant.id } })
+    await logEvent('WorkflowAccessGrantDeleted', 'WorkflowTemplate', req.params.id, req.user!.userId, { grantId: grant.id })
+    res.status(204).end()
+  } catch (err) { next(err) }
+})
+
 workflowTemplatesRouter.get('/:id/permissions', async (req, res, next) => {
   try {
     const id = req.params.id as string
+    await assertTemplatePermission(req.user!.userId, id, 'audit_view')
     const template = await prisma.workflow.findUnique({ where: { id } })
     if (!template) throw new NotFoundError('WorkflowTemplate', id)
 
@@ -1696,6 +1807,7 @@ workflowTemplatesRouter.get('/:id/permissions', async (req, res, next) => {
 workflowTemplatesRouter.post('/:id/permissions', validate(grantPermissionSchema), async (req, res, next) => {
   try {
     const id = req.params.id as string
+    await assertTemplatePermission(req.user!.userId, id, 'edit')
     const template = await prisma.workflow.findUnique({ where: { id } })
     if (!template) throw new NotFoundError('WorkflowTemplate', id)
 
@@ -1713,6 +1825,7 @@ workflowTemplatesRouter.post('/:id/permissions', validate(grantPermissionSchema)
 
 workflowTemplatesRouter.delete('/:id/permissions/:permId', async (req, res, next) => {
   try {
+    await assertTemplatePermission(req.user!.userId, req.params.id as string, 'edit')
     await prisma.workflowPermission.delete({ where: { id: req.params.permId as string } })
     res.status(204).end()
   } catch (err) {

@@ -23,7 +23,7 @@ DEFAULT_ROLES: list[dict] = [
         "role_scope": "platform",
         "system_role": True,
         "permissions": [
-            "audit:view", "capability:view",
+            "audit:view", "capability:view", "workflow:operations:view",
             "context:token_savings:view", "workflow:audit:view",
         ],
     },
@@ -37,7 +37,7 @@ DEFAULT_ROLES: list[dict] = [
             "capability:member:add", "capability:member:remove",
             "capability:relationship:create", "capability:sharing_grant:create",
             "governance:author", "governance:approve", "consumable:approve",
-            "workflow:create", "workflow:view", "workflow:update", "workflow:execute", "workflow:approve",
+            "workflow:create", "workflow:view", "workflow:update", "workflow:delete", "workflow:execute", "workflow:assign", "workflow:approve", "workflow:audit:view", "workflow:template:publish",
             "agent:create", "agent:view", "agent:update", "agent:execute", "agent:learning:approve",
             "tool:register", "tool:view", "tool:execute",
             "context:session:view", "context:token_savings:view",
@@ -51,7 +51,7 @@ DEFAULT_ROLES: list[dict] = [
         "system_role": True,
         "permissions": [
             "workflow:create", "workflow:view", "workflow:update",
-            "workflow:template:create",
+            "workflow:template:create", "workflow:template:publish",
         ],
     },
     {
@@ -59,7 +59,7 @@ DEFAULT_ROLES: list[dict] = [
         "name": "Workflow Executor",
         "role_scope": "capability",
         "system_role": True,
-        "permissions": ["workflow:view", "workflow:execute", "context:session:view", "capability:use_shared"],
+        "permissions": ["workflow:view", "workflow:execute", "workflow:assign", "context:session:view", "capability:use_shared"],
     },
     {
         "role_key": "workflow_approver",
@@ -67,6 +67,17 @@ DEFAULT_ROLES: list[dict] = [
         "role_scope": "capability",
         "system_role": True,
         "permissions": ["workflow:view", "workflow:approve", "governance:approve", "consumable:approve", "audit:view"],
+    },
+    {
+        "role_key": "workflow_operator",
+        "name": "Workflow Operator",
+        "role_scope": "platform",
+        "system_role": True,
+        "permissions": [
+            "workflow:view", "workflow:operations:view",
+            "workflow:operations:replay", "workflow:operations:retry_delivery",
+            "workflow:operations:manage_runners", "workflow:audit:view",
+        ],
     },
     {
         "role_key": "agent_creator",

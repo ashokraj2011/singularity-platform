@@ -235,7 +235,7 @@ export async function routeWorkItem(
   // scheduler) calls with actorId=null and is exempt; the check also no-ops when
   // AUTH_PROVIDER !== 'iam'.
   if (actorId) {
-    await assertCanClaimWorkItemTarget(actorId, target.targetCapabilityId, target.id)
+    await assertCanClaimWorkItemTarget(actorId, target.targetCapabilityId, target.id, workItem.tenantId)
   }
 
   const mode = options.routingMode ?? workItem.routingMode

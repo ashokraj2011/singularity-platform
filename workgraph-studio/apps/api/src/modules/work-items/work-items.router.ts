@@ -13,6 +13,7 @@ import {
   answerWorkItemClarification,
   archiveWorkItem,
   assertCanClaimWorkItemTarget,
+  assertCanMutateWorkItem,
   assertCanViewWorkItem,
   approveWorkItem,
   canViewWorkItem,
@@ -237,7 +238,7 @@ workItemsRouter.post('/', validate(createSchema), async (req, res, next) => {
     // AUTH_PROVIDER !== 'iam'; admins bypass. Internal automation uses the service
     // functions directly (no router), so it is unaffected.
     for (const t of body.targets) {
-      await assertCanClaimWorkItemTarget(req.user!.userId, t.targetCapabilityId, `create:${t.targetCapabilityId}`)
+      await assertCanClaimWorkItemTarget(req.user!.userId, t.targetCapabilityId, `create:${t.targetCapabilityId}`, resolveTenantFromRequest(req))
     }
     const created = await createWorkItem(body, req.user!.userId)
     if (body.routingMode && body.routingMode !== 'MANUAL') {
@@ -348,7 +349,7 @@ workItemsRouter.post('/:id/dependencies', validate(dependencySchema), async (req
     const tenantHint = resolveTenantFromRequest(req)
     const successor = await withTenantDbTransaction(prisma, tx => tx.workItem.findUnique({ where: { id: req.params.id }, include: { targets: true } }), tenantHint)
     if (!successor) throw new NotFoundError('WorkItem', req.params.id)
-    await assertCanViewWorkItem(req.user!.userId, successor)
+    await assertCanMutateWorkItem(req.user!.userId, successor, 'edit')
     const tenantId = successor.tenantId ?? tenantHint ?? 'default'
     const predecessor = await withTenantDbTransaction(prisma, tx => tx.workItem.findUnique({ where: { id: req.body.predecessorId }, include: { targets: true } }), tenantId)
     if (!predecessor) throw new NotFoundError('WorkItem', req.body.predecessorId)
@@ -371,7 +372,7 @@ workItemsRouter.delete('/:id/dependencies/:dependencyId', async (req, res, next)
     const tenantHint = resolveTenantFromRequest(req)
     const workItem = await withTenantDbTransaction(prisma, tx => tx.workItem.findUnique({ where: { id: req.params.id }, include: { targets: true } }), tenantHint)
     if (!workItem) throw new NotFoundError('WorkItem', req.params.id)
-    await assertCanViewWorkItem(req.user!.userId, workItem)
+    await assertCanMutateWorkItem(req.user!.userId, workItem, 'edit')
     const tenantId = workItem.tenantId ?? tenantHint ?? 'default'
     const dependency = await withTenantDbTransaction(prisma, tx => tx.workItemDependency.findFirst({ where: { id: req.params.dependencyId, successorId: req.params.id, tenantId } }), tenantId)
     if (!dependency) throw new NotFoundError('WorkItemDependency', req.params.dependencyId)

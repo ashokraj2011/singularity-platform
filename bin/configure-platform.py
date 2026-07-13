@@ -84,6 +84,7 @@ CONFIG_KEY_MAP = {
     "platform.authOptional": "AUTH_OPTIONAL",
     "platform.requireTenantId": "REQUIRE_TENANT_ID",
     "platform.tenantIsolationMode": "TENANT_ISOLATION_MODE",
+    "platform.workgraphDbTenantIsolationRequired": "WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED",
     "platform.workgraphProxyServiceToken": "WORKGRAPH_PROXY_SERVICE_TOKEN",
     "identity.jwtSecret": "JWT_SECRET",
     "identity.iamBaseUrl": "IAM_BASE_URL",
@@ -645,6 +646,7 @@ def default_values(args: argparse.Namespace) -> dict[str, str]:
         "AUTH_OPTIONAL": pick("AUTH_OPTIONAL", "auth_optional", "AUTH_OPTIONAL", "true"),
         "REQUIRE_TENANT_ID": pick("REQUIRE_TENANT_ID", "require_tenant_id", "REQUIRE_TENANT_ID", "false"),
         "TENANT_ISOLATION_MODE": pick("TENANT_ISOLATION_MODE", "tenant_isolation_mode", "TENANT_ISOLATION_MODE", "off"),
+        "WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED": pick("WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED", "workgraph_db_tenant_isolation_required", "WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED", "false"),
         "JWT_SECRET": jwt_secret,
         "LOCAL_SUPER_ADMIN_EMAIL": bootstrap_email,
         "LOCAL_SUPER_ADMIN_PASSWORD": bootstrap_password,
@@ -764,6 +766,7 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
                 "AUTH_OPTIONAL",
                 "REQUIRE_TENANT_ID",
                 "TENANT_ISOLATION_MODE",
+                "WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED",
                 "JWT_SECRET",
                 "IAM_BASE_URL",
                 "IAM_SERVICE_URL",
@@ -974,6 +977,8 @@ def target_envs(values: dict[str, str]) -> dict[Path, dict[str, str]]:
             "JWT_SECRET": values["JWT_SECRET"],
             "AUTH_PROVIDER": "iam",
             "TENANT_ISOLATION_MODE": values["TENANT_ISOLATION_MODE"],
+            "REQUIRE_TENANT_ID": values["REQUIRE_TENANT_ID"],
+            "WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED": values["WORKGRAPH_DB_TENANT_ISOLATION_REQUIRED"],
             "DEFAULT_GOVERNANCE_MODE": values["DEFAULT_GOVERNANCE_MODE"],
             "WORKGRAPH_FORCE_GOVERNED_CODING": values["WORKGRAPH_FORCE_GOVERNED_CODING"],
             "CONTEXT_FABRIC_GOVERN_SIDE_CALLERS": values["CONTEXT_FABRIC_GOVERN_SIDE_CALLERS"],
@@ -1221,7 +1226,7 @@ def command_mint_workgraph_proxy_token(args: argparse.Namespace) -> None:
 
     payload = {
         "service_name": "platform-web",
-        "scopes": ["read:reference-data", "read:mcp-servers", "publish:events"],
+        "scopes": ["read:reference-data", "read:mcp-servers", "publish:events", "authz:check"],
         "tenant_ids": tenant_ids,
         "ttl_hours": args.ttl_hours,
     }
@@ -1258,6 +1263,7 @@ def command_production_guardrails(args: argparse.Namespace) -> None:
         ("platform.authOptional", False),
         ("platform.requireTenantId", True),
         ("platform.tenantIsolationMode", "strict"),
+        ("platform.workgraphDbTenantIsolationRequired", True),
         ("tokens.iamServiceTokenTenantIds", tenant_scope),
         ("tokens.workgraphInternalTokenTenantIds", tenant_scope),
         ("agentRuntime.providerManifestSignatureMode", args.provider_manifest_signature_mode),
@@ -2266,7 +2272,7 @@ def run_production_mode_doctor(record, merged: dict[str, str]) -> None:
         )
     else:
         scopes = {scope for scope in workgraph_proxy_payload.get("scopes", []) if isinstance(scope, str)}
-        missing_scopes = sorted({"read:reference-data", "read:mcp-servers", "publish:events"} - scopes)
+        missing_scopes = sorted({"read:reference-data", "read:mcp-servers", "publish:events", "authz:check"} - scopes)
         token_tenant_ids = sorted({tenant_id.strip() for tenant_id in workgraph_proxy_payload.get("tenant_ids", []) if isinstance(tenant_id, str) and tenant_id.strip()})
         if missing_scopes:
             record(

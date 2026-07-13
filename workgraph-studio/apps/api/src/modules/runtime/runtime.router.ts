@@ -349,7 +349,11 @@ runtimeRouter.get('/inbox', async (req, res, next) => {
       const roleQueue = queueItems.filter(q => q.roleKey && q.capabilityId).slice(0, ROLE_LOOKUP_BUDGET)
       const checks = await Promise.all(
         roleQueue.map(q =>
-          authzCheck(ctx.iamUserId!, q.capabilityId!, 'claim_task', { resourceType: 'TeamQueueItem', resourceId: q.id })
+          authzCheck(ctx.iamUserId!, q.capabilityId!, 'workflow:assign', {
+            resourceType: 'TeamQueueItem',
+            resourceId: q.id,
+            tenantId,
+          })
             .then(r => [q.id, r.allowed] as const)
             .catch(() => [q.id, false] as const),
         ),
@@ -361,7 +365,11 @@ runtimeRouter.get('/inbox', async (req, res, next) => {
         .slice(0, ROLE_LOOKUP_BUDGET)
       const workItemChecks = await Promise.all(
         unclaimedWorkItems.map(t =>
-          authzCheck(ctx.iamUserId!, t.targetCapabilityId, 'claim_task', { resourceType: 'WorkItemTarget', resourceId: t.id })
+          authzCheck(ctx.iamUserId!, t.targetCapabilityId, 'workflow:assign', {
+            resourceType: 'WorkItemTarget',
+            resourceId: t.id,
+            tenantId,
+          })
             .then(r => [t.id, r.allowed] as const)
             .catch(() => [t.id, false] as const),
         ),

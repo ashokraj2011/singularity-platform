@@ -7,7 +7,6 @@ import { logEvent, publishOutbox } from '../../lib/audit'
 import { ForbiddenError, NotFoundError, ValidationError } from '../../lib/errors'
 import { config } from '../../config'
 import { authzCheck, listCapabilityRelationships, isCapabilityGoverning } from '../../lib/iam/client'
-import { isAdminUser } from '../../lib/permissions/admin'
 import { assertTemplatePermission } from '../../lib/permissions/workflowTemplate'
 import { cloneDesignToRun } from '../workflow/lib/cloneDesignToRun'
 import { getWorkflowBudgetOverview } from '../workflow/runtime/budget'
@@ -400,15 +399,16 @@ async function loadActor(userId: string) {
   })
 }
 
-export async function assertCanClaimWorkItemTarget(userId: string, targetCapabilityId: string, resourceId: string): Promise<void> {
+export async function assertCanClaimWorkItemTarget(userId: string, targetCapabilityId: string, resourceId: string, tenantId?: string | null): Promise<void> {
   if (config.AUTH_PROVIDER !== 'iam') return
   const actor = await loadActor(userId)
-  const isAdmin = await isAdminUser(userId)
+  const isAdmin = false
   if (isAdmin) return
   if (!actor?.iamUserId) throw new ForbiddenError('IAM identity is required to claim this WorkItem')
-  const result = await authzCheck(actor.iamUserId, targetCapabilityId, 'claim_task', {
+  const result = await authzCheck(actor.iamUserId, targetCapabilityId, 'workflow:assign', {
     resourceType: 'WorkItemTarget',
     resourceId,
+    tenantId: tenantId ?? config.WORKGRAPH_DEFAULT_TENANT_ID,
   })
   if (!result.allowed) throw new ForbiddenError('User is not eligible to claim WorkItems for this capability')
 }
@@ -418,6 +418,7 @@ type WorkItemViewRow = {
   parentCapabilityId: string | null
   createdById: string | null
   approvedById?: string | null
+  tenantId?: string | null
   targets: Array<{
     id: string
     targetCapabilityId: string
@@ -431,14 +432,15 @@ export async function canViewWorkItem(userId: string, workItem: WorkItemViewRow)
   if (workItem.targets.some(t => t.claimedById === userId)) return true
 
   const actor = await loadActor(userId)
-  const isAdmin = await isAdminUser(userId)
+  const isAdmin = false
   if (isAdmin) return true
   if (!actor?.iamUserId) return false
 
   for (const target of workItem.targets) {
-    const result = await authzCheck(actor.iamUserId, target.targetCapabilityId, 'claim_task', {
+    const result = await authzCheck(actor.iamUserId, target.targetCapabilityId, 'workflow:view', {
       resourceType: 'WorkItemTarget',
       resourceId: target.id,
+      tenantId: workItem.tenantId ?? config.WORKGRAPH_DEFAULT_TENANT_ID,
     }).catch(() => ({ allowed: false }))
     if (result.allowed) return true
   }
@@ -449,6 +451,25 @@ export async function assertCanViewWorkItem(userId: string, workItem: WorkItemVi
   if (!(await canViewWorkItem(userId, workItem))) {
     throw new ForbiddenError('User is not eligible to view this WorkItem')
   }
+}
+
+type WorkItemAction = 'edit' | 'delete' | 'route' | 'claim' | 'start'
+
+export async function assertCanMutateWorkItem(userId: string, workItem: WorkItemViewRow, action: WorkItemAction): Promise<void> {
+  if (config.AUTH_PROVIDER !== 'iam') return
+  const actor = await loadActor(userId)
+  if (!actor?.iamUserId) throw new ForbiddenError('IAM identity is required to mutate this WorkItem')
+  const permission = action === 'route' || action === 'claim' ? 'workflow:assign' : action === 'start' ? 'workflow:execute' : 'workflow:update'
+  const targets = workItem.targets.length > 0 ? workItem.targets : []
+  for (const target of targets) {
+    const result = await authzCheck(actor.iamUserId, target.targetCapabilityId, permission, {
+      resourceType: 'WorkItem',
+      resourceId: workItem.id,
+      tenantId: workItem.tenantId ?? config.WORKGRAPH_DEFAULT_TENANT_ID,
+    }).catch(() => ({ allowed: false }))
+    if (result.allowed) return
+  }
+  throw new ForbiddenError(`User is not authorized to ${action} this WorkItem`)
 }
 
 // Statuses whose work item may still be edited. Terminal states are frozen.
@@ -488,7 +509,7 @@ export async function updateWorkItem(workItemId: string, userId: string, input: 
     include: { targets: true },
   })
   if (!workItem) throw new NotFoundError('WorkItem', workItemId)
-  await assertCanViewWorkItem(userId, workItem)
+  await assertCanMutateWorkItem(userId, workItem, 'edit')
 
   if (!EDITABLE_WORK_ITEM_STATUSES.has(workItem.status)) {
     throw new ValidationError(
@@ -575,7 +596,7 @@ export async function claimWorkItemTarget(workItemId: string, targetId: string, 
   if (!['QUEUED', 'REWORK_REQUESTED'].includes(target.status) && target.claimedById !== userId) {
     throw new ValidationError(`WorkItem target cannot be claimed from status ${target.status}`)
   }
-  await assertCanClaimWorkItemTarget(userId, target.targetCapabilityId, target.id)
+  await assertCanClaimWorkItemTarget(userId, target.targetCapabilityId, target.id, target.workItem.tenantId)
 
   const updated = await prisma.workItemTarget.update({
     where: { id: target.id },
@@ -596,7 +617,7 @@ export async function archiveWorkItem(workItemId: string, userId: string) {
     include: { targets: true },
   })
   if (!workItem) throw new NotFoundError('WorkItem', workItemId)
-  await assertCanViewWorkItem(userId, workItem)
+  await assertCanMutateWorkItem(userId, workItem, 'delete')
   if (workItem.originType !== 'CAPABILITY_LOCAL') {
     throw new ValidationError('Only capability-created WorkItems can be archived. Parent-delegated WorkItems must be returned, completed, or cancelled by the parent capability.')
   }
@@ -664,7 +685,7 @@ export async function detachWorkItemFromWorkflow(workItemId: string, userId: str
     include: { targets: true },
   })
   if (!workItem) throw new NotFoundError('WorkItem', workItemId)
-  await assertCanViewWorkItem(userId, workItem)
+  await assertCanMutateWorkItem(userId, workItem, 'edit')
   if (!workItem.sourceWorkflowInstanceId && !workItem.sourceWorkflowNodeId && workItem.originType === 'CAPABILITY_LOCAL') {
     return prisma.workItem.findUniqueOrThrow({
       where: { id: workItemId },
@@ -829,7 +850,7 @@ export async function detachWorkItemTargetFromWorkflow(
     include: { workItem: { include: { targets: true } } },
   })
   if (!target) throw new NotFoundError('WorkItemTarget', targetId)
-  await assertCanViewWorkItem(userId, target.workItem)
+  await assertCanMutateWorkItem(userId, target.workItem, 'edit')
   if (['COMPLETED', 'ARCHIVED'].includes(target.workItem.status)) {
     throw new ValidationError(`WorkItem target cannot be detached when WorkItem is ${target.workItem.status}`)
   }

@@ -38,6 +38,7 @@ export type AuthzCheckRequest = {
   user_id: string;
   capability_id: string;
   action: string;
+  tenant_id: string;
   resource_type?: string;
   resource_id?: string;
   requesting_capability_id?: string;

@@ -9,7 +9,8 @@ import { createWorkItem } from '../../work-items/work-items.service'
 import { routeWorkItem } from '../../work-items/work-item-routing.service'
 import { findAttachableWorkItemForTrigger, resolveTriggerCorrelationKey, triggerDocumentsFromPayload, claimTriggerEvent, recordTriggerEventWorkItem } from '../../work-items/work-item-trigger-attach'
 import { recordOf } from '../../metadata/metadata.service'
-import { tenantIdForCreate } from '../../../lib/tenant-isolation'
+import { tenantIdForCreate, resolveTenantFromRequest, tenantIsolationStrict, requireTenantFromRequest } from '../../../lib/tenant-isolation'
+import { assertTemplatePermission, canViewTemplate } from '../../../lib/permissions/workflowTemplate'
 import { startInstance } from '../runtime/WorkflowRuntime'
 
 // Constant-time secret comparison. Hash both sides to a fixed 32-byte digest
@@ -34,30 +35,46 @@ const createTriggerSchema = z.object({
 triggersRouter.post('/', validate(createTriggerSchema), async (req, res, next) => {
   try {
     const body = req.body as z.infer<typeof createTriggerSchema>
+    const template = await assertTemplatePermission(req.user!.userId, body.templateId, 'edit')
     let config = body.config
     // For WEBHOOK, auto-generate a secret if missing
     if (body.type === 'WEBHOOK' && typeof (config as Record<string, unknown>).secret !== 'string') {
       config = { ...config, secret: crypto.randomBytes(24).toString('hex') }
     }
-    const trigger = await prisma.workflowTrigger.create({
-      data: { ...body, config: config as object },
-    })
+    const tenantId = template.tenantId ?? (tenantIsolationStrict() ? requireTenantFromRequest(req, 'workflow trigger creation') : resolveTenantFromRequest(req) ?? 'default')
+    const trigger = await withTenantDbTransaction(prisma, tx => tx.workflowTrigger.create({
+      data: { ...body, config: config as object, tenantId },
+    }), tenantId)
     res.status(201).json(trigger)
   } catch (err) { next(err) }
 })
 
 triggersRouter.get('/', async (req, res, next) => {
   try {
+    const tenantId = tenantIsolationStrict() ? requireTenantFromRequest(req, 'workflow trigger listing') : resolveTenantFromRequest(req)
     const { templateId } = req.query
-    const where = templateId ? { templateId: String(templateId) } : {}
-    const triggers = await prisma.workflowTrigger.findMany({ where, orderBy: { createdAt: 'desc' } })
-    res.json(triggers)
+    if (templateId) await assertTemplatePermission(req.user!.userId, String(templateId), 'view')
+    const where = { ...(templateId ? { templateId: String(templateId) } : {}), ...(tenantId ? { tenantId } : {}) }
+    const triggers = await withTenantDbTransaction(prisma, tx => tx.workflowTrigger.findMany({ where, orderBy: { createdAt: 'desc' } }), tenantId)
+    if (templateId) {
+      res.json(triggers)
+      return
+    }
+    const visibility = await Promise.all([...new Set(triggers.map(trigger => trigger.templateId))].map(async id => ({
+      id,
+      allowed: await canViewTemplate(req.user!.userId, id),
+    })))
+    const visibleTemplateIds = new Set(visibility.filter(item => item.allowed).map(item => item.id))
+    res.json(triggers.filter(trigger => visibleTemplateIds.has(trigger.templateId)))
   } catch (err) { next(err) }
 })
 
 triggersRouter.delete('/:id', async (req, res, next) => {
   try {
-    await prisma.workflowTrigger.delete({ where: { id: req.params.id } })
+    const trigger = await withTenantDbTransaction(prisma, tx => tx.workflowTrigger.findUnique({ where: { id: req.params.id }, select: { templateId: true, tenantId: true } }), resolveTenantFromRequest(req))
+    if (!trigger) return res.status(204).end()
+    await assertTemplatePermission(req.user!.userId, trigger.templateId, 'edit')
+    await withTenantDbTransaction(prisma, tx => tx.workflowTrigger.delete({ where: { id: req.params.id } }), trigger.tenantId ?? resolveTenantFromRequest(req))
     res.status(204).end()
   } catch (err) { next(err) }
 })

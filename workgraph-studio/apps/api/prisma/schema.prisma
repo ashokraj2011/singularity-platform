@@ -668,6 +668,7 @@ model Workflow {
   createdById    String?
   teamId         String
   team           Team                  @relation(fields: [teamId], references: [id])
+  tenantId       String?               @default("default")
   // ID of the owning capability in Singularity IAM.  When set, this is the
   // authorization boundary — the permission helper calls iamClient.authzCheck
   // against this capability.  When null, falls back to the legacy team rule.
@@ -706,6 +707,7 @@ model Workflow {
   triggers       WorkflowTrigger[]
   routingPolicies WorkItemRoutingPolicy[]
   permissions    WorkflowPermission[]
+  accessGrants   WorkflowAccessGrant[]
   instances      WorkflowInstance[]
   runSnapshots   RunSnapshot[]
   programSteps   WorkProgramStep[]
@@ -715,6 +717,7 @@ model Workflow {
   updatedAt      DateTime              @updatedAt
 
   @@index([teamId])
+  @@index([tenantId])
   @@index([capabilityId])
   @@index([capabilityId, workflowTypeKey, status])
   @@index([workflowTypeKey, isDefaultForType])
@@ -765,6 +768,31 @@ model WorkflowPermission {
 
   @@unique([templateId, roleId, action])
   @@map("workflow_permissions")
+}
+
+// Tenant-scoped resource grants. IAM capability permissions remain the coarse
+// authorization boundary; these grants provide explicit workflow sharing and
+// deny rules for users, teams, roles, and capabilities.
+model WorkflowAccessGrant {
+  id          String    @id @default(uuid())
+  workflowId  String
+  tenantId    String?   @default("default")
+  subjectType String
+  subjectId   String
+  action      String
+  effect      String    @default("ALLOW")
+  startsAt    DateTime?
+  endsAt      DateTime?
+  createdById String?
+  metadata    Json      @default("{}")
+  workflow    Workflow  @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([workflowId, subjectType, subjectId, action])
+  @@index([tenantId, subjectType, subjectId])
+  @@index([workflowId, action, effect])
+  @@map("workflow_access_grants")
 }
 
 enum TriggerType {
@@ -916,6 +944,7 @@ model WorkflowInstance {
   completedAt       DateTime?
   archivedAt        DateTime?
   createdById       String?
+  authorizationSnapshot WorkflowAuthorizationSnapshot?
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
 
@@ -923,6 +952,30 @@ model WorkflowInstance {
   @@index([tenantId])
   @@index([status], map: "ix_workflow_instances_status")
   @@map("workflow_instances")
+}
+
+// Immutable start-time authorization evidence. Sensitive actions still perform
+// live checks; this snapshot exists for reproducibility and audit.
+model WorkflowAuthorizationSnapshot {
+  id                 String           @id @default(uuid())
+  instanceId         String           @unique
+  tenantId           String?
+  actorIamUserId     String?
+  actorWorkGraphId   String?
+  runOwnerId         String?
+  workflowId         String?
+  capabilityId       String?
+  policyVersion      String           @default("v1")
+  effectiveRoles     Json             @default("[]")
+  effectivePermissions Json           @default("[]")
+  resourceGrants     Json             @default("[]")
+  snapshotDigest     String
+  capturedAt         DateTime         @default(now())
+  instance           WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, actorIamUserId])
+  @@index([workflowId])
+  @@map("workflow_authorization_snapshots")
 }
 
 model WorkflowRunBudget {
