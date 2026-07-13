@@ -1218,6 +1218,7 @@ model WorkItem {
   specifications          SpecificationVersion[]
   developmentTarget       DevelopmentTarget?
   implementationSubmissions ImplementationSubmission[]
+  reconciliationRuns      ReconciliationRun[]
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
   tenantId                String?          @default("default")
@@ -1318,11 +1319,103 @@ model ImplementationSubmission {
 
   specificationVersion SpecificationVersion @relation(fields: [specificationVersionId], references: [id], onDelete: Cascade)
   workItem             WorkItem             @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  reconciliationRuns   ReconciliationRun[]
 
   @@unique([workItemId, repository, headCommitSha])
   @@index([workItemId, createdAt])
   @@index([tenantId], map: "ix_implementation_submissions_tenant")
   @@map("implementation_submissions")
+}
+
+enum ReconciliationStatus {
+  PENDING
+  RUNNING
+  PASSED
+  FAILED
+  PARTIAL
+  ERROR
+}
+
+enum RequirementVerdictValue {
+  PASS
+  PARTIAL
+  FAIL
+  NOT_APPLICABLE
+  NOT_VERIFIED
+}
+
+enum ReconciliationFindingSeverity {
+  ERROR
+  WARNING
+  INFO
+}
+
+// One reconciliation of a single ImplementationSubmission against the approved specification it
+// claims. The DETERMINISTIC layer (declared-evidence + path/test policy) runs in-request and is
+// pure; the dynamic (test-execution) layer will attach later via the runner queue. The run is the
+// evidence spine (traceId) tying a per-requirement verdict matrix to the immutable submission.
+model ReconciliationRun {
+  id                     String               @id @default(uuid())
+  workItemId             String
+  submissionId           String
+  specificationVersionId String
+  specificationHash      String?
+  mode                   String               @default("DETERMINISTIC")
+  status                 ReconciliationStatus  @default(PENDING)
+  summary                Json                  @default("{}")
+  traceId                String?
+  startedById            String?
+  startedAt              DateTime              @default(now())
+  completedAt            DateTime?
+  tenantId               String?               @default("default")
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  submission ImplementationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  workItem   WorkItem                 @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  verdicts   RequirementVerdict[]
+  findings   ReconciliationFinding[]
+
+  @@index([workItemId, createdAt])
+  @@index([submissionId])
+  @@index([tenantId], map: "ix_reconciliation_runs_tenant")
+  @@map("reconciliation_runs")
+}
+
+// Per-requirement outcome of a reconciliation run — the row-level cells of the verdict matrix.
+model RequirementVerdict {
+  id                  String                  @id @default(uuid())
+  reconciliationRunId String
+  requirementId       String
+  priority            String?
+  verdict             RequirementVerdictValue
+  claimStatus         String?
+  rationale           String?
+  evidence            Json                    @default("[]")
+  createdAt           DateTime                @default(now())
+
+  reconciliationRun ReconciliationRun @relation(fields: [reconciliationRunId], references: [id], onDelete: Cascade)
+
+  @@unique([reconciliationRunId, requirementId])
+  @@index([reconciliationRunId])
+  @@map("requirement_verdicts")
+}
+
+// A single issue surfaced by a reconciliation run — run-level (policy/path) or per-requirement.
+model ReconciliationFinding {
+  id                  String                        @id @default(uuid())
+  reconciliationRunId String
+  requirementId       String?
+  kind                String
+  severity            ReconciliationFindingSeverity @default(WARNING)
+  message             String
+  detail              Json?
+  createdAt           DateTime                      @default(now())
+
+  reconciliationRun ReconciliationRun @relation(fields: [reconciliationRunId], references: [id], onDelete: Cascade)
+
+  @@index([reconciliationRunId])
+  @@map("reconciliation_findings")
 }
 
 model WorkItemDependency {
