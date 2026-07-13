@@ -2,10 +2,11 @@ import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../../../lib/api'
 import {
-  cardStyle, primaryButtonStyle, secondaryButtonStyle, inputStyle, monoTextareaStyle,
+  cardStyle, primaryButtonStyle, secondaryButtonStyle, inputStyle,
   thStyle, tdStyle, mutedText, sectionTitle, badgeStyle,
 } from './workspaceStyles'
 import { errText } from './errText'
+import { SpecificationEditor } from './SpecificationEditor'
 
 interface VersionSummary {
   id: string
@@ -32,7 +33,6 @@ export function SpecificationTab({ workItemId }: { workItemId: string }) {
   const qc = useQueryClient()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
-  const [draftJson, setDraftJson] = useState('')
   const [comment, setComment] = useState('')
   const [validation, setValidation] = useState<ValidationResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -58,11 +58,10 @@ export function SpecificationTab({ workItemId }: { workItemId: string }) {
   const header = (pkg?.version ?? {}) as { status?: string; revision?: number; number?: number; contentHash?: string }
   const editable = header.status === 'DRAFT' || header.status === 'CHANGES_REQUESTED'
 
-  const bodyForEdit = useMemo(() => {
-    if (!pkg) return ''
+  const editableBody = useMemo(() => {
     const body: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(pkg)) if (!HEADER_KEYS.has(k)) body[k] = v
-    return JSON.stringify(body, null, 2)
+    if (pkg) for (const [k, v] of Object.entries(pkg)) if (!HEADER_KEYS.has(k)) body[k] = v
+    return body
   }, [pkg])
 
   const refetchAll = () => {
@@ -93,12 +92,10 @@ export function SpecificationTab({ workItemId }: { workItemId: string }) {
     onError: (e) => setError(errText(e)),
   })
   const saveMut = useMutation({
-    mutationFn: () => {
-      const body = JSON.parse(draftJson)
-      return api.patch(`/work-items/${workItemId}/specifications/${currentId}`, { ...body, expectedRevision: header.revision ?? 1 }).then(r => r.data)
-    },
+    mutationFn: (body: Record<string, unknown>) =>
+      api.patch(`/work-items/${workItemId}/specifications/${currentId}`, { ...body, expectedRevision: header.revision ?? 1 }).then(r => r.data),
     onSuccess: () => { setEditing(false); setValidation(null); refetchAll() },
-    onError: (e) => setError(e instanceof SyntaxError ? `Invalid JSON: ${e.message}` : errText(e)),
+    onError: (e) => setError(errText(e)),
   })
   const validateMut = useMutation({
     mutationFn: () => api.post(`/work-items/${workItemId}/specifications/${currentId}/validate`).then(r => r.data as ValidationResult),
@@ -224,8 +221,8 @@ export function SpecificationTab({ workItemId }: { workItemId: string }) {
                       {validateMut.isPending ? 'Validating…' : 'Validate'}
                     </button>
                     {editable && (
-                      <button style={secondaryButtonStyle} onClick={() => { setEditing((e) => !e); setDraftJson(bodyForEdit); setError(null) }}>
-                        {editing ? 'Cancel edit' : 'Edit (JSON)'}
+                      <button style={secondaryButtonStyle} onClick={() => { setEditing((e) => !e); setError(null) }}>
+                        {editing ? 'Cancel edit' : 'Edit'}
                       </button>
                     )}
                     {editable && (
@@ -245,16 +242,13 @@ export function SpecificationTab({ workItemId }: { workItemId: string }) {
                 </section>
 
                 {editing && (
-                  <section style={cardStyle}>
-                    <h4 style={{ ...sectionTitle, fontSize: 13 }}>Edit specification body (JSON)</h4>
-                    <textarea style={monoTextareaStyle} value={draftJson} onChange={(e) => setDraftJson(e.target.value)} spellCheck={false} />
-                    <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                      <button style={primaryButtonStyle} disabled={saveMut.isPending} onClick={() => clearAnd(() => saveMut.mutate())}>
-                        {saveMut.isPending ? 'Saving…' : 'Save draft'}
-                      </button>
-                      <span style={mutedText}>Optimistic concurrency: saving from revision {header.revision}.</span>
-                    </div>
-                  </section>
+                  <SpecificationEditor
+                    initialBody={editableBody}
+                    revision={header.revision ?? 1}
+                    saving={saveMut.isPending}
+                    onSave={(body) => clearAnd(() => saveMut.mutate(body))}
+                    onCancel={() => setEditing(false)}
+                  />
                 )}
 
                 {validation && (
