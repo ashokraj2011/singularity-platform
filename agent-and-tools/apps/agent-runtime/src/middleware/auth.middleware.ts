@@ -8,6 +8,9 @@ export interface AuthUser {
   email?: string;
   capability_ids?: string[];
   roles?: string[];
+  // Effective platform-level permission keys from IAM /me (e.g. "platform:all"),
+  // so gating can bind to the permission model instead of only role-name strings.
+  permissions?: string[];
   is_platform_admin?: boolean;
   is_super_admin?: boolean;
 }
@@ -26,6 +29,7 @@ type IamMeResponse = {
   is_super_admin?: boolean;
   roles?: string[];
   capability_ids?: string[];
+  permissions?: string[];
 };
 
 const IAM_AUTH_VERIFY_TIMEOUT_MS = env.IAM_AUTH_VERIFY_TIMEOUT_SEC * 1000;
@@ -53,6 +57,7 @@ async function verifyWithIam(token: string): Promise<AuthUser | null> {
       email: me.email,
       roles: me.roles,
       capability_ids: me.capability_ids,
+      permissions: me.permissions,
       is_super_admin: Boolean(me.is_super_admin),
       is_platform_admin: Boolean(me.is_super_admin),
     };

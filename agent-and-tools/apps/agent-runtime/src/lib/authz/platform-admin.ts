@@ -7,11 +7,25 @@ export function rolesOf(actor: AuthUser | undefined): string[] {
     .filter(Boolean);
 }
 
+// Permission key that grants platform-admin access, resolved from config (default
+// "platform:all") so gating binds to the IAM permission model rather than only
+// role-name strings. Read from env directly to keep this module self-contained.
+const PLATFORM_ADMIN_PERMISSION = (process.env.PLATFORM_ADMIN_PERMISSION || "platform:all").trim().toLowerCase();
+
+export function permissionsOf(actor: AuthUser | undefined): string[] {
+  return (actor?.permissions ?? [])
+    .map((permission) => permission.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 export function isPlatformAdmin(actor: AuthUser | undefined): boolean {
   const roles = rolesOf(actor);
   return Boolean(
     actor?.is_platform_admin ||
     actor?.is_super_admin ||
+    // Additive: honor the configured platform-admin permission from IAM /me, while
+    // keeping the existing super-admin flag + legacy role-string paths as fallbacks.
+    permissionsOf(actor).includes(PLATFORM_ADMIN_PERMISSION) ||
     roles.includes("platform-admin") ||
     roles.includes("super-admin"),
   );
