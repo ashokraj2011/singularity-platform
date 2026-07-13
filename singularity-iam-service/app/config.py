@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     LOCAL_SUPER_ADMIN_EMAIL: str = "admin@singularity.local"
     LOCAL_SUPER_ADMIN_PASSWORD: str = "change-me-now"
 
+    # Optional JSON files that ADD site-specific permissions / roles to the code
+    # defaults (default_permissions.py / default_roles.py) at seed time, so a new
+    # key or role ships as config instead of a code change. Purely additive — a
+    # file entry never overrides or removes a code default. See app/seed/catalog_files.py.
+    IAM_PERMISSION_CATALOG_PATH: str | None = None
+    IAM_ROLE_CATALOG_PATH: str | None = None
+
     # IAM_AUTH_MODE controls how humans authenticate to IAM:
     #   local — seeded/local password accounts, suitable for development
     #   oidc  — external OpenID Connect identity provider, production SSO path

@@ -1,0 +1,11 @@
+{
+  "roles": [
+    {
+      "role_key": "billing_clerk",
+      "name": "Billing Clerk",
+      "role_scope": "platform",
+      "system_role": false,
+      "permissions": ["billing:refund", "billing:void"]
+    }
+  ]
+}
