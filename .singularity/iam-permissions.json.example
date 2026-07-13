@@ -1,0 +1,6 @@
+{
+  "permissions": [
+    { "permission_key": "billing:refund", "category": "billing" },
+    { "permission_key": "billing:void", "category": "billing" }
+  ]
+}

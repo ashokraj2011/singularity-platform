@@ -5,6 +5,12 @@ from sqlalchemy import select, text
 from app.models import Permission, Role, RolePermission, User, LocalCredential
 from app.seed.default_permissions import DEFAULT_PERMISSIONS
 from app.seed.default_roles import DEFAULT_ROLES
+from app.seed.catalog_files import (
+    load_permission_catalog_file,
+    load_role_catalog_file,
+    merge_permissions,
+    merge_roles,
+)
 from app.auth.password import hash_password
 from app.config import settings
 
@@ -20,7 +26,10 @@ async def seed_all(db: AsyncSession) -> None:
 
 
 async def _seed_permissions(db: AsyncSession) -> None:
-    for p in DEFAULT_PERMISSIONS:
+    permissions = merge_permissions(
+        DEFAULT_PERMISSIONS, load_permission_catalog_file(settings.IAM_PERMISSION_CATALOG_PATH)
+    )
+    for p in permissions:
         existing = (await db.execute(
             select(Permission).where(Permission.permission_key == p["permission_key"])
         )).scalar_one_or_none()
@@ -30,7 +39,8 @@ async def _seed_permissions(db: AsyncSession) -> None:
 
 
 async def _seed_roles(db: AsyncSession) -> None:
-    for r in DEFAULT_ROLES:
+    roles = merge_roles(DEFAULT_ROLES, load_role_catalog_file(settings.IAM_ROLE_CATALOG_PATH))
+    for r in roles:
         perm_keys = r.pop("permissions", [])
         existing = (await db.execute(select(Role).where(Role.role_key == r["role_key"]))).scalar_one_or_none()
         if not existing:
