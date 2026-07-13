@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { CSSProperties, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import {
   AlertTriangle,
@@ -82,6 +82,9 @@ type PlannerDocument = { title: string; content: string };
 
 type LoopStrategyOption = { id: string; name: string; kind?: string; status?: string };
 
+type GraphNode = { id: string; nodeType: string; label: string };
+type GeneratedGraph = { nodes: GraphNode[]; edges: Array<{ sourceNodeId: string; targetNodeId: string }> };
+
 type ConverseResult = {
   sessionId?: string;
   reply: string;
@@ -159,6 +162,8 @@ export function WorkflowPlannerConsole() {
   const { data: loopStrategyRows } = useSWR<unknown>("planner-loop-strategies", () => workgraphFetch<unknown>("/loop-strategies?kind=DIRECT_LLM_TASK"));
   const loopStrategies = useMemo(() => normalizeLoopStrategies(loopStrategyRows), [loopStrategyRows]);
   const attachedDocuments = useMemo(() => documents.filter((doc) => doc.content.trim().length > 0), [documents]);
+  const [graphPreview, setGraphPreview] = useState<GeneratedGraph | null>(null);
+  const [previewing, setPreviewing] = useState(false);
 
   useEffect(() => {
     if (!capabilityId && capabilities[0]?.id) setCapabilityId(capabilities[0].id);
@@ -332,6 +337,34 @@ export function WorkflowPlannerConsole() {
       setError(`Launch failed: ${errorText(err)}`);
     } finally {
       setLaunching(false);
+    }
+  }
+
+  async function previewGraph() {
+    const prepared = sanitizeForCommit(milestones, capabilityId.trim());
+    if (!validCapability || (prepared.length === 0 && story.trim().length < 8)) {
+      setError("Create a roadmap or provide a story before previewing the workflow.");
+      return;
+    }
+    setPreviewing(true);
+    setError(null);
+    try {
+      const graph = normalizeGraph(await workgraphFetch<unknown>("/planner/preview-graph", {
+        method: "POST",
+        body: JSON.stringify({
+          capabilityId: capabilityId.trim(),
+          milestones: prepared.length ? prepared : undefined,
+          goal: story.trim() || undefined,
+          modelAlias,
+          ...(loopStrategyId ? { loopStrategyId } : {}),
+          ...(governancePreset ? { governancePreset } : {}),
+        }),
+      }));
+      setGraphPreview(graph);
+    } catch (err) {
+      setError(`Preview failed: ${errorText(err)}`);
+    } finally {
+      setPreviewing(false);
     }
   }
 
@@ -532,6 +565,10 @@ export function WorkflowPlannerConsole() {
                   {launching ? <Loader2 size={15} className="animate-spin" /> : <Rocket size={15} />}
                   Create + Launch
                 </button>
+                <button className="btn-secondary" type="button" disabled={previewing || !validCapability} onClick={() => void previewGraph()}>
+                  {previewing ? <Loader2 size={15} className="animate-spin" /> : <GitBranch size={15} />}
+                  Preview graph
+                </button>
               </div>
             </div>
 
@@ -559,6 +596,8 @@ export function WorkflowPlannerConsole() {
                 <input value={governancePreset} onChange={(event) => setGovernancePreset(event.target.value)} style={inputStyle()} />
               </Field>
             </div>
+
+            {graphPreview && <GraphPreviewPanel graph={graphPreview} />}
 
             {launchResult && (
               <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
@@ -828,6 +867,37 @@ function RepoContextPanel({ capabilities }: { capabilities: AssignableCapability
   );
 }
 
+function graphNodeTone(nodeType: string): string {
+  if (nodeType === "START" || nodeType === "END") return "var(--color-surface-container)";
+  if (nodeType === "GOVERNANCE_GATE") return "color-mix(in srgb, #b45309 12%, var(--color-surface-container))";
+  return "color-mix(in srgb, #2563eb 12%, var(--color-surface-container))";
+}
+
+// Lightweight visualization of the runnable workflow graph the planner would generate from
+// the roadmap (the /planner/preview-graph output). The generated graph is linear
+// (START → milestones → gate → END), so a top-to-bottom flow renders it faithfully.
+function GraphPreviewPanel({ graph }: { graph: GeneratedGraph }) {
+  if (!graph.nodes.length) return null;
+  return (
+    <section style={{ marginTop: 14, borderTop: "1px solid var(--color-outline-variant)", paddingTop: 14 }}>
+      <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+        <GitBranch size={13} /> Generated workflow ({graph.nodes.length} nodes)
+      </div>
+      <div style={{ display: "grid", gap: 0, justifyItems: "center" }}>
+        {graph.nodes.map((node, index) => (
+          <Fragment key={node.id}>
+            <div style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 9, padding: "8px 14px", background: graphNodeTone(node.nodeType), minWidth: 230, textAlign: "center" }}>
+              <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 0.5, color: "var(--color-outline)" }}>{node.nodeType}</div>
+              <div style={{ fontSize: 13, fontWeight: 750, color: "var(--color-on-surface)" }}>{node.label}</div>
+            </div>
+            {index < graph.nodes.length - 1 && <div style={{ color: "var(--color-outline)", fontSize: 15, lineHeight: "20px" }}>↓</div>}
+          </Fragment>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function Warning({ text }: { text: string }) {
   return (
     <section style={{ border: "1px solid rgba(180,83,9,0.28)", background: "rgba(255,251,235,0.78)", color: "#92400e", borderRadius: 9, padding: 11, fontSize: 12, lineHeight: 1.5 }}>
@@ -955,6 +1025,16 @@ function normalizeLoopStrategies(value: unknown): LoopStrategyOption[] {
     });
   }
   return out;
+}
+
+function normalizeGraph(value: unknown): GeneratedGraph {
+  const nodes: GraphNode[] = rowsFrom(value, ["nodes"])
+    .map((node) => ({ id: asString(node.id), nodeType: asString(node.nodeType, "NODE"), label: asString(node.label, asString(node.id)) }))
+    .filter((node) => node.id);
+  const edges = rowsFrom(value, ["edges"])
+    .map((edge) => ({ sourceNodeId: asString(edge.sourceNodeId), targetNodeId: asString(edge.targetNodeId) }))
+    .filter((edge) => edge.sourceNodeId && edge.targetNodeId);
+  return { nodes, edges };
 }
 
 function normalizeConverseResult(value: unknown, homeCapabilityId: string): ConverseResult {
