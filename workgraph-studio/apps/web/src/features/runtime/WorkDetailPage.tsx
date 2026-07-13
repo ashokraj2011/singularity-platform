@@ -13,6 +13,7 @@ import { WorkItemArtifactsPanel } from './WorkItemArtifactsPanel'
 import { SpecificationTab } from './workitem/SpecificationTab'
 import { SubmissionsTab } from './workitem/SubmissionsTab'
 import { ReconciliationTab } from './workitem/ReconciliationTab'
+import { OverviewDashboard } from './workitem/OverviewDashboard'
 
 const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
 
@@ -204,6 +205,7 @@ function WorkItemDetail({ id }: { id: string }) {
       </div>
 
       {tab === 'overview' && (<>
+      <OverviewDashboard workItemId={id} workItem={workItem} onOpenTab={setTab} />
       {canDetach && (
         <section style={{
           ...cardStyle,
