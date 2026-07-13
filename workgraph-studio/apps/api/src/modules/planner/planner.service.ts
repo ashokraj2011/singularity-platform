@@ -19,6 +19,7 @@ import { z } from 'zod'
 import { traceIdFromParts } from '@workgraph/shared-types'
 import { contextFabricClient, type ExecuteResponse } from '../../lib/context-fabric/client'
 import { listCapabilityRelationships, getCapability } from '../../lib/iam/client'
+import { getRuntimeCapabilityWorldModel } from '../../lib/agent-and-tools/client'
 import { prisma } from '../../lib/prisma'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { getSdlcIntent } from '../adoption/sdlcCatalog'
@@ -76,7 +77,30 @@ export const criticSchema = z.object({
 })
 export type CriticResult = z.infer<typeof criticSchema>
 
-export interface AssignableCapability { id: string; name: string }
+export interface CapabilityRepoSummary {
+  primaryLanguage?: string
+  buildSystem?: string
+  commands?: string[]
+  architecture?: string[]
+  conventions?: string[]
+  entrypoints?: string[]
+  knownFailures?: string[]
+}
+
+export interface AssignableCapability {
+  id: string
+  name: string
+  // Compact grounding distilled from the capability's CapabilityWorldModel (best-effort;
+  // undefined when the repo hasn't been grounded or the fetch fails).
+  repo?: CapabilityRepoSummary
+}
+
+// A document the caller attached to ground the plan (uploaded/pasted content or a knowledge artifact).
+export const plannerDocumentSchema = z.object({
+  title: z.string().trim().max(200).optional(),
+  content: z.string().trim().min(1).max(20000),
+})
+export type PlannerDocument = z.infer<typeof plannerDocumentSchema>
 
 // ────────────────────────────────────────────────────────────────────────────
 // Pure helpers (unit-tested; no LLM, no DB)
@@ -223,7 +247,8 @@ export function aggregateUsage(responses: Array<ExecuteResponse | null | undefin
 function plannerSystemPrompt(maxItems: number): string {
   return [
     'You are a product planning agent. You turn a goal into a MILESTONE-GROUPED roadmap of work items, and you converse to refine it.',
-    'You are given the CONVERSATION so far, the CURRENT ROADMAP (may be empty), and a list of CAPABILITIES (id + name; the first is HOME).',
+    "You are given the CONVERSATION so far, the CURRENT ROADMAP (may be empty), a list of CAPABILITIES (id + name; the first is HOME), and — when available — REPO CONTEXT (each capability's real tech stack, build/test commands, architecture, conventions, and known risks) and DOCUMENTS (inputs the user attached).",
+    'GROUND the plan in REPO CONTEXT and DOCUMENTS when present: write concrete, repo-accurate task titles and acceptance criteria, reuse the real build/test commands, respect the conventions, account for the known risks, and route each task to the capability whose repo best fits. Never invent stack details that contradict the REPO CONTEXT.',
     '',
     'Decide each turn:',
     '- If the goal is too vague to plan well, ASK 2–4 specific clarifying questions instead of guessing: set needsClarification=true, fill "questions", and leave "milestones" empty.',
@@ -247,7 +272,99 @@ function plannerSystemPrompt(maxItems: number): string {
 }
 
 function capabilityList(caps: AssignableCapability[]): string {
-  return caps.map((c) => `- ${c.id}  ${c.name}`).join('\n')
+  return caps
+    .map((c) => {
+      const stack = [c.repo?.primaryLanguage, c.repo?.buildSystem].filter(Boolean).join(' / ')
+      return stack ? `- ${c.id}  ${c.name}  [${stack}]` : `- ${c.id}  ${c.name}`
+    })
+    .join('\n')
+}
+
+// ── Repo/document grounding (pure; unit-tested) ─────────────────────────────
+function asStr(v: unknown): string | undefined {
+  return typeof v === 'string' && v.trim() ? v.trim() : undefined
+}
+
+// Coerce a heterogeneous world-model list (strings or objects like CapabilityCommand
+// {command,description}, Entrypoint {path}, CodeConvention {rule}, KnownFailure {summary})
+// into a bounded list of short strings.
+function strList(v: unknown, cap: number): string[] {
+  if (!Array.isArray(v)) return []
+  const out: string[] = []
+  for (const item of v) {
+    if (out.length >= cap) break
+    const s =
+      asStr(item) ??
+      (item && typeof item === 'object'
+        ? asStr((item as Record<string, unknown>).command) ??
+          asStr((item as Record<string, unknown>).name) ??
+          asStr((item as Record<string, unknown>).path) ??
+          asStr((item as Record<string, unknown>).title) ??
+          asStr((item as Record<string, unknown>).rule) ??
+          asStr((item as Record<string, unknown>).summary) ??
+          asStr((item as Record<string, unknown>).description)
+        : undefined)
+    if (s) out.push(s.slice(0, 200))
+  }
+  return out
+}
+
+// Distill a raw CapabilityWorldModel into the compact grounding the planner injects.
+// Returns undefined when there is no usable signal (so the caller leaves `repo` unset).
+export function summarizeWorldModel(wm: Record<string, unknown> | null | undefined): CapabilityRepoSummary | undefined {
+  if (!wm || typeof wm !== 'object') return undefined
+  const arch = wm.architectureSlice && typeof wm.architectureSlice === 'object' ? (wm.architectureSlice as Record<string, unknown>) : {}
+  const commands = [...strList(wm.buildCommands, 3), ...strList(wm.testCommands, 3), ...strList(wm.runCommands, 2)]
+  const architecture = [...strList(arch.rootPackages, 8), ...strList(arch.packages, 8), ...strList(arch.modules, 8)].slice(0, 8)
+  const summary: CapabilityRepoSummary = {
+    primaryLanguage: asStr(wm.primaryLanguage),
+    buildSystem: asStr(wm.buildSystem),
+    commands: commands.length ? commands : undefined,
+    architecture: architecture.length ? architecture : undefined,
+    conventions: strList(wm.codeConventions, 6).length ? strList(wm.codeConventions, 6) : undefined,
+    entrypoints: strList(wm.entrypoints, 6).length ? strList(wm.entrypoints, 6) : undefined,
+    knownFailures: strList(wm.knownFailures, 4).length ? strList(wm.knownFailures, 4) : undefined,
+  }
+  const hasSignal = Boolean(
+    summary.primaryLanguage || summary.buildSystem || summary.commands || summary.architecture ||
+    summary.conventions || summary.entrypoints || summary.knownFailures,
+  )
+  return hasSignal ? summary : undefined
+}
+
+// Render the per-capability repo grounding (from each capability's world model) as a prompt block.
+export function repoContextBlock(caps: AssignableCapability[]): string {
+  const grounded = caps.filter((c) => c.repo)
+  if (!grounded.length) return ''
+  const sections = grounded.map((c) => {
+    const r = c.repo!
+    const lines = [`### ${c.name} (${c.id})`]
+    const stack = [r.primaryLanguage, r.buildSystem].filter(Boolean).join(' / ')
+    if (stack) lines.push(`- Stack: ${stack}`)
+    if (r.commands?.length) lines.push(`- Build/test commands: ${r.commands.join(' ; ')}`)
+    if (r.architecture?.length) lines.push(`- Architecture: ${r.architecture.join(', ')}`)
+    if (r.entrypoints?.length) lines.push(`- Entry points: ${r.entrypoints.join(', ')}`)
+    if (r.conventions?.length) lines.push(`- Conventions: ${r.conventions.join('; ')}`)
+    if (r.knownFailures?.length) lines.push(`- Known risks/failures: ${r.knownFailures.join('; ')}`)
+    return lines.join('\n')
+  })
+  return [
+    "REPO CONTEXT (grounded from each capability's real codebase/world model — write concrete, repo-accurate tasks, reuse the real build/test commands, respect the conventions, and route each task to the capability whose repo fits):",
+    ...sections,
+  ].join('\n')
+}
+
+// Render caller-attached documents as an authoritative-context prompt block.
+export function documentsBlock(documents?: PlannerDocument[]): string {
+  if (!documents?.length) return ''
+  const sections = documents.slice(0, 12).map((d, i) => {
+    const title = d.title?.trim() || `Document ${i + 1}`
+    return `### ${title}\n${d.content.trim().slice(0, 4000)}`
+  })
+  return [
+    'DOCUMENTS (inputs the user attached — treat as authoritative requirements/context and ground the plan in them):',
+    ...sections,
+  ].join('\n')
 }
 
 function transcript(messages: ChatMessage[]): string {
@@ -259,11 +376,18 @@ function converseTask(
   plan: Milestone[],
   caps: AssignableCapability[],
   homeId: string,
+  documents?: PlannerDocument[],
 ): string {
-  return [
+  const parts: string[] = [
     'CAPABILITIES (assign tasks by id):',
     capabilityList(caps),
     `HOME capability id: ${homeId}`,
+  ]
+  const repo = repoContextBlock(caps)
+  if (repo) parts.push('', repo)
+  const docs = documentsBlock(documents)
+  if (docs) parts.push('', docs)
+  parts.push(
     '',
     'CURRENT ROADMAP (JSON):',
     plan.length ? JSON.stringify({ milestones: plan }, null, 2) : '(none yet)',
@@ -272,7 +396,8 @@ function converseTask(
     transcript(messages),
     '',
     'Respond with the JSON object only.',
-  ].join('\n')
+  )
+  return parts.join('\n')
 }
 
 function criticPrompt(): string {
@@ -370,10 +495,22 @@ async function assertPlannerWorkflowTemplateLaunchable(
   }
 }
 
+// Best-effort: attach each capability's distilled repo world model (child repos included).
+// getRuntimeCapabilityWorldModel already swallows errors → returns null, so this never throws;
+// a capability with no grounded repo simply keeps `repo` unset and the planner behaves as before.
+async function enrichWithWorldModels(caps: AssignableCapability[], callerToken?: string): Promise<AssignableCapability[]> {
+  return Promise.all(
+    caps.map(async (cap) => {
+      const repo = summarizeWorldModel(await getRuntimeCapabilityWorldModel(cap.id, callerToken))
+      return repo ? { ...cap, repo } : cap
+    }),
+  )
+}
+
 export async function resolveAssignableCapabilities(homeId: string, allowChildren: boolean, callerToken?: string): Promise<AssignableCapability[]> {
   const home = await assertPlannerCapabilityActive(homeId, callerToken)
   const list: AssignableCapability[] = [home]
-  if (!allowChildren) return list
+  if (!allowChildren) return enrichWithWorldModels(list, callerToken)
   const rels = await listCapabilityRelationships(homeId, callerToken).catch(() => [])
   const childIds = [...new Set(rels.filter((r) => r.relationship_type === CHILD_RELATIONSHIP).map((r) => r.target_capability_id))]
   for (const id of childIds) {
@@ -382,7 +519,7 @@ export async function resolveAssignableCapabilities(homeId: string, allowChildre
     if (!cap || cap.isGoverning || capabilityStatus(cap) !== 'ACTIVE') continue
     list.push({ id, name: cap.name ?? id })
   }
-  return list
+  return enrichWithWorldModels(list, callerToken)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -396,6 +533,7 @@ export interface ConverseInput {
   sessionId?: string
   allowChildren?: boolean
   maxItems?: number
+  documents?: PlannerDocument[]
 }
 
 export interface ConverseResult {
@@ -562,14 +700,14 @@ export async function converse(input: ConverseInput, actorId: string, callerToke
   }
 
   // 1) Planner / chat turn — one re-ask on parse failure.
-  const r1 = await contextFabricClient.executeGovernedTurn({ ...base, task: converseTask(input.messages, currentPlan, caps, home) })
+  const r1 = await contextFabricClient.executeGovernedTurn({ ...base, task: converseTask(input.messages, currentPlan, caps, home, input.documents) })
   const responses: Array<ExecuteResponse | null> = [r1]
   let parsed = parseConverse(r1.finalResponse)
   if (!parsed.ok) {
     const r1b = await contextFabricClient.executeGovernedTurn({
       ...base,
       model_overrides: { temperature: 0, maxOutputTokens: 3500 },
-      task: converseTask(input.messages, currentPlan, caps, home) + `\n\nYour previous answer FAILED validation: ${parsed.error}\nReturn STRICT JSON only.`,
+      task: converseTask(input.messages, currentPlan, caps, home, input.documents) + `\n\nYour previous answer FAILED validation: ${parsed.error}\nReturn STRICT JSON only.`,
     })
     responses.push(r1b)
     parsed = parseConverse(r1b.finalResponse)
