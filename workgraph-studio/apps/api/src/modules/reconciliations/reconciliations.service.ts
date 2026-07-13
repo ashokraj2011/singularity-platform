@@ -7,6 +7,9 @@ import { ConflictError, NotFoundError } from '../../lib/errors'
 import { specificationPackageBodySchema, emptySpecificationPackageBody } from '../specifications/specification.schemas'
 import type { DiffValidation } from '../workflow/runtime/executors/governance/diffVsDesign'
 import { reconcile, type ReconciliationInput } from './reconciliation.engine'
+import { buildTestPlan, applyTestResults, type TestResult, type CurrentVerdict } from './reconciliation.dynamic'
+
+export type ReconciliationMode = 'DETERMINISTIC' | 'DYNAMIC'
 
 type WorkItemRef = { id: string; workCode: string; title: string | null; tenantId: string | null }
 
@@ -79,7 +82,7 @@ function asDeviations(value: Prisma.JsonValue): { requirementId?: string; kind: 
  * handoff (spec §15). Synchronous — the deterministic layer runs no customer code, so there is no
  * queue here; the dynamic (test-execution) layer will enqueue a runner job in a later phase.
  */
-export async function startReconciliation(workItemId: string, submissionId: string, actorId: string) {
+export async function startReconciliation(workItemId: string, submissionId: string, actorId: string, mode: ReconciliationMode = 'DETERMINISTIC') {
   const workItem = await loadWorkItem(workItemId)
 
   const submission = await prisma.implementationSubmission.findUnique({ where: { id: submissionId } })
@@ -115,10 +118,24 @@ export async function startReconciliation(workItemId: string, submissionId: stri
 
   const result = reconcile(input)
 
+  // Dynamic mode enqueues an out-of-process test run; the deterministic verdicts are the initial
+  // matrix and the run stays RUNNING until the runner reports back. With no tests to run there is
+  // nothing to execute, so it finalizes deterministically like DETERMINISTIC mode.
+  const testPlan = mode === 'DYNAMIC'
+    ? buildTestPlan({
+        requirements: body.requirements.map((r) => ({ id: r.id, testObligationIds: r.testObligationIds })),
+        testObligations: (body.testObligations as any[]).map((t) => ({ id: t.id, verifies: t.verifies, description: t.description, command: t.command })),
+        scopeRequirementIds: input.scopeRequirementIds,
+      })
+    : []
+  const willRunDynamic = mode === 'DYNAMIC' && testPlan.length > 0
+
   const runId = randomUUID()
   const traceId = `recon-${runId}`
   const tenantId = workItem.tenantId ?? currentTenantIdForDb() ?? undefined
   const now = new Date()
+  const runStatus = willRunDynamic ? 'RUNNING' : result.status
+  const runMode = willRunDynamic ? 'DYNAMIC' : mode
 
   const run = await withTenantDbTransaction(prisma, async (tx) => {
     const created = await tx.reconciliationRun.create({
@@ -128,12 +145,12 @@ export async function startReconciliation(workItemId: string, submissionId: stri
         submissionId,
         specificationVersionId: submission.specificationVersionId,
         specificationHash: spec.contentHash,
-        mode: 'DETERMINISTIC',
-        status: result.status,
+        mode: runMode,
+        status: runStatus,
         summary: result.summary as unknown as Prisma.InputJsonValue,
         traceId,
         startedById: actorId,
-        completedAt: now,
+        completedAt: willRunDynamic ? null : now,
         tenantId: workItem.tenantId,
       },
     })
@@ -161,20 +178,40 @@ export async function startReconciliation(workItemId: string, submissionId: stri
         })),
       })
     }
+    if (willRunDynamic) {
+      await tx.reconciliationJob.create({
+        data: {
+          reconciliationRunId: runId,
+          workItemId,
+          submissionId,
+          repository: target.repository,
+          baseCommitSha: submission.baseCommitSha,
+          headCommitSha: submission.headCommitSha,
+          testPlan: testPlan as unknown as Prisma.InputJsonValue,
+          tenantId: workItem.tenantId,
+        },
+      })
+    }
     return created
   }, tenantId)
 
-  // Both lifecycle events on the Work Item timeline — deterministic runs start and complete atomically.
-  const startedPayload = { reconciliationRunId: runId, submissionId, specificationVersionId: submission.specificationVersionId, mode: 'DETERMINISTIC', traceId }
-  const completedPayload = { reconciliationRunId: runId, submissionId, status: result.status, summary: result.summary, traceId }
+  // Timeline: always STARTED. COMPLETED only when we finalized now (deterministic path); the
+  // dynamic path emits COMPLETED later when the runner job finishes (see completeReconciliationJob).
+  const startedPayload = { reconciliationRunId: runId, submissionId, specificationVersionId: submission.specificationVersionId, mode: runMode, traceId, dynamic: willRunDynamic }
   await withTenantDbTransaction(prisma, async (tx) => {
     await tx.workItemEvent.create({ data: { workItemId, eventType: 'RECONCILIATION_STARTED', actorId, payload: startedPayload as Prisma.InputJsonValue, tenantId: workItem.tenantId } })
-    await tx.workItemEvent.create({ data: { workItemId, eventType: 'RECONCILIATION_COMPLETED', actorId, payload: completedPayload as Prisma.InputJsonValue, tenantId: workItem.tenantId } })
+    if (!willRunDynamic) {
+      const completedPayload = { reconciliationRunId: runId, submissionId, status: result.status, summary: result.summary, traceId }
+      await tx.workItemEvent.create({ data: { workItemId, eventType: 'RECONCILIATION_COMPLETED', actorId, payload: completedPayload as Prisma.InputJsonValue, tenantId: workItem.tenantId } })
+    }
   }, tenantId)
-  await logEvent('ReconciliationCompleted', 'WorkItem', workItemId, actorId, completedPayload)
-  await publishOutbox('WorkItem', workItemId, 'ReconciliationCompleted', completedPayload)
+  if (!willRunDynamic) {
+    const completedPayload = { reconciliationRunId: runId, submissionId, status: result.status, summary: result.summary, traceId }
+    await logEvent('ReconciliationCompleted', 'WorkItem', workItemId, actorId, completedPayload)
+    await publishOutbox('WorkItem', workItemId, 'ReconciliationCompleted', completedPayload)
+  }
 
-  return { run, verdicts: result.verdicts, findings: result.findings, summary: result.summary }
+  return { run, verdicts: result.verdicts, findings: result.findings, summary: result.summary, dynamic: willRunDynamic }
 }
 
 export async function listReconciliations(workItemId: string, submissionId?: string) {
@@ -198,4 +235,96 @@ export async function getReconciliation(workItemId: string, runId: string) {
   })
   if (!run || run.workItemId !== workItemId) throw new NotFoundError('ReconciliationRun', runId)
   return run
+}
+
+// ── Dynamic layer: the runner-facing job queue (spec §15, "Layer 2") ─────────────────────────
+// A runner polls pending jobs, claims one (atomic claim + fresh claimToken), executes the test
+// plan out-of-process, then completes/fails with that token. Claim + complete mirror the
+// PendingExecution fencing: updateMany guarded by status/token, count===1 wins, else 409.
+
+export async function listPendingReconciliationJobs(limit = 20) {
+  const items = await prisma.reconciliationJob.findMany({ where: { status: 'PENDING' }, orderBy: { createdAt: 'asc' }, take: Math.min(Math.max(limit, 1), 100) })
+  return { items }
+}
+
+export async function getReconciliationJob(jobId: string) {
+  const job = await prisma.reconciliationJob.findUnique({ where: { id: jobId } })
+  if (!job) throw new NotFoundError('ReconciliationJob', jobId)
+  return job
+}
+
+export async function claimReconciliationJob(jobId: string, runnerId: string) {
+  const job = await prisma.reconciliationJob.findUnique({ where: { id: jobId } })
+  if (!job) throw new NotFoundError('ReconciliationJob', jobId)
+  const tenantId = job.tenantId ?? undefined
+  const claimToken = randomUUID()
+  const claimed = await withTenantDbTransaction(prisma, (tx) => tx.reconciliationJob.updateMany({
+    where: { id: jobId, status: 'PENDING' },
+    data: { status: 'CLAIMED', claimToken, claimedBy: runnerId, claimedAt: new Date(), attempts: { increment: 1 } },
+  }), tenantId)
+  if (claimed.count !== 1) throw new ConflictError('Reconciliation job is already claimed or no longer pending.')
+  return prisma.reconciliationJob.findUnique({ where: { id: jobId } }) // includes the fresh claimToken
+}
+
+export async function completeReconciliationJob(jobId: string, claimToken: string, tests: TestResult[], actorId: string) {
+  const job = await prisma.reconciliationJob.findUnique({ where: { id: jobId } })
+  if (!job) throw new NotFoundError('ReconciliationJob', jobId)
+  const tenantId = job.tenantId ?? undefined
+
+  const done = await withTenantDbTransaction(prisma, (tx) => tx.reconciliationJob.updateMany({
+    where: { id: jobId, claimToken, status: { in: ['CLAIMED', 'RUNNING'] } },
+    data: { status: 'COMPLETED', result: { tests } as unknown as Prisma.InputJsonValue },
+  }), tenantId)
+  if (done.count !== 1) throw new ConflictError('Reconciliation job is not claimed with this token, or is already resolved.')
+
+  // Fold the executed test outcomes over the deterministic verdicts → verified matrix.
+  const existing = await prisma.requirementVerdict.findMany({ where: { reconciliationRunId: job.reconciliationRunId } })
+  const current: CurrentVerdict[] = existing.map((v) => ({ requirementId: v.requirementId, priority: v.priority, verdict: v.verdict, rationale: v.rationale }))
+  const refined = applyTestResults(current, tests)
+  const byReq = new Map(refined.verdicts.map((v) => [v.requirementId, v]))
+  const now = new Date()
+
+  const run = await withTenantDbTransaction(prisma, async (tx) => {
+    for (const v of existing) {
+      const r = byReq.get(v.requirementId)
+      if (!r) continue
+      await tx.requirementVerdict.update({ where: { id: v.id }, data: { verdict: r.verdict as any, rationale: r.rationale, verified: r.verified } })
+    }
+    return tx.reconciliationRun.update({
+      where: { id: job.reconciliationRunId },
+      data: { status: refined.status, summary: refined.summary as unknown as Prisma.InputJsonValue, completedAt: now },
+    })
+  }, tenantId)
+
+  const payload = { reconciliationRunId: job.reconciliationRunId, submissionId: job.submissionId, status: refined.status, summary: refined.summary, traceId: run.traceId, dynamic: true }
+  await withTenantDbTransaction(prisma, (tx) => tx.workItemEvent.create({ data: { workItemId: job.workItemId, eventType: 'RECONCILIATION_COMPLETED', actorId, payload: payload as Prisma.InputJsonValue, tenantId: job.tenantId } }), tenantId)
+  await logEvent('ReconciliationCompleted', 'WorkItem', job.workItemId, actorId, payload)
+  await publishOutbox('WorkItem', job.workItemId, 'ReconciliationCompleted', payload)
+
+  return { run, verdicts: refined.verdicts, summary: refined.summary }
+}
+
+export async function failReconciliationJob(jobId: string, claimToken: string, error: string, actorId: string) {
+  const job = await prisma.reconciliationJob.findUnique({ where: { id: jobId } })
+  if (!job) throw new NotFoundError('ReconciliationJob', jobId)
+  const tenantId = job.tenantId ?? undefined
+
+  const done = await withTenantDbTransaction(prisma, (tx) => tx.reconciliationJob.updateMany({
+    where: { id: jobId, claimToken, status: { in: ['CLAIMED', 'RUNNING'] } },
+    data: { status: 'FAILED', error },
+  }), tenantId)
+  if (done.count !== 1) throw new ConflictError('Reconciliation job is not claimed with this token, or is already resolved.')
+
+  const now = new Date()
+  const run = await withTenantDbTransaction(prisma, async (tx) => {
+    await tx.reconciliationFinding.create({ data: { reconciliationRunId: job.reconciliationRunId, kind: 'runner-error', severity: 'ERROR', message: `Dynamic reconciliation runner failed: ${error}` } })
+    return tx.reconciliationRun.update({ where: { id: job.reconciliationRunId }, data: { status: 'ERROR', completedAt: now } })
+  }, tenantId)
+
+  const payload = { reconciliationRunId: job.reconciliationRunId, submissionId: job.submissionId, status: 'ERROR', error, traceId: run.traceId, dynamic: true }
+  await withTenantDbTransaction(prisma, (tx) => tx.workItemEvent.create({ data: { workItemId: job.workItemId, eventType: 'RECONCILIATION_COMPLETED', actorId, payload: payload as Prisma.InputJsonValue, tenantId: job.tenantId } }), tenantId)
+  await logEvent('ReconciliationFailed', 'WorkItem', job.workItemId, actorId, payload)
+  await publishOutbox('WorkItem', job.workItemId, 'ReconciliationFailed', payload)
+
+  return { run }
 }
