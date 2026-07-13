@@ -25,6 +25,7 @@ import { Stepper, type Step } from "@/components/ui/primitives";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PRIORITIES = ["HIGH", "MEDIUM", "LOW"] as const;
+const INTENT_OPTIONS = ["build_feature", "fix_bug", "refactor_safely", "add_tests", "security_review", "release_evidence"] as const;
 
 type Priority = (typeof PRIORITIES)[number];
 
@@ -65,13 +66,29 @@ type CriticIssue = {
   fix?: string;
 };
 
+type RepoSummary = {
+  primaryLanguage?: string;
+  buildSystem?: string;
+  commands?: string[];
+  architecture?: string[];
+  conventions?: string[];
+  entrypoints?: string[];
+  knownFailures?: string[];
+};
+
+type AssignableCapability = { id: string; name: string; repo?: RepoSummary };
+
+type PlannerDocument = { title: string; content: string };
+
+type LoopStrategyOption = { id: string; name: string; kind?: string; status?: string };
+
 type ConverseResult = {
   sessionId?: string;
   reply: string;
   needsClarification: boolean;
   questions: string[];
   milestones: Milestone[];
-  assignableCapabilities: Array<{ id: string; name: string }>;
+  assignableCapabilities: AssignableCapability[];
   homeCapabilityId: string;
   deterministic: {
     repairedAssignments: number;
@@ -132,6 +149,16 @@ export function WorkflowPlannerConsole() {
   const [error, setError] = useState<string | null>(null);
   const [commitResult, setCommitResult] = useState<CommitResult | null>(null);
   const [launchResult, setLaunchResult] = useState<LaunchResult | null>(null);
+  // Grounding inputs + execution/launch controls.
+  const [documents, setDocuments] = useState<PlannerDocument[]>([]);
+  const [loopStrategyId, setLoopStrategyId] = useState("");
+  const [intent, setIntent] = useState("build_feature");
+  const [modelAlias, setModelAlias] = useState("balanced");
+  const [runtimePreference, setRuntimePreference] = useState("user_runtime");
+  const [governancePreset, setGovernancePreset] = useState("standard");
+  const { data: loopStrategyRows } = useSWR<unknown>("planner-loop-strategies", () => workgraphFetch<unknown>("/loop-strategies?kind=DIRECT_LLM_TASK"));
+  const loopStrategies = useMemo(() => normalizeLoopStrategies(loopStrategyRows), [loopStrategyRows]);
+  const attachedDocuments = useMemo(() => documents.filter((doc) => doc.content.trim().length > 0), [documents]);
 
   useEffect(() => {
     if (!capabilityId && capabilities[0]?.id) setCapabilityId(capabilities[0].id);
@@ -193,6 +220,9 @@ export function WorkflowPlannerConsole() {
           plan: milestones,
           allowChildren,
           maxItems,
+          ...(attachedDocuments.length
+            ? { documents: attachedDocuments.map((doc) => ({ title: doc.title.trim() || undefined, content: doc.content })) }
+            : {}),
         }),
       }), capabilityId.trim());
       setLast(result);
@@ -286,12 +316,13 @@ export function WorkflowPlannerConsole() {
         body: JSON.stringify({
           capabilityId: capabilityId.trim(),
           ...(sessionId ? { sessionId } : {}),
-          intent: "build_feature",
+          intent: intent || "build_feature",
           story: story.trim() || messages.find((message) => message.role === "user")?.content || starterStory,
           plan: prepared.length ? prepared : undefined,
-          modelAlias: "balanced",
-          runtimePreference: "user_runtime",
-          governancePreset: "standard",
+          modelAlias,
+          runtimePreference,
+          governancePreset,
+          ...(loopStrategyId ? { loopStrategyId } : {}),
         }),
       }));
       setLaunchResult(result);
@@ -401,6 +432,36 @@ export function WorkflowPlannerConsole() {
             />
           </Field>
 
+          <Field label={`Documents${attachedDocuments.length ? ` (${attachedDocuments.length} attached)` : ""} — grounds the plan`}>
+            <div style={{ display: "grid", gap: 8 }}>
+              {documents.map((doc, index) => (
+                <div key={index} style={{ display: "grid", gap: 5, border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 8 }}>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <input
+                      value={doc.title}
+                      placeholder="Title (optional)"
+                      onChange={(event) => setDocuments((current) => current.map((item, i) => (i === index ? { ...item, title: event.target.value } : item)))}
+                      style={inputStyle({ flex: "1 1 auto" })}
+                    />
+                    <button className="btn-secondary" type="button" aria-label="Remove document" onClick={() => setDocuments((current) => current.filter((_, i) => i !== index))}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                  <textarea
+                    value={doc.content}
+                    placeholder="Paste requirements, a spec, or reference context..."
+                    rows={3}
+                    onChange={(event) => setDocuments((current) => current.map((item, i) => (i === index ? { ...item, content: event.target.value } : item)))}
+                    style={inputStyle({ resize: "vertical", lineHeight: 1.45 })}
+                  />
+                </div>
+              ))}
+              <button className="btn-secondary" type="button" style={{ justifySelf: "start" }} onClick={() => setDocuments((current) => [...current, { title: "", content: "" }])}>
+                <Plus size={14} /> Add document
+              </button>
+            </div>
+          </Field>
+
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
             <Field label="Max WorkItems">
               <input type="number" min={1} max={40} value={maxItems} onChange={(event) => setMaxItems(clampNumber(event.target.value, 1, 40))} style={inputStyle()} />
@@ -435,6 +496,8 @@ export function WorkflowPlannerConsole() {
               )}
             </section>
           )}
+
+          <RepoContextPanel capabilities={assignableCapabilities} />
         </section>
 
         <section style={{ display: "grid", gap: 16 }}>
@@ -470,6 +533,31 @@ export function WorkflowPlannerConsole() {
                   Create + Launch
                 </button>
               </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginTop: 14 }}>
+              <Field label="Loop strategy">
+                <select value={loopStrategyId} onChange={(event) => setLoopStrategyId(event.target.value)} style={inputStyle()}>
+                  <option value="">Default (per node)</option>
+                  {loopStrategies.map((strategy) => (
+                    <option key={strategy.id} value={strategy.id}>{strategy.name}{strategy.kind ? ` · ${strategy.kind}` : ""}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Intent">
+                <select value={intent} onChange={(event) => setIntent(event.target.value)} style={inputStyle()}>
+                  {INTENT_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                </select>
+              </Field>
+              <Field label="Model alias">
+                <input value={modelAlias} onChange={(event) => setModelAlias(event.target.value)} style={inputStyle()} />
+              </Field>
+              <Field label="Runtime">
+                <input value={runtimePreference} onChange={(event) => setRuntimePreference(event.target.value)} style={inputStyle()} />
+              </Field>
+              <Field label="Governance">
+                <input value={governancePreset} onChange={(event) => setGovernancePreset(event.target.value)} style={inputStyle()} />
+              </Field>
             </div>
 
             {launchResult && (
@@ -699,6 +787,47 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   return <label style={{ display: "grid", gap: 6 }}><span className="label-xs">{label}</span>{children}</label>;
 }
 
+function RepoLine({ label, items }: { label: string; items: string[] }) {
+  if (!items.length) return null;
+  return (
+    <div style={{ marginTop: 3, fontSize: 11, color: "var(--color-outline)" }}>
+      <strong style={{ color: "var(--color-on-surface)" }}>{label}:</strong> {items.slice(0, 4).join(" · ")}
+    </div>
+  );
+}
+
+// Shows the repo grounding (from each capability's world model) that the planner is
+// using to write repo-accurate tasks. Renders nothing until a capability is grounded.
+function RepoContextPanel({ capabilities }: { capabilities: AssignableCapability[] }) {
+  const grounded = capabilities.filter((capability) => capability.repo);
+  if (!grounded.length) return null;
+  return (
+    <section style={{ borderTop: "1px solid var(--color-outline-variant)", paddingTop: 14 }}>
+      <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+        <GitBranch size={13} /> Repo context ({grounded.length} grounded)
+      </div>
+      <div style={{ display: "grid", gap: 8 }}>
+        {grounded.map((capability) => {
+          const repo = capability.repo!;
+          const stack = [repo.primaryLanguage, repo.buildSystem].filter(Boolean).join(" / ");
+          return (
+            <div key={capability.id} style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 9, background: "var(--color-surface-container)" }}>
+              <div style={{ fontSize: 12, fontWeight: 850 }}>
+                {capability.name}
+                {stack && <span style={{ color: "var(--color-outline)", fontWeight: 600 }}> · {stack}</span>}
+              </div>
+              <RepoLine label="Build/test" items={repo.commands ?? []} />
+              <RepoLine label="Architecture" items={repo.architecture ?? []} />
+              <RepoLine label="Conventions" items={repo.conventions ?? []} />
+              <RepoLine label="Known risks" items={repo.knownFailures ?? []} />
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function Warning({ text }: { text: string }) {
   return (
     <section style={{ border: "1px solid rgba(180,83,9,0.28)", background: "rgba(255,251,235,0.78)", color: "#92400e", borderRadius: 9, padding: 11, fontSize: 12, lineHeight: 1.5 }}>
@@ -777,19 +906,55 @@ function normalizeCapabilities(value: unknown): Capability[] {
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
+function normalizeRepo(value: unknown): RepoSummary | undefined {
+  const row = asRow(value);
+  if (Object.keys(row).length === 0) return undefined;
+  const commands = asStringArray(row.commands);
+  const architecture = asStringArray(row.architecture);
+  const conventions = asStringArray(row.conventions);
+  const entrypoints = asStringArray(row.entrypoints);
+  const knownFailures = asStringArray(row.knownFailures);
+  const repo: RepoSummary = {
+    primaryLanguage: asString(row.primaryLanguage) || undefined,
+    buildSystem: asString(row.buildSystem) || undefined,
+    commands: commands.length ? commands : undefined,
+    architecture: architecture.length ? architecture : undefined,
+    conventions: conventions.length ? conventions : undefined,
+    entrypoints: entrypoints.length ? entrypoints : undefined,
+    knownFailures: knownFailures.length ? knownFailures : undefined,
+  };
+  const hasSignal = repo.primaryLanguage || repo.buildSystem || repo.commands || repo.architecture || repo.conventions || repo.entrypoints || repo.knownFailures;
+  return hasSignal ? repo : undefined;
+}
+
 function normalizeAssignable(
   value: unknown,
   selectedCapability: Capability | null,
   capabilityId: string,
-): Array<{ id: string; name: string }> {
-  const out = new Map<string, string>();
-  if (selectedCapability) out.set(selectedCapability.id, selectedCapability.name);
-  if (capabilityId.trim()) out.set(capabilityId.trim(), selectedCapability?.name ?? "Home capability");
+): AssignableCapability[] {
+  const out = new Map<string, AssignableCapability>();
+  if (selectedCapability) out.set(selectedCapability.id, { id: selectedCapability.id, name: selectedCapability.name });
+  if (capabilityId.trim()) out.set(capabilityId.trim(), { id: capabilityId.trim(), name: selectedCapability?.name ?? "Home capability" });
   for (const row of rowsFrom(value, ["assignableCapabilities", "assignable_capabilities", "capabilities"])) {
     const id = asString(row.id ?? row.capabilityId ?? row.capability_id);
-    if (id) out.set(id, asString(row.name ?? row.displayName ?? row.display_name, id));
+    if (id) out.set(id, { id, name: asString(row.name ?? row.displayName ?? row.display_name, id), repo: normalizeRepo(row.repo) });
   }
-  return Array.from(out.entries()).map(([id, name]) => ({ id, name }));
+  return Array.from(out.values());
+}
+
+function normalizeLoopStrategies(value: unknown): LoopStrategyOption[] {
+  const out: LoopStrategyOption[] = [];
+  for (const row of rowsFrom(value, ["strategies", "items", "data"])) {
+    const id = asString(row.id ?? row.strategyId ?? row.strategy_id);
+    if (!id) continue;
+    out.push({
+      id,
+      name: asString(row.name ?? row.title ?? row.displayName, id),
+      kind: asString(row.kind) || undefined,
+      status: asString(row.status) || undefined,
+    });
+  }
+  return out;
 }
 
 function normalizeConverseResult(value: unknown, homeCapabilityId: string): ConverseResult {
