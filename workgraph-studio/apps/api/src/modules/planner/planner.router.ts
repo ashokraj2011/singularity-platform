@@ -21,6 +21,7 @@ import {
   updatePlannerSession,
   createPlannerSession,
 } from './planner.service'
+import { buildPlanWorkflowGraph } from './planner-graph'
 
 export const plannerRouter: Router = Router()
 
@@ -105,6 +106,34 @@ plannerRouter.post('/launch', validate(launchSchema), async (req, res, next) => 
     const body = req.body as z.infer<typeof launchSchema>
     const result = await launchRoadmap(body, req.user!.userId, callerBearerToken(req))
     res.status(201).json(result)
+  } catch (err) {
+    next(err)
+  }
+})
+
+// Phase 2 — preview a runnable workflow graph generated from the roadmap (+ loop
+// strategy / governance). Pure + read-only: builds design nodes/edges without
+// persisting a template, so the console can render the DAG the launch would run.
+const previewGraphSchema = z.object({
+  capabilityId: z.string().uuid(),
+  milestones: z.array(milestoneSchema).max(12).optional(),
+  modelAlias: z.string().max(120).optional(),
+  loopStrategyId: z.string().uuid().optional(),
+  governancePreset: z.string().max(120).optional(),
+  goal: z.string().max(12000).optional(),
+})
+
+plannerRouter.post('/preview-graph', validate(previewGraphSchema), async (req, res, next) => {
+  try {
+    const body = req.body as z.infer<typeof previewGraphSchema>
+    res.json(buildPlanWorkflowGraph({
+      milestones: body.milestones ?? [],
+      capabilityId: body.capabilityId,
+      modelAlias: body.modelAlias,
+      loopStrategyId: body.loopStrategyId,
+      governancePreset: body.governancePreset,
+      goal: body.goal,
+    }))
   } catch (err) {
     next(err)
   }
