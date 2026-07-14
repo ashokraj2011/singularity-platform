@@ -41,7 +41,7 @@ export function ArtifactFullscreen({ title, content, body, canDownload, onDownlo
     >
       <div
         onClick={e => e.stopPropagation()}
-        style={{ '--color-on-surface': '#f2f2f5', '--color-outline': '#b4b4bd', '--color-outline-variant': 'rgba(255,255,255,0.1)', background: '#101013', color: '#f2f2f5', borderRadius: 12, width: 'min(1100px, 100%)', height: 'min(85vh, 100%)', display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)', boxShadow: '0 30px 90px rgba(0,0,0,0.6)' } as React.CSSProperties}
+        style={{ '--color-on-surface': '#0f172a', '--color-outline': '#475569', '--color-outline-variant': 'rgba(15,23,42,0.09)', background: '#ffffff', color: '#0f172a', borderRadius: 12, width: 'min(1100px, 100%)', height: 'min(85vh, 100%)', display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid rgba(15,23,42,0.09)', boxShadow: '0 30px 80px -28px rgba(15,23,42,0.3)' } as React.CSSProperties}
       >
         <header style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', borderBottom: '1px solid var(--color-outline-variant)' }}>
           <strong style={{ flex: 1, minWidth: 0, fontSize: 14, color: 'var(--color-on-surface)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</strong>
@@ -52,7 +52,7 @@ export function ArtifactFullscreen({ title, content, body, canDownload, onDownlo
             <Minimize2 size={12} /> Collapse
           </button>
         </header>
-        <div style={{ flex: 1, overflow: 'auto', padding: '14px 18px', background: '#0b0b0d' }}>
+        <div style={{ flex: 1, overflow: 'auto', padding: '14px 18px', background: '#f8fafc' }}>
           {typeof content === 'string' && content.length > 0
             ? <MarkdownView source={content} />
             : <pre style={{ margin: 0, fontSize: 12, lineHeight: 1.5, color: 'var(--color-on-surface)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{body || '(no content)'}</pre>}
