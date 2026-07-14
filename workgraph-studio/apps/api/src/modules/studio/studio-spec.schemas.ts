@@ -36,9 +36,20 @@ export const projectDecisionSchema = z.object({
   consequences: z.string().trim().max(4000).optional(),
 })
 
+export const projectRequirementPriority = z.enum(['MUST', 'SHOULD', 'MAY'])
+
+export const projectRequirementSchema = z.object({
+  id: z.string().trim().min(1).max(60),
+  statement: z.string().trim().min(1).max(2000),
+  priority: projectRequirementPriority.default('SHOULD'),
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(1000)).max(50).default([]),
+  rationale: z.string().trim().max(2000).optional(),
+})
+
 /** The full project-spec package. Every section has a default so an empty `{}` parses cleanly. */
 export const projectSpecPackageSchema = z.object({
   analysis: projectAnalysisSchema.default({}),
+  requirements: z.array(projectRequirementSchema).max(300).default([]),
   decisions: z.array(projectDecisionSchema).max(200).default([]),
 })
 
@@ -47,6 +58,7 @@ export type ProjectSpecPackage = z.infer<typeof projectSpecPackageSchema>
 /** Editable sections and the schema each PATCH value must satisfy. */
 export const projectSpecSectionSchemas = {
   analysis: projectAnalysisSchema,
+  requirements: z.array(projectRequirementSchema).max(300),
   decisions: z.array(projectDecisionSchema).max(200),
 } as const
 

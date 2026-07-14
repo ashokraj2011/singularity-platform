@@ -15,6 +15,14 @@ export type Analysis = {
   assumptions: string[];
   constraints: string[];
 };
+export type RequirementPriority = "MUST" | "SHOULD" | "MAY";
+export type Requirement = {
+  id: string;
+  statement: string;
+  priority: RequirementPriority;
+  acceptanceCriteria: string[];
+  rationale?: string;
+};
 export type DecisionStatus = "PROPOSED" | "ACCEPTED" | "SUPERSEDED" | "REJECTED";
 export type Decision = {
   id: string;
@@ -24,18 +32,33 @@ export type Decision = {
   decision: string;
   consequences?: string;
 };
-export type ProjectSpecPackage = { analysis: Analysis; decisions: Decision[] };
+export type ProjectSpecPackage = { analysis: Analysis; requirements: Requirement[]; decisions: Decision[] };
 export type ProjectSpec = { projectId: string; revision: number; package: ProjectSpecPackage; updatedAt?: string };
 
 export const emptyAnalysis: Analysis = { problem: "", goals: [], stakeholders: [], assumptions: [], constraints: [] };
 
+// Project-level reconciliation roll-up (read-only).
+export type ReconCounts = { pass: number; partial: number; fail: number };
+export type ReconRunView = { id: string; status: string; mode: string; counts: ReconCounts; startedAt?: string; completedAt?: string | null } | null;
+export type ProjectReconItem = {
+  workItem: { id: string; workCode?: string | null; title?: string | null; status?: string | null };
+  latestRun: ReconRunView;
+};
+export type ProjectReconciliation = {
+  items: ProjectReconItem[];
+  rollup: { itemsTotal: number; itemsReconciled: number; pass: number; partial: number; fail: number };
+};
+
 export function specKey(projectId: string): string {
   return `/studio/projects/${projectId}/specification`;
+}
+export function reconKey(projectId: string): string {
+  return `/studio/projects/${projectId}/reconciliation`;
 }
 
 export async function patchSection(
   projectId: string,
-  section: "analysis" | "decisions",
+  section: "analysis" | "requirements" | "decisions",
   value: unknown,
   expectedRevision: number,
 ): Promise<ProjectSpec> {
