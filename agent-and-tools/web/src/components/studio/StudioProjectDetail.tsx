@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useState, type CSSProperties } from "react";
 import useSWR from "swr";
-import { ArrowLeft, FolderGit2, FileText, Archive, Unlink, Lightbulb, ClipboardList, PenTool, GitPullRequest, CheckCircle2 } from "lucide-react";
+import { ArrowLeft, FolderGit2, FileText, Archive, Unlink, Lightbulb, ClipboardList, PenTool, GitPullRequest, CheckCircle2, LayoutDashboard } from "lucide-react";
 import { workgraphFetch } from "@/lib/workgraph";
+import { ProjectAnalysisSurface } from "./ProjectAnalysisSurface";
+import { ProjectDesignSurface } from "./ProjectDesignSurface";
 
 /**
  * A Specification Project's workspace: its mission, the shared lifecycle spine, and the work items
@@ -24,10 +26,26 @@ const PHASES = [
   { key: "reconciliation", label: "Reconciliation", Icon: CheckCircle2 },
 ];
 
+type Tab = "overview" | "analysis" | "design";
+const TABS = [
+  { key: "overview" as const, label: "Overview", Icon: LayoutDashboard },
+  { key: "analysis" as const, label: "Analysis", Icon: Lightbulb },
+  { key: "design" as const, label: "Design", Icon: PenTool },
+];
+function tabStyle(active: boolean): CSSProperties {
+  return {
+    display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 13px", fontSize: 13, fontWeight: 650,
+    border: "none", background: "none", cursor: "pointer", marginBottom: -1,
+    color: active ? "var(--color-primary)" : "var(--color-on-surface-variant)",
+    borderBottom: active ? "2px solid var(--color-primary)" : "2px solid transparent",
+  };
+}
+
 export function StudioProjectDetail({ projectId }: { projectId: string }) {
   const projectSWR = useSWR<Project>(`/studio/projects/${projectId}`, (url: string) => workgraphFetch<Project>(url));
   const itemsSWR = useSWR<{ items: WorkItemCard[] }>(`/studio/projects/${projectId}/work-items`, (url: string) => workgraphFetch<{ items: WorkItemCard[] }>(url), { refreshInterval: 15000 });
   const [actionError, setActionError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("overview");
 
   const project = projectSWR.data;
   const items = itemsSWR.data?.items ?? [];
@@ -78,6 +96,14 @@ export function StudioProjectDetail({ projectId }: { projectId: string }) {
 
           {actionError && <div className="card" style={{ marginTop: 14, padding: "10px 14px", fontSize: 12.5, color: "#991b1b", background: "#fef2f2", borderColor: "#fecaca" }}>{actionError}</div>}
 
+          {/* Tabs */}
+          <div style={{ display: "flex", gap: 4, marginTop: 20, borderBottom: "1px solid var(--color-outline-variant)" }}>
+            {TABS.map((t) => (
+              <button key={t.key} type="button" onClick={() => setTab(t.key)} style={tabStyle(tab === t.key)}><t.Icon size={14} /> {t.label}</button>
+            ))}
+          </div>
+
+          {tab === "overview" && (<>
           {/* Lifecycle spine (project-level shared upstream) */}
           <div style={{ display: "grid", gridTemplateColumns: `repeat(${PHASES.length}, 1fr)`, gap: 10, marginTop: 22 }}>
             {PHASES.map(({ key, label, Icon }) => (
@@ -116,6 +142,10 @@ export function StudioProjectDetail({ projectId }: { projectId: string }) {
               ))}
             </div>
           )}
+          </>)}
+
+          {tab === "analysis" && <div style={{ marginTop: 22 }}><ProjectAnalysisSurface projectId={projectId} /></div>}
+          {tab === "design" && <div style={{ marginTop: 22 }}><ProjectDesignSurface projectId={projectId} /></div>}
         </>
       )}
     </div>

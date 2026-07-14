@@ -17,6 +17,7 @@ import {
   detachWorkItem,
   getPortfolio,
 } from './studio-projects.service'
+import { getProjectSpec, patchProjectSpecSection } from './studio-spec.service'
 
 export const studioProjectsRouter: Router = Router()
 
@@ -29,6 +30,11 @@ export const updateProjectSchema = z.object({
   mission: z.string().trim().max(2000).nullable().optional(),
 })
 export const archiveProjectSchema = z.object({ archived: z.boolean().default(true) })
+export const patchProjectSpecSchema = z.object({
+  section: z.enum(['analysis', 'decisions']),
+  value: z.unknown(),
+  expectedRevision: z.number().int().min(1),
+})
 
 const projectIdOf = (req: Request) => String(req.params.projectId)
 const userIdOf = (req: Request) => req.user!.userId
@@ -86,5 +92,18 @@ studioProjectsRouter.post('/projects/:projectId/work-items/:workItemId', async (
 studioProjectsRouter.delete('/projects/:projectId/work-items/:workItemId', async (req, res, next) => {
   try {
     res.json(await detachWorkItem(projectIdOf(req), String(req.params.workItemId), userIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+// The project's shared upstream (analysis + design). Get-or-create on read; section patch on write.
+studioProjectsRouter.get('/projects/:projectId/specification', async (req, res, next) => {
+  try {
+    res.json(await getProjectSpec(projectIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+studioProjectsRouter.patch('/projects/:projectId/specification', validate(patchProjectSpecSchema), async (req, res, next) => {
+  try {
+    res.json(await patchProjectSpecSection(projectIdOf(req), req.body, userIdOf(req)))
   } catch (err) { next(err) }
 })

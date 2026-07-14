@@ -1294,11 +1294,31 @@ model SpecificationProject {
   createdAt   DateTime                   @default(now())
   updatedAt   DateTime                   @updatedAt
 
-  workItems   WorkItem[]
+  workItems     WorkItem[]
+  specification ProjectSpecification?
 
   @@index([status])
   @@index([tenantId], map: "ix_specification_projects_tenant")
   @@map("specification_projects")
+}
+
+// The project's shared upstream — the analysis and design that many Work Items draw on, authored
+// once at the project. A single editable package per project (JSON, validated by the studio-spec
+// schemas). Revision powers optimistic-concurrency section patches. Work Item specs still live in
+// SpecificationVersion; this is the project-level layer above them.
+model ProjectSpecification {
+  id          String               @id @default(uuid())
+  projectId   String               @unique
+  package     Json                 @default("{}")
+  revision    Int                  @default(1)
+  updatedById String?
+  tenantId    String?              @default("default")
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  project     SpecificationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId], map: "ix_project_specifications_tenant")
+  @@map("project_specifications")
 }
 
 // The approved specification, made developer-ready: which repo/base to build against, which
