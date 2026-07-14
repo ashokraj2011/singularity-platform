@@ -71,7 +71,7 @@ const st = runStatusVisual
 
 const RUN_DOMAIN = {
   start: '#16a34a',
-  end: '#64748b',
+  end: '#82828e',
   agent: '#7c3aed',
   human: '#d97706',
   governance: '#9333ea',
@@ -153,7 +153,7 @@ const RUN_NODE_LABELS: Record<string, string> = {
 }
 
 function runNodeVisual(nodeType: string) {
-  return RUN_NODE_VISUAL[nodeType] ?? { color: '#64748b', Icon: Workflow, domain: 'Workflow' }
+  return RUN_NODE_VISUAL[nodeType] ?? { color: '#82828e', Icon: Workflow, domain: 'Workflow' }
 }
 
 function runNodeLabel(nodeType: string) {
@@ -353,7 +353,7 @@ function RunGraphNode({ data }: NodeProps<CardData>) {
         {awaitingStart && startMode === 'event' && (
           <div style={{
             display: 'flex', alignItems: 'center', gap: 6, padding: '7px 9px', borderRadius: 8,
-            border: '1px dashed rgba(6,182,212,0.5)', background: 'rgba(6,182,212,0.08)', color: '#0e7490', fontSize: 10.5, fontWeight: 700,
+            border: '1px dashed rgba(6,182,212,0.5)', background: 'rgba(6,182,212,0.08)', color: '#5ab0f0', fontSize: 10.5, fontWeight: 700,
           }}>
             <Radio size={12} /> Awaiting signal{startSignal ? `: ${startSignal}` : ''}
           </div>
@@ -630,7 +630,7 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
         textTransform: 'uppercase',
         letterSpacing: '0.08em',
       },
-      labelBgStyle: { fill: '#fff', fillOpacity: 0.94 },
+      labelBgStyle: { fill: '#0c0c0f', fillOpacity: 0.94 },
       labelBgPadding: [6, 3],
       labelBgBorderRadius: 999,
     }
@@ -658,9 +658,9 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
         <button onClick={() => downloadCopilotExport('yaml')} style={topBtn} title="Download this run as a Copilot workflow YAML with artifact/metric pushback instructions"><Download size={13} /> Copilot YAML</button>
         <button onClick={() => downloadCopilotExport('runner')} style={topBtn} title="Download an executable script that runs Copilot CLI and posts artifacts/metrics back to the platform"><Download size={13} /> Runner</button>
         <button disabled={!selected} onClick={() => selected && downloadCopilotExport('yaml', selected)} style={{ ...topBtn, opacity: selected ? 1 : 0.45, cursor: selected ? 'pointer' : 'not-allowed' }} title="Select a phase, then download a Copilot handoff YAML starting there: earlier phases inlined as context (full artifacts + diffs), this phase onward as runnable composed prompts to continue on your own Copilot CLI"><Download size={13} /> Handoff</button>
-        <button onClick={() => { setShowCatalog(c => !c); setShowActivity(false); setSelected(null) }} style={{ ...topBtn, ...(showCatalog ? { background: '#ecfeff', borderColor: '#06b6d4', color: '#0e7490' } : {}) }} title="All documents this run produced, grouped by agent (mirrors git deliverables/<work-id>/<agent>/) — view or edit each"><Library size={13} /> Documents</button>
+        <button onClick={() => { setShowCatalog(c => !c); setShowActivity(false); setSelected(null) }} style={{ ...topBtn, ...(showCatalog ? { background: 'rgba(90,176,240,0.12)', borderColor: '#06b6d4', color: '#5ab0f0' } : {}) }} title="All documents this run produced, grouped by agent (mirrors git deliverables/<work-id>/<agent>/) — view or edit each"><Library size={13} /> Documents</button>
         {usesCopilot && (
-          <button onClick={() => { setShowActivity(a => !a); setShowCatalog(false); setSelected(null) }} style={{ ...topBtn, ...(showActivity ? { background: '#f5f3ff', borderColor: '#8b5cf6', color: '#6d28d9' } : {}) }} title="Live governed activity for this copilot run (LLM calls, tools, phases, commits)"><Activity size={13} /> Activity</button>
+          <button onClick={() => { setShowActivity(a => !a); setShowCatalog(false); setSelected(null) }} style={{ ...topBtn, ...(showActivity ? { background: 'rgba(124,124,245,0.13)', borderColor: '#8b5cf6', color: '#9a9aff' } : {}) }} title="Live governed activity for this copilot run (LLM calls, tools, phases, commits)"><Activity size={13} /> Activity</button>
         )}
         <button onClick={() => takeOverMut.mutate()} disabled={takeOverMut.isPending} style={topBtn} title="Take over this run: reassign it to you so your runtime drives it (clones the work branch wi/<code> if it isn't local) and resume it if paused"><UserPlus size={13} /> {takeOverMut.isPending ? 'Taking over…' : 'Take over'}</button>
         <button onClick={onTimeline} style={topBtn}><List size={13} /> Timeline</button>
@@ -761,7 +761,7 @@ function RunStageRail({ nodes, selectedId, focusNode, nextNode, documents, onSel
       alignItems: 'center',
       padding: '10px 16px',
       background: 'rgba(248,250,252,0.90)',
-      borderBottom: '1px solid #dbe3e7',
+      borderBottom: '1px solid rgba(255,255,255,0.1)',
       flexShrink: 0,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, overflowX: 'auto', paddingBottom: 1 }}>
@@ -784,16 +784,16 @@ function RunStageRail({ nodes, selectedId, focusNode, nextNode, documents, onSel
                 maxWidth: 220,
                 padding: '7px 9px',
                 borderRadius: 999,
-                border: `1px solid ${selected ? visual.color : focus ? status.ring : '#dbe3e7'}`,
-                background: selected ? `${visual.color}12` : focus ? status.bg : '#ffffff',
-                color: selected ? visual.color : '#334155',
+                border: `1px solid ${selected ? visual.color : focus ? status.ring : 'rgba(255,255,255,0.1)'}`,
+                background: selected ? `${visual.color}12` : focus ? status.bg : '#101013',
+                color: selected ? visual.color : '#c4c4cc',
                 cursor: 'pointer',
                 boxShadow: selected ? `0 0 0 3px ${visual.color}18` : '0 1px 0 rgba(255,255,255,0.9) inset',
                 flex: '0 0 auto',
               }}
             >
               <span style={{ color: visual.color, display: 'flex' }}><VIcon size={13} /></span>
-              <span style={{ fontSize: 10, fontWeight: 900, color: '#94a3b8' }}>{idx + 1}</span>
+              <span style={{ fontSize: 10, fontWeight: 900, color: '#82828e' }}>{idx + 1}</span>
               <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11, fontWeight: 850 }}>{node.label}</span>
               <span style={{ width: 7, height: 7, borderRadius: 999, background: status.color, boxShadow: activeStatus(node.status) ? `0 0 0 4px ${status.color}18` : undefined, flex: '0 0 auto' }} />
             </button>
@@ -803,12 +803,12 @@ function RunStageRail({ nodes, selectedId, focusNode, nextNode, documents, onSel
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, minWidth: 260,
         padding: '7px 10px', borderRadius: 12,
-        border: '1px solid #dbe3e7', background: '#ffffff',
+        border: '1px solid rgba(255,255,255,0.1)', background: '#101013',
       }}>
         <div style={{ color: '#0d9488', display: 'flex' }}><Library size={15} /></div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 10, fontWeight: 900, color: '#64748b', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Evidence rail</div>
-          <div style={{ fontSize: 11.5, fontWeight: 800, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div style={{ fontSize: 10, fontWeight: 900, color: '#82828e', letterSpacing: '0.10em', textTransform: 'uppercase' }}>Evidence rail</div>
+          <div style={{ fontSize: 11.5, fontWeight: 800, color: '#f2f2f5', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {documents} document{documents === 1 ? '' : 's'} · next {nextNode?.label ?? 'no pending stage'}
           </div>
         </div>
@@ -844,7 +844,7 @@ function RunFocusBanner({ node, nextNode, selected, onSelect }: {
       margin: '10px 16px 0',
       padding: '12px 14px',
       borderRadius: 16,
-      border: `1px solid ${upper === 'BLOCKED' || upper === 'FAILED' ? status.ring : '#dbe3e7'}`,
+      border: `1px solid ${upper === 'BLOCKED' || upper === 'FAILED' ? status.ring : 'rgba(255,255,255,0.1)'}`,
       background: upper === 'BLOCKED' || upper === 'FAILED' ? status.bg : 'rgba(255,255,255,0.86)',
       boxShadow: '0 12px 28px rgba(15,23,42,0.07)',
       flexShrink: 0,
@@ -859,15 +859,15 @@ function RunFocusBanner({ node, nextNode, selected, onSelect }: {
       <div style={{ minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <span style={{ fontSize: 10, fontWeight: 950, color: status.color, letterSpacing: '0.14em', textTransform: 'uppercase' }}>Current focus</span>
-          <span style={{ width: 3, height: 3, borderRadius: 999, background: '#cbd5e1' }} />
+          <span style={{ width: 3, height: 3, borderRadius: 999, background: 'rgba(255,255,255,0.16)' }} />
           <span style={{ fontSize: 10, fontWeight: 900, color: visual.color, letterSpacing: '0.10em', textTransform: 'uppercase' }}>{runNodeLabel(node.nodeType)}</span>
         </div>
-        <div style={{ marginTop: 3, fontSize: 14, fontWeight: 950, color: '#0f172a', letterSpacing: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.label}</div>
-        <div style={{ marginTop: 3, fontSize: 11.5, color: '#475569', lineHeight: 1.4 }}>
+        <div style={{ marginTop: 3, fontSize: 14, fontWeight: 950, color: '#f2f2f5', letterSpacing: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.label}</div>
+        <div style={{ marginTop: 3, fontSize: 11.5, color: '#b4b4bd', lineHeight: 1.4 }}>
           {action}{nextNode ? ` Next: ${nextNode.label}.` : ' No downstream stage is waiting.'}
         </div>
       </div>
-      <button onClick={onSelect} style={{ ...topBtn, background: selected ? `${visual.color}12` : '#fff', color: selected ? visual.color : '#334155', borderColor: selected ? `${visual.color}45` : '#dbe3e7' }}>
+      <button onClick={onSelect} style={{ ...topBtn, background: selected ? `${visual.color}12` : '#101013', color: selected ? visual.color : '#c4c4cc', borderColor: selected ? `${visual.color}45` : 'rgba(255,255,255,0.1)' }}>
         Open stage
       </button>
     </div>
@@ -1059,7 +1059,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
     : null
 
   return (
-    <div style={{ width: panelWidth, flexShrink: 0, background: '#fbfdfe', borderLeft: '1px solid #dbe3e7', display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', boxShadow: '-16px 0 38px rgba(15,23,42,0.08)' }}>
+    <div style={{ width: panelWidth, flexShrink: 0, background: 'rgba(255,255,255,0.03)', borderLeft: '1px solid rgba(255,255,255,0.1)', display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', boxShadow: '-16px 0 38px rgba(15,23,42,0.08)' }}>
       {/* Drag handle on the left edge — resize the review drawer; double-click resets. */}
       <div
         onMouseDown={(e) => { e.preventDefault(); startPanelResize(e.clientX) }}
@@ -1067,7 +1067,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
         title="Drag to resize · double-click to reset"
         style={{ position: 'absolute', left: -3, top: 0, bottom: 0, width: 7, cursor: 'col-resize', zIndex: 20 }}
       />
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '14px 16px', borderBottom: '1px solid #dbe3e7', background: '#ffffff' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '14px 16px', borderBottom: '1px solid rgba(255,255,255,0.1)', background: '#101013' }}>
         <div style={{
           width: 42, height: 42, borderRadius: 14, flexShrink: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -1076,12 +1076,12 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
           <VIcon size={18} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 14.5, fontWeight: 950, color: '#0f172a', letterSpacing: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.label}</div>
+          <div style={{ fontSize: 14.5, fontWeight: 950, color: '#f2f2f5', letterSpacing: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.label}</div>
           <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
             <span style={nodeMiniPill(visual.color, `${visual.color}10`, `${visual.color}28`)}>{runNodeLabel(node.nodeType)}</span>
-            <span style={nodeMiniPill('#475569', '#f8fafc', '#e2e8f0')}>{route}</span>
-            {artifactCounts.reads > 0 && <span style={nodeMiniPill('#2563eb', '#eff6ff', '#bfdbfe')}>Reads {artifactCounts.reads}</span>}
-            {artifactCounts.writes > 0 && <span style={nodeMiniPill('#0f766e', '#f0fdfa', '#99f6e4')}>Writes {artifactCounts.writes}</span>}
+            <span style={nodeMiniPill('#b4b4bd', 'rgba(255,255,255,0.05)', 'rgba(255,255,255,0.1)')}>{route}</span>
+            {artifactCounts.reads > 0 && <span style={nodeMiniPill('#2563eb', 'rgba(90,176,240,0.1)', '#bfdbfe')}>Reads {artifactCounts.reads}</span>}
+            {artifactCounts.writes > 0 && <span style={nodeMiniPill('#0f766e', 'rgba(82,215,136,0.1)', '#99f6e4')}>Writes {artifactCounts.writes}</span>}
           </div>
         </div>
         <span style={{
@@ -1095,16 +1095,16 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
       </div>
       <IoContract node={node} />
       <NodeDecisionRecord instanceId={instanceId} nodeId={node.id} />
-      <div style={{ display: 'flex', gap: 4, padding: '8px 10px', borderBottom: '1px solid #f1f5f9' }}>
+      <div style={{ display: 'flex', gap: 4, padding: '8px 10px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
         {tabs.map(t => {
           const isQ = t === 'questions'
           return (
             <button key={t} onClick={() => setTab(t)} style={{
               flex: 1, padding: '6px 8px', borderRadius: 7, fontSize: 11.5, fontWeight: 600, cursor: 'pointer', textTransform: 'capitalize',
               border: '1px solid',
-              borderColor: activeTab === t ? (isQ ? '#f59e0b' : '#0ea5e9') : 'transparent',
-              background: activeTab === t ? (isQ ? '#fffbeb' : '#f0f9ff') : 'transparent',
-              color: activeTab === t ? (isQ ? '#b45309' : '#0284c7') : (isQ ? '#b45309' : '#64748b'),
+              borderColor: activeTab === t ? (isQ ? '#f59e0b' : '#5ab0f0') : 'transparent',
+              background: activeTab === t ? (isQ ? 'rgba(245,196,81,0.1)' : 'rgba(90,176,240,0.1)') : 'transparent',
+              color: activeTab === t ? (isQ ? '#f5c451' : '#5ab0f0') : (isQ ? '#f5c451' : '#82828e'),
             }}>{isQ ? `Questions (${questions.length})` : t === 'artifacts' ? 'Documents' : t}</button>
           )
         })}
@@ -1142,13 +1142,13 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
         />
       )}
       {active && isInteractive && !awaitingBranchInput && !showForm && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 14px 0', padding: '9px 11px', borderRadius: 9, background: '#fffbeb', border: '1px solid #fde68a' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '10px 14px 0', padding: '9px 11px', borderRadius: 9, background: 'rgba(245,196,81,0.1)', border: '1px solid rgba(245,196,81,0.35)' }}>
           <AlertCircle size={14} color="#d97706" style={{ flexShrink: 0 }} />
-          <div style={{ flex: 1, fontSize: 11.5, color: '#92400e', lineHeight: 1.4 }}>This stage needs input ({node.nodeType.replace(/_/g, ' ').toLowerCase()}). Complete it in the Timeline view.</div>
+          <div style={{ flex: 1, fontSize: 11.5, color: '#f5c451', lineHeight: 1.4 }}>This stage needs input ({node.nodeType.replace(/_/g, ' ').toLowerCase()}). Complete it in the Timeline view.</div>
         </div>
       )}
       {(node.status ?? '').toUpperCase() === 'BLOCKED' && blockInfo != null && (
-        <div style={{ margin: '10px 14px 0', padding: '9px 11px', borderRadius: 9, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 11.5, color: '#991b1b', lineHeight: 1.45, maxHeight: 190, overflow: 'auto' }}>
+        <div style={{ margin: '10px 14px 0', padding: '9px 11px', borderRadius: 9, background: 'rgba(247,123,123,0.1)', border: '1px solid #fecaca', fontSize: 11.5, color: '#991b1b', lineHeight: 1.45, maxHeight: 190, overflow: 'auto' }}>
           <div style={{ fontWeight: 800, marginBottom: 4 }}>Why this stage is blocked</div>
           <BlockReasonBody info={blockInfo} />
         </div>
@@ -1158,25 +1158,25 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
           <NodeFormFill instanceId={instanceId} nodeId={node.id} runName={runName} kind={fillKind} widgets={formWidgets} />
         )}
         {activeTab === 'log' && (
-          <pre style={{ fontSize: 11.5, lineHeight: 1.5, color: '#334155', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'ui-monospace, monospace' }}>
+          <pre style={{ fontSize: 11.5, lineHeight: 1.5, color: '#c4c4cc', whiteSpace: 'pre-wrap', wordBreak: 'break-word', margin: 0, fontFamily: 'ui-monospace, monospace' }}>
             {latest?.formData?.content?.toString() ?? (active ? 'Working… (live output appears here as the stage produces it)' : 'No output yet.')}
           </pre>
         )}
         {activeTab === 'questions' && <CopilotQuestions instanceId={instanceId} node={node} questions={questions} busy={busy} onRestart={onRestart} />}
         {activeTab === 'artifacts' && (
           stageDocs.length === 0
-            ? <div style={{ fontSize: 12, color: '#94a3b8' }}>No documents produced yet.</div>
+            ? <div style={{ fontSize: 12, color: '#82828e' }}>No documents produced yet.</div>
             : <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Documents produced through this stage ({stageDocs.length})</div>
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: '#82828e', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Documents produced through this stage ({stageDocs.length})</div>
                 {stageDocs.map(c => {
                   const content = c.formData?.content?.toString() ?? ''
                   const editable = canEditConsumable(c.status)
                   const isEditing = editingId === c.id
                   return (
-                  <div key={c.id} style={{ border: '1px solid #e2e8f0', borderRadius: 9, overflow: 'hidden' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 10px', background: '#f8fafc', fontSize: 11.5, fontWeight: 700, color: '#334155' }}>
+                  <div key={c.id} style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 9, overflow: 'hidden' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 10px', background: 'rgba(255,255,255,0.03)', fontSize: 11.5, fontWeight: 700, color: '#c4c4cc' }}>
                       <FileText size={12} />
-                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name ?? 'Artifact'} {c.status ? <span style={{ fontWeight: 600, color: '#94a3b8' }}>· {c.status}</span> : null}</span>
+                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name ?? 'Artifact'} {c.status ? <span style={{ fontWeight: 600, color: '#82828e' }}>· {c.status}</span> : null}</span>
                       {!isEditing ? (
                         <>
                           {editable && <button onClick={() => { setEditingId(c.id); setDraft(content) }} title="Edit" style={artifactIconBtn}><Pencil size={12} /></button>}
@@ -1196,16 +1196,16 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
                           onChange={e => setDraft(e.target.value)}
                           rows={14}
                           spellCheck={false}
-                          style={{ width: '100%', boxSizing: 'border-box', fontSize: 11.5, lineHeight: 1.5, fontFamily: 'ui-monospace, monospace', color: '#334155', border: '1px solid #cbd5e1', borderRadius: 7, padding: 9, resize: 'vertical' }}
+                          style={{ width: '100%', boxSizing: 'border-box', fontSize: 11.5, lineHeight: 1.5, fontFamily: 'ui-monospace, monospace', color: '#c4c4cc', border: '1px solid rgba(255,255,255,0.16)', borderRadius: 7, padding: 9, resize: 'vertical' }}
                         />
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span style={{ flex: 1, fontSize: 10.5, color: '#94a3b8', lineHeight: 1.4 }}>Saving snapshots a new version and re-opens verification for this document.</span>
-                          <button onClick={() => setEditingId(null)} disabled={saveEditMut.isPending} style={{ ...footBtn, flex: 'none', padding: '5px 11px', fontSize: 11, background: 'transparent', color: '#64748b', border: '1px solid #e2e8f0' }}>Cancel</button>
+                          <span style={{ flex: 1, fontSize: 10.5, color: '#82828e', lineHeight: 1.4 }}>Saving snapshots a new version and re-opens verification for this document.</span>
+                          <button onClick={() => setEditingId(null)} disabled={saveEditMut.isPending} style={{ ...footBtn, flex: 'none', padding: '5px 11px', fontSize: 11, background: 'transparent', color: '#82828e', border: '1px solid rgba(255,255,255,0.1)' }}>Cancel</button>
                           <button onClick={() => saveEditMut.mutate({ id: c.id, content: draft })} disabled={saveEditMut.isPending || draft === content} style={{ ...footBtn, flex: 'none', padding: '5px 11px', fontSize: 11, opacity: (saveEditMut.isPending || draft === content) ? 0.6 : 1 }}>{saveEditMut.isPending ? 'Saving…' : 'Save'}</button>
                         </div>
                       </div>
                     ) : content ? (
-                      <div style={{ margin: 0, padding: 10, fontSize: 11.5, lineHeight: 1.5, color: '#334155', maxHeight: 320, overflow: 'auto' }}>
+                      <div style={{ margin: 0, padding: 10, fontSize: 11.5, lineHeight: 1.5, color: '#c4c4cc', maxHeight: 320, overflow: 'auto' }}>
                         {isCodeArtifact(c.name)
                           ? <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'ui-monospace, monospace' }}>{content}</pre>
                           : <MarkdownView source={content} />}
@@ -1220,17 +1220,17 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
         {activeTab === 'prompt' && <PromptView instanceId={instanceId} node={node} />}
       </div>
       {sendBackOpen && sendBackTargets.length > 0 && (
-        <div style={{ borderTop: '1px solid #e2e8f0', padding: '8px 8px', maxHeight: 170, overflow: 'auto', background: '#f8fafc' }}>
-          <div style={{ fontSize: 9.5, fontWeight: 800, color: '#64748b', letterSpacing: 0.4, padding: '2px 6px 6px' }}>SEND BACK TO A PREVIOUS STAGE</div>
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', padding: '8px 8px', maxHeight: 170, overflow: 'auto', background: 'rgba(255,255,255,0.03)' }}>
+          <div style={{ fontSize: 9.5, fontWeight: 800, color: '#82828e', letterSpacing: 0.4, padding: '2px 6px 6px' }}>SEND BACK TO A PREVIOUS STAGE</div>
           {sendBackTargets.map(t => (
             <button key={t.id} onClick={() => { onRestartNode(t.id); onClose() }}
-              style={{ display: 'flex', alignItems: 'center', gap: 7, width: '100%', padding: '7px 9px', borderRadius: 7, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: '#334155', textAlign: 'left' }}>
-              <CornerUpLeft size={12} color="#0ea5e9" /> {t.label}
+              style={{ display: 'flex', alignItems: 'center', gap: 7, width: '100%', padding: '7px 9px', borderRadius: 7, border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: '#c4c4cc', textAlign: 'left' }}>
+              <CornerUpLeft size={12} color="#5ab0f0" /> {t.label}
             </button>
           ))}
         </div>
       )}
-      <div style={{ display: 'flex', gap: 8, padding: '10px 14px', borderTop: '1px solid #e2e8f0', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, padding: '10px 14px', borderTop: '1px solid rgba(255,255,255,0.1)', flexWrap: 'wrap' }}>
         {active && isAgent && (
           <button onClick={onApprove} disabled={busy} style={{ ...footBtn, background: '#22c55e', borderColor: '#16a34a', color: '#fff', opacity: busy ? 0.6 : 1 }}>
             <Check size={13} /> Approve &amp; advance
@@ -1245,7 +1245,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
             target="_blank"
             rel="noreferrer"
             title="Open this copilot stage in the Workbench cockpit"
-            style={{ ...footBtn, flex: 'none', padding: '8px 11px', textDecoration: 'none', background: '#7c3aed', borderColor: '#6d28d9', color: '#fff' }}
+            style={{ ...footBtn, flex: 'none', padding: '8px 11px', textDecoration: 'none', background: '#7c3aed', borderColor: '#9a9aff', color: '#fff' }}
           >
             <ExternalLink size={13} /> Open in Workbench
           </a>
@@ -1257,7 +1257,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
               target="_blank"
               rel="noreferrer"
               title="Open the spawned child workflow in Workbench Neo"
-              style={{ ...footBtn, flex: 'none', padding: '8px 11px', textDecoration: 'none', background: '#7c3aed', borderColor: '#6d28d9', color: '#fff' }}
+              style={{ ...footBtn, flex: 'none', padding: '8px 11px', textDecoration: 'none', background: '#7c3aed', borderColor: '#9a9aff', color: '#fff' }}
             >
               <ExternalLink size={13} /> Open Workbench Neo
             </a>
@@ -1271,7 +1271,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
           </>
         )}
         {active && isInteractive && (
-          <button onClick={onOpenTimeline} style={{ ...footBtn, background: '#0ea5e9', borderColor: '#0284c7', color: '#fff' }}>
+          <button onClick={onOpenTimeline} style={{ ...footBtn, background: '#5ab0f0', borderColor: '#5ab0f0', color: '#fff' }}>
             <ExternalLink size={13} /> Open in Timeline
           </button>
         )}
@@ -1280,7 +1280,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
         </button>
         {sendBackTargets.length > 0 && (
           <button onClick={() => setSendBackOpen(o => !o)}
-            style={{ ...footBtn, flex: 'none', padding: '8px 11px', ...(sendBackOpen ? { background: '#f0f9ff', borderColor: '#0ea5e9', color: '#0284c7' } : {}) }}>
+            style={{ ...footBtn, flex: 'none', padding: '8px 11px', ...(sendBackOpen ? { background: 'rgba(90,176,240,0.1)', borderColor: '#5ab0f0', color: '#5ab0f0' } : {}) }}>
             <CornerUpLeft size={13} /> Send back
           </button>
         )}
@@ -1302,7 +1302,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
 const footBtn: CSSProperties = {
   flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
   padding: '8px 10px', borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: 'pointer',
-  border: '1px solid #e2e8f0', background: '#fff', color: '#334155',
+  border: '1px solid rgba(255,255,255,0.1)', background: '#101013', color: '#c4c4cc',
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -1311,13 +1311,13 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 const artifactIconBtn: CSSProperties = {
   display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: 'none',
-  padding: 4, borderRadius: 6, border: '1px solid #e2e8f0', background: '#fff', cursor: 'pointer', color: '#64748b',
+  padding: 4, borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)', background: '#101013', cursor: 'pointer', color: '#82828e',
 }
 
 function nextStepTone(tone: 'amber' | 'green' | 'muted'): CSSProperties {
-  if (tone === 'amber') return { background: '#fffbeb', border: '1px solid #fde68a', color: '#92400e' }
-  if (tone === 'green') return { background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534' }
-  return { background: '#f8fafc', border: '1px solid #e2e8f0', color: '#64748b' }
+  if (tone === 'amber') return { background: 'rgba(245,196,81,0.1)', border: '1px solid rgba(245,196,81,0.35)', color: '#f5c451' }
+  if (tone === 'green') return { background: 'rgba(82,215,136,0.1)', border: '1px solid rgba(82,215,136,0.35)', color: '#166534' }
+  return { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', color: '#82828e' }
 }
 
 // The node's artifact IN/OUT contract (config.inputArtifacts / outputArtifacts):
@@ -1344,8 +1344,8 @@ function NodeDecisionRecord({ instanceId, nodeId }: { instanceId: string; nodeId
   if (!dr) return null
   const row = (label: string, value: string) => (
     <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 11 }}>
-      <span style={{ color: '#94a3b8' }}>{label}</span>
-      <span style={{ color: '#0f172a', fontWeight: 600, textAlign: 'right' }}>{value}</span>
+      <span style={{ color: '#82828e' }}>{label}</span>
+      <span style={{ color: '#f2f2f5', fontWeight: 600, textAlign: 'right' }}>{value}</span>
     </div>
   )
   const agentRuns = dr.agentRuns ?? []
@@ -1356,18 +1356,18 @@ function NodeDecisionRecord({ instanceId, nodeId }: { instanceId: string; nodeId
     ? err
     : (err && typeof err === 'object' ? String((err as { message?: unknown }).message ?? 'error') : null)
   return (
-    <div style={{ margin: '0 16px 12px', padding: 10, border: '1px solid #e2e8f0', borderRadius: 8, background: '#ffffff', display: 'grid', gap: 6 }}>
-      <div style={{ fontSize: 10, fontWeight: 800, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Decision record</div>
+    <div style={{ margin: '0 16px 12px', padding: 10, border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, background: '#101013', display: 'grid', gap: 6 }}>
+      <div style={{ fontSize: 10, fontWeight: 800, color: '#b4b4bd', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Decision record</div>
       {row('Duration', dr.node?.durationMs != null ? `${Math.round(dr.node.durationMs / 1000)}s` : '—')}
       {row('Attempts', String(dr.node?.retryAttempts ?? 0))}
       {row('Agent runs', String(agentRuns.length))}
       {row('Artifacts', String(artifacts.length))}
       {verified.length > 0 ? row('Verified', String(verified.length)) : null}
       {dr.node?.stuckRecovered ? (
-        <div style={{ fontSize: 10, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '3px 6px' }}>Stuck-recovered by the watchdog</div>
+        <div style={{ fontSize: 10, color: '#f5c451', background: 'rgba(245,196,81,0.1)', border: '1px solid rgba(245,196,81,0.35)', borderRadius: 6, padding: '3px 6px' }}>Stuck-recovered by the watchdog</div>
       ) : null}
       {errMsg ? (
-        <div style={{ fontSize: 10, color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '4px 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{errMsg}</div>
+        <div style={{ fontSize: 10, color: '#dc2626', background: 'rgba(247,123,123,0.1)', border: '1px solid #fecaca', borderRadius: 6, padding: '4px 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{errMsg}</div>
       ) : null}
     </div>
   )
@@ -1383,8 +1383,8 @@ function IoContract({ node }: { node: RunGraphNodeData }) {
     const label = String(a.name || a.artifactType || (tone === 'in' ? 'input' : 'output'))
     const optional = a.required === false
     const st = tone === 'in'
-      ? { color: '#4b6ba8', borderColor: '#cdd8ec', background: '#eef1f8' }
-      : { color: '#a24428', borderColor: '#e6cabf', background: '#f8ece7' }
+      ? { color: '#4b6ba8', borderColor: '#cdd8ec', background: 'rgba(255,255,255,0.05)' }
+      : { color: '#a24428', borderColor: 'rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.05)' }
     return (
       <span key={`${tone}-${label}`} title={[String(a.description || ''), optional ? '(optional)' : ''].filter(Boolean).join(' ')}
         style={{ fontSize: 10.5, fontWeight: 600, padding: '2px 8px', borderRadius: 6, border: '1px solid', ...st, opacity: optional ? 0.75 : 1 }}>
@@ -1394,12 +1394,12 @@ function IoContract({ node }: { node: RunGraphNodeData }) {
   }
   const row = (label: string, items: Record<string, unknown>[], tone: 'in' | 'out') => (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-      <span style={{ fontSize: 9, fontWeight: 800, color: '#94a3b8', letterSpacing: 0.5, width: 42, flexShrink: 0 }}>{label}</span>
-      {items.length ? items.map(a => chip(a, tone)) : <span style={{ fontSize: 11, color: '#cbd5e1' }}>—</span>}
+      <span style={{ fontSize: 9, fontWeight: 800, color: '#82828e', letterSpacing: 0.5, width: 42, flexShrink: 0 }}>{label}</span>
+      {items.length ? items.map(a => chip(a, tone)) : <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.16)' }}>—</span>}
     </div>
   )
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 14px', borderBottom: '1px solid #f1f5f9', background: '#fcfcfd' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 14px', borderBottom: '1px solid rgba(255,255,255,0.05)', background: '#0c0c0f' }}>
       {reads.length > 0 && row('READS', reads, 'in')}
       {writes.length > 0 && row('WRITES', writes, 'out')}
     </div>
@@ -1437,23 +1437,23 @@ function PromptView({ instanceId, node }: { instanceId: string; node: RunGraphNo
       .then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) })
       .catch(() => { /* clipboard blocked — ignore */ })
   }
-  if (q.isLoading) return <div style={{ fontSize: 12, color: '#94a3b8' }}>Composing the prompt…</div>
+  if (q.isLoading) return <div style={{ fontSize: 12, color: '#82828e' }}>Composing the prompt…</div>
   if (q.isError) return <div style={{ fontSize: 12, color: '#b91c1c' }}>Couldn&apos;t load the prompt. {errText(q.error, 'request failed')}</div>
   const d = q.data
   if (!d || d.composable === false) {
-    return <div style={{ fontSize: 12, color: '#94a3b8' }}>{d?.reason ?? 'No composed prompt for this phase.'}</div>
+    return <div style={{ fontSize: 12, color: '#82828e' }}>{d?.reason ?? 'No composed prompt for this phase.'}</div>
   }
   const prompt = d.prompt ?? ''
   if (editing) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.45 }}>
+        <div style={{ fontSize: 11, color: '#82828e', lineHeight: 1.45 }}>
           Edit the full prompt below — the agent runs it <strong>verbatim</strong> (composition is skipped, so keep the role, work item, and world model you want). Saving re-runs the phase.
         </div>
         <textarea value={promptDraft} onChange={e => setPromptDraft(e.target.value)} rows={20} spellCheck={false}
-          style={{ width: '100%', boxSizing: 'border-box', fontSize: 11.5, lineHeight: 1.5, fontFamily: 'ui-monospace, monospace', color: '#334155', border: '1px solid #cbd5e1', borderRadius: 7, padding: 9, resize: 'vertical' }} />
+          style={{ width: '100%', boxSizing: 'border-box', fontSize: 11.5, lineHeight: 1.5, fontFamily: 'ui-monospace, monospace', color: '#c4c4cc', border: '1px solid rgba(255,255,255,0.16)', borderRadius: 7, padding: 9, resize: 'vertical' }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
-          <button onClick={() => setEditing(false)} disabled={savePromptMut.isPending} style={{ ...footBtn, flex: 'none', padding: '5px 11px', fontSize: 11, background: 'transparent', color: '#64748b', border: '1px solid #e2e8f0' }}>Cancel</button>
+          <button onClick={() => setEditing(false)} disabled={savePromptMut.isPending} style={{ ...footBtn, flex: 'none', padding: '5px 11px', fontSize: 11, background: 'transparent', color: '#82828e', border: '1px solid rgba(255,255,255,0.1)' }}>Cancel</button>
           <button onClick={() => savePromptMut.mutate(promptDraft)} disabled={savePromptMut.isPending || !promptDraft.trim() || promptDraft === prompt} style={{ ...footBtn, flex: 'none', padding: '5px 11px', fontSize: 11, opacity: (savePromptMut.isPending || !promptDraft.trim() || promptDraft === prompt) ? 0.6 : 1 }}>{savePromptMut.isPending ? 'Saving…' : 'Save & re-run'}</button>
         </div>
       </div>
@@ -1462,7 +1462,7 @@ function PromptView({ instanceId, node }: { instanceId: string; node: RunGraphNo
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-        <div style={{ flex: 1, fontSize: 11, color: '#64748b', lineHeight: 1.45 }}>
+        <div style={{ flex: 1, fontSize: 11, color: '#82828e', lineHeight: 1.45 }}>
           The full prompt this phase&apos;s agent runs{d.role ? ` · role ${d.role}` : ''} — role contract + repo world model + work item + task.
         </div>
         <button onClick={() => { setPromptDraft(prompt); setEditing(true) }} disabled={!prompt} title="Edit this prompt and re-run the phase"
@@ -1475,17 +1475,17 @@ function PromptView({ instanceId, node }: { instanceId: string; node: RunGraphNo
         </button>
       </div>
       {d.overridden && (
-        <div style={{ fontSize: 10.5, color: '#0284c7', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 7, padding: '6px 9px' }}>
+        <div style={{ fontSize: 10.5, color: '#5ab0f0', background: 'rgba(90,176,240,0.1)', border: '1px solid #bae6fd', borderRadius: 7, padding: '6px 9px' }}>
           This phase is running an edited prompt (overrides the composed default). Edit again to change it.
         </div>
       )}
       {d.degraded && (
-        <div style={{ display: 'flex', gap: 7, padding: '8px 10px', borderRadius: 8, background: '#fffbeb', border: '1px solid #fde68a', fontSize: 11, color: '#92400e', lineHeight: 1.4 }}>
+        <div style={{ display: 'flex', gap: 7, padding: '8px 10px', borderRadius: 8, background: 'rgba(245,196,81,0.1)', border: '1px solid rgba(245,196,81,0.35)', fontSize: 11, color: '#f5c451', lineHeight: 1.4 }}>
           <AlertCircle size={13} style={{ flexShrink: 0, marginTop: 1 }} color="#d97706" />
           <span>Composed with a fallback{d.warning ? ` — ${d.warning}` : ' — the repo world model or composer was unavailable, so this is closer to the raw task than the fully grounded prompt.'}</span>
         </div>
       )}
-      <pre style={{ margin: 0, fontSize: 11.5, lineHeight: 1.55, color: '#334155', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'ui-monospace, monospace', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 9, padding: 12 }}>
+      <pre style={{ margin: 0, fontSize: 11.5, lineHeight: 1.55, color: '#c4c4cc', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'ui-monospace, monospace', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 9, padding: 12 }}>
         {prompt || 'The composer returned an empty prompt.'}
       </pre>
     </div>
@@ -1510,18 +1510,18 @@ function ChatRefine({ instanceId, node, busy, onRestart }: {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10, height: '100%' }}>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
         {sent.length === 0
-          ? <div style={{ fontSize: 12, color: '#94a3b8', lineHeight: 1.5 }}>
+          ? <div style={{ fontSize: 12, color: '#82828e', lineHeight: 1.5 }}>
               Send feedback to refine this stage. The stage re-runs with your note as guidance (e.g. “tighten the acceptance criteria”, “add an edge case for empty lists”).
             </div>
           : sent.map((m, i) => (
-              <div key={i} style={{ alignSelf: 'flex-end', maxWidth: '85%', padding: '7px 10px', borderRadius: 10, background: '#f0f9ff', border: '1px solid #bae6fd', fontSize: 12, color: '#0c4a6e' }}>{m}</div>
+              <div key={i} style={{ alignSelf: 'flex-end', maxWidth: '85%', padding: '7px 10px', borderRadius: 10, background: 'rgba(90,176,240,0.1)', border: '1px solid #bae6fd', fontSize: 12, color: '#0c4a6e' }}>{m}</div>
             ))}
       </div>
       <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
         <textarea
           value={msg} onChange={e => setMsg(e.target.value)} placeholder="Refine this stage…" rows={2}
           onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && msg.trim()) refineMut.mutate(msg.trim()) }}
-          style={{ flex: 1, resize: 'none', padding: '8px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12, fontFamily: 'inherit' }}
+          style={{ flex: 1, resize: 'none', padding: '8px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)', fontSize: 12, fontFamily: 'inherit' }}
         />
         <button
           onClick={() => msg.trim() && refineMut.mutate(msg.trim())}
@@ -1561,13 +1561,13 @@ function CopilotQuestions({ instanceId, node, questions, busy, onRestart }: {
   })
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, height: '100%' }}>
-      <div style={{ fontSize: 11.5, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 10px', lineHeight: 1.45 }}>
+      <div style={{ fontSize: 11.5, color: '#f5c451', background: 'rgba(245,196,81,0.1)', border: '1px solid rgba(245,196,81,0.35)', borderRadius: 8, padding: '8px 10px', lineHeight: 1.45 }}>
         Copilot asked {questions.length} question{questions.length > 1 ? 's' : ''} for this stage. Answer and re-run — your answers are injected as confirmed decisions so it won't guess.
       </div>
       <div style={{ flex: 1, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
         {questions.map(q => (
-          <div key={q.id} style={{ border: '1px solid #e2e8f0', borderRadius: 9, padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0f172a', lineHeight: 1.4 }}>{q.question}</div>
+          <div key={q.id} style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 9, padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: '#f2f2f5', lineHeight: 1.4 }}>{q.question}</div>
             {q.options && q.options.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {q.options.map(opt => {
@@ -1577,7 +1577,7 @@ function CopilotQuestions({ instanceId, node, questions, busy, onRestart }: {
                       onClick={() => setAnswers(s => ({ ...s, [q.id]: { ...s[q.id], option: sel ? undefined : opt } }))}
                       style={{
                         padding: '5px 10px', borderRadius: 7, fontSize: 11.5, fontWeight: 600, cursor: 'pointer', border: '1px solid',
-                        borderColor: sel ? '#0ea5e9' : '#e2e8f0', background: sel ? '#f0f9ff' : '#fff', color: sel ? '#0284c7' : '#475569',
+                        borderColor: sel ? '#5ab0f0' : 'rgba(255,255,255,0.1)', background: sel ? 'rgba(90,176,240,0.1)' : '#101013', color: sel ? '#5ab0f0' : '#b4b4bd',
                       }}>{opt}</button>
                   )
                 })}
@@ -1586,7 +1586,7 @@ function CopilotQuestions({ instanceId, node, questions, busy, onRestart }: {
             <textarea rows={2} value={answers[q.id]?.text ?? ''}
               onChange={e => setAnswers(s => ({ ...s, [q.id]: { ...s[q.id], text: e.target.value } }))}
               placeholder={q.options?.length ? 'Add detail (optional)…' : 'Your answer…'}
-              style={{ resize: 'none', padding: '7px 9px', borderRadius: 7, border: '1px solid #e2e8f0', fontSize: 11.5, fontFamily: 'inherit' }} />
+              style={{ resize: 'none', padding: '7px 9px', borderRadius: 7, border: '1px solid rgba(255,255,255,0.1)', fontSize: 11.5, fontFamily: 'inherit' }} />
           </div>
         ))}
       </div>
@@ -1645,8 +1645,8 @@ function BlockReasonBody({ info }: { info: unknown }) {
                   background: 'rgba(15,23,42,0.04)', border: '1px solid rgba(148,163,184,0.25)',
                 }}>
                   <span style={{ fontSize: 8, fontWeight: 900, color: tone, minWidth: 64 }}>{status}</span>
-                  <span style={{ fontSize: 10, fontWeight: 800, color: '#334155', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{check.controlKey ?? 'control'}</span>
-                  {check.bindingType && <span style={{ fontSize: 8.5, color: '#64748b' }}>{check.bindingType}</span>}
+                  <span style={{ fontSize: 10, fontWeight: 800, color: '#c4c4cc', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{check.controlKey ?? 'control'}</span>
+                  {check.bindingType && <span style={{ fontSize: 8.5, color: '#82828e' }}>{check.bindingType}</span>}
                 </div>
               )
             })}
@@ -1712,15 +1712,15 @@ function CreateBranchForm({ instanceId, nodeId, capabilityId, initial, onDone }:
     onSuccess: () => { toast.success('Work branch created — continuing'); onDone() },
     onError: (e) => toast.error(errText(e, 'Create branch failed')),
   })
-  const inputStyle: CSSProperties = { width: '100%', boxSizing: 'border-box', padding: '7px 9px', borderRadius: 7, border: '1px solid #cbd5e1', fontSize: 12, outline: 'none' }
-  const labelStyle: CSSProperties = { fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#64748b', margin: '0 0 4px' }
-  const hint: CSSProperties = { fontSize: 10, color: '#64748b', marginTop: 4 }
+  const inputStyle: CSSProperties = { width: '100%', boxSizing: 'border-box', padding: '7px 9px', borderRadius: 7, border: '1px solid rgba(255,255,255,0.16)', fontSize: 12, outline: 'none' }
+  const labelStyle: CSSProperties = { fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#82828e', margin: '0 0 4px' }
+  const hint: CSSProperties = { fontSize: 10, color: '#82828e', marginTop: 4 }
   return (
-    <div style={{ margin: '10px 14px 0', padding: 12, borderRadius: 10, background: '#f0f9ff', border: '1px solid #bae6fd' }}>
-      <div style={{ fontSize: 12, fontWeight: 800, color: '#0369a1', marginBottom: 8 }}>Create work branch — choose where to start</div>
+    <div style={{ margin: '10px 14px 0', padding: 12, borderRadius: 10, background: 'rgba(90,176,240,0.1)', border: '1px solid #bae6fd' }}>
+      <div style={{ fontSize: 12, fontWeight: 800, color: '#5ab0f0', marginBottom: 8 }}>Create work branch — choose where to start</div>
       <div style={{ marginBottom: 10 }}>
         <p style={labelStyle}>Repository (from capability)</p>
-        <div style={{ ...inputStyle, background: '#f8fafc', color: repoUrl ? '#0f172a' : '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={repoUrl ?? undefined}>
+        <div style={{ ...inputStyle, background: 'rgba(255,255,255,0.03)', color: repoUrl ? '#f2f2f5' : '#82828e', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={repoUrl ?? undefined}>
           {branchesQuery.isLoading ? 'Resolving…' : (repoUrl || (branchesQuery.data?.reason ? `Not resolved — ${branchesQuery.data.reason}` : 'Not resolved — the capability has no linked repo / GIT connector'))}
         </div>
       </div>
@@ -1741,7 +1741,7 @@ function CreateBranchForm({ instanceId, nodeId, capabilityId, initial, onDone }:
         <p style={labelStyle}>Source</p>
         <div style={{ display: 'flex', gap: 6 }}>
           {(['github', 'local_dir'] as const).map(m => (
-            <button key={m} type="button" onClick={() => setSourceMode(m)} style={{ flex: 1, padding: 6, borderRadius: 7, border: `1px solid ${sourceMode === m ? '#0ea5e9' : '#cbd5e1'}`, background: sourceMode === m ? '#e0f2fe' : '#fff', color: sourceMode === m ? '#0369a1' : '#475569', fontWeight: sourceMode === m ? 800 : 600, fontSize: 11.5, cursor: 'pointer' }}>
+            <button key={m} type="button" onClick={() => setSourceMode(m)} style={{ flex: 1, padding: 6, borderRadius: 7, border: `1px solid ${sourceMode === m ? '#5ab0f0' : 'rgba(255,255,255,0.16)'}`, background: sourceMode === m ? 'rgba(90,176,240,0.13)' : '#101013', color: sourceMode === m ? '#5ab0f0' : '#b4b4bd', fontWeight: sourceMode === m ? 800 : 600, fontSize: 11.5, cursor: 'pointer' }}>
               {m === 'github' ? 'GitHub repo' : 'Local directory'}
             </button>
           ))}
@@ -1759,7 +1759,7 @@ function CreateBranchForm({ instanceId, nodeId, capabilityId, initial, onDone }:
           <input value={cloneDir} onChange={e => setCloneDir(e.target.value)} placeholder="e.g. my-checkout" style={inputStyle} />
         </div>
       )}
-      <button onClick={() => submit.mutate()} disabled={submit.isPending} style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #0284c7', background: '#0ea5e9', color: '#fff', fontWeight: 800, fontSize: 12, cursor: submit.isPending ? 'default' : 'pointer', opacity: submit.isPending ? 0.6 : 1 }}>
+      <button onClick={() => submit.mutate()} disabled={submit.isPending} style={{ width: '100%', padding: 8, borderRadius: 8, border: '1px solid #5ab0f0', background: '#5ab0f0', color: '#fff', fontWeight: 800, fontSize: 12, cursor: submit.isPending ? 'default' : 'pointer', opacity: submit.isPending ? 0.6 : 1 }}>
         {submit.isPending ? 'Creating…' : 'Create branch & continue'}
       </button>
     </div>
@@ -1807,12 +1807,12 @@ function NodeFormFill({ instanceId, nodeId, runName, kind, widgets }: {
     onError: (e) => toast.error(errText(e, 'Decision failed')),
   })
 
-  if (entityQuery.isLoading) return <div style={{ fontSize: 12, color: '#94a3b8' }}>Loading form…</div>
-  if (!entity) return <div style={{ fontSize: 12, color: '#94a3b8' }}>Waiting for the {kind} record to be created…</div>
+  if (entityQuery.isLoading) return <div style={{ fontSize: 12, color: '#82828e' }}>Loading form…</div>
+  if (!entity) return <div style={{ fontSize: 12, color: '#82828e' }}>Waiting for the {kind} record to be created…</div>
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ fontSize: 11, color: '#0c4a6e', background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 8, padding: '7px 10px', lineHeight: 1.45 }}>
+      <div style={{ fontSize: 11, color: '#0c4a6e', background: 'rgba(90,176,240,0.1)', border: '1px solid #bae6fd', borderRadius: 8, padding: '7px 10px', lineHeight: 1.45 }}>
         Fill this form to complete the step — Run <strong>{runName}</strong>.
       </div>
       <RuntimeWidgetForm
@@ -1828,7 +1828,7 @@ function NodeFormFill({ instanceId, nodeId, runName, kind, widgets }: {
         primaryLabel={kind === 'approval' ? 'Save sign-off form' : undefined}
       />
       {kind === 'approval' && (
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '1px solid #e2e8f0', paddingTop: 10 }}>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: 10 }}>
           <button onClick={() => decisionMut.mutate('REJECTED')} disabled={decisionMut.isPending}
             style={{ ...footBtn, flex: 'none', width: 'auto', padding: '7px 12px', color: '#991b1b' }}>Reject</button>
           <button onClick={() => decisionMut.mutate('APPROVED')} disabled={decisionMut.isPending}
@@ -1845,7 +1845,7 @@ function NodeFormFill({ instanceId, nodeId, runName, kind, widgets }: {
 const catBtn: CSSProperties = {
   flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
   padding: '5px 8px', borderRadius: 6, fontSize: 10.5, fontWeight: 700, cursor: 'pointer',
-  border: '1px solid', background: '#fff',
+  border: '1px solid', background: '#101013',
 }
 function ArtifactCatalog({ instanceId, live, phases, onClose }: {
   instanceId: string
@@ -1936,25 +1936,25 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
   }, [documents, phases])
 
   return (
-    <div style={{ width: 400, flexShrink: 0, background: '#fff', borderLeft: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid #e2e8f0' }}>
-        <Library size={16} color="#0ea5e9" />
+    <div style={{ width: 400, flexShrink: 0, background: '#101013', borderLeft: '1px solid rgba(255,255,255,0.1)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+        <Library size={16} color="#5ab0f0" />
         <div style={{ flex: 1 }} title="Grouped by agent — mirrors the git layout deliverables/<work-id>/<agent>/. Open a document to view or edit it.">
-          <div style={{ fontSize: 13.5, fontWeight: 700, color: '#0f172a' }}>Documents</div>
-          <div style={{ fontSize: 10.5, color: '#94a3b8' }}>{documents.length} document{documents.length === 1 ? '' : 's'} · by agent</div>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: '#f2f2f5' }}>Documents</div>
+          <div style={{ fontSize: 10.5, color: '#82828e' }}>{documents.length} document{documents.length === 1 ? '' : 's'} · by agent</div>
         </div>
         <button onClick={runVerifyAll} disabled={!!verifyAll || documents.length === 0}
           title="Run the verifier agent on every document"
-          style={{ ...topBtn, padding: '5px 9px', fontSize: 11, color: '#7c3aed', borderColor: '#ddd6fe', opacity: (!!verifyAll || documents.length === 0) ? 0.6 : 1 }}>
+          style={{ ...topBtn, padding: '5px 9px', fontSize: 11, color: '#7c3aed', borderColor: 'rgba(124,124,245,0.2)', opacity: (!!verifyAll || documents.length === 0) ? 0.6 : 1 }}>
           <ShieldCheck size={12} /> {verifyAll ? `Verifying ${verifyAll.done}/${verifyAll.total}…` : 'Verify all'}
         </button>
         <button onClick={onClose} style={{ ...topBtn, padding: 6 }}><X size={14} /></button>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: 12, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
-        {groups.length === 0 && <div style={{ fontSize: 12, color: '#94a3b8' }}>No artifacts produced yet.</div>}
+        {groups.length === 0 && <div style={{ fontSize: 12, color: '#82828e' }}>No artifacts produced yet.</div>}
         {groups.map(g => (
           <section key={g.phase.id}>
-            <div style={{ fontSize: 10, fontWeight: 800, color: '#64748b', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 7 }}>{g.phase.label}</div>
+            <div style={{ fontSize: 10, fontWeight: 800, color: '#82828e', letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 7 }}>{g.phase.label}</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
               {g.docs.map(d => {
                 const approved = ['APPROVED', 'PUBLISHED'].some(k => (d.status ?? '').toUpperCase().includes(k))
@@ -1962,22 +1962,22 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
                 const v: Verdict | undefined = verdicts[d.id] ?? d.formData?._verification
                 const needsForce = forceConfirm === d.id
                 return (
-                  <div key={d.id} style={{ border: '1px solid #e2e8f0', borderRadius: 9, padding: '8px 10px' }}>
+                  <div key={d.id} style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 9, padding: '8px 10px' }}>
                     <div onClick={() => setOpenDoc(d)} title="Open" style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7, cursor: 'pointer' }}>
-                      <FileText size={13} color="#0ea5e9" />
-                      <div style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 700, color: '#0284c7', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name ?? 'Artifact'}</div>
-                      {(d.updatedAt || d.createdAt) && <span style={{ fontSize: 9, color: '#94a3b8', whiteSpace: 'nowrap' }}>{new Date(d.updatedAt ?? d.createdAt!).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>}
-                      {d.status && <span style={{ fontSize: 9.5, fontWeight: 700, color: approved ? '#16a34a' : '#94a3b8' }}>{d.status}</span>}
+                      <FileText size={13} color="#5ab0f0" />
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 700, color: '#5ab0f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.name ?? 'Artifact'}</div>
+                      {(d.updatedAt || d.createdAt) && <span style={{ fontSize: 9, color: '#82828e', whiteSpace: 'nowrap' }}>{new Date(d.updatedAt ?? d.createdAt!).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>}
+                      {d.status && <span style={{ fontSize: 9.5, fontWeight: 700, color: approved ? '#16a34a' : '#82828e' }}>{d.status}</span>}
                     </div>
                     <div style={{ display: 'flex', gap: 6 }}>
                       <button onClick={() => approveMut.mutate({ cid: d.id, force: needsForce })} disabled={approved || approveMut.isPending}
                         title={needsForce ? 'This document failed verification — approve anyway?' : undefined}
-                        style={{ ...catBtn, color: needsForce ? '#b45309' : '#16a34a', borderColor: needsForce ? '#fde68a' : '#bbf7d0', opacity: approved ? 0.5 : 1 }}>
+                        style={{ ...catBtn, color: needsForce ? '#f5c451' : '#16a34a', borderColor: needsForce ? 'rgba(245,196,81,0.35)' : 'rgba(82,215,136,0.35)', opacity: approved ? 0.5 : 1 }}>
                         <Check size={11} /> {approved ? 'Approved' : needsForce ? 'Approve anyway' : 'Approve'}
                       </button>
                       {(() => {
                         const color = v ? (v.passed ? '#16a34a' : '#d97706') : '#7c3aed'
-                        const border = v ? (v.passed ? '#bbf7d0' : '#fde68a') : '#ddd6fe'
+                        const border = v ? (v.passed ? 'rgba(82,215,136,0.35)' : 'rgba(245,196,81,0.35)') : 'rgba(124,124,245,0.2)'
                         const label = verifyMut.isPending && verifyMut.variables === d.id ? 'Verifying…'
                           : v ? (v.passed ? 'Verified ✓' : `${v.findings.length} issue${v.findings.length === 1 ? '' : 's'}`)
                           : 'Verify'
@@ -1992,7 +1992,7 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
                     </div>
                     {v && (!v.passed || v.rationale) && (
                       <div style={{ marginTop: 7, padding: '6px 8px', borderRadius: 7, fontSize: 10.5, lineHeight: 1.4,
-                        background: v.passed ? '#f0fdf4' : '#fffbeb', border: `1px solid ${v.passed ? '#bbf7d0' : '#fde68a'}`, color: v.passed ? '#15803d' : '#92400e' }}>
+                        background: v.passed ? 'rgba(82,215,136,0.1)' : 'rgba(245,196,81,0.1)', border: `1px solid ${v.passed ? 'rgba(82,215,136,0.35)' : 'rgba(245,196,81,0.35)'}`, color: v.passed ? '#52d788' : '#f5c451' }}>
                         {v.rationale && <div style={{ marginBottom: !v.passed && v.findings.length ? 4 : 0 }}>{v.rationale}</div>}
                         {!v.passed && v.findings.length > 0 && (
                           <ul style={{ margin: 0, paddingLeft: 16 }}>{v.findings.slice(0, 6).map((f, i) => <li key={i}>{f}</li>)}</ul>
@@ -2008,19 +2008,19 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
       </div>
       {openDoc && (
         <div onClick={() => { setOpenDoc(null); setEditingDoc(false) }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 24 }}>
-          <div onClick={e => e.stopPropagation()} style={{ width: 'min(840px, 92vw)', maxHeight: '88vh', background: '#fff', borderRadius: 14, display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 12px 48px rgba(0,0,0,0.3)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '13px 16px', borderBottom: '1px solid #e2e8f0' }}>
-              <FileText size={15} color="#0ea5e9" />
-              <div style={{ flex: 1, fontSize: 14, fontWeight: 700, color: '#0f172a' }}>{openDoc.name ?? 'Artifact'}</div>
+          <div onClick={e => e.stopPropagation()} style={{ width: 'min(840px, 92vw)', maxHeight: '88vh', background: '#101013', borderRadius: 14, display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 12px 48px rgba(0,0,0,0.3)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '13px 16px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+              <FileText size={15} color="#5ab0f0" />
+              <div style={{ flex: 1, fontSize: 14, fontWeight: 700, color: '#f2f2f5' }}>{openDoc.name ?? 'Artifact'}</div>
               {editingDoc ? (
                 <>
-                  <button onClick={() => saveDocMut.mutate({ id: openDoc.id, content: docDraft })} disabled={saveDocMut.isPending || docDraft === (openDoc.formData?.content ?? '')} style={{ ...catBtn, color: '#0284c7', borderColor: '#bae6fd', opacity: (saveDocMut.isPending || docDraft === (openDoc.formData?.content ?? '')) ? 0.6 : 1 }}>{saveDocMut.isPending ? 'Saving…' : 'Save'}</button>
-                  <button onClick={() => setEditingDoc(false)} disabled={saveDocMut.isPending} style={{ ...catBtn, color: '#64748b', borderColor: '#e2e8f0' }}>Cancel</button>
+                  <button onClick={() => saveDocMut.mutate({ id: openDoc.id, content: docDraft })} disabled={saveDocMut.isPending || docDraft === (openDoc.formData?.content ?? '')} style={{ ...catBtn, color: '#5ab0f0', borderColor: '#bae6fd', opacity: (saveDocMut.isPending || docDraft === (openDoc.formData?.content ?? '')) ? 0.6 : 1 }}>{saveDocMut.isPending ? 'Saving…' : 'Save'}</button>
+                  <button onClick={() => setEditingDoc(false)} disabled={saveDocMut.isPending} style={{ ...catBtn, color: '#82828e', borderColor: 'rgba(255,255,255,0.1)' }}>Cancel</button>
                 </>
               ) : (
                 <>
                   {canEditConsumable(openDoc.status) && <button onClick={() => { setDocDraft(openDoc.formData?.content ?? ''); setEditingDoc(true) }} title="Edit" style={{ ...topBtn, padding: 6 }}><Pencil size={14} /></button>}
-                  {(openDoc.updatedAt || openDoc.createdAt) && <span style={{ fontSize: 10.5, color: '#94a3b8' }}>{new Date(openDoc.updatedAt ?? openDoc.createdAt!).toLocaleString()}</span>}
+                  {(openDoc.updatedAt || openDoc.createdAt) && <span style={{ fontSize: 10.5, color: '#82828e' }}>{new Date(openDoc.updatedAt ?? openDoc.createdAt!).toLocaleString()}</span>}
                 </>
               )}
               <button onClick={() => { setOpenDoc(null); setEditingDoc(false) }} style={{ ...topBtn, padding: 6 }}><X size={15} /></button>
@@ -2031,7 +2031,7 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
                 if (!dv) return null
                 return (
                   <div style={{ marginBottom: 14, padding: '10px 12px', borderRadius: 9, fontSize: 12, lineHeight: 1.45,
-                    background: dv.passed ? '#f0fdf4' : '#fffbeb', border: `1px solid ${dv.passed ? '#bbf7d0' : '#fde68a'}`, color: dv.passed ? '#15803d' : '#92400e' }}>
+                    background: dv.passed ? 'rgba(82,215,136,0.1)' : 'rgba(245,196,81,0.1)', border: `1px solid ${dv.passed ? 'rgba(82,215,136,0.35)' : 'rgba(245,196,81,0.35)'}`, color: dv.passed ? '#52d788' : '#f5c451' }}>
                     <div style={{ fontWeight: 700, marginBottom: dv.rationale || (!dv.passed && dv.findings.length) ? 5 : 0 }}>
                       {dv.passed ? '✓ Verified — meets the standards' : `⚠ ${dv.findings.length} issue${dv.findings.length === 1 ? '' : 's'} against the standards`}
                     </div>
@@ -2043,11 +2043,11 @@ function ArtifactCatalog({ instanceId, live, phases, onClose }: {
               {editingDoc ? (
                 <>
                   <textarea value={docDraft} onChange={e => setDocDraft(e.target.value)} spellCheck={false}
-                    style={{ width: '100%', boxSizing: 'border-box', minHeight: '52vh', fontSize: 12.5, lineHeight: 1.55, fontFamily: 'ui-monospace, monospace', color: '#334155', border: '1px solid #cbd5e1', borderRadius: 8, padding: 12, resize: 'vertical' }} />
-                  <div style={{ marginTop: 8, fontSize: 10.5, color: '#94a3b8' }}>Saving snapshots a new version and re-opens verification for this document.</div>
+                    style={{ width: '100%', boxSizing: 'border-box', minHeight: '52vh', fontSize: 12.5, lineHeight: 1.55, fontFamily: 'ui-monospace, monospace', color: '#c4c4cc', border: '1px solid rgba(255,255,255,0.16)', borderRadius: 8, padding: 12, resize: 'vertical' }} />
+                  <div style={{ marginTop: 8, fontSize: 10.5, color: '#82828e' }}>Saving snapshots a new version and re-opens verification for this document.</div>
                 </>
               ) : isCodeArtifact(openDoc.name)
-                ? <pre style={{ margin: 0, fontSize: 12.5, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#334155', fontFamily: 'ui-monospace, monospace' }}>{openDoc.formData?.content ?? '(empty)'}</pre>
+                ? <pre style={{ margin: 0, fontSize: 12.5, lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#c4c4cc', fontFamily: 'ui-monospace, monospace' }}>{openDoc.formData?.content ?? '(empty)'}</pre>
                 : <MarkdownView source={openDoc.formData?.content ?? '(empty)'} />}
             </div>
           </div>

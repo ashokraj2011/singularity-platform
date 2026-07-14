@@ -43,7 +43,7 @@ function kindTint(kind: string): string {
   return 'transparent'
 }
 
-const SEV_COLORS: Record<string, string> = { info: '#475569', warn: '#a16207', warning: '#a16207', error: '#b91c1c' }
+const SEV_COLORS: Record<string, string> = { info: '#b4b4bd', warn: '#f5c451', warning: '#f5c451', error: '#f77b7b' }
 
 function previewPayload(p?: Record<string, unknown>): string {
   if (!p) return ''
@@ -181,24 +181,24 @@ export function CopilotActivityPanel({ instanceId }: { instanceId: string }) {
   }, [instanceId, token, addRows])
 
   return (
-    <div style={{ width: 380, flexShrink: 0, background: '#fff', borderLeft: '1px solid #e2e8f0', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid #e2e8f0' }}>
-        <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 4, background: status === 'live' ? '#16a34a' : status === 'error' ? '#ef4444' : '#f59e0b' }} />
+    <div style={{ width: 380, flexShrink: 0, background: '#0c0c0f', borderLeft: '1px solid rgba(255,255,255,0.07)', color: '#f2f2f5', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 14px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+        <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 4, background: status === 'live' ? '#52d788' : status === 'error' ? '#f77b7b' : '#f5c451' }} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 700, color: '#0f172a' }}>Live activity</div>
-          <div style={{ fontSize: 10, color: '#64748b' }}>{events.length} events · {status}</div>
+          <div style={{ fontSize: 13.5, fontWeight: 620, color: '#f2f2f5' }}>Live activity</div>
+          <div style={{ fontSize: 10, color: '#82828e' }}>{events.length} events · {status}</div>
         </div>
       </div>
       <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
         {events.length === 0 ? (
-          <div style={{ padding: 18, fontSize: 12, color: '#94a3b8', textAlign: 'center', lineHeight: 1.5 }}>
+          <div style={{ padding: 18, fontSize: 12, color: '#82828e', textAlign: 'center', lineHeight: 1.5 }}>
             No activity yet. Governed copilot events (LLM calls, tools, phases, commits) stream here as the run works — including live phase progress from an operator running the exported playbook on their own machine.
           </div>
         ) : events.map(ev => (
-          <div key={ev.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 12px', borderBottom: '1px solid #f1f5f9', background: kindTint(ev.kind) }}>
-            <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, color: '#94a3b8', minWidth: 64, flexShrink: 0 }}>{timeOnly(ev.timestamp)}</span>
-            <span style={{ fontSize: 11, fontWeight: 600, color: SEV_COLORS[ev.severity] ?? '#475569', minWidth: 150, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.kind}</span>
-            <span style={{ fontSize: 11, color: '#475569', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{previewPayload(ev.payload)}</span>
+          <div key={ev.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 12px', borderBottom: '1px solid rgba(255,255,255,0.05)', background: kindTint(ev.kind) }}>
+            <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, color: '#82828e', minWidth: 64, flexShrink: 0 }}>{timeOnly(ev.timestamp)}</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: SEV_COLORS[ev.severity] ?? '#b4b4bd', minWidth: 150, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.kind}</span>
+            <span style={{ fontSize: 11, color: '#b4b4bd', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{previewPayload(ev.payload)}</span>
           </div>
         ))}
       </div>
