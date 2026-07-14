@@ -1,9 +1,11 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { LayoutDashboard, FileText, GitPullRequest, CheckCircle2, Zap, Sun, Moon, ArrowLeft, GitBranch } from 'lucide-react'
+import { LayoutDashboard, Lightbulb, FileText, PenTool, GitPullRequest, CheckCircle2, Zap, Sun, Moon, ArrowLeft, GitBranch } from 'lucide-react'
 import { api } from '../../../lib/api'
 import { ideTokens, type IdeTheme } from './ideTheme'
 import { SpecExplorerEditor } from './SpecExplorerEditor'
+import { AnalysisSurface } from './AnalysisSurface'
+import { DesignSurface } from './DesignSurface'
 import { SubmissionsStudio } from './SubmissionsStudio'
 import { ReconciliationStudio } from './ReconciliationStudio'
 import { OverviewDashboard } from './OverviewDashboard'
@@ -16,10 +18,13 @@ import { AgentStormPanel } from './AgentStormPanel'
  * complex Overview detail sections are passed in from WorkDetailPage (which owns their mutations).
  */
 
-type View = 'overview' | 'specification' | 'submissions' | 'reconciliation'
+type View = 'overview' | 'analysis' | 'specification' | 'design' | 'submissions' | 'reconciliation'
+// The upstream SDLC lifecycle, left to right: analyse → specify → design → hand off → verify.
 const VIEWS: { key: View; label: string; Icon: typeof FileText }[] = [
   { key: 'overview', label: 'Overview', Icon: LayoutDashboard },
-  { key: 'specification', label: 'Specification', Icon: FileText },
+  { key: 'analysis', label: 'Analysis', Icon: Lightbulb },
+  { key: 'specification', label: 'Requirements', Icon: FileText },
+  { key: 'design', label: 'Design', Icon: PenTool },
   { key: 'submissions', label: 'Submissions', Icon: GitPullRequest },
   { key: 'reconciliation', label: 'Reconciliation', Icon: CheckCircle2 },
 ]
@@ -90,7 +95,9 @@ export function WorkItemIde({ workItemId, workItem, onBack, overviewDetails }: {
                 </details>
               )}
             </>)}
+            {view === 'analysis' && <AnalysisSurface workItemId={workItemId} />}
             {view === 'specification' && <SpecExplorerEditor workItemId={workItemId} />}
+            {view === 'design' && <DesignSurface workItemId={workItemId} />}
             {view === 'submissions' && <SubmissionsStudio workItemId={workItemId} onGotoReconciliation={(runId) => { setFocusRunId(runId); setView('reconciliation') }} />}
             {view === 'reconciliation' && <ReconciliationStudio workItemId={workItemId} focusRunId={focusRunId} />}
           </div>
