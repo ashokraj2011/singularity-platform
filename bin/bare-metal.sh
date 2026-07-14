@@ -1239,7 +1239,9 @@ JSON
   # migration carrying RAW SQL db push can't model — partial indexes, RLS functions/policies
   # — must be psql-applied here too (the Docker path gets these via `prisma migrate deploy`).
   # These migration files are idempotent, so applying them after db push is safe. Add new
-  # raw-SQL migrations to this list.
+  # raw-SQL migrations to this list. (M86-M89 = the Spec-to-Reconciliation Workspace: spec
+  # versions, developer handoff/submissions, reconciliation runs, and the runner job queue —
+  # largely declarative, listed for Docker/migrate-deploy parity and legacy-DB idempotent safety.)
   # NOTE: 20260709150000_force_tenant_rls (ENABLE/FORCE RLS) is applied LAST — after
   # `prisma generate` and with --single-transaction. Its preflight guards RAISE + abort
   # (fail-closed) if the DB isn't ready (NULL-tenant instances, non-BYPASSRLS role, etc.),
@@ -1265,6 +1267,10 @@ JSON
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260713120000_workflow_authorization_hardening/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260713130000_force_workflow_authorization_rls/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260714100000_direct_llm_loop_strategies/migration.sql >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260715000000_m86_specification_versions/migration.sql >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260716000000_m87_development_targets_submissions/migration.sql >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260717000000_m88_reconciliation_runs/migration.sql >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260718000000_m89_reconciliation_jobs/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260709145000_backfill_null_tenant/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709150000_force_tenant_rls/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709170000_tenant_workitem_family/migration.sql >/dev/null 2>&1 ) \
