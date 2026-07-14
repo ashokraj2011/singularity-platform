@@ -287,10 +287,10 @@ function RunGraphNode({ data }: NodeProps<CardData>) {
       style={{
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
         width: '100%', padding: '6px 8px', borderRadius: 8, fontSize: 11, fontWeight: 800, cursor: 'pointer',
-        border: '1px solid', borderColor: tone === 'approve' ? '#16a34a' : tone === 'reject' ? '#dc2626' : '#e2e8f0',
-        background: tone === 'approve' ? 'linear-gradient(135deg, #22c55e, #16a34a)' : tone === 'reject' ? 'linear-gradient(135deg, #ef4444, #dc2626)' : '#fff',
-        color: tone ? '#fff' : '#334155', opacity: data.busy ? 0.6 : 1,
-        boxShadow: tone ? '0 8px 18px rgba(15,23,42,0.12)' : 'none',
+        border: '1px solid', borderColor: tone === 'approve' ? '#2f9e5b' : tone === 'reject' ? '#c0453f' : 'rgba(255,255,255,0.12)',
+        background: tone === 'approve' ? 'linear-gradient(135deg, #3fbf75, #2f9e5b)' : tone === 'reject' ? 'linear-gradient(135deg, #e06a66, #c0453f)' : '#17171c',
+        color: tone ? '#fff' : '#c4c4cc', opacity: data.busy ? 0.6 : 1,
+        boxShadow: 'none',
       }}
     >
       <Icon size={12} /> {label}
@@ -301,17 +301,17 @@ function RunGraphNode({ data }: NodeProps<CardData>) {
       className="wg-run-node-card"
       onClick={() => data.onSelect(data.id)}
       style={{
-        width: 284, borderRadius: 16, background: '#ffffff', cursor: 'pointer',
-        border: `1.5px solid ${data.selected ? visual.color : s.ring}`,
-        boxShadow: data.selected ? `0 0 0 4px ${visual.color}24, 0 18px 42px rgba(15,23,42,0.16)` : '0 12px 30px rgba(15,23,42,0.09), 0 1px 0 rgba(255,255,255,0.96) inset',
+        width: 284, borderRadius: 14, background: '#101013', cursor: 'pointer',
+        border: `1px solid ${data.selected ? visual.color : 'rgba(255,255,255,0.11)'}`,
+        boxShadow: data.selected ? `0 0 0 1px ${visual.color}, 0 0 28px -2px ${visual.color}55, 0 14px 32px -16px rgba(0,0,0,0.75)` : '0 1px 2px rgba(0,0,0,0.4), 0 12px 30px -16px rgba(0,0,0,0.7)',
         overflow: 'hidden',
         position: 'relative',
         opacity: done && !data.selected ? 0.92 : 1,
       }}
     >
       <div style={{ height: 4, background: `linear-gradient(90deg, ${visual.color}, ${s.color}, transparent)` }} />
-      <Handle type="target" position={Position.Left} style={{ background: visual.color, border: '3px solid #fff', width: 12, height: 12, left: -6 }} />
-      <Handle type="source" position={Position.Right} style={{ background: visual.color, border: '3px solid #fff', width: 12, height: 12, right: -6 }} />
+      <Handle type="target" position={Position.Left} style={{ background: visual.color, border: '2px solid #101013', width: 12, height: 12, left: -6 }} />
+      <Handle type="source" position={Position.Right} style={{ background: visual.color, border: '2px solid #101013', width: 12, height: 12, right: -6 }} />
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 13px 8px' }}>
         <div style={{
           width: 40, height: 40, borderRadius: 12, flexShrink: 0,
@@ -321,30 +321,30 @@ function RunGraphNode({ data }: NodeProps<CardData>) {
           <VIcon size={17} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 900, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: 0 }}>{data.label}</div>
+          <div style={{ fontSize: 13.5, fontWeight: 650, color: '#f2f2f5', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: '-0.01em' }}>{data.label}</div>
           <div style={{ marginTop: 3, display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 9, fontWeight: 900, color: visual.color, letterSpacing: '0.10em', textTransform: 'uppercase' }}>{visual.domain}</span>
-            <span style={{ width: 3, height: 3, borderRadius: 999, background: '#cbd5e1' }} />
-            <span style={{ fontSize: 9, fontWeight: 800, color: '#64748b', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{route}</span>
+            <span style={{ fontSize: 9, fontWeight: 800, color: visual.color, letterSpacing: '0.10em', textTransform: 'uppercase' }}>{visual.domain}</span>
+            <span style={{ width: 3, height: 3, borderRadius: 999, background: 'rgba(255,255,255,0.2)' }} />
+            <span style={{ fontSize: 9, fontWeight: 700, color: '#82828e', letterSpacing: '0.08em', textTransform: 'uppercase' }}>{route}</span>
           </div>
         </div>
         <span style={{
           display: 'inline-flex', alignItems: 'center', gap: 4,
-          fontSize: 9, fontWeight: 900, color: s.color, padding: '4px 7px', borderRadius: 999,
-          background: s.bg, border: `1px solid ${s.ring}`, letterSpacing: '0.08em', textTransform: 'uppercase',
+          fontSize: 9, fontWeight: 800, color: s.color, padding: '4px 7px', borderRadius: 999,
+          background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', letterSpacing: '0.08em', textTransform: 'uppercase',
         }}>
           <SIcon size={10} /> {awaitingStart ? (startMode === 'event' ? 'Signal' : 'Start') : s.label}
         </span>
       </div>
 
       <div style={{ padding: '0 13px 9px', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-        <span style={nodeMiniPill('#475569', '#f8fafc', '#e2e8f0')}>{runNodeLabel(data.nodeType)}</span>
-        {artifactCounts.reads > 0 && <span style={nodeMiniPill('#2563eb', '#eff6ff', '#bfdbfe')}>Reads {artifactCounts.reads}</span>}
-        {artifactCounts.writes > 0 && <span style={nodeMiniPill('#0f766e', '#f0fdfa', '#99f6e4')}>Writes {artifactCounts.writes}</span>}
+        <span style={nodeMiniPill('#b4b4bd', 'rgba(255,255,255,0.05)', 'rgba(255,255,255,0.09)')}>{runNodeLabel(data.nodeType)}</span>
+        {artifactCounts.reads > 0 && <span style={nodeMiniPill('#5ab0f0', 'rgba(90,176,240,0.12)', 'rgba(90,176,240,0.3)')}>Reads {artifactCounts.reads}</span>}
+        {artifactCounts.writes > 0 && <span style={nodeMiniPill('#52d788', 'rgba(82,215,136,0.12)', 'rgba(82,215,136,0.3)')}>Writes {artifactCounts.writes}</span>}
       </div>
 
-      <div style={{ margin: '0 13px 10px', padding: '8px 9px', borderRadius: 10, background: active ? '#f8fbff' : '#f8fafc', border: `1px solid ${active ? '#dbeafe' : '#eef2f7'}`, minHeight: 42 }}>
-        <div style={{ fontSize: 8.5, fontWeight: 900, color: '#94a3b8', letterSpacing: '0.13em', marginBottom: 3, textTransform: 'uppercase' }}>{active ? 'Live signal' : 'Last output'}</div>
+      <div style={{ margin: '0 13px 10px', padding: '8px 9px', borderRadius: 9, background: 'rgba(255,255,255,0.03)', border: `1px solid ${active ? 'rgba(124,124,245,0.4)' : 'rgba(255,255,255,0.07)'}`, minHeight: 42 }}>
+        <div style={{ fontSize: 8.5, fontWeight: 800, color: '#82828e', letterSpacing: '0.13em', marginBottom: 3, textTransform: 'uppercase' }}>{active ? 'Live signal' : 'Last output'}</div>
         <LiveLogPeek instanceId={data.config._instanceId as string} nodeId={data.id} active={active} />
       </div>
 
@@ -399,8 +399,8 @@ function LiveLogPeek({ instanceId, nodeId, active }: { instanceId: string; nodeI
   const { data } = useConsumables(instanceId, nodeId, active)
   const latest = data?.[data.length - 1]
   const text = (latest?.formData?.content ?? '').toString().replace(/\s+/g, ' ').trim()
-  if (!text) return <div style={{ fontSize: 10.5, color: '#94a3b8' }}>{active ? 'Working…' : '—'}</div>
-  return <div style={{ fontSize: 10.5, color: '#475569', lineHeight: 1.35, maxHeight: 42, overflow: 'hidden' }}>{text.slice(0, 140)}{text.length > 140 ? '…' : ''}</div>
+  if (!text) return <div style={{ fontSize: 10.5, color: '#82828e' }}>{active ? 'Working…' : '—'}</div>
+  return <div style={{ fontSize: 10.5, color: '#b4b4bd', lineHeight: 1.35, maxHeight: 42, overflow: 'hidden' }}>{text.slice(0, 140)}{text.length > 140 ? '…' : ''}</div>
 }
 
 type Verdict = { passed: boolean; findings: string[]; rationale?: string; method?: string }
@@ -619,12 +619,12 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
       animated: isLiveEdge,
       className: isLiveEdge ? 'wg-live-edge' : undefined,
       style: {
-        stroke: isLiveEdge ? '#16a34a' : isDefault ? '#f59e0b' : isConditional ? '#0ea5e9' : '#94a3b8',
-        strokeWidth: isLiveEdge ? 2.5 : isConditional ? 2 : 1.5,
+        stroke: isLiveEdge ? '#7c7cf5' : isDefault ? '#f5c451' : isConditional ? '#5ab0f0' : 'rgba(255,255,255,0.16)',
+        strokeWidth: isLiveEdge ? 2 : isConditional ? 1.75 : 1.25,
         ...(isDefault ? { strokeDasharray: '6 4' } : {}),
       },
       labelStyle: {
-        fill: isDefault ? '#92400e' : '#334155',
+        fill: isDefault ? '#f5c451' : '#82828e',
         fontSize: 10,
         fontWeight: 800,
         textTransform: 'uppercase',
@@ -640,15 +640,16 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
   const selectedNode = nodes.find(n => n.id === selected) ?? null
 
   return (
-    <div className="wg-command-center" style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: 'linear-gradient(180deg, #f7faf9 0%, #eef4f5 100%)', zIndex: 10 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'rgba(255,255,255,0.88)', borderBottom: '1px solid #dbe3e7', flexShrink: 0, minWidth: 0, overflowX: 'auto', backdropFilter: 'blur(18px)' }}>
+    <div className="wg-command-center wg-run-dark" style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: '#08080a', color: '#f2f2f5', zIndex: 10 }}>
+      <style>{RUN_DARK_CSS}</style>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 16px', background: 'rgba(12,12,15,0.85)', borderBottom: '1px solid rgba(255,255,255,0.07)', flexShrink: 0, minWidth: 0, overflowX: 'auto', backdropFilter: 'blur(18px)' }}>
         <button onClick={onBack} style={topBtn}><ArrowLeft size={13} /> Back</button>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-            <div style={{ fontSize: 15, fontWeight: 900, color: '#0f172a', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: 0 }}>{runName}</div>
-            <span style={{ fontSize: 10, fontWeight: 900, color: st(instanceStatus).color, padding: '4px 9px', borderRadius: 999, background: st(instanceStatus).bg, border: `1px solid ${st(instanceStatus).ring}`, letterSpacing: '0.10em', textTransform: 'uppercase' }}>{instanceStatus}</span>
+            <div style={{ fontSize: 14.5, fontWeight: 640, color: '#f2f2f5', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: '-0.01em' }}>{runName}</div>
+            <span style={{ fontSize: 10, fontWeight: 700, color: st(instanceStatus).color, padding: '4px 9px', borderRadius: 999, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', letterSpacing: '0.10em', textTransform: 'uppercase' }}>{instanceStatus}</span>
           </div>
-          <div style={{ marginTop: 2, fontSize: 10.5, color: '#64748b', fontWeight: 700 }}>Run cockpit · graph, stage actions, documents, receipts, and handoff exports</div>
+          <div style={{ marginTop: 2, fontSize: 10.5, color: '#82828e', fontWeight: 500 }}>Run cockpit · graph, stage actions, documents, receipts, and handoff exports</div>
         </div>
         <MetricPill label="Stages" value={String(statusCounts.total)} tone="#2563eb" />
         <MetricPill label="Done" value={String(statusCounts.completed)} tone="#16a34a" />
@@ -690,13 +691,13 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
             proOptions={{ hideAttribution: true }}
             onPaneClick={() => setSelected(null)}
           >
-            <Background variant={BackgroundVariant.Dots} gap={22} size={1.1} color="#dbe6e9" />
+            <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="rgba(255,255,255,0.06)" />
             <Controls showInteractive={false} />
             <Panel position="top-right">
               <button
                 onClick={realign}
                 title="Snap all nodes back to the auto layout"
-                style={{ fontSize: 11, fontWeight: 600, color: '#334155', background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 8, padding: '5px 10px', cursor: 'pointer', boxShadow: '0 1px 3px rgba(15,23,42,0.08)' }}
+                style={{ fontSize: 11, fontWeight: 550, color: '#c4c4cc', background: '#141418', border: '1px solid rgba(255,255,255,0.11)', borderRadius: 8, padding: '5px 10px', cursor: 'pointer' }}
               >Re-align</button>
             </Panel>
           </ReactFlow>
@@ -873,16 +874,27 @@ function RunFocusBanner({ node, nextNode, selected, onSelect }: {
   )
 }
 
+// Dark-skins React Flow's own chrome (Controls, edge labels) which ships as light CSS. Scoped to
+// the run cockpit via .wg-run-dark so it can't leak into the rest of the app.
+const RUN_DARK_CSS = `
+.wg-run-dark .react-flow__controls { box-shadow: none; border: 1px solid rgba(255,255,255,0.1); border-radius: 9px; overflow: hidden; }
+.wg-run-dark .react-flow__controls-button { background: #141418; border-bottom: 1px solid rgba(255,255,255,0.07); }
+.wg-run-dark .react-flow__controls-button:hover { background: #1c1c22; }
+.wg-run-dark .react-flow__controls-button svg { fill: #b4b4bd; }
+.wg-run-dark .react-flow__edge-text { fill: #b4b4bd; }
+.wg-run-dark .react-flow__edge-textbg { fill: #0c0c0f; }
+`
+
 const topBtn: CSSProperties = {
   display: 'flex', alignItems: 'center', gap: 5, padding: '6px 11px', borderRadius: 8,
   borderWidth: 1,
   borderStyle: 'solid',
-  borderColor: '#dbe3e7',
-  background: '#fff',
+  borderColor: 'rgba(255,255,255,0.11)',
+  background: '#141418',
   cursor: 'pointer',
-  color: '#475569',
+  color: '#c4c4cc',
   fontSize: 12,
-  fontWeight: 800,
+  fontWeight: 550,
   whiteSpace: 'nowrap',
   flexShrink: 0,
   boxShadow: '0 1px 0 rgba(255,255,255,0.9) inset',
