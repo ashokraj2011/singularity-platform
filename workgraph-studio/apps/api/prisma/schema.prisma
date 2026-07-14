@@ -1297,6 +1297,8 @@ model SpecificationProject {
 
   workItems     WorkItem[]
   specification ProjectSpecification?
+  rooms         Room[]
+  claims        Claim[]
 
   @@index([status])
   @@index([tenantId], map: "ix_specification_projects_tenant")
@@ -1320,6 +1322,123 @@ model ProjectSpecification {
 
   @@index([tenantId], map: "ix_project_specifications_tenant")
   @@map("project_specifications")
+}
+
+// ─── EPISTEMIC LAYER (Rooms & Claims) ─────────────────────────────────────────
+// Governing the *ambiguity regime* of the SDLC with inverted primitives: the unit is a hypothesis,
+// not a task. Rooms are ephemeral, state-machined explorations; Claims carry Beta(alpha,beta)
+// posteriors + provenance + a human steward. The belief math lives in modules/rooms/belief.ts.
+
+enum RoomState {
+  FRAMING
+  DIVERGENCE
+  REVEAL
+  ESTIMATION
+  PROBING
+  REVIEW
+  GATE
+  CONVERGED
+  ABANDONED
+}
+
+enum ClaimType {
+  MARKET
+  USER
+  OPERATIONAL
+  TECHNICAL
+}
+
+enum ClaimStatus {
+  OPEN
+  ACCEPTED
+  PROMOTED
+  RETIRED
+}
+
+enum EstimatorKind {
+  HUMAN
+  AGENT
+}
+
+// A Room — an ephemeral, state-machined exploration over a project. Disposable by design; what
+// endures is the claims it produces (and, in later phases, the evidence it promotes to the registry).
+model Room {
+  id          String    @id @default(uuid())
+  projectId   String
+  title       String
+  state       RoomState @default(FRAMING)
+  createdById String?
+  tenantId    String?   @default("default")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  project SpecificationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  claims  Claim[]
+
+  @@index([projectId])
+  @@index([state])
+  @@index([tenantId], map: "ix_rooms_tenant")
+  @@map("rooms")
+}
+
+// A Claim — a hypothesis carrying a Beta(alpha,beta) posterior over P(true), a riskiest assumption, a
+// provenance chain, a context scope, and a HUMAN steward (accountability never transfers to agents).
+// The statement is immutable per version; alpha/beta is the live belief state.
+model Claim {
+  id                 String      @id @default(uuid())
+  projectId          String
+  roomId             String?
+  statement          String
+  riskiestAssumption String?
+  claimType          ClaimType   @default(TECHNICAL)
+  contextScope       String      @default("default")
+  entityKind         String?
+  entityId           String?
+  alpha              Float       @default(1)
+  beta               Float       @default(1)
+  version            Int         @default(1)
+  supersedesId       String?
+  status             ClaimStatus @default(OPEN)
+  stewardId          String
+  provenance         Json        @default("{}")
+  createdById        String?
+  tenantId           String?     @default("default")
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  project   SpecificationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  room      Room?                @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  estimates Estimate[]
+
+  @@index([projectId])
+  @@index([roomId])
+  @@index([contextScope])
+  @@index([status])
+  @@index([tenantId], map: "ix_claims_tenant")
+  @@map("claims")
+}
+
+// An Estimate — one participant's probability that a claim is true (a human or an agent peer). Latest
+// per estimator; estimates pool (calibration-weighted) into the claim's prior, and their variance
+// locates ignorance (where mental models diverge).
+model Estimate {
+  id            String        @id @default(uuid())
+  claimId       String
+  estimatorId   String
+  estimatorKind EstimatorKind @default(HUMAN)
+  probability   Float
+  weight        Float         @default(1)
+  rationale     String?
+  tenantId      String?       @default("default")
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  claim Claim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  @@unique([claimId, estimatorId])
+  @@index([claimId])
+  @@index([tenantId], map: "ix_claim_estimates_tenant")
+  @@map("claim_estimates")
 }
 
 // The approved specification, made developer-ready: which repo/base to build against, which
