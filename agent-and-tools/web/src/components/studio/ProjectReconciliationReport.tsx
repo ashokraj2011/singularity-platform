@@ -12,9 +12,9 @@ import { muted } from "./ProjectAnalysisSurface";
  * work items. Read-only: a project roll-up (pass/partial/fail + how many items are reconciled) over
  * the latest run per work item, each row deep-linking into that item's reconciliation.
  */
-const GOOD = "#15803d";
-const WARN = "#b45309";
-const BAD = "#b91c1c";
+const GOOD = "#3ecf8e";
+const WARN = "#f5b544";
+const BAD = "#f2688a";
 
 export function ProjectReconciliationReport({ projectId }: { projectId: string }) {
   const { data, error, isLoading, mutate } = useSWR<ProjectReconciliation>(

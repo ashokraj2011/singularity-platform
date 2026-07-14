@@ -14,8 +14,8 @@ import { SaveBar, Field, Empty, muted, inputStyle } from "./ProjectAnalysisSurfa
  */
 const PRIORITIES: RequirementPriority[] = ["MUST", "SHOULD", "MAY"];
 const priorityColor: Record<RequirementPriority, string> = {
-  MUST: "#b91c1c",
-  SHOULD: "#b45309",
+  MUST: "#f2688a",
+  SHOULD: "#f5b544",
   MAY: "var(--color-on-surface-variant)",
 };
 

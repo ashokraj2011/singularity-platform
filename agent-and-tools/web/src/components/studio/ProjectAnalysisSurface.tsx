@@ -109,7 +109,7 @@ export function SaveBar({ section, revision, saving, savedAt, onSave, error }: {
     <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
       <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.09em", textTransform: "uppercase", ...muted }}>{section}</span>
       <span style={{ fontSize: 11, fontFamily: "var(--font-mono, monospace)", color: "var(--color-outline)" }}>r{revision}</span>
-      {error && <span style={{ fontSize: 12, color: "#b91c1c" }}>{error}</span>}
+      {error && <span style={{ fontSize: 12, color: "#f2688a" }}>{error}</span>}
       {!error && savedAt && <span style={{ fontSize: 12, color: "var(--color-primary)" }}>Saved</span>}
       <button className="btn-primary text-xs" style={{ marginLeft: "auto" }} disabled={saving} onClick={onSave}><Save size={13} /> {saving ? "Saving…" : "Save"}</button>
     </div>

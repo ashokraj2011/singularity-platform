@@ -15,9 +15,9 @@ import { SaveBar, Field, Empty, muted, inputStyle } from "./ProjectAnalysisSurfa
 const STATUSES: DecisionStatus[] = ["PROPOSED", "ACCEPTED", "SUPERSEDED", "REJECTED"];
 const statusColor: Record<DecisionStatus, string> = {
   PROPOSED: "var(--color-on-surface-variant)",
-  ACCEPTED: "#15803d",
-  SUPERSEDED: "#b45309",
-  REJECTED: "#b91c1c",
+  ACCEPTED: "#3ecf8e",
+  SUPERSEDED: "#f5b544",
+  REJECTED: "#f2688a",
 };
 
 export function ProjectDesignSurface({ projectId }: { projectId: string }) {
