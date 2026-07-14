@@ -1,6 +1,6 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { LayoutDashboard, Lightbulb, FileText, PenTool, GitPullRequest, CheckCircle2, Zap, Sun, Moon, ArrowLeft, GitBranch } from 'lucide-react'
+import { LayoutDashboard, Lightbulb, FileText, PenTool, GitPullRequest, CheckCircle2, MessageSquare, Zap, Sun, Moon, ArrowLeft, GitBranch } from 'lucide-react'
 import { api } from '../../../lib/api'
 import { ideTokens, type IdeTheme } from './ideTheme'
 import { SpecExplorerEditor } from './SpecExplorerEditor'
@@ -10,6 +10,7 @@ import { SubmissionsStudio } from './SubmissionsStudio'
 import { ReconciliationStudio } from './ReconciliationStudio'
 import { OverviewDashboard } from './OverviewDashboard'
 import { AgentStormPanel } from './AgentStormPanel'
+import { CommentsPanel } from './CommentsPanel'
 
 /**
  * Work Item IDE — the whole workspace as an IDE (VS Code register). An activity bar switches views,
@@ -18,8 +19,9 @@ import { AgentStormPanel } from './AgentStormPanel'
  * complex Overview detail sections are passed in from WorkDetailPage (which owns their mutations).
  */
 
-type View = 'overview' | 'analysis' | 'specification' | 'design' | 'submissions' | 'reconciliation'
+type View = 'overview' | 'analysis' | 'specification' | 'design' | 'submissions' | 'reconciliation' | 'discussion'
 // The upstream SDLC lifecycle, left to right: analyse → specify → design → hand off → verify.
+// Discussion is cross-cutting collaboration — it rides at the end of the rail, above the tools group.
 const VIEWS: { key: View; label: string; Icon: typeof FileText }[] = [
   { key: 'overview', label: 'Overview', Icon: LayoutDashboard },
   { key: 'analysis', label: 'Analysis', Icon: Lightbulb },
@@ -27,6 +29,7 @@ const VIEWS: { key: View; label: string; Icon: typeof FileText }[] = [
   { key: 'design', label: 'Design', Icon: PenTool },
   { key: 'submissions', label: 'Submissions', Icon: GitPullRequest },
   { key: 'reconciliation', label: 'Reconciliation', Icon: CheckCircle2 },
+  { key: 'discussion', label: 'Discussion', Icon: MessageSquare },
 ]
 
 interface WI { workCode?: string; title?: string; status: string; events?: any[]; targets?: any[]; urgency?: string | null; dueAt?: string | null }
@@ -100,6 +103,7 @@ export function WorkItemIde({ workItemId, workItem, onBack, overviewDetails }: {
             {view === 'design' && <DesignSurface workItemId={workItemId} />}
             {view === 'submissions' && <SubmissionsStudio workItemId={workItemId} onGotoReconciliation={(runId) => { setFocusRunId(runId); setView('reconciliation') }} />}
             {view === 'reconciliation' && <ReconciliationStudio workItemId={workItemId} focusRunId={focusRunId} />}
+            {view === 'discussion' && <CommentsPanel workItemId={workItemId} />}
           </div>
         </div>
 
