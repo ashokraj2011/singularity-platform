@@ -1353,6 +1353,23 @@ enum ClaimStatus {
   ACCEPTED
   PROMOTED
   RETIRED
+  ABANDONED
+}
+
+// Source tier of a piece of evidence — caps how far it can move a posterior (production reality moves
+// it far, an agent simulation barely). OPINION is uncapped-at-zero: opinions stay local, only evidence travels.
+enum EvidenceTier {
+  PRODUCTION
+  EXPERIMENT
+  SIMULATION
+  AGENT
+  OPINION
+}
+
+enum ProbeStatus {
+  OPEN
+  RESOLVED
+  ABANDONED
 }
 
 enum EstimatorKind {
@@ -1374,6 +1391,7 @@ model Room {
 
   project SpecificationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
   claims  Claim[]
+  probes  Probe[]
 
   @@index([projectId])
   @@index([state])
@@ -1409,6 +1427,8 @@ model Claim {
   project   SpecificationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
   room      Room?                @relation(fields: [roomId], references: [id], onDelete: SetNull)
   estimates Estimate[]
+  probes    Probe[]
+  evidence  Evidence[]
 
   @@index([projectId])
   @@index([roomId])
@@ -1439,6 +1459,62 @@ model Estimate {
   @@index([claimId])
   @@index([tenantId], map: "ix_claim_estimates_tenant")
   @@map("claim_estimates")
+}
+
+// A Probe — the cheapest experiment that could falsify a claim's riskiest assumption. Pre-registers its
+// falsification condition, has exactly one owner + a deadline, and carries an expected-information-gain
+// (computed at creation) that feeds the room's arithmetic stopping rule. Resolving a probe emits Evidence.
+model Probe {
+  id                 String       @id @default(uuid())
+  claimId            String
+  roomId             String?
+  riskiestAssumption String
+  falsification      String
+  tier               EvidenceTier @default(SIMULATION)
+  ownerId            String
+  deadline           DateTime?
+  status             ProbeStatus  @default(OPEN)
+  eig                Float?
+  outcome            String?
+  createdById        String?
+  tenantId           String?      @default("default")
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  claim    Claim      @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  room     Room?      @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  evidence Evidence[]
+
+  @@index([claimId])
+  @@index([roomId])
+  @@index([status])
+  @@index([tenantId], map: "ix_claim_probes_tenant")
+  @@map("claim_probes")
+}
+
+// A piece of Evidence bound to a claim — the durable output of a probe (artifacts are disposable). Its
+// tier caps how far it moves the posterior; `evidenceKey` is the identity that makes promotion idempotent
+// (the same observation arriving twice counts once). supports=true adds to alpha, false to beta.
+model Evidence {
+  id          String       @id @default(uuid())
+  claimId     String
+  probeId     String?
+  tier        EvidenceTier
+  supports    Boolean
+  weight      Float        @default(1)
+  evidenceKey String       @unique
+  sourceUri   String?
+  note        String?
+  createdById String?
+  tenantId    String?      @default("default")
+  createdAt   DateTime     @default(now())
+
+  claim Claim  @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  probe Probe? @relation(fields: [probeId], references: [id], onDelete: SetNull)
+
+  @@index([claimId])
+  @@index([tenantId], map: "ix_claim_evidence_tenant")
+  @@map("claim_evidence")
 }
 
 // The approved specification, made developer-ready: which repo/base to build against, which

@@ -8,10 +8,26 @@ import { z } from "zod";
 import { validate } from "../../middleware/validate";
 import { createRoom, listRooms, getRoom, addClaim, getClaim, estimateClaim, listClaims, getRegistryClaims } from "./rooms.service";
 import { proposeClaims, acceptCopilotClaim } from "./room-copilot.service";
+import { createProbe, listProbes, resolveProbe, abandonProbe, abandonClaim, getRoomConvergence } from "./probes.service";
 
 export const roomsRouter: Router = Router();
 
 const claimTypeEnum = z.enum(["MARKET", "USER", "OPERATIONAL", "TECHNICAL"]);
+const evidenceTierEnum = z.enum(["PRODUCTION", "EXPERIMENT", "SIMULATION", "AGENT", "OPINION"]);
+const createProbeSchema = z.object({
+  riskiestAssumption: z.string().trim().min(1).max(2000),
+  falsification: z.string().trim().min(1).max(2000),
+  tier: evidenceTierEnum.optional(),
+  ownerId: z.string().trim().max(200).optional(),
+  deadline: z.string().datetime().optional(),
+});
+const resolveProbeSchema = z.object({
+  supports: z.boolean(),
+  weight: z.number().min(0).max(100).optional(),
+  outcome: z.string().trim().max(2000).optional(),
+  sourceUri: z.string().trim().max(600).optional(),
+  note: z.string().trim().max(2000).optional(),
+});
 const createRoomSchema = z.object({ title: z.string().trim().min(1).max(200) });
 const addClaimSchema = z.object({
   roomId: z.string().uuid().optional(),
@@ -75,6 +91,31 @@ roomsRouter.post("/rooms/:roomId/copilot/propose", validate(proposeSchema), asyn
 });
 roomsRouter.post("/rooms/:roomId/copilot/accept", validate(acceptSchema), async (req, res, next) => {
   try { res.status(201).json(await acceptCopilotClaim(roomId(req), req.body, userId(req))); } catch (e) { next(e); }
+});
+
+// ── Probes & Evidence (Phase 2) ──
+const probeId = (req: Request) => String(req.params.probeId);
+
+roomsRouter.post("/claims/:claimId/probes", validate(createProbeSchema), async (req, res, next) => {
+  try { res.status(201).json(await createProbe(claimId(req), req.body, userId(req))); } catch (e) { next(e); }
+});
+roomsRouter.get("/claims/:claimId/probes", async (req, res, next) => {
+  try { res.json(await listProbes({ claimId: claimId(req) })); } catch (e) { next(e); }
+});
+roomsRouter.get("/rooms/:roomId/probes", async (req, res, next) => {
+  try { res.json(await listProbes({ roomId: roomId(req) })); } catch (e) { next(e); }
+});
+roomsRouter.post("/probes/:probeId/resolve", validate(resolveProbeSchema), async (req, res, next) => {
+  try { res.json(await resolveProbe(probeId(req), req.body, userId(req))); } catch (e) { next(e); }
+});
+roomsRouter.post("/probes/:probeId/abandon", async (req, res, next) => {
+  try { res.json(await abandonProbe(probeId(req), userId(req))); } catch (e) { next(e); }
+});
+roomsRouter.post("/claims/:claimId/abandon", async (req, res, next) => {
+  try { res.json(await abandonClaim(claimId(req), userId(req))); } catch (e) { next(e); }
+});
+roomsRouter.get("/rooms/:roomId/convergence", async (req, res, next) => {
+  try { res.json(await getRoomConvergence(roomId(req))); } catch (e) { next(e); }
 });
 
 // ── Registry (decayed-on-read) ──

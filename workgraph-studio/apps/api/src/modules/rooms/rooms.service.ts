@@ -10,7 +10,7 @@ import { currentTenantIdForDb } from "../../lib/tenant-db-context";
 import { logEvent, publishOutbox } from "../../lib/audit";
 import { NotFoundError, ConflictError } from "../../lib/errors";
 import { getProject } from "../studio/studio-projects.service";
-import { poolEstimates, toBetaPrior, betaStats, decayOnRead, ignoranceRank, UNIFORM_PRIOR, type ClaimTypeKey } from "./belief";
+import { poolEstimates, toBetaPrior, betaStats, decayOnRead, ignoranceRank, foldEvidence, UNIFORM_PRIOR, type ClaimTypeKey, type EvidenceTier } from "./belief";
 
 const tenant = () => currentTenantIdForDb() ?? undefined;
 
@@ -77,13 +77,21 @@ export function shapeClaim(claim: ClaimRow, estimates: EstimateRow[]) {
   };
 }
 
-/** Re-pool all of a claim's estimates into its Beta prior. Called after every estimate change. */
-async function recomputePosterior(claimId: string): Promise<void> {
-  const estimates = await prisma.estimate.findMany({ where: { claimId } });
+/**
+ * Recompute a claim's Beta posterior: pooled estimates form the prior, then Evidence is folded in
+ * (tier-capped + idempotent by evidence identity). Called after every estimate change AND after a probe
+ * resolves. Estimates shape the belief cheaply; evidence — from probes — is what actually moves it.
+ */
+export async function recomputePosterior(claimId: string): Promise<void> {
+  const [estimates, evidence] = await Promise.all([
+    prisma.estimate.findMany({ where: { claimId } }),
+    prisma.evidence.findMany({ where: { claimId } }),
+  ]);
   const prior = estimates.length
     ? toBetaPrior(poolEstimates(estimates.map((e) => ({ probability: e.probability, weight: e.weight }))).mean)
     : { ...UNIFORM_PRIOR };
-  await prisma.claim.update({ where: { id: claimId }, data: { alpha: prior.alpha, beta: prior.beta } });
+  const posterior = foldEvidence(prior, evidence.map((ev) => ({ id: ev.id, supports: ev.supports, tier: ev.tier as EvidenceTier, weight: ev.weight })));
+  await prisma.claim.update({ where: { id: claimId }, data: { alpha: posterior.alpha, beta: posterior.beta } });
 }
 
 export interface AddClaimInput {
