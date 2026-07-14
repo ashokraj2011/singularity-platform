@@ -9,6 +9,8 @@ import { ProjectAnalysisSurface } from "./ProjectAnalysisSurface";
 import { ProjectRequirementsSurface } from "./ProjectRequirementsSurface";
 import { ProjectDesignSurface } from "./ProjectDesignSurface";
 import { ProjectReconciliationReport } from "./ProjectReconciliationReport";
+import { usePresence } from "./usePresence";
+import { PresenceBar } from "./PresenceBar";
 
 /**
  * A Specification Project's workspace: its mission, the shared lifecycle spine, and the work items
@@ -50,6 +52,7 @@ export function StudioProjectDetail({ projectId }: { projectId: string }) {
   const itemsSWR = useSWR<{ items: WorkItemCard[] }>(`/studio/projects/${projectId}/work-items`, (url: string) => workgraphFetch<{ items: WorkItemCard[] }>(url), { refreshInterval: 15000 });
   const [actionError, setActionError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
+  const present = usePresence(projectId, tab);
 
   const project = projectSWR.data;
   const items = itemsSWR.data?.items ?? [];
@@ -93,7 +96,8 @@ export function StudioProjectDetail({ projectId }: { projectId: string }) {
               </div>
               <p style={{ margin: "6px 0 0", fontSize: 13.5, maxWidth: "62ch", ...muted }}>{project.mission || "No mission set yet."}</p>
             </div>
-            <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 14 }}>
+              <PresenceBar present={present} />
               {project.status !== "ARCHIVED" && <button className="btn-secondary text-xs" type="button" onClick={archive}><Archive size={13} /> Archive</button>}
             </div>
           </div>
