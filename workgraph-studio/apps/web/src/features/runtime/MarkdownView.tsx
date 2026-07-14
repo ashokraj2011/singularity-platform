@@ -21,7 +21,7 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
   codeParts.forEach((part, ci) => {
     if (/^`[^`]+`$/.test(part)) {
       out.push(
-        <code key={`${keyPrefix}-c${ci}`} style={{ fontFamily: 'monospace', background: 'rgba(0,0,0,0.05)', padding: '1px 4px', borderRadius: 3, fontSize: '0.92em' }}>
+        <code key={`${keyPrefix}-c${ci}`} style={{ fontFamily: 'monospace', background: 'rgba(128,128,128,0.18)', padding: '1px 4px', borderRadius: 3, fontSize: '0.92em' }}>
           {part.slice(1, -1)}
         </code>,
       )
@@ -75,7 +75,7 @@ export function MarkdownView({ source }: { source: string }) {
       const level = h[1].length
       const size = [18, 16, 14.5, 13.5, 12.5, 12][level - 1]
       blocks.push(
-        <div key={key++} style={{ fontSize: size, fontWeight: 800, color: 'var(--color-on-surface)', margin: level <= 2 ? '14px 0 6px' : '10px 0 4px', letterSpacing: '-0.01em' }}>
+        <div key={key++} style={{ fontSize: size, fontWeight: 800, color: 'inherit', margin: level <= 2 ? '14px 0 6px' : '10px 0 4px', letterSpacing: '-0.01em' }}>
           {renderInline(h[2], `h${key}`)}
         </div>,
       )
@@ -85,7 +85,7 @@ export function MarkdownView({ source }: { source: string }) {
 
     // Horizontal rule
     if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
-      blocks.push(<hr key={key++} style={{ border: 'none', borderTop: '1px solid var(--color-outline-variant)', margin: '12px 0' }} />)
+      blocks.push(<hr key={key++} style={{ border: 'none', borderTop: '1px solid rgba(128,128,128,0.3)', margin: '12px 0' }} />)
       i++
       continue
     }
@@ -102,12 +102,12 @@ export function MarkdownView({ source }: { source: string }) {
         <table key={key++} style={{ borderCollapse: 'collapse', margin: '8px 0', fontSize: 12, width: '100%' }}>
           <thead>
             <tr>{header.map((c, ci) => (
-              <th key={ci} style={{ textAlign: 'left', padding: '5px 8px', borderBottom: '2px solid var(--color-outline-variant)', fontWeight: 700 }}>{renderInline(c, `th${key}-${ci}`)}</th>
+              <th key={ci} style={{ textAlign: 'left', padding: '5px 8px', borderBottom: '2px solid rgba(128,128,128,0.3)', fontWeight: 700 }}>{renderInline(c, `th${key}-${ci}`)}</th>
             ))}</tr>
           </thead>
           <tbody>{rows.map((r, ri) => (
             <tr key={ri}>{r.map((c, ci) => (
-              <td key={ci} style={{ padding: '5px 8px', borderBottom: '1px solid var(--color-outline-variant)', verticalAlign: 'top' }}>{renderInline(c, `td${key}-${ri}-${ci}`)}</td>
+              <td key={ci} style={{ padding: '5px 8px', borderBottom: '1px solid rgba(128,128,128,0.3)', verticalAlign: 'top' }}>{renderInline(c, `td${key}-${ri}-${ci}`)}</td>
             ))}</tr>
           ))}</tbody>
         </table>,
@@ -127,7 +127,7 @@ export function MarkdownView({ source }: { source: string }) {
       }
       const ListTag = ordered ? 'ol' : 'ul'
       blocks.push(
-        <ListTag key={key++} style={{ margin: '6px 0', paddingLeft: 22, fontSize: 12.5, lineHeight: 1.6, color: 'var(--color-on-surface)' }}>
+        <ListTag key={key++} style={{ margin: '6px 0', paddingLeft: 22, fontSize: 12.5, lineHeight: 1.6, color: 'inherit' }}>
           {itemsBuf.map((it, ii) => <li key={ii}>{renderInline(it, `li${key}-${ii}`)}</li>)}
         </ListTag>,
       )
@@ -144,7 +144,7 @@ export function MarkdownView({ source }: { source: string }) {
       paraBuf.push(lines[i]); i++
     }
     blocks.push(
-      <p key={key++} style={{ margin: '6px 0', fontSize: 12.5, lineHeight: 1.6, color: 'var(--color-on-surface)' }}>
+      <p key={key++} style={{ margin: '6px 0', fontSize: 12.5, lineHeight: 1.6, color: 'inherit' }}>
         {renderInline(paraBuf.join(' '), `p${key}`)}
       </p>,
     )
