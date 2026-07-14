@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState, type CSSProperties } from "react";
 import useSWR from "swr";
-import { ArrowLeft, FolderGit2, FileText, Archive, Unlink, Lightbulb, ClipboardList, PenTool, GitPullRequest, CheckCircle2, LayoutDashboard, Users } from "lucide-react";
+import { FolderGit2, FileText, Archive, Unlink, Lightbulb, ClipboardList, PenTool, GitPullRequest, CheckCircle2, LayoutDashboard, Users } from "lucide-react";
 import { workgraphFetch } from "@/lib/workgraph";
 import { ProjectAnalysisSurface } from "./ProjectAnalysisSurface";
 import { ProjectRequirementsSurface } from "./ProjectRequirementsSurface";
@@ -12,6 +12,7 @@ import { ProjectReconciliationReport } from "./ProjectReconciliationReport";
 import { usePresence } from "./usePresence";
 import { PresenceBar } from "./PresenceBar";
 import { CoeditCanvas } from "./CoeditCanvas";
+import { StudioShell } from "./StudioShell";
 
 /**
  * A Specification Project's workspace: its mission, the shared lifecycle spine, and the work items
@@ -75,10 +76,8 @@ export function StudioProjectDetail({ projectId }: { projectId: string }) {
   }
 
   return (
-    <div style={{ maxWidth: 1040, margin: "0 auto", padding: "8px 4px 40px" }}>
-      <Link href="/studio" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, textDecoration: "none", ...muted }}>
-        <ArrowLeft size={14} /> All projects
-      </Link>
+    <StudioShell crumb={<><Link href="/studio" style={{ color: "var(--studio-ink-dim)", textDecoration: "none" }}>Projects</Link><span style={{ color: "var(--studio-faint)" }}>›</span><span style={{ color: "var(--studio-ink)", fontWeight: 600 }}>{project?.name ?? "…"}</span></>}>
+    <div style={{ maxWidth: 1040, margin: "0 auto" }}>
 
       {projectSWR.isLoading ? (
         <p style={{ ...muted, marginTop: 16 }}>Loading…</p>
@@ -162,5 +161,6 @@ export function StudioProjectDetail({ projectId }: { projectId: string }) {
         </>
       )}
     </div>
+    </StudioShell>
   );
 }
