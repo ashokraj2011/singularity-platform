@@ -1226,6 +1226,7 @@ model WorkItem {
   implementationSubmissions ImplementationSubmission[]
   reconciliationRuns      ReconciliationRun[]
   project                 SpecificationProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  specComments            SpecComment[]
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
   tenantId                String?          @default("default")
@@ -1512,6 +1513,32 @@ model ReconciliationJob {
   @@index([workItemId])
   @@index([tenantId], map: "ix_reconciliation_jobs_tenant")
   @@map("reconciliation_jobs")
+}
+
+// Collaboration — a comment/thread on the studio, optionally anchored to a spec artifact
+// (a requirement, diagram, decision, …). @mentions are stored resolved; threads via parentId;
+// resolvable. The shared "work together" layer over the versioned spec.
+model SpecComment {
+  id           String    @id @default(uuid())
+  workItemId   String
+  anchorKind   String?
+  anchorId     String?
+  body         String
+  authorId     String
+  mentions     Json      @default("[]")
+  parentId     String?
+  resolvedAt   DateTime?
+  resolvedById String?
+  tenantId     String?   @default("default")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@index([workItemId, createdAt])
+  @@index([workItemId, anchorKind, anchorId])
+  @@index([tenantId], map: "ix_spec_comments_tenant")
+  @@map("spec_comments")
 }
 
 model WorkItemDependency {

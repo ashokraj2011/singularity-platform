@@ -480,9 +480,11 @@ const preStyle: CSSProperties = {
 }
 
 function KeyValue({ label, value }: { label: string; value: string }) {
+  // Stacked (label over value) so it stays legible at any column width — a fixed label column
+  // collapses the value to a sliver inside the IDE's narrower panels and wraps it per-character.
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '150px 1fr', gap: 10, marginTop: 6, fontSize: 12 }}>
-      <span style={{ color: 'var(--color-outline)', fontWeight: 700 }}>{label}</span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 6, fontSize: 12, minWidth: 0 }}>
+      <span style={{ color: 'var(--color-outline)', fontWeight: 700, fontSize: 10.5, letterSpacing: '.02em' }}>{label}</span>
       <span style={{ color: 'var(--color-on-surface)', overflowWrap: 'anywhere' }}>{value}</span>
     </div>
   )

@@ -1,13 +1,16 @@
 import { useState, type CSSProperties, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { LayoutDashboard, FileText, GitPullRequest, CheckCircle2, Zap, Sun, Moon, ArrowLeft, GitBranch } from 'lucide-react'
+import { LayoutDashboard, Lightbulb, FileText, PenTool, GitPullRequest, CheckCircle2, MessageSquare, Zap, Sun, Moon, ArrowLeft, GitBranch } from 'lucide-react'
 import { api } from '../../../lib/api'
 import { ideTokens, type IdeTheme } from './ideTheme'
 import { SpecExplorerEditor } from './SpecExplorerEditor'
+import { AnalysisSurface } from './AnalysisSurface'
+import { DesignSurface } from './DesignSurface'
 import { SubmissionsStudio } from './SubmissionsStudio'
 import { ReconciliationStudio } from './ReconciliationStudio'
 import { OverviewDashboard } from './OverviewDashboard'
 import { AgentStormPanel } from './AgentStormPanel'
+import { CommentsPanel } from './CommentsPanel'
 
 /**
  * Work Item IDE — the whole workspace as an IDE (VS Code register). An activity bar switches views,
@@ -16,12 +19,17 @@ import { AgentStormPanel } from './AgentStormPanel'
  * complex Overview detail sections are passed in from WorkDetailPage (which owns their mutations).
  */
 
-type View = 'overview' | 'specification' | 'submissions' | 'reconciliation'
+type View = 'overview' | 'analysis' | 'specification' | 'design' | 'submissions' | 'reconciliation' | 'discussion'
+// The upstream SDLC lifecycle, left to right: analyse → specify → design → hand off → verify.
+// Discussion is cross-cutting collaboration — it rides at the end of the rail, above the tools group.
 const VIEWS: { key: View; label: string; Icon: typeof FileText }[] = [
   { key: 'overview', label: 'Overview', Icon: LayoutDashboard },
-  { key: 'specification', label: 'Specification', Icon: FileText },
+  { key: 'analysis', label: 'Analysis', Icon: Lightbulb },
+  { key: 'specification', label: 'Requirements', Icon: FileText },
+  { key: 'design', label: 'Design', Icon: PenTool },
   { key: 'submissions', label: 'Submissions', Icon: GitPullRequest },
   { key: 'reconciliation', label: 'Reconciliation', Icon: CheckCircle2 },
+  { key: 'discussion', label: 'Discussion', Icon: MessageSquare },
 ]
 
 interface WI { workCode?: string; title?: string; status: string; events?: any[]; targets?: any[]; urgency?: string | null; dueAt?: string | null }
@@ -81,11 +89,21 @@ export function WorkItemIde({ workItemId, workItem, onBack, overviewDetails }: {
           <div style={{ flex: 1, overflow: 'auto', padding: '20px 22px 40px', background: 'var(--ide-editor)' }}>
             {view === 'overview' && (<>
               <OverviewDashboard workItemId={workItemId} workItem={workItem} onOpenTab={(t) => setView(t)} />
-              {overviewDetails}
+              {overviewDetails && (
+                <details style={{ marginTop: 10, border: '1px solid var(--ide-line)', borderRadius: 12, background: 'var(--ide-chrome)' }}>
+                  <summary style={{ cursor: 'pointer', listStyle: 'none', padding: '12px 16px', fontSize: 12.5, fontWeight: 700, color: 'var(--ide-muted)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 10 }}>▸</span> Work item details &amp; routing <span style={{ fontWeight: 500, color: 'var(--ide-faint)' }}>— routing, targets, clarifications, timeline</span>
+                  </summary>
+                  <div style={{ padding: '0 16px 8px' }}>{overviewDetails}</div>
+                </details>
+              )}
             </>)}
+            {view === 'analysis' && <AnalysisSurface workItemId={workItemId} />}
             {view === 'specification' && <SpecExplorerEditor workItemId={workItemId} />}
+            {view === 'design' && <DesignSurface workItemId={workItemId} />}
             {view === 'submissions' && <SubmissionsStudio workItemId={workItemId} onGotoReconciliation={(runId) => { setFocusRunId(runId); setView('reconciliation') }} />}
             {view === 'reconciliation' && <ReconciliationStudio workItemId={workItemId} focusRunId={focusRunId} />}
+            {view === 'discussion' && <CommentsPanel workItemId={workItemId} />}
           </div>
         </div>
 
