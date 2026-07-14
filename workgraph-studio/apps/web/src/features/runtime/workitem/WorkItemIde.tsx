@@ -81,7 +81,14 @@ export function WorkItemIde({ workItemId, workItem, onBack, overviewDetails }: {
           <div style={{ flex: 1, overflow: 'auto', padding: '20px 22px 40px', background: 'var(--ide-editor)' }}>
             {view === 'overview' && (<>
               <OverviewDashboard workItemId={workItemId} workItem={workItem} onOpenTab={(t) => setView(t)} />
-              {overviewDetails}
+              {overviewDetails && (
+                <details style={{ marginTop: 10, border: '1px solid var(--ide-line)', borderRadius: 12, background: 'var(--ide-chrome)' }}>
+                  <summary style={{ cursor: 'pointer', listStyle: 'none', padding: '12px 16px', fontSize: 12.5, fontWeight: 700, color: 'var(--ide-muted)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 10 }}>▸</span> Work item details &amp; routing <span style={{ fontWeight: 500, color: 'var(--ide-faint)' }}>— routing, targets, clarifications, timeline</span>
+                  </summary>
+                  <div style={{ padding: '0 16px 8px' }}>{overviewDetails}</div>
+                </details>
+              )}
             </>)}
             {view === 'specification' && <SpecExplorerEditor workItemId={workItemId} />}
             {view === 'submissions' && <SubmissionsStudio workItemId={workItemId} onGotoReconciliation={(runId) => { setFocusRunId(runId); setView('reconciliation') }} />}
