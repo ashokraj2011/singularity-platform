@@ -18,6 +18,7 @@ import {
   getPortfolio,
 } from './studio-projects.service'
 import { getProjectSpec, patchProjectSpecSection } from './studio-spec.service'
+import { getProjectReconciliation } from './studio-recon.service'
 
 export const studioProjectsRouter: Router = Router()
 
@@ -31,7 +32,7 @@ export const updateProjectSchema = z.object({
 })
 export const archiveProjectSchema = z.object({ archived: z.boolean().default(true) })
 export const patchProjectSpecSchema = z.object({
-  section: z.enum(['analysis', 'decisions']),
+  section: z.enum(['analysis', 'requirements', 'decisions']),
   value: z.unknown(),
   expectedRevision: z.number().int().min(1),
 })
@@ -105,5 +106,12 @@ studioProjectsRouter.get('/projects/:projectId/specification', async (req, res, 
 studioProjectsRouter.patch('/projects/:projectId/specification', validate(patchProjectSpecSchema), async (req, res, next) => {
   try {
     res.json(await patchProjectSpecSection(projectIdOf(req), req.body, userIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+// Project-level reconciliation roll-up — latest run per work item + a project total (read-only).
+studioProjectsRouter.get('/projects/:projectId/reconciliation', async (req, res, next) => {
+  try {
+    res.json(await getProjectReconciliation(projectIdOf(req)))
   } catch (err) { next(err) }
 })
