@@ -17,6 +17,7 @@ import {
 } from './specifications.service'
 import { generateSpecificationDraft } from './spec-generation.service'
 import { generatePseudocode } from './pseudocode-generation.service'
+import { converseSpecAgent, applySpecProposal } from './spec-agent.service'
 
 export const specificationsRouter: Router = Router()
 
@@ -47,6 +48,15 @@ const generatePseudocodeSchema = z.object({
   instructions: z.string().trim().max(8000).optional(),
 })
 
+// Agent Storm — conversational spec authoring + one-click proposal apply.
+const converseSchema = z.object({
+  messages: z.array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().max(8000) })).min(1).max(40),
+  versionId: z.string().uuid().optional(),
+})
+const applyProposalSchema = z.object({
+  proposal: z.object({ kind: z.enum(['requirement', 'acceptance', 'test']), data: z.record(z.string(), z.unknown()), label: z.string().trim().max(400).optional() }),
+})
+
 const workItemIdOf = (req: Request) => String(req.params.workItemId)
 const versionIdOf = (req: Request) => String(req.params.versionId)
 
@@ -73,6 +83,20 @@ specificationsRouter.post('/:workItemId/specifications/generate', validate(gener
 specificationsRouter.post('/:workItemId/specifications/:versionId/pseudocode/generate', validate(generatePseudocodeSchema), async (req, res, next) => {
   try {
     res.status(201).json(await generatePseudocode(workItemIdOf(req), versionIdOf(req), req.body, req.user!.userId))
+  } catch (err) { next(err) }
+})
+
+// Agent Storm — converse about the spec; returns a reply + applyable proposals.
+specificationsRouter.post('/:workItemId/spec-agent/converse', validate(converseSchema), async (req, res, next) => {
+  try {
+    res.json(await converseSpecAgent(workItemIdOf(req), req.body, req.user!.userId))
+  } catch (err) { next(err) }
+})
+
+// Agent Storm — apply a proposal (requirement / acceptance / test) to a draft version.
+specificationsRouter.post('/:workItemId/specifications/:versionId/apply', validate(applyProposalSchema), async (req, res, next) => {
+  try {
+    res.json(await applySpecProposal(workItemIdOf(req), versionIdOf(req), req.body.proposal, req.user!.userId))
   } catch (err) { next(err) }
 })
 
