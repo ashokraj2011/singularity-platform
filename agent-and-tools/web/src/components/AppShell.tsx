@@ -20,7 +20,7 @@ import { ThemeSwitcher } from "@/components/ui/ThemeSwitcher";
 // sidebar/topbar/padded-main chrome. Keep run artifacts/insights in the normal
 // shell; only the detail cockpit needs its own viewport so its header and
 // action controls cannot sit underneath the platform chrome.
-const FULL_BLEED_PREFIXES = ["/workbench"];
+const FULL_BLEED_PREFIXES = ["/workbench", "/studio"];
 
 function isRunDetailPath(pathname: string): boolean {
   return /^\/runs\/[^/]+$/.test(pathname);

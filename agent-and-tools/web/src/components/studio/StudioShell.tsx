@@ -38,13 +38,12 @@ const shell: CSSProperties = {
   ...(studioTokens() as CSSProperties),
   background: "var(--studio-bg)",
   color: "var(--studio-ink)",
-  borderRadius: 14,
-  border: "1px solid var(--studio-line)",
   overflow: "hidden",
-  minHeight: "calc(100dvh - 128px)",
+  // /studio is a full-bleed route: the AppShell hands us the whole viewport (100vh, no sidebar),
+  // so the studio IS the screen — fill it edge to edge rather than floating as an island.
+  height: "100vh",
   display: "flex",
   flexDirection: "column",
-  boxShadow: "0 24px 60px -30px rgba(0,0,0,0.6)",
   fontFamily: 'ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
 };
 const topbar: CSSProperties = {
