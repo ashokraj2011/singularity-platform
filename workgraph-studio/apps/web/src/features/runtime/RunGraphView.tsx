@@ -31,6 +31,7 @@ import {
   ShieldCheck, CornerUpLeft, Library, Download, Maximize2, Activity, Copy, Pencil, UserPlus,
   Play, Radio, Bot, Cpu, GitBranch, GitMerge, Package, Wrench, Shield, User, Clock,
   Database, Workflow, Repeat, Shuffle, Zap, RadioTower, Terminal, Network, Square,
+  ChevronDown, Upload, Paperclip, Loader2,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { MarkdownView } from './MarkdownView'
@@ -458,6 +459,8 @@ function sortConsumablesByNameThenTime(a: Consumable, b: Consumable): number {
 }
 
 type CopilotQuestion = { id: string; question: string; options?: string[] }
+// A document uploaded against a run + node for the stage's agent to use on rework.
+type UploadedDoc = { id: string; name: string; kind?: string; mimeType?: string | null; sizeBytes?: number | null; uploadedAt?: string }
 // Interactive node types that collect a widget form from the user at runtime.
 type FillKind = 'task' | 'approval' | 'consumable'
 const fillKindFor = (nodeType: string): FillKind | null =>
@@ -883,6 +886,8 @@ const RUN_DARK_CSS = `
 .wg-run-dark .react-flow__controls-button svg { fill: #b4b4bd; }
 .wg-run-dark .react-flow__edge-text { fill: #b4b4bd; }
 .wg-run-dark .react-flow__edge-textbg { fill: #0c0c0f; }
+@keyframes wg-spin { to { transform: rotate(360deg); } }
+.wg-spin { animation: wg-spin 0.8s linear infinite; }
 `
 
 const topBtn: CSSProperties = {
@@ -1011,12 +1016,42 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
     onError: (e) => toast.error(errText(e, 'save failed')),
   })
 
+  // Upload a reference document for this stage's agent to use on rework — the file
+  // is stored against this run + node (POST /documents/upload, kind UPLOAD) and
+  // listed back below so the operator can confirm what's attached before restarting.
+  const { data: nodeUploads = [] } = useQuery<UploadedDoc[]>({
+    queryKey: ['node-uploads', instanceId, node.id],
+    enabled: activeTab === 'artifacts' && !!instanceId && !!node.id,
+    queryFn: () => api.get('/documents/', { params: { instanceId, nodeId: node.id } }).then(r => r.data as UploadedDoc[]),
+  })
+  const uploadMut = useMutation({
+    mutationFn: (file: File) => {
+      const fd = new FormData()
+      fd.append('file', file)
+      fd.append('instanceId', instanceId)
+      fd.append('nodeId', node.id)
+      return api.post('/documents/upload', fd).then(r => r.data)
+    },
+    onSuccess: () => {
+      toast.success('Uploaded — attached to this stage for rework')
+      qc.invalidateQueries({ queryKey: ['node-uploads', instanceId, node.id] })
+    },
+    onError: (e) => toast.error(errText(e, 'upload failed')),
+  })
+  const openUpload = useCallback(async (id: string) => {
+    try {
+      const d = await api.get(`/documents/${id}`).then(r => r.data as { downloadUrl?: string })
+      if (d?.downloadUrl) window.open(d.downloadUrl, '_blank', 'noopener')
+      else toast.error('No download URL available for this file')
+    } catch (e) { toast.error(errText(e, 'could not open file')) }
+  }, [])
+
   // Resizable review drawer. Width is persisted in localStorage so it survives
   // re-selecting a node (this panel remounts per selectedNode) and page reloads.
   const [panelWidth, setPanelWidth] = useState<number>(() => {
-    if (typeof window === 'undefined') return 380
+    if (typeof window === 'undefined') return 760
     const saved = Number(window.localStorage.getItem('runDrawerWidth'))
-    return Number.isFinite(saved) && saved >= 320 && saved <= 2400 ? saved : 380
+    return Number.isFinite(saved) && saved >= 320 && saved <= 2400 ? saved : Math.min(880, Math.round(window.innerWidth * 0.92))
   })
   const startPanelResize = (startX: number) => {
     const startWidth = panelWidth
@@ -1059,11 +1094,14 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
     : null
 
   return (
-    <div style={{ width: panelWidth, flexShrink: 0, background: 'rgba(255,255,255,0.03)', borderLeft: '1px solid rgba(255,255,255,0.1)', display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative', boxShadow: '-16px 0 38px rgba(15,23,42,0.08)' }}>
+    <>
+    {/* Dim backdrop — the panel overlays the whole cockpit; click outside to dismiss. */}
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 44, background: 'rgba(4,4,6,0.62)', backdropFilter: 'blur(3px)', WebkitBackdropFilter: 'blur(3px)' }} />
+    <div style={{ position: 'fixed', top: 0, right: 0, bottom: 0, width: panelWidth, maxWidth: '96vw', zIndex: 45, background: '#0d0d10', borderLeft: '1px solid rgba(255,255,255,0.12)', display: 'flex', flexDirection: 'column', minHeight: 0, boxShadow: '-40px 0 110px rgba(0,0,0,0.6)' }}>
       {/* Drag handle on the left edge — resize the review drawer; double-click resets. */}
       <div
         onMouseDown={(e) => { e.preventDefault(); startPanelResize(e.clientX) }}
-        onDoubleClick={() => { setPanelWidth(380); try { window.localStorage.setItem('runDrawerWidth', '380') } catch { /* ignore */ } }}
+        onDoubleClick={() => { setPanelWidth(760); try { window.localStorage.setItem('runDrawerWidth', '760') } catch { /* ignore */ } }}
         title="Drag to resize · double-click to reset"
         style={{ position: 'absolute', left: -3, top: 0, bottom: 0, width: 7, cursor: 'col-resize', zIndex: 20 }}
       />
@@ -1164,9 +1202,46 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
         )}
         {activeTab === 'questions' && <CopilotQuestions instanceId={instanceId} node={node} questions={questions} busy={busy} onRestart={onRestart} />}
         {activeTab === 'artifacts' && (
-          stageDocs.length === 0
-            ? <div style={{ fontSize: 12, color: '#82828e' }}>No documents produced yet.</div>
-            : <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {/* Upload a reference document for this stage's agent to use on rework. */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              <label style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                padding: '12px 14px', borderRadius: 10, cursor: uploadMut.isPending ? 'wait' : 'pointer',
+                border: '1px dashed rgba(124,124,245,0.5)', background: 'rgba(124,124,245,0.08)',
+                color: '#9a9aff', fontSize: 12, fontWeight: 700,
+              }}>
+                {uploadMut.isPending ? <Loader2 size={14} className="wg-spin" /> : <Upload size={14} />}
+                {uploadMut.isPending ? 'Uploading…' : 'Upload a document for this stage'}
+                <input
+                  type="file"
+                  disabled={uploadMut.isPending}
+                  onChange={e => { const f = e.target.files?.[0]; if (f) uploadMut.mutate(f); e.currentTarget.value = '' }}
+                  style={{ display: 'none' }}
+                />
+              </label>
+              <div style={{ fontSize: 10.5, color: '#82828e', lineHeight: 1.4 }}>
+                Attach reference material (a spec, corrected requirements, an example). It stays with this stage so the agent can use it when you restart or send back for rework.
+              </div>
+            </div>
+
+            {nodeUploads.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: '#82828e', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Uploaded for this stage ({nodeUploads.length})</div>
+                {nodeUploads.map(u => (
+                  <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, background: 'rgba(255,255,255,0.03)' }}>
+                    <Paperclip size={12} color="#9a9aff" style={{ flexShrink: 0 }} />
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, fontWeight: 600, color: '#c4c4cc', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.name}</span>
+                    {formatBytes(u.sizeBytes) ? <span style={{ fontSize: 10, color: '#82828e', flexShrink: 0 }}>{formatBytes(u.sizeBytes)}</span> : null}
+                    <button onClick={() => openUpload(u.id)} title="Download" style={artifactIconBtn}><Download size={12} /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {stageDocs.length === 0
+              ? <div style={{ fontSize: 12, color: '#82828e' }}>No documents produced yet.</div>
+              : <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <div style={{ fontSize: 10.5, fontWeight: 700, color: '#82828e', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Documents produced through this stage ({stageDocs.length})</div>
                 {stageDocs.map(c => {
                   const content = c.formData?.content?.toString() ?? ''
@@ -1215,6 +1290,8 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
                   )
                 })}
               </div>
+            }
+          </div>
         )}
         {activeTab === 'chat' && <ChatRefine instanceId={instanceId} node={node} busy={busy} onRestart={onRestart} />}
         {activeTab === 'prompt' && <PromptView instanceId={instanceId} node={node} />}
@@ -1296,6 +1373,7 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
         />
       )}
     </div>
+    </>
   )
 }
 
@@ -1312,6 +1390,13 @@ function asRecord(value: unknown): Record<string, unknown> {
 const artifactIconBtn: CSSProperties = {
   display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flex: 'none',
   padding: 4, borderRadius: 6, border: '1px solid rgba(255,255,255,0.1)', background: '#101013', cursor: 'pointer', color: '#82828e',
+}
+
+function formatBytes(n?: number | null): string {
+  if (n == null || !Number.isFinite(n)) return ''
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function nextStepTone(tone: 'amber' | 'green' | 'muted'): CSSProperties {
@@ -1335,6 +1420,7 @@ type DecisionRecord = {
 // node detail (which carries decisionRecord) and renders nothing until it arrives,
 // so it can't affect the rest of the inspector.
 function NodeDecisionRecord({ instanceId, nodeId }: { instanceId: string; nodeId: string }) {
+  const [collapsed, setCollapsed] = useState(false)
   const { data } = useQuery({
     queryKey: ['node-decision-record', instanceId, nodeId],
     enabled: !!instanceId && !!nodeId,
@@ -1356,19 +1442,35 @@ function NodeDecisionRecord({ instanceId, nodeId }: { instanceId: string; nodeId
     ? err
     : (err && typeof err === 'object' ? String((err as { message?: unknown }).message ?? 'error') : null)
   return (
-    <div style={{ margin: '0 16px 12px', padding: 10, border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, background: '#101013', display: 'grid', gap: 6 }}>
-      <div style={{ fontSize: 10, fontWeight: 800, color: '#b4b4bd', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Decision record</div>
-      {row('Duration', dr.node?.durationMs != null ? `${Math.round(dr.node.durationMs / 1000)}s` : '—')}
-      {row('Attempts', String(dr.node?.retryAttempts ?? 0))}
-      {row('Agent runs', String(agentRuns.length))}
-      {row('Artifacts', String(artifacts.length))}
-      {verified.length > 0 ? row('Verified', String(verified.length)) : null}
-      {dr.node?.stuckRecovered ? (
-        <div style={{ fontSize: 10, color: '#f5c451', background: 'rgba(245,196,81,0.1)', border: '1px solid rgba(245,196,81,0.35)', borderRadius: 6, padding: '3px 6px' }}>Stuck-recovered by the watchdog</div>
-      ) : null}
-      {errMsg ? (
-        <div style={{ fontSize: 10, color: '#dc2626', background: 'rgba(247,123,123,0.1)', border: '1px solid #fecaca', borderRadius: 6, padding: '4px 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{errMsg}</div>
-      ) : null}
+    <div style={{ margin: '0 16px 12px', padding: 10, border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, background: '#101013', display: 'grid', gap: collapsed ? 0 : 6 }}>
+      <button
+        onClick={() => setCollapsed(c => !c)}
+        title={collapsed ? 'Expand decision record' : 'Collapse decision record'}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: 0, border: 'none', background: 'transparent', cursor: 'pointer', textAlign: 'left' }}
+      >
+        <ChevronDown size={13} color="#82828e" style={{ flexShrink: 0, transition: 'transform 140ms ease', transform: collapsed ? 'rotate(-90deg)' : 'none' }} />
+        <span style={{ flex: 1, fontSize: 10, fontWeight: 800, color: '#b4b4bd', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Decision record</span>
+        {collapsed ? (
+          <span style={{ fontSize: 10, fontWeight: 600, color: '#82828e' }}>
+            {dr.node?.durationMs != null ? `${Math.round(dr.node.durationMs / 1000)}s · ` : ''}{agentRuns.length} run{agentRuns.length === 1 ? '' : 's'} · {artifacts.length} artifact{artifacts.length === 1 ? '' : 's'}
+          </span>
+        ) : null}
+      </button>
+      {!collapsed && (
+        <>
+          {row('Duration', dr.node?.durationMs != null ? `${Math.round(dr.node.durationMs / 1000)}s` : '—')}
+          {row('Attempts', String(dr.node?.retryAttempts ?? 0))}
+          {row('Agent runs', String(agentRuns.length))}
+          {row('Artifacts', String(artifacts.length))}
+          {verified.length > 0 ? row('Verified', String(verified.length)) : null}
+          {dr.node?.stuckRecovered ? (
+            <div style={{ fontSize: 10, color: '#f5c451', background: 'rgba(245,196,81,0.1)', border: '1px solid rgba(245,196,81,0.35)', borderRadius: 6, padding: '3px 6px' }}>Stuck-recovered by the watchdog</div>
+          ) : null}
+          {errMsg ? (
+            <div style={{ fontSize: 10, color: '#dc2626', background: 'rgba(247,123,123,0.1)', border: '1px solid #fecaca', borderRadius: 6, padding: '4px 6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{errMsg}</div>
+          ) : null}
+        </>
+      )}
     </div>
   )
 }
