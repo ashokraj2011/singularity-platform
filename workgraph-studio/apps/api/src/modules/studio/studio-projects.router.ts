@@ -20,6 +20,7 @@ import {
 import { getProjectSpec, patchProjectSpecSection } from './studio-spec.service'
 import { getProjectReconciliation } from './studio-recon.service'
 import { recordPresence, readPresence } from './studio-presence.service'
+import { syncCoedit } from './studio-coedit.service'
 
 export const studioProjectsRouter: Router = Router()
 
@@ -129,5 +130,18 @@ studioProjectsRouter.post('/projects/:projectId/presence', validate(heartbeatSch
 studioProjectsRouter.get('/projects/:projectId/presence', async (req, res, next) => {
   try {
     res.json(await readPresence(projectIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+// Live co-edit relay — append the caller's opaque Yjs updates, return the ones it hasn't seen.
+const coeditSchema = z.object({
+  docKey: z.string().trim().min(1).max(120),
+  updates: z.array(z.string().max(200_000)).max(200).default([]),
+  sinceSeq: z.number().int().min(0).default(0),
+})
+
+studioProjectsRouter.post('/projects/:projectId/coedit', validate(coeditSchema), async (req, res, next) => {
+  try {
+    res.json(await syncCoedit(projectIdOf(req), req.body))
   } catch (err) { next(err) }
 })

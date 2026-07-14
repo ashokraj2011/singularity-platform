@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState, type CSSProperties } from "react";
 import useSWR from "swr";
-import { ArrowLeft, FolderGit2, FileText, Archive, Unlink, Lightbulb, ClipboardList, PenTool, GitPullRequest, CheckCircle2, LayoutDashboard } from "lucide-react";
+import { ArrowLeft, FolderGit2, FileText, Archive, Unlink, Lightbulb, ClipboardList, PenTool, GitPullRequest, CheckCircle2, LayoutDashboard, Users } from "lucide-react";
 import { workgraphFetch } from "@/lib/workgraph";
 import { ProjectAnalysisSurface } from "./ProjectAnalysisSurface";
 import { ProjectRequirementsSurface } from "./ProjectRequirementsSurface";
@@ -11,6 +11,7 @@ import { ProjectDesignSurface } from "./ProjectDesignSurface";
 import { ProjectReconciliationReport } from "./ProjectReconciliationReport";
 import { usePresence } from "./usePresence";
 import { PresenceBar } from "./PresenceBar";
+import { CoeditCanvas } from "./CoeditCanvas";
 
 /**
  * A Specification Project's workspace: its mission, the shared lifecycle spine, and the work items
@@ -30,13 +31,14 @@ const PHASES = [
   { key: "reconciliation", label: "Reconciliation", Icon: CheckCircle2 },
 ];
 
-type Tab = "overview" | "analysis" | "requirements" | "design" | "reconciliation";
+type Tab = "overview" | "analysis" | "requirements" | "design" | "reconciliation" | "coedit";
 const TABS = [
   { key: "overview" as const, label: "Overview", Icon: LayoutDashboard },
   { key: "analysis" as const, label: "Analysis", Icon: Lightbulb },
   { key: "requirements" as const, label: "Requirements", Icon: ClipboardList },
   { key: "design" as const, label: "Design", Icon: PenTool },
   { key: "reconciliation" as const, label: "Reconciliation", Icon: CheckCircle2 },
+  { key: "coedit" as const, label: "Co-edit", Icon: Users },
 ];
 function tabStyle(active: boolean): CSSProperties {
   return {
@@ -156,6 +158,7 @@ export function StudioProjectDetail({ projectId }: { projectId: string }) {
           {tab === "requirements" && <div style={{ marginTop: 22 }}><ProjectRequirementsSurface projectId={projectId} /></div>}
           {tab === "design" && <div style={{ marginTop: 22 }}><ProjectDesignSurface projectId={projectId} /></div>}
           {tab === "reconciliation" && <div style={{ marginTop: 22 }}><ProjectReconciliationReport projectId={projectId} /></div>}
+          {tab === "coedit" && <div style={{ marginTop: 22 }}><CoeditCanvas projectId={projectId} docKey="canvas" surface="coedit" title="Project canvas — live" placeholder="Draft the spec together — problem statements, open questions, sketches. Edits merge live." /></div>}
         </>
       )}
     </div>
