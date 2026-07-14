@@ -19,6 +19,7 @@ import {
 } from './studio-projects.service'
 import { getProjectSpec, patchProjectSpecSection } from './studio-spec.service'
 import { getProjectReconciliation } from './studio-recon.service'
+import { recordPresence, readPresence } from './studio-presence.service'
 
 export const studioProjectsRouter: Router = Router()
 
@@ -113,5 +114,20 @@ studioProjectsRouter.patch('/projects/:projectId/specification', validate(patchP
 studioProjectsRouter.get('/projects/:projectId/reconciliation', async (req, res, next) => {
   try {
     res.json(await getProjectReconciliation(projectIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+// Presence — the live "who's here" layer. A heartbeat records the caller and returns the live set.
+const heartbeatSchema = z.object({ surface: z.string().trim().max(60).optional() })
+
+studioProjectsRouter.post('/projects/:projectId/presence', validate(heartbeatSchema), async (req, res, next) => {
+  try {
+    res.json(await recordPresence(projectIdOf(req), { userId: req.user!.userId, displayName: req.user!.displayName, surface: req.body.surface }))
+  } catch (err) { next(err) }
+})
+
+studioProjectsRouter.get('/projects/:projectId/presence', async (req, res, next) => {
+  try {
+    res.json(await readPresence(projectIdOf(req)))
   } catch (err) { next(err) }
 })
