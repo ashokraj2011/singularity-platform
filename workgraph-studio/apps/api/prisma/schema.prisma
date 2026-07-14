@@ -147,6 +147,11 @@ enum SpecificationStatus {
   REJECTED
 }
 
+enum SpecificationProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
 enum WorkItemOriginType {
   PARENT_DELEGATED
   CAPABILITY_LOCAL
@@ -1205,6 +1210,7 @@ model WorkItem {
   createdById             String?
   approvedById            String?
   parentApprovalRequestId String?
+  projectId               String?
   sourceWorkflowInstance  WorkflowInstance? @relation("WorkItemSourceInstance", fields: [sourceWorkflowInstanceId], references: [id], onDelete: SetNull)
   sourceWorkflowNode      WorkflowNode?    @relation("WorkItemSourceNode", fields: [sourceWorkflowNodeId], references: [id], onDelete: SetNull)
   routingPolicy           WorkItemRoutingPolicy? @relation(fields: [routingPolicyId], references: [id], onDelete: SetNull)
@@ -1219,11 +1225,13 @@ model WorkItem {
   developmentTarget       DevelopmentTarget?
   implementationSubmissions ImplementationSubmission[]
   reconciliationRuns      ReconciliationRun[]
+  project                 SpecificationProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
   tenantId                String?          @default("default")
 
   @@index([tenantId], map: "ix_work_items_tenant")
+  @@index([projectId], map: "ix_work_items_project")
   @@index([workCode])
   @@index([originType])
   @@index([workItemTypeKey])
@@ -1268,6 +1276,29 @@ model SpecificationVersion {
   @@index([workItemId, status])
   @@index([tenantId], map: "ix_specification_versions_tenant")
   @@map("specification_versions")
+}
+
+// A Specification Project — the OPTIONAL, project-level root of the studio. Groups the shared
+// upstream (analysis → requirements → design) that many Work Items draw on. Work Items reference
+// a project via WorkItem.projectId but stay standalone-capable: a null projectId is a solo item
+// that keeps its own spec. Distinct from Initiative (which groups workflow RUNS, not specs).
+model SpecificationProject {
+  id          String                     @id @default(uuid())
+  code        String                     @unique
+  name        String
+  mission     String?
+  status      SpecificationProjectStatus @default(ACTIVE)
+  createdById String?
+  tenantId    String?                    @default("default")
+  archivedAt  DateTime?
+  createdAt   DateTime                   @default(now())
+  updatedAt   DateTime                   @updatedAt
+
+  workItems   WorkItem[]
+
+  @@index([status])
+  @@index([tenantId], map: "ix_specification_projects_tenant")
+  @@map("specification_projects")
 }
 
 // The approved specification, made developer-ready: which repo/base to build against, which
