@@ -1,6 +1,7 @@
 import { Prisma, type WorkflowNode, type WorkflowInstance } from '@prisma/client'
 import { workflowNodeTraceId } from '@workgraph/shared-types'
 import { prisma } from '../../../../lib/prisma'
+import { minioClient } from '../../../../lib/minio'
 import { withTenantDbTransaction } from '../../../../lib/tenant-db-context'
 import { resolveCapabilityRepo } from '../../../../lib/agent-and-tools/capability-repo'
 import { resolveLlmRouting } from '../../../llm-routing/resolve'
@@ -168,6 +169,15 @@ export async function activateAgentTask(
   if (task && copilotAnswers) {
     task = `${task}\n\n## Answers to your clarifying questions\n${copilotAnswers}\n` +
       `Treat these as confirmed decisions — apply them and do not ask them again.`
+  }
+  // Operator-uploaded reference documents (run-graph "Upload a document for this
+  // stage"): files an operator attached to THIS node for rework. Inline them into
+  // the task so the agent actually reads them — this rides both the copilot path
+  // (task on run_context) and the governed path (top-level task), and survives CF
+  // being down since it lives in the task text itself. Best-effort.
+  if (task) {
+    const uploadedDocs = await collectUploadedReferenceDocs(instance.id, node.id, dbTenantId)
+    if (uploadedDocs) task = `${task}\n\n${uploadedDocs}`
   }
 
   if (!agentTemplateId || !task || !capabilityId) {
@@ -851,6 +861,70 @@ function deliverableContent(context: Record<string, unknown>, artifactType: unkn
     }
   }
   return undefined
+}
+
+// Operator-uploaded reference documents attached to a node via the run-graph
+// "Upload a document for this stage" control (Document kind=UPLOAD, scoped to
+// node + instance). Inlined into the stage task on (re)run so the agent actually
+// reads them — text files verbatim (capped), binaries referenced by name.
+const UPLOAD_INLINE_MAX_BYTES = 200 * 1024 // per-file text cap
+const UPLOAD_TOTAL_MAX_BYTES = 600 * 1024  // section budget across all files
+
+function isTextUpload(mimeType?: string | null): boolean {
+  if (!mimeType) return false
+  const m = mimeType.toLowerCase()
+  return m.startsWith('text/') || m.includes('json') || m.includes('xml') ||
+    m.includes('yaml') || m.includes('markdown') || m.includes('csv')
+}
+
+// Read up to maxBytes of a MinIO object as UTF-8, stopping the stream once the cap
+// is hit (mirrors artifact-fetch's readObject — we never buffer a whole large file).
+async function readCappedUploadObject(bucket: string, key: string, maxBytes: number): Promise<{ content: string; truncated: boolean }> {
+  const stream = await minioClient.getObject(bucket, key)
+  const chunks: Buffer[] = []
+  let total = 0
+  let truncated = false
+  for await (const chunk of stream as AsyncIterable<Buffer>) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    const remaining = maxBytes - total
+    if (remaining <= 0) { truncated = true; break }
+    chunks.push(buffer.subarray(0, remaining))
+    total += Math.min(buffer.length, remaining)
+    if (buffer.length > remaining) { truncated = true; break }
+  }
+  return { content: Buffer.concat(chunks).toString('utf8'), truncated }
+}
+
+async function collectUploadedReferenceDocs(instanceId: string, nodeId: string, tenantId?: string): Promise<string> {
+  let docs: Array<{ name: string; mimeType: string | null; bucket: string | null; storageKey: string | null; sizeBytes: bigint | null }>
+  try {
+    docs = await withTenantDbTransaction(prisma, (tx) => tx.document.findMany({
+      where: { instanceId, nodeId, kind: 'UPLOAD' },
+      orderBy: { uploadedAt: 'asc' },
+      select: { name: true, mimeType: true, bucket: true, storageKey: true, sizeBytes: true },
+    }), tenantId)
+  } catch {
+    return '' // never let a document read block the run
+  }
+  if (!docs.length) return ''
+  const sections: string[] = []
+  let budget = UPLOAD_TOTAL_MAX_BYTES
+  for (const d of docs) {
+    if (isTextUpload(d.mimeType) && d.bucket && d.storageKey && budget > 0) {
+      try {
+        const { content, truncated } = await readCappedUploadObject(d.bucket, d.storageKey, Math.min(UPLOAD_INLINE_MAX_BYTES, budget))
+        budget -= Buffer.byteLength(content, 'utf8')
+        const fence = content.includes('```') ? '~~~' : '```'
+        sections.push(`### ${d.name}\n${fence}\n${content}${truncated ? '\n…[truncated]' : ''}\n${fence}`)
+        continue
+      } catch { /* storage miss — fall through to a reference-only entry */ }
+    }
+    const size = d.sizeBytes != null ? ` (${Number(d.sizeBytes)} bytes)` : ''
+    sections.push(`### ${d.name}${size}\n_Binary attachment${d.mimeType ? ` (${d.mimeType})` : ''} — content not inlined._`)
+  }
+  return '## Operator-provided reference documents (for rework)\n' +
+    'The operator attached the following material to this stage. Treat it as authoritative reference and incorporate it into your work.\n\n' +
+    sections.join('\n\n')
 }
 
 // Enrich a node's INPUT artifact defs with the produced upstream document content
