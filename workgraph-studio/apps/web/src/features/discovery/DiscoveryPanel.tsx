@@ -71,7 +71,7 @@ function pill(p: Palette): CSSProperties {
 }
 
 const card: CSSProperties = {
-  padding: 14, borderRadius: 12, background: '#fff',
+  padding: 14, borderRadius: 12, background: 'var(--color-surface-bright)',
   border: '1px solid var(--color-outline-variant)', marginBottom: 14,
 }
 const primaryBtn: CSSProperties = {
@@ -81,12 +81,12 @@ const primaryBtn: CSSProperties = {
 }
 const secondaryBtn: CSSProperties = {
   padding: '6px 11px', borderRadius: 9, border: '1px solid var(--color-outline-variant)',
-  background: '#fff', color: 'var(--color-on-surface)', cursor: 'pointer',
+  background: 'var(--color-surface-bright)', color: 'var(--color-on-surface)', cursor: 'pointer',
   fontSize: 12, fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: 6,
 }
 const input: CSSProperties = {
   width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid var(--color-outline-variant)',
-  fontSize: 12, color: 'var(--color-on-surface)', background: '#fff', boxSizing: 'border-box',
+  fontSize: 12, color: 'var(--color-on-surface)', background: 'var(--color-surface-bright)', boxSizing: 'border-box',
 }
 const muted: CSSProperties = { fontSize: 12, color: 'var(--color-outline)' }
 const sectionTitle: CSSProperties = {
