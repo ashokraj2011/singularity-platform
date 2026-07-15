@@ -97,6 +97,7 @@ export function requiredAdaptersFor(nodeTypes: string[]): string[] {
     if (t === 'DIRECT_LLM_TASK' || t === 'AGENT_TASK') need.add('llm')
     if (t === 'TOOL_REQUEST') need.add('tool')
     if (t === 'GIT_PUSH' || t === 'RAISE_PR' || t === 'CREATE_BRANCH') need.add('git')
+    if (t === 'DISCOVERY') need.add('discovery')
   }
   return [...need].sort()
 }

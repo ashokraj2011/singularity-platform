@@ -14,6 +14,7 @@ import type {
   GitAdapter,
   HumanTaskAdapter,
   AuditAdapter,
+  DiscoveryAdapter,
   Clock,
 } from '../types.js'
 import { OfflineError } from '../types.js'
@@ -55,6 +56,13 @@ const offlineHuman: HumanTaskAdapter = {
   },
 }
 
+const offlineDiscovery: DiscoveryAdapter = {
+  online: () => false,
+  elicit: async () => {
+    throw new OfflineError('discovery')
+  },
+}
+
 export const systemClock: Clock = {
   now: () => new Date(),
 }
@@ -87,6 +95,7 @@ export function offlineAdapters(store: StateStore, clock: Clock = systemClock): 
     tool: offlineTool,
     git: offlineGit,
     human: offlineHuman,
+    discovery: offlineDiscovery,
     audit: queuingAuditAdapter(store, clock),
     clock,
   }

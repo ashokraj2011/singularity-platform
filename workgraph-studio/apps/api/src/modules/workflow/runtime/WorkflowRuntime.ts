@@ -37,6 +37,7 @@ import { activateVerifier } from './executors/VerifierExecutor'
 import { activateGovernanceGate } from './executors/GovernanceGateExecutor'
 import { activateSetContext } from './executors/SetContextExecutor'
 import { activateErrorCatch } from './executors/ErrorCatchExecutor'
+import { activateDiscoveryTask } from './executors/DiscoveryTaskExecutor'
 import { createWorkflowCheckpoint } from '../checkpoint.service'
 
 type PendingAdvance = { nodeId: string }
@@ -1030,6 +1031,16 @@ async function executeServerNode(
       await activateErrorCatch(node, instance)
       await advance(instance.id, node.id, context, actorId, undefined, tenantId)
       break
+    case 'DISCOVERY': {
+      // Run a unified DiscoverySession: seed configured questions, optionally
+      // elicit via the governed LLM gateway/Copilot, then gate. PARK (leave the
+      // node ACTIVE) while a blocking question is OPEN; ADVANCE once resolved.
+      // Parked nodes resume via resumeDiscoveryNode when the last blocking
+      // question is answered through /api/discovery.
+      const result = await activateDiscoveryTask(node, instance, actorId)
+      if (result.resolved) await advance(instance.id, node.id, context, actorId, undefined, tenantId)
+      break
+    }
     default:
       await activateHumanTask(node, instance)
       break
@@ -1724,6 +1735,34 @@ export async function resumeInstance(
   const finalInstance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUniqueOrThrow({ where: { id: instanceId } }), tenantId)
   if (finalInstance.status === 'ACTIVE' && (await isComplete(finalInstance))) {
     await finalizeInstanceCompletion(finalInstance, actorId, tenantId)
+  }
+}
+
+/**
+ * Resume any DISCOVERY node parked on a now-resolved DiscoverySession (ADR 0006
+ * Slice 4). Called best-effort from the /api/discovery answer/dismiss handlers
+ * when a question is resolved. No-op unless the session is RUN-scoped, no longer
+ * BLOCKED, and its bound node is still ACTIVE. Safe to call repeatedly.
+ */
+export async function resumeDiscoveryNode(
+  sessionId: string,
+  scopeInstanceId: string,
+  sessionStatus: string,
+  actorId?: string,
+): Promise<void> {
+  if (sessionStatus === 'BLOCKED') return
+  const instance = await prisma.workflowInstance.findUnique({ where: { id: scopeInstanceId } })
+  if (!instance || instance.status !== 'ACTIVE') return
+  const tenantId = instance.tenantId ?? undefined
+  const nodes = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findMany({
+    where: { instanceId: scopeInstanceId, nodeType: 'DISCOVERY', status: 'ACTIVE' },
+  }), tenantId)
+  const context = (instance.context ?? {}) as Record<string, unknown>
+  for (const node of nodes) {
+    const cfg = (node.config ?? {}) as Record<string, unknown>
+    if (cfg._discoverySessionId !== sessionId) continue
+    await logEvent('DiscoveryResumed', 'WorkflowInstance', scopeInstanceId, actorId, { nodeId: node.id, sessionId })
+    await advance(scopeInstanceId, node.id, context, actorId, undefined, tenantId)
   }
 }
 

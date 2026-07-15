@@ -45,6 +45,7 @@ const TOUCH_POINTS = [
   { key: 'CHAT',           label: 'Chat / Event Horizon', description: 'The assistant chat surface.' },
   { key: 'GOVERNED_AGENT', label: 'Governed Agent Tasks', description: 'Workflow AGENT_TASK nodes (governed loop).' },
   { key: 'AUDIT_JUDGE',    label: 'AI Audit Judge',       description: 'The governance audit judge.' },
+  { key: 'DISCOVERY',      label: 'Discovery / Elicitation', description: 'The unified discovery loop that elicits questions and proposes assumptions (ADR 0006).' },
 ] as const
 
 type Connection = {
