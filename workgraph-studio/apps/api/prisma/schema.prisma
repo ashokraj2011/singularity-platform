@@ -52,6 +52,7 @@ enum NodeType {
   GOVERNANCE_GATE
   RAISE_PR
   CREATE_BRANCH
+  DISCOVERY
 }
 
 enum ExecutionLocation {

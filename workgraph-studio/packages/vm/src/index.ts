@@ -43,6 +43,7 @@ export { setContextExecutor, structuralExecutor } from './executors/deterministi
 export { humanTaskExecutor, governanceGateExecutor } from './executors/serviceBound.js'
 export { llmTaskExecutor, toolRequestExecutor, gitExecutor } from './executors/tasks.js'
 export { timerExecutor } from './executors/timer.js'
+export { discoveryExecutor, readSeedQuestions, hasBlockingOpen } from './executors/discovery.js'
 
 // Builder
 export {

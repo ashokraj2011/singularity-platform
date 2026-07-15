@@ -13,6 +13,23 @@ import { discoveryService } from './discovery.deps'
 
 export const discoveryRouter: Router = Router()
 
+/**
+ * Best-effort: when a discovery question is resolved through this API, advance
+ * any workflow DISCOVERY node parked on the session's run. Dynamically imported
+ * to avoid a static import cycle with the workflow runtime, and swallow-guarded
+ * so a resume failure never fails the answer/dismiss request.
+ */
+async function maybeResumeDiscoveryNode(sessionId: string, actorId?: string): Promise<void> {
+  try {
+    const session = await discoveryService.getSession(sessionId)
+    if (!session || session.scopeType !== 'RUN') return
+    const { resumeDiscoveryNode } = await import('../workflow/runtime/WorkflowRuntime')
+    await resumeDiscoveryNode(sessionId, session.scopeId, session.status, actorId)
+  } catch (err) {
+    void err
+  }
+}
+
 const createSessionSchema = z.object({
   scopeType: z.enum(['WORKFLOW_STAGE', 'WORK_ITEM', 'RUN']),
   scopeId: z.string().min(1),
@@ -132,6 +149,7 @@ discoveryRouter.post('/questions/:qid/answer', validate(answerSchema), async (re
   try {
     const { answer } = req.body as z.infer<typeof answerSchema>
     const question = await discoveryService.answerQuestion(String(req.params.qid), answer, req.user!.userId)
+    await maybeResumeDiscoveryNode(question.sessionId, req.user!.userId)
     res.json(question)
   } catch (err) {
     next(err)
@@ -141,6 +159,7 @@ discoveryRouter.post('/questions/:qid/answer', validate(answerSchema), async (re
 discoveryRouter.post('/questions/:qid/dismiss', async (req, res, next) => {
   try {
     const question = await discoveryService.dismissQuestion(String(req.params.qid))
+    await maybeResumeDiscoveryNode(question.sessionId, req.user!.userId)
     res.json(question)
   } catch (err) {
     next(err)

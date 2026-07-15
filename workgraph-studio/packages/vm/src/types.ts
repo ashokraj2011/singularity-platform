@@ -159,6 +159,7 @@ export interface Adapters {
   git: GitAdapter
   human: HumanTaskAdapter
   audit: AuditAdapter
+  discovery: DiscoveryAdapter
   clock: Clock
 }
 
@@ -213,6 +214,48 @@ export interface AuditEvent {
 export interface AuditAdapter {
   online(): boolean
   emit(event: AuditEvent): Promise<void>
+}
+
+// ─── Discovery / Elicitation (ADR 0006) ─────────────────────────────────────
+// Portable analogue of the server DiscoveryService. A DISCOVERY node reduces
+// unknowns by asking the central discovery loop to elicit questions/assumptions
+// (online → Context Fabric/MCP via the platform); offline it throws OfflineError
+// so the executor parks the run until reconnected (fail-closed on unknowns).
+
+export interface DiscoveryQuestionSpec {
+  id?: string
+  text: string
+  /** Blocking questions gate the node (park while OPEN). */
+  blocking: boolean
+  status?: 'OPEN' | 'ANSWERED' | 'DISMISSED'
+  answer?: string
+}
+
+export interface DiscoveryAssumptionSpec {
+  text: string
+  confidence: number
+}
+
+export interface DiscoveryElicitRequest {
+  runId: string
+  nodeId: string
+  /** Discovery session scope id (defaults to the run id). */
+  scopeId: string
+  hint?: string
+  context?: string
+  /** Configured seed questions carried in the image (source='configured'). */
+  seedQuestions: DiscoveryQuestionSpec[]
+}
+
+export interface DiscoveryElicitResult {
+  questions: DiscoveryQuestionSpec[]
+  assumptions: DiscoveryAssumptionSpec[]
+}
+
+export interface DiscoveryAdapter {
+  online(): boolean
+  /** Runs one elicit iteration online; throws OfflineError when disconnected. */
+  elicit(req: DiscoveryElicitRequest): Promise<DiscoveryElicitResult>
 }
 
 export class OfflineError extends Error {

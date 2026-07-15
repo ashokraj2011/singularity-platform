@@ -417,3 +417,33 @@ describe('discovery bridge — workbench stage questions', () => {
     expect(full!.status).toBe('BLOCKED')
   })
 })
+
+describe('discovery bridge — RUN-scoped node seeding (Slice 4)', () => {
+  it('seeds a workflow DISCOVERY node onto a RUN session, keyed and idempotent', async () => {
+    const store = makeStore()
+    const bridge = createDiscoveryBridge(store)
+    const seed = () => bridge.seedSessionQuestions({
+      scopeType: 'RUN',
+      scopeId: 'inst-1',
+      sourceType: 'workflow_discovery_node',
+      keyPrefix: 'node-a',
+      questions: [
+        { questionId: '0', text: 'Which datastore?', required: true },
+        { questionId: '1', text: 'Optional detail?', required: false },
+      ],
+    })
+    const first = await seed()
+    expect(first.seeded).toHaveLength(2)
+    const blocking = first.seeded.find(q => q.text === 'Which datastore?')
+    expect(blocking?.blocking).toBe(true)
+    expect(blocking?.sourceType).toBe('workflow_discovery_node')
+    expect(blocking?.sourceId).toBe('node-a:0')
+
+    const session = await store.findSessionByScope('RUN', 'inst-1')
+    expect((await store.getSession(session!.id))!.status).toBe('BLOCKED')
+
+    const second = await seed()
+    expect(second.seeded).toHaveLength(0)
+    expect((await store.getSession(first.sessionId))!.questions).toHaveLength(2)
+  })
+})

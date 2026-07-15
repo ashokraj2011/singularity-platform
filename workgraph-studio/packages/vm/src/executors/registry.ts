@@ -10,6 +10,7 @@ import { setContextExecutor, structuralExecutor } from './deterministic.js'
 import { humanTaskExecutor, governanceGateExecutor } from './serviceBound.js'
 import { llmTaskExecutor, toolRequestExecutor, gitExecutor } from './tasks.js'
 import { timerExecutor } from './timer.js'
+import { discoveryExecutor } from './discovery.js'
 
 export class ExecutorRegistry {
   private map = new Map<string, NodeExecutor>()
@@ -38,4 +39,5 @@ export function defaultRegistry(): ExecutorRegistry {
     .register(toolRequestExecutor)
     .register(gitExecutor)
     .register(timerExecutor)
+    .register(discoveryExecutor)
 }

@@ -67,8 +67,47 @@ export function createDiscoveryBridge(store: DiscoveryStore) {
     if (next !== s.status) await store.updateSessionStatus(sessionId, next)
   }
 
+  async function seedSessionQuestions(input: {
+    scopeType: DiscoveryScopeType
+    scopeId: string
+    tenantId?: string
+    sourceType: string
+    keyPrefix?: string
+    createdById?: string
+    questions: SeedStageQuestion[]
+  }) {
+    const session = await getOrCreateSession(input.scopeType, input.scopeId, input.tenantId, input.createdById)
+    const prefix = input.keyPrefix ?? input.scopeId
+    const seeded = []
+    let ordinal = 0
+    for (const cfg of input.questions) {
+      const key = `${prefix}:${cfg.questionId}`
+      const dup = await store.findQuestionBySource(input.sourceType, key)
+      if (dup) {
+        ordinal++
+        continue
+      }
+      const q = await store.addQuestion({
+        sessionId: session.id,
+        tenantId: input.tenantId,
+        text: cfg.text,
+        kind: 'freeform',
+        source: 'configured',
+        blocking: cfg.required ?? false,
+        options: cfg.options,
+        ordinal: cfg.ordinal ?? ordinal++,
+        sourceType: input.sourceType,
+        sourceId: key,
+      })
+      seeded.push(q)
+    }
+    await refreshStatus(session.id)
+    return { sessionId: session.id, seeded }
+  }
+
   return {
     getOrCreateSession,
+    seedSessionQuestions,
 
     async mirrorClarificationRequested(input: MirrorClarificationInput) {
       const text = input.question?.trim()
@@ -105,32 +144,14 @@ export function createDiscoveryBridge(store: DiscoveryStore) {
      * `required` maps to the unified blocking gate. Idempotent per questionId.
      */
     async seedStageQuestions(input: SeedStageInput) {
-      const session = await getOrCreateSession('WORKFLOW_STAGE', input.stageId, input.tenantId)
-      const seeded = []
-      let ordinal = 0
-      for (const cfg of input.questions) {
-        const key = `${input.stageId}:${cfg.questionId}`
-        const dup = await store.findQuestionBySource(SRC_STAGE_QUESTION, key)
-        if (dup) {
-          ordinal++
-          continue
-        }
-        const q = await store.addQuestion({
-          sessionId: session.id,
-          tenantId: input.tenantId,
-          text: cfg.text,
-          kind: 'freeform',
-          source: 'configured',
-          blocking: cfg.required ?? false,
-          options: cfg.options,
-          ordinal: cfg.ordinal ?? ordinal++,
-          sourceType: SRC_STAGE_QUESTION,
-          sourceId: key,
-        })
-        seeded.push(q)
-      }
-      await refreshStatus(session.id)
-      return { sessionId: session.id, seeded }
+      return seedSessionQuestions({
+        scopeType: 'WORKFLOW_STAGE',
+        scopeId: input.stageId,
+        tenantId: input.tenantId,
+        sourceType: SRC_STAGE_QUESTION,
+        keyPrefix: input.stageId,
+        questions: input.questions,
+      })
     },
   }
 }

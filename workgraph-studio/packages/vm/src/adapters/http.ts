@@ -16,6 +16,9 @@ import type {
   HumanTaskRequest,
   AuditAdapter,
   AuditEvent,
+  DiscoveryAdapter,
+  DiscoveryElicitRequest,
+  DiscoveryElicitResult,
   Clock,
 } from '../types.js'
 import { systemClock } from './offline.js'
@@ -32,6 +35,7 @@ export interface HttpAdapterConfig {
   git?: HttpEndpoint
   human?: HttpEndpoint
   audit?: HttpEndpoint
+  discovery?: HttpEndpoint
   timeoutMs?: number
   clock?: Clock
   fetchImpl?: typeof fetch
@@ -128,7 +132,19 @@ export function httpAdapters(config: HttpAdapterConfig): Adapters {
     },
   }
 
-  return { iam, llm, tool, git, human, audit, clock }
+  const discovery: DiscoveryAdapter = {
+    online: () => Boolean(config.discovery?.baseUrl),
+    elicit: async (req: DiscoveryElicitRequest) => {
+      const r = (await postJson(config.discovery!, '/api/v1/discovery/elicit', req, timeoutMs, fetchImpl)) as
+        Partial<DiscoveryElicitResult>
+      return {
+        questions: Array.isArray(r.questions) ? r.questions : [],
+        assumptions: Array.isArray(r.assumptions) ? r.assumptions : [],
+      }
+    },
+  }
+
+  return { iam, llm, tool, git, human, audit, discovery, clock }
 }
 
 /**
@@ -143,6 +159,7 @@ export function mergeAdapters(primary: Adapters, fallback: Adapters): Adapters {
     git: primary.git.online() ? primary.git : fallback.git,
     human: primary.human.online() ? primary.human : fallback.human,
     audit: primary.audit.online() ? primary.audit : fallback.audit,
+    discovery: primary.discovery.online() ? primary.discovery : fallback.discovery,
     clock: primary.clock,
   }
 }
