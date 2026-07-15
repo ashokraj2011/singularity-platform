@@ -55,7 +55,7 @@ export function ProjectReconciliationReport({ projectId }: { projectId: string }
       {items.length === 0 ? (
         <div className="card" style={{ padding: 20, textAlign: "center", ...muted }}>
           <CheckCircle2 size={22} style={{ opacity: 0.6 }} />
-          <p style={{ margin: "8px 0 0", fontSize: 12.5 }}>No work items in this project yet. Attach items from the <Link href="/studio" style={{ color: "var(--color-primary)" }}>portfolio</Link> to see their reconciliation here.</p>
+          <p style={{ margin: "8px 0 0", fontSize: 12.5 }}>No work items in this project yet. Attach items from the <Link href="/workflows/inbox" style={{ color: "var(--color-primary)" }}>work inbox</Link> to see their reconciliation here.</p>
         </div>
       ) : (
         <div className="card" style={{ overflow: "hidden" }}>

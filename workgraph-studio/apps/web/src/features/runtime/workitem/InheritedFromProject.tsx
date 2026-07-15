@@ -116,8 +116,8 @@ export function InheritedFromProject({ workItemId, section }: { workItemId: stri
     <section style={wrap}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
         <span style={label}>Inherited from project</span>
-        <a style={link} href={`/studio/${project.id}`}>{project.code} · {project.name} ↗</a>
-        <span style={{ ...mutedText, marginLeft: 'auto' }}>Baseline r{spec.revision} · read-only</span>
+        <span style={link}>{project.code} · {project.name}</span>
+        <span style={{ ...mutedText, marginLeft: 'auto' }}>Baseline r{spec.revision} · read-only · open “Project baseline” to edit</span>
       </div>
       {section === 'analysis' && <AnalysisView a={spec.package.analysis ?? {}} />}
       {section === 'requirements' && <RequirementsView reqs={spec.package.requirements ?? []} />}

@@ -165,6 +165,11 @@ const nextConfig = {
       { source: "/curation", destination: "/audit/curation", permanent: false },
       { source: "/team-variables", destination: "/identity/variables", permanent: false },
       { source: "/global-variables", destination: "/identity/variables", permanent: false },
+      // The standalone Specification Studio (/studio + /studio/:projectId) was folded into the
+      // Work Item IDE: open a work item and flip the "Project baseline" scope switch. The portfolio
+      // list is the work inbox, so /studio now lands there.
+      { source: "/studio", destination: "/workflows/inbox", permanent: false },
+      { source: "/studio/:projectId", destination: "/workflows/inbox", permanent: false },
       // The green native workbench console (/workbench/<view>) was retired; the
       // blue in-process cockpit at /workbench handles every view internally.
       { source: "/workbench/:view(cockpit|artifacts|stage-chat|code-review|audit|loop-theater|milestones|governance|export)", destination: "/workbench", permanent: false },
