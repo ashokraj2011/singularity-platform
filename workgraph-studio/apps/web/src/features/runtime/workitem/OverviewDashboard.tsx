@@ -36,6 +36,16 @@ export function OverviewDashboard({ workItemId, workItem, onOpenTab }: { workIte
   const latest = runs[0]
   const recon = latest ? { label: latest.status, tone: latest.status === 'PASSED' ? GREEN : latest.status === 'FAILED' || latest.status === 'ERROR' ? RED : AMBER } : { label: 'None', tone: GRAY }
 
+  // Completion gate: reconciliation is the finalizer. The work item auto-completes only when the
+  // latest run PASSED; a non-PASSED run holds (or reopens) it. Mirrors the server-side gate.
+  const completion = workItem.status === 'COMPLETED'
+    ? { label: 'Completed', tone: GREEN }
+    : latest && latest.status === 'PASSED'
+      ? { label: 'Finalizing…', tone: AMBER }
+      : latest
+        ? { label: 'Blocked', tone: AMBER }
+        : { label: 'Pending', tone: GRAY }
+
   const events: any[] = (workItem.events ?? []).slice(0, 6)
 
   return (
@@ -63,6 +73,8 @@ export function OverviewDashboard({ workItemId, workItem, onOpenTab }: { workIte
           <StageCard label="Submissions" status={submissions.label} tone={submissions.tone} onClick={() => onOpenTab('submissions')} />
           <Arrow />
           <StageCard label="Reconciliation" status={recon.label} tone={recon.tone} onClick={() => onOpenTab('reconciliation')} />
+          <Arrow />
+          <StageCard label="Completion" status={completion.label} tone={completion.tone} onClick={() => onOpenTab('reconciliation')} />
         </div>
       </section>
 

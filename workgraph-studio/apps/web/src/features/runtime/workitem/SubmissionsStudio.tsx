@@ -36,6 +36,8 @@ export function SubmissionsStudio({ workItemId, onGotoReconciliation }: { workIt
   const activeSpecQ = useQuery<any>({ queryKey: ['spec-version', workItemId, activeVersionId], enabled: !!activeVersionId, queryFn: () => api.get(`/work-items/${workItemId}/specifications/${activeVersionId}`).then((r) => r.data) })
 
   const target = handoffQ.data?.target ?? null
+  const hasApprovedSpec = !!handoffQ.data?.activeSpecificationVersion
+  const canReconcile = target?.status === 'PUBLISHED'
   const submissions = submissionsQ.data?.items ?? []
   const selected = submissions.find((s) => s.id === selectedId) ?? submissions[0] ?? null
   const attemptNumber = (id: string) => submissions.length - submissions.findIndex((s) => s.id === id)
@@ -81,7 +83,7 @@ export function SubmissionsStudio({ workItemId, onGotoReconciliation }: { workIt
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {target && <span style={badgeStyle('target', target.status)}>{target.status}</span>}
             <button style={secondaryButtonStyle} onClick={openEditor}>{target ? 'Edit' : 'Configure'}</button>
-            {target && target.status !== 'PUBLISHED' && <button style={primaryButtonStyle} disabled={publishMut.isPending} onClick={() => clearAnd(() => publishMut.mutate())}>{publishMut.isPending ? 'Publishing…' : 'Publish'}</button>}
+            {target && target.status !== 'PUBLISHED' && <button style={primaryButtonStyle} disabled={publishMut.isPending || !hasApprovedSpec} title={!hasApprovedSpec ? 'Approve a specification version before publishing the handoff.' : undefined} onClick={() => clearAnd(() => publishMut.mutate())}>{publishMut.isPending ? 'Publishing…' : 'Publish'}</button>}
           </div>
         </div>
         {!handoffQ.data?.activeSpecificationVersion && <p style={{ ...mutedText, marginTop: 10 }}>No approved specification yet — approve a spec version before handing off.</p>}
@@ -156,9 +158,9 @@ export function SubmissionsStudio({ workItemId, onGotoReconciliation }: { workIt
                     </div>
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       <button style={secondaryButtonStyle} disabled={validateMut.isPending} onClick={() => clearAnd(() => validateMut.mutate(selected.id))}>Validate</button>
-                      <button style={secondaryButtonStyle} disabled={reconcileMut.isPending} onClick={() => clearAnd(() => reconcileMut.mutate({ id: selected.id, mode: 'DETERMINISTIC' }))}>Reconcile</button>
-                      <button style={secondaryButtonStyle} disabled={reconcileMut.isPending} title="LLM review" onClick={() => clearAnd(() => reconcileMut.mutate({ id: selected.id, mode: 'SEMANTIC' }))}>AI review</button>
-                      <button style={primaryButtonStyle} disabled={reconcileMut.isPending} title="Run the declared tests" onClick={() => clearAnd(() => reconcileMut.mutate({ id: selected.id, mode: 'DYNAMIC' }))}>Reconcile + tests</button>
+                      <button style={secondaryButtonStyle} disabled={reconcileMut.isPending || !canReconcile} title={!canReconcile ? 'Publish the handoff before reconciling.' : undefined} onClick={() => clearAnd(() => reconcileMut.mutate({ id: selected.id, mode: 'DETERMINISTIC' }))}>Reconcile</button>
+                      <button style={secondaryButtonStyle} disabled={reconcileMut.isPending || !canReconcile} title={!canReconcile ? 'Publish the handoff before reconciling.' : 'LLM review'} onClick={() => clearAnd(() => reconcileMut.mutate({ id: selected.id, mode: 'SEMANTIC' }))}>AI review</button>
+                      <button style={primaryButtonStyle} disabled={reconcileMut.isPending || !canReconcile} title={!canReconcile ? 'Publish the handoff before reconciling.' : 'Run the declared tests'} onClick={() => clearAnd(() => reconcileMut.mutate({ id: selected.id, mode: 'DYNAMIC' }))}>Reconcile + tests</button>
                     </div>
                   </div>
                 </section>

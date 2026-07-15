@@ -13,15 +13,63 @@ import type { SemanticVerdict } from './reconciliation.semantic'
 
 export type ReconciliationMode = 'DETERMINISTIC' | 'DYNAMIC' | 'SEMANTIC'
 
-type WorkItemRef = { id: string; workCode: string; title: string | null; tenantId: string | null }
+type WorkItemRef = { id: string; workCode: string; title: string | null; tenantId: string | null; status: string }
 
 async function loadWorkItem(workItemId: string): Promise<WorkItemRef> {
   const workItem = await prisma.workItem.findUnique({
     where: { id: workItemId },
-    select: { id: true, workCode: true, title: true, tenantId: true },
+    select: { id: true, workCode: true, title: true, tenantId: true, status: true },
   })
   if (!workItem) throw new NotFoundError('WorkItem', workItemId)
   return workItem
+}
+
+// Reconciliation is the finalization gate for a work item. A PASSED verdict auto-completes the
+// item (status -> COMPLETED); any non-PASSED verdict (PARTIAL/FAILED/ERROR) on a previously
+// completed item reopens it (status -> IN_PROGRESS). Terminal items (CANCELLED/ARCHIVED) are
+// never touched. Runs inside the caller's tenant transaction so the status change is atomic with
+// the RECONCILIATION_COMPLETED event; returns the applied transition (if any) so the caller can
+// mirror it to the audit log/outbox after the transaction commits.
+const TERMINAL_WORK_ITEM_STATUSES = new Set(['CANCELLED', 'ARCHIVED'])
+
+type CompletionTransition = { from: string; to: string; eventType: string }
+
+export async function applyReconciliationCompletionGate(
+  tx: Prisma.TransactionClient,
+  args: {
+    workItemId: string
+    currentStatus: string
+    runStatus: string
+    reconciliationRunId: string
+    submissionId: string
+    actorId: string
+    tenantId: string | null
+  },
+): Promise<CompletionTransition | null> {
+  const { workItemId, currentStatus, runStatus, reconciliationRunId, submissionId, actorId, tenantId } = args
+  if (TERMINAL_WORK_ITEM_STATUSES.has(currentStatus)) return null
+
+  const passed = runStatus === 'PASSED'
+  if (passed && currentStatus !== 'COMPLETED') {
+    await tx.workItem.update({ where: { id: workItemId }, data: { status: 'COMPLETED' } })
+    const payload = { reconciliationRunId, submissionId, reconciliationStatus: runStatus, from: currentStatus, to: 'COMPLETED' }
+    await tx.workItemEvent.create({ data: { workItemId, eventType: 'WORK_ITEM_COMPLETED', actorId, payload: payload as Prisma.InputJsonValue, tenantId } })
+    return { from: currentStatus, to: 'COMPLETED', eventType: 'WORK_ITEM_COMPLETED' }
+  }
+  if (!passed && currentStatus === 'COMPLETED') {
+    await tx.workItem.update({ where: { id: workItemId }, data: { status: 'IN_PROGRESS' } })
+    const payload = { reconciliationRunId, submissionId, reconciliationStatus: runStatus, from: currentStatus, to: 'IN_PROGRESS' }
+    await tx.workItemEvent.create({ data: { workItemId, eventType: 'WORK_ITEM_REOPENED', actorId, payload: payload as Prisma.InputJsonValue, tenantId } })
+    return { from: currentStatus, to: 'IN_PROGRESS', eventType: 'WORK_ITEM_REOPENED' }
+  }
+  return null
+}
+
+async function emitCompletionTransitionAudit(workItemId: string, actorId: string, transition: CompletionTransition | null) {
+  if (!transition) return
+  const auditType = transition.eventType === 'WORK_ITEM_COMPLETED' ? 'WorkItemCompleted' : 'WorkItemReopened'
+  await logEvent(auditType, 'WorkItem', workItemId, actorId, transition)
+  await publishOutbox('WorkItem', workItemId, auditType, transition)
 }
 
 // Coerce the handoff's open reconciliationPolicy JSON (+ its forbiddenPaths column) into the
@@ -231,17 +279,28 @@ export async function startReconciliation(workItemId: string, submissionId: stri
   // Timeline: always STARTED. COMPLETED only when we finalized now (deterministic path); the
   // dynamic path emits COMPLETED later when the runner job finishes (see completeReconciliationJob).
   const startedPayload = { reconciliationRunId: runId, submissionId, specificationVersionId: submission.specificationVersionId, mode: runMode, traceId, dynamic: willRunDynamic }
+  let completionTransition: CompletionTransition | null = null
   await withTenantDbTransaction(prisma, async (tx) => {
     await tx.workItemEvent.create({ data: { workItemId, eventType: 'RECONCILIATION_STARTED', actorId, payload: startedPayload as Prisma.InputJsonValue, tenantId: workItem.tenantId } })
     if (!willRunDynamic) {
       const completedPayload = { reconciliationRunId: runId, submissionId, status: finalStatus, summary: finalSummary, traceId }
       await tx.workItemEvent.create({ data: { workItemId, eventType: 'RECONCILIATION_COMPLETED', actorId, payload: completedPayload as Prisma.InputJsonValue, tenantId: workItem.tenantId } })
+      completionTransition = await applyReconciliationCompletionGate(tx, {
+        workItemId,
+        currentStatus: workItem.status,
+        runStatus: finalStatus,
+        reconciliationRunId: runId,
+        submissionId,
+        actorId,
+        tenantId: workItem.tenantId,
+      })
     }
   }, tenantId)
   if (!willRunDynamic) {
     const completedPayload = { reconciliationRunId: runId, submissionId, status: finalStatus, summary: finalSummary, traceId }
     await logEvent('ReconciliationCompleted', 'WorkItem', workItemId, actorId, completedPayload)
     await publishOutbox('WorkItem', workItemId, 'ReconciliationCompleted', completedPayload)
+    await emitCompletionTransitionAudit(workItemId, actorId, completionTransition)
   }
 
   return { run, verdicts: finalVerdicts, findings: result.findings, summary: finalSummary, dynamic: willRunDynamic, semantic: mode === 'SEMANTIC' }
@@ -330,9 +389,25 @@ export async function completeReconciliationJob(jobId: string, claimToken: strin
   }, tenantId)
 
   const payload = { reconciliationRunId: job.reconciliationRunId, submissionId: job.submissionId, status: refined.status, summary: refined.summary, traceId: run.traceId, dynamic: true }
-  await withTenantDbTransaction(prisma, (tx) => tx.workItemEvent.create({ data: { workItemId: job.workItemId, eventType: 'RECONCILIATION_COMPLETED', actorId, payload: payload as Prisma.InputJsonValue, tenantId: job.tenantId } }), tenantId)
+  let completionTransition: CompletionTransition | null = null
+  await withTenantDbTransaction(prisma, async (tx) => {
+    await tx.workItemEvent.create({ data: { workItemId: job.workItemId, eventType: 'RECONCILIATION_COMPLETED', actorId, payload: payload as Prisma.InputJsonValue, tenantId: job.tenantId } })
+    const wi = await tx.workItem.findUnique({ where: { id: job.workItemId }, select: { status: true } })
+    if (wi) {
+      completionTransition = await applyReconciliationCompletionGate(tx, {
+        workItemId: job.workItemId,
+        currentStatus: wi.status,
+        runStatus: refined.status,
+        reconciliationRunId: job.reconciliationRunId,
+        submissionId: job.submissionId,
+        actorId,
+        tenantId: job.tenantId,
+      })
+    }
+  }, tenantId)
   await logEvent('ReconciliationCompleted', 'WorkItem', job.workItemId, actorId, payload)
   await publishOutbox('WorkItem', job.workItemId, 'ReconciliationCompleted', payload)
+  await emitCompletionTransitionAudit(job.workItemId, actorId, completionTransition)
 
   return { run, verdicts: refined.verdicts, summary: refined.summary }
 }
@@ -355,9 +430,25 @@ export async function failReconciliationJob(jobId: string, claimToken: string, e
   }, tenantId)
 
   const payload = { reconciliationRunId: job.reconciliationRunId, submissionId: job.submissionId, status: 'ERROR', error, traceId: run.traceId, dynamic: true }
-  await withTenantDbTransaction(prisma, (tx) => tx.workItemEvent.create({ data: { workItemId: job.workItemId, eventType: 'RECONCILIATION_COMPLETED', actorId, payload: payload as Prisma.InputJsonValue, tenantId: job.tenantId } }), tenantId)
+  let completionTransition: CompletionTransition | null = null
+  await withTenantDbTransaction(prisma, async (tx) => {
+    await tx.workItemEvent.create({ data: { workItemId: job.workItemId, eventType: 'RECONCILIATION_COMPLETED', actorId, payload: payload as Prisma.InputJsonValue, tenantId: job.tenantId } })
+    const wi = await tx.workItem.findUnique({ where: { id: job.workItemId }, select: { status: true } })
+    if (wi) {
+      completionTransition = await applyReconciliationCompletionGate(tx, {
+        workItemId: job.workItemId,
+        currentStatus: wi.status,
+        runStatus: 'ERROR',
+        reconciliationRunId: job.reconciliationRunId,
+        submissionId: job.submissionId,
+        actorId,
+        tenantId: job.tenantId,
+      })
+    }
+  }, tenantId)
   await logEvent('ReconciliationFailed', 'WorkItem', job.workItemId, actorId, payload)
   await publishOutbox('WorkItem', job.workItemId, 'ReconciliationFailed', payload)
+  await emitCompletionTransitionAudit(job.workItemId, actorId, completionTransition)
 
   return { run }
 }
