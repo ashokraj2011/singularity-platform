@@ -15,12 +15,13 @@ import {
   promoteCard,
   freezeArchive,
   recutArchive,
+  pathfinder,
   listProposals,
   createProposal,
   decideProposal,
   rebaseProposal,
 } from './archive.service'
-import { confirmCoordsSchema, createArchiveSchema, createProposalSchema, freezeSchema, killCellSchema, pinSchema, promoteSchema, recutAxesSchema, stageCardSchema, voteSchema } from './archive.schemas'
+import { confirmCoordsSchema, createArchiveSchema, createProposalSchema, freezeSchema, killCellSchema, pathfinderSchema, pinSchema, promoteSchema, recutAxesSchema, stageCardSchema, voteSchema } from './archive.schemas'
 
 export const conceptArchiveRouter: Router = Router()
 
@@ -81,6 +82,10 @@ conceptArchiveRouter.post('/archives/:archiveId/freeze', validate(freezeSchema),
 
 conceptArchiveRouter.post('/archives/:archiveId/recut', validate(recutAxesSchema), async (req, res, next) => {
   try { res.json(await recutArchive(id(req, 'archiveId'), req.body, userId(req))) } catch (error) { next(error) }
+})
+
+conceptArchiveRouter.post('/archives/:archiveId/pathfinder', validate(pathfinderSchema), async (req, res, next) => {
+  try { res.json(await pathfinder(id(req, 'archiveId'), req.body, userId(req))) } catch (error) { next(error) }
 })
 
 conceptArchiveRouter.get('/studios/:studioId/proposals', async (req, res, next) => {

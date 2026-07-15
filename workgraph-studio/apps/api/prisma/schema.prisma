@@ -1442,6 +1442,8 @@ model ConceptArchive {
   axes           Json
   axesRevision   Int      @default(1)
   fitnessConfig  Json     @default("{}")
+  budgetConfig   Json     @default("{\"maxCards\":500,\"maxProposals\":100,\"maxEmbeddingCalls\":1000,\"maxSearchExpansions\":200}")
+  budgetUsage    Json     @default("{\"cards\":0,\"proposals\":0,\"embeddingCalls\":0,\"searchExpansions\":0}")
   contentHash    String?
   frozenAt       DateTime?
   createdById    String?
@@ -1474,6 +1476,8 @@ model ConceptCard {
   cellKey         String?
   status          String   @default("STAGED")
   fitness         Json     @default("{}")
+  embedding       Json?
+  embeddingModel  String?
   compositeScore  Float    @default(0)
   pinned          Boolean  @default(false)
   pinnedById      String?

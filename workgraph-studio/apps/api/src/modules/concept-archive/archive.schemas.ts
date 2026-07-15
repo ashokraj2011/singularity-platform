@@ -38,6 +38,12 @@ export const createArchiveSchema = z.object({
   name: z.string().trim().min(1).max(200),
   axes: archiveAxesSchema,
   fitnessConfig: z.record(z.number().finite().min(-100).max(100)).default({}),
+  budgetConfig: z.object({
+    maxCards: z.number().int().min(1).max(100_000).default(500),
+    maxProposals: z.number().int().min(1).max(100_000).default(100),
+    maxEmbeddingCalls: z.number().int().min(0).max(1_000_000).default(1000),
+    maxSearchExpansions: z.number().int().min(1).max(1_000_000).default(200),
+  }).default({}),
 })
 
 export const stageCardSchema = z.object({
@@ -52,6 +58,7 @@ export const stageCardSchema = z.object({
   parentCardIds: z.array(z.string().uuid()).max(20).default([]),
   operator: z.enum(['SEED', 'MUTATE', 'CROSSOVER', 'REPAIR']).default('SEED'),
   operatorNote: z.string().trim().max(1000).optional(),
+  allowDuplicate: z.boolean().default(false),
 })
 
 export const confirmCoordsSchema = z.object({
@@ -66,6 +73,11 @@ export const killCellSchema = z.object({ reason: z.string().trim().min(20).max(2
 export const promoteSchema = z.object({ promotedRef: z.record(z.unknown()).default({}), note: z.string().trim().max(1000).optional() })
 export const freezeSchema = z.object({ cardIds: z.array(z.string().uuid()).min(2).max(50), note: z.string().trim().max(2000).optional() })
 export const recutAxesSchema = z.object({ axes: archiveAxesSchema, note: z.string().trim().min(1).max(2000) })
+export const pathfinderSchema = z.object({
+  query: z.string().trim().min(2).max(2000),
+  maxResults: z.number().int().min(1).max(50).default(10),
+  maxExpansions: z.number().int().min(1).max(1000).optional(),
+})
 
 export const createProposalSchema = z.object({
   scopeType: z.enum(['CONCEPT_CARD', 'ARCHIVE_CELL', 'ARCHIVE']),

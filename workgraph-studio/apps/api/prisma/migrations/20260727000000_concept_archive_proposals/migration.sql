@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS "concept_archives" (
   "axes" JSONB NOT NULL,
   "axesRevision" INTEGER NOT NULL DEFAULT 1,
   "fitnessConfig" JSONB NOT NULL DEFAULT '{}',
+  "budgetConfig" JSONB NOT NULL DEFAULT '{"maxCards":500,"maxProposals":100,"maxEmbeddingCalls":1000,"maxSearchExpansions":200}',
+  "budgetUsage" JSONB NOT NULL DEFAULT '{"cards":0,"proposals":0,"embeddingCalls":0,"searchExpansions":0}',
   "contentHash" TEXT,
   "frozenAt" TIMESTAMP(3),
   "createdById" TEXT,
@@ -54,6 +56,8 @@ CREATE TABLE IF NOT EXISTS "concept_cards" (
   "cellKey" TEXT,
   "status" TEXT NOT NULL DEFAULT 'STAGED',
   "fitness" JSONB NOT NULL DEFAULT '{}',
+  "embedding" JSONB,
+  "embeddingModel" TEXT,
   "compositeScore" DOUBLE PRECISION NOT NULL DEFAULT 0,
   "pinned" BOOLEAN NOT NULL DEFAULT false,
   "pinnedById" TEXT,
@@ -150,3 +154,10 @@ CREATE TABLE IF NOT EXISTS "studio_proposals" (
 CREATE INDEX IF NOT EXISTS "studio_proposals_studioId_status_createdAt_idx" ON "studio_proposals"("studioId", "status", "createdAt");
 CREATE INDEX IF NOT EXISTS "studio_proposals_studioId_agentRole_status_idx" ON "studio_proposals"("studioId", "agentRole", "status");
 CREATE INDEX IF NOT EXISTS "studio_proposals_tenantId_status_idx" ON "studio_proposals"("tenantId", "status");
+
+-- The first local rollout applied this migration before the budget/vector
+-- columns were added. Keep the hand-applied bare-metal migration rerunnable.
+ALTER TABLE "concept_archives" ADD COLUMN IF NOT EXISTS "budgetConfig" JSONB NOT NULL DEFAULT '{"maxCards":500,"maxProposals":100,"maxEmbeddingCalls":1000,"maxSearchExpansions":200}';
+ALTER TABLE "concept_archives" ADD COLUMN IF NOT EXISTS "budgetUsage" JSONB NOT NULL DEFAULT '{"cards":0,"proposals":0,"embeddingCalls":0,"searchExpansions":0}';
+ALTER TABLE "concept_cards" ADD COLUMN IF NOT EXISTS "embedding" JSONB;
+ALTER TABLE "concept_cards" ADD COLUMN IF NOT EXISTS "embeddingModel" TEXT;

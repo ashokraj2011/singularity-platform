@@ -4,8 +4,8 @@ import { prisma } from '../../lib/prisma'
 import { currentTenantIdForDb, withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors'
-import { archiveAxesSchema, conceptCardBodySchema, createArchiveSchema, createProposalSchema, type StageCardInput, stageCardSchema } from './archive.schemas'
-import { cellKeyOf, compositeScoreOf, considerInsertion, coverageOf } from './archive.engine'
+import { archiveAxesSchema, conceptCardBodySchema, createArchiveSchema, createProposalSchema, pathfinderSchema, type StageCardInput, stageCardSchema } from './archive.schemas'
+import { cellKeyOf, compositeScoreOf, considerInsertion, coverageOf, dedupCheckWithEmbeddings, pathfinderRank } from './archive.engine'
 
 const tenantId = () => currentTenantIdForDb() ?? undefined
 const tenantWhere = () => (tenantId() ? { tenantId: tenantId() } : {})
@@ -13,6 +13,55 @@ type Db = typeof prisma | Prisma.TransactionClient
 
 function json(value: unknown): Prisma.InputJsonValue {
   return value as Prisma.InputJsonValue
+}
+
+const DEFAULT_BUDGET = { maxCards: 500, maxProposals: 100, maxEmbeddingCalls: 1000, maxSearchExpansions: 200 }
+const DEFAULT_USAGE = { cards: 0, proposals: 0, embeddingCalls: 0, searchExpansions: 0 }
+
+function budgetOf(value: unknown) {
+  const row = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  return {
+    maxCards: Number.isFinite(Number(row.maxCards)) ? Number(row.maxCards) : DEFAULT_BUDGET.maxCards,
+    maxProposals: Number.isFinite(Number(row.maxProposals)) ? Number(row.maxProposals) : DEFAULT_BUDGET.maxProposals,
+    maxEmbeddingCalls: Number.isFinite(Number(row.maxEmbeddingCalls)) ? Number(row.maxEmbeddingCalls) : DEFAULT_BUDGET.maxEmbeddingCalls,
+    maxSearchExpansions: Number.isFinite(Number(row.maxSearchExpansions)) ? Number(row.maxSearchExpansions) : DEFAULT_BUDGET.maxSearchExpansions,
+  }
+}
+
+function usageOf(value: unknown) {
+  const row = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  return {
+    cards: Number(row.cards) || 0,
+    proposals: Number(row.proposals) || 0,
+    embeddingCalls: Number(row.embeddingCalls) || 0,
+    searchExpansions: Number(row.searchExpansions) || 0,
+  }
+}
+
+async function resolveEmbedding(text: string): Promise<{ vector?: number[]; model?: string }> {
+  const url = process.env.CONCEPT_ARCHIVE_EMBEDDING_URL?.trim()
+  if (!url) return {}
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 8_000)
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(process.env.CONCEPT_ARCHIVE_EMBEDDING_TOKEN ? { authorization: `Bearer ${process.env.CONCEPT_ARCHIVE_EMBEDDING_TOKEN}` } : {}) },
+      body: JSON.stringify({ input: [text] }),
+      signal: controller.signal,
+    })
+    if (!response.ok) return {}
+    const body = await response.json() as Record<string, unknown>
+    const data = Array.isArray(body.data) ? body.data : Array.isArray(body.embeddings) ? body.embeddings : []
+    const first = data[0]
+    const vector = Array.isArray(first) ? first : first && typeof first === 'object' && Array.isArray((first as Record<string, unknown>).embedding) ? (first as Record<string, unknown>).embedding : undefined
+    const candidateVector: unknown[] | undefined = Array.isArray(vector) ? vector : undefined
+    return { vector: candidateVector?.every((value: unknown) => typeof value === 'number' && Number.isFinite(value)) ? candidateVector as number[] : undefined, model: typeof body.model === 'string' ? body.model : undefined }
+  } catch {
+    return {}
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 async function studioOrThrow(id: string, db: Db = prisma) {
@@ -48,7 +97,8 @@ async function appendArchiveEvent(
 }
 
 function cardView(card: any) {
-  return { ...card, votes: card.votes?.map((vote: any) => ({ userId: vote.userId, direction: vote.direction })) ?? [] }
+  const { embedding: _embedding, ...safeCard } = card
+  return { ...safeCard, votes: card.votes?.map((vote: any) => ({ userId: vote.userId, direction: vote.direction })) ?? [] }
 }
 
 export async function listStudios(projectId?: string) {
@@ -85,7 +135,7 @@ export async function createArchive(studioId: string, input: unknown, userId: st
   const parsed = createArchiveSchema.parse(input)
   await studioOrThrow(studioId)
   const archive = await prisma.conceptArchive.create({
-    data: { studioId, name: parsed.name, axes: json(parsed.axes), fitnessConfig: json(parsed.fitnessConfig), createdById: userId, tenantId: tenantId() },
+    data: { studioId, name: parsed.name, axes: json(parsed.axes), fitnessConfig: json(parsed.fitnessConfig), budgetConfig: json(parsed.budgetConfig), createdById: userId, tenantId: tenantId() },
   })
   await withTenantDbTransaction(prisma, tx => appendArchiveEvent(tx, { archiveId: archive.id, eventType: 'ARCHIVE_CREATED', actorType: 'HUMAN', actorId: userId, payload: { axesRevision: 1 } }))
   await logEvent('ConceptArchiveCreated', 'ConceptArchive', archive.id, userId, { studioId })
@@ -94,7 +144,8 @@ export async function createArchive(studioId: string, input: unknown, userId: st
 }
 
 export async function getArchive(archiveId: string) {
-  const archive = await archiveOrThrow(archiveId)
+  const archive = await prisma.conceptArchive.findFirst({ where: { id: archiveId, ...tenantWhere() }, include: { studio: { select: { projectId: true, name: true } } } })
+  if (!archive) throw new NotFoundError('ConceptArchive', archiveId)
   const [cards, cells, events] = await Promise.all([
     prisma.conceptCard.findMany({ where: { archiveId, ...tenantWhere() }, include: { votes: true }, orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }] }),
     prisma.archiveCellState.findMany({ where: { archiveId }, orderBy: [{ axesRevision: 'desc' }, { cellKey: 'asc' }] }),
@@ -113,9 +164,12 @@ export async function getArchive(archiveId: string) {
   }
 }
 
-async function stageCardInTx(tx: Prisma.TransactionClient, archive: any, parsed: StageCardInput, userId: string) {
+async function stageCardInTx(tx: Prisma.TransactionClient, archive: any, parsed: StageCardInput, userId: string, embedding?: { vector?: number[]; model?: string }) {
   const axes = archiveAxesSchema.parse(archive.axes)
   cellKeyOf(axes, parsed.declaredCoords)
+  const budget = budgetOf(archive.budgetConfig)
+  const usage = usageOf(archive.budgetUsage)
+  if (usage.cards >= budget.maxCards) throw new ConflictError(`Archive card budget exhausted (${budget.maxCards}). Increase the archive budget or freeze/recut before adding more.`)
   const compositeScore = compositeScoreOf(parsed.fitness, archive.fitnessConfig as Record<string, number>)
   const card = await tx.conceptCard.create({
     data: {
@@ -125,6 +179,7 @@ async function stageCardInTx(tx: Prisma.TransactionClient, archive: any, parsed:
       body: json(conceptCardBodySchema.parse(parsed.body)),
       declaredCoords: json(parsed.declaredCoords),
       fitness: json(parsed.fitness),
+      ...(embedding?.vector ? { embedding: json(embedding.vector), embeddingModel: embedding.model ?? 'configured-provider' } : {}),
       compositeScore,
       authorType: parsed.authorType,
       authorId: userId,
@@ -136,17 +191,26 @@ async function stageCardInTx(tx: Prisma.TransactionClient, archive: any, parsed:
       tenantId: tenantId(),
     },
   })
+  await tx.conceptArchive.update({ where: { id: archive.id }, data: { budgetUsage: json({ ...usage, cards: usage.cards + 1, embeddingCalls: usage.embeddingCalls + (embedding?.vector ? 1 : 0) }) } })
   await appendArchiveEvent(tx, { archiveId: archive.id, cardId: card.id, eventType: 'CARD_STAGED', actorType: parsed.authorType, actorId: userId, payload: { operator: parsed.operator, compositeScore } })
   return card
 }
 
 export async function stageCard(archiveId: string, input: unknown, userId: string) {
   const parsed = stageCardSchema.parse(input)
+  const archiveSnapshot = await archiveOrThrow(archiveId)
+  const existing = await prisma.conceptCard.findMany({ where: { archiveId, ...tenantWhere() }, select: { title: true, summary: true, embedding: true } })
+  const text = `${parsed.title}\n${parsed.summary}`
+  const embeddingBudget = budgetOf(archiveSnapshot.budgetConfig)
+  const embeddingUsage = usageOf(archiveSnapshot.budgetUsage)
+  const embedding = embeddingUsage.embeddingCalls < embeddingBudget.maxEmbeddingCalls ? await resolveEmbedding(text) : {}
+  const duplicate = dedupCheckWithEmbeddings(text, embedding.vector, existing.map(card => ({ text: `${card.title}\n${card.summary}`, embedding: Array.isArray(card.embedding) ? card.embedding as number[] : null })))
+  if (duplicate.duplicate && !parsed.allowDuplicate) throw new ConflictError(`This concept is too close to an existing card (similarity ${duplicate.similarity.toFixed(2)}). Use an explicit mutation or enable duplicate staging.`)
   const result = await withTenantDbTransaction(prisma, async tx => {
     const archive = await tx.conceptArchive.findFirst({ where: { id: archiveId, ...tenantWhere() } })
     if (!archive) throw new NotFoundError('ConceptArchive', archiveId)
     if (archive.status !== 'ACTIVE') throw new ConflictError('A frozen archive cannot accept new cards.')
-    return stageCardInTx(tx, archive, parsed, userId)
+    return stageCardInTx(tx, archive, parsed, userId, embedding)
   })
   await logEvent('ConceptCardStaged', 'ConceptCard', result.id, userId, { archiveId, authorType: parsed.authorType })
   await publishOutbox('ConceptCard', result.id, 'ConceptCardStaged', { archiveId, actorId: userId })
@@ -180,9 +244,12 @@ export async function confirmCardCoords(cardId: string, input: unknown, userId: 
       await tx.conceptCard.update({ where: { id: card.id }, data: { status: 'ELITE' } })
     }
     if (decision.kind === 'PROPOSE_SWAP') {
+      const budget = budgetOf(card.archive.budgetConfig)
+      const usage = usageOf(card.archive.budgetUsage)
+      if (usage.proposals >= budget.maxProposals) throw new ConflictError(`Archive proposal budget exhausted (${budget.maxProposals}).`)
       await tx.studioProposal.create({
         data: {
-          studioId: (await tx.conceptArchive.findUniqueOrThrow({ where: { id: card.archiveId }, select: { studioId: true } })).studioId,
+          studioId: card.archive.studioId,
           scopeType: 'ARCHIVE_CELL',
           scopeRef: json({ archiveId: card.archiveId, cellKey, currentEliteId: currentElite?.id ?? null, candidateCardId: card.id }),
           kind: 'SWAP',
@@ -190,8 +257,10 @@ export async function confirmCardCoords(cardId: string, input: unknown, userId: 
           baseRevision: card.archive.axesRevision,
           authorType: 'HUMAN',
           authorId: userId,
+          tenantId: tenantId(),
         },
       })
+      await tx.conceptArchive.update({ where: { id: card.archiveId }, data: { budgetUsage: json({ ...usage, proposals: usage.proposals + 1 }) } })
     }
     await appendArchiveEvent(tx, { archiveId: card.archiveId, cardId: card.id, cellKey, eventType: 'CARD_COORDS_CONFIRMED', actorType: 'HUMAN', actorId: userId, payload: { decision: decision.kind, reason: decision.reason } })
     return { card: updated, decision }
@@ -308,6 +377,32 @@ export async function recutArchive(archiveId: string, input: unknown, userId: st
   return getArchive(archiveId)
 }
 
+export async function pathfinder(archiveId: string, input: unknown, userId: string) {
+  const parsed = pathfinderSchema.parse(input)
+  const archive = await archiveOrThrow(archiveId)
+  const budget = budgetOf(archive.budgetConfig)
+  const usage = usageOf(archive.budgetUsage)
+  const remaining = Math.max(0, budget.maxSearchExpansions - usage.searchExpansions)
+  const maxExpansions = Math.min(parsed.maxExpansions ?? budget.maxSearchExpansions, remaining)
+  if (maxExpansions < 1) throw new ConflictError(`Pathfinder budget exhausted (${budget.maxSearchExpansions} expansions).`)
+  const cards = await prisma.conceptCard.findMany({ where: { archiveId, ...tenantWhere(), status: { not: 'KILLED_WITH_CELL' } }, select: { id: true, title: true, summary: true, status: true, cellKey: true, compositeScore: true, parentCardIds: true } })
+  const ranked = pathfinderRank(parsed.query, cards.map(card => ({ ...card, parentCardIds: Array.isArray(card.parentCardIds) ? card.parentCardIds as string[] : [] })), { maxResults: parsed.maxResults, maxExpansions })
+  await withTenantDbTransaction(prisma, tx => tx.conceptArchive.update({ where: { id: archiveId }, data: { budgetUsage: json({ ...usage, searchExpansions: usage.searchExpansions + ranked.expansions }) } }))
+  const byId = new Map(cards.map(card => [card.id, card]))
+  const results = ranked.results.map(result => {
+    const path: Array<{ id: string; title: string; status: string }> = []
+    let current: any = result.card
+    for (let step = 0; step < 8 && current; step++) {
+      path.unshift({ id: current.id, title: current.title, status: current.status })
+      const parentId = current.parentCardIds?.[0]
+      current = parentId ? byId.get(parentId) : undefined
+    }
+    return { ...result, path }
+  })
+  await logEvent('ConceptArchivePathfinderSearched', 'ConceptArchive', archiveId, userId, { query: parsed.query, expansions: ranked.expansions })
+  return { ...ranked, results, budget: { config: budget, usage: { ...usage, searchExpansions: usage.searchExpansions + ranked.expansions } } }
+}
+
 export async function listProposals(studioId: string, status?: string) {
   await studioOrThrow(studioId)
   return { items: await prisma.studioProposal.findMany({ where: { studioId, ...tenantWhere(), ...(status ? { status } : {}) }, orderBy: { createdAt: 'desc' }, take: 200 }) }
@@ -316,8 +411,20 @@ export async function listProposals(studioId: string, status?: string) {
 export async function createProposal(studioId: string, input: unknown, userId: string) {
   const parsed = createProposalSchema.parse(input)
   await studioOrThrow(studioId)
-  const proposal = await prisma.studioProposal.create({
-    data: { studioId, scopeType: parsed.scopeType, scopeRef: json(parsed.scopeRef), kind: parsed.kind, payload: json(parsed.payload), baseRevision: parsed.baseRevision ?? null, authorType: parsed.authorType, authorId: userId, agentRole: parsed.agentRole ?? null, traceId: parsed.traceId ?? null, expiresAt: parsed.expiresAt ? new Date(parsed.expiresAt) : null },
+  const archiveId = typeof parsed.scopeRef.archiveId === 'string' ? parsed.scopeRef.archiveId : undefined
+  const proposal = await withTenantDbTransaction(prisma, async tx => {
+    const archive = archiveId ? await tx.conceptArchive.findFirst({ where: { id: archiveId, ...tenantWhere() } }) : null
+    if (archiveId && !archive) throw new NotFoundError('ConceptArchive', archiveId)
+    if (archive && archive.studioId !== studioId) throw new ConflictError('The proposal archive does not belong to the selected studio.')
+    if (archive) {
+      const budget = budgetOf(archive.budgetConfig)
+      const usage = usageOf(archive.budgetUsage)
+      if (usage.proposals >= budget.maxProposals) throw new ConflictError(`Archive proposal budget exhausted (${budget.maxProposals}).`)
+      const created = await tx.studioProposal.create({ data: { studioId, scopeType: parsed.scopeType, scopeRef: json(parsed.scopeRef), kind: parsed.kind, payload: json(parsed.payload), baseRevision: parsed.baseRevision ?? archive.axesRevision, authorType: parsed.authorType, authorId: userId, agentRole: parsed.agentRole ?? null, traceId: parsed.traceId ?? null, expiresAt: parsed.expiresAt ? new Date(parsed.expiresAt) : null, tenantId: tenantId() } })
+      await tx.conceptArchive.update({ where: { id: archive.id }, data: { budgetUsage: json({ ...usage, proposals: usage.proposals + 1 }) } })
+      return created
+    }
+    return tx.studioProposal.create({ data: { studioId, scopeType: parsed.scopeType, scopeRef: json(parsed.scopeRef), kind: parsed.kind, payload: json(parsed.payload), baseRevision: parsed.baseRevision ?? null, authorType: parsed.authorType, authorId: userId, agentRole: parsed.agentRole ?? null, traceId: parsed.traceId ?? null, expiresAt: parsed.expiresAt ? new Date(parsed.expiresAt) : null, tenantId: tenantId() } })
   })
   await logEvent('StudioProposalCreated', 'StudioProposal', proposal.id, userId, { studioId, scopeType: proposal.scopeType, kind: proposal.kind })
   return proposal
@@ -336,6 +443,7 @@ export async function decideProposal(proposalId: string, decision: 'ACCEPTED' | 
     if (archiveId && proposal.baseRevision != null) {
       const archive = await tx.conceptArchive.findFirst({ where: { id: archiveId, ...tenantWhere() } })
       if (!archive) throw new NotFoundError('ConceptArchive', archiveId)
+      if (archive.studioId !== proposal.studioId) throw new ConflictError('The proposal archive does not belong to its studio.')
       if (archive.axesRevision !== proposal.baseRevision) {
         const stale = await tx.studioProposal.update({ where: { id: proposalId }, data: { status: 'STALE', decidedAt: new Date(), decidedById: userId, decisionNote: `Base revision ${proposal.baseRevision} is no longer current.` } })
         return stale
@@ -347,8 +455,35 @@ export async function decideProposal(proposalId: string, decision: 'ACCEPTED' | 
         if (!archiveIdForCreate) throw new ValidationError('Concept card proposal must reference an archiveId.')
         const archive = await tx.conceptArchive.findFirst({ where: { id: archiveIdForCreate, ...tenantWhere() } })
         if (!archive) throw new NotFoundError('ConceptArchive', archiveIdForCreate)
+        if (archive.studioId !== proposal.studioId) throw new ConflictError('The proposal archive does not belong to its studio.')
         const cardInput = stageCardSchema.parse(editedPayload ?? proposal.payload)
         await stageCardInTx(tx, archive, { ...cardInput, authorType: 'AGENT' }, userId)
+      } else if (proposal.scopeType === 'CONCEPT_CARD' && ['UPDATE', 'MUTATE', 'PROMOTE'].includes(proposal.kind)) {
+        const ref = proposal.scopeRef as Record<string, unknown>
+        const targetCardId = typeof ref.cardId === 'string' ? ref.cardId : undefined
+        if (!targetCardId || !archiveId) throw new ValidationError('Concept card proposal must reference an archiveId and cardId.')
+        const archive = await tx.conceptArchive.findFirst({ where: { id: archiveId, ...tenantWhere() } })
+        if (!archive) throw new NotFoundError('ConceptArchive', archiveId)
+        if (archive.studioId !== proposal.studioId) throw new ConflictError('The proposal archive does not belong to its studio.')
+        const target = await tx.conceptCard.findFirst({ where: { id: targetCardId, archiveId, ...tenantWhere() } })
+        if (!target) throw new NotFoundError('ConceptCard', targetCardId)
+        const payload = (editedPayload ?? proposal.payload) as Record<string, unknown>
+        if (proposal.kind === 'PROMOTE') {
+          if (!['ELITE', 'PROMOTED'].includes(target.status) && !target.pinned) throw new ConflictError('Only an elite or pinned card can be promoted.')
+          await tx.conceptCard.update({ where: { id: target.id }, data: { status: 'PROMOTED', promotedRef: json(payload.promotedRef ?? {}), operatorNote: typeof payload.note === 'string' ? payload.note : target.operatorNote } })
+          await appendArchiveEvent(tx, { archiveId, cardId: target.id, eventType: 'CARD_PROMOTED', actorType: 'HUMAN', actorId: userId, payload: { proposalId } })
+        } else if (proposal.kind === 'UPDATE') {
+          const body = payload.body === undefined ? undefined : conceptCardBodySchema.parse(payload.body)
+          const fitness = payload.fitness === undefined ? undefined : stageCardSchema.shape.fitness.parse(payload.fitness)
+          const title = payload.title === undefined ? target.title : String(payload.title)
+          const summary = payload.summary === undefined ? target.summary : String(payload.summary)
+          const compositeScore = fitness ? compositeScoreOf(fitness, archive.fitnessConfig as Record<string, number>) : target.compositeScore
+          await tx.conceptCard.update({ where: { id: target.id }, data: { title: title.trim().slice(0, 240), summary: summary.trim().slice(0, 2000), ...(body ? { body: json(body) } : {}), ...(fitness ? { fitness: json(fitness), compositeScore } : {}) } })
+          await appendArchiveEvent(tx, { archiveId, cardId: target.id, eventType: 'CARD_UPDATED', actorType: 'HUMAN', actorId: userId, payload: { proposalId } })
+        } else {
+          const cardInput = stageCardSchema.parse({ ...payload, parentCardIds: [...(Array.isArray(payload.parentCardIds) ? payload.parentCardIds : []), target.id], authorType: 'AGENT', operator: 'MUTATE' })
+          await stageCardInTx(tx, archive, cardInput, userId)
+        }
       } else if (proposal.scopeType === 'ARCHIVE_CELL' && proposal.kind === 'SWAP') {
         const ref = proposal.scopeRef as Record<string, unknown>
         const refArchiveId = typeof ref.archiveId === 'string' ? ref.archiveId : undefined
@@ -380,9 +515,17 @@ export async function rebaseProposal(proposalId: string, payload: Record<string,
   if (!original) throw new NotFoundError('StudioProposal', proposalId)
   if (original.status !== 'STALE') throw new ConflictError('Only a stale proposal can be rebased.')
   const archiveId = typeof (original.scopeRef as any).archiveId === 'string' ? (original.scopeRef as any).archiveId : undefined
-  let baseRevision: number | undefined
-  if (archiveId) baseRevision = (await archiveOrThrow(archiveId)).axesRevision
-  const rebased = await prisma.studioProposal.create({ data: { studioId: original.studioId, scopeType: original.scopeType, scopeRef: json(original.scopeRef), kind: original.kind, payload: json(payload), baseRevision, authorType: original.authorType, authorId: userId, agentRole: original.agentRole, traceId: original.traceId, rebaseOfId: original.id, tenantId: tenantId() } })
-  await logEvent('StudioProposalRebased', 'StudioProposal', rebased.id, userId, { rebaseOfId: original.id, baseRevision })
+  const rebased = await withTenantDbTransaction(prisma, async tx => {
+    const archive = archiveId ? await tx.conceptArchive.findFirst({ where: { id: archiveId, ...tenantWhere() } }) : null
+    if (archiveId && !archive) throw new NotFoundError('ConceptArchive', archiveId)
+    if (archive && archive.studioId !== original.studioId) throw new ConflictError('The proposal archive does not belong to its studio.')
+    const budget = archive ? budgetOf(archive.budgetConfig) : null
+    const usage = archive ? usageOf(archive.budgetUsage) : null
+    if (budget && usage && usage.proposals >= budget.maxProposals) throw new ConflictError(`Archive proposal budget exhausted (${budget.maxProposals}).`)
+    const created = await tx.studioProposal.create({ data: { studioId: original.studioId, scopeType: original.scopeType, scopeRef: json(original.scopeRef), kind: original.kind, payload: json(payload), baseRevision: archive?.axesRevision, authorType: original.authorType, authorId: userId, agentRole: original.agentRole, traceId: original.traceId, rebaseOfId: original.id, tenantId: tenantId() } })
+    if (archive && usage) await tx.conceptArchive.update({ where: { id: archive.id }, data: { budgetUsage: json({ ...usage, proposals: usage.proposals + 1 }) } })
+    return created
+  })
+  await logEvent('StudioProposalRebased', 'StudioProposal', rebased.id, userId, { rebaseOfId: original.id, baseRevision: rebased.baseRevision })
   return rebased
 }

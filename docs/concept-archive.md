@@ -26,6 +26,7 @@ The authenticated API is mounted at `/api/concept-archive`:
 - `GET|POST /studios/:studioId/archives`
 - `GET /archives/:archiveId`
 - `POST /archives/:archiveId/cards`
+- `POST /archives/:archiveId/pathfinder`
 - `POST /cards/:cardId/confirm-coords`
 - `POST /cards/:cardId/vote`, `/pin`, `/unpin`, `/promote`
 - `POST /archives/:archiveId/cells/kill`, `/freeze`, `/recut`
@@ -38,10 +39,36 @@ parent. Mutations run through the tenant transaction helper and append an
 revision-aware: a stale base revision is marked `STALE` and must be rebased;
 it is never silently applied to newer archive axes.
 
-## Deliberate follow-up work
+## Budgets, search, and deduplication
 
-This slice leaves Pathfinder search, budget enforcement, embeddings, and Yjs
-document collaboration for the next increment. The current contracts make
-those additions safe: cards have trace/parent/operator metadata, proposals
-have an explicit scope and base revision, and archive events provide the
-append-only history needed for replay and evidence.
+Archives carry bounded `budgetConfig` and `budgetUsage` JSON. The defaults are
+500 cards, 100 proposals, 1,000 embedding calls, and 200 Pathfinder search
+expansions. Budget exhaustion fails closed. These values can be supplied when
+an archive is created and are surfaced in the archive response for operator
+visibility.
+
+Pathfinder is a deterministic, bounded lexical search over live cards. It
+returns matched terms, a composite-score tie breaker, and up to eight parent
+card lineage steps. It never calls an LLM and cannot expand beyond the
+configured archive budget.
+
+Staging performs lexical duplicate detection by default. If
+`CONCEPT_ARCHIVE_EMBEDDING_URL` is configured, the service also requests an
+optional embedding using `CONCEPT_ARCHIVE_EMBEDDING_TOKEN` (the token is read
+only from the server environment and never stored or returned). Embedding
+failure falls back to lexical checks; an explicit `allowDuplicate` flag is
+required to stage a near-duplicate.
+
+## Collaboration
+
+Staged cards expose a collaborative notes surface backed by the existing
+authenticated Yjs/Studio relay. The relay gives concurrent editors mergeable
+notes and presence, while the canonical card body remains changed through the
+normal archive API. Relay documents are intentionally ephemeral until a later
+durable snapshot policy is introduced; archive decisions and card content are
+still persisted and audited in WorkGraph.
+
+Proposal acceptance supports `CREATE`, `UPDATE`, `MUTATE`, `PROMOTE`, and
+`SWAP`. Archive-scoped proposals enforce studio ownership, revision fencing,
+tenant scope, and the proposal budget on creation, coordinate confirmation,
+and rebase.
