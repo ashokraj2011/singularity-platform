@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { cardStyle, primaryButtonStyle, secondaryButtonStyle, inputStyle, mutedText, sectionTitle } from './workspaceStyles'
 import { errText } from './errText'
 import { useSpecDraft } from './useSpecDraft'
+import { InheritedFromProject } from './InheritedFromProject'
 
 /**
  * Analysis surface — the upstream "why", captured before requirements: the problem, goals,
@@ -42,6 +43,8 @@ export function AnalysisSurface({ workItemId }: { workItemId: string }) {
         <div><h3 style={{ ...sectionTitle, marginBottom: 4 }}>Analysis</h3><span style={mutedText}>The problem, goals and constraints — the why behind this work, before requirements.</span></div>
         {editable && <button style={primaryButtonStyle} disabled={!dirty || patchMut.isPending} onClick={save}>{patchMut.isPending ? 'Saving…' : dirty ? 'Save analysis' : 'Saved'}</button>}
       </section>
+
+      <InheritedFromProject workItemId={workItemId} section="analysis" />
 
       <section style={cardStyle}>
         <h4 style={{ ...sectionTitle, fontSize: 13 }}>Problem statement</h4>

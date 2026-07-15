@@ -36,7 +36,7 @@ const VIEWS: { key: View; label: string; Icon: typeof FileText }[] = [
   { key: 'discussion', label: 'Discussion', Icon: MessageSquare },
 ]
 
-interface WI { workCode?: string; title?: string; status: string; events?: any[]; targets?: any[]; urgency?: string | null; dueAt?: string | null }
+interface WI { workCode?: string; title?: string; status: string; events?: any[]; targets?: any[]; urgency?: string | null; dueAt?: string | null; project?: { id: string; code: string; name: string; status?: string } | null }
 
 export function WorkItemIde({ workItemId, workItem, onBack, overviewDetails }: { workItemId: string; workItem: WI; onBack: () => void; overviewDetails?: ReactNode }) {
   const [view, setView] = useState<View>('overview')
@@ -81,6 +81,12 @@ export function WorkItemIde({ workItemId, workItem, onBack, overviewDetails }: {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           {/* Top bar */}
           <header style={{ height: 46, flex: 'none', borderBottom: '1px solid var(--ide-line)', background: 'var(--ide-chrome)', display: 'flex', alignItems: 'center', gap: 12, padding: '0 18px' }}>
+            {workItem.project && (
+              <>
+                <a href={`/studio/${workItem.project.id}`} title={`Specification project ${workItem.project.name}`} style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--ide-ink-dim)', textDecoration: 'none', whiteSpace: 'nowrap' }}>{workItem.project.code}</a>
+                <span style={{ fontSize: 11, color: 'var(--ide-muted)' }}>›</span>
+              </>
+            )}
             <span style={{ fontFamily: 'var(--mono, ui-monospace)', fontSize: 11.5, color: 'var(--ide-accent)', fontWeight: 600 }}>{workItem.workCode}</span>
             <span style={{ fontSize: 13.5, fontWeight: 700, letterSpacing: '-.01em', color: 'var(--ide-ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{workItem.title}</span>
             <span style={{ fontSize: 11, color: 'var(--ide-muted)' }}>›</span>

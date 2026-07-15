@@ -12,6 +12,8 @@ import {
 } from './specification.schemas'
 import { specificationContentHash } from './specification.hash'
 import { validateSpecificationBody, type SpecValidationResult } from './specification.validator'
+import { getProjectSpec } from '../studio/studio-spec.service'
+import type { ProjectSpecPackage } from '../studio/studio-spec.schemas'
 
 type WorkItemRef = { id: string; workCode: string; title: string; tenantId: string | null }
 
@@ -237,4 +239,27 @@ export async function approveSpecificationVersion(
     contentHash,
   })
   return composePackage(workItem, { id: approved.id, number: approved.version, status: approved.status, revision: approved.revision, contentHash }, body)
+}
+
+/**
+ * Inheritance: a work item attached to a Specification Project draws on the project's shared
+ * upstream baseline (analysis / requirements / decisions). This returns that baseline read-only
+ * so the item IDE can show it as "inherited from project", with the item's own versioned spec as
+ * the local delta/override layer. Returns { project: null } for a standalone (unattached) item.
+ */
+export async function getInheritedProjectSpec(workItemId: string): Promise<{
+  project: { id: string; code: string; name: string } | null
+  spec: { revision: number; package: ProjectSpecPackage; updatedAt: Date } | null
+}> {
+  const workItem = await prisma.workItem.findUnique({
+    where: { id: workItemId },
+    select: { id: true, projectId: true, project: { select: { id: true, code: true, name: true } } },
+  })
+  if (!workItem) throw new NotFoundError('WorkItem', workItemId)
+  if (!workItem.projectId || !workItem.project) return { project: null, spec: null }
+  const spec = await getProjectSpec(workItem.projectId)
+  return {
+    project: workItem.project,
+    spec: { revision: spec.revision, package: spec.package, updatedAt: spec.updatedAt },
+  }
 }

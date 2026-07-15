@@ -400,6 +400,7 @@ workItemsRouter.get('/:id', async (req, res, next) => {
         targets: { orderBy: { createdAt: 'asc' } },
         events: { orderBy: { createdAt: 'asc' } },
         clarifications: { orderBy: { createdAt: 'asc' } },
+        project: { select: { id: true, code: true, name: true, status: true } },
       },
     })
     if (!workItem) throw new NotFoundError('WorkItem', id)

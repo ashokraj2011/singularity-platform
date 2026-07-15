@@ -6,6 +6,7 @@ import { SpecificationEditor } from './SpecificationEditor'
 import { DiagramCanvas, type DiagramModel } from './DiagramCanvas'
 import { errText } from './errText'
 import { requirementDiagnostics, worstSeverity, severityColor, type Diagnostic } from './specDiagnostics'
+import { InheritedFromProject } from './InheritedFromProject'
 
 /**
  * Spec explorer + editor — the IDE's Specification view (Phase B). A tree of the spec's parts
@@ -116,7 +117,10 @@ export function SpecExplorerEditor({ workItemId }: { workItemId: string }) {
           {editing ? (
             <div style={{ padding: 16 }}><SpecificationEditor initialBody={body} revision={header.revision ?? 1} saving={saveMut.isPending} onSave={(b) => saveMut.mutate(b)} onCancel={() => setEditing(false)} /></div>
           ) : active.kind === 'overview' ? (
-            <OverviewDoc pkg={pkg} reqCount={requirements.length} problems={[...diagsByReq.values()].flat()} />
+            <div>
+              <div style={{ padding: '16px 16px 0' }}><InheritedFromProject workItemId={workItemId} section="requirements" /></div>
+              <OverviewDoc pkg={pkg} reqCount={requirements.length} problems={[...diagsByReq.values()].flat()} />
+            </div>
           ) : activeReq ? (
             <RequirementDoc req={activeReq} diags={diagsByReq.get(activeReq.id) ?? []} onEdit={() => setEditing(true)} editable={editable} />
           ) : active.kind === 'diagram' ? (

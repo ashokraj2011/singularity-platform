@@ -14,6 +14,7 @@ import {
   updateSpecificationDraft,
   validateSpecificationVersion,
   approveSpecificationVersion,
+  getInheritedProjectSpec,
 } from './specifications.service'
 import { generateSpecificationDraft } from './spec-generation.service'
 import { generatePseudocode } from './pseudocode-generation.service'
@@ -63,6 +64,14 @@ const versionIdOf = (req: Request) => String(req.params.versionId)
 specificationsRouter.get('/:workItemId/specifications', async (req, res, next) => {
   try {
     res.json(await listSpecificationVersions(workItemIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+// Inheritance: the parent Specification Project's shared baseline (analysis/requirements/decisions),
+// surfaced read-only so the item IDE can render it as "inherited from project". null when standalone.
+specificationsRouter.get('/:workItemId/inherited-spec', async (req, res, next) => {
+  try {
+    res.json(await getInheritedProjectSpec(workItemIdOf(req)))
   } catch (err) { next(err) }
 })
 
