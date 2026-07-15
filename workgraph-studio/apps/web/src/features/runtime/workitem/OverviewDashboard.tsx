@@ -36,10 +36,15 @@ export function OverviewDashboard({ workItemId, workItem, onOpenTab }: { workIte
   const latest = runs[0]
   const recon = latest ? { label: latest.status, tone: latest.status === 'PASSED' ? GREEN : latest.status === 'FAILED' || latest.status === 'ERROR' ? RED : AMBER } : { label: 'None', tone: GRAY }
 
+  // Completion fan-out: surface the next-stage work items spawned when this item finalized.
+  const spawnEvent = (workItem.events ?? []).find((e) => e.eventType === 'NEXT_STAGE_SPAWNED')
+  const spawnFailedEvent = (workItem.events ?? []).find((e) => e.eventType === 'NEXT_STAGE_SPAWN_FAILED')
+  const spawnedItems: any[] = spawnEvent?.payload?.workItems ?? []
+
   // Completion gate: reconciliation is the finalizer. The work item auto-completes only when the
   // latest run PASSED; a non-PASSED run holds (or reopens) it. Mirrors the server-side gate.
   const completion = workItem.status === 'COMPLETED'
-    ? { label: 'Completed', tone: GREEN }
+    ? { label: spawnedItems.length ? `Completed · ${spawnedItems.length} spawned` : 'Completed', tone: GREEN }
     : latest && latest.status === 'PASSED'
       ? { label: 'Finalizing…', tone: AMBER }
       : latest
@@ -77,6 +82,28 @@ export function OverviewDashboard({ workItemId, workItem, onOpenTab }: { workIte
           <StageCard label="Completion" status={completion.label} tone={completion.tone} onClick={() => onOpenTab('reconciliation')} />
         </div>
       </section>
+
+      {(spawnedItems.length > 0 || spawnFailedEvent) && (
+        <section style={cardStyle}>
+          <h4 style={{ ...sectionTitle, fontSize: 13 }}>Next-stage work items</h4>
+          {spawnedItems.length > 0 ? (
+            <>
+              <p style={{ ...mutedText, marginBottom: 8 }}>Spawned on finalize from the attached Work Program — each runs via its workflow.</p>
+              <div style={{ display: 'grid', gap: 6 }}>
+                {spawnedItems.map((it) => (
+                  <div key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--color-on-surface)' }}>
+                    <span style={{ width: 7, height: 7, borderRadius: 999, background: GREEN }} />
+                    <strong>{it.workCode}</strong>
+                    {it.stepKey && <span style={mutedText}>· {it.stepKey}</span>}
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p style={{ ...mutedText, color: RED }}>Next-stage spawn failed: {spawnFailedEvent?.payload?.error ?? 'unknown error'}</p>
+          )}
+        </section>
+      )}
 
       {events.length > 0 && (
         <section style={cardStyle}>

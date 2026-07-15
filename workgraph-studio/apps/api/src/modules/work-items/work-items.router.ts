@@ -419,6 +419,7 @@ const updateWorkItemSchema = z.object({
   dueAt: z.string().datetime().nullable().optional(),
   details: z.record(z.unknown()).optional(),
   status: z.enum(['SCHEDULED', 'QUEUED', 'IN_PROGRESS', 'CANCELLED']).optional(),
+  completionProgramId: z.string().uuid().nullable().optional(),
 }).refine(b => Object.keys(b).length > 0, { message: 'No fields to update' })
 
 workItemsRouter.patch('/:id', validate(updateWorkItemSchema), async (req, res, next) => {

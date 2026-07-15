@@ -70,6 +70,18 @@ async function emitCompletionTransitionAudit(workItemId: string, actorId: string
   const auditType = transition.eventType === 'WORK_ITEM_COMPLETED' ? 'WorkItemCompleted' : 'WorkItemReopened'
   await logEvent(auditType, 'WorkItem', workItemId, actorId, transition)
   await publishOutbox('WorkItem', workItemId, auditType, transition)
+
+  // On finalization, fan out the next stage of work via the item's attached Work Program (if any).
+  // Dynamic import breaks the work-program -> work-items -> ... import cycle. The spawn never throws
+  // (it records a NEXT_STAGE_SPAWN_FAILED event on failure) so it cannot undo the completion.
+  if (transition.to === 'COMPLETED') {
+    try {
+      const { spawnCompletionProgram } = await import('../work-program/work-programs.service')
+      await spawnCompletionProgram({ workItemId, actorId })
+    } catch {
+      // spawnCompletionProgram swallows its own errors; this guards only the dynamic import itself.
+    }
+  }
 }
 
 // Coerce the handoff's open reconciliationPolicy JSON (+ its forbiddenPaths column) into the

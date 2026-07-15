@@ -134,6 +134,8 @@ SPEC_AMENDMENT_CREATED SPEC_AMENDMENT_CREATED
 IMPLEMENTATION_ACCEPTED IMPLEMENTATION_ACCEPTED
 WORK_ITEM_COMPLETED WORK_ITEM_COMPLETED
 WORK_ITEM_REOPENED WORK_ITEM_REOPENED
+NEXT_STAGE_SPAWNED NEXT_STAGE_SPAWNED
+NEXT_STAGE_SPAWN_FAILED NEXT_STAGE_SPAWN_FAILED
         }
     
 
@@ -2985,9 +2987,11 @@ INVALIDATED INVALIDATED
     "work_items" }o--|o workflow_nodes : "sourceWorkflowNode"
     "work_items" }o--|o work_item_routing_policies : "routingPolicy"
     "work_items" }o--|o specification_projects : "project"
+    "work_items" }o--|o work_programs : "completionProgram"
     "specification_versions" |o--|| "SpecificationStatus" : "enum:status"
     "specification_versions" }o--|| work_items : "workItem"
     "specification_projects" |o--|| "SpecificationProjectStatus" : "enum:status"
+    "specification_projects" }o--|o work_programs : "completionProgram"
     "project_specifications" |o--|| specification_projects : "project"
     "rooms" |o--|| "RoomState" : "enum:state"
     "rooms" }o--|| specification_projects : "project"
