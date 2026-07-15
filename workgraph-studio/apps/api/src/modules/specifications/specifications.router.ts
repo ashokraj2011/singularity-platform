@@ -16,6 +16,8 @@ import {
   approveSpecificationVersion,
 } from './specifications.service'
 import { generateSpecificationDraft } from './spec-generation.service'
+import { generatePseudocode } from './pseudocode-generation.service'
+import { converseSpecAgent, applySpecProposal } from './spec-agent.service'
 
 export const specificationsRouter: Router = Router()
 
@@ -38,6 +40,23 @@ const updateSchema = specificationPackageBodySchema.partial().extend({
 
 const approveSchema = z.object({ comment: z.string().trim().max(4000).optional() })
 
+// Spec Studio: generate a pseudo-code module for a draft (optionally scoped to some requirements).
+const generatePseudocodeSchema = z.object({
+  requirementIds: z.array(z.string().trim().min(1)).optional(),
+  language: z.string().trim().max(40).optional(),
+  title: z.string().trim().max(400).optional(),
+  instructions: z.string().trim().max(8000).optional(),
+})
+
+// Agent Storm — conversational spec authoring + one-click proposal apply.
+const converseSchema = z.object({
+  messages: z.array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().max(8000) })).min(1).max(40),
+  versionId: z.string().uuid().optional(),
+})
+const applyProposalSchema = z.object({
+  proposal: z.object({ kind: z.enum(['requirement', 'acceptance', 'test']), data: z.record(z.string(), z.unknown()), label: z.string().trim().max(400).optional() }),
+})
+
 const workItemIdOf = (req: Request) => String(req.params.workItemId)
 const versionIdOf = (req: Request) => String(req.params.versionId)
 
@@ -57,6 +76,27 @@ specificationsRouter.post('/:workItemId/specifications', validate(createDraftSch
 specificationsRouter.post('/:workItemId/specifications/generate', validate(generateSchema), async (req, res, next) => {
   try {
     res.status(201).json(await generateSpecificationDraft(workItemIdOf(req), req.body, req.user!.userId))
+  } catch (err) { next(err) }
+})
+
+// Spec Studio — generate a pseudo-code module and append it to a draft version.
+specificationsRouter.post('/:workItemId/specifications/:versionId/pseudocode/generate', validate(generatePseudocodeSchema), async (req, res, next) => {
+  try {
+    res.status(201).json(await generatePseudocode(workItemIdOf(req), versionIdOf(req), req.body, req.user!.userId))
+  } catch (err) { next(err) }
+})
+
+// Agent Storm — converse about the spec; returns a reply + applyable proposals.
+specificationsRouter.post('/:workItemId/spec-agent/converse', validate(converseSchema), async (req, res, next) => {
+  try {
+    res.json(await converseSpecAgent(workItemIdOf(req), req.body, req.user!.userId))
+  } catch (err) { next(err) }
+})
+
+// Agent Storm — apply a proposal (requirement / acceptance / test) to a draft version.
+specificationsRouter.post('/:workItemId/specifications/:versionId/apply', validate(applyProposalSchema), async (req, res, next) => {
+  try {
+    res.json(await applySpecProposal(workItemIdOf(req), versionIdOf(req), req.body.proposal, req.user!.userId))
   } catch (err) { next(err) }
 })
 

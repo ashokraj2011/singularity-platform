@@ -148,6 +148,11 @@ enum SpecificationStatus {
   REJECTED
 }
 
+enum SpecificationProjectStatus {
+  ACTIVE
+  ARCHIVED
+}
+
 enum WorkItemOriginType {
   PARENT_DELEGATED
   CAPABILITY_LOCAL
@@ -1206,6 +1211,7 @@ model WorkItem {
   createdById             String?
   approvedById            String?
   parentApprovalRequestId String?
+  projectId               String?
   sourceWorkflowInstance  WorkflowInstance? @relation("WorkItemSourceInstance", fields: [sourceWorkflowInstanceId], references: [id], onDelete: SetNull)
   sourceWorkflowNode      WorkflowNode?    @relation("WorkItemSourceNode", fields: [sourceWorkflowNodeId], references: [id], onDelete: SetNull)
   routingPolicy           WorkItemRoutingPolicy? @relation(fields: [routingPolicyId], references: [id], onDelete: SetNull)
@@ -1220,11 +1226,14 @@ model WorkItem {
   developmentTarget       DevelopmentTarget?
   implementationSubmissions ImplementationSubmission[]
   reconciliationRuns      ReconciliationRun[]
+  project                 SpecificationProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  specComments            SpecComment[]
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
   tenantId                String?          @default("default")
 
   @@index([tenantId], map: "ix_work_items_tenant")
+  @@index([projectId], map: "ix_work_items_project")
   @@index([workCode])
   @@index([originType])
   @@index([workItemTypeKey])
@@ -1269,6 +1278,244 @@ model SpecificationVersion {
   @@index([workItemId, status])
   @@index([tenantId], map: "ix_specification_versions_tenant")
   @@map("specification_versions")
+}
+
+// A Specification Project — the OPTIONAL, project-level root of the studio. Groups the shared
+// upstream (analysis → requirements → design) that many Work Items draw on. Work Items reference
+// a project via WorkItem.projectId but stay standalone-capable: a null projectId is a solo item
+// that keeps its own spec. Distinct from Initiative (which groups workflow RUNS, not specs).
+model SpecificationProject {
+  id          String                     @id @default(uuid())
+  code        String                     @unique
+  name        String
+  mission     String?
+  status      SpecificationProjectStatus @default(ACTIVE)
+  createdById String?
+  tenantId    String?                    @default("default")
+  archivedAt  DateTime?
+  createdAt   DateTime                   @default(now())
+  updatedAt   DateTime                   @updatedAt
+
+  workItems     WorkItem[]
+  specification ProjectSpecification?
+  rooms         Room[]
+  claims        Claim[]
+
+  @@index([status])
+  @@index([tenantId], map: "ix_specification_projects_tenant")
+  @@map("specification_projects")
+}
+
+// The project's shared upstream — the analysis and design that many Work Items draw on, authored
+// once at the project. A single editable package per project (JSON, validated by the studio-spec
+// schemas). Revision powers optimistic-concurrency section patches. Work Item specs still live in
+// SpecificationVersion; this is the project-level layer above them.
+model ProjectSpecification {
+  id          String               @id @default(uuid())
+  projectId   String               @unique
+  package     Json                 @default("{}")
+  revision    Int                  @default(1)
+  updatedById String?
+  tenantId    String?              @default("default")
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  project     SpecificationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId], map: "ix_project_specifications_tenant")
+  @@map("project_specifications")
+}
+
+// ─── EPISTEMIC LAYER (Rooms & Claims) ─────────────────────────────────────────
+// Governing the *ambiguity regime* of the SDLC with inverted primitives: the unit is a hypothesis,
+// not a task. Rooms are ephemeral, state-machined explorations; Claims carry Beta(alpha,beta)
+// posteriors + provenance + a human steward. The belief math lives in modules/rooms/belief.ts.
+
+enum RoomState {
+  FRAMING
+  DIVERGENCE
+  REVEAL
+  ESTIMATION
+  PROBING
+  REVIEW
+  GATE
+  CONVERGED
+  ABANDONED
+}
+
+enum ClaimType {
+  MARKET
+  USER
+  OPERATIONAL
+  TECHNICAL
+}
+
+enum ClaimStatus {
+  OPEN
+  ACCEPTED
+  PROMOTED
+  RETIRED
+  ABANDONED
+}
+
+// Source tier of a piece of evidence — caps how far it can move a posterior (production reality moves
+// it far, an agent simulation barely). OPINION is uncapped-at-zero: opinions stay local, only evidence travels.
+enum EvidenceTier {
+  PRODUCTION
+  EXPERIMENT
+  SIMULATION
+  AGENT
+  OPINION
+}
+
+enum ProbeStatus {
+  OPEN
+  RESOLVED
+  ABANDONED
+}
+
+enum EstimatorKind {
+  HUMAN
+  AGENT
+}
+
+// A Room — an ephemeral, state-machined exploration over a project. Disposable by design; what
+// endures is the claims it produces (and, in later phases, the evidence it promotes to the registry).
+model Room {
+  id          String    @id @default(uuid())
+  projectId   String
+  title       String
+  state       RoomState @default(FRAMING)
+  createdById String?
+  tenantId    String?   @default("default")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  project SpecificationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  claims  Claim[]
+  probes  Probe[]
+
+  @@index([projectId])
+  @@index([state])
+  @@index([tenantId], map: "ix_rooms_tenant")
+  @@map("rooms")
+}
+
+// A Claim — a hypothesis carrying a Beta(alpha,beta) posterior over P(true), a riskiest assumption, a
+// provenance chain, a context scope, and a HUMAN steward (accountability never transfers to agents).
+// The statement is immutable per version; alpha/beta is the live belief state.
+model Claim {
+  id                 String      @id @default(uuid())
+  projectId          String
+  roomId             String?
+  statement          String
+  riskiestAssumption String?
+  claimType          ClaimType   @default(TECHNICAL)
+  contextScope       String      @default("default")
+  entityKind         String?
+  entityId           String?
+  alpha              Float       @default(1)
+  beta               Float       @default(1)
+  version            Int         @default(1)
+  supersedesId       String?
+  status             ClaimStatus @default(OPEN)
+  stewardId          String
+  provenance         Json        @default("{}")
+  createdById        String?
+  tenantId           String?     @default("default")
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  project   SpecificationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  room      Room?                @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  estimates Estimate[]
+  probes    Probe[]
+  evidence  Evidence[]
+
+  @@index([projectId])
+  @@index([roomId])
+  @@index([contextScope])
+  @@index([status])
+  @@index([tenantId], map: "ix_claims_tenant")
+  @@map("claims")
+}
+
+// An Estimate — one participant's probability that a claim is true (a human or an agent peer). Latest
+// per estimator; estimates pool (calibration-weighted) into the claim's prior, and their variance
+// locates ignorance (where mental models diverge).
+model Estimate {
+  id            String        @id @default(uuid())
+  claimId       String
+  estimatorId   String
+  estimatorKind EstimatorKind @default(HUMAN)
+  probability   Float
+  weight        Float         @default(1)
+  rationale     String?
+  tenantId      String?       @default("default")
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  claim Claim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  @@unique([claimId, estimatorId])
+  @@index([claimId])
+  @@index([tenantId], map: "ix_claim_estimates_tenant")
+  @@map("claim_estimates")
+}
+
+// A Probe — the cheapest experiment that could falsify a claim's riskiest assumption. Pre-registers its
+// falsification condition, has exactly one owner + a deadline, and carries an expected-information-gain
+// (computed at creation) that feeds the room's arithmetic stopping rule. Resolving a probe emits Evidence.
+model Probe {
+  id                 String       @id @default(uuid())
+  claimId            String
+  roomId             String?
+  riskiestAssumption String
+  falsification      String
+  tier               EvidenceTier @default(SIMULATION)
+  ownerId            String
+  deadline           DateTime?
+  status             ProbeStatus  @default(OPEN)
+  eig                Float?
+  outcome            String?
+  createdById        String?
+  tenantId           String?      @default("default")
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  claim    Claim      @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  room     Room?      @relation(fields: [roomId], references: [id], onDelete: SetNull)
+  evidence Evidence[]
+
+  @@index([claimId])
+  @@index([roomId])
+  @@index([status])
+  @@index([tenantId], map: "ix_claim_probes_tenant")
+  @@map("claim_probes")
+}
+
+// A piece of Evidence bound to a claim — the durable output of a probe (artifacts are disposable). Its
+// tier caps how far it moves the posterior; `evidenceKey` is the identity that makes promotion idempotent
+// (the same observation arriving twice counts once). supports=true adds to alpha, false to beta.
+model Evidence {
+  id          String       @id @default(uuid())
+  claimId     String
+  probeId     String?
+  tier        EvidenceTier
+  supports    Boolean
+  weight      Float        @default(1)
+  evidenceKey String       @unique
+  sourceUri   String?
+  note        String?
+  createdById String?
+  tenantId    String?      @default("default")
+  createdAt   DateTime     @default(now())
+
+  claim Claim  @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  probe Probe? @relation(fields: [probeId], references: [id], onDelete: SetNull)
+
+  @@index([claimId])
+  @@index([tenantId], map: "ix_claim_evidence_tenant")
+  @@map("claim_evidence")
 }
 
 // The approved specification, made developer-ready: which repo/base to build against, which
@@ -1462,6 +1709,32 @@ model ReconciliationJob {
   @@index([workItemId])
   @@index([tenantId], map: "ix_reconciliation_jobs_tenant")
   @@map("reconciliation_jobs")
+}
+
+// Collaboration — a comment/thread on the studio, optionally anchored to a spec artifact
+// (a requirement, diagram, decision, …). @mentions are stored resolved; threads via parentId;
+// resolvable. The shared "work together" layer over the versioned spec.
+model SpecComment {
+  id           String    @id @default(uuid())
+  workItemId   String
+  anchorKind   String?
+  anchorId     String?
+  body         String
+  authorId     String
+  mentions     Json      @default("[]")
+  parentId     String?
+  resolvedAt   DateTime?
+  resolvedById String?
+  tenantId     String?   @default("default")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@index([workItemId, createdAt])
+  @@index([workItemId, anchorKind, anchorId])
+  @@index([tenantId], map: "ix_spec_comments_tenant")
+  @@map("spec_comments")
 }
 
 model WorkItemDependency {

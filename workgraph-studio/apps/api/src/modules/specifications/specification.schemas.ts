@@ -84,6 +84,75 @@ export const reconciliationPolicySchema = z.object({
   requiredPaths: z.array(z.string().trim().min(1).max(600)).default([]),
 }).passthrough()
 
+// Spec Studio — diagrams authored as structured node/edge graphs (rendered with reactflow; an
+// optional free-form `source`, e.g. mermaid, can ride along). Architects sketch flows, context,
+// and architecture; the graph is versioned + hashed with the rest of the spec.
+export const DIAGRAM_KINDS = ['FLOW', 'ARCHITECTURE', 'SEQUENCE', 'STATE', 'ERD', 'CONTEXT'] as const
+
+export const specificationDiagramNodeSchema = z.object({
+  id: idString,
+  label: z.string().trim().max(400).default(''),
+  kind: z.string().trim().max(60).optional(),
+}).passthrough()
+
+export const specificationDiagramEdgeSchema = z.object({
+  id: idString,
+  source: idString,
+  target: idString,
+  label: z.string().trim().max(200).optional(),
+}).passthrough()
+
+export const specificationDiagramSchema = z.object({
+  id: idString,
+  title: z.string().trim().max(400).default(''),
+  kind: z.enum(DIAGRAM_KINDS).catch('FLOW').default('FLOW'),
+  description: z.string().trim().max(4000).optional(),
+  nodes: z.array(specificationDiagramNodeSchema).default([]),
+  edges: z.array(specificationDiagramEdgeSchema).default([]),
+  source: z.string().max(20_000).optional(),
+}).passthrough()
+
+// Spec Studio — pseudo-code / reference implementations, per module, optionally linked to the
+// requirements they realize. Content is markdown-with-fences so the existing MarkdownView renders
+// it; `generated` marks LLM-authored modules.
+export const pseudocodeModuleSchema = z.object({
+  id: idString,
+  title: z.string().trim().max(400).default(''),
+  language: z.string().trim().max(40).default('pseudocode'),
+  requirementIds: z.array(idString).default([]),
+  content: z.string().max(200_000).default(''),
+  generated: z.boolean().default(false),
+}).passthrough()
+
+// Analysis (the "why", before requirements) — problem, goals, stakeholders, assumptions,
+// constraints. The product owner / analyst captures this upstream; requirements trace back to it.
+export const specificationStakeholderSchema = z.object({
+  role: z.string().trim().min(1).max(120),
+  name: z.string().trim().max(200).optional(),
+  interest: z.string().trim().max(600).optional(),
+}).passthrough()
+
+export const specificationAnalysisSchema = z.object({
+  problem: z.string().trim().max(8000).default(''),
+  goals: z.array(z.string().trim().min(1).max(600)).default([]),
+  stakeholders: z.array(specificationStakeholderSchema).default([]),
+  assumptions: z.array(z.string().trim().min(1).max(600)).default([]),
+  constraints: z.array(z.string().trim().min(1).max(600)).default([]),
+}).passthrough()
+
+// Design decisions (ADRs) — the architect's record of what was decided and why. Diagrams +
+// contracts (above) are the rest of the Design surface.
+export const DECISION_STATUSES = ['PROPOSED', 'ACCEPTED', 'SUPERSEDED', 'REJECTED'] as const
+export const specificationDecisionSchema = z.object({
+  id: idString,
+  title: z.string().trim().max(400).default(''),
+  status: z.enum(DECISION_STATUSES).catch('PROPOSED').default('PROPOSED'),
+  context: z.string().trim().max(4000).optional(),
+  decision: z.string().trim().max(4000).default(''),
+  consequences: z.string().trim().max(4000).optional(),
+  alternatives: z.array(z.string().trim().min(1).max(600)).default([]),
+}).passthrough()
+
 // The parts an author can supply/edit. version/workItem identity is stamped by the service.
 export const specificationPackageBodySchema = z.object({
   summary: z.string().trim().max(20_000).default(''),
@@ -97,11 +166,19 @@ export const specificationPackageBodySchema = z.object({
   outOfScope: z.array(z.string().trim().min(1).max(600)).default([]),
   openQuestions: z.array(openQuestionSchema).default([]),
   reconciliationPolicy: reconciliationPolicySchema.default({}),
+  diagrams: z.array(specificationDiagramSchema).default([]),
+  pseudocode: z.array(pseudocodeModuleSchema).default([]),
+  analysis: specificationAnalysisSchema.default({}),
+  decisions: z.array(specificationDecisionSchema).default([]),
 })
 
 export type SpecificationRequirement = z.infer<typeof specificationRequirementSchema>
 export type AcceptanceCriterion = z.infer<typeof acceptanceCriterionSchema>
 export type TestObligation = z.infer<typeof testObligationSchema>
+export type SpecificationDiagram = z.infer<typeof specificationDiagramSchema>
+export type PseudocodeModule = z.infer<typeof pseudocodeModuleSchema>
+export type SpecificationAnalysis = z.infer<typeof specificationAnalysisSchema>
+export type SpecificationDecision = z.infer<typeof specificationDecisionSchema>
 export type SpecificationPackageBody = z.infer<typeof specificationPackageBodySchema>
 
 // The full stored package = author body + stamped identity/version metadata.

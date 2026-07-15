@@ -91,6 +91,7 @@ export const ROUTES: RouteMeta[] = [
 
   // Workflows (merged: operations + authoring)
   { id: "workflows", label: "Workflow Home", href: "/workflows", group: "Workflows", icon: Workflow, priority: "primary", surfaceType: "workflow" },
+  { id: "studio", label: "Studio", href: "/studio", group: "Workflows", icon: Boxes, priority: "primary", surfaceType: "workflow", description: "Project-rooted specification studio — analysis, requirements, design, and reconciliation.", keywords: ["studio", "project", "specification", "spec", "analysis", "design", "requirements", "reconciliation"] },
   { id: "workflows-planner", label: "Story Planner", href: "/workflows/planner", group: "Workflows", icon: Route, priority: "journey", surfaceType: "workflow", statusLabel: "Plan" },
   { id: "workflows-start", label: "Guided Launch", href: "/workflows/start", group: "Workflows", icon: Play, priority: "journey", surfaceType: "workflow", statusLabel: "Launch" },
   { id: "workflows-inbox", label: "Inbox", href: "/workflows/inbox", group: "Workflows", icon: Inbox, priority: "secondary", surfaceType: "workflow" },

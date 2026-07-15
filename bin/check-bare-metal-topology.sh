@@ -340,6 +340,12 @@ checks["bare-metal applies event operations tenant hardening migrations"] = (
     and '20260713100000_roadmap_gap_closure/migration.sql' in bare
     and '20260714100000_direct_llm_loop_strategies/migration.sql' in bare
 )
+checks["bare-metal applies spec-to-reconciliation migrations"] = (
+    '20260715000000_m86_specification_versions/migration.sql' in bare
+    and '20260716000000_m87_development_targets_submissions/migration.sql' in bare
+    and '20260717000000_m88_reconciliation_runs/migration.sql' in bare
+    and '20260718000000_m89_reconciliation_jobs/migration.sql' in bare
+)
 checks["bare-metal forwards bounded local logs to the observability lake"] = (
     'boot log-forwarder' in bare
     and 'python3 bin/log-forwarder.py' in bare
