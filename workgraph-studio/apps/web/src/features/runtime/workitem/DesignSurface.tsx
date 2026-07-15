@@ -3,6 +3,7 @@ import { cardStyle, primaryButtonStyle, secondaryButtonStyle, inputStyle, mutedT
 import { errText } from './errText'
 import { useSpecDraft } from './useSpecDraft'
 import { DiagramCanvas, type DiagramModel } from './DiagramCanvas'
+import { InheritedFromProject } from './InheritedFromProject'
 
 /**
  * Design surface — the architect's workspace: architecture/flow diagrams (reactflow), design
@@ -41,6 +42,8 @@ export function DesignSurface({ workItemId }: { workItemId: string }) {
         <div><h3 style={{ ...sectionTitle, marginBottom: 4 }}>Design</h3><span style={mutedText}>Architecture, flows and the decisions behind them — the shape of the solution.</span></div>
         {editable && <button style={primaryButtonStyle} disabled={!dirty || patchMut.isPending} onClick={save}>{patchMut.isPending ? 'Saving…' : dirty ? 'Save design' : 'Saved'}</button>}
       </section>
+
+      <InheritedFromProject workItemId={workItemId} section="decisions" />
 
       {/* Diagrams */}
       <section style={{ ...cardStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
