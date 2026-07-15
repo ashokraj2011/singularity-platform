@@ -148,3 +148,65 @@ test('DISCOVERY passes through offline when there are no blocking seed questions
   const out = state.context.disc as { degraded?: string }
   assert.equal(out.degraded, 'offline')
 })
+
+// ── portability e2e: one image, offline → online ─────────────────────────────
+
+test('e2e: same image parks offline on a blocking unknown, then an online resume finishes the run', async () => {
+  // A single portable image with a blocking seed question. It must fail-closed
+  // offline (unknowns can't be reduced) yet finish once reconnected online —
+  // proving a run can start in one environment and complete in another.
+  const image = buildImage({
+    workflow: discoveryWorkflow({ questions: [{ id: 'q1', text: 'Approved budget?', required: true }] }),
+    policy: basePolicy,
+  })
+  const s = store()
+
+  // Phase 1 — offline: no gateway, blocking unknown → park (fail-closed).
+  const offlineVm = new WorkflowVm({ image, store: s, adapters: offlineAdapters(s) })
+  const parked = await offlineVm.start({}, { runId: 'run-e1' })
+  assert.equal(parked.status, 'BLOCKED')
+  assert.equal(parked.nodes['disc'].status, 'BLOCKED')
+  assert.equal(parked.nodes['end'].status, 'PENDING')
+  // Offline threw before eliciting, so no elicitation receipt was produced.
+  assert.equal(s.pendingOutbox().some(e => e.kind === 'audit:DiscoveryElicited'), false)
+
+  // Phase 2 — reconnect online: the gateway reports the blocking question is
+  // now answered → the same run resumes and completes end-to-end.
+  const online: DiscoveryAdapter = {
+    online: () => true,
+    elicit: async () => ({
+      questions: [{ id: 'q1', text: 'Approved budget?', blocking: true, status: 'ANSWERED', answer: '$50k' }],
+      assumptions: [{ text: 'quarterly cadence', confidence: 0.7 }],
+    }),
+  }
+  const onlineVm = new WorkflowVm({ image, store: s, adapters: { ...offlineAdapters(s), discovery: online } })
+  const done = await onlineVm.resume('run-e1')
+  assert.equal(done.status, 'COMPLETED')
+  assert.equal(done.nodes['disc'].status, 'COMPLETED')
+  assert.equal(done.nodes['end'].status, 'COMPLETED')
+  // Resolved output is threaded into the run context under the node id.
+  const out = done.context.disc as { status: string; assumptions: unknown[] }
+  assert.equal(out.status, 'RESOLVED')
+  assert.equal(out.assumptions.length, 1)
+  // The online elicitation is now recorded in the durable audit outbox.
+  assert.equal(s.pendingOutbox().some(e => e.kind === 'audit:DiscoveryElicited'), true)
+})
+
+test('e2e: an online run with no blocking unknowns completes in one pass and records a receipt', async () => {
+  const image = buildImage({ workflow: discoveryWorkflow({ hint: 'find data-model unknowns' }), policy: basePolicy })
+  const s = store()
+  const online: DiscoveryAdapter = {
+    online: () => true,
+    elicit: async () => ({
+      questions: [{ text: 'Which region?', blocking: false, status: 'OPEN' }],
+      assumptions: [],
+    }),
+  }
+  const vm = new WorkflowVm({ image, store: s, adapters: { ...offlineAdapters(s), discovery: online } })
+  const state = await vm.start({}, { runId: 'run-e2' })
+  assert.equal(state.status, 'COMPLETED')
+  assert.equal(state.nodes['end'].status, 'COMPLETED')
+  const elicited = s.pendingOutbox().filter(e => e.kind === 'audit:DiscoveryElicited')
+  assert.equal(elicited.length, 1)
+  assert.equal(elicited[0].runId, 'run-e2')
+})
