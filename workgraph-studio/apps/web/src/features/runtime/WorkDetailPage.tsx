@@ -10,7 +10,7 @@ import type { FormWidget } from '../forms/widgets/types'
 import type { UploadedDocument } from '../../lib/uploadAttachment'
 import { useCapabilityLabels } from './useCapabilityLabels'
 import { WorkItemArtifactsPanel } from './WorkItemArtifactsPanel'
-import { WorkItemIde } from './workitem/WorkItemIde'
+import { WorkItemIde, type ProjectSurfaceRenderer } from './workitem/WorkItemIde'
 
 const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
 
@@ -26,7 +26,7 @@ type Kind = 'task' | 'approval' | 'consumable' | 'workitem'
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-export function WorkDetailPage() {
+export function WorkDetailPage({ renderProjectSurface }: { renderProjectSurface?: ProjectSurfaceRenderer } = {}) {
   const { kind, id } = useParams<{ kind: Kind; id: string }>()
   const navigate = usePlatformNavigate()
 
@@ -37,7 +37,7 @@ export function WorkDetailPage() {
   // WorkItems open as the full-width IDE (its own chrome + back control); other kinds keep the
   // capped detail layout with a back button.
   if (kind === 'workitem') {
-    return <div style={{ padding: 8, minWidth: 0 }}><WorkItemDetail id={id} /></div>
+    return <div style={{ padding: 8, minWidth: 0 }}><WorkItemDetail id={id} renderProjectSurface={renderProjectSurface} /></div>
   }
 
   return (
@@ -62,7 +62,7 @@ export function WorkDetailPage() {
 
 // ── WorkItem ──────────────────────────────────────────────────────────────────
 
-function WorkItemDetail({ id }: { id: string }) {
+function WorkItemDetail({ id, renderProjectSurface }: { id: string; renderProjectSurface?: ProjectSurfaceRenderer }) {
   const navigate = usePlatformNavigate()
   const params = useSearchParams()
   const targetId = params.get('targetId')
@@ -157,6 +157,7 @@ function WorkItemDetail({ id }: { id: string }) {
       workItemId={id}
       workItem={workItem}
       onBack={() => navigate('/runtime')}
+      renderProjectSurface={renderProjectSurface}
       overviewDetails={<>
       {canDetach && (
         <section style={{
