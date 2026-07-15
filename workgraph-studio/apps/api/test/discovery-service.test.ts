@@ -344,6 +344,20 @@ describe('answer / dismiss unblocks the gate', () => {
   })
 })
 
+describe('resolveSession — get-or-create by scope (Slice 3 UI)', () => {
+  it('creates on first call and returns the same session (with children) after', async () => {
+    const { svc } = makeService()
+    const first = await svc.resolveSession({ scopeType: 'WORK_ITEM', scopeId: 'wi-r1' })
+    expect(first.questions).toEqual([])
+    expect(first.assumptions).toEqual([])
+    await svc.addQuestion({ sessionId: first.id, text: 'Region?', blocking: true })
+    const second = await svc.resolveSession({ scopeType: 'WORK_ITEM', scopeId: 'wi-r1' })
+    expect(second.id).toBe(first.id)
+    expect(second.questions).toHaveLength(1)
+    expect(second.status).toBe('BLOCKED')
+  })
+})
+
 // ── Compatibility bridge (Slice 2) ───────────────────────────────────────────
 
 describe('discovery bridge — work-item clarifications', () => {

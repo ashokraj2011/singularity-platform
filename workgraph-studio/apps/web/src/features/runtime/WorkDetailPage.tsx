@@ -13,6 +13,7 @@ import { WorkItemArtifactsPanel } from './WorkItemArtifactsPanel'
 import { SpecificationTab } from './workitem/SpecificationTab'
 import { SubmissionsTab } from './workitem/SubmissionsTab'
 import { ReconciliationTab } from './workitem/ReconciliationTab'
+import { DiscoveryPanel } from '../discovery/DiscoveryPanel'
 
 const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env ?? {}
 
@@ -28,9 +29,10 @@ type Kind = 'task' | 'approval' | 'consumable' | 'workitem'
 
 // Spec-to-Reconciliation workspace tabs. Overview keeps the existing WorkItem detail; the other
 // three are the specification → handoff/submissions → reconciliation surfaces (own components).
-type WorkspaceTab = 'overview' | 'specification' | 'submissions' | 'reconciliation'
+type WorkspaceTab = 'overview' | 'discovery' | 'specification' | 'submissions' | 'reconciliation'
 const WORKSPACE_TABS: { key: WorkspaceTab; label: string }[] = [
   { key: 'overview', label: 'Overview' },
+  { key: 'discovery', label: 'Discovery' },
   { key: 'specification', label: 'Specification' },
   { key: 'submissions', label: 'Submissions' },
   { key: 'reconciliation', label: 'Reconciliation' },
@@ -475,6 +477,7 @@ function WorkItemDetail({ id }: { id: string }) {
       </section>
       </>)}
 
+      {tab === 'discovery' && <DiscoveryPanel scopeType="WORK_ITEM" scopeId={id} title="Discovery — resolve this work item's unknowns" />}
       {tab === 'specification' && <SpecificationTab workItemId={id} />}
       {tab === 'submissions' && (
         <SubmissionsTab

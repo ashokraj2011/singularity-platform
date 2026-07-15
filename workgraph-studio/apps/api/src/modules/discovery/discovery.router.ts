@@ -93,6 +93,22 @@ discoveryRouter.post('/sessions', validate(createSessionSchema), async (req, res
   }
 })
 
+discoveryRouter.post('/sessions/resolve', validate(createSessionSchema), async (req, res, next) => {
+  try {
+    const body = req.body as z.infer<typeof createSessionSchema>
+    const session = await discoveryService.resolveSession({
+      scopeType: body.scopeType,
+      scopeId: body.scopeId,
+      touchPoint: body.touchPoint,
+      createdById: req.user!.userId,
+      tenantId: resolveTenantFromRequest(req),
+    })
+    res.json(session)
+  } catch (err) {
+    next(err)
+  }
+})
+
 discoveryRouter.get('/sessions/:id', async (req, res, next) => {
   try {
     const session = await discoveryService.getSession(String(req.params.id))

@@ -15,6 +15,7 @@ import type {
   DiscoveryBudget,
   DiscoveryDeps,
   DiscoveryQuestionRecord,
+  DiscoveryScopeType,
   DiscoverySessionStatus,
   DiscoverySessionWithChildren,
   ElicitInput,
@@ -171,6 +172,31 @@ export function createDiscoveryService(deps: DiscoveryDeps) {
     createSession: (input: Parameters<DiscoveryDeps['store']['createSession']>[0]) => deps.store.createSession(input),
 
     getSession: (id: string) => deps.store.getSession(id),
+
+    /**
+     * Resolve a session by scope, get-or-create. Returns the full session with
+     * children so an embedding UI can render in a single round-trip. Used by the
+     * shared Discovery panel (studio stage canvas + work-item detail).
+     */
+    async resolveSession(input: {
+      scopeType: DiscoveryScopeType
+      scopeId: string
+      touchPoint?: string
+      tenantId?: string
+      createdById?: string
+    }): Promise<DiscoverySessionWithChildren> {
+      const existing = await deps.store.findSessionByScope(input.scopeType, input.scopeId, input.tenantId)
+      const id = existing
+        ? existing.id
+        : (await deps.store.createSession({
+            scopeType: input.scopeType,
+            scopeId: input.scopeId,
+            touchPoint: input.touchPoint,
+            tenantId: input.tenantId,
+            createdById: input.createdById,
+          })).id
+      return refreshStatus(id)
+    },
 
     async addQuestion(input: Parameters<DiscoveryDeps['store']['addQuestion']>[0]) {
       const text = input.text?.trim()

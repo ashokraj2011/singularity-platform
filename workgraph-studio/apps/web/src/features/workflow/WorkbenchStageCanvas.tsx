@@ -27,6 +27,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css'
 import { api } from '../../lib/api'
 import { fetchAgents, type RegistryAgent } from '../../lib/registry'
+import { DiscoveryPanel } from '../discovery/DiscoveryPanel'
 
 type StageView = {
   id: string
@@ -701,6 +702,11 @@ function StageInspector({ stage, agents, templates, consumes, allProduced, busy,
             ))}
           </div>
         )}
+      </div>
+
+      {/* Discovery — unified live unknowns for this stage (ADR 0006 Slice 3). */}
+      <div style={{ marginTop: 14, borderTop: '1px solid #e5e7eb', paddingTop: 12 }}>
+        <DiscoveryPanel scopeType="WORKFLOW_STAGE" scopeId={stage.id} title={`Discovery — ${stage.label || 'stage'} unknowns`} />
       </div>
     </div>
   )
