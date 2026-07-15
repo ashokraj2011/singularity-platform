@@ -10,7 +10,7 @@ import { cardStyle, mutedText, sectionTitle, badgeStyle } from './workspaceStyle
  * activity timeline from the Work Item events.
  */
 
-type StudioTab = 'specification' | 'submissions' | 'reconciliation'
+type StudioTab = 'specification' | 'submissions' | 'reconciliation' | 'nextstage'
 interface WorkItemLike { workCode?: string; title?: string; status: string; urgency?: string | null; dueAt?: string | null; targets?: any[]; events?: any[] }
 
 const GREEN = 'var(--color-success)', AMBER = 'var(--color-warning)', RED = 'var(--color-danger)', GRAY = 'var(--color-outline)'
@@ -79,7 +79,7 @@ export function OverviewDashboard({ workItemId, workItem, onOpenTab }: { workIte
           <Arrow />
           <StageCard label="Reconciliation" status={recon.label} tone={recon.tone} onClick={() => onOpenTab('reconciliation')} />
           <Arrow />
-          <StageCard label="Completion" status={completion.label} tone={completion.tone} onClick={() => onOpenTab('reconciliation')} />
+          <StageCard label="Completion" status={completion.label} tone={completion.tone} onClick={() => onOpenTab('nextstage')} />
         </div>
       </section>
 
