@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { withTenantDbTransaction, currentTenantIdForDb } from '../../lib/tenant-db-context'
 import { NotFoundError, ValidationError } from '../../lib/errors'
+import { logEvent, publishOutbox } from '../../lib/audit'
 import { createWorkItem } from '../work-items/work-items.service'
 import { routeWorkItem } from '../work-items/work-item-routing.service'
 import { createWorkItemDependency } from '../work-items/work-item-dependencies.service'
@@ -169,8 +170,34 @@ export async function executeWorkProgram(id: string, input: Record<string, unkno
   if (!program) throw new NotFoundError('WorkProgram', id)
   if (program.status !== 'ACTIVE') throw new ValidationError(`Work Program must be ACTIVE before execution (current status: ${program.status})`)
   const tenantId = currentTenantIdForDb() ?? 'default'
+  return runProgramFanout(program, input, actorId, tenantId)
+}
+
+// System-initiated execution used by automated fan-out (e.g. when a work item finalizes). Unlike
+// executeWorkProgram this is NOT scoped to a program creator — it resolves the program within the
+// current tenant only, since the finalizing actor is rarely the program's author.
+export async function executeWorkProgramAsSystem(id: string, input: Record<string, unknown>, actorId: string) {
+  const tenantId = currentTenantIdForDb() ?? 'default'
+  const program = await withTenantDbTransaction(prisma, tx => tx.workProgram.findFirst({
+    where: { id, tenantId },
+    include: { steps: { orderBy: { ordinal: 'asc' } } },
+  }), tenantId)
+  if (!program) throw new NotFoundError('WorkProgram', id)
+  if (program.status !== 'ACTIVE') throw new ValidationError(`Work Program must be ACTIVE before execution (current status: ${program.status})`)
+  return runProgramFanout(program, input, actorId, tenantId)
+}
+
+// The shared fan-out core: instantiate one work item per step (interpolating the templates from
+// `input`), wire step dependencies into WorkItem dependencies, then route/start every step with no
+// unmet dependencies. Callers own resolving + authorizing the program.
+async function runProgramFanout(
+  program: { id: string; capabilityId: string | null; steps: any[] },
+  input: Record<string, unknown>,
+  actorId: string,
+  tenantId: string,
+) {
   const run = await withTenantDbTransaction(prisma, tx => tx.workProgramRun.create({
-    data: { programId: id, input: input as Prisma.InputJsonValue, startedById: actorId, tenantId },
+    data: { programId: program.id, input: input as Prisma.InputJsonValue, startedById: actorId, tenantId },
   }), tenantId)
   const createdByKey = new Map<string, string>()
   const workItems: Array<{ id: string; workCode: string; stepKey: string }> = []
@@ -189,7 +216,7 @@ export async function executeWorkProgram(id: string, input: Record<string, unkno
       routingMode: step.routingMode,
       workflowTypeKey: step.workItemTypeKey,
       input: mappedInput,
-      details: { source: 'work-program', programId: id, runId: run.id, stepKey: step.stepKey, input: mappedInput },
+      details: { source: 'work-program', programId: program.id, runId: run.id, stepKey: step.stepKey, input: mappedInput },
       targets: [{ targetCapabilityId: step.targetCapabilityId, ...(step.workflowTemplateId ? { childWorkflowTemplateId: step.workflowTemplateId } : {}) }],
     }, actorId)
     createdByKey.set(step.stepKey, item.id)
@@ -254,4 +281,76 @@ export async function reconcileWorkProgramForWorkItem(workItemId: string) {
     if (allComplete) await withTenantDbTransaction(prisma, tx => tx.workProgramRun.updateMany({ where: { id: link.runId, status: 'RUNNING' }, data: { status: 'COMPLETED', completedAt: new Date() } }), tenantId)
   }
   return links.length
+}
+
+export type SpawnCompletionResult =
+  | { spawned: true; programId: string; runId: string | null; workItems: Array<{ id: string; workCode: string; stepKey: string }>; warnings: string[] }
+  | { spawned: false; reason: 'no-program' | 'already-spawned' | 'error'; programId?: string; error?: string }
+
+// Completion fan-out: when a work item finalizes, auto-execute its attached Work Program to spawn
+// the next stage of work (each step becomes a work item bound to a workflow). The program is
+// resolved from the item first, then its project. Idempotent — a work item only fans out once,
+// guarded by the NEXT_STAGE_SPAWNED timeline event. A spawn failure is recorded but never thrown,
+// so it cannot roll back the finalization that triggered it.
+export async function spawnCompletionProgram(args: { workItemId: string; actorId: string }): Promise<SpawnCompletionResult> {
+  const { workItemId, actorId } = args
+  const tenantId = currentTenantIdForDb() ?? 'default'
+  const workItem = await prisma.workItem.findUnique({
+    where: { id: workItemId },
+    select: {
+      id: true, workCode: true, title: true, projectId: true, tenantId: true,
+      completionProgramId: true,
+      project: { select: { code: true, name: true, completionProgramId: true } },
+    },
+  })
+  if (!workItem) throw new NotFoundError('WorkItem', workItemId)
+
+  const programId = workItem.completionProgramId ?? workItem.project?.completionProgramId ?? null
+  if (!programId) return { spawned: false, reason: 'no-program' }
+
+  const already = await prisma.workItemEvent.findFirst({ where: { workItemId, eventType: 'NEXT_STAGE_SPAWNED' } })
+  if (already) return { spawned: false, reason: 'already-spawned', programId }
+
+  const approvedSpec = await prisma.specificationVersion.findFirst({
+    where: { workItemId, status: 'APPROVED' },
+    orderBy: { version: 'desc' },
+    select: { id: true, version: true, contentHash: true },
+  })
+
+  const input: Record<string, unknown> = {
+    workItemId: workItem.id,
+    workCode: workItem.workCode,
+    title: workItem.title ?? '',
+    projectId: workItem.projectId ?? '',
+    projectCode: workItem.project?.code ?? '',
+    projectName: workItem.project?.name ?? '',
+    specificationVersionId: approvedSpec?.id ?? '',
+    specificationVersion: approvedSpec?.version ?? '',
+    specificationHash: approvedSpec?.contentHash ?? '',
+  }
+
+  try {
+    const result = await executeWorkProgramAsSystem(programId, input, actorId)
+    const payload = {
+      programId,
+      runId: result.run?.id ?? null,
+      workItems: result.workItems,
+      warnings: result.warnings,
+    }
+    await withTenantDbTransaction(prisma, tx => tx.workItemEvent.create({
+      data: { workItemId, eventType: 'NEXT_STAGE_SPAWNED', actorId, payload: payload as Prisma.InputJsonValue, tenantId: workItem.tenantId },
+    }), tenantId)
+    await logEvent('NextStageSpawned', 'WorkItem', workItemId, actorId, payload)
+    await publishOutbox('WorkItem', workItemId, 'NextStageSpawned', payload)
+    return { spawned: true, programId, runId: result.run?.id ?? null, workItems: result.workItems, warnings: result.warnings }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const payload = { programId, error: message }
+    await withTenantDbTransaction(prisma, tx => tx.workItemEvent.create({
+      data: { workItemId, eventType: 'NEXT_STAGE_SPAWN_FAILED', actorId, payload: payload as Prisma.InputJsonValue, tenantId: workItem.tenantId },
+    }), tenantId)
+    await logEvent('NextStageSpawnFailed', 'WorkItem', workItemId, actorId, payload)
+    await publishOutbox('WorkItem', workItemId, 'NextStageSpawnFailed', payload)
+    return { spawned: false, reason: 'error', programId, error: message }
+  }
 }

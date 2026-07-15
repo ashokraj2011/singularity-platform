@@ -137,6 +137,10 @@ enum WorkItemEventType {
   CODE_REWORK_REQUESTED
   SPEC_AMENDMENT_CREATED
   IMPLEMENTATION_ACCEPTED
+  WORK_ITEM_COMPLETED
+  WORK_ITEM_REOPENED
+  NEXT_STAGE_SPAWNED
+  NEXT_STAGE_SPAWN_FAILED
 }
 
 enum SpecificationStatus {
@@ -1212,6 +1216,7 @@ model WorkItem {
   approvedById            String?
   parentApprovalRequestId String?
   projectId               String?
+  completionProgramId     String?
   sourceWorkflowInstance  WorkflowInstance? @relation("WorkItemSourceInstance", fields: [sourceWorkflowInstanceId], references: [id], onDelete: SetNull)
   sourceWorkflowNode      WorkflowNode?    @relation("WorkItemSourceNode", fields: [sourceWorkflowNodeId], references: [id], onDelete: SetNull)
   routingPolicy           WorkItemRoutingPolicy? @relation(fields: [routingPolicyId], references: [id], onDelete: SetNull)
@@ -1227,6 +1232,7 @@ model WorkItem {
   implementationSubmissions ImplementationSubmission[]
   reconciliationRuns      ReconciliationRun[]
   project                 SpecificationProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  completionProgram       WorkProgram?     @relation("WorkItemCompletionProgram", fields: [completionProgramId], references: [id], onDelete: SetNull)
   specComments            SpecComment[]
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
@@ -1234,6 +1240,7 @@ model WorkItem {
 
   @@index([tenantId], map: "ix_work_items_tenant")
   @@index([projectId], map: "ix_work_items_project")
+  @@index([completionProgramId], map: "ix_work_items_completion_program")
   @@index([workCode])
   @@index([originType])
   @@index([workItemTypeKey])
@@ -1293,6 +1300,7 @@ model SpecificationProject {
   createdById String?
   tenantId    String?                    @default("default")
   archivedAt  DateTime?
+  completionProgramId String?
   createdAt   DateTime                   @default(now())
   updatedAt   DateTime                   @updatedAt
 
@@ -1300,8 +1308,10 @@ model SpecificationProject {
   specification ProjectSpecification?
   rooms         Room[]
   claims        Claim[]
+  completionProgram WorkProgram?         @relation("ProjectCompletionProgram", fields: [completionProgramId], references: [id], onDelete: SetNull)
 
   @@index([status])
+  @@index([completionProgramId], map: "ix_specification_projects_completion_program")
   @@index([tenantId], map: "ix_specification_projects_tenant")
   @@map("specification_projects")
 }
@@ -1768,6 +1778,8 @@ model WorkProgram {
   tenantId     String?             @default("default")
   steps        WorkProgramStep[]
   runs         WorkProgramRun[]
+  completionWorkItems WorkItem[]            @relation("WorkItemCompletionProgram")
+  completionProjects  SpecificationProject[] @relation("ProjectCompletionProgram")
   createdAt    DateTime            @default(now())
   updatedAt    DateTime            @updatedAt
 

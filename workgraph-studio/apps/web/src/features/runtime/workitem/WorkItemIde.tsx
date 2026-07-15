@@ -1,6 +1,6 @@
 import { useState, type ReactNode, type CSSProperties } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { LayoutDashboard, Lightbulb, Compass, FileText, PenTool, GitPullRequest, CheckCircle2, MessageSquare, Zap, GitBranch, ClipboardList, FlaskConical, Users } from 'lucide-react'
+import { LayoutDashboard, Lightbulb, Compass, FileText, PenTool, GitPullRequest, CheckCircle2, MessageSquare, Zap, GitBranch, ClipboardList, FlaskConical, Users, Boxes } from 'lucide-react'
 import { api } from '../../../lib/api'
 import { type IdeTheme } from './ideTheme'
 import { IdeShell, IdeActBtn, IdeStatusSeg, type IdeShellView } from './IdeShell'
@@ -10,6 +10,7 @@ import { DesignSurface } from './DesignSurface'
 import { SubmissionsStudio } from './SubmissionsStudio'
 import { ReconciliationStudio } from './ReconciliationStudio'
 import { OverviewDashboard } from './OverviewDashboard'
+import { NextStagePanel } from './NextStagePanel'
 import { AgentStormPanel } from './AgentStormPanel'
 import { CommentsPanel } from './CommentsPanel'
 import { DiscoveryPanel } from '../../discovery/DiscoveryPanel'
@@ -27,10 +28,11 @@ import { DiscoveryPanel } from '../../discovery/DiscoveryPanel'
  * imported directly (workgraph-web cannot import the platform-web app).
  */
 
-type ItemView = 'overview' | 'analysis' | 'discovery' | 'specification' | 'design' | 'submissions' | 'reconciliation' | 'discussion'
+type ItemView = 'overview' | 'analysis' | 'discovery' | 'specification' | 'design' | 'submissions' | 'reconciliation' | 'nextstage' | 'discussion'
 // The upstream SDLC lifecycle, left to right: analyse → specify → design → hand off → verify.
 // Discovery is the unified unknowns-resolution surface (elicitation via LLM gateway / Copilot);
-// it rides beside Analysis, upstream of Requirements. Discussion is cross-cutting collaboration —
+// it rides beside Analysis, upstream of Requirements. Next stage is the completion fan-out (attach a
+// Work Program that spawns the next stage on finalize). Discussion is cross-cutting collaboration —
 // it rides at the end of the rail, above the tools group.
 const VIEWS: IdeShellView<ItemView>[] = [
   { key: 'overview', label: 'Overview', Icon: LayoutDashboard },
@@ -40,6 +42,7 @@ const VIEWS: IdeShellView<ItemView>[] = [
   { key: 'design', label: 'Design', Icon: PenTool },
   { key: 'submissions', label: 'Submissions', Icon: GitPullRequest },
   { key: 'reconciliation', label: 'Reconciliation', Icon: CheckCircle2 },
+  { key: 'nextstage', label: 'Next stage', Icon: Boxes },
   { key: 'discussion', label: 'Discussion', Icon: MessageSquare },
 ]
 
@@ -168,6 +171,7 @@ export function WorkItemIde({ workItemId, workItem, onBack, overviewDetails, ren
           {itemView === 'design' && <DesignSurface workItemId={workItemId} />}
           {itemView === 'submissions' && <SubmissionsStudio workItemId={workItemId} onGotoReconciliation={(runId) => { setFocusRunId(runId); setItemView('reconciliation') }} />}
           {itemView === 'reconciliation' && <ReconciliationStudio workItemId={workItemId} focusRunId={focusRunId} />}
+          {itemView === 'nextstage' && <NextStagePanel workItemId={workItemId} />}
           {itemView === 'discussion' && <CommentsPanel workItemId={workItemId} />}
         </>
       )}

@@ -401,6 +401,7 @@ workItemsRouter.get('/:id', async (req, res, next) => {
         events: { orderBy: { createdAt: 'asc' } },
         clarifications: { orderBy: { createdAt: 'asc' } },
         project: { select: { id: true, code: true, name: true, status: true } },
+        completionProgram: { select: { id: true, name: true, status: true, _count: { select: { steps: true } } } },
       },
     })
     if (!workItem) throw new NotFoundError('WorkItem', id)
@@ -419,6 +420,7 @@ const updateWorkItemSchema = z.object({
   dueAt: z.string().datetime().nullable().optional(),
   details: z.record(z.unknown()).optional(),
   status: z.enum(['SCHEDULED', 'QUEUED', 'IN_PROGRESS', 'CANCELLED']).optional(),
+  completionProgramId: z.string().uuid().nullable().optional(),
 }).refine(b => Object.keys(b).length > 0, { message: 'No fields to update' })
 
 workItemsRouter.patch('/:id', validate(updateWorkItemSchema), async (req, res, next) => {

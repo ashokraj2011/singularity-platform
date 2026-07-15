@@ -498,6 +498,7 @@ export interface UpdateWorkItemInput {
   dueAt?: string | null
   details?: Record<string, unknown>
   status?: string
+  completionProgramId?: string | null
 }
 
 /**
@@ -562,6 +563,16 @@ export async function updateWorkItem(workItemId: string, userId: string, input: 
     }
     data.status = input.status as never
     changed.push('status')
+  }
+  if (input.completionProgramId !== undefined && (input.completionProgramId ?? null) !== (workItem.completionProgramId ?? null)) {
+    if (input.completionProgramId) {
+      const program = await prisma.workProgram.findFirst({ where: { id: input.completionProgramId, tenantId: workItem.tenantId ?? 'default' }, select: { id: true } })
+      if (!program) throw new ValidationError('completionProgramId does not reference a Work Program in this tenant')
+      data.completionProgram = { connect: { id: input.completionProgramId } }
+    } else {
+      data.completionProgram = { disconnect: true }
+    }
+    changed.push('completionProgramId')
   }
 
   if (changed.length === 0) {

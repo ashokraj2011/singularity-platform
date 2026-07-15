@@ -10,7 +10,7 @@ import { cardStyle, mutedText, sectionTitle, badgeStyle } from './workspaceStyle
  * activity timeline from the Work Item events.
  */
 
-type StudioTab = 'specification' | 'submissions' | 'reconciliation'
+type StudioTab = 'specification' | 'submissions' | 'reconciliation' | 'nextstage'
 interface WorkItemLike { workCode?: string; title?: string; status: string; urgency?: string | null; dueAt?: string | null; targets?: any[]; events?: any[] }
 
 const GREEN = 'var(--color-success)', AMBER = 'var(--color-warning)', RED = 'var(--color-danger)', GRAY = 'var(--color-outline)'
@@ -35,6 +35,21 @@ export function OverviewDashboard({ workItemId, workItem, onOpenTab }: { workIte
   const runs: any[] = reconQ.data?.items ?? []
   const latest = runs[0]
   const recon = latest ? { label: latest.status, tone: latest.status === 'PASSED' ? GREEN : latest.status === 'FAILED' || latest.status === 'ERROR' ? RED : AMBER } : { label: 'None', tone: GRAY }
+
+  // Completion fan-out: surface the next-stage work items spawned when this item finalized.
+  const spawnEvent = (workItem.events ?? []).find((e) => e.eventType === 'NEXT_STAGE_SPAWNED')
+  const spawnFailedEvent = (workItem.events ?? []).find((e) => e.eventType === 'NEXT_STAGE_SPAWN_FAILED')
+  const spawnedItems: any[] = spawnEvent?.payload?.workItems ?? []
+
+  // Completion gate: reconciliation is the finalizer. The work item auto-completes only when the
+  // latest run PASSED; a non-PASSED run holds (or reopens) it. Mirrors the server-side gate.
+  const completion = workItem.status === 'COMPLETED'
+    ? { label: spawnedItems.length ? `Completed · ${spawnedItems.length} spawned` : 'Completed', tone: GREEN }
+    : latest && latest.status === 'PASSED'
+      ? { label: 'Finalizing…', tone: AMBER }
+      : latest
+        ? { label: 'Blocked', tone: AMBER }
+        : { label: 'Pending', tone: GRAY }
 
   const events: any[] = (workItem.events ?? []).slice(0, 6)
 
@@ -63,8 +78,32 @@ export function OverviewDashboard({ workItemId, workItem, onOpenTab }: { workIte
           <StageCard label="Submissions" status={submissions.label} tone={submissions.tone} onClick={() => onOpenTab('submissions')} />
           <Arrow />
           <StageCard label="Reconciliation" status={recon.label} tone={recon.tone} onClick={() => onOpenTab('reconciliation')} />
+          <Arrow />
+          <StageCard label="Completion" status={completion.label} tone={completion.tone} onClick={() => onOpenTab('nextstage')} />
         </div>
       </section>
+
+      {(spawnedItems.length > 0 || spawnFailedEvent) && (
+        <section style={cardStyle}>
+          <h4 style={{ ...sectionTitle, fontSize: 13 }}>Next-stage work items</h4>
+          {spawnedItems.length > 0 ? (
+            <>
+              <p style={{ ...mutedText, marginBottom: 8 }}>Spawned on finalize from the attached Work Program — each runs via its workflow.</p>
+              <div style={{ display: 'grid', gap: 6 }}>
+                {spawnedItems.map((it) => (
+                  <div key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--color-on-surface)' }}>
+                    <span style={{ width: 7, height: 7, borderRadius: 999, background: GREEN }} />
+                    <strong>{it.workCode}</strong>
+                    {it.stepKey && <span style={mutedText}>· {it.stepKey}</span>}
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p style={{ ...mutedText, color: RED }}>Next-stage spawn failed: {spawnFailedEvent?.payload?.error ?? 'unknown error'}</p>
+          )}
+        </section>
+      )}
 
       {events.length > 0 && (
         <section style={cardStyle}>
