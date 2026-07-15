@@ -50,6 +50,23 @@ export function resolveTenantFromRequest(req: Request): string | undefined {
   return stringKey(req.body, 'tenantId', 'tenant_id')
 }
 
+/**
+ * Return every explicit tenant selector supplied by the caller. A request must
+ * not be able to select one tenant in a header and another in its JSON body.
+ */
+export function tenantSelectorsFromRequest(req: Request): string[] {
+  const selectors = [
+    req.header('x-tenant-id'),
+    req.header('x-singularity-tenant-id'),
+    typeof req.query.tenant_id === 'string' ? req.query.tenant_id : undefined,
+    typeof req.query.tenantId === 'string' ? req.query.tenantId : undefined,
+    stringKey(req.body, 'tenantId', 'tenant_id'),
+  ]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .map(value => value.trim())
+  return [...new Set(selectors)]
+}
+
 export function requireTenantFromRequest(req: Request, surface = 'this request'): string | undefined {
   if (!tenantIsolationStrict()) return undefined
   const tenantId = resolveTenantFromRequest(req)

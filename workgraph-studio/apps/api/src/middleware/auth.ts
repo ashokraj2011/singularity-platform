@@ -17,6 +17,8 @@ import { verifyToken as verifyIamToken, IamUnauthorizedError, IamUnavailableErro
 import { config } from '../config'
 import { prisma } from '../lib/prisma'
 import { syncIamUserTeams } from '../lib/iam/teamMirror'
+import { resolveTenantFromRequest, tenantIsolationStrict, tenantSelectorsFromRequest } from '../lib/tenant-isolation'
+import { runWithTenantDbContext } from '../lib/tenant-db-context'
 
 declare global {
   namespace Express {
@@ -175,13 +177,40 @@ export const authMiddleware: RequestHandler = async (req, res, next) => {
         })
         return
       }
+      const tenantSelectors = tenantSelectorsFromRequest(req)
+      if (tenantSelectors.length > 1) {
+        res.status(400).json({
+          code: 'CONFLICTING_TENANT_CONTEXT',
+          message: 'Tenant must be specified consistently across headers, query parameters, and body.',
+        })
+        return
+      }
+      const requestedTenant = resolveTenantFromRequest(req)
+      const tokenTenants = [...new Set((iamUser.tenant_ids ?? []).filter(value => typeof value === 'string' && value.trim()).map(value => value.trim()))]
+      // In strict mode the bearer must carry a tenant membership claim. IAM's
+      // /authz/check remains the final permission decision, but this early
+      // binding prevents a caller-controlled X-Tenant-Id from selecting the
+      // database scope before route authorization runs.
+      if (tenantIsolationStrict() && (!requestedTenant || tokenTenants.length === 0 || !tokenTenants.includes(requestedTenant))) {
+        res.status(403).json({
+          code: 'TENANT_NOT_BOUND_TO_TOKEN',
+          message: 'The requested tenant is not present in the authenticated IAM token. Sign in again after tenant membership is granted.',
+        })
+        return
+      }
+      if (requestedTenant && tokenTenants.length > 0 && !tokenTenants.includes(requestedTenant)) {
+        res.status(403).json({ code: 'TENANT_NOT_BOUND_TO_TOKEN', message: 'The requested tenant is not available to this user.' })
+        return
+      }
       const mirrored = await mirrorIamUser(iamUser)
       await syncIamUserTeams(mirrored.id, iamUser.id, token).catch((err) => {
         console.warn(`[auth] IAM team mirror skipped for ${iamUser.id}: ${(err as Error).message}`)
       })
       req.iamUser = iamUser
       req.user    = { userId: mirrored.id, email: mirrored.email, displayName: mirrored.displayName }
-      next()
+      // Re-enter the tenant context after authentication so downstream code
+      // cannot retain an unverified selector from the pre-auth middleware.
+      runWithTenantDbContext(requestedTenant, next)
       return
     }
 

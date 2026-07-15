@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.database import get_db
-from app.models import User, LocalCredential
+from app.models import User, LocalCredential, UserTenantMembership
 from app.auth.password import verify_password
 from app.auth.jwt import create_access_token, create_service_token, decode_token
 from app.auth.schemas import LoginRequest, LoginResponse, TokenUserOut
@@ -21,6 +21,16 @@ from pydantic import BaseModel, Field
 import secrets
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+async def active_tenant_ids(db: AsyncSession, user_id: str) -> list[str]:
+    result = await db.execute(
+        select(UserTenantMembership.tenant_id).where(
+            UserTenantMembership.user_id == user_id,
+            UserTenantMembership.status == "active",
+        )
+    )
+    return sorted({str(value) for value in result.scalars().all() if value})
 
 
 @router.post("/local/login", response_model=LoginResponse)
@@ -52,12 +62,13 @@ async def local_login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     cred.last_login_at = datetime.now(timezone.utc)
     await db.commit()
 
-    token = create_access_token(user.id, user.email, user.is_super_admin)
+    tenant_ids = await active_tenant_ids(db, user.id)
+    token = create_access_token(user.id, user.email, user.is_super_admin, tenant_ids)
     await record_event(db, actor_user_id=user.id, event_type="local_login", payload={"email": user.email})
 
     return LoginResponse(
         access_token=token,
-        user=TokenUserOut(id=user.id, email=user.email, display_name=user.display_name, is_super_admin=user.is_super_admin),
+        user=TokenUserOut(id=user.id, email=user.email, display_name=user.display_name, is_super_admin=user.is_super_admin, tenant_ids=tenant_ids),
     )
 
 
@@ -142,7 +153,8 @@ async def _login_oidc_id_token(id_token: str, nonce: str | None, db: AsyncSessio
     await db.commit()
     await db.refresh(user)
 
-    token = create_access_token(user.id, user.email, user.is_super_admin)
+    tenant_ids = await active_tenant_ids(db, user.id)
+    token = create_access_token(user.id, user.email, user.is_super_admin, tenant_ids)
     await record_event(
         db,
         actor_user_id=user.id,
@@ -153,7 +165,7 @@ async def _login_oidc_id_token(id_token: str, nonce: str | None, db: AsyncSessio
 
     return LoginResponse(
         access_token=token,
-        user=TokenUserOut(id=user.id, email=user.email, display_name=user.display_name, is_super_admin=user.is_super_admin),
+        user=TokenUserOut(id=user.id, email=user.email, display_name=user.display_name, is_super_admin=user.is_super_admin, tenant_ids=tenant_ids),
     )
 
 
@@ -279,6 +291,7 @@ async def verify_token(body: VerifyRequest, db: AsyncSession = Depends(get_db)):
                 email=f"{service_name}@service.local",
                 display_name=service_name,
                 is_super_admin=False,
+                tenant_ids=list(payload.get("tenant_ids") or []),
             ),
         )
 
@@ -294,5 +307,6 @@ async def verify_token(body: VerifyRequest, db: AsyncSession = Depends(get_db)):
             email=user.email,
             display_name=user.display_name,
             is_super_admin=user.is_super_admin,
+            tenant_ids=list(payload.get("tenant_ids") or []),
         ),
     )

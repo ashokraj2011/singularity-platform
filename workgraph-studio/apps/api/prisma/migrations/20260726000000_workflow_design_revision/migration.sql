@@ -1,0 +1,2 @@
+ALTER TABLE "workflow_templates"
+  ADD COLUMN IF NOT EXISTS "designRevision" INTEGER NOT NULL DEFAULT 0;

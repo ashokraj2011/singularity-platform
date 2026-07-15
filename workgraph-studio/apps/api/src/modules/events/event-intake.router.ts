@@ -8,6 +8,7 @@ import { fanOutToWorkItemTriggersDetailed } from '../work-items/work-item-event-
 import { assertCapabilityPermission } from '../../lib/permissions/workflowTemplate'
 import { requireTenantFromRequest, resolveTenantFromRequest } from '../../lib/tenant-isolation'
 import { runWithTenantDbContext } from '../../lib/tenant-db-context'
+import { assertEventPayloadSize, redactEventPayload } from './event-payload'
 
 /**
  * P1-9A — canonical, authenticated event intake.
@@ -41,6 +42,8 @@ const ingestSchema = z.object({
 eventIntakeRouter.post('/', validate(ingestSchema), async (req, res, next) => {
   try {
     const body = req.body as z.infer<typeof ingestSchema>
+    assertEventPayloadSize(body.payload)
+    const safePayload = redactEventPayload(body.payload)
     const tenantId = requireTenantFromRequest(req, 'workflow event ingestion') ?? resolveTenantFromRequest(req) ?? 'default'
     await assertCapabilityPermission(
       req.user!.userId,
@@ -61,6 +64,7 @@ eventIntakeRouter.post('/', validate(ingestSchema), async (req, res, next) => {
         capabilityId: body.capabilityId,
         sourceEventTypeKey: body.eventType,
         traceId,
+        actorId: req.user!.userId,
       }))
     const workItemIds = [...new Set(results.flatMap(result => result.workItemId ? [result.workItemId] : []))]
     const eventStatus =
@@ -79,7 +83,7 @@ eventIntakeRouter.post('/', validate(ingestSchema), async (req, res, next) => {
       eventTypeKey: body.eventType,
       deliveryId: body.deliveryId ?? null,
       capabilityId: body.capabilityId ?? null,
-      payload: body.payload,
+      payload: safePayload,
       workItemIds,
       triggerResults: results,
       matchedTriggerIds: results.map(result => result.triggerId),

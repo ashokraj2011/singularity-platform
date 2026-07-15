@@ -10,6 +10,7 @@ import { ValidationError } from '../../lib/errors'
 import { normalizeMetadataKey, recordOf, resolveMetadataSnapshot } from '../metadata/metadata.service'
 import { createWorkItem } from '../work-items/work-items.service'
 import { routeWorkItem } from '../work-items/work-item-routing.service'
+import { systemRouteActor } from '../work-items/work-item-actors'
 import {
   findAttachableWorkItemForTrigger,
   resolveTriggerCorrelationKey,
@@ -747,7 +748,7 @@ async function createOrAttachWorkItemFromTrigger(args: {
     data: { lastFiredAt: now },
   })
 
-  const routed = await routeWorkItem(workItem.id, null, {
+  const routed = await routeWorkItem(workItem.id, systemRouteActor('demo-verifier'), {
     routingMode: args.trigger.routingMode,
     workflowTypeKey: args.workflowTypeKey,
   })

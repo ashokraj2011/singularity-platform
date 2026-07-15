@@ -5,11 +5,13 @@ import { runWithTenantDbContext } from '../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 import { createWorkItem } from '../../work-items/work-items.service'
 import { routeWorkItem } from '../../work-items/work-item-routing.service'
+import { systemRouteActor } from '../../work-items/work-item-actors'
 import { findAttachableWorkItemForTrigger, resolveTriggerCorrelationKey, triggerDocumentsFromPayload, triggerStringAt, claimTriggerEvent, recordTriggerEventWorkItem, type TriggerDocument } from '../../work-items/work-item-trigger-attach'
 import { normalizeMetadataKey, recordOf } from '../../metadata/metadata.service'
 import { tenantIdForCreate } from '../../../lib/tenant-isolation'
 import { startInstance } from '../runtime/WorkflowRuntime'
 import { adminPrisma } from '../../../lib/admin-prisma'
+import { redactEventPayload } from '../../events/event-payload'
 
 const EVENT_LOOKBACK_CAP_MS = 24 * 60 * 60 * 1000
 const EVENT_TRIGGER_BATCH_SIZE = 200
@@ -71,7 +73,7 @@ async function runScheduledWorkItems(): Promise<void> {
             payload: { trigger: 'server-time', firedAt: now.toISOString() } as object,
           },
         })
-        await routeWorkItem(item.id, null, { routingMode: 'SCHEDULED_START', startNow: true })
+        await routeWorkItem(item.id, systemRouteActor('schedule-trigger'), { routingMode: 'SCHEDULED_START', startNow: true })
       } catch (err) {
         await withTenantDbTransaction(prisma, tx => tx.workItem.updateMany({
           where: { id: item.id, status: 'QUEUED' }, data: { status: 'SCHEDULED' },
@@ -114,7 +116,7 @@ async function runWorkItemScheduleTriggers(): Promise<void> {
             description: typeof cfg.description === 'string' ? cfg.description : undefined,
             input: { triggerType: 'SCHEDULE', cron: cronExpr, timezone: timezone ?? 'server-local', tenantId },
           }, now)
-          await routeWorkItem(workItem.id, null, { routingMode: trigger.routingMode })
+          await routeWorkItem(workItem.id, systemRouteActor('schedule-trigger'), { routingMode: trigger.routingMode })
         })
       } catch (err) {
         await withTenantDbTransaction(prisma, tx => tx.workItemTrigger.updateMany({
@@ -148,9 +150,10 @@ async function runWorkItemEventTriggers(): Promise<void> {
       for (const matched of matchedEvents) {
         await runWithTenantDbContext(trigger.tenantId ?? undefined, async () => {
           const payload = recordOf(matched.payload)
+          const safePayload = redactEventPayload(payload)
           const title = triggerStringAt(payload, mapping.titlePath) ?? String(mapping.title ?? `${trigger.workItemTypeKey} event work`)
           const description = triggerStringAt(payload, mapping.descriptionPath) ?? (typeof mapping.description === 'string' ? mapping.description : undefined)
-          const documents = triggerDocumentsFromPayload({ payload, payloadMapping: mapping })
+          const documents = triggerDocumentsFromPayload({ payload: safePayload, payloadMapping: mapping })
           const attachable = await findAttachableWorkItemForTrigger({
             payload,
             payloadMapping: mapping,
@@ -173,7 +176,7 @@ async function runWorkItemEventTriggers(): Promise<void> {
           const workItem = attachable?.workItem ?? await createWorkItemFromTrigger(trigger, {
             title,
             description,
-            input: { triggerType: 'EVENT', eventType: matched.eventType, payload, triggerCorrelationKey: correlationKey, documents, tenantId: trigger.tenantId },
+            input: { triggerType: 'EVENT', eventType: matched.eventType, payload: safePayload, triggerCorrelationKey: correlationKey, documents, tenantId: trigger.tenantId },
             sourceEventTypeKey: matched.eventType,
             correlationKey,
             documents,
@@ -194,6 +197,7 @@ async function runWorkItemEventTriggers(): Promise<void> {
                   sourceEventTypeKey: matched.eventType,
                   triggerCorrelationKey: correlationKey,
                   documents,
+                  eventPayload: safePayload,
                 } as object,
               },
             })
@@ -204,7 +208,7 @@ async function runWorkItemEventTriggers(): Promise<void> {
           })
           trigger.lastFiredAt = matched.createdAt
           markEventProcessed(matched.id)
-          await routeWorkItem(workItem.id, null, { routingMode: trigger.routingMode })
+          await routeWorkItem(workItem.id, systemRouteActor('event-trigger'), { routingMode: trigger.routingMode })
         })
       }
     }

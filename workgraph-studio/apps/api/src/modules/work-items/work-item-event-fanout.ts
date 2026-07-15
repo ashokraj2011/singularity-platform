@@ -1,6 +1,7 @@
 import { prisma } from '../../lib/prisma'
 import { createWorkItem } from './work-items.service'
 import { routeWorkItem } from './work-item-routing.service'
+import { systemRouteActor } from './work-item-actors'
 import {
   findAttachableWorkItemForTrigger,
   resolveTriggerCorrelationKey,
@@ -9,6 +10,7 @@ import {
   recordTriggerEventWorkItem,
 } from './work-item-trigger-attach'
 import { normalizeMetadataKey, recordOf } from '../metadata/metadata.service'
+import { redactEventPayload } from '../events/event-payload'
 
 // P1-9 — fan an inbound event out to matching WorkItem EVENT triggers: create (or
 // attach to) a WorkItem and, under AUTO_START, start a run. This is the same model
@@ -27,6 +29,7 @@ export async function fanOutToWorkItemTriggers(args: {
   // event fans out to every capability's trigger for the event type — pub/sub).
   capabilityId?: string | null
   traceId?: string | null
+  actorId: string
 }): Promise<string[]> {
   const results = await fanOutToWorkItemTriggersDetailed(args)
   return results.flatMap(result => result.workItemId ? [result.workItemId] : [])
@@ -60,10 +63,12 @@ export async function fanOutToWorkItemTriggersDetailed(args: {
   sourceEventTypeKey?: string
   capabilityId?: string | null
   traceId?: string | null
+  actorId: string
 }): Promise<WorkItemTriggerFanoutResult[]> {
   const eventTypeKey = normalizeMetadataKey(args.eventTypeKey)
   if (!eventTypeKey) return []
   const capabilityId = typeof args.capabilityId === 'string' && args.capabilityId.trim() ? args.capabilityId.trim() : undefined
+  const safePayload = redactEventPayload(args.payload)
 
   const triggers = await prisma.workItemTrigger.findMany({
     where: { triggerType: 'EVENT', isActive: true, eventTypeKey, ...(capabilityId ? { capabilityId } : {}) },
@@ -84,7 +89,7 @@ export async function fanOutToWorkItemTriggersDetailed(args: {
     try {
       const mapping = recordOf(trigger.payloadMapping)
       const correlationKey = resolveTriggerCorrelationKey({ payload: args.payload, payloadMapping: mapping, dedupeKey: trigger.dedupeKey })
-      const documents = triggerDocumentsFromPayload({ payload: args.payload, payloadMapping: mapping })
+      const documents = triggerDocumentsFromPayload({ payload: safePayload, payloadMapping: mapping })
       const attachable = await findAttachableWorkItemForTrigger({
         payload: args.payload, payloadMapping: mapping, dedupeKey: trigger.dedupeKey, capabilityId: trigger.capabilityId,
       })
@@ -118,7 +123,7 @@ export async function fanOutToWorkItemTriggersDetailed(args: {
         workflowTypeKey,
         sourceEventTypeKey: args.sourceEventTypeKey ?? trigger.eventTypeKey ?? undefined,
         parentCapabilityId: trigger.capabilityId,
-        input: { triggerType: 'EVENT', eventType: trigger.eventTypeKey, payload: args.payload, triggerCorrelationKey: correlationKey, traceId: args.traceId ?? null, trace_id: args.traceId ?? null, documents },
+        input: { triggerType: 'EVENT', eventType: trigger.eventTypeKey, payload: safePayload, triggerCorrelationKey: correlationKey, traceId: args.traceId ?? null, trace_id: args.traceId ?? null, documents },
         details: {
           title,
           source: 'incoming-event',
@@ -127,11 +132,11 @@ export async function fanOutToWorkItemTriggersDetailed(args: {
           traceId: args.traceId ?? null,
           trace_id: args.traceId ?? null,
           documents,
-          input: args.payload,
+          input: safePayload,
         },
         originType: 'CAPABILITY_LOCAL',
         targets: [{ targetCapabilityId: trigger.capabilityId }],
-      }, null)
+      }, args.actorId)
 
       if (!attachable) {
         await recordTriggerEventWorkItem({ triggerId: trigger.id, dedupeValue, workItemId: workItem.id })
@@ -139,13 +144,13 @@ export async function fanOutToWorkItemTriggersDetailed(args: {
           data: {
             workItemId: workItem.id,
             eventType: 'TRIGGERED',
-            payload: { triggerId: trigger.id, firedAt: new Date().toISOString(), source: 'incoming-event', triggerCorrelationKey: correlationKey, traceId: args.traceId ?? null, trace_id: args.traceId ?? null, documents } as object,
+            payload: { triggerId: trigger.id, firedAt: new Date().toISOString(), source: 'incoming-event', triggerCorrelationKey: correlationKey, traceId: args.traceId ?? null, trace_id: args.traceId ?? null, documents, eventPayload: safePayload } as object,
           },
         }).catch(() => {})
       }
 
       await prisma.workItemTrigger.update({ where: { id: trigger.id }, data: { lastFiredAt: new Date() } }).catch(() => {})
-      const routed = await routeWorkItem(workItem.id, null, { routingMode: trigger.routingMode, workflowTypeKey })
+      const routed = await routeWorkItem(workItem.id, args.actorId || systemRouteActor('event-trigger'), { routingMode: trigger.routingMode, workflowTypeKey })
       const target = routed.targets[0]
       results.push({
         ...base,

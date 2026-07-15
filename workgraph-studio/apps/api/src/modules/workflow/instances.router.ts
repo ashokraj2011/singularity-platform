@@ -30,6 +30,7 @@ import {
   tenantIsolationStrict,
 } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
+import { validateNodeConfig } from '../lookup/resolver'
 
 export const workflowInstancesRouter: Router = Router()
 
@@ -552,6 +553,8 @@ workflowInstancesRouter.post('/:id/nodes', validate(createNodeSchema), async (re
   try {
     const id = req.params.id as string
     await assertInstancePermission(req.user!.userId, id, 'edit', resolveTenantFromRequest(req))
+    const validation = await validateNodeConfig(req.body.nodeType, req.body.config ?? {}, req)
+    if (!validation.ok) return res.status(422).json({ code: 'NODE_CONFIG_INVALID', message: 'node configuration references could not be resolved', failures: validation.failures })
     const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.create({
       data: { instanceId: id, ...req.body },
     }), resolveTenantFromRequest(req))
@@ -579,6 +582,14 @@ workflowInstancesRouter.patch('/:id/nodes/:nodeId', validate(updateNodeSchema), 
     const node = await withTenantDbTransaction(prisma, async (tx) => {
       const before = await tx.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } })
       if (!before) throw new NotFoundError('WorkflowNode', nodeId)
+      const effectiveType = req.body.nodeType ?? before.nodeType
+      const effectiveConfig = req.body.config !== undefined ? req.body.config : before.config
+      const validation = await validateNodeConfig(effectiveType, effectiveConfig ?? {}, req)
+      if (!validation.ok) {
+        const error = new ValidationError('node configuration references could not be resolved')
+        ;(error as ValidationError & { failures?: unknown }).failures = validation.failures
+        throw error
+      }
       const updated = await tx.workflowNode.update({
         where: { id: before.id },
         data: req.body,
@@ -734,7 +745,7 @@ workflowInstancesRouter.post('/:id/signals/:name', validate(signalSchema), async
     })
 
     for (const node of matched) {
-      await advance(id, node.id, { _signal: { name: signalName, payload, correlationKey } }, req.user!.userId)
+      await advance(id, node.id, { _signal: { name: signalName, payload, correlationKey } }, req.user!.userId, undefined, signalTenantId)
     }
     // A live waiter already consumed this signal → retire the persisted copy so a
     // later waiter doesn't re-fire on it. If none matched, it stays claimable.
@@ -830,6 +841,8 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/refine', async (req, res, next)
     const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } }), resolveTenantFromRequest(req))
     if (!node) return res.status(404).json({ error: 'node not found in this run' })
     const config = { ...((node.config ?? {}) as Record<string, unknown>), _refineFeedback: feedback }
+    const validation = await validateNodeConfig(node.nodeType, config, req)
+    if (!validation.ok) return res.status(422).json({ code: 'NODE_CONFIG_INVALID', message: 'node configuration references could not be resolved', failures: validation.failures })
     await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({ where: { id: nodeId }, data: { config: config as Prisma.InputJsonValue } }), resolveTenantFromRequest(req))
     const result = await restartNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
     res.json({ ...result, refined: true })
@@ -852,6 +865,8 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/prompt', async (req, res, next)
     const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } }), resolveTenantFromRequest(req))
     if (!node) return res.status(404).json({ error: 'node not found in this run' })
     const config = { ...((node.config ?? {}) as Record<string, unknown>), _promptOverride: prompt }
+    const validation = await validateNodeConfig(node.nodeType, config, req)
+    if (!validation.ok) return res.status(422).json({ code: 'NODE_CONFIG_INVALID', message: 'node configuration references could not be resolved', failures: validation.failures })
     await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({ where: { id: nodeId }, data: { config: config as Prisma.InputJsonValue } }), resolveTenantFromRequest(req))
     const result = await restartNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
     res.json({ ...result, promptOverridden: true })
@@ -882,6 +897,8 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/answer-questions', async (req, 
     const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } }), resolveTenantFromRequest(req))
     if (!node) return res.status(404).json({ error: 'node not found in this run' })
     const config = { ...((node.config ?? {}) as Record<string, unknown>), _copilotAnswers: formatted }
+    const validation = await validateNodeConfig(node.nodeType, config, req)
+    if (!validation.ok) return res.status(422).json({ code: 'NODE_CONFIG_INVALID', message: 'node configuration references could not be resolved', failures: validation.failures })
     await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.update({ where: { id: nodeId }, data: { config: config as Prisma.InputJsonValue } }), resolveTenantFromRequest(req))
     const result = await restartNode(id, nodeId, req.user!.userId, resolveTenantFromRequest(req))
     res.json({ ...result, answered: true })

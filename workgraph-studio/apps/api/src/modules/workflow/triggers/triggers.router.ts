@@ -7,11 +7,13 @@ import { validate } from '../../../middleware/validate'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 import { createWorkItem } from '../../work-items/work-items.service'
 import { routeWorkItem } from '../../work-items/work-item-routing.service'
+import { systemRouteActor } from '../../work-items/work-item-actors'
 import { findAttachableWorkItemForTrigger, resolveTriggerCorrelationKey, triggerDocumentsFromPayload, claimTriggerEvent, recordTriggerEventWorkItem } from '../../work-items/work-item-trigger-attach'
 import { recordOf } from '../../metadata/metadata.service'
 import { tenantIdForCreate, resolveTenantFromRequest, tenantIsolationStrict, requireTenantFromRequest } from '../../../lib/tenant-isolation'
 import { assertTemplatePermission, canViewTemplate } from '../../../lib/permissions/workflowTemplate'
 import { startInstance } from '../runtime/WorkflowRuntime'
+import { assertEventPayloadSize, redactEventPayload } from '../../events/event-payload'
 
 // Constant-time secret comparison. Hash both sides to a fixed 32-byte digest
 // first so timingSafeEqual never sees unequal lengths (which throws and would
@@ -103,7 +105,9 @@ webhookRouter.post('/:secret', async (req, res, next) => {
       const mapping = recordOf(workItemMatch.payloadMapping)
       const title = typeof mapping.title === 'string' ? mapping.title : `${workItemMatch.workItemTypeKey} webhook work`
       const payload = recordOf(req.body)
-      const documents = triggerDocumentsFromPayload({ payload, payloadMapping: mapping })
+      assertEventPayloadSize(payload)
+      const safePayload = redactEventPayload(payload)
+      const documents = triggerDocumentsFromPayload({ payload: safePayload, payloadMapping: mapping })
       const attachable = await findAttachableWorkItemForTrigger({
         payload,
         payloadMapping: mapping,
@@ -133,7 +137,7 @@ webhookRouter.post('/:secret', async (req, res, next) => {
         routingMode: workItemMatch.routingMode,
         sourceEventTypeKey: workItemMatch.eventTypeKey ?? 'WEBHOOK',
         parentCapabilityId: workItemMatch.capabilityId,
-        input: { webhookPayload: req.body, triggerCorrelationKey: correlationKey, documents },
+        input: { webhookPayload: safePayload, triggerCorrelationKey: correlationKey, documents },
         details: {
           title,
           description: typeof mapping.description === 'string' ? mapping.description : null,
@@ -141,9 +145,10 @@ webhookRouter.post('/:secret', async (req, res, next) => {
           triggerId: workItemMatch.id,
           triggerCorrelationKey: correlationKey ?? null,
           documents,
-          input: { webhookPayload: req.body, documents },
+          input: { webhookPayload: safePayload, documents },
         },
         originType: 'CAPABILITY_LOCAL',
+        tenantId: workItemMatch.tenantId,
         targets: [{ targetCapabilityId: workItemMatch.capabilityId }],
       }, null)
       if (!attachable) {
@@ -162,20 +167,25 @@ webhookRouter.post('/:secret', async (req, res, next) => {
               sourceEventTypeKey: workItemMatch.eventTypeKey ?? 'WEBHOOK',
               triggerCorrelationKey: correlationKey,
               documents,
+              webhookPayload: safePayload,
             } as object,
           },
         })
       }
       await prisma.workItemTrigger.update({ where: { id: workItemMatch.id }, data: { lastFiredAt: new Date() } })
-      const routed = await routeWorkItem(workItem.id, null, { routingMode: workItemMatch.routingMode })
+      const routed = await routeWorkItem(workItem.id, systemRouteActor('webhook-trigger'), { routingMode: workItemMatch.routingMode })
       res.status(202).json({ workItemId: routed.id })
       return
     }
 
-    const payloadTenantId = tenantIdForCreate(req.body)
+    // The webhook secret identifies a trigger, so the trigger's tenant is the
+    // authority. Never let an unauthenticated payload choose the DB tenant.
+    const payloadTenantId = match.tenantId ?? undefined
+    assertEventPayloadSize(req.body)
+    const safeWebhookPayload = redactEventPayload(req.body)
     const context = {
       ...(payloadTenantId ? { tenantId: payloadTenantId } : {}),
-      _webhookPayload: req.body,
+      _webhookPayload: safeWebhookPayload,
       _triggeredAt: new Date().toISOString(),
     }
     // Public webhook — no request tenant; scope to the tenant derived from the

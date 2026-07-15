@@ -26,6 +26,8 @@ import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
 import { runWithTenantDbContext } from '../../lib/tenant-db-context'
 import { fanOutToWorkItemTriggers } from '../work-items/work-item-event-fanout'
+import { systemRouteActor } from '../work-items/work-item-actors'
+import { assertEventPayloadSize, redactEventPayload } from '../events/event-payload'
 
 export const incomingEventsRouter: Router = Router()
 
@@ -138,6 +140,8 @@ incomingEventsRouter.post('/', async (req, res) => {
   if (config.TENANT_ISOLATION_MODE === 'strict' && !tenantId) {
     return res.status(403).json({ code: 'MISSING_EVENT_TENANT', message: 'Strict tenant isolation requires envelope.tenant_id' })
   }
+  assertEventPayloadSize(body.envelope)
+  const safeEnvelope = redactEventPayload(body.envelope)
 
   // Persist into workgraph audit log so the unified /api/receipts timeline
   // surfaces inbound cross-service events alongside local ones.
@@ -157,7 +161,7 @@ incomingEventsRouter.post('/', async (req, res) => {
         trace_id:       body.envelope.trace_id ?? null,
         traceId:        body.envelope.trace_id ?? null,
         tenant_id:      tenantId ?? null,
-        envelope:       body.envelope,
+        envelope:       safeEnvelope,
       } as object,
     },
     }))
@@ -179,6 +183,7 @@ incomingEventsRouter.post('/', async (req, res) => {
       deliveryId: outboxId,
       sourceEventTypeKey: eventName,
       traceId: body.envelope.trace_id,
+      actorId: systemRouteActor('event-trigger'),
     }))
   } catch (err) {
     console.error('[incoming-events] trigger fan-out failed:', (err as Error).message)
