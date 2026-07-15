@@ -36,7 +36,7 @@ GOVERNANCE_GATE GOVERNANCE_GATE
 RAISE_PR RAISE_PR
 CREATE_BRANCH CREATE_BRANCH
         }
-
+    
 
 
         ExecutionLocation {
@@ -45,7 +45,7 @@ CLIENT CLIENT
 EDGE EDGE
 EXTERNAL EXTERNAL
         }
-
+    
 
 
         ConnectorType {
@@ -63,7 +63,7 @@ S3 S3
 POSTGRES POSTGRES
 SHAREPOINT SHAREPOINT
         }
-
+    
 
 
         EdgeType {
@@ -73,7 +73,7 @@ PARALLEL_SPLIT PARALLEL_SPLIT
 PARALLEL_JOIN PARALLEL_JOIN
 ERROR_BOUNDARY ERROR_BOUNDARY
         }
-
+    
 
 
         WorkItemStatus {
@@ -85,7 +85,7 @@ COMPLETED COMPLETED
 CANCELLED CANCELLED
 ARCHIVED ARCHIVED
         }
-
+    
 
 
         WorkItemTargetStatus {
@@ -97,7 +97,7 @@ APPROVED APPROVED
 REWORK_REQUESTED REWORK_REQUESTED
 CANCELLED CANCELLED
         }
-
+    
 
 
         WorkItemEventType {
@@ -119,15 +119,38 @@ CLARIFICATION_ANSWERED CLARIFICATION_ANSWERED
 CANCELLED CANCELLED
 ARCHIVED ARCHIVED
 DETACHED DETACHED
+SPEC_DRAFT_CREATED SPEC_DRAFT_CREATED
+SPEC_GENERATED SPEC_GENERATED
+SPEC_VALIDATION_COMPLETED SPEC_VALIDATION_COMPLETED
+SPEC_REVIEW_REQUESTED SPEC_REVIEW_REQUESTED
+SPEC_APPROVED SPEC_APPROVED
+DEVELOPER_PACKAGE_PUBLISHED DEVELOPER_PACKAGE_PUBLISHED
+IMPLEMENTATION_SUBMITTED IMPLEMENTATION_SUBMITTED
+RECONCILIATION_STARTED RECONCILIATION_STARTED
+RECONCILIATION_COMPLETED RECONCILIATION_COMPLETED
+CODE_REWORK_REQUESTED CODE_REWORK_REQUESTED
+SPEC_AMENDMENT_CREATED SPEC_AMENDMENT_CREATED
+IMPLEMENTATION_ACCEPTED IMPLEMENTATION_ACCEPTED
         }
+    
 
+
+        SpecificationStatus {
+            DRAFT DRAFT
+IN_REVIEW IN_REVIEW
+CHANGES_REQUESTED CHANGES_REQUESTED
+APPROVED APPROVED
+SUPERSEDED SUPERSEDED
+REJECTED REJECTED
+        }
+    
 
 
         WorkItemOriginType {
             PARENT_DELEGATED PARENT_DELEGATED
 CAPABILITY_LOCAL CAPABILITY_LOCAL
         }
-
+    
 
 
         WorkItemRoutingMode {
@@ -136,7 +159,7 @@ AUTO_ATTACH AUTO_ATTACH
 AUTO_START AUTO_START
 SCHEDULED_START SCHEDULED_START
         }
-
+    
 
 
         WorkItemRoutingState {
@@ -146,7 +169,7 @@ ATTACHED ATTACHED
 STARTED STARTED
 ROUTE_FAILED ROUTE_FAILED
         }
-
+    
 
 
         MetadataDefinitionKind {
@@ -156,7 +179,7 @@ NODE_TYPE NODE_TYPE
 EVENT_TYPE EVENT_TYPE
 TRIGGER_PROFILE TRIGGER_PROFILE
         }
-
+    
 
 
         MetadataDefinitionStatus {
@@ -165,7 +188,7 @@ ACTIVE ACTIVE
 DEPRECATED DEPRECATED
 ARCHIVED ARCHIVED
         }
-
+    
 
 
         MetadataScopeType {
@@ -174,7 +197,7 @@ CAPABILITY CAPABILITY
 WORKFLOW WORKFLOW
 NODE NODE
         }
-
+    
 
 
         WorkItemTriggerType {
@@ -182,7 +205,7 @@ NODE NODE
 SCHEDULE SCHEDULE
 WEBHOOK WEBHOOK
         }
-
+    
 
 
         WorkItemUrgency {
@@ -191,7 +214,7 @@ NORMAL NORMAL
 HIGH HIGH
 CRITICAL CRITICAL
         }
-
+    
 
 
         WorkItemClarificationStatus {
@@ -199,14 +222,14 @@ CRITICAL CRITICAL
 ANSWERED ANSWERED
 CLOSED CLOSED
         }
-
+    
 
 
         WorkItemClarificationDirection {
             CHILD_TO_PARENT CHILD_TO_PARENT
 PARENT_TO_CHILD PARENT_TO_CHILD
         }
-
+    
 
 
         NodeStatus {
@@ -217,7 +240,7 @@ SKIPPED SKIPPED
 FAILED FAILED
 BLOCKED BLOCKED
         }
-
+    
 
 
         InstanceStatus {
@@ -228,7 +251,7 @@ COMPLETED COMPLETED
 CANCELLED CANCELLED
 FAILED FAILED
         }
-
+    
 
 
         TaskStatus {
@@ -238,7 +261,7 @@ PENDING_REVIEW PENDING_REVIEW
 COMPLETED COMPLETED
 CANCELLED CANCELLED
         }
-
+    
 
 
         AssignmentMode {
@@ -248,7 +271,7 @@ ROLE_BASED ROLE_BASED
 SKILL_BASED SKILL_BASED
 AGENT AGENT
         }
-
+    
 
 
         ApprovalStatus {
@@ -260,7 +283,7 @@ NEEDS_MORE_INFORMATION NEEDS_MORE_INFORMATION
 DEFERRED DEFERRED
 ESCALATED ESCALATED
         }
-
+    
 
 
         ConsumableStatus {
@@ -272,7 +295,7 @@ SUPERSEDED SUPERSEDED
 CONSUMED CONSUMED
 REJECTED REJECTED
         }
-
+    
 
 
         AgentRunStatus {
@@ -284,7 +307,7 @@ APPROVED APPROVED
 REJECTED REJECTED
 FAILED FAILED
         }
-
+    
 
 
         ToolRunStatus {
@@ -296,7 +319,7 @@ COMPLETED COMPLETED
 REJECTED REJECTED
 FAILED FAILED
         }
-
+    
 
 
         RiskLevel {
@@ -305,7 +328,7 @@ MEDIUM MEDIUM
 HIGH HIGH
 CRITICAL CRITICAL
         }
-
+    
 
 
         OutboxStatus {
@@ -313,14 +336,14 @@ CRITICAL CRITICAL
 PROCESSED PROCESSED
 FAILED FAILED
         }
-
+    
 
 
         BlueprintSourceType {
             GITHUB GITHUB
 LOCALDIR LOCALDIR
         }
-
+    
 
 
         BlueprintSessionStatus {
@@ -332,7 +355,7 @@ APPROVED APPROVED
 FAILED FAILED
 ABANDONED ABANDONED
         }
-
+    
 
 
         BlueprintStage {
@@ -340,7 +363,7 @@ ABANDONED ABANDONED
 DEVELOPER DEVELOPER
 QA QA
         }
-
+    
 
 
         BlueprintStageStatus {
@@ -349,7 +372,7 @@ RUNNING RUNNING
 COMPLETED COMPLETED
 FAILED FAILED
         }
-
+    
 
 
         WorkflowBudgetEnforcementMode {
@@ -357,7 +380,7 @@ FAILED FAILED
 FAIL_HARD FAIL_HARD
 WARN_ONLY WARN_ONLY
         }
-
+    
 
 
         WorkflowRunBudgetStatus {
@@ -367,7 +390,7 @@ PAUSED PAUSED
 EXCEEDED EXCEEDED
 EXHAUSTED EXHAUSTED
         }
-
+    
 
 
         WorkflowRunBudgetEventType {
@@ -380,7 +403,7 @@ BUDGET_EXCEEDED BUDGET_EXCEEDED
 EXTRA_APPROVED EXTRA_APPROVED
 UNPRICED_USAGE UNPRICED_USAGE
         }
-
+    
 
 
         WorkflowPermissionAction {
@@ -389,7 +412,7 @@ EDIT EDIT
 START START
 ADMIN ADMIN
         }
-
+    
 
 
         TriggerType {
@@ -397,642 +420,892 @@ ADMIN ADMIN
 SCHEDULE SCHEDULE
 EVENT EVENT
         }
+    
 
+
+        ReconciliationStatus {
+            PENDING PENDING
+RUNNING RUNNING
+PASSED PASSED
+FAILED FAILED
+PARTIAL PARTIAL
+ERROR ERROR
+        }
+    
+
+
+        RequirementVerdictValue {
+            PASS PASS
+PARTIAL PARTIAL
+FAIL FAIL
+NOT_APPLICABLE NOT_APPLICABLE
+NOT_VERIFIED NOT_VERIFIED
+        }
+    
+
+
+        ReconciliationFindingSeverity {
+            ERROR ERROR
+WARNING WARNING
+INFO INFO
+        }
+    
+
+
+        ReconciliationJobStatus {
+            PENDING PENDING
+CLAIMED CLAIMED
+RUNNING RUNNING
+COMPLETED COMPLETED
+FAILED FAILED
+CANCELLED CANCELLED
+        }
+    
+
+
+        DiscoveryScopeType {
+            WORKFLOW_STAGE WORKFLOW_STAGE
+WORK_ITEM WORK_ITEM
+RUN RUN
+        }
+    
+
+
+        DiscoverySessionStatus {
+            OPEN OPEN
+RESOLVING RESOLVING
+BLOCKED BLOCKED
+RESOLVED RESOLVED
+ABANDONED ABANDONED
+        }
+    
+
+
+        DiscoveryQuestionKind {
+            single_select single_select
+multi_select multi_select
+freeform freeform
+clarification clarification
+        }
+    
+
+
+        DiscoveryQuestionSource {
+            configured configured
+llm llm
+copilot copilot
+human human
+agent agent
+        }
+    
+
+
+        DiscoveryQuestionStatus {
+            OPEN OPEN
+ANSWERED ANSWERED
+DISMISSED DISMISSED
+        }
+    
+
+
+        DiscoveryAssumptionStatus {
+            PROPOSED PROPOSED
+ACCEPTED ACCEPTED
+REJECTED REJECTED
+VALIDATED VALIDATED
+INVALIDATED INVALIDATED
+        }
+    
   "users" {
     String id "🗝️"
-    String email
-    String displayName
+    String email 
+    String displayName 
     String passwordHash "❓"
     String iamUserId "❓"
-    Boolean isActive
-    DateTime createdAt
-    DateTime updatedAt
+    Boolean isActive 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "teams" {
     String id "🗝️"
-    String name
+    String name 
     String description "❓"
     String externalIamTeamId "❓"
     String externalTeamKey "❓"
-    String source
-    DateTime createdAt
-    DateTime updatedAt
+    String source 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "team_variables" {
     String id "🗝️"
-    String key
+    String key 
     String label "❓"
-    String type
-    String scope
-    String visibility
+    String type 
+    String scope 
+    String visibility 
     String visibilityScopeId "❓"
-    String editableBy
-    Json value
+    String editableBy 
+    Json value 
     String description "❓"
     String createdById "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "capabilities_cache" {
     String id "🗝️"
-    String name
+    String name 
     String type "❓"
     String status "❓"
-    Boolean isGoverning
-    DateTime syncedAt
+    Boolean isGoverning 
+    DateTime syncedAt 
     }
-
+  
 
   "governance_overlay_snapshots" {
     String id "🗝️"
     String workItemId "❓"
     String workflowInstanceId "❓"
     String workflowNodeId "❓"
-    String governedCapabilityId
-    String overlayHash
-    Json resolvedOverlayJson
-    DateTime resolvedAt
-    DateTime createdAt
+    String governedCapabilityId 
+    String overlayHash 
+    Json resolvedOverlayJson 
+    DateTime resolvedAt 
+    DateTime createdAt 
     }
-
+  
 
   "governance_waivers" {
     String id "🗝️"
     String workItemId "❓"
     String workflowInstanceId "❓"
     String workflowNodeId "❓"
-    String controlKey
-    String reason
-    String status
+    String controlKey 
+    String reason 
+    String status 
     String requestedBy "❓"
     String approvedBy "❓"
     DateTime expiresAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    String revokedBy "❓"
+    DateTime revokedAt "❓"
+    String revocationReason "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "departments" {
     String id "🗝️"
-    String name
-    DateTime createdAt
+    String name 
+    DateTime createdAt 
     }
-
+  
 
   "roles" {
     String id "🗝️"
-    String name
+    String name 
     String description "❓"
-    Boolean isSystemRole
-    DateTime createdAt
+    Boolean isSystemRole 
+    DateTime createdAt 
     }
-
+  
 
   "skills" {
     String id "🗝️"
-    String name
+    String name 
     String description "❓"
     String category "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "permissions" {
     String id "🗝️"
-    String name
-    String resource
-    String action
+    String name 
+    String resource 
+    String action 
     String description "❓"
     }
-
+  
 
   "user_roles" {
-    DateTime grantedAt
-    String source
+    DateTime grantedAt 
+    String source 
     }
-
+  
 
   "user_skills" {
     Int proficiencyLevel "❓"
     }
-
+  
 
   "role_permissions" {
 
     }
-
+  
 
   "team_members" {
     String id "🗝️"
-    String userId
-    DateTime joinedAt
+    String userId 
+    DateTime joinedAt 
     }
-
+  
 
   "delegations" {
     String id "🗝️"
-    String delegatorId
-    String delegateId
+    String delegatorId 
+    String delegateId 
     String scope "❓"
-    DateTime startsAt
-    DateTime endsAt
-    DateTime createdAt
+    DateTime startsAt 
+    DateTime endsAt 
+    DateTime createdAt 
     }
-
+  
 
   "approval_authorities" {
     String id "🗝️"
-    String userId
-    String resourceType
+    String userId 
+    String resourceType 
     Decimal maxValue "❓"
-    DateTime grantedAt
+    DateTime grantedAt 
     DateTime expiresAt "❓"
     }
-
+  
 
   "initiatives" {
     String id "🗝️"
-    String title
+    String title 
     String description "❓"
-    String status
-    String createdById
-    DateTime createdAt
-    DateTime updatedAt
+    String status 
+    String createdById 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "initiative_owners" {
     String userId "🗝️"
     }
-
+  
 
   "initiative_documents" {
     String id "🗝️"
-    String documentId
-    DateTime createdAt
+    String documentId 
+    DateTime createdAt 
     }
-
+  
 
   "workflow_templates" {
     String id "🗝️"
-    String name
+    String name 
     String description "❓"
-    String status
-    Int currentVersion
+    String status 
+    Int currentVersion 
     String createdById "❓"
+    String tenantId "❓"
     String capabilityId "❓"
     DateTime archivedAt "❓"
     Json metadata "❓"
-    String workflowTypeKey
-    Int typeVersion
+    String workflowTypeKey 
+    Int typeVersion 
     Json typeSnapshot "❓"
-    String profile
-    Json eligibleWorkItemTypes
-    Boolean isDefaultForType
-    WorkItemRoutingMode defaultRoutingMode
-    Json variables
+    String profile 
+    Json eligibleWorkItemTypes 
+    Boolean isDefaultForType 
+    WorkItemRoutingMode defaultRoutingMode 
+    Json variables 
     Json budgetPolicy "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "run_snapshots" {
     String id "🗝️"
-    String runId
-    String name
-    String status
-    Json payload
-    Int version
+    String runId 
+    String name 
+    String status 
+    Json payload 
+    Int version 
     String createdById "❓"
     String tenantId "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "workflow_permissions" {
     String id "🗝️"
-    String roleId
-    WorkflowPermissionAction action
-    DateTime grantedAt
+    String roleId 
+    WorkflowPermissionAction action 
+    DateTime grantedAt 
     }
+  
 
+  "workflow_access_grants" {
+    String id "🗝️"
+    String tenantId "❓"
+    String subjectType 
+    String subjectId 
+    String action 
+    String effect 
+    DateTime startsAt "❓"
+    DateTime endsAt "❓"
+    String createdById "❓"
+    Json metadata 
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
 
   "workflow_triggers" {
     String id "🗝️"
-    TriggerType type
-    Boolean isActive
-    Json config
+    TriggerType type 
+    Boolean isActive 
+    Json config 
     DateTime lastFiredAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     String tenantId "❓"
     }
-
+  
 
   "workflow_template_versions" {
     String id "🗝️"
-    Int version
-    Json graphSnapshot
+    Int version 
+    Json graphSnapshot 
     String contentHash "❓"
     String source "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "workflow_design_phases" {
     String id "🗝️"
-    String name
-    Int displayOrder
+    String name 
+    Int displayOrder 
     String color "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "workflow_design_nodes" {
     String id "🗝️"
-    NodeType nodeType
+    NodeType nodeType 
     String nodeTypeKey "❓"
     Int nodeTypeVersion "❓"
     Json nodeTypeSnapshot "❓"
-    String label
-    Json config
+    String label 
+    Json config 
     Json compensationConfig "❓"
-    ExecutionLocation executionLocation
-    Float positionX
-    Float positionY
-    DateTime createdAt
-    DateTime updatedAt
+    ExecutionLocation executionLocation 
+    Float positionX 
+    Float positionY 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "workflow_design_edges" {
     String id "🗝️"
-    EdgeType edgeType
+    EdgeType edgeType 
     Json condition "❓"
     String label "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "workflow_instances" {
     String id "🗝️"
     Int templateVersion "❓"
     String tenantId "❓"
-    String name
-    InstanceStatus status
-    Json context
+    String name 
+    InstanceStatus status 
+    Json context 
     String parentNodeId "❓"
-    String profile
+    String profile 
     DateTime startedAt "❓"
     DateTime completedAt "❓"
     DateTime archivedAt "❓"
     String createdById "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
+  
 
+  "workflow_authorization_snapshots" {
+    String id "🗝️"
+    String tenantId "❓"
+    String actorIamUserId "❓"
+    String actorWorkGraphId "❓"
+    String runOwnerId "❓"
+    String workflowId "❓"
+    String capabilityId "❓"
+    String policyVersion 
+    Json effectiveRoles 
+    Json effectivePermissions 
+    Json resourceGrants 
+    String snapshotDigest 
+    DateTime capturedAt 
+    }
+  
 
   "workflow_run_budgets" {
     String id "🗝️"
     String templateId "❓"
-    Json policy
+    Json policy 
     Int maxInputTokens "❓"
     Int maxOutputTokens "❓"
     Int maxTotalTokens "❓"
     Float maxEstimatedCost "❓"
-    Int warnAtPercent
-    WorkflowBudgetEnforcementMode enforcementMode
-    Int consumedInputTokens
-    Int consumedOutputTokens
-    Int consumedTotalTokens
-    Float consumedEstimatedCost
-    String pricingStatus
-    WorkflowRunBudgetStatus status
+    Int warnAtPercent 
+    WorkflowBudgetEnforcementMode enforcementMode 
+    Int consumedInputTokens 
+    Int consumedOutputTokens 
+    Int consumedTotalTokens 
+    Float consumedEstimatedCost 
+    String pricingStatus 
+    WorkflowRunBudgetStatus status 
     DateTime warningEmittedAt "❓"
     DateTime exceededAt "❓"
     DateTime pausedAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "workflow_run_budget_events" {
     String id "🗝️"
-    String instanceId
+    String instanceId 
     String nodeId "❓"
     String agentRunId "❓"
     String cfCallId "❓"
     String promptAssemblyId "❓"
-    WorkflowRunBudgetEventType eventType
-    Int inputTokensDelta
-    Int outputTokensDelta
-    Int totalTokensDelta
+    WorkflowRunBudgetEventType eventType 
+    Int inputTokensDelta 
+    Int outputTokensDelta 
+    Int totalTokensDelta 
     Float estimatedCostDelta "❓"
-    String pricingStatus
+    String pricingStatus 
     Json metadata "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "workflow_phases" {
     String id "🗝️"
-    String name
-    Int displayOrder
+    String name 
+    Int displayOrder 
     String color "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "workflow_nodes" {
     String id "🗝️"
-    NodeType nodeType
+    NodeType nodeType 
     String nodeTypeKey "❓"
     Int nodeTypeVersion "❓"
     Json nodeTypeSnapshot "❓"
-    String label
-    NodeStatus status
-    Json config
+    String label 
+    NodeStatus status 
+    Json config 
     Json compensationConfig "❓"
-    ExecutionLocation executionLocation
-    Float positionX
-    Float positionY
-    DateTime createdAt
-    DateTime updatedAt
+    ExecutionLocation executionLocation 
+    Float positionX 
+    Float positionY 
+    DateTime createdAt 
+    DateTime updatedAt 
     DateTime startedAt "❓"
     DateTime completedAt "❓"
-    Int attempt
+    Int attempt 
     }
-
+  
 
   "workflow_edges" {
     String id "🗝️"
-    EdgeType edgeType
+    EdgeType edgeType 
     Json condition "❓"
     String label "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "workflow_mutations" {
     String id "🗝️"
     String nodeId "❓"
-    String mutationType
+    String mutationType 
     Json beforeState "❓"
     Json afterState "❓"
     String performedById "❓"
-    DateTime performedAt
+    DateTime performedAt 
     }
-
+  
 
   "workflow_events" {
     String id "🗝️"
-    String eventType
+    String eventType 
     Json payload "❓"
-    DateTime occurredAt
+    DateTime occurredAt 
     }
-
+  
 
   "workflow_signals" {
     String id "🗝️"
-    String instanceId
-    String signalName
+    String instanceId 
+    String signalName 
     String correlationKey "❓"
     Json payload "❓"
-    DateTime emittedAt
+    DateTime emittedAt 
     DateTime consumedAt "❓"
-    DateTime expiresAt
+    DateTime expiresAt 
     }
-
+  
 
   "work_items" {
     String id "🗝️"
-    String workCode
-    WorkItemOriginType originType
-    String workItemTypeKey
-    Int typeVersion
+    String workCode 
+    WorkItemOriginType originType 
+    String workItemTypeKey 
+    Int typeVersion 
     Json typeSnapshot "❓"
-    WorkItemRoutingMode routingMode
+    WorkItemRoutingMode routingMode 
     DateTime scheduledAt "❓"
     DateTime notBefore "❓"
     String sourceEventTypeKey "❓"
-    WorkItemRoutingState routingState
-    String title
+    WorkItemRoutingState routingState 
+    String title 
     String description "❓"
     String parentCapabilityId "❓"
-    WorkItemStatus status
-    Json input
-    Json details
-    Json budget
-    WorkItemUrgency urgency
+    WorkItemStatus status 
+    Json input 
+    Json details 
+    Json budget 
+    WorkItemUrgency urgency 
     DateTime requiredBy "❓"
-    Boolean detailsLocked
+    Boolean detailsLocked 
     Json finalOutput "❓"
-    Int priority
+    Int priority 
     DateTime dueAt "❓"
     String createdById "❓"
     String approvedById "❓"
     String parentApprovalRequestId "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     String tenantId "❓"
     }
+  
 
+  "specification_versions" {
+    String id "🗝️"
+    Int version 
+    Int revision 
+    SpecificationStatus status 
+    Json package 
+    String renderedMarkdown "❓"
+    String contentHash "❓"
+    String createdById "❓"
+    String approvedById "❓"
+    DateTime approvedAt "❓"
+    String approvalComment "❓"
+    String supersedesId "❓"
+    String tenantId "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "development_targets" {
+    String id "🗝️"
+    String specificationVersionId 
+    String repository 
+    String component "❓"
+    String baseBranch 
+    String baseCommitSha 
+    Json requirementIds 
+    Json requiredEvidence 
+    Json forbiddenPaths 
+    Json reconciliationPolicy 
+    DateTime dueAt "❓"
+    String status 
+    DateTime publishedAt "❓"
+    String tenantId "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "implementation_submissions" {
+    String id "🗝️"
+    String specificationHash 
+    String repository 
+    String baseCommitSha 
+    String headCommitSha 
+    Int pullRequestNumber "❓"
+    Json manifest "❓"
+    Json claims 
+    Json deviations 
+    String source 
+    String status 
+    String tenantId "❓"
+    DateTime createdAt 
+    }
+  
+
+  "reconciliation_runs" {
+    String id "🗝️"
+    String specificationVersionId 
+    String specificationHash "❓"
+    String mode 
+    ReconciliationStatus status 
+    Json summary 
+    String traceId "❓"
+    String startedById "❓"
+    DateTime startedAt 
+    DateTime completedAt "❓"
+    String tenantId "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "requirement_verdicts" {
+    String id "🗝️"
+    String requirementId 
+    String priority "❓"
+    RequirementVerdictValue verdict 
+    String claimStatus "❓"
+    String rationale "❓"
+    Json evidence 
+    Boolean verified 
+    DateTime createdAt 
+    }
+  
+
+  "reconciliation_findings" {
+    String id "🗝️"
+    String requirementId "❓"
+    String kind 
+    ReconciliationFindingSeverity severity 
+    String message 
+    Json detail "❓"
+    DateTime createdAt 
+    }
+  
+
+  "reconciliation_jobs" {
+    String id "🗝️"
+    String workItemId 
+    String submissionId 
+    ReconciliationJobStatus status 
+    String repository 
+    String baseCommitSha 
+    String headCommitSha 
+    Json testPlan 
+    String claimToken "❓"
+    String claimedBy "❓"
+    DateTime claimedAt "❓"
+    Int attempts 
+    Json result "❓"
+    String error "❓"
+    String tenantId "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
 
   "work_item_dependencies" {
     String id "🗝️"
-    String dependencyType
+    String dependencyType 
     Json condition "❓"
     String createdById "❓"
     String tenantId "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "work_programs" {
     String id "🗝️"
-    String name
+    String name 
     String description "❓"
     String capabilityId "❓"
-    Int version
-    String status
-    Json metadata
+    Int version 
+    String status 
+    Json metadata 
     String createdById "❓"
     String tenantId "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "work_program_steps" {
     String id "🗝️"
-    String stepKey
-    Int ordinal
-    String titleTemplate
+    String stepKey 
+    Int ordinal 
+    String titleTemplate 
     String descriptionTemplate "❓"
-    String workItemTypeKey
-    String targetCapabilityId
-    WorkItemRoutingMode routingMode
-    Json inputMapping
-    Json dependsOnKeys
-    DateTime createdAt
-    DateTime updatedAt
+    String workItemTypeKey 
+    String targetCapabilityId 
+    WorkItemRoutingMode routingMode 
+    Json inputMapping 
+    Json dependsOnKeys 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "work_program_runs" {
     String id "🗝️"
-    String status
-    Json input
+    String status 
+    Json input 
     Json output "❓"
     String startedById "❓"
     String tenantId "❓"
-    DateTime startedAt
+    DateTime startedAt 
     DateTime completedAt "❓"
     }
-
+  
 
   "work_program_run_steps" {
     String id "🗝️"
-    String status
+    String status 
     Json output "❓"
     DateTime startedAt "❓"
     DateTime completedAt "❓"
     }
-
+  
 
   "work_item_targets" {
     String id "🗝️"
-    String targetCapabilityId
+    String targetCapabilityId 
     String roleKey "❓"
-    WorkItemTargetStatus status
+    WorkItemTargetStatus status 
     String claimedById "❓"
     Json output "❓"
     DateTime claimedAt "❓"
     DateTime startedAt "❓"
     DateTime submittedAt "❓"
     DateTime completedAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     String tenantId "❓"
     }
-
+  
 
   "work_item_events" {
     String id "🗝️"
-    WorkItemEventType eventType
+    WorkItemEventType eventType 
     String actorId "❓"
     Json payload "❓"
-    DateTime createdAt
+    DateTime createdAt 
     String tenantId "❓"
     }
-
+  
 
   "work_item_clarifications" {
     String id "🗝️"
-    WorkItemClarificationDirection direction
-    WorkItemClarificationStatus status
-    String question
+    WorkItemClarificationDirection direction 
+    WorkItemClarificationStatus status 
+    String question 
     String answer "❓"
     String requestedById "❓"
     String answeredById "❓"
     DateTime answeredAt "❓"
     Json payload "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     String tenantId "❓"
     }
-
+  
 
   "metadata_definitions" {
     String id "🗝️"
-    MetadataDefinitionKind kind
-    String key
-    Int version
-    MetadataDefinitionStatus status
-    MetadataScopeType scopeType
-    String scopeId
-    String label
+    MetadataDefinitionKind kind 
+    String key 
+    Int version 
+    MetadataDefinitionStatus status 
+    MetadataScopeType scopeType 
+    String scopeId 
+    String label 
     String description "❓"
     String icon "❓"
     String color "❓"
     String category "❓"
-    Json schema
-    Json defaults
-    Json policy
-    Json ui
-    Json compatibility
-    DateTime createdAt
-    DateTime updatedAt
+    Json schema 
+    Json defaults 
+    Json policy 
+    Json ui 
+    Json compatibility 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "work_item_routing_policies" {
     String id "🗝️"
-    String capabilityId
-    String workItemTypeKey
-    String workflowTypeKey
-    WorkItemRoutingMode routingMode
-    Int priority
-    Json selector
-    Boolean isActive
-    DateTime createdAt
-    DateTime updatedAt
+    String capabilityId 
+    String workItemTypeKey 
+    String workflowTypeKey 
+    WorkItemRoutingMode routingMode 
+    Int priority 
+    Json selector 
+    Boolean isActive 
+    DateTime createdAt 
+    DateTime updatedAt 
     String tenantId "❓"
     }
-
+  
 
   "work_item_triggers" {
     String id "🗝️"
-    WorkItemTriggerType triggerType
+    WorkItemTriggerType triggerType 
     String eventTypeKey "❓"
     String capabilityId "❓"
-    String workItemTypeKey
-    WorkItemRoutingMode routingMode
-    Json scheduleConfig
-    Json payloadMapping
+    String workItemTypeKey 
+    WorkItemRoutingMode routingMode 
+    Json scheduleConfig 
+    Json payloadMapping 
     String dedupeKey "❓"
-    Boolean isActive
+    Boolean isActive 
     DateTime lastFiredAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     String tenantId "❓"
     }
-
+  
 
   "work_item_event_dedup" {
     String id "🗝️"
-    String triggerId
-    String dedupeValue
+    String triggerId 
+    String dedupeValue 
     String workItemId "❓"
-    DateTime claimedAt
+    DateTime claimedAt 
     }
-
+  
 
   "tasks" {
     String id "🗝️"
     String tenantId "❓"
     String nodeId "❓"
-    String title
+    String title 
     String description "❓"
-    TaskStatus status
-    AssignmentMode assignmentMode
-    Int priority
+    TaskStatus status 
+    AssignmentMode assignmentMode 
+    Int priority 
     DateTime dueAt "❓"
     Json formSchema "❓"
     Json formData "❓"
     String createdById "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "task_assignments" {
     String id "🗝️"
@@ -1040,11 +1313,11 @@ EVENT EVENT
     String teamId "❓"
     String roleId "❓"
     String skillId "❓"
-    DateTime assignedAt
+    DateTime assignedAt 
     DateTime claimedAt "❓"
     DateTime completedAt "❓"
     }
-
+  
 
   "team_queue_items" {
     String id "🗝️"
@@ -1053,196 +1326,200 @@ EVENT EVENT
     String capabilityId "❓"
     String assignmentMode "❓"
     String claimedById "❓"
-    DateTime enqueuedAt
+    DateTime enqueuedAt 
     DateTime claimedAt "❓"
     }
-
+  
 
   "task_comments" {
     String id "🗝️"
-    String authorId
-    String content
-    DateTime createdAt
+    String authorId 
+    String content 
+    DateTime createdAt 
     }
-
+  
 
   "task_status_history" {
     String id "🗝️"
     TaskStatus previousStatus "❓"
-    TaskStatus newStatus
+    TaskStatus newStatus 
     String changedById "❓"
     String reason "❓"
-    DateTime changedAt
+    DateTime changedAt 
     }
-
+  
 
   "approval_requests" {
     String id "🗝️"
     String instanceId "❓"
     String tenantId "❓"
     String nodeId "❓"
-    String subjectType
-    String subjectId
-    String requestedById
+    String subjectType 
+    String subjectId 
+    String requestedById 
     String assignedToId "❓"
     String assignmentMode "❓"
     String teamId "❓"
     String roleKey "❓"
     String skillKey "❓"
     String capabilityId "❓"
-    ApprovalStatus status
+    ApprovalStatus status 
     DateTime dueAt "❓"
     Json formData "❓"
-    Int quorumRequired
-    Boolean adminOverride
+    Int quorumRequired 
+    Boolean adminOverride 
     DateTime quorumMetAt "❓"
-    Json escalationPolicy
-    Int escalationLevel
+    Json escalationPolicy 
+    Int escalationLevel 
     DateTime nextEscalationAt "❓"
     DateTime lastEscalatedAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "approval_decisions" {
     String id "🗝️"
-    String decidedById
-    ApprovalStatus decision
+    String decidedById 
+    ApprovalStatus decision 
     String conditions "❓"
     String notes "❓"
-    DateTime decidedAt
+    DateTime decidedAt 
     }
-
+  
 
   "approval_escalations" {
     String id "🗝️"
-    Int level
+    Int level 
     String targetUserId "❓"
     String targetTeamId "❓"
     String targetRoleKey "❓"
     String targetSkillKey "❓"
     String reason "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "planner_sessions" {
     String id "🗝️"
-    String capabilityId
-    String createdById
+    String capabilityId 
+    String createdById 
     String title "❓"
     String story "❓"
-    String status
+    String status 
     String intent "❓"
     String modelAlias "❓"
     String runtimePreference "❓"
     String governancePreset "❓"
-    Json messages
-    Json milestones
+    Json messages 
+    Json milestones 
     Json critic "❓"
-    Json metadata
-    Int version
+    Json metadata 
+    Int version 
     String tenantId "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "planner_session_revisions" {
     String id "🗝️"
-    Int version
-    Json messages
-    Json milestones
+    Int version 
+    Json messages 
+    Json milestones 
     Json response "❓"
     String createdById "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "work_notifications" {
     String id "🗝️"
     String userId "❓"
     String teamId "❓"
     String tenantId "❓"
-    String kind
-    String title
-    String message
-    String severity
-    String status
+    String kind 
+    String title 
+    String message 
+    String source 
+    String threadKey "❓"
+    String severity 
+    String status 
     String entityType "❓"
     String entityId "❓"
     String href "❓"
-    Json payload
+    Json payload 
+    Json why 
+    Json deliveryPolicy 
     DateTime dueAt "❓"
     DateTime readAt "❓"
     DateTime resolvedAt "❓"
     DateTime snoozedUntil "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "workflow_checkpoints" {
     String id "🗝️"
-    Int sequence
-    String checkpointType
+    Int sequence 
+    String checkpointType 
     String nodeId "❓"
-    Json nodeStates
-    Json context
+    Json nodeStates 
+    Json context 
     String traceId "❓"
     String reason "❓"
     String createdById "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "workflow_simulations" {
     String id "🗝️"
     String createdById "❓"
     String tenantId "❓"
-    String status
-    Json input
+    String status 
+    Json input 
     Json result "❓"
     String traceId "❓"
     String error "❓"
-    DateTime createdAt
+    DateTime createdAt 
     DateTime completedAt "❓"
     }
-
+  
 
   "workflow_replays" {
     String id "🗝️"
     String requestedById "❓"
-    String status
-    Json input
+    String status 
+    Json input 
     Json result "❓"
     String error "❓"
-    DateTime createdAt
+    DateTime createdAt 
     DateTime completedAt "❓"
     }
-
+  
 
   "consumable_types" {
     String id "🗝️"
-    String name
+    String name 
     String description "❓"
-    Json schemaDef
+    Json schemaDef 
     String ownerRoleId "❓"
-    Boolean requiresApproval
-    Boolean allowVersioning
-    DateTime createdAt
-    DateTime updatedAt
+    Boolean requiresApproval 
+    Boolean allowVersioning 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "consumables" {
     String id "🗝️"
     String tenantId "❓"
     String nodeId "❓"
-    String name
-    ConsumableStatus status
-    Int currentVersion
+    String name 
+    ConsumableStatus status 
+    Int currentVersion 
     Json formData "❓"
     String assignedToId "❓"
     String assignmentMode "❓"
@@ -1251,59 +1528,59 @@ EVENT EVENT
     String skillKey "❓"
     String capabilityId "❓"
     String createdById "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "consumable_versions" {
     String id "🗝️"
-    Int version
-    Json payload
+    Int version 
+    Json payload 
     String createdById "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "consumable_events" {
     String id "🗝️"
-    String eventType
+    String eventType 
     Json payload "❓"
-    DateTime occurredAt
+    DateTime occurredAt 
     }
-
+  
 
   "agents" {
     String id "🗝️"
-    String name
+    String name 
     String description "❓"
-    String provider
-    String model
+    String provider 
+    String model 
     String systemPrompt "❓"
-    Boolean isActive
+    Boolean isActive 
     String externalTemplateId "❓"
     DateTime externalSyncedAt "❓"
     String sourceHash "❓"
     String sourceVersion "❓"
     String fetchedBy "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "agent_skills" {
 
     }
-
+  
 
   "agent_runs" {
     String id "🗝️"
     String tenantId "❓"
     String nodeId "❓"
     Int attempt "❓"
-    AgentRunStatus status
+    AgentRunStatus status 
     String initiatedById "❓"
-    String origin
+    String origin 
     String client "❓"
     String traceId "❓"
     String cfCallId "❓"
@@ -1315,44 +1592,44 @@ EVENT EVENT
     String laptopInvocationId "❓"
     DateTime startedAt "❓"
     DateTime completedAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "agent_run_inputs" {
     String id "🗝️"
-    String inputType
-    Json payload
-    DateTime createdAt
+    String inputType 
+    Json payload 
+    DateTime createdAt 
     }
-
+  
 
   "agent_run_outputs" {
     String id "🗝️"
-    String outputType
+    String outputType 
     String rawContent "❓"
     Json structuredPayload "❓"
     Int tokenCount "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "agent_reviews" {
     String id "🗝️"
-    String reviewedById
-    String decision
+    String reviewedById 
+    String decision 
     String notes "❓"
-    DateTime reviewedAt
+    DateTime reviewedAt 
     }
-
+  
 
   "laptop_invocations" {
     String id "🗝️"
     String capabilityId "❓"
-    String client
-    String mode
-    String status
+    String client 
+    String mode 
+    String status 
     String userId "❓"
     String tenantId "❓"
     String mcpUrl "❓"
@@ -1363,158 +1640,158 @@ EVENT EVENT
     String renderedPrompt "❓"
     String promptAssemblyId "❓"
     String envelopeAssemblyId "❓"
-    Json agentSpec
-    Json data
+    Json agentSpec 
+    Json data 
     DateTime lastHeartbeatAt "❓"
-    DateTime startedAt
+    DateTime startedAt 
     DateTime endedAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "laptop_questions" {
     String id "🗝️"
-    String workItemId
-    String question
-    Json context
-    String status
+    String workItemId 
+    String question 
+    Json context 
+    String status 
     String answer "❓"
     String askedById "❓"
     String answeredById "❓"
-    DateTime askedAt
+    DateTime askedAt 
     DateTime answeredAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "blueprint_sessions" {
     String id "🗝️"
-    String goal
-    BlueprintSourceType sourceType
-    String sourceUri
+    String goal 
+    BlueprintSourceType sourceType 
+    String sourceUri 
     String sourceRef "❓"
-    Json includeGlobs
-    Json excludeGlobs
-    String capabilityId
-    String architectAgentTemplateId
-    String developerAgentTemplateId
-    String qaAgentTemplateId
-    BlueprintSessionStatus status
+    Json includeGlobs 
+    Json excludeGlobs 
+    String capabilityId 
+    String architectAgentTemplateId 
+    String developerAgentTemplateId 
+    String qaAgentTemplateId 
+    BlueprintSessionStatus status 
     String workflowInstanceId "❓"
     String multinodeInstanceKey "❓"
     String phaseId "❓"
-    Json metadata
+    Json metadata 
     String createdById "❓"
     String approvedById "❓"
     DateTime approvedAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "blueprint_source_snapshots" {
     String id "🗝️"
-    String status
-    Json manifest
-    Json summary
-    Int fileCount
-    Int totalBytes
+    String status 
+    Json manifest 
+    Json summary 
+    Int fileCount 
+    Int totalBytes 
     String rootHash "❓"
     String error "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "blueprint_stage_runs" {
     String id "🗝️"
-    BlueprintStage stage
-    BlueprintStageStatus status
-    String task
+    BlueprintStage stage 
+    BlueprintStageStatus status 
+    String task 
     String response "❓"
     String error "❓"
     Json correlation "❓"
     Json tokensUsed "❓"
     DateTime startedAt "❓"
     DateTime completedAt "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "blueprint_artifacts" {
     String id "🗝️"
     BlueprintStage stage "❓"
-    String kind
-    String title
+    String kind 
+    String title 
     String content "❓"
     Json payload "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "tools" {
     String id "🗝️"
-    String name
+    String name 
     String description "❓"
-    RiskLevel riskLevel
-    Boolean requiresApproval
-    Boolean isActive
+    RiskLevel riskLevel 
+    Boolean requiresApproval 
+    Boolean isActive 
     String externalToolName "❓"
     String externalVersion "❓"
     DateTime externalSyncedAt "❓"
     String sourceHash "❓"
     String sourceVersion "❓"
     String fetchedBy "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "tool_actions" {
     String id "🗝️"
-    String name
+    String name 
     String description "❓"
-    Json inputSchema
-    Json outputSchema
-    RiskLevel riskLevel
+    Json inputSchema 
+    Json outputSchema 
+    RiskLevel riskLevel 
     }
-
+  
 
   "tool_permissions" {
     String id "🗝️"
-    String toolId
+    String toolId 
     String roleId "❓"
     String actionId "❓"
-    DateTime grantedAt
+    DateTime grantedAt 
     }
-
+  
 
   "execution_runners" {
     String id "🗝️"
-    String name
-    String runnerType
-    Json config
-    Boolean isActive
+    String name 
+    String runnerType 
+    Json config 
+    Boolean isActive 
     }
-
+  
 
   "tool_runs" {
     String id "🗝️"
     String actionId "❓"
     String tenantId "❓"
     String runnerId "❓"
-    ToolRunStatus status
-    Json inputPayload
+    ToolRunStatus status 
+    Json inputPayload 
     Json outputPayload "❓"
     String requestedById "❓"
     String idempotencyKey "❓"
     DateTime startedAt "❓"
     DateTime completedAt "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "tool_run_approvals" {
     String id "🗝️"
@@ -1523,64 +1800,64 @@ EVENT EVENT
     String decision "❓"
     DateTime decidedAt "❓"
     }
-
+  
 
   "policies" {
     String id "🗝️"
-    String name
+    String name 
     String description "❓"
-    String resourceType
-    Boolean isActive
-    Int priority
-    DateTime createdAt
-    DateTime updatedAt
+    String resourceType 
+    Boolean isActive 
+    Int priority 
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "policy_conditions" {
     String id "🗝️"
-    String fieldPath
-    String operator
-    Json value
-    String logicalOperator
+    String fieldPath 
+    String operator 
+    Json value 
+    String logicalOperator 
     }
-
+  
 
   "policy_actions" {
     String id "🗝️"
-    String actionType
-    Json actionConfig
+    String actionType 
+    Json actionConfig 
     }
-
+  
 
   "event_log" {
     String id "🗝️"
-    String eventType
-    String entityType
-    String entityId
+    String eventType 
+    String entityType 
+    String entityId 
     String actorId "❓"
     String traceId "❓"
     String tenantId "❓"
     Json payload "❓"
-    DateTime occurredAt
+    DateTime occurredAt 
     }
-
+  
 
   "receipts" {
     String id "🗝️"
-    String receiptType
-    String entityType
-    String entityId
+    String receiptType 
+    String entityType 
+    String entityId 
     String eventLogId "❓"
-    Json content
-    DateTime generatedAt
+    Json content 
+    DateTime generatedAt 
     }
-
+  
 
   "documents" {
     String id "🗝️"
-    String name
-    String kind
+    String name 
+    String kind 
     String mimeType "❓"
     BigInt sizeBytes "❓"
     String storageKey "❓"
@@ -1588,176 +1865,176 @@ EVENT EVENT
     String url "❓"
     String provider "❓"
     String uploadedById "❓"
-    DateTime uploadedAt
+    DateTime uploadedAt 
     String tenantId "❓"
     }
-
+  
 
   "custom_node_types" {
     String id "🗝️"
-    String name
-    String label
+    String name 
+    String label 
     String description "❓"
-    String color
-    String icon
-    String baseType
-    Json fields
-    Boolean supportsForms
-    Boolean isActive
+    String color 
+    String icon 
+    String baseType 
+    Json fields 
+    Boolean supportsForms 
+    Boolean isActive 
     String createdById "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "outbox_events" {
     String id "🗝️"
-    String aggregateType
-    String aggregateId
-    String eventType
-    Json payload
-    OutboxStatus status
-    DateTime createdAt
+    String aggregateType 
+    String aggregateId 
+    String eventType 
+    Json payload 
+    OutboxStatus status 
+    DateTime createdAt 
     DateTime processedAt "❓"
     String errorMessage "❓"
     }
-
+  
 
   "connectors" {
     String id "🗝️"
-    ConnectorType type
-    String name
+    ConnectorType type 
+    String name 
     String description "❓"
-    Json config
-    Json credentials
+    Json config 
+    Json credentials 
     DateTime archivedAt "❓"
     String createdById "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "pending_executions" {
     String id "🗝️"
-    Int attempt
-    ExecutionLocation location
-    String claimToken
+    Int attempt 
+    ExecutionLocation location 
+    String claimToken 
     Json payload "❓"
     DateTime claimedAt "❓"
     String claimedBy "❓"
     DateTime completedAt "❓"
     Json result "❓"
     String error "❓"
-    DateTime expiresAt
-    DateTime createdAt
+    DateTime expiresAt 
+    DateTime createdAt 
     }
-
+  
 
   "artifact_templates" {
     String id "🗝️"
-    String name
+    String name 
     String description "❓"
-    String type
-    String status
-    Int version
-    Json sections
-    Json parties
+    String type 
+    String status 
+    Int version 
+    Json sections 
+    Json parties 
     Json metadata "❓"
-    String createdById
+    String createdById 
     String teamName "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "event_outbox" {
     String id "🗝️"
-    String eventName
-    String sourceService
+    String eventName 
+    String sourceService 
     String traceId "❓"
-    String subjectKind
-    String subjectId
-    Json envelope
+    String subjectKind 
+    String subjectId 
+    Json envelope 
     String tenantId "❓"
-    String status
-    Int attempts
-    DateTime emittedAt
+    String status 
+    Int attempts 
+    DateTime emittedAt 
     DateTime lastAttemptAt "❓"
     String lastError "❓"
     }
-
+  
 
   "event_subscriptions" {
     String id "🗝️"
-    String subscriberId
-    String eventPattern
-    String targetUrl
+    String subscriberId 
+    String eventPattern 
+    String targetUrl 
     String secret "❓"
-    Boolean isActive
+    Boolean isActive 
     Json metadata "❓"
     String createdById "❓"
     String tenantId "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "event_deliveries" {
     String id "🗝️"
-    String status
-    Int attempts
+    String status 
+    Int attempts 
     DateTime lastAttemptAt "❓"
     String lastError "❓"
     DateTime deliveredAt "❓"
     Int responseStatus "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "prompt_profile_snapshots" {
     String id "🗝️"
-    String externalId
+    String externalId 
     String name "❓"
     String capabilityId "❓"
     String scope "❓"
-    Json payload
-    String sourceHash
+    Json payload 
+    String sourceHash 
     String sourceVersion "❓"
-    DateTime fetchedAt
+    DateTime fetchedAt 
     String fetchedBy "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "capability_snapshots" {
     String id "🗝️"
-    String externalId
+    String externalId 
     String capabilityKey "❓"
     String name "❓"
     String capabilityType "❓"
-    Json payload
-    String sourceHash
+    Json payload 
+    String sourceHash 
     String sourceVersion "❓"
-    DateTime fetchedAt
+    DateTime fetchedAt 
     String fetchedBy "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "feature_flags" {
     String key "🗝️"
-    Boolean enabled
+    Boolean enabled 
     String description "❓"
     String updatedById "❓"
-    DateTime updatedAt
+    DateTime updatedAt 
     }
-
+  
 
   "workbench_definitions" {
     String id "🗝️"
-    String workflowNodeId
-    String name
-    Int version
+    String workflowNodeId 
+    String name 
+    Int version 
     String goal "❓"
     String sourceType "❓"
     String sourceUri "❓"
@@ -1766,254 +2043,698 @@ EVENT EVENT
     String architectAgentTemplateId "❓"
     String developerAgentTemplateId "❓"
     String qaAgentTemplateId "❓"
-    Int maxLoopsPerStage
-    Int maxTotalSendBacks
-    String gateMode
+    Int maxLoopsPerStage 
+    Int maxTotalSendBacks 
+    String gateMode 
     String finalPackKey "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "workbench_stages" {
     String id "🗝️"
-    String stageKey
-    String label
-    String agentRole
+    String stageKey 
+    String label 
+    String agentRole 
     String agentTemplateId "❓"
     String promptProfileKey "❓"
-    Int ordinal
+    Int ordinal 
     Float positionX "❓"
     Float positionY "❓"
-    Boolean required
-    Boolean terminal
-    Boolean approvalRequired
-    Boolean repoAccess
-    String toolPolicy
-    String contextPolicy
+    Boolean required 
+    Boolean terminal 
+    Boolean approvalRequired 
+    Boolean repoAccess 
+    String toolPolicy 
+    String contextPolicy 
     String governancePolicyId "❓"
     String governanceEnforcement "❓"
     Int governancePriority "❓"
     Json governanceContributions "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "workbench_expected_artifacts" {
     String id "🗝️"
-    String kind
-    String title
+    String kind 
+    String title 
     String description "❓"
-    String format
-    Boolean required
-    Int ordinal
-    Boolean editable
+    String format 
+    Boolean required 
+    Int ordinal 
+    Boolean editable 
     String templateId "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "workbench_stage_edges" {
     String id "🗝️"
-    String kind
+    String kind 
     String label "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "workbench_artifact_consumes" {
     String id "🗝️"
-    Boolean required
-    Boolean inferred
-    DateTime createdAt
+    Boolean required 
+    Boolean inferred 
+    DateTime createdAt 
     }
-
+  
 
   "workbench_stage_questions" {
     String id "🗝️"
-    String questionId
-    String text
-    Boolean required
-    Boolean freeform
-    Int ordinal
+    String questionId 
+    String text 
+    Boolean required 
+    Boolean freeform 
+    Int ordinal 
     Json options "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "llm_routing" {
     String id "🗝️"
-    String touchPoint
-    String scopeType
-    String scopeId
-    String modelAlias
-    Boolean enabled
+    String touchPoint 
+    String scopeType 
+    String scopeId 
+    String modelAlias 
+    Boolean enabled 
     Float positionX "❓"
     Float positionY "❓"
     String createdById "❓"
     String tenantId "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "llm_connection" {
     String id "🗝️"
-    String name
-    String provider
+    String name 
+    String provider 
     String baseUrl "❓"
-    String model
-    String alias
+    String model 
+    String alias 
     String credentialEnv "❓"
-    Boolean enabled
+    Boolean enabled 
     String createdById "❓"
     String tenantId "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
+  
 
+  "loop_strategies" {
+    String id "🗝️"
+    String tenantId "❓"
+    String name 
+    String description "❓"
+    String kind 
+    String status 
+    Int currentVersion 
+    String createdById "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "loop_strategy_versions" {
+    String id "🗝️"
+    String tenantId "❓"
+    Int version 
+    Json definition 
+    String contentHash 
+    String createdById "❓"
+    DateTime publishedAt "❓"
+    DateTime createdAt 
+    }
+  
 
   "codegen_specs" {
     String id "🗝️"
-    String specName
-    String version
-    String kind
-    String state
-    String yaml
-    Json canonicalJson
-    String specHash
+    String specName 
+    String version 
+    String kind 
+    String state 
+    String yaml 
+    Json canonicalJson 
+    String specHash 
     Json irJson "❓"
     String irHash "❓"
     String workItemId "❓"
     String createdById "❓"
     String tenantId "❓"
-    DateTime createdAt
-    DateTime updatedAt
+    DateTime createdAt 
+    DateTime updatedAt 
     }
-
+  
 
   "codegen_spec_lifecycle_events" {
     String id "🗝️"
     String fromState "❓"
-    String toState
+    String toState 
     String actorId "❓"
     String reason "❓"
     Json payload "❓"
-    DateTime occurredAt
+    DateTime occurredAt 
     }
-
+  
 
   "codegen_runs" {
     String id "🗝️"
-    String irHash
-    String templateVersion
-    String generatorVersion
-    String status
-    String mode
+    String irHash 
+    String templateVersion 
+    String generatorVersion 
+    String status 
+    String mode 
     String outputPath "❓"
     String workflowInstanceId "❓"
     String tenantId "❓"
-    DateTime startedAt
+    DateTime startedAt 
     DateTime completedAt "❓"
     }
-
+  
 
   "codegen_repo_models" {
     String id "🗝️"
-    String repoPath
-    String language
-    String framework
-    Json modelJson
-    String modelHash
+    String repoPath 
+    String language 
+    String framework 
+    Json modelJson 
+    String modelHash 
     String scannedById "❓"
     String tenantId "❓"
-    DateTime scannedAt
+    DateTime scannedAt 
     }
-
+  
 
   "codegen_change_plans" {
     String id "🗝️"
-    Json enhancementSpecJson
-    String enhancementSpecHash
-    Json planJson
-    String planHash
-    String status
+    Json enhancementSpecJson 
+    String enhancementSpecHash 
+    Json planJson 
+    String planHash 
+    String status 
     String tenantId "❓"
-    DateTime createdAt
+    DateTime createdAt 
     DateTime appliedAt "❓"
     }
-
+  
 
   "codegen_artifacts" {
     String id "🗝️"
-    String path
-    String contentHash
-    String fileType
-    String generatedBy
-    Boolean protected
+    String path 
+    String contentHash 
+    String fileType 
+    String generatedBy 
+    Boolean protected 
     String content "❓"
     Int sizeBytes "❓"
-    DateTime createdAt
+    DateTime createdAt 
     }
-
+  
 
   "codegen_gaps" {
     String id "🗝️"
-    String gapType
-    String severity
+    String gapType 
+    String severity 
     String filePath "❓"
     String className "❓"
     String methodName "❓"
     String regionId "❓"
-    String description
+    String description 
     String recommendedResolution "❓"
-    Boolean llmEligible
-    Boolean resolved
-    DateTime createdAt
+    Boolean llmEligible 
+    Boolean resolved 
+    DateTime createdAt 
     DateTime resolvedAt "❓"
     }
-
+  
 
   "codegen_llm_patch_tasks" {
     String id "🗝️"
     String gapId "❓"
-    String taskType
-    String status
-    String targetFile
+    String taskType 
+    String status 
+    String targetFile 
     String targetClass "❓"
     String targetMethod "❓"
-    String regionId
-    Json allowedChanges
-    Json forbiddenChanges
+    String regionId 
+    Json allowedChanges 
+    Json forbiddenChanges 
     String promptHash "❓"
     String responseHash "❓"
     String cfCallId "❓"
     String bundleHash "❓"
     Json metadata "❓"
-    DateTime createdAt
+    DateTime createdAt 
     DateTime dispatchedAt "❓"
     DateTime completedAt "❓"
     }
-
+  
 
   "codegen_verifications" {
     String id "🗝️"
-    String status
-    Json result
-    DateTime createdAt
+    String status 
+    Json result 
+    DateTime createdAt 
     }
-
+  
 
   "codegen_receipts" {
     String id "🗝️"
-    Json receiptJson
-    String receiptHash
-    DateTime createdAt
+    Json receiptJson 
+    String receiptHash 
+    DateTime createdAt 
     }
+  
 
+  "workflow_run_clones" {
+    String id "🗝️"
+    String sourceInstanceId 
+    String cloneInstanceId "❓"
+    String sourceCheckpointId "❓"
+    String requestedById "❓"
+    String tenantId "❓"
+    String reason "❓"
+    String status 
+    Json isolatedContext 
+    DateTime createdAt 
+    DateTime completedAt "❓"
+    String error "❓"
+    }
+  
+
+  "workflow_template_migrations" {
+    String id "🗝️"
+    String templateId 
+    Int fromVersion 
+    Int toVersion 
+    Json nodeMap 
+    String status 
+    Json warnings 
+    String createdById "❓"
+    String tenantId "❓"
+    DateTime createdAt 
+    DateTime appliedAt "❓"
+    }
+  
+
+  "workflow_time_travel_snapshots" {
+    String id "🗝️"
+    String instanceId 
+    String checkpointId "❓"
+    String nodeId "❓"
+    String tenantId "❓"
+    Json context 
+    Json nodeStates 
+    Json routingDecisions 
+    Json promptReferences 
+    Json policySnapshot 
+    Json artifactReferences 
+    String createdById "❓"
+    DateTime createdAt 
+    }
+  
+
+  "workflow_compensation_executions" {
+    String id "🗝️"
+    String instanceId 
+    String nodeId 
+    String actionKey 
+    String tenantId "❓"
+    String status 
+    Json config 
+    Json result "❓"
+    String requestedById "❓"
+    DateTime createdAt 
+    DateTime completedAt "❓"
+    String error "❓"
+    }
+  
+
+  "work_comments" {
+    String id "🗝️"
+    String tenantId "❓"
+    String entityType 
+    String entityId 
+    String authorId 
+    String parentId "❓"
+    String body 
+    Json mentions 
+    String status 
+    DateTime createdAt 
+    DateTime updatedAt 
+    DateTime resolvedAt "❓"
+    String resolvedBy "❓"
+    }
+  
+
+  "notification_preferences" {
+    String id "🗝️"
+    String tenantId "❓"
+    String userId 
+    Json categories 
+    Json channels 
+    String digestMode 
+    Json quietHours 
+    String severityMin 
+    String timezone 
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "notification_subscriptions" {
+    String id "🗝️"
+    String tenantId "❓"
+    String userId "❓"
+    String teamId "❓"
+    String entityType "❓"
+    String entityId "❓"
+    String capabilityId "❓"
+    String workflowId "❓"
+    String severityMin 
+    Json channels 
+    Boolean enabled 
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "notification_deliveries" {
+    String id "🗝️"
+    String notificationId 
+    String tenantId "❓"
+    String channel 
+    String status 
+    Int attempts 
+    String providerId "❓"
+    String lastError "❓"
+    DateTime nextAttemptAt "❓"
+    DateTime deliveredAt "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "notification_audit" {
+    String id "🗝️"
+    String notificationId 
+    String tenantId "❓"
+    String actorId "❓"
+    String action 
+    String channel "❓"
+    Json details 
+    DateTime createdAt 
+    }
+  
+
+  "out_of_office_delegations" {
+    String id "🗝️"
+    String tenantId "❓"
+    String principalUserId 
+    String delegateUserId 
+    DateTime startsAt 
+    DateTime endsAt 
+    String reason "❓"
+    String status 
+    String createdById "❓"
+    DateTime createdAt 
+    DateTime revokedAt "❓"
+    }
+  
+
+  "governance_policies" {
+    String id "🗝️"
+    String tenantId "❓"
+    String name 
+    String description "❓"
+    String capabilityId "❓"
+    String workflowId "❓"
+    String workItemTypeKey "❓"
+    String mode 
+    String status 
+    Int currentVersion 
+    String createdById "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "governance_policy_versions" {
+    String id "🗝️"
+    String policyId 
+    String tenantId "❓"
+    Int version 
+    String mode 
+    Json rules 
+    Json snapshot 
+    String createdById "❓"
+    DateTime createdAt 
+    DateTime activatedAt "❓"
+    }
+  
+
+  "governance_policy_evaluations" {
+    String id "🗝️"
+    String policyId 
+    Int policyVersion 
+    String tenantId "❓"
+    String instanceId "❓"
+    String nodeId "❓"
+    String workItemId "❓"
+    String mode 
+    String status 
+    Json evidence 
+    Json missing 
+    Json result 
+    String evaluatedById "❓"
+    DateTime createdAt 
+    }
+  
+
+  "capacity_calendars" {
+    String id "🗝️"
+    String tenantId "❓"
+    String ownerType 
+    String ownerId 
+    String timezone 
+    Json weeklyHours 
+    Json holidays 
+    Int wipLimit "❓"
+    String createdById "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "capacity_allocations" {
+    String id "🗝️"
+    String tenantId "❓"
+    String calendarId 
+    String workItemId "❓"
+    String programStepId "❓"
+    String capabilityId "❓"
+    String skillKey "❓"
+    DateTime startAt 
+    DateTime endAt 
+    Float estimatedHours 
+    String status 
+    String risk 
+    Json metadata 
+    String createdById "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "planning_forecasts" {
+    String id "🗝️"
+    String tenantId "❓"
+    String plannerSessionId "❓"
+    String capabilityId "❓"
+    Json scenario 
+    String status 
+    Json result 
+    String createdById "❓"
+    DateTime createdAt 
+    }
+  
+
+  "runtime_policies" {
+    String id "🗝️"
+    String tenantId "❓"
+    String name 
+    String minVersion "❓"
+    Json allowedPaths 
+    String consentMode 
+    Boolean autoUpdate 
+    Boolean killSwitch 
+    Boolean enabled 
+    String createdById "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "runtime_devices" {
+    String id "🗝️"
+    String tenantId "❓"
+    String userId 
+    String runtimeId 
+    String deviceName 
+    String platform 
+    String version "❓"
+    String status 
+    String policyId "❓"
+    Json workspaceProfiles 
+    DateTime lastSeenAt "❓"
+    DateTime revokedAt "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "runtime_consents" {
+    String id "🗝️"
+    String tenantId "❓"
+    String runtimeId 
+    String userId 
+    String action 
+    String scope 
+    String decision 
+    String reason "❓"
+    DateTime expiresAt "❓"
+    DateTime createdAt 
+    }
+  
+
+  "grounding_evidence" {
+    String id "🗝️"
+    String tenantId "❓"
+    String instanceId "❓"
+    String nodeId "❓"
+    String agentRunId "❓"
+    String sourceType 
+    String sourceUri "❓"
+    String contentHash "❓"
+    DateTime retrievedAt 
+    Float influenceScore "❓"
+    String outcome "❓"
+    Json feedback 
+    DateTime createdAt 
+    }
+  
+
+  "code_impact_snapshots" {
+    String id "🗝️"
+    String tenantId "❓"
+    String instanceId "❓"
+    String nodeId "❓"
+    String workItemId "❓"
+    String commitSha "❓"
+    String query "❓"
+    String provider 
+    Json files 
+    Json callGraph 
+    Json matches 
+    Float riskScore "❓"
+    String createdById "❓"
+    DateTime createdAt 
+    }
+  
+
+  "independent_verifications" {
+    String id "🗝️"
+    String tenantId "❓"
+    String instanceId "❓"
+    String nodeId "❓"
+    String workItemId "❓"
+    String commitSha "❓"
+    String environment "❓"
+    String command 
+    String status 
+    Json result 
+    Json testSummary 
+    Json coverage 
+    Float riskScore "❓"
+    DateTime startedAt "❓"
+    DateTime completedAt "❓"
+    String requestedById "❓"
+    DateTime createdAt 
+    }
+  
+
+  "verification_findings" {
+    String id "🗝️"
+    String verificationId 
+    String tenantId "❓"
+    String filePath "❓"
+    String ruleKey "❓"
+    String severity 
+    String message 
+    Json evidence 
+    DateTime createdAt 
+    }
+  
+
+  "discovery_sessions" {
+    String id "🗝️"
+    String tenantId "❓"
+    DiscoveryScopeType scopeType 
+    String scopeId 
+    DiscoverySessionStatus status 
+    String touchPoint "❓"
+    Json budget "❓"
+    String createdById "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "discovery_questions" {
+    String id "🗝️"
+    String tenantId "❓"
+    String text 
+    DiscoveryQuestionKind kind 
+    DiscoveryQuestionSource source 
+    Boolean blocking 
+    DiscoveryQuestionStatus status 
+    Json options "❓"
+    String answer "❓"
+    String answeredById "❓"
+    DateTime answeredAt "❓"
+    String proposedAnswer "❓"
+    Float confidence "❓"
+    Int ordinal 
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "discovery_assumptions" {
+    String id "🗝️"
+    String tenantId "❓"
+    String text 
+    Float confidence 
+    DiscoveryAssumptionStatus status 
+    String validatedById "❓"
+    DateTime validatedAt "❓"
+    Json evidenceRef "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
     "users" }o--|o teams : "team"
     "teams" }o--|o departments : "department"
     "team_variables" }o--|| teams : "team"
@@ -2032,6 +2753,7 @@ EVENT EVENT
     "run_snapshots" }o--|| workflow_templates : "workflow"
     "workflow_permissions" |o--|| "WorkflowPermissionAction" : "enum:action"
     "workflow_permissions" }o--|| workflow_templates : "template"
+    "workflow_access_grants" }o--|| workflow_templates : "workflow"
     "workflow_triggers" }o--|| workflow_templates : "template"
     "workflow_triggers" |o--|| "TriggerType" : "enum:type"
     "workflow_template_versions" }o--|| workflow_templates : "template"
@@ -2048,6 +2770,7 @@ EVENT EVENT
     "workflow_instances" |o--|| "InstanceStatus" : "enum:status"
     "workflow_instances" }o--|o initiatives : "initiative"
     "workflow_instances" |o--|o workflow_instances : "parent"
+    "workflow_authorization_snapshots" |o--|| workflow_instances : "instance"
     "workflow_run_budgets" |o--|| "WorkflowBudgetEnforcementMode" : "enum:enforcementMode"
     "workflow_run_budgets" |o--|| "WorkflowRunBudgetStatus" : "enum:status"
     "workflow_run_budgets" |o--|| workflow_instances : "instance"
@@ -2073,6 +2796,20 @@ EVENT EVENT
     "work_items" }o--|o workflow_instances : "sourceWorkflowInstance"
     "work_items" }o--|o workflow_nodes : "sourceWorkflowNode"
     "work_items" }o--|o work_item_routing_policies : "routingPolicy"
+    "specification_versions" |o--|| "SpecificationStatus" : "enum:status"
+    "specification_versions" }o--|| work_items : "workItem"
+    "development_targets" |o--|| work_items : "workItem"
+    "implementation_submissions" }o--|| specification_versions : "specificationVersion"
+    "implementation_submissions" }o--|| work_items : "workItem"
+    "reconciliation_runs" |o--|| "ReconciliationStatus" : "enum:status"
+    "reconciliation_runs" }o--|| implementation_submissions : "submission"
+    "reconciliation_runs" }o--|| work_items : "workItem"
+    "requirement_verdicts" |o--|| "RequirementVerdictValue" : "enum:verdict"
+    "requirement_verdicts" }o--|| reconciliation_runs : "reconciliationRun"
+    "reconciliation_findings" |o--|| "ReconciliationFindingSeverity" : "enum:severity"
+    "reconciliation_findings" }o--|| reconciliation_runs : "reconciliationRun"
+    "reconciliation_jobs" |o--|| "ReconciliationJobStatus" : "enum:status"
+    "reconciliation_jobs" |o--|| reconciliation_runs : "reconciliationRun"
     "work_item_dependencies" }o--|| work_items : "predecessor"
     "work_item_dependencies" }o--|| work_items : "successor"
     "work_program_steps" |o--|| "WorkItemRoutingMode" : "enum:routingMode"
@@ -2169,6 +2906,7 @@ EVENT EVENT
     "workbench_artifact_consumes" }o--|| workbench_stages : "consumerStage"
     "workbench_artifact_consumes" }o--|| workbench_expected_artifacts : "producerArtifact"
     "workbench_stage_questions" }o--|| workbench_stages : "stage"
+    "loop_strategy_versions" }o--|| loop_strategies : "strategy"
     "codegen_spec_lifecycle_events" }o--|| codegen_specs : "spec"
     "codegen_runs" }o--|| codegen_specs : "spec"
     "codegen_runs" }o--|o codegen_change_plans : "changePlan"
@@ -2178,4 +2916,12 @@ EVENT EVENT
     "codegen_llm_patch_tasks" }o--|| codegen_runs : "run"
     "codegen_verifications" }o--|| codegen_runs : "run"
     "codegen_receipts" |o--|| codegen_runs : "run"
+    "discovery_sessions" |o--|| "DiscoveryScopeType" : "enum:scopeType"
+    "discovery_sessions" |o--|| "DiscoverySessionStatus" : "enum:status"
+    "discovery_questions" |o--|| "DiscoveryQuestionKind" : "enum:kind"
+    "discovery_questions" |o--|| "DiscoveryQuestionSource" : "enum:source"
+    "discovery_questions" |o--|| "DiscoveryQuestionStatus" : "enum:status"
+    "discovery_questions" }o--|| discovery_sessions : "session"
+    "discovery_assumptions" |o--|| "DiscoveryAssumptionStatus" : "enum:status"
+    "discovery_assumptions" }o--|| discovery_sessions : "session"
 ```

@@ -51,6 +51,7 @@ import { incomingEventsRouter } from './modules/audit/incoming-events.router'
 import { blueprintRouter } from './modules/blueprint/blueprint.router'
 import { eventHorizonRouter } from './modules/event-horizon/event-horizon.router'
 import { llmRoutingRouter } from './modules/llm-routing/llm-routing.router'
+import { discoveryRouter } from './modules/discovery/discovery.router'
 import { loopStrategyRouter } from './modules/workflow/loop-strategy.router'
 import { directLlmToolsRouter } from './modules/workflow/direct-llm-tools.router'
 import { codegenRouter } from './modules/codegen/codegen.router'
@@ -207,6 +208,7 @@ export function createApp(): Express {
   app.use('/api/blueprint', authMiddleware, blueprintRouter)
   app.use('/api/event-horizon', authMiddleware, eventHorizonRouter)
   app.use('/api/llm-routing', authMiddleware, llmRoutingRouter)
+  app.use('/api/discovery', authMiddleware, discoveryRouter)
   app.use('/api/loop-strategies', authMiddleware, loopStrategyRouter)
   // Direct LLM tool catalog is read-only. Strategy CRUD remains isolated under
   // /api/loop-strategies so a catalog lookup can never mutate strategy state.

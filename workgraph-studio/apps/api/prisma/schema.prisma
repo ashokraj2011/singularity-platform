@@ -3799,3 +3799,129 @@ model VerificationFinding {
   @@index([tenantId, verificationId, severity])
   @@map("verification_findings")
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADR 0006 — Unified Discovery & Elicitation. One first-class capability that
+// consolidates the three legacy "handle the unknowns" mechanisms (workbench
+// stage questions, work-item clarifications, LLM open-questions) behind a single
+// model + service. A DiscoverySession attaches to a workflow stage, a work item,
+// or a run; it can actively reduce unknowns by talking to the governed LLM
+// gateway / Copilot (via Context Fabric) and read-only MCP research tools.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum DiscoveryScopeType {
+  WORKFLOW_STAGE
+  WORK_ITEM
+  RUN
+}
+
+enum DiscoverySessionStatus {
+  OPEN
+  RESOLVING
+  BLOCKED
+  RESOLVED
+  ABANDONED
+}
+
+enum DiscoveryQuestionKind {
+  single_select
+  multi_select
+  freeform
+  clarification
+}
+
+enum DiscoveryQuestionSource {
+  configured
+  llm
+  copilot
+  human
+  agent
+}
+
+enum DiscoveryQuestionStatus {
+  OPEN
+  ANSWERED
+  DISMISSED
+}
+
+enum DiscoveryAssumptionStatus {
+  PROPOSED
+  ACCEPTED
+  REJECTED
+  VALIDATED
+  INVALIDATED
+}
+
+model DiscoverySession {
+  id         String                 @id @default(uuid())
+  tenantId   String?                @default("default")
+  scopeType  DiscoveryScopeType
+  // stageId | workItemId | runId, depending on scopeType.
+  scopeId    String
+  status     DiscoverySessionStatus @default(OPEN)
+  // Optional LLM routing hints: which touch point + capability drove elicitation.
+  touchPoint String?                @default("DISCOVERY")
+  // Running budget accounting for the elicitation loop (turns/tokens/tool calls).
+  budget     Json?
+  createdById String?
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
+
+  questions   DiscoveryQuestion[]
+  assumptions DiscoveryAssumption[]
+
+  @@index([tenantId, scopeType, scopeId])
+  @@index([tenantId, status])
+  @@map("discovery_sessions")
+}
+
+model DiscoveryQuestion {
+  id             String                  @id @default(uuid())
+  sessionId      String
+  tenantId       String?                 @default("default")
+  text           String
+  kind           DiscoveryQuestionKind   @default(clarification)
+  source         DiscoveryQuestionSource @default(human)
+  // Unifies the legacy "required" gate semantics: a blocking, OPEN question
+  // parks the session (and any workflow node bound to it).
+  blocking       Boolean                 @default(false)
+  status         DiscoveryQuestionStatus @default(OPEN)
+  // Structured answer set: [{label, impact?, recommended?}].
+  options        Json?
+  answer         String?
+  answeredById   String?
+  answeredAt     DateTime?
+  // Model/tool-proposed answer pending human confirmation, with confidence 0..1.
+  proposedAnswer String?
+  confidence     Float?
+  ordinal        Int                     @default(0)
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+
+  session DiscoverySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, status])
+  @@index([tenantId])
+  @@map("discovery_questions")
+}
+
+model DiscoveryAssumption {
+  id           String                    @id @default(uuid())
+  sessionId    String
+  tenantId     String?                   @default("default")
+  text         String
+  confidence   Float                     @default(0.5)
+  status       DiscoveryAssumptionStatus @default(PROPOSED)
+  validatedById String?
+  validatedAt  DateTime?
+  // Evidence supporting/refuting the assumption (tool receipts, links, etc.).
+  evidenceRef  Json?
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+
+  session DiscoverySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, status])
+  @@index([tenantId])
+  @@map("discovery_assumptions")
+}
