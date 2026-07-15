@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo } from "react";
+import { Suspense, useMemo, type CSSProperties } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ArtifactDesignerPage } from "workgraph-web/features/artifact/ArtifactDesignerPage";
 import { ArtifactEditorPage } from "workgraph-web/features/artifact/ArtifactEditorPage";
@@ -14,12 +14,37 @@ import { RunWorkflowPage } from "workgraph-web/features/runtime/RunWorkflowPage"
 import { RunsDashboardPage } from "workgraph-web/features/runtime/RunsDashboardPage";
 import { WorkItemsPage } from "workgraph-web/features/runtime/WorkItemsPage";
 import { WorkDetailPage } from "workgraph-web/features/runtime/WorkDetailPage";
+import type { ProjectSurfaceRenderer } from "workgraph-web/features/runtime/workitem/WorkItemIde";
 import { MetadataRegistryPage } from "workgraph-web/features/metadata/MetadataRegistryPage";
 import { PlannerPage } from "workgraph-web/features/planner/PlannerPage";
 import { CustomNodeTypesPage } from "workgraph-web/features/workflow/CustomNodeTypesPage";
 import { WorkflowStudioPage } from "workgraph-web/features/workflow/WorkflowStudioPage";
 import { WorkflowsListPage } from "workgraph-web/features/workflow/WorkflowsListPage";
 import { WorkgraphSurfaceBoundary } from "@/components/workflows/WorkgraphSurfaceBoundary";
+import { ProjectAnalysisSurface } from "@/components/studio/ProjectAnalysisSurface";
+import { ProjectRequirementsSurface } from "@/components/studio/ProjectRequirementsSurface";
+import { ProjectDesignSurface } from "@/components/studio/ProjectDesignSurface";
+import { ProjectReconciliationReport } from "@/components/studio/ProjectReconciliationReport";
+import { ProjectRoomsSurface } from "@/components/studio/ProjectRoomsSurface";
+import { CoeditCanvas } from "@/components/studio/CoeditCanvas";
+import { projectIdeTokens } from "@/components/studio/projectIdeTokens";
+
+// Injected into the Work Item IDE so the old /studio project-baseline surfaces render as views inside
+// the single IDE. They are platform-web components (SWR/next), which the workgraph-web IDE cannot
+// import directly, so they are supplied here via a render prop and wrapped in projectIdeTokens so
+// their --studio-* tokens map onto the IDE's spruce palette (and follow the IDE light/dark toggle).
+const renderProjectSurface: ProjectSurfaceRenderer = ({ projectId, surface, theme }) => (
+  <div style={projectIdeTokens(theme) as CSSProperties}>
+    {surface === "analysis" && <ProjectAnalysisSurface projectId={projectId} />}
+    {surface === "requirements" && <ProjectRequirementsSurface projectId={projectId} />}
+    {surface === "design" && <ProjectDesignSurface projectId={projectId} />}
+    {surface === "reconciliation" && <ProjectReconciliationReport projectId={projectId} />}
+    {surface === "rooms" && <ProjectRoomsSurface projectId={projectId} />}
+    {surface === "coedit" && (
+      <CoeditCanvas projectId={projectId} docKey="canvas" surface="coedit" title="Project canvas — live" placeholder="Draft the spec together — problem statements, open questions, sketches. Edits merge live." />
+    )}
+  </div>
+);
 
 // These workgraph-web feature pages now route natively on Next (next/navigation),
 // so the old MemoryRouter/Routes embedding is gone. Each Next route under
@@ -117,7 +142,7 @@ export function LegacyInboxRoute() {
 // kind/id are read from the Next route segment (/workflows/work/[kind]/[id]) and the
 // query from Next's useSearchParams by WorkDetailPage itself.
 export function LegacyWorkDetailRoute(_props: { kind: string; id: string; query?: string }) {
-  return <WgProvider><WorkDetailPage /></WgProvider>;
+  return <WgProvider><WorkDetailPage renderProjectSurface={renderProjectSurface} /></WgProvider>;
 }
 
 export function LegacyCurationRoute() {
