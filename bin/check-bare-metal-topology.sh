@@ -346,6 +346,11 @@ checks["bare-metal applies spec-to-reconciliation migrations"] = (
     and '20260717000000_m88_reconciliation_runs/migration.sql' in bare
     and '20260718000000_m89_reconciliation_jobs/migration.sql' in bare
 )
+checks["bare-metal applies unified discovery migrations"] = (
+    '20260719000000_m90_discovery_sessions/migration.sql' in bare
+    and '20260720000000_m91_discovery_bridge/migration.sql' in bare
+    and '20260721000000_m92_discovery_nodetype/migration.sql' in bare
+)
 checks["bare-metal forwards bounded local logs to the observability lake"] = (
     'boot log-forwarder' in bare
     and 'python3 bin/log-forwarder.py' in bare
