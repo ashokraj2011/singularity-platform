@@ -9,7 +9,7 @@ import type { CSSProperties } from 'react'
 export const cardStyle: CSSProperties = {
   padding: 14,
   borderRadius: 12,
-  background: '#fff',
+  background: 'var(--color-surface-bright)',
   border: '1px solid var(--color-outline-variant)',
   marginBottom: 14,
 }
@@ -32,7 +32,7 @@ export const secondaryButtonStyle: CSSProperties = {
   padding: '8px 13px',
   borderRadius: 9,
   border: '1px solid var(--color-outline-variant)',
-  background: '#fff',
+  background: 'var(--color-surface-bright)',
   color: 'var(--color-on-surface)',
   cursor: 'pointer',
   fontSize: 12,
@@ -49,7 +49,7 @@ export const inputStyle: CSSProperties = {
   border: '1px solid var(--color-outline-variant)',
   fontSize: 12,
   color: 'var(--color-on-surface)',
-  background: '#fff',
+  background: 'var(--color-surface-bright)',
   boxSizing: 'border-box',
 }
 
