@@ -355,6 +355,7 @@ checks["bare-metal applies finalize gate/fan-out migrations"] = (
     '20260724000000_m95_work_item_completion_gate/migration.sql' in bare
     and '20260725000000_m96_completion_program_fanout/migration.sql' in bare
     and '20260725000000_contract_bound_work_execution/migration.sql' in bare
+    and '20260727000000_concept_archive_proposals/migration.sql' in bare
 )
 checks["bare-metal forwards bounded local logs to the observability lake"] = (
     'boot log-forwarder' in bare

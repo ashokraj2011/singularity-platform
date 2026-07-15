@@ -1403,12 +1403,185 @@ model SpecificationProject {
   rooms         Room[]
   claims        Claim[]
   generationPlans GenerationPlan[]
+  studio        Studio?
   completionProgram WorkProgram?         @relation("ProjectCompletionProgram", fields: [completionProgramId], references: [id], onDelete: SetNull)
 
   @@index([status])
   @@index([completionProgramId], map: "ix_specification_projects_completion_program")
   @@index([tenantId], map: "ix_specification_projects_tenant")
   @@map("specification_projects")
+}
+
+// Thin user-facing Studio identity. SpecificationProject remains the durable
+// specification root; Studio owns exploration surfaces such as the Concept
+// Archive and proposal inbox.
+model Studio {
+  id          String   @id @default(uuid())
+  projectId   String   @unique
+  name        String
+  kind        String   @default("CONCEPT_ARCHIVE")
+  status      String   @default("ACTIVE")
+  createdById String?
+  tenantId    String?  @default("default")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project          SpecificationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  conceptArchives  ConceptArchive[]
+  proposals        StudioProposal[]
+
+  @@index([tenantId, status])
+  @@map("studios")
+}
+
+model ConceptArchive {
+  id             String   @id @default(uuid())
+  studioId       String
+  name           String
+  status         String   @default("ACTIVE")
+  axes           Json
+  axesRevision   Int      @default(1)
+  fitnessConfig  Json     @default("{}")
+  contentHash    String?
+  frozenAt       DateTime?
+  createdById    String?
+  tenantId       String?  @default("default")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  studio Studio              @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  cards  ConceptCard[]
+  cells  ArchiveCellState[]
+  events ArchiveEvent[]
+
+  @@index([tenantId, studioId, status])
+  @@map("concept_archives")
+}
+
+model ConceptCard {
+  id              String   @id @default(uuid())
+  archiveId       String
+  title           String
+  summary         String
+  body            Json     @default("{}")
+  authorType      String   @default("HUMAN")
+  authorId        String?
+  agentRole       String?
+  traceId         String?
+  declaredCoords  Json
+  confirmedCoords Json?
+  coordsAxesRevision Int?
+  cellKey         String?
+  status          String   @default("STAGED")
+  fitness         Json     @default("{}")
+  compositeScore  Float    @default(0)
+  pinned          Boolean  @default(false)
+  pinnedById      String?
+  parentCardIds   Json     @default("[]")
+  operator        String   @default("SEED")
+  operatorNote    String?
+  promotedRef     Json?
+  tenantId        String?  @default("default")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  archive   ConceptArchive      @relation(fields: [archiveId], references: [id], onDelete: Cascade)
+  eliteCells ArchiveCellState[] @relation("CellElite")
+  events    ArchiveEvent[]
+  votes     ConceptCardVote[]
+
+  @@index([archiveId, status, createdAt])
+  @@index([archiveId, cellKey])
+  @@index([authorId])
+  @@index([tenantId])
+  @@map("concept_cards")
+}
+
+model ArchiveCellState {
+  id          String   @id @default(uuid())
+  archiveId   String
+  cellKey     String
+  axesRevision Int
+  eliteCardId String?
+  killed      Boolean  @default(false)
+  killReason  String?
+  killClaimId String?
+  killedById  String?
+  tenantId    String?  @default("default")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  archive  ConceptArchive @relation(fields: [archiveId], references: [id], onDelete: Cascade)
+  eliteCard ConceptCard?  @relation("CellElite", fields: [eliteCardId], references: [id], onDelete: SetNull)
+
+  @@unique([archiveId, axesRevision, cellKey])
+  @@index([archiveId, killed])
+  @@map("archive_cell_states")
+}
+
+model ArchiveEvent {
+  id        String   @id @default(uuid())
+  archiveId String
+  cardId    String?
+  cellKey   String?
+  eventType String
+  actorType String
+  actorId   String?
+  payload   Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  archive ConceptArchive @relation(fields: [archiveId], references: [id], onDelete: Cascade)
+  card    ConceptCard?   @relation(fields: [cardId], references: [id], onDelete: SetNull)
+
+  @@index([archiveId, createdAt])
+  @@index([cardId, createdAt])
+  @@map("archive_events")
+}
+
+model ConceptCardVote {
+  id        String   @id @default(uuid())
+  cardId    String
+  userId    String
+  direction Int      @default(1)
+  tenantId  String?  @default("default")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  card ConceptCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@unique([cardId, userId])
+  @@index([tenantId, userId])
+  @@map("concept_card_votes")
+}
+
+model StudioProposal {
+  id            String   @id @default(uuid())
+  studioId      String
+  scopeType     String
+  scopeRef      Json
+  kind          String
+  payload       Json
+  baseRevision  Int?
+  authorType    String   @default("AGENT")
+  authorId      String?
+  agentRole     String?
+  traceId       String?
+  status        String   @default("PENDING")
+  decidedById   String?
+  decisionNote  String?
+  editedPayload Json?
+  rebaseOfId    String?
+  createdAt     DateTime @default(now())
+  decidedAt     DateTime?
+  expiresAt     DateTime?
+  tenantId      String?  @default("default")
+
+  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+
+  @@index([studioId, status, createdAt])
+  @@index([studioId, agentRole, status])
+  @@index([tenantId, status])
+  @@map("studio_proposals")
 }
 
 // The project's shared upstream — the analysis and design that many Work Items draw on, authored

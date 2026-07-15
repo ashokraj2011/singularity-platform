@@ -3,6 +3,7 @@
 import { useState, type CSSProperties } from "react";
 import useSWR from "swr";
 import { Plus, Sparkles, Flame } from "lucide-react";
+import Link from "next/link";
 import { workgraphFetch } from "@/lib/workgraph";
 
 /**
@@ -75,6 +76,7 @@ export function ProjectRoomsSurface({ projectId }: { projectId: string }) {
           <h2 style={{ margin: 0, fontSize: 17, fontWeight: 640, letterSpacing: "-0.02em" }}>Rooms &amp; Claims</h2>
           <p style={{ margin: "3px 0 0", fontSize: 13, color: "var(--studio-muted)" }}>Explore before you commit. Each claim is a hypothesis with a belief — the curve is its posterior; where you disagree is where you&apos;re most ignorant.</p>
         </div>
+        <Link href={`/concept-archive?projectId=${encodeURIComponent(projectId)}`} className="rm-btn" style={{ ...btn, flex: "none", textDecoration: "none" }}>Concept Archive</Link>
       </div>
 
       {err && <div style={errorBanner}>{err}</div>}
