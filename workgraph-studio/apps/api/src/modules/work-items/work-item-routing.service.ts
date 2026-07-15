@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client'
+import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../lib/audit'
@@ -10,27 +11,94 @@ import { normalizeMetadataKey, recordOf } from '../metadata/metadata.service'
 import { assertCanClaimWorkItemTarget } from './work-items.service'
 import { assertTemplatePermission } from '../../lib/permissions/workflowTemplate'
 import { assertWorkItemDependenciesComplete } from './work-item-dependencies.service'
+import { SYSTEM_ROUTE_ACTORS, systemRouteActor } from './work-item-actors'
 
 type RoutingMode = 'MANUAL' | 'AUTO_ATTACH' | 'AUTO_START' | 'SCHEDULED_START'
 
+export type WorkItemRouteActor = string | null
+
+function assertRouteActor(actorId: WorkItemRouteActor, targetCapabilityId: string, tenantId: string | null | undefined): void {
+  if (!actorId) throw new ValidationError('WorkItem routing requires an authenticated user or an explicit automation principal')
+  if (SYSTEM_ROUTE_ACTORS.has(actorId)) {
+    if (!config.WORKFLOW_INTERNAL_AUTOMATION_ENABLED) {
+      throw new ValidationError('Internal WorkItem automation is disabled by WORKFLOW_INTERNAL_AUTOMATION_ENABLED')
+    }
+    // The system principal is only a narrowly scoped route/start identity. It
+    // cannot choose a different tenant or capability; policy/template checks
+    // below still constrain the selected workflow to this target capability.
+    if (!targetCapabilityId || !tenantId) throw new ValidationError('Internal WorkItem automation requires tenant and target capability context')
+    return
+  }
+}
+
 function dateReady(value: Date | null | undefined, now = new Date()): boolean {
   return !value || value.valueOf() <= now.valueOf()
+}
+
+function pathValue(source: unknown, path: string): unknown {
+  const normalized = path.replace(/^\$\.?/, '').trim()
+  if (!normalized) return source
+  return normalized.split('.').filter(Boolean).reduce<unknown>((current, part) => {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return undefined
+    return (current as Record<string, unknown>)[part]
+  }, source)
+}
+
+function selectorValue(context: Record<string, unknown>, key: string): unknown {
+  return pathValue(context, key) ?? pathValue(context, `payload.${key}`) ?? pathValue(context, `input.${key}`)
+}
+
+export function selectorMatches(selector: unknown, context: Record<string, unknown>): boolean {
+  if (!selector || typeof selector !== 'object' || Array.isArray(selector)) return true
+  const entries = Object.entries(selector as Record<string, unknown>)
+  return entries.every(([key, expected]) => {
+    if (key === '$and') return Array.isArray(expected) && expected.every(item => selectorMatches(item, context))
+    if (key === '$or') return Array.isArray(expected) && expected.some(item => selectorMatches(item, context))
+    const actual = selectorValue(context, key)
+    if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
+      const operators = expected as Record<string, unknown>
+      if ('$in' in operators) return Array.isArray(operators.$in) && operators.$in.some(value => Object.is(value, actual))
+      if ('$exists' in operators) return Boolean(operators.$exists) === (actual !== undefined)
+      if ('$ne' in operators) return !Object.is(operators.$ne, actual)
+    }
+    return Object.is(actual, expected)
+  })
+}
+
+export function routingSelectorContext(workItem: { input: unknown; details: unknown; workItemTypeKey: string; title: string }): Record<string, unknown> {
+  const input = recordOf(workItem.input)
+  const details = recordOf(workItem.details)
+  const payload = recordOf(input.payload ?? details.input)
+  return {
+    ...payload,
+    ...input,
+    ...details,
+    payload,
+    input,
+    details,
+    workItemTypeKey: workItem.workItemTypeKey,
+    title: workItem.title,
+  }
 }
 
 async function choosePolicy(args: {
   capabilityId: string
   workItemTypeKey: string
   workflowTypeKey?: string | null
+  tenantId?: string | null
+  selectorContext: Record<string, unknown>
 }) {
-  return prisma.workItemRoutingPolicy.findFirst({
+  const candidates = await prisma.workItemRoutingPolicy.findMany({
     where: {
       capabilityId: args.capabilityId,
       workItemTypeKey: args.workItemTypeKey,
       isActive: true,
+      tenantId: args.tenantId ?? config.WORKGRAPH_DEFAULT_TENANT_ID,
       ...(args.workflowTypeKey ? { workflowTypeKey: args.workflowTypeKey } : {}),
     },
     orderBy: [{ priority: 'desc' }, { updatedAt: 'desc' }],
   })
+  return candidates.find(policy => selectorMatches(policy.selector, args.selectorContext)) ?? null
 }
 
 async function chooseWorkflow(args: {
@@ -38,6 +106,7 @@ async function chooseWorkflow(args: {
   workItemTypeKey: string
   workflowTypeKey?: string | null
   workflowId?: string | null
+  tenantId?: string | null
 }) {
   if (args.workflowId) {
     return prisma.workflow.findFirst({
@@ -50,6 +119,7 @@ async function chooseWorkflow(args: {
       where: {
         id: args.workflowId,
         capabilityId: args.capabilityId,
+        tenantId: args.tenantId ?? config.WORKGRAPH_DEFAULT_TENANT_ID,
         archivedAt: null,
         status: { not: 'ARCHIVED' },
         profile: { not: 'workbench' },
@@ -61,6 +131,7 @@ async function chooseWorkflow(args: {
   return prisma.workflow.findFirst({
     where: {
       capabilityId: args.capabilityId,
+      tenantId: args.tenantId ?? config.WORKGRAPH_DEFAULT_TENANT_ID,
       archivedAt: null,
       status: { not: 'ARCHIVED' },
       profile: { not: 'workbench' },
@@ -239,11 +310,11 @@ export async function routeWorkItem(
   // start a workflow until every BLOCKS predecessor is terminal.
   await assertWorkItemDependenciesComplete(workItemId, workItem.tenantId)
 
-  // Security (finding #3): a real user routing/attaching/starting must be authorized to
-  // act in the target capability. Internal automation (WORK_ITEM node, triggers,
-  // scheduler) calls with actorId=null and is exempt; the check also no-ops when
-  // AUTH_PROVIDER !== 'iam'.
-  if (actorId) {
+  // Security: every route has an explicit actor. User actors are checked by IAM;
+  // system actors are a small allowlist used only by the scheduler/trigger
+  // boundaries and remain tenant/capability constrained.
+  assertRouteActor(actorId ?? null, target.targetCapabilityId, workItem.tenantId)
+  if (actorId && !SYSTEM_ROUTE_ACTORS.has(actorId)) {
     await assertCanClaimWorkItemTarget(actorId, target.targetCapabilityId, target.id, workItem.tenantId)
   }
 
@@ -267,12 +338,15 @@ export async function routeWorkItem(
     capabilityId: target.targetCapabilityId,
     workItemTypeKey: workItem.workItemTypeKey,
     workflowTypeKey: options.workflowTypeKey,
+    tenantId: workItem.tenantId,
+    selectorContext: routingSelectorContext(workItem),
   })
   const workflow = await chooseWorkflow({
     capabilityId: target.targetCapabilityId,
     workItemTypeKey: workItem.workItemTypeKey,
     workflowTypeKey: options.workflowTypeKey ?? policy?.workflowTypeKey ?? workflowTypeKey,
     workflowId: options.workflowId ?? policy?.workflowId,
+    tenantId: workItem.tenantId,
   })
 
   if (!workflow) {
@@ -310,10 +384,10 @@ export async function routeWorkItem(
     return failed
   }
 
-  // Security (finding #3): the AUTO_START / startNow path must enforce the same 'start'
-  // template permission as the manual path (startWorkItemTarget); checked before attach
-  // so an unauthorized start does not even attach. Internal automation (actorId=null) exempt.
-  if ((options.startNow || mode === 'AUTO_START') && actorId) {
+  // User starts require the same template permission as manual starts. Explicit
+  // system principals are allowed only after the routing policy and capability
+  // boundary above have been resolved.
+  if ((options.startNow || mode === 'AUTO_START') && actorId && !SYSTEM_ROUTE_ACTORS.has(actorId)) {
     await assertTemplatePermission(actorId, workflow.id, 'start')
   }
 

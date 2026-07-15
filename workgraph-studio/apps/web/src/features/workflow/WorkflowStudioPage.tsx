@@ -2610,6 +2610,7 @@ export function WorkflowStudioPage() {
   const [selectedNode, setSelectedNode] = useState<Node<NodeData> | null>(null)
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [designRevision, setDesignRevision] = useState<number | null>(null)
   const [nodeSearch, setNodeSearch] = useState('')
   const [designerView, setDesignerView] = useState<DesignerView>(() => isDesignMode ? 'design' : 'run')
   const [overflowOpen, setOverflowOpen] = useState(false)
@@ -2797,9 +2798,12 @@ export function WorkflowStudioPage() {
   // Design mode hits the workflow_design_* tables via the design-graph
   // endpoint; run mode hits the workflow_instances graph (read-only).  Both
   // produce the same row shape so the rest of the studio stays uniform.
-  const { data: designGraphData } = useQuery<{ phases: any[]; nodes: any[]; edges: any[] }>({
+  const { data: designGraphData } = useQuery<{ phases: any[]; nodes: any[]; edges: any[]; designRevision?: number }>({
     queryKey: ['workflow-design', designWorkflowId],
-    queryFn: () => api.get(`/workflow-templates/${designWorkflowId}/design-graph`).then(r => r.data),
+    queryFn: () => api.get(`/workflow-templates/${designWorkflowId}/design-graph`).then(r => {
+      setDesignRevision(Number(r.data?.designRevision ?? 0))
+      return r.data
+    }),
     enabled: isDesignMode && !!designWorkflowId,
     refetchInterval: 5_000,
   })
@@ -2936,12 +2940,16 @@ export function WorkflowStudioPage() {
     }
   }
 
+  const designRequestConfig = () => isDesignMode && designRevision !== null
+    ? { headers: { 'If-Match': String(designRevision) } }
+    : undefined
+
   const addNode = useMutation({
     mutationFn: (payload: { label: string; nodeType: string; positionX: number; positionY: number; config?: Record<string, unknown> }) => {
       const url = isDesignMode
         ? `/workflow-templates/${designWorkflowId}/design/nodes`
         : `/workflow-instances/${runInstanceId}/nodes`
-      return api.post(url, payload).then(r => r.data)
+      return api.post(url, payload, designRequestConfig()).then(r => r.data)
     },
     onSuccess: () => {
       setDesignerError(null)
@@ -2958,7 +2966,7 @@ export function WorkflowStudioPage() {
       const url = isDesignMode
         ? `/workflow-templates/${designWorkflowId}/design/nodes/${nodeId}`
         : `/workflow-instances/${runInstanceId}/nodes/${nodeId}`
-      return api.delete(url)
+      return api.delete(url, designRequestConfig())
     },
     onSuccess: () => invalidateGraph(),
   })
@@ -2968,7 +2976,7 @@ export function WorkflowStudioPage() {
       const url = isDesignMode
         ? `/workflow-templates/${designWorkflowId}/design/edges`
         : `/workflow-instances/${runInstanceId}/edges`
-      return api.post(url, payload).then(r => r.data)
+      return api.post(url, payload, designRequestConfig()).then(r => r.data)
     },
     onSuccess: () => invalidateGraph(),
   })
@@ -2978,7 +2986,7 @@ export function WorkflowStudioPage() {
       const url = isDesignMode
         ? `/workflow-templates/${designWorkflowId}/design/nodes/${nodeId}`
         : `/workflow-instances/${runInstanceId}/nodes/${nodeId}`
-      return api.patch(url, payload)
+      return api.patch(url, payload, designRequestConfig())
     },
     onSuccess: () => invalidateGraph(),
   })

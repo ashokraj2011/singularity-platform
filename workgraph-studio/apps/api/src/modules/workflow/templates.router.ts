@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, type Request, type Response } from 'express'
 import { z } from 'zod'
 import { Prisma, NodeType } from '@prisma/client'
 import { config } from '../../config'
@@ -6,7 +6,7 @@ import { prisma } from '../../lib/prisma'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
-import { NotFoundError, ValidationError } from '../../lib/errors'
+import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { assertTemplatePermission, assertWorkflowCreatePermission, canViewTemplate, ensureWorkflowOwnerAccess, resolveDefaultTeamId } from '../../lib/permissions/workflowTemplate'
 import { getDesignInstanceId } from './lib/cloneDesignToRun'
@@ -953,6 +953,26 @@ const designPhaseBodySchema = z.object({
   color:        z.string().nullable().optional(),
 })
 
+function requestedDesignRevision(req: Request): number | undefined {
+  const raw = req.header('if-match') ?? req.header('x-workflow-design-revision')
+  if (!raw) return undefined
+  const revision = Number(String(raw).replace(/^W\/\"|\"$/g, ''))
+  if (!Number.isInteger(revision) || revision < 0) throw new ValidationError('x-workflow-design-revision must be a non-negative integer')
+  return revision
+}
+
+async function bumpDesignRevision(id: string, req: Request, res: Response): Promise<number> {
+  const expected = requestedDesignRevision(req)
+  const updated = await prisma.workflow.updateMany({
+    where: { id, ...(expected === undefined ? {} : { designRevision: expected }) },
+    data: { designRevision: { increment: 1 } },
+  })
+  if (updated.count !== 1) throw new ConflictError('Workflow design changed while saving; refresh before retrying')
+  const current = await prisma.workflow.findUniqueOrThrow({ where: { id }, select: { designRevision: true } })
+  res.setHeader('X-Workflow-Design-Revision', String(current.designRevision))
+  return current.designRevision
+}
+
 // Read the full design graph in one round-trip — used by the studio on open.
 workflowTemplatesRouter.get('/:id/design-graph', async (req, res, next) => {
   try {
@@ -963,7 +983,9 @@ workflowTemplatesRouter.get('/:id/design-graph', async (req, res, next) => {
       prisma.workflowDesignNode.findMany ({ where: { workflowId: id }, orderBy: { createdAt: 'asc' } }),
       prisma.workflowDesignEdge.findMany ({ where: { workflowId: id }, orderBy: { createdAt: 'asc' } }),
     ])
-    res.json({ phases, nodes, edges })
+    const workflow = await prisma.workflow.findUnique({ where: { id }, select: { designRevision: true } })
+    res.setHeader('X-Workflow-Design-Revision', String(workflow?.designRevision ?? 0))
+    res.json({ phases, nodes, edges, designRevision: workflow?.designRevision ?? 0 })
   } catch (err) { next(err) }
 })
 
@@ -972,6 +994,7 @@ workflowTemplatesRouter.post('/:id/design/phases', validate(designPhaseBodySchem
   try {
     const id = req.params.id as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
+    await bumpDesignRevision(id, req, res)
     const body = req.body as z.infer<typeof designPhaseBodySchema>
     const created = await prisma.workflowDesignPhase.create({ data: { workflowId: id, ...body } })
     res.status(201).json(created)
@@ -982,6 +1005,7 @@ workflowTemplatesRouter.patch('/:id/design/phases/:phaseId', validate(designPhas
     const id      = req.params.id as string
     const phaseId = req.params.phaseId as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
+    await bumpDesignRevision(id, req, res)
     // Ownership: the phase must belong to THIS workflow — edit perm on :id must
     // not let a caller mutate another workflow's phase by bare id.
     const owned = await prisma.workflowDesignPhase.findFirst({ where: { id: phaseId, workflowId: id }, select: { id: true } })
@@ -995,6 +1019,7 @@ workflowTemplatesRouter.delete('/:id/design/phases/:phaseId', async (req, res, n
     const id      = req.params.id as string
     const phaseId = req.params.phaseId as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
+    await bumpDesignRevision(id, req, res)
     // Ownership: scope the delete to THIS workflow (see PATCH above).
     const { count } = await prisma.workflowDesignPhase.deleteMany({ where: { id: phaseId, workflowId: id } })
     if (count === 0) throw new NotFoundError('WorkflowDesignPhase', phaseId)
@@ -1007,6 +1032,7 @@ workflowTemplatesRouter.post('/:id/design/nodes', validate(designNodeBodySchema)
   try {
     const id = req.params.id as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
+    await bumpDesignRevision(id, req, res)
     const body = req.body as z.infer<typeof designNodeBodySchema>
 
     // M11.b — write-time cross-service ref validation. Skipped when the
@@ -1048,6 +1074,7 @@ workflowTemplatesRouter.patch('/:id/design/nodes/:nodeId', validate(designNodeBo
     const id     = req.params.id as string
     const nodeId = req.params.nodeId as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
+    await bumpDesignRevision(id, req, res)
     // Ownership: the node must belong to THIS workflow. Guards every path below
     // (including position-only patches that skip the config/metadata re-fetch).
     const ownedNode = await prisma.workflowDesignNode.findFirst({ where: { id: nodeId, workflowId: id }, select: { id: true } })
@@ -1107,6 +1134,7 @@ workflowTemplatesRouter.delete('/:id/design/nodes/:nodeId', async (req, res, nex
     const id     = req.params.id as string
     const nodeId = req.params.nodeId as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
+    await bumpDesignRevision(id, req, res)
     // Ownership: scope the delete to THIS workflow.
     const { count } = await prisma.workflowDesignNode.deleteMany({ where: { id: nodeId, workflowId: id } })
     if (count === 0) throw new NotFoundError('WorkflowDesignNode', nodeId)
@@ -1119,6 +1147,7 @@ workflowTemplatesRouter.post('/:id/design/edges', validate(designEdgeBodySchema)
   try {
     const id = req.params.id as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
+    await bumpDesignRevision(id, req, res)
     const body = req.body as z.infer<typeof designEdgeBodySchema>
     // Ownership: both endpoints must be nodes of THIS workflow — otherwise a
     // caller could wire an edge into another workflow's node by bare id.
@@ -1148,6 +1177,7 @@ workflowTemplatesRouter.patch('/:id/design/edges/:edgeId', validate(designEdgeBo
     const id     = req.params.id as string
     const edgeId = req.params.edgeId as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
+    await bumpDesignRevision(id, req, res)
     // Ownership: the edge must belong to THIS workflow.
     const ownedEdge = await prisma.workflowDesignEdge.findFirst({ where: { id: edgeId, workflowId: id }, select: { id: true } })
     if (!ownedEdge) throw new NotFoundError('WorkflowDesignEdge', edgeId)
@@ -1168,6 +1198,7 @@ workflowTemplatesRouter.delete('/:id/design/edges/:edgeId', async (req, res, nex
     const id     = req.params.id as string
     const edgeId = req.params.edgeId as string
     await assertTemplatePermission(req.user!.userId, id, 'edit')
+    await bumpDesignRevision(id, req, res)
     // Ownership: scope the delete to THIS workflow.
     const { count } = await prisma.workflowDesignEdge.deleteMany({ where: { id: edgeId, workflowId: id } })
     if (count === 0) throw new NotFoundError('WorkflowDesignEdge', edgeId)

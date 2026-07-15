@@ -4,10 +4,11 @@ import { randomBytes } from 'node:crypto'
 import { prisma } from '../../lib/prisma'
 import { currentTenantIdForDb, withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../lib/audit'
-import { ForbiddenError, NotFoundError, ValidationError } from '../../lib/errors'
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '../../lib/errors'
 import { config } from '../../config'
 import { authzCheck, listCapabilityRelationships, isCapabilityGoverning } from '../../lib/iam/client'
 import { assertTemplatePermission } from '../../lib/permissions/workflowTemplate'
+import { systemRouteActor } from './work-item-actors'
 import { cloneDesignToRun } from '../workflow/lib/cloneDesignToRun'
 import { getWorkflowBudgetOverview } from '../workflow/runtime/budget'
 import { normalizeMetadataKey, recordOf, resolveMetadataSnapshot } from '../metadata/metadata.service'
@@ -394,7 +395,7 @@ export async function activateWorkItem(node: WorkflowNode, instance: WorkflowIns
   if (workItem.routingMode === 'AUTO_START' || workItem.routingMode === 'AUTO_ATTACH') {
     const { routeWorkItem } = await import('./work-item-routing.service')
     for (const t of workItem.targets) {
-      await routeWorkItem(workItem.id, actorId ?? instance.createdById ?? null, { targetId: t.id, routingMode: workItem.routingMode })
+      await routeWorkItem(workItem.id, actorId ?? instance.createdById ?? systemRouteActor('work-item-node'), { targetId: t.id, routingMode: workItem.routingMode })
     }
   }
 }
@@ -615,15 +616,37 @@ export async function claimWorkItemTarget(workItemId: string, targetId: string, 
     throw new ValidationError(`WorkItem target cannot be claimed from status ${target.status}`)
   }
   await assertCanClaimWorkItemTarget(userId, target.targetCapabilityId, target.id, target.workItem.tenantId)
-
-  const updated = await prisma.workItemTarget.update({
-    where: { id: target.id },
-    data: { status: 'CLAIMED', claimedById: userId, claimedAt: new Date() },
-  })
-  await prisma.workItem.update({ where: { id: workItemId }, data: { status: 'IN_PROGRESS' } })
-  await prisma.workItemEvent.create({
-    data: { workItemId, targetId, eventType: 'CLAIMED', actorId: userId },
-  })
+  const tenantId = target.workItem.tenantId ?? currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID
+  const claimedAt = new Date()
+  const result = await withTenantDbTransaction(prisma, async tx => {
+    // Conditional update is the claim fence. A second request cannot claim the
+    // same queued target after the first request changes its status.
+    const claimed = await tx.workItemTarget.updateMany({
+      where: {
+        id: target.id,
+        workItemId,
+        status: { in: ['QUEUED', 'REWORK_REQUESTED'] },
+        claimedById: null,
+      },
+      data: { status: 'CLAIMED', claimedById: userId, claimedAt },
+    })
+    if (claimed.count === 0) {
+      const current = await tx.workItemTarget.findUnique({ where: { id: target.id } })
+      if (current?.claimedById === userId && current.status === 'CLAIMED') return { target: current, changed: false }
+      throw new ConflictError('WorkItem target was claimed or changed by another request')
+    }
+    await tx.workItem.updateMany({
+      where: { id: workItemId, status: { in: ['SCHEDULED', 'QUEUED', 'IN_PROGRESS'] } },
+      data: { status: 'IN_PROGRESS' },
+    })
+    const updated = await tx.workItemTarget.findUniqueOrThrow({ where: { id: target.id } })
+    await tx.workItemEvent.create({
+      data: { workItemId, targetId, eventType: 'CLAIMED', actorId: userId, tenantId },
+    })
+    return { target: updated, changed: true }
+  }, tenantId)
+  if (!result.changed) return result.target
+  const updated = result.target
   await logEvent('WorkItemTargetClaimed', 'WorkItemTarget', targetId, userId, { workItemId })
   await publishOutbox('WorkItemTarget', targetId, 'WorkItemTargetClaimed', { workItemId, targetId })
   return updated
@@ -909,9 +932,15 @@ export async function detachWorkItemTargetFromWorkflow(
       if (workItemRef.id === workItemId || workItemRef.targetId === targetId) {
         delete context._workItem
       }
+      context._workItemDetached = detachedRef
+      const activeChild = ['DRAFT', 'ACTIVE', 'PAUSED', 'BLOCKED', 'WAITING']
+      const childStatus = await tx.workflowInstance.findUnique({ where: { id: childWorkflowInstanceId }, select: { status: true } })
       await tx.workflowInstance.update({
         where: { id: childWorkflowInstanceId },
-        data: { context: context as Prisma.InputJsonValue },
+        data: {
+          context: context as Prisma.InputJsonValue,
+          ...(childStatus && activeChild.includes(String(childStatus.status)) ? { status: 'CANCELLED', completedAt: new Date() } : {}),
+        },
       })
     }
 
@@ -1241,33 +1270,46 @@ export async function answerWorkItemClarification(
   userId: string,
   answer: string,
 ) {
-  const workItem = await prisma.workItem.findUnique({
+  const workItem = await withTenantDbTransaction(prisma, tx => tx.workItem.findUnique({
     where: { id: workItemId },
     include: { targets: true },
-  })
+  }), currentTenantIdForDb() ?? undefined)
   if (!workItem) throw new NotFoundError('WorkItem', workItemId)
   await assertCanViewWorkItem(userId, workItem)
   const text = answer.trim()
   if (!text) throw new ValidationError('Clarification answer is required')
 
-  const clarification = await prisma.workItemClarification.update({
-    where: { id: clarificationId },
-    data: {
-      status: 'ANSWERED',
-      answer: text,
-      answeredById: userId,
-      answeredAt: new Date(),
-    },
-  })
-  await prisma.workItemEvent.create({
-    data: {
-      workItemId,
-      targetId: clarification.targetId,
-      eventType: 'CLARIFICATION_ANSWERED',
-      actorId: userId,
-      payload: { clarificationId, answer: text } as Prisma.InputJsonValue,
-    },
-  })
+  const tenantId = workItem.tenantId ?? currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID
+  const clarification = await withTenantDbTransaction(prisma, async tx => {
+    // Scope the lookup by both parent WorkItem and tenant before updating. The
+    // previous id-only update allowed a clarification id from another item to
+    // be answered through an otherwise authorized WorkItem route.
+    const current = await tx.workItemClarification.findFirst({
+      where: { id: clarificationId, workItemId, tenantId },
+    })
+    if (!current) throw new NotFoundError('WorkItemClarification', clarificationId)
+    if (current.status !== 'OPEN') throw new ConflictError(`Clarification is already ${current.status}`)
+    const updated = await tx.workItemClarification.update({
+      where: { id: current.id },
+      data: {
+        status: 'ANSWERED',
+        answer: text,
+        answeredById: userId,
+        answeredAt: new Date(),
+      },
+    })
+    await tx.workItemEvent.create({
+      data: {
+        workItemId,
+        targetId: updated.targetId,
+        eventType: 'CLARIFICATION_ANSWERED',
+        actorId: userId,
+        tenantId,
+        payload: { clarificationId, answer: text } as Prisma.InputJsonValue,
+      },
+    })
+    return updated
+  }, tenantId)
   await logEvent('WorkItemClarificationAnswered', 'WorkItem', workItemId, userId, {
     workCode: workItem.workCode,
     targetId: clarification.targetId,
@@ -1324,6 +1366,8 @@ async function buildChildOutput(instance: WorkflowInstance): Promise<Record<stri
 export async function handleWorkItemChildCompletion(instance: WorkflowInstance, actorId?: string): Promise<void> {
   const ctx = asRecord(instance.context)
   const workItemRef = asRecord(ctx._workItem)
+  const detachedRef = asRecord(ctx._workItemDetached)
+  if (Object.keys(detachedRef).length > 0) return
   const targetId = typeof workItemRef.targetId === 'string' ? workItemRef.targetId : null
   const target = await prisma.workItemTarget.findFirst({
     where: {
@@ -1335,21 +1379,34 @@ export async function handleWorkItemChildCompletion(instance: WorkflowInstance, 
     include: { workItem: { include: { targets: true } } },
   })
   if (!target || DONE_TARGET_STATUSES.has(target.status) || target.status === 'CANCELLED') return
+  if (targetId && (target.id !== targetId || target.childWorkflowInstanceId !== instance.id)) return
 
   const output = await buildChildOutput(instance)
-  await prisma.workItemTarget.update({
-    where: { id: target.id },
-    data: { status: 'SUBMITTED', output: output as Prisma.InputJsonValue, submittedAt: new Date() },
-  })
-  await prisma.workItemEvent.create({
-    data: {
-      workItemId: target.workItemId,
-      targetId: target.id,
-      eventType: 'SUBMITTED',
-      actorId,
-      payload: output as Prisma.InputJsonValue,
-    },
-  })
+  const tenantId = instance.tenantId ?? target.workItem.tenantId ?? currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID
+  const submittedAt = new Date()
+  const changed = await withTenantDbTransaction(prisma, async tx => {
+    const updated = await tx.workItemTarget.updateMany({
+      where: {
+        id: target.id,
+        workItemId: target.workItemId,
+        status: { notIn: ['SUBMITTED', 'APPROVED', 'CANCELLED'] },
+      },
+      data: { status: 'SUBMITTED', output: output as Prisma.InputJsonValue, submittedAt },
+    })
+    if (updated.count === 0) return false
+    await tx.workItemEvent.create({
+      data: {
+        workItemId: target.workItemId,
+        targetId: target.id,
+        eventType: 'SUBMITTED',
+        actorId,
+        tenantId,
+        payload: output as Prisma.InputJsonValue,
+      },
+    })
+    return true
+  }, tenantId)
+  if (!changed) return
   await logEvent('WorkItemTargetSubmitted', 'WorkItemTarget', target.id, actorId, {
     workItemId: target.workItemId,
     childWorkflowInstanceId: instance.id,
@@ -1395,33 +1452,44 @@ async function maybeRequestParentApproval(workItemId: string, actorId?: string, 
   if (tenantIsolationStrict() && !approvalInstanceId) {
     throw new ValidationError('TENANT_ISOLATION_MODE=strict requires WorkItem approval requests to be linked to a workflow instance')
   }
-  const approval = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest.create({
-    data: {
-      instanceId: approvalInstanceId,
-      tenantId: tenantId ?? workItem.tenantId ?? 'default',
-      nodeId: workItem.sourceWorkflowNodeId ?? undefined,
-      subjectType: 'WorkItem',
-      subjectId: workItem.id,
-      requestedById: actorId ?? workItem.createdById ?? 'system',
-      assignedToId: workItem.createdById ?? undefined,
-      assignmentMode: workItem.createdById ? 'DIRECT_USER' : 'ROLE_BASED',
-      capabilityId: workItem.parentCapabilityId ?? undefined,
-      roleKey: workItem.createdById ? undefined : 'owner',
-      formData: { workItemId: workItem.id, targets: submittedTargets } as Prisma.InputJsonValue,
-    },
-  }), tenantId)
-  await prisma.workItem.update({
-    where: { id: workItem.id },
-    data: { status: 'AWAITING_PARENT_APPROVAL', parentApprovalRequestId: approval.id },
-  })
-  await prisma.workItemEvent.create({
-    data: {
-      workItemId: workItem.id,
-      eventType: 'APPROVAL_REQUESTED',
-      actorId,
-      payload: { approvalRequestId: approval.id } as Prisma.InputJsonValue,
-    },
-  })
+  const approval = await withTenantDbTransaction(prisma, async tx => {
+    const current = await tx.workItem.findUnique({ where: { id: workItem.id }, include: { targets: true } })
+    if (!current || current.parentApprovalRequestId || current.status === 'COMPLETED' || !current.targets.every(t => DONE_TARGET_STATUSES.has(t.status))) return null
+    const created = await tx.approvalRequest.create({
+      data: {
+        instanceId: approvalInstanceId,
+        tenantId: tenantId ?? current.tenantId ?? 'default',
+        nodeId: current.sourceWorkflowNodeId ?? undefined,
+        subjectType: 'WorkItem',
+        subjectId: current.id,
+        requestedById: actorId ?? current.createdById ?? 'system:work-item',
+        // Do not route directly to the WorkItem creator: that permits self-approval.
+        assignmentMode: 'ROLE_BASED',
+        capabilityId: current.parentCapabilityId ?? undefined,
+        roleKey: 'owner',
+        formData: { workItemId: current.id, targets: submittedTargets } as Prisma.InputJsonValue,
+      },
+    })
+    const transitioned = await tx.workItem.updateMany({
+      where: { id: current.id, parentApprovalRequestId: null, status: { not: 'COMPLETED' } },
+      data: { status: 'AWAITING_PARENT_APPROVAL', parentApprovalRequestId: created.id },
+    })
+    if (transitioned.count !== 1) {
+      await tx.approvalRequest.delete({ where: { id: created.id } })
+      return null
+    }
+    await tx.workItemEvent.create({
+      data: {
+        workItemId: current.id,
+        eventType: 'APPROVAL_REQUESTED',
+        actorId,
+        tenantId: tenantId ?? current.tenantId ?? 'default',
+        payload: { approvalRequestId: created.id } as Prisma.InputJsonValue,
+      },
+    })
+    return created
+  }, tenantId)
+  if (!approval) return
   await logEvent('WorkItemApprovalRequested', 'WorkItem', workItem.id, actorId, {
     approvalRequestId: approval.id,
   })
@@ -1478,28 +1546,15 @@ export async function approveWorkItem(workItemId: string, userId: string, approv
   }
 
   await withTenantDbTransaction(prisma, async tx => {
-    await Promise.all([
-    tx.workItem.update({
-      where: { id: workItemId },
-      data: {
-        status: 'COMPLETED',
-        finalOutput: finalOutput as Prisma.InputJsonValue,
-        approvedById: userId,
-      },
-    }),
-    tx.workItemTarget.updateMany({
-      where: { workItemId, status: 'SUBMITTED' },
-      data: { status: 'APPROVED', completedAt: new Date() },
-    }),
-    tx.workItemEvent.create({
-      data: {
-        workItemId,
-        eventType: 'APPROVED',
-        actorId: userId,
-        payload: { approvalDecision } as Prisma.InputJsonValue,
-      },
-    }),
-    ])
+    const transitioned = await tx.workItem.updateMany({
+      where: { id: workItemId, status: 'AWAITING_PARENT_APPROVAL', parentApprovalRequestId: workItem.parentApprovalRequestId ?? undefined },
+      data: { status: 'COMPLETED', finalOutput: finalOutput as Prisma.InputJsonValue, approvedById: userId },
+    })
+    if (transitioned.count !== 1) throw new ConflictError('WorkItem approval is stale or has already been decided')
+    await tx.workItemTarget.updateMany({ where: { workItemId, status: 'SUBMITTED' }, data: { status: 'APPROVED', completedAt: new Date() } })
+    await tx.workItemEvent.create({
+      data: { workItemId, eventType: 'APPROVED', actorId: userId, tenantId, payload: { approvalDecision } as Prisma.InputJsonValue },
+    })
   }, tenantId)
   await logEvent('WorkItemApproved', 'WorkItem', workItemId, userId, { approvalDecision })
   await publishOutbox('WorkItem', workItemId, 'WorkItemApproved', { workItemId })
@@ -1541,7 +1596,7 @@ export async function approveWorkItem(workItemId: string, userId: string, approv
     if (['AUTO_ATTACH', 'AUTO_START'].includes(successor.routingMode)) {
       const { routeWorkItem } = await import('./work-item-routing.service')
       let routed = false
-      await routeWorkItem(successor.id, null, { routingMode: successor.routingMode, startNow: successor.routingMode === 'AUTO_START' }).then(() => { routed = true }).catch(async err => {
+      await routeWorkItem(successor.id, systemRouteActor('dependency-release'), { routingMode: successor.routingMode, startNow: successor.routingMode === 'AUTO_START' }).then(() => { routed = true }).catch(async err => {
         await logEvent('WorkItemDependencyAutoRouteFailed', 'WorkItem', successor.id, userId, { error: String(err), predecessorId: workItemId })
       })
       if (routed) {
@@ -1575,18 +1630,24 @@ export async function requestWorkItemRework(workItemId: string, userId: string, 
   const tenantId = currentTenantIdForDb() ?? 'default'
   const workItem = await withTenantDbTransaction(prisma, tx => tx.workItem.findUnique({ where: { id: workItemId }, include: { targets: true } }), tenantId)
   if (!workItem) throw new NotFoundError('WorkItem', workItemId)
+  if (workItem.status !== 'AWAITING_PARENT_APPROVAL') throw new ConflictError(`WorkItem cannot be sent for rework from status ${workItem.status}`)
   const selected = targetIds && targetIds.length > 0
     ? targetIds
     : workItem.targets.filter(t => t.status === 'SUBMITTED' || t.status === 'APPROVED').map(t => t.id)
   if (selected.length === 0) throw new ValidationError('No submitted WorkItem targets are available for rework')
+  const selectedSet = new Set(selected)
+  const selectedTargets = workItem.targets.filter(target => selectedSet.has(target.id))
+  if (selectedTargets.length !== selected.length || selectedTargets.some(target => !['SUBMITTED', 'APPROVED'].includes(target.status))) {
+    throw new ValidationError('Rework targets must belong to the WorkItem and be submitted or approved')
+  }
 
   await withTenantDbTransaction(prisma, async tx => {
-    await Promise.all([
-    tx.workItem.update({
-      where: { id: workItemId },
+    const transitioned = await tx.workItem.updateMany({
+      where: { id: workItemId, status: 'AWAITING_PARENT_APPROVAL', parentApprovalRequestId: workItem.parentApprovalRequestId ?? undefined },
       data: { status: 'IN_PROGRESS', parentApprovalRequestId: null },
-    }),
-    tx.workItemTarget.updateMany({
+    })
+    if (transitioned.count !== 1) throw new ConflictError('WorkItem approval is stale or has already been decided')
+    await tx.workItemTarget.updateMany({
       where: { workItemId, id: { in: selected } },
       data: {
         status: 'REWORK_REQUESTED',
@@ -1594,16 +1655,16 @@ export async function requestWorkItemRework(workItemId: string, userId: string, 
         claimedAt: null,
         submittedAt: null,
       },
-    }),
-    tx.workItemEvent.create({
+    })
+    await tx.workItemEvent.create({
       data: {
         workItemId,
         eventType: 'REWORK_REQUESTED',
         actorId: userId,
+        tenantId,
         payload: { targetIds: selected, reason } as Prisma.InputJsonValue,
       },
-    }),
-    ])
+    })
   }, tenantId)
   await logEvent('WorkItemReworkRequested', 'WorkItem', workItemId, userId, { targetIds: selected, reason })
   await publishOutbox('WorkItem', workItemId, 'WorkItemReworkRequested', { workItemId, targetIds: selected })

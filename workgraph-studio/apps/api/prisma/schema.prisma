@@ -696,6 +696,8 @@ model Workflow {
   description    String?
   status         String                @default("DRAFT")
   currentVersion Int                   @default(1)
+  // Monotonic design revision used by Studio clients to detect stale edits.
+  designRevision Int                   @default(0)
   createdById    String?
   teamId         String
   team           Team                  @relation(fields: [teamId], references: [id])

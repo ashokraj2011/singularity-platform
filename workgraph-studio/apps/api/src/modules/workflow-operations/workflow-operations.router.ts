@@ -350,6 +350,7 @@ workflowOperationsRouter.post('/events/:id/replay', async (req, res, next) => {
       capabilityId: stringValue(source.capabilityId),
       sourceEventTypeKey: eventType,
       traceId,
+      actorId: req.user!.userId,
     })
     const workItemIds = [...new Set(results.flatMap(result => result.workItemId ? [result.workItemId] : []))]
     const replayEventId = await logEvent('WorkflowInboundEventReplayed', 'WorkflowInboundEvent', replayDeliveryId, req.user?.userId, {

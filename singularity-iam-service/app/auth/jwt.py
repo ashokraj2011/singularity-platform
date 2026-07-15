@@ -3,12 +3,21 @@ import jwt
 from app.config import settings
 
 
-def create_access_token(user_id: str, email: str, is_super_admin: bool) -> str:
+def create_access_token(
+    user_id: str,
+    email: str,
+    is_super_admin: bool,
+    tenant_ids: list[str] | None = None,
+) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
     payload = {
         "sub": user_id,
         "email": email,
         "is_super_admin": is_super_admin,
+        # Tenant membership is part of the authenticated user context. Downstream
+        # services use it to bind an X-Tenant-Id selection to the bearer rather
+        # than trusting a caller-controlled header on its own.
+        "tenant_ids": sorted({tenant_id.strip() for tenant_id in (tenant_ids or []) if tenant_id.strip()}),
         "exp": expire,
     }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)

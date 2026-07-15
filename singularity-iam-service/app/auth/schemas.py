@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LoginRequest(BaseModel):
@@ -11,6 +11,7 @@ class TokenUserOut(BaseModel):
     email: str
     display_name: str | None
     is_super_admin: bool
+    tenant_ids: list[str] = Field(default_factory=list)
 
 
 class MeResponse(TokenUserOut):

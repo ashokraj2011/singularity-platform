@@ -22,6 +22,7 @@ export type IamUser = {
   email:            string
   display_name?:    string
   is_super_admin?:  boolean
+  tenant_ids?:      string[]
 }
 
 export type IamTeamMember = {

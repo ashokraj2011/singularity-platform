@@ -101,6 +101,10 @@ const envSchema = z.object({
   LAPTOP_HEARTBEAT_SWEEP_SEC: z.coerce.number().int().positive().default(60),
   LAPTOP_MCP_TOKEN_TTL_SEC: z.coerce.number().int().positive().default(12 * 60 * 60),
   TENANT_ISOLATION_MODE: z.enum(['off', 'strict']).default('off'),
+  // Internal trigger/scheduler paths must identify themselves explicitly when
+  // routing WorkItems. Production can disable these paths during a controlled
+  // incident without weakening user authorization.
+  WORKFLOW_INTERNAL_AUTOMATION_ENABLED: envBool(true),
   // Fallback tenant stamped on rows created without an explicit tenant (trigger-
   // spawned runs, seeds, unscoped creates) so no row is left tenantId=NULL under
   // forced RLS. In a single-tenant deployment every row collapses to this value.
