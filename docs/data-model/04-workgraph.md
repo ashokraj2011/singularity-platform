@@ -147,6 +147,13 @@ REJECTED REJECTED
     
 
 
+        SpecificationProjectStatus {
+            ACTIVE ACTIVE
+ARCHIVED ARCHIVED
+        }
+    
+
+
         WorkItemOriginType {
             PARENT_DELEGATED PARENT_DELEGATED
 CAPABILITY_LOCAL CAPABILITY_LOCAL
@@ -420,6 +427,64 @@ ADMIN ADMIN
             WEBHOOK WEBHOOK
 SCHEDULE SCHEDULE
 EVENT EVENT
+        }
+    
+
+
+        RoomState {
+            FRAMING FRAMING
+DIVERGENCE DIVERGENCE
+REVEAL REVEAL
+ESTIMATION ESTIMATION
+PROBING PROBING
+REVIEW REVIEW
+GATE GATE
+CONVERGED CONVERGED
+ABANDONED ABANDONED
+        }
+    
+
+
+        ClaimType {
+            MARKET MARKET
+USER USER
+OPERATIONAL OPERATIONAL
+TECHNICAL TECHNICAL
+        }
+    
+
+
+        ClaimStatus {
+            OPEN OPEN
+ACCEPTED ACCEPTED
+PROMOTED PROMOTED
+RETIRED RETIRED
+ABANDONED ABANDONED
+        }
+    
+
+
+        EvidenceTier {
+            PRODUCTION PRODUCTION
+EXPERIMENT EXPERIMENT
+SIMULATION SIMULATION
+AGENT AGENT
+OPINION OPINION
+        }
+    
+
+
+        ProbeStatus {
+            OPEN OPEN
+RESOLVED RESOLVED
+ABANDONED ABANDONED
+        }
+    
+
+
+        EstimatorKind {
+            HUMAN HUMAN
+AGENT AGENT
         }
     
 
@@ -1021,6 +1086,108 @@ INVALIDATED INVALIDATED
     }
   
 
+  "specification_projects" {
+    String id "🗝️"
+    String code 
+    String name 
+    String mission "❓"
+    SpecificationProjectStatus status 
+    String createdById "❓"
+    String tenantId "❓"
+    DateTime archivedAt "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "project_specifications" {
+    String id "🗝️"
+    Json package 
+    Int revision 
+    String updatedById "❓"
+    String tenantId "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "rooms" {
+    String id "🗝️"
+    String title 
+    RoomState state 
+    String createdById "❓"
+    String tenantId "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "claims" {
+    String id "🗝️"
+    String statement 
+    String riskiestAssumption "❓"
+    ClaimType claimType 
+    String contextScope 
+    String entityKind "❓"
+    String entityId "❓"
+    Float alpha 
+    Float beta 
+    Int version 
+    String supersedesId "❓"
+    ClaimStatus status 
+    String stewardId 
+    Json provenance 
+    String createdById "❓"
+    String tenantId "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "claim_estimates" {
+    String id "🗝️"
+    String estimatorId 
+    EstimatorKind estimatorKind 
+    Float probability 
+    Float weight 
+    String rationale "❓"
+    String tenantId "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "claim_probes" {
+    String id "🗝️"
+    String riskiestAssumption 
+    String falsification 
+    EvidenceTier tier 
+    String ownerId 
+    DateTime deadline "❓"
+    ProbeStatus status 
+    Float eig "❓"
+    String outcome "❓"
+    String createdById "❓"
+    String tenantId "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "claim_evidence" {
+    String id "🗝️"
+    EvidenceTier tier 
+    Boolean supports 
+    Float weight 
+    String evidenceKey 
+    String sourceUri "❓"
+    String note "❓"
+    String createdById "❓"
+    String tenantId "❓"
+    DateTime createdAt 
+    }
+  
+
   "development_targets" {
     String id "🗝️"
     String specificationVersionId 
@@ -1114,6 +1281,22 @@ INVALIDATED INVALIDATED
     Int attempts 
     Json result "❓"
     String error "❓"
+    String tenantId "❓"
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "spec_comments" {
+    String id "🗝️"
+    String anchorKind "❓"
+    String anchorId "❓"
+    String body 
+    String authorId 
+    Json mentions 
+    String parentId "❓"
+    DateTime resolvedAt "❓"
+    String resolvedById "❓"
     String tenantId "❓"
     DateTime createdAt 
     DateTime updatedAt 
@@ -2799,8 +2982,26 @@ INVALIDATED INVALIDATED
     "work_items" }o--|o workflow_instances : "sourceWorkflowInstance"
     "work_items" }o--|o workflow_nodes : "sourceWorkflowNode"
     "work_items" }o--|o work_item_routing_policies : "routingPolicy"
+    "work_items" }o--|o specification_projects : "project"
     "specification_versions" |o--|| "SpecificationStatus" : "enum:status"
     "specification_versions" }o--|| work_items : "workItem"
+    "specification_projects" |o--|| "SpecificationProjectStatus" : "enum:status"
+    "project_specifications" |o--|| specification_projects : "project"
+    "rooms" |o--|| "RoomState" : "enum:state"
+    "rooms" }o--|| specification_projects : "project"
+    "claims" |o--|| "ClaimType" : "enum:claimType"
+    "claims" |o--|| "ClaimStatus" : "enum:status"
+    "claims" }o--|| specification_projects : "project"
+    "claims" }o--|o rooms : "room"
+    "claim_estimates" |o--|| "EstimatorKind" : "enum:estimatorKind"
+    "claim_estimates" }o--|| claims : "claim"
+    "claim_probes" |o--|| "EvidenceTier" : "enum:tier"
+    "claim_probes" |o--|| "ProbeStatus" : "enum:status"
+    "claim_probes" }o--|| claims : "claim"
+    "claim_probes" }o--|o rooms : "room"
+    "claim_evidence" |o--|| "EvidenceTier" : "enum:tier"
+    "claim_evidence" }o--|| claims : "claim"
+    "claim_evidence" }o--|o claim_probes : "probe"
     "development_targets" |o--|| work_items : "workItem"
     "implementation_submissions" }o--|| specification_versions : "specificationVersion"
     "implementation_submissions" }o--|| work_items : "workItem"
@@ -2813,6 +3014,7 @@ INVALIDATED INVALIDATED
     "reconciliation_findings" }o--|| reconciliation_runs : "reconciliationRun"
     "reconciliation_jobs" |o--|| "ReconciliationJobStatus" : "enum:status"
     "reconciliation_jobs" |o--|| reconciliation_runs : "reconciliationRun"
+    "spec_comments" }o--|| work_items : "workItem"
     "work_item_dependencies" }o--|| work_items : "predecessor"
     "work_item_dependencies" }o--|| work_items : "successor"
     "work_program_steps" |o--|| "WorkItemRoutingMode" : "enum:routingMode"
