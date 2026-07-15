@@ -1,9 +1,12 @@
-# Concept Archive
+# Concept Studio
 
-The Concept Archive is the first Creative Studio slice. It gives a team a
+Concept Studio is the first Creative Studio slice. It gives a team a
 tenant-scoped, sparse idea map backed by the existing `SpecificationProject`
-root. A `Studio` is a thin identity for exploration surfaces; it does not
-replace project specifications, WorkItems, or workflow runs.
+root. The user-facing surface is **Concept Studio** at `/concept-studio`;
+`/concept-archive` remains a compatibility route and the archive terminology
+is retained only for storage and API contracts. A `Studio` is a thin identity
+for exploration surfaces; it does not replace project specifications,
+WorkItems, or workflow runs.
 
 ## Operating model
 

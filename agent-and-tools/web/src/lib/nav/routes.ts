@@ -15,7 +15,7 @@ import {
   LayoutDashboard, Wrench, Play, Users, GitBranch, Layers, ScrollText,
   ShieldCheck, Activity, Brain, DollarSign, Cpu, WandSparkles, Bot, Inbox,
   Network, Route, Workflow, Zap, Database, FileText, Globe, Link2, Package,
-  Puzzle, ClipboardCheck, BookOpen, Settings, Boxes, KeyRound, Archive,
+  Puzzle, ClipboardCheck, BookOpen, Settings, Boxes, KeyRound, Lightbulb,
 } from "lucide-react";
 
 export type NavGroup =
@@ -78,7 +78,7 @@ export const ROUTES: RouteMeta[] = [
   { id: "agents", label: "Agents", href: "/agents/studio", group: "Agent Studio", icon: Bot, priority: "primary", surfaceType: "agent" },
   { id: "capabilities", label: "Capabilities", href: "/capabilities", group: "Agent Studio", icon: GitBranch, priority: "primary", surfaceType: "agent" },
   { id: "tools", label: "Tools", href: "/tools", group: "Agent Studio", icon: Boxes, priority: "primary", surfaceType: "agent" },
-  { id: "concept-archive", label: "Concept Archive", href: "/concept-archive", group: "Agent Studio", icon: Archive, priority: "secondary", surfaceType: "agent", description: "Explore concepts in a sparse archive with human-confirmed placement and a proposal inbox.", keywords: ["creative studio", "ideas", "map elites", "concept", "proposal"] },
+  { id: "concept-studio", label: "Concept Studio", href: "/concept-studio", group: "Agent Studio", icon: Lightbulb, priority: "secondary", surfaceType: "agent", description: "Create, explore, and review concepts in a human-guided idea map.", keywords: ["creative studio", "ideas", "concept map", "concept", "proposal", "archive"] },
   { id: "tool-grants", label: "Tool Grants", href: "/tool-grants", group: "Agent Studio", icon: KeyRound, advanced: true, priority: "admin", surfaceType: "agent" },
   { id: "executions", label: "Executions", href: "/executions", group: "Agent Studio", icon: Play, advanced: true, priority: "admin", surfaceType: "agent" },
 
