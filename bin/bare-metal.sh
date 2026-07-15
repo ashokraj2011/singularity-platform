@@ -1249,6 +1249,8 @@ JSON
   # WORK_ITEM_REOPENED events) and the next-stage fan-out (NEXT_STAGE_SPAWNED/_FAILED events +
   # work_items/specification_projects.completionProgramId FKs) — idempotent (ADD VALUE IF NOT
   # EXISTS, ADD COLUMN IF NOT EXISTS, DO-block guarded ADD CONSTRAINT), same rationale.)
+  # Contract-bound work execution adds immutable specification bindings, per-target development
+  # scopes, handoff generations, durable commands, generation plans, and finalization records.
   # NOTE: 20260709150000_force_tenant_rls (ENABLE/FORCE RLS) is applied LAST — after
   # `prisma generate` and with --single-transaction. Its preflight guards RAISE + abort
   # (fail-closed) if the DB isn't ready (NULL-tenant instances, non-BYPASSRLS role, etc.),
@@ -1283,6 +1285,7 @@ JSON
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260721000000_m92_discovery_nodetype/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260724000000_m95_work_item_completion_gate/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260725000000_m96_completion_program_fanout/migration.sql >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260725000000_contract_bound_work_execution/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260709145000_backfill_null_tenant/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709150000_force_tenant_rls/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709170000_tenant_workitem_family/migration.sql >/dev/null 2>&1 ) \

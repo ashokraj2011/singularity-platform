@@ -155,6 +155,9 @@ async function startAttachedTarget(args: {
     include: { workItem: true },
   })
   if (!target) throw new NotFoundError('WorkItemTarget', args.targetId)
+  if (['CANCELLED', 'ARCHIVED', 'COMPLETED'].includes(String(target.workItem.status)) || target.status === 'CANCELLED') {
+    throw new ValidationError(`WorkItem target cannot be started from ${target.workItem.status}/${target.status}`)
+  }
   const templateId = target.childWorkflowTemplateId
   if (!templateId) throw new ValidationError('WorkItem target is not attached to a workflow template')
   if (target.childWorkflowInstanceId) return { childWorkflowInstanceId: target.childWorkflowInstanceId }
@@ -296,7 +299,7 @@ export async function routeWorkItem(
     include: { targets: { orderBy: { createdAt: 'asc' } } },
   })
   if (!workItem) throw new NotFoundError('WorkItem', workItemId)
-  if (workItem.status === 'ARCHIVED' || workItem.status === 'COMPLETED') {
+  if (['ARCHIVED', 'COMPLETED', 'CANCELLED'].includes(String(workItem.status))) {
     throw new ValidationError(`WorkItem cannot be routed from status ${workItem.status}`)
   }
   const target = options.targetId

@@ -50,6 +50,12 @@ export function validateSpecificationBody(body: SpecificationPackageBody): SpecV
   // Structural integrity (errors).
   check('requirement-ids-unique', 'error', duplicates(body.requirements.map((r) => r.id)),
     'Every requirement has a unique id', 'Duplicate requirement ids')
+  check('acceptance-ids-unique', 'error', duplicates(body.acceptanceCriteria.map((a) => a.id)),
+    'Every acceptance criterion has a unique id', 'Duplicate acceptance-criteria ids')
+  check('test-obligation-ids-unique', 'error', duplicates(body.testObligations.map((t) => t.id)),
+    'Every test obligation has a unique id', 'Duplicate test-obligation ids')
+  check('source-ids-unique', 'error', duplicates(body.sources.map((s) => s.id)),
+    'Every source has a unique id', 'Duplicate source ids')
   check('must-has-acceptance', 'error',
     body.requirements.filter((r) => r.priority === 'MUST' && r.acceptanceCriterionIds.length === 0).map((r) => r.id),
     'Every MUST requirement has acceptance criteria', 'MUST requirements missing acceptance criteria')
@@ -63,10 +69,13 @@ export function validateSpecificationBody(body: SpecificationPackageBody): SpecV
     body.requirements.filter((r) => r.testObligationIds.some((id) => !testObligationIds.has(id))).map((r) => r.id),
     'All requirement → test-obligation references resolve', 'Requirements referencing unknown test obligations')
 
-  // Completeness / hygiene (warnings).
+  // MUST requirements cannot enter an executable contract without a verification strategy.
+  check('must-has-test-obligation', 'error',
+    body.requirements.filter((r) => r.priority === 'MUST' && r.testObligationIds.length === 0).map((r) => r.id),
+    'Every MUST requirement has a test obligation', 'MUST requirements without a test obligation')
   check('requirement-has-test-obligation', 'warning',
-    body.requirements.filter((r) => r.testObligationIds.length === 0).map((r) => r.id),
-    'Every requirement has a test obligation', 'Requirements without a test obligation')
+    body.requirements.filter((r) => r.priority !== 'MUST' && r.testObligationIds.length === 0).map((r) => r.id),
+    'Every non-MUST requirement has a test obligation', 'Non-MUST requirements without a test obligation')
   check('requirement-has-source', 'warning',
     body.requirements.filter((r) => r.sourceIds.length === 0).map((r) => r.id),
     'Every requirement traces to a source', 'Requirements without a source')

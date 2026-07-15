@@ -21,7 +21,7 @@
  *   RECON_POLL_INTERVAL_MS        (default 5000)   RECON_HTTP_TIMEOUT_MS (default 30000)
  *   RECON_COMMAND_TIMEOUT_MS      per-command kill timeout (default 600000)
  */
-import { exec as execCb } from 'node:child_process'
+import { execFile as execFileCb } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -35,13 +35,14 @@ import {
   type CheckoutHandle,
 } from './runner.core'
 
-const execFileP = promisify(execCb)
+const execFileP = promisify(execFileCb)
 
 export interface RunnerConfig {
   apiBase: string
   authToken: string
   tenantId?: string
   gitBaseUrl: string
+  gitAllowedHosts: string[]
   defaultCommand?: string
   workDir: string
   pollIntervalMs: number
@@ -71,6 +72,7 @@ export function loadRunnerConfig(): RunnerConfig {
     authToken,
     tenantId: process.env.RUNNER_TENANT_ID?.trim() || undefined,
     gitBaseUrl: (process.env.RECON_GIT_BASE_URL ?? 'https://github.com/').replace(/\/?$/, '/'),
+    gitAllowedHosts: (process.env.RECON_GIT_ALLOWED_HOSTS ?? 'github.com,gitlab.com,bitbucket.org').split(',').map(value => value.trim().toLowerCase()).filter(Boolean),
     defaultCommand: process.env.RECON_DEFAULT_TEST_COMMAND?.trim() || undefined,
     workDir: process.env.RECON_WORK_DIR?.trim() || tmpdir(),
     pollIntervalMs: intEnv('RECON_POLL_INTERVAL_MS', 5_000, 500, 60_000),
@@ -129,8 +131,39 @@ async function failJob(cfg: RunnerConfig, id: string, claimToken: string, error:
 
 // ── Real side-effecting deps (git + shell) ──────────────────────────────────────
 function repoUrl(cfg: RunnerConfig, repository: string): string {
-  if (/^(https?:\/\/|git@|ssh:\/\/)/.test(repository)) return repository
-  return `${cfg.gitBaseUrl}${repository.replace(/\.git$/, '')}.git`
+  const value = /^(https?:\/\/|ssh:\/\/)/.test(repository)
+    ? repository
+    : `${cfg.gitBaseUrl}${repository.replace(/\.git$/, '')}.git`
+  if (!/^https:\/\//.test(value)) throw new Error('Only HTTPS Git repositories are allowed for isolated reconciliation runners')
+  const parsed = new URL(value)
+  if (!cfg.gitAllowedHosts.includes(parsed.hostname.toLowerCase())) throw new Error(`Git host ${parsed.hostname} is not in RECON_GIT_ALLOWED_HOSTS`)
+  return parsed.toString()
+}
+
+function safeCommand(command: string): { executable: string; args: string[] } {
+  const source = command.trim()
+  if (!source || /[;&|<>$()`\n\r]/.test(source)) throw new Error('Runner commands must be executable plus argument array; shell operators are forbidden')
+  const tokens: string[] = []
+  const pattern = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^']*)'|([^\s]+)/g
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(source))) tokens.push(match[1] ?? match[2] ?? match[3])
+  if (!tokens.length || tokens.join(' ') !== source.replace(/\s+/g, ' ').trim()) throw new Error('Runner command contains unsupported quoting or whitespace')
+  const executable = tokens.shift()!
+  const allowed = (process.env.RECON_ALLOWED_COMMANDS ?? 'npm,pnpm,yarn,node,python,python3,pytest,go,cargo,mvn,gradle,make').split(',').map(value => value.trim())
+  if (!allowed.includes(executable)) throw new Error(`Runner executable ${executable} is not allowed`)
+  return { executable, args: tokens }
+}
+
+function isolatedEnv(): NodeJS.ProcessEnv {
+  return {
+    PATH: process.env.PATH ?? '/usr/bin:/bin',
+    HOME: tmpdir(),
+    CI: '1',
+    NODE_ENV: 'test',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0',
+  }
 }
 
 export function realRunnerExec(cfg: RunnerConfig): RunnerExec {
@@ -140,13 +173,14 @@ export function realRunnerExec(cfg: RunnerConfig): RunnerExec {
       const dir = await mkdtemp(join(cfg.workDir, 'recon-'))
       const url = repoUrl(cfg, job.repository)
       // Full clone (not shallow) so an arbitrary head commit is reachable, then hard-checkout it.
-      await execFileP(`git clone ${JSON.stringify(url)} ${JSON.stringify(dir)}`, { timeout: cfg.commandTimeoutMs, maxBuffer: 32 * 1024 * 1024 })
-      await execFileP(`git -C ${JSON.stringify(dir)} checkout --quiet ${JSON.stringify(job.headCommitSha)}`, { timeout: cfg.commandTimeoutMs, maxBuffer: 32 * 1024 * 1024 })
+      await execFileP('git', ['clone', '--no-tags', url, dir], { timeout: cfg.commandTimeoutMs, maxBuffer: 32 * 1024 * 1024, env: isolatedEnv() })
+      await execFileP('git', ['-C', dir, 'checkout', '--quiet', job.headCommitSha], { timeout: cfg.commandTimeoutMs, maxBuffer: 32 * 1024 * 1024, env: isolatedEnv() })
       return { cwd: dir, cleanup: () => rm(dir, { recursive: true, force: true }) }
     },
     async runCommand(command: string, cwd: string): Promise<CommandOutcome> {
       try {
-        const { stdout, stderr } = await execFileP(command, { cwd, timeout: cfg.commandTimeoutMs, maxBuffer: 32 * 1024 * 1024, shell: '/bin/bash' })
+        const parsed = safeCommand(command)
+        const { stdout, stderr } = await execFileP(parsed.executable, parsed.args, { cwd, timeout: cfg.commandTimeoutMs, maxBuffer: 32 * 1024 * 1024, shell: false, env: isolatedEnv() })
         return { code: 0, output: `${stdout}${stderr}` }
       } catch (err) {
         const e = err as { code?: number; stdout?: string; stderr?: string; message?: string }

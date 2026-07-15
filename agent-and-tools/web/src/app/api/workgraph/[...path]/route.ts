@@ -218,11 +218,15 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path?: strin
   const base = WORKGRAPH_API_URL.replace(/\/$/, "");
   const upstreamPath = suffix === "health" ? "/health" : `/api/${suffix}`;
   const upstream = `${base}${upstreamPath}${search}`;
+  // Verify the human caller before any service-token fallback can be reached.
+  // The first request still preserves the caller token; this preflight only
+  // establishes that a privileged retry is attributable to an authenticated user.
+  if (SERVICE_AUTH_ENABLED && allowsServiceTokenRetry(req, suffix)) {
+    const callerAuthFailure = await requireVerifiedCallerBearer(req, "Workgraph");
+    if (callerAuthFailure) return callerAuthFailure;
+  }
   const first = await proxyRequest(req, upstream, proxyHeaders(req, WORKGRAPH_API_URL), { normalizeTextErrors: true });
   if (first.status !== 401 || !SERVICE_AUTH_ENABLED || !allowsServiceTokenRetry(req, suffix)) return first;
-
-  const authFailure = await requireVerifiedCallerBearer(req, "Workgraph");
-  if (authFailure) return authFailure;
 
   if (platformWebProductionEnv() && !serverEnv("WORKGRAPH_PROXY_SERVICE_TOKEN")) {
     return NextResponse.json(
@@ -234,10 +238,10 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path?: strin
     );
   }
 
-  const serviceTokenResult = await getServiceToken();
-  if (!serviceTokenResult.token) {
-    if (serviceTokenResult.failure) {
-      return NextResponse.json(serviceTokenResult.failure, { status: 503 });
+  const serviceToken = await getServiceToken();
+  if (!serviceToken.token) {
+    if (serviceToken.failure) {
+      return NextResponse.json(serviceToken.failure, { status: 503 });
     }
     const error = workgraphProxyTokenError(serverEnv("WORKGRAPH_PROXY_SERVICE_TOKEN"));
     if (error) return NextResponse.json({ code: "PLATFORM_WEB_CREDENTIAL_UNSAFE", message: error }, { status: 503 });
@@ -253,7 +257,7 @@ async function proxy(req: NextRequest, context: { params: Promise<{ path?: strin
     return first;
   }
   const headers = proxyHeaders(req, WORKGRAPH_API_URL);
-  headers.set("authorization", `Bearer ${serviceTokenResult.token}`);
+  headers.set("authorization", `Bearer ${serviceToken.token}`);
   return proxyRequest(req, upstream, headers, { normalizeTextErrors: true });
 }
 

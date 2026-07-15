@@ -1,6 +1,6 @@
 import { Prisma } from '@prisma/client'
 import type { WorkflowInstance, WorkflowNode } from '@prisma/client'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { prisma } from '../../lib/prisma'
 import { currentTenantIdForDb, withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../lib/audit'
@@ -14,6 +14,7 @@ import { getWorkflowBudgetOverview } from '../workflow/runtime/budget'
 import { normalizeMetadataKey, recordOf, resolveMetadataSnapshot } from '../metadata/metadata.service'
 import { tenantIdForCreate, tenantIsolationStrict } from '../../lib/tenant-isolation'
 import { discoveryBridge } from '../discovery/discovery.deps'
+import { finalizeWorkItem } from './work-item-finalizer.service'
 
 type KVPair = { key?: string; path?: string; value?: string }
 
@@ -40,10 +41,11 @@ export type CreateWorkItemInput = {
   budget?: Record<string, unknown>
   urgency?: 'LOW' | 'NORMAL' | 'HIGH' | 'CRITICAL'
   requiredBy?: string | Date | null
-  originType?: 'PARENT_DELEGATED' | 'CAPABILITY_LOCAL'
+  originType?: 'PARENT_DELEGATED' | 'CAPABILITY_LOCAL' | 'SPEC_GENERATED'
   priority?: number
   dueAt?: string | Date | null
   tenantId?: string | null
+  idempotencyKey?: string
   targets: WorkItemTargetInput[]
 }
 
@@ -198,7 +200,34 @@ export async function createWorkItem(input: CreateWorkItemInput, actorId?: strin
     throw new ValidationError('TENANT_ISOLATION_MODE=strict requires tenantId when creating a WorkItem')
   }
 
-  const workItem = await prisma.workItem.create({
+  const requestHash = createHash('sha256').update(JSON.stringify({
+    title: input.title,
+    description: input.description,
+    workItemTypeKey,
+    targets,
+    routingMode,
+    tenantId,
+    input: input.input,
+    details: input.details,
+  })).digest('hex')
+  const idempotencyKey = input.idempotencyKey?.trim()
+  if (idempotencyKey) {
+    const existingCommand = await prisma.workItemCreationCommand.findUnique({ where: { idempotencyKey } })
+    if (existingCommand) {
+      if (existingCommand.requestHash !== requestHash) throw new ConflictError('WorkItem creation idempotency key was reused with a different request')
+      if (existingCommand.state === 'COMPLETED' && existingCommand.workItemId) {
+        return prisma.workItem.findUniqueOrThrow({ where: { id: existingCommand.workItemId }, include: { targets: true, events: true } })
+      }
+      if (existingCommand.state === 'IN_PROGRESS') throw new ConflictError('WorkItem creation command is already in progress')
+      await prisma.workItemCreationCommand.update({ where: { id: existingCommand.id }, data: { state: 'IN_PROGRESS', error: null } })
+    } else {
+      await prisma.workItemCreationCommand.create({ data: { idempotencyKey, requestHash, state: 'IN_PROGRESS', tenantId } })
+    }
+  }
+
+  const workItem = await (async () => {
+    try {
+      const workItem = await prisma.workItem.create({
     data: {
       workCode,
       originType,
@@ -244,7 +273,14 @@ export async function createWorkItem(input: CreateWorkItemInput, actorId?: strin
       },
     },
     include: { targets: true, events: true },
-  })
+      })
+      return workItem
+    } catch (error) {
+      if (idempotencyKey) await prisma.workItemCreationCommand.updateMany({ where: { idempotencyKey, state: 'IN_PROGRESS' }, data: { state: 'FAILED', error: String(error) } })
+      throw error
+    }
+  })()
+  if (idempotencyKey) await prisma.workItemCreationCommand.update({ where: { idempotencyKey }, data: { state: 'COMPLETED', workItemId: workItem.id, error: null } })
 
   await prisma.workItemEvent.create({
     data: {
@@ -461,13 +497,25 @@ export async function assertCanViewWorkItem(userId: string, workItem: WorkItemVi
   }
 }
 
-type WorkItemAction = 'edit' | 'delete' | 'route' | 'claim' | 'start'
+type WorkItemAction = 'edit' | 'delete' | 'route' | 'claim' | 'start' | 'cancel' | 'finalize' | 'submit' | 'reconcile'
 
 export async function assertCanMutateWorkItem(userId: string, workItem: WorkItemViewRow, action: WorkItemAction): Promise<void> {
   if (config.AUTH_PROVIDER !== 'iam') return
   const actor = await loadActor(userId)
   if (!actor?.iamUserId) throw new ForbiddenError('IAM identity is required to mutate this WorkItem')
-  const permission = action === 'route' || action === 'claim' ? 'workflow:assign' : action === 'start' ? 'workflow:execute' : 'workflow:update'
+  const permission = action === 'route' || action === 'claim'
+    ? 'workflow:assign'
+    : action === 'start'
+      ? 'workflow:execute'
+      : action === 'cancel'
+        ? 'workflow:cancel'
+        : action === 'finalize'
+          ? 'workflow:finalize'
+          : action === 'submit'
+            ? 'workflow:submit'
+            : action === 'reconcile'
+              ? 'workflow:reconcile'
+              : 'workflow:update'
   const targets = workItem.targets.length > 0 ? workItem.targets : []
   for (const target of targets) {
     const result = await authzCheck(actor.iamUserId, target.targetCapabilityId, permission, {
@@ -611,6 +659,9 @@ export async function claimWorkItemTarget(workItemId: string, targetId: string, 
     include: { workItem: true },
   })
   if (!target) throw new NotFoundError('WorkItemTarget', targetId)
+  if (['CANCELLED', 'ARCHIVED', 'COMPLETED'].includes(String(target.workItem.status)) || target.status === 'CANCELLED') {
+    throw new ConflictError(`WorkItem target cannot start from WorkItem status ${target.workItem.status} / target status ${target.status}`)
+  }
   if (target.claimedById && target.claimedById !== userId) throw new ValidationError('WorkItem target is already claimed')
   if (!['QUEUED', 'REWORK_REQUESTED'].includes(target.status) && target.claimedById !== userId) {
     throw new ValidationError(`WorkItem target cannot be claimed from status ${target.status}`)
@@ -1062,6 +1113,7 @@ export async function startWorkItemTarget(
     vars?: Record<string, unknown>
     globals?: Record<string, unknown>
     params?: Record<string, unknown>
+    idempotencyKey?: string
   } = {},
 ) {
   const target = await prisma.workItemTarget.findFirst({
@@ -1073,6 +1125,34 @@ export async function startWorkItemTarget(
   const templateId = options.childWorkflowTemplateId ?? target.childWorkflowTemplateId
   if (!templateId) throw new ValidationError('Choose a workflow template before starting this WorkItem target')
   if (target.childWorkflowInstanceId) throw new ValidationError('This WorkItem target already has a child workflow run')
+
+  const idempotencyKey = options.idempotencyKey?.trim() || `work-item-target-start:${workItemId}:${targetId}:${templateId}`
+  const requestHash = createHash('sha256').update(JSON.stringify({ workItemId, targetId, templateId, vars: options.vars, globals: options.globals, params: options.params })).digest('hex')
+  const existingCommand = await prisma.workflowStartCommand.findUnique({ where: { idempotencyKey } })
+  if (existingCommand) {
+    if (existingCommand.requestHash !== requestHash) throw new ConflictError('Idempotency key was already used with a different workflow start request')
+    if (existingCommand.state === 'COMPLETED' && existingCommand.workflowInstanceId) {
+      return { target, childWorkflowInstanceId: existingCommand.workflowInstanceId, idempotent: true }
+    }
+    if (existingCommand.state === 'IN_PROGRESS' && existingCommand.leaseUntil && existingCommand.leaseUntil > new Date()) {
+      throw new ConflictError('This WorkItem target start command is already in progress')
+    }
+    if (existingCommand.state === 'FAILED' || existingCommand.state === 'STALE' || !existingCommand.leaseUntil || existingCommand.leaseUntil <= new Date()) {
+      await prisma.workflowStartCommand.update({ where: { id: existingCommand.id }, data: { state: 'IN_PROGRESS', attempt: { increment: 1 }, leaseUntil: new Date(Date.now() + 10 * 60 * 1000), error: null } })
+    }
+  } else {
+    await prisma.workflowStartCommand.create({
+      data: {
+        idempotencyKey,
+        requestHash,
+        workItemTargetId: targetId,
+        state: 'IN_PROGRESS',
+        attempt: 1,
+        leaseUntil: new Date(Date.now() + 10 * 60 * 1000),
+        tenantId: target.workItem.tenantId,
+      },
+    })
+  }
 
   await assertTemplatePermission(userId, templateId, 'start')
   await assertStartableWorkItemTemplate({ templateId, targetCapabilityId: target.targetCapabilityId })
@@ -1117,6 +1197,7 @@ export async function startWorkItemTarget(
     data: { startedAt: new Date() },
   })
   if (reservation.count === 0) {
+    await prisma.workflowStartCommand.updateMany({ where: { idempotencyKey, state: 'IN_PROGRESS' }, data: { state: 'FAILED', error: 'This WorkItem target is already started or being started', leaseUntil: null } })
     throw new ValidationError('This WorkItem target is already started or being started')
   }
 
@@ -1146,6 +1227,10 @@ export async function startWorkItemTarget(
       await prisma.workItemTarget.updateMany({
         where: { id: targetId, childWorkflowInstanceId: null },
         data: { startedAt: null },
+      })
+      await prisma.workflowStartCommand.updateMany({
+        where: { idempotencyKey, state: 'IN_PROGRESS' },
+        data: { state: 'FAILED', error: String(err), leaseUntil: null },
       })
       throw err
     }
@@ -1185,6 +1270,10 @@ export async function startWorkItemTarget(
       childWorkflowInstanceId: result.instance.id,
       startedAt: new Date(),
     },
+  })
+  await prisma.workflowStartCommand.update({
+    where: { idempotencyKey },
+    data: { state: 'COMPLETED', workflowInstanceId: result.instance.id, leaseUntil: null, error: null },
   })
   await prisma.workItemEvent.create({
     data: {
@@ -1500,130 +1589,59 @@ async function maybeRequestParentApproval(workItemId: string, actorId?: string, 
 }
 
 export async function approveWorkItem(workItemId: string, userId: string, approvalDecision?: string) {
+  const result = await finalizeWorkItem(workItemId, userId, { approvalDecision })
+  await logEvent('WorkItemApproved', 'WorkItem', workItemId, userId, { approvalDecision, finalizationGeneration: result.finalizationGeneration })
+  await publishOutbox('WorkItem', workItemId, 'WorkItemApproved', { workItemId, finalizationGeneration: result.finalizationGeneration })
+  return result.finalOutput
+}
+
+/** Explicit cancellation command. It fences child runs and reconciliation jobs and increments the
+ * finalization generation so late runner responses cannot mutate a cancelled WorkItem. */
+export async function cancelWorkItem(
+  workItemId: string,
+  userId: string,
+  options: { reason?: string; propagationPolicy?: 'TARGETS_AND_CHILDREN' | 'WORK_ITEM_ONLY' } = {},
+) {
   const tenantId = currentTenantIdForDb() ?? 'default'
-  const workItem = await withTenantDbTransaction(prisma, tx => tx.workItem.findUnique({
-    where: { id: workItemId },
-    include: { targets: true },
-  }), tenantId)
-  if (!workItem) throw new NotFoundError('WorkItem', workItemId)
-
-  const targetOutputs = workItem.targets.map(t => ({
-    targetId: t.id,
-    targetCapabilityId: t.targetCapabilityId,
-    childWorkflowInstanceId: t.childWorkflowInstanceId,
-    output: t.output,
-  }))
-  const consumableIds = targetOutputs.flatMap(t => {
-    const output = asRecord(t.output)
-    return Array.isArray(output.consumableIds) ? output.consumableIds.filter(id => typeof id === 'string') : []
-  })
-  // M101 (Epic→child) — B4: aggregate the per-child impact verdicts into a
-  // ready-to-dispatch target list. A downstream WORK_ITEM node (the impl
-  // stage) can set `standard.targetsPath: 'workItem.impactedChildren'` to
-  // dispatch ONLY to the children that reported impact (the per-child
-  // STORY_IMPL routing policy then selects each child's impl workflow). Empty
-  // when this WorkItem isn't an impact-analysis run, so it's harmless on
-  // ordinary delegated WorkItems.
-  const impactedChildren = targetOutputs
-    .filter(t => asRecord(asRecord(t.output).impactVerdict).impacted === true)
-    .map(t => ({ targetCapabilityId: t.targetCapabilityId, childWorkflowInstanceId: t.childWorkflowInstanceId }))
-  // M101 (Epic→child) — scalar flags for the parent DECISION_GATE. The edge
-  // evaluator has no array-length op, so the Epic template branches on
-  // `workItem.hasImpact` (== true/false) or `workItem.impactedCount` (> 0).
-  const impactedCount = impactedChildren.length
-  const hasImpact = impactedCount > 0
-  const finalOutput = {
-    workItemId,
-    title: workItem.title,
-    status: 'COMPLETED',
-    approvalDecision,
-    targetOutputs,
-    impactedChildren,
-    impactedCount,
-    hasImpact,
-    consumableIds,
-    childWorkflowInstanceIds: targetOutputs.map(t => t.childWorkflowInstanceId).filter(Boolean),
-  }
-
-  await withTenantDbTransaction(prisma, async tx => {
+  const reason = options.reason?.trim() || 'Cancelled by operator'
+  const result = await withTenantDbTransaction(prisma, async tx => {
+    const item = await tx.workItem.findUnique({
+      where: { id: workItemId },
+      include: { targets: { select: { childWorkflowInstanceId: true } } },
+    })
+    if (!item) throw new NotFoundError('WorkItem', workItemId)
+    if (['COMPLETED', 'ARCHIVED'].includes(item.status)) throw new ConflictError(`WorkItem cannot be cancelled from ${item.status}`)
+    if (item.status === 'CANCELLED') return { workItemId, status: 'CANCELLED', idempotent: true }
     const transitioned = await tx.workItem.updateMany({
-      where: { id: workItemId, status: 'AWAITING_PARENT_APPROVAL', parentApprovalRequestId: workItem.parentApprovalRequestId ?? undefined },
-      data: { status: 'COMPLETED', finalOutput: finalOutput as Prisma.InputJsonValue, approvedById: userId },
+      where: { id: workItemId, status: { notIn: ['COMPLETED', 'ARCHIVED', 'CANCELLED'] } },
+      data: { status: 'CANCELLED', reconciliationState: 'NOT_VERIFIED', finalizationGeneration: { increment: 1 } },
     })
-    if (transitioned.count !== 1) throw new ConflictError('WorkItem approval is stale or has already been decided')
-    await tx.workItemTarget.updateMany({ where: { workItemId, status: 'SUBMITTED' }, data: { status: 'APPROVED', completedAt: new Date() } })
-    await tx.workItemEvent.create({
-      data: { workItemId, eventType: 'APPROVED', actorId: userId, tenantId, payload: { approvalDecision } as Prisma.InputJsonValue },
-    })
-  }, tenantId)
-  await logEvent('WorkItemApproved', 'WorkItem', workItemId, userId, { approvalDecision })
-  await publishOutbox('WorkItem', workItemId, 'WorkItemApproved', { workItemId })
-  await import('../work-program/work-programs.service')
-    .then(({ reconcileWorkProgramForWorkItem }) => reconcileWorkProgramForWorkItem(workItemId))
-    .catch(() => undefined)
-
-  // Release dependent WorkItems when their predecessor reaches a terminal
-  // success state. Auto-routed dependents are claimed through the same routing
-  // boundary; manual dependents get a durable inbox notification instead.
-  const dependents = await withTenantDbTransaction(prisma, tx => tx.workItemDependency.findMany({
-    where: { predecessorId: workItemId, dependencyType: 'BLOCKS' },
-    include: { successor: { select: { id: true, workCode: true, title: true, status: true, routingMode: true, createdById: true } } },
-  }), tenantId)
-  for (const dependency of dependents) {
-    const successor = dependency.successor
-    const remaining = await withTenantDbTransaction(prisma, tx => tx.workItemDependency.count({
-      where: { successorId: successor.id, dependencyType: 'BLOCKS', predecessor: { status: { notIn: ['COMPLETED', 'ARCHIVED'] } } },
-    }), tenantId)
-    if (remaining > 0) continue
-    await withTenantDbTransaction(prisma, tx => tx.workItemEvent.create({
-      data: { workItemId: successor.id, eventType: 'TRIGGERED', actorId: userId, payload: { releasedBy: workItemId, dependencyId: dependency.id } as Prisma.InputJsonValue },
-    }), tenantId).catch(() => undefined)
-    if (successor.createdById) {
-      const { createNotification } = await import('../notifications/notifications.service')
-      await createNotification({
-        tenantId: workItem.tenantId ?? 'default',
-        userId: successor.createdById,
-        kind: 'WORK_ITEM_RELEASED',
-        title: 'WorkItem dependency released',
-        message: `${successor.workCode} is unblocked and ready for routing.`,
-        severity: 'info',
-        entityType: 'WorkItem',
-        entityId: successor.id,
-        href: `/work-items/${successor.id}`,
-        payload: { predecessorId: workItemId, dependencyId: dependency.id },
-      }).catch(() => undefined)
-    }
-    if (['AUTO_ATTACH', 'AUTO_START'].includes(successor.routingMode)) {
-      const { routeWorkItem } = await import('./work-item-routing.service')
-      let routed = false
-      await routeWorkItem(successor.id, systemRouteActor('dependency-release'), { routingMode: successor.routingMode, startNow: successor.routingMode === 'AUTO_START' }).then(() => { routed = true }).catch(async err => {
-        await logEvent('WorkItemDependencyAutoRouteFailed', 'WorkItem', successor.id, userId, { error: String(err), predecessorId: workItemId })
+    if (transitioned.count !== 1) throw new ConflictError('WorkItem cancellation is stale or has already been decided')
+    const childIds = item.targets.map(target => target.childWorkflowInstanceId).filter((id): id is string => Boolean(id))
+    if (options.propagationPolicy !== 'WORK_ITEM_ONLY' && childIds.length) {
+      await tx.workflowInstance.updateMany({
+        where: { id: { in: childIds }, status: { in: ['DRAFT', 'ACTIVE', 'PAUSED'] } },
+        data: { status: 'CANCELLED', completedAt: new Date() },
       })
-      if (routed) {
-        await import('../work-program/work-programs.service')
-          .then(({ markWorkProgramStepRouted }) => markWorkProgramStepRouted(successor.id))
-          .catch(() => undefined)
-      }
     }
+    await tx.workItemTarget.updateMany({ where: { workItemId, status: { not: 'CANCELLED' } }, data: { status: 'CANCELLED', claimedById: null, claimedAt: null } })
+    await tx.reconciliationJob.updateMany({ where: { workItemId, status: { in: ['PENDING', 'CLAIMED', 'RUNNING'] } }, data: { status: 'CANCELLED', error: reason } })
+    await tx.workItemEvent.create({
+      data: {
+        workItemId,
+        actorId: userId,
+        eventType: 'WORK_ITEM_CANCELLATION_REQUESTED',
+        tenantId,
+        payload: { reason, propagationPolicy: options.propagationPolicy ?? 'TARGETS_AND_CHILDREN' } as Prisma.InputJsonValue,
+      },
+    })
+    return { workItemId, status: 'CANCELLED', idempotent: false }
+  }, tenantId)
+  if (!result.idempotent) {
+    await logEvent('WorkItemCancelled', 'WorkItem', workItemId, userId, { reason, propagationPolicy: options.propagationPolicy ?? 'TARGETS_AND_CHILDREN' })
+    await publishOutbox('WorkItem', workItemId, 'WorkItemCancelled', { workItemId, reason })
   }
-
-  if (workItem.sourceWorkflowInstanceId && workItem.sourceWorkflowNodeId) {
-    // RLS prep — WorkItem has no tenantId column of its own (only a bare
-    // sourceWorkflowInstanceId FK); pull the owning instance's tenantId in the same
-    // query as this pre-existing lookup rather than adding a second round trip.
-    const sourceNode = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.findUnique({
-      where: { id: workItem.sourceWorkflowNodeId! },
-      select: { config: true, instance: { select: { tenantId: true } } },
-    }), tenantId)
-    const sourceTenantId = sourceNode?.instance.tenantId ?? tenantId
-    const cfg = asRecord(sourceNode?.config)
-    const outputPath = String(asRecord(cfg.standard).outputPath ?? cfg.outputPath ?? 'workItem').trim() || 'workItem'
-    const advanceOutput: Record<string, unknown> = {}
-    setPath(advanceOutput, outputPath, finalOutput)
-    const { advance } = await import('../workflow/runtime/WorkflowRuntime')
-    await advance(workItem.sourceWorkflowInstanceId, workItem.sourceWorkflowNodeId, advanceOutput, userId, undefined, sourceTenantId)
-  }
-  return finalOutput
+  return result
 }
 
 export async function requestWorkItemRework(workItemId: string, userId: string, targetIds?: string[], reason?: string) {
@@ -1644,7 +1662,7 @@ export async function requestWorkItemRework(workItemId: string, userId: string, 
   await withTenantDbTransaction(prisma, async tx => {
     const transitioned = await tx.workItem.updateMany({
       where: { id: workItemId, status: 'AWAITING_PARENT_APPROVAL', parentApprovalRequestId: workItem.parentApprovalRequestId ?? undefined },
-      data: { status: 'IN_PROGRESS', parentApprovalRequestId: null },
+      data: { status: 'IN_PROGRESS', parentApprovalRequestId: null, reconciliationState: 'NOT_VERIFIED', finalizationGeneration: { increment: 1 } },
     })
     if (transitioned.count !== 1) throw new ConflictError('WorkItem approval is stale or has already been decided')
     await tx.workItemTarget.updateMany({
@@ -1654,8 +1672,21 @@ export async function requestWorkItemRework(workItemId: string, userId: string, 
         claimedById: null,
         claimedAt: null,
         submittedAt: null,
+        childWorkflowInstanceId: null,
+        startedAt: null,
+        output: Prisma.JsonNull,
+        completedAt: null,
       },
     })
+    const childWorkflowInstanceIds = selectedTargets
+      .map(target => target.childWorkflowInstanceId)
+      .filter((id): id is string => Boolean(id))
+    if (childWorkflowInstanceIds.length) {
+      await tx.workflowInstance.updateMany({
+        where: { id: { in: childWorkflowInstanceIds }, status: { in: ['DRAFT', 'ACTIVE', 'PAUSED'] } },
+        data: { status: 'CANCELLED', completedAt: new Date() },
+      })
+    }
     await tx.workItemEvent.create({
       data: {
         workItemId,

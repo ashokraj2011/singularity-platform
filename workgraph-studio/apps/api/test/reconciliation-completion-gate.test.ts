@@ -1,10 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// applyReconciliationCompletionGate is the finalization gate: a PASSED reconciliation run
-// auto-completes the work item; a non-PASSED run reopens a previously completed one. Terminal
-// items (CANCELLED/ARCHIVED) are never touched. These are pure unit tests driving a fake
-// transaction client, so no DB/Prisma is required. Mock the prisma + audit deps the module
-// imports at load time.
+// Reconciliation is evidence-only. WorkItemFinalizer owns COMPLETED transitions; these tests
+// ensure reconciliation can update evidence state without completing or reopening the item.
 vi.mock('../src/lib/prisma', () => ({ prisma: {} }))
 vi.mock('../src/lib/tenant-db-context', () => ({
   withTenantDbTransaction: (_p: unknown, fn: (tx: unknown) => unknown) => fn({}),
@@ -38,34 +35,34 @@ const base = {
 describe('applyReconciliationCompletionGate', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  it('auto-completes an IN_PROGRESS item when the run PASSED', async () => {
+  it('records VERIFIED evidence without completing an IN_PROGRESS item', async () => {
     const { tx, updates, events } = fakeTx()
     const t = await applyReconciliationCompletionGate(tx, { ...base, currentStatus: 'IN_PROGRESS', runStatus: 'PASSED' })
-    expect(t).toEqual({ from: 'IN_PROGRESS', to: 'COMPLETED', eventType: 'WORK_ITEM_COMPLETED' })
-    expect(updates[0].data.status).toBe('COMPLETED')
-    expect(events[0].eventType).toBe('WORK_ITEM_COMPLETED')
+    expect(t).toMatchObject({ from: 'IN_PROGRESS', to: 'VERIFIED', eventType: 'RECONCILIATION_EVIDENCE_UPDATED' })
+    expect(updates[0].data).toEqual({ reconciliationState: 'VERIFIED' })
+    expect(events[0].eventType).toBe('RECONCILIATION_EVIDENCE_UPDATED')
   })
 
-  it('is idempotent — already COMPLETED + PASSED does nothing', async () => {
+  it('can record evidence on an already completed item without changing status', async () => {
     const { tx, updates } = fakeTx()
     const t = await applyReconciliationCompletionGate(tx, { ...base, currentStatus: 'COMPLETED', runStatus: 'PASSED' })
-    expect(t).toBeNull()
-    expect(updates).toHaveLength(0)
+    expect(t).toMatchObject({ to: 'VERIFIED' })
+    expect(updates[0].data).toEqual({ reconciliationState: 'VERIFIED' })
   })
 
   it.each(['PARTIAL', 'FAILED', 'ERROR'])('does not complete on a non-PASSED (%s) run', async (runStatus) => {
     const { tx, updates } = fakeTx()
     const t = await applyReconciliationCompletionGate(tx, { ...base, currentStatus: 'IN_PROGRESS', runStatus })
-    expect(t).toBeNull()
-    expect(updates).toHaveLength(0)
+    expect(t).toMatchObject({ to: 'NOT_VERIFIED' })
+    expect(updates[0].data).toEqual({ reconciliationState: 'NOT_VERIFIED' })
   })
 
-  it.each(['PARTIAL', 'FAILED', 'ERROR'])('reopens a COMPLETED item when a later run is %s', async (runStatus) => {
+  it.each(['PARTIAL', 'FAILED', 'ERROR'])('marks a completed item CONTESTED when a later run is %s', async (runStatus) => {
     const { tx, updates, events } = fakeTx()
     const t = await applyReconciliationCompletionGate(tx, { ...base, currentStatus: 'COMPLETED', runStatus })
-    expect(t).toEqual({ from: 'COMPLETED', to: 'IN_PROGRESS', eventType: 'WORK_ITEM_REOPENED' })
-    expect(updates[0].data.status).toBe('IN_PROGRESS')
-    expect(events[0].eventType).toBe('WORK_ITEM_REOPENED')
+    expect(t).toMatchObject({ from: 'COMPLETED', to: 'CONTESTED', eventType: 'RECONCILIATION_CONTESTED' })
+    expect(updates[0].data).toEqual({ reconciliationState: 'CONTESTED' })
+    expect(events[0].eventType).toBe('RECONCILIATION_CONTESTED')
   })
 
   it.each(['CANCELLED', 'ARCHIVED'])('never touches a terminal (%s) item', async (currentStatus) => {

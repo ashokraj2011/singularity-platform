@@ -90,6 +90,8 @@ enum WorkItemStatus {
   SCHEDULED
   QUEUED
   IN_PROGRESS
+  BLOCKED
+  AWAITING_FINALIZATION
   AWAITING_PARENT_APPROVAL
   COMPLETED
   CANCELLED
@@ -99,10 +101,13 @@ enum WorkItemStatus {
 enum WorkItemTargetStatus {
   QUEUED
   CLAIMED
+  STARTING
   IN_PROGRESS
   SUBMITTED
+  ACCEPTED
   APPROVED
   REWORK_REQUESTED
+  BLOCKED
   CANCELLED
 }
 
@@ -139,6 +144,13 @@ enum WorkItemEventType {
   IMPLEMENTATION_ACCEPTED
   WORK_ITEM_COMPLETED
   WORK_ITEM_REOPENED
+  SPECIFICATION_BOUND
+  HANDOFF_PUBLISHED
+  RECONCILIATION_CONTESTED
+  RECONCILIATION_EVIDENCE_UPDATED
+  WORK_ITEM_FINALIZATION_REQUESTED
+  WORK_ITEM_FINALIZED
+  WORK_ITEM_CANCELLATION_REQUESTED
   NEXT_STAGE_SPAWNED
   NEXT_STAGE_SPAWN_FAILED
 }
@@ -147,19 +159,81 @@ enum SpecificationStatus {
   DRAFT
   IN_REVIEW
   CHANGES_REQUESTED
+  LOCKED
+  GENERATING
+  ACTIVE
+  CHANGE_REQUESTED
   APPROVED
   SUPERSEDED
   REJECTED
 }
 
 enum SpecificationProjectStatus {
+  DRAFT
+  IN_REVIEW
+  LOCKED
+  GENERATING
   ACTIVE
+  CHANGE_REQUESTED
   ARCHIVED
 }
 
 enum WorkItemOriginType {
   PARENT_DELEGATED
   CAPABILITY_LOCAL
+  SPEC_GENERATED
+}
+
+enum ReconciliationState {
+  UNVERIFIED
+  VERIFYING
+  VERIFIED
+  CONTESTED
+  NOT_VERIFIED
+}
+
+enum DevelopmentScopeStatus {
+  DRAFT
+  HANDOFF_PUBLISHED
+  IMPLEMENTING
+  SUBMITTED
+  RECONCILING
+  ACCEPTED
+  REWORK_REQUIRED
+  CANCELLED
+}
+
+enum HandoffGenerationStatus {
+  DRAFT
+  PUBLISHED
+  SUPERSEDED
+  CANCELLED
+}
+
+enum FinalizationStatus {
+  REQUESTED
+  ACCEPTED
+  COMPLETED
+  REJECTED
+  STALE
+}
+
+enum WorkCommandStatus {
+  REQUESTED
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  STALE
+}
+
+enum GenerationPlanStatus {
+  DRAFT
+  VALIDATED
+  APPLYING
+  PARTIAL
+  APPLIED
+  FAILED
+  STALE
 }
 
 enum WorkItemRoutingMode {
@@ -956,6 +1030,7 @@ model WorkflowInstance {
   // here so runtime / UI queries don't have to join the template every
   // time. blueprint-workbench filters on this directly.
   profile           String             @default("main")
+  graphGeneration   Int                @default(1)
   children          WorkflowInstance[] @relation("Subworkflows")
   phases            WorkflowPhase[]
   nodes             WorkflowNode[]
@@ -966,6 +1041,7 @@ model WorkflowInstance {
   consumables       Consumable[]
   sourceWorkItems   WorkItem[]         @relation("WorkItemSourceInstance")
   childWorkItemTargets WorkItemTarget[] @relation("WorkItemChildInstance")
+  workflowStartCommands WorkflowStartCommand[]
   agentRuns         AgentRun[]
   toolRuns          ToolRun[]
   pendingExecutions PendingExecution[]
@@ -1205,8 +1281,12 @@ model WorkItem {
   sourceWorkflowInstanceId String?
   sourceWorkflowNodeId    String?
   status                  WorkItemStatus   @default(QUEUED)
+  reconciliationState     ReconciliationState @default(UNVERIFIED)
+  completionPolicy        String           @default("VERIFY_THEN_APPROVE")
+  finalizationGeneration  Int              @default(0)
   input                   Json             @default("{}")
   details                 Json             @default("{}")
+  specSourceRef           Json?
   budget                  Json             @default("{}")
   urgency                 WorkItemUrgency   @default(NORMAL)
   requiredBy              DateTime?
@@ -1230,9 +1310,14 @@ model WorkItem {
   successorDependencies   WorkItemDependency[] @relation("DependencySuccessor")
   programRunSteps         WorkProgramRunStep[]
   specifications          SpecificationVersion[]
+  specificationBindings   WorkItemSpecificationBinding[]
+  developmentScopes       DevelopmentScope[]
   developmentTarget       DevelopmentTarget?
   implementationSubmissions ImplementationSubmission[]
   reconciliationRuns      ReconciliationRun[]
+  finalizationRecords     WorkItemFinalizationRecord[]
+  creationCommands        WorkItemCreationCommand[]
+  generationPlanRows      GenerationPlanRow[]
   project                 SpecificationProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
   completionProgram       WorkProgram?     @relation("WorkItemCompletionProgram", fields: [completionProgramId], references: [id], onDelete: SetNull)
   specComments            SpecComment[]
@@ -1265,7 +1350,8 @@ model WorkItem {
 // version (no denormalized pointer on WorkItem yet — added later for performance).
 model SpecificationVersion {
   id               String              @id @default(uuid())
-  workItemId       String
+  workItemId       String?
+  specificationProjectId String?
   version          Int
   revision         Int                 @default(1)
   status           SpecificationStatus @default(DRAFT)
@@ -1280,11 +1366,16 @@ model SpecificationVersion {
   tenantId         String?             @default("default")
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt
-  workItem         WorkItem            @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  workItem         WorkItem?           @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  specificationProject SpecificationProject? @relation(fields: [specificationProjectId], references: [id], onDelete: Cascade)
+  bindings         WorkItemSpecificationBinding[]
   submissions      ImplementationSubmission[]
+  generationPlans  GenerationPlan[]
 
   @@unique([workItemId, version])
+  @@unique([specificationProjectId, version])
   @@index([workItemId, status])
+  @@index([specificationProjectId, status])
   @@index([tenantId], map: "ix_specification_versions_tenant")
   @@map("specification_versions")
 }
@@ -1307,9 +1398,11 @@ model SpecificationProject {
   updatedAt   DateTime                   @updatedAt
 
   workItems     WorkItem[]
+  specificationVersions SpecificationVersion[]
   specification ProjectSpecification?
   rooms         Room[]
   claims        Claim[]
+  generationPlans GenerationPlan[]
   completionProgram WorkProgram?         @relation("ProjectCompletionProgram", fields: [completionProgramId], references: [id], onDelete: SetNull)
 
   @@index([status])
@@ -1335,6 +1428,221 @@ model ProjectSpecification {
 
   @@index([tenantId], map: "ix_project_specifications_tenant")
   @@map("project_specifications")
+}
+
+// Immutable contract-to-execution binding. New execution paths resolve the
+// project/specification baseline once and reconcile only against this snapshot.
+model WorkItemSpecificationBinding {
+  id                   String   @id @default(uuid())
+  workItemId           String
+  specificationVersionId String
+  bindingGeneration    Int      @default(1)
+  resolvedPackage      Json
+  resolvedContentHash  String
+  requirementIds       Json     @default("[]")
+  status               String   @default("CURRENT")
+  boundById             String?
+  boundAt              DateTime @default(now())
+  tenantId             String?  @default("default")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  workItem             WorkItem           @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  specificationVersion SpecificationVersion @relation(fields: [specificationVersionId], references: [id], onDelete: Restrict)
+  developmentScopes   DevelopmentScope[]
+  handoffGenerations   HandoffGeneration[]
+  submissions          ImplementationSubmission[]
+  reconciliationRuns   ReconciliationRun[]
+
+  @@unique([workItemId, bindingGeneration])
+  @@index([specificationVersionId])
+  @@index([workItemId, status])
+  @@index([tenantId])
+  @@map("work_item_specification_bindings")
+}
+
+// One delivery obligation per WorkItem target, capability, repository, and
+// requirement subset. This replaces the single WorkItem-wide DevelopmentTarget
+// for new execution paths while keeping the old model as a compatibility view.
+model DevelopmentScope {
+  id                      String                @id @default(uuid())
+  workItemId              String
+  workItemTargetId        String
+  specificationBindingId  String?
+  targetCapabilityId      String
+  repository              String
+  component               String?
+  requirementIds          Json                  @default("[]")
+  mandatory               Boolean               @default(true)
+  status                  DevelopmentScopeStatus @default(DRAFT)
+  currentHandoffGenerationId String?
+  tenantId                String?               @default("default")
+  createdAt               DateTime              @default(now())
+  updatedAt               DateTime              @updatedAt
+
+  workItem               WorkItem                @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  workItemTarget         WorkItemTarget          @relation(fields: [workItemTargetId], references: [id], onDelete: Cascade)
+  specificationBinding   WorkItemSpecificationBinding? @relation(fields: [specificationBindingId], references: [id], onDelete: SetNull)
+  currentHandoffGeneration HandoffGeneration?    @relation("CurrentScopeHandoff", fields: [currentHandoffGenerationId], references: [id], onDelete: SetNull)
+  handoffGenerations     HandoffGeneration[]     @relation("ScopeHandoffs")
+  submissions            ImplementationSubmission[]
+  reconciliationRuns     ReconciliationRun[]
+
+  @@index([workItemId, status])
+  @@index([workItemTargetId])
+  @@index([specificationBindingId])
+  @@index([tenantId])
+  @@map("development_scopes")
+}
+
+model HandoffGeneration {
+  id                    String                 @id @default(uuid())
+  developmentScopeId    String
+  generation            Int                    @default(1)
+  specificationBindingId String?
+  repository            String
+  component             String?
+  baseBranch            String
+  baseCommitSha         String
+  requirementIds        Json                   @default("[]")
+  requiredEvidence      Json                   @default("[]")
+  forbiddenPaths        Json                   @default("[]")
+  reconciliationPolicy  Json                   @default("{}")
+  contentHash           String
+  status                HandoffGenerationStatus @default(DRAFT)
+  publishedById         String?
+  publishedAt           DateTime?
+  tenantId              String?                @default("default")
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  developmentScope      DevelopmentScope      @relation("ScopeHandoffs", fields: [developmentScopeId], references: [id], onDelete: Cascade)
+  currentForScopes      DevelopmentScope[]     @relation("CurrentScopeHandoff")
+  specificationBinding  WorkItemSpecificationBinding? @relation(fields: [specificationBindingId], references: [id], onDelete: SetNull)
+  submissions           ImplementationSubmission[]
+  reconciliationRuns    ReconciliationRun[]
+
+  @@unique([developmentScopeId, generation])
+  @@index([status, createdAt])
+  @@index([specificationBindingId])
+  @@index([tenantId])
+  @@map("handoff_generations")
+}
+
+model WorkItemFinalizationRecord {
+  id                    String             @id @default(uuid())
+  workItemId            String
+  finalizationGeneration Int
+  status                FinalizationStatus @default(REQUESTED)
+  actorId               String?
+  finalOutput           Json?
+  evidenceDigest        String?
+  reason                String?
+  tenantId              String?            @default("default")
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+
+  workItem WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+
+  @@unique([workItemId, finalizationGeneration])
+  @@index([tenantId, status])
+  @@map("work_item_finalization_records")
+}
+
+model WorkItemCreationCommand {
+  id             String          @id @default(uuid())
+  idempotencyKey String          @unique
+  requestHash    String
+  workItemId     String?
+  state          WorkCommandStatus @default(REQUESTED)
+  error          String?
+  tenantId       String?         @default("default")
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  workItem WorkItem? @relation(fields: [workItemId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, state])
+  @@map("work_item_creation_commands")
+}
+
+model WorkflowStartCommand {
+  id             String          @id @default(uuid())
+  idempotencyKey String          @unique
+  requestHash    String
+  workItemTargetId String
+  workflowInstanceId String?
+  state          WorkCommandStatus @default(REQUESTED)
+  attempt        Int             @default(0)
+  leaseUntil     DateTime?
+  error          String?
+  tenantId       String?         @default("default")
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  workItemTarget WorkItemTarget @relation(fields: [workItemTargetId], references: [id], onDelete: Cascade)
+  workflowInstance WorkflowInstance? @relation(fields: [workflowInstanceId], references: [id], onDelete: SetNull)
+
+  @@index([workItemTargetId, state])
+  @@index([tenantId, state])
+  @@map("workflow_start_commands")
+}
+
+model GenerationPlan {
+  id                    String              @id @default(uuid())
+  specificationProjectId String
+  specificationVersionId String?
+  status                GenerationPlanStatus @default(DRAFT)
+  contentHash           String
+  requestId             String?
+  validation            Json                @default("{}")
+  appliedRows           Int                 @default(0)
+  totalRows             Int                 @default(0)
+  createdById            String?
+  tenantId              String?             @default("default")
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  specificationProject SpecificationProject @relation(fields: [specificationProjectId], references: [id], onDelete: Cascade)
+  specificationVersion SpecificationVersion? @relation(fields: [specificationVersionId], references: [id], onDelete: SetNull)
+  rows                 GenerationPlanRow[]
+
+  @@index([specificationProjectId, status])
+  @@index([tenantId])
+  @@map("generation_plans")
+}
+
+model GenerationPlanRow {
+  id                    String   @id @default(uuid())
+  planId                String
+  rowKey                String
+  title                 String
+  description           String?
+  targetCapabilityId    String
+  childWorkflowTemplateId String?
+  repository            String?
+  component             String?
+  baseBranch            String?
+  baseCommitSha         String?
+  requirementIds        Json     @default("[]")
+  requiredEvidence      Json     @default("[]")
+  forbiddenPaths        Json     @default("[]")
+  reconciliationPolicy  Json     @default("{}")
+  dependencies          Json     @default("[]")
+  workItemId            String?
+  state                 String   @default("PENDING")
+  error                 String?
+  tenantId              String?  @default("default")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  plan     GenerationPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  workItem WorkItem?      @relation(fields: [workItemId], references: [id], onDelete: SetNull)
+
+  @@unique([planId, rowKey])
+  @@index([workItemId])
+  @@index([tenantId, state])
+  @@map("generation_plan_rows")
 }
 
 // ─── EPISTEMIC LAYER (Rooms & Claims) ─────────────────────────────────────────
@@ -1564,6 +1872,9 @@ model ImplementationSubmission {
   id                     String   @id @default(uuid())
   workItemId             String
   specificationVersionId String
+  specificationBindingId String?
+  developmentScopeId     String?
+  handoffGenerationId    String?
   specificationHash      String
   repository             String
   baseCommitSha          String
@@ -1578,6 +1889,9 @@ model ImplementationSubmission {
   createdAt              DateTime @default(now())
 
   specificationVersion SpecificationVersion @relation(fields: [specificationVersionId], references: [id], onDelete: Cascade)
+  specificationBinding WorkItemSpecificationBinding? @relation(fields: [specificationBindingId], references: [id], onDelete: SetNull)
+  developmentScope     DevelopmentScope? @relation(fields: [developmentScopeId], references: [id], onDelete: SetNull)
+  handoffGeneration    HandoffGeneration? @relation(fields: [handoffGenerationId], references: [id], onDelete: SetNull)
   workItem             WorkItem             @relation(fields: [workItemId], references: [id], onDelete: Cascade)
   reconciliationRuns   ReconciliationRun[]
 
@@ -1590,10 +1904,14 @@ model ImplementationSubmission {
 enum ReconciliationStatus {
   PENDING
   RUNNING
+  DECLARED_CONSISTENT
+  SEMANTICALLY_REVIEWED
+  VERIFIED_PASS
   PASSED
   FAILED
   PARTIAL
   ERROR
+  CANCELLED
 }
 
 enum RequirementVerdictValue {
@@ -1619,9 +1937,14 @@ model ReconciliationRun {
   workItemId             String
   submissionId           String
   specificationVersionId String
+  specificationBindingId String?
+  developmentScopeId    String?
+  handoffGenerationId   String?
+  generation             Int                  @default(1)
   specificationHash      String?
   mode                   String               @default("DETERMINISTIC")
   status                 ReconciliationStatus  @default(PENDING)
+  reconciliationState    ReconciliationState   @default(UNVERIFIED)
   summary                Json                  @default("{}")
   traceId                String?
   startedById            String?
@@ -1633,12 +1956,16 @@ model ReconciliationRun {
 
   submission ImplementationSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
   workItem   WorkItem                 @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  specificationBinding WorkItemSpecificationBinding? @relation(fields: [specificationBindingId], references: [id], onDelete: SetNull)
+  developmentScope    DevelopmentScope? @relation(fields: [developmentScopeId], references: [id], onDelete: SetNull)
+  handoffGeneration   HandoffGeneration? @relation(fields: [handoffGenerationId], references: [id], onDelete: SetNull)
   verdicts   RequirementVerdict[]
   findings   ReconciliationFinding[]
   job        ReconciliationJob?
 
   @@index([workItemId, createdAt])
   @@index([submissionId])
+  @@index([developmentScopeId, generation])
   @@index([tenantId], map: "ix_reconciliation_runs_tenant")
   @@map("reconciliation_runs")
 }
@@ -1687,6 +2014,7 @@ enum ReconciliationJobStatus {
   RUNNING
   COMPLETED
   FAILED
+  DEAD_LETTERED
   CANCELLED
 }
 
@@ -1700,6 +2028,7 @@ model ReconciliationJob {
   reconciliationRunId String                  @unique
   workItemId          String
   submissionId        String
+  generation          Int                     @default(1)
   status              ReconciliationJobStatus @default(PENDING)
   repository          String
   baseCommitSha       String
@@ -1708,9 +2037,13 @@ model ReconciliationJob {
   claimToken          String?
   claimedBy           String?
   claimedAt           DateTime?
+  leaseUntil          DateTime?
+  heartbeatAt         DateTime?
   attempts            Int                     @default(0)
+  maxAttempts         Int                     @default(3)
   result              Json?
   error               String?
+  deadLetterReason    String?
   tenantId            String?                 @default("default")
   createdAt           DateTime                @default(now())
   updatedAt           DateTime                @updatedAt
@@ -1870,6 +2203,8 @@ model WorkItemTarget {
   childWorkflowTemplate   Workflow?         @relation("WorkItemTargetTemplate", fields: [childWorkflowTemplateId], references: [id], onDelete: SetNull)
   events                  WorkItemEvent[]
   clarifications          WorkItemClarification[]
+  developmentScopes       DevelopmentScope[]
+  workflowStartCommands   WorkflowStartCommand[]
   createdAt               DateTime          @default(now())
   updatedAt               DateTime          @updatedAt
   tenantId                String?           @default("default")

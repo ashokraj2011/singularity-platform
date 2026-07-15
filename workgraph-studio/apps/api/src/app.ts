@@ -58,6 +58,7 @@ import { codegenRouter } from './modules/codegen/codegen.router'
 // M40 — ImmutableContract replay + lookup endpoints.
 import { contractsRouter } from './modules/contracts/contracts.router'
 import { workItemsRouter } from './modules/work-items/work-items.router'
+import { contractBoundRouter } from './modules/work-items/contract-bound.router'
 import { specificationsRouter } from './modules/specifications/specifications.router'
 import { developmentTargetsRouter } from './modules/development-targets/development-targets.router'
 import { submissionsRouter } from './modules/submissions/submissions.router'
@@ -140,6 +141,7 @@ export function createApp(): Express {
   app.use('/api/roles', authMiddleware, rolesRouter)
   app.use('/api/skills', authMiddleware, skillsRouter)
   app.use('/api/permissions', authMiddleware, permissionsRouter)
+  app.use('/api', authMiddleware, contractBoundRouter)
   app.use('/api/authz', authMiddleware, workflowAuthzRouter)
   // app.use('/api/initiatives', authMiddleware, initiativesRouter) — out of scope
   app.use('/api/workflow-templates', authMiddleware, workflowTemplatesRouter)

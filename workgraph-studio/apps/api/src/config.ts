@@ -69,7 +69,7 @@ const envSchema = z.object({
 
   // ── Context Fabric (M8 — AGENT_TASK executor calls /execute) ──
   CONTEXT_FABRIC_URL: z.string().default('http://localhost:8000'),
-  DEFAULT_GOVERNANCE_MODE: z.enum(['fail_open', 'fail_closed', 'degraded', 'human_approval_required']).default('fail_open'),
+  DEFAULT_GOVERNANCE_MODE: z.enum(['fail_open', 'fail_closed', 'degraded', 'human_approval_required']).default('fail_closed'),
   // M13 — service token for context-fabric's /internal/mcp/* surface (the
   // proxy that resolves code-changes through MCP). Should match the value
   // configured on context-fabric as IAM_SERVICE_TOKEN. In dev with no IAM

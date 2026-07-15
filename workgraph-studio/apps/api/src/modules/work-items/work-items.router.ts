@@ -16,6 +16,7 @@ import {
   assertCanMutateWorkItem,
   assertCanViewWorkItem,
   approveWorkItem,
+  cancelWorkItem,
   canViewWorkItem,
   claimWorkItemTarget,
   createWorkItem,
@@ -151,6 +152,7 @@ const targetSchema = z.object({
 })
 
 const createSchema = z.object({
+  idempotencyKey: z.string().min(8).max(200).optional(),
   title: z.string().min(1),
   description: z.string().optional(),
   workItemTypeKey: z.string().optional(),
@@ -159,7 +161,7 @@ const createSchema = z.object({
   scheduledAt: z.string().datetime().optional(),
   notBefore: z.string().datetime().optional(),
   sourceEventTypeKey: z.string().optional(),
-  originType: z.enum(['PARENT_DELEGATED', 'CAPABILITY_LOCAL']).optional(),
+  originType: z.enum(['PARENT_DELEGATED', 'CAPABILITY_LOCAL', 'SPEC_GENERATED']).optional(),
   parentCapabilityId: z.string().optional(),
   sourceWorkflowInstanceId: z.string().uuid().optional(),
   sourceWorkflowNodeId: z.string().uuid().optional(),
@@ -175,6 +177,7 @@ const createSchema = z.object({
 
 const startTargetSchema = z.object({
   childWorkflowTemplateId: z.string().uuid().optional(),
+  idempotencyKey: z.string().min(8).max(200).optional(),
   // Values captured by the run-start form. They are merged over the WorkItem
   // packet for this run only; the WorkItem itself remains unchanged.
   vars: z.record(z.unknown()).optional(),
@@ -233,6 +236,11 @@ const reworkSchema = z.object({
   targetIds: z.array(z.string().uuid()).optional(),
   reason: z.string().optional(),
 })
+
+const cancelSchema = z.object({
+  reason: z.string().max(2000).optional(),
+  propagationPolicy: z.enum(['TARGETS_AND_CHILDREN', 'WORK_ITEM_ONLY']).optional(),
+}).default({})
 
 const detachSchema = z.object({
   reason: z.string().optional(),
@@ -523,6 +531,7 @@ workItemsRouter.post('/:id/targets/:targetId/start', validate(startTargetSchema)
     const body = req.body as z.infer<typeof startTargetSchema>
     const result = await startWorkItemTarget(String(req.params.id), String(req.params.targetId), req.user!.userId, {
       childWorkflowTemplateId: body?.childWorkflowTemplateId,
+      idempotencyKey: body?.idempotencyKey,
       vars: body?.vars,
       globals: body?.globals,
       params: body?.params,
@@ -579,6 +588,29 @@ workItemsRouter.post('/:id/approve', async (req, res, next) => {
     )
     const result = await approveWorkItem(id, req.user!.userId, 'APPROVED')
     res.json(result)
+  } catch (err) {
+    next(err)
+  }
+})
+
+workItemsRouter.post('/:id/cancel', validate(cancelSchema), async (req, res, next) => {
+  try {
+    const body = req.body as z.infer<typeof cancelSchema>
+    const id = String(req.params.id)
+    const item = await prisma.workItem.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        parentCapabilityId: true,
+        createdById: true,
+        approvedById: true,
+        tenantId: true,
+        targets: { select: { id: true, targetCapabilityId: true, claimedById: true } },
+      },
+    })
+    if (!item) throw new NotFoundError('WorkItem', id)
+    await assertCanMutateWorkItem(req.user!.userId, item, 'cancel')
+    res.json(await cancelWorkItem(id, req.user!.userId, body))
   } catch (err) {
     next(err)
   }

@@ -8,7 +8,7 @@ import { resolveRuntimeTenantId } from '../../lib/runtime-tenant'
 import { contextFabricServiceHeaders } from '../../lib/context-fabric/client'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
-import { NotFoundError, ValidationError } from '../../lib/errors'
+import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors'
 import { mapLimit } from '../../lib/map-limit'
 import { readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
@@ -33,6 +33,24 @@ import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { validateNodeConfig } from '../lookup/resolver'
 
 export const workflowInstancesRouter: Router = Router()
+
+// Activated workflow topology is an execution contract. Editing it in place makes a running
+// instance impossible to reproduce and allows late node/edge writes to bypass the run snapshot.
+// Design clients must clone a new DRAFT instance or use a future governed mutation proposal.
+async function assertInstanceGraphEditable(instanceId: string, tenantId?: string | null): Promise<void> {
+  const instance = await withTenantDbTransaction(prisma, tx => tx.workflowInstance.findFirst({
+    where: { id: instanceId },
+    select: { id: true, status: true },
+  }), tenantId ?? undefined)
+  if (!instance) throw new NotFoundError('WorkflowInstance', instanceId)
+  if (String(instance.status) !== 'DRAFT') {
+    throw new ConflictError('WORKFLOW_GRAPH_FROZEN: workflow topology can only be edited while the instance is DRAFT')
+  }
+}
+
+async function bumpGraphGeneration(tx: Prisma.TransactionClient, instanceId: string): Promise<void> {
+  await tx.workflowInstance.update({ where: { id: instanceId }, data: { graphGeneration: { increment: 1 } } })
+}
 
 workflowInstancesRouter.post('/:id/formal-analysis', async (req, res, next) => {
   try {
@@ -401,9 +419,13 @@ workflowInstancesRouter.get('/:id/artifacts', async (req, res, next) => {
 workflowInstancesRouter.post('/:id/phases', validate(createPhaseSchema), async (req, res, next) => {
   try {
     const id = req.params.id as string
-    const phase = await withTenantDbTransaction(prisma, (tx) => tx.workflowPhase.create({
-      data: { instanceId: id, ...req.body },
-    }), resolveTenantFromRequest(req))
+    await assertInstancePermission(req.user!.userId, id, 'edit', resolveTenantFromRequest(req))
+    await assertInstanceGraphEditable(id, resolveTenantFromRequest(req))
+    const phase = await withTenantDbTransaction(prisma, async (tx) => {
+      const created = await tx.workflowPhase.create({ data: { instanceId: id, ...req.body } })
+      await bumpGraphGeneration(tx, id)
+      return created
+    }, resolveTenantFromRequest(req))
     await logEvent('PhaseAdded', 'WorkflowPhase', phase.id, req.user!.userId, { instanceId: id })
     await withTenantDbTransaction(prisma, (tx) => tx.workflowMutation.create({
       data: {
@@ -553,11 +575,14 @@ workflowInstancesRouter.post('/:id/nodes', validate(createNodeSchema), async (re
   try {
     const id = req.params.id as string
     await assertInstancePermission(req.user!.userId, id, 'edit', resolveTenantFromRequest(req))
+    await assertInstanceGraphEditable(id, resolveTenantFromRequest(req))
     const validation = await validateNodeConfig(req.body.nodeType, req.body.config ?? {}, req)
     if (!validation.ok) return res.status(422).json({ code: 'NODE_CONFIG_INVALID', message: 'node configuration references could not be resolved', failures: validation.failures })
-    const node = await withTenantDbTransaction(prisma, (tx) => tx.workflowNode.create({
-      data: { instanceId: id, ...req.body },
-    }), resolveTenantFromRequest(req))
+    const node = await withTenantDbTransaction(prisma, async (tx) => {
+      const created = await tx.workflowNode.create({ data: { instanceId: id, ...req.body } })
+      await bumpGraphGeneration(tx, id)
+      return created
+    }, resolveTenantFromRequest(req))
     await logEvent('NodeAdded', 'WorkflowNode', node.id, req.user!.userId, { instanceId: id })
     await withTenantDbTransaction(prisma, (tx) => tx.workflowMutation.create({
       data: {
@@ -579,6 +604,7 @@ workflowInstancesRouter.patch('/:id/nodes/:nodeId', validate(updateNodeSchema), 
     const id = req.params.id as string
     const nodeId = req.params.nodeId as string
     await assertInstancePermission(req.user!.userId, id, 'edit', resolveTenantFromRequest(req))
+    await assertInstanceGraphEditable(id, resolveTenantFromRequest(req))
     const node = await withTenantDbTransaction(prisma, async (tx) => {
       const before = await tx.workflowNode.findFirst({ where: { id: nodeId, instanceId: id } })
       if (!before) throw new NotFoundError('WorkflowNode', nodeId)
@@ -594,6 +620,7 @@ workflowInstancesRouter.patch('/:id/nodes/:nodeId', validate(updateNodeSchema), 
         where: { id: before.id },
         data: req.body,
       })
+      await bumpGraphGeneration(tx, id)
       await tx.workflowMutation.create({
         data: {
           instanceId: id,
@@ -637,10 +664,12 @@ workflowInstancesRouter.patch('/:id/nodes/:nodeId', validate(updateNodeSchema), 
 workflowInstancesRouter.delete('/:id/nodes/:nodeId', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'edit', resolveTenantFromRequest(req))
+    await assertInstanceGraphEditable(req.params.id, resolveTenantFromRequest(req))
     await withTenantDbTransaction(prisma, async (tx) => {
       const node = await tx.workflowNode.findFirst({ where: { id: req.params.nodeId, instanceId: req.params.id } })
       if (!node) throw new NotFoundError('WorkflowNode', req.params.nodeId)
       await tx.workflowNode.delete({ where: { id: node.id } })
+      await bumpGraphGeneration(tx, req.params.id)
       await tx.workflowMutation.create({
         data: {
           instanceId: req.params.id,
@@ -669,9 +698,12 @@ workflowInstancesRouter.get('/:id/edges', async (req, res, next) => {
 workflowInstancesRouter.post('/:id/edges', validate(createEdgeSchema), async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'edit', resolveTenantFromRequest(req))
-    const edge = await withTenantDbTransaction(prisma, (tx) => tx.workflowEdge.create({
-      data: { instanceId: req.params.id, ...req.body },
-    }), resolveTenantFromRequest(req))
+    await assertInstanceGraphEditable(req.params.id, resolveTenantFromRequest(req))
+    const edge = await withTenantDbTransaction(prisma, async (tx) => {
+      const created = await tx.workflowEdge.create({ data: { instanceId: req.params.id, ...req.body } })
+      await bumpGraphGeneration(tx, req.params.id)
+      return created
+    }, resolveTenantFromRequest(req))
     res.status(201).json(edge)
   } catch (err) {
     next(err)
@@ -687,10 +719,13 @@ const updateEdgeSchema = z.object({
 workflowInstancesRouter.patch('/:id/edges/:edgeId', validate(updateEdgeSchema), async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'edit', resolveTenantFromRequest(req))
+    await assertInstanceGraphEditable(req.params.id, resolveTenantFromRequest(req))
     const edge = await withTenantDbTransaction(prisma, async (tx) => {
       const existing = await tx.workflowEdge.findFirst({ where: { id: req.params.edgeId as string, instanceId: req.params.id } })
       if (!existing) throw new NotFoundError('WorkflowEdge', req.params.edgeId)
-      return tx.workflowEdge.update({ where: { id: existing.id }, data: req.body })
+      const updated = await tx.workflowEdge.update({ where: { id: existing.id }, data: req.body })
+      await bumpGraphGeneration(tx, req.params.id)
+      return updated
     }, resolveTenantFromRequest(req))
     res.json(edge)
   } catch (err) {
@@ -701,10 +736,12 @@ workflowInstancesRouter.patch('/:id/edges/:edgeId', validate(updateEdgeSchema), 
 workflowInstancesRouter.delete('/:id/edges/:edgeId', async (req, res, next) => {
   try {
     await assertInstancePermission(req.user!.userId, req.params.id, 'edit', resolveTenantFromRequest(req))
+    await assertInstanceGraphEditable(req.params.id, resolveTenantFromRequest(req))
     await withTenantDbTransaction(prisma, async (tx) => {
       const edge = await tx.workflowEdge.findFirst({ where: { id: req.params.edgeId, instanceId: req.params.id } })
       if (!edge) throw new NotFoundError('WorkflowEdge', req.params.edgeId)
       await tx.workflowEdge.delete({ where: { id: edge.id } })
+      await bumpGraphGeneration(tx, req.params.id)
     }, resolveTenantFromRequest(req))
     res.status(204).end()
   } catch (err) {

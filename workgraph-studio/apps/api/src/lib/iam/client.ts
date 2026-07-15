@@ -491,10 +491,7 @@ export async function getCapability(capabilityId: string, callerToken?: string):
   // revoked or never registered the identity.
   const res = await iamFetch(`/capabilities/${encodeURIComponent(capabilityId)}`, { token: callerToken }).catch(() => null)
   if (res?.ok) {
-    const cap = await readIamJson<{
-      id: string; name: string; capability_id?: string; capability_type?: string;
-      status?: string; is_governing?: boolean; metadata?: Record<string, unknown>
-    }>(res, `/capabilities/${capabilityId}`).catch(() => null)
+    const cap = await readIamJson<{ id: string; name: string; capability_id?: string; capability_type?: string; status?: string; is_governing?: boolean; metadata?: Record<string, unknown> }>(res, `/capabilities/${capabilityId}`).catch(() => null)
     const row = cap ? await cacheIamCapability(capabilityId, cap) : null
     if (cap && row) {
       const isRuntimeAlias = runtimeCapabilityIdFromIam(cap) === capabilityId && cap.id !== capabilityId

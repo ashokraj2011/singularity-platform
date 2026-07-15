@@ -201,6 +201,9 @@ export async function approveSpecificationVersion(
   const workItem = await loadWorkItem(workItemId)
   const version = await loadVersion(workItemId, versionId)
   if (version.status === 'APPROVED') throw new ConflictError(`Specification version ${version.version} is already approved.`)
+  if (version.createdById && version.createdById === actorId) {
+    throw new ConflictError('Specification authors cannot approve their own version; an independent reviewer is required.')
+  }
   if (version.status === 'SUPERSEDED' || version.status === 'REJECTED') {
     throw new ConflictError(`Specification version ${version.version} is ${version.status} and cannot be approved.`)
   }

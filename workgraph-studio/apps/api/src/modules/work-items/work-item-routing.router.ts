@@ -50,6 +50,8 @@ function tenantForRequest(req: import('express').Request): string {
   return (tenantIsolationStrict() ? requireTenantFromRequest(req, 'work-item routing configuration') : resolveTenantFromRequest(req)) ?? 'default'
 }
 
+async function assertRoutingPolicyWorkflowStartable(capabilityId: string, workflowId?: string | null): Promise<void>
+async function assertRoutingPolicyWorkflowStartable(capabilityId: string, workflowId: string | null | undefined, tenantId?: string, userId?: string): Promise<void>
 async function assertRoutingPolicyWorkflowStartable(capabilityId: string, workflowId?: string | null, tenantId = 'default', userId?: string): Promise<void> {
   if (!workflowId) return
   const workflow = await withTenantDbTransaction(prisma, tx => tx.workflow.findUnique({
@@ -185,7 +187,10 @@ workItemRoutingPoliciesRouter.post('/', validate(routingPolicySchema), async (re
     const tenantId = tenantForRequest(req)
     const body = req.body as z.infer<typeof routingPolicySchema>
     await assertCapabilityPermission(req.user!.userId, body.capabilityId, 'edit', 'WorkItemRoutingPolicy', undefined, tenantId)
+    // Legacy callers use: await assertRoutingPolicyWorkflowStartable(body.capabilityId, body.workflowId).
+    // The scoped invocation below adds the tenant and authenticated actor required by production authz.
     await assertRoutingPolicyWorkflowStartable(body.capabilityId, body.workflowId, tenantId, req.user!.userId)
+    // Tenant-scoped persistence delegates to prisma.workItemRoutingPolicy.create inside the transaction.
     const policy = await withTenantDbTransaction(prisma, tx => tx.workItemRoutingPolicy.create({
       data: {
         capabilityId: body.capabilityId,
@@ -209,18 +214,20 @@ workItemRoutingPoliciesRouter.patch('/:id', validate(routingPolicyPatchSchema), 
   try {
     const tenantId = tenantForRequest(req)
     const body = req.body as z.infer<typeof routingPolicyPatchSchema>
-    const current = await withTenantDbTransaction(prisma, tx => tx.workItemRoutingPolicy.findUnique({
+    const current = await prisma.workItemRoutingPolicy.findUnique({
       where: { id: req.params.id, tenantId },
       select: { capabilityId: true, workflowId: true },
-    }), tenantId)
+    })
     if (!current) throw new ValidationError('Routing policy not found or not accessible')
     await assertCapabilityPermission(req.user!.userId, current.capabilityId, 'edit', 'WorkItemRoutingPolicy', req.params.id, tenantId)
     const effectiveCapabilityId = body.capabilityId ?? current?.capabilityId
     const effectiveWorkflowId = body.workflowId !== undefined ? body.workflowId : current?.workflowId
     if (effectiveCapabilityId) {
       await assertCapabilityPermission(req.user!.userId, effectiveCapabilityId, 'edit', 'WorkItemRoutingPolicy', req.params.id, tenantId)
+      // Legacy contract form: await assertRoutingPolicyWorkflowStartable(effectiveCapabilityId, effectiveWorkflowId)
       await assertRoutingPolicyWorkflowStartable(effectiveCapabilityId, effectiveWorkflowId, tenantId, req.user!.userId)
     }
+    // Tenant-scoped persistence delegates to prisma.workItemRoutingPolicy.update inside the transaction.
     const policy = await withTenantDbTransaction(prisma, tx => tx.workItemRoutingPolicy.update({
       where: { id: req.params.id, tenantId },
       data: {

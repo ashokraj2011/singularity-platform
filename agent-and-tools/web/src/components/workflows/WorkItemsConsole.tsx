@@ -4,7 +4,7 @@ import Link from "next/link";
 import type { CSSProperties, ReactNode } from "react";
 import { useMemo, useState } from "react";
 import useSWR from "swr";
-import { AlertTriangle, Archive, CheckCircle2, GitBranch, Play, Plus, RefreshCw, Route, Search, UserCheck, X } from "lucide-react";
+import { AlertTriangle, Archive, CheckCircle2, FileCheck2, GitBranch, GitPullRequest, Play, Plus, RefreshCw, Route, Search, ShieldCheck, UserCheck, X } from "lucide-react";
 import { asRow, asString } from "@/lib/row";
 import { formatDate, shortId, unwrapWorkgraphItems, valueText, workgraphFetch } from "@/lib/workgraph";
 
@@ -267,9 +267,83 @@ function WorkItemDetail({ item, onAction }: { item: WorkItem; onAction: (label: 
           {(item.events ?? []).length === 0 && <EmptyPanel text="No recent events." />}
         </div>
       </section>
+
+      <ContractBoundPanel workItemId={item.id} />
     </div>
   );
 }
+
+function ContractBoundPanel({ workItemId }: { workItemId: string }) {
+  const contractFetcher = (url: string) => workgraphFetch<{ items?: Array<Record<string, unknown>> }>(url);
+  const bindingsQ = useSWR<{ items?: Array<Record<string, unknown>> }>(`/work-items/${workItemId}/specification-bindings`, contractFetcher);
+  const scopesQ = useSWR<{ items?: Array<Record<string, unknown>> }>(`/work-items/${workItemId}/development-scopes`, contractFetcher);
+  const reconciliationsQ = useSWR<{ items?: Array<Record<string, unknown>> }>(`/work-items/${workItemId}/reconciliations`, contractFetcher);
+  const finalizationQ = useSWR<{ items?: Array<Record<string, unknown>> }>(`/work-items/${workItemId}/finalization`, contractFetcher);
+  const specificationsQ = useSWR<{ items?: Array<Record<string, unknown>> }>(`/work-items/${workItemId}/specifications`, contractFetcher);
+  const scopes = scopesQ.data?.items ?? [];
+  const scopeKey = scopes.map((scope) => String(scope.id ?? "")).filter(Boolean).join(",");
+  const handoffsQ = useSWR<Array<{ scopeId: string; items: Array<Record<string, unknown>> }>>(scopeKey ? `/work-items/${workItemId}/handoffs?scopes=${scopeKey}` : null, async () => Promise.all(scopes.map(async (scope) => ({
+    scopeId: String(scope.id),
+    items: unwrapWorkgraphItems<Record<string, unknown>>(await workgraphFetch<{ items?: Array<Record<string, unknown>> }>(`/development-scopes/${String(scope.id)}/handoffs`)),
+  }))));
+
+  const loading = [bindingsQ, scopesQ, reconciliationsQ, finalizationQ, specificationsQ].some((query) => query.isLoading);
+  const error = [bindingsQ, scopesQ, reconciliationsQ, finalizationQ, specificationsQ, handoffsQ].find((query) => query.error)?.error;
+  const bindings = bindingsQ.data?.items ?? [];
+  const reconciliations = reconciliationsQ.data?.items ?? [];
+  const finalizations = finalizationQ.data?.items ?? [];
+  const specifications = specificationsQ.data?.items ?? [];
+  const handoffs: Array<Record<string, unknown> & { scopeId: string }> = (handoffsQ.data ?? []).flatMap((entry) => entry.items.map((handoff) => ({ ...handoff, scopeId: entry.scopeId })));
+
+  return (
+    <section style={{ marginTop: 18, borderTop: "1px solid var(--color-outline-variant)", paddingTop: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+        <div>
+          <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 5 }}>Contract-bound execution</div>
+          <h3 style={{ margin: 0, fontSize: 15 }}>Specification to delivery evidence</h3>
+          <p style={{ margin: "5px 0 0", color: "var(--color-outline)", fontSize: 12, lineHeight: 1.45 }}>
+            Immutable bindings, per-target scopes, handoff generations, reconciliation evidence, and the finalization authority.
+          </p>
+        </div>
+        <Link className="btn-secondary text-xs" href={`/workflows/work/workitem/${workItemId}`}><GitPullRequest size={13} /> Open WorkItem IDE</Link>
+      </div>
+      {loading && <div style={{ marginTop: 12, color: "var(--color-outline)", fontSize: 12 }}>Loading contract records…</div>}
+      {error && <div style={{ marginTop: 12, border: "1px solid rgba(185,28,28,0.24)", borderRadius: 8, padding: 10, color: "#991b1b", background: "rgba(254,242,242,0.7)", fontSize: 12 }}>Contract records unavailable: {error instanceof Error ? error.message : String(error)}</div>}
+      {!loading && !error && (
+        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+          <div style={contractGridStyle}>
+            <ContractMetric icon={<FileCheck2 size={14} />} label="Specifications" value={String(specifications.length)} detail={specificationStatus(specifications)} />
+            <ContractMetric icon={<ShieldCheck size={14} />} label="Bindings" value={String(bindings.length)} detail={bindingStatus(bindings)} />
+            <ContractMetric icon={<GitBranch size={14} />} label="Development scopes" value={String(scopes.length)} detail={`${scopes.filter((scope) => String(scope.status) === "ACCEPTED").length} accepted`} />
+            <ContractMetric icon={<GitPullRequest size={14} />} label="Handoffs" value={String(handoffs.length)} detail={`${handoffs.filter((handoff) => String(handoff.status) === "PUBLISHED").length} published`} />
+            <ContractMetric icon={<CheckCircle2 size={14} />} label="Reconciliation" value={String(reconciliations.length)} detail={reconciliationStatus(reconciliations)} />
+            <ContractMetric icon={<ShieldCheck size={14} />} label="Finalization" value={String(finalizations.length)} detail={finalizationStatus(finalizations)} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
+            <ContractList title="Current bindings" rows={bindings.map((binding) => `${String(binding.status ?? "CURRENT")} · generation ${String(binding.bindingGeneration ?? "-")} · ${shortId(binding.specificationVersionId)}`)} empty="No immutable specification binding yet." />
+            <ContractList title="Scopes and handoffs" rows={scopes.map((scope) => `${shortId(scope.targetCapabilityId)} · ${String(scope.status ?? "DRAFT")} · ${handoffs.filter((handoff) => handoff.scopeId === String(scope.id) && String(handoff.status) === "PUBLISHED").length ? "published handoff" : "handoff pending"}`)} empty="No DevelopmentScopes yet." />
+            <ContractList title="Evidence and finalization" rows={reconciliations.slice(0, 4).map((run) => `${String(run.status ?? "-")} · ${shortId(run.developmentScopeId)} · ${shortId(run.id)}`)} empty="No reconciliation evidence yet." />
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ContractMetric({ icon, label, value, detail }: { icon: ReactNode; label: string; value: string; detail: string }) {
+  return <div style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 11, background: "var(--color-surface-bright)" }}><div style={{ display: "flex", alignItems: "center", gap: 6, color: "var(--color-primary)", fontSize: 12, fontWeight: 800 }}>{icon}{label}</div><div style={{ marginTop: 7, fontSize: 20, fontWeight: 800 }}>{value}</div><div style={{ marginTop: 2, color: "var(--color-outline)", fontSize: 11 }}>{detail}</div></div>;
+}
+
+function ContractList({ title, rows, empty }: { title: string; rows: string[]; empty: string }) {
+  return <div style={{ border: "1px solid var(--color-outline-variant)", borderRadius: 8, padding: 11 }}><h4 style={{ margin: "0 0 7px", fontSize: 12 }}>{title}</h4>{rows.length ? rows.map((row, index) => <div key={`${row}-${index}`} style={{ borderTop: index ? "1px solid var(--color-outline-variant)" : undefined, padding: "7px 0", color: "var(--color-outline)", fontSize: 11, overflowWrap: "anywhere" }}>{row}</div>) : <div style={{ color: "var(--color-outline)", fontSize: 11 }}>{empty}</div>}</div>;
+}
+
+const contractGridStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8 };
+
+function specificationStatus(items: Array<Record<string, unknown>>) { return items.find((item) => ["ACTIVE", "LOCKED", "APPROVED"].includes(String(item.status)))?.status ? `current ${String(items.find((item) => ["ACTIVE", "LOCKED", "APPROVED"].includes(String(item.status)))?.status).toLowerCase()}` : "draft or unlinked"; }
+function bindingStatus(items: Array<Record<string, unknown>>) { return items.find((item) => String(item.status) === "CURRENT") ? "current binding present" : "binding required"; }
+function reconciliationStatus(items: Array<Record<string, unknown>>) { return items.find((item) => String(item.status) === "VERIFIED_PASS") ? "verified evidence present" : items[0]?.status ? String(items[0].status).toLowerCase() : "not started"; }
+function finalizationStatus(items: Array<Record<string, unknown>>) { return items.find((item) => String(item.status) === "COMPLETED") ? "completed" : items[0]?.status ? String(items[0].status).toLowerCase() : "not finalized"; }
 
 function CreateWorkItemDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [title, setTitle] = useState("");

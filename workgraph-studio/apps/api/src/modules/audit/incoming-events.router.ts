@@ -130,7 +130,10 @@ incomingEventsRouter.post('/', async (req, res) => {
   const signedBody = timestampHeader
     ? (Buffer.isBuffer(exactBody) ? Buffer.concat([Buffer.from(`${timestampHeader}.`), exactBody]) : `${timestampHeader}.${exactBody}`)
     : exactBody
-  if (!verifySignature(req, signedBody, secret)) {
+  const validSignature = timestampHeader
+    ? verifySignature(req, signedBody, secret)
+    : verifySignature(req, requestBodyForSignature(req, compactFallback), secret)
+  if (!validSignature) {
     return res.status(401).json({ code: 'BAD_SIGNATURE', message: 'HMAC verification failed' })
   }
 

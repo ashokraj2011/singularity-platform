@@ -12,6 +12,11 @@ import {
 
 type WorkItemRef = { id: string; workCode: string; title: string | null; tenantId: string | null }
 
+export type ScopedSubmissionContext = {
+  developmentScopeId: string
+  handoffGenerationId: string
+}
+
 async function loadWorkItem(workItemId: string): Promise<WorkItemRef> {
   const workItem = await prisma.workItem.findUnique({
     where: { id: workItemId },
@@ -41,6 +46,45 @@ async function loadHandoffContext(workItemId: string) {
     requirementIds: ((target.requirementIds as string[] | null) ?? []),
   }
   return { target, spec, ctx }
+}
+
+async function loadScopedHandoffContext(workItemId: string, context: ScopedSubmissionContext) {
+  const handoff = await prisma.handoffGeneration.findFirst({
+    where: {
+      id: context.handoffGenerationId,
+      developmentScopeId: context.developmentScopeId,
+      status: 'PUBLISHED',
+    },
+    include: {
+      developmentScope: {
+        include: { specificationBinding: true },
+      },
+    },
+  })
+  if (!handoff || handoff.developmentScope.workItemId !== workItemId) {
+    throw new NotFoundError('HandoffGeneration', context.handoffGenerationId)
+  }
+  const scope = handoff.developmentScope
+  if (scope.status === 'CANCELLED') throw new ConflictError('The DevelopmentScope is cancelled')
+  if (scope.currentHandoffGenerationId !== handoff.id) {
+    throw new ConflictError('The handoff generation is stale; publish the current generation before submitting')
+  }
+  const binding = scope.specificationBinding
+  if (!binding || binding.status !== 'CURRENT') {
+    throw new ConflictError('The DevelopmentScope has no current specification binding')
+  }
+  const spec = await prisma.specificationVersion.findUnique({
+    where: { id: binding.specificationVersionId },
+    select: { id: true, version: true, status: true, contentHash: true },
+  })
+  if (!spec) throw new NotFoundError('SpecificationVersion', binding.specificationVersionId)
+  const ctx: SubmissionValidationContext = {
+    specificationHash: binding.resolvedContentHash || spec.contentHash,
+    repository: handoff.repository,
+    baseCommitSha: handoff.baseCommitSha,
+    requirementIds: Array.isArray(handoff.requirementIds) ? handoff.requirementIds.filter((id): id is string => typeof id === 'string') : [],
+  }
+  return { handoff, scope, binding, spec, ctx }
 }
 
 function serialize(row: {
@@ -88,18 +132,26 @@ export async function registerSubmission(
   workItemId: string,
   input: RegisterSubmissionInput,
   actorId: string,
+  scopedContext?: ScopedSubmissionContext,
 ) {
   const workItem = await loadWorkItem(workItemId)
-  const { target, spec, ctx } = await loadHandoffContext(workItemId)
+  const scoped = scopedContext ? await loadScopedHandoffContext(workItemId, scopedContext) : null
+  const legacy = scoped ? null : await loadHandoffContext(workItemId)
+  const repository = scoped?.handoff.repository ?? legacy!.target.repository
+  const specificationVersionId = scoped?.binding.specificationVersionId ?? legacy!.target.specificationVersionId
+  const ctx = scoped?.ctx ?? legacy!.ctx
 
   const { source, ...manifest } = input
   const validation = validateSubmissionManifest(manifest as SubmissionManifest, ctx)
 
   // Immutable per head commit — return the prior record untouched if this SHA was already seen.
   const existing = await prisma.implementationSubmission.findUnique({
-    where: { workItemId_repository_headCommitSha: { workItemId, repository: target.repository, headCommitSha: manifest.headCommit } },
+    where: { workItemId_repository_headCommitSha: { workItemId, repository, headCommitSha: manifest.headCommit } },
   })
   if (existing) {
+    if (scoped && (existing.developmentScopeId !== scoped.scope.id || existing.handoffGenerationId !== scoped.handoff.id || existing.specificationBindingId !== scoped.binding.id)) {
+      throw new ConflictError('This commit is already registered against a different DevelopmentScope or handoff generation')
+    }
     return { submission: serialize(existing), validation, alreadyRegistered: true }
   }
 
@@ -111,9 +163,12 @@ export async function registerSubmission(
     created = await withTenantDbTransaction(prisma, (tx) => tx.implementationSubmission.create({
       data: {
         workItemId,
-        specificationVersionId: target.specificationVersionId,
+        specificationVersionId,
+        specificationBindingId: scoped?.binding.id ?? null,
+        developmentScopeId: scoped?.scope.id ?? null,
+        handoffGenerationId: scoped?.handoff.id ?? null,
         specificationHash: manifest.specificationHash,
-        repository: target.repository,
+        repository,
         baseCommitSha: manifest.baseCommit,
         headCommitSha: manifest.headCommit,
         pullRequestNumber: manifest.pullRequestNumber ?? null,
@@ -129,7 +184,7 @@ export async function registerSubmission(
     // Lost a race on the unique (workItemId, repository, headCommit) — fetch and return the winner.
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
       const winner = await prisma.implementationSubmission.findUnique({
-        where: { workItemId_repository_headCommitSha: { workItemId, repository: target.repository, headCommitSha: manifest.headCommit } },
+        where: { workItemId_repository_headCommitSha: { workItemId, repository, headCommitSha: manifest.headCommit } },
       })
       if (winner) return { submission: serialize(winner), validation, alreadyRegistered: true }
     }
@@ -138,9 +193,12 @@ export async function registerSubmission(
 
   const payload = {
     submissionId: created.id,
-    specificationVersionId: target.specificationVersionId,
-    specificationVersion: spec.version,
-    repository: target.repository,
+    specificationVersionId,
+    specificationVersion: scoped?.spec.version ?? legacy!.spec.version,
+    specificationBindingId: scoped?.binding.id ?? null,
+    developmentScopeId: scoped?.scope.id ?? null,
+    handoffGenerationId: scoped?.handoff.id ?? null,
+    repository,
     headCommit: manifest.headCommit,
     pullRequestNumber: manifest.pullRequestNumber ?? null,
     source,
