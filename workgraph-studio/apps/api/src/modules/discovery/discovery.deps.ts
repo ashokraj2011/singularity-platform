@@ -13,6 +13,7 @@ import { prisma } from '../../lib/prisma'
 import { contextFabricClient } from '../../lib/context-fabric/client'
 import { resolveLlmRouting } from '../llm-routing/resolve'
 import { createDiscoveryService } from './discovery.service'
+import { createDiscoveryBridge } from './discovery.bridge'
 import type {
   DiscoveryAssumptionRecord,
   DiscoveryBudget,
@@ -48,6 +49,13 @@ const prismaStore: DiscoveryStore = {
     })
     return row as unknown as DiscoverySessionWithChildren | null
   },
+  async findSessionByScope(scopeType, scopeId, tenantId) {
+    const row = await prisma.discoverySession.findFirst({
+      where: { scopeType, scopeId, ...(tenantId ? { tenantId } : {}) },
+      orderBy: { createdAt: 'asc' },
+    })
+    return row as unknown as DiscoverySessionWithChildren | null
+  },
   async updateSessionStatus(id, status) {
     await prisma.discoverySession.update({ where: { id }, data: { status } })
   },
@@ -67,12 +75,18 @@ const prismaStore: DiscoveryStore = {
         proposedAnswer: input.proposedAnswer ?? null,
         confidence: input.confidence ?? null,
         ordinal: input.ordinal ?? 0,
+        sourceType: input.sourceType ?? null,
+        sourceId: input.sourceId ?? null,
       },
     })
     return row as unknown as DiscoveryQuestionRecord
   },
   async findQuestionByText(sessionId, text) {
     const row = await prisma.discoveryQuestion.findFirst({ where: { sessionId, text: text.trim() } })
+    return row as unknown as DiscoveryQuestionRecord | null
+  },
+  async findQuestionBySource(sourceType, sourceId) {
+    const row = await prisma.discoveryQuestion.findFirst({ where: { sourceType, sourceId } })
     return row as unknown as DiscoveryQuestionRecord | null
   },
   async getQuestion(id) {
@@ -178,3 +192,4 @@ export const discoveryDeps: DiscoveryDeps = {
 }
 
 export const discoveryService = createDiscoveryService(discoveryDeps)
+export const discoveryBridge = createDiscoveryBridge(prismaStore)

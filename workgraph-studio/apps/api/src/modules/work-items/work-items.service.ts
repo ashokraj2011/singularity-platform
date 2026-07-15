@@ -12,6 +12,7 @@ import { cloneDesignToRun } from '../workflow/lib/cloneDesignToRun'
 import { getWorkflowBudgetOverview } from '../workflow/runtime/budget'
 import { normalizeMetadataKey, recordOf, resolveMetadataSnapshot } from '../metadata/metadata.service'
 import { tenantIdForCreate, tenantIsolationStrict } from '../../lib/tenant-isolation'
+import { discoveryBridge } from '../discovery/discovery.deps'
 
 type KVPair = { key?: string; path?: string; value?: string }
 
@@ -1210,6 +1211,16 @@ export async function requestWorkItemClarification(
     targetId,
     clarificationId: clarification.id,
   })
+  // ADR 0006 Slice 2 — mirror into the unified Discovery model (best-effort;
+  // must never break the legacy clarification path).
+  await discoveryBridge
+    .mirrorClarificationRequested({
+      workItemId,
+      clarificationId: clarification.id,
+      question: text,
+      tenantId: workItem.tenantId ?? undefined,
+    })
+    .catch(() => undefined)
   return clarification
 }
 
@@ -1256,6 +1267,11 @@ export async function answerWorkItemClarification(
     targetId: clarification.targetId,
     clarificationId,
   })
+  // ADR 0006 Slice 2 — mirror the answer into the unified Discovery model
+  // (best-effort; unblocks the mirrored question + recomputes the gate).
+  await discoveryBridge
+    .mirrorClarificationAnswered({ clarificationId, answer: text, answeredById: userId })
+    .catch(() => undefined)
   return clarification
 }
 

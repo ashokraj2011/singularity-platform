@@ -3895,6 +3895,11 @@ model DiscoveryQuestion {
   proposedAnswer String?
   confidence     Float?
   ordinal        Int                     @default(0)
+  // Compatibility bridge (ADR 0006 Slice 2): links a mirrored question back to
+  // the legacy row it shadows — sourceType e.g. 'work_item_clarification' /
+  // 'workbench_stage_question', sourceId the legacy PK. Null for native ones.
+  sourceType     String?
+  sourceId       String?
   createdAt      DateTime                @default(now())
   updatedAt      DateTime                @updatedAt
 
@@ -3902,6 +3907,7 @@ model DiscoveryQuestion {
 
   @@index([sessionId, status])
   @@index([tenantId])
+  @@index([sourceType, sourceId])
   @@map("discovery_questions")
 }
 

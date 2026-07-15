@@ -13,6 +13,7 @@ import {
   mergeBudget,
   budgetExhausted,
 } from '../src/modules/discovery/discovery.service'
+import { createDiscoveryBridge } from '../src/modules/discovery/discovery.bridge'
 import { DEFAULT_BUDGET } from '../src/modules/discovery/discovery.types'
 import type {
   DiscoveryAssumptionRecord,
@@ -56,6 +57,12 @@ function makeStore(): DiscoveryStore & { _sessions: Map<string, DiscoverySession
       const s = sessions.get(sid)
       return s ? { ...s, questions: [...s.questions], assumptions: [...s.assumptions] } : null
     },
+    async findSessionByScope(scopeType, scopeId, tenantId) {
+      for (const s of sessions.values()) {
+        if (s.scopeType === scopeType && s.scopeId === scopeId && (!tenantId || s.tenantId === tenantId)) return s
+      }
+      return null
+    },
     async updateSessionStatus(sid, status) {
       const s = sessions.get(sid)
       if (s) s.status = status
@@ -80,6 +87,8 @@ function makeStore(): DiscoveryStore & { _sessions: Map<string, DiscoverySession
         proposedAnswer: input.proposedAnswer ?? null,
         confidence: input.confidence ?? null,
         ordinal: input.ordinal ?? s.questions.length,
+        sourceType: input.sourceType ?? null,
+        sourceId: input.sourceId ?? null,
         createdAt: now(),
         updatedAt: now(),
       }
@@ -89,6 +98,13 @@ function makeStore(): DiscoveryStore & { _sessions: Map<string, DiscoverySession
     async findQuestionByText(sid, text) {
       const s = sessions.get(sid)
       return s?.questions.find(q => q.text === text.trim()) ?? null
+    },
+    async findQuestionBySource(sourceType, sourceId) {
+      for (const s of sessions.values()) {
+        const q = s.questions.find(x => x.sourceType === sourceType && x.sourceId === sourceId)
+        if (q) return q
+      }
+      return null
     },
     async getQuestion(qid) {
       for (const s of sessions.values()) {
@@ -325,5 +341,79 @@ describe('answer / dismiss unblocks the gate', () => {
     await svc.dismissQuestion(q.id)
     const session = await svc.getSession(s.id)
     expect(session!.status).toBe('RESOLVED')
+  })
+})
+
+// ── Compatibility bridge (Slice 2) ───────────────────────────────────────────
+
+describe('discovery bridge — work-item clarifications', () => {
+  it('mirrors a clarification as a blocking question on the WI session (get-or-create)', async () => {
+    const store = makeStore()
+    const bridge = createDiscoveryBridge(store)
+    const q = await bridge.mirrorClarificationRequested({
+      workItemId: 'wi-100',
+      clarificationId: 'clar-1',
+      question: 'Which region?',
+    })
+    expect(q?.blocking).toBe(true)
+    expect(q?.sourceType).toBe('work_item_clarification')
+    const session = await store.findSessionByScope('WORK_ITEM', 'wi-100')
+    const full = await store.getSession(session!.id)
+    expect(full!.status).toBe('BLOCKED')
+  })
+
+  it('is idempotent — a repeated request does not duplicate the question', async () => {
+    const store = makeStore()
+    const bridge = createDiscoveryBridge(store)
+    await bridge.mirrorClarificationRequested({ workItemId: 'wi-101', clarificationId: 'clar-2', question: 'Q?' })
+    await bridge.mirrorClarificationRequested({ workItemId: 'wi-101', clarificationId: 'clar-2', question: 'Q?' })
+    const session = await store.findSessionByScope('WORK_ITEM', 'wi-101')
+    const full = await store.getSession(session!.id)
+    expect(full!.questions).toHaveLength(1)
+  })
+
+  it('mirroring an answer unblocks the session', async () => {
+    const store = makeStore()
+    const bridge = createDiscoveryBridge(store)
+    await bridge.mirrorClarificationRequested({ workItemId: 'wi-102', clarificationId: 'clar-3', question: 'Q?' })
+    const updated = await bridge.mirrorClarificationAnswered({ clarificationId: 'clar-3', answer: 'yes', answeredById: 'u1' })
+    expect(updated?.status).toBe('ANSWERED')
+    const session = await store.findSessionByScope('WORK_ITEM', 'wi-102')
+    const full = await store.getSession(session!.id)
+    expect(full!.status).toBe('RESOLVED')
+  })
+
+  it('answering an unknown clarification is a no-op', async () => {
+    const store = makeStore()
+    const bridge = createDiscoveryBridge(store)
+    const r = await bridge.mirrorClarificationAnswered({ clarificationId: 'nope', answer: 'x' })
+    expect(r).toBeNull()
+  })
+})
+
+describe('discovery bridge — workbench stage questions', () => {
+  it('seeds configured questions with required→blocking, idempotently', async () => {
+    const store = makeStore()
+    const bridge = createDiscoveryBridge(store)
+    const first = await bridge.seedStageQuestions({
+      stageId: 'stg-9',
+      questions: [
+        { questionId: 'q1', text: 'Target platform?', required: true },
+        { questionId: 'q2', text: 'Nice to have?', required: false },
+      ],
+    })
+    expect(first.seeded).toHaveLength(2)
+    const blocking = first.seeded.find(q => q.text === 'Target platform?')
+    expect(blocking?.blocking).toBe(true)
+    expect(blocking?.source).toBe('configured')
+
+    const second = await bridge.seedStageQuestions({
+      stageId: 'stg-9',
+      questions: [{ questionId: 'q1', text: 'Target platform?', required: true }],
+    })
+    expect(second.seeded).toHaveLength(0)
+    const full = await store.getSession(first.sessionId)
+    expect(full!.questions).toHaveLength(2)
+    expect(full!.status).toBe('BLOCKED')
   })
 })

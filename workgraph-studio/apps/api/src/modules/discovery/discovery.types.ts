@@ -28,6 +28,8 @@ export interface DiscoveryQuestionRecord {
   proposedAnswer?: string | null
   confidence?: number | null
   ordinal: number
+  sourceType?: string | null
+  sourceId?: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -113,6 +115,8 @@ export interface UpsertQuestionInput {
   proposedAnswer?: string | null
   confidence?: number | null
   ordinal?: number
+  sourceType?: string | null
+  sourceId?: string | null
 }
 
 export interface UpsertAssumptionInput {
@@ -127,12 +131,20 @@ export interface UpsertAssumptionInput {
 export interface DiscoveryStore {
   createSession(input: CreateSessionInput): Promise<DiscoverySessionRecord>
   getSession(id: string): Promise<DiscoverySessionWithChildren | null>
+  /** Bridge: find an existing session for a legacy scope (get-or-create upstream). */
+  findSessionByScope(
+    scopeType: DiscoveryScopeType,
+    scopeId: string,
+    tenantId?: string,
+  ): Promise<DiscoverySessionRecord | null>
   updateSessionStatus(id: string, status: DiscoverySessionStatus): Promise<void>
   updateSessionBudget(id: string, budget: DiscoveryBudget): Promise<void>
 
   addQuestion(input: UpsertQuestionInput): Promise<DiscoveryQuestionRecord>
   /** Idempotency helper: a question whose trimmed text already exists on the session. */
   findQuestionByText(sessionId: string, text: string): Promise<DiscoveryQuestionRecord | null>
+  /** Bridge: find a mirrored question by its legacy source pointer. */
+  findQuestionBySource(sourceType: string, sourceId: string): Promise<DiscoveryQuestionRecord | null>
   getQuestion(id: string): Promise<DiscoveryQuestionRecord | null>
   answerQuestion(id: string, answer: string, answeredById?: string): Promise<DiscoveryQuestionRecord>
   dismissQuestion(id: string): Promise<DiscoveryQuestionRecord>

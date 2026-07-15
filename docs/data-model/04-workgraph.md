@@ -2717,6 +2717,8 @@ INVALIDATED INVALIDATED
     String proposedAnswer "❓"
     Float confidence "❓"
     Int ordinal 
+    String sourceType "❓"
+    String sourceId "❓"
     DateTime createdAt 
     DateTime updatedAt 
     }
