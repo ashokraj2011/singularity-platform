@@ -11,6 +11,7 @@ import { registryRouter } from './routes/registry.router';
 import { ambiguityRouter } from './routes/ambiguity.router';
 import { AppError } from './lib/errors';
 import { registryAuth } from './middleware/auth';
+import { startDispatcher } from './lib/dispatcher';
 
 export const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -43,5 +44,8 @@ if (require.main === module) {
   app.listen(PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`claim-registry listening on :${PORT}`);
+    // Start the event-bus dispatcher (LISTEN/NOTIFY + 30s sweep, HMAC-signed
+    // delivery). Server-mode only — tests import `app` without booting it.
+    void startDispatcher();
   });
 }
