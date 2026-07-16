@@ -8,7 +8,7 @@
 import { Router, type Request } from 'express'
 import { z } from 'zod'
 import { validate } from '../../middleware/validate'
-import { createBoard, listBoards, appendEvent, readState, listEvents } from './board.service'
+import { createBoard, listBoards, appendEvent, readState, listEvents, forkBranch, listBranches, abandonBranch } from './board.service'
 import { detectAndNarrate, listMoments, editMoment, rejectMoment } from './board-moments.service'
 
 export const studioBoardRouter: Router = Router()
@@ -25,6 +25,17 @@ const appendEventSchema = z.object({
   coalesceKey: z.string().trim().max(200).nullable().optional(),
   agentRole: z.string().trim().max(64).nullable().optional(),
   expectedHeadSeq: z.number().int().min(0).optional(),
+})
+
+const forkSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  fromBranch: z.string().trim().min(1).max(120).default('main'),
+  atEventSeq: z.number().int().min(0).optional(),
+  atMomentId: z.string().uuid().optional(),
+  mode: z.enum(['HUMAN', 'AGENT_EXPLORATION']).default('HUMAN'),
+  purpose: z.string().trim().max(500).optional(),
+  maxEvents: z.number().int().min(1).max(100_000).optional(),
+  maxTurns: z.number().int().min(1).max(10_000).optional(),
 })
 
 const detectMomentsSchema = z.object({
@@ -73,6 +84,25 @@ studioBoardRouter.get('/boards/:boardId/events', async (req, res, next) => {
     const from = typeof req.query.from === 'string' && req.query.from !== '' ? Number(req.query.from) : undefined
     const to = typeof req.query.to === 'string' && req.query.to !== '' ? Number(req.query.to) : undefined
     res.json(await listEvents(boardIdOf(req), branchOf(req), from, to))
+  } catch (err) { next(err) }
+})
+
+// ── Branches / fork (PR-3) ────────────────────────────────────────────────────
+studioBoardRouter.get('/boards/:boardId/branches', async (req, res, next) => {
+  try {
+    res.json(await listBranches(boardIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+studioBoardRouter.post('/boards/:boardId/fork', validate(forkSchema), async (req, res, next) => {
+  try {
+    res.status(201).json(await forkBranch(boardIdOf(req), req.body, userIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+studioBoardRouter.post('/boards/:boardId/branches/:name/abandon', async (req, res, next) => {
+  try {
+    res.json(await abandonBranch(boardIdOf(req), String(req.params.name), userIdOf(req)))
   } catch (err) { next(err) }
 })
 
