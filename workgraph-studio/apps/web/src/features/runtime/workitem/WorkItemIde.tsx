@@ -47,13 +47,14 @@ const VIEWS: IdeShellView<ItemView>[] = [
 ]
 
 // Project-baseline views mirror the old /studio project surfaces, now injected into this IDE.
-export type ProjectSurfaceKey = 'analysis' | 'requirements' | 'design' | 'reconciliation' | 'rooms' | 'coedit'
+export type ProjectSurfaceKey = 'analysis' | 'requirements' | 'design' | 'reconciliation' | 'rooms' | 'board' | 'coedit'
 const PROJECT_VIEWS: IdeShellView<ProjectSurfaceKey>[] = [
   { key: 'analysis', label: 'Analysis', Icon: Lightbulb },
   { key: 'requirements', label: 'Requirements', Icon: ClipboardList },
   { key: 'design', label: 'Design', Icon: PenTool },
   { key: 'reconciliation', label: 'Reconciliation', Icon: CheckCircle2 },
   { key: 'rooms', label: 'Rooms', Icon: FlaskConical },
+  { key: 'board', label: 'Board', Icon: Boxes },
   { key: 'coedit', label: 'Co-edit', Icon: Users },
 ]
 

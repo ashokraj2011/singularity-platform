@@ -26,6 +26,7 @@ import { ProjectRequirementsSurface } from "@/components/studio/ProjectRequireme
 import { ProjectDesignSurface } from "@/components/studio/ProjectDesignSurface";
 import { ProjectReconciliationReport } from "@/components/studio/ProjectReconciliationReport";
 import { ProjectRoomsSurface } from "@/components/studio/ProjectRoomsSurface";
+import { ProjectBoardSurface } from "@/components/studio/ProjectBoardSurface";
 import { CoeditCanvas } from "@/components/studio/CoeditCanvas";
 import { projectIdeTokens } from "@/components/studio/projectIdeTokens";
 
@@ -40,6 +41,7 @@ const renderProjectSurface: ProjectSurfaceRenderer = ({ projectId, surface, them
     {surface === "design" && <ProjectDesignSurface projectId={projectId} />}
     {surface === "reconciliation" && <ProjectReconciliationReport projectId={projectId} />}
     {surface === "rooms" && <ProjectRoomsSurface projectId={projectId} />}
+    {surface === "board" && <ProjectBoardSurface projectId={projectId} />}
     {surface === "coedit" && (
       <CoeditCanvas projectId={projectId} docKey="canvas" surface="coedit" title="Project canvas — live" placeholder="Draft the spec together — problem statements, open questions, sketches. Edits merge live." />
     )}
