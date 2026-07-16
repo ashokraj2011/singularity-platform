@@ -1,14 +1,12 @@
 "use client";
 
-import { Binary } from "lucide-react";
-import { SynComingSoon } from "@/components/synthesis/SynComingSoon";
+import { Suspense } from "react";
+import { LogicConsoleScreen } from "@/components/synthesis/screens/LogicConsoleScreen";
 
 export default function LogicPage() {
   return (
-    <SynComingSoon
-      title="Logic Console"
-      icon={Binary}
-      description="Surface contradictions and consistency gaps across requirements."
-    />
+    <Suspense fallback={null}>
+      <LogicConsoleScreen />
+    </Suspense>
   );
 }

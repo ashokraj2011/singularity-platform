@@ -29,7 +29,7 @@ export function SynCard({
       className={[
         "bg-surface-container-lowest border border-outline-variant rounded-xl shadow-sm",
         interactive
-          ? "hover:border-secondary hover:shadow-md transition-all duration-300 cursor-pointer"
+          ? "group hover:border-secondary hover:shadow-md transition-all duration-300 cursor-pointer"
           : "",
         className,
       ]

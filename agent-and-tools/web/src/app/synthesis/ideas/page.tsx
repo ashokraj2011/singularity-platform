@@ -1,14 +1,12 @@
 "use client";
 
-import { Lightbulb } from "lucide-react";
-import { SynComingSoon } from "@/components/synthesis/SynComingSoon";
+import { Suspense } from "react";
+import { IdeaWallScreen } from "@/components/synthesis/screens/IdeaWallScreen";
 
 export default function IdeasPage() {
   return (
-    <SynComingSoon
-      title="Idea Wall"
-      icon={Lightbulb}
-      description="Capture raw ideas and let AI parse them into structured claims and questions."
-    />
+    <Suspense fallback={null}>
+      <IdeaWallScreen />
+    </Suspense>
   );
 }
