@@ -11,6 +11,8 @@ import {
   Cpu,
   FlaskConical,
   Building2,
+  LayoutGrid,
+  ListChecks,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { SynthesisShell } from "@/components/synthesis/SynthesisShell";
@@ -37,6 +39,7 @@ import {
   proposeClaims,
 } from "@/components/synthesis/hooks/useSynthesis";
 import type { ClaimType, SynClaim } from "@/components/synthesis/types";
+import { IdeaBoardWorkspace } from "@/components/synthesis/IdeaBoardWorkspace";
 
 const CLAIM_TYPES: { key: ClaimType; label: string; icon: LucideIcon }[] = [
   { key: "MARKET", label: "Market", icon: Building2 },
@@ -45,20 +48,35 @@ const CLAIM_TYPES: { key: ClaimType; label: string; icon: LucideIcon }[] = [
   { key: "TECHNICAL", label: "Technical", icon: Cpu },
 ];
 
-const IDEA_WALL_ROOM = "Idea Wall";
+const IDEA_WALL_ROOM = "Idea Board";
 
 export function IdeaWallScreen() {
   const pathname = usePathname() ?? "/synthesis/ideas";
   const projectId = useSelectedProjectId();
+  const [view, setView] = useState<"board" | "claims">("board");
 
   return (
-    <SynthesisShell title="Idea Wall" headerActions={<ProjectPicker pathname={pathname} />}>
-      {projectId ? <IdeaWall projectId={projectId} /> : <NoProjectSelected surface="The Idea Wall" />}
+    <SynthesisShell
+      title="Idea Board"
+      fullBleed={view === "board"}
+      headerActions={(
+        <>
+          <div className="flex h-9 items-center rounded-lg border border-outline-variant bg-surface-container-low p-1" aria-label="Idea workspace view">
+            <button type="button" onClick={() => setView("board")} className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold ${view === "board" ? "bg-surface text-on-surface shadow-sm" : "text-on-surface-variant"}`}><LayoutGrid size={14} /> Board</button>
+            <button type="button" onClick={() => setView("claims")} className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold ${view === "claims" ? "bg-surface text-on-surface shadow-sm" : "text-on-surface-variant"}`}><ListChecks size={14} /> Claims</button>
+          </div>
+          <ProjectPicker pathname={pathname} />
+        </>
+      )}
+    >
+      {projectId
+        ? view === "board" ? <IdeaBoardWorkspace projectId={projectId} /> : <ClaimsView projectId={projectId} />
+        : <NoProjectSelected surface="The Idea Board" />}
     </SynthesisShell>
   );
 }
 
-function IdeaWall({ projectId }: { projectId: string }) {
+function ClaimsView({ projectId }: { projectId: string }) {
   const roomsQ = useRooms(projectId);
   const claimsQ = useClaims(projectId, {}, { refreshInterval: 15000 });
   const [draft, setDraft] = useState("");
@@ -135,11 +153,11 @@ function IdeaWall({ projectId }: { projectId: string }) {
         <div>
           <MonoMeta className="block mb-1">Capture · Parse · Cluster</MonoMeta>
           <h1 className="font-display font-semibold text-2xl text-on-surface tracking-tight">
-            Idea Wall
+            Governed claims
           </h1>
           <p className="mt-1.5 text-sm text-on-surface-variant max-w-2xl">
-            Drop raw ideas and assumptions. Each becomes a tracked claim with a confidence posterior,
-            clustered by type. Let the copilot expand a seed into structured claims.
+            Promote selected notes from the board or capture a claim directly. Claims carry confidence,
+            provenance, and validation state into discovery and specification.
           </p>
         </div>
         <MonoMeta>{claims.length} claims</MonoMeta>

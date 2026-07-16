@@ -71,7 +71,16 @@ export function applyEvent(state: ObjectMap, ev: BoardEventLike): ObjectMap {
       if (!id) return state
       const obj = state[id]
       if (!obj) return state
-      return { ...state, [id]: { ...obj, position: asRecord(p.to) } }
+      const position = asRecord(p.to)
+      return {
+        ...state,
+        [id]: {
+          ...obj,
+          position,
+          ...(typeof position.x === 'number' ? { x: position.x } : {}),
+          ...(typeof position.y === 'number' ? { y: position.y } : {}),
+        },
+      }
     }
     case 'OBJECT_DELETED': {
       const id = ids[0]

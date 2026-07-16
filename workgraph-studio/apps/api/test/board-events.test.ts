@@ -29,6 +29,7 @@ describe('applyEvent', () => {
     const s0 = applyEvent({}, created('o1'))
     const s1 = applyEvent(s0, { eventType: 'OBJECT_MOVED', objectIds: ['o1'], payload: { from: { x: 0, y: 0 }, to: { x: 5, y: 9 } } })
     expect(s1.o1.position).toEqual({ x: 5, y: 9 })
+    expect(s1.o1).toMatchObject({ x: 5, y: 9 })
   })
 
   it('OBJECT_DELETED tombstones, OBJECT_RESTORED revives', () => {

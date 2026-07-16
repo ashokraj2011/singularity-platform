@@ -39,6 +39,7 @@ const addClaimSchema = z.object({
   entityId: z.string().trim().max(200).optional(),
   stewardId: z.string().trim().max(200).optional(),
   initialEstimate: z.number().min(0).max(1).optional(),
+  provenance: z.record(z.unknown()).optional(),
 });
 const estimateSchema = z.object({ probability: z.number().min(0).max(1), rationale: z.string().trim().max(2000).optional() });
 const proposeSchema = z.object({ prompt: z.string().trim().min(1).max(8000) });

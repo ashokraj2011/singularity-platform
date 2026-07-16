@@ -71,5 +71,21 @@ assert.ok(hrefs.length >= 8, "SynthesisShell should register the eight journey s
 for (const href of hrefs) {
   assert.ok(href.startsWith("/synthesis/"), `nav href ${href} must live under /synthesis`);
 }
+assert.match(shell, /label: "Idea Board"/, "the primary synthesis capture surface should be named Idea Board");
+
+const ideaScreen = fs.readFileSync(
+  path.join(process.cwd(), "src/components/synthesis/screens/IdeaWallScreen.tsx"),
+  "utf8",
+);
+assert.match(ideaScreen, /IdeaBoardWorkspace/, "the Idea Board route should mount the durable board workspace");
+assert.match(ideaScreen, /fullBleed=\{view === "board"\}/, "the spatial canvas should use the full work area");
+
+const boardCanvas = fs.readFileSync(
+  path.join(process.cwd(), "src/components/studio/BoardCanvas.tsx"),
+  "utf8",
+);
+for (const capability of ["ReactFlow", "Synthesize", "Promote", "Connect", "Timeline"]) {
+  assert.ok(boardCanvas.includes(capability), `Idea Board should expose ${capability}`);
+}
 
 console.log("synthesis logic + nav contract tests passed");
