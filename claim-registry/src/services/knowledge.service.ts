@@ -16,6 +16,7 @@ import { loweringSystemPrompt, buildLoweringTask, parseLoweringResponse } from '
 import { defaultGatewayLlm, type GatewayLlm } from '../lib/gateway';
 import { createClaim } from './claim.service';
 import { AppError } from '../lib/errors';
+import { currentRegistryTenant } from '../lib/request-context';
 
 export interface CaptureEventInput {
   source: CaptureSource;
@@ -27,12 +28,14 @@ export interface CaptureEventInput {
 
 /** Permissive intake — hash-dedup on contentHash; the same capture links, never re-ingests. */
 export async function captureEvent(input: CaptureEventInput) {
+  const tenantId = currentRegistryTenant();
   const contentHash = hashPayload({ source: input.source, content: input.content });
-  const existing = await prisma.knowledgeEvent.findUnique({ where: { contentHash } });
+  const existing = await prisma.knowledgeEvent.findFirst({ where: { tenantId, contentHash } });
   if (existing) return { event: existing, deduped: true };
 
   const event = await prisma.knowledgeEvent.create({
     data: {
+      tenantId,
       source: input.source, externalRef: input.externalRef ?? null, contentHash,
       payloadRef: putPayload(input.content), capabilityId: input.capabilityId ?? null, capturedBy: input.capturedBy,
     },
@@ -43,7 +46,8 @@ export async function captureEvent(input: CaptureEventInput) {
 
 /** Run the lowering pass through the LLM gateway, persist pre-matched candidates. */
 export async function lowerEvent(eventId: string, llm: GatewayLlm = defaultGatewayLlm) {
-  const event = await prisma.knowledgeEvent.findUnique({ where: { id: eventId } });
+  const tenantId = currentRegistryTenant();
+  const event = await prisma.knowledgeEvent.findFirst({ where: { id: eventId, tenantId } });
   if (!event) throw new AppError(404, 'EVENT_NOT_FOUND', `KnowledgeEvent ${eventId} not found.`);
 
   let proposals;
@@ -60,9 +64,10 @@ export async function lowerEvent(eventId: string, llm: GatewayLlm = defaultGatew
   // Pre-match each candidate against existing claims by canonicalKey (the dedup guard).
   const rows = await Promise.all(proposals.map(async (p) => {
     const canonicalKey = statementCanonicalKey(p.statement);
-    const match = await prisma.claim.findUnique({ where: { canonicalKey }, select: { id: true } });
+    const match = await prisma.claim.findFirst({ where: { tenantId, canonicalKey }, select: { id: true } });
     return prisma.loweringCandidate.create({
       data: {
+        tenantId,
         eventId, proposedStatement: p.statement, proposedKind: p.kind as never,
         modelConfidence: p.confidence, matchedClaimId: match?.id ?? null,
       },
@@ -77,9 +82,10 @@ export async function lowerEvent(eventId: string, llm: GatewayLlm = defaultGatew
 }
 
 export async function listCandidates(status?: string) {
+  const tenantId = currentRegistryTenant();
   return {
     items: await prisma.loweringCandidate.findMany({
-      where: status ? { status: status as never } : {},
+      where: { tenantId, ...(status ? { status: status as never } : {}) },
       orderBy: { createdAt: 'desc' }, take: 200,
     }),
   };
@@ -87,7 +93,8 @@ export async function listCandidates(status?: string) {
 
 /** Accept a candidate → create a new claim, or (if pre-matched) attach to the existing one. */
 export async function acceptCandidate(candidateId: string, reviewedBy: string) {
-  const c = await prisma.loweringCandidate.findUnique({ where: { id: candidateId } });
+  const tenantId = currentRegistryTenant();
+  const c = await prisma.loweringCandidate.findFirst({ where: { id: candidateId, tenantId } });
   if (!c) throw new AppError(404, 'CANDIDATE_NOT_FOUND', `LoweringCandidate ${candidateId} not found.`);
   if (c.status !== 'PENDING_REVIEW') throw new AppError(409, 'ALREADY_REVIEWED', `Candidate is ${c.status}.`);
 
@@ -111,7 +118,7 @@ export async function acceptCandidate(candidateId: string, reviewedBy: string) {
 }
 
 export async function rejectCandidate(candidateId: string, reviewedBy: string) {
-  const c = await prisma.loweringCandidate.findUnique({ where: { id: candidateId } });
+  const c = await prisma.loweringCandidate.findFirst({ where: { id: candidateId, tenantId: currentRegistryTenant() } });
   if (!c) throw new AppError(404, 'CANDIDATE_NOT_FOUND', `LoweringCandidate ${candidateId} not found.`);
   const updated = await prisma.loweringCandidate.update({ where: { id: candidateId }, data: { status: 'REJECTED' as never, reviewedBy } });
   return { candidate: updated };

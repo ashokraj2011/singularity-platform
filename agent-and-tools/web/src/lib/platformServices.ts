@@ -5,6 +5,7 @@ export type PlatformServiceId =
   | "agent-runtime"
   | "agent-service"
   | "audit-governance"
+  | "claim-registry"
   | "context-fabric"
   | "formal-verifier"
   | "iam"

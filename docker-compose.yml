@@ -57,6 +57,37 @@ services:
   # ─────────────────────────────────────────────────────────────────────
   # IAM
   # ─────────────────────────────────────────────────────────────────────
+  claim-registry:
+    build:
+      context: ./claim-registry
+      dockerfile: Dockerfile
+    container_name: singularity-claim-registry
+    profiles: [core, full, backend-split]
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 8600
+      DATABASE_URL_CLAIM_REGISTRY: postgresql://postgres:singularity@at-postgres:5432/singularity_claim_registry
+      CLAIM_REGISTRY_AUTH_PROVIDER: iam
+      IAM_BASE_URL: http://iam-service:8100/api/v1
+      IAM_SERVICE_TOKEN: ${CLAIM_REGISTRY_IAM_SERVICE_TOKEN:-}
+      TENANT_ISOLATION_MODE: ${TENANT_ISOLATION_MODE:-off}
+      CLAIM_REGISTRY_DEFAULT_TENANT_ID: ${WORKGRAPH_DEFAULT_TENANT_ID:-default}
+    ports:
+      - "8600:8600"
+    depends_on:
+      at-postgres:
+        condition: service_healthy
+      at-postgres-bootstrap:
+        condition: service_completed_successfully
+      iam-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8600/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
   iam-postgres:
     image: postgres:16-alpine
     container_name: singularity-iam-postgres

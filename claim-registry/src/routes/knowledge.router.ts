@@ -13,7 +13,7 @@ const captureSchema = z.object({
   capabilityId: z.string().uuid().nullable().optional(),
 });
 
-const actorOf = (req: Request) => String(req.header('x-user-id') ?? req.header('x-service-name') ?? 'system');
+const actorOf = (req: Request) => req.registryActor?.userId ?? 'unknown';
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => { void fn(req, res).catch(next); };
 
 // Permissive intake (invariant 6) — capture is never blocked.

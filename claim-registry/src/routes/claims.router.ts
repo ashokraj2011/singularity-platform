@@ -34,9 +34,7 @@ const evidenceSchema = z.object({
 });
 const transitionSchema = z.object({ toState: z.enum(STATES), approvedBy: z.string().optional() });
 
-// Actor resolution — M-CR1 reads x-user-id / x-service-name; the copied IAM
-// JWT-verify middleware (mint at bootstrap, verify inbound) lands in hardening.
-const actorOf = (req: Request) => String(req.header('x-user-id') ?? req.header('x-service-name') ?? 'system');
+const actorOf = (req: Request) => req.registryActor?.userId ?? 'unknown';
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => { void fn(req, res).catch(next); };
 
 claimsRouter.post('/claims', wrap(async (req, res) => {

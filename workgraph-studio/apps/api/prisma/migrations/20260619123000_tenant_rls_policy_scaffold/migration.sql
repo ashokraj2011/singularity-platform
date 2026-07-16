@@ -73,4 +73,23 @@ SELECT public.workgraph_install_tenant_policy('tool_runs', 'public.workgraph_ins
 SELECT public.workgraph_install_tenant_policy('documents', 'public.workgraph_instance_visible("instanceId")');
 SELECT public.workgraph_install_tenant_policy('pending_executions', 'public.workgraph_instance_visible("instanceId")');
 
+-- Studio board tables were introduced after this scaffold migration. Keep the
+-- deployment/cutover script self-contained by installing their policies when
+-- they already exist, while allowing a fresh Prisma migration to run before
+-- those later tables are created. M101 installs the same policies in normal
+-- migration order.
+DO $$
+BEGIN
+  IF to_regclass('public.boards') IS NOT NULL THEN
+    PERFORM public.workgraph_install_tenant_policy('boards', '"tenantId" = public.workgraph_current_tenant_id()');
+    PERFORM public.workgraph_install_tenant_policy('board_branches', '"tenantId" = public.workgraph_current_tenant_id()');
+    PERFORM public.workgraph_install_tenant_policy('board_events', '"tenantId" = public.workgraph_current_tenant_id()');
+    PERFORM public.workgraph_install_tenant_policy('board_snapshots', '"tenantId" = public.workgraph_current_tenant_id()');
+    PERFORM public.workgraph_install_tenant_policy('board_moments', '"tenantId" = public.workgraph_current_tenant_id()');
+    PERFORM public.workgraph_install_tenant_policy('ingested_artifacts', '"tenantId" = public.workgraph_current_tenant_id()');
+    PERFORM public.workgraph_install_tenant_policy('agent_verdicts', '"tenantId" = public.workgraph_current_tenant_id()');
+  END IF;
+END;
+$$;
+
 DROP FUNCTION public.workgraph_install_tenant_policy(text, text);

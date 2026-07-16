@@ -156,7 +156,8 @@ DECLARE
   v_tables text[] := ARRAY[
     'workflow_instances','run_snapshots','workflow_run_budgets','workflow_run_budget_events',
     'workflow_phases','workflow_nodes','workflow_edges','workflow_mutations','workflow_events',
-    'tasks','approval_requests','consumables','agent_runs','tool_runs','documents','pending_executions'
+    'tasks','approval_requests','consumables','agent_runs','tool_runs','documents','pending_executions',
+    'boards','board_branches','board_events','board_snapshots','board_moments','ingested_artifacts','agent_verdicts'
   ];
   -- The six tables with a NULLABLE instanceId (B2) — standalone rows here are
   -- unrepresentable under the instance-visibility policy.
@@ -220,7 +221,7 @@ END
 $preflight$;
 
 -- ----------------------------------------------------------------------------
--- ENABLE + FORCE ROW LEVEL SECURITY on the 16 scaffolded tables.
+-- ENABLE + FORCE ROW LEVEL SECURITY on the engine and Studio board tables.
 -- ----------------------------------------------------------------------------
 ALTER TABLE public.workflow_instances         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.run_snapshots              ENABLE ROW LEVEL SECURITY;
@@ -238,6 +239,13 @@ ALTER TABLE public.agent_runs                 ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.tool_runs                  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.documents                  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.pending_executions         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.boards                     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.board_branches             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.board_events               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.board_snapshots            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.board_moments              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ingested_artifacts         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.agent_verdicts             ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE public.workflow_instances         FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.run_snapshots              FORCE ROW LEVEL SECURITY;
@@ -255,6 +263,13 @@ ALTER TABLE public.agent_runs                 FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.tool_runs                  FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.documents                  FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.pending_executions         FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.boards                     FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.board_branches             FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.board_events               FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.board_snapshots            FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.board_moments              FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.ingested_artifacts         FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.agent_verdicts             FORCE ROW LEVEL SECURITY;
 
 COMMIT;
 
@@ -284,6 +299,13 @@ COMMIT;
 -- ALTER TABLE public.tool_runs                  NO FORCE ROW LEVEL SECURITY;
 -- ALTER TABLE public.documents                  NO FORCE ROW LEVEL SECURITY;
 -- ALTER TABLE public.pending_executions         NO FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE public.boards                     NO FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE public.board_branches             NO FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE public.board_events               NO FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE public.board_snapshots            NO FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE public.board_moments              NO FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE public.ingested_artifacts         NO FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE public.agent_verdicts             NO FORCE ROW LEVEL SECURITY;
 -- COMMIT;
 
 -- BEGIN;
@@ -303,4 +325,11 @@ COMMIT;
 -- ALTER TABLE public.tool_runs                  DISABLE ROW LEVEL SECURITY;
 -- ALTER TABLE public.documents                  DISABLE ROW LEVEL SECURITY;
 -- ALTER TABLE public.pending_executions         DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE public.boards                     DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE public.board_branches             DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE public.board_events               DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE public.board_snapshots            DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE public.board_moments              DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE public.ingested_artifacts         DISABLE ROW LEVEL SECURITY;
+-- ALTER TABLE public.agent_verdicts             DISABLE ROW LEVEL SECURITY;
 -- COMMIT;

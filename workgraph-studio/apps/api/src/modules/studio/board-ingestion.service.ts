@@ -11,12 +11,14 @@
  * an unknown kind still lands as a single source card.
  */
 import { randomUUID } from 'crypto'
+import { lookup } from 'node:dns/promises'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { currentTenantIdForDb } from '../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { contextFabricClient } from '../../lib/context-fabric/client'
+import { classifyAddress, precheckTargetUrl } from '../../lib/ssrf-guard'
 import { appendEvent } from './board.service'
 import { extractJson } from './board-moments'
 import {
@@ -77,6 +79,27 @@ async function loadArtifact(boardId: string, artifactId: string): Promise<Artifa
   return a
 }
 
+async function resolveIngestContent(input: IngestInput): Promise<string> {
+  if (input.content !== undefined) return input.content
+  if (input.storageRef) throw new ValidationError('storageRef ingestion is not configured for this deployment; provide extracted content or a URL.')
+  if (!input.url) throw new ValidationError('An ingestion source is required: content or URL.')
+  const check = precheckTargetUrl(input.url)
+  if (!check.ok) throw new ValidationError(`Document URL rejected: ${check.reason}`)
+  if (check.url.username || check.url.password) throw new ValidationError('Document URLs must not contain credentials.')
+  const addresses = await lookup(check.host, { all: true })
+  const allowPrivate = String(process.env.STUDIO_INGEST_ALLOW_PRIVATE_URLS ?? 'false').toLowerCase() === 'true'
+  if (!allowPrivate && addresses.some(({ address }) => ['loopback', 'private', 'link-local', 'unique-local', 'unspecified'].includes(classifyAddress(address) ?? 'unspecified'))) {
+    throw new ValidationError('Document URL resolves to a private or local address; set STUDIO_INGEST_ALLOW_PRIVATE_URLS=true only for controlled local development.')
+  }
+  const response = await fetch(check.url, { signal: AbortSignal.timeout(30_000), redirect: 'error' })
+  if (!response.ok) throw new ValidationError(`Document URL returned HTTP ${response.status}.`)
+  const length = Number(response.headers.get('content-length') ?? 0)
+  if (length > 500_000) throw new ValidationError('Document URL exceeds the 500 KB ingestion limit.')
+  const text = await response.text()
+  if (text.length > 500_000) throw new ValidationError('Document URL exceeds the 500 KB ingestion limit.')
+  return text
+}
+
 export async function ingest(
   boardId: string, branchName: string, input: IngestInput, actor: { actorId: string },
   deps: { parser?: DocumentParser; extractor?: ClaimExtractor } = {},
@@ -85,7 +108,7 @@ export async function ingest(
   const branch = await branchOr404(boardId, branchName)
   const parser = deps.parser ?? defaultTextParser
   const extractor = deps.extractor ?? defaultClaimExtractor
-  const rawContent = input.url ?? input.content ?? ''
+  const rawContent = await resolveIngestContent(input)
   const contentHash = contentHashOf(`${input.kind.toUpperCase()}:${rawContent}`)
   const tenantId = currentTenantIdForDb() ?? undefined
 
@@ -104,9 +127,8 @@ export async function ingest(
   // Parse (deterministic; unknown kinds fall back to a single card).
   let parsed: ParsedArtifact
   try {
-    parsed = parser.supports(input.kind)
-      ? parser.parse({ kind: input.kind, filename: input.filename, content: rawContent })
-      : { spans: [{ ref: 'raw:0', title: input.filename, text: rawContent.slice(0, 4000) }], summary: { kind: input.kind, spans: 1, note: 'no parser registered for this kind — placed as a single source card' } }
+    if (!parser.supports(input.kind)) throw new ValidationError(`No parser is registered for artifact kind ${input.kind}. Supported kinds are TEXT, MARKDOWN, MD, and URL.`)
+    parsed = parser.parse({ kind: input.kind, filename: input.filename, content: rawContent })
   } catch {
     await prisma.ingestedArtifact.update({ where: { id: artifact.id }, data: { status: 'FAILED' } })
     throw new ValidationError('Failed to parse the ingested artifact.')

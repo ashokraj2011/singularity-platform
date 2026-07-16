@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
-import { workgraphFetch } from "@/lib/workgraph";
+import { workgraphFetch, WorkgraphError } from "@/lib/workgraph";
 import { BoardCanvas } from "./BoardCanvas";
 
 /**
@@ -17,18 +17,23 @@ export function ProjectBoardSurface({ projectId }: { projectId: string }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const res = await workgraphFetch<{ items: BoardItem[] }>(`/studio/projects/${projectId}/boards`);
       setBoards(res.items ?? []);
       setSelected((cur) => cur ?? res.items?.[0]?.id ?? null);
-    } catch { /* ignore */ }
+      setError(null);
+    } catch (e) {
+      setError(e instanceof WorkgraphError ? e.message : "Could not load boards.");
+    }
   }, [projectId]);
   useEffect(() => { void load(); }, [load]);
 
   const create = useCallback(async () => {
     setBusy(true);
+    setError(null);
     try {
       const b = await workgraphFetch<BoardItem>(`/studio/projects/${projectId}/boards`, {
         method: "POST", body: JSON.stringify({ name: name.trim() || "Untitled board" }),
@@ -36,7 +41,9 @@ export function ProjectBoardSurface({ projectId }: { projectId: string }) {
       setName("");
       await load();
       setSelected(b.id);
-    } catch { /* ignore */ } finally { setBusy(false); }
+    } catch (e) {
+      setError(e instanceof WorkgraphError ? e.message : "Could not create the board.");
+    } finally { setBusy(false); }
   }, [name, projectId, load]);
 
   return (
@@ -52,6 +59,12 @@ export function ProjectBoardSurface({ projectId }: { projectId: string }) {
         />
         <button onClick={() => void create()} disabled={busy} style={chip(false)}>{busy ? "Creating…" : "+ New board"}</button>
       </div>
+
+      {error && <div role="alert" style={errorBox}>
+        <strong>Board action failed.</strong>
+        <span>{error}</span>
+        <button onClick={() => void load()} style={retryBtn}>Retry</button>
+      </div>}
 
       {selected ? (
         <BoardCanvas projectId={projectId} boardId={selected} />
@@ -76,3 +89,5 @@ const inputStyle: CSSProperties = {
   fontSize: 12, padding: "5px 10px", borderRadius: 8, border: "1px solid var(--color-outline-variant)",
   background: "var(--color-surface)", color: "var(--color-on-surface)", minWidth: 160,
 };
+const errorBox: CSSProperties = { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(220,38,38,0.28)", background: "rgba(220,38,38,0.07)", color: "#991b1b", fontSize: 12 };
+const retryBtn: CSSProperties = { marginLeft: "auto", border: "1px solid rgba(153,27,27,0.35)", borderRadius: 6, padding: "5px 9px", background: "transparent", color: "#991b1b", cursor: "pointer", fontWeight: 650 };

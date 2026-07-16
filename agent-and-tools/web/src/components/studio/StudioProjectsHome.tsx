@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import Link from "next/link";
-import { workgraphFetch } from "@/lib/workgraph";
+import { workgraphFetch, WorkgraphError } from "@/lib/workgraph";
 
 /**
  * Studio home: the portfolio of Specification Projects. A project is the top-level unit —
@@ -16,23 +16,31 @@ export function StudioProjectsHome() {
   const [projects, setProjects] = useState<ProjectItem[] | null>(null);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
       const r = await workgraphFetch<{ items: ProjectItem[] }>(`/studio/projects`);
       setProjects(r.items ?? []);
-    } catch { setProjects([]); }
+      setError(null);
+    } catch (e) {
+      setProjects([]);
+      setError(e instanceof WorkgraphError ? e.message : "Could not load Specification Projects.");
+    }
   }, []);
   useEffect(() => { void load(); }, [load]);
 
   const create = useCallback(async () => {
     if (!name.trim()) return;
     setBusy(true);
+    setError(null);
     try {
       await workgraphFetch<ProjectItem>(`/studio/projects`, { method: "POST", body: JSON.stringify({ name: name.trim() }) });
       setName("");
       await load();
-    } catch { /* ignore */ } finally { setBusy(false); }
+    } catch (e) {
+      setError(e instanceof WorkgraphError ? e.message : "Could not create the project.");
+    } finally { setBusy(false); }
   }, [name, load]);
 
   return (
@@ -47,6 +55,12 @@ export function StudioProjectsHome() {
           <button onClick={() => void create()} disabled={busy} style={primaryBtn}>{busy ? "Creating…" : "New project"}</button>
         </div>
       </div>
+
+      {error && <div role="alert" style={errorBox}>
+        <strong>Studio could not complete that request.</strong>
+        <span>{error}</span>
+        <button onClick={() => void load()} style={retryBtn}>Retry</button>
+      </div>}
 
       {projects === null ? (
         <div style={{ fontSize: 12.5, color: "var(--color-outline)" }}>Loading…</div>
@@ -74,3 +88,5 @@ const inputStyle: CSSProperties = { fontSize: 12.5, padding: "7px 11px", borderR
 const primaryBtn: CSSProperties = { fontSize: 12.5, fontWeight: 650, padding: "7px 14px", borderRadius: 8, border: "none", background: "var(--color-primary, #6366f1)", color: "#fff", cursor: "pointer" };
 const cardStyle: CSSProperties = { display: "block", padding: 14, textDecoration: "none", color: "var(--color-on-surface)", cursor: "pointer" };
 const codeChip: CSSProperties = { fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 5, fontVariantNumeric: "tabular-nums", background: "var(--color-surface-container-high, rgba(15,23,42,0.06))", color: "var(--color-outline)" };
+const errorBox: CSSProperties = { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 14, padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(220,38,38,0.28)", background: "rgba(220,38,38,0.07)", color: "#991b1b", fontSize: 12 };
+const retryBtn: CSSProperties = { marginLeft: "auto", border: "1px solid rgba(153,27,27,0.35)", borderRadius: 6, padding: "5px 9px", background: "transparent", color: "#991b1b", cursor: "pointer", fontWeight: 650 };

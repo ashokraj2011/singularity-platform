@@ -88,3 +88,26 @@ npm run prisma:generate
 npm run prisma:deploy   # or: npx prisma db push (bare-metal)
 npm run dev
 ```
+
+## Runtime security contract
+
+All `/api/v1` requests require a verified IAM bearer token. The registry derives
+the actor from the verified identity and scopes every read and write to the
+verified tenant. Legacy `x-user-id` and `x-service-name` headers are not trusted.
+Use `x-tenant-id` only when the tenant is present in the verified token's tenant
+membership; strict deployments reject ambiguous or missing tenant context.
+
+`/health` is public for liveness checks. Scheduled `/jobs/*` endpoints require a
+service-principal bearer token and are intended for the platform scheduler, not
+browser users.
+
+Example authenticated request:
+
+```bash
+curl -H "Authorization: Bearer $IAM_SERVICE_TOKEN" \
+  -H "X-Tenant-Id: $TENANT_ID" \
+  http://localhost:8600/api/v1/claims
+```
+
+For production, set `AUTH_PROVIDER=iam`, `AUTH_OPTIONAL=false`,
+`REQUIRE_TENANT_ID=true`, and the IAM URL/token settings from `.env.example`.

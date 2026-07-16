@@ -7,6 +7,8 @@
  * stateHash short-circuits to "nothing to merge".
  */
 import { prisma } from '../../lib/prisma'
+import { config } from '../../config'
+import { currentTenantIdForDb } from '../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { NotFoundError, ValidationError } from '../../lib/errors'
 import { materializeBoardState, appendEvent, type AppendEventInput } from './board.service'
@@ -53,9 +55,10 @@ function contentPatch(o: BoardObject | undefined): Record<string, unknown> {
   return rest
 }
 
-async function applyItems(boardId: string, fromBranch: string, toBranch: string, branchState: ObjectMap, items: DiffItem[], userId: string) {
-  for (const it of items) {
-    await appendEvent(boardId, toBranch, mergeEvent(it.objectId, it.change, branchState[it.objectId], fromBranch), { actorType: 'SYSTEM', actorId: userId })
+async function applyItems(boardId: string, fromBranch: string, toBranch: string, branchState: ObjectMap, items: DiffItem[], userId: string, targetHeadSeq: number) {
+  for (const [index, it] of items.entries()) {
+    if (it.conflict) throw new ValidationError(`Cannot merge ${it.objectId}: the target branch changed the same material object.`)
+    await appendEvent(boardId, toBranch, { ...mergeEvent(it.objectId, it.change, branchState[it.objectId], fromBranch), expectedHeadSeq: targetHeadSeq + index }, { actorType: 'SYSTEM', actorId: userId })
   }
 }
 
@@ -71,7 +74,7 @@ export async function mergeBranch(boardId: string, fromBranch: string, toBranch:
   const { items } = diffStates(base.state, branch.state, main.state)
   const spatial = items.filter((i) => i.klass === 'SPATIAL')
   const material = items.filter((i) => i.klass === 'MATERIAL')
-  await applyItems(boardId, fromBranch, toBranch, branch.state, spatial, userId)
+  await applyItems(boardId, fromBranch, toBranch, branch.state, spatial, userId, main.headEventSeq)
   await logEvent('BoardBranchMerged', 'BoardBranch', branch.branchId, userId, { boardId, from: fromBranch, to: toBranch, autoMerged: spatial.length, pending: material.length })
   await publishOutbox('BoardBranch', branch.branchId, 'BoardBranchMerged', { boardId, from: fromBranch, to: toBranch, autoMerged: spatial.length })
   return { from: fromBranch, to: toBranch, identical: false, autoMerged: spatial.length, batch: material, summary: summarizeDiff(items) }
@@ -80,21 +83,32 @@ export async function mergeBranch(boardId: string, fromBranch: string, toBranch:
 /** Accept material batch items: replay the branch's version of each onto the target. */
 export async function applyMergeItems(boardId: string, fromBranch: string, objectIds: string[], toBranch: string, userId: string) {
   if (!objectIds.length) throw new ValidationError('No objectIds to apply.')
-  const { base, branch } = await threeWay(boardId, fromBranch, toBranch)
-  const { items } = diffStates(base.state, branch.state, branch.state) // classify branch vs base
+  const { base, branch, main } = await threeWay(boardId, fromBranch, toBranch)
+  const { items } = diffStates(base.state, branch.state, main.state)
   const chosen = items.filter((i) => objectIds.includes(i.objectId))
   if (!chosen.length) throw new ValidationError('None of the requested objects have a branch change to apply.')
-  await applyItems(boardId, fromBranch, toBranch, branch.state, chosen, userId)
+  await applyItems(boardId, fromBranch, toBranch, branch.state, chosen, userId, main.headEventSeq)
   await logEvent('BoardMergeItemsApplied', 'BoardBranch', branch.branchId, userId, { boardId, from: fromBranch, to: toBranch, count: chosen.length })
   return { applied: chosen.map((i) => ({ objectId: i.objectId, change: i.change })) }
 }
 
 /** Close the merge: mark the source branch MERGED. */
 export async function completeMerge(boardId: string, fromBranch: string, userId: string) {
-  const branch = await prisma.boardBranch.findFirst({ where: { boardId, name: fromBranch }, select: { id: true, name: true } })
+  const tenantId = currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID
+  const board = await prisma.board.findFirst({ where: { id: boardId, tenantId }, select: { id: true } })
+  if (!board) throw new NotFoundError('Board', boardId)
+  const branch = await prisma.boardBranch.findFirst({ where: { boardId, name: fromBranch, tenantId }, select: { id: true, name: true, status: true, mergedAt: true } })
   if (!branch) throw new NotFoundError('BoardBranch', `${boardId}/${fromBranch}`)
   if (branch.name === 'main') throw new ValidationError('The main branch cannot be merged away.')
-  const updated = await prisma.boardBranch.update({ where: { id: branch.id }, data: { status: 'MERGED', mergedAt: new Date() } })
+  if (branch.status === 'MERGED') return { id: branch.id, name: branch.name, status: branch.status, mergedAt: branch.mergedAt }
+  if (branch.status !== 'ACTIVE') throw new ValidationError(`Branch ${fromBranch} is ${branch.status} and cannot be completed.`)
+  const remaining = await diffBranches(boardId, fromBranch, 'main')
+  if (!remaining.identical) {
+    throw new ValidationError('Merge is not complete: branch changes remain. Apply or resolve the remaining changes before closing the branch.')
+  }
+  const updatedResult = await prisma.boardBranch.updateMany({ where: { id: branch.id, status: 'ACTIVE' }, data: { status: 'MERGED', mergedAt: new Date() } })
+  if (updatedResult.count !== 1) throw new ValidationError('Merge completion lost its branch-state fence; reload and retry.')
+  const updated = await prisma.boardBranch.findUniqueOrThrow({ where: { id: branch.id } })
   await logEvent('BoardBranchMergeCompleted', 'BoardBranch', branch.id, userId, { boardId, from: fromBranch })
   await publishOutbox('BoardBranch', branch.id, 'BoardBranchMergeCompleted', { boardId, from: fromBranch })
   return { id: updated.id, name: updated.name, status: updated.status, mergedAt: updated.mergedAt }

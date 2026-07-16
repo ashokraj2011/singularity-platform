@@ -8,6 +8,7 @@
  * (decision-log, requirements-traceability, open-questions) are deferred.
  */
 import { prisma } from '../lib/prisma';
+import { currentRegistryTenant } from '../lib/request-context';
 
 export interface AssumptionRow {
   claimId: string;
@@ -33,6 +34,7 @@ export interface AssumptionRegister {
 export async function assumptionRegister(filter: { capabilityId?: string | null }, nowMs: number = Date.now()): Promise<AssumptionRegister> {
   const claims = await prisma.claim.findMany({
     where: {
+      tenantId: currentRegistryTenant(),
       kind: 'ASSUMPTION',
       status: { in: ['ACTIVE', 'FALSIFIED'] },
       ...(filter.capabilityId !== undefined ? { capabilityId: filter.capabilityId } : {}),
@@ -44,7 +46,7 @@ export async function assumptionRegister(filter: { capabilityId?: string | null 
 
   // Open-ambiguity count per claim (one round-trip, counted in JS — small result set).
   const ambs = claims.length
-    ? await prisma.ambiguity.findMany({ where: { status: 'OPEN', claimId: { in: claims.map((c) => c.id) } }, select: { claimId: true } })
+    ? await prisma.ambiguity.findMany({ where: { tenantId: currentRegistryTenant(), status: 'OPEN', claimId: { in: claims.map((c) => c.id) } }, select: { claimId: true } })
     : [];
   const ambCount = new Map<string, number>();
   for (const a of ambs) ambCount.set(a.claimId, (ambCount.get(a.claimId) ?? 0) + 1);

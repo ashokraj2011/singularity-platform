@@ -65,12 +65,13 @@ enum EvidenceDirection {
 
 model Claim {
   id                String        @id @default(uuid())
+  tenantId          String        @default("default")
   capabilityId      String? // platform org-scoping join key; null = org-level
   kind              ClaimKind
   maturity          MaturityState @default(FRAGMENT)
   status            ClaimStatus   @default(ACTIVE)
   statement         String
-  canonicalKey      String        @unique // sha256 of normalized statement — the hard dedup guard
+  canonicalKey      String // sha256 of normalized statement — the hard dedup guard
   embedding         Unsupported("vector(1536)")?
   embeddingDegraded Boolean       @default(false) // set when canonicalization couldn't embed (fail-loud, never silent-fork)
   subjectRefs       Json          @default("[]")
@@ -96,13 +97,15 @@ model Claim {
   relationsTo   ClaimRelation[]      @relation("RelationTo")
   ambiguities   Ambiguity[]
 
-  @@index([capabilityId, maturity, status])
+  @@unique([tenantId, canonicalKey])
+  @@index([tenantId, capabilityId, maturity, status])
   @@index([kind, status])
   @@map("claims")
 }
 
 model ClaimVersion {
   id         String   @id @default(uuid())
+  tenantId   String   @default("default")
   claimId    String
   claim      Claim    @relation(fields: [claimId], references: [id], onDelete: Cascade)
   version    Int
@@ -117,9 +120,10 @@ model ClaimVersion {
 
 model EvidenceObject {
   id          String       @id @default(uuid())
+  tenantId    String       @default("default")
   tier        EvidenceTier
   kind        EvidenceKind
-  contentHash String       @unique // sha256 of raw payload — immutable at intake (invariant 2)
+  contentHash String       // sha256 of raw payload — immutable at intake (invariant 2)
   excerpt     String
   payloadRef  String? // MinIO ref (bounded, fail-closed fetch)
   sourceMeta  Json         @default("{}")
@@ -130,11 +134,13 @@ model EvidenceObject {
 
   links EvidenceLink[]
 
+  @@unique([tenantId, contentHash])
   @@map("evidence_objects")
 }
 
 model EvidenceLink {
   id                 String            @id @default(uuid())
+  tenantId           String            @default("default")
   claimId            String
   claim              Claim             @relation(fields: [claimId], references: [id], onDelete: Cascade)
   evidenceId         String
@@ -153,6 +159,7 @@ model EvidenceLink {
 
 model MaturityTransition {
   id             String        @id @default(uuid())
+  tenantId       String        @default("default")
   claimId        String
   claim          Claim         @relation(fields: [claimId], references: [id], onDelete: Cascade)
   fromState      MaturityState
@@ -171,6 +178,7 @@ model MaturityTransition {
 // M11.d unified receipt envelope, persisted (joinable by traceId).
 model Receipt {
   id            String   @id @default(uuid())
+  tenantId      String   @default("default")
   traceId       String
   kind          String
   sourceService String   @default("claim-registry")
@@ -189,6 +197,7 @@ model Receipt {
 // M11.e event bus — outbox + subscriber registry + per-delivery state.
 model EventOutbox {
   id          String   @id @default(uuid())
+  tenantId    String   @default("default")
   eventType   String
   aggregateId String
   payload     Json
@@ -204,7 +213,8 @@ model EventOutbox {
 
 model EventSubscription {
   id         String   @id @default(uuid())
-  name       String   @unique
+  tenantId   String   @default("default")
+  name       String
   eventTypes String[]
   targetUrl  String
   secret     String
@@ -213,11 +223,13 @@ model EventSubscription {
 
   deliveries EventDelivery[]
 
+  @@unique([tenantId, name])
   @@map("event_subscriptions")
 }
 
 model EventDelivery {
   id             String            @id @default(uuid())
+  tenantId       String            @default("default")
   outboxId       String
   outbox         EventOutbox       @relation(fields: [outboxId], references: [id], onDelete: Cascade)
   subscriptionId String
@@ -257,9 +269,10 @@ enum CandidateStatus {
 
 model KnowledgeEvent {
   id             String         @id @default(uuid())
+  tenantId       String         @default("default")
   source         CaptureSource
   externalRef    String?
-  contentHash    String         @unique // hash-dedup: same capture links, not re-ingests
+  contentHash    String         // hash-dedup: same capture links, not re-ingests
   payloadRef     String // MinIO ref to raw capture
   capabilityId   String?
   capturedBy     String
@@ -268,11 +281,13 @@ model KnowledgeEvent {
 
   candidates LoweringCandidate[]
 
+  @@unique([tenantId, contentHash])
   @@map("knowledge_events")
 }
 
 model LoweringCandidate {
   id                String          @id @default(uuid())
+  tenantId          String          @default("default")
   eventId           String
   event             KnowledgeEvent  @relation(fields: [eventId], references: [id], onDelete: Cascade)
   proposedStatement String
@@ -313,6 +328,7 @@ enum RelationType {
 // the input the contradiction sweep reads.
 model ClaimRelation {
   id          String       @id @default(uuid())
+  tenantId    String       @default("default")
   fromClaimId String
   fromClaim   Claim        @relation("RelationFrom", fields: [fromClaimId], references: [id], onDelete: Cascade)
   toClaimId   String
@@ -333,6 +349,7 @@ model ClaimRelation {
 // resolved row and a later-reopened one coexist; "one OPEN per key" is code-enforced.
 model Ambiguity {
   id             String          @id @default(uuid())
+  tenantId       String          @default("default")
   type           AmbiguityType
   status         AmbiguityStatus @default(OPEN)
   claimId        String

@@ -71,6 +71,15 @@ TENANT_TABLES = [
     TenantTable("work_item_routing_policies", None, tenant_column="tenantId"),
     TenantTable("work_item_triggers", None, tenant_column="tenantId"),
     TenantTable("workflow_triggers", None, tenant_column="tenantId"),
+    # Studio's durable event-sourced board and ingestion/verdict records are
+    # first-class tenant data, not an unscoped UI cache.
+    TenantTable("boards", None, tenant_column="tenantId"),
+    TenantTable("board_branches", None, tenant_column="tenantId"),
+    TenantTable("board_events", None, tenant_column="tenantId"),
+    TenantTable("board_snapshots", None, tenant_column="tenantId"),
+    TenantTable("board_moments", None, tenant_column="tenantId"),
+    TenantTable("ingested_artifacts", None, tenant_column="tenantId"),
+    TenantTable("agent_verdicts", None, tenant_column="tenantId"),
 ]
 
 

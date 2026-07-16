@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
-import { workgraphFetch } from "@/lib/workgraph";
+import { workgraphFetch, WorkgraphError } from "@/lib/workgraph";
 import { projectIdeTokens } from "./projectIdeTokens";
 import { ProjectAnalysisSurface } from "./ProjectAnalysisSurface";
 import { ProjectRequirementsSurface } from "./ProjectRequirementsSurface";
@@ -38,12 +38,13 @@ interface ProjectHeader { id: string; code: string; name: string; mission?: stri
 export function ProjectWorkspace({ projectId }: { projectId: string }) {
   const [project, setProject] = useState<ProjectHeader | null>(null);
   const [activity, setActivity] = useState<Activity>("requirements");
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     workgraphFetch<ProjectHeader>(`/studio/projects/${projectId}`)
-      .then((p) => { if (active) setProject(p); })
-      .catch(() => { /* ignore */ });
+      .then((p) => { if (active) { setProject(p); setError(null); } })
+      .catch((e) => { if (active) setError(e instanceof WorkgraphError ? e.message : "Could not load this Specification Project."); });
     return () => { active = false; };
   }, [projectId]);
 
@@ -65,6 +66,12 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           <div style={{ fontSize: 10.5, color: "var(--color-outline)" }}>work items generated</div>
         </div>
       </header>
+
+      {error && <div role="alert" style={errorBox}>
+        <strong>Project unavailable.</strong>
+        <span>{error}</span>
+        <button onClick={() => window.location.reload()} style={retryBtn}>Retry</button>
+      </div>}
 
       <div style={{ display: "flex", gap: 0, flex: 1, minHeight: 0 }}>
         <nav style={navStyle}>
@@ -102,6 +109,8 @@ const navStyle: CSSProperties = {
   display: "flex", flexDirection: "column", gap: 2, width: 168, flexShrink: 0, padding: "14px 10px",
   borderRight: "1px solid var(--color-outline-variant)", background: "var(--color-surface)",
 };
+const errorBox: CSSProperties = { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "10px 20px 0", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(220,38,38,0.28)", background: "rgba(220,38,38,0.07)", color: "#991b1b", fontSize: 12 };
+const retryBtn: CSSProperties = { marginLeft: "auto", border: "1px solid rgba(153,27,27,0.35)", borderRadius: 6, padding: "5px 9px", background: "transparent", color: "#991b1b", cursor: "pointer", fontWeight: 650 };
 function navItem(active: boolean): CSSProperties {
   return {
     textAlign: "left", fontSize: 12.5, fontWeight: active ? 650 : 500, padding: "7px 11px", borderRadius: 8,

@@ -10,6 +10,7 @@
  */
 import { prisma } from '../lib/prisma';
 import { openAmbiguity } from './ambiguity.service';
+import { currentRegistryTenant } from '../lib/request-context';
 import { runDecayRecompute } from './registry.service';
 import {
   detectStarvation, contradictionLive, contradictionSeverity,
@@ -23,7 +24,7 @@ import {
  */
 export async function runContradictionSweep(openedBy = 'sweep:contradiction') {
   const relations = await prisma.claimRelation.findMany({
-    where: { type: 'CONTRADICTS' },
+    where: { tenantId: currentRegistryTenant(), type: 'CONTRADICTS' },
     include: {
       fromClaim: { select: { id: true, status: true, posteriorProb: true } },
       toClaim: { select: { id: true, status: true, posteriorProb: true } },
@@ -56,7 +57,7 @@ export async function runContradictionSweep(openedBy = 'sweep:contradiction') {
  */
 export async function runStarvationSweep(nowMs: number = Date.now(), policy: StarvationPolicy = DEFAULT_STARVATION, openedBy = 'sweep:starvation') {
   const claims = await prisma.claim.findMany({
-    where: { status: 'ACTIVE', maturity: { in: ['FRAGMENT', 'HYPOTHESIS'] } },
+    where: { tenantId: currentRegistryTenant(), status: 'ACTIVE', maturity: { in: ['FRAGMENT', 'HYPOTHESIS'] } },
     select: { id: true, maturity: true, createdAt: true, _count: { select: { evidenceLinks: true } } },
   });
   let scanned = 0;

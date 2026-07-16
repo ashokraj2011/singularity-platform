@@ -15,6 +15,7 @@ import { decayThresholdCrossed, type MaturityState } from '../lib/maturity';
 import { publishEvent } from '../lib/events';
 import { createClaim, recompute, transition } from './claim.service';
 import { openAmbiguity } from './ambiguity.service';
+import { currentRegistryTenant } from '../lib/request-context';
 
 // ── /lookup/resolve (M11.b 200/207) ───────────────────────────────────────────
 export interface RefInput { kind: string; id: string }
@@ -23,7 +24,7 @@ export interface RefResult { kind: string; id: string; exists: boolean; label?: 
 export async function resolveRefs(refs: RefInput[]): Promise<{ all_ok: boolean; results: RefResult[] }> {
   const results = await Promise.all(refs.map(async (ref): Promise<RefResult> => {
     if (ref.kind !== 'claim') return { kind: ref.kind, id: ref.id, exists: false, error: `unsupported kind ${ref.kind}` };
-    const claim = await prisma.claim.findUnique({ where: { id: ref.id }, select: { statement: true, maturity: true, status: true } });
+    const claim = await prisma.claim.findFirst({ where: { id: ref.id, tenantId: currentRegistryTenant() }, select: { statement: true, maturity: true, status: true } });
     return claim
       ? { kind: 'claim', id: ref.id, exists: true, label: `${claim.maturity}: ${claim.statement.slice(0, 80)}` }
       : { kind: 'claim', id: ref.id, exists: false };
@@ -55,7 +56,7 @@ export async function promoteFromRoom(input: PromoteInput) {
 
 // ── decay-recompute job (nightly) ─────────────────────────────────────────────
 export async function runDecayRecompute(nowMs: number = Date.now()) {
-  const claims = await prisma.claim.findMany({ where: { status: 'ACTIVE' }, select: { id: true, maturity: true, posteriorProb: true } });
+  const claims = await prisma.claim.findMany({ where: { tenantId: currentRegistryTenant(), status: 'ACTIVE' }, select: { id: true, maturity: true, posteriorProb: true } });
   let recomputed = 0;
   let thresholdCrossed = 0;
   let falsified = 0;

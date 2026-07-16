@@ -9,6 +9,7 @@ import { prisma } from '../lib/prisma';
 import { publishEvent } from '../lib/events';
 import { AppError } from '../lib/errors';
 import { dedupeKeyFor, SEVERITY_RANK, STATUS_RANK, type AmbiguityType, type Severity } from '../lib/ambiguity';
+import { currentRegistryTenant } from '../lib/request-context';
 
 export interface OpenAmbiguityInput {
   type: AmbiguityType;
@@ -25,13 +26,15 @@ export interface OpenAmbiguityInput {
  * forking a duplicate. This is what lets the nightly sweeps re-run safely.
  */
 export async function openAmbiguity(input: OpenAmbiguityInput): Promise<{ ambiguity: Awaited<ReturnType<typeof prisma.ambiguity.create>>; created: boolean }> {
+  const tenantId = currentRegistryTenant();
   const involved = [input.claimId, ...(input.relatedClaimId ? [input.relatedClaimId] : [])];
   const dedupeKey = dedupeKeyFor(input.type, involved);
-  const existing = await prisma.ambiguity.findFirst({ where: { dedupeKey, status: 'OPEN' } });
+  const existing = await prisma.ambiguity.findFirst({ where: { tenantId, dedupeKey, status: 'OPEN' } });
   if (existing) return { ambiguity: existing, created: false };
 
   const ambiguity = await prisma.ambiguity.create({
     data: {
+      tenantId,
       type: input.type as never,
       claimId: input.claimId,
       relatedClaimId: input.relatedClaimId ?? null,
@@ -55,8 +58,10 @@ export interface AmbiguityFilter {
 
 /** List the ledger. OPEN + HIGH-severity + oldest float to the top (the work queue order). */
 export async function listAmbiguities(filter: AmbiguityFilter) {
+  const tenantId = currentRegistryTenant();
   const rows = await prisma.ambiguity.findMany({
     where: {
+      tenantId,
       ...(filter.status ? { status: filter.status as never } : {}),
       ...(filter.type ? { type: filter.type as never } : {}),
       ...(filter.claimId ? { claimId: filter.claimId } : {}),
@@ -71,7 +76,7 @@ export async function listAmbiguities(filter: AmbiguityFilter) {
 }
 
 export async function acknowledgeAmbiguity(id: string, actor: string) {
-  const amb = await prisma.ambiguity.findUnique({ where: { id } });
+  const amb = await prisma.ambiguity.findFirst({ where: { id, tenantId: currentRegistryTenant() } });
   if (!amb) throw new AppError(404, 'AMBIGUITY_NOT_FOUND', `Ambiguity ${id} not found.`);
   if (amb.status !== 'OPEN') throw new AppError(409, 'AMBIGUITY_NOT_OPEN', `Ambiguity is ${amb.status}, not OPEN.`);
   const updated = await prisma.ambiguity.update({
@@ -83,7 +88,7 @@ export async function acknowledgeAmbiguity(id: string, actor: string) {
 
 /** Close an ambiguity — resolved (tension settled) or dismissed (not real / won't-fix). */
 export async function resolveAmbiguity(id: string, actor: string, note: string | undefined, dismiss = false) {
-  const amb = await prisma.ambiguity.findUnique({ where: { id } });
+  const amb = await prisma.ambiguity.findFirst({ where: { id, tenantId: currentRegistryTenant() } });
   if (!amb) throw new AppError(404, 'AMBIGUITY_NOT_FOUND', `Ambiguity ${id} not found.`);
   if (amb.status === 'RESOLVED' || amb.status === 'DISMISSED') {
     throw new AppError(409, 'AMBIGUITY_CLOSED', `Ambiguity already ${amb.status}.`);

@@ -2,6 +2,7 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import { z } from 'zod';
 import { resolveRefs, promoteFromRoom, runDecayRecompute } from '../services/registry.service';
 import { runContradictionSweep, runStarvationSweep, runAllSweeps } from '../services/sweeps.service';
+import { requireServicePrincipal } from '../middleware/auth';
 
 export const registryRouter: Router = Router();
 
@@ -19,7 +20,7 @@ const promoteSchema = z.object({
   capabilityId: z.string().uuid().nullable().optional(),
 });
 
-const actorOf = (req: Request) => String(req.header('x-user-id') ?? req.header('x-service-name') ?? 'system');
+const actorOf = (req: Request) => req.registryActor?.userId ?? 'unknown';
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => { void fn(req, res).catch(next); };
 
 // M11.b resolver: 200 = every ref exists, 207 = at least one missing (Workgraph 422s on 207).
@@ -36,15 +37,15 @@ registryRouter.post('/promotions', wrap(async (req, res) => {
 }));
 
 // Lifecycle sweeps (a scheduler POSTs these nightly). Each opens ledger rows; none demote.
-registryRouter.post('/jobs/decay-recompute', wrap(async (_req, res) => {
+registryRouter.post('/jobs/decay-recompute', requireServicePrincipal, wrap(async (_req, res) => {
   res.json(await runDecayRecompute());
 }));
-registryRouter.post('/jobs/contradiction-sweep', wrap(async (_req, res) => {
+registryRouter.post('/jobs/contradiction-sweep', requireServicePrincipal, wrap(async (_req, res) => {
   res.json(await runContradictionSweep());
 }));
-registryRouter.post('/jobs/starvation-sweep', wrap(async (_req, res) => {
+registryRouter.post('/jobs/starvation-sweep', requireServicePrincipal, wrap(async (_req, res) => {
   res.json(await runStarvationSweep());
 }));
-registryRouter.post('/jobs/sweep-all', wrap(async (_req, res) => {
+registryRouter.post('/jobs/sweep-all', requireServicePrincipal, wrap(async (_req, res) => {
   res.json(await runAllSweeps());
 }));

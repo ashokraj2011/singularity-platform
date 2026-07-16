@@ -58,4 +58,20 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 GRANT ALL ON SCHEMA public TO singularity;
 SQL
 
+echo "[bootstrap] ensuring 'singularity_claim_registry' database exists…"
+DB_EXISTS=$(psql -v ON_ERROR_STOP=1 -d singularity -tAc \
+  "SELECT 1 FROM pg_database WHERE datname='singularity_claim_registry'")
+if [ -z "$DB_EXISTS" ]; then
+  psql -v ON_ERROR_STOP=1 -d singularity -c \
+    "CREATE DATABASE singularity_claim_registry"
+  echo "[bootstrap] created database singularity_claim_registry"
+fi
+
+echo "[bootstrap] ensuring pgvector + pgcrypto + grants in singularity_claim_registry…"
+psql -v ON_ERROR_STOP=1 -d singularity_claim_registry <<'SQL'
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS vector;
+GRANT ALL ON SCHEMA public TO singularity;
+SQL
+
 echo "[bootstrap] done."

@@ -9,6 +9,7 @@ import { randomBytes } from 'crypto'
 import type { Prisma, SpecificationProjectStatus } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { currentTenantIdForDb } from '../../lib/tenant-db-context'
+import { config } from '../../config'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { ConflictError, NotFoundError } from '../../lib/errors'
 
@@ -21,11 +22,15 @@ export interface UpdateProjectInput {
   mission?: string | null
 }
 
+function tenantId(): string {
+  return currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID
+}
+
 // Compact, human-facing project code — mirrors WorkItem's WRK- codes.
 async function generateProjectCode(): Promise<string> {
   for (let i = 0; i < 5; i++) {
     const code = `PRJ-${randomBytes(3).toString('hex').slice(0, 5).toUpperCase()}`
-    if (!(await prisma.specificationProject.findUnique({ where: { code }, select: { id: true } }))) return code
+    if (!(await prisma.specificationProject.findFirst({ where: { code, tenantId: tenantId() }, select: { id: true } }))) return code
   }
   return `PRJ-${Date.now().toString(36).slice(-5).toUpperCase()}`
 }
@@ -50,7 +55,7 @@ export function shapeProject<T extends { _count: { workItems: number } }>(p: T) 
 
 export async function listProjects(filter: { status?: SpecificationProjectStatus } = {}) {
   const projects = await prisma.specificationProject.findMany({
-    where: { ...(filter.status ? { status: filter.status } : {}) },
+    where: { tenantId: tenantId(), ...(filter.status ? { status: filter.status } : {}) },
     select: projectListSelect,
     orderBy: { createdAt: 'desc' },
   })
@@ -58,7 +63,7 @@ export async function listProjects(filter: { status?: SpecificationProjectStatus
 }
 
 export async function getProject(id: string) {
-  const project = await prisma.specificationProject.findUnique({ where: { id }, select: projectListSelect })
+  const project = await prisma.specificationProject.findFirst({ where: { id, tenantId: tenantId() }, select: projectListSelect })
   if (!project) throw new NotFoundError('SpecificationProject', id)
   return shapeProject(project)
 }
@@ -71,7 +76,7 @@ export async function createProject(input: CreateProjectInput, userId: string) {
       name: input.name,
       mission: input.mission ?? null,
       createdById: userId,
-      tenantId: currentTenantIdForDb() ?? undefined,
+      tenantId: tenantId(),
     },
     select: projectListSelect,
   })
@@ -118,12 +123,12 @@ const workItemCardSelect = {
 
 export async function listProjectWorkItems(id: string) {
   await getProject(id)
-  const items = await prisma.workItem.findMany({ where: { projectId: id }, select: workItemCardSelect, orderBy: { createdAt: 'desc' } })
+  const items = await prisma.workItem.findMany({ where: { projectId: id, tenantId: tenantId() }, select: workItemCardSelect, orderBy: { createdAt: 'desc' } })
   return { items }
 }
 
 async function loadWorkItem(workItemId: string) {
-  const workItem = await prisma.workItem.findUnique({ where: { id: workItemId }, select: { id: true, projectId: true } })
+  const workItem = await prisma.workItem.findFirst({ where: { id: workItemId, tenantId: tenantId() }, select: { id: true, projectId: true } })
   if (!workItem) throw new NotFoundError('WorkItem', workItemId)
   return workItem
 }
@@ -153,7 +158,7 @@ export async function detachWorkItem(projectId: string, workItemId: string, user
 export async function getPortfolio() {
   const [{ items: projects }, standalone] = await Promise.all([
     listProjects({ status: 'ACTIVE' }),
-    prisma.workItem.findMany({ where: { projectId: null }, select: workItemCardSelect, orderBy: { createdAt: 'desc' }, take: 50 }),
+    prisma.workItem.findMany({ where: { projectId: null, tenantId: tenantId() }, select: workItemCardSelect, orderBy: { createdAt: 'desc' }, take: 50 }),
   ])
   return { projects, standaloneWorkItems: standalone }
 }

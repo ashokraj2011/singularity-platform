@@ -15,6 +15,7 @@
 import type { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { withTenantDbTransaction, currentTenantIdForDb } from '../../lib/tenant-db-context'
+import { config } from '../../config'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { NotFoundError, ValidationError, ConflictError } from '../../lib/errors'
 import { getProject } from './studio-projects.service'
@@ -68,7 +69,7 @@ function eventToLike(e: EventRow): BoardEventLike {
 // ── Boards ──────────────────────────────────────────────────────────────────
 export async function createBoard(projectId: string, name: string, userId: string) {
   await getProject(projectId) // tenant-scoped 404 — can't create a board on a project the caller can't see
-  const tenantId = currentTenantIdForDb() ?? undefined
+  const tenantId = currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID
   const board = await prisma.board.create({
     data: {
       projectId, name, createdById: userId, tenantId,
@@ -84,7 +85,7 @@ export async function createBoard(projectId: string, name: string, userId: strin
 export async function listBoards(projectId: string) {
   await getProject(projectId)
   const boards = await prisma.board.findMany({
-    where: { projectId }, include: { branches: true }, orderBy: { createdAt: 'asc' },
+    where: { projectId, tenantId: currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID }, include: { branches: true }, orderBy: { createdAt: 'asc' },
   })
   return { items: boards.map(shapeBoard) }
 }
@@ -94,11 +95,11 @@ function shapeBoard(b: { id: string; projectId: string; name: string; createdByI
 }
 
 async function loadBoard(boardId: string) {
-  const board = await prisma.board.findUnique({ where: { id: boardId }, select: { id: true } })
+  const board = await prisma.board.findFirst({ where: { id: boardId, tenantId: currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID }, select: { id: true } })
   if (!board) throw new NotFoundError('Board', boardId)
 }
 async function resolveBranch(boardId: string, branchName: string): Promise<BranchRow> {
-  const branch = await prisma.boardBranch.findFirst({ where: { boardId, name: branchName } })
+  const branch = await prisma.boardBranch.findFirst({ where: { boardId, name: branchName, tenantId: currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID } })
   if (!branch) throw new NotFoundError('BoardBranch', `${boardId}/${branchName}`)
   return branch
 }
@@ -106,14 +107,14 @@ async function resolveBranch(boardId: string, branchName: string): Promise<Branc
 // ── Append (the fenced write path) ────────────────────────────────────────────
 export async function appendEvent(boardId: string, branchName: string, input: AppendEventInput, actor: BoardActor) {
   await loadBoard(boardId)
-  const tenantId = currentTenantIdForDb() ?? undefined
+  const tenantId = currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID
   const nowMs = Date.now()
 
   const { event, coalesced, suspended } = await withTenantDbTransaction(prisma, async (tx) => {
     // Fence: lock the branch row so exactly one appender allocates the next seq.
     const rows = await tx.$queryRaw<BranchRow[]>`
       SELECT "id", "name", "mode", "status", "parentBranchId", "forkEventSeq", "headEventSeq", "purpose", "explorationBudget", "createdAt"
-      FROM "board_branches" WHERE "boardId" = ${boardId} AND "name" = ${branchName} FOR UPDATE`
+      FROM "board_branches" WHERE "boardId" = ${boardId} AND "name" = ${branchName} AND "tenantId" = ${tenantId} FOR UPDATE`
     const branch = rows[0]
     if (!branch) throw new NotFoundError('BoardBranch', `${boardId}/${branchName}`)
     if (branch.status !== 'ACTIVE') {
@@ -131,6 +132,15 @@ export async function appendEvent(boardId: string, branchName: string, input: Ap
     const nextLike: BoardEventLike = {
       eventType: input.eventType, coalesceKey: input.coalesceKey ?? null,
       actorType: actor.actorType, actorId: actor.actorId ?? null, createdAt: new Date(nowMs),
+    }
+    // Client retries are idempotent when a stable coalesce key is supplied.
+    // This covers create/delete retries as well as debounced moves/edits.
+    if (input.coalesceKey) {
+      const prior = (await tx.boardEvent.findFirst({
+        where: { branchId: branch.id, eventType: input.eventType, coalesceKey: input.coalesceKey, actorType: actor.actorType, actorId: actor.actorId ?? null },
+        orderBy: { eventSeq: 'desc' },
+      })) as EventRow | null
+      if (prior && !shouldCoalesce(eventToLike(prior), nextLike, nowMs)) return { event: prior, coalesced: true, suspended: false }
     }
     if (last && shouldCoalesce(eventToLike(last), nextLike, nowMs)) {
       const mergedPayload = coalescePayload(asRecord(last.payload), input.payload ?? {}, input.eventType)
@@ -205,8 +215,7 @@ async function materializeInternal(client: Prisma.TransactionClient, branchId: s
     }
     baseSeq = 0
   } else {
-    base = {}
-    baseSeq = 0
+    throw new ValidationError('Board fork depth exceeded 64 branches; create a fresh branch from a materialized snapshot before continuing.')
   }
   const events = (await client.boardEvent.findMany({
     where: { branchId, eventSeq: { gt: BigInt(baseSeq), lte: BigInt(atSeq) } }, orderBy: { eventSeq: 'asc' },
@@ -306,10 +315,10 @@ export async function forkBranch(boardId: string, input: ForkInput, userId: stri
     throw new ValidationError('An AGENT_EXPLORATION branch requires a stated purpose.')
   }
   const budget = parseExplorationBudget({ maxEvents: input.maxEvents, maxTurns: input.maxTurns })
-  const tenantId = currentTenantIdForDb() ?? undefined
+  const tenantId = currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID
 
   const branch = await withTenantDbTransaction(prisma, async (tx) => {
-    const existing = await tx.boardBranch.findFirst({ where: { boardId, name: input.name }, select: { id: true } })
+    const existing = await tx.boardBranch.findFirst({ where: { boardId, name: input.name, tenantId }, select: { id: true } })
     if (existing) throw new ConflictError(`A branch named "${input.name}" already exists on this board.`)
     // Forced snapshot on the parent at the fork seq so the child reads it in O(1).
     if (forkSeq > 0) {
@@ -334,7 +343,7 @@ export async function forkBranch(boardId: string, input: ForkInput, userId: stri
 
 export async function listBranches(boardId: string) {
   await loadBoard(boardId)
-  const branches = await prisma.boardBranch.findMany({ where: { boardId }, orderBy: { createdAt: 'asc' } })
+  const branches = await prisma.boardBranch.findMany({ where: { boardId, tenantId: currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID }, orderBy: { createdAt: 'asc' } })
   return { items: branches.map((b) => shapeBranch(b)) }
 }
 

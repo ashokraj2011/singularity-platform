@@ -56,6 +56,16 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 GRANT ALL ON SCHEMA public TO singularity;
 \connect singularity
 
+-- M-CR5 — durable Claim Registry database. The registry is a first-class
+-- knowledge-plane service, not an unshipped sidecar.
+SELECT 'CREATE DATABASE singularity_claim_registry'
+ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_claim_registry')\gexec
+\connect singularity_claim_registry
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS vector;
+GRANT ALL ON SCHEMA public TO singularity;
+\connect singularity
+
 -- ==================== AGENT SCHEMA ====================
 CREATE SCHEMA IF NOT EXISTS agent;
 

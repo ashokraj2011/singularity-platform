@@ -14,7 +14,7 @@ const AMBIGUITY_TYPES = ['CONTRADICTION', 'MISSING_EVIDENCE', 'STARVATION'] as c
 const SEVERITIES = ['LOW', 'MEDIUM', 'HIGH'] as const;
 const RELATION_TYPES = ['CONTRADICTS', 'DEPENDS_ON', 'REFINES', 'DUPLICATES'] as const;
 
-const actorOf = (req: Request) => String(req.header('x-user-id') ?? req.header('x-service-name') ?? 'system');
+const actorOf = (req: Request) => req.registryActor?.userId ?? 'unknown';
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => { void fn(req, res).catch(next); };
 
 // ── Ambiguity ledger ──────────────────────────────────────────────────────────

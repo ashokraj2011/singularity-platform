@@ -18,6 +18,12 @@ export const SERVICE_DEFINITIONS = {
     healthPath: "/health",
     tokenEnvKeys: ["AUDIT_GOV_SERVICE_TOKEN", "AUDIT_GOV_TOKEN"],
   },
+  "claim-registry": {
+    envKey: "CLAIM_REGISTRY_URL",
+    localUrl: "http://localhost:8600",
+    dockerUrl: "http://claim-registry:8600",
+    healthPath: "/health",
+  },
   "context-fabric": {
     envKey: "CONTEXT_FABRIC_URL",
     localUrl: "http://localhost:8000",

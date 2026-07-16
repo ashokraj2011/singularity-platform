@@ -52,7 +52,9 @@ describe('Workgraph user-facing service-token boundary', () => {
     expect(route).toContain('suffix.startsWith("tool-registry/")')
     expect(route).toContain('!allowsServiceTokenRetry(req, suffix)')
     expect(route).toContain('requireVerifiedCallerBearer(req, "Workgraph")')
-    expect(route.indexOf('requireVerifiedCallerBearer(req, "Workgraph")')).toBeLessThan(route.indexOf('const serviceToken = await getServiceToken()'))
+    const serviceTokenAssignment = route.search(/const serviceToken(?:Result)? = await getServiceToken\(\)/)
+    expect(serviceTokenAssignment).toBeGreaterThanOrEqual(0)
+    expect(route.indexOf('requireVerifiedCallerBearer(req, "Workgraph")')).toBeLessThan(serviceTokenAssignment)
   })
 
   it('requires caller authorization before Platform Web injects privileged service tokens', () => {

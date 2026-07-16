@@ -38,6 +38,15 @@ TENANT_TABLES = [
     "tool_runs",
     "documents",
     "pending_executions",
+    # Studio board/event-sourced state is also tenant data. These tables own a
+    # direct tenantId and must be cut over together with the workflow engine.
+    "boards",
+    "board_branches",
+    "board_events",
+    "board_snapshots",
+    "board_moments",
+    "ingested_artifacts",
+    "agent_verdicts",
 ]
 
 TRUE_VALUES = {"1", "true", "yes", "on"}

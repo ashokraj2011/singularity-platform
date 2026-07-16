@@ -70,6 +70,7 @@ import { reconciliationOverviewRouter } from './modules/reconciliations/reconcil
 import { studioProjectsRouter } from './modules/studio/studio-projects.router'
 import { studioBoardRouter } from './modules/studio/board.router'
 import { studioBoardVerdictRouter, studioBoardAgentVerdictRouter } from './modules/studio/board-verdicts.router'
+import { studioAuthz } from './modules/studio/studio-authz'
 import { roomsRouter } from './modules/rooms/rooms.router'
 import { conceptArchiveRouter } from './modules/concept-archive/archive.router'
 import { plannerRouter } from './modules/planner/planner.router'
@@ -183,9 +184,9 @@ export function createApp(): Express {
   app.use('/api/reconciliation-jobs', authMiddleware, reconciliationJobsRouter)
   app.use('/api/reconciliation-overview', authMiddleware, reconciliationOverviewRouter)
   app.use('/api/work-items', authMiddleware, workItemsRouter)
-  app.use('/api/studio', authMiddleware, studioProjectsRouter)
-  app.use('/api/studio', authMiddleware, studioBoardRouter)
-  app.use('/api/studio', authMiddleware, studioBoardVerdictRouter)
+  app.use('/api/studio', authMiddleware, studioAuthz, studioProjectsRouter)
+  app.use('/api/studio', authMiddleware, studioAuthz, studioBoardRouter)
+  app.use('/api/studio', authMiddleware, studioAuthz, studioBoardVerdictRouter)
   // Agent-principal verdict writes: separate prefix + service-token gate, NOT authMiddleware
   // (authMiddleware rejects service principals). See board-verdicts.router.ts.
   app.use('/api/studio-agent', studioBoardAgentVerdictRouter)

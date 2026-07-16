@@ -81,6 +81,18 @@ export function useBoardDoc(projectId: string, boardId: string, onLocal: (m: Loc
 
     let active = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    async function hydrateDurableState() {
+      try {
+        const durable = await workgraphFetch<{ objects?: BoardObj[] }>(`/studio/boards/${boardId}/state?branch=main`);
+        if (!active || !Array.isArray(durable.objects)) return;
+        doc.transact(() => {
+          for (const obj of durable.objects ?? []) map.set(obj.id, obj);
+        }, REMOTE);
+      } catch {
+        // Co-edit can still connect when the durable board endpoint is temporarily
+        // unavailable; the next reload will reconcile from the event log.
+      }
+    }
     async function sync() {
       const sending = pendingRef.current;
       pendingRef.current = [];
@@ -98,7 +110,7 @@ export function useBoardDoc(projectId: string, boardId: string, onLocal: (m: Loc
       }
       if (active) timer = setTimeout(sync, POLL_MS);
     }
-    sync();
+    void hydrateDurableState().finally(() => { if (active) void sync(); });
 
     return () => {
       active = false;

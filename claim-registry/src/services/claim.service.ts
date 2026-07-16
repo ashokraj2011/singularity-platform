@@ -13,6 +13,7 @@ import { publishEvent, emitReceipt } from '../lib/events';
 import { computePosterior, priorLogOddsForKind, type PosteriorEvidenceLink, type EvidenceTier, type EvidenceDirection } from '../lib/posterior';
 import { evaluateTransition, autoTransitionFor, DEFAULT_GATES, type MaturityState } from '../lib/maturity';
 import { AppError } from '../lib/errors';
+import { currentRegistryTenant } from '../lib/request-context';
 
 const KIND_HALF_LIFE_DAYS: Record<string, number> = { HYPOTHESIS: 180, ASSUMPTION: 90, OBSERVATION: 180, CONSTRAINT: 730, DECISION: 365, REQUIREMENT: 365 };
 const halfLifeFor = (kind: string) => KIND_HALF_LIFE_DAYS[kind] ?? 180;
@@ -34,9 +35,10 @@ export interface CreateClaimInput {
 }
 
 export async function createClaim(input: CreateClaimInput) {
+  const tenantId = currentRegistryTenant();
   const canonicalKey = statementCanonicalKey(input.statement);
   // Exact-hash dedup — the HARD guard, works without embeddings.
-  const existing = await prisma.claim.findUnique({ where: { canonicalKey } });
+  const existing = await prisma.claim.findFirst({ where: { tenantId, canonicalKey } });
   if (existing && !input.force) {
     throw new AppError(409, 'CLAIM_EXISTS', 'An identical claim already exists.', { existing });
   }
@@ -50,6 +52,7 @@ export async function createClaim(input: CreateClaimInput) {
 
   const claim = await prisma.claim.create({
     data: {
+      tenantId,
       kind: input.kind, statement: input.statement, canonicalKey,
       capabilityId: input.capabilityId ?? null,
       subjectRefs: (input.subjectRefs ?? []) as Prisma.InputJsonValue,
@@ -67,7 +70,7 @@ export async function createClaim(input: CreateClaimInput) {
 }
 
 export async function getClaim(id: string) {
-  const claim = await prisma.claim.findUnique({ where: { id }, include: { evidenceLinks: true, versions: { orderBy: { version: 'desc' } }, transitions: { orderBy: { occurredAt: 'desc' } } } });
+  const claim = await prisma.claim.findFirst({ where: { id, tenantId: currentRegistryTenant() }, include: { evidenceLinks: true, versions: { orderBy: { version: 'desc' } }, transitions: { orderBy: { occurredAt: 'desc' } } } });
   if (!claim) throw new AppError(404, 'CLAIM_NOT_FOUND', `Claim ${id} not found.`);
   return claim;
 }
@@ -88,16 +91,18 @@ export interface AttachEvidenceInput {
 }
 
 export async function attachEvidence(claimId: string, input: AttachEvidenceInput) {
-  const claim = await prisma.claim.findUnique({ where: { id: claimId } });
+  const tenantId = currentRegistryTenant();
+  const claim = await prisma.claim.findFirst({ where: { id: claimId, tenantId } });
   if (!claim) throw new AppError(404, 'CLAIM_NOT_FOUND', `Claim ${claimId} not found.`);
   const before = claim.posteriorProb;
 
   const contentHash = hashPayload({ excerpt: input.excerpt, sourceMeta: input.sourceMeta ?? {}, observedAt: input.observedAt, kind: input.kind, tier: input.tier });
   // Evidence is immutable + content-hashed; the same payload reuses the object.
   const evidence = await prisma.evidenceObject.upsert({
-    where: { contentHash },
+    where: { tenantId_contentHash: { tenantId, contentHash } },
     update: {},
     create: {
+      tenantId,
       tier: input.tier as never, kind: input.kind as never, contentHash, excerpt: input.excerpt,
       payloadRef: input.payloadRef ?? null, sourceMeta: (input.sourceMeta ?? {}) as Prisma.InputJsonValue,
       observedAt: new Date(input.observedAt), createdBy: input.attachedBy,
@@ -107,7 +112,7 @@ export async function attachEvidence(claimId: string, input: AttachEvidenceInput
     where: { claimId_evidenceId: { claimId, evidenceId: evidence.id } },
     update: {},
     create: {
-      claimId, evidenceId: evidence.id, direction: input.direction as never,
+      tenantId, claimId, evidenceId: evidence.id, direction: input.direction as never,
       logLikelihoodRatio: input.logLikelihoodRatio, sourceKey: input.sourceKey,
       decayExempt: input.decayExempt ?? false, attachedBy: input.attachedBy,
     },
@@ -124,7 +129,7 @@ export async function attachEvidence(claimId: string, input: AttachEvidenceInput
 
 /** Recompute the posterior from links + decay (the derived state; invariant 3). */
 export async function recompute(claimId: string, nowMs: number = Date.now()) {
-  const claim = await prisma.claim.findUnique({ where: { id: claimId }, include: { evidenceLinks: { include: { evidence: true } } } });
+  const claim = await prisma.claim.findFirst({ where: { id: claimId, tenantId: currentRegistryTenant() }, include: { evidenceLinks: { include: { evidence: true } } } });
   if (!claim) throw new AppError(404, 'CLAIM_NOT_FOUND', `Claim ${claimId} not found.`);
 
   const links: PosteriorEvidenceLink[] = claim.evidenceLinks.map((l) => ({
@@ -149,12 +154,12 @@ export async function recompute(claimId: string, nowMs: number = Date.now()) {
 }
 
 async function tierContext(claimId: string) {
-  const links = await prisma.evidenceLink.findMany({ where: { claimId }, include: { evidence: { select: { tier: true } } } });
+  const links = await prisma.evidenceLink.findMany({ where: { claimId, tenantId: currentRegistryTenant() }, include: { evidence: { select: { tier: true } } } });
   return links.map((l) => l.evidence.tier as EvidenceTier);
 }
 
 async function maybeAutoTransition(claimId: string): Promise<string | null> {
-  const claim = await prisma.claim.findUnique({ where: { id: claimId } });
+  const claim = await prisma.claim.findFirst({ where: { id: claimId, tenantId: currentRegistryTenant() } });
   if (!claim) return null;
   const presentTiers = await tierContext(claimId);
   const ctx = {
@@ -169,7 +174,7 @@ async function maybeAutoTransition(claimId: string): Promise<string | null> {
 
 // ── Gated transition ──────────────────────────────────────────────────────────
 export async function transition(claimId: string, toState: MaturityState, approvedBy?: string | null) {
-  const claim = await prisma.claim.findUnique({ where: { id: claimId } });
+  const claim = await prisma.claim.findFirst({ where: { id: claimId, tenantId: currentRegistryTenant() } });
   if (!claim) throw new AppError(404, 'CLAIM_NOT_FOUND', `Claim ${claimId} not found.`);
   const presentTiers = await tierContext(claimId);
   const ctx = {
@@ -182,7 +187,8 @@ export async function transition(claimId: string, toState: MaturityState, approv
 }
 
 async function applyTransition(claimId: string, from: MaturityState, to: MaturityState, approvedBy: string | null) {
-  const claim = await prisma.claim.findUnique({ where: { id: claimId }, include: { evidenceLinks: true } });
+  const tenantId = currentRegistryTenant();
+  const claim = await prisma.claim.findFirst({ where: { id: claimId, tenantId }, include: { evidenceLinks: true } });
   if (!claim) throw new AppError(404, 'CLAIM_NOT_FOUND', `Claim ${claimId} not found.`);
   const traceId = `claim-registry-${claimId}-${randomUUID()}`;
   const gate = DEFAULT_GATES[`${from}->${to}`];
@@ -190,6 +196,7 @@ async function applyTransition(claimId: string, from: MaturityState, to: Maturit
 
   await prisma.maturityTransition.create({
     data: {
+      tenantId,
       claimId, fromState: from as PrismaMaturity, toState: to as PrismaMaturity,
       thresholdProb: gate?.posteriorMin ?? 0, actualProb: claim.posteriorProb, evidenceHash,
       approvedBy, receiptTraceId: traceId,

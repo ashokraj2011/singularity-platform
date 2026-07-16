@@ -200,6 +200,7 @@ BARE_METAL_APP_PORT_SPECS=(
   "8080:workgraph-api"
   "8100:iam-service"
   "8500:audit-governance"
+  "8600:claim-registry"
 )
 BARE_METAL_OPTIONAL_PORT_SPECS=(
   "8002:context-memory"
@@ -763,6 +764,7 @@ SELECT 'CREATE DATABASE workgraph'            WHERE NOT EXISTS (SELECT FROM pg_d
 SELECT 'CREATE DATABASE audit_governance'     WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='audit_governance')\gexec
 SELECT 'CREATE DATABASE singularity_iam'      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_iam')\gexec
 SELECT 'CREATE DATABASE singularity_context_fabric' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_context_fabric')\gexec
+SELECT 'CREATE DATABASE singularity_claim_registry'   WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='singularity_claim_registry')\gexec
 SQL
 
   info "enabling pgvector + pgcrypto in 'singularity' (agent-runtime + tool-service)…"
@@ -795,6 +797,12 @@ SQL
   info "enabling pgcrypto in 'audit_governance'…"
   PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d audit_governance \
     -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>&1 | grep -vE "NOTICE" || true
+
+  info "enabling pgvector + pgcrypto in 'singularity_claim_registry'…"
+  PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d singularity_claim_registry \
+    -c "CREATE EXTENSION IF NOT EXISTS vector;" \
+    -c "CREATE EXTENSION IF NOT EXISTS pgcrypto;" 2>&1 | grep -vE "NOTICE" || \
+    { err "Failed to install pgvector on singularity_claim_registry."; exit 1; }
 
   info "applying audit-governance schema…"
   PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d audit_governance \
@@ -900,6 +908,7 @@ export DATABASE_URL_WORKGRAPH_ADMIN="postgresql://${db_user}:${db_pass}@${db_hos
 export DATABASE_URL_WORKGRAPH_RUNTIME="postgresql://${WORKGRAPH_APP_DB_USER}:${WORKGRAPH_APP_DB_PASSWORD}@${db_host}:${db_port}/workgraph"
 export DATABASE_URL_WORKGRAPH="\$DATABASE_URL_WORKGRAPH_RUNTIME"
 export DATABASE_URL_AUDIT_GOV="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/audit_governance"
+export DATABASE_URL_CLAIM_REGISTRY="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_claim_registry"
 # Context Fabric stores (call_log, events_store, context_memory) — Postgres,
 # matching the Docker stack. The CF services read CONTEXT_FABRIC_DATABASE_URL.
 export DATABASE_URL_CONTEXT_FABRIC="postgresql://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_context_fabric"
@@ -1126,6 +1135,7 @@ JSON
   ensure_install agent-and-tools/web      npm
   ensure_install workgraph-studio         pnpm
   ensure_install audit-governance-service npm
+  ensure_install claim-registry            npm
   if [ -z "$SKIP_LOCAL_RUNTIME" ]; then
     ensure_install mcp-server             npm
   fi
@@ -1287,6 +1297,7 @@ JSON
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260725000000_m96_completion_program_fanout/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260725000000_contract_bound_work_execution/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260727000000_concept_archive_proposals/migration.sql >/dev/null 2>&1 \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260801000000_m101_board_rls_policies/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q -f prisma/migrations/20260709145000_backfill_null_tenant/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709150000_force_tenant_rls/migration.sql >/dev/null 2>&1 \
     && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 --single-transaction -q -f prisma/migrations/20260709170000_tenant_workitem_family/migration.sql >/dev/null 2>&1 ) \
@@ -1336,6 +1347,12 @@ SQL
   ( cd workgraph-studio/apps/api \
     && DATABASE_URL="$DATABASE_URL_WORKGRAPH_ADMIN" npm run prisma:seed >/dev/null 2>&1 ) \
     || warn "workgraph prisma:seed had warnings — run it manually: (cd workgraph-studio/apps/api && DATABASE_URL=\"$DATABASE_URL_WORKGRAPH_ADMIN\" npm run prisma:seed)"
+
+  info "applying Claim Registry schema…"
+  ( cd claim-registry \
+    && DATABASE_URL_CLAIM_REGISTRY="$DATABASE_URL_CLAIM_REGISTRY" npm run prisma:generate >/dev/null 2>&1 \
+    && DATABASE_URL_CLAIM_REGISTRY="$DATABASE_URL_CLAIM_REGISTRY" npm run prisma:deploy >/dev/null 2>&1 ) \
+    || warn "Claim Registry schema deploy had warnings — run: (cd claim-registry && DATABASE_URL_CLAIM_REGISTRY=\"$DATABASE_URL_CLAIM_REGISTRY\" npm run prisma:deploy)"
 
   # The top-level "SDLC Delivery" workflow lives in separate self-running seeds
   # (NOT prisma/seed.ts): seed-sdlc-workbench.ts creates the "SDLC implementation
@@ -1401,6 +1418,9 @@ SQL
   boot iam-service      "cd singularity-iam-service  && DATABASE_URL=\"postgresql+asyncpg://${db_user}:${db_pass}@${db_host}:${db_port}/singularity_iam\" JWT_SECRET=\"$JWT_SECRET\" JWT_EXPIRE_MINUTES=720 LOCAL_SUPER_ADMIN_EMAIL=\"$LOCAL_SUPER_ADMIN_EMAIL\" LOCAL_SUPER_ADMIN_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" CORS_ORIGINS='[\"http://localhost:5180\"]' python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8100"
   wait_http iam-service "http://localhost:8100/api/v1/health" 45
   ensure_platform_web_service_token || true
+
+  boot claim-registry   "cd claim-registry && PORT=8600 DATABASE_URL_CLAIM_REGISTRY=\"$DATABASE_URL_CLAIM_REGISTRY\" CLAIM_REGISTRY_AUTH_PROVIDER=iam IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_SERVICE_TOKEN=\"${CLAIM_REGISTRY_IAM_SERVICE_TOKEN:-}\" TENANT_ISOLATION_MODE=\"$TENANT_ISOLATION_MODE\" CLAIM_REGISTRY_DEFAULT_TENANT_ID=\"${WORKGRAPH_DEFAULT_TENANT_ID:-default}\" npm run dev"
+  wait_http claim-registry "http://localhost:8600/health" 45
 
   info "applying SQL seed data…"
   # Capture to a log and surface real failures — do NOT >/dev/null them. A failed
@@ -1598,6 +1618,7 @@ cmd_smoke() {
   local checks=(
     "http://localhost:8100/api/v1/health|200,304|5" \
     "http://localhost:8500/health|200,304|5" \
+    "http://localhost:8600/health|200,304|5" \
     "http://localhost:8000/health|200,304|5" \
     "http://localhost:8080/health|200,304|5" \
     "http://localhost:3003/healthz/strict|200,304|10" \
@@ -1727,7 +1748,7 @@ cmd_reset_db() {
   require psql
   warn "DROPPING all Singularity databases on ${db_user}@${db_host}:${db_port} — ALL DATA WILL BE LOST."
   local db
-  for db in singularity singularity_composer workgraph audit_governance singularity_iam singularity_context_fabric singularity_codegen; do
+  for db in singularity singularity_composer workgraph audit_governance singularity_iam singularity_context_fabric singularity_claim_registry singularity_codegen; do
     if PGPASSWORD="$db_pass" psql -h "$db_host" -p "$db_port" -U "$db_user" -d postgres \
          -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE);" >/dev/null 2>&1; then
       dim "  dropped $db"

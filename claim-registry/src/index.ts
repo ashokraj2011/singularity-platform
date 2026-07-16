@@ -10,12 +10,14 @@ import { knowledgeRouter } from './routes/knowledge.router';
 import { registryRouter } from './routes/registry.router';
 import { ambiguityRouter } from './routes/ambiguity.router';
 import { AppError } from './lib/errors';
+import { registryAuth } from './middleware/auth';
 
 export const app = express();
 app.use(express.json({ limit: '2mb' }));
 
 app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'claim-registry', plane: 'knowledge' }));
 
+app.use('/api/v1', registryAuth);
 app.use('/api/v1', claimsRouter);
 app.use('/api/v1', knowledgeRouter);
 app.use('/api/v1', registryRouter);
