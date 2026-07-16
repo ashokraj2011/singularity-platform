@@ -13,7 +13,7 @@ import { createProbe, listProbes, resolveProbe, abandonProbe, abandonClaim, getR
 export const roomsRouter: Router = Router();
 
 const claimTypeEnum = z.enum(["MARKET", "USER", "OPERATIONAL", "TECHNICAL"]);
-const evidenceTierEnum = z.enum(["PRODUCTION", "EXPERIMENT", "SIMULATION", "AGENT", "OPINION"]);
+const evidenceTierEnum = z.enum(["PRODUCTION", "EXPERIMENT", "SOURCE_DOCUMENT", "SIMULATION", "AGENT", "OPINION"]);
 const createProbeSchema = z.object({
   riskiestAssumption: z.string().trim().min(1).max(2000),
   falsification: z.string().trim().min(1).max(2000),

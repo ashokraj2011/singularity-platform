@@ -10,6 +10,7 @@ import { converged, type EvidenceTier } from "./belief";
 export const PROBE_HOURS: Record<EvidenceTier, number> = {
   PRODUCTION: 40,
   EXPERIMENT: 8,
+  SOURCE_DOCUMENT: 3, // cheap: reading/analysing a dropped document
   SIMULATION: 2,
   AGENT: 1,
   OPINION: 1,
