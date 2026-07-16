@@ -34,8 +34,14 @@ including the M-CR1 smoke path (prior 0.5 + T2+T1 support → posterior ≥ 0.8,
   the M11.e outbox / M11.d receipt / self-registration / IAM patterns are copied
   (their Prisma-flavored variants) rather than imported (none are shared libs).
 
+## M-CR2 (shipped)
+Permissive knowledge-event intake (hash-dedup) → transcript **lowering** through the LLM
+gateway (`gateway.ts`, model_alias only) → **curation queue** of `LoweringCandidate`s, each
+**pre-matched against existing claims by canonicalKey** (the dedup guard) → accept
+(create a claim, or attach to the matched one) / reject. `src/lib/lowering.ts` is the pure
+parse/validate core (`npm test`); the payload store is an inline stub (MinIO in production).
+
 ## Deferred (later milestones)
-- M-CR2: knowledge-event intake + LLM-gateway lowering + curation queue.
 - M-CR3: `/lookup/resolve` + the Workgraph `claim`-kind resolver case + decay
   subscription + Rooms→registry promotion intake.
 - M-CR4: ambiguity ledger + sweeps (decay/contradiction/starvation) + projections.

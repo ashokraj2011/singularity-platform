@@ -227,3 +227,60 @@ model EventDelivery {
   @@unique([outboxId, subscriptionId])
   @@map("event_deliveries")
 }
+
+// ── Capture: knowledge events + lowering (M-CR2) ──────────────────────────────
+enum CaptureSource {
+  TRANSCRIPT
+  SLACK
+  CONFLUENCE
+  BOARD_EXPORT
+  WORKBENCH
+  MANUAL
+}
+
+enum LoweringStatus {
+  PENDING
+  LOWERED
+  NO_CLAIMS
+  FAILED
+}
+
+enum CandidateStatus {
+  PENDING_REVIEW
+  ACCEPTED
+  REJECTED
+  MERGED_TO_EXISTING
+}
+
+model KnowledgeEvent {
+  id             String         @id @default(uuid())
+  source         CaptureSource
+  externalRef    String?
+  contentHash    String         @unique // hash-dedup: same capture links, not re-ingests
+  payloadRef     String // MinIO ref to raw capture
+  capabilityId   String?
+  capturedBy     String
+  capturedAt     DateTime       @default(now())
+  loweringStatus LoweringStatus @default(PENDING)
+
+  candidates LoweringCandidate[]
+
+  @@map("knowledge_events")
+}
+
+model LoweringCandidate {
+  id                String          @id @default(uuid())
+  eventId           String
+  event             KnowledgeEvent  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  proposedStatement String
+  proposedKind      ClaimKind
+  modelConfidence   Float // lowering-pass self-estimate; advisory only
+  matchedClaimId    String? // canonicalization hit, if any (the dedup guard)
+  status            CandidateStatus @default(PENDING_REVIEW)
+  reviewedBy        String?
+  resultingClaimId  String?
+  createdAt         DateTime        @default(now())
+
+  @@index([status, createdAt])
+  @@map("lowering_candidates")
+}

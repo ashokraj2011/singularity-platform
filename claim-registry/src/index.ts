@@ -6,6 +6,7 @@
 import express, { type ErrorRequestHandler } from 'express';
 import { ZodError } from 'zod';
 import { claimsRouter } from './routes/claims.router';
+import { knowledgeRouter } from './routes/knowledge.router';
 import { AppError } from './lib/errors';
 
 export const app = express();
@@ -14,6 +15,7 @@ app.use(express.json({ limit: '2mb' }));
 app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'claim-registry', plane: 'knowledge' }));
 
 app.use('/api/v1', claimsRouter);
+app.use('/api/v1', knowledgeRouter);
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   if (err instanceof AppError) {
