@@ -68,6 +68,7 @@ import { commentsRouter } from './modules/comments/comments.router'
 import { reconciliationJobsRouter } from './modules/reconciliations/reconciliation-jobs.router'
 import { reconciliationOverviewRouter } from './modules/reconciliations/reconciliation-overview.router'
 import { studioProjectsRouter } from './modules/studio/studio-projects.router'
+import { studioBoardRouter } from './modules/studio/board.router'
 import { roomsRouter } from './modules/rooms/rooms.router'
 import { conceptArchiveRouter } from './modules/concept-archive/archive.router'
 import { plannerRouter } from './modules/planner/planner.router'
@@ -182,6 +183,7 @@ export function createApp(): Express {
   app.use('/api/reconciliation-overview', authMiddleware, reconciliationOverviewRouter)
   app.use('/api/work-items', authMiddleware, workItemsRouter)
   app.use('/api/studio', authMiddleware, studioProjectsRouter)
+  app.use('/api/studio', authMiddleware, studioBoardRouter)
   app.use('/api/studio', authMiddleware, roomsRouter)
   app.use('/api/concept-archive', authMiddleware, conceptArchiveRouter)
   app.use('/api/planner', authMiddleware, plannerRouter)
