@@ -10,6 +10,7 @@ import { ProjectReconciliationReport } from "./ProjectReconciliationReport";
 import { ProjectRoomsSurface } from "./ProjectRoomsSurface";
 import { ProjectBoardSurface } from "./ProjectBoardSurface";
 import { CoeditCanvas } from "./CoeditCanvas";
+import { ProjectGeneration } from "./ProjectGeneration";
 import { ProjectWorkItemsList } from "./ProjectWorkItemsList";
 
 /**
@@ -19,7 +20,7 @@ import { ProjectWorkItemsList } from "./ProjectWorkItemsList";
  * Items view lists them; the generation authoring flow lands in a follow-up). This inverts
  * the old model where these surfaces were buried under a Work Item's "Project baseline" scope.
  */
-type Activity = "analysis" | "requirements" | "design" | "rooms" | "board" | "coedit" | "reconciliation" | "workitems";
+type Activity = "analysis" | "requirements" | "design" | "rooms" | "board" | "coedit" | "reconciliation" | "generate" | "workitems";
 const ACTIVITIES: { key: Activity; label: string }[] = [
   { key: "analysis", label: "Analysis" },
   { key: "requirements", label: "Requirements" },
@@ -28,6 +29,7 @@ const ACTIVITIES: { key: Activity; label: string }[] = [
   { key: "board", label: "Board" },
   { key: "coedit", label: "Co-edit" },
   { key: "reconciliation", label: "Reconciliation" },
+  { key: "generate", label: "Generate" },
   { key: "workitems", label: "Work Items" },
 ];
 
@@ -80,6 +82,7 @@ export function ProjectWorkspace({ projectId }: { projectId: string }) {
           {activity === "coedit" && (
             <CoeditCanvas projectId={projectId} docKey="canvas" surface="coedit" title="Project canvas — live" placeholder="Draft the spec together — problem statements, open questions, sketches. Edits merge live." />
           )}
+          {activity === "generate" && <ProjectGeneration projectId={projectId} />}
           {activity === "workitems" && <ProjectWorkItemsList projectId={projectId} />}
         </div>
       </div>
