@@ -1895,6 +1895,7 @@ model Board {
   branches  BoardBranch[]
   events    BoardEvent[]
   snapshots BoardSnapshot[]
+  moments   BoardMoment[]
 
   @@index([projectId])
   @@index([tenantId], map: "ix_boards_tenant")
@@ -1920,6 +1921,7 @@ model BoardBranch {
   board     Board           @relation(fields: [boardId], references: [id], onDelete: Cascade)
   events    BoardEvent[]
   snapshots BoardSnapshot[]
+  moments   BoardMoment[]
 
   @@unique([boardId, name])
   @@index([tenantId, boardId, status])
@@ -1966,6 +1968,34 @@ model BoardSnapshot {
 
   @@unique([branchId, eventSeq])
   @@map("board_snapshots")
+}
+
+// A Moment — an AI-authored, causally-narrated marker on the timeline. Detected
+// deterministically, narrated by the Chronicler under the citation rule. A
+// low-stakes proposal: VISIBLE immediately, auto-confirms after 72h.
+model BoardMoment {
+  id            String   @id @default(uuid())
+  tenantId      String?  @default("default")
+  boardId       String
+  branchId      String
+  kind          String
+  detectorKey   String
+  eventSeqStart BigInt
+  eventSeqEnd   BigInt
+  title         String
+  narrative     String
+  causalChain   Json     @default("[]")
+  confidence    Float    @default(0)
+  status        String   @default("VISIBLE")
+  editedById    String?
+  createdAt     DateTime @default(now())
+
+  board  Board       @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  branch BoardBranch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@index([boardId, branchId, eventSeqStart])
+  @@index([tenantId], map: "ix_board_moments_tenant")
+  @@map("board_moments")
 }
 
 model Room {
