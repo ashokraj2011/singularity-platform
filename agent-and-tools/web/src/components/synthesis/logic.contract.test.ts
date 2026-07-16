@@ -72,6 +72,13 @@ for (const href of hrefs) {
   assert.ok(href.startsWith("/synthesis/"), `nav href ${href} must live under /synthesis`);
 }
 assert.match(shell, /label: "Idea Board"/, "the primary synthesis capture surface should be named Idea Board");
+assert.doesNotMatch(shell, /<aside/, "Synthesis should use the canonical Platform Web sidebar");
+
+const appShell = fs.readFileSync(
+  path.join(process.cwd(), "src/components/AppShell.tsx"),
+  "utf8",
+);
+assert.doesNotMatch(appShell, /FULL_BLEED_PREFIXES\s*=\s*\[[^\]]*synthesis/, "Synthesis should render inside AppShell");
 
 const ideaScreen = fs.readFileSync(
   path.join(process.cwd(), "src/components/synthesis/screens/IdeaWallScreen.tsx"),

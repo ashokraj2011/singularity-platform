@@ -278,7 +278,7 @@ export function Sidebar() {
     });
   }
 
-  const canvasRoute = path.startsWith("/prompt-workbench");
+  const canvasRoute = path.startsWith("/prompt-workbench") || path.startsWith("/synthesis/ideas");
   const effectiveCollapsed = collapsed || canvasRoute || narrowViewport;
   const sidebarWidth = effectiveCollapsed ? 66 : 264;
   const isActive = (href: string) => activeRoute?.href === href;

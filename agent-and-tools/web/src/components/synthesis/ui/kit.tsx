@@ -4,9 +4,8 @@ import type { CSSProperties, ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 
 /**
- * Synthesis UI kit — small presentational primitives styled with the
- * "Ethos & Form" Tailwind tokens (scoped under `.synthesis-root`). Screens
- * compose these instead of re-deriving styling, keeping the product cohesive.
+ * Synthesis UI kit. Semantic aliases resolve to the shared Platform Web
+ * tokens, keeping the domain screens compact without creating another theme.
  */
 
 /* ─── Card ──────────────────────────────────────────────────────────────── */
@@ -27,9 +26,9 @@ export function SynCard({
   return (
     <Tag
       className={[
-        "bg-surface-container-lowest border border-outline-variant rounded-xl shadow-sm",
+        "card",
         interactive
-          ? "group hover:border-secondary hover:shadow-md transition-all duration-300 cursor-pointer"
+          ? "card-hover group cursor-pointer"
           : "",
         className,
       ]
@@ -152,7 +151,7 @@ export function StageHeader({
     <div className="flex items-start justify-between gap-6 mb-8">
       <div className="flex items-start gap-4 min-w-0">
         {Icon ? (
-          <div className="mt-1 w-11 h-11 rounded-xl bg-secondary-container flex items-center justify-center text-on-secondary-container shrink-0">
+          <div className="mt-1 w-10 h-10 rounded-lg bg-secondary-container flex items-center justify-center text-on-secondary-container shrink-0">
             <Icon size={20} strokeWidth={1.8} />
           </div>
         ) : null}
@@ -193,9 +192,8 @@ export function SynButton({
   title?: string;
 }) {
   const variants: Record<string, string> = {
-    primary: "bg-primary text-on-primary hover:bg-primary/90 shadow-sm",
-    secondary:
-      "bg-secondary-container text-on-secondary-container hover:bg-secondary-container/80",
+    primary: "btn-primary",
+    secondary: "btn-secondary",
     ghost:
       "bg-transparent text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface",
   };
@@ -206,7 +204,7 @@ export function SynButton({
       disabled={disabled}
       title={title}
       className={[
-        "h-9 px-4 rounded-lg font-display font-semibold text-sm inline-flex items-center gap-2 transition-all active:scale-[0.98]",
+        "h-9 justify-center font-semibold text-sm inline-flex items-center gap-2",
         "disabled:opacity-45 disabled:cursor-not-allowed disabled:active:scale-100",
         variants[variant],
         className,
@@ -236,7 +234,7 @@ export function EmptyState({
   return (
     <div className="flex flex-col items-center justify-center text-center py-20 px-6">
       {Icon ? (
-        <div className="w-14 h-14 rounded-2xl bg-surface-container flex items-center justify-center text-on-surface-variant mb-5">
+        <div className="w-12 h-12 rounded-lg bg-surface-container flex items-center justify-center text-on-surface-variant mb-5">
           <Icon size={24} strokeWidth={1.6} />
         </div>
       ) : null}
@@ -257,7 +255,7 @@ export function SynSkeleton({ rows = 3, className = "" }: { rows?: number; class
       {Array.from({ length: rows }).map((_, i) => (
         <div
           key={i}
-          className="h-16 rounded-xl bg-surface-container-high/70 animate-pulse"
+          className="h-16 rounded-lg bg-surface-container-high/70 animate-pulse"
         />
       ))}
     </div>
@@ -268,7 +266,7 @@ export function SynSkeleton({ rows = 3, className = "" }: { rows?: number; class
 
 export function SynError({ message }: { message: string }) {
   return (
-    <div className="rounded-xl border border-error/30 bg-error-container/40 px-4 py-3 text-sm text-on-error-container">
+    <div className="rounded-lg border border-error/30 bg-error-container/40 px-4 py-3 text-sm text-on-error-container">
       {message}
     </div>
   );

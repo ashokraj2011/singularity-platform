@@ -20,7 +20,7 @@ import { ThemeSwitcher } from "@/components/ui/ThemeSwitcher";
 // sidebar/topbar/padded-main chrome. Keep run artifacts/insights in the normal
 // shell; only the detail cockpit needs its own viewport so its header and
 // action controls cannot sit underneath the platform chrome.
-const FULL_BLEED_PREFIXES = ["/workbench", "/synthesis"];
+const FULL_BLEED_PREFIXES = ["/workbench"];
 
 function isRunDetailPath(pathname: string): boolean {
   return /^\/runs\/[^/]+$/.test(pathname);
@@ -28,6 +28,7 @@ function isRunDetailPath(pathname: string): boolean {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname() ?? "";
+  const synthesisCanvas = pathname.startsWith("/synthesis/ideas");
   const fullBleed = FULL_BLEED_PREFIXES.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   ) || isRunDetailPath(pathname);
@@ -200,7 +201,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           style={{
             flex: 1,
             overflow: "auto",
-            padding: "2rem",
+            padding: synthesisCanvas ? "1rem" : "2rem",
             background: "var(--color-surface)",
           }}
         >
