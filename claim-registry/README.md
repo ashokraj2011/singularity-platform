@@ -51,10 +51,34 @@ auto-demotion — humans decide), and auto-falsifies at ≤ 0.20 (`claim.falsifi
 **Cross-service tail (a workgraph-api PR):** teach Workgraph's `resolver.ts` the
 `claim` kind + the `claim.decay`/`claim.falsified` subscription → template review flag.
 
+## M-CR4 (shipped)
+The **ambiguity ledger** + the sweeps that fill it + the first **projection**.
+
+- **`src/lib/ambiguity.ts`** — pure detectors (`npm test`): `dedupeKeyFor` (order-independent
+  idempotency key), `detectStarvation`, `contradictionLive` / `contradictionSeverity`.
+- **Ledger** (`ambiguity.service.ts`) — a queue of surfaced-but-unresolved tensions
+  (`CONTRADICTION` / `MISSING_EVIDENCE` / `STARVATION`). Opening is **idempotent** (one OPEN
+  row per logical key, code-enforced); closing is a human act (`acknowledge` / `resolve` /
+  `dismiss`). The ledger **never** mutates a claim's belief or maturity — it only surfaces.
+- **Sweeps** (`sweeps.service.ts`, `POST /jobs/*`) — `contradiction-sweep` (asserted
+  `CONTRADICTS` edges where both sides are still believed), `starvation-sweep` (young
+  evidence-less claims aged out), and the existing `decay-recompute` now also opens a
+  `MISSING_EVIDENCE` ambiguity when a matured claim slips below its gate. `sweep-all` runs
+  the lot. **None demote** — humans decide.
+- **Relations** (`relation.service.ts`, `POST /claims/:id/relations`) — typed claim-to-claim
+  edges, **asserted, never inferred** (no embeddings — the same fail-loud stance). `CONTRADICTS`
+  is the contradiction sweep's input.
+- **Projection** (`projections.service.ts`, `GET /projections/assumption-register`) — every
+  ASSUMPTION claim with its live belief state, evidence balance, and open-ambiguity count,
+  riskiest-first. A live query; materialization + the other projections are deferred.
+
 ## Deferred (later milestones)
-- M-CR4: ambiguity ledger + sweeps (decay/contradiction/starvation) + projections.
+- **M-CR3 cross-service tail** (a workgraph-api PR): teach Workgraph's `resolver.ts` the
+  `claim` kind + subscribe `claim.decay`/`claim.falsified` → template review flag.
+- More projections (decision-log, requirements-traceability, open-questions) + projection
+  materialization; `ClaimMerge`.
 - The LISTEN/NOTIFY outbox **dispatcher** (HMAC, 5-attempt retry) and the IAM
-  service-token/JWT middleware are copied in during M-CR1 hardening.
+  service-token/JWT middleware are copied in during hardening.
 
 ## Setup
 ```

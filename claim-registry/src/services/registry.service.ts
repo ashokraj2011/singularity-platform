@@ -14,6 +14,7 @@ import { betaToLogOdds } from '../lib/posterior';
 import { decayThresholdCrossed, type MaturityState } from '../lib/maturity';
 import { publishEvent } from '../lib/events';
 import { createClaim, recompute, transition } from './claim.service';
+import { openAmbiguity } from './ambiguity.service';
 
 // ── /lookup/resolve (M11.b 200/207) ───────────────────────────────────────────
 export interface RefInput { kind: string; id: string }
@@ -67,9 +68,14 @@ export async function runDecayRecompute(nowMs: number = Date.now()) {
     const crossed = decayThresholdCrossed(c.maturity as MaturityState, prev, r.posteriorProb);
     if (crossed !== null) {
       thresholdCrossed++;
-      // No auto-demotion (spec §4): flag it, humans decide. (The MISSING_EVIDENCE
-      // ambiguity that pairs with this lands in M-CR4.)
+      // No auto-demotion (spec §4): flag it, humans decide. Emit the event AND open a
+      // MISSING_EVIDENCE ambiguity so the tension lands in the ledger's work queue (M-CR4).
       await publishEvent('claim.decay.threshold_crossed', c.id, { threshold: crossed, prevProb: prev, newProb: r.posteriorProb, maturity: c.maturity });
+      await openAmbiguity({
+        type: 'MISSING_EVIDENCE', claimId: c.id, severity: 'HIGH',
+        detail: { threshold: crossed, prevProb: prev, newProb: r.posteriorProb, maturity: c.maturity },
+        openedBy: 'sweep:decay',
+      });
     }
     if (r.posteriorProb <= 0.2 && c.maturity !== 'FALSIFIED') {
       await transition(c.id, 'FALSIFIED'); // automatic + terminal; emits claim.falsified

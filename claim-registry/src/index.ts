@@ -8,6 +8,7 @@ import { ZodError } from 'zod';
 import { claimsRouter } from './routes/claims.router';
 import { knowledgeRouter } from './routes/knowledge.router';
 import { registryRouter } from './routes/registry.router';
+import { ambiguityRouter } from './routes/ambiguity.router';
 import { AppError } from './lib/errors';
 
 export const app = express();
@@ -18,6 +19,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok', service: 'claim-regis
 app.use('/api/v1', claimsRouter);
 app.use('/api/v1', knowledgeRouter);
 app.use('/api/v1', registryRouter);
+app.use('/api/v1', ambiguityRouter);
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   if (err instanceof AppError) {
