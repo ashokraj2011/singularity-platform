@@ -1,0 +1,94 @@
+/* ─── Synthesis app theme: "Ethos & Form" ────────────────────────────────
+ * Scoped to `.synthesis-root` so it never leaks into the rest of platform-web.
+ * The Tailwind color utilities (bg-surface-container-low, text-on-surface, …)
+ * declared in tailwind.config.ts read the `--syn-*` variables defined here.
+ * A warm, calm "thoughtful workspace" palette: Sand / Charcoal / Sage. */
+
+@import url('https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap');
+
+.synthesis-root {
+  /* Surfaces */
+  --syn-surface: #fcf9f4;
+  --syn-surface-dim: #dcdad5;
+  --syn-surface-bright: #fcf9f4;
+  --syn-surface-container-lowest: #ffffff;
+  --syn-surface-container-low: #f6f3ee;
+  --syn-surface-container: #f0ede9;
+  --syn-surface-container-high: #ebe8e3;
+  --syn-surface-container-highest: #e5e2dd;
+  --syn-surface-variant: #e5e2dd;
+  --syn-surface-tint: #5f5e5c;
+  /* Text */
+  --syn-on-surface: #1c1c19;
+  --syn-on-surface-variant: #464741;
+  --syn-inverse-surface: #31302d;
+  --syn-inverse-on-surface: #f3f0eb;
+  --syn-outline: #777771;
+  --syn-outline-variant: #c7c7bf;
+  /* Primary — signature charcoal */
+  --syn-primary: #040404;
+  --syn-on-primary: #ffffff;
+  --syn-primary-container: #1e1e1c;
+  --syn-on-primary-container: #878683;
+  --syn-inverse-primary: #c8c6c3;
+  /* Secondary — sage */
+  --syn-secondary: #4e625f;
+  --syn-on-secondary: #ffffff;
+  --syn-secondary-container: #cee4df;
+  --syn-on-secondary-container: #526763;
+  /* Tertiary — dusty gold */
+  --syn-tertiary: #080300;
+  --syn-on-tertiary: #ffffff;
+  --syn-tertiary-container: #281b09;
+  --syn-on-tertiary-container: #978269;
+  /* Error */
+  --syn-error: #ba1a1a;
+  --syn-on-error: #ffffff;
+  --syn-error-container: #ffdad6;
+  --syn-on-error-container: #93000a;
+  /* Background */
+  --syn-background: #fcf9f4;
+  --syn-on-background: #1c1c19;
+
+  background-color: var(--syn-background);
+  color: var(--syn-on-surface);
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  height: 100%;
+}
+
+/* Headings & display type use Public Sans (overrides platform font-display
+ * within the Synthesis subtree only, thanks to the extra `.synthesis-root`
+ * specificity). */
+.synthesis-root .font-display {
+  font-family: 'Public Sans', ui-sans-serif, system-ui, sans-serif;
+}
+.synthesis-root .font-sans {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+.synthesis-root .syn-glass {
+  background: rgba(252, 249, 244, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.synthesis-root ::-webkit-scrollbar { width: 10px; height: 10px; }
+.synthesis-root ::-webkit-scrollbar-track { background: transparent; }
+.synthesis-root ::-webkit-scrollbar-thumb {
+  background: var(--syn-outline-variant);
+  border-radius: 9999px;
+  border: 3px solid var(--syn-surface);
+}
+
+@keyframes syn-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.synthesis-root .syn-fade-in { animation: syn-fade-in 220ms ease both; }
+
+@keyframes syn-pulse-dot {
+  0%, 100% { opacity: 0.4; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.25); }
+}
+.synthesis-root .syn-pulse-dot { animation: syn-pulse-dot 2.4s ease-in-out infinite; }

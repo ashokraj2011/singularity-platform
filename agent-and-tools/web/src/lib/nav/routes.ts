@@ -15,7 +15,7 @@ import {
   LayoutDashboard, Wrench, Play, Users, GitBranch, Layers, ScrollText,
   ShieldCheck, Activity, Brain, DollarSign, Cpu, WandSparkles, Bot, Inbox,
   Network, Route, Workflow, Zap, Database, FileText, Globe, Link2, Package,
-  Puzzle, ClipboardCheck, BookOpen, Settings, Boxes, KeyRound, Lightbulb,
+  Puzzle, ClipboardCheck, BookOpen, Settings, Boxes, KeyRound, Lightbulb, Sparkles,
 } from "lucide-react";
 
 export type NavGroup =
@@ -91,6 +91,7 @@ export const ROUTES: RouteMeta[] = [
   { id: "memory", label: "Memory", href: "/memory", group: "Prompts and Knowledge", icon: Database, priority: "secondary", surfaceType: "knowledge" },
 
   // Workflows (merged: operations + authoring)
+  { id: "synthesis", label: "Synthesis", href: "/synthesis/hub", group: "Workflows", icon: Sparkles, priority: "journey", surfaceType: "workflow", statusLabel: "Discover", description: "Pre-development studio — capture ideas, reduce unknowns, validate assumptions, converge a spec, and generate tickets. Unifies discovery, rooms, and specifications.", keywords: ["synthesis", "discovery", "ideas", "idea wall", "assumption", "spec", "traceability", "use case", "concept", "pre-development", "elicitation"] },
   { id: "studio-projects", label: "Projects", href: "/studio", group: "Workflows", icon: Layers, priority: "primary", surfaceType: "workflow", description: "Specification projects — the top-level workspace: analysis, requirements, design, rooms, board, co-edit. Work items are generated from the locked spec.", keywords: ["studio", "project", "specification", "spec", "requirements", "design", "board", "rooms", "generate", "work items", "workspace"] },
   { id: "workflows", label: "Workflow Home", href: "/workflows", group: "Workflows", icon: Workflow, priority: "primary", surfaceType: "workflow" },
   { id: "workflows-planner", label: "Story Planner", href: "/workflows/planner", group: "Workflows", icon: Route, priority: "journey", surfaceType: "workflow", statusLabel: "Plan" },
