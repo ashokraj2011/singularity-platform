@@ -27,6 +27,10 @@ export interface CreateClaimInput {
   provenance?: Record<string, unknown>;
   createdBy: string;
   force?: boolean;
+  /** override the kind-default prior (Rooms→registry promotion seeds from a Beta posterior) */
+  priorLogOddsOverride?: number;
+  /** promoted claims arrive already reviewed/typed, not as raw FRAGMENTs */
+  maturity?: 'FRAGMENT' | 'HYPOTHESIS';
 }
 
 export async function createClaim(input: CreateClaimInput) {
@@ -41,7 +45,7 @@ export async function createClaim(input: CreateClaimInput) {
   // never a silent posterior fork — the invariant the spec demands. Wire the
   // /v1/embeddings call in once a reliable embedding alias is configured.
   const embeddingDegraded = true;
-  const prior = priorLogOddsForKind(input.kind);
+  const prior = input.priorLogOddsOverride ?? priorLogOddsForKind(input.kind);
   const seed = computePosterior(prior, [], Date.now(), halfLifeFor(input.kind));
 
   const claim = await prisma.claim.create({
@@ -54,6 +58,7 @@ export async function createClaim(input: CreateClaimInput) {
       createdBy: input.createdBy,
       priorLogOdds: prior, posteriorLogOdds: seed.posteriorLogOdds, posteriorProb: seed.posteriorProb,
       effectiveEvidence: 0, halfLifeDays: halfLifeFor(input.kind), embeddingDegraded,
+      ...(input.maturity ? { maturity: input.maturity as never } : {}),
       versions: { create: { version: 1, statement: input.statement, editedBy: input.createdBy } },
     },
   });

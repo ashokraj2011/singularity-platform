@@ -68,6 +68,17 @@ export function priorLogOddsForKind(kind: string): number {
   return logit(KIND_PRIOR_PROB[kind] ?? 0.5);
 }
 
+/**
+ * Beta(α,β) → prior log-odds — the translation at the Rooms→registry promotion
+ * boundary. Rooms hold belief as a Beta posterior; the registry holds it as log-odds,
+ * so a promoted claim seeds its prior from the Beta mean.
+ */
+export function betaToLogOdds(alpha: number, beta: number): number {
+  const a = Math.max(1e-9, alpha);
+  const b = Math.max(1e-9, beta);
+  return logit(a / (a + b));
+}
+
 /** Clamp a raw LLR magnitude to the tier cap, preserving sign. */
 export function capLLR(rawLLR: number, tier: EvidenceTier, caps: Record<EvidenceTier, number> = DEFAULT_TIER_LLR_CAP): number {
   const cap = caps[tier];

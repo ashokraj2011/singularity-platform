@@ -41,9 +41,17 @@ gateway (`gateway.ts`, model_alias only) → **curation queue** of `LoweringCand
 (create a claim, or attach to the matched one) / reject. `src/lib/lowering.ts` is the pure
 parse/validate core (`npm test`); the payload store is an inline stub (MinIO in production).
 
+## M-CR3 (shipped — registry side)
+`POST /lookup/resolve` (M11.b, 200/207 so Workgraph can 422 on bad claim refs), the
+Rooms→registry **promotion intake** (`POST /promotions`, Beta→log-odds prior via
+`betaToLogOdds`), and the **decay-recompute job** (`POST /jobs/decay-recompute`) that
+re-derives every ACTIVE posterior with decay applied, emits
+`claim.decay.threshold_crossed` when a matured claim slips below its gate (no
+auto-demotion — humans decide), and auto-falsifies at ≤ 0.20 (`claim.falsified`).
+**Cross-service tail (a workgraph-api PR):** teach Workgraph's `resolver.ts` the
+`claim` kind + the `claim.decay`/`claim.falsified` subscription → template review flag.
+
 ## Deferred (later milestones)
-- M-CR3: `/lookup/resolve` + the Workgraph `claim`-kind resolver case + decay
-  subscription + Rooms→registry promotion intake.
 - M-CR4: ambiguity ledger + sweeps (decay/contradiction/starvation) + projections.
 - The LISTEN/NOTIFY outbox **dispatcher** (HMAC, 5-attempt retry) and the IAM
   service-token/JWT middleware are copied in during M-CR1 hardening.
