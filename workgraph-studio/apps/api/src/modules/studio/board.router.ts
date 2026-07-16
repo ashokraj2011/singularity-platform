@@ -11,6 +11,7 @@ import { validate } from '../../middleware/validate'
 import { createBoard, listBoards, appendEvent, readState, listEvents, forkBranch, listBranches, abandonBranch } from './board.service'
 import { detectAndNarrate, listMoments, editMoment, rejectMoment } from './board-moments.service'
 import { ingest, listArtifacts, getArtifactClaims, acceptExtractedClaim, rejectExtractedClaim } from './board-ingestion.service'
+import { diffBranches, mergeBranch, applyMergeItems, completeMerge } from './board-merge.service'
 
 export const studioBoardRouter: Router = Router()
 
@@ -46,6 +47,13 @@ const ingestSchema = z.object({
   url: z.string().url().max(2000).optional(),
   storageRef: z.string().max(500).optional(),
 })
+
+const mergeSchema = z.object({
+  fromBranch: z.string().trim().min(1).max(120),
+  toBranch: z.string().trim().min(1).max(120).default('main'),
+})
+const mergeApplySchema = mergeSchema.extend({ objectIds: z.array(z.string().max(200)).min(1).max(1000) })
+const mergeCompleteSchema = z.object({ fromBranch: z.string().trim().min(1).max(120) })
 
 const detectMomentsSchema = z.object({
   branch: z.string().trim().min(1).max(120).default('main'),
@@ -178,5 +186,32 @@ studioBoardRouter.post('/boards/:boardId/moments/:momentId/edit', validate(editM
 studioBoardRouter.post('/boards/:boardId/moments/:momentId/reject', async (req, res, next) => {
   try {
     res.json(await rejectMoment(boardIdOf(req), momentIdOf(req), userIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+// ── Merge (PR-6): semantic diff → proposal batch ──────────────────────────────
+studioBoardRouter.get('/boards/:boardId/diff', async (req, res, next) => {
+  try {
+    const from = typeof req.query.from === 'string' && req.query.from ? req.query.from : 'main'
+    const to = typeof req.query.to === 'string' && req.query.to ? req.query.to : 'main'
+    res.json(await diffBranches(boardIdOf(req), from, to))
+  } catch (err) { next(err) }
+})
+
+studioBoardRouter.post('/boards/:boardId/merge', validate(mergeSchema), async (req, res, next) => {
+  try {
+    res.json(await mergeBranch(boardIdOf(req), req.body.fromBranch, req.body.toBranch, userIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+studioBoardRouter.post('/boards/:boardId/merge/apply', validate(mergeApplySchema), async (req, res, next) => {
+  try {
+    res.json(await applyMergeItems(boardIdOf(req), req.body.fromBranch, req.body.objectIds, req.body.toBranch, userIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+studioBoardRouter.post('/boards/:boardId/merge/complete', validate(mergeCompleteSchema), async (req, res, next) => {
+  try {
+    res.json(await completeMerge(boardIdOf(req), req.body.fromBranch, userIdOf(req)))
   } catch (err) { next(err) }
 })
