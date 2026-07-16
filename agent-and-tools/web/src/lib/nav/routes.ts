@@ -91,6 +91,7 @@ export const ROUTES: RouteMeta[] = [
   { id: "memory", label: "Memory", href: "/memory", group: "Prompts and Knowledge", icon: Database, priority: "secondary", surfaceType: "knowledge" },
 
   // Workflows (merged: operations + authoring)
+  { id: "studio-projects", label: "Projects", href: "/studio", group: "Workflows", icon: Layers, priority: "primary", surfaceType: "workflow", description: "Specification projects — the top-level workspace: analysis, requirements, design, rooms, board, co-edit. Work items are generated from the locked spec.", keywords: ["studio", "project", "specification", "spec", "requirements", "design", "board", "rooms", "generate", "work items", "workspace"] },
   { id: "workflows", label: "Workflow Home", href: "/workflows", group: "Workflows", icon: Workflow, priority: "primary", surfaceType: "workflow" },
   { id: "workflows-planner", label: "Story Planner", href: "/workflows/planner", group: "Workflows", icon: Route, priority: "journey", surfaceType: "workflow", statusLabel: "Plan" },
   { id: "workflows-start", label: "Guided Launch", href: "/workflows/start", group: "Workflows", icon: Play, priority: "journey", surfaceType: "workflow", statusLabel: "Launch" },
