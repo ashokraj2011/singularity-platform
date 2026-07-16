@@ -140,6 +140,29 @@ export interface SynProbe {
   createdAt?: string;
 }
 
+/* ─── Idea-board synthesis ──────────────────────────────────────────────── */
+
+export type SynthesisInsightKind = "THEME" | "TENSION" | "OPPORTUNITY";
+
+export interface SynthesisInsight {
+  kind: SynthesisInsightKind;
+  title: string;
+  summary: string;
+  sourceIds: string[];
+  keywords: string[];
+  confidence: number;
+}
+
+export interface BoardSynthesisResult {
+  sourceCount: number;
+  coveredSourceCount: number;
+  coverage: number;
+  themes: SynthesisInsight[];
+  tensions: SynthesisInsight[];
+  opportunities: SynthesisInsight[];
+  warnings: string[];
+}
+
 /* ─── Specification package ─────────────────────────────────────────────── */
 
 export type RequirementPriority = "MUST" | "SHOULD" | "MAY" | string;

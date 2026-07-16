@@ -12,6 +12,7 @@ import { createBoard, listBoards, appendEvent, readState, listEvents, forkBranch
 import { detectAndNarrate, listMoments, editMoment, rejectMoment } from './board-moments.service'
 import { ingest, listArtifacts, getArtifactClaims, acceptExtractedClaim, rejectExtractedClaim } from './board-ingestion.service'
 import { diffBranches, mergeBranch, applyMergeItems, completeMerge } from './board-merge.service'
+import { synthesizeBoardObjects } from './board-synthesis'
 
 export const studioBoardRouter: Router = Router()
 
@@ -46,6 +47,12 @@ const ingestSchema = z.object({
   content: z.string().max(500_000).optional(),
   url: z.string().url().max(2000).optional(),
   storageRef: z.string().max(500).optional(),
+})
+const synthesizeSchema = z.object({
+  objectIds: z.array(z.string().trim().min(1).max(200)).max(500).optional(),
+  maxThemes: z.number().int().min(1).max(12).default(6),
+  includeTensions: z.boolean().default(true),
+  includeOpportunities: z.boolean().default(true),
 })
 
 const mergeSchema = z.object({
@@ -101,6 +108,13 @@ studioBoardRouter.get('/boards/:boardId/events', async (req, res, next) => {
     const from = typeof req.query.from === 'string' && req.query.from !== '' ? Number(req.query.from) : undefined
     const to = typeof req.query.to === 'string' && req.query.to !== '' ? Number(req.query.to) : undefined
     res.json(await listEvents(boardIdOf(req), branchOf(req), from, to))
+  } catch (err) { next(err) }
+})
+
+studioBoardRouter.post('/boards/:boardId/synthesize', validate(synthesizeSchema), async (req, res, next) => {
+  try {
+    const state = await readState(boardIdOf(req), branchOf(req))
+    res.json(synthesizeBoardObjects(state.objects, req.body))
   } catch (err) { next(err) }
 })
 
