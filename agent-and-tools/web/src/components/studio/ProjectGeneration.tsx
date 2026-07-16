@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { workgraphFetch, WorkgraphError } from "@/lib/workgraph";
 
 /**
@@ -10,18 +10,32 @@ import { workgraphFetch, WorkgraphError } from "@/lib/workgraph";
  * + coverage), then apply → each row becomes one SPEC_GENERATED work item with a specSourceRef.
  * Wires the existing /generation-plans endpoints.
  */
-interface EditRow { key: string; title: string; targetCapabilityId: string; requirementIds: string }
+interface EditRow { key: string; title: string; targetCapabilityId: string; requirementIds: string[] }
 interface PlanRow { id: string; rowKey: string; title: string; state: string; workItemId?: string | null; error?: string | null }
 interface Plan { id: string; status: string; totalRows: number; appliedRows: number; rows: PlanRow[]; validation?: { valid?: boolean; errors?: string[] } }
+interface Cap { id: string; name: string }
+interface Req { id: string; statement: string }
 
-const splitCsv = (s: string): string[] => s.split(",").map((x) => x.trim()).filter(Boolean);
-const emptyRow = (): EditRow => ({ key: crypto.randomUUID().slice(0, 8), title: "", targetCapabilityId: "", requirementIds: "" });
+const emptyRow = (): EditRow => ({ key: crypto.randomUUID().slice(0, 8), title: "", targetCapabilityId: "", requirementIds: [] });
 
 export function ProjectGeneration({ projectId }: { projectId: string }) {
   const [rows, setRows] = useState<EditRow[]>([emptyRow()]);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [caps, setCaps] = useState<Cap[]>([]);
+  const [reqs, setReqs] = useState<Req[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    workgraphFetch<{ items?: Array<Record<string, unknown>> }>(`/lookup/capabilities?size=200`)
+      .then((r) => { if (active) setCaps((r.items ?? []).map((c) => ({ id: String(c.id ?? c.iamCapabilityId ?? ""), name: String(c.name ?? c.displayName ?? c.label ?? c.id ?? "") })).filter((c) => c.id)); })
+      .catch(() => { /* ignore — the picker falls back to a text input */ });
+    workgraphFetch<{ package?: { requirements?: Req[] } }>(`/studio/projects/${projectId}/specification`)
+      .then((s) => { if (active) setReqs(s.package?.requirements ?? []); })
+      .catch(() => { /* ignore */ });
+    return () => { active = false; };
+  }, [projectId]);
 
   const setRow = (i: number, patch: Partial<EditRow>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
 
@@ -34,7 +48,7 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
         method: "POST",
         body: JSON.stringify({
           specificationProjectId: projectId,
-          rows: valid.map((r) => ({ rowKey: r.key, title: r.title.trim(), targetCapabilityId: r.targetCapabilityId.trim(), requirementIds: splitCsv(r.requirementIds) })),
+          rows: valid.map((r) => ({ rowKey: r.key, title: r.title.trim(), targetCapabilityId: r.targetCapabilityId.trim(), requirementIds: r.requirementIds })),
         }),
       });
       setPlan(created);
@@ -106,8 +120,23 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
         {rows.map((r, i) => (
           <div key={r.key} style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input value={r.title} onChange={(e) => setRow(i, { title: e.target.value })} placeholder="Work item title" style={{ ...inp, flex: 2 }} />
-            <input value={r.targetCapabilityId} onChange={(e) => setRow(i, { targetCapabilityId: e.target.value })} placeholder="Target capability id" style={{ ...inp, flex: 1.4 }} />
-            <input value={r.requirementIds} onChange={(e) => setRow(i, { requirementIds: e.target.value })} placeholder="requirement ids (comma-sep)" style={{ ...inp, flex: 1.6 }} />
+            {caps.length ? (
+              <select value={r.targetCapabilityId} onChange={(e) => setRow(i, { targetCapabilityId: e.target.value })} style={{ ...inp, flex: 1.4 }}>
+                <option value="">Target capability…</option>
+                {caps.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            ) : (
+              <input value={r.targetCapabilityId} onChange={(e) => setRow(i, { targetCapabilityId: e.target.value })} placeholder="Target capability id" style={{ ...inp, flex: 1.4 }} />
+            )}
+            <select
+              multiple value={r.requirementIds}
+              onChange={(e) => setRow(i, { requirementIds: Array.from(e.target.selectedOptions, (o) => o.value) })}
+              title="Requirement slice — ⌘/ctrl-click to select multiple"
+              style={{ ...inp, flex: 1.8, height: 60, padding: "4px 6px" }}
+            >
+              {reqs.length === 0 && <option disabled>No requirements in the spec yet</option>}
+              {reqs.map((rq) => <option key={rq.id} value={rq.id}>{rq.id} · {rq.statement.slice(0, 44)}</option>)}
+            </select>
             <button onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))} disabled={rows.length === 1} title="Remove" style={{ ...btn(rows.length === 1), padding: "4px 9px" }}>×</button>
           </div>
         ))}
