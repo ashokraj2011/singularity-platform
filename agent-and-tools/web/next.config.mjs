@@ -165,11 +165,11 @@ const nextConfig = {
       { source: "/curation", destination: "/audit/curation", permanent: false },
       { source: "/team-variables", destination: "/identity/variables", permanent: false },
       { source: "/global-variables", destination: "/identity/variables", permanent: false },
-      // The standalone Specification Studio (/studio + /studio/:projectId) was folded into the
-      // Work Item IDE: open a work item and flip the "Project baseline" scope switch. The portfolio
-      // list is the work inbox, so /studio now lands there.
-      { source: "/studio", destination: "/workflows/inbox", permanent: false },
-      { source: "/studio/:projectId", destination: "/workflows/inbox", permanent: false },
+      // /studio and /studio/:projectId are the standalone Project workspace again — the
+      // top-level, project-first surface (its activities: analysis, requirements, design,
+      // rooms, board, co-edit, generate, work items). Routes live at app/studio. The old
+      // redirect-to-inbox (from when the studio was folded into the Work Item IDE's
+      // "Project baseline" scope) is intentionally removed so these routes render.
       // The green native workbench console (/workbench/<view>) was retired; the
       // blue in-process cockpit at /workbench handles every view internally.
       { source: "/workbench/:view(cockpit|artifacts|stage-chat|code-review|audit|loop-theater|milestones|governance|export)", destination: "/workbench", permanent: false },
