@@ -2026,6 +2026,36 @@ model IngestedArtifact {
   @@map("ingested_artifacts")
 }
 
+// An agent's verdict on a human artifact — CHALLENGE / ENDORSE / FLAG. Voice, never
+// a vote: it never changes the target's status. boardId is nullable (verdicts also
+// apply to graph artifacts). Anti-nag "one OPEN per (target, agent, stance)" is a
+// partial unique index (see the m100 migration). See board-verdicts.ts.
+model AgentVerdict {
+  id           String    @id @default(uuid())
+  tenantId     String?   @default("default")
+  boardId      String?
+  targetType   String
+  targetRef    String
+  actorType    String    @default("AGENT")
+  agentRole    String
+  stance       String
+  rationale    String
+  evidenceRefs Json      @default("[]")
+  resolvesWith String?
+  confidence   Float     @default(0.6)
+  status       String    @default("OPEN")
+  createdById  String?
+  answeredById String?
+  answerNote   String?
+  traceId      String?
+  createdAt    DateTime  @default(now())
+  resolvedAt   DateTime?
+
+  @@index([tenantId, boardId, status])
+  @@index([targetType, targetRef, status])
+  @@map("agent_verdicts")
+}
+
 model Room {
   id          String    @id @default(uuid())
   projectId   String
