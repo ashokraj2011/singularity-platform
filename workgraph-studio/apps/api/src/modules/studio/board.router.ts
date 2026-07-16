@@ -10,6 +10,7 @@ import { z } from 'zod'
 import { validate } from '../../middleware/validate'
 import { createBoard, listBoards, appendEvent, readState, listEvents, forkBranch, listBranches, abandonBranch } from './board.service'
 import { detectAndNarrate, listMoments, editMoment, rejectMoment } from './board-moments.service'
+import { ingest, listArtifacts, getArtifactClaims, acceptExtractedClaim, rejectExtractedClaim } from './board-ingestion.service'
 
 export const studioBoardRouter: Router = Router()
 
@@ -36,6 +37,14 @@ const forkSchema = z.object({
   purpose: z.string().trim().max(500).optional(),
   maxEvents: z.number().int().min(1).max(100_000).optional(),
   maxTurns: z.number().int().min(1).max(10_000).optional(),
+})
+const ingestSchema = z.object({
+  branch: z.string().trim().min(1).max(120).default('main'),
+  kind: z.string().trim().min(1).max(24),
+  filename: z.string().trim().min(1).max(300),
+  content: z.string().max(500_000).optional(),
+  url: z.string().url().max(2000).optional(),
+  storageRef: z.string().max(500).optional(),
 })
 
 const detectMomentsSchema = z.object({
@@ -103,6 +112,41 @@ studioBoardRouter.post('/boards/:boardId/fork', validate(forkSchema), async (req
 studioBoardRouter.post('/boards/:boardId/branches/:name/abandon', async (req, res, next) => {
   try {
     res.json(await abandonBranch(boardIdOf(req), String(req.params.name), userIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+// ── Ingestion (PR-4) ──────────────────────────────────────────────────────────
+const artifactIdOf = (req: Request) => String(req.params.artifactId)
+const claimIdOf = (req: Request) => String(req.params.claimId)
+
+studioBoardRouter.post('/boards/:boardId/ingest', validate(ingestSchema), async (req, res, next) => {
+  try {
+    const { branch, ...input } = req.body
+    res.status(201).json(await ingest(boardIdOf(req), branch, input, { actorId: userIdOf(req) }))
+  } catch (err) { next(err) }
+})
+
+studioBoardRouter.get('/boards/:boardId/artifacts', async (req, res, next) => {
+  try {
+    res.json(await listArtifacts(boardIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+studioBoardRouter.get('/boards/:boardId/artifacts/:artifactId/claims', async (req, res, next) => {
+  try {
+    res.json(await getArtifactClaims(boardIdOf(req), artifactIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+studioBoardRouter.post('/boards/:boardId/artifacts/:artifactId/claims/:claimId/accept', async (req, res, next) => {
+  try {
+    res.json(await acceptExtractedClaim(boardIdOf(req), artifactIdOf(req), claimIdOf(req), userIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+studioBoardRouter.post('/boards/:boardId/artifacts/:artifactId/claims/:claimId/reject', async (req, res, next) => {
+  try {
+    res.json(await rejectExtractedClaim(boardIdOf(req), artifactIdOf(req), claimIdOf(req), userIdOf(req)))
   } catch (err) { next(err) }
 })
 

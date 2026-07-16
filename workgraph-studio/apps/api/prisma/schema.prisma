@@ -1860,6 +1860,7 @@ enum ClaimStatus {
 enum EvidenceTier {
   PRODUCTION
   EXPERIMENT
+  SOURCE_DOCUMENT
   SIMULATION
   AGENT
   OPINION
@@ -1896,6 +1897,7 @@ model Board {
   events    BoardEvent[]
   snapshots BoardSnapshot[]
   moments   BoardMoment[]
+  ingestedArtifacts IngestedArtifact[]
 
   @@index([projectId])
   @@index([tenantId], map: "ix_boards_tenant")
@@ -1996,6 +1998,32 @@ model BoardMoment {
   @@index([boardId, branchId, eventSeqStart])
   @@index([tenantId], map: "ix_board_moments_tenant")
   @@map("board_moments")
+}
+
+// An artifact dragged onto the board (deck, doc, sheet, image, link). Ingested as
+// DATA, never instructions: parsed → placed as board objects → cross-examined into
+// staged claims at evidence tier SOURCE_DOCUMENT. See board-ingestion.ts.
+model IngestedArtifact {
+  id              String   @id @default(uuid())
+  tenantId        String?  @default("default")
+  boardId         String
+  branchId        String
+  kind            String
+  filename        String
+  storageRef      String?
+  contentHash     String
+  status          String   @default("QUEUED")
+  parseSummary    Json     @default("{}")
+  extractedClaims Json     @default("[]")
+  droppedById     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+
+  @@index([boardId, contentHash])
+  @@index([tenantId], map: "ix_ingested_artifacts_tenant")
+  @@map("ingested_artifacts")
 }
 
 model Room {

@@ -9,7 +9,7 @@
  * by evidence identity. Confidence DECAYS on read as a pure function of evidence age + claim type.
  */
 
-export type EvidenceTier = "PRODUCTION" | "EXPERIMENT" | "SIMULATION" | "AGENT" | "OPINION";
+export type EvidenceTier = "PRODUCTION" | "EXPERIMENT" | "SOURCE_DOCUMENT" | "SIMULATION" | "AGENT" | "OPINION";
 export type ClaimTypeKey = "MARKET" | "USER" | "OPERATIONAL" | "TECHNICAL";
 
 export interface Beta {
@@ -32,6 +32,7 @@ export interface EvidenceInput {
 export const TIER_CAP: Record<EvidenceTier, number> = {
   PRODUCTION: 20,
   EXPERIMENT: 10,
+  SOURCE_DOCUMENT: 6, // a document asserting X is weak evidence X is true — below executed-test, above simulation
   SIMULATION: 4,
   AGENT: 2,
   OPINION: 0,
