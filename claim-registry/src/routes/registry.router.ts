@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
 import { resolveRefs, promoteFromRoom, runDecayRecompute } from '../services/registry.service';
+import { runContradictionSweep, runStarvationSweep, runAllSweeps } from '../services/sweeps.service';
 
 export const registryRouter: Router = Router();
 
@@ -34,7 +35,16 @@ registryRouter.post('/promotions', wrap(async (req, res) => {
   res.status(201).json(await promoteFromRoom({ ...body, promotedBy: actorOf(req) }));
 }));
 
-// Trigger the decay-recompute sweep (a scheduler calls this nightly).
+// Lifecycle sweeps (a scheduler POSTs these nightly). Each opens ledger rows; none demote.
 registryRouter.post('/jobs/decay-recompute', wrap(async (_req, res) => {
   res.json(await runDecayRecompute());
+}));
+registryRouter.post('/jobs/contradiction-sweep', wrap(async (_req, res) => {
+  res.json(await runContradictionSweep());
+}));
+registryRouter.post('/jobs/starvation-sweep', wrap(async (_req, res) => {
+  res.json(await runStarvationSweep());
+}));
+registryRouter.post('/jobs/sweep-all', wrap(async (_req, res) => {
+  res.json(await runAllSweeps());
 }));

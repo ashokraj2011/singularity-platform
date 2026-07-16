@@ -1,7 +1,7 @@
-// claim-registry — Prisma schema (M-CR1 subset: claims, versions, evidence, maturity,
-// receipts + the M11.e event-bus trio). Relations / merges / ambiguity ledger /
-// knowledge-capture (KnowledgeEvent, LoweringCandidate, ClaimRelation, ClaimMerge,
-// AmbiguityRecord) land in M-CR2/M-CR4 and are intentionally omitted here.
+// claim-registry — Prisma schema. M-CR1: claims, versions, evidence, maturity, receipts
+// + the M11.e event-bus trio. M-CR2: knowledge capture + lowering. M-CR4: the ambiguity
+// ledger + claim relations (sweeps open ledger rows; projections read them). ClaimMerge
+// is the one model still deferred.
 
 generator client {
   provider        = "prisma-client-js"
@@ -92,6 +92,9 @@ model Claim {
   versions      ClaimVersion[]
   evidenceLinks EvidenceLink[]
   transitions   MaturityTransition[]
+  relationsFrom ClaimRelation[]      @relation("RelationFrom")
+  relationsTo   ClaimRelation[]      @relation("RelationTo")
+  ambiguities   Ambiguity[]
 
   @@index([capabilityId, maturity, status])
   @@index([kind, status])
@@ -283,4 +286,71 @@ model LoweringCandidate {
 
   @@index([status, createdAt])
   @@map("lowering_candidates")
+}
+
+// ── Ambiguity ledger + relations (M-CR4) ──────────────────────────────────────
+enum AmbiguityType {
+  CONTRADICTION // two still-believed claims asserted to contradict
+  MISSING_EVIDENCE // a matured claim decayed below its gate threshold
+  STARVATION // a young claim with no evidence, aging out
+}
+
+enum AmbiguityStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+  DISMISSED
+}
+
+enum RelationType {
+  CONTRADICTS
+  DEPENDS_ON
+  REFINES
+  DUPLICATES
+}
+
+// A typed claim-to-claim edge, asserted (never inferred — no embeddings). CONTRADICTS is
+// the input the contradiction sweep reads.
+model ClaimRelation {
+  id          String       @id @default(uuid())
+  fromClaimId String
+  fromClaim   Claim        @relation("RelationFrom", fields: [fromClaimId], references: [id], onDelete: Cascade)
+  toClaimId   String
+  toClaim     Claim        @relation("RelationTo", fields: [toClaimId], references: [id], onDelete: Cascade)
+  type        RelationType
+  note        String?
+  createdBy   String
+  createdAt   DateTime     @default(now())
+
+  @@unique([fromClaimId, toClaimId, type])
+  @@index([type])
+  @@index([toClaimId])
+  @@map("claim_relations")
+}
+
+// A surfaced-but-unresolved epistemic tension. The sweeps open these; humans close them.
+// dedupeKey (type + sorted claim ids) is the idempotency guard — NOT a DB unique, so a
+// resolved row and a later-reopened one coexist; "one OPEN per key" is code-enforced.
+model Ambiguity {
+  id             String          @id @default(uuid())
+  type           AmbiguityType
+  status         AmbiguityStatus @default(OPEN)
+  claimId        String
+  claim          Claim           @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  relatedClaimId String? // the other side of a CONTRADICTION (soft ref, no FK)
+  dedupeKey      String
+  severity       String          @default("MEDIUM") // LOW | MEDIUM | HIGH
+  detail         Json            @default("{}")
+  openedBy       String // sweep name or actor
+  openedAt       DateTime        @default(now())
+  acknowledgedBy String?
+  acknowledgedAt DateTime?
+  resolvedBy     String?
+  resolvedAt     DateTime?
+  resolutionNote String?
+
+  @@index([status, type])
+  @@index([claimId, status])
+  @@index([dedupeKey, status])
+  @@map("ambiguities")
 }
