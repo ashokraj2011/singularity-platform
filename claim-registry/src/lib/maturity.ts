@@ -95,6 +95,25 @@ export function evaluateTransition(
   return { allowed: true };
 }
 
+// The posterior threshold a claim must stay above to keep its earned maturity.
+export const MATURITY_THRESHOLD: Record<string, number> = {
+  VALIDATED: 0.8,
+  REQUIREMENT: 0.9,
+  SPEC_BOUND: 0.9,
+};
+
+/**
+ * Did decay just drop the posterior below the claim's maturity threshold? Returns the
+ * crossed threshold (for the event), or null. A VALIDATED+ claim is NOT auto-demoted
+ * (spec §4) — it emits claim.decay.threshold_crossed and a human decides; only
+ * falsification (≤0.20) is automatic.
+ */
+export function decayThresholdCrossed(maturity: MaturityState, prevProb: number, newProb: number): number | null {
+  const th = MATURITY_THRESHOLD[maturity];
+  if (th === undefined) return null;
+  return prevProb >= th && newProb < th ? th : null;
+}
+
 /** The one auto transition the recompute path applies without human action. */
 export function autoTransitionFor(from: MaturityState, ctx: TransitionContext, gates?: Record<string, GateRule>): MaturityState | null {
   if (ctx.posteriorProb <= FALSIFICATION_FLOOR && from !== 'FALSIFIED') return 'FALSIFIED';
