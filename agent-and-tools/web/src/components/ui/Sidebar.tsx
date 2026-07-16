@@ -4,10 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "motion/react";
-import { ChevronDown, ChevronLeft, ChevronRight, Sparkles, Star } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, SlidersHorizontal, Star } from "lucide-react";
 import {
-  advancedRoutes,
-  journeyRoutes,
   sidebarSections,
   type NavGroup,
   type RouteMeta,
@@ -16,8 +14,8 @@ import {
 import { useFavorites } from "@/lib/nav/favorites";
 
 const menuSections = sidebarSections();
-const journeyItems = journeyRoutes();
 const allMenuItems = menuSections.flatMap((section) => section.items);
+const advancedItemCount = allMenuItems.filter((item) => item.advanced).length;
 const sidebarGroupLabels = new Set<NavGroup>(menuSections.map((section) => section.label));
 
 function parseStoredBoolean(raw: string | null, fallback: boolean): boolean {
@@ -202,6 +200,26 @@ function SectionHeader({
         size={14}
         style={{ transform: open ? "none" : "rotate(-90deg)", transition: "transform 0.15s", flexShrink: 0 }}
       />
+      {section.phase && (
+        <span
+          aria-hidden
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 23,
+            height: 20,
+            borderRadius: 6,
+            background: "var(--accent-workflow-soft)",
+            color: "var(--accent-workflow)",
+            fontSize: 9,
+            fontWeight: 900,
+            flexShrink: 0,
+          }}
+        >
+          {section.phase}
+        </span>
+      )}
       <span style={{ minWidth: 0, flex: 1 }}>
         <span className="label-xs" style={{ display: "block", margin: 0 }}>{section.label}</span>
         <span style={{ display: "block", marginTop: 1, fontSize: 10, fontWeight: 600, lineHeight: 1.25 }}>
@@ -307,8 +325,11 @@ export function Sidebar() {
   }
 
   function renderSection(section: SidebarSection, index: number) {
-    const items = section.items.filter((item) => !item.advanced && item.priority !== "journey");
-    if (items.length === 0) return null;
+    const primaryItems = section.items.filter((item) => !item.advanced);
+    const advancedItems = section.items.filter((item) => item.advanced);
+    const showAdvancedItems = advancedOpen || Boolean(activeRoute?.advanced && activeRoute.group === section.label);
+    const visibleAdvancedItems = showAdvancedItems ? advancedItems : [];
+    if (primaryItems.length === 0 && visibleAdvancedItems.length === 0) return null;
     const open = effectiveCollapsed || openGroups[section.label] || activeRoute?.group === section.label;
     return (
       <section
@@ -323,7 +344,18 @@ export function Sidebar() {
         <SectionHeader section={section} open={open} collapsed={effectiveCollapsed} onToggle={() => toggleGroup(section.label)} />
         {open && (
           <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: effectiveCollapsed ? 0 : 4 }}>
-            {items.map((item) => (
+            {primaryItems.map((item) => (
+              <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={effectiveCollapsed} />
+            ))}
+            {visibleAdvancedItems.length > 0 && !effectiveCollapsed && primaryItems.length > 0 && (
+              <div
+                className="label-xs"
+                style={{ margin: "7px 8px 3px", color: "var(--color-outline)", opacity: 0.78 }}
+              >
+                Advanced controls
+              </div>
+            )}
+            {visibleAdvancedItems.map((item) => (
               <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={effectiveCollapsed} />
             ))}
           </div>
@@ -332,49 +364,45 @@ export function Sidebar() {
     );
   }
 
-  function renderAdvanced() {
-    const items = advancedRoutes();
-    if (items.length === 0) return null;
-    const anyActive = items.some((item) => isActive(item.href));
-    const open = advancedOpen || anyActive || effectiveCollapsed;
+  function renderAdvancedToggle() {
+    if (advancedItemCount === 0) return null;
     return (
       <section
-        title="Advanced"
+        title={advancedOpen ? "Hide advanced controls" : "Show advanced controls"}
         style={{
           marginTop: 10,
           paddingTop: 10,
           borderTop: "1px solid rgba(106,116,134,0.18)",
         }}
       >
-        {!effectiveCollapsed && (
-          <button
-            type="button"
-            onClick={toggleAdvanced}
-            aria-expanded={open}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 7,
-              width: "100%",
-              padding: "5px 10px",
-              background: "transparent",
-              border: "none",
-              cursor: "pointer",
-              color: "var(--color-outline)",
-            }}
-          >
-            <ChevronDown size={14} style={{ transform: open ? "none" : "rotate(-90deg)", transition: "transform 0.15s" }} />
-            <span className="label-xs" style={{ margin: 0 }}>Advanced</span>
-            <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 800 }}>{items.length}</span>
-          </button>
-        )}
-        {open && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: effectiveCollapsed ? 0 : 4 }}>
-            {items.map((item) => (
-              <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={effectiveCollapsed} />
-            ))}
-          </div>
-        )}
+        <button
+          type="button"
+          onClick={toggleAdvanced}
+          aria-pressed={advancedOpen}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: effectiveCollapsed ? "center" : "flex-start",
+            gap: 8,
+            width: "100%",
+            minHeight: 34,
+            padding: effectiveCollapsed ? 6 : "6px 10px",
+            background: advancedOpen ? "var(--accent-workflow-soft)" : "transparent",
+            border: "none",
+            borderRadius: 6,
+            cursor: "pointer",
+            color: advancedOpen ? "var(--accent-workflow)" : "var(--color-outline)",
+          }}
+        >
+          <SlidersHorizontal size={15} />
+          {!effectiveCollapsed && (
+            <>
+              <span className="label-xs" style={{ margin: 0 }}>Advanced controls</span>
+              <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 800 }}>{advancedItemCount}</span>
+              <ChevronDown size={14} style={{ transform: advancedOpen ? "none" : "rotate(-90deg)", transition: "transform 0.15s" }} />
+            </>
+          )}
+        </button>
       </section>
     );
   }
@@ -455,22 +483,8 @@ export function Sidebar() {
 
       <nav style={{ flex: 1, overflowY: "auto", overflowX: "hidden", padding: "10px 8px" }}>
         {renderFavorites()}
-        <section className={effectiveCollapsed ? "" : "journey-rail"} title="Primary SDLC journey">
-          {!effectiveCollapsed && (
-            <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "2px 4px 8px", color: "var(--accent-workflow)" }}>
-              <Sparkles size={14} />
-              <span className="label-xs" style={{ margin: 0, color: "var(--accent-workflow)" }}>Primary Journey</span>
-            </div>
-          )}
-          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            {journeyItems.map((item) => (
-              <NavItem key={item.href} {...item} active={isActive(item.href)} collapsed={effectiveCollapsed} />
-            ))}
-          </div>
-        </section>
-
         {menuSections.map(renderSection)}
-        {renderAdvanced()}
+        {renderAdvancedToggle()}
       </nav>
 
       {!effectiveCollapsed && (

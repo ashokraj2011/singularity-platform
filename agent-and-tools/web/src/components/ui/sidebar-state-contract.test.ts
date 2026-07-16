@@ -3,6 +3,16 @@ import fs from "node:fs";
 import path from "node:path";
 
 const source = fs.readFileSync(path.join(process.cwd(), "src/components/ui/Sidebar.tsx"), "utf8");
+const routesSource = fs.readFileSync(path.join(process.cwd(), "src/lib/nav/routes.ts"), "utf8");
+
+const navGroupsBlock = routesSource.match(/export const NAV_GROUPS:[^=]+ = \[([\s\S]*?)\];/);
+assert.ok(navGroupsBlock, "Navigation registry should declare ordered SDLC groups");
+const navGroupLabels = [...navGroupsBlock[1].matchAll(/label: "([^"]+)"/g)].map((match) => match[1]);
+assert.deepEqual(
+  navGroupLabels,
+  ["SDLC Home", "Discover", "Define", "Plan", "Build", "Verify", "Release", "Operate", "Administration"],
+  "Sidebar navigation should follow the SDLC lifecycle before administration",
+);
 
 assert.match(
   source,
@@ -32,6 +42,18 @@ assert.doesNotMatch(
   source,
   /setOpenGroups\(JSON\.parse\(storedGroups\) as Record<string, boolean>\)/,
   "Sidebar should not cast arbitrary localStorage JSON into open-group state",
+);
+
+assert.doesNotMatch(
+  source,
+  /Primary Journey/,
+  "Sidebar should not duplicate lifecycle routes in a separate primary-journey list",
+);
+
+assert.match(
+  source,
+  /const primaryItems = section\.items\.filter\(\(item\) => !item\.advanced\);[\s\S]*?const advancedItems = section\.items\.filter\(\(item\) => item\.advanced\);[\s\S]*?visibleAdvancedItems/,
+  "Advanced controls should remain inside their owning SDLC phase",
 );
 
 console.log("sidebar persisted state contract tests passed");
