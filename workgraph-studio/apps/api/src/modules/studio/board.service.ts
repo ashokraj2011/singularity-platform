@@ -196,9 +196,14 @@ export async function readState(boardId: string, branchName: string, at?: string
   if (at !== undefined && at !== '' && at !== 'head') {
     if (/^\d+$/.test(at)) {
       atSeq = Math.min(Number(at), head)
+    } else if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(at)) {
+      // Moment cursor — "jump to the moment the latency assumption was born".
+      const moment = await prisma.boardMoment.findFirst({ where: { id: at, branchId: branch.id }, select: { eventSeqStart: true } })
+      if (!moment) throw new NotFoundError('BoardMoment', at)
+      atSeq = Math.min(Number(moment.eventSeqStart), head)
     } else {
       const d = new Date(at)
-      if (Number.isNaN(d.getTime())) throw new ValidationError(`Invalid 'at' cursor: "${at}" (expected an eventSeq or ISO timestamp).`)
+      if (Number.isNaN(d.getTime())) throw new ValidationError(`Invalid 'at' cursor: "${at}" (expected an eventSeq, moment id, or ISO timestamp).`)
       const e = await prisma.boardEvent.findFirst({ where: { branchId: branch.id, createdAt: { lte: d } }, orderBy: { eventSeq: 'desc' } })
       atSeq = e ? Number(e.eventSeq) : 0
     }
