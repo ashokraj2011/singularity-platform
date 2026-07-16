@@ -1,0 +1,9 @@
+{
+  "_comment": "Evidence-tier LLR caps (spec §3), hot-reloadable. |LLR| is clamped to the cap per tier; magnitudes are odds-equivalents. Stronger evidence (T0) can move the belief far; soft anecdote (T3) barely.",
+  "tierLlrCap": {
+    "T0": 4.6,
+    "T1": 2.3,
+    "T2": 1.1,
+    "T3": 0.4
+  }
+}

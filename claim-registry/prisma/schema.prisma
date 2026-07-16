@@ -1,0 +1,229 @@
+// claim-registry — Prisma schema (M-CR1 subset: claims, versions, evidence, maturity,
+// receipts + the M11.e event-bus trio). Relations / merges / ambiguity ledger /
+// knowledge-capture (KnowledgeEvent, LoweringCandidate, ClaimRelation, ClaimMerge,
+// AmbiguityRecord) land in M-CR2/M-CR4 and are intentionally omitted here.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL_CLAIM_REGISTRY")
+  extensions = [vector, pgcrypto]
+}
+
+enum ClaimKind {
+  HYPOTHESIS
+  ASSUMPTION
+  OBSERVATION
+  CONSTRAINT
+  DECISION
+  REQUIREMENT
+}
+
+enum MaturityState {
+  FRAGMENT
+  HYPOTHESIS
+  VALIDATED
+  REQUIREMENT
+  SPEC_BOUND
+  FALSIFIED
+}
+
+enum ClaimStatus {
+  ACTIVE
+  MERGED
+  RETIRED
+  FALSIFIED
+}
+
+enum EvidenceTier {
+  T0
+  T1
+  T2
+  T3
+}
+
+enum EvidenceKind {
+  DATA_PULL
+  PROD_TELEMETRY
+  EXPERIMENT
+  SPIKE
+  USABILITY_SESSION
+  INTERVIEW
+  EXPERT_OPINION
+  DOCUMENT
+  MARKET_SIGNAL
+}
+
+enum EvidenceDirection {
+  SUPPORTS
+  CONTRADICTS
+}
+
+model Claim {
+  id                String        @id @default(uuid())
+  capabilityId      String? // platform org-scoping join key; null = org-level
+  kind              ClaimKind
+  maturity          MaturityState @default(FRAGMENT)
+  status            ClaimStatus   @default(ACTIVE)
+  statement         String
+  canonicalKey      String        @unique // sha256 of normalized statement — the hard dedup guard
+  embedding         Unsupported("vector(1536)")?
+  embeddingDegraded Boolean       @default(false) // set when canonicalization couldn't embed (fail-loud, never silent-fork)
+  subjectRefs       Json          @default("[]")
+  tags              String[]      @default([])
+  // Bayesian state — DERIVED, never set by an API (invariant 3)
+  priorLogOdds      Float         @default(0)
+  posteriorLogOdds  Float         @default(0)
+  posteriorProb     Float         @default(0.5)
+  effectiveEvidence Float         @default(0)
+  halfLifeDays      Int           @default(180)
+  thresholdHeldSince DateTime?    // when posterior first crossed the current maturity threshold
+  lastComputedAt    DateTime      @default(now())
+  provenance        Json          @default("{}")
+  createdBy         String
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  currentVersion    Int           @default(1)
+
+  versions      ClaimVersion[]
+  evidenceLinks EvidenceLink[]
+  transitions   MaturityTransition[]
+
+  @@index([capabilityId, maturity, status])
+  @@index([kind, status])
+  @@map("claims")
+}
+
+model ClaimVersion {
+  id         String   @id @default(uuid())
+  claimId    String
+  claim      Claim    @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  version    Int
+  statement  String
+  changeNote String?
+  editedBy   String
+  createdAt  DateTime @default(now())
+
+  @@unique([claimId, version])
+  @@map("claim_versions")
+}
+
+model EvidenceObject {
+  id          String       @id @default(uuid())
+  tier        EvidenceTier
+  kind        EvidenceKind
+  contentHash String       @unique // sha256 of raw payload — immutable at intake (invariant 2)
+  excerpt     String
+  payloadRef  String? // MinIO ref (bounded, fail-closed fetch)
+  sourceMeta  Json         @default("{}")
+  observedAt  DateTime
+  signature   String?
+  createdBy   String
+  createdAt   DateTime     @default(now())
+
+  links EvidenceLink[]
+
+  @@map("evidence_objects")
+}
+
+model EvidenceLink {
+  id                 String            @id @default(uuid())
+  claimId            String
+  claim              Claim             @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  evidenceId         String
+  evidence           EvidenceObject    @relation(fields: [evidenceId], references: [id])
+  direction          EvidenceDirection
+  logLikelihoodRatio Float // raw; capped by tier at compute time
+  sourceKey          String // same-source diminishing dedup key
+  decayExempt        Boolean           @default(false)
+  attachedBy         String
+  attachedAt         DateTime          @default(now())
+
+  @@unique([claimId, evidenceId])
+  @@index([claimId, attachedAt])
+  @@map("evidence_links")
+}
+
+model MaturityTransition {
+  id             String        @id @default(uuid())
+  claimId        String
+  claim          Claim         @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  fromState      MaturityState
+  toState        MaturityState
+  thresholdProb  Float
+  actualProb     Float
+  evidenceHash   String // canonical-JSON sha256 of the evidence set (M11.c)
+  approvedBy     String?
+  receiptTraceId String
+  occurredAt     DateTime      @default(now())
+
+  @@index([claimId, occurredAt])
+  @@map("maturity_transitions")
+}
+
+// M11.d unified receipt envelope, persisted (joinable by traceId).
+model Receipt {
+  id            String   @id @default(uuid())
+  traceId       String
+  kind          String
+  sourceService String   @default("claim-registry")
+  subjectKind   String
+  subjectId     String
+  actorKind     String
+  actorId       String
+  status        String
+  payload       Json     @default("{}")
+  createdAt     DateTime @default(now())
+
+  @@index([traceId])
+  @@map("receipts")
+}
+
+// M11.e event bus — outbox + subscriber registry + per-delivery state.
+model EventOutbox {
+  id          String   @id @default(uuid())
+  eventType   String
+  aggregateId String
+  payload     Json
+  traceId     String?
+  status      String   @default("PENDING") // PENDING | PROCESSED
+  createdAt   DateTime @default(now())
+
+  deliveries EventDelivery[]
+
+  @@index([status, createdAt])
+  @@map("event_outbox")
+}
+
+model EventSubscription {
+  id         String   @id @default(uuid())
+  name       String   @unique
+  eventTypes String[]
+  targetUrl  String
+  secret     String
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  deliveries EventDelivery[]
+
+  @@map("event_subscriptions")
+}
+
+model EventDelivery {
+  id             String            @id @default(uuid())
+  outboxId       String
+  outbox         EventOutbox       @relation(fields: [outboxId], references: [id], onDelete: Cascade)
+  subscriptionId String
+  subscription   EventSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  status         String            @default("PENDING") // PENDING | DELIVERED | FAILED
+  attempts       Int               @default(0)
+  lastError      String?
+  updatedAt      DateTime          @updatedAt
+
+  @@unique([outboxId, subscriptionId])
+  @@map("event_deliveries")
+}
