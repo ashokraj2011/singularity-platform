@@ -23,7 +23,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export const SINGLE_KINDS = [
   'user', 'team', 'business-unit', 'capability', 'role',
-  'mcp-server', 'agent-template', 'tool', 'prompt-profile',
+  'mcp-server', 'agent-template', 'tool', 'prompt-profile', 'claim',
 ] as const
 
 export type RefKind = typeof SINGLE_KINDS[number]
@@ -106,6 +106,21 @@ export async function resolveOne(kind: string, id: string, req: Request): Promis
         const all = await listPromptProfiles(authHeader(req))
         const hit = all.find((p) => p.id === id) ?? null
         return hit ? { kind, id, exists: true, label: hit.name, raw: hit } : { kind, id, exists: false }
+      }
+      case 'claim': {
+        // claim-registry is the system of record for SPEC_BOUND belief refs
+        // (a template's metadata.claimRefs). Fetch-to-validate; forward the caller's
+        // bearer (the registry is auth-gated) and fail closed on any error/timeout.
+        const base = (process.env.CLAIM_REGISTRY_URL ?? 'http://claim-registry:8600').replace(/\/+$/, '')
+        const auth = authHeader(req)
+        const res = await fetch(`${base}/api/v1/claims/${encodeURIComponent(id)}`, {
+          headers: auth ? { authorization: auth } : {},
+          signal: AbortSignal.timeout(4000),
+        }).catch(() => null)
+        if (!res || !res.ok) return { kind, id, exists: false }
+        const claim = await res.json().catch(() => null) as { statement?: string; maturity?: string; posteriorProb?: number } | null
+        if (!claim) return { kind, id, exists: false }
+        return { kind, id, exists: true, label: claim.statement, raw: claim }
       }
       default:
         return { kind, id, exists: false, error: `unsupported kind: ${kind}` }

@@ -9,7 +9,12 @@ import { prisma } from './prisma';
 import { currentRegistryTenant } from './request-context';
 
 export async function publishEvent(eventType: string, aggregateId: string, payload: Record<string, unknown>, traceId?: string): Promise<void> {
-  await prisma.eventOutbox.create({ data: { tenantId: currentRegistryTenant(), eventType, aggregateId, payload: payload as object, traceId: traceId ?? null } });
+  const row = await prisma.eventOutbox.create({ data: { tenantId: currentRegistryTenant(), eventType, aggregateId, payload: payload as object, traceId: traceId ?? null } });
+  // Wake the dispatcher immediately (best-effort). The 30s sweep is the delivery
+  // guarantee; a lost notify only costs latency, so it must never fail the write.
+  try {
+    await prisma.$executeRawUnsafe(`SELECT pg_notify('event_outbox_claim_registry', $1)`, row.id);
+  } catch { /* notify is a latency optimization, not part of the durable write contract */ }
 }
 
 export interface ReceiptInput {

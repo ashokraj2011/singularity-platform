@@ -26,6 +26,7 @@ import { config } from '../../config'
 import { prisma } from '../../lib/prisma'
 import { runWithTenantDbContext } from '../../lib/tenant-db-context'
 import { fanOutToWorkItemTriggers } from '../work-items/work-item-event-fanout'
+import { handleIncomingClaimEvent } from '../claims/claim-event-handler'
 import { systemRouteActor } from '../work-items/work-item-actors'
 import { assertEventPayloadSize, redactEventPayload } from '../events/event-payload'
 
@@ -191,6 +192,18 @@ incomingEventsRouter.post('/', async (req, res) => {
   } catch (err) {
     console.error('[incoming-events] trigger fan-out failed:', (err as Error).message)
     return res.status(503).json({ code: 'EVENT_FANOUT_FAILED', message: 'Event was recorded but routing did not complete; retryable=true', retryable: true, recorded_event: eventName })
+  }
+
+  // Claim-registry decay/falsification → flag every workflow template that rests on
+  // the claim (metadata.claimRefs → metadata.claimReview) + an EventLog row. Best-effort:
+  // a flagging failure must not turn a received+logged+routed event into a
+  // retry-triggering 5xx. Flags only — humans decide (the registry's no-auto-demotion stance).
+  if (source === 'claim-registry') {
+    try {
+      await handleIncomingClaimEvent(eventName, String(outboxId), body.envelope)
+    } catch (err) {
+      console.error('[incoming-events] claim review flagging failed:', (err as Error).message)
+    }
   }
 
   return res.status(200).json({ ok: true, recorded_event: eventName, source, workItemIds })
