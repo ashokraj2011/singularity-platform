@@ -14,33 +14,15 @@ import {
   ConfidenceBar,
 } from "@/components/synthesis/ui/kit";
 import { usePortfolio } from "@/components/synthesis/hooks/useSynthesis";
+import { computeMaturity as maturity, MATURITY_ORDER, type Maturity } from "@/components/synthesis/logic";
 import type { ChipTone } from "@/components/synthesis/ui/kit";
-import type { SynProject } from "@/components/synthesis/types";
 
-type Maturity = "SEED" | "SHAPING" | "DELIVERING" | "MATURE";
-
-const MATURITY_ORDER: Maturity[] = ["MATURE", "DELIVERING", "SHAPING", "SEED"];
 const MATURITY_TONE: Record<Maturity, ChipTone> = {
   SEED: "neutral",
   SHAPING: "tertiary",
   DELIVERING: "secondary",
   MATURE: "success",
 };
-
-/**
- * Maturity heuristic from portfolio signals we already have: an initiative with
- * many work items and an active status is further along than an empty draft.
- * Score in [0,1] drives the label; both are shown for transparency.
- */
-function maturity(p: SynProject): { score: number; label: Maturity } {
-  const items = p.workItemCount ?? 0;
-  const activity = p.status === "ACTIVE" ? 0.35 : p.status === "ARCHIVED" ? 0.1 : 0.2;
-  const delivery = Math.min(0.65, items * 0.13);
-  const score = Math.min(1, activity + delivery);
-  const label: Maturity =
-    score >= 0.8 ? "MATURE" : score >= 0.55 ? "DELIVERING" : score >= 0.3 ? "SHAPING" : "SEED";
-  return { score, label };
-}
 
 export default function UseCaseRegistryScreen() {
   const { data, error, isLoading } = usePortfolio({ refreshInterval: 20000 });

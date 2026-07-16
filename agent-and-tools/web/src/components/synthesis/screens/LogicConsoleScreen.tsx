@@ -25,10 +25,9 @@ import {
   ConfidenceBar,
 } from "@/components/synthesis/ui/kit";
 import { useClaims, useProjectSpec } from "@/components/synthesis/hooks/useSynthesis";
+import { isContested, isLikelyFalse, isUnbacked } from "@/components/synthesis/logic";
 import type { SynClaim } from "@/components/synthesis/types";
 
-const CONTESTED_VAR = 0.05;
-const LIKELY_FALSE = 0.35;
 
 export function LogicConsoleScreen() {
   const pathname = usePathname() ?? "/synthesis/logic";
@@ -52,9 +51,9 @@ function LogicConsole({ projectId }: { projectId: string }) {
   const requirements = specQ.data?.package?.requirements ?? [];
 
   const signals = useMemo(() => {
-    const contested = claims.filter((c) => (c.disagreement ?? 0) > CONTESTED_VAR);
-    const likelyFalse = claims.filter((c) => (c.mean ?? 0.5) < LIKELY_FALSE);
-    const unbacked = claims.filter((c) => (c.estimateCount ?? 0) <= 1);
+    const contested = claims.filter(isContested);
+    const likelyFalse = claims.filter(isLikelyFalse);
+    const unbacked = claims.filter(isUnbacked);
     const mustReqs = requirements.filter((r) => r.priority === "MUST");
     const mustNoCriteria = mustReqs.filter((r) => r.acceptanceCriteria.length === 0);
     return { contested, likelyFalse, unbacked, mustReqs, mustNoCriteria };
