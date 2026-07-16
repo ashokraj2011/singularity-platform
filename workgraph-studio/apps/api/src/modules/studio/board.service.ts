@@ -243,6 +243,17 @@ export async function readState(boardId: string, branchName: string, at?: string
   }
 }
 
+/** Full materialized object map for a branch at a point (INCLUDING tombstones) — the
+ *  raw state the semantic diff/merge compares (readState hides deleted objects). */
+export async function materializeBoardState(boardId: string, branchName: string, atSeq?: number): Promise<{ state: ObjectMap; branchId: string; atEventSeq: number; headEventSeq: number; stateHash: string }> {
+  await loadBoard(boardId)
+  const branch = await resolveBranch(boardId, branchName)
+  const head = Number(branch.headEventSeq)
+  const seq = atSeq === undefined ? head : Math.max(0, Math.min(atSeq, head))
+  const { state } = await materializeInternal(prisma, branch.id, seq)
+  return { state, branchId: branch.id, atEventSeq: seq, headEventSeq: head, stateHash: hashState(state) }
+}
+
 /** Replay stream: events on a branch in [from, to]. */
 export async function listEvents(boardId: string, branchName: string, from?: number, to?: number) {
   await loadBoard(boardId)
