@@ -312,11 +312,15 @@ studioProjectsRouter.get('/projects/:projectId/reconciliation', async (req, res,
 })
 
 // Presence — the live "who's here" layer. A heartbeat records the caller and returns the live set.
-const heartbeatSchema = z.object({ surface: z.string().trim().max(60).optional() })
+const heartbeatSchema = z.object({
+  surface: z.string().trim().max(60).optional(),
+  cursor: z.object({ x: z.number().finite(), y: z.number().finite() }).optional(),
+  viewport: z.object({ x: z.number().finite(), y: z.number().finite(), zoom: z.number().finite().positive().max(8) }).optional(),
+})
 
 studioProjectsRouter.post('/projects/:projectId/presence', validate(heartbeatSchema), async (req, res, next) => {
   try {
-    res.json(await recordPresence(projectIdOf(req), { userId: req.user!.userId, displayName: req.user!.displayName, surface: req.body.surface }))
+    res.json(await recordPresence(projectIdOf(req), { userId: req.user!.userId, displayName: req.user!.displayName, surface: req.body.surface, cursor: req.body.cursor, viewport: req.body.viewport }))
   } catch (err) { next(err) }
 })
 

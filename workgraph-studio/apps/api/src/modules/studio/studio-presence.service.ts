@@ -20,12 +20,14 @@ export interface HeartbeatInput {
   userId: string
   displayName?: string
   surface?: string
+  cursor?: { x: number; y: number }
+  viewport?: { x: number; y: number; zoom: number }
 }
 
 export async function recordPresence(projectId: string, input: HeartbeatInput): Promise<{ present: PresenceBeat[] }> {
   await getProject(projectId) // tenant-scoped 404 — don't leak presence across projects the caller can't see
   const now = Date.now()
-  const beat: PresenceBeat = { userId: input.userId, displayName: input.displayName, surface: input.surface, at: now }
+  const beat: PresenceBeat = { userId: input.userId, displayName: input.displayName, surface: input.surface, cursor: input.cursor, viewport: input.viewport, at: now }
   const next = upsertBeat(pruneStale(store.get(projectId) ?? [], now), beat)
   store.set(projectId, next)
   return { present: next }

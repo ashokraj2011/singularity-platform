@@ -108,5 +108,11 @@ const boardCanvas = fs.readFileSync(
 for (const capability of ["ReactFlow", "Synthesize", "Promote", "Connect", "Timeline"]) {
   assert.ok(boardCanvas.includes(capability), `Idea Board should expose ${capability}`);
 }
+for (const miroLikeCapability of ["NodeResizer", "BOARD_TEMPLATES", "Undo", "Redo", "Facilitation", "Dot voting", "Object details", "Find on board"]) {
+  assert.ok(boardCanvas.includes(miroLikeCapability), `Idea Board should keep Miro-style capability: ${miroLikeCapability}`);
+}
+for (const deeperBoardCapability of ["RemoteCursorLayer", "CollaborationDrawer", "privateDrafts", "readFileAsDataUrl", "boardToSvg", "Reply or @mention", "Shape style"]) {
+  assert.ok(boardCanvas.includes(deeperBoardCapability), `Idea Board should keep advanced board capability: ${deeperBoardCapability}`);
+}
 
 console.log("synthesis logic + nav contract tests passed");

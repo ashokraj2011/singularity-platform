@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { workgraphFetch } from "@/lib/workgraph";
 
 /**
@@ -8,12 +8,21 @@ import { workgraphFetch } from "@/lib/workgraph";
  * the returned live set — so everyone sees who else is here and what they're looking at. Best-effort:
  * network errors are swallowed, and a user simply ages out of the set (server TTL) after they leave.
  */
-export type Present = { userId: string; displayName?: string; surface?: string; at: number };
+export type Present = {
+  userId: string;
+  displayName?: string;
+  surface?: string;
+  cursor?: { x: number; y: number };
+  viewport?: { x: number; y: number; zoom: number };
+  at: number;
+};
 
-const HEARTBEAT_MS = 8000;
+const HEARTBEAT_MS = 1600;
 
-export function usePresence(projectId: string, surface: string): Present[] {
+export function usePresence(projectId: string, surface: string, live?: { cursor?: { x: number; y: number }; viewport?: { x: number; y: number; zoom: number } }): Present[] {
   const [present, setPresent] = useState<Present[]>([]);
+  const liveRef = useRef(live);
+  liveRef.current = live;
 
   useEffect(() => {
     let active = true;
@@ -21,9 +30,10 @@ export function usePresence(projectId: string, surface: string): Present[] {
 
     async function beat() {
       try {
+        const latest = liveRef.current;
         const res = await workgraphFetch<{ present: Present[] }>(`/studio/projects/${projectId}/presence`, {
           method: "POST",
-          body: JSON.stringify({ surface }),
+          body: JSON.stringify({ surface, ...(latest?.cursor ? { cursor: latest.cursor } : {}), ...(latest?.viewport ? { viewport: latest.viewport } : {}) }),
         });
         if (active) setPresent(Array.isArray(res.present) ? res.present : []);
       } catch {

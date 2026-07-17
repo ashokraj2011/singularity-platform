@@ -8,6 +8,8 @@ export interface PresenceBeat {
   userId: string
   displayName?: string
   surface?: string
+  cursor?: { x: number; y: number }
+  viewport?: { x: number; y: number; zoom: number }
   at: number
 }
 
