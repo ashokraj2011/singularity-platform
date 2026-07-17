@@ -99,6 +99,65 @@ export function startTimerSweep(): void {
       console.error('Task SLA sweep error:', err)
     }
 
+    // ─── WorkItem SLA breach ──────────────────────────────────────────
+    try {
+      const overdueWorkItems = await sweepReader.workItem.findMany({
+        where: {
+          dueAt: { not: null, lte: now },
+          status: { in: ['SCHEDULED', 'QUEUED', 'IN_PROGRESS', 'AWAITING_PARENT_APPROVAL'] },
+          events: { none: { eventType: 'SLA_BREACHED' } },
+        },
+        select: {
+          id: true,
+          workCode: true,
+          status: true,
+          dueAt: true,
+          parentCapabilityId: true,
+          sourceWorkflowInstanceId: true,
+          tenantId: true,
+        },
+        take: 100,
+      })
+
+      for (const workItem of overdueWorkItems) {
+        const breachedAt = now.toISOString()
+        const payload = {
+          workCode: workItem.workCode,
+          dueAt: workItem.dueAt?.toISOString(),
+          breachedAt,
+          status: workItem.status,
+          capabilityId: workItem.parentCapabilityId,
+          workflowInstanceId: workItem.sourceWorkflowInstanceId,
+          tenantId: workItem.tenantId,
+        }
+        try {
+          const created = await withTenantDbTransaction(prisma, async tx => {
+            const result = await tx.workItemEvent.createMany({
+              data: [{
+                workItemId: workItem.id,
+                eventType: 'SLA_BREACHED',
+                payload,
+                tenantId: workItem.tenantId,
+              }],
+              skipDuplicates: true,
+            })
+            return result.count === 1
+          }, workItem.tenantId ?? undefined)
+          if (!created) continue
+
+          await logEvent('WorkItemSlaBreached', 'WorkItem', workItem.id, undefined, payload)
+          await publishOutbox('WorkItem', workItem.id, 'WorkItemSlaBreached', {
+            workItemId: workItem.id,
+            ...payload,
+          })
+        } catch (err) {
+          console.error(`WorkItem SLA breach emission failed for ${workItem.id}:`, err)
+        }
+      }
+    } catch (err) {
+      console.error('WorkItem SLA sweep error:', err)
+    }
+
     // ─── Deadline attachment fire ──────────────────────────────────────
     try {
       // Find ACTIVE nodes that have _deadlineFireAt stored in config and the time has passed.

@@ -1,4 +1,5 @@
 import { prisma } from '../../lib/prisma'
+import { canViewWorkItem } from '../work-items/work-items.service'
 
 /**
  * Cross-Work-Item reconciliation overview (operator cockpit). Aggregates recent reconciliation runs
@@ -24,29 +25,40 @@ export function tallyByStatus(rows: StatusGroup[]): { total: number; byStatus: R
   return { total, byStatus }
 }
 
-export async function getReconciliationOverview(limit = 25) {
+export async function getReconciliationOverview(userId: string, limit = 25) {
   const take = Math.min(Math.max(limit, 1), 100)
-  const [runs, submissions, runGroups, submissionGroups] = await Promise.all([
+  const candidateTake = Math.min(take * 4, 400)
+  const [runs, submissions] = await Promise.all([
     prisma.reconciliationRun.findMany({
       orderBy: { createdAt: 'desc' },
-      take,
-      include: { workItem: { select: { workCode: true, title: true } } },
+      take: candidateTake,
+      include: { workItem: { include: { targets: true } } },
     }),
     prisma.implementationSubmission.findMany({
       orderBy: { createdAt: 'desc' },
-      take,
-      include: { workItem: { select: { workCode: true, title: true } } },
+      take: candidateTake,
+      include: { workItem: { include: { targets: true } } },
     }),
-    prisma.reconciliationRun.groupBy({ by: ['status'], _count: true }),
-    prisma.implementationSubmission.groupBy({ by: ['status'], _count: true }),
   ])
+  const workItems = new Map([...runs, ...submissions].map(row => [row.workItem.id, row.workItem]))
+  const access = await Promise.all([...workItems.values()].map(async workItem => [workItem.id, await canViewWorkItem(userId, workItem)] as const))
+  const visibleWorkItemIds = new Set(access.filter(([, allowed]) => allowed).map(([workItemId]) => workItemId))
+  const visibleRuns = runs.filter(row => visibleWorkItemIds.has(row.workItemId)).slice(0, take)
+  const visibleSubmissions = submissions.filter(row => visibleWorkItemIds.has(row.workItemId)).slice(0, take)
+  const grouped = (rows: Array<{ status: string }>) => {
+    const counts = new Map<string, number>()
+    for (const row of rows) counts.set(String(row.status), (counts.get(String(row.status)) ?? 0) + 1)
+    return [...counts.entries()].map(([status, count]) => ({ status, _count: count }))
+  }
+  const runGroups = grouped(visibleRuns)
+  const submissionGroups = grouped(visibleSubmissions)
 
   return {
     summary: {
       reconciliations: tallyByStatus(runGroups as StatusGroup[]),
       submissions: tallyByStatus(submissionGroups as StatusGroup[]),
     },
-    recentReconciliations: runs.map((r) => ({
+    recentReconciliations: visibleRuns.map((r) => ({
       id: r.id,
       workItemId: r.workItemId,
       workCode: r.workItem?.workCode ?? null,
@@ -58,7 +70,7 @@ export async function getReconciliationOverview(limit = 25) {
       createdAt: r.createdAt,
       completedAt: r.completedAt,
     })),
-    recentSubmissions: submissions.map((s) => ({
+    recentSubmissions: visibleSubmissions.map((s) => ({
       id: s.id,
       workItemId: s.workItemId,
       workCode: s.workItem?.workCode ?? null,

@@ -83,7 +83,16 @@ export function SpecStudio({ workItemId }: { workItemId: string }) {
   })
   const saveMut = useMutation({ mutationFn: (body: Record<string, unknown>) => api.patch(`/work-items/${workItemId}/specifications/${currentId}`, { ...body, expectedRevision: header.revision ?? 1 }).then((r) => r.data), onSuccess: () => { setEditingReqs(false); setDiagrams(null); setValidation(null); refetchAll() }, onError: (e) => setError(errText(e)) })
   const validateMut = useMutation({ mutationFn: () => api.post(`/work-items/${workItemId}/specifications/${currentId}/validate`).then((r) => r.data as ValidationResult), onSuccess: (d) => { setValidation(d); setNote(null); setError(null) }, onError: (e) => setError(errText(e)) })
-  const approveMut = useMutation({ mutationFn: () => api.post(`/work-items/${workItemId}/specifications/${currentId}/approve`, comment ? { comment } : {}).then((r) => r.data), onSuccess: () => { setValidation(null); setComment(''); refetchAll() }, onError: (e) => setError(errText(e)) })
+  const reviewMut = useMutation({
+    mutationFn: () => api.post(`/work-items/${workItemId}/specifications/${currentId}/reviews`, comment ? { comment } : {}).then((r) => r.data),
+    onSuccess: () => {
+      setValidation(null)
+      setComment('')
+      setNote('Independent review requested. An eligible approver must decide it from the approval inbox.')
+      refetchAll()
+    },
+    onError: (e) => setError(errText(e)),
+  })
 
   const requirements: any[] = pkg?.requirements ?? []
 
@@ -115,8 +124,8 @@ export function SpecStudio({ workItemId }: { workItemId: string }) {
             <button style={primaryButtonStyle} onClick={() => { setGenOpen((o) => !o); setError(null); setNote(null) }}>{genOpen ? 'Cancel' : 'Generate with AI'}</button>
             {editable && (
               <>
-                <input style={{ ...inputStyle, width: 170 }} placeholder="Approval comment" value={comment} onChange={(e) => setComment(e.target.value)} />
-                <button style={primaryButtonStyle} disabled={approveMut.isPending} onClick={() => clearAnd(() => approveMut.mutate())}>{approveMut.isPending ? 'Approving…' : 'Approve'}</button>
+                <input style={{ ...inputStyle, width: 190 }} placeholder="Review context (optional)" value={comment} onChange={(e) => setComment(e.target.value)} />
+                <button style={primaryButtonStyle} disabled={reviewMut.isPending} onClick={() => clearAnd(() => reviewMut.mutate())}>{reviewMut.isPending ? 'Requesting…' : 'Request review'}</button>
               </>
             )}
           </div>

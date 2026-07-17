@@ -14,6 +14,7 @@ import { specificationContentHash } from './specification.hash'
 import { validateSpecificationBody, type SpecValidationResult } from './specification.validator'
 import { getProjectSpec } from '../studio/studio-spec.service'
 import type { ProjectSpecPackage } from '../studio/studio-spec.schemas'
+import { assertApprovedSpecificationReview } from './specification-review.service'
 
 type WorkItemRef = { id: string; workCode: string; title: string; tenantId: string | null }
 
@@ -86,9 +87,15 @@ function summarize(version: {
   }
 }
 
+export function assertIndependentSpecificationApprover(createdById: string | null, actorId: string): void {
+  if (createdById && createdById === actorId) {
+    throw new ConflictError('Specification authors cannot approve their own version; an independent reviewer is required.')
+  }
+}
+
 async function emitWorkItemEvent(
   workItem: WorkItemRef,
-  eventType: 'SPEC_DRAFT_CREATED' | 'SPEC_VALIDATION_COMPLETED' | 'SPEC_APPROVED',
+  eventType: 'SPEC_DRAFT_CREATED' | 'SPEC_DRAFT_EDITED' | 'SPEC_VALIDATION_COMPLETED' | 'SPEC_APPROVED',
   actorId: string,
   auditType: string,
   payload: Record<string, unknown>,
@@ -164,7 +171,7 @@ export async function updateSpecificationDraft(
   workItemId: string,
   versionId: string,
   input: { expectedRevision: number; body: Partial<SpecificationPackageBody> },
-  _actorId: string,
+  actorId: string,
 ): Promise<SpecificationPackage> {
   const workItem = await loadWorkItem(workItemId)
   const version = await loadVersion(workItemId, versionId)
@@ -183,6 +190,13 @@ export async function updateSpecificationDraft(
     where: { id: versionId },
     data: { revision: nextRevision, package: pkg as unknown as Prisma.InputJsonValue },
   }), tenantId)
+  await emitWorkItemEvent(workItem, 'SPEC_DRAFT_EDITED', actorId, 'SpecificationDraftEdited', {
+    specificationVersionId: updated.id,
+    version: updated.version,
+    fromRevision: version.revision,
+    toRevision: updated.revision,
+    changedSections: Object.keys(input.body).sort(),
+  })
   return composePackage(workItem, { id: updated.id, number: updated.version, status: updated.status, revision: updated.revision }, merged)
 }
 
@@ -195,18 +209,17 @@ export async function validateSpecificationVersion(workItemId: string, versionId
 export async function approveSpecificationVersion(
   workItemId: string,
   versionId: string,
-  input: { comment?: string },
+  input: { approvalRequestId: string; comment?: string },
   actorId: string,
 ): Promise<SpecificationPackage> {
   const workItem = await loadWorkItem(workItemId)
   const version = await loadVersion(workItemId, versionId)
   if (version.status === 'APPROVED') throw new ConflictError(`Specification version ${version.version} is already approved.`)
-  if (version.createdById && version.createdById === actorId) {
-    throw new ConflictError('Specification authors cannot approve their own version; an independent reviewer is required.')
-  }
+  assertIndependentSpecificationApprover(version.createdById, actorId)
   if (version.status === 'SUPERSEDED' || version.status === 'REJECTED') {
     throw new ConflictError(`Specification version ${version.version} is ${version.status} and cannot be approved.`)
   }
+  await assertApprovedSpecificationReview(input.approvalRequestId, versionId, actorId, workItem.tenantId ?? 'default')
   const body = bodyOf(version.package)
   const validation = validateSpecificationBody(body)
   if (!validation.passed) {
@@ -217,13 +230,17 @@ export async function approveSpecificationVersion(
   const pkg = composePackage(workItem, { id: version.id, number: version.version, status: 'APPROVED', revision: version.revision, contentHash }, body)
   const tenantId = workItem.tenantId ?? undefined
 
-  const approved = await withTenantDbTransaction(prisma, async (tx) => {
+  const approvalResult = await withTenantDbTransaction(prisma, async (tx) => {
+    const previousVersions = await tx.specificationVersion.findMany({
+      where: { workItemId, status: 'APPROVED', id: { not: versionId } },
+      select: { id: true, version: true },
+    })
     // Freeze this version and supersede any previously-approved one (single active approved version).
     await tx.specificationVersion.updateMany({
       where: { workItemId, status: 'APPROVED', id: { not: versionId } },
       data: { status: 'SUPERSEDED' },
     })
-    return tx.specificationVersion.update({
+    const approvedVersion = await tx.specificationVersion.update({
       where: { id: versionId },
       data: {
         status: 'APPROVED',
@@ -234,12 +251,40 @@ export async function approveSpecificationVersion(
         package: pkg as unknown as Prisma.InputJsonValue,
       },
     })
+    const dependentScopes = previousVersions.length
+      ? await tx.developmentScope.findMany({
+          where: {
+            workItemId,
+            status: { notIn: ['CANCELLED', 'REWORK_REQUIRED'] },
+            specificationBinding: { specificationVersionId: { in: previousVersions.map((item) => item.id) } },
+          },
+          select: { id: true, currentHandoffGenerationId: true },
+        })
+      : []
+    const flaggedScopes = dependentScopes.length
+      ? await tx.developmentScope.updateMany({
+          where: {
+            id: { in: dependentScopes.map((scope) => scope.id) },
+          },
+          data: { status: 'REWORK_REQUIRED' },
+        })
+      : { count: 0 }
+    return {
+      approvedVersion,
+      previousVersions,
+      flaggedScopeCount: flaggedScopes.count,
+      flaggedHandoffIds: dependentScopes.map((scope) => scope.currentHandoffGenerationId).filter((id): id is string => Boolean(id)),
+    }
   }, tenantId)
+  const approved = approvalResult.approvedVersion
 
   await emitWorkItemEvent(workItem, 'SPEC_APPROVED', actorId, 'SpecApproved', {
     specificationVersionId: approved.id,
     version: approved.version,
     contentHash,
+    supersededVersionIds: approvalResult.previousVersions.map((item) => item.id),
+    flaggedScopeCount: approvalResult.flaggedScopeCount,
+    flaggedHandoffIds: approvalResult.flaggedHandoffIds,
   })
   return composePackage(workItem, { id: approved.id, number: approved.version, status: approved.status, revision: approved.revision, contentHash }, body)
 }

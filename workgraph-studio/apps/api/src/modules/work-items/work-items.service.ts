@@ -34,6 +34,7 @@ export type CreateWorkItemInput = {
   notBefore?: string | Date | null
   sourceEventTypeKey?: string | null
   parentCapabilityId?: string | null
+  projectId?: string | null
   sourceWorkflowInstanceId?: string | null
   sourceWorkflowNodeId?: string | null
   input?: Record<string, unknown>
@@ -207,6 +208,7 @@ export async function createWorkItem(input: CreateWorkItemInput, actorId?: strin
     targets,
     routingMode,
     tenantId,
+    projectId: input.projectId,
     input: input.input,
     details: input.details,
   })).digest('hex')
@@ -242,6 +244,7 @@ export async function createWorkItem(input: CreateWorkItemInput, actorId?: strin
       title: input.title,
       description: input.description,
       parentCapabilityId: input.parentCapabilityId ?? undefined,
+      projectId: input.projectId ?? undefined,
       sourceWorkflowInstanceId: input.sourceWorkflowInstanceId ?? undefined,
       sourceWorkflowNodeId: input.sourceWorkflowNodeId ?? undefined,
       input: (input.input ?? {}) as Prisma.InputJsonValue,
@@ -497,7 +500,7 @@ export async function assertCanViewWorkItem(userId: string, workItem: WorkItemVi
   }
 }
 
-type WorkItemAction = 'edit' | 'delete' | 'route' | 'claim' | 'start' | 'cancel' | 'finalize' | 'submit' | 'reconcile'
+export type WorkItemAction = 'edit' | 'delete' | 'route' | 'claim' | 'start' | 'cancel' | 'finalize' | 'submit' | 'reconcile' | 'approve'
 
 export async function assertCanMutateWorkItem(userId: string, workItem: WorkItemViewRow, action: WorkItemAction): Promise<void> {
   if (config.AUTH_PROVIDER !== 'iam') return
@@ -513,8 +516,10 @@ export async function assertCanMutateWorkItem(userId: string, workItem: WorkItem
           ? 'workflow:finalize'
           : action === 'submit'
             ? 'workflow:submit'
-            : action === 'reconcile'
+          : action === 'reconcile'
               ? 'workflow:reconcile'
+              : action === 'approve'
+                ? 'workflow:approve'
               : 'workflow:update'
   const targets = workItem.targets.length > 0 ? workItem.targets : []
   for (const target of targets) {
@@ -526,6 +531,17 @@ export async function assertCanMutateWorkItem(userId: string, workItem: WorkItem
     if (result.allowed) return
   }
   throw new ForbiddenError(`User is not authorized to ${action} this WorkItem`)
+}
+
+export async function loadAuthorizedWorkItem(workItemId: string, userId: string, action?: WorkItemAction) {
+  const workItem = await prisma.workItem.findUnique({
+    where: { id: workItemId },
+    include: { targets: true },
+  })
+  if (!workItem) throw new NotFoundError('WorkItem', workItemId)
+  await assertCanViewWorkItem(userId, workItem)
+  if (action) await assertCanMutateWorkItem(userId, workItem, action)
+  return workItem
 }
 
 // Statuses whose work item may still be edited. Terminal states are frozen.
@@ -653,6 +669,21 @@ export async function updateWorkItem(workItemId: string, userId: string, input: 
   return updated
 }
 
+export const CLAIMABLE_WORK_ITEM_TARGET_STATUSES = new Set(['QUEUED', 'REWORK_REQUESTED'])
+
+export function reworkTargetResetData() {
+  return {
+    status: 'REWORK_REQUESTED' as const,
+    claimedById: null,
+    claimedAt: null,
+    submittedAt: null,
+    childWorkflowInstanceId: null,
+    startedAt: null,
+    output: Prisma.JsonNull,
+    completedAt: null,
+  }
+}
+
 export async function claimWorkItemTarget(workItemId: string, targetId: string, userId: string) {
   const target = await prisma.workItemTarget.findFirst({
     where: { id: targetId, workItemId },
@@ -663,7 +694,7 @@ export async function claimWorkItemTarget(workItemId: string, targetId: string, 
     throw new ConflictError(`WorkItem target cannot start from WorkItem status ${target.workItem.status} / target status ${target.status}`)
   }
   if (target.claimedById && target.claimedById !== userId) throw new ValidationError('WorkItem target is already claimed')
-  if (!['QUEUED', 'REWORK_REQUESTED'].includes(target.status) && target.claimedById !== userId) {
+  if (!CLAIMABLE_WORK_ITEM_TARGET_STATUSES.has(target.status) && target.claimedById !== userId) {
     throw new ValidationError(`WorkItem target cannot be claimed from status ${target.status}`)
   }
   await assertCanClaimWorkItemTarget(userId, target.targetCapabilityId, target.id, target.workItem.tenantId)
@@ -1130,7 +1161,11 @@ export async function startWorkItemTarget(
   const requestHash = createHash('sha256').update(JSON.stringify({ workItemId, targetId, templateId, vars: options.vars, globals: options.globals, params: options.params })).digest('hex')
   const existingCommand = await prisma.workflowStartCommand.findUnique({ where: { idempotencyKey } })
   if (existingCommand) {
-    if (existingCommand.requestHash !== requestHash) throw new ConflictError('Idempotency key was already used with a different workflow start request')
+    // Rework establishes a new execution generation. Its command is deliberately marked STALE,
+    // so the operator may supply corrected variables while retaining the stable target key.
+    if (existingCommand.state !== 'STALE' && existingCommand.requestHash !== requestHash) {
+      throw new ConflictError('Idempotency key was already used with a different workflow start request')
+    }
     if (existingCommand.state === 'COMPLETED' && existingCommand.workflowInstanceId) {
       return { target, childWorkflowInstanceId: existingCommand.workflowInstanceId, idempotent: true }
     }
@@ -1138,7 +1173,17 @@ export async function startWorkItemTarget(
       throw new ConflictError('This WorkItem target start command is already in progress')
     }
     if (existingCommand.state === 'FAILED' || existingCommand.state === 'STALE' || !existingCommand.leaseUntil || existingCommand.leaseUntil <= new Date()) {
-      await prisma.workflowStartCommand.update({ where: { id: existingCommand.id }, data: { state: 'IN_PROGRESS', attempt: { increment: 1 }, leaseUntil: new Date(Date.now() + 10 * 60 * 1000), error: null } })
+      await prisma.workflowStartCommand.update({
+        where: { id: existingCommand.id },
+        data: {
+          state: 'IN_PROGRESS',
+          requestHash,
+          workflowInstanceId: existingCommand.state === 'STALE' ? null : existingCommand.workflowInstanceId,
+          attempt: { increment: 1 },
+          leaseUntil: new Date(Date.now() + 10 * 60 * 1000),
+          error: null,
+        },
+      })
     }
   } else {
     await prisma.workflowStartCommand.create({
@@ -1667,15 +1712,14 @@ export async function requestWorkItemRework(workItemId: string, userId: string, 
     if (transitioned.count !== 1) throw new ConflictError('WorkItem approval is stale or has already been decided')
     await tx.workItemTarget.updateMany({
       where: { workItemId, id: { in: selected } },
+      data: reworkTargetResetData(),
+    })
+    await tx.workflowStartCommand.updateMany({
+      where: { workItemTargetId: { in: selected }, state: { in: ['REQUESTED', 'IN_PROGRESS', 'COMPLETED', 'FAILED'] } },
       data: {
-        status: 'REWORK_REQUESTED',
-        claimedById: null,
-        claimedAt: null,
-        submittedAt: null,
-        childWorkflowInstanceId: null,
-        startedAt: null,
-        output: Prisma.JsonNull,
-        completedAt: null,
+        state: 'STALE',
+        leaseUntil: null,
+        error: 'Invalidated by a WorkItem rework request.',
       },
     })
     const childWorkflowInstanceIds = selectedTargets

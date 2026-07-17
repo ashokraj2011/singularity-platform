@@ -34,6 +34,9 @@ export const projectDecisionSchema = z.object({
   context: z.string().trim().max(4000).optional(),
   decision: z.string().trim().max(4000).default(''),
   consequences: z.string().trim().max(4000).optional(),
+  claimRefs: z.array(z.string().uuid()).default([]),
+  optionRefs: z.array(z.string().uuid()).default([]),
+  resolvesTensions: z.array(z.string().trim().min(1).max(600)).default([]),
 })
 
 export const projectRequirementPriority = z.enum(['MUST', 'SHOULD', 'MAY'])
@@ -44,6 +47,8 @@ export const projectRequirementSchema = z.object({
   priority: projectRequirementPriority.default('SHOULD'),
   acceptanceCriteria: z.array(z.string().trim().min(1).max(1000)).max(50).default([]),
   rationale: z.string().trim().max(2000).optional(),
+  claimRefs: z.array(z.string().uuid()).default([]),
+  decisionRefs: z.array(z.string().uuid()).default([]),
 })
 
 /** The full project-spec package. Every section has a default so an empty `{}` parses cleanly. */

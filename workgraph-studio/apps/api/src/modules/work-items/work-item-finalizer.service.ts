@@ -14,6 +14,26 @@ type FinalizeOptions = {
 
 const SUCCESSFUL_TARGET_STATUSES = new Set(['SUBMITTED', 'APPROVED', 'ACCEPTED'])
 
+export function isCurrentVerifiedScopeRun(
+  run: {
+    submissionId: string
+    status: string
+    reconciliationState: string
+    specificationBindingId: string | null
+    developmentScopeId: string | null
+    handoffGenerationId: string | null
+  },
+  scope: { id: string; specificationBindingId: string | null; currentHandoffGenerationId: string | null },
+  latestSubmissionId: string | undefined,
+): boolean {
+  return run.status === 'VERIFIED_PASS'
+    && run.reconciliationState === 'VERIFIED'
+    && run.developmentScopeId === scope.id
+    && run.submissionId === latestSubmissionId
+    && run.specificationBindingId === scope.specificationBindingId
+    && run.handoffGenerationId === scope.currentHandoffGenerationId
+}
+
 function recordOf(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -152,7 +172,11 @@ export async function finalizeWorkItem(workItemId: string, actorId: string, opti
       targets: true,
       developmentScopes: { include: { specificationBinding: true, currentHandoffGeneration: true } },
       specificationBindings: { where: { status: 'CURRENT' } },
-      reconciliationRuns: { select: { id: true, status: true, reconciliationState: true, generation: true, specificationBindingId: true, developmentScopeId: true, handoffGenerationId: true } },
+      implementationSubmissions: {
+        select: { id: true, developmentScopeId: true, repository: true, createdAt: true },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      },
+      reconciliationRuns: { select: { id: true, submissionId: true, status: true, reconciliationState: true, generation: true, specificationBindingId: true, developmentScopeId: true, handoffGenerationId: true } },
       predecessorDependencies: { include: { predecessor: { select: { id: true, workCode: true, status: true } } } },
       clarifications: { where: { status: 'OPEN' }, select: { id: true } },
     },
@@ -193,16 +217,18 @@ export async function finalizeWorkItem(workItemId: string, actorId: string, opti
   }
   if (workItem.completionPolicy === 'VERIFY_THEN_APPROVE' && workItem.developmentScopes.some(scope => scope.mandatory)) {
     const mandatoryScopes = workItem.developmentScopes.filter(scope => scope.mandatory)
+    const latestSubmissionByScope = new Map<string, string>()
+    for (const submission of workItem.implementationSubmissions) {
+      if (submission.developmentScopeId && !latestSubmissionByScope.has(submission.developmentScopeId)) {
+        latestSubmissionByScope.set(submission.developmentScopeId, submission.id)
+      }
+    }
     const verifiedScopes = new Set(
       workItem.reconciliationRuns
         .filter(run => {
-          if (run.status !== 'VERIFIED_PASS' || run.reconciliationState !== 'VERIFIED' || !run.developmentScopeId) return false
+          if (!run.developmentScopeId) return false
           const scope = workItem.developmentScopes.find(item => item.id === run.developmentScopeId)
-          return Boolean(
-            scope
-            && run.specificationBindingId === scope.specificationBindingId
-            && run.handoffGenerationId === scope.currentHandoffGenerationId,
-          )
+          return Boolean(scope && isCurrentVerifiedScopeRun(run, scope, latestSubmissionByScope.get(scope.id)))
         })
         .map(run => run.developmentScopeId)
         .filter((scopeId): scopeId is string => Boolean(scopeId)),
@@ -224,7 +250,8 @@ export async function finalizeWorkItem(workItemId: string, actorId: string, opti
     finalizationGeneration: expectedGeneration,
     bindings: workItem.specificationBindings.map(binding => ({ id: binding.id, generation: binding.bindingGeneration, hash: binding.resolvedContentHash })),
     scopes: workItem.developmentScopes.map(scope => ({ id: scope.id, status: scope.status, bindingId: scope.specificationBindingId, handoffId: scope.currentHandoffGenerationId })),
-    reconciliations: workItem.reconciliationRuns.map(run => ({ id: run.id, status: run.status, state: run.reconciliationState, generation: run.generation, bindingId: run.specificationBindingId, scopeId: run.developmentScopeId, handoffId: run.handoffGenerationId })),
+    submissions: workItem.implementationSubmissions.map(submission => ({ id: submission.id, scopeId: submission.developmentScopeId, repository: submission.repository, createdAt: submission.createdAt })),
+    reconciliations: workItem.reconciliationRuns.map(run => ({ id: run.id, submissionId: run.submissionId, status: run.status, state: run.reconciliationState, generation: run.generation, bindingId: run.specificationBindingId, scopeId: run.developmentScopeId, handoffId: run.handoffGenerationId })),
   })).digest('hex')
 
   await withTenantDbTransaction(prisma, async tx => {

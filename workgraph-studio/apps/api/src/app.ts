@@ -87,6 +87,7 @@ import { metadataDefinitionsRouter } from './modules/metadata/metadata.router'
 import { laptopInvocationsRouter, laptopQuestionsRouter, workItemLaptopRouter } from './modules/laptop/laptop.router'
 import { internalArtifactFetchRouter } from './modules/internal/artifact-fetch.router'
 import { capacityRouter } from './modules/planning/capacity.router'
+import { portfolioExecutionRouter } from './modules/portfolio-execution/portfolio-execution.router'
 import { verificationRouter } from './modules/verification/verification.router'
 import { runtimePolicyRouter } from './modules/runtime/runtime-policy.router'
 // M42.0 — admin feature-flag toggles (kill switches for major capabilities).
@@ -185,13 +186,14 @@ export function createApp(): Express {
   app.use('/api/reconciliation-overview', authMiddleware, reconciliationOverviewRouter)
   app.use('/api/work-items', authMiddleware, workItemsRouter)
   app.use('/api/studio', authMiddleware, studioAuthz, studioProjectsRouter)
+  app.use('/api/studio', authMiddleware, studioAuthz, portfolioExecutionRouter)
   app.use('/api/studio', authMiddleware, studioAuthz, studioBoardRouter)
   app.use('/api/studio', authMiddleware, studioAuthz, studioBoardVerdictRouter)
   // Agent-principal verdict writes: separate prefix + service-token gate, NOT authMiddleware
   // (authMiddleware rejects service principals). See board-verdicts.router.ts.
   app.use('/api/studio-agent', studioBoardAgentVerdictRouter)
   app.use('/api/studio', authMiddleware, roomsRouter)
-  app.use('/api/concept-archive', authMiddleware, conceptArchiveRouter)
+  app.use('/api/concept-archive', authMiddleware, studioAuthz, conceptArchiveRouter)
   app.use('/api/planner', authMiddleware, plannerRouter)
   app.use('/api/work-programs', authMiddleware, workProgramsRouter)
   app.use('/api/notifications', authMiddleware, notificationsRouter)

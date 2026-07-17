@@ -333,13 +333,36 @@ export async function killCell(archiveId: string, cellKey: string, reason: strin
 }
 
 export async function promoteCard(cardId: string, promotedRef: Record<string, unknown>, userId: string, note?: string) {
-  const card = await prisma.conceptCard.findFirst({ where: { id: cardId, ...tenantWhere() } })
+  const card = await prisma.conceptCard.findFirst({ where: { id: cardId, ...tenantWhere() }, include: { archive: { include: { studio: true } } } })
   if (!card) throw new NotFoundError('ConceptCard', cardId)
   if (!['ELITE', 'PINNED'].includes(card.status) && !card.pinned) throw new ConflictError('Only an elite or pinned card can be promoted.')
-  const updated = await prisma.conceptCard.update({ where: { id: cardId }, data: { status: 'PROMOTED', promotedRef: json(promotedRef), operatorNote: note ?? card.operatorNote } })
-  await prisma.archiveEvent.create({ data: { archiveId: card.archiveId, cardId, eventType: 'CARD_PROMOTED', actorType: 'HUMAN', actorId: userId, payload: json({ promotedRef, note: note ?? null }) } })
-  await logEvent('ConceptCardPromoted', 'ConceptCard', cardId, userId, { archiveId: card.archiveId })
-  return cardView(updated)
+  const body = conceptCardBodySchema.parse(card.body)
+  const result = await withTenantDbTransaction(prisma, async tx => {
+    const claimIds: string[] = []
+    for (const assumption of body.assumptions) {
+      const claim = await tx.claim.create({
+        data: {
+          projectId: card.archive.studio.projectId,
+          statement: assumption,
+          riskiestAssumption: assumption,
+          contextScope: 'concept_option',
+          entityKind: 'CONCEPT_CARD',
+          entityId: card.id,
+          stewardId: userId,
+          provenance: json({ origin: 'concept_archive_promotion', archiveId: card.archiveId, cardId: card.id }),
+          createdById: userId,
+          tenantId: tenantId(),
+        },
+      })
+      claimIds.push(claim.id)
+    }
+    const updated = await tx.conceptCard.update({ where: { id: cardId }, data: { status: 'PROMOTED', promotedRef: json(promotedRef), claimRefs: json(claimIds), operatorNote: note ?? card.operatorNote } })
+    await appendArchiveEvent(tx, { archiveId: card.archiveId, cardId, eventType: 'CARD_PROMOTED', actorType: 'HUMAN', actorId: userId, payload: { promotedRef, note: note ?? null, claimIds } })
+    return { updated, claimIds }
+  }, card.tenantId ?? undefined)
+  await logEvent('ConceptCardPromoted', 'ConceptCard', cardId, userId, { archiveId: card.archiveId, claimIds: result.claimIds })
+  await publishOutbox('ConceptCard', cardId, 'ConceptCardPromoted', { archiveId: card.archiveId, claimIds: result.claimIds })
+  return { ...cardView(result.updated), claimRefs: result.claimIds }
 }
 
 export async function freezeArchive(archiveId: string, cardIds: string[], userId: string, note?: string) {

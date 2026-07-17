@@ -131,6 +131,7 @@ enum WorkItemEventType {
   ARCHIVED
   DETACHED
   SPEC_DRAFT_CREATED
+  SPEC_DRAFT_EDITED
   SPEC_GENERATED
   SPEC_VALIDATION_COMPLETED
   SPEC_REVIEW_REQUESTED
@@ -147,10 +148,12 @@ enum WorkItemEventType {
   SPECIFICATION_BOUND
   HANDOFF_PUBLISHED
   RECONCILIATION_CONTESTED
+  RECONCILIATION_INVALIDATED
   RECONCILIATION_EVIDENCE_UPDATED
   WORK_ITEM_FINALIZATION_REQUESTED
   WORK_ITEM_FINALIZED
   WORK_ITEM_CANCELLATION_REQUESTED
+  SLA_BREACHED
   NEXT_STAGE_SPAWNED
   NEXT_STAGE_SPAWN_FAILED
 }
@@ -202,6 +205,7 @@ enum ReconciliationState {
   VERIFIED
   CONTESTED
   NOT_VERIFIED
+  STALE
 }
 
 enum DevelopmentScopeStatus {
@@ -1437,6 +1441,9 @@ model SpecificationProject {
   claims        Claim[]
   boards        Board[]
   generationPlans GenerationPlan[]
+  decisionDossiers DecisionDossier[]
+  budgetEnvelope ProjectBudgetEnvelope?
+  tokenLedgerEntries ProjectTokenLedgerEntry[]
   capabilityLinks SpecificationProjectCapability[]
   impactAssessments CapabilityImpactAssessment[]
   studio        Studio?
@@ -1567,6 +1574,7 @@ model ConceptCard {
   operator        String   @default("SEED")
   operatorNote    String?
   promotedRef     Json?
+  claimRefs       Json     @default("[]")
   tenantId        String?  @default("default")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -1668,6 +1676,61 @@ model StudioProposal {
   @@index([studioId, agentRole, status])
   @@index([tenantId, status])
   @@map("studio_proposals")
+}
+
+// Governed convergence record: alternatives remain durable even after one option is accepted.
+// Decision acceptance is separated from authorship through ApprovalRequest.
+model DecisionDossier {
+  id                    String   @id @default(uuid())
+  projectId             String
+  title                 String
+  problem               String
+  status                String   @default("DRAFT")
+  claimRefs             Json     @default("[]")
+  resolvesTensions      Json     @default("[]")
+  acceptedOptionId      String?
+  approvalRequestId     String?
+  revision              Int      @default(1)
+  createdById           String
+  decidedById           String?
+  decidedAt             DateTime?
+  supersedesId          String?
+  tenantId              String?  @default("default")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  project SpecificationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  options DecisionOption[]
+
+  @@index([projectId, status, updatedAt])
+  @@index([tenantId, status])
+  @@map("decision_dossiers")
+}
+
+model DecisionOption {
+  id                String   @id @default(uuid())
+  dossierId         String
+  conceptCardId     String?
+  title             String
+  summary           String
+  status            String   @default("ACTIVE")
+  claimRefs         Json     @default("[]")
+  tradeoffs         Json     @default("[]")
+  estimatedHours    Float?
+  estimatedCostLow  Float?
+  estimatedCostHigh Float?
+  estimatedTokens   Int?
+  riskScore         Int?
+  createdById       String?
+  tenantId          String?  @default("default")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  dossier DecisionDossier @relation(fields: [dossierId], references: [id], onDelete: Cascade)
+
+  @@index([dossierId, status])
+  @@index([tenantId])
+  @@map("decision_options")
 }
 
 // The project's shared upstream — the analysis and design that many Work Items draw on, authored
@@ -1884,10 +1947,20 @@ model GenerationPlanRow {
   baseBranch            String?
   baseCommitSha         String?
   requirementIds        Json     @default("[]")
+  decisionRefs           Json     @default("[]")
+  claimRefs              Json     @default("[]")
   requiredEvidence      Json     @default("[]")
   forbiddenPaths        Json     @default("[]")
   reconciliationPolicy  Json     @default("{}")
   dependencies          Json     @default("[]")
+  estimatedHours         Float?
+  rateBand               String?
+  estimatedCostLow       Float?
+  estimatedCostHigh      Float?
+  estimatedTokens        Int?
+  projectedStartAt       DateTime?
+  projectedFinishAt      DateTime?
+  criticalPath           Boolean  @default(false)
   workItemId            String?
   state                 String   @default("PENDING")
   error                 String?
@@ -1902,6 +1975,54 @@ model GenerationPlanRow {
   @@index([workItemId])
   @@index([tenantId, state])
   @@map("generation_plan_rows")
+}
+
+model ProjectBudgetEnvelope {
+  id                    String   @id @default(uuid())
+  projectId             String   @unique
+  currency              String   @default("USD")
+  budgetLow             Float?
+  budgetHigh            Float?
+  tokenLimit            Int?
+  warningPercent        Int      @default(80)
+  hardCapPercent        Int      @default(120)
+  status                String   @default("ACTIVE")
+  overrideApprovalId    String?
+  createdById           String?
+  tenantId              String?  @default("default")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  project SpecificationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@map("project_budget_envelopes")
+}
+
+model ProjectTokenLedgerEntry {
+  id                 String   @id @default(uuid())
+  projectId          String
+  evidenceKey        String   @unique
+  workflowInstanceId String?
+  workflowNodeId     String?
+  artifactId         String?
+  stage              String?
+  provider           String?
+  model              String?
+  inputTokens        Int      @default(0)
+  outputTokens       Int      @default(0)
+  totalTokens        Int      @default(0)
+  estimatedCostUsd   Float?
+  traceId            String?
+  metadata           Json     @default("{}")
+  tenantId           String?  @default("default")
+  createdAt          DateTime @default(now())
+
+  project SpecificationProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+  @@index([tenantId, stage])
+  @@map("project_token_ledger")
 }
 
 // ─── EPISTEMIC LAYER (Rooms & Claims) ─────────────────────────────────────────

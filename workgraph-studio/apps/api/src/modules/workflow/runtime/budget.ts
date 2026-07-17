@@ -5,6 +5,7 @@ import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 import { ValidationError } from '../../../lib/errors'
 import { config } from '../../../config'
+import { recordProjectTokenLedger } from '../../portfolio-execution/portfolio-execution.service'
 
 export type BudgetEnforcementMode = 'PAUSE_FOR_APPROVAL' | 'FAIL_HARD' | 'WARN_ONLY'
 export type GovernanceMode = 'fail_open' | 'fail_closed' | 'degraded' | 'human_approval_required'
@@ -435,6 +436,25 @@ export async function recordWorkflowLlmUsage(
     budgetId: updated.id,
     status: updated.status,
   })
+  const initiative = await withTenantDbTransaction(prisma, tx => findInitiativeBudgetForInstance(tx, instanceId), tenantId)
+  if (initiative) {
+    const correlation = usage.cfCallId ?? usage.promptAssemblyId ?? usage.agentRunId ?? usage.nodeId ?? 'run'
+    await recordProjectTokenLedger({
+      projectId: initiative.id,
+      evidenceKey: `llm:${instanceId}:${correlation}:${updated.consumedTotalTokens}`,
+      workflowInstanceId: instanceId,
+      workflowNodeId: usage.nodeId,
+      stage: typeof usage.metadata?.stage === 'string' ? usage.metadata.stage : undefined,
+      provider: usage.provider,
+      model: usage.model,
+      inputTokens: input,
+      outputTokens: output,
+      totalTokens: total,
+      estimatedCostUsd: estimatedCost,
+      traceId: typeof usage.metadata?.traceId === 'string' ? usage.metadata.traceId : undefined,
+      metadata: { agentRunId: usage.agentRunId, cfCallId: usage.cfCallId, promptAssemblyId: usage.promptAssemblyId },
+    })
+  }
   return updated
 }
 

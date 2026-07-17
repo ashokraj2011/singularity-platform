@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
+import { adminPrisma } from '../../lib/admin-prisma'
 import { currentTenantIdForDb, withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors'
@@ -10,8 +11,41 @@ import { reconcile, type ReconciliationInput } from './reconciliation.engine'
 import { buildTestPlan, applyTestResults, type TestResult, type CurrentVerdict } from './reconciliation.dynamic'
 import { runSemanticPass } from './reconciliation.semantic.service'
 import type { SemanticVerdict } from './reconciliation.semantic'
+import { foldReconciliationIntoClaims } from './reconciliation-claim-evidence.service'
 
 export type ReconciliationMode = 'DETERMINISTIC' | 'DYNAMIC' | 'SEMANTIC'
+
+export function dynamicCompletionOutcome(
+  expectedCount: number,
+  tests: Array<{ status: string }>,
+  refinedStatus: string,
+): { completePlan: boolean; allPassed: boolean; allSkipped: boolean; status: string; reconciliationState: 'VERIFIED' | 'NOT_VERIFIED' } {
+  const completePlan = expectedCount > 0 && tests.length === expectedCount
+  const allPassed = completePlan && tests.every((result) => result.status === 'PASS')
+  const allSkipped = completePlan && tests.every((result) => result.status === 'SKIPPED')
+  const status = allPassed && refinedStatus === 'PASSED'
+    ? 'VERIFIED_PASS'
+    : refinedStatus === 'PASSED'
+      ? 'PARTIAL'
+      : refinedStatus
+  return {
+    completePlan,
+    allPassed,
+    allSkipped,
+    status,
+    reconciliationState: status === 'VERIFIED_PASS' ? 'VERIFIED' : 'NOT_VERIFIED',
+  }
+}
+
+export function supersededSpecificationFinding(status: string, version: number) {
+  return status === 'SUPERSEDED'
+    ? {
+        kind: 'superseded-specification',
+        severity: 'WARNING' as const,
+        message: `Submission is bound to superseded specification version ${version}; retain this result as historical evidence and rebase before finalization.`,
+      }
+    : null
+}
 
 type WorkItemRef = { id: string; workCode: string; title: string | null; tenantId: string | null; status: string }
 
@@ -47,7 +81,7 @@ export async function applyReconciliationCompletionGate(
   const { workItemId, currentStatus, runStatus, reconciliationRunId, submissionId, actorId, tenantId } = args
   if (TERMINAL_WORK_ITEM_STATUSES.has(currentStatus)) return null
 
-  const nextState = runStatus === 'VERIFIED_PASS' || runStatus === 'PASSED'
+  const nextState = runStatus === 'VERIFIED_PASS'
     ? 'VERIFIED'
     : currentStatus === 'COMPLETED'
       ? 'CONTESTED'
@@ -216,6 +250,9 @@ export async function startReconciliation(workItemId: string, submissionId: stri
   }
 
   const result = reconcile(input)
+  const findings = [...result.findings]
+  const supersededFinding = supersededSpecificationFinding(spec.status, spec.version)
+  if (supersededFinding) findings.push(supersededFinding)
 
   // Dynamic mode enqueues an out-of-process test run; the deterministic verdicts are the initial
   // matrix and the run stays RUNNING until the runner reports back. With no tests to run there is
@@ -305,9 +342,9 @@ export async function startReconciliation(workItemId: string, submissionId: stri
         })),
       })
     }
-    if (result.findings.length) {
+    if (findings.length) {
       await tx.reconciliationFinding.createMany({
-        data: result.findings.map((f) => ({
+        data: findings.map((f) => ({
           reconciliationRunId: runId,
           requirementId: f.requirementId ?? null,
           kind: f.kind,
@@ -361,7 +398,7 @@ export async function startReconciliation(workItemId: string, submissionId: stri
     await emitEvidenceTransitionAudit(workItemId, actorId, evidenceTransition)
   }
 
-  return { run, verdicts: finalVerdicts, findings: result.findings, summary: finalSummary, dynamic: willRunDynamic, semantic: mode === 'SEMANTIC' }
+  return { run, verdicts: finalVerdicts, findings, summary: finalSummary, dynamic: willRunDynamic, semantic: mode === 'SEMANTIC' }
 }
 
 export async function listReconciliations(workItemId: string, submissionId?: string) {
@@ -403,14 +440,66 @@ export async function getReconciliationJob(jobId: string) {
   return job
 }
 
+export function expiredReconciliationJobDisposition(attempts: number, maxAttempts: number): 'PENDING' | 'DEAD_LETTERED' {
+  return attempts >= maxAttempts ? 'DEAD_LETTERED' : 'PENDING'
+}
+
+/** Recover runner leases after a crashed or disconnected worker. Discovery is cross-tenant;
+ * every write is fenced by the expired lease and performed in that job's tenant context. */
+export async function reapExpiredReconciliationJobs(now = new Date(), limit = 100) {
+  const sweepReader = adminPrisma ?? prisma
+  const expired = await sweepReader.reconciliationJob.findMany({
+    where: { status: { in: ['CLAIMED', 'RUNNING'] }, leaseUntil: { lt: now } },
+    select: { id: true, reconciliationRunId: true, workItemId: true, attempts: true, maxAttempts: true, tenantId: true },
+    orderBy: { leaseUntil: 'asc' },
+    take: Math.min(Math.max(limit, 1), 500),
+  })
+  let requeued = 0
+  let deadLettered = 0
+  for (const job of expired) {
+    const disposition = expiredReconciliationJobDisposition(job.attempts, job.maxAttempts)
+    const updated = await withTenantDbTransaction(prisma, async (tx) => {
+      const result = await tx.reconciliationJob.updateMany({
+        where: { id: job.id, status: { in: ['CLAIMED', 'RUNNING'] }, leaseUntil: { lt: now } },
+        data: {
+          status: disposition,
+          claimToken: null,
+          claimedBy: null,
+          claimedAt: null,
+          leaseUntil: null,
+          heartbeatAt: null,
+          error: disposition === 'PENDING' ? 'Runner lease expired; job returned to the queue.' : 'Runner lease expired after the maximum number of attempts.',
+          deadLetterReason: disposition === 'DEAD_LETTERED' ? 'Maximum attempts exhausted after runner lease expiry.' : null,
+        },
+      })
+      if (result.count === 1 && disposition === 'DEAD_LETTERED') {
+        await tx.reconciliationRun.updateMany({
+          where: { id: job.reconciliationRunId, reconciliationState: { not: 'STALE' } },
+          data: { status: 'ERROR', reconciliationState: 'NOT_VERIFIED', completedAt: now },
+        })
+        await tx.workItem.updateMany({
+          where: { id: job.workItemId, reconciliationState: { not: 'STALE' } },
+          data: { reconciliationState: 'NOT_VERIFIED' },
+        })
+      }
+      return result.count
+    }, job.tenantId ?? undefined)
+    if (updated !== 1) continue
+    if (disposition === 'PENDING') requeued += 1
+    else deadLettered += 1
+  }
+  return { inspected: expired.length, requeued, deadLettered }
+}
+
 export async function claimReconciliationJob(jobId: string, runnerId: string) {
   const job = await prisma.reconciliationJob.findUnique({ where: { id: jobId } })
   if (!job) throw new NotFoundError('ReconciliationJob', jobId)
   const tenantId = job.tenantId ?? undefined
-  const runContext = await prisma.reconciliationRun.findUnique({ where: { id: job.reconciliationRunId }, select: { generation: true, status: true } })
+  const runContext = await prisma.reconciliationRun.findUnique({ where: { id: job.reconciliationRunId }, select: { generation: true, status: true, reconciliationState: true } })
   const workItemContext = await prisma.workItem.findUnique({ where: { id: job.workItemId }, select: { status: true } })
   if (!runContext || !workItemContext) throw new NotFoundError('ReconciliationRun', job.reconciliationRunId)
   if (runContext.generation !== job.generation) throw new ConflictError('Reconciliation runner result belongs to a stale reconciliation generation')
+  if (runContext.reconciliationState === 'STALE') throw new ConflictError('Reconciliation run was invalidated by a newer implementation submission')
   if (['CANCELLED', 'ARCHIVED'].includes(String(workItemContext.status))) throw new ConflictError('Cancelled WorkItems reject late reconciliation results')
   if (!['RUNNING', 'PENDING'].includes(String(runContext.status))) throw new ConflictError(`Reconciliation run is ${runContext.status} and cannot accept results`)
   if (job.attempts >= job.maxAttempts) {
@@ -430,10 +519,11 @@ export async function completeReconciliationJob(jobId: string, claimToken: strin
   const job = await prisma.reconciliationJob.findUnique({ where: { id: jobId } })
   if (!job) throw new NotFoundError('ReconciliationJob', jobId)
   const tenantId = job.tenantId ?? undefined
-  const runContext = await prisma.reconciliationRun.findUnique({ where: { id: job.reconciliationRunId }, select: { generation: true, status: true } })
+  const runContext = await prisma.reconciliationRun.findUnique({ where: { id: job.reconciliationRunId }, select: { generation: true, status: true, reconciliationState: true } })
   const workItemContext = await prisma.workItem.findUnique({ where: { id: job.workItemId }, select: { status: true } })
   if (!runContext || !workItemContext) throw new NotFoundError('ReconciliationRun', job.reconciliationRunId)
   if (runContext.generation !== job.generation) throw new ConflictError('Reconciliation runner result belongs to a stale reconciliation generation')
+  if (runContext.reconciliationState === 'STALE') throw new ConflictError('Reconciliation run was invalidated by a newer implementation submission')
   if (['CANCELLED', 'ARCHIVED'].includes(String(workItemContext.status))) throw new ConflictError('Cancelled WorkItems reject late reconciliation results')
   if (!['RUNNING', 'PENDING'].includes(String(runContext.status))) throw new ConflictError(`Reconciliation run is ${runContext.status} and cannot accept results`)
 
@@ -453,39 +543,45 @@ export async function completeReconciliationJob(jobId: string, claimToken: strin
   }
   const completePlan = expected.size > 0 && seen.size === expected.size
 
-  const done = await withTenantDbTransaction(prisma, (tx) => tx.reconciliationJob.updateMany({
-    where: { id: jobId, claimToken, status: { in: ['CLAIMED', 'RUNNING'] } },
-    data: { status: 'COMPLETED', result: { tests } as unknown as Prisma.InputJsonValue, leaseUntil: null, heartbeatAt: new Date() },
-  }), tenantId)
-  if (done.count !== 1) throw new ConflictError('Reconciliation job is not claimed with this token, or is already resolved.')
-
   // Fold the executed test outcomes over the deterministic verdicts → verified matrix.
   const existing = await prisma.requirementVerdict.findMany({ where: { reconciliationRunId: job.reconciliationRunId } })
   const current: CurrentVerdict[] = existing.map((v) => ({ requirementId: v.requirementId, priority: v.priority, verdict: v.verdict, rationale: v.rationale }))
   const refined = applyTestResults(current, tests)
-  const allPassed = completePlan && tests.every((result) => result.status === 'PASS')
-  const dynamicStatus = allPassed && refined.status === 'PASSED' ? 'VERIFIED_PASS' : refined.status === 'PASSED' ? 'PARTIAL' : refined.status
+  const outcome = dynamicCompletionOutcome(expected.size, tests, refined.status)
+  const { allPassed, allSkipped } = outcome
+  const dynamicStatus = outcome.status
   const byReq = new Map(refined.verdicts.map((v) => [v.requirementId, v]))
   const now = new Date()
 
   const run = await withTenantDbTransaction(prisma, async (tx) => {
+    const done = await tx.reconciliationJob.updateMany({
+      where: { id: jobId, claimToken, status: { in: ['CLAIMED', 'RUNNING'] } },
+      data: { status: 'COMPLETED', result: { tests } as unknown as Prisma.InputJsonValue, leaseUntil: null, heartbeatAt: now },
+    })
+    if (done.count !== 1) throw new ConflictError('Reconciliation job is not claimed with this token, or is already resolved.')
+    const transitioned = await tx.reconciliationRun.updateMany({
+      where: {
+        id: job.reconciliationRunId,
+        status: { in: ['RUNNING', 'PENDING'] },
+        reconciliationState: { not: 'STALE' },
+      },
+      data: {
+        status: dynamicStatus as any,
+        reconciliationState: outcome.reconciliationState,
+        summary: { ...refined.summary, completePlan, allPassed, allSkipped } as unknown as Prisma.InputJsonValue,
+        completedAt: now,
+      },
+    })
+    if (transitioned.count !== 1) throw new ConflictError('Reconciliation run was invalidated or resolved before the runner result arrived.')
     for (const v of existing) {
       const r = byReq.get(v.requirementId)
       if (!r) continue
       await tx.requirementVerdict.update({ where: { id: v.id }, data: { verdict: r.verdict as any, rationale: r.rationale, verified: r.verified } })
     }
-    return tx.reconciliationRun.update({
-      where: { id: job.reconciliationRunId },
-      data: {
-        status: dynamicStatus as any,
-        reconciliationState: dynamicStatus === 'VERIFIED_PASS' ? 'VERIFIED' : 'NOT_VERIFIED',
-        summary: { ...refined.summary, completePlan, allPassed } as unknown as Prisma.InputJsonValue,
-        completedAt: now,
-      },
-    })
+    return tx.reconciliationRun.findUniqueOrThrow({ where: { id: job.reconciliationRunId } })
   }, tenantId)
 
-  const payload = { reconciliationRunId: job.reconciliationRunId, submissionId: job.submissionId, status: dynamicStatus, summary: { ...refined.summary, completePlan, allPassed }, traceId: run.traceId, dynamic: true, authoritativeCompletion: false }
+  const payload = { reconciliationRunId: job.reconciliationRunId, submissionId: job.submissionId, status: dynamicStatus, summary: { ...refined.summary, completePlan, allPassed, allSkipped }, traceId: run.traceId, dynamic: true, authoritativeCompletion: false }
   let evidenceTransition: EvidenceTransition | null = null
   await withTenantDbTransaction(prisma, async (tx) => {
     await tx.workItemEvent.create({ data: { workItemId: job.workItemId, eventType: 'RECONCILIATION_COMPLETED', actorId, payload: payload as Prisma.InputJsonValue, tenantId: job.tenantId } })
@@ -505,25 +601,36 @@ export async function completeReconciliationJob(jobId: string, claimToken: strin
   await logEvent('ReconciliationCompleted', 'WorkItem', job.workItemId, actorId, payload)
   await publishOutbox('WorkItem', job.workItemId, 'ReconciliationCompleted', payload)
   await emitEvidenceTransitionAudit(job.workItemId, actorId, evidenceTransition)
+  const claimEvidence = await foldReconciliationIntoClaims(run.id, actorId)
 
-  return { run, verdicts: refined.verdicts, summary: refined.summary }
+  return { run, verdicts: refined.verdicts, summary: refined.summary, claimEvidence }
 }
 
 export async function failReconciliationJob(jobId: string, claimToken: string, error: string, actorId: string) {
   const job = await prisma.reconciliationJob.findUnique({ where: { id: jobId } })
   if (!job) throw new NotFoundError('ReconciliationJob', jobId)
   const tenantId = job.tenantId ?? undefined
-
-  const done = await withTenantDbTransaction(prisma, (tx) => tx.reconciliationJob.updateMany({
-    where: { id: jobId, claimToken, status: { in: ['CLAIMED', 'RUNNING'] } },
-    data: { status: 'FAILED', error, leaseUntil: null, heartbeatAt: new Date() },
-  }), tenantId)
-  if (done.count !== 1) throw new ConflictError('Reconciliation job is not claimed with this token, or is already resolved.')
+  const runContext = await prisma.reconciliationRun.findUnique({
+    where: { id: job.reconciliationRunId },
+    select: { reconciliationState: true },
+  })
+  if (!runContext) throw new NotFoundError('ReconciliationRun', job.reconciliationRunId)
+  if (runContext.reconciliationState === 'STALE') throw new ConflictError('Reconciliation run was invalidated by a newer implementation submission')
 
   const now = new Date()
   const run = await withTenantDbTransaction(prisma, async (tx) => {
+    const done = await tx.reconciliationJob.updateMany({
+      where: { id: jobId, claimToken, status: { in: ['CLAIMED', 'RUNNING'] } },
+      data: { status: 'FAILED', error, leaseUntil: null, heartbeatAt: now },
+    })
+    if (done.count !== 1) throw new ConflictError('Reconciliation job is not claimed with this token, or is already resolved.')
+    const transitioned = await tx.reconciliationRun.updateMany({
+      where: { id: job.reconciliationRunId, reconciliationState: { not: 'STALE' } },
+      data: { status: 'ERROR', reconciliationState: 'NOT_VERIFIED', completedAt: now },
+    })
+    if (transitioned.count !== 1) throw new ConflictError('Reconciliation run was invalidated before the runner failure arrived.')
     await tx.reconciliationFinding.create({ data: { reconciliationRunId: job.reconciliationRunId, kind: 'runner-error', severity: 'ERROR', message: `Dynamic reconciliation runner failed: ${error}` } })
-    return tx.reconciliationRun.update({ where: { id: job.reconciliationRunId }, data: { status: 'ERROR', reconciliationState: 'NOT_VERIFIED', completedAt: now } })
+    return tx.reconciliationRun.findUniqueOrThrow({ where: { id: job.reconciliationRunId } })
   }, tenantId)
 
   const payload = { reconciliationRunId: job.reconciliationRunId, submissionId: job.submissionId, status: 'ERROR', error, traceId: run.traceId, dynamic: true, authoritativeCompletion: false }

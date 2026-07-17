@@ -2,9 +2,10 @@
 
 ## Status
 
-Accepted (v1 implemented). Front-end only; no new backend contracts or
-migrations. Lives in `platform-web` (`agent-and-tools/web`) as the `/synthesis`
-route group.
+Accepted. The initial v1 was front-end only. The contract-bound execution
+extension adds durable decisions, generation lineage, economics, and token
+ledger contracts. The experience lives in `platform-web`
+(`agent-and-tools/web`) as the `/synthesis` route group.
 
 ## Context
 
@@ -31,25 +32,27 @@ name ("Synthesis") replaces the mockups' inconsistent naming.
 
 Synthesis is **project-centric**, so it anchors on the project-scoped epistemic
 layer that already exists rather than on discovery sessions (which are only
-scoped to `WORKFLOW_STAGE | WORK_ITEM | RUN`, never to a project). This avoided
-any new scope type or migration:
+scoped to `WORKFLOW_STAGE | WORK_ITEM | RUN`, never to a project). The first
+release avoided a new discovery scope. Later execution hardening adds
+server-authoritative decision and generation records under the same project:
 
 | Concept in Synthesis | Backing (existing) API |
 |---|---|
 | Idea / assumption | a **claim** in a room (`claimType` Market/User/Operational/Technical) carrying a Beta posterior (`mean` = P(true), `disagreement` = estimator variance = where the ignorance is) |
 | Reduce unknowns | contested-ranked claims + **probes** + per-room **convergence** |
 | Spec | project **specification** package (analysis / requirements / decisions) |
-| Tickets | deep-link to Studio work-program generation |
+| Options and decisions | durable `DecisionDossier` and `DecisionOption` records with independent approval |
+| Tickets | validated `GenerationPlan` rows applied as version-bound WorkItems |
 | Portfolio / use cases | `/studio/portfolio` + `/studio/projects` |
 
-### Screens (eight)
+### Screens
 
 Workspace Hub, System Overview, Idea Wall, Discovery Board, Assumption Rooms,
-Spec & Traceability, Logic Console, Use-Case Registry. Each is wired to real
-endpoints via `workgraphFetch` + SWR. Derived views (traceability pipeline,
-consistency signals, use-case maturity, dashboard metrics, activity feed) are
-computed **client-side** over those APIs — no dedicated aggregation endpoints
-were added for v1.
+Spec & Traceability, Logic Console, Use-Case Registry, Options, Decisions,
+Compile & Generate, and Economics & Timeline. Each is wired to real endpoints
+via `workgraphFetch` + SWR. Heuristic views remain client-side; decisions,
+compiled specifications, generation plans, budget envelopes, token usage, and
+reconciliation evidence are server-authoritative.
 
 ### Theming
 
@@ -62,13 +65,15 @@ its own chrome (`SynthesisShell`).
 
 ## Consequences
 
-- **No new backend / no migration.** Synthesis runs against the platform as-is.
+- Durable decision, generation, budget, and token-ledger records require the
+  WorkGraph migrations shipped with the contract-bound execution extension.
 - Consistency/traceability/maturity are heuristics over existing data (see
   `src/components/synthesis/logic.ts`, unit-tested in `logic.contract.test.ts`).
   If richer, server-authoritative aggregation is later required, add endpoints
   behind the same hooks without changing the screens.
-- Studio and the Work Item IDE remain as the deep authoring surfaces; Synthesis
-  is the unifying front door and does not replace them.
+- Studio and the Work Item IDE remain deep authoring surfaces. Synthesis owns
+  the guided claims → options → decisions → specification → generation journey
+  and links into those surfaces when implementation work begins.
 
 ## Alternatives considered
 

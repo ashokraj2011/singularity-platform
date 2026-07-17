@@ -7,9 +7,12 @@ import type {
   ProjectSpecView,
   SynClaim,
   SynConvergence,
+  SynDecisionDossier,
+  SynGenerationPlan,
   SynPortfolio,
   SynProbe,
   SynProject,
+  SynProjectEconomics,
   SynRoom,
   SynWorkItemCard,
 } from "../types";
@@ -160,6 +163,36 @@ export function useProjectWorkItems(
 ) {
   return useSyn<{ items: SynWorkItemCard[] }>(
     projectId ? `/studio/projects/${projectId}/work-items` : null,
+    config,
+  );
+}
+
+export function useDecisions(
+  projectId: string | null,
+  config?: SWRConfiguration<{ items: SynDecisionDossier[] }>,
+) {
+  return useSyn<{ items: SynDecisionDossier[] }>(
+    projectId ? `/studio/projects/${projectId}/decisions` : null,
+    config,
+  );
+}
+
+export function useGenerationPlans(
+  projectId: string | null,
+  config?: SWRConfiguration<{ items: SynGenerationPlan[] }>,
+) {
+  return useSyn<{ items: SynGenerationPlan[] }>(
+    projectId ? `/generation-plans?specificationProjectId=${encodeURIComponent(projectId)}` : null,
+    config,
+  );
+}
+
+export function useProjectEconomics(
+  projectId: string | null,
+  config?: SWRConfiguration<SynProjectEconomics>,
+) {
+  return useSyn<SynProjectEconomics>(
+    projectId ? `/studio/projects/${projectId}/economics` : null,
     config,
   );
 }

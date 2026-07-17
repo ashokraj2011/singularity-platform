@@ -53,10 +53,26 @@ SELECT public.workgraph_install_tenant_policy(
   '"tenantId" = public.workgraph_current_tenant_id()'
 );
 
-SELECT public.workgraph_install_tenant_policy(
-  'run_snapshots',
-  '"tenantId" = public.workgraph_current_tenant_id()'
-);
+-- run_snapshots receives tenantId in the immediately following migration.
+-- On upgraded databases the column may already exist; on a clean replay it
+-- does not yet. Install here only when safe and let the next migration own the
+-- normal fresh-install policy creation.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'run_snapshots'
+      AND column_name = 'tenantId'
+  ) THEN
+    PERFORM public.workgraph_install_tenant_policy(
+      'run_snapshots',
+      '"tenantId" = public.workgraph_current_tenant_id()'
+    );
+  END IF;
+END;
+$$;
 
 SELECT public.workgraph_install_tenant_policy('workflow_run_budgets', 'public.workgraph_instance_visible("instanceId")');
 SELECT public.workgraph_install_tenant_policy('workflow_run_budget_events', 'public.workgraph_instance_visible("instanceId")');

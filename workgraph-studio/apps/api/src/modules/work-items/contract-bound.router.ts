@@ -16,6 +16,8 @@ import { validateSpecificationBody } from '../specifications/specification.valid
 import { registerSubmission } from '../submissions/submissions.service'
 import { registerSubmissionSchema } from '../submissions/submission.schemas'
 import { startReconciliation } from '../reconciliations/reconciliations.service'
+import { requestSpecificationReview } from '../specifications/specification-review.service'
+import { scheduleGenerationPlan } from '../planning/generation-scheduler'
 
 export const contractBoundRouter: Router = Router()
 
@@ -69,10 +71,17 @@ const planRowSchema = z.object({
   baseBranch: z.string().min(1).optional(),
   baseCommitSha: z.string().min(1).optional(),
   requirementIds: z.array(z.string()).default([]),
+  decisionRefs: z.array(z.string().uuid()).default([]),
+  claimRefs: z.array(z.string().uuid()).default([]),
   requiredEvidence: z.array(z.unknown()).default([]),
   forbiddenPaths: z.array(z.string()).default([]),
   reconciliationPolicy: z.record(z.unknown()).default({}),
   dependencies: z.array(z.object({ rowKey: z.string().min(1), dependencyType: z.string().optional() })).default([]),
+  estimatedHours: z.number().positive().default(8),
+  rateBand: z.string().trim().min(1).max(80).optional(),
+  estimatedCostLow: z.number().nonnegative().optional(),
+  estimatedCostHigh: z.number().nonnegative().optional(),
+  estimatedTokens: z.number().int().nonnegative().optional(),
 })
 
 const planSchema = z.object({
@@ -85,11 +94,15 @@ const planSchema = z.object({
 const reviewSchema = z.object({
   versionId: z.string().uuid().optional(),
   assignedToId: z.string().uuid().optional(),
-  assignmentMode: z.string().optional(),
+  assignmentMode: z.enum(['DIRECT_USER', 'TEAM_QUEUE', 'ROLE_BASED', 'SKILL_BASED']).optional(),
   teamId: z.string().uuid().optional(),
   roleKey: z.string().optional(),
-  capabilityId: z.string().optional(),
+  skillKey: z.string().optional(),
+  capabilityId: z.string().min(1).optional(),
   dueAt: z.string().datetime().optional(),
+  quorumRequired: z.coerce.number().int().min(1).max(100).optional(),
+  adminOverride: z.boolean().optional(),
+  comment: z.string().trim().max(4000).optional(),
 })
 
 const workflowStartCommandSchema = z.object({
@@ -326,8 +339,12 @@ contractBoundRouter.post('/specifications/:specificationId/reviews', validate(re
     if (!versionId) throw new ValidationError('A specification version is required for review')
     const version = await prisma.specificationVersion.findFirst({ where: { id: versionId, specificationProjectId: specificationId, tenantId: tenantOf(req) }, select: { id: true } })
     if (!version) throw new NotFoundError('SpecificationVersion', versionId)
-    if (req.body.assignedToId && req.body.assignedToId === req.user!.userId) throw new ValidationError('Specification authors and reviewers must be independent users')
-    const review = await prisma.approvalRequest.create({ data: { subjectType: 'SpecificationVersion', subjectId: versionId, requestedById: req.user!.userId, assignedToId: req.body.assignedToId, assignmentMode: req.body.assignmentMode ?? 'ROLE_BASED', teamId: req.body.teamId, roleKey: req.body.roleKey, capabilityId: req.body.capabilityId, dueAt: req.body.dueAt ? new Date(req.body.dueAt) : undefined, tenantId: tenantOf(req), formData: { specificationProjectId: specificationId, versionId } as Prisma.InputJsonValue } })
+    const review = await requestSpecificationReview(
+      version.id,
+      { ...req.body, dueAt: req.body.dueAt ? new Date(req.body.dueAt) : undefined },
+      req.user!.userId,
+      tenantOf(req),
+    )
     res.status(201).json(review)
   } catch (err) { next(err) }
 })
@@ -400,6 +417,24 @@ contractBoundRouter.post('/workflow-start-commands', validate(workflowStartComma
   } catch (err) { next(err) }
 })
 
+contractBoundRouter.get('/generation-plans', async (req, res, next) => {
+  try {
+    const projectId = typeof req.query.specificationProjectId === 'string' ? req.query.specificationProjectId : undefined
+    if (!projectId) throw new ValidationError('specificationProjectId query parameter is required')
+    const project = await prisma.specificationProject.findFirst({ where: { id: projectId, tenantId: tenantOf(req) }, select: { id: true } })
+    if (!project) throw new NotFoundError('SpecificationProject', projectId)
+    res.json({ items: await prisma.generationPlan.findMany({ where: { specificationProjectId: projectId, tenantId: tenantOf(req) }, include: { rows: true }, orderBy: { updatedAt: 'desc' } }) })
+  } catch (err) { next(err) }
+})
+
+contractBoundRouter.get('/generation-plans/:planId', async (req, res, next) => {
+  try {
+    const plan = await prisma.generationPlan.findFirst({ where: { id: String(req.params.planId), tenantId: tenantOf(req) }, include: { rows: true } })
+    if (!plan) throw new NotFoundError('GenerationPlan', String(req.params.planId))
+    res.json(plan)
+  } catch (err) { next(err) }
+})
+
 contractBoundRouter.post('/generation-plans', validate(planSchema), async (req, res, next) => {
   try {
     const input = req.body as z.infer<typeof planSchema>
@@ -419,14 +454,14 @@ contractBoundRouter.post('/generation-plans', validate(planSchema), async (req, 
       if (!version) throw new NotFoundError('SpecificationVersion', input.specificationVersionId)
       if (!['LOCKED', 'ACTIVE', 'APPROVED'].includes(String(version.status))) throw new ConflictError('Generation requires a locked or approved specification version')
     }
-    const plan = await prisma.generationPlan.create({ data: { specificationProjectId: project.id, specificationVersionId: input.specificationVersionId, requestId: input.requestId, contentHash: digest(input.rows), totalRows: input.rows.length, createdById: req.user!.userId, tenantId: project.tenantId, rows: { create: input.rows.map(row => ({ rowKey: row.rowKey, title: row.title, description: row.description, targetCapabilityId: row.targetCapabilityId, childWorkflowTemplateId: row.childWorkflowTemplateId, repository: row.repository, component: row.component, baseBranch: row.baseBranch, baseCommitSha: row.baseCommitSha, requirementIds: row.requirementIds as Prisma.InputJsonValue, requiredEvidence: row.requiredEvidence as Prisma.InputJsonValue, forbiddenPaths: row.forbiddenPaths as Prisma.InputJsonValue, reconciliationPolicy: row.reconciliationPolicy as Prisma.InputJsonValue, dependencies: row.dependencies as unknown as Prisma.InputJsonValue })) } }, include: { rows: true } })
+    const plan = await prisma.generationPlan.create({ data: { specificationProjectId: project.id, specificationVersionId: input.specificationVersionId, requestId: input.requestId, contentHash: digest(input.rows), totalRows: input.rows.length, createdById: req.user!.userId, tenantId: project.tenantId, rows: { create: input.rows.map(row => ({ rowKey: row.rowKey, title: row.title, description: row.description, targetCapabilityId: row.targetCapabilityId, childWorkflowTemplateId: row.childWorkflowTemplateId, repository: row.repository, component: row.component, baseBranch: row.baseBranch, baseCommitSha: row.baseCommitSha, requirementIds: row.requirementIds as Prisma.InputJsonValue, decisionRefs: row.decisionRefs as Prisma.InputJsonValue, claimRefs: row.claimRefs as Prisma.InputJsonValue, requiredEvidence: row.requiredEvidence as Prisma.InputJsonValue, forbiddenPaths: row.forbiddenPaths as Prisma.InputJsonValue, reconciliationPolicy: row.reconciliationPolicy as Prisma.InputJsonValue, dependencies: row.dependencies as unknown as Prisma.InputJsonValue, estimatedHours: row.estimatedHours, rateBand: row.rateBand, estimatedCostLow: row.estimatedCostLow, estimatedCostHigh: row.estimatedCostHigh, estimatedTokens: row.estimatedTokens })) } }, include: { rows: true } })
     res.status(201).json(plan)
   } catch (err) { next(err) }
 })
 
 contractBoundRouter.post('/generation-plans/:planId/validate', async (req, res, next) => {
   try {
-    const plan = await prisma.generationPlan.findFirst({ where: { id: String(req.params.planId), tenantId: tenantOf(req) }, include: { rows: true } })
+    const plan = await prisma.generationPlan.findFirst({ where: { id: String(req.params.planId), tenantId: tenantOf(req) }, include: { rows: true, specificationProject: { include: { budgetEnvelope: true } }, specificationVersion: true } })
     if (!plan) throw new NotFoundError('GenerationPlan', String(req.params.planId))
     const rowKeys = new Set(plan.rows.map(row => row.rowKey))
     const errors: string[] = []
@@ -444,10 +479,53 @@ contractBoundRouter.post('/generation-plans/:planId/validate', async (req, res, 
       visiting.delete(key); visited.add(key)
     }
     for (const row of plan.rows) visit(row.rowKey)
+    const acceptedDecisions = await prisma.decisionDossier.findMany({ where: { projectId: plan.specificationProjectId, status: 'ACCEPTED', tenantId: tenantOf(req) }, select: { id: true } })
+    const acceptedDecisionIds = new Set(acceptedDecisions.map(decision => decision.id))
+    const projectClaims = await prisma.claim.findMany({ where: { projectId: plan.specificationProjectId, tenantId: tenantOf(req) }, select: { id: true } })
+    const projectClaimIds = new Set(projectClaims.map(claim => claim.id))
+    for (const row of plan.rows) {
+      const decisionRefs = Array.isArray(row.decisionRefs) ? row.decisionRefs.map(String) : []
+      const claimRefs = Array.isArray(row.claimRefs) ? row.claimRefs.map(String) : []
+      for (const decisionRef of decisionRefs) if (!acceptedDecisionIds.has(decisionRef)) errors.push(`Row ${row.rowKey} references a decision that is not accepted: ${decisionRef}`)
+      for (const claimRef of claimRefs) if (!projectClaimIds.has(claimRef)) errors.push(`Row ${row.rowKey} references a claim outside this initiative: ${claimRef}`)
+      if ((row.estimatedCostLow ?? 0) > (row.estimatedCostHigh ?? Number.POSITIVE_INFINITY)) errors.push(`Row ${row.rowKey} cost range is inverted`)
+    }
+    if (plan.specificationVersion) {
+      const parsed = specificationPackageBodySchema.safeParse(plan.specificationVersion.package)
+      if (!parsed.success) errors.push('The selected specification version is malformed')
+      else {
+        const covered = new Set(plan.rows.flatMap(row => Array.isArray(row.requirementIds) ? row.requirementIds.map(String) : []))
+        for (const requirement of parsed.data.requirements) if (!covered.has(requirement.id)) errors.push(`Requirement ${requirement.id} is not covered by any generation plan row`)
+      }
+    }
+    const estimatedCostHigh = plan.rows.reduce((sum, row) => sum + (row.estimatedCostHigh ?? row.estimatedCostLow ?? 0), 0)
+    const estimatedTokens = plan.rows.reduce((sum, row) => sum + (row.estimatedTokens ?? 0), 0)
+    const envelope = plan.specificationProject.budgetEnvelope
+    const budgetHigh = envelope?.budgetHigh ?? plan.specificationProject.costBudgetUsd
+    const tokenLimit = envelope?.tokenLimit ?? plan.specificationProject.tokenBudget
+    const warningPercent = envelope?.warningPercent ?? 80
+    const hardCapPercent = envelope?.hardCapPercent ?? 120
+    const warnings: string[] = []
+    const waiverReason = typeof req.body?.budgetWaiverReason === 'string' ? req.body.budgetWaiverReason.trim() : ''
+    const costPercent = budgetHigh ? estimatedCostHigh / budgetHigh * 100 : 0
+    const tokenPercent = tokenLimit ? estimatedTokens / tokenLimit * 100 : 0
+    const highestPercent = Math.max(costPercent, tokenPercent)
+    if (highestPercent >= hardCapPercent) errors.push(`Plan exceeds the ${hardCapPercent}% hard budget cap`)
+    else if (highestPercent > 100 && waiverReason.length < 20) errors.push('Plan exceeds its budget envelope; a DRI waiver reason of at least 20 characters is required')
+    else if (highestPercent >= warningPercent) warnings.push(`Plan consumes ${highestPercent.toFixed(1)}% of its budget envelope`)
+    const startAt = typeof req.body?.startAt === 'string' ? new Date(req.body.startAt) : new Date()
+    if (Number.isNaN(startAt.getTime())) throw new ValidationError('startAt must be a valid ISO timestamp')
+    const schedule = errors.some(error => error.startsWith('Dependency cycle')) ? [] : scheduleGenerationPlan(plan.rows.map(row => ({
+      rowKey: row.rowKey,
+      estimatedHours: row.estimatedHours ?? 8,
+      dependencies: (Array.isArray(row.dependencies) ? row.dependencies : []).map(dependency => ({ rowKey: String((dependency as Record<string, unknown>).rowKey ?? '') })),
+    })), { startAt })
+    await Promise.all(schedule.map(item => prisma.generationPlanRow.update({ where: { planId_rowKey: { planId: plan.id, rowKey: item.rowKey } }, data: { projectedStartAt: item.projectedStartAt, projectedFinishAt: item.projectedFinishAt, criticalPath: item.criticalPath } })))
     const status = errors.length ? 'DRAFT' : 'VALIDATED'
-    const updated = await prisma.generationPlan.update({ where: { id: plan.id }, data: { status: status as any, validation: { valid: errors.length === 0, errors } as Prisma.InputJsonValue } })
-    if (errors.length) res.status(422).json({ ...updated, errors })
-    else res.json({ ...updated, errors: [] })
+    const validation = { valid: errors.length === 0, errors, warnings, waiverReason: waiverReason || null, estimatedCostHigh, estimatedTokens, costPercent, tokenPercent, schedule }
+    const updated = await prisma.generationPlan.update({ where: { id: plan.id }, data: { status: status as any, validation: validation as unknown as Prisma.InputJsonValue }, include: { rows: true } })
+    if (errors.length) res.status(422).json({ ...updated, errors, warnings })
+    else res.json({ ...updated, errors: [], warnings })
   } catch (err) { next(err) }
 })
 
@@ -461,7 +539,36 @@ contractBoundRouter.post('/generation-plans/:planId/apply', async (req, res, nex
     for (const row of plan.rows) {
       if (row.workItemId) { byKey.set(row.rowKey, row.workItemId); continue }
       try {
-        const input: CreateWorkItemInput = { title: row.title, description: row.description ?? undefined, originType: 'SPEC_GENERATED', parentCapabilityId: row.targetCapabilityId, workItemTypeKey: 'SPEC_GENERATED', routingMode: 'MANUAL', tenantId: plan.tenantId, idempotencyKey: `generation-plan:${plan.id}:${row.rowKey}`, targets: [{ targetCapabilityId: row.targetCapabilityId, childWorkflowTemplateId: row.childWorkflowTemplateId ?? undefined }] }
+        const input: CreateWorkItemInput = {
+          title: row.title,
+          description: row.description ?? undefined,
+          originType: 'SPEC_GENERATED',
+          projectId: plan.specificationProjectId,
+          parentCapabilityId: row.targetCapabilityId,
+          workItemTypeKey: 'SPEC_GENERATED',
+          routingMode: 'MANUAL',
+          dueAt: row.projectedFinishAt,
+          details: {
+            title: row.title,
+            description: row.description,
+            generationPlanId: plan.id,
+            generationPlanRowId: row.id,
+            rowKey: row.rowKey,
+            requirementIds: row.requirementIds,
+            decisionRefs: row.decisionRefs,
+            claimRefs: row.claimRefs,
+            projectedStartAt: row.projectedStartAt?.toISOString(),
+            projectedFinishAt: row.projectedFinishAt?.toISOString(),
+            criticalPath: row.criticalPath,
+            estimatedHours: row.estimatedHours,
+            estimatedCostLow: row.estimatedCostLow,
+            estimatedCostHigh: row.estimatedCostHigh,
+            estimatedTokens: row.estimatedTokens,
+          },
+          tenantId: plan.tenantId,
+          idempotencyKey: `generation-plan:${plan.id}:${row.rowKey}`,
+          targets: [{ targetCapabilityId: row.targetCapabilityId, childWorkflowTemplateId: row.childWorkflowTemplateId ?? undefined }],
+        }
         const created = await createWorkItem(input, req.user!.userId)
         const createdTarget = created.targets[0]
         if (!createdTarget) throw new ValidationError(`Generation plan row ${row.rowKey} did not create a WorkItem target`)
@@ -479,8 +586,10 @@ contractBoundRouter.post('/generation-plans/:planId/apply', async (req, res, nex
           const scope = existingScope ?? await prisma.developmentScope.create({ data: { workItemId: created.id, workItemTargetId: createdTarget.id, specificationBindingId: binding?.id, targetCapabilityId: row.targetCapabilityId, repository: row.repository, component: row.component, requirementIds: row.requirementIds as Prisma.InputJsonValue, mandatory: true, tenantId: plan.tenantId } })
           const existingHandoff = await prisma.handoffGeneration.findFirst({ where: { developmentScopeId: scope.id }, orderBy: { generation: 'desc' } })
           if (!existingHandoff) {
-            const handoffContent = { scopeId: scope.id, repository: row.repository, component: row.component, baseBranch: row.baseBranch, baseCommitSha: row.baseCommitSha, requirementIds: row.requirementIds, requiredEvidence: row.requiredEvidence, forbiddenPaths: row.forbiddenPaths, reconciliationPolicy: row.reconciliationPolicy }
-            await prisma.handoffGeneration.create({ data: { developmentScopeId: scope.id, specificationBindingId: binding?.id, repository: row.repository, component: row.component, baseBranch: row.baseBranch, baseCommitSha: row.baseCommitSha, requirementIds: row.requirementIds as Prisma.InputJsonValue, requiredEvidence: row.requiredEvidence as Prisma.InputJsonValue, forbiddenPaths: row.forbiddenPaths as Prisma.InputJsonValue, reconciliationPolicy: row.reconciliationPolicy as Prisma.InputJsonValue, contentHash: digest(handoffContent), tenantId: plan.tenantId } })
+            const policy = row.reconciliationPolicy && typeof row.reconciliationPolicy === 'object' && !Array.isArray(row.reconciliationPolicy) ? row.reconciliationPolicy as Record<string, unknown> : {}
+            const reconciliationPolicy = { ...policy, claimRefs: row.claimRefs, decisionRefs: row.decisionRefs }
+            const handoffContent = { scopeId: scope.id, repository: row.repository, component: row.component, baseBranch: row.baseBranch, baseCommitSha: row.baseCommitSha, requirementIds: row.requirementIds, requiredEvidence: row.requiredEvidence, forbiddenPaths: row.forbiddenPaths, reconciliationPolicy }
+            await prisma.handoffGeneration.create({ data: { developmentScopeId: scope.id, specificationBindingId: binding?.id, repository: row.repository, component: row.component, baseBranch: row.baseBranch, baseCommitSha: row.baseCommitSha, requirementIds: row.requirementIds as Prisma.InputJsonValue, requiredEvidence: row.requiredEvidence as Prisma.InputJsonValue, forbiddenPaths: row.forbiddenPaths as Prisma.InputJsonValue, reconciliationPolicy: reconciliationPolicy as Prisma.InputJsonValue, contentHash: digest(handoffContent), tenantId: plan.tenantId } })
           }
         }
         byKey.set(row.rowKey, created.id)

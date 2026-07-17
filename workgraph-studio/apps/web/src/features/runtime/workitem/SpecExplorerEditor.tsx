@@ -47,7 +47,7 @@ export function SpecExplorerEditor({ workItemId }: { workItemId: string }) {
   const createMut = useMutation({ mutationFn: () => api.post(`/work-items/${workItemId}/specifications`, {}).then((r) => r.data), onSuccess: (d: any) => { setSelVersion(d?.version?.id ?? null); setActive({ kind: 'overview', label: 'Overview' }); refetch() }, onError: (e) => setError(errText(e)) })
   const saveMut = useMutation({ mutationFn: (b: any) => api.patch(`/work-items/${workItemId}/specifications/${currentId}`, { ...b, expectedRevision: header.revision ?? 1 }).then((r) => r.data), onSuccess: () => { setEditing(false); setValidation(null); refetch() }, onError: (e) => setError(errText(e)) })
   const validateMut = useMutation({ mutationFn: () => api.post(`/work-items/${workItemId}/specifications/${currentId}/validate`).then((r) => r.data), onSuccess: (d) => { setValidation(d); setError(null) }, onError: (e) => setError(errText(e)) })
-  const approveMut = useMutation({ mutationFn: () => api.post(`/work-items/${workItemId}/specifications/${currentId}/approve`, {}).then((r) => r.data), onSuccess: () => { setValidation(null); refetch() }, onError: (e) => setError(errText(e)) })
+  const reviewMut = useMutation({ mutationFn: () => api.post(`/work-items/${workItemId}/specifications/${currentId}/reviews`, {}).then((r) => r.data), onSuccess: () => { setValidation(null); refetch() }, onError: (e) => setError(errText(e)) })
 
   const open = (item: Item) => { setActive(item); setEditing(false); setTabs((t) => (t.some((x) => x.kind === item.kind && x.id === item.id) ? t : [...t, item])) }
   const closeTab = (item: Item) => setTabs((t) => { const nx = t.filter((x) => !(x.kind === item.kind && x.id === item.id)); if (active.kind === item.kind && active.id === item.id && nx.length) setActive(nx[nx.length - 1]); return nx })
@@ -106,7 +106,7 @@ export function SpecExplorerEditor({ workItemId }: { workItemId: string }) {
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center', padding: '0 10px' }}>
             {editable && <button style={btn} onClick={() => validateMut.mutate()}>{validateMut.isPending ? 'Validating…' : 'Validate'}</button>}
             {editable && <button style={btn} onClick={() => setEditing((e) => !e)}>{editing ? 'Close editor' : 'Edit'}</button>}
-            {editable && <button style={{ ...btn, background: 'var(--color-primary)', color: '#fff', borderColor: 'var(--color-primary)' }} onClick={() => approveMut.mutate()}>{approveMut.isPending ? 'Approving…' : 'Approve'}</button>}
+            {editable && <button style={{ ...btn, background: 'var(--color-primary)', color: '#fff', borderColor: 'var(--color-primary)' }} onClick={() => reviewMut.mutate()}>{reviewMut.isPending ? 'Requesting…' : 'Request review'}</button>}
           </div>
         </div>
 

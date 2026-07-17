@@ -31,6 +31,12 @@ import {
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { evaluateApprovalQuorum } from '../../lib/permissions/approval-quorum'
 import { createNotification } from '../notifications/notifications.service'
+import { approveSpecificationVersion } from '../specifications/specifications.service'
+import {
+  applyProjectSpecificationApproval,
+  applySpecificationReviewRejection,
+} from '../specifications/specification-review.service'
+import { applyDecisionApproval } from '../portfolio-execution/portfolio-execution.service'
 
 export const approvalsRouter: Router = Router()
 
@@ -457,6 +463,37 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
       } else if (decision === 'REJECTED' || decision === 'NEEDS_MORE_INFORMATION') {
         await requestWorkItemRework(approvalRequest.subjectId, userId, undefined, notes ?? conditions)
       }
+      res.status(201).json(approvalDecision)
+      return
+    }
+
+    if (approvalRequest.subjectType === 'SpecificationVersion') {
+      const version = await prisma.specificationVersion.findFirst({
+        where: { id: approvalRequest.subjectId, tenantId: decisionTenantId },
+        select: { id: true, workItemId: true, specificationProjectId: true },
+      })
+      if (!version) throw new NotFoundError('SpecificationVersion', approvalRequest.subjectId)
+      const comment = notes ?? conditions
+      if (decision === 'APPROVED' || decision === 'APPROVED_WITH_CONDITIONS') {
+        if (version.workItemId) {
+          await approveSpecificationVersion(
+            version.workItemId,
+            version.id,
+            { approvalRequestId: id, comment },
+            userId,
+          )
+        } else {
+          await applyProjectSpecificationApproval(version.id, id, userId, comment, decisionTenantId)
+        }
+      } else if (decision === 'REJECTED' || decision === 'NEEDS_MORE_INFORMATION') {
+        await applySpecificationReviewRejection(version.id, id, userId, decision, comment, decisionTenantId)
+      }
+      res.status(201).json(approvalDecision)
+      return
+    }
+
+    if (approvalRequest.subjectType === 'DecisionDossier') {
+      await applyDecisionApproval(id, decision, userId, notes ?? conditions)
       res.status(201).json(approvalDecision)
       return
     }

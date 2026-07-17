@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   ArrowLeft,
+  BadgeDollarSign,
   Binary,
   BookOpen,
   Boxes,
@@ -14,12 +15,15 @@ import {
   Home,
   LayoutDashboard,
   Lightbulb,
+  ListTree,
   Map,
   MessagesSquare,
   Network,
   PanelLeftClose,
   PanelLeftOpen,
+  Scale,
   Sparkles,
+  Ticket,
   Wifi,
   WifiOff,
   type LucideIcon,
@@ -30,7 +34,7 @@ export interface SynNavItem {
   label: string;
   icon: LucideIcon;
   hint: string;
-  phase: "Ideate" | "Synthesize" | "Shape";
+  phase: "Ideate" | "Synthesize" | "Shape" | "Execute";
 }
 
 export const SYN_NAV: SynNavItem[] = [
@@ -40,15 +44,19 @@ export const SYN_NAV: SynNavItem[] = [
   { href: "/synthesis/journey", label: "Journey Map", icon: Map, hint: "Customer stages, pain, and opportunity", phase: "Ideate" },
   { href: "/synthesis/discovery", label: "Discovery", icon: Network, hint: "Reduce unknowns", phase: "Synthesize" },
   { href: "/synthesis/rooms", label: "Assumption Rooms", icon: MessagesSquare, hint: "Validate governed claims", phase: "Synthesize" },
+  { href: "/synthesis/options", label: "Options", icon: ListTree, hint: "Compare durable solution options", phase: "Synthesize" },
+  { href: "/synthesis/decisions", label: "Decisions", icon: Scale, hint: "Govern trade-offs and approvals", phase: "Synthesize" },
   { href: "/synthesis/wiki", label: "Project Wiki", icon: BookOpen, hint: "Living synthesis and evidence", phase: "Synthesize" },
   { href: "/synthesis/diagrams", label: "Diagrams", icon: GitFork, hint: "Map systems and decisions", phase: "Shape" },
   { href: "/synthesis/pseudocode", label: "Pseudo-code", icon: Braces, hint: "Shape logic before implementation", phase: "Shape" },
   { href: "/synthesis/spec", label: "Specification", icon: FileText, hint: "Converge and trace", phase: "Shape" },
   { href: "/synthesis/logic", label: "Logic", icon: Binary, hint: "Check consistency", phase: "Shape" },
   { href: "/synthesis/use-cases", label: "Use Cases", icon: Boxes, hint: "Track maturity", phase: "Shape" },
+  { href: "/synthesis/generate", label: "Generate", icon: Ticket, hint: "Compile the spec and generate work", phase: "Execute" },
+  { href: "/synthesis/economics", label: "Economics", icon: BadgeDollarSign, hint: "Budget, token use, and timeline", phase: "Execute" },
 ];
 
-const PHASES: SynNavItem["phase"][] = ["Ideate", "Synthesize", "Shape"];
+const PHASES: SynNavItem["phase"][] = ["Ideate", "Synthesize", "Shape", "Execute"];
 
 function useOnline() {
   const [online, setOnline] = useState(true);

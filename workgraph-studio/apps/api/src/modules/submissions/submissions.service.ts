@@ -159,27 +159,78 @@ export async function registerSubmission(
   const tenantId = workItem.tenantId ?? currentTenantIdForDb() ?? undefined
 
   let created
+  let invalidatedRunCount = 0
   try {
-    created = await withTenantDbTransaction(prisma, (tx) => tx.implementationSubmission.create({
-      data: {
-        workItemId,
-        specificationVersionId,
-        specificationBindingId: scoped?.binding.id ?? null,
-        developmentScopeId: scoped?.scope.id ?? null,
-        handoffGenerationId: scoped?.handoff.id ?? null,
-        specificationHash: manifest.specificationHash,
-        repository,
-        baseCommitSha: manifest.baseCommit,
-        headCommitSha: manifest.headCommit,
-        pullRequestNumber: manifest.pullRequestNumber ?? null,
-        manifest: manifest as unknown as Prisma.InputJsonValue,
-        claims: manifest.claims as unknown as Prisma.InputJsonValue,
-        deviations: manifest.deviations as unknown as Prisma.InputJsonValue,
-        source,
-        status,
-        tenantId: workItem.tenantId,
-      },
-    }), tenantId)
+    const registration = await withTenantDbTransaction(prisma, async (tx) => {
+      const submission = await tx.implementationSubmission.create({
+        data: {
+          workItemId,
+          specificationVersionId,
+          specificationBindingId: scoped?.binding.id ?? null,
+          developmentScopeId: scoped?.scope.id ?? null,
+          handoffGenerationId: scoped?.handoff.id ?? null,
+          specificationHash: manifest.specificationHash,
+          repository,
+          baseCommitSha: manifest.baseCommit,
+          headCommitSha: manifest.headCommit,
+          pullRequestNumber: manifest.pullRequestNumber ?? null,
+          manifest: manifest as unknown as Prisma.InputJsonValue,
+          claims: manifest.claims as unknown as Prisma.InputJsonValue,
+          deviations: manifest.deviations as unknown as Prisma.InputJsonValue,
+          source,
+          status,
+          tenantId: workItem.tenantId,
+        },
+      })
+      const priorRuns = await tx.reconciliationRun.findMany({
+        where: {
+          workItemId,
+          submissionId: { not: submission.id },
+          reconciliationState: { not: 'STALE' },
+          ...(scoped
+            ? { developmentScopeId: scoped.scope.id }
+            : { developmentScopeId: null, submission: { repository } }),
+        },
+        select: { id: true },
+      })
+      const runIds = priorRuns.map((run) => run.id)
+      if (runIds.length > 0) {
+        await tx.reconciliationRun.updateMany({
+          where: { id: { in: runIds }, reconciliationState: { not: 'STALE' } },
+          data: { reconciliationState: 'STALE' },
+        })
+        await tx.reconciliationJob.updateMany({
+          where: { reconciliationRunId: { in: runIds }, status: { in: ['PENDING', 'CLAIMED', 'RUNNING'] } },
+          data: {
+            status: 'CANCELLED',
+            claimToken: null,
+            leaseUntil: null,
+            deadLetterReason: 'Invalidated by a newer implementation submission.',
+          },
+        })
+        await tx.workItem.update({
+          where: { id: workItemId },
+          data: { reconciliationState: 'STALE', finalizationGeneration: { increment: 1 } },
+        })
+        await tx.workItemEvent.create({
+          data: {
+            workItemId,
+            eventType: 'RECONCILIATION_INVALIDATED',
+            actorId,
+            tenantId: workItem.tenantId,
+            payload: {
+              submissionId: submission.id,
+              developmentScopeId: scoped?.scope.id ?? null,
+              repository,
+              invalidatedRunIds: runIds,
+            } as Prisma.InputJsonValue,
+          },
+        })
+      }
+      return { submission, invalidatedRunCount: runIds.length }
+    }, tenantId)
+    created = registration.submission
+    invalidatedRunCount = registration.invalidatedRunCount
   } catch (err) {
     // Lost a race on the unique (workItemId, repository, headCommit) — fetch and return the winner.
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
@@ -210,8 +261,18 @@ export async function registerSubmission(
   }), tenantId)
   await logEvent('ImplementationSubmitted', 'WorkItem', workItem.id, actorId, payload)
   await publishOutbox('WorkItem', workItem.id, 'ImplementationSubmitted', payload)
+  if (invalidatedRunCount > 0) {
+    const invalidationPayload = {
+      submissionId: created.id,
+      developmentScopeId: scoped?.scope.id ?? null,
+      repository,
+      invalidatedRunCount,
+    }
+    await logEvent('ReconciliationInvalidated', 'WorkItem', workItem.id, actorId, invalidationPayload)
+    await publishOutbox('WorkItem', workItem.id, 'ReconciliationInvalidated', invalidationPayload)
+  }
 
-  return { submission: serialize(created), validation, alreadyRegistered: false }
+  return { submission: serialize(created), validation, alreadyRegistered: false, invalidatedRunCount }
 }
 
 /** Re-run the deterministic checks against the current handoff/spec (read-only, no mutation). */

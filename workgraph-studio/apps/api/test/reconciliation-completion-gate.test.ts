@@ -37,7 +37,7 @@ describe('applyReconciliationCompletionGate', () => {
 
   it('records VERIFIED evidence without completing an IN_PROGRESS item', async () => {
     const { tx, updates, events } = fakeTx()
-    const t = await applyReconciliationCompletionGate(tx, { ...base, currentStatus: 'IN_PROGRESS', runStatus: 'PASSED' })
+    const t = await applyReconciliationCompletionGate(tx, { ...base, currentStatus: 'IN_PROGRESS', runStatus: 'VERIFIED_PASS' })
     expect(t).toMatchObject({ from: 'IN_PROGRESS', to: 'VERIFIED', eventType: 'RECONCILIATION_EVIDENCE_UPDATED' })
     expect(updates[0].data).toEqual({ reconciliationState: 'VERIFIED' })
     expect(events[0].eventType).toBe('RECONCILIATION_EVIDENCE_UPDATED')
@@ -45,19 +45,19 @@ describe('applyReconciliationCompletionGate', () => {
 
   it('can record evidence on an already completed item without changing status', async () => {
     const { tx, updates } = fakeTx()
-    const t = await applyReconciliationCompletionGate(tx, { ...base, currentStatus: 'COMPLETED', runStatus: 'PASSED' })
+    const t = await applyReconciliationCompletionGate(tx, { ...base, currentStatus: 'COMPLETED', runStatus: 'VERIFIED_PASS' })
     expect(t).toMatchObject({ to: 'VERIFIED' })
     expect(updates[0].data).toEqual({ reconciliationState: 'VERIFIED' })
   })
 
-  it.each(['PARTIAL', 'FAILED', 'ERROR'])('does not complete on a non-PASSED (%s) run', async (runStatus) => {
+  it.each(['PASSED', 'PARTIAL', 'FAILED', 'ERROR'])('does not verify on a non-dynamic (%s) run', async (runStatus) => {
     const { tx, updates } = fakeTx()
     const t = await applyReconciliationCompletionGate(tx, { ...base, currentStatus: 'IN_PROGRESS', runStatus })
     expect(t).toMatchObject({ to: 'NOT_VERIFIED' })
     expect(updates[0].data).toEqual({ reconciliationState: 'NOT_VERIFIED' })
   })
 
-  it.each(['PARTIAL', 'FAILED', 'ERROR'])('marks a completed item CONTESTED when a later run is %s', async (runStatus) => {
+  it.each(['PASSED', 'PARTIAL', 'FAILED', 'ERROR'])('marks a completed item CONTESTED when a later run is %s', async (runStatus) => {
     const { tx, updates, events } = fakeTx()
     const t = await applyReconciliationCompletionGate(tx, { ...base, currentStatus: 'COMPLETED', runStatus })
     expect(t).toMatchObject({ from: 'COMPLETED', to: 'CONTESTED', eventType: 'RECONCILIATION_CONTESTED' })
@@ -67,7 +67,7 @@ describe('applyReconciliationCompletionGate', () => {
 
   it.each(['CANCELLED', 'ARCHIVED'])('never touches a terminal (%s) item', async (currentStatus) => {
     const { tx, updates, events } = fakeTx()
-    const passed = await applyReconciliationCompletionGate(tx, { ...base, currentStatus, runStatus: 'PASSED' })
+    const passed = await applyReconciliationCompletionGate(tx, { ...base, currentStatus, runStatus: 'VERIFIED_PASS' })
     const failed = await applyReconciliationCompletionGate(tx, { ...base, currentStatus, runStatus: 'FAILED' })
     expect(passed).toBeNull()
     expect(failed).toBeNull()

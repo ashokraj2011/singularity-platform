@@ -12,6 +12,7 @@ import {
   listReconciliations,
   getReconciliation,
 } from './reconciliations.service'
+import { loadAuthorizedWorkItem } from '../work-items/work-items.service'
 
 export const reconciliationsRouter: Router = Router()
 
@@ -23,6 +24,7 @@ const reconcileSchema = z.object({ mode: z.enum(['DETERMINISTIC', 'DYNAMIC', 'SE
 
 reconciliationsRouter.post('/:workItemId/submissions/:submissionId/reconcile', validate(reconcileSchema), async (req, res, next) => {
   try {
+    await loadAuthorizedWorkItem(workItemIdOf(req), req.user!.userId, 'reconcile')
     const mode = (req.body?.mode as 'DETERMINISTIC' | 'DYNAMIC' | 'SEMANTIC' | undefined) ?? 'DETERMINISTIC'
     const result = await startReconciliation(workItemIdOf(req), String(req.params.submissionId), req.user!.userId, mode)
     res.status(201).json(result)
@@ -31,6 +33,7 @@ reconciliationsRouter.post('/:workItemId/submissions/:submissionId/reconcile', v
 
 reconciliationsRouter.get('/:workItemId/reconciliations', async (req, res, next) => {
   try {
+    await loadAuthorizedWorkItem(workItemIdOf(req), req.user!.userId)
     const submissionId = typeof req.query.submissionId === 'string' ? req.query.submissionId : undefined
     res.json(await listReconciliations(workItemIdOf(req), submissionId))
   } catch (err) { next(err) }
@@ -38,6 +41,7 @@ reconciliationsRouter.get('/:workItemId/reconciliations', async (req, res, next)
 
 reconciliationsRouter.get('/:workItemId/reconciliations/:runId', async (req, res, next) => {
   try {
+    await loadAuthorizedWorkItem(workItemIdOf(req), req.user!.userId)
     res.json(await getReconciliation(workItemIdOf(req), String(req.params.runId)))
   } catch (err) { next(err) }
 })

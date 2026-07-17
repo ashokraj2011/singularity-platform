@@ -89,7 +89,7 @@ function SpecTraceability({ projectId }: { projectId: string }) {
             work items that deliver them.
           </p>
         </div>
-        <Link href={`/studio/${projectId}`}>
+        <Link href={`/synthesis/generate?projectId=${encodeURIComponent(projectId)}`}>
           <SynButton icon={Ticket}>Generate tickets</SynButton>
         </Link>
       </div>

@@ -268,3 +268,114 @@ export interface ProjectSpecView {
   package: SpecPackage;
   updatedAt: string;
 }
+
+/* ─── Decisions, generation, and economics ─────────────────────────────── */
+
+export interface SynDecisionOption {
+  id: string;
+  dossierId: string;
+  title: string;
+  summary: string;
+  status: "ACTIVE" | "ACCEPTED" | "REJECTED" | string;
+  claimRefs: string[];
+  tradeoffs: string[];
+  estimatedHours?: number | null;
+  estimatedCostLow?: number | null;
+  estimatedCostHigh?: number | null;
+  estimatedTokens?: number | null;
+  riskScore?: number | null;
+}
+
+export interface SynDecisionDossier {
+  id: string;
+  projectId: string;
+  title: string;
+  problem: string;
+  status: "DRAFT" | "IN_REVIEW" | "ACCEPTED" | "REJECTED" | "CHANGES_REQUESTED" | string;
+  claimRefs: string[];
+  resolvesTensions: string[];
+  acceptedOptionId?: string | null;
+  approvalRequestId?: string | null;
+  revision: number;
+  options: SynDecisionOption[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SynSpecificationVersion {
+  id: string;
+  specificationProjectId: string;
+  version: number;
+  status: string;
+  contentHash?: string | null;
+  createdAt: string;
+}
+
+export interface SynGenerationPlanRow {
+  id: string;
+  rowKey: string;
+  title: string;
+  state: string;
+  workItemId?: string | null;
+  error?: string | null;
+  requirementIds: string[];
+  decisionRefs: string[];
+  claimRefs: string[];
+  estimatedHours?: number | null;
+  estimatedCostLow?: number | null;
+  estimatedCostHigh?: number | null;
+  estimatedTokens?: number | null;
+  projectedStartAt?: string | null;
+  projectedFinishAt?: string | null;
+  criticalPath?: boolean;
+}
+
+export interface SynGenerationPlan {
+  id: string;
+  specificationProjectId: string;
+  specificationVersionId?: string | null;
+  status: string;
+  totalRows: number;
+  appliedRows: number;
+  validation?: { valid?: boolean; errors?: string[]; warnings?: string[] };
+  rows: SynGenerationPlanRow[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SynProjectEconomics {
+  project: {
+    id: string;
+    tokenBudget: number;
+    tokenUsed: number;
+    costBudgetUsd?: number | null;
+    costUsedUsd: number;
+  };
+  envelope?: {
+    id: string;
+    currency: string;
+    budgetLow?: number | null;
+    budgetHigh?: number | null;
+    tokenLimit?: number | null;
+    warningPercent: number;
+    hardCapPercent: number;
+  } | null;
+  rollup: {
+    estimatedPlanCostHigh: number;
+    ledgerTokens: number;
+    ledgerCostUsd: number;
+    tokenPercent?: number | null;
+    costPercent?: number | null;
+  };
+  ledger: Array<{
+    id: string;
+    stage?: string | null;
+    provider?: string | null;
+    model?: string | null;
+    totalTokens: number;
+    estimatedCostUsd?: number | null;
+    traceId?: string | null;
+    createdAt: string;
+  }>;
+  plans: SynGenerationPlan[];
+}

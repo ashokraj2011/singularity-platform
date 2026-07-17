@@ -14,6 +14,7 @@ import { startSelfRegistration } from './lib/platform-registry/register'
 import { startEventDispatcher } from './lib/eventbus/dispatcher'
 import { startLaptopHeartbeatWatchdog } from './modules/laptop/laptop.service'
 import { startApprovalEscalationSweep } from './modules/approval/escalation.service'
+import { startReconciliationLeaseReaper } from './modules/reconciliations/reconciliation-lease-reaper'
 
 async function main() {
   // Verify DB connection
@@ -37,6 +38,7 @@ async function main() {
   startTriggerScheduler()
   startLaptopHeartbeatWatchdog()
   startApprovalEscalationSweep()
+  startReconciliationLeaseReaper()
 
   // M11.e — event-bus dispatcher (LISTEN/NOTIFY + safety sweep)
   await startEventDispatcher().catch((err) => {
