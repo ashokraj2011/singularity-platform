@@ -30,4 +30,43 @@ describe('generation plan scheduler', () => {
       { rowKey: 'b', estimatedHours: 1, dependencies: [{ rowKey: 'a' }] },
     ])).toThrow(/cycle/i)
   })
+
+  it('uses capability calendars, skips holidays, and subtracts booked capacity', () => {
+    const schedule = scheduleGenerationPlan([
+      { rowKey: 'api', estimatedHours: 6, dependencies: [], capacityCalendarId: 'backend' },
+    ], {
+      startAt: new Date('2026-07-20T09:00:00.000Z'),
+      capacityCalendars: [{
+        id: 'backend',
+        weeklyHours: { mon: 8, tue: 8, wed: 8, thu: 8, fri: 8 },
+        holidays: ['2026-07-21'],
+        allocations: [{
+          startAt: new Date('2026-07-20T09:00:00.000Z'),
+          endAt: new Date('2026-07-20T13:00:00.000Z'),
+          estimatedHours: 4,
+        }],
+      }],
+    })
+
+    expect(schedule[0]).toMatchObject({ capacityCalendarId: 'backend', capacityConstrained: true })
+    expect(schedule[0].projectedFinishAt.toISOString()).toBe('2026-07-22T11:00:00.000Z')
+  })
+
+  it('does not reset shared calendar capacity for a dependent task starting midday', () => {
+    const schedule = scheduleGenerationPlan([
+      { rowKey: 'design', estimatedHours: 4, dependencies: [], capacityCalendarId: 'team' },
+      { rowKey: 'build', estimatedHours: 6, dependencies: [{ rowKey: 'design' }], capacityCalendarId: 'team' },
+    ], {
+      startAt: new Date('2026-07-20T09:00:00.000Z'),
+      capacityCalendars: [{
+        id: 'team',
+        weeklyHours: { mon: 8, tue: 8, wed: 8, thu: 8, fri: 8 },
+        holidays: [],
+      }],
+    })
+
+    expect(schedule[0].projectedFinishAt.toISOString()).toBe('2026-07-20T13:00:00.000Z')
+    expect(schedule[1].projectedStartAt.toISOString()).toBe('2026-07-20T13:00:00.000Z')
+    expect(schedule[1].projectedFinishAt.toISOString()).toBe('2026-07-21T11:00:00.000Z')
+  })
 })

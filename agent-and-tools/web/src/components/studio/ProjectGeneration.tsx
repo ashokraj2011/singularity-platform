@@ -10,13 +10,14 @@ import { workgraphFetch, WorkgraphError } from "@/lib/workgraph";
  * + coverage), then apply → each row becomes one SPEC_GENERATED work item with a specSourceRef.
  * Wires the existing /generation-plans endpoints.
  */
-interface EditRow { key: string; title: string; targetCapabilityId: string; requirementIds: string[]; decisionRefs: string[]; estimatedHours: number; estimatedCostHigh?: number; estimatedTokens?: number }
-interface PlanRow { id: string; rowKey: string; title: string; state: string; workItemId?: string | null; error?: string | null; projectedStartAt?: string | null; projectedFinishAt?: string | null; criticalPath?: boolean }
+interface EditRow { key: string; title: string; targetCapabilityId: string; requirementIds: string[]; decisionRefs: string[]; estimatedHours: number; estimatedCostHigh?: number; estimatedTokens?: number; capacityCalendarId?: string }
+interface PlanRow { id: string; rowKey: string; title: string; state: string; workItemId?: string | null; error?: string | null; projectedStartAt?: string | null; projectedFinishAt?: string | null; criticalPath?: boolean; capacityCalendarId?: string | null }
 interface Plan { id: string; status: string; totalRows: number; appliedRows: number; rows: PlanRow[]; validation?: { valid?: boolean; errors?: string[]; warnings?: string[] } }
 interface Cap { id: string; name: string }
 interface Req { id: string; statement: string }
 interface Decision { id: string; title: string; status: string; claimRefs?: string[] }
 interface SpecVersion { id: string; version: number; status: string; contentHash?: string | null }
+interface CapacityCalendar { id: string; ownerType: string; ownerId: string; timezone: string; wipLimit?: number | null }
 
 const emptyRow = (): EditRow => ({ key: crypto.randomUUID().slice(0, 8), title: "", targetCapabilityId: "", requirementIds: [], decisionRefs: [], estimatedHours: 8 });
 
@@ -29,6 +30,7 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
   const [reqs, setReqs] = useState<Req[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [versions, setVersions] = useState<SpecVersion[]>([]);
+  const [calendars, setCalendars] = useState<CapacityCalendar[]>([]);
   const [specificationVersionId, setSpecificationVersionId] = useState("");
 
   useEffect(() => {
@@ -51,6 +53,9 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
         setSpecificationVersionId(eligible?.id ?? "");
       })
       .catch(() => { /* compile action on the parent screen can create a version */ });
+    workgraphFetch<CapacityCalendar[]>(`/planning/capacity/calendars`)
+      .then((items) => { if (active) setCalendars(items); })
+      .catch(() => { /* calendar selection remains optional */ });
     return () => { active = false; };
   }, [projectId]);
 
@@ -76,6 +81,7 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
             estimatedHours: r.estimatedHours,
             ...(r.estimatedCostHigh !== undefined ? { estimatedCostHigh: r.estimatedCostHigh } : {}),
             ...(r.estimatedTokens !== undefined ? { estimatedTokens: r.estimatedTokens } : {}),
+            ...(r.capacityCalendarId ? { capacityCalendarId: r.capacityCalendarId } : {}),
           })),
         }),
       });
@@ -130,7 +136,8 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
               <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
               {r.criticalPath ? <span style={{ fontSize: 9, fontWeight: 800, color: "#b45309" }}>CRITICAL</span> : null}
               {r.projectedFinishAt ? <span style={{ fontSize: 10.5, color: "var(--color-outline)" }}>due {new Date(r.projectedFinishAt).toLocaleDateString()}</span> : null}
-              {r.workItemId && <a href={`/work-items/${r.workItemId}`} style={{ fontSize: 11.5, color: "var(--color-primary, #6366f1)", textDecoration: "none" }}>open →</a>}
+              {r.capacityCalendarId ? <span style={{ fontSize: 9, fontWeight: 750, color: "var(--color-secondary)" }}>CAPACITY</span> : null}
+              {r.workItemId && <a href={`/work-items?selected=${r.workItemId}`} style={{ fontSize: 11.5, color: "var(--color-primary, #6366f1)", textDecoration: "none" }}>open →</a>}
               {r.error && <span style={{ fontSize: 11, color: "#dc2626", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.error}</span>}
             </div>
           ))}
@@ -159,7 +166,7 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
           <div key={r.key} style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input value={r.title} onChange={(e) => setRow(i, { title: e.target.value })} placeholder="Work item title" style={{ ...inp, flex: 2 }} />
             {caps.length ? (
-              <select value={r.targetCapabilityId} onChange={(e) => setRow(i, { targetCapabilityId: e.target.value })} style={{ ...inp, flex: 1.4 }}>
+              <select value={r.targetCapabilityId} onChange={(e) => setRow(i, { targetCapabilityId: e.target.value, capacityCalendarId: undefined })} style={{ ...inp, flex: 1.4 }}>
                 <option value="">Target capability…</option>
                 {caps.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
@@ -185,6 +192,10 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
               {decisions.map(decision => <option key={decision.id} value={decision.id}>{decision.title}</option>)}
             </select>
             <input type="number" min={0.5} step={0.5} value={r.estimatedHours} onChange={(e) => setRow(i, { estimatedHours: Math.max(0.5, Number(e.target.value) || 0.5) })} title="Estimated effort in hours" style={{ ...inp, width: 72 }} />
+            <select value={r.capacityCalendarId ?? ""} onChange={(event) => setRow(i, { capacityCalendarId: event.target.value || undefined })} title="Capacity calendar; Auto uses the target capability calendar" style={{ ...inp, width: 150 }}>
+              <option value="">Capacity: Auto</option>
+              {calendars.filter(calendar => !r.targetCapabilityId || calendar.ownerType !== "CAPABILITY" || calendar.ownerId === r.targetCapabilityId).map(calendar => <option key={calendar.id} value={calendar.id}>{calendar.ownerType}: {calendar.ownerId.slice(0, 12)} · {calendar.timezone}</option>)}
+            </select>
             <button onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))} disabled={rows.length === 1} title="Remove" style={{ ...btn(rows.length === 1), padding: "4px 9px" }}>×</button>
           </div>
         ))}

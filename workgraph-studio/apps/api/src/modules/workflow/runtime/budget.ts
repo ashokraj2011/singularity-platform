@@ -5,7 +5,7 @@ import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../lib/audit'
 import { ValidationError } from '../../../lib/errors'
 import { config } from '../../../config'
-import { recordProjectTokenLedger } from '../../portfolio-execution/portfolio-execution.service'
+import { evaluateProjectBudget, recordProjectTokenLedger } from '../../portfolio-execution/portfolio-execution.service'
 
 export type BudgetEnforcementMode = 'PAUSE_FOR_APPROVAL' | 'FAIL_HARD' | 'WARN_ONLY'
 export type GovernanceMode = 'fail_open' | 'fail_closed' | 'degraded' | 'human_approval_required'
@@ -196,6 +196,11 @@ export async function prepareLlmBudget(input: LlmBudgetInput): Promise<LlmBudget
       ? null
       : Math.max(0, initiative.costBudgetUsd - initiative.costUsedUsd),
   } : null
+  const nodeConfig = isRecord(input.node.config) ? input.node.config : {}
+  const initiativeControl = initiative ? await evaluateProjectBudget(initiative.id, {
+    stage: typeof nodeConfig.stage === 'string' ? nodeConfig.stage : input.node.label,
+    record: true,
+  }) : null
   const remaining = initiativeRemaining ? {
     ...workflowRemaining,
     totalTokens: lowerNullable(workflowRemaining.totalTokens, initiativeRemaining.totalTokens),
@@ -205,17 +210,20 @@ export async function prepareLlmBudget(input: LlmBudgetInput): Promise<LlmBudget
   const policy = normalizeBudgetPolicy(budget.policy)
   const nodeDefaults = policy.nodeTypeDefaults?.[input.node.nodeType] ?? {}
 
-  const initiativeExhausted = initiativeRemaining != null
-    && (initiativeRemaining.totalTokens === 0 || initiativeRemaining.estimatedCost === 0)
-  if (initiativeExhausted) {
-    const reason = `Initiative ${initiative!.code} token/cost budget is exhausted. Update the initiative guardrails before retrying.`
+  if (initiativeControl?.effective.status === 'HARD_CAP') {
+    const reason = `Initiative ${initiative!.code} reached its hard token/cost cap. Agent turns are denied; human actions remain available.`
     await recordBudgetEvent(budget.id, input.instance.id, {
       eventType: 'BUDGET_EXCEEDED',
       nodeId: input.node.id,
       agentRunId: input.agentRunId,
-      metadata: { reason, initiativeId: initiative!.id, initiativeRemaining },
+      metadata: { reason, initiativeId: initiative!.id, initiativeRemaining, initiativeControl },
     }, tenantId)
     return { action: 'FAIL', reason }
+  }
+  if (initiativeControl?.effective.status === 'EXCEEDED') {
+    const reason = `Initiative ${initiative!.code} exceeded its approved envelope. Human work may continue, but another agent turn requires a DRI budget raise.`
+    await blockForBudgetApproval(input.instance, input.node, budget.id, input.agentRunId, reason, initiativeControl)
+    return { action: 'BLOCKED', reason }
   }
 
   if (isBudgetExhausted(remaining)) {
@@ -246,6 +254,10 @@ export async function prepareLlmBudget(input: LlmBudgetInput): Promise<LlmBudget
   const limits = { ...input.limits }
   const contextPolicy = { ...input.contextPolicy }
   const modelOverrides = { ...input.modelOverrides }
+  if (initiativeControl?.effective.status === 'WARNING') {
+    warnings.push('Initiative budget crossed its warning threshold; the call is constrained and routed to the configured economy model when available.')
+    if (initiativeControl.effective.recommendedModelAlias) modelOverrides.modelAlias = initiativeControl.effective.recommendedModelAlias
+  }
 
   const requestedInput = intFrom(limits.inputTokenBudget) ?? intFrom(contextPolicy.maxContextTokens) ?? nodeDefaults.inputTokenBudget
   const requestedOutput = intFrom(limits.outputTokenBudget) ?? intFrom(modelOverrides.maxOutputTokens) ?? nodeDefaults.outputTokenBudget
@@ -631,7 +643,7 @@ async function blockForBudgetApproval(
   budgetId: string,
   agentRunId: string | undefined,
   reason: string,
-  remaining: ReturnType<typeof remainingBudget>,
+  remaining: unknown,
 ) {
   const requestedInputTokens = 10_000
   const requestedOutputTokens = 2_000

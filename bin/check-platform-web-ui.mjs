@@ -77,6 +77,32 @@ const checks = [
     `,
   },
   {
+    name: "synthesis learning control",
+    path: "/synthesis/learning",
+    expression: `
+      (() => {
+        const text = document.body?.innerText || "";
+        return {
+          ok: /Learning|Learning & Change Control/i.test(text) && /Pilot Proof/i.test(text) && /Select an initiative|Belief movement/i.test(text) && !/Unexpected token|Internal Server Error/i.test(text),
+          detail: text.slice(0, 280)
+        };
+      })()
+    `,
+  },
+  {
+    name: "synthesis pilot proof",
+    path: "/synthesis/pilot",
+    expression: `
+      (() => {
+        const text = document.body?.innerText || "";
+        return {
+          ok: /Pilot Proof/i.test(text) && /Select an initiative|End-to-end pilot proof|Proof obligations/i.test(text) && !/Unexpected token|Internal Server Error/i.test(text),
+          detail: text.slice(0, 280)
+        };
+      })()
+    `,
+  },
+  {
     name: "unified app catalog",
     path: "/control-plane",
     expression: `

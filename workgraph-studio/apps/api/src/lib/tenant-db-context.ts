@@ -1,11 +1,14 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { randomUUID } from 'node:crypto'
 import type { NextFunction, Request, Response } from 'express'
 import type { Prisma, PrismaClient } from '@prisma/client'
+import { normalizeTraceId, traceIdFromParts } from '@workgraph/shared-types'
 import { config } from '../config'
 import { ValidationError } from './errors'
 
 type TenantDbStore = {
   tenantId?: string
+  traceId?: string
   tx?: TransactionClient
 }
 
@@ -21,13 +24,17 @@ export function currentTenantIdForDb(): string | undefined {
   return currentTenantDbContext().tenantId
 }
 
+export function currentTraceIdForRequest(): string | undefined {
+  return currentTenantDbContext().traceId
+}
+
 export function currentTenantDbClient(): TransactionClient | undefined {
   return currentTenantDbContext().tx
 }
 
-export function runWithTenantDbContext<T>(tenantId: string | undefined, callback: () => T): T {
+export function runWithTenantDbContext<T>(tenantId: string | undefined, callback: () => T, traceId?: string): T {
   const existing = currentTenantDbContext()
-  return tenantDbContext.run({ ...existing, tenantId }, callback)
+  return tenantDbContext.run({ ...existing, tenantId, traceId: traceId ?? existing.traceId }, callback)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -60,7 +67,11 @@ function tenantIsolationStrictForDb(): boolean {
 }
 
 export function tenantDbContextMiddleware(req: Request, _res: Response, next: NextFunction): void {
-  runWithTenantDbContext(resolveTenantFromRequestForDb(req), next)
+  const bodyTrace = stringKey(req.body, 'traceId', 'trace_id')
+  const traceId = normalizeTraceId(req.header('x-singularity-trace-id'))
+    ?? normalizeTraceId(bodyTrace)
+    ?? traceIdFromParts(['http', randomUUID()])
+  runWithTenantDbContext(resolveTenantFromRequestForDb(req), next, traceId)
 }
 
 export async function withTenantDbTransaction<T>(

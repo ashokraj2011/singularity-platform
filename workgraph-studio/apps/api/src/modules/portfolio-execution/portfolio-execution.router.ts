@@ -5,10 +5,17 @@ import {
   addDecisionOption,
   compileProjectSpecification,
   createDecisionDossier,
+  evaluateProjectBudget,
   getProjectEconomics,
+  getProjectLearning,
+  getProjectPilotReadiness,
+  getProjectTraceability,
+  getTenantBudget,
   listDecisionDossiers,
   requestDecisionReview,
+  transitionChangeRequest,
   upsertProjectBudgetEnvelope,
+  upsertTenantBudget,
 } from './portfolio-execution.service'
 
 export const portfolioExecutionRouter: Router = Router()
@@ -58,6 +65,46 @@ portfolioExecutionRouter.get('/projects/:projectId/economics', async (req, res, 
   try { res.json(await getProjectEconomics(String(req.params.projectId))) } catch (error) { next(error) }
 })
 
+portfolioExecutionRouter.get('/projects/:projectId/traceability', async (req, res, next) => {
+  try { res.json(await getProjectTraceability(String(req.params.projectId))) } catch (error) { next(error) }
+})
+
+portfolioExecutionRouter.get('/projects/:projectId/learning', async (req, res, next) => {
+  try { res.json(await getProjectLearning(String(req.params.projectId))) } catch (error) { next(error) }
+})
+
+portfolioExecutionRouter.get('/projects/:projectId/pilot-readiness', async (req, res, next) => {
+  try { res.json(await getProjectPilotReadiness(String(req.params.projectId))) } catch (error) { next(error) }
+})
+
+portfolioExecutionRouter.get('/projects/:projectId/budget-decision', async (req, res, next) => {
+  try { res.json(await evaluateProjectBudget(String(req.params.projectId), { stage: typeof req.query.stage === 'string' ? req.query.stage : undefined })) } catch (error) { next(error) }
+})
+
+portfolioExecutionRouter.post('/change-requests/:changeRequestId/transition', validate(z.object({
+  status: z.enum(['OPEN', 'APPROVED', 'REJECTED', 'APPLIED']),
+  comment: z.string().trim().max(2000).optional(),
+})), async (req, res, next) => {
+  try { res.json(await transitionChangeRequest(String(req.params.changeRequestId), req.body.status, req.user!.userId, req.body.comment)) } catch (error) { next(error) }
+})
+
+const tenantBudgetSchema = z.object({
+  currency: z.string().trim().length(3).optional(),
+  costLimitUsd: z.number().nonnegative().nullable().optional(),
+  tokenLimit: z.number().int().positive().nullable().optional(),
+  warningPercent: z.number().int().min(1).max(100).optional(),
+  hardCapPercent: z.number().int().min(100).max(200).optional(),
+  economyModelAlias: z.string().trim().max(200).nullable().optional(),
+})
+
+portfolioExecutionRouter.get('/tenant-budget', async (_req, res, next) => {
+  try { res.json(await getTenantBudget()) } catch (error) { next(error) }
+})
+
+portfolioExecutionRouter.put('/tenant-budget', validate(tenantBudgetSchema), async (req, res, next) => {
+  try { res.json(await upsertTenantBudget(req.body, req.user!.userId)) } catch (error) { next(error) }
+})
+
 portfolioExecutionRouter.put('/projects/:projectId/budget-envelope', validate(z.object({
   currency: z.string().trim().min(3).max(3).optional(),
   budgetLow: z.number().nonnegative().nullable().optional(),
@@ -65,6 +112,10 @@ portfolioExecutionRouter.put('/projects/:projectId/budget-envelope', validate(z.
   tokenLimit: z.number().int().positive().nullable().optional(),
   warningPercent: z.number().int().min(1).max(100).optional(),
   hardCapPercent: z.number().int().min(100).max(200).optional(),
+  stageBudgets: z.record(z.object({
+    tokenLimit: z.number().int().positive().nullable().optional(),
+    costLimitUsd: z.number().nonnegative().nullable().optional(),
+  })).optional(),
 })), async (req, res, next) => {
   try { res.json(await upsertProjectBudgetEnvelope(String(req.params.projectId), req.body, req.user!.userId)) } catch (error) { next(error) }
 })

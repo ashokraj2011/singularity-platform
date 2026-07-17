@@ -126,6 +126,7 @@ CANCELLED CANCELLED
 ARCHIVED ARCHIVED
 DETACHED DETACHED
 SPEC_DRAFT_CREATED SPEC_DRAFT_CREATED
+SPEC_DRAFT_EDITED SPEC_DRAFT_EDITED
 SPEC_GENERATED SPEC_GENERATED
 SPEC_VALIDATION_COMPLETED SPEC_VALIDATION_COMPLETED
 SPEC_REVIEW_REQUESTED SPEC_REVIEW_REQUESTED
@@ -142,10 +143,12 @@ WORK_ITEM_REOPENED WORK_ITEM_REOPENED
 SPECIFICATION_BOUND SPECIFICATION_BOUND
 HANDOFF_PUBLISHED HANDOFF_PUBLISHED
 RECONCILIATION_CONTESTED RECONCILIATION_CONTESTED
+RECONCILIATION_INVALIDATED RECONCILIATION_INVALIDATED
 RECONCILIATION_EVIDENCE_UPDATED RECONCILIATION_EVIDENCE_UPDATED
 WORK_ITEM_FINALIZATION_REQUESTED WORK_ITEM_FINALIZATION_REQUESTED
 WORK_ITEM_FINALIZED WORK_ITEM_FINALIZED
 WORK_ITEM_CANCELLATION_REQUESTED WORK_ITEM_CANCELLATION_REQUESTED
+SLA_BREACHED SLA_BREACHED
 NEXT_STAGE_SPAWNED NEXT_STAGE_SPAWNED
 NEXT_STAGE_SPAWN_FAILED NEXT_STAGE_SPAWN_FAILED
         }
@@ -179,10 +182,56 @@ ARCHIVED ARCHIVED
 
 
 
+        ProjectCapabilityRole {
+            PRIMARY PRIMARY
+IMPACTED IMPACTED
+        }
+
+
+
+        ImpactAssessmentStatus {
+            PENDING PENDING
+RUNNING RUNNING
+COMPLETED COMPLETED
+FAILED FAILED
+        }
+
+
+
         WorkItemOriginType {
             PARENT_DELEGATED PARENT_DELEGATED
 CAPABILITY_LOCAL CAPABILITY_LOCAL
 SPEC_GENERATED SPEC_GENERATED
+AD_HOC AD_HOC
+        }
+
+
+
+        ChangeControlStatus {
+            RECOMMENDED RECOMMENDED
+OPEN OPEN
+APPROVED APPROVED
+REJECTED REJECTED
+APPLIED APPLIED
+        }
+
+
+
+        PlanAmendmentStatus {
+            DRAFT DRAFT
+IN_REVIEW IN_REVIEW
+APPROVED APPROVED
+REJECTED REJECTED
+APPLIED APPLIED
+        }
+
+
+
+        BudgetControlStatus {
+            HEALTHY HEALTHY
+WARNING WARNING
+EXCEEDED EXCEEDED
+HARD_CAP HARD_CAP
         }
 
 
@@ -193,6 +242,7 @@ VERIFYING VERIFYING
 VERIFIED VERIFIED
 CONTESTED CONTESTED
 NOT_VERIFIED NOT_VERIFIED
+STALE STALE
         }
 
 
@@ -557,6 +607,7 @@ ABANDONED ABANDONED
         EvidenceTier {
             PRODUCTION PRODUCTION
 EXPERIMENT EXPERIMENT
+SOURCE_DOCUMENT SOURCE_DOCUMENT
 SIMULATION SIMULATION
 AGENT AGENT
 OPINION OPINION
@@ -1196,6 +1247,221 @@ INVALIDATED INVALIDATED
     String createdById "❓"
     String tenantId "❓"
     DateTime archivedAt "❓"
+    String primaryCapabilityId "❓"
+    String primaryCapabilityName "❓"
+    Int tokenBudget
+    Int tokenUsed
+    Float costBudgetUsd "❓"
+    Float costUsedUsd
+    Int businessValue "❓"
+    Int customerImpact "❓"
+    Int strategicAlignment "❓"
+    Int urgency "❓"
+    Int deliveryRisk "❓"
+    Int technicalRisk "❓"
+    Int regulatoryRisk "❓"
+    Int confidence "❓"
+    Int effort "❓"
+    DateTime targetDate "❓"
+    Int reviewCadenceDays
+    DateTime lastReviewedAt "❓"
+    String sponsorId "❓"
+    String productOwnerId "❓"
+    Json successMetrics
+    String tags
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "specification_project_capabilities" {
+    String id "🗝️"
+    String capabilityId
+    String capabilityName "❓"
+    ProjectCapabilityRole role
+    String impactArea "❓"
+    String tenantId "❓"
+    DateTime createdAt
+    }
+
+
+  "capability_impact_assessments" {
+    String id "🗝️"
+    String capabilityId
+    String capabilityName "❓"
+    String agentTemplateId "❓"
+    String agentTemplateName "❓"
+    ImpactAssessmentStatus status
+    String summary "❓"
+    Json recommendations
+    Json risks
+    Json dependencies
+    Json suggestedClaims
+    String traceId "❓"
+    Int tokensUsed
+    Float estimatedCostUsd "❓"
+    String error "❓"
+    DateTime assessedAt "❓"
+    String tenantId "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "studios" {
+    String id "🗝️"
+    String name
+    String kind
+    String status
+    String createdById "❓"
+    String tenantId "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "concept_archives" {
+    String id "🗝️"
+    String name
+    String status
+    Json axes
+    Int axesRevision
+    Json fitnessConfig
+    Json budgetConfig
+    Json budgetUsage
+    String contentHash "❓"
+    DateTime frozenAt "❓"
+    String createdById "❓"
+    String tenantId "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "concept_cards" {
+    String id "🗝️"
+    String title
+    String summary
+    Json body
+    String authorType
+    String authorId "❓"
+    String agentRole "❓"
+    String traceId "❓"
+    Json declaredCoords
+    Json confirmedCoords "❓"
+    Int coordsAxesRevision "❓"
+    String cellKey "❓"
+    String status
+    Json fitness
+    Json embedding "❓"
+    String embeddingModel "❓"
+    Float compositeScore
+    Boolean pinned
+    String pinnedById "❓"
+    Json parentCardIds
+    String operator
+    String operatorNote "❓"
+    Json promotedRef "❓"
+    Json claimRefs
+    String tenantId "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "archive_cell_states" {
+    String id "🗝️"
+    String cellKey
+    Int axesRevision
+    Boolean killed
+    String killReason "❓"
+    String killClaimId "❓"
+    String killedById "❓"
+    String tenantId "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "archive_events" {
+    String id "🗝️"
+    String cellKey "❓"
+    String eventType
+    String actorType
+    String actorId "❓"
+    Json payload
+    DateTime createdAt
+    }
+
+
+  "concept_card_votes" {
+    String id "🗝️"
+    String userId
+    Int direction
+    String tenantId "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "studio_proposals" {
+    String id "🗝️"
+    String scopeType
+    Json scopeRef
+    String kind
+    Json payload
+    Int baseRevision "❓"
+    String authorType
+    String authorId "❓"
+    String agentRole "❓"
+    String traceId "❓"
+    String status
+    String decidedById "❓"
+    String decisionNote "❓"
+    Json editedPayload "❓"
+    String rebaseOfId "❓"
+    DateTime createdAt
+    DateTime decidedAt "❓"
+    DateTime expiresAt "❓"
+    String tenantId "❓"
+    }
+
+
+  "decision_dossiers" {
+    String id "🗝️"
+    String title
+    String problem
+    String status
+    Json claimRefs
+    Json resolvesTensions
+    String acceptedOptionId "❓"
+    String approvalRequestId "❓"
+    Int revision
+    String createdById
+    String decidedById "❓"
+    DateTime decidedAt "❓"
+    String supersedesId "❓"
+    String tenantId "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "decision_options" {
+    String id "🗝️"
+    String conceptCardId "❓"
+    String title
+    String summary
+    String status
+    Json claimRefs
+    Json tradeoffs
+    Float estimatedHours "❓"
+    Float estimatedCostLow "❓"
+    Float estimatedCostHigh "❓"
+    Int estimatedTokens "❓"
+    Int riskScore "❓"
+    String createdById "❓"
+    String tenantId "❓"
     DateTime createdAt
     DateTime updatedAt
     }
@@ -1329,15 +1595,233 @@ INVALIDATED INVALIDATED
     String baseBranch "❓"
     String baseCommitSha "❓"
     Json requirementIds
+    Json decisionRefs
+    Json claimRefs
     Json requiredEvidence
     Json forbiddenPaths
     Json reconciliationPolicy
     Json dependencies
+    Float estimatedHours "❓"
+    String rateBand "❓"
+    Float estimatedCostLow "❓"
+    Float estimatedCostHigh "❓"
+    Int estimatedTokens "❓"
+    DateTime projectedStartAt "❓"
+    DateTime projectedFinishAt "❓"
+    Boolean criticalPath
+    String capacityCalendarId "❓"
+    String capacityAllocationId "❓"
+    DateTime actualStartAt "❓"
+    DateTime actualFinishAt "❓"
+    Float actualHours "❓"
+    Float actualCostUsd "❓"
     String state
     String error "❓"
     String tenantId "❓"
     DateTime createdAt
     DateTime updatedAt
+    }
+
+
+  "generation_plan_amendments" {
+    String id "🗝️"
+    Int generation
+    PlanAmendmentStatus status
+    String reason
+    DateTime requestedStartAt "❓"
+    Json proposedSchedule
+    String previousScheduleHash
+    String proposedScheduleHash
+    String createdById
+    String approvedById "❓"
+    DateTime approvedAt "❓"
+    DateTime appliedAt "❓"
+    String tenantId "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "project_budget_envelopes" {
+    String id "🗝️"
+    String currency
+    Float budgetLow "❓"
+    Float budgetHigh "❓"
+    Int tokenLimit "❓"
+    Int warningPercent
+    Int hardCapPercent
+    Json stageBudgets
+    String status
+    String overrideApprovalId "❓"
+    String createdById "❓"
+    String tenantId "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "project_token_ledger" {
+    String id "🗝️"
+    String evidenceKey
+    String workflowInstanceId "❓"
+    String workflowNodeId "❓"
+    String artifactId "❓"
+    String stage "❓"
+    String provider "❓"
+    String model "❓"
+    Int inputTokens
+    Int outputTokens
+    Int totalTokens
+    Float estimatedCostUsd "❓"
+    String traceId "❓"
+    Json metadata
+    String tenantId "❓"
+    DateTime createdAt
+    }
+
+
+  "project_budget_events" {
+    String id "🗝️"
+    String evidenceKey
+    String scopeType
+    String scopeId "❓"
+    String stage "❓"
+    BudgetControlStatus status
+    Float percentUsed
+    Int tokenUsed
+    Float costUsedUsd
+    Int thresholdPercent "❓"
+    String action
+    String traceId "❓"
+    Json metadata
+    String tenantId "❓"
+    DateTime createdAt
+    }
+
+
+  "tenant_budget_envelopes" {
+    String id "🗝️"
+    String tenantId
+    String currency
+    Float costLimitUsd "❓"
+    Int tokenLimit "❓"
+    Int warningPercent
+    Int hardCapPercent
+    String economyModelAlias "❓"
+    String status
+    String createdById "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "boards" {
+    String id "🗝️"
+    String name
+    String createdById "❓"
+    String tenantId "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "board_branches" {
+    String id "🗝️"
+    String tenantId "❓"
+    String name
+    String parentBranchId "❓"
+    BigInt forkEventSeq "❓"
+    BigInt headEventSeq
+    String mode
+    String purpose "❓"
+    String status
+    Json explorationBudget
+    String createdById "❓"
+    DateTime createdAt
+    DateTime mergedAt "❓"
+    }
+
+
+  "board_events" {
+    String id "🗝️"
+    String tenantId "❓"
+    BigInt eventSeq
+    String eventType
+    Json objectIds
+    String actorType
+    String actorId "❓"
+    String agentRole "❓"
+    Json payload
+    Json causedBy
+    String coalesceKey "❓"
+    DateTime createdAt
+    }
+
+
+  "board_snapshots" {
+    String id "🗝️"
+    String tenantId "❓"
+    BigInt eventSeq
+    Json state
+    String stateHash
+    DateTime createdAt
+    }
+
+
+  "board_moments" {
+    String id "🗝️"
+    String tenantId "❓"
+    String kind
+    String detectorKey
+    BigInt eventSeqStart
+    BigInt eventSeqEnd
+    String title
+    String narrative
+    Json causalChain
+    Float confidence
+    String status
+    String editedById "❓"
+    DateTime createdAt
+    }
+
+
+  "ingested_artifacts" {
+    String id "🗝️"
+    String tenantId "❓"
+    String branchId
+    String kind
+    String filename
+    String storageRef "❓"
+    String contentHash
+    String status
+    Json parseSummary
+    Json extractedClaims
+    String droppedById "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "agent_verdicts" {
+    String id "🗝️"
+    String tenantId "❓"
+    String boardId "❓"
+    String targetType
+    String targetRef
+    String actorType
+    String agentRole
+    String stance
+    String rationale
+    Json evidenceRefs
+    String resolvesWith "❓"
+    Float confidence
+    String status
+    String createdById "❓"
+    String answeredById "❓"
+    String answerNote "❓"
+    String traceId "❓"
+    DateTime createdAt
+    DateTime resolvedAt "❓"
     }
 
 
@@ -1368,6 +1852,37 @@ INVALIDATED INVALIDATED
     String stewardId
     Json provenance
     String createdById "❓"
+    String tenantId "❓"
+    DateTime createdAt
+    DateTime updatedAt
+    }
+
+
+  "claim_drift_signals" {
+    String id "🗝️"
+    Float beforeMean
+    Float afterMean
+    Float delta
+    String direction
+    Float threshold
+    String status
+    String traceId "❓"
+    String tenantId "❓"
+    DateTime createdAt
+    }
+
+
+  "specification_change_requests" {
+    String id "🗝️"
+    String title
+    String reason
+    ChangeControlStatus status
+    String requestedById "❓"
+    String decidedById "❓"
+    DateTime decidedAt "❓"
+    DateTime appliedAt "❓"
+    String traceId "❓"
+    Json metadata
     String tenantId "❓"
     DateTime createdAt
     DateTime updatedAt
@@ -3227,6 +3742,21 @@ INVALIDATED INVALIDATED
     "specification_versions" }o--|o specification_projects : "specificationProject"
     "specification_projects" |o--|| "SpecificationProjectStatus" : "enum:status"
     "specification_projects" }o--|o work_programs : "completionProgram"
+    "specification_project_capabilities" |o--|| "ProjectCapabilityRole" : "enum:role"
+    "specification_project_capabilities" }o--|| specification_projects : "project"
+    "capability_impact_assessments" |o--|| "ImpactAssessmentStatus" : "enum:status"
+    "capability_impact_assessments" }o--|| specification_projects : "project"
+    "studios" |o--|| specification_projects : "project"
+    "concept_archives" }o--|| studios : "studio"
+    "concept_cards" }o--|| concept_archives : "archive"
+    "archive_cell_states" }o--|| concept_archives : "archive"
+    "archive_cell_states" }o--|o concept_cards : "eliteCard"
+    "archive_events" }o--|| concept_archives : "archive"
+    "archive_events" }o--|o concept_cards : "card"
+    "concept_card_votes" }o--|| concept_cards : "card"
+    "studio_proposals" }o--|| studios : "studio"
+    "decision_dossiers" }o--|| specification_projects : "project"
+    "decision_options" }o--|| decision_dossiers : "dossier"
     "project_specifications" |o--|| specification_projects : "project"
     "work_item_specification_bindings" }o--|| work_items : "workItem"
     "work_item_specification_bindings" }o--|| specification_versions : "specificationVersion"
@@ -3250,12 +3780,34 @@ INVALIDATED INVALIDATED
     "generation_plans" }o--|o specification_versions : "specificationVersion"
     "generation_plan_rows" }o--|| generation_plans : "plan"
     "generation_plan_rows" }o--|o work_items : "workItem"
+    "generation_plan_amendments" |o--|| "PlanAmendmentStatus" : "enum:status"
+    "generation_plan_amendments" }o--|| generation_plans : "plan"
+    "project_budget_envelopes" |o--|| specification_projects : "project"
+    "project_token_ledger" }o--|| specification_projects : "project"
+    "project_budget_events" |o--|| "BudgetControlStatus" : "enum:status"
+    "project_budget_events" }o--|| specification_projects : "project"
+    "boards" }o--|| specification_projects : "project"
+    "board_branches" }o--|| boards : "board"
+    "board_events" }o--|| boards : "board"
+    "board_events" }o--|| board_branches : "branch"
+    "board_snapshots" }o--|| boards : "board"
+    "board_snapshots" }o--|| board_branches : "branch"
+    "board_moments" }o--|| boards : "board"
+    "board_moments" }o--|| board_branches : "branch"
+    "ingested_artifacts" }o--|| boards : "board"
     "rooms" |o--|| "RoomState" : "enum:state"
     "rooms" }o--|| specification_projects : "project"
     "claims" |o--|| "ClaimType" : "enum:claimType"
     "claims" |o--|| "ClaimStatus" : "enum:status"
     "claims" }o--|| specification_projects : "project"
     "claims" }o--|o rooms : "room"
+    "claim_drift_signals" }o--|| specification_projects : "project"
+    "claim_drift_signals" }o--|| claims : "claim"
+    "claim_drift_signals" }o--|o reconciliation_runs : "reconciliationRun"
+    "specification_change_requests" |o--|| "ChangeControlStatus" : "enum:status"
+    "specification_change_requests" }o--|| specification_projects : "project"
+    "specification_change_requests" }o--|o claim_drift_signals : "driftSignal"
+    "specification_change_requests" }o--|o specification_versions : "specificationVersion"
     "claim_estimates" |o--|| "EstimatorKind" : "enum:estimatorKind"
     "claim_estimates" }o--|| claims : "claim"
     "claim_probes" |o--|| "EvidenceTier" : "enum:tier"

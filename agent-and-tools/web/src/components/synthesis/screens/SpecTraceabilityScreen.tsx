@@ -12,6 +12,9 @@ import {
   ListChecks,
   Ticket,
   ExternalLink,
+  GitBranch,
+  Scale,
+  ShieldCheck,
 } from "lucide-react";
 import { SynthesisShell } from "@/components/synthesis/SynthesisShell";
 import {
@@ -32,6 +35,7 @@ import {
   useProjectSpec,
   useClaims,
   useProjectWorkItems,
+  useProjectTraceability,
 } from "@/components/synthesis/hooks/useSynthesis";
 import type { ChipTone } from "@/components/synthesis/ui/kit";
 import type { RequirementPriority, SpecRequirement } from "@/components/synthesis/types";
@@ -63,6 +67,7 @@ function SpecTraceability({ projectId }: { projectId: string }) {
   const specQ = useProjectSpec(projectId);
   const claimsQ = useClaims(projectId);
   const itemsQ = useProjectWorkItems(projectId);
+  const traceQ = useProjectTraceability(projectId);
 
   const pkg = specQ.data?.package;
   const claims = claimsQ.data?.items ?? [];
@@ -124,6 +129,8 @@ function SpecTraceability({ projectId }: { projectId: string }) {
             />
           </div>
 
+          {traceQ.data ? <LineageExplorer data={traceQ.data} /> : traceQ.error ? <SynError message="Could not load the complete lineage graph." /> : <SynSkeleton rows={2} />}
+
           {/* Analysis */}
           {pkg?.analysis ? <AnalysisCard analysis={pkg.analysis} /> : null}
 
@@ -153,6 +160,20 @@ function SpecTraceability({ projectId }: { projectId: string }) {
       )}
     </div>
   );
+}
+
+function LineageExplorer({ data }: { data: import("@/components/synthesis/types").SynTraceability }) {
+  const stages = [
+    { key: "idea", label: "Idea evidence", types: ["board-object", "option-source", "rejected-option"], icon: Lightbulb },
+    { key: "claim", label: "Claims", types: ["claim"], icon: GitBranch },
+    { key: "decision", label: "Decisions", types: ["decision-option", "decision"], icon: Scale },
+    { key: "contract", label: "Contract", types: ["requirement", "specification", "generation-plan", "plan-row"], icon: FileText },
+    { key: "proof", label: "Delivery proof", types: ["work-item", "submission", "reconciliation", "finalization"], icon: ShieldCheck },
+  ];
+  return <section>
+    <div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div><h2 className="font-display font-semibold text-base text-on-surface">One-click evidence lineage</h2><p className="text-xs text-on-surface-variant">Rejected alternatives remain visible; every item opens its owning surface.</p></div><SynChip tone={data.summary.completeChains === data.summary.workItems && data.summary.workItems > 0 ? "success" : "tertiary"}>{data.summary.completeChains}/{data.summary.workItems} complete chains</SynChip></div>
+    <div className="overflow-x-auto rounded-md border border-outline-variant bg-surface"><div className="grid min-w-[1120px] grid-cols-5 divide-x divide-outline-variant">{stages.map(stage => { const Icon = stage.icon; const nodes = data.nodes.filter(node => stage.types.includes(node.type)); return <div key={stage.key} className="min-w-0"><div className="flex h-11 items-center gap-2 border-b border-outline-variant bg-surface-container px-3"><Icon size={15} className="text-secondary" /><strong className="text-xs text-on-surface">{stage.label}</strong><span className="ml-auto text-[10px] tabular-nums text-on-surface-variant">{nodes.length}</span></div><div className="max-h-[340px] space-y-2 overflow-y-auto p-2">{nodes.length ? nodes.map(node => { const content = <><span className="block truncate text-xs font-semibold text-on-surface">{node.label}</span><span className="mt-0.5 block truncate text-[10px] uppercase text-on-surface-variant">{node.type}{node.status ? ` · ${node.status}` : ""}</span></>; return node.href ? <Link key={node.id} href={node.href} title={node.detail ?? node.label} className="block rounded-md border border-outline-variant bg-surface-container-lowest px-3 py-2 hover:border-secondary">{content}</Link> : <div key={node.id} className="rounded-md border border-outline-variant px-3 py-2">{content}</div>; }) : <div className="px-2 py-6 text-center text-xs text-on-surface-variant">No evidence yet</div>}</div></div>; })}</div></div>
+  </section>;
 }
 
 function PipelineStage({

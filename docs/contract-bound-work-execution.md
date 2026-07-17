@@ -47,6 +47,9 @@ Synthesis now exposes the governed handoff:
 7. Plan apply idempotently creates `SPEC_GENERATED` WorkItems, bindings, DevelopmentScopes, and HandoffGenerations.
 8. Dynamic reconciliation feeds experiment-tier evidence back into the linked claims.
 9. `/synthesis/economics` compares planned cost with the model token ledger and shows the critical path.
+10. Capacity calendars and existing allocations refine projected dates during plan validation.
+11. Applied plans accept governed amendments and record delivery actuals without rewriting the approved baseline.
+12. `/synthesis/learning` shows belief movement and specification change control; `/synthesis/pilot` proves the chain with evidence-backed checks.
 
 The governing records are `DecisionDossier`, `DecisionOption`, `SpecificationVersion`, `GenerationPlan`, `GenerationPlanRow`, `ProjectBudgetEnvelope`, and `ProjectTokenLedgerEntry`.
 
@@ -64,8 +67,14 @@ npm run build --workspace=web
 
 Run the lifecycle integration suite with an isolated, migrated PostgreSQL database in `DATABASE_URL` and `TEST_DATABASE_URL`. It covers fresh-run fencing, stale submission invalidation, specification and decision approval separation of duties, and SLA event uniqueness.
 
-## Residual pilot work
+## Pilot acceptance
 
-- Capacity calendars currently refine planning outside the pure scheduler; per-person availability and holiday calendars are not yet inputs to generation validation.
-- Budget envelopes enforce plan thresholds, while automatic model rerouting by remaining budget is policy-driven rather than optimizer-driven.
-- Production feedback remains outside the declared scope. The production evidence tier is reserved for that later expansion.
+`/synthesis/pilot` is the evidence-backed acceptance surface. A pilot is ready
+only when it demonstrates idea and claim evidence, an independently accepted
+decision, a locked specification, an applied plan with complete lineage,
+dynamic verification, authoritative finalization, closed-loop learning,
+delivery actuals, a budget warning, SLA evidence, and the `AD_HOC` fast lane.
+
+Production feedback remains outside the declared scope. The `PRODUCTION`
+evidence tier is reserved for a later expansion and is not simulated by pilot
+readiness.

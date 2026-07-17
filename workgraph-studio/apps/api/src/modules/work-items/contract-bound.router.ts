@@ -17,7 +17,8 @@ import { registerSubmission } from '../submissions/submissions.service'
 import { registerSubmissionSchema } from '../submissions/submission.schemas'
 import { startReconciliation } from '../reconciliations/reconciliations.service'
 import { requestSpecificationReview } from '../specifications/specification-review.service'
-import { scheduleGenerationPlan } from '../planning/generation-scheduler'
+import { scheduleGenerationPlan, type ScheduleCapacityCalendar } from '../planning/generation-scheduler'
+import { assertCapabilityPermission, type WorkflowAction } from '../../lib/permissions/workflowTemplate'
 
 export const contractBoundRouter: Router = Router()
 
@@ -82,6 +83,7 @@ const planRowSchema = z.object({
   estimatedCostLow: z.number().nonnegative().optional(),
   estimatedCostHigh: z.number().nonnegative().optional(),
   estimatedTokens: z.number().int().nonnegative().optional(),
+  capacityCalendarId: z.string().uuid().optional(),
 })
 
 const planSchema = z.object({
@@ -89,6 +91,23 @@ const planSchema = z.object({
   specificationVersionId: z.string().uuid().optional(),
   requestId: z.string().optional(),
   rows: z.array(planRowSchema).min(1),
+})
+
+const planActualsSchema = z.object({
+  actualStartAt: z.string().datetime().optional(),
+  actualFinishAt: z.string().datetime().optional(),
+  actualHours: z.number().nonnegative().optional(),
+  actualCostUsd: z.number().nonnegative().optional(),
+})
+
+const planAmendmentSchema = z.object({
+  reason: z.string().trim().min(20).max(4000),
+  requestedStartAt: z.string().datetime().optional(),
+})
+
+const planAmendmentTransitionSchema = z.object({
+  status: z.enum(['APPROVED', 'REJECTED', 'APPLIED']),
+  comment: z.string().trim().max(2000).optional(),
 })
 
 const reviewSchema = z.object({
@@ -122,6 +141,38 @@ function digest(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex')
 }
 
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+async function loadScheduleCapacity(tenantId: string, rows: Array<{ capacityCalendarId: string | null }>): Promise<ScheduleCapacityCalendar[]> {
+  const ids = [...new Set(rows.map(row => row.capacityCalendarId).filter((id): id is string => Boolean(id)))]
+  if (!ids.length) return []
+  const [calendars, allocations] = await Promise.all([
+    prisma.capacityCalendar.findMany({ where: { id: { in: ids }, tenantId } }),
+    prisma.capacityAllocation.findMany({ where: { calendarId: { in: ids }, tenantId, status: { in: ['PLANNED', 'COMMITTED', 'IN_PROGRESS'] } } }),
+  ])
+  return calendars.map(calendar => ({
+    id: calendar.id,
+    weeklyHours: Object.fromEntries(Object.entries(recordValue(calendar.weeklyHours)).map(([key, value]) => [key, Number(value) || 0])),
+    holidays: Array.isArray(calendar.holidays) ? calendar.holidays.map(String) : [],
+    wipLimit: calendar.wipLimit,
+    allocations: allocations.filter(allocation => allocation.calendarId === calendar.id).map(allocation => ({ startAt: allocation.startAt, endAt: allocation.endAt, estimatedHours: allocation.estimatedHours })),
+  }))
+}
+
+async function ensurePlanRowAllocation(row: { id: string; capacityCalendarId: string | null; capacityAllocationId: string | null; projectedStartAt: Date | null; projectedFinishAt: Date | null; estimatedHours: number | null; targetCapabilityId: string }, workItemId: string, actorId: string, tenantId: string) {
+  if (!row.capacityCalendarId || !row.projectedStartAt || !row.projectedFinishAt) return row.capacityAllocationId
+  if (row.capacityAllocationId) {
+    await prisma.capacityAllocation.updateMany({ where: { id: row.capacityAllocationId, tenantId }, data: { workItemId, startAt: row.projectedStartAt, endAt: row.projectedFinishAt, estimatedHours: row.estimatedHours ?? 8 } })
+    return row.capacityAllocationId
+  }
+  const allocation = await prisma.capacityAllocation.create({
+    data: { tenantId, calendarId: row.capacityCalendarId, workItemId, capabilityId: row.targetCapabilityId, startAt: row.projectedStartAt, endAt: row.projectedFinishAt, estimatedHours: row.estimatedHours ?? 8, status: 'PLANNED', createdById: actorId, metadata: { source: 'generation-plan', generationPlanRowId: row.id } as Prisma.InputJsonValue },
+  })
+  return allocation.id
+}
+
 async function loadVisibleWorkItem(workItemId: string, userId: string) {
   const workItem = await prisma.workItem.findUnique({
     where: { id: workItemId },
@@ -130,6 +181,32 @@ async function loadVisibleWorkItem(workItemId: string, userId: string) {
   if (!workItem) throw new NotFoundError('WorkItem', workItemId)
   await assertCanViewWorkItem(userId, workItem)
   return workItem
+}
+
+async function assertGenerationProjectAccess(req: Request, projectId: string, action: WorkflowAction) {
+  const project = await prisma.specificationProject.findFirst({
+    where: { id: projectId, tenantId: tenantOf(req) },
+    select: { id: true, primaryCapabilityId: true, tenantId: true },
+  })
+  if (!project) throw new NotFoundError('SpecificationProject', projectId)
+  await assertCapabilityPermission(
+    req.user!.userId,
+    project.primaryCapabilityId ?? '__platform__',
+    action,
+    'GenerationPlan',
+    project.id,
+    project.tenantId,
+  )
+  return project
+}
+
+async function assertGenerationPlanAccess(req: Request, planId: string, action: WorkflowAction) {
+  const plan = await prisma.generationPlan.findFirst({
+    where: { id: planId, tenantId: tenantOf(req) },
+    select: { id: true, specificationProjectId: true },
+  })
+  if (!plan) throw new NotFoundError('GenerationPlan', planId)
+  await assertGenerationProjectAccess(req, plan.specificationProjectId, action)
 }
 
 contractBoundRouter.get('/work-items/:workItemId/specification-bindings', async (req, res, next) => {
@@ -421,14 +498,14 @@ contractBoundRouter.get('/generation-plans', async (req, res, next) => {
   try {
     const projectId = typeof req.query.specificationProjectId === 'string' ? req.query.specificationProjectId : undefined
     if (!projectId) throw new ValidationError('specificationProjectId query parameter is required')
-    const project = await prisma.specificationProject.findFirst({ where: { id: projectId, tenantId: tenantOf(req) }, select: { id: true } })
-    if (!project) throw new NotFoundError('SpecificationProject', projectId)
+    await assertGenerationProjectAccess(req, projectId, 'view')
     res.json({ items: await prisma.generationPlan.findMany({ where: { specificationProjectId: projectId, tenantId: tenantOf(req) }, include: { rows: true }, orderBy: { updatedAt: 'desc' } }) })
   } catch (err) { next(err) }
 })
 
 contractBoundRouter.get('/generation-plans/:planId', async (req, res, next) => {
   try {
+    await assertGenerationPlanAccess(req, String(req.params.planId), 'view')
     const plan = await prisma.generationPlan.findFirst({ where: { id: String(req.params.planId), tenantId: tenantOf(req) }, include: { rows: true } })
     if (!plan) throw new NotFoundError('GenerationPlan', String(req.params.planId))
     res.json(plan)
@@ -438,8 +515,8 @@ contractBoundRouter.get('/generation-plans/:planId', async (req, res, next) => {
 contractBoundRouter.post('/generation-plans', validate(planSchema), async (req, res, next) => {
   try {
     const input = req.body as z.infer<typeof planSchema>
-    const project = await prisma.specificationProject.findFirst({ where: { id: input.specificationProjectId, tenantId: tenantOf(req) } })
-    if (!project) throw new NotFoundError('SpecificationProject', input.specificationProjectId)
+    await assertGenerationProjectAccess(req, input.specificationProjectId, 'edit')
+    const project = await prisma.specificationProject.findFirstOrThrow({ where: { id: input.specificationProjectId, tenantId: tenantOf(req) } })
     const keys = new Set<string>()
     for (const row of input.rows) {
       if (keys.has(row.rowKey)) throw new ValidationError(`Duplicate generation plan row ${row.rowKey}`)
@@ -454,13 +531,17 @@ contractBoundRouter.post('/generation-plans', validate(planSchema), async (req, 
       if (!version) throw new NotFoundError('SpecificationVersion', input.specificationVersionId)
       if (!['LOCKED', 'ACTIVE', 'APPROVED'].includes(String(version.status))) throw new ConflictError('Generation requires a locked or approved specification version')
     }
-    const plan = await prisma.generationPlan.create({ data: { specificationProjectId: project.id, specificationVersionId: input.specificationVersionId, requestId: input.requestId, contentHash: digest(input.rows), totalRows: input.rows.length, createdById: req.user!.userId, tenantId: project.tenantId, rows: { create: input.rows.map(row => ({ rowKey: row.rowKey, title: row.title, description: row.description, targetCapabilityId: row.targetCapabilityId, childWorkflowTemplateId: row.childWorkflowTemplateId, repository: row.repository, component: row.component, baseBranch: row.baseBranch, baseCommitSha: row.baseCommitSha, requirementIds: row.requirementIds as Prisma.InputJsonValue, decisionRefs: row.decisionRefs as Prisma.InputJsonValue, claimRefs: row.claimRefs as Prisma.InputJsonValue, requiredEvidence: row.requiredEvidence as Prisma.InputJsonValue, forbiddenPaths: row.forbiddenPaths as Prisma.InputJsonValue, reconciliationPolicy: row.reconciliationPolicy as Prisma.InputJsonValue, dependencies: row.dependencies as unknown as Prisma.InputJsonValue, estimatedHours: row.estimatedHours, rateBand: row.rateBand, estimatedCostLow: row.estimatedCostLow, estimatedCostHigh: row.estimatedCostHigh, estimatedTokens: row.estimatedTokens })) } }, include: { rows: true } })
+    const capabilityIds = [...new Set(input.rows.map(row => row.targetCapabilityId))]
+    const calendars = await prisma.capacityCalendar.findMany({ where: { tenantId: tenantOf(req), ownerType: 'CAPABILITY', ownerId: { in: capabilityIds } } })
+    const calendarByCapability = new Map(calendars.map(calendar => [calendar.ownerId, calendar.id]))
+    const plan = await prisma.generationPlan.create({ data: { specificationProjectId: project.id, specificationVersionId: input.specificationVersionId, requestId: input.requestId, contentHash: digest(input.rows), totalRows: input.rows.length, createdById: req.user!.userId, tenantId: project.tenantId, rows: { create: input.rows.map(row => ({ rowKey: row.rowKey, title: row.title, description: row.description, targetCapabilityId: row.targetCapabilityId, childWorkflowTemplateId: row.childWorkflowTemplateId, repository: row.repository, component: row.component, baseBranch: row.baseBranch, baseCommitSha: row.baseCommitSha, requirementIds: row.requirementIds as Prisma.InputJsonValue, decisionRefs: row.decisionRefs as Prisma.InputJsonValue, claimRefs: row.claimRefs as Prisma.InputJsonValue, requiredEvidence: row.requiredEvidence as Prisma.InputJsonValue, forbiddenPaths: row.forbiddenPaths as Prisma.InputJsonValue, reconciliationPolicy: row.reconciliationPolicy as Prisma.InputJsonValue, dependencies: row.dependencies as unknown as Prisma.InputJsonValue, estimatedHours: row.estimatedHours, rateBand: row.rateBand, estimatedCostLow: row.estimatedCostLow, estimatedCostHigh: row.estimatedCostHigh, estimatedTokens: row.estimatedTokens, capacityCalendarId: row.capacityCalendarId ?? calendarByCapability.get(row.targetCapabilityId) })) } }, include: { rows: true } })
     res.status(201).json(plan)
   } catch (err) { next(err) }
 })
 
 contractBoundRouter.post('/generation-plans/:planId/validate', async (req, res, next) => {
   try {
+    await assertGenerationPlanAccess(req, String(req.params.planId), 'edit')
     const plan = await prisma.generationPlan.findFirst({ where: { id: String(req.params.planId), tenantId: tenantOf(req) }, include: { rows: true, specificationProject: { include: { budgetEnvelope: true } }, specificationVersion: true } })
     if (!plan) throw new NotFoundError('GenerationPlan', String(req.params.planId))
     const rowKeys = new Set(plan.rows.map(row => row.rowKey))
@@ -506,6 +587,12 @@ contractBoundRouter.post('/generation-plans/:planId/validate', async (req, res, 
     const warningPercent = envelope?.warningPercent ?? 80
     const hardCapPercent = envelope?.hardCapPercent ?? 120
     const warnings: string[] = []
+    const capacityCalendars = await loadScheduleCapacity(tenantOf(req), plan.rows)
+    const availableCalendarIds = new Set(capacityCalendars.map(calendar => calendar.id))
+    for (const row of plan.rows) {
+      if (!row.capacityCalendarId) warnings.push(`Row ${row.rowKey} has no capability capacity calendar; the standard weekday calendar is used`)
+      else if (!availableCalendarIds.has(row.capacityCalendarId)) errors.push(`Row ${row.rowKey} references an unavailable capacity calendar`)
+    }
     const waiverReason = typeof req.body?.budgetWaiverReason === 'string' ? req.body.budgetWaiverReason.trim() : ''
     const costPercent = budgetHigh ? estimatedCostHigh / budgetHigh * 100 : 0
     const tokenPercent = tokenLimit ? estimatedTokens / tokenLimit * 100 : 0
@@ -518,9 +605,10 @@ contractBoundRouter.post('/generation-plans/:planId/validate', async (req, res, 
     const schedule = errors.some(error => error.startsWith('Dependency cycle')) ? [] : scheduleGenerationPlan(plan.rows.map(row => ({
       rowKey: row.rowKey,
       estimatedHours: row.estimatedHours ?? 8,
+      capacityCalendarId: row.capacityCalendarId ?? undefined,
       dependencies: (Array.isArray(row.dependencies) ? row.dependencies : []).map(dependency => ({ rowKey: String((dependency as Record<string, unknown>).rowKey ?? '') })),
-    })), { startAt })
-    await Promise.all(schedule.map(item => prisma.generationPlanRow.update({ where: { planId_rowKey: { planId: plan.id, rowKey: item.rowKey } }, data: { projectedStartAt: item.projectedStartAt, projectedFinishAt: item.projectedFinishAt, criticalPath: item.criticalPath } })))
+    })), { startAt, capacityCalendars })
+    await Promise.all(schedule.map(item => prisma.generationPlanRow.update({ where: { planId_rowKey: { planId: plan.id, rowKey: item.rowKey } }, data: { projectedStartAt: item.projectedStartAt, projectedFinishAt: item.projectedFinishAt, criticalPath: item.criticalPath, capacityCalendarId: item.capacityCalendarId } })))
     const status = errors.length ? 'DRAFT' : 'VALIDATED'
     const validation = { valid: errors.length === 0, errors, warnings, waiverReason: waiverReason || null, estimatedCostHigh, estimatedTokens, costPercent, tokenPercent, schedule }
     const updated = await prisma.generationPlan.update({ where: { id: plan.id }, data: { status: status as any, validation: validation as unknown as Prisma.InputJsonValue }, include: { rows: true } })
@@ -531,13 +619,19 @@ contractBoundRouter.post('/generation-plans/:planId/validate', async (req, res, 
 
 contractBoundRouter.post('/generation-plans/:planId/apply', async (req, res, next) => {
   try {
+    await assertGenerationPlanAccess(req, String(req.params.planId), 'edit')
     const plan = await prisma.generationPlan.findFirst({ where: { id: String(req.params.planId), tenantId: tenantOf(req) }, include: { rows: true, specificationProject: true, specificationVersion: true } })
     if (!plan) throw new NotFoundError('GenerationPlan', String(req.params.planId))
     if (plan.status !== 'VALIDATED' && plan.status !== 'PARTIAL') throw new ConflictError('Generation plan must be validated before apply')
     const byKey = new Map<string, string>()
     let applied = 0
     for (const row of plan.rows) {
-      if (row.workItemId) { byKey.set(row.rowKey, row.workItemId); continue }
+      if (row.workItemId) {
+        byKey.set(row.rowKey, row.workItemId)
+        const allocationId = await ensurePlanRowAllocation(row, row.workItemId, req.user!.userId, tenantOf(req))
+        if (allocationId && allocationId !== row.capacityAllocationId) await prisma.generationPlanRow.update({ where: { id: row.id }, data: { capacityAllocationId: allocationId } })
+        continue
+      }
       try {
         const input: CreateWorkItemInput = {
           title: row.title,
@@ -592,8 +686,9 @@ contractBoundRouter.post('/generation-plans/:planId/apply', async (req, res, nex
             await prisma.handoffGeneration.create({ data: { developmentScopeId: scope.id, specificationBindingId: binding?.id, repository: row.repository, component: row.component, baseBranch: row.baseBranch, baseCommitSha: row.baseCommitSha, requirementIds: row.requirementIds as Prisma.InputJsonValue, requiredEvidence: row.requiredEvidence as Prisma.InputJsonValue, forbiddenPaths: row.forbiddenPaths as Prisma.InputJsonValue, reconciliationPolicy: reconciliationPolicy as Prisma.InputJsonValue, contentHash: digest(handoffContent), tenantId: plan.tenantId } })
           }
         }
+        const allocationId = await ensurePlanRowAllocation(row, created.id, req.user!.userId, tenantOf(req))
         byKey.set(row.rowKey, created.id)
-        await prisma.generationPlanRow.update({ where: { id: row.id }, data: { workItemId: created.id, state: 'APPLIED', error: null } })
+        await prisma.generationPlanRow.update({ where: { id: row.id }, data: { workItemId: created.id, capacityAllocationId: allocationId, state: 'APPLIED', error: null } })
         applied += 1
       } catch (error) {
         await prisma.generationPlanRow.update({ where: { id: row.id }, data: { state: 'FAILED', error: String(error) } })
@@ -611,5 +706,84 @@ contractBoundRouter.post('/generation-plans/:planId/apply', async (req, res, nex
     const status = applied === plan.rows.length ? 'APPLIED' : applied > 0 ? 'PARTIAL' : 'FAILED'
     const updated = await prisma.generationPlan.update({ where: { id: plan.id }, data: { status: status as any, appliedRows: { increment: applied } }, include: { rows: true } })
     res.json({ ...updated, applied })
+  } catch (err) { next(err) }
+})
+
+contractBoundRouter.patch('/generation-plans/:planId/rows/:rowId/actuals', validate(planActualsSchema), async (req, res, next) => {
+  try {
+    await assertGenerationPlanAccess(req, String(req.params.planId), 'edit')
+    const row = await prisma.generationPlanRow.findFirst({ where: { id: String(req.params.rowId), planId: String(req.params.planId), tenantId: tenantOf(req) } })
+    if (!row) throw new NotFoundError('GenerationPlanRow', String(req.params.rowId))
+    const actualStartAt = req.body.actualStartAt ? new Date(req.body.actualStartAt) : row.actualStartAt
+    const actualFinishAt = req.body.actualFinishAt ? new Date(req.body.actualFinishAt) : row.actualFinishAt
+    if (actualStartAt && actualFinishAt && actualFinishAt < actualStartAt) throw new ValidationError('Actual finish must be after actual start')
+    const updated = await withTenantDbTransaction(prisma, async tx => {
+      const result = await tx.generationPlanRow.update({
+        where: { id: row.id },
+        data: { actualStartAt, actualFinishAt, actualHours: req.body.actualHours, actualCostUsd: req.body.actualCostUsd },
+      })
+      if (row.capacityAllocationId) await tx.capacityAllocation.updateMany({
+        where: { id: row.capacityAllocationId, tenantId: tenantOf(req) },
+        data: { ...(actualStartAt ? { startAt: actualStartAt } : {}), ...(actualFinishAt ? { endAt: actualFinishAt } : {}), ...(req.body.actualHours != null ? { estimatedHours: req.body.actualHours } : {}), status: actualFinishAt ? 'COMPLETED' : actualStartAt ? 'IN_PROGRESS' : undefined },
+      })
+      return result
+    }, tenantOf(req))
+    await logEvent('GenerationPlanActualsRecorded', 'GenerationPlanRow', row.id, req.user!.userId, { planId: row.planId, workItemId: row.workItemId, actualStartAt, actualFinishAt, actualHours: req.body.actualHours, actualCostUsd: req.body.actualCostUsd })
+    res.json(updated)
+  } catch (err) { next(err) }
+})
+
+contractBoundRouter.get('/generation-plans/:planId/amendments', async (req, res, next) => {
+  try {
+    await assertGenerationPlanAccess(req, String(req.params.planId), 'view')
+    const plan = await prisma.generationPlan.findFirst({ where: { id: String(req.params.planId), tenantId: tenantOf(req) }, select: { id: true } })
+    if (!plan) throw new NotFoundError('GenerationPlan', String(req.params.planId))
+    res.json({ items: await prisma.generationPlanAmendment.findMany({ where: { planId: plan.id, tenantId: tenantOf(req) }, orderBy: { generation: 'desc' } }) })
+  } catch (err) { next(err) }
+})
+
+contractBoundRouter.post('/generation-plans/:planId/amendments', validate(planAmendmentSchema), async (req, res, next) => {
+  try {
+    await assertGenerationPlanAccess(req, String(req.params.planId), 'edit')
+    const plan = await prisma.generationPlan.findFirst({ where: { id: String(req.params.planId), tenantId: tenantOf(req) }, include: { rows: true, amendments: { orderBy: { generation: 'desc' }, take: 1 } } })
+    if (!plan) throw new NotFoundError('GenerationPlan', String(req.params.planId))
+    if (!['VALIDATED', 'APPLIED', 'PARTIAL'].includes(plan.status)) throw new ConflictError('Only validated or applied plans can be amended')
+    const capacityCalendars = await loadScheduleCapacity(tenantOf(req), plan.rows)
+    const schedule = scheduleGenerationPlan(plan.rows.map(row => ({ rowKey: row.rowKey, estimatedHours: row.estimatedHours ?? 8, capacityCalendarId: row.capacityCalendarId ?? undefined, dependencies: (Array.isArray(row.dependencies) ? row.dependencies : []).map(dependency => ({ rowKey: String((dependency as Record<string, unknown>).rowKey ?? '') })) })), { startAt: req.body.requestedStartAt ? new Date(req.body.requestedStartAt) : new Date(), capacityCalendars })
+    const previousSchedule = plan.rows.map(row => ({ rowKey: row.rowKey, projectedStartAt: row.projectedStartAt, projectedFinishAt: row.projectedFinishAt, criticalPath: row.criticalPath, capacityCalendarId: row.capacityCalendarId }))
+    const proposedSchedule = schedule.map(row => ({ ...row, projectedStartAt: row.projectedStartAt.toISOString(), projectedFinishAt: row.projectedFinishAt.toISOString() }))
+    const amendment = await prisma.generationPlanAmendment.create({
+      data: { planId: plan.id, generation: (plan.amendments[0]?.generation ?? 0) + 1, status: 'IN_REVIEW', reason: req.body.reason, requestedStartAt: req.body.requestedStartAt ? new Date(req.body.requestedStartAt) : null, proposedSchedule: proposedSchedule as unknown as Prisma.InputJsonValue, previousScheduleHash: digest(previousSchedule), proposedScheduleHash: digest(proposedSchedule), createdById: req.user!.userId, tenantId: plan.tenantId },
+    })
+    await logEvent('GenerationPlanAmendmentProposed', 'GenerationPlanAmendment', amendment.id, req.user!.userId, { planId: plan.id, generation: amendment.generation })
+    res.status(201).json(amendment)
+  } catch (err) { next(err) }
+})
+
+contractBoundRouter.post('/generation-plans/:planId/amendments/:amendmentId/transition', validate(planAmendmentTransitionSchema), async (req, res, next) => {
+  try {
+    await assertGenerationPlanAccess(req, String(req.params.planId), req.body.status === 'APPLIED' ? 'edit' : 'approve')
+    const amendment = await prisma.generationPlanAmendment.findFirst({ where: { id: String(req.params.amendmentId), planId: String(req.params.planId), tenantId: tenantOf(req) } })
+    if (!amendment) throw new NotFoundError('GenerationPlanAmendment', String(req.params.amendmentId))
+    const allowedTransitions: Record<string, string[]> = { IN_REVIEW: ['APPROVED', 'REJECTED'], APPROVED: ['APPLIED'], DRAFT: [], REJECTED: [], APPLIED: [] }
+    if (!(allowedTransitions[amendment.status] ?? []).includes(req.body.status)) throw new ConflictError(`Plan amendment cannot transition from ${amendment.status} to ${req.body.status}`)
+    if (amendment.createdById === req.user!.userId && ['APPROVED', 'REJECTED'].includes(req.body.status)) throw new ConflictError('A plan amendment author cannot approve or reject their own amendment')
+    const proposed = Array.isArray(amendment.proposedSchedule) ? amendment.proposedSchedule as Array<Record<string, unknown>> : []
+    const updated = await withTenantDbTransaction(prisma, async tx => {
+      if (req.body.status === 'APPLIED') {
+        for (const item of proposed) {
+          const rowKey = String(item.rowKey ?? '')
+          const startAt = new Date(String(item.projectedStartAt ?? ''))
+          const finishAt = new Date(String(item.projectedFinishAt ?? ''))
+          if (!rowKey || Number.isNaN(startAt.getTime()) || Number.isNaN(finishAt.getTime())) throw new ValidationError('Amendment schedule is malformed')
+          const row = await tx.generationPlanRow.update({ where: { planId_rowKey: { planId: amendment.planId, rowKey } }, data: { projectedStartAt: startAt, projectedFinishAt: finishAt, criticalPath: Boolean(item.criticalPath) } })
+          if (row.capacityAllocationId) await tx.capacityAllocation.updateMany({ where: { id: row.capacityAllocationId, tenantId: tenantOf(req) }, data: { startAt, endAt: finishAt, metadata: { source: 'generation-plan-amendment', amendmentId: amendment.id, generation: amendment.generation } as Prisma.InputJsonValue } })
+          if (row.workItemId) await tx.workItem.update({ where: { id: row.workItemId }, data: { dueAt: finishAt } })
+        }
+      }
+      return tx.generationPlanAmendment.update({ where: { id: amendment.id }, data: { status: req.body.status, ...(req.body.status === 'APPROVED' ? { approvedById: req.user!.userId, approvedAt: new Date() } : {}), ...(req.body.status === 'APPLIED' ? { appliedAt: new Date() } : {}) } })
+    }, tenantOf(req))
+    await logEvent('GenerationPlanAmendmentTransitioned', 'GenerationPlanAmendment', amendment.id, req.user!.userId, { planId: amendment.planId, status: req.body.status, comment: req.body.comment })
+    res.json(updated)
   } catch (err) { next(err) }
 })

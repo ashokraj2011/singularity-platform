@@ -1,9 +1,10 @@
 import { Prisma } from '@prisma/client'
+import { traceIdFromParts } from '@workgraph/shared-types'
 import { prisma } from './prisma'
 import { publishEvent } from './eventbus/publisher'
 import { emitAuditEvent } from './audit-gov-emit'
 import { redactSecrets } from './redact'
-import { currentTenantIdForDb } from './tenant-db-context'
+import { currentTenantIdForDb, currentTraceIdForRequest } from './tenant-db-context'
 
 /**
  * M11.e — convert legacy PascalCase eventType strings (e.g. "AgentRunCompleted",
@@ -39,7 +40,7 @@ export async function logEvent(
     ? safePayload.traceId
     : typeof safePayload?.trace_id === 'string'
       ? safePayload.trace_id
-      : undefined
+      : currentTraceIdForRequest() ?? traceIdFromParts(['workgraph', entityType, entityId])
   const requestTenantId = currentTenantIdForDb()
   const tenantId = requestTenantId
     ?? (typeof safePayload?.tenantId === 'string'
@@ -85,6 +86,11 @@ export async function publishOutbox(
   // secret reaches any of them regardless of the caller. Non-secret correlation
   // fields (traceId/actorId/capabilityId) are unaffected by the patterns.
   const safe = redactSecrets(payload)
+  const traceId = typeof safe.traceId === 'string'
+    ? safe.traceId
+    : typeof safe.trace_id === 'string'
+      ? safe.trace_id
+      : currentTraceIdForRequest() ?? traceIdFromParts(['workgraph', aggregateType, aggregateId])
   const requestTenantId = currentTenantIdForDb()
   const tenantId = requestTenantId
     ?? (typeof safe.tenantId === 'string'
@@ -106,7 +112,7 @@ export async function publishOutbox(
       eventName: toCanonicalEventName(eventType),
       envelope: {
         source_service: 'workgraph-api',
-        trace_id:       (safe.traceId as string | undefined) ?? null,
+        trace_id:       traceId,
         tenant_id:      tenantId ?? null,
         subject:        { kind: aggregateToSubjectKind(aggregateType), id: aggregateId },
         actor:          safe.actorId ? { kind: 'user', id: safe.actorId as string } : null,
@@ -124,7 +130,7 @@ export async function publishOutbox(
   // M22 — central audit-governance ledger (fire-and-forget). Every workgraph
   // state transition that goes through publishOutbox lands in audit_events.
   emitAuditEvent({
-    trace_id:       (safe.traceId as string | undefined),
+    trace_id:       traceId,
     source_service: 'workgraph-api',
     kind:           toCanonicalEventName(eventType),
     subject_type:   aggregateType,

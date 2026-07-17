@@ -2,6 +2,8 @@ import { prisma } from '../../lib/prisma'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { projectSpecPackageSchema } from '../studio/studio-spec.schemas'
 import { recomputePosterior } from '../rooms/rooms.service'
+import { betaStats } from '../rooms/belief'
+import { executionThresholds } from '../portfolio-execution/execution-thresholds'
 
 /** Close the epistemic loop: verified code outcomes become EXPERIMENT evidence on the
  * project claims that justified each requirement. Evidence keys make retries idempotent. */
@@ -39,7 +41,18 @@ export async function foldReconciliationIntoClaims(reconciliationRunId: string, 
     select: { id: true },
   })
   let created = 0
+  let changeRequests = 0
+  const materialDriftThreshold = executionThresholds().materialDrift
   for (const claim of validClaims) {
+    const existingSignal = await prisma.claimDriftSignal.findUnique({
+      where: { reconciliationRunId_claimId: { reconciliationRunId: run.id, claimId: claim.id } },
+    })
+    // The evidence and drift pair is immutable for one reconciliation/claim.
+    // A redelivery must not recalculate "before" from the already-updated posterior.
+    if (existingSignal) continue
+    const before = await prisma.claim.findUnique({ where: { id: claim.id }, select: { alpha: true, beta: true, statement: true } })
+    if (!before) continue
+    const beforeMean = betaStats(before).mean
     const supports = (outcomes.get(claim.id) ?? []).every(Boolean)
     const evidenceKey = `recon:${run.id}:${claim.id}`
     const existing = await prisma.evidence.findUnique({ where: { evidenceKey }, select: { id: true } })
@@ -60,11 +73,38 @@ export async function foldReconciliationIntoClaims(reconciliationRunId: string, 
       created += 1
     }
     await recomputePosterior(claim.id)
+    const after = await prisma.claim.findUnique({ where: { id: claim.id }, select: { alpha: true, beta: true } })
+    const afterMean = after ? betaStats(after).mean : beforeMean
+    const delta = afterMean - beforeMean
+    const direction = delta > 0.0001 ? 'UP' : delta < -0.0001 ? 'DOWN' : 'UNCHANGED'
+    const signal = await prisma.claimDriftSignal.create({
+      data: { projectId: run.workItem.projectId, claimId: claim.id, reconciliationRunId: run.id, beforeMean, afterMean, delta, direction, threshold: materialDriftThreshold, traceId: run.traceId, tenantId: run.tenantId, status: Math.abs(delta) >= materialDriftThreshold ? 'MATERIAL' : 'OBSERVED' },
+    })
+    if (delta <= -materialDriftThreshold) {
+      const currentVersion = await prisma.specificationVersion.findFirst({ where: { specificationProjectId: run.workItem.projectId, tenantId: run.tenantId }, orderBy: { version: 'desc' }, select: { id: true } })
+      const existing = await prisma.specificationChangeRequest.findFirst({ where: { driftSignalId: signal.id, projectId: run.workItem.projectId } })
+      if (!existing) {
+        await prisma.specificationChangeRequest.create({
+          data: {
+            projectId: run.workItem.projectId,
+            driftSignalId: signal.id,
+            specificationVersionId: currentVersion?.id,
+            title: `Revisit claim: ${before.statement.slice(0, 180)}`,
+            reason: `Verified implementation evidence lowered confidence from ${Math.round(beforeMean * 100)}% to ${Math.round(afterMean * 100)}%. Review affected requirements before the next generation.`,
+            traceId: run.traceId,
+            requestedById: actorId,
+            metadata: { reconciliationRunId: run.id, workItemId: run.workItemId, claimId: claim.id } as any,
+            tenantId: run.tenantId,
+          },
+        })
+        changeRequests += 1
+      }
+    }
   }
   if (validClaims.length) {
     const claimIds = validClaims.map(claim => claim.id)
-    await logEvent('ReconciliationClaimEvidenceFolded', 'ReconciliationRun', run.id, actorId, { claimIds, created })
-    await publishOutbox('ReconciliationRun', run.id, 'ReconciliationClaimEvidenceFolded', { claimIds, created })
+    await logEvent('ReconciliationClaimEvidenceFolded', 'ReconciliationRun', run.id, actorId, { claimIds, created, changeRequests, traceId: run.traceId ?? undefined })
+    await publishOutbox('ReconciliationRun', run.id, 'ReconciliationClaimEvidenceFolded', { claimIds, created, changeRequests, traceId: run.traceId ?? undefined, actorId })
   }
-  return { created, claimIds: validClaims.map(claim => claim.id) }
+  return { created, changeRequests, claimIds: validClaims.map(claim => claim.id) }
 }

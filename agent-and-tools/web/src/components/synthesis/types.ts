@@ -328,6 +328,12 @@ export interface SynGenerationPlanRow {
   projectedStartAt?: string | null;
   projectedFinishAt?: string | null;
   criticalPath?: boolean;
+  capacityCalendarId?: string | null;
+  capacityAllocationId?: string | null;
+  actualStartAt?: string | null;
+  actualFinishAt?: string | null;
+  actualHours?: number | null;
+  actualCostUsd?: number | null;
 }
 
 export interface SynGenerationPlan {
@@ -339,6 +345,7 @@ export interface SynGenerationPlan {
   appliedRows: number;
   validation?: { valid?: boolean; errors?: string[]; warnings?: string[] };
   rows: SynGenerationPlanRow[];
+  amendments?: Array<{ id: string; generation: number; status: string; reason: string; requestedStartAt?: string | null; createdAt: string }>;
   createdAt: string;
   updatedAt: string;
 }
@@ -359,6 +366,7 @@ export interface SynProjectEconomics {
     tokenLimit?: number | null;
     warningPercent: number;
     hardCapPercent: number;
+    stageBudgets?: Record<string, { tokenLimit?: number | null; costLimitUsd?: number | null }>;
   } | null;
   rollup: {
     estimatedPlanCostHigh: number;
@@ -366,7 +374,13 @@ export interface SynProjectEconomics {
     ledgerCostUsd: number;
     tokenPercent?: number | null;
     costPercent?: number | null;
+    actualCostUsd: number;
+    actualHours: number;
+    slippedRows: number;
   };
+  budgetDecision: SynBudgetDecision;
+  budgetEvents: Array<{ id: string; status: string; action: string; percentUsed: number; stage?: string | null; traceId?: string | null; createdAt: string }>;
+  tenantEnvelope?: { id: string; tokenLimit?: number | null; costLimitUsd?: number | null; economyModelAlias?: string | null; warningPercent: number; hardCapPercent: number } | null;
   ledger: Array<{
     id: string;
     stage?: string | null;
@@ -378,4 +392,92 @@ export interface SynProjectEconomics {
     createdAt: string;
   }>;
   plans: SynGenerationPlan[];
+}
+
+export interface SynTraceNode {
+  id: string;
+  type: string;
+  label: string;
+  status?: string | null;
+  href?: string;
+  detail?: string;
+  data?: Record<string, unknown>;
+}
+
+export interface SynTraceability {
+  project: { id: string; code: string; name: string; status: string };
+  nodes: SynTraceNode[];
+  edges: Array<{ from: string; to: string; kind: string }>;
+  summary: {
+    boards: number;
+    concepts: number;
+    rejectedOptions: number;
+    claims: number;
+    requirements: number;
+    decisions: number;
+    workItems: number;
+    reconciliations: number;
+    completeChains: number;
+  };
+}
+
+export interface SynClaimDriftSignal {
+  id: string;
+  beforeMean: number;
+  afterMean: number;
+  delta: number;
+  direction: "UP" | "DOWN" | "UNCHANGED";
+  threshold: number;
+  status: string;
+  traceId?: string | null;
+  createdAt: string;
+  claim: { id: string; statement: string; status: string };
+  reconciliationRun?: { id: string; status: string; workItemId: string } | null;
+}
+
+export interface SynChangeRequest {
+  id: string;
+  title: string;
+  reason: string;
+  status: "RECOMMENDED" | "OPEN" | "APPROVED" | "REJECTED" | "APPLIED";
+  requestedById?: string | null;
+  traceId?: string | null;
+  createdAt: string;
+  driftSignal?: SynClaimDriftSignal | null;
+}
+
+export interface SynProjectLearning {
+  signals: SynClaimDriftSignal[];
+  changeRequests: SynChangeRequest[];
+  claims: Array<{ id: string; statement: string; mean: number; status: string }>;
+  summary: { materialDrops: number; materialGains: number; openChangeRequests: number };
+}
+
+export interface SynPilotReadiness {
+  projectId: string;
+  ready: boolean;
+  score: number;
+  checks: Array<{ key: string; label: string; ok: boolean; fixRoute: string }>;
+  metrics: {
+    origin: { specGenerated: number; adHoc: number };
+    verified: number;
+    finalized: number;
+    actualRows: number;
+    specGeneratedToAdHocRatio?: number | null;
+  };
+  traceability: SynTraceability["summary"];
+  learning: SynProjectLearning["summary"];
+}
+
+export interface SynBudgetDecision {
+  effective: {
+    status: "HEALTHY" | "WARNING" | "EXCEEDED" | "HARD_CAP";
+    action: string;
+    allowAgentTurns: boolean;
+    humanActionsAllowed: boolean;
+    raiseAvailable: boolean;
+    recommendedModelAlias?: string | null;
+  };
+  project: { status: string; percentUsed: number; tokens: number; costUsd: number; tokenLimit?: number | null; costLimitUsd?: number | null };
+  tenant: { status: string; percentUsed: number; tokens: number; costUsd: number; tokenLimit?: number | null; costLimitUsd?: number | null };
 }

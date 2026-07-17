@@ -24,6 +24,8 @@ import {
   Scale,
   Sparkles,
   Ticket,
+  TrendingUp,
+  ShieldCheck,
   Wifi,
   WifiOff,
   type LucideIcon,
@@ -54,6 +56,8 @@ export const SYN_NAV: SynNavItem[] = [
   { href: "/synthesis/use-cases", label: "Use Cases", icon: Boxes, hint: "Track maturity", phase: "Shape" },
   { href: "/synthesis/generate", label: "Generate", icon: Ticket, hint: "Compile the spec and generate work", phase: "Execute" },
   { href: "/synthesis/economics", label: "Economics", icon: BadgeDollarSign, hint: "Budget, token use, and timeline", phase: "Execute" },
+  { href: "/synthesis/learning", label: "Learning", icon: TrendingUp, hint: "Belief drift and governed change", phase: "Execute" },
+  { href: "/synthesis/pilot", label: "Pilot Proof", icon: ShieldCheck, hint: "End-to-end readiness and evidence", phase: "Execute" },
 ];
 
 const PHASES: SynNavItem["phase"][] = ["Ideate", "Synthesize", "Shape", "Execute"];

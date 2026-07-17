@@ -9,11 +9,15 @@ import type {
   SynConvergence,
   SynDecisionDossier,
   SynGenerationPlan,
+  SynBudgetDecision,
+  SynPilotReadiness,
   SynPortfolio,
+  SynProjectLearning,
   SynProbe,
   SynProject,
   SynProjectEconomics,
   SynRoom,
+  SynTraceability,
   SynWorkItemCard,
 } from "../types";
 
@@ -195,4 +199,21 @@ export function useProjectEconomics(
     projectId ? `/studio/projects/${projectId}/economics` : null,
     config,
   );
+}
+
+export function useProjectTraceability(projectId: string | null, config?: SWRConfiguration<SynTraceability>) {
+  return useSyn<SynTraceability>(projectId ? `/studio/projects/${projectId}/traceability` : null, config);
+}
+
+export function useProjectLearning(projectId: string | null, config?: SWRConfiguration<SynProjectLearning>) {
+  return useSyn<SynProjectLearning>(projectId ? `/studio/projects/${projectId}/learning` : null, config);
+}
+
+export function usePilotReadiness(projectId: string | null, config?: SWRConfiguration<SynPilotReadiness>) {
+  return useSyn<SynPilotReadiness>(projectId ? `/studio/projects/${projectId}/pilot-readiness` : null, config);
+}
+
+export function useBudgetDecision(projectId: string | null, stage?: string, config?: SWRConfiguration<SynBudgetDecision>) {
+  const suffix = stage ? `?stage=${encodeURIComponent(stage)}` : "";
+  return useSyn<SynBudgetDecision>(projectId ? `/studio/projects/${projectId}/budget-decision${suffix}` : null, config);
 }

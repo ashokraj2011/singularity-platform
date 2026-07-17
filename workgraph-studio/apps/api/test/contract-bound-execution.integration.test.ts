@@ -10,8 +10,9 @@ import { registerSubmission } from '../src/modules/submissions/submissions.servi
 import { specificationPackageBodySchema } from '../src/modules/specifications/specification.schemas'
 import { requestSpecificationReview } from '../src/modules/specifications/specification-review.service'
 import { approveSpecificationVersion } from '../src/modules/specifications/specifications.service'
-import { applyDecisionApproval } from '../src/modules/portfolio-execution/portfolio-execution.service'
+import { applyDecisionApproval, evaluateProjectBudget, transitionChangeRequest } from '../src/modules/portfolio-execution/portfolio-execution.service'
 import { runWithTenantDbContext, withTenantDbTransaction } from '../src/lib/tenant-db-context'
+import { foldReconciliationIntoClaims } from '../src/modules/reconciliations/reconciliation-claim-evidence.service'
 
 const HAS_DB = Boolean(process.env.TEST_DATABASE_URL)
 const tenantId = 'contract-e2e'
@@ -356,5 +357,142 @@ describe.runIf(HAS_DB)('contract-bound work execution — real Postgres', () => 
     await prisma.workItemEvent.create({ data: { workItemId: workItem.id, eventType: 'SLA_BREACHED', tenantId } })
     await expect(prisma.workItemEvent.create({ data: { workItemId: workItem.id, eventType: 'SLA_BREACHED', tenantId } }))
       .rejects.toMatchObject({ code: 'P2002' })
+  })
+
+  it('turns material reconciliation drift into traceable change control', async () => {
+    const suffix = randomUUID().slice(0, 8)
+    const traceId = `contract-drift-${suffix}`
+    const project = await prisma.specificationProject.create({
+      data: { code: `DRIFT-${suffix}`, name: 'Drift feedback loop', tenantId },
+    })
+    const claim = await prisma.claim.create({
+      data: {
+        projectId: project.id,
+        statement: 'The implementation satisfies the governing design constraint',
+        stewardId: `steward-${suffix}`,
+        tenantId,
+      },
+    })
+    await prisma.projectSpecification.create({
+      data: {
+        projectId: project.id,
+        package: {
+          analysis: {},
+          decisions: [],
+          requirements: [{
+            id: 'REQ-DRIFT',
+            statement: 'Enforce the governing design constraint',
+            priority: 'MUST',
+            acceptanceCriteria: ['The dynamic verifier passes'],
+            claimRefs: [claim.id],
+            decisionRefs: [],
+          }],
+        },
+        tenantId,
+      },
+    })
+    const workItem = await prisma.workItem.create({
+      data: { workCode: `WRK-DRIFT-${suffix}`, title: 'Exercise learning feedback', projectId: project.id, tenantId },
+    })
+    const specification = await prisma.specificationVersion.create({
+      data: {
+        specificationProjectId: project.id,
+        version: 1,
+        status: 'APPROVED',
+        package: { requirements: [{ id: 'REQ-DRIFT', statement: 'Enforce the governing design constraint' }] },
+        contentHash: `sha256:${'c'.repeat(64)}`,
+        tenantId,
+      },
+    })
+    const submission = await prisma.implementationSubmission.create({
+      data: {
+        workItemId: workItem.id,
+        specificationVersionId: specification.id,
+        specificationHash: specification.contentHash!,
+        repository: 'example/drift-repo',
+        baseCommitSha: 'base-drift',
+        headCommitSha: 'head-drift',
+        source: 'API',
+        tenantId,
+      },
+    })
+    const reconciliation = await prisma.reconciliationRun.create({
+      data: {
+        workItemId: workItem.id,
+        submissionId: submission.id,
+        specificationVersionId: specification.id,
+        specificationHash: specification.contentHash,
+        mode: 'DYNAMIC',
+        status: 'FAILED',
+        reconciliationState: 'NOT_VERIFIED',
+        traceId,
+        tenantId,
+        verdicts: {
+          create: { requirementId: 'REQ-DRIFT', verdict: 'FAIL', verified: true },
+        },
+      },
+    })
+
+    const folded = await runWithTenantDbContext(tenantId, () => foldReconciliationIntoClaims(reconciliation.id, `reviewer-${suffix}`), traceId)
+    expect(folded).toMatchObject({ created: 1, changeRequests: 1, claimIds: [claim.id] })
+    const signal = await prisma.claimDriftSignal.findUniqueOrThrow({
+      where: { reconciliationRunId_claimId: { reconciliationRunId: reconciliation.id, claimId: claim.id } },
+    })
+    expect(signal).toMatchObject({ direction: 'DOWN', status: 'MATERIAL', traceId })
+    const changeRequest = await prisma.specificationChangeRequest.findFirstOrThrow({
+      where: { projectId: project.id, driftSignal: { reconciliationRunId: reconciliation.id } },
+    })
+    expect(changeRequest).toMatchObject({ status: 'RECOMMENDED', traceId })
+    expect(await prisma.eventLog.findFirstOrThrow({
+      where: { eventType: 'ReconciliationClaimEvidenceFolded', entityId: reconciliation.id },
+    })).toMatchObject({ traceId, tenantId })
+
+    await runWithTenantDbContext(tenantId, () => foldReconciliationIntoClaims(reconciliation.id, `reviewer-${suffix}`), traceId)
+    expect(await prisma.claimDriftSignal.findUniqueOrThrow({ where: { id: signal.id } })).toMatchObject({
+      beforeMean: signal.beforeMean,
+      afterMean: signal.afterMean,
+      delta: signal.delta,
+      status: 'MATERIAL',
+    })
+    await expect(runWithTenantDbContext(tenantId, () => transitionChangeRequest(changeRequest.id, 'APPLIED', `independent-${suffix}`)))
+      .rejects.toThrow(/cannot transition/i)
+    await runWithTenantDbContext(tenantId, () => transitionChangeRequest(changeRequest.id, 'OPEN', `reviewer-${suffix}`))
+    await expect(runWithTenantDbContext(tenantId, () => transitionChangeRequest(changeRequest.id, 'APPROVED', `reviewer-${suffix}`)))
+      .rejects.toThrow(/cannot approve/i)
+    await runWithTenantDbContext(tenantId, () => transitionChangeRequest(changeRequest.id, 'APPROVED', `independent-${suffix}`))
+    await runWithTenantDbContext(tenantId, () => transitionChangeRequest(changeRequest.id, 'APPLIED', `reviewer-${suffix}`))
+    expect(await prisma.specificationChangeRequest.findUniqueOrThrow({ where: { id: changeRequest.id } })).toMatchObject({ status: 'APPLIED' })
+  })
+
+  it('enforces the initiative envelope when a workflow stage has no narrower budget', async () => {
+    const suffix = randomUUID().slice(0, 8)
+    const project = await prisma.specificationProject.create({
+      data: { code: `BUDGET-${suffix}`, name: 'Hierarchical budget controls', tokenBudget: 100, tenantId },
+    })
+    await prisma.projectBudgetEnvelope.create({
+      data: {
+        projectId: project.id,
+        tokenLimit: 100,
+        warningPercent: 80,
+        hardCapPercent: 120,
+        stageBudgets: { Build: { tokenLimit: 10 } },
+        tenantId,
+      },
+    })
+    await prisma.projectTokenLedgerEntry.createMany({ data: [
+      { projectId: project.id, evidenceKey: `budget-design-${suffix}`, stage: 'Design', totalTokens: 73, tenantId },
+      { projectId: project.id, evidenceKey: `budget-build-${suffix}`, stage: 'Build', totalTokens: 12, tenantId },
+    ] })
+
+    const fallback = await runWithTenantDbContext(tenantId, () => evaluateProjectBudget(project.id, { stage: 'Verify' }))
+    expect(fallback).toMatchObject({
+      effective: { status: 'WARNING', action: 'ROUTE_ECONOMY_MODEL' },
+      project: { tokens: 85, tokenLimit: 100 },
+    })
+    const stage = await runWithTenantDbContext(tenantId, () => evaluateProjectBudget(project.id, { stage: 'Build' }))
+    expect(stage).toMatchObject({
+      effective: { status: 'HARD_CAP', action: 'DENY_AGENT_TURNS' },
+      project: { tokens: 12, tokenLimit: 10 },
+    })
   })
 })

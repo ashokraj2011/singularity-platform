@@ -39,4 +39,12 @@ describe('workflow authorization hardening contracts', () => {
     expect(triggers).toContain("assertTemplatePermission(req.user!.userId, body.templateId, 'edit')")
     expect(triggers).toContain('canViewTemplate')
   })
+
+  it('protects generation plans, actuals, and baseline amendments', () => {
+    const contractBound = read('src/modules/work-items/contract-bound.router.ts')
+    expect(contractBound).toContain('assertGenerationProjectAccess')
+    expect(contractBound).toContain('assertGenerationPlanAccess')
+    expect(contractBound).toContain("assertGenerationPlanAccess(req, String(req.params.planId), 'edit')")
+    expect(contractBound).toContain("req.body.status === 'APPLIED' ? 'edit' : 'approve'")
+  })
 })
