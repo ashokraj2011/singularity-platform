@@ -3,18 +3,18 @@
 import { useMemo, useState } from "react";
 import type { FocusEvent } from "react";
 import { usePathname } from "next/navigation";
-import { ExternalLink, Grid3X3 } from "lucide-react";
+import { ChevronRight, ExternalLink, Grid3X3 } from "lucide-react";
 import { controlPlaneApps } from "@/lib/controlPlaneApps";
 
 function inferCurrentApp(pathname: string | null | undefined): string {
-  if (!pathname) return "agent-studio";
-  if (pathname.startsWith("/control-plane")) return "control-plane";
-  if (pathname.startsWith("/workflows")) return "workflows";
-  if (pathname.startsWith("/runs")) return "runs";
-  if (pathname.startsWith("/work-items")) return "work-items";
-  if (pathname.startsWith("/identity")) return "identity";
-  if (pathname.startsWith("/operations")) return "operations";
-  return "agent-studio";
+  if (!pathname || pathname === "/" || pathname.startsWith("/start") || pathname.startsWith("/help")) return "command-center";
+  if (pathname.startsWith("/synthesis") || pathname.startsWith("/concept-studio") || pathname.startsWith("/studio") || pathname.startsWith("/learning")) return "synthesis";
+  if (pathname.startsWith("/work-items") || pathname.startsWith("/workflows/planner") || pathname.startsWith("/workflows/routing-policies")) return "work-management";
+  if (pathname.startsWith("/agents") || pathname.startsWith("/agent-") || pathname.startsWith("/capabilities") || pathname.startsWith("/tools") || pathname.startsWith("/prompt-") || pathname.startsWith("/behavior-") || pathname.startsWith("/instruction-") || pathname.startsWith("/memory") || pathname.startsWith("/executions")) return "agent-studio";
+  if (pathname.startsWith("/workflows") || pathname.startsWith("/runs") || pathname.startsWith("/workbench") || pathname.startsWith("/engine") || pathname.startsWith("/audit")) return "workflows";
+  if (pathname.startsWith("/identity") || pathname.startsWith("/tool-grants")) return "identity";
+  if (pathname.startsWith("/operations") || pathname.startsWith("/llm-settings") || pathname.startsWith("/control-plane") || pathname.startsWith("/runtime-") || pathname.startsWith("/cost") || pathname.startsWith("/settings")) return "operations";
+  return "command-center";
 }
 
 export function AppSwitcher({ currentApp }: { currentApp?: string }) {
@@ -38,7 +38,7 @@ export function AppSwitcher({ currentApp }: { currentApp?: string }) {
         onClick={() => setOpen(value => !value)}
         aria-expanded={open}
         aria-haspopup="menu"
-        title="Switch Singularity app"
+        title="Switch workspace"
         style={{
           height: 32,
           display: "inline-flex",
@@ -75,7 +75,7 @@ export function AppSwitcher({ currentApp }: { currentApp?: string }) {
           }}
         >
           <div style={{ padding: "8px 10px 10px", fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.12em", color: "var(--color-outline)" }}>
-            Singularity Apps
+            Platform Workspaces
           </div>
           {links.map(item => {
             const Icon = item.icon;
@@ -121,7 +121,9 @@ export function AppSwitcher({ currentApp }: { currentApp?: string }) {
                     {item.summary}
                   </span>
                 </span>
-                <ExternalLink size={13} style={{ color: "var(--color-outline)" }} />
+                {isExternalApp
+                  ? <ExternalLink size={13} style={{ color: "var(--color-outline)" }} />
+                  : <ChevronRight size={14} style={{ color: "var(--color-outline)" }} />}
               </a>
             );
           })}
@@ -133,6 +135,7 @@ export function AppSwitcher({ currentApp }: { currentApp?: string }) {
 
 function appAccent(id: string): { fg: string; bg: string } {
   if (id === "agent-studio") return { fg: "var(--accent-agent)", bg: "var(--accent-agent-soft)" };
+  if (id === "synthesis") return { fg: "var(--accent-evidence)", bg: "var(--accent-evidence-soft)" };
   if (id === "identity") return { fg: "var(--accent-identity)", bg: "var(--accent-identity-soft)" };
   if (id === "operations") return { fg: "var(--accent-runtime)", bg: "var(--accent-runtime-soft)" };
   return { fg: "var(--accent-workflow)", bg: "var(--accent-workflow-soft)" };

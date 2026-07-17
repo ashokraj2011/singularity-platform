@@ -53,7 +53,7 @@ const loop = [
   },
   {
     label: "Plan",
-    title: "Guided Launch",
+    title: "Workflow Launch",
     href: "/workflows/start",
     icon: Workflow,
     detail: "Intent, template, runtime checks, and governed run kickoff",
@@ -102,11 +102,11 @@ const loop = [
 ] satisfies Array<{ label: string; title: string; href: string; icon: LucideIcon; detail: string; tone: string }>;
 
 const commandActions = [
-  { label: "Start SDLC Work", href: "/start", icon: Play, primary: true },
-  { label: "Paste Story", href: "/workflows/planner", icon: ClipboardList },
-  { label: "Guided Launch", href: "/workflows/start", icon: Workflow },
+  { label: "Start Governed Work", href: "/start", icon: Play, primary: true },
+  { label: "Plan Work", href: "/workflows/planner", icon: ClipboardList },
+  { label: "Workflow Launch", href: "/workflows/start", icon: Workflow },
   { label: "Runs", href: "/runs", icon: Activity },
-  { label: "Runtime + LLM", href: "/llm-settings", icon: Network },
+  { label: "Runtime & Models", href: "/llm-settings", icon: Network },
   { label: "Create Agent", href: "/agents/studio", icon: Bot },
 ];
 
@@ -163,24 +163,24 @@ export default async function SdlcCommandCenterPage() {
   ]);
 
   return (
-    <div style={{ maxWidth: 1440, display: "grid", gap: 18 }}>
-      <section style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.35fr) minmax(320px, 0.65fr)", gap: 18, alignItems: "stretch" }}>
+    <div style={{ width: "100%", minWidth: 0, maxWidth: 1440, display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 18 }}>
+      <section className="grid w-full min-w-0 items-stretch gap-[18px] xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.65fr)]">
         <div className="page-hero">
           <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--accent-workflow)", background: "var(--accent-workflow-soft)", border: "1px solid rgba(37,99,235,0.18)", borderRadius: 999, padding: "5px 10px", fontSize: 12, fontWeight: 850, textTransform: "uppercase", marginBottom: 12 }}>
             <Sparkles size={15} />
             Software Lifecycle Command Center
           </div>
-          <h1 className="page-header" style={{ margin: 0, fontSize: 40, lineHeight: 1.08 }}>Paste Story. Launch Workflow. Export Evidence.</h1>
+          <h1 className="page-header" style={{ margin: 0, fontSize: 36, lineHeight: 1.08 }}>Shape Intent. Govern Delivery. Prove Outcomes.</h1>
           <p style={{ margin: "10px 0 0", maxWidth: 900, color: "var(--color-outline)", fontSize: 14, lineHeight: 1.6 }}>
-            The primary path is simple: split a story into WorkItems, choose the SDLC intent, launch the seeded workflow, watch the run cockpit, and hand off evidence or Copilot YAML.
+            Move ideas, events, or approved specifications into scoped WorkItems, governed execution, independent verification, and an auditable record of the outcome.
           </p>
           <div className="evidence-rail" style={{ marginTop: 18 }}>
             {[
-              ["01", "Story", "Capture the request"],
-              ["02", "WorkItems", "Split and route"],
-              ["03", "Workflow", "Launch with gates"],
-              ["04", "Run", "Watch execution"],
-              ["05", "Evidence", "Export proof"],
+              ["01", "Intent", "Frame the outcome"],
+              ["02", "Contract", "Decide and specify"],
+              ["03", "Work", "Scope and route"],
+              ["04", "Execution", "Orchestrate with gates"],
+              ["05", "Evidence", "Verify the outcome"],
             ].map(([step, label, detail]) => (
               <div key={step} className="evidence-step">
                 <span style={{ width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--accent-workflow-soft)", color: "var(--accent-workflow)", fontWeight: 900, fontSize: 11 }}>{step}</span>

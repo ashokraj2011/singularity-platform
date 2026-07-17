@@ -29,7 +29,7 @@ export const NOTIFICATION_STATE_KEY = "singularity.notification.state.v1";
 
 export const NOTIFICATION_CATEGORIES: Array<{ id: NotificationCategory; label: string; description: string }> = [
   { id: "workflow", label: "Workflow", description: "Runs, WorkItems, approvals, and SDLC evidence." },
-  { id: "runtime", label: "Runtime + LLM", description: "Runtime Bridge, MCP, LLM provider, and model readiness." },
+  { id: "runtime", label: "Runtime & Models", description: "Runtime Bridge, MCP, provider, and model readiness." },
   { id: "security", label: "Security", description: "IAM, access keys, runtime tokens, and authentication issues." },
   { id: "governance", label: "Governance", description: "Audit, trust evidence, Git push, and release handoff." },
   { id: "setup", label: "Setup", description: "Core platform services and required setup tasks." },
@@ -107,7 +107,7 @@ export function notificationCategoryForCheck(check: Record<string, unknown>): No
 }
 
 export function notificationActionLabel(item: PlatformNotification): string {
-  if (item.category === "runtime") return "Open Runtime + LLM";
+  if (item.category === "runtime") return "Open Runtime & Models";
   if (item.category === "security") return "Open Security";
   if (item.category === "workflow") return "Open Workflows";
   if (item.category === "agents") return "Open Agent Studio";

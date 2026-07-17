@@ -61,7 +61,7 @@ const SETTINGS_KEY = "singularity.platform.settings.v1";
 const sections: Array<{ id: SettingsSection; label: string; description: string; icon: LucideIcon }> = [
   { id: "profile", label: "Profile", description: "Signed-in user, shell defaults, and local mode.", icon: User },
   { id: "appearance", label: "Appearance", description: "Switch between the current palette and enterprise green.", icon: Palette },
-  { id: "runtime", label: "Runtime + LLM", description: "MCP dial-in, model provider readiness, and setup commands.", icon: Cpu },
+  { id: "runtime", label: "Runtime & Models", description: "MCP dial-in, model provider readiness, and setup commands.", icon: Cpu },
   { id: "source", label: "Git + Source", description: "Repository broker, GitHub connections, and push identity.", icon: GitBranch },
   { id: "notifications", label: "Notifications", description: "Choose which platform signals appear in the bell.", icon: Bell },
   { id: "workflows", label: "Workflow Defaults", description: "Start route, evidence mode, and SDLC launch preferences.", icon: Workflow },
@@ -342,7 +342,7 @@ export default function SettingsPage() {
                   <CommandLine label="Laptop / remote runtime setup" command="bin/mcp-runtime-setup.sh" />
                   <CommandLine label="Two terminal split-runtime test" command={"# terminal 1\nbin/bare-metal-apps.sh up\n\n# terminal 2, laptop or runtime host\nbin/mcp-runtime-setup.sh"} />
                   <div className="flex flex-wrap gap-2">
-                    <Link href="/llm-settings" className="btn-primary">Open Runtime + LLM</Link>
+                    <Link href="/llm-settings" className="btn-primary">Open Runtime & Models</Link>
                     <Link href="/operations/readiness" className="btn-secondary">Open Readiness</Link>
                   </div>
                 </div>
@@ -411,9 +411,9 @@ export default function SettingsPage() {
                       value={settings.defaultStartRoute}
                       onChange={(event) => updateLocalSettings({ ...settings, defaultStartRoute: event.target.value as LocalSettings["defaultStartRoute"] })}
                     >
-                      <option value="/start">Start SDLC Work</option>
-                      <option value="/workflows/planner">Story Planner</option>
-                      <option value="/workflows/start">Guided Launch</option>
+                      <option value="/start">Start Governed Work</option>
+                      <option value="/workflows/planner">Work Planner</option>
+                      <option value="/workflows/start">Workflow Launch</option>
                     </select>
                     <Link href={settings.defaultStartRoute} className="btn-secondary mt-3">Open default start</Link>
                   </div>

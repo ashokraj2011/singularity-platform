@@ -197,10 +197,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         {/* ── Page content ── */}
         <main
+          className="app-main"
           style={{
             flex: 1,
             overflow: "auto",
-            padding: "2rem",
+            minWidth: 0,
             background: "var(--color-surface)",
           }}
         >

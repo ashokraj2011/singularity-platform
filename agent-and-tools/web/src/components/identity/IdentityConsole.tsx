@@ -36,7 +36,7 @@ import { formatDate, valueText } from "@/lib/workgraph";
 
 const viewCopy: Record<IdentityView, { title: string; description: string }> = {
   dashboard: {
-    title: "Identity Dashboard",
+    title: "Identity & Access",
     description: "Monitor IAM users, teams, capabilities, and recent audit activity from the unified platform shell.",
   },
   users: {
@@ -52,7 +52,7 @@ const viewCopy: Record<IdentityView, { title: string; description: string }> = {
     description: "Inspect organizational units and parent-child ownership for teams and capabilities.",
   },
   capabilities: {
-    title: "Capabilities",
+    title: "Capability Governance",
     description: "Review registered capabilities, capability IDs, types, status, and IAM authorization anchors.",
   },
   "capability-graph": {
@@ -64,11 +64,11 @@ const viewCopy: Record<IdentityView, { title: string; description: string }> = {
     description: "Inspect named IAM roles and the permission groups attached to platform actors.",
   },
   permissions: {
-    title: "Permissions",
+    title: "Permission Catalog",
     description: "Browse available permission keys, scopes, resource types, and descriptions.",
   },
   "sharing-grants": {
-    title: "Sharing Grants",
+    title: "Resource Sharing",
     description: "Inspect provider-to-consumer capability sharing grants, grant status, and access direction.",
   },
   audit: {
@@ -76,11 +76,11 @@ const viewCopy: Record<IdentityView, { title: string; description: string }> = {
     description: "Review IAM audit events, actors, target resources, and authorization-relevant changes.",
   },
   "authz-check": {
-    title: "Authorization Check",
+    title: "Policy Tester",
     description: "Evaluate whether a user can perform an action on a capability/resource with the current policy graph.",
   },
   "mcp-servers": {
-    title: "MCP Servers",
+    title: "MCP Registry",
     description: "Register and review the MCP tool servers available to each capability.",
   },
 };

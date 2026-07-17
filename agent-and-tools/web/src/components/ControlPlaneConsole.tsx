@@ -31,10 +31,10 @@ export function ControlPlaneConsole() {
       <section className="card" style={{ padding: 24, marginBottom: 18 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 18, alignItems: "flex-start", flexWrap: "wrap" }}>
           <div>
-            <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8 }}>Unified Control Plane</div>
-            <h1 className="page-header" style={{ marginBottom: 8 }}>Singularity Command Center</h1>
+            <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8 }}>Platform Operations</div>
+            <h1 className="page-header" style={{ marginBottom: 8 }}>Platform Services</h1>
             <p style={{ margin: 0, maxWidth: 800, color: "var(--color-outline)", fontSize: 14, lineHeight: 1.6 }}>
-              One native web app for agents, tools, workflows, WorkItems, identity, and operations. External-capable services such as LLM Gateway and MCP remain deployable outside this UI container.
+              Browse the platform workspaces and inspect the services behind them. Remote-capable components such as LLM Gateway and MCP remain deployable outside the web container.
             </p>
           </div>
           <button className="btn-secondary" type="button" onClick={() => void mutate()}><RefreshCw size={15} /> Refresh</button>
@@ -42,7 +42,7 @@ export function ControlPlaneConsole() {
       </section>
 
       <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10, marginBottom: 18 }}>
-        <Metric label="Native apps" value={apps.length} />
+        <Metric label="Workspaces" value={apps.length} />
         <Metric label="Required healthy" value={data ? (data.summary.requiredHealthy ? "Yes" : "No") : "..."} tone={data?.summary.requiredHealthy ? "#15803d" : "#b91c1c"} />
         <Metric label="Optional healthy" value={data ? `${data.summary.optionalHealthy}/${data.summary.optionalConfigured}` : "..."} />
         <Metric label="Remote capable" value={remoteCapable.length || "..."} />

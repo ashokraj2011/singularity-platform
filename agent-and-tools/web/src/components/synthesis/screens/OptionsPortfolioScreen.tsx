@@ -11,7 +11,7 @@ import { EmptyState, StageHeader, SynButton, SynCard, SynChip, SynError, SynSkel
 export function OptionsPortfolioScreen() {
   const pathname = usePathname() ?? "/synthesis/options";
   const projectId = useSelectedProjectId();
-  return <SynthesisShell title="Options" headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <Portfolio projectId={projectId} /> : <NoProjectSelected surface="Options" />}</SynthesisShell>;
+  return <SynthesisShell title="Solution Options" headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <Portfolio projectId={projectId} /> : <NoProjectSelected surface="Solution Options" />}</SynthesisShell>;
 }
 
 function Portfolio({ projectId }: { projectId: string }) {

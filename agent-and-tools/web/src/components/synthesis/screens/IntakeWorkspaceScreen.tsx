@@ -28,7 +28,7 @@ const STAGES: Array<{ key: IntakeStage; label: string; prompt: string }> = [
 export function IntakeWorkspaceScreen() {
   const pathname = usePathname() ?? "/synthesis/intake";
   const projectId = useSelectedProjectId();
-  return <SynthesisShell title="Intake" headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <Intake projectId={projectId} /> : <NoProjectSelected surface="Intake" />}</SynthesisShell>;
+  return <SynthesisShell title="Source Intake" headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <Intake projectId={projectId} /> : <NoProjectSelected surface="Source Intake" />}</SynthesisShell>;
 }
 
 function Intake({ projectId }: { projectId: string }) {

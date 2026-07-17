@@ -49,7 +49,7 @@ export default function OverviewScreen() {
   );
 
   return (
-    <SynthesisShell title="System Overview">
+    <SynthesisShell title="Initiative Overview">
       <div className="mb-8">
         <MonoMeta className="block mb-1">Health &amp; activity</MonoMeta>
         <h1 className="font-display font-semibold text-2xl text-on-surface tracking-tight">

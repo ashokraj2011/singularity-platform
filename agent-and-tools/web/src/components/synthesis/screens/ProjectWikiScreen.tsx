@@ -11,7 +11,7 @@ import { SynError, SynSkeleton } from "../ui/kit";
 export function ProjectWikiScreen() {
   const pathname = usePathname() ?? "/synthesis/wiki";
   const projectId = useSelectedProjectId();
-  return <SynthesisShell title="Project Wiki" headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <WikiDocument projectId={projectId} /> : <NoProjectSelected surface="Project Wiki" />}</SynthesisShell>;
+  return <SynthesisShell title="Evidence Wiki" headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <WikiDocument projectId={projectId} /> : <NoProjectSelected surface="Evidence Wiki" />}</SynthesisShell>;
 }
 
 function WikiDocument({ projectId }: { projectId: string }) {

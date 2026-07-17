@@ -12,14 +12,14 @@ export default function WorkflowsDomainPage() {
               <Workflow size={15} />
               Workflows
             </div>
-            <h1 className="page-header" style={{ margin: 0, fontSize: 34 }}>Plan, launch, and watch governed SDLC runs.</h1>
+            <h1 className="page-header" style={{ margin: 0, fontSize: 34 }}>Design, operate, and verify governed delivery.</h1>
             <p style={{ margin: "10px 0 0", maxWidth: 820, color: "var(--color-outline)", fontSize: 14, lineHeight: 1.6 }}>
-              Start from a story, create WorkItems, launch a seeded workflow, then follow artifacts, approvals, and evidence in the run cockpit.
+              Turn planned work or incoming events into routed WorkItems, coordinate agents and people through policy gates, and preserve the evidence in one run cockpit.
             </p>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <Link className="btn-primary" href="/workflows/planner"><Route size={15} /> Story Planner</Link>
-            <Link className="btn-secondary" href="/workflows/start"><Play size={15} /> Guided Launch</Link>
+            <Link className="btn-primary" href="/workflows/planner"><Route size={15} /> Work Planner</Link>
+            <Link className="btn-secondary" href="/workflows/start"><Play size={15} /> Workflow Launch</Link>
             <Link className="btn-secondary" href="/workflows/control-plane"><RadioTower size={15} /> Control Plane</Link>
             <Link className="btn-secondary" href="/workflows/loop-strategies"><Wand2 size={15} /> Loop Strategies</Link>
             <Link className="btn-secondary" href="/runs"><Activity size={15} /> Runs</Link>
@@ -27,11 +27,11 @@ export default function WorkflowsDomainPage() {
         </div>
         <div className="evidence-rail" style={{ marginTop: 18 }}>
           {[
-            { label: "Story", detail: "Paste and refine", icon: ClipboardList },
-            { label: "WorkItems", detail: "Scope and route", icon: Route },
-            { label: "Workflow", detail: "Template and gates", icon: Workflow },
-            { label: "Run", detail: "Live cockpit", icon: Activity },
-            { label: "Evidence", detail: "Artifacts and receipts", icon: ScrollText },
+            { label: "Intent", detail: "Plan or receive", icon: ClipboardList },
+            { label: "Work", detail: "Scope and route", icon: Route },
+            { label: "Orchestration", detail: "Flows and gates", icon: Workflow },
+            { label: "Execution", detail: "Live cockpit", icon: Activity },
+            { label: "Evidence", detail: "Verify and retain", icon: ScrollText },
           ].map((item) => {
             const Icon = item.icon;
             return (
@@ -62,7 +62,7 @@ export default function WorkflowsDomainPage() {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 12 }}>
           <ModeCard icon={Play} title="Beginner: Guided SDLC Launch" detail="Choose Build Feature, Fix Bug, Refactor, Add Tests, Security Review, or Release Evidence. The launcher validates runtime, LLM, agents, and templates before starting." href="/start" primary />
           <ModeCard icon={Workflow} title="Advanced: Workflow Designer" detail="Open the full workflow manager and React Flow designer for node-level orchestration, custom gates, branches, and manual execution controls." href="/workflows/templates" />
-          <ModeCard icon={RadioTower} title="Workflow Control Plane" detail="Configure WorkGraph LLM aliases, direct-LLM routes, inbound events, webhooks, outbound event bus subscribers, and runner queues." href="/workflows/control-plane" />
+          <ModeCard icon={RadioTower} title="Workflow Operations" detail="Operate WorkGraph LLM aliases, direct-LLM routes, inbound events, webhooks, outbound event bus subscribers, and runner queues." href="/workflows/control-plane" />
           <ModeCard icon={Wand2} title="Direct LLM Loop Strategies" detail="Build bounded phase and read-only tool loops, validate their contracts, and publish immutable versions for Direct LLM nodes." href="/workflows/loop-strategies" />
           <ModeCard icon={ShieldCheck} title="Governance Gates" detail="Use reusable hard, soft, or automatic gates for design documents, standards, git diffs, tests, approvals, and release evidence." href="/workflows/node-types" />
         </div>

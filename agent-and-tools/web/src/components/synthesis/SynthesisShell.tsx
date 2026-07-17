@@ -39,34 +39,34 @@ export interface SynNavItem {
   label: string;
   icon: LucideIcon;
   hint: string;
-  phase: "Ideate" | "Synthesize" | "Shape" | "Execute";
+  phase: "Orient" | "Explore" | "Decide" | "Specify" | "Govern";
 }
 
 export const SYN_NAV: SynNavItem[] = [
-  { href: "/synthesis/desk", label: "The Desk", icon: Inbox, hint: "Ranked decisions and exceptions", phase: "Ideate" },
-  { href: "/synthesis/intake", label: "Intake", icon: FileInput, hint: "Interview or validate a document pile", phase: "Ideate" },
-  { href: "/synthesis/hub", label: "Initiatives", icon: Home, hint: "Portfolio and active initiatives", phase: "Ideate" },
-  { href: "/synthesis/business", label: "Business Alignment", icon: Target, hint: "Objectives, milestones, sponsor consent, and risk", phase: "Ideate" },
-  { href: "/synthesis/overview", label: "Overview", icon: LayoutDashboard, hint: "Signals, budgets, and activity", phase: "Ideate" },
-  { href: "/synthesis/ideas", label: "Idea Board", icon: Lightbulb, hint: "Spatial capture, facts, and synthesis", phase: "Ideate" },
-  { href: "/synthesis/journey", label: "Journey Map", icon: Map, hint: "Customer stages, pain, and opportunity", phase: "Ideate" },
-  { href: "/synthesis/discovery", label: "Discovery", icon: Network, hint: "Reduce unknowns", phase: "Synthesize" },
-  { href: "/synthesis/rooms", label: "Assumption Rooms", icon: MessagesSquare, hint: "Validate governed claims", phase: "Synthesize" },
-  { href: "/synthesis/options", label: "Options", icon: ListTree, hint: "Compare durable solution options", phase: "Synthesize" },
-  { href: "/synthesis/decisions", label: "Decisions", icon: Scale, hint: "Govern trade-offs and approvals", phase: "Synthesize" },
-  { href: "/synthesis/wiki", label: "Project Wiki", icon: BookOpen, hint: "Living synthesis and evidence", phase: "Synthesize" },
-  { href: "/synthesis/diagrams", label: "Diagrams", icon: GitFork, hint: "Map systems and decisions", phase: "Shape" },
-  { href: "/synthesis/pseudocode", label: "Pseudo-code", icon: Braces, hint: "Shape logic before implementation", phase: "Shape" },
-  { href: "/synthesis/spec", label: "Specification", icon: FileText, hint: "Converge and trace", phase: "Shape" },
-  { href: "/synthesis/logic", label: "Logic", icon: Binary, hint: "Check consistency", phase: "Shape" },
-  { href: "/synthesis/use-cases", label: "Use Cases", icon: Boxes, hint: "Track maturity", phase: "Shape" },
-  { href: "/synthesis/generate", label: "Generate", icon: Ticket, hint: "Compile the spec and generate work", phase: "Execute" },
-  { href: "/synthesis/economics", label: "Economics", icon: BadgeDollarSign, hint: "Budget, token use, and timeline", phase: "Execute" },
-  { href: "/synthesis/learning", label: "Learning", icon: TrendingUp, hint: "Belief drift and governed change", phase: "Execute" },
-  { href: "/synthesis/pilot", label: "Pilot Proof", icon: ShieldCheck, hint: "End-to-end readiness and evidence", phase: "Execute" },
+  { href: "/synthesis/hub", label: "Initiative Portfolio", icon: Home, hint: "Portfolio and active initiatives", phase: "Orient" },
+  { href: "/synthesis/overview", label: "Initiative Overview", icon: LayoutDashboard, hint: "Signals, budgets, and activity", phase: "Orient" },
+  { href: "/synthesis/business", label: "Business Alignment", icon: Target, hint: "Objectives, milestones, sponsor consent, and risk", phase: "Orient" },
+  { href: "/synthesis/desk", label: "Decision Desk", icon: Inbox, hint: "Ranked decisions and exceptions", phase: "Orient" },
+  { href: "/synthesis/intake", label: "Source Intake", icon: FileInput, hint: "Interview or validate a document set", phase: "Orient" },
+  { href: "/synthesis/ideas", label: "Idea Board", icon: Lightbulb, hint: "Spatial capture, facts, and synthesis", phase: "Explore" },
+  { href: "/synthesis/journey", label: "Journey Map", icon: Map, hint: "Customer stages, pain, and opportunity", phase: "Explore" },
+  { href: "/synthesis/discovery", label: "Discovery", icon: Network, hint: "Reduce unknowns", phase: "Explore" },
+  { href: "/synthesis/rooms", label: "Assumption Rooms", icon: MessagesSquare, hint: "Validate governed claims", phase: "Explore" },
+  { href: "/synthesis/options", label: "Solution Options", icon: ListTree, hint: "Compare durable solution options", phase: "Decide" },
+  { href: "/synthesis/decisions", label: "Decision Records", icon: Scale, hint: "Govern trade-offs and approvals", phase: "Decide" },
+  { href: "/synthesis/wiki", label: "Evidence Wiki", icon: BookOpen, hint: "Living synthesis and evidence", phase: "Decide" },
+  { href: "/synthesis/diagrams", label: "System Diagrams", icon: GitFork, hint: "Map systems and decisions", phase: "Specify" },
+  { href: "/synthesis/pseudocode", label: "Pseudocode", icon: Braces, hint: "Shape logic before implementation", phase: "Specify" },
+  { href: "/synthesis/spec", label: "Specification", icon: FileText, hint: "Converge and trace", phase: "Specify" },
+  { href: "/synthesis/logic", label: "Logic Checks", icon: Binary, hint: "Check consistency", phase: "Specify" },
+  { href: "/synthesis/use-cases", label: "Use Cases", icon: Boxes, hint: "Track maturity", phase: "Specify" },
+  { href: "/synthesis/generate", label: "Generate Work", icon: Ticket, hint: "Compile the specification and generate work", phase: "Govern" },
+  { href: "/synthesis/economics", label: "Delivery Economics", icon: BadgeDollarSign, hint: "Budget, token use, and timeline", phase: "Govern" },
+  { href: "/synthesis/learning", label: "Learning & Change", icon: TrendingUp, hint: "Belief drift and governed change", phase: "Govern" },
+  { href: "/synthesis/pilot", label: "Pilot Proof", icon: ShieldCheck, hint: "End-to-end readiness and evidence", phase: "Govern" },
 ];
 
-const PHASES: SynNavItem["phase"][] = ["Ideate", "Synthesize", "Shape", "Execute"];
+const PHASES: SynNavItem["phase"][] = ["Orient", "Explore", "Decide", "Specify", "Govern"];
 
 function useOnline() {
   const [online, setOnline] = useState(true);

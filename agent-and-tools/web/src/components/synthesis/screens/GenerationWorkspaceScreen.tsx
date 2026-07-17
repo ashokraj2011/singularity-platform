@@ -15,7 +15,7 @@ import { MonoMeta, StageHeader, SynButton, SynCard, SynChip, SynError, SynSkelet
 export function GenerationWorkspaceScreen() {
   const pathname = usePathname() ?? "/synthesis/generate";
   const projectId = useSelectedProjectId();
-  return <SynthesisShell title="Compile & Generate" headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <GenerationWorkspace projectId={projectId} /> : <NoProjectSelected surface="Compile & Generate" />}</SynthesisShell>;
+  return <SynthesisShell title="Generate Work" headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <GenerationWorkspace projectId={projectId} /> : <NoProjectSelected surface="Generate Work" />}</SynthesisShell>;
 }
 
 function GenerationWorkspace({ projectId }: { projectId: string }) {

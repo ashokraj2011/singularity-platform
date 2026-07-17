@@ -72,7 +72,10 @@ for (const href of hrefs) {
   assert.ok(href.startsWith("/synthesis/"), `nav href ${href} must live under /synthesis`);
 }
 assert.match(shell, /label: "Idea Board"/, "the primary synthesis capture surface should be named Idea Board");
-for (const surface of ["Journey Map", "Project Wiki", "Diagrams", "Pseudo-code"]) {
+for (const phase of ["Orient", "Explore", "Decide", "Specify", "Govern"]) {
+  assert.ok(shell.includes(`"${phase}"`), `Synthesis should expose the ${phase} phase`);
+}
+for (const surface of ["Journey Map", "Evidence Wiki", "System Diagrams", "Pseudocode"]) {
   assert.ok(shell.includes(surface), `Synthesis should expose ${surface}`);
 }
 assert.match(shell, /<aside/, "Synthesis should provide its dedicated workspace navigation");

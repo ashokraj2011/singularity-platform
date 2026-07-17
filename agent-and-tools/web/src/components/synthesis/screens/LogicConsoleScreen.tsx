@@ -33,11 +33,11 @@ export function LogicConsoleScreen() {
   const pathname = usePathname() ?? "/synthesis/logic";
   const projectId = useSelectedProjectId();
   return (
-    <SynthesisShell title="Logic Console" headerActions={<ProjectPicker pathname={pathname} />}>
+    <SynthesisShell title="Logic Checks" headerActions={<ProjectPicker pathname={pathname} />}>
       {projectId ? (
         <LogicConsole projectId={projectId} />
       ) : (
-        <NoProjectSelected surface="The Logic Console" />
+        <NoProjectSelected surface="Logic Checks" />
       )}
     </SynthesisShell>
   );

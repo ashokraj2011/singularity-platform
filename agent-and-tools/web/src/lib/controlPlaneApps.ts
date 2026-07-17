@@ -1,5 +1,5 @@
 import type { LucideIcon } from "lucide-react";
-import { Bot, ServerCog, ShieldCheck, Workflow } from "lucide-react";
+import { Bot, ClipboardList, LayoutDashboard, ServerCog, ShieldCheck, Sparkles, Workflow } from "lucide-react";
 
 export type ControlPlaneApp = {
   id: string;
@@ -19,9 +19,36 @@ export function localUrl(port: number, path = "") {
 export function controlPlaneApps(): ControlPlaneApp[] {
   return [
     {
+      id: "command-center",
+      label: "Command Center",
+      group: "Home",
+      href: "/",
+      nativeHref: "/",
+      summary: "Start governed work, resume delivery, and see platform signals.",
+      icon: LayoutDashboard,
+    },
+    {
+      id: "synthesis",
+      label: "Synthesis",
+      group: "Discover & Define",
+      href: "/synthesis",
+      nativeHref: "/synthesis",
+      summary: "Ideas, evidence, decisions, specifications, economics, and learning.",
+      icon: Sparkles,
+    },
+    {
+      id: "work-management",
+      label: "Work Management",
+      group: "Plan",
+      href: "/work-items",
+      nativeHref: "/work-items",
+      summary: "Plan, scope, route, and track capability-bound Work Items.",
+      icon: ClipboardList,
+    },
+    {
       id: "agent-studio",
       label: "Agent Studio",
-      group: "Agent Runtime",
+      group: "Define",
       href: "/agents/studio",
       nativeHref: "/agents/studio",
       summary: "Agents, capability teams, tools, prompt profiles, and model settings.",
@@ -30,34 +57,16 @@ export function controlPlaneApps(): ControlPlaneApp[] {
     {
       id: "workflows",
       label: "Workflows",
-      group: "Workgraph",
+      group: "Execute & Verify",
       href: "/workflows",
       nativeHref: "/workflows",
-      summary: "Workflow templates, designer, node settings, and run launch.",
-      icon: Workflow,
-    },
-    {
-      id: "runs",
-      label: "Runs",
-      group: "Workgraph",
-      href: "/runs",
-      nativeHref: "/runs",
-      summary: "Mission Control, approvals, live events, stage restarts, and run evidence.",
-      icon: Workflow,
-    },
-    {
-      id: "work-items",
-      label: "WorkItems",
-      group: "Workgraph",
-      href: "/work-items",
-      nativeHref: "/work-items",
-      summary: "Capability-scoped work queue, parent delegation, attach workflow, and start.",
+      summary: "Workflow design, launch, live runs, approvals, and delivery evidence.",
       icon: Workflow,
     },
     {
       id: "identity",
-      label: "Identity",
-      group: "IAM",
+      label: "Identity & Access",
+      group: "Administration",
       href: "/identity",
       nativeHref: "/identity",
       summary: "Users, teams, roles, capabilities, sharing grants, and authorization checks.",
@@ -65,8 +74,8 @@ export function controlPlaneApps(): ControlPlaneApp[] {
     },
     {
       id: "operations",
-      label: "Operations",
-      group: "Operations",
+      label: "Platform Operations",
+      group: "Operate",
       href: "/operations",
       nativeHref: "/operations",
       summary: "Setup Center, readiness, audit packs, architecture, and trust evidence.",

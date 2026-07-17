@@ -75,7 +75,7 @@ export function ConceptArchiveConsole() {
   }
   return (
     <PageShell maxWidth={1440}>
-      <PageHero eyebrow="Creative Studio" title="Concept Studio" description="Create and explore ideas as a sparse, evidence-aware map. Agents can propose; humans confirm placement, protect strong ideas, and freeze the portfolio." icon={Archive} actions={<button className="btn-primary text-xs" type="button" onClick={createArchive}><Plus size={14} /> New concept map</button>} />
+      <PageHero eyebrow="Synthesis" title="Concept Maps" description="Create and explore ideas as a sparse, evidence-aware map. Agents can propose; humans confirm placement, protect strong ideas, and freeze the portfolio." icon={Archive} actions={<button className="btn-primary text-xs" type="button" onClick={createArchive}><Plus size={14} /> New concept map</button>} />
       <div className="mt-5 grid gap-3 lg:grid-cols-[1fr_1fr_1fr_auto]">
         <label className="text-xs font-semibold text-slate-600">Specification project<select className="input mt-1 w-full" value={projectId} onChange={(event) => { setProjectId(event.target.value); setStudioId(""); setArchiveId(""); }}><option value="">Choose project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name} · {project.code}</option>)}</select></label>
         <label className="text-xs font-semibold text-slate-600">Studio<select className="input mt-1 w-full" value={studioId} onChange={(event) => { setStudioId(event.target.value); setArchiveId(""); }}><option value="">Choose studio</option>{studios.map((studio) => <option key={studio.id} value={studio.id}>{studio.name}</option>)}</select></label>

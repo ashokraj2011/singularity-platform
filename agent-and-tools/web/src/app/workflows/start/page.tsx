@@ -551,7 +551,7 @@ export default function WorkflowStartPage() {
               tone="#b91c1c"
               icon={AlertTriangle}
               title="Selected model alias is not ready"
-              body={`${modelAlias || "Model alias"} is not in the ready alias set reported by Runtime + LLM. Choose one of: ${readyModelAliases.slice(0, 6).join(", ") || "no ready aliases reported"}.`}
+              body={`${modelAlias || "Model alias"} is not in the ready alias set reported by Runtime & Models. Choose one of: ${readyModelAliases.slice(0, 6).join(", ") || "no ready aliases reported"}.`}
               actions={<Link href="/llm-settings" className="btn-secondary"><Wrench size={14} /> Runtime setup</Link>}
             />
           )}

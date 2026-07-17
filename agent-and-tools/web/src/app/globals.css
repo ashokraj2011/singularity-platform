@@ -424,6 +424,7 @@
 
   .page-hero {
     position: relative;
+    min-width: 0;
     overflow: hidden;
     border: 1px solid var(--color-outline-variant);
     border-radius: var(--radius-card);
@@ -432,8 +433,13 @@
     padding: 24px;
   }
 
+  .app-main {
+    padding: 2rem;
+  }
+
   .metric-card,
   .data-panel {
+    min-width: 0;
     border: 1px solid var(--color-outline-variant);
     border-radius: var(--radius-card);
     background: var(--color-card);
@@ -903,6 +909,7 @@
     letter-spacing: 0;
     color: var(--color-on-surface);
     text-wrap: balance;
+    overflow-wrap: anywhere;
   }
 
   .label-xs {
@@ -996,6 +1003,18 @@
 }
 
 @media (max-width: 720px) {
+  .app-main {
+    padding: 12px;
+  }
+
+  .page-hero {
+    padding: 16px;
+  }
+
+  .data-panel {
+    padding: 14px;
+  }
+
   .topology-header {
     align-items: stretch;
   }

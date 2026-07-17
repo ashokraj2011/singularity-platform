@@ -393,27 +393,27 @@ export default function StartPage() {
           <div>
             <div className="mb-3 inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
               <IconTile icon={Sparkles} tone="emerald" size="sm" />
-              First-run SDLC launchpad
+              Governed delivery launchpad
             </div>
-            <h1 className="page-header text-4xl">Paste Story. Launch Workflow. Export Evidence.</h1>
+            <h1 className="page-header text-4xl">Shape Intent. Govern Delivery. Prove Outcomes.</h1>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600">
-              Start here when you want the platform to choose the right SDLC intent, validate setup, create WorkItems, and open the unified run cockpit.
+              Describe the outcome you need. The platform recommends a governed execution path, validates its prerequisites, creates scoped work, and opens the unified run cockpit.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Link className="btn-secondary" href="/workflows/planner"><ClipboardList size={15} /> Planner</Link>
-            <Link className="btn-secondary" href="/llm-settings"><Network size={15} /> Runtime + LLM</Link>
+            <Link className="btn-secondary" href="/llm-settings"><Network size={15} /> Runtime & Models</Link>
             <Link className="btn-secondary" href="/operations/readiness"><ShieldCheck size={15} /> Health</Link>
           </div>
         </div>
         <div className="mt-5">
           <EvidenceRail
             items={[
-              { label: "Story", detail: "Capture request", icon: ClipboardList, state: story.trim().length >= 8 ? "ready" : "waiting" },
+              { label: "Intent", detail: "Describe outcome", icon: ClipboardList, state: story.trim().length >= 8 ? "ready" : "waiting" },
               { label: "WorkItems", detail: "Split and route", icon: GitBranch, state: launchResult?.workItems?.length ? "ready" : "waiting" },
               { label: "Workflow", detail: recommendation?.intentLabel ?? "Recommended", icon: Rocket, state: recommendation?.workflowTemplateId ? "ready" : "blocked" },
               { label: "Run", detail: launchResult?.workflowInstance?.id ? shortId(launchResult.workflowInstance.id) : "Not launched", icon: Play, state: launchResult?.workflowInstance?.id ? "ready" : "waiting" },
-              { label: "Evidence", detail: "Receipts + Copilot YAML", icon: FileCheck2, state: launchResult?.workflowInstance?.id ? "ready" : "optional" },
+              { label: "Evidence", detail: "Verify + hand off", icon: FileCheck2, state: launchResult?.workflowInstance?.id ? "ready" : "optional" },
             ]}
           />
         </div>
@@ -535,7 +535,7 @@ export default function StartPage() {
             />
             {preview?.modelReadiness && !preview.modelReadiness.ready && (
               <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs leading-5 text-red-800">
-                <strong>Model alias blocked:</strong> {preview.modelReadiness.alias} is not ready. {(preview.modelReadiness.warnings ?? []).join(" ") || "Choose a ready alias from Runtime + LLM."}
+                <strong>Model alias blocked:</strong> {preview.modelReadiness.alias} is not ready. {(preview.modelReadiness.warnings ?? []).join(" ") || "Choose a ready alias from Runtime & Models."}
               </div>
             )}
           </section>

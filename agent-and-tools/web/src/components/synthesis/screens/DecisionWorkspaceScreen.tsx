@@ -18,8 +18,8 @@ export function DecisionWorkspaceScreen() {
   const pathname = usePathname() ?? "/synthesis/decisions";
   const projectId = useSelectedProjectId();
   return (
-    <SynthesisShell title="Decisions" headerActions={<ProjectPicker pathname={pathname} />}>
-      {projectId ? <DecisionWorkspace projectId={projectId} /> : <NoProjectSelected surface="Decisions" />}
+    <SynthesisShell title="Decision Records" headerActions={<ProjectPicker pathname={pathname} />}>
+      {projectId ? <DecisionWorkspace projectId={projectId} /> : <NoProjectSelected surface="Decision Records" />}
     </SynthesisShell>
   );
 }

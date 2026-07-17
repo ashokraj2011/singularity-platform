@@ -17,7 +17,7 @@ type StageBudgetRow = { key: string; stage: string; tokenLimit: string; costLimi
 export function EconomicsWorkspaceScreen() {
   const pathname = usePathname() ?? "/synthesis/economics";
   const projectId = useSelectedProjectId();
-  return <SynthesisShell title="Economics & Timeline" headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <Economics projectId={projectId} /> : <NoProjectSelected surface="Economics & Timeline" />}</SynthesisShell>;
+  return <SynthesisShell title="Delivery Economics" headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <Economics projectId={projectId} /> : <NoProjectSelected surface="Delivery Economics" />}</SynthesisShell>;
 }
 
 function Economics({ projectId }: { projectId: string }) {

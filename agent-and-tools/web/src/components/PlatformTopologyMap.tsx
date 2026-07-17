@@ -286,7 +286,7 @@ export function PlatformTopologyMap() {
     <section className="topology-section">
       <div className="topology-header">
         <div>
-          <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8 }}>Live App Map</div>
+          <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8 }}>System Map</div>
           <h2 style={{ margin: 0, fontSize: 18 }}>Platform topology and service connections</h2>
           <p style={{ color: "var(--color-outline)", fontSize: 13, lineHeight: 1.55, margin: "6px 0 0", maxWidth: 820 }}>
             One web app fans into domain routes, core APIs, workflow services, and remote-capable dial-in runtimes. Status refreshes every ten seconds from the platform health endpoints.

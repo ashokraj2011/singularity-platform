@@ -27,7 +27,7 @@ END FUNCTION`;
 export function PseudoCodeStudioScreen() {
   const pathname = usePathname() ?? "/synthesis/pseudocode";
   const projectId = useSelectedProjectId();
-  return <SynthesisShell title="Pseudo-code Studio" fullBleed headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <PseudoCodeWorkspace projectId={projectId} /> : <NoProjectSelected surface="Pseudo-code Studio" />}</SynthesisShell>;
+  return <SynthesisShell title="Pseudocode" fullBleed headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <PseudoCodeWorkspace projectId={projectId} /> : <NoProjectSelected surface="Pseudocode" />}</SynthesisShell>;
 }
 
 function PseudoCodeWorkspace({ projectId }: { projectId: string }) {

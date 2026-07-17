@@ -21,7 +21,7 @@ const STARTER: DiagramState = { nodes: [
 export function DiagramWorkspaceScreen() {
   const pathname = usePathname() ?? "/synthesis/diagrams";
   const projectId = useSelectedProjectId();
-  return <SynthesisShell title="Diagram Workspace" fullBleed headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <ReactFlowProvider><DiagramCanvas projectId={projectId} /></ReactFlowProvider> : <NoProjectSelected surface="Diagram Workspace" />}</SynthesisShell>;
+  return <SynthesisShell title="System Diagrams" fullBleed headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <ReactFlowProvider><DiagramCanvas projectId={projectId} /></ReactFlowProvider> : <NoProjectSelected surface="System Diagrams" />}</SynthesisShell>;
 }
 
 function DiagramCanvas({ projectId }: { projectId: string }) {

@@ -630,7 +630,7 @@ function OverviewView({
     {
       href: "/operations/architecture",
       icon: Network,
-      title: "Live App Map",
+      title: "System Map",
       value: "Topology",
       description: "Connected UI domains, APIs, Context Fabric, runtime bridge, MCP, and LLM paths.",
       state: "guarded",

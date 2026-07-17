@@ -89,9 +89,9 @@ export default function HelpPage() {
           does not clear your session — it lives in your browser).
         </p>
         <p>
-          <strong>Navigate</strong> from the left sidebar, grouped by area. <Link href="/" className={linkCls}>Command
-          Center</Link> is your overview; the <Link href="/control-plane" className={linkCls}>App Catalog</Link> lists
-          every surface; <Link href="/start" className={linkCls}>Start SDLC Work</Link> kicks off a guided run.
+          <strong>Navigate</strong> from the left sidebar, grouped by lifecycle phase. <Link href="/" className={linkCls}>Command
+          Center</Link> is your overview; <Link href="/control-plane" className={linkCls}>Platform Services</Link> lists
+          every surface; <Link href="/start" className={linkCls}>Start Governed Work</Link> kicks off a guided run.
         </p>
       </Section>
 
@@ -159,7 +159,7 @@ export default function HelpPage() {
         </p>
         <p><strong>Ways to create one:</strong></p>
         <ul className="list-disc space-y-2 pl-5">
-          <li><Link href="/workflows/planner" className={linkCls}>Story Planner</Link> turns a story into proposed WorkItems; commit the plan before launch.</li>
+          <li><Link href="/workflows/planner" className={linkCls}>Work Planner</Link> turns a request, story, or desired outcome into proposed Work Items; commit the plan before launch.</li>
           <li><Link href="/workflows/control-plane?tab=event-intake" className={linkCls}>Inbound event triggers</Link> create or attach a WorkItem using mapped fields such as work id, title, description, and documents.</li>
           <li>Manual creation uses a WorkItem type, capability, title, description, and routing mode.</li>
         </ul>
@@ -170,7 +170,7 @@ export default function HelpPage() {
       <Section id="events" icon={Activity} title="Events, triggers, and routing">
         <p>
           An event becomes workflow work only when an active trigger matches its event type and capability. Configure triggers and routing policies in the
-          <Link href="/workflows/control-plane?tab=event-intake" className={linkCls}> Workflow Control Plane</Link>.
+          <Link href="/workflows/control-plane?tab=event-intake" className={linkCls}> Workflow Operations</Link>.
         </p>
         <ol className="list-decimal space-y-2 pl-5">
           <li>Define an <strong>EVENT</strong>, <strong>WEBHOOK</strong>, or <strong>SCHEDULE</strong> trigger with an event key and WorkItem type.</li>
@@ -186,7 +186,7 @@ export default function HelpPage() {
       <Section id="workflows" icon={Workflow} title="Workflows & Workbench">
         <p>
           <Link href="/workflows" className={linkCls}>Workflows</Link> is where you plan, launch, and monitor runs —
-          Story Planner, Guided Launch, Run History, and live Runs. The{" "}
+          Work Planner, Workflow Launch, run history, and live Workflow Runs. The{" "}
           <Link href="/workbench" className={linkCls}>Blueprint Workbench</Link> is the in-portal cockpit for SDLC work.
         </p>
         <p>
@@ -194,8 +194,8 @@ export default function HelpPage() {
           or waiver. The run cockpit shows what blocked it and the evidence behind each decision.
         </p>
         <p>
-          Start in <Link href="/start" className={linkCls}>Guided Launch</Link> for Build Feature, Fix Bug, Refactor, Add Tests,
-          Security Review, or Release Evidence. Use the advanced <Link href="/workflows/templates" className={linkCls}>template gallery</Link>
+          Start in <Link href="/start" className={linkCls}>Start Governed Work</Link> for Build Feature, Fix Bug, Refactor, Add Tests,
+          Security Review, or Release Evidence. Use the advanced <Link href="/workflows/templates" className={linkCls}>Workflow Designer</Link>
           and React Flow designer when you need custom nodes, branches, event waits, direct LLM routes, or reusable governance gates.
         </p>
         <p><strong>Authoring sequence:</strong> create a draft template → add and label nodes → connect sequential or error-boundary edges → configure node JSON → validate with sample context → publish a version → start a run. Published versions are the immutable execution contract; edit a new draft instead of changing a run in progress.</p>
@@ -212,8 +212,8 @@ export default function HelpPage() {
 
       <Section id="identity" icon={Users} title="Identity & access">
         <p>
-          <Link href="/identity" className={linkCls}>Identity</Link> manages users, teams, business units, roles,
-          permissions, capability access, and sharing grants — plus an identity audit log. Sign-in supports local
+          <Link href="/identity" className={linkCls}>Identity &amp; Access</Link> manages users, teams, business units, roles,
+          permissions, capability access, and resource sharing — plus an identity audit log. Sign-in supports local
           credentials and SSO/OIDC.
         </p>
       </Section>
@@ -221,8 +221,8 @@ export default function HelpPage() {
       <Section id="governance" icon={ShieldCheck} title="Governance & FinOps">
         <p>
           Under <strong>Governance &amp; FinOps</strong> you author and observe controls: the policy{" "}
-          <Link href="/engine" className={linkCls}>Engine</Link>, <Link href="/llm-settings" className={linkCls}>LLM
-          routing</Link>, the <Link href="/audit" className={linkCls}>Audit</Link> ledger, eval curation, and{" "}
+          <Link href="/engine" className={linkCls}>Engine</Link>, <Link href="/llm-settings" className={linkCls}>Runtime
+          &amp; Models</Link>, the <Link href="/audit" className={linkCls}>Audit</Link> ledger, evaluation curation, and{" "}
           <Link href="/cost" className={linkCls}>Cost</Link>. Governance gates in a workflow enforce these controls
           at run time (advisory / required / blocking) with waivers recorded as evidence.
         </p>
@@ -231,7 +231,7 @@ export default function HelpPage() {
       <Section id="operations" icon={Activity} title="Operations & health">
         <p>
           <Link href="/operations/readiness" className={linkCls}>Operations</Link> shows live system health:
-          Readiness, the <Link href="/operations/architecture" className={linkCls}>Live App Map</Link>, Access Keys,
+          Readiness, the <Link href="/operations/architecture" className={linkCls}>System Map</Link>, Service Access Keys,
           the Setup Center, and Trust Evidence. Check here first if a surface looks empty or a run stalls.
         </p>
       </Section>

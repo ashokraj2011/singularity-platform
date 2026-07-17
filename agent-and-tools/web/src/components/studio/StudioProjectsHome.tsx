@@ -5,7 +5,7 @@ import Link from "next/link";
 import { workgraphFetch, WorkgraphError } from "@/lib/workgraph";
 
 /**
- * Studio home: the portfolio of Specification Projects. A project is the top-level unit —
+ * Specifications home: each initiative is the top-level contract unit —
  * open one to work its analysis / requirements / design / rooms / board, then generate the
  * work items from it. (Projects were previously reachable only by burrowing into a Work Item;
  * this is the front door.)
@@ -23,7 +23,7 @@ export function StudioProjectsHome() {
       setError(null);
     } catch (e) {
       setProjects([]);
-      setError(e instanceof WorkgraphError ? e.message : "Could not load Specification Projects.");
+      setError(e instanceof WorkgraphError ? e.message : "Could not load specifications.");
     }
   }, []);
   useEffect(() => { void load(); }, [load]);
@@ -32,8 +32,8 @@ export function StudioProjectsHome() {
     <div style={{ maxWidth: 900, margin: "0 auto", padding: "24px 20px" }}>
       <div style={{ display: "flex", alignItems: "flex-end", gap: 12, marginBottom: 18 }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, letterSpacing: "-0.01em" }}>Studio</h1>
-          <p style={{ margin: "4px 0 0", fontSize: 12.5, color: "var(--color-outline)" }}>Specification projects — the shared upstream. Work items are generated from here.</p>
+          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, letterSpacing: "-0.01em" }}>Specifications</h1>
+          <p style={{ margin: "4px 0 0", fontSize: 12.5, color: "var(--color-outline)" }}>Approved initiative contracts are the shared upstream for generated Work Items.</p>
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
           <Link href="/synthesis/hub" style={primaryBtn}>New initiative</Link>

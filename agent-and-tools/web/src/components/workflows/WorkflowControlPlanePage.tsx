@@ -366,7 +366,7 @@ export function WorkflowControlPlanePage() {
         <div style={{ display: "flex", justifyContent: "space-between", gap: 18, flexWrap: "wrap", alignItems: "flex-start" }}>
           <div>
             <div className="label-xs" style={{ color: "var(--color-primary)", marginBottom: 8 }}>Workflow module</div>
-            <h1 className="page-header" style={{ marginBottom: 8 }}>Workflow Control Plane</h1>
+            <h1 className="page-header" style={{ marginBottom: 8 }}>Workflow Operations</h1>
             <p style={{ margin: 0, color: "var(--color-outline)", maxWidth: 920, lineHeight: 1.6, fontSize: 14 }}>
               Configure WorkGraph-owned LLM aliases, event intake, webhook triggers, event-bus subscribers, pending execution runners, and direct-LLM harness presets from one operational screen.
             </p>

@@ -461,7 +461,7 @@ export default function LlmSettingsPage() {
         <div>
           <div className="mb-3 inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">
             <RadioTower size={15} className="text-cyan-700" />
-            Runtime + LLM Switchboard
+            Runtime & Models Switchboard
           </div>
           <h1 className="page-header text-3xl font-black text-slate-950">Runtime Bridge and Model Routing</h1>
           <p className="text-sm text-slate-500 mt-1">

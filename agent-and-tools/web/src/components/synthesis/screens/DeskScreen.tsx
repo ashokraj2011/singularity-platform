@@ -21,7 +21,7 @@ const BANDS: Array<{ key: SynAttentionBand; label: string; hint: string; icon: t
 export function DeskScreen() {
   const pathname = usePathname() ?? "/synthesis/desk";
   const projectId = useSelectedProjectId();
-  return <SynthesisShell title="The Desk" headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <Desk projectId={projectId} /> : <NoProjectSelected surface="The Desk" />}</SynthesisShell>;
+  return <SynthesisShell title="Decision Desk" headerActions={<ProjectPicker pathname={pathname} />}>{projectId ? <Desk projectId={projectId} /> : <NoProjectSelected surface="Decision Desk" />}</SynthesisShell>;
 }
 
 function Desk({ projectId }: { projectId: string }) {
@@ -38,7 +38,7 @@ function Desk({ projectId }: { projectId: string }) {
   }
 
   if (desk.isLoading) return <SynSkeleton rows={8} />;
-  if (desk.error || !desk.data) return <SynError message={desk.error instanceof Error ? desk.error.message : "The Desk is unavailable."} />;
+  if (desk.error || !desk.data) return <SynError message={desk.error instanceof Error ? desk.error.message : "The Decision Desk is unavailable."} />;
   const data = desk.data;
   return <div className="space-y-7">
     <StageHeader eyebrow="Human attention" title="Exceptions, ranked" description="Passing gates stay quiet. Work appears here only when a human decision, material review, or time-bound response is needed." icon={Inbox} actions={<><SynButton variant="secondary" icon={RefreshCw} disabled={Boolean(busy)} onClick={() => void act("refresh", () => workgraphFetch("/studio/experience/desk/refresh", { method: "POST", body: JSON.stringify({ projectId }) }))}>Refresh</SynButton><SynButton icon={Sparkles} disabled={Boolean(busy)} onClick={() => void act("shift", () => workgraphFetch(`/studio/experience/projects/${projectId}/overnight/run`, { method: "POST" }))}>{busy === "shift" ? "Running…" : "Run shift"}</SynButton></>} />
