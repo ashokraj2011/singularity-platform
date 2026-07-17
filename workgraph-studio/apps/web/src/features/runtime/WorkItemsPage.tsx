@@ -48,7 +48,7 @@ export function WorkItemsPage() {
         mine: mine ? 'true' : undefined,
         limit: 100,
       },
-    }).then(r => r.data as WorkItemsResponse),
+    }).then(r => normalizeWorkItemsResponse(r.data)),
     refetchInterval: 15_000,
   })
 
@@ -64,7 +64,7 @@ export function WorkItemsPage() {
     )
   }, [search, workItems])
   const selected = filtered.find(item => item.id === selectedId) ?? filtered[0] ?? null
-  const selectedTarget = selected?.targets[0] ?? null
+  const selectedTarget = selected?.targets?.[0] ?? null
   const selectedWorkflow = selectedTarget ? selectedWorkflowByTarget[selectedTarget.id] ?? '' : ''
   const effectiveWorkflow = selectedTarget?.childWorkflowTemplateId || selectedWorkflow
   const { labelForCapability } = useCapabilityLabels()
@@ -108,17 +108,21 @@ export function WorkItemsPage() {
     ? buildWorkItemFlow(selected, selectedTarget, selectedTargetCapability)
     : []
 
+  const refreshWorkItems = () => {
+    void workItemsQuery.refetch({ throwOnError: false }).catch(() => undefined)
+  }
+
   const claimMut = useMutation({
     mutationFn: ({ workItemId, targetId }: { workItemId: string; targetId: string }) =>
       api.post(`/work-items/${workItemId}/targets/${targetId}/claim`).then(r => r.data),
-    onSuccess: () => workItemsQuery.refetch(),
+    onSuccess: refreshWorkItems,
   })
 
   const startMut = useMutation({
     mutationFn: ({ workItemId, targetId, workflowId }: { workItemId: string; targetId: string; workflowId?: string }) =>
       api.post(`/work-items/${workItemId}/targets/${targetId}/start`, workflowId ? { childWorkflowTemplateId: workflowId } : {}).then(r => r.data as { childWorkflowInstanceId?: string }),
     onSuccess: (data) => {
-      workItemsQuery.refetch()
+      refreshWorkItems()
       if (data.childWorkflowInstanceId) navigate(`/runs/${data.childWorkflowInstanceId}`)
     },
   })
@@ -129,7 +133,7 @@ export function WorkItemsPage() {
       return api.post(`/work-items/${workItemId}/targets/${targetId}/start`, { childWorkflowTemplateId: workflowId }).then(r => r.data as { childWorkflowInstanceId?: string })
     },
     onSuccess: (data) => {
-      workItemsQuery.refetch()
+      refreshWorkItems()
       if (data.childWorkflowInstanceId) navigate(`/runs/${data.childWorkflowInstanceId}`)
     },
   })
@@ -138,7 +142,7 @@ export function WorkItemsPage() {
     mutationFn: (workItemId: string) => api.post(`/work-items/${workItemId}/archive`).then(r => r.data as WorkItemRow),
     onSuccess: () => {
       setSelectedId('')
-      workItemsQuery.refetch()
+      refreshWorkItems()
     },
   })
 
@@ -148,7 +152,7 @@ export function WorkItemsPage() {
     }).then(r => r.data as WorkItemRow),
     onSuccess: (item) => {
       setSelectedId(item.id)
-      workItemsQuery.refetch()
+      refreshWorkItems()
     },
   })
   const detachTargetMut = useMutation({
@@ -158,7 +162,7 @@ export function WorkItemsPage() {
       }).then(r => r.data as WorkItemRow),
     onSuccess: (item) => {
       setSelectedId(item.id)
-      workItemsQuery.refetch()
+      refreshWorkItems()
     },
   })
 
@@ -183,7 +187,7 @@ export function WorkItemsPage() {
     onSuccess: (item) => {
       setEditing(false)
       setSelectedId(item.id)
-      workItemsQuery.refetch()
+      refreshWorkItems()
     },
   })
   const submitEdit = () => {
@@ -232,7 +236,7 @@ export function WorkItemsPage() {
           <button style={primaryButtonStyle} onClick={() => setCreateOpen(true)}>
             <Plus size={13} /> New WorkItem
           </button>
-          <button style={secondaryButtonStyle} onClick={() => workItemsQuery.refetch()}>
+          <button style={secondaryButtonStyle} onClick={refreshWorkItems}>
             <RefreshCw size={13} /> Refresh
           </button>
         </div>
@@ -287,6 +291,8 @@ export function WorkItemsPage() {
           </div>
           {workItemsQuery.isLoading ? (
             <p style={mutedStyle}>Loading WorkItems...</p>
+          ) : workItemsQuery.isError ? (
+            <QueryErrorState error={workItemsQuery.error} onRetry={refreshWorkItems} />
           ) : filtered.length === 0 ? (
             <div style={emptyStyle}>
               <Network size={28} style={{ opacity: 0.35 }} />
@@ -296,7 +302,7 @@ export function WorkItemsPage() {
           ) : (
             <div style={{ display: 'grid', gap: 8 }}>
               {filtered.map(item => {
-                const target = item.targets[0]
+                const target = item.targets?.[0]
                 const isActive = item.id === selected?.id
                 return (
                   <button key={item.id} onClick={() => setSelectedId(item.id)} style={{ ...itemCardStyle, borderColor: isActive ? '#8b5cf6' : 'var(--color-outline-variant)', background: isActive ? 'rgba(139,92,246,0.06)' : '#fff' }}>
@@ -552,11 +558,11 @@ export function WorkItemsPage() {
                 <InfoBlock title="Budget and constraints" value={selected.budget} empty="No budget captured" />
               </div>
 
-              {selected.targets.length > 1 && (
+              {(selected.targets?.length ?? 0) > 1 && (
                 <div style={{ marginTop: 14 }}>
                   <h3 style={panelTitleStyle}>Targets</h3>
                   <div style={{ display: 'grid', gap: 8 }}>
-                    {selected.targets.map(target => (
+                    {(selected.targets ?? []).map(target => (
                       <button key={target.id} style={targetRowStyle} onClick={() => setSelectedId(selected.id)}>
                         <span>{labelForCapability(target.targetCapabilityId)}</span>
                         <StatusPill status={target.status} />
@@ -576,10 +582,10 @@ export function WorkItemsPage() {
           onClose={() => setCreateOpen(false)}
           onCreated={(item) => {
             setCreateOpen(false)
-            const targetCapabilityId = item.targets[0]?.targetCapabilityId
+            const targetCapabilityId = item.targets?.[0]?.targetCapabilityId
             if (targetCapabilityId) setCapabilityId(targetCapabilityId)
             setSelectedId(item.id)
-            workItemsQuery.refetch()
+            refreshWorkItems()
           }}
         />
       )}
@@ -759,6 +765,28 @@ function Metric({ label, value }: { label: string; value: string }) {
   )
 }
 
+function QueryErrorState({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  return (
+    <div role="alert" style={{ minHeight: 180, display: 'grid', alignContent: 'center', justifyItems: 'start', gap: 8, padding: 18, border: '1px solid #fecaca', borderRadius: 8, color: '#7f1d1d', background: '#fff7f7', textAlign: 'left' }}>
+      <AlertCircle size={24} />
+      <strong>WorkItems could not be loaded</strong>
+      <span>{requestErrorMessage(error)}</span>
+      <button type="button" style={secondaryButtonStyle} onClick={onRetry}>
+        <RefreshCw size={13} /> Retry
+      </button>
+    </div>
+  )
+}
+
+function requestErrorMessage(error: unknown): string {
+  const response = recordOrNull(recordOrNull(error)?.response)
+  const body = recordOrNull(response?.data)
+  return text(
+    body?.message ?? body?.error ?? recordOrNull(error)?.message,
+    'Check Workgraph readiness and your access, then retry.',
+  )
+}
+
 function InfoBlock({ title, value, empty = 'None' }: { title: string; value?: Record<string, unknown> | null; empty?: string }) {
   const hasValue = value && Object.keys(value).length > 0
   return (
@@ -879,6 +907,87 @@ type WorkItemRow = {
   targets: WorkItemTarget[]
 }
 
+export function normalizeWorkItemsResponse(data: unknown): WorkItemsResponse {
+  const container = recordOrNull(data)
+  return {
+    items: unwrapItems<unknown>(data)
+      .map(normalizeWorkItemRow)
+      .filter((item): item is WorkItemRow => item !== null),
+    nextCursor: nullableText(container?.nextCursor ?? container?.next_cursor),
+  }
+}
+
+function normalizeWorkItemRow(value: unknown): WorkItemRow | null {
+  const row = recordOrNull(value)
+  if (!row) return null
+  const id = text(row.id ?? row.workItemId ?? row.work_item_id)
+  if (!id) return null
+  return {
+    id,
+    workCode: nullableText(row.workCode ?? row.work_code),
+    title: text(row.title ?? row.name, row.workCode ?? row.work_code ?? id),
+    description: nullableText(row.description),
+    originType: text(row.originType ?? row.origin_type, 'CAPABILITY_LOCAL'),
+    workItemTypeKey: nullableText(row.workItemTypeKey ?? row.work_item_type_key),
+    routingMode: nullableText(row.routingMode ?? row.routing_mode),
+    routingState: nullableText(row.routingState ?? row.routing_state),
+    scheduledAt: nullableText(row.scheduledAt ?? row.scheduled_at),
+    sourceEventTypeKey: nullableText(row.sourceEventTypeKey ?? row.source_event_type_key),
+    status: text(row.status, 'UNKNOWN'),
+    sourceWorkflowInstanceId: nullableText(row.sourceWorkflowInstanceId ?? row.source_workflow_instance_id),
+    sourceWorkflowNodeId: nullableText(row.sourceWorkflowNodeId ?? row.source_workflow_node_id),
+    details: recordOrNull(row.details),
+    budget: recordOrNull(row.budget),
+    urgency: nullableText(row.urgency),
+    requiredBy: nullableText(row.requiredBy ?? row.required_by),
+    dueAt: nullableText(row.dueAt ?? row.due_at),
+    priority: finiteNumberOrNull(row.priority),
+    detailsLocked: Boolean(row.detailsLocked ?? row.details_locked),
+    targets: unwrapItems<unknown>(row.targets)
+      .map(normalizeWorkItemTarget)
+      .filter((target): target is WorkItemTarget => target !== null),
+  }
+}
+
+function normalizeWorkItemTarget(value: unknown, index: number): WorkItemTarget | null {
+  const row = recordOrNull(value)
+  if (!row) return null
+  return {
+    id: text(row.id ?? row.targetId ?? row.target_id, `target-${index + 1}`),
+    targetCapabilityId: text(row.targetCapabilityId ?? row.target_capability_id ?? row.capabilityId ?? row.capability_id),
+    childWorkflowTemplateId: nullableText(row.childWorkflowTemplateId ?? row.child_workflow_template_id),
+    childWorkflowInstanceId: nullableText(row.childWorkflowInstanceId ?? row.child_workflow_instance_id),
+    roleKey: nullableText(row.roleKey ?? row.role_key),
+    status: text(row.status, 'QUEUED'),
+    claimedById: nullableText(row.claimedById ?? row.claimed_by_id),
+  }
+}
+
+function recordOrNull(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function text(value: unknown, fallback: unknown = ''): string {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (typeof fallback === 'string') return fallback
+  if (typeof fallback === 'number' || typeof fallback === 'boolean') return String(fallback)
+  return ''
+}
+
+function nullableText(value: unknown): string | null {
+  const result = text(value)
+  return result || null
+}
+
+function finiteNumberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const result = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(result) ? result : null
+}
+
 type WorkflowOption = {
   id: string
   name: string
@@ -902,7 +1011,7 @@ type NextAction = {
 
 function buildHubStats(items: WorkItemRow[]) {
   return items.reduce((acc, item) => {
-    const target = item.targets[0]
+    const target = item.targets?.[0]
     acc.total += 1
     if (
       !target?.childWorkflowInstanceId &&

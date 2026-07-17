@@ -7,6 +7,7 @@ function read(relativePath: string): string {
 }
 
 const source = read("src/components/workflows/WorkItemsConsole.tsx");
+const runtimeSource = read("../../workgraph-studio/apps/web/src/features/runtime/WorkItemsPage.tsx");
 
 assert.match(
   source,
@@ -60,6 +61,36 @@ assert.doesNotMatch(
   source,
   /unwrapWorkgraphItems<WorkItem>|workgraphFetch<WorkItem>|as WorkItem|as WorkItemTarget/,
   "WorkItems console should not cast Workgraph WorkItem payloads directly to trusted client types",
+);
+
+assert.match(
+  runtimeSource,
+  /\.then\(r => normalizeWorkItemsResponse\(r\.data\)\)/,
+  "the Workgraph-native WorkItems route should normalize its live API response before rendering",
+);
+
+assert.match(
+  runtimeSource,
+  /export function normalizeWorkItemsResponse\(data: unknown\): WorkItemsResponse[\s\S]*?\.map\(normalizeWorkItemRow\)[\s\S]*?filter\(\(item\): item is WorkItemRow => item !== null\)/,
+  "the Workgraph-native route should discard malformed WorkItems and normalize optional fields",
+);
+
+assert.match(
+  runtimeSource,
+  /const refreshWorkItems = \(\) => \{[\s\S]*?refetch\(\{ throwOnError: false \}\)\.catch\(\(\) => undefined\)/,
+  "background WorkItem refetches should never become unhandled promise rejections",
+);
+
+assert.match(
+  runtimeSource,
+  /workItemsQuery\.isError \? \([\s\S]*?<QueryErrorState error=\{workItemsQuery\.error\} onRetry=\{refreshWorkItems\}/,
+  "the Workgraph-native route should render a retryable in-page query error",
+);
+
+assert.doesNotMatch(
+  runtimeSource,
+  /r\.data as WorkItemsResponse|selected\?\.targets\[0\]|item\.targets\[0\]/,
+  "the Workgraph-native route should not trust API response or target arrays",
 );
 
 console.log("work items normalization contract tests passed");
