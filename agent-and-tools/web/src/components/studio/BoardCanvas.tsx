@@ -330,7 +330,7 @@ function BoardCanvasInner({ projectId, boardId, mode }: { projectId: string; boa
   }, []);
 
   return (
-    <section className="relative overflow-hidden rounded-lg border border-outline-variant bg-surface-container-lowest shadow-sm">
+    <section className="syn-board relative flex h-full min-h-[520px] flex-col overflow-hidden border border-outline-variant bg-surface-container-lowest shadow-sm">
       <div className="flex min-h-14 flex-wrap items-center gap-2 border-b border-outline-variant bg-surface-container-lowest px-3 py-2">
         <div className="mr-1 flex items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${ready ? "bg-secondary" : "bg-outline"}`} />
@@ -366,7 +366,7 @@ function BoardCanvasInner({ projectId, boardId, mode }: { projectId: string; boa
       {error ? <div className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-800"><X size={13} />{error}<button className="ml-auto" onClick={() => setError(null)} aria-label="Dismiss error"><X size={13} /></button></div> : null}
       {notice ? <div className="flex items-center gap-2 border-b border-emerald-200 bg-emerald-50 px-4 py-2 text-xs text-emerald-800"><Check size={13} />{notice}<button className="ml-auto" onClick={() => setNotice(null)} aria-label="Dismiss message"><X size={13} /></button></div> : null}
 
-      <div className="relative h-[min(720px,calc(100vh-220px))] min-h-[520px] bg-surface-container-low">
+      <div className="relative min-h-0 flex-1 bg-surface-container-low">
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -444,7 +444,7 @@ function IdeaNode({ data, selected }: NodeProps<CanvasNodeData>) {
   useEffect(() => setText(objectText(object)), [object]);
   const promoted = typeof object.promotedClaimId === "string";
   return (
-    <div className={`h-full w-full rounded-md border p-3 shadow-sm transition-shadow ${selected ? "border-secondary ring-2 ring-secondary/25" : "border-black/10"}`} style={{ background: colorOf(object) }}>
+    <div className={`h-full w-full border p-3 shadow-sm transition-all ${selected ? "border-blue-500 ring-2 ring-blue-500/25 shadow-md" : "border-black/10"}`} style={{ background: colorOf(object) }}>
       <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-0 !bg-outline" />
       <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-0 !bg-outline" />
       <textarea

@@ -15,9 +15,10 @@ export function CommandPalette({
 }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const router = useRouter();
 
-  function go(href: string) {
+  function go(href: string, openInNewTab = false) {
     onOpenChange(false);
-    router.push(href);
+    if (openInNewTab) window.open(href, "_blank", "noopener,noreferrer");
+    else router.push(href);
   }
 
   return (
@@ -49,7 +50,7 @@ export function CommandPalette({
                     // cmdk filters on this value — include label, group, path, and
                     // keywords so search matches any of them.
                     value={`${route.label} ${route.group} ${route.href} ${(route.keywords ?? []).join(" ")}`}
-                    onSelect={() => go(route.href)}
+                    onSelect={() => go(route.href, route.openInNewTab)}
                   >
                     <Icon size={15} aria-hidden />
                     <span>{route.label}</span>

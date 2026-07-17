@@ -49,6 +49,46 @@
   color: var(--color-on-surface);
   font-family: var(--font-sans);
   min-width: 0;
+  --syn-collaboration: #2563eb;
+  --syn-collaboration-soft: #dbeafe;
+}
+
+.synthesis-root .syn-appbar,
+.synthesis-root .syn-workbar,
+.synthesis-root .syn-sidebar {
+  box-shadow: none;
+}
+
+.synthesis-root .syn-dot-grid {
+  background-color: var(--color-surface-low);
+  background-image: radial-gradient(color-mix(in srgb, var(--color-outline) 34%, transparent) 0.8px, transparent 0.8px);
+  background-size: 20px 20px;
+}
+
+.synthesis-root .syn-board .react-flow__pane {
+  cursor: grab;
+}
+
+.synthesis-root .syn-board .react-flow__pane:active {
+  cursor: grabbing;
+}
+
+.synthesis-root .syn-board .react-flow__controls,
+.synthesis-root .syn-board .react-flow__minimap {
+  border: 1px solid var(--color-outline-variant);
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.10);
+}
+
+.synthesis-root .wiki-copy ul,
+.synthesis-root .wiki-copy ol {
+  margin-top: 0.75rem;
+  padding-left: 1.25rem;
+}
+
+.synthesis-root .wiki-copy li {
+  margin-top: 0.35rem;
 }
 
 .synthesis-root .font-display { font-family: var(--font-display); }
@@ -62,4 +102,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .synthesis-root .syn-fade-in { animation: none; }
+}
+
+@media (max-width: 767px) {
+  .synthesis-root select { max-width: 48vw; }
 }

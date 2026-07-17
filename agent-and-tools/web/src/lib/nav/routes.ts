@@ -42,6 +42,8 @@ export type RouteMeta = {
   surfaceType?: "launch" | "workflow" | "agent" | "operation" | "identity" | "governance" | "knowledge" | "runtime";
   /** Optional concise status label for palette and app surfaces. */
   statusLabel?: string;
+  /** Open a product-style workspace in a separate browser tab. */
+  openInNewTab?: boolean;
 };
 
 export type NavGroupMeta = {
@@ -71,7 +73,7 @@ export const ROUTES: RouteMeta[] = [
   { id: "home", label: "Command Center", href: "/", group: "SDLC Home", icon: LayoutDashboard, priority: "primary", surfaceType: "launch" },
 
   // 01 Discover
-  { id: "synthesis", label: "Synthesis", href: "/synthesis", group: "Discover", icon: Sparkles, priority: "journey", surfaceType: "workflow", description: "Capture ideas, reduce unknowns, validate assumptions, converge a specification, and generate work.", keywords: ["synthesis", "discovery", "ideas", "idea board", "assumption", "spec", "traceability", "use case", "concept", "elicitation"] },
+  { id: "synthesis", label: "Synthesis", href: "/synthesis", group: "Discover", icon: Sparkles, priority: "journey", surfaceType: "workflow", openInNewTab: true, statusLabel: "Workspace", description: "Capture ideas, map journeys, validate assumptions, and converge a specification in a dedicated workspace.", keywords: ["synthesis", "discovery", "ideas", "idea board", "journey map", "diagram", "wiki", "assumption", "spec", "traceability", "use case", "concept", "elicitation"] },
   { id: "concept-studio", label: "Concept Studio", href: "/concept-studio", group: "Discover", icon: Lightbulb, priority: "primary", surfaceType: "agent", description: "Create, explore, and review concepts in a human-guided idea map.", keywords: ["creative studio", "ideas", "concept map", "concept", "proposal"] },
   { id: "capabilities", label: "Capability Portfolio", href: "/capabilities", group: "Discover", icon: GitBranch, priority: "primary", surfaceType: "agent" },
   { id: "learning", label: "Learning", href: "/learning", group: "Discover", icon: Brain, priority: "secondary", surfaceType: "knowledge" },

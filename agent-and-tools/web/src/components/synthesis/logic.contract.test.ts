@@ -67,18 +67,21 @@ const shell = fs.readFileSync(
   "utf8",
 );
 const hrefs = [...shell.matchAll(/href:\s*"([^"]+)"/g)].map((m) => m[1]);
-assert.ok(hrefs.length >= 8, "SynthesisShell should register the eight journey surfaces");
+assert.ok(hrefs.length >= 12, "SynthesisShell should register the complete creative workspace");
 for (const href of hrefs) {
   assert.ok(href.startsWith("/synthesis/"), `nav href ${href} must live under /synthesis`);
 }
 assert.match(shell, /label: "Idea Board"/, "the primary synthesis capture surface should be named Idea Board");
-assert.doesNotMatch(shell, /<aside/, "Synthesis should use the canonical Platform Web sidebar");
+for (const surface of ["Journey Map", "Project Wiki", "Diagrams", "Pseudo-code"]) {
+  assert.ok(shell.includes(surface), `Synthesis should expose ${surface}`);
+}
+assert.match(shell, /<aside/, "Synthesis should provide its dedicated workspace navigation");
 
 const appShell = fs.readFileSync(
   path.join(process.cwd(), "src/components/AppShell.tsx"),
   "utf8",
 );
-assert.doesNotMatch(appShell, /FULL_BLEED_PREFIXES\s*=\s*\[[^\]]*synthesis/, "Synthesis should render inside AppShell");
+assert.match(appShell, /FULL_BLEED_PREFIXES\s*=\s*\[[^\]]*synthesis/, "Synthesis should own the full viewport");
 
 const ideaScreen = fs.readFileSync(
   path.join(process.cwd(), "src/components/synthesis/screens/IdeaWallScreen.tsx"),
@@ -86,6 +89,7 @@ const ideaScreen = fs.readFileSync(
 );
 assert.match(ideaScreen, /IdeaBoardWorkspace/, "the Idea Board route should mount the durable board workspace");
 assert.match(ideaScreen, /fullBleed=\{view === "board"\}/, "the spatial canvas should use the full work area");
+assert.match(ideaScreen, /FactVotingView/, "the Idea Board should expose fact review and voting");
 
 const boardCanvas = fs.readFileSync(
   path.join(process.cwd(), "src/components/studio/BoardCanvas.tsx"),

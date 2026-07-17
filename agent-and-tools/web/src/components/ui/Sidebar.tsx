@@ -54,13 +54,14 @@ function NavItem({
   collapsed,
   statusLabel,
   surfaceType,
+  openInNewTab,
 }: RouteMeta & { active: boolean; collapsed: boolean }) {
   const accent = surfaceAccent(surfaceType);
   const { isFavorite, toggleFavorite } = useFavorites();
   const [hovered, setHovered] = useState(false);
   const favorite = isFavorite(id);
   return (
-    <Link href={href} className="block" aria-current={active ? "page" : undefined}>
+    <Link href={href} target={openInNewTab ? "_blank" : undefined} rel={openInNewTab ? "noopener noreferrer" : undefined} className="block" aria-current={active ? "page" : undefined}>
       <motion.div
         layout
         className={`nav-item${active ? " active" : ""}`}

@@ -13,6 +13,7 @@ import {
   Building2,
   LayoutGrid,
   ListChecks,
+  Vote,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { SynthesisShell } from "@/components/synthesis/SynthesisShell";
@@ -40,6 +41,7 @@ import {
 } from "@/components/synthesis/hooks/useSynthesis";
 import type { ClaimType, SynClaim } from "@/components/synthesis/types";
 import { IdeaBoardWorkspace } from "@/components/synthesis/IdeaBoardWorkspace";
+import { FactVotingView } from "@/components/synthesis/FactVotingView";
 
 const CLAIM_TYPES: { key: ClaimType; label: string; icon: LucideIcon }[] = [
   { key: "MARKET", label: "Market", icon: Building2 },
@@ -53,7 +55,7 @@ const IDEA_WALL_ROOM = "Idea Board";
 export function IdeaWallScreen() {
   const pathname = usePathname() ?? "/synthesis/ideas";
   const projectId = useSelectedProjectId();
-  const [view, setView] = useState<"board" | "claims">("board");
+  const [view, setView] = useState<"board" | "facts" | "claims">("board");
 
   return (
     <SynthesisShell
@@ -63,6 +65,7 @@ export function IdeaWallScreen() {
         <>
           <div className="flex h-9 items-center rounded-lg border border-outline-variant bg-surface-container-low p-1" aria-label="Idea workspace view">
             <button type="button" onClick={() => setView("board")} className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold ${view === "board" ? "bg-surface text-on-surface shadow-sm" : "text-on-surface-variant"}`}><LayoutGrid size={14} /> Board</button>
+            <button type="button" onClick={() => setView("facts")} className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold ${view === "facts" ? "bg-surface text-on-surface shadow-sm" : "text-on-surface-variant"}`}><Vote size={14} /> Facts</button>
             <button type="button" onClick={() => setView("claims")} className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold ${view === "claims" ? "bg-surface text-on-surface shadow-sm" : "text-on-surface-variant"}`}><ListChecks size={14} /> Claims</button>
           </div>
           <ProjectPicker pathname={pathname} />
@@ -70,7 +73,7 @@ export function IdeaWallScreen() {
       )}
     >
       {projectId
-        ? view === "board" ? <IdeaBoardWorkspace projectId={projectId} /> : <ClaimsView projectId={projectId} />
+        ? view === "board" ? <IdeaBoardWorkspace projectId={projectId} /> : view === "facts" ? <FactVotingView projectId={projectId} /> : <ClaimsView projectId={projectId} />
         : <NoProjectSelected surface="The Idea Board" />}
     </SynthesisShell>
   );
