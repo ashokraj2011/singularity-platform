@@ -4,19 +4,21 @@ import { describe, expect, it } from 'vitest'
 
 const service = fs.readFileSync(path.join(process.cwd(), 'src/modules/planner/planner.service.ts'), 'utf8')
 const router = fs.readFileSync(path.join(process.cwd(), 'src/modules/planner/planner.router.ts'), 'utf8')
-const iamClient = fs.readFileSync(path.join(process.cwd(), 'src/lib/iam/client.ts'), 'utf8')
+const agentToolsClient = fs.readFileSync(path.join(process.cwd(), 'src/lib/agent-and-tools/client.ts'), 'utf8')
 
 describe('planner capability scope contract', () => {
   it('requires the home capability to be active before planner work can proceed', () => {
     expect(service).toMatch(/async function assertPlannerCapabilityActive\(capabilityId: string, callerToken\?: string\)/)
-    expect(service).toMatch(/const capability = await getCapability\(capabilityId, callerToken\)/)
-    expect(service).toMatch(/if \(!capability\) throw new ValidationError\(`Capability \$\{capabilityId\} is not available to the planner\.`\)/)
+    expect(service).toMatch(/const capability = await getRuntimeCapability\(capabilityId, callerToken\)/)
+    expect(service).toMatch(/Capability \$\{capabilityId\} is not available in the Agent and Tools capability catalog/)
     expect(service).toMatch(/if \(status !== 'ACTIVE'\) \{[\s\S]*?planner converse, commit, and launch require an ACTIVE capability/)
     expect(service).toMatch(/export async function resolveAssignableCapabilities\(homeId: string, allowChildren: boolean, callerToken\?: string\)[\s\S]*?const home = await assertPlannerCapabilityActive\(homeId, callerToken\)/)
   })
 
   it('filters inactive children and rejects out-of-scope task assignments before creating WorkItems', () => {
-    expect(service).toMatch(/if \(!cap \|\| cap\.isGoverning \|\| capabilityStatus\(cap\) !== 'ACTIVE'\) continue/)
+    expect(service).toMatch(/const runtimeCapabilities = await listRuntimeCapabilities\(callerToken\)/)
+    expect(service).toMatch(/runtimeCapabilities\.filter\(capability => String\(capability\.parentCapabilityId \?\? ''\) === homeId\)/)
+    expect(service).toMatch(/if \(isGoverning \|\| capabilityStatus\(capability\) !== 'ACTIVE'\) continue/)
     expect(service).toMatch(/async function assertPlannerAssignmentsActive\(homeId: string, milestones: Milestone\[\], callerToken\?: string\)/)
     expect(service).toMatch(/const caps = await resolveAssignableCapabilities\(homeId, true, callerToken\)[\s\S]*?const invalid = flattenTasks\(milestones\)\.filter\(\(task\) => !allowed\.has\(task\.capabilityId\)\)/)
     expect(service).toMatch(/throw new ValidationError\(`Planner roadmap includes task assignments outside the active capability scope: \$\{labels\}`\)/)
@@ -38,11 +40,9 @@ describe('planner capability scope contract', () => {
     expect(router).toMatch(/plannerRouter\.post\('\/launch'[\s\S]*?catch \(err\) \{[\s\S]*?next\(err\)/)
   })
 
-  it('resolves IAM capabilities by UUID or slug when the direct lookup is slug-keyed', () => {
-    expect(iamClient).toMatch(/async function findCapabilityByUuidOrSlug\(capabilityId: string, callerToken\?: string\)/)
-    expect(iamClient).toMatch(/item\.id === capabilityId \|\| item\.capability_id === capabilityId/)
-    expect(iamClient).toMatch(/runtimeCapabilityIdFromIam\(item\) === capabilityId/)
-    expect(iamClient).toMatch(/agentRuntimeCapabilityId/)
-    expect(iamClient).toMatch(/const listed = await findCapabilityByUuidOrSlug\(capabilityId, callerToken\)/)
+  it('resolves executable capabilities from Agent Runtime', () => {
+    expect(agentToolsClient).toMatch(/export async function getRuntimeCapability\(/)
+    expect(agentToolsClient).toMatch(/api\/v1\/capabilities\/\$\{encodeURIComponent\(capabilityId\)\}/)
+    expect(service).not.toMatch(/getCapability\(capabilityId, callerToken\)/)
   })
 })

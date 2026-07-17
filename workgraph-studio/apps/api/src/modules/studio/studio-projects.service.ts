@@ -1,14 +1,11 @@
 /**
- * Specification Projects — the studio's optional project-level root. A project groups the shared
- * upstream (analysis → requirements → design); Work Items reference it via projectId but stay
- * standalone-capable (null projectId = solo item with its own spec). This service is the backend
- * for the top-level /studio front door (Portfolio → Project). Distinct from Initiative, which
- * groups workflow RUNS, not specifications.
+ * Specification Projects are the persisted initiative root. They own portfolio guardrails and
+ * the shared upstream (analysis -> requirements -> design) used by their Work Items.
  */
 import { randomBytes } from 'crypto'
 import type { Prisma, SpecificationProjectStatus } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
-import { currentTenantIdForDb } from '../../lib/tenant-db-context'
+import { currentTenantIdForDb, withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { config } from '../../config'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { ConflictError, NotFoundError } from '../../lib/errors'
@@ -16,14 +13,63 @@ import { ConflictError, NotFoundError } from '../../lib/errors'
 export interface CreateProjectInput {
   name: string
   mission?: string
+  primaryCapability: CapabilityRef
+  impactedCapabilities?: CapabilityRef[]
+  tokenBudget: number
+  costBudgetUsd?: number
+  businessValue?: number
+  customerImpact?: number
+  strategicAlignment?: number
+  urgency?: number
+  deliveryRisk?: number
+  technicalRisk?: number
+  regulatoryRisk?: number
+  confidence?: number
+  effort?: number
+  targetDate?: string
+  reviewCadenceDays?: number
+  sponsorId?: string
+  productOwnerId?: string
+  successMetrics?: string[]
+  tags?: string[]
 }
 export interface UpdateProjectInput {
   name?: string
   mission?: string | null
+  primaryCapability?: CapabilityRef
+  impactedCapabilities?: CapabilityRef[]
+  tokenBudget?: number
+  costBudgetUsd?: number | null
+  businessValue?: number | null
+  customerImpact?: number | null
+  strategicAlignment?: number | null
+  urgency?: number | null
+  deliveryRisk?: number | null
+  technicalRisk?: number | null
+  regulatoryRisk?: number | null
+  confidence?: number | null
+  effort?: number | null
+  targetDate?: string | null
+  reviewCadenceDays?: number
+  lastReviewedAt?: string | null
+  sponsorId?: string | null
+  productOwnerId?: string | null
+  successMetrics?: string[]
+  tags?: string[]
+}
+
+export interface CapabilityRef {
+  id: string
+  name: string
+  impactArea?: string
 }
 
 function tenantId(): string {
   return currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID
+}
+
+function tenantTx<T>(callback: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  return withTenantDbTransaction(prisma, callback, tenantId())
 }
 
 // Compact, human-facing project code — mirrors WorkItem's WRK- codes.
@@ -43,69 +89,309 @@ const projectListSelect = {
   status: true,
   createdById: true,
   archivedAt: true,
+  primaryCapabilityId: true,
+  primaryCapabilityName: true,
+  tokenBudget: true,
+  tokenUsed: true,
+  costBudgetUsd: true,
+  costUsedUsd: true,
+  businessValue: true,
+  customerImpact: true,
+  strategicAlignment: true,
+  urgency: true,
+  deliveryRisk: true,
+  technicalRisk: true,
+  regulatoryRisk: true,
+  confidence: true,
+  effort: true,
+  targetDate: true,
+  reviewCadenceDays: true,
+  lastReviewedAt: true,
+  sponsorId: true,
+  productOwnerId: true,
+  successMetrics: true,
+  tags: true,
   createdAt: true,
   updatedAt: true,
-  _count: { select: { workItems: true } },
+  capabilityLinks: {
+    select: { id: true, capabilityId: true, capabilityName: true, role: true, impactArea: true },
+    orderBy: { role: 'asc' },
+  },
+  impactAssessments: {
+    select: {
+      id: true, capabilityId: true, capabilityName: true, agentTemplateId: true,
+      agentTemplateName: true, status: true, summary: true, recommendations: true,
+      risks: true, dependencies: true, suggestedClaims: true, traceId: true,
+      tokensUsed: true, estimatedCostUsd: true, error: true, assessedAt: true, updatedAt: true,
+    },
+    orderBy: { updatedAt: 'desc' },
+  },
+  claims: { select: { updatedAt: true }, orderBy: { updatedAt: 'desc' }, take: 1 },
+  workItems: { select: { updatedAt: true }, orderBy: { updatedAt: 'desc' }, take: 1 },
+  _count: { select: { workItems: true, claims: true } },
 } satisfies Prisma.SpecificationProjectSelect
 
-export function shapeProject<T extends { _count: { workItems: number } }>(p: T) {
-  const { _count, ...rest } = p
-  return { ...rest, workItemCount: _count.workItems }
+export function shapeProject<T extends {
+  _count: { workItems: number; claims?: number }
+  createdAt?: Date | string
+  updatedAt?: Date | string
+  targetDate?: Date | string | null
+  reviewCadenceDays?: number
+  businessValue?: number | null
+  customerImpact?: number | null
+  strategicAlignment?: number | null
+  urgency?: number | null
+  deliveryRisk?: number | null
+  technicalRisk?: number | null
+  regulatoryRisk?: number | null
+  confidence?: number | null
+  effort?: number | null
+  tokenBudget?: number
+  tokenUsed?: number
+  claims?: Array<{ updatedAt: Date | string }>
+  workItems?: Array<{ updatedAt: Date | string }>
+  impactAssessments?: Array<{ status: string; updatedAt?: Date | string }>
+}>(p: T) {
+  const { _count, claims = [], workItems = [], ...rest } = p
+  const now = Date.now()
+  const createdAt = dateMs(p.createdAt) ?? now
+  const latestActivityAt = Math.max(
+    dateMs(p.updatedAt) ?? createdAt,
+    dateMs(claims[0]?.updatedAt) ?? 0,
+    dateMs(workItems[0]?.updatedAt) ?? 0,
+    dateMs(p.impactAssessments?.[0]?.updatedAt) ?? 0,
+  )
+  const ageDays = wholeDays(now - createdAt)
+  const inactiveDays = wholeDays(now - latestActivityAt)
+  const targetMs = dateMs(p.targetDate)
+  const reviewCadenceDays = p.reviewCadenceDays ?? 30
+  const agingStatus = targetMs != null && targetMs < now
+    ? 'OVERDUE'
+    : inactiveDays >= reviewCadenceDays * 2
+      ? 'STALE'
+      : inactiveDays >= reviewCadenceDays
+        ? 'REVIEW_DUE'
+        : 'CURRENT'
+  const assessmentStates = (p.impactAssessments ?? []).map((item) => item.status)
+  const impactAssessmentStatus = assessmentStates.includes('FAILED')
+    ? 'ATTENTION'
+    : assessmentStates.some((state) => state === 'RUNNING')
+      ? 'RUNNING'
+      : assessmentStates.some((state) => state === 'PENDING')
+        ? 'PENDING'
+        : assessmentStates.length > 0 && assessmentStates.every((state) => state === 'COMPLETED')
+          ? 'COMPLETED'
+          : 'NONE'
+  const valueScore = average([p.businessValue, p.customerImpact, p.strategicAlignment, p.urgency])
+  const riskScore = average([p.deliveryRisk, p.technicalRisk, p.regulatoryRisk])
+  const confidence = p.confidence ?? 3
+  const effort = Math.max(1, p.effort ?? 3)
+  const priorityScore = valueScore == null
+    ? null
+    : Math.round(((valueScore * (confidence / 5)) / (effort * (1 + ((riskScore ?? 0) / 5)))) * 100) / 100
+  const tokenBudget = p.tokenBudget ?? 0
+  const tokenUsed = p.tokenUsed ?? 0
+  return {
+    ...rest,
+    workItemCount: _count.workItems,
+    claimCount: _count.claims ?? 0,
+    ageDays,
+    inactiveDays,
+    agingStatus,
+    latestActivityAt: new Date(latestActivityAt),
+    valueScore,
+    riskScore,
+    priorityScore,
+    tokenBudgetPercent: tokenBudget > 0 ? Math.min(100, Math.round((tokenUsed / tokenBudget) * 100)) : 100,
+    impactAssessmentStatus,
+  }
+}
+
+function dateMs(value: Date | string | null | undefined): number | null {
+  if (!value) return null
+  const result = value instanceof Date ? value.getTime() : Date.parse(value)
+  return Number.isFinite(result) ? result : null
+}
+
+function wholeDays(milliseconds: number): number {
+  return Math.max(0, Math.floor(milliseconds / 86_400_000))
+}
+
+function average(values: Array<number | null | undefined>): number | null {
+  const present = values.filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+  if (present.length === 0) return null
+  return Math.round((present.reduce((sum, value) => sum + value, 0) / present.length) * 10) / 10
 }
 
 export async function listProjects(filter: { status?: SpecificationProjectStatus } = {}) {
-  const projects = await prisma.specificationProject.findMany({
+  const projects = await tenantTx(tx => tx.specificationProject.findMany({
     where: { tenantId: tenantId(), ...(filter.status ? { status: filter.status } : {}) },
     select: projectListSelect,
     orderBy: { createdAt: 'desc' },
-  })
+  }))
   return { items: projects.map(shapeProject) }
 }
 
 export async function getProject(id: string) {
-  const project = await prisma.specificationProject.findFirst({ where: { id, tenantId: tenantId() }, select: projectListSelect })
+  const project = await tenantTx(tx => tx.specificationProject.findFirst({ where: { id, tenantId: tenantId() }, select: projectListSelect }))
   if (!project) throw new NotFoundError('SpecificationProject', id)
   return shapeProject(project)
 }
 
 export async function createProject(input: CreateProjectInput, userId: string) {
   const code = await generateProjectCode()
-  const project = await prisma.specificationProject.create({
-    data: {
-      code,
-      name: input.name,
-      mission: input.mission ?? null,
-      createdById: userId,
-      tenantId: tenantId(),
-    },
-    select: projectListSelect,
+  const capabilityLinks = dedupeCapabilities(input.primaryCapability, input.impactedCapabilities ?? [])
+  const project = await tenantTx(async (tx) => {
+    const created = await tx.specificationProject.create({
+      data: {
+        code,
+        name: input.name,
+        mission: input.mission ?? null,
+        primaryCapabilityId: input.primaryCapability.id,
+        primaryCapabilityName: input.primaryCapability.name,
+        tokenBudget: input.tokenBudget,
+        costBudgetUsd: input.costBudgetUsd ?? null,
+        businessValue: input.businessValue ?? null,
+        customerImpact: input.customerImpact ?? null,
+        strategicAlignment: input.strategicAlignment ?? null,
+        urgency: input.urgency ?? null,
+        deliveryRisk: input.deliveryRisk ?? null,
+        technicalRisk: input.technicalRisk ?? null,
+        regulatoryRisk: input.regulatoryRisk ?? null,
+        confidence: input.confidence ?? null,
+        effort: input.effort ?? null,
+        targetDate: input.targetDate ? new Date(input.targetDate) : null,
+        reviewCadenceDays: input.reviewCadenceDays ?? 30,
+        sponsorId: input.sponsorId ?? null,
+        productOwnerId: input.productOwnerId ?? null,
+        successMetrics: (input.successMetrics ?? []) as Prisma.InputJsonValue,
+        tags: input.tags ?? [],
+        createdById: userId,
+        tenantId: tenantId(),
+      },
+    })
+    await tx.specificationProjectCapability.createMany({
+      data: capabilityLinks.map((capability) => ({
+        projectId: created.id,
+        capabilityId: capability.id,
+        capabilityName: capability.name,
+        role: capability.id === input.primaryCapability.id ? 'PRIMARY' : 'IMPACTED',
+        impactArea: capability.impactArea ?? null,
+        tenantId: tenantId(),
+      })),
+    })
+    await tx.capabilityImpactAssessment.createMany({
+      data: capabilityLinks.map((capability) => ({
+        projectId: created.id,
+        capabilityId: capability.id,
+        capabilityName: capability.name,
+        status: 'PENDING',
+        tenantId: tenantId(),
+      })),
+    })
+    return tx.specificationProject.findUniqueOrThrow({ where: { id: created.id }, select: projectListSelect })
   })
   await logEvent('SpecificationProjectCreated', 'SpecificationProject', project.id, userId)
-  await publishOutbox('SpecificationProject', project.id, 'SpecificationProjectCreated', { code: project.code, name: project.name })
+  await publishOutbox('SpecificationProject', project.id, 'SpecificationProjectCreated', {
+    code: project.code,
+    name: project.name,
+    primaryCapabilityId: input.primaryCapability.id,
+    impactedCapabilityIds: capabilityLinks.filter((item) => item.id !== input.primaryCapability.id).map((item) => item.id),
+    tokenBudget: input.tokenBudget,
+  })
   return shapeProject(project)
 }
 
 export async function updateProject(id: string, input: UpdateProjectInput, userId: string) {
   await getProject(id)
-  const project = await prisma.specificationProject.update({
-    where: { id },
-    data: {
-      ...(input.name !== undefined ? { name: input.name } : {}),
-      ...(input.mission !== undefined ? { mission: input.mission } : {}),
-    },
-    select: projectListSelect,
+  const project = await tenantTx(async (tx) => {
+    await tx.specificationProject.update({
+      where: { id },
+      data: {
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.mission !== undefined ? { mission: input.mission } : {}),
+        ...(input.primaryCapability !== undefined ? {
+          primaryCapabilityId: input.primaryCapability.id,
+          primaryCapabilityName: input.primaryCapability.name,
+        } : {}),
+        ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+        ...(input.costBudgetUsd !== undefined ? { costBudgetUsd: input.costBudgetUsd } : {}),
+        ...(input.businessValue !== undefined ? { businessValue: input.businessValue } : {}),
+        ...(input.customerImpact !== undefined ? { customerImpact: input.customerImpact } : {}),
+        ...(input.strategicAlignment !== undefined ? { strategicAlignment: input.strategicAlignment } : {}),
+        ...(input.urgency !== undefined ? { urgency: input.urgency } : {}),
+        ...(input.deliveryRisk !== undefined ? { deliveryRisk: input.deliveryRisk } : {}),
+        ...(input.technicalRisk !== undefined ? { technicalRisk: input.technicalRisk } : {}),
+        ...(input.regulatoryRisk !== undefined ? { regulatoryRisk: input.regulatoryRisk } : {}),
+        ...(input.confidence !== undefined ? { confidence: input.confidence } : {}),
+        ...(input.effort !== undefined ? { effort: input.effort } : {}),
+        ...(input.targetDate !== undefined ? { targetDate: input.targetDate ? new Date(input.targetDate) : null } : {}),
+        ...(input.reviewCadenceDays !== undefined ? { reviewCadenceDays: input.reviewCadenceDays } : {}),
+        ...(input.lastReviewedAt !== undefined ? { lastReviewedAt: input.lastReviewedAt ? new Date(input.lastReviewedAt) : null } : {}),
+        ...(input.sponsorId !== undefined ? { sponsorId: input.sponsorId } : {}),
+        ...(input.productOwnerId !== undefined ? { productOwnerId: input.productOwnerId } : {}),
+        ...(input.successMetrics !== undefined ? { successMetrics: input.successMetrics as Prisma.InputJsonValue } : {}),
+        ...(input.tags !== undefined ? { tags: input.tags } : {}),
+      },
+    })
+    if (input.primaryCapability || input.impactedCapabilities) {
+      const current = await tx.specificationProject.findUniqueOrThrow({
+        where: { id },
+        select: { primaryCapabilityId: true, primaryCapabilityName: true, capabilityLinks: true },
+      })
+      const primary = input.primaryCapability ?? {
+        id: current.primaryCapabilityId ?? '',
+        name: current.primaryCapabilityName ?? current.primaryCapabilityId ?? '',
+      }
+      const impacted = input.impactedCapabilities
+        ?? current.capabilityLinks.filter((item) => item.role === 'IMPACTED').map((item) => ({
+          id: item.capabilityId,
+          name: item.capabilityName ?? item.capabilityId,
+          impactArea: item.impactArea ?? undefined,
+        }))
+      const links = dedupeCapabilities(primary, impacted).filter((item) => item.id)
+      await tx.specificationProjectCapability.deleteMany({ where: { projectId: id } })
+      await tx.specificationProjectCapability.createMany({
+        data: links.map((capability) => ({
+          projectId: id,
+          capabilityId: capability.id,
+          capabilityName: capability.name,
+          role: capability.id === primary.id ? 'PRIMARY' : 'IMPACTED',
+          impactArea: capability.impactArea ?? null,
+          tenantId: tenantId(),
+        })),
+      })
+      for (const capability of links) {
+        await tx.capabilityImpactAssessment.upsert({
+          where: { projectId_capabilityId: { projectId: id, capabilityId: capability.id } },
+          create: { projectId: id, capabilityId: capability.id, capabilityName: capability.name, status: 'PENDING', tenantId: tenantId() },
+          update: { capabilityName: capability.name, status: 'PENDING', error: null },
+        })
+      }
+      await tx.capabilityImpactAssessment.deleteMany({ where: { projectId: id, capabilityId: { notIn: links.map((item) => item.id) } } })
+    }
+    return tx.specificationProject.findUniqueOrThrow({ where: { id }, select: projectListSelect })
   })
   await logEvent('SpecificationProjectUpdated', 'SpecificationProject', id, userId)
   return shapeProject(project)
 }
 
+function dedupeCapabilities(primary: CapabilityRef, impacted: CapabilityRef[]): CapabilityRef[] {
+  const byId = new Map<string, CapabilityRef>()
+  byId.set(primary.id, primary)
+  for (const capability of impacted) {
+    if (!byId.has(capability.id)) byId.set(capability.id, capability)
+  }
+  return [...byId.values()]
+}
+
 export async function setProjectArchived(id: string, archived: boolean, userId: string) {
   await getProject(id)
-  const project = await prisma.specificationProject.update({
+  const project = await tenantTx(tx => tx.specificationProject.update({
     where: { id },
     data: archived ? { status: 'ARCHIVED', archivedAt: new Date() } : { status: 'ACTIVE', archivedAt: null },
     select: projectListSelect,
-  })
+  }))
   await logEvent(archived ? 'SpecificationProjectArchived' : 'SpecificationProjectReactivated', 'SpecificationProject', id, userId)
   return shapeProject(project)
 }
@@ -123,12 +409,12 @@ const workItemCardSelect = {
 
 export async function listProjectWorkItems(id: string) {
   await getProject(id)
-  const items = await prisma.workItem.findMany({ where: { projectId: id, tenantId: tenantId() }, select: workItemCardSelect, orderBy: { createdAt: 'desc' } })
+  const items = await tenantTx(tx => tx.workItem.findMany({ where: { projectId: id, tenantId: tenantId() }, select: workItemCardSelect, orderBy: { createdAt: 'desc' } }))
   return { items }
 }
 
 async function loadWorkItem(workItemId: string) {
-  const workItem = await prisma.workItem.findFirst({ where: { id: workItemId, tenantId: tenantId() }, select: { id: true, projectId: true } })
+  const workItem = await tenantTx(tx => tx.workItem.findFirst({ where: { id: workItemId, tenantId: tenantId() }, select: { id: true, projectId: true } }))
   if (!workItem) throw new NotFoundError('WorkItem', workItemId)
   return workItem
 }
@@ -139,7 +425,7 @@ export async function attachWorkItem(projectId: string, workItemId: string, user
   if (workItem.projectId && workItem.projectId !== projectId) {
     throw new ConflictError('Work item is already attached to a different project. Detach it first.')
   }
-  const updated = await prisma.workItem.update({ where: { id: workItemId }, data: { projectId }, select: workItemCardSelect })
+  const updated = await tenantTx(tx => tx.workItem.update({ where: { id: workItemId }, data: { projectId }, select: workItemCardSelect }))
   await logEvent('WorkItemAttachedToProject', 'WorkItem', workItemId, userId)
   await publishOutbox('SpecificationProject', projectId, 'WorkItemAttached', { workItemId })
   return updated
@@ -149,16 +435,18 @@ export async function detachWorkItem(projectId: string, workItemId: string, user
   await getProject(projectId)
   const workItem = await loadWorkItem(workItemId)
   if (workItem.projectId !== projectId) throw new ConflictError('Work item is not attached to this project.')
-  const updated = await prisma.workItem.update({ where: { id: workItemId }, data: { projectId: null }, select: workItemCardSelect })
+  const updated = await tenantTx(tx => tx.workItem.update({ where: { id: workItemId }, data: { projectId: null }, select: workItemCardSelect }))
   await logEvent('WorkItemDetachedFromProject', 'WorkItem', workItemId, userId)
   return updated
 }
 
 // The /studio landing: active projects (with counts) + the standalone (unprojected) work items.
 export async function getPortfolio() {
-  const [{ items: projects }, standalone] = await Promise.all([
-    listProjects({ status: 'ACTIVE' }),
-    prisma.workItem.findMany({ where: { projectId: null, tenantId: tenantId() }, select: workItemCardSelect, orderBy: { createdAt: 'desc' }, take: 50 }),
-  ])
-  return { projects, standaloneWorkItems: standalone }
+  return tenantTx(async tx => {
+    const [{ items: projects }, standalone] = await Promise.all([
+      listProjects({ status: 'ACTIVE' }),
+      tx.workItem.findMany({ where: { projectId: null, tenantId: tenantId() }, select: workItemCardSelect, orderBy: { createdAt: 'desc' }, take: 50 }),
+    ])
+    return { projects, standaloneWorkItems: standalone }
+  })
 }

@@ -12,14 +12,13 @@ import type { Request } from 'express'
 import { proxyGet as iamProxyGet, IamUnauthorizedError, IamUnavailableError } from '../../lib/iam/client'
 import {
   getAgentTemplate,
+  getRuntimeCapability,
   getToolByName,
   listPromptProfiles,
   AgentAndToolsError,
 } from '../../lib/agent-and-tools/client'
 import { validateDirectLlmConfig } from '../workflow/runtime/executors/direct-llm-config'
 import { resolveLoopStrategyVersion } from '../workflow/loop-strategy.service'
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export const SINGLE_KINDS = [
   'user', 'team', 'business-unit', 'capability', 'role',
@@ -65,26 +64,13 @@ export async function resolveOne(kind: string, id: string, req: Request): Promis
         return r ? { kind, id, exists: true, label: r.name as string | undefined, raw: r } : { kind, id, exists: false }
       }
       case 'capability': {
-        // IAM keys /capabilities/{capability_id} by SLUG (e.g. "tag-test"),
-        // not the row UUID. If `id` looks like a UUID, list and find by row id.
-        if (UUID_RE.test(id)) {
-          const list = await iamProxyGet('/capabilities', { size: 500 }, authToken(req)) as { items?: Array<Record<string, unknown>> } | Array<Record<string, unknown>> | null
-          const items = Array.isArray(list) ? list : (list?.items ?? [])
-          const hit = items.find((r) => {
-            const metadata = r.metadata && typeof r.metadata === 'object' && !Array.isArray(r.metadata)
-              ? r.metadata as Record<string, unknown>
-              : {}
-            return [
-              r.id,
-              r.capability_id,
-              metadata.agentRuntimeCapabilityId,
-              metadata.agent_runtime_capability_id,
-            ].some(value => String(value ?? '') === id)
-          })
-          return hit ? { kind, id, exists: true, label: hit.name as string | undefined, raw: hit } : { kind, id, exists: false }
-        }
-        const r = await iamProxyGet(`/capabilities/${encodeURIComponent(id)}`, {}, authToken(req)) as Record<string, unknown> | null
-        return r ? { kind, id, exists: true, label: r.name as string | undefined, raw: r } : { kind, id, exists: false }
+        // Workflow configuration references the executable Agent Runtime
+        // capability, not the IAM authorization record. Runtime capability IDs
+        // are stable UUIDs and are also used for repositories/world models.
+        const capability = await getRuntimeCapability(id, authHeader(req))
+        return capability
+          ? { kind, id, exists: true, label: capability.name, raw: { ...capability, source: 'agent-runtime' } }
+          : { kind, id, exists: false }
       }
       case 'role': {
         const r = await iamProxyGet(`/roles/${encodeURIComponent(id)}`, {}, authToken(req)) as Record<string, unknown> | null

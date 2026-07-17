@@ -18,8 +18,12 @@
 import { z } from 'zod'
 import { traceIdFromParts } from '@workgraph/shared-types'
 import { contextFabricClient, type ExecuteResponse } from '../../lib/context-fabric/client'
-import { listCapabilityRelationships, getCapability } from '../../lib/iam/client'
-import { getRuntimeCapabilityWorldModel } from '../../lib/agent-and-tools/client'
+import {
+  getRuntimeCapability,
+  getRuntimeCapabilityWorldModel,
+  listRuntimeCapabilities,
+  type RuntimeCapability,
+} from '../../lib/agent-and-tools/client'
 import { prisma } from '../../lib/prisma'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { getSdlcIntent } from '../adoption/sdlcCatalog'
@@ -428,15 +432,15 @@ function criticTask(goal: string, milestones: Milestone[], caps: AssignableCapab
 // Capability resolution
 // ────────────────────────────────────────────────────────────────────────────
 
-const CHILD_RELATIONSHIP = 'decomposes_to'
-
-function capabilityStatus(capability: Awaited<ReturnType<typeof getCapability>>): string {
+function capabilityStatus(capability: RuntimeCapability | null): string {
   return String(capability?.status ?? 'ACTIVE').trim().toUpperCase()
 }
 
 async function assertPlannerCapabilityActive(capabilityId: string, callerToken?: string): Promise<AssignableCapability> {
-  const capability = await getCapability(capabilityId, callerToken)
-  if (!capability) throw new ValidationError(`Capability ${capabilityId} is not available to the planner.`)
+  const capability = await getRuntimeCapability(capabilityId, callerToken)
+  if (!capability) {
+    throw new ValidationError(`Capability ${capabilityId} is not available in the Agent and Tools capability catalog.`)
+  }
   const status = capabilityStatus(capability)
   if (status !== 'ACTIVE') {
     throw new ValidationError(`Capability ${capabilityId} is ${status}; planner converse, commit, and launch require an ACTIVE capability.`)
@@ -511,13 +515,13 @@ export async function resolveAssignableCapabilities(homeId: string, allowChildre
   const home = await assertPlannerCapabilityActive(homeId, callerToken)
   const list: AssignableCapability[] = [home]
   if (!allowChildren) return enrichWithWorldModels(list, callerToken)
-  const rels = await listCapabilityRelationships(homeId, callerToken).catch(() => [])
-  const childIds = [...new Set(rels.filter((r) => r.relationship_type === CHILD_RELATIONSHIP).map((r) => r.target_capability_id))]
-  for (const id of childIds) {
-    if (id === homeId) continue
-    const cap = await getCapability(id, callerToken).catch(() => null)
-    if (!cap || cap.isGoverning || capabilityStatus(cap) !== 'ACTIVE') continue
-    list.push({ id, name: cap.name ?? id })
+  const runtimeCapabilities = await listRuntimeCapabilities(callerToken)
+  const children = runtimeCapabilities.filter(capability => String(capability.parentCapabilityId ?? '') === homeId)
+  for (const capability of children) {
+    if (capability.id === homeId) continue
+    const isGoverning = capability.isGoverning === true || capability.is_governing === true
+    if (isGoverning || capabilityStatus(capability) !== 'ACTIVE') continue
+    list.push({ id: capability.id, name: capability.name ?? capability.id })
   }
   return enrichWithWorldModels(list, callerToken)
 }

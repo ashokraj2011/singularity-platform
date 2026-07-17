@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
-import { Archive, Check, CircleSlash2, Flag, FolderPlus, Lock, Plus, Sparkles, ThumbsDown, ThumbsUp, Pin, RefreshCw, Search, ShieldCheck, X } from "lucide-react";
+import Link from "next/link";
+import { Archive, Check, CircleSlash2, Flag, Lock, Plus, Sparkles, ThumbsDown, ThumbsUp, Pin, RefreshCw, Search, ShieldCheck, X } from "lucide-react";
 import { workgraphFetch } from "@/lib/workgraph";
 import { MetricTile, PageHero, PageShell, StatusPill } from "@/components/ui/primitives";
 import { CoeditCanvas } from "./CoeditCanvas";
@@ -39,8 +40,6 @@ export function ConceptArchiveConsole() {
   const [projectId, setProjectId] = useState("");
   const [studioId, setStudioId] = useState("");
   const [archiveId, setArchiveId] = useState("");
-  const [newProjectName, setNewProjectName] = useState("");
-  const [newProjectMission, setNewProjectMission] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const projectsQ = useSWR<{ items: Project[] }>("/studio/projects?status=ACTIVE", fetcher);
@@ -74,15 +73,6 @@ export function ConceptArchiveConsole() {
       setArchiveId(created.archive.id); await archivesQ.mutate(); setMessage("Concept map created. Stage an idea, then confirm its placement.");
     } catch (err) { fail(err); }
   }
-  async function createProject() {
-    if (!newProjectName.trim()) return;
-    setError(null); setMessage(null);
-    try {
-      const project = await workgraphFetch<Project>("/studio/projects", { method: "POST", body: JSON.stringify({ name: newProjectName.trim(), mission: newProjectMission.trim() || undefined }) });
-      setNewProjectName(""); setNewProjectMission(""); setProjectId(project.id); setStudioId(""); setArchiveId(""); await projectsQ.mutate(); setMessage("Specification project created. You can now create its Concept Studio map.");
-    } catch (err) { fail(err); }
-  }
-
   return (
     <PageShell maxWidth={1440}>
       <PageHero eyebrow="Creative Studio" title="Concept Studio" description="Create and explore ideas as a sparse, evidence-aware map. Agents can propose; humans confirm placement, protect strong ideas, and freeze the portfolio." icon={Archive} actions={<button className="btn-primary text-xs" type="button" onClick={createArchive}><Plus size={14} /> New concept map</button>} />
@@ -92,7 +82,7 @@ export function ConceptArchiveConsole() {
         <label className="text-xs font-semibold text-slate-600">Concept map<select className="input mt-1 w-full" value={archiveId} onChange={(event) => setArchiveId(event.target.value)}><option value="">Choose concept map</option>{archives.map((archive) => <option key={archive.id} value={archive.id}>{archive.name} · r{archive.axesRevision}</option>)}</select></label>
         <div className="flex items-end"><button className="btn-secondary text-xs" type="button" onClick={() => { projectsQ.mutate(); studiosQ.mutate(); archivesQ.mutate(); archiveQ.mutate(); }}><RefreshCw size={13} /> Refresh</button></div>
       </div>
-      <div className="mt-3 flex flex-wrap items-end gap-2 rounded-lg border border-dashed border-slate-300 bg-slate-50/70 p-3"><div className="mr-1 flex items-center gap-2 text-xs font-semibold text-slate-600"><FolderPlus size={14} className="text-cyan-600" /> New specification project</div><input className="input w-56" value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="Project name" /><input className="input min-w-64 flex-1" value={newProjectMission} onChange={(event) => setNewProjectMission(event.target.value)} placeholder="Mission or problem space (optional)" /><button className="btn-secondary text-xs" type="button" disabled={!newProjectName.trim()} onClick={createProject}><Plus size={13} /> Create project</button></div>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50/70 p-3"><div><div className="text-xs font-semibold text-slate-700">Need another initiative?</div><div className="mt-0.5 text-xs text-slate-500">Create it in Synthesis Hub so capability ownership, budget, value, risk, and impact review are captured together.</div></div><Link className="btn-secondary text-xs" href="/synthesis/hub"><Plus size={13} /> New initiative</Link></div>
       {error && <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>}
       {message && <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{message}</div>}
       {!view ? <div className="mt-6 rounded-xl border border-dashed border-slate-300 bg-white p-12 text-center text-sm text-slate-600"><Sparkles className="mx-auto mb-3 text-cyan-600" size={24} />Choose a project and concept map to open the exploration surface.</div> : <ArchiveSurface view={view} proposals={proposalsQ.data?.items ?? []} onChanged={() => { archiveQ.mutate(); proposalsQ.mutate(); }} onError={fail} />}

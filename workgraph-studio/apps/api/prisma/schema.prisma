@@ -178,6 +178,18 @@ enum SpecificationProjectStatus {
   ARCHIVED
 }
 
+enum ProjectCapabilityRole {
+  PRIMARY
+  IMPACTED
+}
+
+enum ImpactAssessmentStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
 enum WorkItemOriginType {
   PARENT_DELEGATED
   CAPABILITY_LOCAL
@@ -1380,10 +1392,9 @@ model SpecificationVersion {
   @@map("specification_versions")
 }
 
-// A Specification Project — the OPTIONAL, project-level root of the studio. Groups the shared
-// upstream (analysis → requirements → design) that many Work Items draw on. Work Items reference
-// a project via WorkItem.projectId but stay standalone-capable: a null projectId is a solo item
-// that keeps its own spec. Distinct from Initiative (which groups workflow RUNS, not specs).
+// A Specification Project is the persisted initiative root. It owns portfolio guardrails and the
+// shared upstream (analysis -> requirements -> design) that many Work Items draw on. Work Items
+// reference a project via WorkItem.projectId but remain standalone-capable for legacy/solo work.
 model SpecificationProject {
   id          String                     @id @default(uuid())
   code        String                     @unique
@@ -1394,6 +1405,28 @@ model SpecificationProject {
   tenantId    String?                    @default("default")
   archivedAt  DateTime?
   completionProgramId String?
+  primaryCapabilityId String?
+  primaryCapabilityName String?
+  tokenBudget          Int                        @default(250000)
+  tokenUsed            Int                        @default(0)
+  costBudgetUsd        Float?
+  costUsedUsd          Float                      @default(0)
+  businessValue        Int?
+  customerImpact       Int?
+  strategicAlignment  Int?
+  urgency              Int?
+  deliveryRisk         Int?
+  technicalRisk        Int?
+  regulatoryRisk       Int?
+  confidence           Int?
+  effort               Int?
+  targetDate           DateTime?
+  reviewCadenceDays    Int                        @default(30)
+  lastReviewedAt       DateTime?
+  sponsorId            String?
+  productOwnerId       String?
+  successMetrics       Json                       @default("[]")
+  tags                 String[]                   @default([])
   createdAt   DateTime                   @default(now())
   updatedAt   DateTime                   @updatedAt
 
@@ -1404,6 +1437,8 @@ model SpecificationProject {
   claims        Claim[]
   boards        Board[]
   generationPlans GenerationPlan[]
+  capabilityLinks SpecificationProjectCapability[]
+  impactAssessments CapabilityImpactAssessment[]
   studio        Studio?
   completionProgram WorkProgram?         @relation("ProjectCompletionProgram", fields: [completionProgramId], references: [id], onDelete: SetNull)
 
@@ -1411,6 +1446,52 @@ model SpecificationProject {
   @@index([completionProgramId], map: "ix_specification_projects_completion_program")
   @@index([tenantId], map: "ix_specification_projects_tenant")
   @@map("specification_projects")
+}
+
+model SpecificationProjectCapability {
+  id             String                @id @default(uuid())
+  projectId      String
+  capabilityId   String
+  capabilityName String?
+  role           ProjectCapabilityRole @default(IMPACTED)
+  impactArea     String?
+  tenantId       String?               @default("default")
+  createdAt      DateTime              @default(now())
+  project        SpecificationProject  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, capabilityId])
+  @@index([capabilityId, role])
+  @@index([tenantId], map: "ix_specification_project_capabilities_tenant")
+  @@map("specification_project_capabilities")
+}
+
+model CapabilityImpactAssessment {
+  id               String                 @id @default(uuid())
+  projectId        String
+  capabilityId     String
+  capabilityName   String?
+  agentTemplateId  String?
+  agentTemplateName String?
+  status           ImpactAssessmentStatus @default(PENDING)
+  summary          String?
+  recommendations  Json                   @default("[]")
+  risks            Json                   @default("[]")
+  dependencies     Json                   @default("[]")
+  suggestedClaims  Json                   @default("[]")
+  traceId           String?
+  tokensUsed        Int                    @default(0)
+  estimatedCostUsd Float?
+  error             String?
+  assessedAt        DateTime?
+  tenantId          String?                @default("default")
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  project           SpecificationProject   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, capabilityId])
+  @@index([status, updatedAt])
+  @@index([tenantId], map: "ix_capability_impact_assessments_tenant")
+  @@map("capability_impact_assessments")
 }
 
 // Thin user-facing Studio identity. SpecificationProject remains the durable

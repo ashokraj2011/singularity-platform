@@ -5,6 +5,36 @@
 
 export type ProjectStatus = "ACTIVE" | "ARCHIVED" | "DRAFT" | string;
 
+export type InitiativeAgingStatus = "CURRENT" | "REVIEW_DUE" | "STALE" | "OVERDUE";
+export type ImpactAssessmentStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
+
+export interface SynCapabilityLink {
+  id: string;
+  capabilityId: string;
+  capabilityName?: string | null;
+  role: "PRIMARY" | "IMPACTED";
+  impactArea?: string | null;
+}
+
+export interface SynImpactAssessment {
+  id: string;
+  capabilityId: string;
+  capabilityName?: string | null;
+  agentTemplateId?: string | null;
+  agentTemplateName?: string | null;
+  status: ImpactAssessmentStatus;
+  summary?: string | null;
+  recommendations?: string[];
+  risks?: string[];
+  dependencies?: string[];
+  suggestedClaims?: Array<{ statement: string; rationale?: string; claimType?: string }>;
+  traceId?: string | null;
+  tokensUsed?: number;
+  estimatedCostUsd?: number | null;
+  error?: string | null;
+  assessedAt?: string | null;
+}
+
 export interface SynProject {
   id: string;
   code: string;
@@ -13,6 +43,40 @@ export interface SynProject {
   status: ProjectStatus;
   createdById?: string | null;
   archivedAt?: string | null;
+  primaryCapabilityId?: string | null;
+  primaryCapabilityName?: string | null;
+  capabilityLinks?: SynCapabilityLink[];
+  impactAssessments?: SynImpactAssessment[];
+  tokenBudget: number;
+  tokenUsed: number;
+  tokenBudgetPercent?: number;
+  costBudgetUsd?: number | null;
+  costUsedUsd?: number;
+  businessValue?: number | null;
+  customerImpact?: number | null;
+  strategicAlignment?: number | null;
+  urgency?: number | null;
+  deliveryRisk?: number | null;
+  technicalRisk?: number | null;
+  regulatoryRisk?: number | null;
+  confidence?: number | null;
+  effort?: number | null;
+  valueScore?: number | null;
+  riskScore?: number | null;
+  priorityScore?: number | null;
+  targetDate?: string | null;
+  reviewCadenceDays?: number;
+  lastReviewedAt?: string | null;
+  sponsorId?: string | null;
+  productOwnerId?: string | null;
+  successMetrics?: string[];
+  tags?: string[];
+  ageDays?: number;
+  inactiveDays?: number;
+  agingStatus?: InitiativeAgingStatus;
+  latestActivityAt?: string;
+  impactAssessmentStatus?: "NONE" | "PENDING" | "RUNNING" | "COMPLETED" | "ATTENTION";
+  claimCount?: number;
   createdAt: string;
   updatedAt: string;
   workItemCount: number;

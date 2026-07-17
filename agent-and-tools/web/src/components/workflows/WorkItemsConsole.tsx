@@ -53,6 +53,13 @@ type WorkItem = {
   updatedAt?: string | null;
 };
 
+type CapabilityOption = {
+  id: string;
+  name: string;
+  capabilityType?: string | null;
+  status?: string | null;
+};
+
 const filterOptions = [
   { label: "Open", query: "" },
   { label: "Available", query: "available=true" },
@@ -353,6 +360,11 @@ function CreateWorkItemDialog({ onClose, onCreated }: { onClose: () => void; onC
   const [routingMode, setRoutingMode] = useState("MANUAL");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const capabilitiesQ = useSWR<unknown>(
+    "/lookup/capabilities?size=200&status=ACTIVE",
+    (url: string) => workgraphFetch<unknown>(url),
+  );
+  const capabilities = normalizeCapabilityOptions(capabilitiesQ.data);
 
   async function create() {
     setBusy(true);
@@ -389,7 +401,24 @@ function CreateWorkItemDialog({ onClose, onCreated }: { onClose: () => void; onC
         <div style={{ display: "grid", gap: 12 }}>
           <Field label="Title"><input value={title} onChange={(event) => setTitle(event.target.value)} style={inputStyle()} autoFocus /></Field>
           <Field label="Description"><textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} style={inputStyle({ resize: "vertical" })} /></Field>
-          <Field label="Target capability id"><input value={targetCapabilityId} onChange={(event) => setTargetCapabilityId(event.target.value)} style={inputStyle()} /></Field>
+          <Field label="Target capability">
+            <select
+              value={targetCapabilityId}
+              onChange={(event) => setTargetCapabilityId(event.target.value)}
+              style={inputStyle()}
+              disabled={capabilitiesQ.isLoading || Boolean(capabilitiesQ.error)}
+            >
+              <option value="">{capabilitiesQ.isLoading ? "Loading Agent and Tools capabilities..." : "Choose an active capability"}</option>
+              {capabilities.map((capability) => (
+                <option key={capability.id} value={capability.id}>
+                  {capability.name}{capability.capabilityType ? ` · ${capability.capabilityType}` : ""}
+                </option>
+              ))}
+            </select>
+            <div style={{ marginTop: 5, color: "var(--color-outline)", fontSize: 11, lineHeight: 1.45 }}>
+              Loaded live from Agent and Tools. IAM permissions are checked when the WorkItem is created.
+            </div>
+          </Field>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
             <Field label="Work item type"><input value={workItemTypeKey} onChange={(event) => setWorkItemTypeKey(event.target.value)} style={inputStyle()} /></Field>
             <Field label="Routing mode">
@@ -401,6 +430,10 @@ function CreateWorkItemDialog({ onClose, onCreated }: { onClose: () => void; onC
               </select>
             </Field>
           </div>
+          {capabilitiesQ.error && <ErrorPanel error={capabilitiesQ.error instanceof Error ? capabilitiesQ.error : new Error(String(capabilitiesQ.error))} />}
+          {!capabilitiesQ.isLoading && !capabilitiesQ.error && capabilities.length === 0 && (
+            <ErrorPanel error={new Error("No ACTIVE capabilities are available in Agent and Tools. Create or activate a capability in Agent Studio first.")} />
+          )}
           {error && <ErrorPanel error={new Error(error)} />}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
             <button className="btn-secondary" type="button" onClick={onClose}>Cancel</button>
@@ -410,6 +443,18 @@ function CreateWorkItemDialog({ onClose, onCreated }: { onClose: () => void; onC
       </section>
     </div>
   );
+}
+
+function normalizeCapabilityOptions(value: unknown): CapabilityOption[] {
+  return unwrapWorkgraphItems<Record<string, unknown>>(value, ["capabilities", "data"])
+    .map((row) => ({
+      id: asString(row.runtimeCapabilityId ?? row.id ?? row.capability_id),
+      name: asString(row.name ?? row.label),
+      capabilityType: asString(row.capabilityType ?? row.capability_type) || null,
+      status: asString(row.status, "ACTIVE") || null,
+    }))
+    .filter((capability) => capability.id && capability.name && String(capability.status ?? "ACTIVE").toUpperCase() === "ACTIVE")
+    .sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function normalizeWorkItems(value: unknown): WorkItem[] {

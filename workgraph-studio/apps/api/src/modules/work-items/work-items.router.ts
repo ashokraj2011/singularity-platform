@@ -2,7 +2,8 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
-import { NotFoundError } from '../../lib/errors'
+import { NotFoundError, ValidationError } from '../../lib/errors'
+import { getRuntimeCapability } from '../../lib/agent-and-tools/client'
 import { assertApprovalRequestTenant, resolveTenantFromRequest } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import {
@@ -175,6 +176,24 @@ const createSchema = z.object({
   targets: z.array(targetSchema).min(1),
 })
 
+async function assertAgentRuntimeTargets(
+  targets: Array<{ targetCapabilityId: string }>,
+  authorization?: string,
+): Promise<void> {
+  const ids = [...new Set(targets.map(target => target.targetCapabilityId.trim()).filter(Boolean))]
+  const capabilities = await Promise.all(ids.map(id => getRuntimeCapability(id, authorization)))
+  for (let index = 0; index < ids.length; index += 1) {
+    const capability = capabilities[index]
+    if (!capability) {
+      throw new ValidationError(`Capability ${ids[index]} is not available in the Agent and Tools capability catalog.`)
+    }
+    const status = String(capability.status ?? 'ACTIVE').trim().toUpperCase()
+    if (status !== 'ACTIVE') {
+      throw new ValidationError(`Capability ${capability.name ?? ids[index]} is ${status}; WorkItems require an ACTIVE Agent and Tools capability.`)
+    }
+  }
+}
+
 const startTargetSchema = z.object({
   childWorkflowTemplateId: z.string().uuid().optional(),
   idempotencyKey: z.string().min(8).max(200).optional(),
@@ -249,6 +268,7 @@ const detachSchema = z.object({
 workItemsRouter.post('/', validate(createSchema), async (req, res, next) => {
   try {
     const body = req.body as z.infer<typeof createSchema>
+    await assertAgentRuntimeTargets(body.targets, req.headers.authorization)
     // Security (finding #3): a real user must be authorized to act in every target
     // capability before creating/routing a work item there. No-ops when
     // AUTH_PROVIDER !== 'iam'; admins bypass. Internal automation uses the service

@@ -239,9 +239,12 @@ export type RuntimeCapability = {
   id: string
   name: string
   description?: string | null
+  parentCapabilityId?: string | null
   capabilityType?: string
   status?: string
   criticality?: string
+  isGoverning?: boolean
+  children?: RuntimeCapability[]
   [k: string]: unknown
 }
 

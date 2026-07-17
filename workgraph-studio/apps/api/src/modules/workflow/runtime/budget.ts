@@ -183,10 +183,39 @@ export async function ensureWorkflowRunBudget(
 export async function prepareLlmBudget(input: LlmBudgetInput): Promise<LlmBudgetDecision> {
   const tenantId = input.instance.tenantId ?? undefined
   const budget = await ensureWorkflowRunBudget(input.instance.id, tenantId)
-  const remaining = remainingBudget(budget)
+  const workflowRemaining = remainingBudget(budget)
+  const initiative = await withTenantDbTransaction(
+    prisma,
+    tx => findInitiativeBudgetForInstance(tx, input.instance.id),
+    tenantId,
+  )
+  const initiativeRemaining = initiative ? {
+    totalTokens: Math.max(0, initiative.tokenBudget - initiative.tokenUsed),
+    estimatedCost: initiative.costBudgetUsd === null
+      ? null
+      : Math.max(0, initiative.costBudgetUsd - initiative.costUsedUsd),
+  } : null
+  const remaining = initiativeRemaining ? {
+    ...workflowRemaining,
+    totalTokens: lowerNullable(workflowRemaining.totalTokens, initiativeRemaining.totalTokens),
+    estimatedCost: lowerNullable(workflowRemaining.estimatedCost, initiativeRemaining.estimatedCost),
+  } : workflowRemaining
   const warnings: string[] = []
   const policy = normalizeBudgetPolicy(budget.policy)
   const nodeDefaults = policy.nodeTypeDefaults?.[input.node.nodeType] ?? {}
+
+  const initiativeExhausted = initiativeRemaining != null
+    && (initiativeRemaining.totalTokens === 0 || initiativeRemaining.estimatedCost === 0)
+  if (initiativeExhausted) {
+    const reason = `Initiative ${initiative!.code} token/cost budget is exhausted. Update the initiative guardrails before retrying.`
+    await recordBudgetEvent(budget.id, input.instance.id, {
+      eventType: 'BUDGET_EXCEEDED',
+      nodeId: input.node.id,
+      agentRunId: input.agentRunId,
+      metadata: { reason, initiativeId: initiative!.id, initiativeRemaining },
+    }, tenantId)
+    return { action: 'FAIL', reason }
+  }
 
   if (isBudgetExhausted(remaining)) {
     const reason = 'Workflow run token/cost budget is exhausted.'
@@ -219,8 +248,16 @@ export async function prepareLlmBudget(input: LlmBudgetInput): Promise<LlmBudget
 
   const requestedInput = intFrom(limits.inputTokenBudget) ?? intFrom(contextPolicy.maxContextTokens) ?? nodeDefaults.inputTokenBudget
   const requestedOutput = intFrom(limits.outputTokenBudget) ?? intFrom(modelOverrides.maxOutputTokens) ?? nodeDefaults.outputTokenBudget
-  const clampedInput = clampToRemaining(requestedInput, remaining.inputTokens)
-  const clampedOutput = clampToRemaining(requestedOutput, remaining.outputTokens)
+  let clampedInput = clampToRemaining(requestedInput, remaining.inputTokens)
+  let clampedOutput = clampToRemaining(requestedOutput, remaining.outputTokens)
+  if (remaining.totalTokens !== null && clampedInput !== undefined && clampedOutput !== undefined) {
+    const totalRequested = clampedInput + clampedOutput
+    if (totalRequested > remaining.totalTokens) {
+      const outputShare = totalRequested > 0 ? clampedOutput / totalRequested : 0.2
+      clampedOutput = Math.max(1, Math.floor(remaining.totalTokens * outputShare))
+      clampedInput = Math.max(1, remaining.totalTokens - clampedOutput)
+    }
+  }
 
   if (clampedInput !== undefined) {
     limits.inputTokenBudget = clampedInput
@@ -242,12 +279,22 @@ export async function prepareLlmBudget(input: LlmBudgetInput): Promise<LlmBudget
   }
 
   if ((requestedInput !== undefined && clampedInput !== requestedInput) || (requestedOutput !== undefined && clampedOutput !== requestedOutput)) {
-    warnings.push('LLM call budget was clamped to the remaining workflow run budget.')
+    warnings.push(initiative
+      ? 'LLM call budget was clamped to the remaining workflow or initiative budget.'
+      : 'LLM call budget was clamped to the remaining workflow run budget.')
     await recordBudgetEvent(budget.id, input.instance.id, {
       eventType: 'PRECHECK_CLAMPED',
       nodeId: input.node.id,
       agentRunId: input.agentRunId,
-      metadata: { requestedInput, requestedOutput, clampedInput, clampedOutput, remaining },
+      metadata: {
+        requestedInput,
+        requestedOutput,
+        clampedInput,
+        clampedOutput,
+        remaining,
+        initiativeId: initiative?.id ?? null,
+        initiativeRemaining,
+      },
     }, tenantId)
   }
 
@@ -358,6 +405,16 @@ export async function recordWorkflowLlmUsage(
         },
       })
     }
+    const initiative = await findInitiativeBudgetForInstance(tx, instanceId)
+    if (initiative) {
+      await tx.specificationProject.update({
+        where: { id: initiative.id },
+        data: {
+          tokenUsed: { increment: total },
+          ...(estimatedCost !== null ? { costUsedUsd: { increment: estimatedCost } } : {}),
+        },
+      })
+    }
     return row
   }, tenantId)
 
@@ -393,6 +450,11 @@ export async function getWorkflowBudgetOverview(
     take: 200,
   }), tenantId)
   const remaining = remainingBudget(budget)
+  const initiative = await withTenantDbTransaction(
+    prisma,
+    tx => findInitiativeBudgetForInstance(tx, instanceId),
+    tenantId,
+  )
   return {
     ...budget,
     remaining,
@@ -403,8 +465,47 @@ export async function getWorkflowBudgetOverview(
       estimatedCost: percent(budget.consumedEstimatedCost, budget.maxEstimatedCost),
     },
     warnings: buildBudgetWarnings(budget),
+    initiative: initiative ? {
+      ...initiative,
+      remainingTokens: Math.max(0, initiative.tokenBudget - initiative.tokenUsed),
+      remainingCostUsd: initiative.costBudgetUsd === null
+        ? null
+        : Math.max(0, initiative.costBudgetUsd - initiative.costUsedUsd),
+    } : null,
     events,
   }
+}
+
+async function findInitiativeBudgetForInstance(tx: Prisma.TransactionClient, instanceId: string) {
+  const workItem = await tx.workItem.findFirst({
+    where: {
+      projectId: { not: null },
+      OR: [
+        { sourceWorkflowInstanceId: instanceId },
+        { targets: { some: { childWorkflowInstanceId: instanceId } } },
+      ],
+    },
+    select: {
+      project: {
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          tokenBudget: true,
+          tokenUsed: true,
+          costBudgetUsd: true,
+          costUsedUsd: true,
+        },
+      },
+    },
+  })
+  return workItem?.project ?? null
+}
+
+function lowerNullable(left: number | null, right: number | null): number | null {
+  if (left === null) return right
+  if (right === null) return left
+  return Math.min(left, right)
 }
 
 export async function approveBudgetIncreaseFromApproval(

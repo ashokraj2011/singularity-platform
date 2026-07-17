@@ -130,10 +130,12 @@ function normalizeRuntimeCapability(cap: RuntimeCapability): Record<string, unkn
     id:              cap.id,
     capability_id:   cap.id,
     name:            cap.name,
+    parentCapabilityId: cap.parentCapabilityId,
     capability_type: cap.capabilityType ?? cap.capability_type,
     status:          typeof cap.status === 'string' ? cap.status.toLowerCase() : cap.status,
     description:     cap.description,
     criticality:     cap.criticality,
+    isGoverning:     cap.isGoverning ?? cap.is_governing,
     repositories,
     repoUrl,
     sourceUri:       repoUrl,
@@ -150,6 +152,8 @@ function capabilityIdentityKeys(capability: Record<string, unknown>): string[] {
   return [
     capability.id,
     capability.capability_id,
+    capability.iamCapabilityId,
+    capability.iam_capability_id,
     metadata.agentRuntimeCapabilityId,
     metadata.agent_runtime_capability_id,
   ]
@@ -223,56 +227,51 @@ lookupRouter.get('/business-units', async (req, res) => {
 lookupRouter.get('/capabilities', async (req, res) => {
   try {
     const { page, size } = pageFromQuery(req)
-    const body = await iamProxyGet('/capabilities', {
-      page, size,
-      q:      req.query.q as string | undefined,
-      type:   req.query.type as string | undefined,
-      status: req.query.status as string | undefined,
-      // G8 — let the governing-policy picker request only governing capabilities.
-      is_governing: req.query.is_governing as string | undefined,
-    }, authToken(req))
-    const iamPage = unwrapIamPage(body, page, size)
-    const itemsByIdentity = new Map<string, Record<string, unknown>>()
-    const iamItems = iamPage.items as Array<Record<string, unknown>>
-    for (const item of iamItems) {
-      const canonical = { ...item, source: 'iam', iamCapabilityId: item.id ?? null }
-      for (const key of capabilityIdentityKeys(item)) itemsByIdentity.set(key, canonical)
-    }
-
+    // Agent Runtime is the executable capability catalog used by agents,
+    // WorkItems, workflow nodes, repositories, and world models. IAM remains
+    // an optional authorization/governance overlay; an IAM-only row must not
+    // become an executable WorkItem target and a missing overlay must not hide
+    // a runtime capability from the picker.
+    const runtimeCaps = await listRuntimeCapabilities(authHeader(req))
+    const iamByIdentity = new Map<string, Record<string, unknown>>()
     try {
-      const runtimeCaps = await listRuntimeCapabilities(authHeader(req))
-      for (const cap of runtimeCaps) {
-        const runtimeId = String(cap.id ?? '').trim()
-        if (!runtimeId) continue
-        const iamRow = capabilityIdentityKeys(cap as unknown as Record<string, unknown>)
-          .map(key => itemsByIdentity.get(key))
-          .find(Boolean)
-        // IAM owns the identity. A runtime projection without a matching IAM
-        // row is intentionally omitted instead of being promoted into the
-        // platform catalog by this lookup endpoint.
-        if (!iamRow) continue
-        const normalized = normalizeRuntimeCapability(cap)
-        const hydrated = {
-          ...normalized,
-          ...iamRow,
-          id: runtimeId,
-          iamCapabilityId: iamRow.iamCapabilityId ?? iamRow.id ?? null,
-          runtimeCapabilityId: runtimeId,
-          source: 'iam+agent-runtime',
-          repositories: normalized.repositories,
-          repoUrl: normalized.repoUrl,
-          sourceUri: normalized.sourceUri,
-          sourceType: normalized.sourceType,
-          defaultBranch: normalized.defaultBranch,
-        }
-        for (const key of capabilityIdentityKeys(iamRow)) itemsByIdentity.set(key, hydrated)
-        itemsByIdentity.set(runtimeId, hydrated)
+      const body = await iamProxyGet('/capabilities', { page: 1, size: 500 }, authToken(req))
+      const iamItems = unwrapIamPage(body, 1, 500).items as Array<Record<string, unknown>>
+      for (const item of iamItems) {
+        for (const key of capabilityIdentityKeys(item)) iamByIdentity.set(key, item)
       }
     } catch {
-      // Keep IAM-backed lookup usable even if agent-runtime is unavailable.
+      // Runtime is authoritative for selection. IAM metadata is enrichment and
+      // authorization is enforced separately at the action boundary.
     }
 
-    let items = Array.from(new Set(itemsByIdentity.values()))
+    let items: Array<Record<string, unknown>> = runtimeCaps.flatMap((cap): Array<Record<string, unknown>> => {
+      const runtimeId = String(cap.id ?? '').trim()
+      if (!runtimeId) return []
+      const normalized = normalizeRuntimeCapability(cap)
+      const iamRow = capabilityIdentityKeys(cap as unknown as Record<string, unknown>)
+        .map(key => iamByIdentity.get(key))
+        .find(Boolean)
+        ?? iamByIdentity.get(runtimeId)
+      return [{
+        ...(iamRow ?? {}),
+        ...normalized,
+        id: runtimeId,
+        capability_id: runtimeId,
+        runtimeCapabilityId: runtimeId,
+        iamCapabilityId: typeof iamRow?.id === 'string' ? iamRow.id : null,
+        source: iamRow ? 'agent-runtime+iam' : 'agent-runtime',
+        authorizationOverlay: iamRow ? 'linked' : 'unlinked',
+      }]
+    })
+    const requestedType = caseFold(req.query.type)
+    const requestedStatus = caseFold(req.query.status)
+    const governingOnly = String(req.query.is_governing ?? '').toLowerCase()
+    if (requestedType) items = items.filter(item => caseFold(item.capability_type ?? item.capabilityType) === requestedType)
+    if (requestedStatus) items = items.filter(item => caseFold(item.status) === requestedStatus)
+    if (governingOnly === 'true' || governingOnly === '1') {
+      items = items.filter(item => item.isGoverning === true || item.is_governing === true)
+    }
     items = clientFilter(items, req.query.q as string | undefined, (c) => [c.name, c.description, c.capability_type, c.capabilityType, c.id, c.capability_id])
     return res.json(paginate(items, page, size))
   } catch (err) { handleError(err, res) }
