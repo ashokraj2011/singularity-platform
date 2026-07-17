@@ -323,7 +323,16 @@ else
   ok "MCP server already registered (skipped)"
 fi
 
-# ── 10. Final summary ──────────────────────────────────────────────────────
+# ── 10. Seed the transparent reference pilot ───────────────────────────────
+if [ "${REFERENCE_PILOT_ENABLED:-true}" = "true" ]; then
+  info "seeding and verifying the synthetic reference pilot…"
+  "$SCRIPT_DIR/reference-pilot.sh" all
+  ok "reference pilot evidence is complete"
+else
+  dim "reference pilot skipped (REFERENCE_PILOT_ENABLED=false)"
+fi
+
+# ── 11. Final summary ──────────────────────────────────────────────────────
 echo
 ok "Demo stack is up. Open Platform Web:"
 echo "    ${C_BLUE}http://localhost:5180${C_END}                 unified platform shell"
@@ -337,6 +346,8 @@ echo "  Real IAM:    $BOOTSTRAP_EMAIL / configured bootstrap password"
 echo "  Pseudo-IAM:  any email / any password  (port 8101, for laptop CLI)"
 echo
 echo "  Code-change demo:    ${C_BLUE}./bin/demo-todoapp.sh${C_END}  (deterministic, real commit)"
+echo "  Reference pilot:     ${C_BLUE}http://localhost:5180/synthesis/pilot?project=9f000000-0000-4000-8000-000000000001${C_END}"
+echo "  Re-run pilot proof:  ${C_BLUE}./bin/reference-pilot.sh${C_END}"
 echo
 echo "  Workflow:            workgraph SPA → 'TodoApp — Add Clear Completed'"
 echo "                       (workflow_id: 9f4f1824-0a27-4d49-b24b-2ff15493ab73"

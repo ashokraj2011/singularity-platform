@@ -57,6 +57,7 @@ def main() -> int:
     parser.add_argument("--email", default=email)
     parser.add_argument("--password", default=password)
     parser.add_argument("--report-only", action="store_true", help="Print incomplete evidence without returning a failure status.")
+    parser.add_argument("--require-live", action="store_true", help="Reject transparent synthetic reference-pilot evidence.")
     args = parser.parse_args()
 
     status, login = request_json(args.iam_url, "/api/v1/auth/local/login", body={"email": args.email, "password": args.password})
@@ -70,7 +71,11 @@ def main() -> int:
         print(f"FAIL pilot evidence returned HTTP {status}: {readiness.get('message') or readiness}", file=sys.stderr)
         return 2
 
-    print(f"Contract-bound pilot: {readiness.get('score', 0)}/100")
+    evidence_mode = readiness.get("evidenceMode", "LIVE")
+    print(f"Contract-bound pilot: {readiness.get('score', 0)}/100 ({evidence_mode})")
+    if args.require_live and evidence_mode != "LIVE":
+        print("FAIL --require-live rejects synthetic reference-pilot evidence.", file=sys.stderr)
+        return 3
     for check in readiness.get("checks", []):
         marker = "OK  " if check.get("ok") else "MISS"
         print(f"{marker} {check.get('label', check.get('key'))}")
@@ -79,7 +84,8 @@ def main() -> int:
     metrics = readiness.get("metrics", {})
     print("Metrics:", json.dumps(metrics, separators=(",", ":"), sort_keys=True))
     if readiness.get("ready"):
-        print(f"PASS evidence is complete: {args.base_url.rstrip('/')}/synthesis/pilot?projectId={args.project_id}")
+        qualifier = "synthetic control evidence" if evidence_mode == "REFERENCE_SYNTHETIC" else "live pilot evidence"
+        print(f"PASS {qualifier} is complete: {args.base_url.rstrip('/')}/synthesis/pilot?project={args.project_id}")
         return 0
     print("INCOMPLETE durable proof obligations remain.")
     return 0 if args.report_only else 1

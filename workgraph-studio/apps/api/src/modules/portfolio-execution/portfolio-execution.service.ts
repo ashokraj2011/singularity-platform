@@ -19,6 +19,7 @@ import {
 import { requestSpecificationReview } from '../specifications/specification-review.service'
 import { detectObjectiveCoverage, diffRequirements, uncoveredRequirementDelta } from '../business-alignment/business-alignment'
 import { evaluatePilotReadiness, type PilotEvidence } from './pilot-readiness'
+import { pilotEvidenceMode } from './reference-pilot'
 
 const tenantId = () => currentTenantIdForDb() ?? 'default'
 const json = (value: unknown) => value as Prisma.InputJsonValue
@@ -740,7 +741,7 @@ async function getProjectPilotReadinessInternal(projectId: string) {
     getProjectTraceabilityInternal(projectId),
     getProjectLearningInternal(projectId),
     db().generationPlan.findMany({ where: { specificationProjectId: projectId, tenantId: tenantId() }, include: { rows: true } }),
-    db().workItem.findMany({ where: { projectId, tenantId: tenantId() }, include: { reconciliationRuns: true, finalizationRecords: true } }),
+    db().workItem.findMany({ where: { projectId, tenantId: tenantId() }, include: { reconciliationRuns: { include: { verdicts: true } }, finalizationRecords: true } }),
     db().projectBudgetEvent.findMany({ where: { projectId, tenantId: tenantId() } }),
     db().workItemEvent.count({ where: { workItem: { projectId }, eventType: 'SLA_BREACHED', tenantId: tenantId() } }),
     db().businessReadout.findMany({ where: { studioProjectId: projectId, tenantId: tenantId() } }),
@@ -749,21 +750,29 @@ async function getProjectPilotReadinessInternal(projectId: string) {
     db().specificationProjectCapability.findMany({ where: { projectId, tenantId: tenantId(), role: { not: 'PROPOSED' } } }),
     db().capabilityImpactAssessment.findMany({ where: { projectId, tenantId: tenantId(), status: 'COMPLETED' } }),
     db().artifactValidationReport.findMany({ where: { projectId, tenantId: tenantId() }, select: { tensions: true } }),
-    db().decisionDossier.findMany({ where: { projectId, tenantId: tenantId(), status: 'ACCEPTED' }, select: { resolvesTensions: true } }),
+    db().decisionDossier.findMany({ where: { projectId, tenantId: tenantId(), status: 'ACCEPTED' }, select: { resolvesTensions: true, createdById: true, decidedById: true } }),
     db().attentionItem.count({ where: { projectId, tenantId: tenantId(), status: 'RESOLVED' } }),
     db().specificationChangeRequest.findMany({ where: { projectId, tenantId: tenantId(), status: { in: ['APPROVED', 'APPLIED'] } }, select: { requirementDeltas: true, costDelta: true, scheduleDelta: true, milestoneImpacts: true } }),
   ])
   const workItemIds = workItems.map(item => item.id)
-  const [approvedWaivers, finalizationEvents, failedReconciliationDriftSignals] = await Promise.all([
-    workItemIds.length ? db().governanceWaiver.count({ where: { workItemId: { in: workItemIds }, status: 'APPROVED' } }) : 0,
-    workItemIds.length ? db().workItemEvent.findMany({ where: { workItemId: { in: workItemIds }, eventType: 'WORK_ITEM_FINALIZED' }, select: { workItemId: true, actorId: true } }) : [],
+  const sponsorApprovalIds = readouts.map(readout => readout.sponsorApprovalId).filter((id): id is string => Boolean(id))
+  const [waivers, finalizationEvents, failedReconciliationDriftSignals, sponsorApprovals] = await Promise.all([
+    workItemIds.length ? db().governanceWaiver.findMany({ where: { workItemId: { in: workItemIds }, status: 'APPROVED' }, select: { requestedBy: true, approvedBy: true } }) : [],
+    workItemIds.length ? db().workItemEvent.findMany({ where: { workItemId: { in: workItemIds }, eventType: 'WORK_ITEM_FINALIZED' }, select: { workItemId: true, actorId: true, payload: true } }) : [],
     db().claimDriftSignal.count({ where: { projectId, tenantId: tenantId(), delta: { not: 0 }, reconciliationRun: { status: { in: ['FAILED', 'PARTIAL', 'ERROR'] } } } }),
+    sponsorApprovalIds.length ? db().approvalRequest.findMany({ where: { id: { in: sponsorApprovalIds }, tenantId: tenantId(), status: 'APPROVED' }, include: { decisions: true } }) : [],
   ])
   const origin = {
     specGenerated: workItems.filter(item => item.originType === 'SPEC_GENERATED').length,
     adHoc: workItems.filter(item => item.originType === 'AD_HOC' || item.originType === 'CAPABILITY_LOCAL').length,
   }
-  const verified = workItems.filter(item => item.reconciliationRuns.some(run => run.status === 'VERIFIED_PASS' && run.reconciliationState === 'VERIFIED')).length
+  const verified = workItems.filter(item => item.reconciliationRuns.some(run =>
+    run.status === 'VERIFIED_PASS'
+    && run.reconciliationState === 'VERIFIED'
+    && run.mode.toUpperCase() === 'DYNAMIC'
+    && run.verdicts.length > 0
+    && run.verdicts.every(verdict => verdict.verified && verdict.verdict === 'PASS'),
+  )).length
   const finalized = workItems.filter(item => item.finalizationRecords.some(record => record.status === 'COMPLETED')).length
   const actualRows = plans.flatMap(plan => plan.rows).filter(row => row.actualFinishAt || row.actualHours != null || row.actualCostUsd != null).length
   const estimatedActualRows = plans.flatMap(plan => plan.rows).filter(row =>
@@ -779,7 +788,8 @@ async function getProjectPilotReadinessInternal(projectId: string) {
     'portfolio',
   )
   const tensionIds = new Set(validationReports.flatMap(report => jsonRecords(report.tensions).map(tension => String(tension.id ?? '')).filter(Boolean)))
-  const resolvedTensionIds = new Set(acceptedDossiers.flatMap(dossier => jsonStrings(dossier.resolvesTensions)))
+  const independentlyAcceptedDossiers = acceptedDossiers.filter(dossier => Boolean(dossier.decidedById) && dossier.decidedById !== dossier.createdById)
+  const resolvedTensionIds = new Set(independentlyAcceptedDossiers.flatMap(dossier => jsonStrings(dossier.resolvesTensions)))
   const adjudicatedTensions = [...tensionIds].filter(id => resolvedTensionIds.has(id)).length
   const morningBriefs = readouts.filter(readout => readout.kind === 'MORNING' && jsonRecords(readout.citations).length > 0 && /\bSpend:/i.test(readout.renderedMarkdown)).length
   const consequenceChangeRequests = changeRequests.filter(change =>
@@ -789,10 +799,20 @@ async function getProjectPilotReadinessInternal(projectId: string) {
   const capabilityIds = new Set(capabilityLinks.map(link => link.capabilityId))
   if (project.primaryCapabilityId) capabilityIds.add(project.primaryCapabilityId)
   const assessedCapabilityIds = new Set(impactAssessments.map(assessment => assessment.capabilityId))
+  const independentlyApprovedSponsorRequestIds = new Set(sponsorApprovals.filter(request =>
+    request.decisions.some(decision => ['APPROVED', 'APPROVED_WITH_CONDITIONS'].includes(decision.decision) && decision.decidedById !== request.requestedById),
+  ).map(request => request.id))
+  const authoritativeFinalizationEvents = finalizationEvents.filter(event => Boolean(event.actorId) && jsonRecord(event.payload).source === 'WorkItemFinalizer')
+  const independentlyApprovedWaivers = waivers.filter(waiver => Boolean(waiver.approvedBy) && waiver.approvedBy !== waiver.requestedBy)
+  const fencedStaleReconciliations = workItems.flatMap(item => item.reconciliationRuns).filter(run => {
+    if (run.reconciliationState !== 'STALE') return false
+    const fence = jsonRecord(jsonRecord(run.summary).fence)
+    return fence.outcome === 'REJECTED' && Number(fence.expectedGeneration) > Number(fence.receivedGeneration)
+  })
   const evidence: PilotEvidence = {
     ideas: traceability.summary.concepts + traceability.summary.boards,
     claims: traceability.summary.claims,
-    acceptedDecisions: acceptedDossiers.length,
+    acceptedDecisions: independentlyAcceptedDossiers.length,
     lockedSpecifications: traceability.nodes.filter(node => node.type === 'specification' && ['LOCKED', 'ACTIVE', 'APPROVED'].includes(String(node.status))).length,
     appliedPlans: plans.filter(plan => plan.status === 'APPLIED').length,
     workItems: traceability.summary.workItems,
@@ -800,16 +820,16 @@ async function getProjectPilotReadinessInternal(projectId: string) {
     verifiedWorkItems: verified,
     finalizedWorkItems: finalized,
     learningSignals: learning.signals.length,
-    ownedFinalizationTransitions: finalizationEvents.filter(event => Boolean(event.actorId)).length,
+    ownedFinalizationTransitions: authoritativeFinalizationEvents.length,
     duplicateFinalizationTransitions: [...finalizationsByWorkItem.values()].filter(count => count > 1).length,
-    staleReconciliations: workItems.flatMap(item => item.reconciliationRuns).filter(run => run.reconciliationState === 'STALE').length,
-    approvedWaivers,
+    staleReconciliations: fencedStaleReconciliations.length,
+    approvedWaivers: independentlyApprovedWaivers.length,
     failedReconciliationDriftSignals,
     estimateActualRows: estimatedActualRows,
     adHocWorkItems: origin.adHoc,
     budgetWarnings: budgetEvents.filter(event => event.status === 'WARNING').length,
     objectiveCoverageErrors: objectiveCoverage.errors.length,
-    signedSponsorReadouts: readouts.filter(readout => readout.kind === 'SPONSOR' && readout.status === 'SIGNED' && readout.signedAt).length,
+    signedSponsorReadouts: readouts.filter(readout => readout.kind === 'SPONSOR' && readout.status === 'SIGNED' && readout.signedAt && readout.sponsorApprovalId && independentlyApprovedSponsorRequestIds.has(readout.sponsorApprovalId)).length,
     consequenceChangeRequests,
     weeklyReadouts: readouts.filter(readout => readout.kind === 'WEEKLY').length,
     capabilityLinks: capabilityIds.size,
@@ -820,7 +840,14 @@ async function getProjectPilotReadinessInternal(projectId: string) {
     slaBreaches: slaEvents,
   }
   const readiness = evaluatePilotReadiness(projectId, evidence)
-  return { projectId, ...readiness, metrics: { origin, verified, finalized, actualRows, specGeneratedToAdHocRatio: origin.adHoc ? origin.specGenerated / origin.adHoc : null, acceptance: evidence }, traceability: traceability.summary, learning: learning.summary }
+  return {
+    projectId,
+    evidenceMode: pilotEvidenceMode(project.tags),
+    ...readiness,
+    metrics: { origin, verified, finalized, actualRows, specGeneratedToAdHocRatio: origin.adHoc ? origin.specGenerated / origin.adHoc : null, acceptance: evidence },
+    traceability: traceability.summary,
+    learning: learning.summary,
+  }
 }
 
 function jsonRecord(value: unknown): Record<string, unknown> {

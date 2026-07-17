@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { CheckCircle2, CircleDashed, ClipboardCheck, RefreshCw, Route, ShieldCheck } from "lucide-react";
+import { CheckCircle2, CircleDashed, ClipboardCheck, FlaskConical, RefreshCw, Route, ShieldCheck } from "lucide-react";
 import { SynthesisShell } from "@/components/synthesis/SynthesisShell";
 import { NoProjectSelected, ProjectPicker, useSelectedProjectId } from "@/components/synthesis/ProjectPicker";
 import { usePilotReadiness } from "@/components/synthesis/hooks/useSynthesis";
@@ -21,6 +21,7 @@ function PilotProof({ projectId }: { projectId: string }) {
   const data = query.data;
   return <div className="space-y-7">
     <StageHeader eyebrow="Idea → Verified check-in" title="End-to-end pilot proof" description="This score is earned from durable records. It does not turn green because a page exists; every check points to the evidence or the place that fixes it." icon={ShieldCheck} actions={<SynButton variant="secondary" icon={RefreshCw} onClick={() => void query.mutate()}>Refresh proof</SynButton>} />
+    {data.evidenceMode === "REFERENCE_SYNTHETIC" ? <div className="flex items-start gap-3 border-l-4 border-tertiary bg-tertiary-container/10 px-4 py-3 text-sm text-on-surface"><FlaskConical size={18} className="mt-0.5 shrink-0 text-tertiary" /><div><strong>Reference pilot evidence</strong><p className="mt-0.5 text-xs leading-5 text-on-surface-variant">This initiative is a transparent synthetic control exercise. It proves platform wiring and evidence integrity; it is not a production sponsor attestation.</p></div></div> : null}
     <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
       <SynCard className="p-6"><div className="text-xs font-black uppercase text-on-surface-variant">Pilot readiness</div><div className="mt-3 flex items-end gap-2"><span className="text-6xl font-black tabular-nums text-on-surface">{data.score}</span><span className="pb-2 text-sm font-bold text-on-surface-variant">/ 100</span></div><div className="mt-4 h-2 overflow-hidden rounded-full bg-surface-container-high"><div className={`h-full ${data.ready ? "bg-secondary" : "bg-tertiary"}`} style={{ width: `${data.score}%` }} /></div><p className="mt-4 text-sm text-on-surface-variant">{data.ready ? "The declared pilot evidence is complete." : `${data.checks.filter(check => !check.ok).length} proof obligation(s) remain.`}</p></SynCard>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"><Metric label="Generated / AD_HOC" value={`${data.metrics.origin.specGenerated} / ${data.metrics.origin.adHoc}`} /><Metric label="Verified items" value={String(data.metrics.verified)} /><Metric label="Finalized items" value={String(data.metrics.finalized)} /><Metric label="Rows with actuals" value={String(data.metrics.actualRows)} /></div>

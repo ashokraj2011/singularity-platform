@@ -589,6 +589,7 @@ export interface SynProjectLearning {
 
 export interface SynPilotReadiness {
   projectId: string;
+  evidenceMode: "REFERENCE_SYNTHETIC" | "LIVE";
   ready: boolean;
   score: number;
   checks: Array<{ key: string; label: string; ok: boolean; fixRoute: string; evidence?: string }>;

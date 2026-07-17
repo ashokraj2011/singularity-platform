@@ -1,4 +1,5 @@
 import { evaluatePilotReadiness, type PilotEvidence } from '../src/modules/portfolio-execution/pilot-readiness'
+import { pilotEvidenceMode, REFERENCE_PILOT_EXPECTED_EVIDENCE, REFERENCE_PILOT_TAGS } from '../src/modules/portfolio-execution/reference-pilot'
 
 const completeEvidence: PilotEvidence = {
   ideas: 1,
@@ -58,5 +59,13 @@ describe('Master Design pilot readiness', () => {
   it('does not accept duplicate authoritative finalization transitions', () => {
     const result = evaluatePilotReadiness('project-1', { ...completeEvidence, duplicateFinalizationTransitions: 1 })
     expect(result.checks.find(check => check.key === 'transition-owner')?.ok).toBe(false)
+  })
+
+  it('keeps the reference fixture aligned with every proof obligation', () => {
+    const result = evaluatePilotReadiness('reference-pilot', REFERENCE_PILOT_EXPECTED_EVIDENCE)
+    expect(result.ready).toBe(true)
+    expect(result.score).toBe(100)
+    expect(pilotEvidenceMode([...REFERENCE_PILOT_TAGS])).toBe('REFERENCE_SYNTHETIC')
+    expect(pilotEvidenceMode(['customer-pilot'])).toBe('LIVE')
   })
 })

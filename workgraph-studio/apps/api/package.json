@@ -10,6 +10,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "ts-node prisma/seed.ts",
+    "pilot:seed": "ts-node --transpile-only prisma/seed-reference-pilot.ts",
     "prisma:generate": "prisma generate --generator client",
     "prisma:erd": "prisma generate --generator erd_md",
     "prisma:studio": "prisma studio",
