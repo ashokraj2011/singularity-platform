@@ -83,6 +83,13 @@ const appShell = fs.readFileSync(
 );
 assert.match(appShell, /FULL_BLEED_PREFIXES\s*=\s*\[[^\]]*synthesis/, "Synthesis should own the full viewport");
 
+const synthesisIndex = fs.readFileSync(
+  path.join(process.cwd(), "src/app/synthesis/page.tsx"),
+  "utf8",
+);
+assert.doesNotMatch(synthesisIndex, /from ["']next\/navigation["'];?\s*\n.*redirect/, "Synthesis entry must not throw a server redirect below the client auth gate");
+assert.match(synthesisIndex, /router\.replace\("\/synthesis\/hub"\)/, "Synthesis entry should navigate after the session gate renders");
+
 const ideaScreen = fs.readFileSync(
   path.join(process.cwd(), "src/components/synthesis/screens/IdeaWallScreen.tsx"),
   "utf8",
