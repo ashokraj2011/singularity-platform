@@ -1,4 +1,4 @@
-import { Prisma, type ApprovalStatus } from '@prisma/client'
+import { Prisma, type ApprovalStatus, type SpecificationChangeRequest } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { logEvent, publishOutbox } from '../../lib/audit'
 import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors'
@@ -10,6 +10,15 @@ import { specificationPackageBodySchema } from '../specifications/specification.
 import { specificationContentHash } from '../specifications/specification.hash'
 import { validateSpecificationBody } from '../specifications/specification.validator'
 import { deriveBudgetControl, executionThresholds } from './execution-thresholds'
+import {
+  assertObjectiveCoverageForLock,
+  generateBusinessReadout,
+  getSponsorGateDecision,
+  requestBusinessReadoutSponsorApproval,
+} from '../business-alignment/business-alignment.service'
+import { requestSpecificationReview } from '../specifications/specification-review.service'
+import { detectObjectiveCoverage, diffRequirements, uncoveredRequirementDelta } from '../business-alignment/business-alignment'
+import { evaluatePilotReadiness, type PilotEvidence } from './pilot-readiness'
 
 const tenantId = () => currentTenantIdForDb() ?? 'default'
 const json = (value: unknown) => value as Prisma.InputJsonValue
@@ -175,6 +184,7 @@ async function compileProjectSpecificationInternal(
   actorId: string,
 ) {
   const project = await projectOrThrow(projectId)
+  const businessCoverage = await assertObjectiveCoverageForLock(projectId)
   const [draft, claims, decisions, latest] = await Promise.all([
     db().projectSpecification.findUnique({ where: { projectId } }),
     db().claim.findMany({ where: { projectId, tenantId: tenantId() }, include: { estimates: true } }),
@@ -233,6 +243,7 @@ async function compileProjectSpecificationInternal(
       priority: requirement.priority,
       rationale: requirement.rationale,
       sourceIds: requirement.claimRefs,
+      objectiveRefs: requirement.objectiveRefs,
       acceptanceCriterionIds: acceptanceCriteria.filter(item => item.requirementIds.includes(requirement.id)).map(item => item.id),
       testObligationIds: [`TEST-${requirement.id}`],
     })),
@@ -249,12 +260,62 @@ async function compileProjectSpecificationInternal(
   const validation = validateSpecificationBody(body)
   if (!validation.passed) throw new ValidationError(`Compiled specification has ${validation.errorCount} blocking issue(s)`)
   const contentHash = specificationContentHash(body)
+  const sponsorGate = await getSponsorGateDecision(projectId)
+  if (sponsorGate.required && !project.sponsorId) throw new ValidationError('This initiative exceeds the sponsor threshold but has no sponsor assigned')
+  if (sponsorGate.required && project.sponsorId === actorId) throw new ValidationError('Compile must be initiated by someone other than the assigned sponsor so the sponsor gate remains independent')
+  if (latest?.contentHash === contentHash && !['REJECTED', 'CHANGES_REQUESTED'].includes(String(latest.status))) {
+    if (latest.status === 'APPROVED') {
+      return { version: latest, contentHash, blockers, warnings, waivers, validation, businessCoverage, sponsorGate, unchanged: true }
+    }
+    const technicalApproval = await requestSpecificationReview(latest.id, {
+      assignmentMode: 'ROLE_BASED', roleKey: 'APPROVER', capabilityId: project.primaryCapabilityId ?? undefined,
+      adminOverride: false, comment: 'Technical review for compiled execution contract',
+    }, actorId, project.tenantId ?? tenantId())
+    let sponsorReadout = null
+    let sponsorApproval = null
+    if (sponsorGate.required) {
+      sponsorReadout = await db().businessReadout.findFirst({
+        where: { specificationVersionId: latest.id, tenantId: tenantId(), kind: 'SPONSOR', status: { in: ['DRAFT', 'PENDING_SPONSOR', 'SIGNED'] } },
+        orderBy: { createdAt: 'desc' },
+      }) ?? await generateBusinessReadout(projectId, { kind: 'SPONSOR', specificationVersionId: latest.id }, actorId)
+      sponsorApproval = await requestBusinessReadoutSponsorApproval(sponsorReadout.id, actorId)
+    }
+    return { version: latest, contentHash, blockers, warnings, waivers, validation, businessCoverage, sponsorGate, technicalApproval, sponsorReadout, sponsorApproval, resumed: true }
+  }
+  let approvedChangeRequest: SpecificationChangeRequest | null = null
+  if (latest && ['APPROVED', 'LOCKED', 'ACTIVE'].includes(String(latest.status))) {
+    approvedChangeRequest = await db().specificationChangeRequest.findFirst({
+      where: {
+        projectId,
+        specificationVersionId: latest.id,
+        tenantId: tenantId(),
+        status: 'APPROVED',
+        resultingVersionId: null,
+      },
+      orderBy: { decidedAt: 'desc' },
+    })
+    if (!approvedChangeRequest) {
+      throw new ValidationError('Post-lock specification changes require a sponsor-approved consequence-priced ChangeRequest')
+    }
+    const previous = specificationPackageBodySchema.safeParse(latest.package)
+    if (!previous.success) throw new ValidationError('The prior specification package is malformed and cannot be amended')
+    const actual = diffRequirements(previous.data.requirements, body.requirements)
+    const declared = approvedChangeRequest.requirementDeltas && typeof approvedChangeRequest.requirementDeltas === 'object' && !Array.isArray(approvedChangeRequest.requirementDeltas)
+      ? approvedChangeRequest.requirementDeltas as Record<string, unknown>
+      : {}
+    const missing = uncoveredRequirementDelta(actual, {
+      added: stringArray(declared.added),
+      changed: stringArray(declared.changed),
+      removed: stringArray(declared.removed),
+    })
+    if (missing.length) throw new ValidationError(`Approved ChangeRequest does not cover actual requirement changes: ${missing.join(', ')}`)
+  }
   const version = await withTenantDbTransaction(prisma, async tx => {
     const created = await tx.specificationVersion.create({
       data: {
         specificationProjectId: projectId,
         version: (latest?.version ?? 0) + 1,
-        status: 'LOCKED',
+        status: 'DRAFT',
         package: body as unknown as Prisma.InputJsonValue,
         contentHash,
         createdById: actorId,
@@ -262,12 +323,28 @@ async function compileProjectSpecificationInternal(
         tenantId: project.tenantId,
       },
     })
-    await tx.specificationProject.update({ where: { id: projectId }, data: { status: 'LOCKED' } })
+    await tx.specificationProject.update({ where: { id: projectId }, data: { status: 'IN_REVIEW' } })
+    if (approvedChangeRequest) {
+      await tx.specificationChangeRequest.update({ where: { id: approvedChangeRequest.id }, data: { resultingVersionId: created.id } })
+    }
     return created
   }, project.tenantId ?? undefined)
-  await logEvent('SpecificationCompiledAndLocked', 'SpecificationProject', projectId, actorId, { versionId: version.id, contentHash, blockers, warnings, waivers })
-  await publishOutbox('SpecificationProject', projectId, 'SpecificationCompiledAndLocked', { versionId: version.id, contentHash })
-  return { version, contentHash, blockers, warnings, waivers, validation }
+  const technicalApproval = await requestSpecificationReview(version.id, {
+    assignmentMode: 'ROLE_BASED',
+    roleKey: 'APPROVER',
+    capabilityId: project.primaryCapabilityId ?? undefined,
+    adminOverride: false,
+    comment: 'Technical review for compiled execution contract',
+  }, actorId, project.tenantId ?? tenantId())
+  let sponsorReadout = null
+  let sponsorApproval = null
+  if (sponsorGate.required) {
+    sponsorReadout = await generateBusinessReadout(projectId, { kind: 'SPONSOR', specificationVersionId: version.id }, actorId)
+    sponsorApproval = await requestBusinessReadoutSponsorApproval(sponsorReadout.id, actorId)
+  }
+  await logEvent('SpecificationCompiledForReview', 'SpecificationProject', projectId, actorId, { versionId: version.id, contentHash, blockers, warnings, waivers, businessCoverage, technicalApprovalId: technicalApproval.id, sponsorGate, sponsorReadoutId: sponsorReadout?.id, sponsorApprovalId: sponsorApproval && 'id' in sponsorApproval ? sponsorApproval.id : null })
+  await publishOutbox('SpecificationProject', projectId, 'SpecificationCompiledForReview', { versionId: version.id, contentHash, technicalApprovalId: technicalApproval.id, sponsorApprovalId: sponsorApproval && 'id' in sponsorApproval ? sponsorApproval.id : null })
+  return { version: { ...version, status: 'IN_REVIEW' }, contentHash, blockers, warnings, waivers, validation, businessCoverage, sponsorGate, technicalApproval, sponsorReadout, sponsorApproval }
 }
 
 async function getProjectEconomicsInternal(projectId: string) {
@@ -396,7 +473,7 @@ function stringArray(value: unknown): string[] {
 
 async function getProjectTraceabilityInternal(projectId: string) {
   const project = await projectOrThrow(projectId)
-  const [draft, claims, dossiers, plans, archives, boards, versions] = await Promise.all([
+  const [draft, claims, dossiers, plans, archives, boards, versions, objectives] = await Promise.all([
     db().projectSpecification.findUnique({ where: { projectId } }),
     db().claim.findMany({ where: { projectId, tenantId: tenantId() }, include: { evidence: true } }),
     db().decisionDossier.findMany({ where: { projectId, tenantId: tenantId() }, include: { options: true } }),
@@ -408,6 +485,7 @@ async function getProjectTraceabilityInternal(projectId: string) {
     db().conceptArchive.findMany({ where: { studio: { projectId }, tenantId: tenantId() }, include: { cards: true, cells: true } }),
     db().board.findMany({ where: { projectId, tenantId: tenantId() }, include: { events: { orderBy: { eventSeq: 'asc' }, take: 1000 } } }),
     db().specificationVersion.findMany({ where: { specificationProjectId: projectId, tenantId: tenantId() }, orderBy: { version: 'asc' } }),
+    db().businessObjective.findMany({ where: { tenantId: tenantId(), OR: [{ studioProjectId: projectId }, { projectLinks: { some: { projectId, tenantId: tenantId() } } }] } }),
   ])
   const parsedDraft = projectSpecPackageSchema.safeParse(draft?.package ?? {})
   const requirements = parsedDraft.success ? parsedDraft.data.requirements : []
@@ -420,6 +498,12 @@ async function getProjectTraceabilityInternal(projectId: string) {
     if (!edgeKeys.has(key)) { edgeKeys.add(key); edges.push({ from, to, kind }) }
   }
   addNode({ id: `project:${project.id}`, type: 'initiative', label: project.name, status: project.status, href: `/synthesis/hub?projectId=${project.id}` })
+
+  for (const objective of objectives) {
+    const objectiveId = `objective:${objective.id}`
+    addNode({ id: objectiveId, type: 'business-objective', label: objective.title, status: objective.status, href: `/synthesis/business?project=${projectId}&objective=${objective.id}`, data: { valueScore: objective.valueScore, targetMetric: objective.targetMetric } })
+    addEdge(`project:${project.id}`, objectiveId, 'funds')
+  }
 
   for (const board of boards) {
     addNode({ id: `board:${board.id}`, type: 'board', label: board.name, href: `/synthesis/ideas?projectId=${projectId}&boardId=${board.id}` })
@@ -458,6 +542,7 @@ async function getProjectTraceabilityInternal(projectId: string) {
     const requirementId = `requirement:${requirement.id}`
     addNode({ id: requirementId, type: 'requirement', label: requirement.statement, status: requirement.priority, href: `/synthesis/spec?projectId=${projectId}&requirement=${requirement.id}` })
     for (const claimId of requirement.claimRefs) addEdge(`claim:${claimId}`, requirementId, 'supports')
+    for (const objectiveId of requirement.objectiveRefs) addEdge(`objective:${objectiveId}`, requirementId, 'justifies')
   }
   for (const dossier of dossiers) {
     const decisionId = `decision:${dossier.id}`
@@ -524,6 +609,8 @@ async function getProjectTraceabilityInternal(projectId: string) {
       rejectedOptions: [...nodes.values()].filter(node => node.type === 'rejected-option').length,
       claims: claims.length,
       requirements: requirements.length,
+      objectives: objectives.length,
+      fundedRequirements: requirements.filter(requirement => requirement.objectiveRefs.length > 0).length,
       decisions: dossiers.length,
       workItems: connectedWorkItems,
       reconciliations: [...nodes.values()].filter(node => node.type === 'reconciliation').length,
@@ -648,14 +735,29 @@ async function upsertTenantBudgetInternal(input: Record<string, unknown>, actorI
 }
 
 async function getProjectPilotReadinessInternal(projectId: string) {
-  await projectOrThrow(projectId)
-  const [traceability, learning, plans, workItems, budgetEvents, slaEvents] = await Promise.all([
+  const project = await projectOrThrow(projectId)
+  const [traceability, learning, plans, workItems, budgetEvents, slaEvents, readouts, objectives, projectSpecification, capabilityLinks, impactAssessments, validationReports, acceptedDossiers, resolvedAttentionItems, changeRequests] = await Promise.all([
     getProjectTraceabilityInternal(projectId),
     getProjectLearningInternal(projectId),
     db().generationPlan.findMany({ where: { specificationProjectId: projectId, tenantId: tenantId() }, include: { rows: true } }),
     db().workItem.findMany({ where: { projectId, tenantId: tenantId() }, include: { reconciliationRuns: true, finalizationRecords: true } }),
     db().projectBudgetEvent.findMany({ where: { projectId, tenantId: tenantId() } }),
     db().workItemEvent.count({ where: { workItem: { projectId }, eventType: 'SLA_BREACHED', tenantId: tenantId() } }),
+    db().businessReadout.findMany({ where: { studioProjectId: projectId, tenantId: tenantId() } }),
+    db().businessObjective.findMany({ where: { tenantId: tenantId(), OR: [{ studioProjectId: projectId }, { projectLinks: { some: { projectId } } }] } }),
+    db().projectSpecification.findUnique({ where: { projectId } }),
+    db().specificationProjectCapability.findMany({ where: { projectId, tenantId: tenantId(), role: { not: 'PROPOSED' } } }),
+    db().capabilityImpactAssessment.findMany({ where: { projectId, tenantId: tenantId(), status: 'COMPLETED' } }),
+    db().artifactValidationReport.findMany({ where: { projectId, tenantId: tenantId() }, select: { tensions: true } }),
+    db().decisionDossier.findMany({ where: { projectId, tenantId: tenantId(), status: 'ACCEPTED' }, select: { resolvesTensions: true } }),
+    db().attentionItem.count({ where: { projectId, tenantId: tenantId(), status: 'RESOLVED' } }),
+    db().specificationChangeRequest.findMany({ where: { projectId, tenantId: tenantId(), status: { in: ['APPROVED', 'APPLIED'] } }, select: { requirementDeltas: true, costDelta: true, scheduleDelta: true, milestoneImpacts: true } }),
+  ])
+  const workItemIds = workItems.map(item => item.id)
+  const [approvedWaivers, finalizationEvents, failedReconciliationDriftSignals] = await Promise.all([
+    workItemIds.length ? db().governanceWaiver.count({ where: { workItemId: { in: workItemIds }, status: 'APPROVED' } }) : 0,
+    workItemIds.length ? db().workItemEvent.findMany({ where: { workItemId: { in: workItemIds }, eventType: 'WORK_ITEM_FINALIZED' }, select: { workItemId: true, actorId: true } }) : [],
+    db().claimDriftSignal.count({ where: { projectId, tenantId: tenantId(), delta: { not: 0 }, reconciliationRun: { status: { in: ['FAILED', 'PARTIAL', 'ERROR'] } } } }),
   ])
   const origin = {
     specGenerated: workItems.filter(item => item.originType === 'SPEC_GENERATED').length,
@@ -664,22 +766,73 @@ async function getProjectPilotReadinessInternal(projectId: string) {
   const verified = workItems.filter(item => item.reconciliationRuns.some(run => run.status === 'VERIFIED_PASS' && run.reconciliationState === 'VERIFIED')).length
   const finalized = workItems.filter(item => item.finalizationRecords.some(record => record.status === 'COMPLETED')).length
   const actualRows = plans.flatMap(plan => plan.rows).filter(row => row.actualFinishAt || row.actualHours != null || row.actualCostUsd != null).length
-  const checks = [
-    { key: 'idea', label: 'Idea evidence exists', ok: traceability.summary.concepts + traceability.summary.boards > 0, fixRoute: `/synthesis/ideas?projectId=${projectId}` },
-    { key: 'claim', label: 'Claims are traceable', ok: traceability.summary.claims > 0, fixRoute: `/synthesis/rooms?projectId=${projectId}` },
-    { key: 'decision', label: 'An independently accepted decision exists', ok: traceability.nodes.some(node => node.type === 'decision' && node.status === 'ACCEPTED'), fixRoute: `/synthesis/decisions?projectId=${projectId}` },
-    { key: 'spec', label: 'A specification is locked', ok: traceability.nodes.some(node => node.type === 'specification' && ['LOCKED', 'ACTIVE', 'APPROVED'].includes(String(node.status))), fixRoute: `/synthesis/generate?projectId=${projectId}` },
-    { key: 'plan', label: 'A generation plan was applied', ok: plans.some(plan => plan.status === 'APPLIED'), fixRoute: `/synthesis/generate?projectId=${projectId}` },
-    { key: 'lineage', label: 'Generated rows carry claim, decision, and requirement lineage', ok: traceability.summary.workItems > 0 && traceability.summary.completeChains === traceability.summary.workItems, fixRoute: `/synthesis/spec?projectId=${projectId}` },
-    { key: 'verified', label: 'At least one WorkItem has verified dynamic reconciliation', ok: verified > 0, fixRoute: '/work-items' },
-    { key: 'finalized', label: 'At least one WorkItem reached authoritative finalization', ok: finalized > 0, fixRoute: '/work-items' },
-    { key: 'learning', label: 'Reconciliation evidence closed the claim loop', ok: learning.signals.length > 0, fixRoute: `/synthesis/learning?projectId=${projectId}` },
-    { key: 'actuals', label: 'Delivery actuals are recorded', ok: actualRows > 0, fixRoute: `/synthesis/economics?projectId=${projectId}` },
-    { key: 'budget-warning', label: 'A real budget warning is recorded', ok: budgetEvents.some(event => event.status === 'WARNING'), fixRoute: `/synthesis/economics?projectId=${projectId}` },
-    { key: 'sla', label: 'SLA enforcement is evidenced', ok: slaEvents > 0, fixRoute: '/work-items' },
-    { key: 'fast-lane', label: 'The AD_HOC fast lane is exercised', ok: origin.adHoc > 0, fixRoute: '/work-items' },
-  ]
-  return { projectId, ready: checks.every(check => check.ok), score: Math.round(checks.filter(check => check.ok).length / checks.length * 100), checks, metrics: { origin, verified, finalized, actualRows, specGeneratedToAdHocRatio: origin.adHoc ? origin.specGenerated / origin.adHoc : null }, traceability: traceability.summary, learning: learning.summary }
+  const estimatedActualRows = plans.flatMap(plan => plan.rows).filter(row =>
+    (row.estimatedHours != null || row.estimatedCostLow != null || row.estimatedCostHigh != null || row.estimatedTokens != null)
+    && (row.actualFinishAt != null || row.actualHours != null || row.actualCostUsd != null),
+  ).length
+  const finalizationsByWorkItem = new Map<string, number>()
+  for (const event of finalizationEvents) finalizationsByWorkItem.set(event.workItemId, (finalizationsByWorkItem.get(event.workItemId) ?? 0) + 1)
+  const parsedSpec = projectSpecification ? projectSpecPackageSchema.safeParse(projectSpecification.package) : null
+  const objectiveCoverage = detectObjectiveCoverage(
+    objectives.map(objective => ({ id: objective.id, title: objective.title, status: objective.status, valueScore: objective.valueScore })),
+    parsedSpec?.success ? parsedSpec.data.requirements.map(requirement => ({ id: requirement.id, statement: requirement.statement, priority: requirement.priority, objectiveRefs: requirement.objectiveRefs })) : [],
+    'portfolio',
+  )
+  const tensionIds = new Set(validationReports.flatMap(report => jsonRecords(report.tensions).map(tension => String(tension.id ?? '')).filter(Boolean)))
+  const resolvedTensionIds = new Set(acceptedDossiers.flatMap(dossier => jsonStrings(dossier.resolvesTensions)))
+  const adjudicatedTensions = [...tensionIds].filter(id => resolvedTensionIds.has(id)).length
+  const morningBriefs = readouts.filter(readout => readout.kind === 'MORNING' && jsonRecords(readout.citations).length > 0 && /\bSpend:/i.test(readout.renderedMarkdown)).length
+  const consequenceChangeRequests = changeRequests.filter(change =>
+    Object.keys(jsonRecord(change.requirementDeltas)).length > 0
+    && (Object.keys(jsonRecord(change.costDelta)).length > 0 || Object.keys(jsonRecord(change.scheduleDelta)).length > 0 || jsonRecords(change.milestoneImpacts).length > 0),
+  ).length
+  const capabilityIds = new Set(capabilityLinks.map(link => link.capabilityId))
+  if (project.primaryCapabilityId) capabilityIds.add(project.primaryCapabilityId)
+  const assessedCapabilityIds = new Set(impactAssessments.map(assessment => assessment.capabilityId))
+  const evidence: PilotEvidence = {
+    ideas: traceability.summary.concepts + traceability.summary.boards,
+    claims: traceability.summary.claims,
+    acceptedDecisions: acceptedDossiers.length,
+    lockedSpecifications: traceability.nodes.filter(node => node.type === 'specification' && ['LOCKED', 'ACTIVE', 'APPROVED'].includes(String(node.status))).length,
+    appliedPlans: plans.filter(plan => plan.status === 'APPLIED').length,
+    workItems: traceability.summary.workItems,
+    completeChains: traceability.summary.completeChains,
+    verifiedWorkItems: verified,
+    finalizedWorkItems: finalized,
+    learningSignals: learning.signals.length,
+    ownedFinalizationTransitions: finalizationEvents.filter(event => Boolean(event.actorId)).length,
+    duplicateFinalizationTransitions: [...finalizationsByWorkItem.values()].filter(count => count > 1).length,
+    staleReconciliations: workItems.flatMap(item => item.reconciliationRuns).filter(run => run.reconciliationState === 'STALE').length,
+    approvedWaivers,
+    failedReconciliationDriftSignals,
+    estimateActualRows: estimatedActualRows,
+    adHocWorkItems: origin.adHoc,
+    budgetWarnings: budgetEvents.filter(event => event.status === 'WARNING').length,
+    objectiveCoverageErrors: objectiveCoverage.errors.length,
+    signedSponsorReadouts: readouts.filter(readout => readout.kind === 'SPONSOR' && readout.status === 'SIGNED' && readout.signedAt).length,
+    consequenceChangeRequests,
+    weeklyReadouts: readouts.filter(readout => readout.kind === 'WEEKLY').length,
+    capabilityLinks: capabilityIds.size,
+    assessedCapabilityLinks: [...capabilityIds].filter(id => assessedCapabilityIds.has(id)).length,
+    adjudicatedTensions,
+    resolvedAttentionItems,
+    actionableMorningBriefs: morningBriefs,
+    slaBreaches: slaEvents,
+  }
+  const readiness = evaluatePilotReadiness(projectId, evidence)
+  return { projectId, ...readiness, metrics: { origin, verified, finalized, actualRows, specGeneratedToAdHocRatio: origin.adHoc ? origin.specGenerated / origin.adHoc : null, acceptance: evidence }, traceability: traceability.summary, learning: learning.summary }
+}
+
+function jsonRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function jsonRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.filter(item => item && typeof item === 'object' && !Array.isArray(item)) as Record<string, unknown>[] : []
+}
+
+function jsonStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.length > 0) : []
 }
 
 function numberOrNull(value: unknown): number | null {

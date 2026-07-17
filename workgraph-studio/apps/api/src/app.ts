@@ -88,6 +88,8 @@ import { laptopInvocationsRouter, laptopQuestionsRouter, workItemLaptopRouter } 
 import { internalArtifactFetchRouter } from './modules/internal/artifact-fetch.router'
 import { capacityRouter } from './modules/planning/capacity.router'
 import { portfolioExecutionRouter } from './modules/portfolio-execution/portfolio-execution.router'
+import { businessAlignmentRouter } from './modules/business-alignment/business-alignment.router'
+import { experienceRouter } from './modules/experience/experience.router'
 import { verificationRouter } from './modules/verification/verification.router'
 import { runtimePolicyRouter } from './modules/runtime/runtime-policy.router'
 // M42.0 — admin feature-flag toggles (kill switches for major capabilities).
@@ -187,6 +189,8 @@ export function createApp(): Express {
   app.use('/api/work-items', authMiddleware, workItemsRouter)
   app.use('/api/studio', authMiddleware, studioAuthz, studioProjectsRouter)
   app.use('/api/studio', authMiddleware, studioAuthz, portfolioExecutionRouter)
+  app.use('/api/studio', authMiddleware, studioAuthz, businessAlignmentRouter)
+  app.use('/api/studio', authMiddleware, studioAuthz, experienceRouter)
   app.use('/api/studio', authMiddleware, studioAuthz, studioBoardRouter)
   app.use('/api/studio', authMiddleware, studioAuthz, studioBoardVerdictRouter)
   // Agent-principal verdict writes: separate prefix + service-token gate, NOT authMiddleware

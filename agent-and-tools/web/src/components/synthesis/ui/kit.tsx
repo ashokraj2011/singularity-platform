@@ -148,8 +148,8 @@ export function StageHeader({
   icon?: LucideIcon;
 }) {
   return (
-    <div className="flex items-start justify-between gap-6 mb-8">
-      <div className="flex items-start gap-4 min-w-0">
+    <div className="mb-8 flex flex-col items-stretch gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+      <div className="flex min-w-0 items-start gap-3 sm:gap-4">
         {Icon ? (
           <div className="mt-1 w-10 h-10 rounded-lg bg-secondary-container flex items-center justify-center text-on-secondary-container shrink-0">
             <Icon size={20} strokeWidth={1.8} />
@@ -157,7 +157,7 @@ export function StageHeader({
         ) : null}
         <div className="min-w-0">
           {eyebrow ? <MonoMeta className="block mb-1">{eyebrow}</MonoMeta> : null}
-          <h1 className="font-display font-semibold text-2xl text-on-surface tracking-tight truncate">
+          <h1 className="font-display text-2xl font-semibold text-on-surface">
             {title}
           </h1>
           {description ? (
@@ -165,7 +165,7 @@ export function StageHeader({
           ) : null}
         </div>
       </div>
-      {actions ? <div className="flex items-center gap-2 shrink-0">{actions}</div> : null}
+      {actions ? <div className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:w-auto">{actions}</div> : null}
     </div>
   );
 }

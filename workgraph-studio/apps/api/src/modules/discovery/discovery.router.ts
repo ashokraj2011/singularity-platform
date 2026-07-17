@@ -31,7 +31,7 @@ async function maybeResumeDiscoveryNode(sessionId: string, actorId?: string): Pr
 }
 
 const createSessionSchema = z.object({
-  scopeType: z.enum(['WORKFLOW_STAGE', 'WORK_ITEM', 'RUN']),
+  scopeType: z.enum(['WORKFLOW_STAGE', 'WORK_ITEM', 'RUN', 'INITIATIVE']),
   scopeId: z.string().min(1),
   touchPoint: z.string().min(1).optional(),
 })

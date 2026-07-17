@@ -13,6 +13,8 @@ import {
   FileText,
   GitFork,
   Home,
+  Inbox,
+  FileInput,
   LayoutDashboard,
   Lightbulb,
   ListTree,
@@ -24,6 +26,7 @@ import {
   Scale,
   Sparkles,
   Ticket,
+  Target,
   TrendingUp,
   ShieldCheck,
   Wifi,
@@ -40,7 +43,10 @@ export interface SynNavItem {
 }
 
 export const SYN_NAV: SynNavItem[] = [
+  { href: "/synthesis/desk", label: "The Desk", icon: Inbox, hint: "Ranked decisions and exceptions", phase: "Ideate" },
+  { href: "/synthesis/intake", label: "Intake", icon: FileInput, hint: "Interview or validate a document pile", phase: "Ideate" },
   { href: "/synthesis/hub", label: "Initiatives", icon: Home, hint: "Portfolio and active initiatives", phase: "Ideate" },
+  { href: "/synthesis/business", label: "Business Alignment", icon: Target, hint: "Objectives, milestones, sponsor consent, and risk", phase: "Ideate" },
   { href: "/synthesis/overview", label: "Overview", icon: LayoutDashboard, hint: "Signals, budgets, and activity", phase: "Ideate" },
   { href: "/synthesis/ideas", label: "Idea Board", icon: Lightbulb, hint: "Spatial capture, facts, and synthesis", phase: "Ideate" },
   { href: "/synthesis/journey", label: "Journey Map", icon: Map, hint: "Customer stages, pain, and opportunity", phase: "Ideate" },

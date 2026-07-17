@@ -7,6 +7,7 @@ import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { specificationPackageBodySchema } from './specification.schemas'
 import { specificationContentHash } from './specification.hash'
 import { validateSpecificationBody } from './specification.validator'
+import { getSponsorGateDecision } from '../business-alignment/business-alignment.service'
 
 export type SpecificationReviewRouting = ApprovalRouting & {
   comment?: string
@@ -49,7 +50,7 @@ export async function requestSpecificationReview(
   tenantId: string,
 ) {
   const version = await loadReviewSubject(versionId, tenantId)
-  if (!['DRAFT', 'CHANGES_REQUESTED', 'CHANGE_REQUESTED'].includes(String(version.status))) {
+  if (!['DRAFT', 'IN_REVIEW', 'CHANGES_REQUESTED', 'CHANGE_REQUESTED'].includes(String(version.status))) {
     throw new ConflictError(`Specification version is ${version.status} and cannot be submitted for review`)
   }
   const body = specificationPackageBodySchema.safeParse(version.package)
@@ -85,11 +86,12 @@ export async function requestSpecificationReview(
   const review = await withTenantDbTransaction(prisma, async tx => {
     const current = await tx.specificationVersion.findFirst({ where: { id: versionId, tenantId } })
     if (!current) throw new NotFoundError('SpecificationVersion', versionId)
-    if (!['DRAFT', 'CHANGES_REQUESTED', 'CHANGE_REQUESTED'].includes(String(current.status))) {
+    if (!['DRAFT', 'IN_REVIEW', 'CHANGES_REQUESTED', 'CHANGE_REQUESTED'].includes(String(current.status))) {
       throw new ConflictError(`Specification version is ${current.status} and cannot be submitted for review`)
     }
     const pending = await tx.approvalRequest.findFirst({
-      where: { subjectType: 'SpecificationVersion', subjectId: versionId, tenantId, status: 'PENDING' },
+      where: { subjectType: 'SpecificationVersion', subjectId: versionId, tenantId, status: { in: ['PENDING', 'APPROVED', 'APPROVED_WITH_CONDITIONS'] } },
+      orderBy: { updatedAt: 'desc' },
     })
     if (pending) return { request: pending, created: false }
     const request = await tx.approvalRequest.create({
@@ -168,6 +170,37 @@ export async function applyProjectSpecificationApproval(
   const validation = validateSpecificationBody(parsed.data)
   if (!validation.passed) throw new ValidationError(`Specification has ${validation.errorCount} blocking issue(s)`)
   const contentHash = specificationContentHash(parsed.data)
+  const sponsorGate = await getSponsorGateDecision(version.specificationProjectId)
+  if (sponsorGate.required) {
+    const signedReadout = await findSignedReadout(version.id, tenantId)
+    if (!signedReadout) {
+      await logEvent('SpecificationTechnicalApprovalRecorded', 'SpecificationVersion', versionId, actorId, { approvalRequestId, contentHash, awaiting: 'SPONSOR_READOUT' })
+      return prisma.specificationVersion.findUniqueOrThrow({ where: { id: versionId } })
+    }
+    const sponsorDecision = await prisma.approvalDecision.findFirst({ where: { requestId: signedReadout.sponsorApprovalId!, decision: { in: ['APPROVED', 'APPROVED_WITH_CONDITIONS'] } }, orderBy: { decidedAt: 'desc' } })
+    if (sponsorDecision?.decidedById === actorId) throw new ConflictError('Technical and sponsor approvals require independent approvers')
+  }
+  return finalizeProjectSpecificationVersion(versionId, approvalRequestId, actorId, comment, tenantId, contentHash)
+}
+
+async function findSignedReadout(versionId: string, tenantId: string) {
+  const readout = await prisma.businessReadout.findFirst({ where: { specificationVersionId: versionId, tenantId, kind: 'SPONSOR', status: 'SIGNED', sponsorApprovalId: { not: null } }, orderBy: { signedAt: 'desc' } })
+  if (!readout?.sponsorApprovalId) return null
+  const approval = await prisma.approvalRequest.findFirst({ where: { id: readout.sponsorApprovalId, tenantId, status: { in: ['APPROVED', 'APPROVED_WITH_CONDITIONS'] }, approvedContentHash: readout.contentHash } })
+  return approval ? readout : null
+}
+
+async function finalizeProjectSpecificationVersion(
+  versionId: string,
+  approvalRequestId: string,
+  actorId: string,
+  comment: string | undefined,
+  tenantId: string,
+  contentHash?: string,
+) {
+  const version = await loadReviewSubject(versionId, tenantId)
+  if (!version.specificationProjectId) throw new ValidationError('Specification version is not owned by a specification project')
+  const hash = contentHash ?? specificationContentHash(specificationPackageBodySchema.parse(version.package))
   const approved = await withTenantDbTransaction(prisma, async tx => {
     await tx.specificationVersion.updateMany({
       where: { specificationProjectId: version.specificationProjectId, status: 'APPROVED', id: { not: versionId } },
@@ -175,14 +208,39 @@ export async function applyProjectSpecificationApproval(
     })
     const row = await tx.specificationVersion.update({
       where: { id: versionId },
-      data: { status: 'APPROVED', contentHash, approvedById: actorId, approvedAt: new Date(), approvalComment: comment ?? null },
+      data: { status: 'APPROVED', contentHash: hash, approvedById: actorId, approvedAt: new Date(), approvalComment: comment ?? null },
+    })
+    await tx.specificationChangeRequest.updateMany({
+      where: { resultingVersionId: versionId, status: 'APPROVED' },
+      data: { status: 'APPLIED', appliedAt: new Date() },
     })
     await tx.specificationProject.update({ where: { id: version.specificationProjectId! }, data: { status: 'ACTIVE' } })
     return row
   }, tenantId)
-  await logEvent('SpecificationApproved', 'SpecificationVersion', versionId, actorId, { approvalRequestId, contentHash })
-  await publishOutbox('SpecificationVersion', versionId, 'SpecificationApproved', { approvalRequestId, contentHash })
+  await logEvent('SpecificationApproved', 'SpecificationVersion', versionId, actorId, { approvalRequestId, contentHash: hash })
+  await publishOutbox('SpecificationVersion', versionId, 'SpecificationApproved', { approvalRequestId, contentHash: hash })
   return approved
+}
+
+export async function finalizeProjectSpecificationAfterSponsor(versionId: string, tenantId: string) {
+  const version = await loadReviewSubject(versionId, tenantId)
+  if (!version.specificationProjectId) throw new ValidationError('Specification version is not owned by a specification project')
+  const sponsorGate = await getSponsorGateDecision(version.specificationProjectId)
+  if (!sponsorGate.required) return version
+  const readout = await findSignedReadout(versionId, tenantId)
+  if (!readout?.sponsorApprovalId) return version
+  const technicalApproval = await prisma.approvalRequest.findFirst({
+    where: { subjectType: 'SpecificationVersion', subjectId: versionId, tenantId, status: { in: ['APPROVED', 'APPROVED_WITH_CONDITIONS'] } },
+    include: { decisions: { where: { decision: { in: ['APPROVED', 'APPROVED_WITH_CONDITIONS'] } }, orderBy: { decidedAt: 'desc' }, take: 1 } },
+    orderBy: { updatedAt: 'desc' },
+  })
+  const technicalDecision = technicalApproval?.decisions[0]
+  if (!technicalApproval || !technicalDecision) return version
+  const sponsorDecision = await prisma.approvalDecision.findFirst({ where: { requestId: readout.sponsorApprovalId, decision: { in: ['APPROVED', 'APPROVED_WITH_CONDITIONS'] } }, orderBy: { decidedAt: 'desc' } })
+  if (!sponsorDecision) return version
+  if (technicalDecision.decidedById === sponsorDecision.decidedById) throw new ConflictError('Technical and sponsor approvals require independent approvers')
+  if (version.status === 'APPROVED') return version
+  return finalizeProjectSpecificationVersion(versionId, technicalApproval.id, technicalDecision.decidedById, 'Sponsor readout signed; both approval lanes satisfied', tenantId)
 }
 
 export async function applySpecificationReviewRejection(

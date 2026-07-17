@@ -37,6 +37,7 @@ const addClaimSchema = z.object({
   contextScope: z.string().trim().max(120).optional(),
   entityKind: z.string().trim().max(60).optional(),
   entityId: z.string().trim().max(200).optional(),
+  capabilityId: z.string().trim().max(200).optional(),
   stewardId: z.string().trim().max(200).optional(),
   initialEstimate: z.number().min(0).max(1).optional(),
   provenance: z.record(z.unknown()).optional(),

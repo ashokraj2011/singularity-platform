@@ -3,6 +3,7 @@ export type ScheduleRow = {
   estimatedHours: number
   dependencies: Array<{ rowKey: string }>
   capacityCalendarId?: string
+  valueScore?: number
 }
 
 export type ScheduleCapacityCalendar = {
@@ -98,7 +99,11 @@ export function scheduleGenerationPlan(
 ): ScheduledRow[] {
   const startAt = new Date(options.startAt ?? new Date())
   const hoursPerDay = Math.max(1, Math.min(24, options.hoursPerDay ?? 8))
-  const byKey = new Map(rows.map(row => [row.rowKey, row]))
+  const orderedRows = rows
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => (right.row.valueScore ?? 0) - (left.row.valueScore ?? 0) || left.index - right.index)
+    .map(entry => entry.row)
+  const byKey = new Map(orderedRows.map(row => [row.rowKey, row]))
   if (byKey.size !== rows.length) throw new Error('Generation plan row keys must be unique')
   const visiting = new Set<string>()
   const scheduled = new Map<string, ScheduledRow & { score: number; parent?: string }>()
@@ -139,14 +144,14 @@ export function scheduleGenerationPlan(
     return result
   }
 
-  for (const row of rows) visit(row.rowKey)
+  for (const row of orderedRows) visit(row.rowKey)
   const terminal = [...scheduled.values()].sort((left, right) => right.score - left.score)[0]
   let cursor: (ScheduledRow & { score: number; parent?: string }) | undefined = terminal
   while (cursor) {
     cursor.criticalPath = true
     cursor = cursor.parent ? scheduled.get(cursor.parent) : undefined
   }
-  return rows.map(row => {
+  return orderedRows.map(row => {
     const value = scheduled.get(row.rowKey)!
     return {
       rowKey: value.rowKey,

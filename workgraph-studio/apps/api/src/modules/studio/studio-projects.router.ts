@@ -32,9 +32,13 @@ import { syncCoedit } from './studio-coedit.service'
 export const studioProjectsRouter: Router = Router()
 
 const score = z.number().int().min(1).max(5)
+const capabilityIds = z.array(z.string().trim().min(1).max(200)).max(8)
 const projectGovernanceSchema = z.object({
   primaryCapabilityId: z.string().trim().min(1).max(200),
-  impactedCapabilityIds: z.array(z.string().trim().min(1).max(200)).max(8).default([]),
+  impactedCapabilityIds: capabilityIds.default([]),
+  supportingCapabilityIds: capabilityIds.default([]),
+  consumedCapabilityIds: capabilityIds.default([]),
+  proposedCapabilityIds: capabilityIds.default([]),
   tokenBudget: z.number().int().min(10_000).max(50_000_000).default(250_000),
   costBudgetUsd: z.number().positive().max(1_000_000).optional(),
   businessValue: score.optional(),
@@ -57,12 +61,15 @@ const projectGovernanceSchema = z.object({
 export const createProjectSchema = z.object({
   name: z.string().trim().min(1).max(200),
   mission: z.string().trim().max(2000).optional(),
-}).merge(projectGovernanceSchema)
+}).merge(projectGovernanceSchema).superRefine(validateCapabilityAssignments)
 export const updateProjectSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   mission: z.string().trim().max(2000).nullable().optional(),
   primaryCapabilityId: z.string().trim().min(1).max(200).optional(),
-  impactedCapabilityIds: z.array(z.string().trim().min(1).max(200)).max(8).optional(),
+  impactedCapabilityIds: capabilityIds.optional(),
+  supportingCapabilityIds: capabilityIds.optional(),
+  consumedCapabilityIds: capabilityIds.optional(),
+  proposedCapabilityIds: capabilityIds.optional(),
   tokenBudget: z.number().int().min(10_000).max(50_000_000).optional(),
   costBudgetUsd: z.number().positive().max(1_000_000).nullable().optional(),
   businessValue: score.nullable().optional(),
@@ -81,7 +88,7 @@ export const updateProjectSchema = z.object({
   productOwnerId: z.string().trim().min(1).max(200).nullable().optional(),
   successMetrics: z.array(z.string().trim().min(1).max(500)).max(12).optional(),
   tags: z.array(z.string().trim().min(1).max(60)).max(16).optional(),
-})
+}).superRefine(validateCapabilityAssignments)
 export const archiveProjectSchema = z.object({ archived: z.boolean().default(true) })
 export const patchProjectSpecSchema = z.object({
   section: z.enum(['analysis', 'requirements', 'decisions']),
@@ -92,8 +99,51 @@ export const patchProjectSpecSchema = z.object({
 const projectIdOf = (req: Request) => String(req.params.projectId)
 const userIdOf = (req: Request) => req.user!.userId
 
-async function resolveCapabilities(req: Request, primaryId?: string, impactedIds?: string[]) {
-  const ids = [...new Set([primaryId, ...(impactedIds ?? [])].filter((id): id is string => Boolean(id)))]
+type CapabilityAssignments = {
+  primaryCapabilityId?: string
+  impactedCapabilityIds?: string[]
+  supportingCapabilityIds?: string[]
+  consumedCapabilityIds?: string[]
+  proposedCapabilityIds?: string[]
+}
+
+function validateCapabilityAssignments(input: CapabilityAssignments, ctx: z.RefinementCtx) {
+  const assignments = [
+    ['primaryCapabilityId', input.primaryCapabilityId ? [input.primaryCapabilityId] : []],
+    ['impactedCapabilityIds', input.impactedCapabilityIds ?? []],
+    ['supportingCapabilityIds', input.supportingCapabilityIds ?? []],
+    ['consumedCapabilityIds', input.consumedCapabilityIds ?? []],
+    ['proposedCapabilityIds', input.proposedCapabilityIds ?? []],
+  ] as const
+  const seen = new Map<string, string>()
+  for (const [field, ids] of assignments) {
+    for (const id of ids) {
+      const previous = seen.get(id)
+      if (previous) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field],
+          message: `Capability ${id} is already assigned as ${previous.replace(/CapabilityIds?$/, '').replace('primary', 'primary capability')}.`,
+        })
+      } else {
+        seen.set(id, field)
+      }
+    }
+  }
+}
+
+async function resolveCapabilities(req: Request, assignments: CapabilityAssignments) {
+  const { primaryCapabilityId: primaryId } = assignments
+  const groups = {
+    impactedCapabilities: assignments.impactedCapabilityIds,
+    supportingCapabilities: assignments.supportingCapabilityIds,
+    consumedCapabilities: assignments.consumedCapabilityIds,
+    proposedCapabilities: assignments.proposedCapabilityIds,
+  }
+  const ids = [...new Set([
+    primaryId,
+    ...Object.values(groups).flatMap((group) => group ?? []),
+  ].filter((id): id is string => Boolean(id)))]
   const hits = await Promise.all(ids.map((id) => resolveOne('capability', id, req)))
   const unresolved = hits.filter((hit) => !hit.exists)
   if (unresolved.length > 0) {
@@ -112,9 +162,13 @@ async function resolveCapabilities(req: Request, primaryId?: string, impactedIds
     id: hit.id,
     name: hit.label?.trim() || hit.id,
   } satisfies CapabilityRef]))
+  const resolveGroup = (ids?: string[]) => ids?.map((id) => byId.get(id)).filter((item): item is CapabilityRef => Boolean(item))
   return {
     primaryCapability: primaryId ? byId.get(primaryId) : undefined,
-    impactedCapabilities: impactedIds?.map((id) => byId.get(id)).filter((item): item is CapabilityRef => Boolean(item)),
+    impactedCapabilities: resolveGroup(assignments.impactedCapabilityIds),
+    supportingCapabilities: resolveGroup(assignments.supportingCapabilityIds),
+    consumedCapabilities: resolveGroup(assignments.consumedCapabilityIds),
+    proposedCapabilities: resolveGroup(assignments.proposedCapabilityIds),
   }
 }
 
@@ -134,13 +188,23 @@ studioProjectsRouter.get('/projects', async (req, res, next) => {
 
 studioProjectsRouter.post('/projects', validate(createProjectSchema), async (req, res, next) => {
   try {
-    const resolved = await resolveCapabilities(req, req.body.primaryCapabilityId, req.body.impactedCapabilityIds)
+    const resolved = await resolveCapabilities(req, req.body)
     if (!resolved.primaryCapability) throw new ValidationError('A primary capability is required')
-    const { primaryCapabilityId: _primaryCapabilityId, impactedCapabilityIds: _impactedCapabilityIds, ...input } = req.body
+    const {
+      primaryCapabilityId: _primaryCapabilityId,
+      impactedCapabilityIds: _impactedCapabilityIds,
+      supportingCapabilityIds: _supportingCapabilityIds,
+      consumedCapabilityIds: _consumedCapabilityIds,
+      proposedCapabilityIds: _proposedCapabilityIds,
+      ...input
+    } = req.body
     const project = await createProject({
       ...input,
       primaryCapability: resolved.primaryCapability,
       impactedCapabilities: resolved.impactedCapabilities,
+      supportingCapabilities: resolved.supportingCapabilities,
+      consumedCapabilities: resolved.consumedCapabilities,
+      proposedCapabilities: resolved.proposedCapabilities,
     }, userIdOf(req))
     res.status(201).json(project)
     // Creation is fast and deterministic; capability-agent review continues in
@@ -157,15 +221,26 @@ studioProjectsRouter.get('/projects/:projectId', async (req, res, next) => {
 
 studioProjectsRouter.patch('/projects/:projectId', validate(updateProjectSchema), async (req, res, next) => {
   try {
-    const shouldResolve = req.body.primaryCapabilityId !== undefined || req.body.impactedCapabilityIds !== undefined
+    const capabilityFields = ['primaryCapabilityId', 'impactedCapabilityIds', 'supportingCapabilityIds', 'consumedCapabilityIds', 'proposedCapabilityIds'] as const
+    const shouldResolve = capabilityFields.some((field) => req.body[field] !== undefined)
     const resolved: Awaited<ReturnType<typeof resolveCapabilities>> = shouldResolve
-      ? await resolveCapabilities(req, req.body.primaryCapabilityId, req.body.impactedCapabilityIds)
-      : { primaryCapability: undefined, impactedCapabilities: undefined }
-    const { primaryCapabilityId: _primaryCapabilityId, impactedCapabilityIds: _impactedCapabilityIds, ...input } = req.body
+      ? await resolveCapabilities(req, req.body)
+      : { primaryCapability: undefined, impactedCapabilities: undefined, supportingCapabilities: undefined, consumedCapabilities: undefined, proposedCapabilities: undefined }
+    const {
+      primaryCapabilityId: _primaryCapabilityId,
+      impactedCapabilityIds: _impactedCapabilityIds,
+      supportingCapabilityIds: _supportingCapabilityIds,
+      consumedCapabilityIds: _consumedCapabilityIds,
+      proposedCapabilityIds: _proposedCapabilityIds,
+      ...input
+    } = req.body
     res.json(await updateProject(projectIdOf(req), {
       ...input,
       ...(resolved.primaryCapability ? { primaryCapability: resolved.primaryCapability } : {}),
       ...(req.body.impactedCapabilityIds !== undefined ? { impactedCapabilities: resolved.impactedCapabilities ?? [] } : {}),
+      ...(req.body.supportingCapabilityIds !== undefined ? { supportingCapabilities: resolved.supportingCapabilities ?? [] } : {}),
+      ...(req.body.consumedCapabilityIds !== undefined ? { consumedCapabilities: resolved.consumedCapabilities ?? [] } : {}),
+      ...(req.body.proposedCapabilityIds !== undefined ? { proposedCapabilities: resolved.proposedCapabilities ?? [] } : {}),
     }, userIdOf(req)))
   } catch (err) { next(err) }
 })

@@ -1122,13 +1122,41 @@ JSON
 JSON
   fi
 
-  # ── 3. Install dependencies (only if missing) ────────────────────────────
+  # ── 3. Install dependencies when manifests change ───────────────────────
+  dependency_fingerprint() {
+    local dir="$1"
+    local files=()
+    local candidate
+
+    for candidate in package.json package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock; do
+      [ -f "$dir/$candidate" ] && files+=("$dir/$candidate")
+    done
+
+    # package.json is required for every directory passed to ensure_install.
+    # Hashing the lockfile as well prevents an existing node_modules directory
+    # from hiding newly added or updated dependencies on subsequent setup runs.
+    shasum -a 256 "${files[@]}" | shasum -a 256 | awk '{print $1}'
+  }
+
   ensure_install() {
     local dir="$1"
     local mgr="${2:-npm}"
-    if [ ! -d "$dir/node_modules" ]; then
+    local stamp="$dir/node_modules/.singularity-deps-fingerprint"
+    local expected=""
+    local installed=""
+
+    expected="$(dependency_fingerprint "$dir")"
+    [ -f "$stamp" ] && installed="$(tr -d '[:space:]' < "$stamp")"
+
+    if [ ! -d "$dir/node_modules" ] || [ "$installed" != "$expected" ]; then
       info "installing $dir via $mgr…"
-      ( cd "$dir" && $mgr install >/dev/null 2>&1 ) || { err "$mgr install failed in $dir"; exit 1; }
+      if [ "$mgr" = "npm" ] && [ -f "$dir/package-lock.json" ]; then
+        ( cd "$dir" && npm ci >/dev/null 2>&1 ) || { err "npm ci failed in $dir"; exit 1; }
+      else
+        ( cd "$dir" && $mgr install >/dev/null 2>&1 ) || { err "$mgr install failed in $dir"; exit 1; }
+      fi
+      expected="$(dependency_fingerprint "$dir")"
+      printf '%s\n' "$expected" > "$stamp"
     fi
   }
   ensure_install agent-and-tools          npm
@@ -1314,6 +1342,12 @@ JSON
       -f prisma/migrations/20260710100000_harden_event_operations_tenant_scope/migration.sql >/dev/null 2>&1 ) \
     || warn "WorkGraph event correlation migration had warnings"
 
+  info "enforcing WorkGraph business and experience tenant isolation..."
+  ( cd workgraph-studio/apps/api \
+    && psql "$DATABASE_URL_WORKGRAPH_ADMIN" -v ON_ERROR_STOP=1 -q \
+      -f prisma/migrations/20260808010000_experience_business_rls_hardening/migration.sql >/dev/null 2>&1 ) \
+    || warn "WorkGraph business/experience RLS hardening had warnings"
+
   info "provisioning Workgraph non-bypass app role…"
   PGPASSWORD="$db_pass" psql -v ON_ERROR_STOP=1 -h "$db_host" -p "$db_port" -U "$db_user" -d workgraph <<SQL >/dev/null
 DO \$\$
@@ -1393,7 +1427,15 @@ SQL
     local cmd="$*"
     local log_file="$LOG_DIR/${name}.log"
     if command -v setsid >/dev/null 2>&1; then
-      setsid bash -c "$cmd" >> "$log_file" 2>&1 < /dev/null &
+      # setsid gives the service its own session, but it does not ignore SIGHUP.
+      # Keep nohup in front so services survive the setup shell/terminal closing.
+      nohup setsid bash -c "$cmd" >> "$log_file" 2>&1 < /dev/null &
+    elif command -v python3 >/dev/null 2>&1; then
+      # macOS does not ship a setsid executable. Create the detached session in
+      # Python, then replace that process with the service shell so the pidfile
+      # still tracks the long-lived process rather than a transient wrapper.
+      nohup python3 -c 'import os, sys; os.setsid(); os.execvp("bash", ("bash", "-c", sys.argv[1]))' \
+        "$cmd" >> "$log_file" 2>&1 < /dev/null &
     else
       nohup bash -c "$cmd" >> "$log_file" 2>&1 < /dev/null &
     fi
@@ -1518,6 +1560,7 @@ SQL
   # always runs the dev server, so clear the cache before launch.
   clean_platform_web_cache
   boot platform-web     "cd agent-and-tools/web        && PORT=5180 IAM_BASE_URL=\"$IAM_BASE_URL\" IAM_HEALTH_URL=\"http://localhost:8100/api/v1/health\" IAM_BOOTSTRAP_USERNAME=\"$LOCAL_SUPER_ADMIN_EMAIL\" IAM_BOOTSTRAP_PASSWORD=\"$LOCAL_SUPER_ADMIN_PASSWORD\" TENANT_ISOLATION_MODE=\"$TENANT_ISOLATION_MODE\" REQUIRE_TENANT_ID=\"$REQUIRE_TENANT_ID\" IAM_SERVICE_TOKEN_TENANT_IDS=\"$IAM_SERVICE_TOKEN_TENANT_IDS\" AUDIT_GOV_URL=\"$AUDIT_GOV_URL\" AUDIT_GOV_SERVICE_TOKEN=\"$AUDIT_GOV_SERVICE_TOKEN\" MCP_SERVER_URL=\"$MCP_SERVER_URL\" MCP_BEARER_TOKEN=\"$MCP_BEARER_TOKEN\" LLM_GATEWAY_URL=\"$LLM_GATEWAY_URL\" AGENT_RUNTIME_URL=\"$AGENT_RUNTIME_URL\" TOOL_SERVICE_URL=\"$TOOL_SERVICE_URL\" AGENT_SERVICE_URL=\"$AGENT_SERVICE_URL\" PROMPT_COMPOSER_URL=\"$PROMPT_COMPOSER_URL\" PROMPT_COMPOSER_SERVICE_TOKEN=\"$PROMPT_COMPOSER_SERVICE_TOKEN\" WORKGRAPH_API_URL=\"http://localhost:8080\" WORKGRAPH_PROXY_SERVICE_AUTH=true WORKGRAPH_PROXY_SERVICE_TOKEN=\"$WORKGRAPH_PROXY_SERVICE_TOKEN\" CONTEXT_FABRIC_URL=\"$CONTEXT_FABRIC_URL\" NEXT_PUBLIC_WORKGRAPH_WEB_URL=\"/workflows\" npm run dev"
+  wait_http platform-web "http://localhost:5180/healthz" 90
 
   # Append-only helper for anyone who starts the legacy/debug UIs manually.
   _ensure_kv() { # $1=file  $2=KEY=VALUE

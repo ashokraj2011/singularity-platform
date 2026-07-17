@@ -274,11 +274,12 @@ export async function evaluateLogAlerts(): Promise<Array<Record<string, unknown>
     for (const rule of rules) {
       const stats = await queryOne<{ total: number; errors: number; newest_at: Date | null }>(
         `SELECT
-           COUNT(*) FILTER (WHERE ts >= now() - make_interval(mins => $1))::int AS total,
-           COUNT(*) FILTER (WHERE ts >= now() - make_interval(mins => $1) AND level IN ('error','fatal'))::int AS errors,
+           COUNT(*)::int AS total,
+           COUNT(*) FILTER (WHERE level IN ('error','fatal'))::int AS errors,
            MAX(ts) AS newest_at
          FROM audit_governance.observability_logs
-         WHERE ($2::text IS NULL OR service = $2)`,
+         WHERE ts >= now() - make_interval(mins => $1)
+           AND ($2::text IS NULL OR service = $2)`,
         [rule.window_minutes, rule.service],
       );
       const total = stats?.total ?? 0;

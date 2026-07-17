@@ -15,6 +15,8 @@ import { startEventDispatcher } from './lib/eventbus/dispatcher'
 import { startLaptopHeartbeatWatchdog } from './modules/laptop/laptop.service'
 import { startApprovalEscalationSweep } from './modules/approval/escalation.service'
 import { startReconciliationLeaseReaper } from './modules/reconciliations/reconciliation-lease-reaper'
+import { startBusinessReadoutScheduler } from './modules/business-alignment/BusinessReadoutScheduler'
+import { startExperienceShiftScheduler } from './modules/experience/ExperienceShiftScheduler'
 
 async function main() {
   // Verify DB connection
@@ -39,6 +41,8 @@ async function main() {
   startLaptopHeartbeatWatchdog()
   startApprovalEscalationSweep()
   startReconciliationLeaseReaper()
+  startBusinessReadoutScheduler()
+  startExperienceShiftScheduler()
 
   // M11.e — event-bus dispatcher (LISTEN/NOTIFY + safety sweep)
   await startEventDispatcher().catch((err) => {

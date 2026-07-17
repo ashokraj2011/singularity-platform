@@ -11,8 +11,8 @@ import { workgraphFetch, WorkgraphError } from "@/lib/workgraph";
  * Wires the existing /generation-plans endpoints.
  */
 interface EditRow { key: string; title: string; targetCapabilityId: string; requirementIds: string[]; decisionRefs: string[]; estimatedHours: number; estimatedCostHigh?: number; estimatedTokens?: number; capacityCalendarId?: string }
-interface PlanRow { id: string; rowKey: string; title: string; state: string; workItemId?: string | null; error?: string | null; projectedStartAt?: string | null; projectedFinishAt?: string | null; criticalPath?: boolean; capacityCalendarId?: string | null }
-interface Plan { id: string; status: string; totalRows: number; appliedRows: number; rows: PlanRow[]; validation?: { valid?: boolean; errors?: string[]; warnings?: string[] } }
+interface PlanRow { id: string; rowKey: string; title: string; state: string; workItemId?: string | null; error?: string | null; projectedStartAt?: string | null; projectedFinishAt?: string | null; criticalPath?: boolean; capacityCalendarId?: string | null; objectiveValueScore?: number }
+interface Plan { id: string; status: string; totalRows: number; appliedRows: number; rows: PlanRow[]; validation?: { valid?: boolean; errors?: string[]; warnings?: string[]; valueDeliveredByDate?: Array<{ date: string; cumulativeValue: number }> } }
 interface Cap { id: string; name: string }
 interface Req { id: string; statement: string }
 interface Decision { id: string; title: string; status: string; claimRefs?: string[] }
@@ -135,6 +135,7 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
               <span style={rowStateChip(r.state)}>{r.state}</span>
               <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title}</span>
               {r.criticalPath ? <span style={{ fontSize: 9, fontWeight: 800, color: "#b45309" }}>CRITICAL</span> : null}
+              {r.objectiveValueScore ? <span style={{ fontSize: 9, fontWeight: 800, color: "var(--color-secondary)" }}>VALUE {r.objectiveValueScore}/5</span> : null}
               {r.projectedFinishAt ? <span style={{ fontSize: 10.5, color: "var(--color-outline)" }}>due {new Date(r.projectedFinishAt).toLocaleDateString()}</span> : null}
               {r.capacityCalendarId ? <span style={{ fontSize: 9, fontWeight: 750, color: "var(--color-secondary)" }}>CAPACITY</span> : null}
               {r.workItemId && <a href={`/work-items?selected=${r.workItemId}`} style={{ fontSize: 11.5, color: "var(--color-primary, #6366f1)", textDecoration: "none" }}>open →</a>}

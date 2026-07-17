@@ -536,14 +536,23 @@ logsRouter.get("/traces/:traceId/timeline", async (req: Request, res: Response) 
 
 logsRouter.get("/logs/health", async (_req: Request, res: Response) => {
   const storage = getLogStorage();
-  const [row] = await query<{ count: number; newest_ts: Date | null }>(
-    `SELECT COUNT(*)::int AS count, MAX(ts) AS newest_ts
-       FROM audit_governance.observability_logs`,
+  const [row] = await query<{ estimated_count: number | string; newest_ts: Date | null }>(
+    `SELECT GREATEST(0, ROUND(table_stats.reltuples))::bigint AS estimated_count,
+            newest.ts AS newest_ts
+       FROM pg_class table_stats
+       LEFT JOIN LATERAL (
+         SELECT ts
+           FROM audit_governance.observability_logs
+          ORDER BY ts DESC, id DESC
+          LIMIT 1
+       ) newest ON true
+      WHERE table_stats.oid = 'audit_governance.observability_logs'::regclass`,
   );
   res.json({
     ok: true,
     storage: storage.health(),
-    ingested_count: row?.count ?? 0,
+    ingested_count: Number(row?.estimated_count ?? 0),
+    ingested_count_is_estimate: true,
     newest_ts: row?.newest_ts ?? null,
     operations: await logOperationsSummary(),
   });

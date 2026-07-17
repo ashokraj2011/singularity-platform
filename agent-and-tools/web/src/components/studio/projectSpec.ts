@@ -22,6 +22,9 @@ export type Requirement = {
   priority: RequirementPriority;
   acceptanceCriteria: string[];
   rationale?: string;
+  claimRefs?: string[];
+  decisionRefs?: string[];
+  objectiveRefs?: string[];
 };
 export type DecisionStatus = "PROPOSED" | "ACCEPTED" | "SUPERSEDED" | "REJECTED";
 export type Decision = {

@@ -3,7 +3,7 @@
  * the shared upstream (analysis -> requirements -> design) used by their Work Items.
  */
 import { randomBytes } from 'crypto'
-import type { Prisma, SpecificationProjectStatus } from '@prisma/client'
+import type { Prisma, ProjectCapabilityRole, SpecificationProjectStatus } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { currentTenantIdForDb, withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { config } from '../../config'
@@ -15,6 +15,9 @@ export interface CreateProjectInput {
   mission?: string
   primaryCapability: CapabilityRef
   impactedCapabilities?: CapabilityRef[]
+  supportingCapabilities?: CapabilityRef[]
+  consumedCapabilities?: CapabilityRef[]
+  proposedCapabilities?: CapabilityRef[]
   tokenBudget: number
   costBudgetUsd?: number
   businessValue?: number
@@ -38,6 +41,9 @@ export interface UpdateProjectInput {
   mission?: string | null
   primaryCapability?: CapabilityRef
   impactedCapabilities?: CapabilityRef[]
+  supportingCapabilities?: CapabilityRef[]
+  consumedCapabilities?: CapabilityRef[]
+  proposedCapabilities?: CapabilityRef[]
   tokenBudget?: number
   costBudgetUsd?: number | null
   businessValue?: number | null
@@ -63,6 +69,8 @@ export interface CapabilityRef {
   name: string
   impactArea?: string
 }
+
+type CapabilityLinkInput = CapabilityRef & { role: ProjectCapabilityRole }
 
 function tenantId(): string {
   return currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID
@@ -240,7 +248,12 @@ export async function getProject(id: string) {
 
 export async function createProject(input: CreateProjectInput, userId: string) {
   const code = await generateProjectCode()
-  const capabilityLinks = dedupeCapabilities(input.primaryCapability, input.impactedCapabilities ?? [])
+  const capabilityLinks = buildCapabilityLinks(input.primaryCapability, {
+    IMPACTED: input.impactedCapabilities ?? [],
+    SUPPORTING: input.supportingCapabilities ?? [],
+    CONSUMES: input.consumedCapabilities ?? [],
+    PROPOSED: input.proposedCapabilities ?? [],
+  })
   const project = await tenantTx(async (tx) => {
     const created = await tx.specificationProject.create({
       data: {
@@ -275,13 +288,13 @@ export async function createProject(input: CreateProjectInput, userId: string) {
         projectId: created.id,
         capabilityId: capability.id,
         capabilityName: capability.name,
-        role: capability.id === input.primaryCapability.id ? 'PRIMARY' : 'IMPACTED',
+        role: capability.role,
         impactArea: capability.impactArea ?? null,
         tenantId: tenantId(),
       })),
     })
     await tx.capabilityImpactAssessment.createMany({
-      data: capabilityLinks.map((capability) => ({
+      data: capabilityLinks.filter(capability => capability.role !== 'PROPOSED').map((capability) => ({
         projectId: created.id,
         capabilityId: capability.id,
         capabilityName: capability.name,
@@ -296,7 +309,7 @@ export async function createProject(input: CreateProjectInput, userId: string) {
     code: project.code,
     name: project.name,
     primaryCapabilityId: input.primaryCapability.id,
-    impactedCapabilityIds: capabilityLinks.filter((item) => item.id !== input.primaryCapability.id).map((item) => item.id),
+    capabilityIdsByRole: Object.fromEntries(['IMPACTED', 'SUPPORTING', 'CONSUMES', 'PROPOSED'].map(role => [role, capabilityLinks.filter(item => item.role === role).map(item => item.id)])),
     tokenBudget: input.tokenBudget,
   })
   return shapeProject(project)
@@ -334,7 +347,7 @@ export async function updateProject(id: string, input: UpdateProjectInput, userI
         ...(input.tags !== undefined ? { tags: input.tags } : {}),
       },
     })
-    if (input.primaryCapability || input.impactedCapabilities) {
+    if (input.primaryCapability || input.impactedCapabilities || input.supportingCapabilities || input.consumedCapabilities || input.proposedCapabilities) {
       const current = await tx.specificationProject.findUniqueOrThrow({
         where: { id },
         select: { primaryCapabilityId: true, primaryCapabilityName: true, capabilityLinks: true },
@@ -343,32 +356,53 @@ export async function updateProject(id: string, input: UpdateProjectInput, userI
         id: current.primaryCapabilityId ?? '',
         name: current.primaryCapabilityName ?? current.primaryCapabilityId ?? '',
       }
-      const impacted = input.impactedCapabilities
-        ?? current.capabilityLinks.filter((item) => item.role === 'IMPACTED').map((item) => ({
+      const suppliedByRole: Partial<Record<ProjectCapabilityRole, CapabilityRef[] | undefined>> = {
+        IMPACTED: input.impactedCapabilities,
+        SUPPORTING: input.supportingCapabilities,
+        CONSUMES: input.consumedCapabilities,
+        PROPOSED: input.proposedCapabilities,
+      }
+      const explicitRoleByCapability = new Map<string, ProjectCapabilityRole>()
+      for (const role of ['IMPACTED', 'SUPPORTING', 'CONSUMES', 'PROPOSED'] as const) {
+        for (const capability of suppliedByRole[role] ?? []) explicitRoleByCapability.set(capability.id, role)
+      }
+      const forRole = (role: ProjectCapabilityRole): CapabilityRef[] => {
+        const selected = suppliedByRole[role] ?? current.capabilityLinks.filter(item => item.role === role).map(item => ({
           id: item.capabilityId,
           name: item.capabilityName ?? item.capabilityId,
           impactArea: item.impactArea ?? undefined,
         }))
-      const links = dedupeCapabilities(primary, impacted).filter((item) => item.id)
+        return selected.filter(capability => {
+          const explicitRole = explicitRoleByCapability.get(capability.id)
+          return explicitRole === undefined || explicitRole === role
+        })
+      }
+      const links = buildCapabilityLinks(primary, {
+        IMPACTED: forRole('IMPACTED'),
+        SUPPORTING: forRole('SUPPORTING'),
+        CONSUMES: forRole('CONSUMES'),
+        PROPOSED: forRole('PROPOSED'),
+      }).filter((item) => item.id)
       await tx.specificationProjectCapability.deleteMany({ where: { projectId: id } })
       await tx.specificationProjectCapability.createMany({
         data: links.map((capability) => ({
           projectId: id,
           capabilityId: capability.id,
           capabilityName: capability.name,
-          role: capability.id === primary.id ? 'PRIMARY' : 'IMPACTED',
+          role: capability.role,
           impactArea: capability.impactArea ?? null,
           tenantId: tenantId(),
         })),
       })
-      for (const capability of links) {
+      const assessableLinks = links.filter(item => item.role !== 'PROPOSED')
+      for (const capability of assessableLinks) {
         await tx.capabilityImpactAssessment.upsert({
           where: { projectId_capabilityId: { projectId: id, capabilityId: capability.id } },
           create: { projectId: id, capabilityId: capability.id, capabilityName: capability.name, status: 'PENDING', tenantId: tenantId() },
           update: { capabilityName: capability.name, status: 'PENDING', error: null },
         })
       }
-      await tx.capabilityImpactAssessment.deleteMany({ where: { projectId: id, capabilityId: { notIn: links.map((item) => item.id) } } })
+      await tx.capabilityImpactAssessment.deleteMany({ where: { projectId: id, capabilityId: { notIn: assessableLinks.map((item) => item.id) } } })
     }
     return tx.specificationProject.findUniqueOrThrow({ where: { id }, select: projectListSelect })
   })
@@ -376,11 +410,12 @@ export async function updateProject(id: string, input: UpdateProjectInput, userI
   return shapeProject(project)
 }
 
-function dedupeCapabilities(primary: CapabilityRef, impacted: CapabilityRef[]): CapabilityRef[] {
-  const byId = new Map<string, CapabilityRef>()
-  byId.set(primary.id, primary)
-  for (const capability of impacted) {
-    if (!byId.has(capability.id)) byId.set(capability.id, capability)
+function buildCapabilityLinks(primary: CapabilityRef, groups: Partial<Record<ProjectCapabilityRole, CapabilityRef[]>>): CapabilityLinkInput[] {
+  const byId = new Map<string, CapabilityLinkInput>([[primary.id, { ...primary, role: 'PRIMARY' }]])
+  for (const role of ['IMPACTED', 'SUPPORTING', 'CONSUMES', 'PROPOSED'] as const) {
+    for (const capability of groups[role] ?? []) {
+      if (!byId.has(capability.id)) byId.set(capability.id, { ...capability, role })
+    }
   }
   return [...byId.values()]
 }

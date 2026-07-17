@@ -10,6 +10,9 @@ describe('studio project schemas', () => {
       expect(parsed.data.tokenBudget).toBe(250_000)
       expect(parsed.data.reviewCadenceDays).toBe(30)
       expect(parsed.data.impactedCapabilityIds).toEqual([])
+      expect(parsed.data.supportingCapabilityIds).toEqual([])
+      expect(parsed.data.consumedCapabilityIds).toEqual([])
+      expect(parsed.data.proposedCapabilityIds).toEqual([])
     }
     expect(createProjectSchema.safeParse({ name: 'Payments Reliability' }).success).toBe(false)
     expect(createProjectSchema.safeParse({ name: '  ' }).success).toBe(false)
@@ -22,6 +25,8 @@ describe('studio project schemas', () => {
     expect(createProjectSchema.safeParse({ ...base, businessValue: 6 }).success).toBe(false)
     expect(createProjectSchema.safeParse({ ...base, deliveryRisk: 0 }).success).toBe(false)
     expect(createProjectSchema.safeParse({ ...base, impactedCapabilityIds: Array.from({ length: 9 }, (_, index) => `cap-${index}`) }).success).toBe(false)
+    expect(createProjectSchema.safeParse({ ...base, impactedCapabilityIds: ['shared'], supportingCapabilityIds: ['shared'] }).success).toBe(false)
+    expect(createProjectSchema.safeParse({ ...base, proposedCapabilityIds: ['payments'] }).success).toBe(false)
   })
 
   it('updateProjectSchema allows a partial patch and a null mission (clear it)', () => {

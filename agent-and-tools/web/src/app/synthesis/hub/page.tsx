@@ -37,12 +37,17 @@ import type { SynProject } from "@/components/synthesis/types";
 
 type LookupItem = Record<string, unknown>;
 type SelectOption = { id: string; name: string };
+type CapabilityRelationRole = "IMPACTED" | "SUPPORTING" | "CONSUMES" | "PROPOSED";
+type CapabilityRelationField = "impactedCapabilityIds" | "supportingCapabilityIds" | "consumedCapabilityIds" | "proposedCapabilityIds";
 
 type InitiativeForm = {
   name: string;
   mission: string;
   primaryCapabilityId: string;
   impactedCapabilityIds: string[];
+  supportingCapabilityIds: string[];
+  consumedCapabilityIds: string[];
+  proposedCapabilityIds: string[];
   tokenBudget: string;
   costBudgetUsd: string;
   businessValue: string;
@@ -67,6 +72,9 @@ const EMPTY_FORM: InitiativeForm = {
   mission: "",
   primaryCapabilityId: "",
   impactedCapabilityIds: [],
+  supportingCapabilityIds: [],
+  consumedCapabilityIds: [],
+  proposedCapabilityIds: [],
   tokenBudget: "250000",
   costBudgetUsd: "",
   businessValue: "",
@@ -225,6 +233,34 @@ function InitiativeComposer({
     ["regulatoryRisk", "Regulatory risk", "Compliance and control exposure"],
   ];
   const impacted = capabilities.filter((item) => item.id !== form.primaryCapabilityId);
+  const relationFields: Record<CapabilityRelationRole, CapabilityRelationField> = {
+    IMPACTED: "impactedCapabilityIds",
+    SUPPORTING: "supportingCapabilityIds",
+    CONSUMES: "consumedCapabilityIds",
+    PROPOSED: "proposedCapabilityIds",
+  };
+  const relationOptions: Array<{ value: CapabilityRelationRole; label: string }> = [
+    { value: "IMPACTED", label: "Impacted" },
+    { value: "SUPPORTING", label: "Supporting" },
+    { value: "CONSUMES", label: "Consumed dependency" },
+    { value: "PROPOSED", label: "Proposed relationship" },
+  ];
+
+  function relationFor(capabilityId: string): CapabilityRelationRole | "" {
+    return relationOptions.find(({ value }) => form[relationFields[value]].includes(capabilityId))?.value ?? "";
+  }
+
+  function assignRelation(capabilityId: string, role: CapabilityRelationRole | "") {
+    for (const [candidateRole, field] of Object.entries(relationFields) as Array<[CapabilityRelationRole, CapabilityRelationField]>) {
+      const withoutCapability = form[field].filter((id) => id !== capabilityId);
+      setField(field, candidateRole === role ? [...withoutCapability, capabilityId] : withoutCapability);
+    }
+  }
+
+  function assignPrimary(capabilityId: string) {
+    setField("primaryCapabilityId", capabilityId);
+    if (capabilityId) assignRelation(capabilityId, "");
+  }
 
   return (
     <SynCard className="mb-8 overflow-hidden">
@@ -236,7 +272,7 @@ function InitiativeComposer({
       </div>
       <div className="grid gap-4 p-5 lg:grid-cols-2">
         <Field label="Initiative name" required><input autoFocus value={form.name} onChange={(event) => setField("name", event.target.value)} placeholder="e.g. Unified billing experience" className={inputClass} /></Field>
-        <Field label="Primary capability" required hint="IAM is the source of truth"><select value={form.primaryCapabilityId} onChange={(event) => setField("primaryCapabilityId", event.target.value)} className={inputClass}><option value="">Choose capability</option>{capabilities.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
+        <Field label="Primary capability" required hint="IAM is the source of truth"><select value={form.primaryCapabilityId} onChange={(event) => assignPrimary(event.target.value)} className={inputClass}><option value="">Choose capability</option>{capabilities.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
         <Field label="Outcome / mission" className="lg:col-span-2"><textarea value={form.mission} onChange={(event) => setField("mission", event.target.value)} placeholder="What changes for customers or the business when this succeeds?" className={`${inputClass} min-h-20 py-2`} /></Field>
         <Field label="Token budget" required hint="Shared by capability analysis and workflow LLM usage"><input type="number" min={10000} step={10000} value={form.tokenBudget} onChange={(event) => setField("tokenBudget", event.target.value)} className={inputClass} /></Field>
         <Field label="Optional cost guardrail (USD)"><input type="number" min={0} step="10" value={form.costBudgetUsd} onChange={(event) => setField("costBudgetUsd", event.target.value)} placeholder="No cost cap" className={inputClass} /></Field>
@@ -262,13 +298,21 @@ function InitiativeComposer({
             <Field label="Product owner"><select value={form.productOwnerId} onChange={(event) => setField("productOwnerId", event.target.value)} className={inputClass}><option value="">Unassigned</option>{users.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
           </section>
           <section>
-            <MonoMeta className="mb-3 block">Impacted capabilities · agents from these capabilities will review the initiative</MonoMeta>
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {impacted.length === 0 ? <p className="text-sm text-on-surface-variant">Choose a primary capability to see other active capabilities.</p> : impacted.map((item) => {
-                const checked = form.impactedCapabilityIds.includes(item.id);
-                return <label key={item.id} className="flex min-h-11 items-center gap-3 rounded-lg border border-outline-variant bg-surface-container-low px-3 py-2 text-sm text-on-surface"><input type="checkbox" checked={checked} disabled={!checked && form.impactedCapabilityIds.length >= 8} onChange={(event) => setField("impactedCapabilityIds", event.target.checked ? [...form.impactedCapabilityIds, item.id] : form.impactedCapabilityIds.filter((id) => id !== item.id))} /><span>{item.name}</span></label>;
-              })}
-            </div>
+            <MonoMeta className="mb-1 block">Capability map · one relationship per IAM capability</MonoMeta>
+            <p className="mb-3 text-xs text-on-surface-variant">Impacted and supporting capabilities participate in agent review. Consumed capabilities expose dependencies. Proposed records a relationship for later human decision.</p>
+            {impacted.length === 0 ? <p className="text-sm text-on-surface-variant">Choose a primary capability to map the other active capabilities.</p> : (
+              <div className="max-h-72 overflow-y-auto rounded-lg border border-outline-variant">
+                {impacted.map((item) => (
+                  <div key={item.id} className="grid min-h-12 items-center gap-3 border-b border-outline-variant px-3 py-2 last:border-b-0 sm:grid-cols-[minmax(0,1fr)_220px]">
+                    <span className="truncate text-sm font-medium text-on-surface">{item.name}</span>
+                    <select value={relationFor(item.id)} onChange={(event) => assignRelation(item.id, event.target.value as CapabilityRelationRole | "")} className={inputClass} aria-label={`Relationship for ${item.name}`}>
+                      <option value="">No relationship</option>
+                      {relationOptions.map((option) => <option key={option.value} value={option.value} disabled={relationFor(item.id) !== option.value && form[relationFields[option.value]].length >= 8}>{option.label}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
           <section className="grid gap-3 lg:grid-cols-2">
             <Field label="Success metrics" hint="One measurable outcome per line"><textarea value={form.successMetrics} onChange={(event) => setField("successMetrics", event.target.value)} placeholder={"Reduce cycle time by 20%\nIncrease successful self-service to 80%"} className={`${inputClass} min-h-24 py-2`} /></Field>
@@ -394,6 +438,9 @@ function toPayload(form: InitiativeForm) {
     mission: form.mission.trim() || undefined,
     primaryCapabilityId: form.primaryCapabilityId,
     impactedCapabilityIds: form.impactedCapabilityIds,
+    supportingCapabilityIds: form.supportingCapabilityIds,
+    consumedCapabilityIds: form.consumedCapabilityIds,
+    proposedCapabilityIds: form.proposedCapabilityIds,
     tokenBudget: Number(form.tokenBudget),
     costBudgetUsd: form.costBudgetUsd ? Number(form.costBudgetUsd) : undefined,
     ...scores,

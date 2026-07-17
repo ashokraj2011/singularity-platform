@@ -19,6 +19,8 @@ import { startReconciliation } from '../reconciliations/reconciliations.service'
 import { requestSpecificationReview } from '../specifications/specification-review.service'
 import { scheduleGenerationPlan, type ScheduleCapacityCalendar } from '../planning/generation-scheduler'
 import { assertCapabilityPermission, type WorkflowAction } from '../../lib/permissions/workflowTemplate'
+import { getObjectiveCoverage } from '../business-alignment/business-alignment.service'
+import { buildValueDeliveredCurve, maxObjectiveValueScore } from '../business-alignment/business-alignment'
 
 export const contractBoundRouter: Router = Router()
 
@@ -84,6 +86,7 @@ const planRowSchema = z.object({
   estimatedCostHigh: z.number().nonnegative().optional(),
   estimatedTokens: z.number().int().nonnegative().optional(),
   capacityCalendarId: z.string().uuid().optional(),
+  milestoneId: z.string().uuid().optional(),
 })
 
 const planSchema = z.object({
@@ -434,17 +437,8 @@ contractBoundRouter.post('/specifications/:specificationId/versions/:versionId/l
     if (!project) throw new NotFoundError('SpecificationProject', projectId)
     const version = await prisma.specificationVersion.findFirst({ where: { id: versionId, specificationProjectId: projectId } })
     if (!version) throw new NotFoundError('SpecificationVersion', versionId)
-    if (!['DRAFT', 'CHANGE_REQUESTED', 'CHANGES_REQUESTED'].includes(String(version.status))) throw new ConflictError(`Specification version is ${version.status} and cannot be locked`)
-    const parsed = specificationPackageBodySchema.safeParse(version.package)
-    if (!parsed.success) throw new ValidationError('Specification package is malformed')
-    const validation = validateSpecificationBody(parsed.data)
-    if (!validation.passed) throw new ValidationError(`Specification has ${validation.errorCount} blocking issue(s) and cannot be locked`)
-    const locked = await withTenantDbTransaction(prisma, async tx => {
-      const updated = await tx.specificationVersion.update({ where: { id: versionId }, data: { status: 'LOCKED', contentHash: specificationContentHash(parsed.data) } })
-      await tx.specificationProject.update({ where: { id: projectId }, data: { status: 'LOCKED' } })
-      return updated
-    }, tenantOf(req))
-    res.json(locked)
+    if (version.status === 'APPROVED') { res.json(version); return }
+    throw new ConflictError('Direct project specification locking is disabled. Submit the version for technical review and complete the sponsor readout lane when required.')
   } catch (err) { next(err) }
 })
 
@@ -499,7 +493,8 @@ contractBoundRouter.get('/generation-plans', async (req, res, next) => {
     const projectId = typeof req.query.specificationProjectId === 'string' ? req.query.specificationProjectId : undefined
     if (!projectId) throw new ValidationError('specificationProjectId query parameter is required')
     await assertGenerationProjectAccess(req, projectId, 'view')
-    res.json({ items: await prisma.generationPlan.findMany({ where: { specificationProjectId: projectId, tenantId: tenantOf(req) }, include: { rows: true }, orderBy: { updatedAt: 'desc' } }) })
+    const items = await prisma.generationPlan.findMany({ where: { specificationProjectId: projectId, tenantId: tenantOf(req) }, include: { rows: true }, orderBy: { updatedAt: 'desc' } })
+    res.json({ items: items.map(plan => ({ ...plan, valueDeliveredByDate: buildValueDeliveredCurve(plan.rows.map(row => ({ rowKey: row.rowKey, projectedFinishAt: row.projectedFinishAt, objectiveValueScore: row.objectiveValueScore }))) })) })
   } catch (err) { next(err) }
 })
 
@@ -508,7 +503,7 @@ contractBoundRouter.get('/generation-plans/:planId', async (req, res, next) => {
     await assertGenerationPlanAccess(req, String(req.params.planId), 'view')
     const plan = await prisma.generationPlan.findFirst({ where: { id: String(req.params.planId), tenantId: tenantOf(req) }, include: { rows: true } })
     if (!plan) throw new NotFoundError('GenerationPlan', String(req.params.planId))
-    res.json(plan)
+    res.json({ ...plan, valueDeliveredByDate: buildValueDeliveredCurve(plan.rows.map(row => ({ rowKey: row.rowKey, projectedFinishAt: row.projectedFinishAt, objectiveValueScore: row.objectiveValueScore }))) })
   } catch (err) { next(err) }
 })
 
@@ -534,7 +529,16 @@ contractBoundRouter.post('/generation-plans', validate(planSchema), async (req, 
     const capabilityIds = [...new Set(input.rows.map(row => row.targetCapabilityId))]
     const calendars = await prisma.capacityCalendar.findMany({ where: { tenantId: tenantOf(req), ownerType: 'CAPABILITY', ownerId: { in: capabilityIds } } })
     const calendarByCapability = new Map(calendars.map(calendar => [calendar.ownerId, calendar.id]))
-    const plan = await prisma.generationPlan.create({ data: { specificationProjectId: project.id, specificationVersionId: input.specificationVersionId, requestId: input.requestId, contentHash: digest(input.rows), totalRows: input.rows.length, createdById: req.user!.userId, tenantId: project.tenantId, rows: { create: input.rows.map(row => ({ rowKey: row.rowKey, title: row.title, description: row.description, targetCapabilityId: row.targetCapabilityId, childWorkflowTemplateId: row.childWorkflowTemplateId, repository: row.repository, component: row.component, baseBranch: row.baseBranch, baseCommitSha: row.baseCommitSha, requirementIds: row.requirementIds as Prisma.InputJsonValue, decisionRefs: row.decisionRefs as Prisma.InputJsonValue, claimRefs: row.claimRefs as Prisma.InputJsonValue, requiredEvidence: row.requiredEvidence as Prisma.InputJsonValue, forbiddenPaths: row.forbiddenPaths as Prisma.InputJsonValue, reconciliationPolicy: row.reconciliationPolicy as Prisma.InputJsonValue, dependencies: row.dependencies as unknown as Prisma.InputJsonValue, estimatedHours: row.estimatedHours, rateBand: row.rateBand, estimatedCostLow: row.estimatedCostLow, estimatedCostHigh: row.estimatedCostHigh, estimatedTokens: row.estimatedTokens, capacityCalendarId: row.capacityCalendarId ?? calendarByCapability.get(row.targetCapabilityId) })) } }, include: { rows: true } })
+    const coverage = await getObjectiveCoverage(project.id)
+    const objectiveValues = new Map(coverage.objectives.map(objective => [objective.id, objective.valueScore]))
+    const requirementObjectives = new Map(coverage.requirements.map(requirement => [requirement.id, requirement.objectiveRefs]))
+    const milestoneIds = [...new Set(input.rows.map(row => row.milestoneId).filter((id): id is string => Boolean(id)))]
+    if (milestoneIds.length) {
+      const milestoneCount = await prisma.businessMilestone.count({ where: { id: { in: milestoneIds }, studioProjectId: project.id, tenantId: tenantOf(req) } })
+      if (milestoneCount !== milestoneIds.length) throw new ValidationError('Every selected milestone must belong to this initiative')
+    }
+    const valuedRows = input.rows.map(row => ({ ...row, objectiveValueScore: maxObjectiveValueScore(row.requirementIds.flatMap(id => requirementObjectives.get(id) ?? []), objectiveValues) }))
+    const plan = await prisma.generationPlan.create({ data: { specificationProjectId: project.id, specificationVersionId: input.specificationVersionId, requestId: input.requestId, contentHash: digest(valuedRows), totalRows: valuedRows.length, createdById: req.user!.userId, tenantId: project.tenantId, rows: { create: valuedRows.sort((left, right) => right.objectiveValueScore - left.objectiveValueScore || left.rowKey.localeCompare(right.rowKey)).map(row => ({ rowKey: row.rowKey, title: row.title, description: row.description, targetCapabilityId: row.targetCapabilityId, childWorkflowTemplateId: row.childWorkflowTemplateId, repository: row.repository, component: row.component, baseBranch: row.baseBranch, baseCommitSha: row.baseCommitSha, requirementIds: row.requirementIds as Prisma.InputJsonValue, decisionRefs: row.decisionRefs as Prisma.InputJsonValue, claimRefs: row.claimRefs as Prisma.InputJsonValue, requiredEvidence: row.requiredEvidence as Prisma.InputJsonValue, forbiddenPaths: row.forbiddenPaths as Prisma.InputJsonValue, reconciliationPolicy: row.reconciliationPolicy as Prisma.InputJsonValue, dependencies: row.dependencies as unknown as Prisma.InputJsonValue, estimatedHours: row.estimatedHours, rateBand: row.rateBand, estimatedCostLow: row.estimatedCostLow, estimatedCostHigh: row.estimatedCostHigh, estimatedTokens: row.estimatedTokens, objectiveValueScore: row.objectiveValueScore, milestoneId: row.milestoneId, capacityCalendarId: row.capacityCalendarId ?? calendarByCapability.get(row.targetCapabilityId) })) } }, include: { rows: true } })
     res.status(201).json(plan)
   } catch (err) { next(err) }
 })
@@ -606,11 +610,13 @@ contractBoundRouter.post('/generation-plans/:planId/validate', async (req, res, 
       rowKey: row.rowKey,
       estimatedHours: row.estimatedHours ?? 8,
       capacityCalendarId: row.capacityCalendarId ?? undefined,
+      valueScore: row.objectiveValueScore,
       dependencies: (Array.isArray(row.dependencies) ? row.dependencies : []).map(dependency => ({ rowKey: String((dependency as Record<string, unknown>).rowKey ?? '') })),
     })), { startAt, capacityCalendars })
     await Promise.all(schedule.map(item => prisma.generationPlanRow.update({ where: { planId_rowKey: { planId: plan.id, rowKey: item.rowKey } }, data: { projectedStartAt: item.projectedStartAt, projectedFinishAt: item.projectedFinishAt, criticalPath: item.criticalPath, capacityCalendarId: item.capacityCalendarId } })))
     const status = errors.length ? 'DRAFT' : 'VALIDATED'
-    const validation = { valid: errors.length === 0, errors, warnings, waiverReason: waiverReason || null, estimatedCostHigh, estimatedTokens, costPercent, tokenPercent, schedule }
+    const valueDeliveredByDate = buildValueDeliveredCurve(schedule.map(item => ({ rowKey: item.rowKey, projectedFinishAt: item.projectedFinishAt, objectiveValueScore: plan.rows.find(row => row.rowKey === item.rowKey)?.objectiveValueScore ?? 0 })))
+    const validation = { valid: errors.length === 0, errors, warnings, waiverReason: waiverReason || null, estimatedCostHigh, estimatedTokens, costPercent, tokenPercent, schedule, valueDeliveredByDate }
     const updated = await prisma.generationPlan.update({ where: { id: plan.id }, data: { status: status as any, validation: validation as unknown as Prisma.InputJsonValue }, include: { rows: true } })
     if (errors.length) res.status(422).json({ ...updated, errors, warnings })
     else res.json({ ...updated, errors: [], warnings })
@@ -658,6 +664,8 @@ contractBoundRouter.post('/generation-plans/:planId/apply', async (req, res, nex
             estimatedCostLow: row.estimatedCostLow,
             estimatedCostHigh: row.estimatedCostHigh,
             estimatedTokens: row.estimatedTokens,
+            objectiveValueScore: row.objectiveValueScore,
+            milestoneId: row.milestoneId,
           },
           tenantId: plan.tenantId,
           idempotencyKey: `generation-plan:${plan.id}:${row.rowKey}`,
@@ -749,7 +757,7 @@ contractBoundRouter.post('/generation-plans/:planId/amendments', validate(planAm
     if (!plan) throw new NotFoundError('GenerationPlan', String(req.params.planId))
     if (!['VALIDATED', 'APPLIED', 'PARTIAL'].includes(plan.status)) throw new ConflictError('Only validated or applied plans can be amended')
     const capacityCalendars = await loadScheduleCapacity(tenantOf(req), plan.rows)
-    const schedule = scheduleGenerationPlan(plan.rows.map(row => ({ rowKey: row.rowKey, estimatedHours: row.estimatedHours ?? 8, capacityCalendarId: row.capacityCalendarId ?? undefined, dependencies: (Array.isArray(row.dependencies) ? row.dependencies : []).map(dependency => ({ rowKey: String((dependency as Record<string, unknown>).rowKey ?? '') })) })), { startAt: req.body.requestedStartAt ? new Date(req.body.requestedStartAt) : new Date(), capacityCalendars })
+    const schedule = scheduleGenerationPlan(plan.rows.map(row => ({ rowKey: row.rowKey, estimatedHours: row.estimatedHours ?? 8, capacityCalendarId: row.capacityCalendarId ?? undefined, valueScore: row.objectiveValueScore, dependencies: (Array.isArray(row.dependencies) ? row.dependencies : []).map(dependency => ({ rowKey: String((dependency as Record<string, unknown>).rowKey ?? '') })) })), { startAt: req.body.requestedStartAt ? new Date(req.body.requestedStartAt) : new Date(), capacityCalendars })
     const previousSchedule = plan.rows.map(row => ({ rowKey: row.rowKey, projectedStartAt: row.projectedStartAt, projectedFinishAt: row.projectedFinishAt, criticalPath: row.criticalPath, capacityCalendarId: row.capacityCalendarId }))
     const proposedSchedule = schedule.map(row => ({ ...row, projectedStartAt: row.projectedStartAt.toISOString(), projectedFinishAt: row.projectedFinishAt.toISOString() }))
     const amendment = await prisma.generationPlanAmendment.create({

@@ -5,7 +5,7 @@
  * elicit loop with in-memory fakes — no live DB, Context Fabric, or MCP needed.
  */
 
-export type DiscoveryScopeType = 'WORKFLOW_STAGE' | 'WORK_ITEM' | 'RUN'
+export type DiscoveryScopeType = 'WORKFLOW_STAGE' | 'WORK_ITEM' | 'RUN' | 'INITIATIVE'
 export type DiscoverySessionStatus = 'OPEN' | 'RESOLVING' | 'BLOCKED' | 'RESOLVED' | 'ABANDONED'
 export type DiscoveryQuestionKind = 'single_select' | 'multi_select' | 'freeform' | 'clarification'
 export type DiscoveryQuestionSource = 'configured' | 'llm' | 'copilot' | 'human' | 'agent'
@@ -55,6 +55,10 @@ export interface DiscoverySessionRecord {
   scopeId: string
   status: DiscoverySessionStatus
   touchPoint?: string | null
+  protocolStage?: string | null
+  stageExtracts?: unknown
+  sessionCostUsd?: number
+  tokensUsed?: number
   budget?: DiscoveryBudget | null
   createdById?: string | null
   createdAt: Date

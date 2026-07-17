@@ -45,6 +45,7 @@ type EstimateRow = { probability: number; weight: number; estimatorId: string; e
 type ClaimRow = {
   id: string; projectId: string; roomId: string | null; statement: string; riskiestAssumption: string | null;
   claimType: ClaimType; contextScope: string; entityKind: string | null; entityId: string | null;
+  capabilityId: string | null;
   alpha: number; beta: number; version: number; status: string; stewardId: string; provenance: unknown;
   createdAt: Date; updatedAt: Date;
 };
@@ -63,6 +64,7 @@ export function shapeClaim(claim: ClaimRow, estimates: EstimateRow[]) {
     contextScope: claim.contextScope,
     entityKind: claim.entityKind,
     entityId: claim.entityId,
+    capabilityId: claim.capabilityId,
     status: claim.status,
     stewardId: claim.stewardId,
     alpha: claim.alpha,
@@ -102,6 +104,7 @@ export interface AddClaimInput {
   contextScope?: string;
   entityKind?: string;
   entityId?: string;
+  capabilityId?: string;
   stewardId?: string; // defaults to the caller — a human is always accountable
   initialEstimate?: number; // the steward's own P(true)
   provenance?: Record<string, unknown>;
@@ -123,6 +126,7 @@ export async function addClaim(projectId: string, input: AddClaimInput, userId: 
       contextScope: input.contextScope ?? "default",
       entityKind: input.entityKind ?? null,
       entityId: input.entityId ?? null,
+      capabilityId: input.capabilityId ?? null,
       stewardId: input.stewardId ?? userId, // hard invariant: a human steward
       provenance: (input.provenance ?? { origin: "human", by: userId }) as Prisma.InputJsonValue,
       createdById: userId,

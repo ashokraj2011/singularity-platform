@@ -10,6 +10,8 @@ import type {
   SynDecisionDossier,
   SynGenerationPlan,
   SynBudgetDecision,
+  SynBusinessRollup,
+  SynDesk,
   SynPilotReadiness,
   SynPortfolio,
   SynProjectLearning,
@@ -216,4 +218,12 @@ export function usePilotReadiness(projectId: string | null, config?: SWRConfigur
 export function useBudgetDecision(projectId: string | null, stage?: string, config?: SWRConfiguration<SynBudgetDecision>) {
   const suffix = stage ? `?stage=${encodeURIComponent(stage)}` : "";
   return useSyn<SynBudgetDecision>(projectId ? `/studio/projects/${projectId}/budget-decision${suffix}` : null, config);
+}
+
+export function useBusinessAlignment(projectId: string | null, config?: SWRConfiguration<SynBusinessRollup>) {
+  return useSyn<SynBusinessRollup>(projectId ? `/studio/business-alignment/projects/${projectId}/rollup` : null, config);
+}
+
+export function useDesk(projectId: string | null, reviewBudget = 12, config?: SWRConfiguration<SynDesk>) {
+  return useSyn<SynDesk>(projectId ? `/studio/experience/desk?projectId=${encodeURIComponent(projectId)}&reviewBudget=${reviewBudget}` : null, config);
 }

@@ -12,7 +12,7 @@ export interface SynCapabilityLink {
   id: string;
   capabilityId: string;
   capabilityName?: string | null;
-  role: "PRIMARY" | "IMPACTED";
+  role: "PRIMARY" | "IMPACTED" | "SUPPORTING" | "CONSUMES" | "PROPOSED";
   impactArea?: string | null;
 }
 
@@ -137,6 +137,10 @@ export interface DiscoverySession {
   scopeType?: string;
   scopeId?: string | null;
   status?: string;
+  protocolStage?: "PROBLEM" | "BELIEFS" | "SUCCESS" | "CONSTRAINTS" | "CONTEXT";
+  stageExtracts?: Record<string, { text: string; statements: string[]; confidence: number; readback: string }>;
+  sessionCostUsd?: number;
+  tokensUsed?: number;
   questions?: DiscoveryQuestion[];
   assumptions?: DiscoveryAssumption[];
   blocked?: boolean;
@@ -168,6 +172,7 @@ export interface SynClaim {
   contextScope?: string | null;
   entityKind?: string | null;
   entityId?: string | null;
+  capabilityId?: string | null;
   status?: string;
   stewardId?: string;
   alpha?: number;
@@ -237,6 +242,125 @@ export interface SpecRequirement {
   priority: RequirementPriority;
   acceptanceCriteria: string[];
   rationale?: string;
+  claimRefs?: string[];
+  decisionRefs?: string[];
+  objectiveRefs: string[];
+}
+
+export interface SynBusinessObjective {
+  id: string;
+  title: string;
+  description: string;
+  ownerId: string;
+  targetMetric: Record<string, unknown>;
+  valueScore: number;
+  valueRationale?: string | null;
+  budgetLineRef?: string | null;
+  period: Record<string, unknown>;
+  status: "ACTIVE" | "ACHIEVED_DECLARED" | "DROPPED" | "DEFERRED";
+  studioProjectId?: string | null;
+}
+
+export interface SynBusinessCoverageIssue {
+  code: string;
+  severity: "warning" | "error";
+  entityType: "objective" | "requirement";
+  entityId: string;
+  message: string;
+}
+
+export interface SynBusinessMilestone {
+  id: string;
+  name: string;
+  valueStatement: string;
+  targetDate: string;
+  projectedFinishAt?: string | null;
+  status: "PLANNED" | "AT_RISK" | "LATE" | "DELIVERED";
+  completed: number;
+  total: number;
+  percentComplete: number;
+}
+
+export interface SynBusinessRisk {
+  id: string;
+  category: string;
+  title: string;
+  description: string;
+  ownerId?: string | null;
+  mitigation?: string | null;
+  severity: number;
+  status: "OPEN" | "MITIGATING" | "ACCEPTED" | "CLOSED";
+  sourceHref?: string | null;
+}
+
+export interface SynBusinessReadout {
+  id: string;
+  kind: "SPONSOR" | "WEEKLY" | "MORNING";
+  status: "DRAFT" | "PENDING_SPONSOR" | "SIGNED" | "SUPERSEDED";
+  contentHash: string;
+  renderedMarkdown: string;
+  sponsorApprovalId?: string | null;
+  signedAt?: string | null;
+  createdAt: string;
+}
+
+export type SynAttentionBand = "BLOCKING" | "DECIDE" | "REVIEW" | "DIGEST";
+
+export interface SynAttentionItem {
+  id: string;
+  projectId: string;
+  sourceType: string;
+  sourceId: string;
+  band: SynAttentionBand;
+  title: string;
+  summary: string;
+  actionHref?: string | null;
+  stakes: number;
+  uncertainty: number;
+  urgency: number;
+  priority: number;
+  rankingReason: string;
+  status: string;
+  assignedToId?: string | null;
+  autoConfirmAt?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SynDesk {
+  projectId: string;
+  reviewBudget: number;
+  totalOpen: number;
+  visibleCount: number;
+  digestCount: number;
+  grouped: Record<SynAttentionBand, SynAttentionItem[]>;
+  digest: SynAttentionItem[];
+  generatedAt: string;
+}
+
+export interface SynArtifactValidationReport {
+  id: string;
+  projectId: string;
+  boardId: string;
+  taxonomy: Array<{ artifactId: string; filename: string; recognizedType: string; confidence: number }>;
+  findings: Array<{ id: string; kind: string; severity: "INFO" | "WARNING" | "ERROR"; title: string; consequence: string; citationRefs: string[]; suggestedRewrite?: string }>;
+  tensions: Array<{ id: string; status: string; left: { statement: string; citationRef: string }; right: { statement: string; citationRef: string }; reason: string }>;
+  citations: string[];
+  status: string;
+  contentHash: string;
+  createdAt: string;
+  sources?: Array<{ artifact: { id: string; filename: string; kind: string; status: string } }>;
+}
+
+export interface SynBusinessRollup {
+  projectId: string;
+  coverage: { coveragePercent: number; errors: SynBusinessCoverageIssue[]; warnings: SynBusinessCoverageIssue[] };
+  objectives: SynBusinessObjective[];
+  milestones: SynBusinessMilestone[];
+  risks: SynBusinessRisk[];
+  work: { total: number; finalized: number; percentComplete: number };
+  burn: { actualCostUsd: number; actualHours: number };
+  valueDeliveredByDate: Array<{ rowKey: string; date: string; value: number; cumulativeValue: number }>;
+  readouts: SynBusinessReadout[];
 }
 
 export interface SpecDecision {
@@ -283,6 +407,8 @@ export interface SynDecisionOption {
   estimatedCostLow?: number | null;
   estimatedCostHigh?: number | null;
   estimatedTokens?: number | null;
+  objectiveValueScore?: number;
+  milestoneId?: string | null;
   riskScore?: number | null;
 }
 
@@ -345,6 +471,7 @@ export interface SynGenerationPlan {
   appliedRows: number;
   validation?: { valid?: boolean; errors?: string[]; warnings?: string[] };
   rows: SynGenerationPlanRow[];
+  valueDeliveredByDate?: Array<{ rowKey: string; date: string; value: number; cumulativeValue: number }>;
   amendments?: Array<{ id: string; generation: number; status: string; reason: string; requestedStartAt?: string | null; createdAt: string }>;
   createdAt: string;
   updatedAt: string;
@@ -414,6 +541,8 @@ export interface SynTraceability {
     rejectedOptions: number;
     claims: number;
     requirements: number;
+    objectives?: number;
+    fundedRequirements?: number;
     decisions: number;
     workItems: number;
     reconciliations: number;
@@ -439,11 +568,16 @@ export interface SynChangeRequest {
   id: string;
   title: string;
   reason: string;
-  status: "RECOMMENDED" | "OPEN" | "APPROVED" | "REJECTED" | "APPLIED";
+  status: "DRAFT" | "RECOMMENDED" | "OPEN" | "SPONSOR_REVIEW" | "APPROVED" | "REJECTED" | "APPLIED";
   requestedById?: string | null;
   traceId?: string | null;
   createdAt: string;
   driftSignal?: SynClaimDriftSignal | null;
+  requirementDeltas?: Record<string, unknown>;
+  costDelta?: Record<string, unknown>;
+  scheduleDelta?: Record<string, unknown>;
+  milestoneImpacts?: unknown[];
+  sponsorApprovalId?: string | null;
 }
 
 export interface SynProjectLearning {
@@ -457,13 +591,14 @@ export interface SynPilotReadiness {
   projectId: string;
   ready: boolean;
   score: number;
-  checks: Array<{ key: string; label: string; ok: boolean; fixRoute: string }>;
+  checks: Array<{ key: string; label: string; ok: boolean; fixRoute: string; evidence?: string }>;
   metrics: {
     origin: { specGenerated: number; adHoc: number };
     verified: number;
     finalized: number;
     actualRows: number;
     specGeneratedToAdHocRatio?: number | null;
+    acceptance?: Record<string, number>;
   };
   traceability: SynTraceability["summary"];
   learning: SynProjectLearning["summary"];

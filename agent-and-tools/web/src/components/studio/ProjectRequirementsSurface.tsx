@@ -21,6 +21,7 @@ const priorityColor: Record<RequirementPriority, string> = {
 
 export function ProjectRequirementsSurface({ projectId }: { projectId: string }) {
   const { data: spec, error, isLoading, mutate } = useSWR<ProjectSpec>(specKey(projectId), (url: string) => workgraphFetch<ProjectSpec>(url));
+  const objectivesQ = useSWR<{ items: Array<{ id: string; title: string; valueScore: number; status: string }> }>(`/studio/business-alignment/objectives?projectId=${encodeURIComponent(projectId)}`, (url: string) => workgraphFetch<{ items: Array<{ id: string; title: string; valueScore: number; status: string }> }>(url));
   const [reqs, setReqs] = useState<Requirement[]>([]);
   const [acText, setAcText] = useState<Record<string, string>>({}); // id → acceptance criteria textarea
   const [saving, setSaving] = useState(false);
@@ -43,7 +44,7 @@ export function ProjectRequirementsSurface({ projectId }: { projectId: string })
   }
   function addReq() {
     const id = nextId();
-    setReqs((arr) => [...arr, { id, statement: "", priority: "SHOULD", acceptanceCriteria: [] }]);
+    setReqs((arr) => [...arr, { id, statement: "", priority: "SHOULD", acceptanceCriteria: [], objectiveRefs: [] }]);
     setAcText((m) => ({ ...m, [id]: "" }));
   }
 
@@ -58,6 +59,9 @@ export function ProjectRequirementsSurface({ projectId }: { projectId: string })
         priority: r.priority,
         acceptanceCriteria: (acText[r.id] ?? "").split("\n").map((s) => s.trim()).filter(Boolean),
         ...(r.rationale?.trim() ? { rationale: r.rationale.trim() } : {}),
+        claimRefs: r.claimRefs ?? [],
+        decisionRefs: r.decisionRefs ?? [],
+        objectiveRefs: r.objectiveRefs ?? [],
       }));
     try {
       await mutate(patchSection(projectId, "requirements", cleaned, spec.revision), { revalidate: false });
@@ -88,6 +92,18 @@ export function ProjectRequirementsSurface({ projectId }: { projectId: string })
               <button onClick={() => setReqs((arr) => arr.filter((_, j) => j !== i))} title="Remove" style={{ marginLeft: "auto", border: "none", background: "none", color: "var(--color-outline)", cursor: "pointer" }}><X size={16} /></button>
             </div>
             <textarea value={r.statement} onChange={(e) => update(i, { statement: e.target.value })} placeholder="The requirement — e.g. A refund MUST settle within 3 business days." style={{ ...inputStyle, minHeight: 46, resize: "vertical" }} />
+            <label className="grid gap-1 text-xs font-semibold text-on-surface-variant">
+              Funded business objective
+              <select
+                multiple
+                value={r.objectiveRefs ?? []}
+                onChange={(event) => update(i, { objectiveRefs: Array.from(event.target.selectedOptions, option => option.value) })}
+                style={{ ...inputStyle, minHeight: 74 }}
+              >
+                {(objectivesQ.data?.items ?? []).filter(objective => objective.status === "ACTIVE").map(objective => <option key={objective.id} value={objective.id}>{objective.title} · value {objective.valueScore}/5</option>)}
+              </select>
+              <span style={{ fontWeight: 400 }}>Required for MUST items. Use Ctrl/Cmd to select more than one objective.</span>
+            </label>
             <div>
               <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", ...muted, marginBottom: 5 }}>Acceptance criteria <span style={{ fontWeight: 400 }}>· one per line</span></div>
               <textarea value={acText[r.id] ?? ""} onChange={(e) => setAcText((m) => ({ ...m, [r.id]: e.target.value }))} placeholder="Given… when… then…" style={{ ...inputStyle, minHeight: 54, resize: "vertical", fontFamily: "var(--font-mono, monospace)", fontSize: 12 }} />

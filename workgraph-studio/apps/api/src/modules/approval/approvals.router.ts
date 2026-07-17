@@ -35,8 +35,13 @@ import { approveSpecificationVersion } from '../specifications/specifications.se
 import {
   applyProjectSpecificationApproval,
   applySpecificationReviewRejection,
+  finalizeProjectSpecificationAfterSponsor,
 } from '../specifications/specification-review.service'
 import { applyDecisionApproval } from '../portfolio-execution/portfolio-execution.service'
+import {
+  applyBusinessChangeRequestApproval,
+  applyBusinessReadoutApproval,
+} from '../business-alignment/business-alignment.service'
 
 export const approvalsRouter: Router = Router()
 
@@ -50,6 +55,47 @@ function permissionForApprovalSubject(subjectType: string): string {
   if (subjectType === 'GovernanceWaiver') return approvalPermission('governance')
   if (subjectType === 'Consumable') return approvalPermission('consumable')
   return approvalPermission('workflow')
+}
+
+async function assertBusinessApprovalSeparation(
+  tx: Prisma.TransactionClient,
+  request: { subjectType: string; subjectId: string; requestedById: string; tenantId: string | null },
+  actorId: string,
+  decision: string,
+) {
+  if (!['APPROVED', 'APPROVED_WITH_CONDITIONS'].includes(decision)) return
+  if (!['SpecificationVersion', 'BusinessReadout', 'SpecificationChangeRequest'].includes(request.subjectType)) return
+  if (request.requestedById === actorId) {
+    throw new ValidationError('Business approval requires an independent approver; the requester cannot approve their own request')
+  }
+  if (request.subjectType === 'SpecificationVersion') {
+    const version = await tx.specificationVersion.findUnique({
+      where: { id: request.subjectId },
+      include: { specificationProject: { select: { sponsorId: true } } },
+    })
+    if (version?.createdById === actorId) throw new ValidationError('Specification authors cannot approve their own version')
+    if (version?.specificationProject?.sponsorId === actorId) {
+      throw new ValidationError('The sponsor cannot occupy the technical DRI approval lane')
+    }
+  }
+  if (request.subjectType === 'BusinessReadout') {
+    const readout = await tx.businessReadout.findUnique({ where: { id: request.subjectId } })
+    if (readout?.generatedById === actorId) throw new ValidationError('Readout generators cannot sign their own document')
+    if (readout?.specificationVersionId) {
+      const technicalVote = await tx.approvalDecision.findFirst({
+        where: {
+          decidedById: actorId,
+          decision: { in: ['APPROVED', 'APPROVED_WITH_CONDITIONS'] },
+          request: { subjectType: 'SpecificationVersion', subjectId: readout.specificationVersionId, tenantId: request.tenantId },
+        },
+      })
+      if (technicalVote) throw new ValidationError('Technical and sponsor approvals require independent approvers')
+    }
+  }
+  if (request.subjectType === 'SpecificationChangeRequest') {
+    const change = await tx.specificationChangeRequest.findUnique({ where: { id: request.subjectId }, select: { requestedById: true } })
+    if (change?.requestedById === actorId) throw new ValidationError('Change-request authors cannot approve their own consequences')
+  }
 }
 
 async function tenantScopedInstanceIds(tenantId: string, db: Prisma.TransactionClient | typeof prisma = prisma): Promise<string[]> {
@@ -345,6 +391,7 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
       if (found.status !== 'PENDING') {
         throw new ValidationError(`ApprovalRequest cannot be decided from status ${found.status}`)
       }
+      await assertBusinessApprovalSeparation(tx, found, userId, decision)
       const eligibility = await assertCanDecideApproval(
         userId,
         approvalRequestRouting(found),
@@ -494,6 +541,21 @@ approvalsRouter.post('/:id/decision', validate(decisionSchema), async (req, res,
 
     if (approvalRequest.subjectType === 'DecisionDossier') {
       await applyDecisionApproval(id, decision, userId, notes ?? conditions)
+      res.status(201).json(approvalDecision)
+      return
+    }
+
+    if (approvalRequest.subjectType === 'BusinessReadout') {
+      const readout = await applyBusinessReadoutApproval(id, decision, userId, notes ?? conditions)
+      if ((decision === 'APPROVED' || decision === 'APPROVED_WITH_CONDITIONS') && readout.specificationVersionId) {
+        await finalizeProjectSpecificationAfterSponsor(readout.specificationVersionId, decisionTenantId)
+      }
+      res.status(201).json(approvalDecision)
+      return
+    }
+
+    if (approvalRequest.subjectType === 'SpecificationChangeRequest') {
+      await applyBusinessChangeRequestApproval(id, decision, userId, notes ?? conditions)
       res.status(201).json(approvalDecision)
       return
     }

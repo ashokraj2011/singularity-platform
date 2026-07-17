@@ -36,6 +36,7 @@ export const specificationRequirementSchema = z.object({
   priority: z.enum(REQUIREMENT_PRIORITIES).catch('SHOULD').default('SHOULD'),
   risk: z.enum(REQUIREMENT_RISKS).catch('MEDIUM').default('MEDIUM'),
   sourceIds: z.array(idString).default([]),
+  objectiveRefs: z.array(z.string().uuid()).default([]),
   acceptanceCriterionIds: z.array(idString).default([]),
   testObligationIds: z.array(idString).default([]),
 })

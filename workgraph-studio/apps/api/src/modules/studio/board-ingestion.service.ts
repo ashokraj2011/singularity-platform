@@ -54,13 +54,13 @@ export interface IngestInput { kind: string; filename: string; content?: string;
 
 type ArtifactRow = {
   id: string; boardId: string; branchId: string; kind: string; filename: string
-  status: string; contentHash: string; parseSummary: Prisma.JsonValue; extractedClaims: Prisma.JsonValue; createdAt: Date
+  status: string; contentHash: string; parseSummary: Prisma.JsonValue; sourceSpans: Prisma.JsonValue; extractedClaims: Prisma.JsonValue; createdAt: Date
 }
 function shapeArtifact(a: ArtifactRow) {
   return {
     id: a.id, boardId: a.boardId, branchId: a.branchId, kind: a.kind, filename: a.filename,
     status: a.status, contentHash: a.contentHash, parseSummary: a.parseSummary,
-    extractedClaims: a.extractedClaims, createdAt: a.createdAt,
+    sourceSpans: a.sourceSpans, extractedClaims: a.extractedClaims, createdAt: a.createdAt,
   }
 }
 
@@ -144,7 +144,14 @@ export async function ingest(
       payload: { object: { id: pl.objectId, type: pl.type, ...pl.props } }, causedBy: cause,
     }, sysActor)
   }
-  await prisma.ingestedArtifact.update({ where: { id: artifact.id }, data: { status: 'EXTRACTING', parseSummary: parsed.summary as Prisma.InputJsonValue } })
+  await prisma.ingestedArtifact.update({
+    where: { id: artifact.id },
+    data: {
+      status: 'EXTRACTING',
+      parseSummary: parsed.summary as Prisma.InputJsonValue,
+      sourceSpans: parsed.spans.map(span => ({ ref: span.ref, title: span.title ?? null, text: span.text })) as Prisma.InputJsonValue,
+    },
+  })
 
   // Extract in the no-tools sandbox: input = spans, output = schema-valid claim JSON only.
   const staged = await extractStagedClaims(artifact.id, boardId, parsed, extractor)

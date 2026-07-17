@@ -49,6 +49,7 @@ export const projectRequirementSchema = z.object({
   rationale: z.string().trim().max(2000).optional(),
   claimRefs: z.array(z.string().uuid()).default([]),
   decisionRefs: z.array(z.string().uuid()).default([]),
+  objectiveRefs: z.array(z.string().uuid()).default([]),
 })
 
 /** The full project-spec package. Every section has a default so an empty `{}` parses cleanly. */
