@@ -14473,6 +14473,73 @@ Required fixes:
   search, compiling another user's context, fetching another package by id, and
   legacy standalone service exposure.
 
+### 309. Context Memory silently promotes heuristic fallback summaries as trusted memory
+
+Evidence:
+
+- `context-fabric/services/context_memory_service/app/summarizer.py` defines
+  `fallback_summary(...)` as a deterministic regex/string parser that uses the
+  last user message, the last 20 lines, a keyword regex for decisions, and
+  question marks for open questions. It leaves requirements, constraints, user
+  preferences, technical design, changes done, and next best actions empty.
+- `_resolve_summarizer_prompts(...)` logs prompt-composer lookup failures and
+  uses inline fallback prompt text, but it returns the same `(system_msg,
+  user_msg)` shape as the composer-backed path.
+- `summarize_with_llm(...)` sends the summarization request to
+  `settings.mcp_server_url + "/mcp/invoke"` with a synthetic
+  `traceId = summarize-{agent_id or 'anon'}`. If the MCP call fails, returns a
+  non-JSON body, or produces no extractable dict, the broad `except Exception:
+  pass` path falls through to `fallback_summary(messages)` without returning any
+  status, provenance, warning, trace id, or failure reason.
+- `context-fabric/services/context_memory_service/app/routes.py` persists the
+  returned object as a normal `"rolling"` summary through `insert_summary(...)`
+  regardless of whether it came from MCP/LLM or from the heuristic fallback.
+- The same route promotes `summary["durable_learning"]` into `memory_items` with
+  `importance_score = 0.75`, `confidence = 0.75`, and `source_type = "summary"`
+  even when the durable learning came from the regex fallback.
+- `context-fabric/services/context_memory_service/app/context_compiler.py` later
+  loads `get_latest_summary(...)`, renders it with `summary_to_text(...)`, marks
+  the optimized context as containing `rolling_summary`, and ranks memory items
+  with no indication that the summary or durable learning was fallback-derived.
+
+Impact:
+
+- MCP outages, LLM JSON-shape failures, prompt-composer outages, or provider
+  timeout errors can silently degrade memory quality while the API still reports
+  `"updated": true` and downstream context treats the summary as authoritative.
+- A heuristic keyword match such as "must" or "should" can become durable
+  learning with 0.75 confidence, influencing later prompts, workflow decisions,
+  and evidence without an operator-visible warning.
+- The synthetic trace id is disconnected from the original workflow/run trace, so
+  audit reconstruction cannot reliably prove which run caused a summary, which
+  provider/model attempted it, or why the fallback was used.
+- Operators cannot distinguish a high-quality LLM summary from a lossy fallback
+  summary in `/context/compile` output, memory search, run receipts, or evidence
+  packs.
+- Because fallback summaries omit entire schema sections, requirements,
+  constraints, technical design, and next-best-action context can disappear from
+  subsequent agent turns without a visible degraded-memory signal.
+
+Required fixes:
+
+- Return a structured `SummaryResult` containing `summary`, `mode`
+  (`llm`, `prompt_fallback`, `heuristic_fallback`, `failed`), provider/model
+  metadata, trace id, prompt version, warnings, and failure reason.
+- Persist summary provenance fields and confidence at the summary row level; do
+  not promote heuristic fallback `durable_learning` at the same confidence as
+  validated LLM output.
+- Replace the broad silent `except Exception: pass` with logged, trace-linked,
+  surfaced failures and a policy switch such as `fail_closed`, `warn`, or
+  `allow_heuristic_fallback`.
+- Propagate the caller's workflow/run/trace context into the summarizer MCP call
+  instead of generating `summarize-{agent_id}` as the only trace.
+- Include summary provenance and degraded-memory warnings in `/memory/summaries/update`,
+  `/context/compile`, context package records, and run/evidence views that consume
+  compiled context.
+- Add tests for MCP timeout, non-JSON LLM output, prompt-composer outage,
+  fallback provenance persistence, reduced fallback confidence, and strict-mode
+  refusal to use heuristic summaries.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
