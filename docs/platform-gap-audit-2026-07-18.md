@@ -15393,6 +15393,70 @@ Required fixes:
   `WORKGRAPH_DATABASE_URL_ADMIN` under forced-RLS fixtures and prove equivalent
   behavior, tenant handoff, and no writes through the admin client.
 
+### 325. OpenAI-compatible LLM calls bypass the gateway retry envelope
+
+Evidence:
+
+- `context-fabric/services/llm_gateway_service/RELEASE.md` documents the
+  gateway as the single LLM traffic point and lists
+  `LLM_GATEWAY_RATE_LIMIT_RETRIES`, `LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC`, and
+  `LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC` as the upstream retry controls.
+- The same release notes explicitly list a known limitation:
+  "`openai_compat` provider has no retry logic of its own - only the Anthropic
+  provider implements the M64 retry set."
+- `app/providers/anthropic.py` implements `_retry_after_seconds(...)`, defines
+  `RETRYABLE_STATUS = {429, 503, 529}`, loops for
+  `settings.upstream_rate_limit_retries + 1` attempts, honors `Retry-After`, and
+  sleeps before retrying transient upstream responses.
+- `app/providers/openai_compat.py` performs one `client.post(...)` for chat
+  completions and one `client.post(...)` for embeddings, then raises on any
+  non-200 status. It does not inspect `Retry-After`, does not retry 429/503/529
+  equivalents, and does not share the Anthropic retry helper.
+- `tests/test_gateway_hardening.py` has a retry test that patches the Anthropic
+  provider to return a 429 once, verifies two calls, and verifies the sleep
+  delay. Search found no equivalent OpenAI-compatible chat or embeddings retry
+  test.
+- `router.py` routes `provider in ("openai", "openrouter")` through the
+  OpenAI-compatible provider. That path also covers common "OpenAI compatible"
+  deployments such as OpenRouter, Azure-style gateways, local proxy gateways,
+  and any tenant/provider alias using the OpenAI wire format.
+
+Impact:
+
+- Direct LLM nodes, MCP-forwarded model calls, prompt-composer embeddings, and
+  any workflow using OpenAI-compatible aliases can fail on one transient 429,
+  503, upstream timeout, or short provider overload even though operators set
+  gateway retry environment variables expecting uniform protection.
+- The same workflow may be resilient on Anthropic but brittle on OpenAI,
+  OpenRouter, Azure-compatible, or local OpenAI-compatible providers, making
+  provider switching look like a workflow or agent failure rather than a
+  provider-adapter reliability gap.
+- Retry behavior, `Retry-After` handling, latency accounting, and upstream error
+  taxonomy are inconsistent across providers, so run receipts and operations
+  dashboards cannot explain how many provider attempts happened or why a call was
+  abandoned.
+- Higher-level workflow retry may repeat entire nodes, approvals, or tool-loop
+  context instead of retrying the provider call at the correct boundary.
+
+Required fixes:
+
+- Move retry handling into a shared gateway helper used by all provider adapters,
+  not only Anthropic. The helper should handle retryable HTTP statuses, transport
+  timeouts, `Retry-After`, bounded jitter, max attempts, and an overall deadline.
+- Apply the helper to OpenAI-compatible chat completions and embeddings, with
+  provider-specific retryable status mapping for OpenAI, OpenRouter,
+  Azure-compatible endpoints, and local gateways.
+- Emit attempt count, retry reasons, retry delays, final upstream status, and
+  exhausted-retry markers into response metadata/receipts without leaking
+  provider secrets or request bodies.
+- Keep non-retryable validation and authentication failures fail-fast, and avoid
+  retrying after a response body has produced billable output.
+- Add tests for OpenAI-compatible 429 with `Retry-After`, transient 503 then
+  success, timeout exhaustion, non-retryable 400, embeddings retries, and
+  consistency of error envelopes with Anthropic.
+- Update readiness/docs so provider aliases show whether they are protected by
+  the shared retry policy.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
