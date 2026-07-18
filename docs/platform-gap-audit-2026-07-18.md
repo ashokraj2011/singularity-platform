@@ -8084,6 +8084,159 @@ Required fixes:
 - Add a small UI fallback that warns if backend topology data contains duplicate
   ids instead of silently rendering a misleading map.
 
+### 189. Initiative project codes are globally unique but generated from a tenant-local short space
+
+Evidence:
+
+- `SpecificationProject.code` is declared `@unique`, so the database uniqueness
+  boundary is global across all tenants.
+- `generateProjectCode()` creates `PRJ-${randomBytes(3).toString('hex').slice(0,
+  5).toUpperCase()}`, which gives only five hex characters of entropy for the
+  human-facing project code.
+- The same function checks for an existing code with `where: { code, tenantId:
+  tenantId() }`, so it only probes collisions inside the current tenant even
+  though the unique constraint is global.
+- After at most five attempts, the fallback code is based on the tail of
+  `Date.now().toString(36)`, with no global retry around the actual insert.
+- `createProject(...)` calls `generateProjectCode()` before the transaction and
+  then performs the `specificationProject.create(...)`; a collision at insert
+  time would surface as a raw database error, not as a controlled retry or
+  user-facing conflict.
+- Search found WorkItem and workflow-start idempotency command models, but no
+  equivalent contract test for `SpecificationProject` code uniqueness,
+  tenant-scoped code display, or collision retry behavior.
+
+Impact:
+
+- Multi-tenant installs can reject an initiative create because another tenant
+  already owns the same short code, even though the code generator believed the
+  value was available.
+- Large demo or production portfolios have a realistic chance of code collisions
+  because the random code space is small for a global key.
+- Operators may see intermittent "failed to create initiative" errors that are
+  hard to reproduce and unrelated to the user's input.
+- If product intent is for codes to be tenant-local, the current schema prevents
+  two tenants from using the same friendly code. If intent is global, the
+  generator and retry logic are too weak.
+
+Required fixes:
+
+- Decide whether project codes are tenant-local or globally unique.
+- If tenant-local, replace `code @unique` with a composite unique constraint on
+  `(tenantId, code)` and update lookup/API routes accordingly.
+- If globally unique, probe globally and wrap `specificationProject.create(...)`
+  in a bounded retry loop that catches unique violations.
+- Increase code entropy or use a sequence-backed per-tenant counter for
+  predictable human-facing identifiers.
+- Add collision tests for same-tenant and cross-tenant project creation.
+
+### 190. Initiative creation is not backed by an idempotent command
+
+Evidence:
+
+- `WorkspaceHubPage.createProject()` posts directly to `/studio/projects` with
+  the form payload; it relies on component `busy` state to reduce duplicate
+  clicks, but it does not send an idempotency key.
+- `studioProjectsRouter.post('/projects', ...)` validates the body, resolves the
+  selected capability, and directly calls `createProject(...)`.
+- `createProject(...)` inserts a `SpecificationProject`, creates the single
+  capability link, creates a pending `CapabilityImpactAssessment`, emits
+  `SpecificationProjectCreated`, and publishes an outbox event.
+- After returning `201`, the router starts
+  `runCapabilityImpactAssessments(...)` in the background and swallows failures
+  from that detached promise.
+- The schema has durable `WorkItemCreationCommand` and `WorkflowStartCommand`
+  models with `idempotencyKey`, `requestHash`, state, error, and result links,
+  but there is no `SpecificationProjectCreationCommand` or equivalent request
+  fence for initiatives.
+- Search did not find API or UI tests that retry the same initiative-create
+  request and prove only one project, one capability link, one pending
+  assessment, and one creation outbox event are produced.
+
+Impact:
+
+- A browser retry, network timeout, double submit from another tab, or reverse
+  proxy replay can create duplicate initiatives with the same name, mission,
+  capability, and budgets.
+- Duplicate initiatives each schedule their own capability-impact assessment and
+  outbox event, so downstream agents can spend tokens and create recommendations
+  for work that the user intended to submit once.
+- Unlike WorkItem creation and workflow start, the top-level Synthesis intake is
+  not crash/retry safe, even though it is the root of the enterprise SDLC flow.
+- Support teams cannot reconcile "did my initiative create?" from a durable
+  command state when the client loses the response after the database write.
+
+Required fixes:
+
+- Add a `SpecificationProjectCreationCommand` or reuse a generalized
+  `DomainCreationCommand` with `idempotencyKey`, request hash, tenant id, actor
+  id, state, error, and created project id.
+- Have the Synthesis UI generate and send an idempotency key for every create
+  attempt, and reuse it while retrying the same draft.
+- Move capability-link creation, pending assessment creation, audit/outbox
+  publication, and background-assessment scheduling behind the command state or a
+  transactional outbox worker.
+- Return the previously created project when the same idempotency key/request
+  hash is retried, and reject reused keys with a different request hash.
+- Add API tests for duplicate submit, lost-response retry, conflicting key reuse,
+  background assessment failure, and command recovery after a process restart.
+
+### 191. Synthesis internal links use two incompatible initiative query parameters
+
+Evidence:
+
+- `ProjectPicker.useSelectedProjectId()` reads only `params?.get("project")`.
+- `ProjectPicker.select(...)` writes only `?project=<id>` when a user changes the
+  selected initiative.
+- Most project-scoped Synthesis screens render `NoProjectSelected` whenever
+  `useSelectedProjectId()` returns null.
+- Several internal Synthesis links still navigate with `?projectId=<id>` instead
+  of `?project=<id>`:
+  - `SpecTraceabilityScreen` links "Generate tickets" to
+    `/synthesis/generate?projectId=...`.
+  - `OptionsPortfolioScreen` links "Govern decisions" to
+    `/synthesis/decisions?projectId=...`.
+  - `EconomicsWorkspaceScreen` links "Open generation" to
+    `/synthesis/generate?projectId=...`.
+  - `PilotProofScreen` links "Open lineage" to
+    `/synthesis/spec?projectId=...`.
+- Those target screens all use `useSelectedProjectId()`, so the initiative id is
+  present in the URL but ignored by the page.
+- `SynthesisShell` renders phase/sidebar/mobile navigation with `href={item.href}`
+  for every `SYN_NAV` item, so using the main Synthesis navigation also drops the
+  current `?project=<id>` selection.
+- The only contract test found for Synthesis route state checks the legacy
+  `/studio/:projectId` redirect to `/synthesis/overview?project=...`; it does not
+  assert that every in-app Synthesis link preserves the selected initiative.
+
+Impact:
+
+- Users can click from one Synthesis workspace to another and land in a "Choose an
+  initiative" empty state even though the source link carried an initiative id.
+- The experience reinforces the user's earlier confusion that Synthesis cells,
+  boards, specs, generation, and decisions are disconnected surfaces.
+- Deep links shared from those buttons are not actually deep links to the intended
+  initiative.
+- Operators cannot rely on URL state to reproduce a user's journey through
+  Synthesis because route parameters are not canonical.
+
+Required fixes:
+
+- Standardize on one query parameter, preferably `project`, for all Synthesis
+  routes and links.
+- Temporarily make `useSelectedProjectId()` accept `projectId` as a compatibility
+  alias and rewrite the URL to the canonical parameter.
+- Add a `synthesisProjectHref(path, projectId)` helper so links are generated from
+  one place.
+- Have `SynthesisShell` preserve the selected initiative across phase/sidebar and
+  mobile navigation when the destination is project-scoped.
+- Add a route/link contract test that searches Synthesis code for
+  `?projectId=` in hrefs and verifies every project-scoped route preserves the
+  selected initiative.
+- Add a browser smoke path: open an initiative, click Spec -> Generate,
+  Options -> Decisions, Economics -> Generate, and Pilot -> Spec, then assert the
+  target page is not `NoProjectSelected`.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
