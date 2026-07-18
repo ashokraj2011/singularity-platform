@@ -15184,6 +15184,58 @@ Required fixes:
   duplicate mappings across two initiatives, and Jira export correctness after
   mapping updates.
 
+### 321. Synthesis budget ledger idempotency keys are globally scoped and silently collide
+
+Evidence:
+
+- `ProjectTokenLedgerEntry.evidenceKey` is declared as a single-column global
+  `@unique` field, and `ProjectBudgetEvent.evidenceKey` has the same global
+  uniqueness pattern.
+- `recordProjectTokenLedgerInternal(...)` writes usage with
+  `projectTokenLedgerEntry.upsert({ where: { evidenceKey }, update: {}, create:
+  { ...input, tenantId: project.tenantId } })`. If an evidence key already
+  exists for another initiative or tenant, the update branch performs no
+  ownership assertion and creates no new ledger entry.
+- The same function then recomputes the rollup only for `input.projectId`, so a
+  collision can leave the requested initiative undercounted while returning the
+  unrelated existing row as if the write were idempotent.
+- The workflow budget bridge constructs ledger keys as
+  `llm:${instanceId}:${correlation}:${updated.consumedTotalTokens}`; the key is
+  derived from runtime ids rather than persisted tenant/project ownership.
+- Budget events are deduplicated through
+  `projectBudgetEvent.upsert({ where: { evidenceKey }, update: {}, create: ... })`,
+  so any future caller that reuses a non-project-qualified key would have the
+  same silent suppression behavior.
+
+Impact:
+
+- Tenant isolation and initiative economics depend on a caller-assembled string
+  being globally unique forever, across cloned runs, seed data, imports,
+  environment restores, and test/demo tenants.
+- A duplicated evidence key can make a real LLM spend disappear from the
+  initiative token ledger and budget warnings, weakening hard-cap enforcement
+  and sponsor/evidence reporting.
+- Operators cannot distinguish a true idempotent retry from a cross-project or
+  cross-tenant key collision because the existing code does not emit a conflict
+  event or ownership mismatch error.
+
+Required fixes:
+
+- Change ledger/event idempotency to tenant- and project-scoped keys, for example
+  unique `(tenantId, projectId, evidenceKey)` for project ledger entries and
+  `(tenantId, projectId, evidenceKey)` for project budget events.
+- In upsert/update branches, assert that the existing row's tenant id and project
+  id match the requested write; otherwise fail closed and log a security/evidence
+  collision event.
+- Normalize evidence keys through a helper that includes tenant id, project id,
+  workflow instance id, node id, trace id, and a source-specific digest rather
+  than accepting arbitrary caller strings directly.
+- Add migration/backfill checks for duplicate evidence keys by tenant/project
+  before changing indexes.
+- Add tests for retry idempotency, same evidence key in two tenants, same
+  evidence key in two initiatives, restored seed/demo rows, and rollup behavior
+  after a rejected collision.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
