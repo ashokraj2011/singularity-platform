@@ -12776,6 +12776,63 @@ Required fixes:
   document, missing document id, non-instance approval attachment, and partial
   update-count mismatch.
 
+### 276. Governed single-turn direct LLM bypasses pre-call governance gates
+
+Evidence:
+
+- The legacy Context Fabric `/execute` path computes `governance_mode`, then
+  calls `fail_closed_precheck(...)` before prompt composition, tool discovery,
+  MCP dispatch, or model execution.
+- The same legacy path blocks invalid required context plans in
+  `governance_mode=fail_closed`, allows a degraded posture only when requested,
+  and returns `WAITING_APPROVAL` for `human_approval_required` context-plan
+  approval.
+- `POST /api/v1/execute-governed-single-turn` computes `governance_mode` and
+  extracts `governance_overlay`, but then immediately chooses either
+  `call_direct_chat(...)` or `call_gateway_chat(...)`.
+- When `run_context.llm_route` selects the Context-Fabric-direct route,
+  `call_direct_chat(...)` reads provider configuration and credentials from
+  server environment variables and calls the provider directly.
+- The single-turn endpoint emits `governed.turn_completed` after the provider
+  call and includes `governanceMode`, `governanceOverlay`, and `llmRoute` in the
+  audit payload, but it does not perform the legacy fail-closed audit precheck,
+  required-context validation, human-approval pause, or overlay enforcement
+  before the direct provider call.
+- Existing audit findings cover direct LLM routing/evidence drift and WorkGraph
+  budget preflight gaps, but not this Context Fabric single-turn pre-call
+  governance bypass.
+
+Impact:
+
+- A node can be labeled as a governed single turn while direct-provider egress
+  has already happened before audit/governance readiness is proven.
+- `governance_mode=fail_closed` is weaker on the single-turn endpoint than on
+  `/execute`, which gives operators two different meanings for the same setting.
+- `human_approval_required` cannot pause the direct single-turn call before the
+  model sees prompt and document context.
+- Governance overlays and waivers become after-the-fact evidence fields instead
+  of an enforcement boundary for this route.
+- Regulated Direct LLM verifier or co-work nodes can bypass the stricter Context
+  Fabric path even when the UI and receipts call them governed.
+
+Required fixes:
+
+- Reuse the same pre-call governance gate for `/execute` and
+  `/api/v1/execute-governed-single-turn`: strict audit precheck, required
+  context-plan validation, human-approval pause, and overlay enforcement.
+- Add a `governance_required=true` or equivalent flag to the single-turn request
+  and fail closed when the overlay is missing, stale, advisory-only, or cannot be
+  resolved.
+- For direct LLM routes, evaluate the direct-provider connection, credential env,
+  data classification, prompt source, and context artifacts before any provider
+  call.
+- Make single-turn responses distinguish `governed`, `governed_degraded`,
+  `approval_paused`, and `context_fabric_direct_unverified` instead of always
+  returning `executionPosture: governed`.
+- Add tests for single-turn direct LLM with audit-governance down,
+  fail-closed mode, human-approval-required mode, missing governance overlay,
+  advisory overlay, and a permitted overlay.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
