@@ -8699,6 +8699,248 @@ Required fixes:
   strict-tenant failure, reused idempotency key with different source/model
   options, and retry after a failed preflight command.
 
+### 201. Legacy WorkGraph audit event and receipt routes bypass tenant/resource authorization
+
+Evidence:
+
+- `app.ts` mounts `auditRouter` at `/api/audit` behind `authMiddleware`, so the
+  caller must be signed in, but the router itself is the final route-level
+  policy gate for this surface.
+- `audit.router.ts` implements `GET /api/audit/events` by building `where` from
+  only optional `entityType` and `entityId` query parameters.
+- The same route calls `prisma.eventLog.findMany(...)` and
+  `prisma.eventLog.count(...)` directly; it does not add a tenant filter,
+  resource permission check, capability/team check, or audit-view action check.
+- `EventLog` has an optional `tenantId` column and indexed tenant field, but this
+  endpoint never uses it.
+- `GET /api/audit/receipts/:id` calls `prisma.receipt.findUnique({ where: { id }
+  })` directly by receipt id.
+- `Receipt` has no `tenantId` column, so the receipt route cannot enforce tenant
+  scope from the row itself; it also does not join through `eventLogId`,
+  `entityType`, or `entityId` to authorize the underlying resource.
+- Neither route uses `withTenantDbTransaction`, `runWithTenantDbContext`,
+  `assertInstancePermission`, WorkItem/capability access checks, or the newer
+  unified `/api/receipts?trace_id=...` trace-spine redaction/warning logic.
+- Raw `payload` and `content` JSON are returned as stored; there is no sensitive
+  evidence redaction for event payloads, delivery metadata, documents, artifact
+  references, code-change details, or external side-effect receipts.
+
+Impact:
+
+- Any authenticated WorkGraph user who can reach `/api/audit/events` can enumerate
+  event metadata across tenants or resources by paging with no filters, or probe
+  specific `entityType/entityId` pairs.
+- Receipt ids become direct object references: a leaked or guessed id can expose
+  the receipt content even if the caller cannot view the workflow instance,
+  WorkItem, capability, artifact, or audit trace that produced it.
+- Operations hardening and the unified trace cockpit can be bypassed by older UI
+  clients, scripts, or direct API calls that still use the legacy `/api/audit`
+  endpoints.
+- Sensitive delivery evidence can leak in environments where audit rows contain
+  prompt snippets, document references, event payloads, repository metadata, or
+  external delivery details.
+- Tenant isolation depends on every writer filling tenant fields and every
+  reader avoiding this legacy route, which is not an enterprise-ready safety
+  boundary.
+
+Required fixes:
+
+- Route `/api/audit/events` through tenant-scoped database context and require
+  `workflow:audit:view` or an equivalent typed authorization decision for the
+  target resource.
+- Require at least one scoped selector for non-admin reads, such as tenant plus
+  trace id, workflow instance id, WorkItem id, capability id, or audited entity,
+  and verify effective access before returning rows.
+- Rework `/api/audit/receipts/:id` to resolve the backing receipt through
+  `eventLogId` or canonical trace/resource linkage, then apply the same
+  resource-level authorization and tenant checks as the trace cockpit.
+- Add field-level redaction unless the caller has the relevant sensitive-evidence
+  permission.
+- Deprecate or redirect legacy receipt reads through the unified receipts/trace
+  API once compatibility callers are migrated.
+- Add IDOR tests for cross-tenant event enumeration, entity id probing, receipt
+  id probing, unauthorized workflow receipt access, and sensitive-payload
+  redaction.
+
+### 202. Canonical trace receipt reads are trace-id scoped but not resource-authorized
+
+Evidence:
+
+- Platform Web `src/app/api/traces/[traceId]/route.ts` is the canonical trace
+  cockpit API and calls `/api/workgraph/receipts?trace_id=...`,
+  `/api/audit-gov/traces/:traceId/timeline`, and `/api/platform-logs` in
+  parallel.
+- The route normalizes only the trace id length/null-byte shape, forwards the
+  caller authorization header, and merges whatever the upstream services return;
+  it does not first resolve the trace to a workflow instance, WorkItem,
+  capability, artifact, or actor-visible resource.
+- WorkGraph `receipts.router.ts` accepts only `trace_id` plus optional
+  `include_cf`, derives tenant from the request, and then calls
+  `localReceipts(traceId, tenantId)` and `cfReceipts(traceId)`.
+- `localReceipts(...)` tenant-filters `AgentRun` rows by matching
+  `WorkflowInstance.tenantId`, but it does not call
+  `assertInstancePermission(..., 'audit_view')`, `assertInstancePermission(...,
+  'view')`, WorkItem access checks, capability access checks, or any
+  sensitive-evidence permission before returning receipts.
+- Once any `AgentRun` matches the trace, the same local receipt query includes
+  all `ApprovalRequest` rows for the discovered workflow instance ids and all
+  `ToolRun` rows for those instances, even though the caller has not been proven
+  allowed to view approvals, tool evidence, or the run itself.
+- `cfReceipts(...)` fetches Context Fabric receipts by trace id with a
+  service-token header and then merges them into the caller response; the
+  WorkGraph route does not pass or enforce the caller's resource-level access
+  against those remote receipts.
+- The response payload includes receipt `payload`, `correlation`, metrics, tool
+  idempotency keys, reviewer notes, reviewer ids, approval decisions, and
+  Context Fabric/MCP receipt payloads without field-level redaction.
+
+Impact:
+
+- A tenant member who learns a trace id can open the canonical trace cockpit and
+  retrieve evidence for workflow runs, approvals, tools, and model calls they may
+  not otherwise be authorized to view.
+- Trace ids become bearer-like evidence locators inside a tenant. That conflicts
+  with the desired model where trace id is a correlation key, not an access
+  grant.
+- Sensitive approval notes, tool metadata, model-call payloads, and runtime
+  correlations can leak through the trace view even when direct run, WorkItem, or
+  operation routes are later hardened.
+- The trace API can merge and display Context Fabric/MCP evidence without the
+  platform verifying that the human caller has rights to the originating run or
+  capability.
+- Auditors and operators get an inconsistent access model: `/runs/:id` may deny
+  a user, while `/audit/trace/:traceId` can still show correlated evidence if the
+  trace id is known.
+
+Required fixes:
+
+- Add a trace-to-resource resolver that maps trace id to candidate workflow
+  instances, WorkItems, capabilities, AgentRuns, ToolRuns, and Context Fabric
+  calls before returning timeline data.
+- Require `workflow:audit:view` or an explicit typed authorization decision for
+  every resolved workflow instance/capability, with a fail-closed response when
+  no authorized owning resource can be found.
+- Make Context Fabric receipt fetch accept and enforce caller resource context or
+  return only redacted source counts until WorkGraph authorizes and scopes the
+  merge.
+- Redact receipt payloads, approval notes, document references, model/tool
+  payloads, idempotency keys, and external side-effect details unless the caller
+  has the corresponding sensitive-evidence permission.
+- Add tests where a same-tenant viewer can access one run but not another, then
+  prove both `/runs/:id` and `/api/traces/:traceId` enforce the same effective
+  access.
+
+### 203. Idea Board coalesce keys can drop legitimate later edits and moves
+
+Evidence:
+
+- `useBoardProducer.ts` persists a browser-local queue of pending board events
+  under `singularity:studio-board-events:${boardId}`.
+- Each queued item contains only `eventType`, `objectIds`, `payload`, and
+  optional `coalesceKey`; it does not store the branch, `expectedHeadSeq`, state
+  hash, base event sequence, or a unique request id.
+- The producer posts the queued object directly to
+  `/studio/boards/:boardId/events`.
+- The UI uses stable per-object coalesce keys for normal editing:
+  `move:${id}`, `edit:${id}`, `create:${id}`, and `delete:${id}`.
+- `board.router.ts` accepts `expectedHeadSeq`, but it is optional.
+- `appendEvent(...)` enforces the stale-head guard only when
+  `input.expectedHeadSeq !== undefined`.
+- Before appending a fresh event, `appendEvent(...)` searches all prior events on
+  the branch with the same `eventType`, `coalesceKey`, actor type, and actor id.
+- If such a prior event exists and `shouldCoalesce(...)` returns false, the
+  service returns the prior event as `coalesced: true` instead of appending or
+  rejecting the new event.
+- `shouldCoalesce(...)` returns false for `OBJECT_MOVED` after 2 seconds and for
+  `OBJECT_EDITED` after 5 seconds.
+- Therefore, a user moving or editing the same board object later with the same
+  stable key can receive a successful response while the new move/edit is not
+  appended to `BoardEvent` and not represented in replay, snapshots, branch
+  merge, synthesis, or exports.
+
+Impact:
+
+- The live board can appear to accept an edit through the CRDT/local UI while the
+  durable event log silently retains an older position or text.
+- Reload, time travel, export, synthesis, branch diff, and evidence replay can
+  lose ordinary later edits to the same sticky/frame/object.
+- Offline queued events can replay against a newer branch head without a base
+  sequence check, so stale browser state may append or be swallowed in ways the
+  user cannot understand.
+- The server conflates two different concepts: "retry the same request" and
+  "coalesce a short-lived drag/edit burst". Stable object keys are not unique
+  idempotency keys.
+- This weakens the Miro-like board promise because users can make visible changes
+  that do not become durable governed Synthesis evidence.
+
+Required fixes:
+
+- Split coalescing identity from idempotency identity. Use a unique
+  `requestId`/`eventId` for retries and a short-lived `coalesceGroupId` for
+  drag/edit bursts.
+- Never return an old prior event for a new payload merely because the coalesce
+  key matches outside the coalesce window. Append a fresh event or reject a true
+  conflicting idempotency-key reuse.
+- Make the board producer include branch, base `headEventSeq` or state hash, and
+  a unique request id in every durable event post.
+- Require `expectedHeadSeq` for structural object mutations in enterprise mode,
+  with a clear conflict response that offers reload, fork, or merge.
+- Add tests for editing the same object twice after the coalesce window, moving
+  the same object twice after the coalesce window, retrying the exact same event,
+  conflicting idempotency-key reuse, offline queue replay after head changes, and
+  reload/time-travel reflecting the latest durable edit.
+
+### 204. Source-document claim extraction failures are recorded as successful empty ingests
+
+Evidence:
+
+- `board-ingestion.service.ts` moves an artifact to `EXTRACTING`, then calls
+  `extractStagedClaims(...)`.
+- `extractStagedClaims(...)` catches every extractor error, invalid JSON parse,
+  invalid envelope, or malformed claim output and returns an empty array.
+- The catch block comment explicitly says "Extractor unavailable or produced no
+  valid JSON" and "Never let extraction fail the ingest."
+- After receiving that empty array, `ingest(...)` updates the artifact to
+  `status: 'COMPLETED'` and stores `extractedClaims: []`.
+- The same ingest path appends `INGESTION_COMPLETED`, logs
+  `IngestionCompleted`, and publishes `IngestionCompleted` with
+  `claims: staged.length`.
+- `parseExtractedClaims(...)` also returns `[]` for an invalid envelope, and in
+  the bare-array compatibility path silently drops malformed individual claims.
+- No extraction status, warning, error class, invalid-claim count, raw-output
+  digest, extractor model/call id, or retryability metadata is stored on the
+  `IngestedArtifact` row.
+
+Impact:
+
+- Operators cannot distinguish "the source contained no extractable claims" from
+  "Context Fabric was unavailable", "the model returned malformed JSON", "the
+  schema rejected every claim", or "the extractor crashed".
+- Synthesis may show a clean completed document pile while the governed
+  source-to-claim evidence chain is incomplete.
+- A user can proceed to decisions, specification, or generation with zero staged
+  claims, believing the source was reviewed rather than extraction having failed
+  open.
+- Troubleshooting has no durable error reason, model call id, trace id, retry
+  count, or dead-letter record for failed extraction.
+- Evidence packs become weaker because a completed artifact does not prove that
+  claim extraction succeeded or that zero claims is a meaningful result.
+
+Required fixes:
+
+- Split artifact status into at least `PARSED`, `EXTRACTION_COMPLETED`,
+  `EXTRACTION_EMPTY`, `EXTRACTION_FAILED`, and `COMPLETED` or store a separate
+  extraction-status object on the artifact.
+- Persist extractor trace id, model/provider metadata, validation errors,
+  malformed/drop counts, output digest, retryable flag, and last error reason.
+- Treat extractor unavailable or invalid envelope as warning/failed extraction,
+  not as successful empty extraction.
+- Let the UI show "parsed but claim extraction failed" with retry and
+  continue-without-claims options.
+- Add tests for extractor unavailable, invalid JSON, invalid envelope, all claims
+  malformed, valid zero-claim result, partial invalid claims, retry after failure,
+  and evidence-pack rendering of extraction health.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
