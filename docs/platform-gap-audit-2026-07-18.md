@@ -12833,6 +12833,113 @@ Required fixes:
   fail-closed mode, human-approval-required mode, missing governance overlay,
   advisory overlay, and a permitted overlay.
 
+### 277. Specification generation LLM calls use a static capability instead of the WorkItem capability
+
+Evidence:
+
+- The WorkGraph `WorkItem` model stores `parentCapabilityId` and target records,
+  and the `SpecificationProject` model stores the required
+  `primaryCapabilityId`.
+- The specification generator's default LLM client calls Context Fabric
+  `executeGovernedTurn(...)` with `run_context.capability_id` set to
+  `process.env.SPEC_GEN_CAPABILITY_ID ?? 'spec-author'`.
+- `generateSpecificationDraft(...)` loads only `id`, `workCode`, `title`,
+  `description`, and `tenantId` for the WorkItem before calling the generator.
+  It does not load `parentCapabilityId`, WorkItem targets, `projectId`, or the
+  linked `SpecificationProject.primaryCapabilityId`.
+- Other governed-turn callers in WorkGraph pass caller-owned capability context:
+  the planner sends the selected home capability, and contract replay sends the
+  request's `capabilityId`.
+- The Context Fabric client contract treats `run_context.capability_id` as a
+  required execution context field for governed execution.
+- The audit did not already contain a specific finding for spec-generation
+  capability attribution; related entries covered broader direct LLM and
+  budget/governance issues.
+
+Impact:
+
+- Generated specification drafts can be billed, routed, authorized, audited, and
+  budgeted under `spec-author` or a global environment capability instead of the
+  initiative or WorkItem capability that owns the work.
+- Capability-specific LLM routing, runtime placement, provider allowlists, data
+  classification, prompt policy, and token budgets can be silently bypassed.
+- Multi-tenant or multi-capability deployments cannot explain which business
+  capability caused a spec-generation model call from Context Fabric receipts
+  alone.
+- If `SPEC_GEN_CAPABILITY_ID` is missing, the literal `spec-author` may not map
+  to an active IAM capability, creating inconsistent behavior between local
+  setup and enterprise deployments.
+
+Required fixes:
+
+- Resolve the effective capability for spec generation from the WorkItem in this
+  order: explicit request capability if allowed, active WorkItem target,
+  `parentCapabilityId`, linked `SpecificationProject.primaryCapabilityId`, then
+  fail closed.
+- Include `tenant_id`, `project_id`, specification version id, and the resolved
+  capability in the Context Fabric `run_context` and trace/audit payload.
+- Remove the `spec-author` fallback from production mode; keep any platform
+  default only behind an explicit local/demo flag.
+- Add tests for WorkItem-only, project-owned, multi-target, missing-capability,
+  inactive-capability, and cross-tenant spec-generation cases.
+
+### 278. Event verifier demo endpoints can install active workflow automation without workflow authoring authorization
+
+Evidence:
+
+- `app.ts` mounts `/api/demo/event-verifier` behind `authMiddleware`, but there
+  is no feature flag, demo-only environment guard, service-principal check, or
+  workflow-authoring permission check around the router.
+- `POST /api/demo/event-verifier/setup` resolves any visible active capability
+  or accepts an explicit `capabilityId`, then creates or reuses a Verifier agent.
+- The same setup path calls `upsertVerifierWorkflow(...)`, which directly
+  creates or updates an `ACTIVE` workflow, rewrites its design nodes/edges, marks
+  it `isDefaultForType`, and sets `defaultRoutingMode: AUTO_START`.
+- The setup path also calls `upsertEventTrigger(...)`, which creates or updates
+  an active event trigger with `routingMode: AUTO_START`.
+- `POST /api/demo/event-verifier/ingest` and `/simulate` create or attach a
+  WorkItem from the trigger payload, then call `routeWorkItem(...)` as
+  `systemRouteActor('demo-verifier')`.
+- `routeWorkItem(...)` skips IAM `workflow:assign` checks for any actor in
+  `SYSTEM_ROUTE_ACTORS`; `system:demo-verifier` is part of that allowlist.
+- `WORKFLOW_INTERNAL_AUTOMATION_ENABLED` defaults to true, so the bypass is
+  enabled unless an operator explicitly disables internal automation.
+- The audit already covered event-created WorkItems being mislabeled as local
+  work, but not this demo setup and system-route authorization bypass.
+
+Impact:
+
+- Any authenticated user who can see a capability can potentially install an
+  active auto-start workflow, routing policy, and event trigger for that
+  capability without `workflow:create`, `workflow:edit`, `workflow:publish`,
+  `workflow:route`, or trigger-management permissions.
+- Demo infrastructure can silently become production automation: inbound events
+  may start verifier Direct LLM workflows, emit callbacks, and create approval
+  work before the capability owner approved the template.
+- Because `system:demo-verifier` bypasses normal route/claim IAM checks, the
+  resulting WorkItem start evidence names a platform automation principal rather
+  than proving the initiating user was authorized for the target capability.
+- Disabling all internal automation to close this path also disables legitimate
+  scheduler/trigger automation, so operators do not have a narrow kill switch.
+
+Required fixes:
+
+- Put `/api/demo/event-verifier/*` behind an explicit
+  `WORKGRAPH_DEMO_ENDPOINTS_ENABLED=true` flag and refuse it in production-class
+  environments.
+- Require capability-scoped permissions before setup:
+  `workflow:create`, `workflow:edit`, `workflow:publish`,
+  `workflow:routing_policy:manage`, `workflow:trigger:manage`, and
+  `agent:profile:create` as applicable.
+- Replace `system:demo-verifier` with a scoped service principal that carries
+  tenant id, capability id, trigger id, and allowed actions, and records the
+  initiating user in the route/start authorization snapshot.
+- Make demo-created workflows and triggers default to `DRAFT` or
+  `INACTIVE_DEMO` until a capability owner explicitly enables them.
+- Add tests proving a normal authenticated viewer cannot run setup, ingest, or
+  simulate for a capability unless they have the required authoring and routing
+  permissions.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
