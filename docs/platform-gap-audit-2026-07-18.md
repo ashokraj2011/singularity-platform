@@ -16857,6 +16857,76 @@ Required fixes:
   authorized sensitive preview, and synthetic preview assembly isolation from
   production run evidence.
 
+### 348. Prompt Composer artifact-body fetch is not bound to tenant, document, or run authorization
+
+Evidence:
+
+- `compose.schemas.ts` accepts `artifacts[]` with optional `consumableId`,
+  `consumableType`, `role`, `label`, inline `content`, `excerpt`, and `minioRef`.
+  It does not require a document id, tenant id, workflow instance id, artifact id,
+  source run id, source capability id, content hash, or authorization decision.
+- `compose.service.ts` calls `renderArtifact(...)` for each caller-supplied
+  artifact and injects the returned body into an `ARTIFACT_CONTEXT` prompt layer.
+- `renderArtifact(...)` uses inline `content` first, then `excerpt`, then
+  `minioRef`; it does not validate that the artifact belongs to the supplied
+  `workflowContext`, `capabilityId`, `agentTemplateId`, `consumableId`, or caller.
+- `fetchArtifactContent(...)` calls the configured `WORKGRAPH_ARTIFACT_FETCH_URL`
+  with the Prompt Composer service token and a JSON body containing only
+  `{ minioRef, maxBytes }`. It does not send tenant headers, a document id,
+  consumable id, workflow/run id, requester identity, or a prompt assembly/access
+  decision.
+- WorkGraph's `/internal/artifact-fetch/fetch` route validates
+  `WORKGRAPH_INTERNAL_TOKEN`, then calls `requireTenantScopedInternalToken(...)`.
+  In strict tenant isolation this requires an `X-Tenant-Id` or `tenant_id`, but
+  Prompt Composer never supplies one.
+- The WorkGraph route can resolve a governed document only when `documentId` or a
+  `document:` / `workgraph-document://` `minioRef` is provided. For a plain
+  `minio://`, `s3://`, or `bucket/key` reference, strict mode rejects the request;
+  non-strict mode parses the bucket/key and reads the object directly.
+- In non-strict mode, the WorkGraph route reads the MinIO object using only the
+  service token and object reference, with no document, workflow, capability,
+  tenant, or artifact ownership lookup.
+- The existing artifact finding covers silent omission of non-input artifacts when
+  fetch fails; it does not cover this tenant/document/run binding mismatch or
+  non-strict object-reference overread path.
+
+Impact:
+
+- In production strict mode, Prompt Composer cannot reliably fetch artifact bodies
+  through the intended WorkGraph internal route because it does not propagate the
+  required tenant/document context.
+- Required input artifacts may hard-fail prompt composition, while context/reference
+  artifacts may be silently skipped, even when the caller supplied a valid
+  WorkGraph document or workflow artifact.
+- In non-strict or relaxed deployments, any authenticated Prompt Composer caller
+  who can supply a `minioRef` can cause WorkGraph to read arbitrary text-like
+  object-store content reachable by the WorkGraph MinIO credentials.
+- Prompt assemblies can include artifact text that is not tied to the run,
+  capability, WorkItem, document grant, or artifact publication lifecycle, making
+  evidence provenance and tenant isolation weak.
+
+Required fixes:
+
+- Change the artifact input contract to require a governed `documentId` or
+  `artifactId` for stored bodies. Treat raw `minioRef` as an internal/debug-only
+  field behind explicit permission.
+- Pass tenant id, actor/service identity, workflow/run id, capability id,
+  artifact/document id, content hash, and authorization decision id from the
+  caller into Prompt Composer and onward to WorkGraph.
+- Make WorkGraph artifact fetch authorize the document/artifact against tenant,
+  workflow/run, capability, and caller/service scope before reading object-store
+  bytes.
+- Remove plain `bucket/key`, `minio://`, and `s3://` dereference in
+  production-class modes unless an audited break-glass object-read permission is
+  present.
+- Persist artifact-source metadata on `PromptAssembly` and `PromptAssemblyLayer`:
+  document id, artifact id, run id, content hash, tenant id, decision id,
+  truncation state, and redaction mode.
+- Add tests for strict-mode Prompt Composer fetch with tenant/document context,
+  strict-mode missing tenant denial, non-strict raw `minioRef` denial in
+  production, wrong tenant document, wrong run artifact, optional artifact
+  omission with explicit warning, and authorized artifact injection.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
