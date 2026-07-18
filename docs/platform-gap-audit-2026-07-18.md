@@ -14229,6 +14229,66 @@ Required fixes:
   retry, failure after room creation, failure after claims/probes, and failure
   after spec update.
 
+### 305. Observability log ingest is not atomic or deduplicated
+
+Evidence:
+
+- `audit-governance-service/src/routes-logs.ts` normalizes every incoming log with
+  `id: randomUUID()`.
+- The same ingest path calls `storage.writeBatch(logs)` before inserting rows into
+  `audit_governance.observability_logs`.
+- After raw storage succeeds, the route inserts each normalized log row one at a
+  time with separate `query(...)` calls; there is no ingest batch row,
+  transaction-spanning manifest, recovery cursor, or cleanup path for a later DB
+  insert failure.
+- Filesystem log storage appends raw NDJSON to service/day files and returns
+  byte pointers; S3 log storage writes a UUID-named NDJSON object per batch, but
+  neither backend makes the subsequent database index insert idempotent.
+- `audit_governance.observability_logs` has only the UUID primary key plus raw
+  storage URI/offset/byte columns; it has no source event id, producer sequence,
+  source file/inode/offset key, batch id, or unique fingerprint.
+- `bin/log-forwarder.py` advances its local file offsets only after `/logs/batch`
+  succeeds. If the central service writes raw storage and then fails before
+  returning success, the forwarder retries the same physical log lines and the
+  server assigns fresh UUIDs.
+- `queueLogExports(logs)` runs after row inserts and writes one export payload per
+  ready target without an ingest batch id, so duplicate ingest retries can also
+  duplicate vendor export queue entries.
+
+Impact:
+
+- A transient DB failure after raw storage succeeds can leave raw NDJSON records
+  that are not searchable from `/operations/logs`, `/logs/search`, or trace
+  timelines.
+- A partial insert failure can create a split-brain batch where some records are
+  indexed, some only exist in raw storage, and the caller sees a failed request
+  that is retried as a new logical batch.
+- Retrying the same bare-metal log lines after a lost response or state-file loss
+  can produce duplicate central rows and duplicate Datadog/Splunk/http-json
+  export queue items with different platform log ids.
+- Operators cannot reliably answer whether two matching log records represent two
+  real events, a retry replay, or an orphaned raw batch being indexed later.
+- For governance evidence, the log lake is still weaker than an at-least-once
+  append ledger because it lacks a durable ingest command, batch manifest, and
+  deterministic idempotency key.
+
+Required fixes:
+
+- Introduce an `ObservabilityIngestBatch` table keyed by tenant, producer,
+  source, source offset/fingerprint, and request idempotency key.
+- Accept or derive deterministic per-record ids from producer identity plus
+  source file/inode/offset/hash, OTLP event id, or an explicit caller-provided
+  `eventId`.
+- Make ingest a recoverable state machine: `RECEIVED`, `RAW_STORED`, `INDEXED`,
+  `EXPORTED`, `FAILED`, and `DEAD_LETTERED`, with visible repair/replay actions.
+- Store a batch manifest with raw object URIs, byte ranges, hashes, DB row ids,
+  export queue ids, and attempt metadata.
+- Queue exports from indexed row ids or batch ids, not from the in-memory request
+  array, and make export queue insertion idempotent per target and row/batch.
+- Add fault-injection tests for raw-storage success plus DB failure, partial row
+  insert failure, retry after lost response, state-file loss, duplicate
+  suppression, and export queue dedupe.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
