@@ -15974,6 +15974,69 @@ Required fixes:
   capabilities, and tenants; include browser snapshot ids in the same workflow
   authorization matrix as server `WorkflowInstance` ids.
 
+### 335. Agent profiles can bind prompt profiles without capability compatibility checks
+
+Evidence:
+
+- `workgraph-studio/apps/api/src/modules/agent-studio/agent-studio.router.ts:152-158`
+  exposes
+  `GET /api/agent-studio/capabilities/:capabilityId/prompt-profiles`, but the
+  handler ignores `capabilityId` and returns every prompt profile that
+  `listPromptProfiles(authHeader(req))` exposes.
+- `workgraph-studio/apps/api/src/lib/agent-and-tools/client.ts:506-514`
+  calls Prompt Composer `GET /api/v1/prompt-profiles` with no query parameter for
+  capability, owner scope, role, status, or intended agent profile.
+- Prompt Composer does enforce actor visibility in
+  `agent-and-tools/apps/prompt-composer/src/modules/prompts/prompt.service.ts:23-28`
+  through `profileScopeWhere(actor)`, but that answers "what can this actor see",
+  not "what profile is valid for this selected capability/agent role".
+- `agent-and-tools/apps/agent-runtime/src/modules/agents/agent.schemas.ts:31-36`
+  and `:89-98` validate `basePromptProfileId` only as a UUID for derive/create
+  profile requests.
+- `agent-and-tools/apps/agent-runtime/src/modules/agents/agent.service.ts:982-1007`
+  writes `basePromptProfileId: input.basePromptProfileId` when creating an agent
+  profile after checking capability ownership and tool-policy references, but
+  without checking the prompt profile's existence, status, owner scope, role, or
+  compatibility with `input.capabilityId`.
+- `agent-and-tools/apps/agent-runtime/src/modules/agents/agent.service.ts:1364-1400`
+  allows a derive request to override `basePromptProfileId` and then persists it
+  on the capability-scoped child template with the same missing compatibility
+  check.
+
+Impact:
+
+- Agent Studio can present prompt profiles that are merely visible to the user,
+  including global/shared profiles or profiles from another capability the user can
+  see, as if they were valid for the selected capability.
+- A capability owner can create an agent profile that points at a stale, missing,
+  inactive, wrong-role, or wrong-capability prompt profile; the failure may surface
+  much later during prompt assembly or runtime execution.
+- Capability-scoped prompt governance becomes weaker than tool-policy governance:
+  `defaultToolPolicyId` is checked against the capability, while
+  `basePromptProfileId` is accepted as an opaque UUID.
+- Audit evidence for an agent profile cannot prove that the selected base prompt
+  profile was approved for that capability, role, tenant, or source-lock policy at
+  the time of profile creation.
+
+Required fixes:
+
+- Add a Prompt Composer lookup/validation endpoint for intended usage:
+  `GET /api/v1/prompt-profiles?capabilityId=&roleType=&usage=agent-profile` and
+  `POST /api/v1/prompt-profiles/:id/validate-binding`.
+- Make WorkGraph Agent Studio pass the selected capability and role when listing
+  prompt profiles, and label global profiles separately from capability-owned
+  profiles.
+- In Agent Runtime create/derive/update/restore paths, validate
+  `basePromptProfileId` against Prompt Composer before persisting:
+  exists, active/published, actor can view, tenant matches, owner scope is global
+  or the same capability, and role/usage constraints match.
+- Persist a prompt-profile binding snapshot on the agent template version:
+  profile id, version, owner scope, content hash/digest, validation decision id,
+  tenant, and validated-at timestamp.
+- Add tests for missing profile ids, inactive profiles, wrong-capability profiles,
+  wrong-role profiles, cross-tenant ids, visible-but-incompatible shared profiles,
+  and a valid same-capability/global profile binding.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
