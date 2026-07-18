@@ -15074,6 +15074,58 @@ Required fixes:
   completion does reset it, caller-supplied `lastReviewedAt` is rejected or
   ignored, and aging queues remain stable across cosmetic PATCHes.
 
+### 319. Failed capability-impact LLM parses can drop token and cost evidence
+
+Evidence:
+
+- `defaultCapabilityImpactLlm.complete(...)` calls Context Fabric and returns
+  `text`, `traceId`, `totalTokens`, and `estimatedCost`.
+- `runCapabilityImpactAssessments(...)` awaits that LLM response, then immediately
+  calls `parseCapabilityImpactResult(response.text)`.
+- `parseCapabilityImpactResult(...)` throws when the response does not contain a
+  parseable JSON object or when the object fails the zod output contract.
+- The successful path writes `tokensUsed`, `estimatedCostUsd`, `traceId`, and
+  parsed recommendations to `CapabilityImpactAssessment`, then increments
+  `SpecificationProject.tokenUsed` and optionally `costUsedUsd`.
+- The catch block for the same try/catch writes only `status: 'FAILED'`, an error
+  message, `traceId`, and `assessedAt`; it does not write `response.totalTokens`,
+  `response.estimatedCost`, raw-response hash, parser error details, or increment
+  the project usage counters.
+- Because `response` is scoped inside the try block, the catch block cannot access
+  usage metadata from an LLM call that succeeded but produced malformed output.
+
+Impact:
+
+- A capability-impact assessment can spend model tokens and money but show zero
+  usage on the assessment row and initiative budget when the model response is
+  malformed.
+- Initiative token guardrails and cost dashboards understate actual usage for
+  failed parse/validation attempts.
+- Operators can see a failed assessment, but cannot distinguish "provider never
+  returned" from "provider returned invalid JSON after consuming budget" without
+  checking external traces.
+- Repeated retries against a prompt that returns invalid JSON can silently burn
+  budget outside the Synthesis hub's visible token ledger.
+- Audit and dispute reviews lack a raw-response hash or parse diagnostic that
+  proves what failed and whether the output contract or the model response was at
+  fault.
+
+Required fixes:
+
+- Split the provider call from output parsing so usage metadata is captured in a
+  durable assessment attempt row before parsing begins.
+- On parse or schema failure, persist `tokensUsed`, `estimatedCostUsd`, provider
+  trace id, raw-response hash, parser error path, and validation issue summary.
+- Increment initiative token/cost usage for every provider call that returned
+  authoritative usage, regardless of parse success.
+- Add a terminal status such as `FAILED_INVALID_OUTPUT` so UI and operators can
+  distinguish malformed model output from transport/governance/provider failure.
+- Include parse-failure attempts in audit/outbox events and Synthesis budget
+  displays.
+- Add tests where the LLM returns valid usage plus invalid JSON, invalid schema,
+  empty response, and provider failure, proving only actual provider calls consume
+  visible budget while every failure class is explainable.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
