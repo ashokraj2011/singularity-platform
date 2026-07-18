@@ -15524,6 +15524,67 @@ Required fixes:
   capability, fails when the project has no active capability, rejects
   cross-tenant board/room ids, and emits receipts with the expected capability.
 
+### 327. Business Alignment mutation routes share one generic Studio edit gate
+
+Evidence:
+
+- `app.ts` mounts `businessAlignmentRouter` at `/api/studio` behind
+  `authMiddleware, studioAuthz`.
+- `studio-authz.ts` maps every Studio write to `workflow:update` on
+  `__platform__` with a broad `StudioProject` resource type. It does not resolve
+  the target initiative, primary capability, sponsor, objective owner, finance
+  role, or business-alignment action.
+- `business-alignment.router.ts` exposes business-critical mutation routes under
+  that generic gate:
+  - `POST /business-alignment/objectives`
+  - `PATCH /business-alignment/objectives/:objectiveId`
+  - `POST /business-alignment/projects/:projectId/milestones`
+  - `PATCH /business-alignment/risks/:riskId`
+  - `POST /business-alignment/projects/:projectId/readouts`
+  - `POST /business-alignment/projects/:projectId/change-requests`
+  - `PUT /business-alignment/projects/:projectId/taxonomy-mappings`
+- `requestBusinessReadoutSponsorApproval(...)` and
+  `requestBusinessChangeSponsorReview(...)` call `assertCanRequestApproval(...)`,
+  but objective creation/update, milestone creation, risk mitigation/status
+  updates, readout generation, change-request creation, and taxonomy mapping
+  updates do not perform a route-specific live authorization decision.
+- Existing gap 102 covers sensitive Business Alignment exports. This is a
+  separate write-path issue: who may change funded intent, milestone evidence,
+  risk posture, readouts, and external handoff metadata.
+
+Impact:
+
+- Any user with broad Studio edit permission may be able to create or change
+  funded objectives, milestone definitions, risk mitigations, sponsor readouts,
+  change-request drafts, and Jira/cost-center mappings for an initiative they do
+  not own.
+- Business Alignment is used as executive evidence. If objective and milestone
+  edits are not capability/sponsor/finance-authorized, signed readouts can be
+  generated from metadata that was never governed by the correct owner.
+- A capability owner, sponsor, finance controller, and product author cannot be
+  separated cleanly; they all collapse into the same `workflow:update`
+  permission.
+- Audit events record that a business object changed, but they do not include an
+  explicit business authorization decision id, required permission, or owning
+  capability context for the mutation.
+
+Required fixes:
+
+- Add explicit business permissions such as `business:objective:create`,
+  `business:objective:update`, `business:milestone:manage`,
+  `business:risk:update`, `business:readout:generate`,
+  `business:change_request:create`, and `business:taxonomy:update`.
+- Resolve the affected project/objective/risk/readout/change request before the
+  mutation, then authorize against tenant, `primaryCapabilityId`, sponsor/product
+  owner, objective owner, finance role, and action-specific permission.
+- Keep `studioAuthz` as a coarse entry gate only; add business-alignment
+  authorization helpers inside the service/router before every write.
+- Include decision id, policy version, required permission, project id,
+  capability id, and trace id in business audit events.
+- Add negative API tests for ordinary Studio editors attempting cross-capability
+  objective updates, milestone creation, risk closure, readout generation,
+  change-request creation, and taxonomy updates.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
