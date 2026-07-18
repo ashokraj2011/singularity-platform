@@ -12983,6 +12983,119 @@ Required fixes:
   Work Hub component and includes the expected capability, routing, evidence,
   and contract-bound controls.
 
+### 280. Routing policies and WorkItem triggers use broad workflow permissions instead of automation-specific permissions
+
+Evidence:
+
+- `workflowTemplate.ts` maps generic workflow actions to IAM permissions:
+  `edit` becomes `workflow:update`, `delete` becomes `workflow:delete`, and
+  `route` / `claim` become `workflow:assign`.
+- `assertCapabilityPermission(...)` accepts a generic `WorkflowAction` and
+  applies that generic permission to any supplied `resourceType`; it does not
+  switch `WorkItemRoutingPolicy` or `WorkItemTrigger` to a dedicated permission
+  vocabulary.
+- `work-item-routing.router.ts` creates and updates routing policies with
+  `assertCapabilityPermission(..., 'edit', 'WorkItemRoutingPolicy', ...)` and
+  deletes them with `assertCapabilityPermission(..., 'delete',
+  'WorkItemRoutingPolicy', ...)`.
+- The same router creates, updates, and deletes WorkItem triggers with generic
+  `edit`, `create`, and `delete` checks. Capability-less triggers are checked
+  against `__platform__`, but still through the generic workflow permission map.
+- `singularity-iam-service/app/seed/default_permissions.py` seeds workflow
+  permissions such as `workflow:create`, `workflow:update`,
+  `workflow:delete`, `workflow:execute`, `workflow:assign`,
+  `workflow:event:publish`, and operations permissions, but it does not seed
+  `workflow:routing_policy:*` or `workflow:trigger:*` permissions.
+- The default `workflow_designer` role includes `workflow:update`, so the same
+  capability role used to edit workflow templates can also be enough to change
+  routing policies and event/schedule/webhook trigger definitions.
+
+Impact:
+
+- Template design authority is coupled to production automation authority. A
+  user who should only edit workflow structure may also be able to change which
+  WorkItems auto-route, which workflows auto-start, and which external events
+  create work.
+- Enterprises cannot grant or revoke trigger/routing administration separately
+  from workflow template updates.
+- Audit evidence says the user had `workflow:update` or `workflow:delete`, not
+  that they had explicit authority to manage event intake and routing
+  automation.
+- The safer checks already added for target workflow startability do not solve
+  this separation-of-duties problem; they only prove the selected workflow can
+  be started.
+
+Required fixes:
+
+- Add dedicated IAM permissions such as `workflow:routing_policy:view`,
+  `workflow:routing_policy:manage`, `workflow:routing_policy:delete`,
+  `workflow:trigger:view`, `workflow:trigger:manage`, and
+  `workflow:trigger:delete`.
+- Replace the generic `WorkflowAction` mapping for `WorkItemRoutingPolicy` and
+  `WorkItemTrigger` with resource-specific authorization helpers and decision
+  logging.
+- Update default roles so workflow designers can design templates without
+  automatically owning event intake and routing automation; create a separate
+  workflow automation administrator role.
+- Add regression tests proving a user with `workflow:update` but without the
+  trigger/routing permissions cannot create, edit, delete, activate, replay, or
+  auto-start routing automation.
+
+### 281. Governance Gate receipts lose active policy evaluation identity and advisory details
+
+Evidence:
+
+- `GovernanceGateExecutor.activateGovernanceGate(...)` calls
+  `evaluateActiveGovernancePolicies(...)` before resolving local and overlay
+  controls.
+- `evaluateGovernancePolicy(...)` creates durable `GovernancePolicyEvaluation`
+  rows with `policyId`, `policyVersion`, `instanceId`, `nodeId`, `workItemId`,
+  `evidence`, `missing`, and `result`.
+- The gate converts only `policyEvaluation.blocked` into local blocking controls
+  with control keys like `POLICY:${policy.id}:${key}`. Those controls include the
+  policy id in a string, but not the policy version, evaluation id, evaluated
+  status, evidence digest, or full missing/check result.
+- Advisory policy results are not converted into checks at all. The executor only
+  appends a note such as `"N advisory governance policy warning(s)"` to
+  `gate.note`.
+- `blockNode(...)` and `emitNonBlock(...)` create `GOVERNANCE_GATE_EVIDENCE`
+  receipts containing only `instanceId`, `nodeId`, `status`, `mode`, `checks`,
+  and `blocked`. They do not include `GovernancePolicyEvaluation` ids, active
+  policy ids/versions, or advisory warning details.
+- The run viewer's blocked-detail extraction reads generic keys such as
+  `approvalRequestId`, `code`, `blockedCode`, and `retryable`, but there is no
+  searched UI path that links a Governance Gate node to the persisted
+  `GovernancePolicyEvaluation` rows.
+
+Impact:
+
+- A run can correctly evaluate an active governance policy, but the main gate
+  evidence shown in receipts and the run cockpit cannot prove exactly which policy
+  version and evaluation row caused the warning or block.
+- Advisory governance policy warnings become a count, not actionable evidence;
+  operators cannot see which advisory policy warned, what was missing, or whether
+  it was intentionally accepted.
+- Blocking controls from policies are harder to audit because the policy id is
+  embedded in a synthetic control key rather than linked to an immutable
+  policy-version/evaluation record.
+- Evidence packs and trace views may show a Governance Gate pass/warn/block
+  without enough correlation to reconstruct the governed policy decision later.
+
+Required fixes:
+
+- Add `policyEvaluations` to the Governance Gate output with
+  `evaluationId`, `policyId`, `policyVersion`, `policyName`, `mode`, `status`,
+  `missing`, `checks`, and an evidence/content digest.
+- Include both blocked and advisory policy evaluations in
+  `GOVERNANCE_GATE_EVIDENCE` receipts and outbox payloads.
+- Convert advisory warnings into first-class gate checks with severity `warning`,
+  while keeping them non-blocking under advisory mode.
+- Update the run cockpit and trace cockpit to link Governance Gate policy checks
+  to the persisted `GovernancePolicyEvaluation` row and active policy version.
+- Add tests for blocking policy, advisory policy, mixed overlay-plus-policy gate,
+  policy evaluation failure, and evidence-pack reconstruction from only receipts
+  plus evaluation ids.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
