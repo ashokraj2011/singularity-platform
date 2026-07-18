@@ -15634,6 +15634,55 @@ Required fixes:
   rejected in enterprise mode, real model receipts are recorded, and omitted
   browser values cannot hide server-observed usage.
 
+### 329. Codegen freeze and generate routes accept caller-supplied actor identity
+
+Evidence:
+
+- `app.ts` mounts `/api/codegen` behind `authMiddleware`, so the authenticated
+  caller is available as `req.user`.
+- `parseGenerateBody(...)` accepts `actorId` from either request JSON
+  `body.actorId` or the `x-actor-id` header.
+- `POST /api/codegen/spec/freeze` and `POST /api/codegen/generate` compute
+  `const actorId = parsed.actorId ?? req.user?.userId`, so the caller-provided
+  actor id overrides the authenticated user.
+- `upsertSpec(...)` stores that actor in `CodegenSpec.createdById`.
+- `freezeSpec(...)` records the same actor id into every
+  `CodegenSpecLifecycleEvent`.
+- `createRunReceipt(...)` receives the same actor id and creates Codegen run
+  evidence, while the durable receipt body has no authenticated-subject field
+  that would expose the override.
+- Searched Codegen tests only cover the Platform Web service-token boundary; no
+  searched test rejects `body.actorId` or `x-actor-id` spoofing.
+
+Impact:
+
+- Any authenticated Codegen caller can make a spec freeze, lifecycle transition,
+  generation run, and receipt appear to have been performed by another user or
+  service principal.
+- Codegen evidence can be used in SDLC delivery and Workgraph evidence packs, so
+  forged actor attribution weakens auditability even when the generated files are
+  otherwise deterministic.
+- Enterprise approval, separation-of-duties, and incident review workflows cannot
+  trust `createdById` or lifecycle `actorId` on Codegen records unless they also
+  reconstruct the HTTP caller from external logs.
+- A future workflow stage that relies on Codegen receipts may accept an artifact
+  whose apparent generator is not the authenticated actor that invoked the route.
+
+Required fixes:
+
+- Remove `actorId` and `x-actor-id` from user-facing Codegen freeze/generate
+  requests. Use `req.user.userId` for human callers.
+- Allow service-principal actor delegation only through a verified service token
+  with explicit delegation scope, recording both `authenticatedSubjectId` and
+  `effectiveActorId`.
+- Persist both authenticated caller and effective actor on `CodegenSpec`,
+  `CodegenRun`, lifecycle events, and receipts, with a delegation reason and
+  policy decision id when they differ.
+- Reject or ignore caller-supplied actor ids in enterprise mode and return a
+  clear validation error for attempts to spoof identity.
+- Add API tests for JSON `actorId`, `x-actor-id`, service-principal delegation,
+  receipt attribution, and lifecycle event attribution.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
