@@ -12423,6 +12423,220 @@ Required fixes:
   ambiguous WorkItem code, wrong installation id, and authorized tenant-specific
   registration.
 
+### 269. Concept Archive embeddings bypass governed LLM/runtime egress controls
+
+Evidence:
+
+- `archive.service.ts` calls `resolveEmbedding(text)` during card staging when
+  `CONCEPT_ARCHIVE_EMBEDDING_URL` is configured.
+- `resolveEmbedding(...)` reads the target URL and bearer token directly from
+  `CONCEPT_ARCHIVE_EMBEDDING_URL` and `CONCEPT_ARCHIVE_EMBEDDING_TOKEN`, then
+  sends the staged concept title and summary to that URL with `fetch(...)`.
+- The URL is not resolved through LLM Routing, Context Fabric, MCP runtime
+  bridge, service-token policy, provider allowlists, or the board-ingestion SSRF
+  guard.
+- The function accepts any configured URL string, uses the same token for all
+  tenants/archives, and has no tenant, project, capability, actor, trace, or
+  data-classification context in the request.
+- Non-OK responses, parsing issues, and network errors are swallowed and return
+  `{}`, causing silent fallback to lexical duplicate detection.
+- `docs/concept-archive.md` documents this as an optional embedding path and
+  explicitly says embedding failure falls back to lexical checks.
+- Search found no dedicated contract tests for URL allowlisting, private-network
+  rejection, token scoping, tenant-specific embedding providers, audit events, or
+  visible degraded status for this Concept Archive embedding path.
+
+Impact:
+
+- Sensitive early-stage strategy, customer evidence, assumptions, and concept
+  summaries can leave WorkGraph through an arbitrary server-configured endpoint
+  that is outside the platform's normal LLM/runtime governance model.
+- A compromised or misconfigured embedding URL can become a data-exfiltration
+  path from Synthesis without the runtime bridge, Context Fabric, or audit
+  controls seeing the call.
+- Because failures are silent, operators may believe semantic duplicate checks
+  are active while the system is actually running lexical-only matching.
+- A single global embedding token makes tenant-specific rotation, revocation,
+  provider readiness, and egress evidence impossible.
+- Evidence packs cannot prove which embedding provider/model was used, whether
+  data was sent off-platform, or why a duplicate decision was lexical versus
+  embedding-assisted.
+
+Required fixes:
+
+- Route Concept Archive embeddings through the same governed LLM/routing layer
+  used by other model calls, or introduce a dedicated governed embedding
+  provider registry with tenant/capability allowlists.
+- Apply SSRF/private-network controls and provider allowlists before any
+  embedding URL is contacted.
+- Include tenant id, actor id, project id, primary capability id, trace id, data
+  classification, and provider alias in every embedding request and receipt.
+- Replace the global embedding token with environment-indirection plus
+  tenant/provider policy, and never expose the secret value to API/UI responses.
+- Surface embedding readiness and degraded lexical-only fallback in Operations
+  and the Concept Archive UI.
+- Add tests for unsafe URLs, localhost/private network targets, provider
+  failures, token absence, tenant/provider routing, audit receipt emission, and
+  lexical fallback visibility.
+
+### 270. Studio co-edit relay accepts arbitrary opaque document streams under a visible project
+
+Evidence:
+
+- `studio-projects.router.ts` exposes
+  `POST /projects/:projectId/coedit` with `docKey` as any non-empty string up
+  to 120 characters and `updates` as up to 200 strings of 200,000 characters
+  each.
+- `syncCoedit(...)` in `studio-coedit.service.ts` only verifies that the caller
+  can see the project through `getProject(projectId)`, then stores updates under
+  the key `${projectId}::${docKey}` in an in-memory `Map`.
+- The service does not validate that `docKey` refers to an existing board,
+  specification section, archive card, room, or other first-class Synthesis
+  resource.
+- The server treats Yjs updates as opaque base64 strings and never decodes,
+  validates, hashes, redacts, or bounds them beyond the per-request string
+  length and a soft `MAX_LOG = 20_000` update cap.
+- `useBoardDoc.ts` uses doc keys such as `board:<boardId>`, but the API accepts
+  any caller-supplied doc key for the project, so hidden or typoed streams can
+  be created without resource ownership.
+- The co-edit log is memory-local and comments state that a multi-instance
+  deploy would need a shared store; there is no persistent index, cleanup job,
+  resource binding table, or audit event for arbitrary doc streams.
+- Existing audit findings cover durable board-event divergence, but not this
+  separate resource-binding and memory/authorization gap for arbitrary co-edit
+  documents.
+
+Impact:
+
+- A user with access to one project can create opaque co-edit documents that are
+  not tied to a governed board or Synthesis artifact, making them invisible to
+  normal evidence, retention, audit, and cleanup paths.
+- Typos or stale UI code can fork collaboration state into an untracked doc key,
+  which makes board state harder to reconcile and support.
+- Large opaque updates can consume process memory until the soft cap is reached,
+  and the cap drops old updates in a way that can strand new joiners without a
+  durable snapshot.
+- Because updates are not typed or resource-bound, the platform cannot enforce
+  per-board locks, archive freeze rules, DLP/redaction, sensitive-field
+  controls, or resource-specific edit permissions on live collaborative edits.
+- In horizontally scaled deployments, users connected to different API workers
+  can see different live board states because the relay is process-local.
+
+Required fixes:
+
+- Replace free-form `docKey` with typed document references such as
+  `{resourceType, resourceId, surface}` and verify that the referenced resource
+  belongs to the project and the caller has edit access.
+- Bind each live co-edit document to a durable row with tenant, project,
+  resource id, lifecycle state, last activity, owner, retention policy, and
+  cleanup status.
+- Move co-edit updates to a shared store or durable event stream for
+  multi-instance deployments, with snapshotting for late joiners.
+- Enforce per-resource lifecycle guards, including board/branch status, archive
+  freeze, specification lock, and read-only historical views before accepting
+  updates.
+- Add request-size, per-document, per-user, and per-tenant rate limits and
+  memory quotas.
+- Emit audit/activity records for doc creation, first sync, high-water updates,
+  cleanup, and rejected writes.
+- Add tests for wrong project/board pairs, arbitrary doc keys, locked resources,
+  large update floods, multi-user late join, dropped-log recovery, and
+  multi-instance behavior with a shared relay backend.
+
+### 271. Policy Check nodes pass by default with a local allow engine
+
+Evidence:
+
+- `PolicyCheckExecutor.ts` resolves the node engine as
+  `cfgString(node, 'engine') ?? cfgString(node, 'policyEngine') ??
+  'local_allow'`.
+- The only special engine implemented is `formal_verifier`; every other engine
+  falls through to the default branch, updates the node to `COMPLETED`, and
+  returns `{ policyCheck: { engine, status: 'PASSED' } }`.
+- When `engine=formal_verifier` but formal verification is disabled,
+  `recordFormalDisabledSkip(...)` is called, the node is completed, and the
+  executor returns `passed: true` with `status: 'SKIPPED'`.
+- The designer and node catalog label `POLICY_CHECK` as "Policy Check" and say
+  it checks a governance policy before the workflow continues, but the runtime
+  path does not call `governance-policy.service.ts`, IAM governance resolution,
+  a named policy registry, or a typed rule evaluator.
+- `GovernanceGateExecutor` now has richer policy, overlay, evidence, waiver,
+  and formal-binding logic, but `POLICY_CHECK` remains a separate legacy
+  executor with a pass-by-default path.
+- Search found no audit entry or contract test proving `POLICY_CHECK` fails
+  closed when the engine is missing, unknown, disabled, or points at a named
+  policy that cannot be evaluated.
+
+Impact:
+
+- A workflow can contain a node that visually reads as a governance/policy gate
+  while runtime behavior is a no-op pass unless the author explicitly chose the
+  one implemented formal verifier engine.
+- Typos such as `policyEngine: opa` or `engine: governance_policy` are not
+  rejected; they are recorded as the engine name and treated as passed.
+- In deployments where formal verification is disabled, a formal policy check
+  reports skipped but still allows downstream release, push, or event-emission
+  stages to continue.
+- Operators comparing `POLICY_CHECK` and `GOVERNANCE_GATE` may assume both are
+  enterprise gates, but they enforce very different contracts.
+
+Required fixes:
+
+- Make `POLICY_CHECK` either a compatibility alias for `GOVERNANCE_GATE` or a
+  thin executor that evaluates a named active `GovernancePolicy`.
+- Fail closed for missing, unknown, disabled, or unavailable policy engines in
+  production/strict mode.
+- Require explicit `mode: warn|block|audit` if a policy check is intended to be
+  advisory; never default to pass.
+- Surface `SKIPPED` policy checks as warnings or blocks in the run cockpit
+  rather than full completion.
+- Add tests for missing engine, unknown engine, formal disabled, named
+  governance policy pass/fail, advisory mode, and strict-mode fail-closed.
+
+### 272. Verifier nodes pass empty evidence by default
+
+Evidence:
+
+- `VerifierExecutor.ts` defaults `scope` to `PRIOR`, gathers consumables from
+  immediately upstream nodes, and reads `requireDocuments` with fallback
+  `false`.
+- If no matching documents are found, the executor sets
+  `const passed = !requireDocuments`.
+- The returned output can be
+  `{ verifier: { status: 'PASSED', total: 0, failed: 0, documents: [],
+  note: 'No documents produced by the preceding stage to verify.' } }`.
+- The node is not marked blocked unless `requireDocuments` is explicitly true.
+- The UI labels `VERIFIER` as a governance/reliability node, and the executor
+  comment says it verifies documents produced by preceding stages and blocks
+  when any document fails standards.
+- Search found no audit entry or contract test proving verifier nodes fail when
+  expected evidence is missing.
+
+Impact:
+
+- A release/readiness workflow can include a Verifier node that appears to check
+  design, QA, security, or compliance documents but passes because an upstream
+  stage produced no consumables or used a mismatched document name.
+- Optional-by-default verification makes template errors and broken artifact
+  wiring look like successful verification.
+- Downstream Governance Gate, Git Push, Event Emit, or Evidence Pack stages can
+  rely on a "passed" verifier with zero documents reviewed.
+- Operators must inspect the note and `total: 0` manually to notice that the
+  verification step did not actually verify anything.
+
+Required fixes:
+
+- Make verifier nodes require at least one document by default in
+  production/strict mode and in all release/security/readiness templates.
+- Add explicit `allowEmpty: true` or `requireDocuments: false` as an advisory
+  exception, and render it visually as advisory/no evidence.
+- Validate node configuration at design time: selected document names or scopes
+  should be resolvable from upstream artifacts or declared workflow outputs.
+- Treat `total: 0` as a warning/block in the run cockpit, evidence pack, and
+  workflow health views.
+- Add tests for no upstream documents, mismatched filters, prior versus all
+  scope, optional/advisory empty mode, and strict-mode missing evidence.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
