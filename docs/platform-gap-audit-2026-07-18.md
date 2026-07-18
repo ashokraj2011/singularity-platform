@@ -14958,6 +14958,69 @@ Required fixes:
   DLP failures prevent send, and successful sends produce durable delivery and
   trace evidence.
 
+### 317. Business objective primary initiative can drift from linked initiatives
+
+Evidence:
+
+- `BusinessObjective` stores both `studioProjectId` as a convenient primary
+  initiative pointer and `BusinessObjectiveProject` rows as the many-initiative
+  link table.
+- `createObjectiveInternal(...)` deduplicates `projectIds`, appends
+  `studioProjectId` when present, validates every referenced
+  `SpecificationProject` in the current tenant, writes `studioProjectId`, and
+  creates matching `BusinessObjectiveProject` rows.
+- `updateObjectiveInternal(...)` validates only `input.projectIds` when that
+  array is present. It does not validate `input.studioProjectId` independently,
+  does not require it to belong to the same tenant, and does not require it to be
+  one of the linked `projectIds`.
+- When `projectIds` are patched, `updateObjectiveInternal(...)` deletes and
+  recreates the link-table rows but leaves the old `studioProjectId` in place
+  unless the caller also supplies a replacement primary project id.
+- The PATCH route accepts `objectiveSchema.partial()`, so a caller can send only
+  `studioProjectId`, only `projectIds`, or both without a server-side invariant
+  that the primary pointer and link table describe the same initiative set.
+- Objective listing uses
+  `OR: [{ studioProjectId: projectId }, { projectLinks: { some: ... } }]`, so a
+  stale primary pointer continues to make the objective appear under the old
+  initiative even after the link table was moved.
+- Traceability and spend exports use the same `studioProjectId OR projectLinks`
+  pattern, so drift affects exported evidence and not only the on-screen
+  objective list.
+
+Impact:
+
+- A business objective can appear attached to multiple initiatives even after an
+  operator intended to move it, or it can keep a primary initiative that is not
+  represented by the explicit link table.
+- Value, spend, objective coverage, sponsor readouts, and traceability exports
+  can include objectives for the wrong initiative, undermining the business
+  alignment layer that is supposed to explain why work is funded.
+- Capability ownership becomes ambiguous because initiative ownership is now the
+  route back to capability, budget, sponsor lane, and generated WorkItems.
+- Cross-tenant or stale-id attempts may fail only through database foreign-key
+  behavior instead of returning a clear validation error with tenant/capability
+  context.
+
+Required fixes:
+
+- Define one source of truth for objective-to-initiative membership. Prefer the
+  link table, with `studioProjectId` either removed, derived, or maintained by a
+  strict invariant.
+- On create and update, validate `studioProjectId` against current tenant,
+  active initiative status, and capability access, then require it to be included
+  in `projectIds`.
+- When `projectIds` change without an explicit primary id, set
+  `studioProjectId` to the first linked project or reject the request as
+  ambiguous.
+- Add a database constraint, trigger, or transactional service invariant so
+  `BusinessObjective.studioProjectId` cannot point outside the objective's
+  `BusinessObjectiveProject` set.
+- Add a repair/doctor check for existing objectives where the primary pointer is
+  missing from the link table or points at a project from another tenant.
+- Add tests for moving an objective between initiatives, clearing/replacing the
+  primary pointer, cross-tenant primary project ids, stale project ids, and
+  traceability/spend exports after objective relinking.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
