@@ -10170,6 +10170,264 @@ Required fixes:
   internal-token key scoping, unknown flag creation policy, production toggle
   approval, and audit event contents.
 
+### 229. IAM local login records failures but does not enforce lockout, throttling, or MFA
+
+Evidence:
+
+- `singularity-iam-service/app/auth/routes.py` implements `POST
+  /auth/local/login` by looking up a local account, verifying the bcrypt hash,
+  updating `last_login_at`, minting a bearer JWT, and recording `failed_login`
+  or `local_login` audit events.
+- The same route records a failed-login audit event for unknown users and bad
+  passwords, but it does not increment a failed-attempt counter, update a
+  lockout timestamp, call a rate limiter, inspect the caller IP/user agent, or
+  deny repeated attempts after a threshold.
+- `singularity-iam-service/app/models.py` defines `LocalCredential` with
+  `mfa_enabled` and `mfa_secret_ref`, but the login route never reads those
+  fields.
+- `singularity-iam-service/app/auth/schemas.py` defines `LoginRequest` with only
+  `email` and `password`; there is no `totp_code`, recovery code, MFA challenge,
+  or step-up decision in the API contract.
+- `singularity-iam-service/AUTHENTICATION.md` explicitly documents MFA as
+  future wiring: it says the table already has MFA columns, then shows example
+  code for how to extend `local_login()` and `LoginRequest`.
+- Exact searches under `singularity-iam-service/app` and
+  `singularity-iam-service/tests` found no implemented `lockout`, login
+  `rate_limit`, `failed_attempt`, `totp_code`, `refresh_token`,
+  `token_version`, or session-revocation path for human IAM sessions.
+
+Impact:
+
+- A password-spray or brute-force attack against local IAM accounts is limited
+  only by external infrastructure, not by the IAM service itself.
+- Operators can see failed-login events after the fact, but the platform does not
+  automatically slow, lock, or challenge the attacker.
+- Enabling `mfa_enabled` in the database would not actually require a second
+  factor at login, so the column can create a false enterprise-readiness signal.
+- Stolen browser bearer tokens remain valid until JWT expiry because there is no
+  session table, refresh-token rotation, token version, or per-session revocation
+  check for normal user tokens.
+- Production environments that temporarily use local password login during
+  setup, break-glass, or office-laptop testing have weaker controls than the
+  Identity UI and documentation imply.
+
+Required fixes:
+
+- Add a local-login protection service that tracks failed attempts by user,
+  normalized email, IP/subnet, tenant selector, and device fingerprint, with
+  exponential backoff and lockout.
+- Extend `LoginRequest` and the UI to support MFA challenge/verification when
+  `mfa_enabled` is true; store only secret references in a secrets manager.
+- Add recovery-code and break-glass flows that are audited and super-admin
+  approved, not ordinary password resets.
+- Introduce a server-side user session/token version table so logout, admin
+  revocation, password rotation, MFA reset, and tenant removal can invalidate
+  existing access tokens before JWT expiry.
+- Add production preflight warnings or refusal when `IAM_AUTH_MODE=local` is used
+  without lockout/MFA/break-glass policy.
+- Add tests for repeated failed login, unknown-user spray, locked-account login,
+  successful reset after lockout expiry, MFA-required login, missing/invalid TOTP,
+  token revocation after password rotation, and audit event contents.
+
+### 230. OIDC login state and nonce are browser-owned instead of server-bound
+
+Evidence:
+
+- `singularity-iam-service/app/auth/routes.py` exposes `GET
+  /auth/oidc/login-url`, generates `state` and `nonce` with
+  `secrets.token_urlsafe(24)`, returns both values to the browser, and includes
+  them in the provider authorization URL.
+- The same IAM service does not persist the generated state or nonce in a
+  server-side login-attempt table, signed HttpOnly cookie, cache entry, or
+  one-time challenge record.
+- `OidcCodeLoginRequest` and `OidcTokenLoginRequest` accept only `code` or
+  `id_token` plus optional `nonce`; neither request accepts `state`, so IAM
+  cannot verify that the callback corresponds to a server-issued authorization
+  request.
+- `_login_oidc_id_token(...)` passes the optional nonce to
+  `verify_oidc_id_token(...)`. If the caller omits nonce, `assert_oidc_nonce(...)`
+  intentionally does nothing because it only compares when `expected_nonce` is
+  truthy.
+- `agent-and-tools/web/src/components/identity/IdentityLoginPage.tsx` stores the
+  OIDC `state` and `nonce` in `localStorage`, and
+  `IdentityOidcCallbackPage.tsx` compares callback `state` against that local
+  value before sending `{ code, nonce }` to IAM.
+- `singularity-iam-service/tests/test_sso_config.py` asserts nonce mismatch
+  fails and nonce match passes, but it also asserts that passing `None` for the
+  expected nonce is accepted. The tests only verify the authorization URL
+  contains a state value; they do not prove server-side state storage,
+  one-time-use semantics, expiry, replay denial, or missing-nonce rejection.
+
+Impact:
+
+- IAM relies on the browser to preserve and validate OIDC CSRF/correlation state.
+  A different client, script, or compromised same-origin page can call the OIDC
+  code-login endpoint without presenting a server-issued state record.
+- OIDC nonce becomes optional at the security boundary. If the browser loses
+  localStorage state or a custom client skips the login-url step, IAM can still
+  exchange and accept an ID token without proving it belongs to a fresh browser
+  authorization request.
+- Login attempts are not one-time-use or expiry-bound from IAM's perspective, so
+  operators cannot audit or revoke a pending OIDC login challenge.
+- The implementation is fragile across multiple tabs, private browsing, browser
+  storage clearing, or embedded enterprise IdP flows because login correlation
+  exists only in local browser storage.
+- This weakens SSO enterprise readiness even though token signature, audience,
+  issuer, and domain checks are present.
+
+Required fixes:
+
+- Add a server-side OIDC login challenge table or signed HttpOnly cookie storing
+  state hash, nonce hash, issuer/client id, redirect URI, expiry, user agent/IP
+  fingerprint metadata, tenant hint, consumed-at, and audit trace id.
+- Require `state` on `/auth/oidc/code-login`, look up the unconsumed challenge,
+  compare nonce against the stored server value, and consume it atomically before
+  minting a platform token.
+- Make nonce required for code and token login in OIDC mode unless the provider
+  is explicitly configured for a tested flow that does not support nonce.
+- Reject replayed, expired, missing-state, missing-nonce, mismatched-nonce, and
+  wrong-redirect/client/issuer login attempts with audited failure reasons.
+- Keep browser localStorage only as a UI convenience, not as the authoritative
+  security state.
+- Add tests for multi-tab login, missing state, wrong state, expired challenge,
+  replayed code-login, missing nonce, wrong nonce, and callback after browser
+  storage loss.
+
+### 231. Audit Governance uses one shared service token for all producers and operations
+
+Evidence:
+
+- `audit-governance-service/src/routes-events.ts` defines `SERVICE_TOKEN =
+  process.env.AUDIT_GOV_SERVICE_TOKEN ?? ""` and `requireServiceAuth(...)`
+  accepts either `Authorization: Bearer <token>` or `X-Service-Token: <token>`.
+  It compares only against that one shared string.
+- The same middleware does not decode an IAM service JWT, check `kind=service`,
+  validate scopes, enforce tenant allowlists, bind allowed source services, or
+  attach an authenticated producer identity to the request.
+- `eventsRouter.use(requireServiceAuth, rateLimit)` protects audit ingest, but
+  `actorKey(...)` derives the rate-limit bucket from request body fields:
+  `source_service` and `tenant_id`. A caller with the shared token can therefore
+  choose the producer and tenant labels used for ingestion and throttling.
+- `ingestOne(...)` stores `source_service`, `actor_id`, `capability_id`, and
+  `tenant_id` from the parsed event payload. `AUDIT_GOV_ALLOWED_SOURCE_SERVICES`
+  can reject unknown source names, but the code comment says the empty default
+  disables the check and that per-service tokens are out of scope.
+- `audit-governance-service/src/routes-governance.ts` applies the same
+  `requireServiceAuth` to approvals, budget mutation, rate-limit mutation, and
+  authz decision routes. The route comments say platform-web and backend
+  services all inject `AUDIT_GOV_SERVICE_TOKEN`.
+- `audit-governance-service/src/routes-logs.ts` applies the same
+  `requireServiceAuth` to operational log ingestion, search, trace timelines,
+  alert rules, retention sweeps, export drains, and retry operations.
+- `audit-governance-service/src/routes-search.ts` gates audit search with the
+  same middleware and lets callers supply optional `tenantId`, `actorId`,
+  `traceId`, sources, and capability filters; facets are global over the last 30
+  days.
+- Existing searched tests cover timing-safe token comparison, bounded ingest
+  knobs, redaction, storage, and log operations, but not per-service scopes,
+  tenant-claim enforcement, producer/source binding, forged `source_service`,
+  forged `tenant_id`, or operation-specific audit-governance permissions.
+
+Impact:
+
+- Any service or proxy that can read the shared audit-governance token can write
+  events as any `source_service`, for any `tenant_id`, and can mutate budgets,
+  rate limits, approvals, and log operations.
+- A compromised producer can poison the audit ledger with another service's
+  identity, making forensic timelines and governance evidence less trustworthy.
+- Rate limiting can be bypassed or shifted by changing body-level source/tenant
+  labels because the bucket is not bound to authenticated producer claims.
+- Platform Web's proxy token becomes equivalent to all backend producer powers,
+  not just read-only operator search or redacted trace lookup.
+- Enterprise tenants cannot prove that an audit event, budget change, approval,
+  or log operation came from a producer authorized for that tenant and action.
+
+Required fixes:
+
+- Replace the raw shared token with IAM-signed service JWTs carrying
+  `service_name`, allowed route/action scopes, allowed source services, tenant
+  allowlists, expiry, key id, and token id.
+- Make `requireServiceAuth` verify JWT claims and expose an authenticated
+  producer context; reject raw shared tokens in production.
+- Derive `source_service` and tenant eligibility from the producer token, not
+  from untrusted request body fields; allow body values only when they match the
+  token's allowed claims.
+- Split scopes for event ingest, audit search, log ingest, log search, budget
+  mutate, approval decide/consume, rate-limit mutate, retention sweep, export
+  drain, and alert-rule management.
+- Filter search/facets/timeline/log results by the caller's tenant and scope,
+  with explicit break-glass/auditor scopes for global queries.
+- Add tests for producer A attempting to write as producer B, tenant A token
+  writing tenant B events, read-only proxy token attempting mutation, forged
+  source-service rate-limit bypass, expired/revoked token, global facet denial,
+  and successful scoped producer ingestion.
+
+### 232. MCP session-token minting can escalate a scoped static bearer
+
+Evidence:
+
+- `mcp-server/src/app.ts` mounts `app.use("/mcp", bearerAuth)` and then mounts
+  `tokensRouter` before the per-route `requireMcpScope(...)` guards.
+- `mcp-server/src/mcp/tokens.ts` protects `POST /mcp/tokens` only with
+  `requireStaticBearer(...)`, which checks that the presented bearer equals the
+  static `MCP_BEARER_TOKEN`.
+- The token mint schema accepts caller-supplied `subject`, `origin`, `client`,
+  `invocationId`, `agentRunId`, `capabilityId`, `scopes`, and `ttlSeconds`.
+  `scopes` is `z.array(z.string()).optional()` with no enum, allowlist,
+  maximum length, wildcard rejection, or subset-of-caller validation.
+- `mintMcpSessionToken(...)` writes `input.scopes` directly into the token
+  claims, defaulting to `["tools:list", "tools:call", "resources:read",
+  "events:read"]` when the caller omits scopes.
+- `hasMcpSessionScope(...)` treats any session token containing `"*"` as having
+  every MCP scope.
+- `MCP_STATIC_BEARER_SCOPES` was added so the static bearer is no longer an
+  invisible all-scopes credential, but `/mcp/tokens` does not check
+  `staticBearerHasScope(...)` or derive the minted scopes from the static
+  bearer allowlist.
+- `mcp-server/src/lib/http-auth.contract.test.ts` proves a static bearer can
+  mint a session token with requested scopes and that the session token can call
+  scoped routes, but it does not test that minted scopes are a subset of
+  `MCP_STATIC_BEARER_SCOPES`, that `"*"` is rejected, that unknown scopes are
+  rejected, or that subject/capability/origin claims are authorized.
+
+Impact:
+
+- An operator may configure `MCP_STATIC_BEARER_SCOPES=resources:read` expecting
+  the static bearer to be read-only, but the same bearer can mint a session token
+  with `tools:call`, `invoke`, or `"*"`.
+- A leaked static bearer can create long-lived session tokens for arbitrary
+  subjects, clients, capabilities, and origins, confusing run evidence and
+  ownership.
+- The scoped-bearer hardening can be bypassed without changing the static bearer
+  itself: mint a broader session token, then call the protected route with the
+  session token.
+- Revocation is only an in-memory `Map` in `session-token.ts`, so minted session
+  revocations disappear on MCP restart and cannot be coordinated across shared
+  server runtime replicas.
+- Enterprise runtime operators cannot prove that a session token's scopes,
+  subject, tenant/capability, and client identity were authorized by IAM or
+  Context Fabric.
+
+Required fixes:
+
+- Gate `/mcp/tokens` with a dedicated static scope such as
+  `tokens:mint`, and refuse minting unless `MCP_STATIC_BEARER_SCOPES` permits
+  that action.
+- Validate requested session scopes against a fixed MCP scope enum and require
+  them to be a subset of the caller's authenticated scopes; reject `"*"` outside
+  explicit break-glass/admin mode.
+- Do not accept arbitrary `subject`, `origin`, `client`, `capabilityId`, or
+  `agentRunId` from the request body unless they are signed by Context Fabric or
+  validated against an IAM/runtime enrollment record.
+- Add tenant/runtime/capability claims to MCP session tokens and enforce them in
+  `requireMcpScope(...)` where route semantics are tenant or workspace sensitive.
+- Persist session-token revocation and issuance metadata, or make session tokens
+  very short-lived and non-revocable with clear evidence of issuer and scope.
+- Add tests for static bearer with only `resources:read` attempting to mint
+  `tools:call`, wildcard scope rejection, unknown scope rejection, overlong TTL,
+  forged subject/capability, restart revocation behavior, and a valid scoped
+  mint through an authorized Context Fabric/runtime issuer.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
