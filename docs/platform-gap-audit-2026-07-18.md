@@ -15126,6 +15126,64 @@ Required fixes:
   empty response, and provider failure, proving only actual provider calls consume
   visible budget while every failure class is explainable.
 
+### 320. External taxonomy mappings can be attached to the wrong initiative
+
+Evidence:
+
+- `ExternalTaxonomyMapping` stores `studioProjectId`, `entityType`, `entityId`,
+  `externalSystem`, `externalType`, `externalLabel`, `costCenterRef`, and
+  metadata.
+- The model's uniqueness key is
+  `@@unique([tenantId, externalSystem, entityType, entityId])`; it does not
+  include `studioProjectId`.
+- `PUT /business-alignment/projects/:projectId/taxonomy-mappings` accepts
+  caller-supplied `entityType`, `entityId`, `externalSystem`, `externalType`,
+  `externalLabel`, `costCenterRef`, and `metadata`.
+- `upsertTaxonomyMappingInternal(...)` verifies only that the target project
+  exists. It does not verify that `entityId` belongs to that project, that the
+  `entityType` is one of the supported business-alignment entities, or that the
+  entity is still active/current.
+- The upsert lookup uses the tenant/system/type/entity tuple; if a mapping for
+  the same entity already exists under another initiative, the update branch sets
+  `studioProjectId` to the new `projectId`, effectively moving the mapping.
+- The Synthesis UI only offers local generation-plan rows in its dropdown, but
+  the API remains a direct path that can submit arbitrary ids and entity types.
+- `exportJiraCsvInternal(...)` loads all mappings for the current
+  `studioProjectId` and uses them to set Jira issue type, label, and cost center
+  for generation-plan rows.
+
+Impact:
+
+- A malformed or direct API request can attach a Jira/cost-center mapping to an
+  initiative even when the mapped entity belongs to a different initiative or
+  does not exist.
+- Updating a mapping for one initiative can silently move the mapping away from
+  another initiative because the unique key is global per tenant/entity, not
+  project-scoped.
+- Jira CSV exports can carry the wrong issue type, labels, or cost center,
+  confusing downstream delivery, finance, and traceability reporting.
+- Business alignment evidence can imply that a WorkItem or generation-plan row is
+  funded or tracked under a project that does not actually own that work.
+- Operators may trust the dropdown-based UI while integrations or scripts corrupt
+  the same table through the broader API contract.
+
+Required fixes:
+
+- Restrict `entityType` to an enum such as `GENERATION_PLAN_ROW`,
+  `BUSINESS_OBJECTIVE`, or `REQUIREMENT`, and validate each `entityId` against the
+  target initiative before upsert.
+- For `GENERATION_PLAN_ROW`, load the row through its generation plan and require
+  `plan.specificationProjectId = projectId` and tenant match.
+- Include `studioProjectId` in the uniqueness model, or reject attempts to move an
+  existing mapping between projects without an explicit governed transfer action.
+- Store the resolved owning entity type/project/version metadata on the mapping
+  so exports can verify it has not drifted.
+- Add audit/outbox events for create, update, and transfer of external taxonomy
+  mappings.
+- Add tests for arbitrary entity ids, cross-project row ids, stale/deleted rows,
+  duplicate mappings across two initiatives, and Jira export correctness after
+  mapping updates.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
