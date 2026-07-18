@@ -9867,6 +9867,178 @@ Required fixes:
   tenants, overlay snapshot reuse, waived hard gates, and evidence-pack
   generation.
 
+### 224. IAM-mirrored users can inherit stale local workflow grants by email
+
+Evidence:
+
+- WorkGraph IAM authentication lazily mirrors the IAM user into the local
+  `users` table. If no row exists for `iamUserId`, `mirrorIamUser(...)` falls
+  back to `findUnique({ where: { email: iamUser.email } })` and attaches the
+  incoming `iamUserId` to that existing local user.
+- That email-link path updates `iamUserId` and `displayName`, then reconciles only
+  the IAM-sourced admin role. It does not clear local `UserRole` rows, local
+  `teamId`, existing `TeamMember` rows, workflow creator ownership, or other
+  local grants tied to the reused WorkGraph user id.
+- Team mirroring adds IAM team memberships and updates the primary `user.teamId`
+  when IAM teams are present, but when IAM team lookup returns no teams or fails
+  it does not remove stale local team memberships or reset an old local `teamId`.
+- Workflow resource grants are evaluated before IAM capability checks:
+  `actorGrantSubjects(...)` builds local `USER:<workgraph-id>`,
+  `TEAM:<local-team-id>`, and `ROLE:<local-role-id>` subjects, and
+  `grantMatches(...)` allows matching `WorkflowAccessGrant` rows for those
+  subjects.
+- The workflow access-grant API accepts `USER`, `IAM_USER`, `TEAM`, `ROLE`, and
+  `CAPABILITY` subjects and stores only `subjectType` / `subjectId`; it does not
+  record whether a local user/team/role subject was IAM-mirrored, legacy-local, or
+  still active in IAM.
+
+Impact:
+
+- Switching a deployment from local users to IAM, or reusing an email address,
+  can cause an IAM-authenticated user to inherit stale local workflow ownership,
+  team grants, role grants, or explicit workflow access grants that IAM did not
+  issue.
+- A hardened IAM `/authz/check` decision can be bypassed for workflow resource
+  grants because WorkGraph may return `resource_grant` before consulting IAM for
+  the capability permission.
+- IAM team revocation is not enough if stale local `TeamMember` rows or `teamId`
+  remain in WorkGraph and existing workflow grants target those local teams.
+- Enterprise audits cannot prove whether a workflow allow came from current IAM
+  membership or from a historical local WorkGraph identity artifact.
+
+Required fixes:
+
+- In `AUTH_PROVIDER=iam`, stop binding IAM users to pre-existing local rows by
+  email unless an explicit one-time migration claims that mapping with audit
+  evidence and conflict review.
+- Mark local identity rows and grants with provenance, then ignore or reject
+  local `USER`, `TEAM`, and `ROLE` workflow grants for IAM-authenticated users
+  unless the subject is verified against current IAM membership.
+- On every IAM login or background sync, reconcile deletions as well as additions:
+  remove stale IAM-sourced team memberships and reset primary local team when IAM
+  no longer grants it.
+- Prefer `IAM_USER` and IAM team/capability subject ids for enterprise workflow
+  access grants; require a live IAM authorization check before honoring local
+  role/team grants in IAM mode.
+- Add migration tests for a local user with workflow grants, then IAM login with
+  the same email; revoked IAM team membership; stale local role grant; and
+  explicit local `TEAM` / `ROLE` workflow grants in IAM mode.
+
+### 225. Workflow access grants accept arbitrary subjects and action strings
+
+Evidence:
+
+- The workflow access-grant API schema allows `subjectType` values `USER`,
+  `IAM_USER`, `TEAM`, `ROLE`, and `CAPABILITY`, but it validates `subjectId` only
+  as a non-empty string and `action` only as a free-form string up to 80
+  characters.
+- `PUT /api/workflows/:id/access` checks only that the caller can edit the
+  workflow, loads the workflow tenant, and upserts the grant by
+  `(workflowId, subjectType, subjectId, action)`.
+- The route does not verify that a `USER` is active, an `IAM_USER` exists and
+  belongs to the workflow tenant, a `TEAM` belongs to the tenant, a `ROLE` is a
+  valid tenant/platform role, or a `CAPABILITY` is active and owned by the same
+  tenant.
+- The same route stores arbitrary action text. Runtime evaluation lowercases the
+  stored action and treats it as matching only when it equals the requested action
+  or `*`, but unsupported action names can still be persisted as apparent policy.
+- `WorkflowAccessGrant` has no foreign keys to users, teams, roles, IAM users, or
+  capabilities; it stores `subjectType` and `subjectId` as plain strings and
+  indexes them for lookup.
+- `grantMatches(...)` turns these stored strings into authorization decisions by
+  comparing them to local actor subjects and allows matching `ALLOW` grants before
+  performing the IAM capability permission check.
+
+Impact:
+
+- Editors can create grants for nonexistent, inactive, cross-tenant, misspelled,
+  or stale subjects, and the UI/API will present them as access policy even though
+  no live identity authority validated them.
+- If a stale local user/team/role later becomes active or is reused, an old grant
+  can unexpectedly become effective.
+- Free-form action strings create policy drift: operators can think they granted
+  or denied a permission while runtime ignores it, or they can accidentally create
+  `*` grants without an explicit elevated workflow-access-admin flow.
+- Enterprise access reviews cannot distinguish valid IAM-governed grants from
+  inert or stale local string grants without manually resolving every subject.
+
+Required fixes:
+
+- Replace free-form `action` with the canonical `WorkflowAction` enum, and make
+  wildcard grants a separate privileged operation that requires an explicit
+  workflow access administration permission.
+- Validate every grant subject against the authoritative tenant source before
+  write and before effective-access evaluation: IAM for IAM users/capabilities,
+  IAM-mirrored teams/roles where applicable, and local rows only in local-auth
+  development mode.
+- Store subject provenance, resolved display metadata, and validation status so
+  access reviews show whether a grant is live, stale, invalid, or pending
+  migration.
+- Revalidate grants on IAM sync, tenant membership revocation, team deletion,
+  capability archive, and role deletion; suspend or mark invalid grants rather
+  than leaving them silently matchable.
+- Add tests for nonexistent subjects, cross-tenant subjects, archived
+  capabilities, deleted teams/roles, wildcard grants, typo actions, deny
+  precedence, and later subject id reuse.
+
+### 226. Contract-bound WorkItem evidence can be mutated after lifecycle lock
+
+Evidence:
+
+- The normal `updateWorkItem(...)` path explicitly limits edits to
+  `SCHEDULED`, `QUEUED`, and `IN_PROGRESS`, rejects terminal states such as
+  `AWAITING_PARENT_APPROVAL`, `COMPLETED`, `CANCELLED`, and `ARCHIVED`, and blocks
+  detail edits when `detailsLocked` is true.
+- Contract-bound routes use a separate path. `loadVisibleWorkItem(...)` loads the
+  WorkItem with targets and checks view access, but it does not enforce
+  `status`, `detailsLocked`, `finalizationGeneration`, or target lifecycle state.
+- `POST /work-items/:workItemId/specification-bindings` calls only
+  `assertCanMutateWorkItem(..., 'edit')`, then supersedes the current binding and
+  creates a new `WorkItemSpecificationBinding`.
+- `POST /work-items/:workItemId/development-scopes` likewise checks only edit
+  permission before creating a `DevelopmentScope`.
+- `POST /development-scopes/:scopeId/handoffs` and
+  `POST /handoffs/:handoffId/publish` check only WorkItem edit permission before
+  creating a new handoff, superseding any published handoff, and replacing
+  `DevelopmentScope.currentHandoffGenerationId`.
+- `assertCanMutateWorkItem(...)` maps the action to IAM permission and target
+  capability checks; it does not reject terminal WorkItem states or locked
+  contract/evidence state.
+
+Impact:
+
+- A user with `workflow:update` on the target capability can rewrite the governing
+  specification binding, create extra scopes, or replace the current handoff after
+  implementation, reconciliation, approval, or even finalization has already
+  occurred.
+- Finalization records and evidence digests can describe the contract that was
+  current at completion, while the live WorkItem contract panels later show a
+  different binding/scope/handoff chain.
+- Replacing the current handoff after a submission can make previously valid
+  submissions and reconciliation runs look stale without an explicit rework,
+  cancellation, or generation bump.
+- Enterprise auditors cannot rely on the mutable contract-bound endpoints as the
+  live source of truth unless every read is pinned to a historical
+  finalization/binding/handoff generation.
+
+Required fixes:
+
+- Add a contract mutation guard that rejects binding, scope, handoff creation, and
+  handoff publication unless the WorkItem is in an allowed pre-execution state or
+  an explicit governed rework/change-request command is active.
+- Treat `AWAITING_PARENT_APPROVAL`, `COMPLETED`, `CANCELLED`, and `ARCHIVED` as
+  hard stops for contract mutation.
+- When changing a binding or publishing a replacement handoff after execution has
+  started, require a rework path that increments `finalizationGeneration`, marks
+  affected submissions/reconciliation runs stale, cancels/fences child workflow
+  runs, and records the approved reason.
+- Pin contract-panel reads to either "current mutable draft" or "finalized
+  evidence generation" so UI and evidence packs do not mix live state with
+  historical proof.
+- Add tests for binding/scope/handoff mutation in `QUEUED`, `IN_PROGRESS`,
+  `AWAITING_PARENT_APPROVAL`, `COMPLETED`, `CANCELLED`, and after dynamic
+  reconciliation has passed.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
