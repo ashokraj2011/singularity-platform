@@ -9602,6 +9602,271 @@ Required fixes:
   lifecycle without `platform:all`, and that users lacking each specific key are
   denied only that action.
 
+### 219. WorkItem detail and contract-bound reads bypass the tenant-scoped DB context
+
+Evidence:
+
+- The RLS scaffold explicitly says enabling RLS must happen only after
+  request-scoped DB transactions set `app.tenant_id` with `SET LOCAL` for all
+  tenant-sensitive query paths.
+- `tenantDbContextMiddleware` only stores tenant and trace metadata in
+  `AsyncLocalStorage`; the code that actually calls `set_config('app.tenant_id',
+  ...)` lives in `withTenantDbTransaction(...)`.
+- The WorkItem-family RLS migration enables and forces row-level security on
+  `work_items`, `work_item_targets`, `work_item_events`,
+  `work_item_clarifications`, `work_item_routing_policies`,
+  `work_item_triggers`, and `workflow_triggers`.
+- Despite that, key WorkItem APIs still use plain Prisma reads outside
+  `withTenantDbTransaction`: `GET /work-items/:id` loads by id with targets,
+  events, clarifications, project, and completion program; `cancel` and approval
+  routes load WorkItems directly; `loadAuthorizedWorkItem(...)` and
+  `updateWorkItem(...)` also call `prisma.workItem.findUnique(...)` directly.
+- The contract-bound router repeats the pattern: `loadVisibleWorkItem(...)` uses
+  `prisma.workItem.findUnique(...)`, then specification bindings, development
+  scopes, handoffs, submissions, reconciliation, finalization, and workflow start
+  command routes use that helper before querying more contract-bound records.
+- `canViewWorkItem(...)` grants view immediately when `createdById`,
+  `approvedById`, or any target `claimedById` equals the local WorkGraph user id;
+  those shortcuts do not first prove tenant membership or a capability-scoped IAM
+  decision.
+
+Impact:
+
+- In strict RLS deployments, these routes can fail closed or behave
+  inconsistently because the forced-RLS tables expect `app.tenant_id` but the
+  plain Prisma query never set it.
+- In relaxed/default-tenant deployments, direct-id reads can occur before a
+  tenant-scoped query boundary, leaving tenant safety to application-side checks
+  and local id shortcuts instead of a uniform database invariant.
+- The local creator/approver/claimed shortcuts are especially brittle in a
+  multi-tenant system: they can authorize view without proving that the caller is
+  still a member of the WorkItem tenant or the target capability.
+- Contract-bound evidence APIs can inherit the same problem, exposing or blocking
+  bindings, scopes, handoffs, submissions, reconciliation runs, and finalization
+  records depending on whether the route happened to enter a tenant-scoped
+  transaction.
+
+Required fixes:
+
+- Move all WorkItem detail, mutation preloads, and contract-bound helper reads
+  behind a single tenant-scoped loader that uses `withTenantDbTransaction(...)`
+  and includes an explicit persisted-row tenant check.
+- Prefer `findFirst({ where: { id, tenantId } })` or equivalent row-tenant
+  filters for every direct-id WorkItem and contract-bound child lookup, even when
+  RLS is expected to protect the query.
+- Remove or tighten the creator/approver/claimed view shortcuts so they require
+  active tenant membership and a capability/resource decision before returning
+  `true`.
+- Add tests for strict-RLS WorkItem detail, contract-bound binding/scope/handoff
+  reads, direct-id cross-tenant access, same local user id in two tenants, claimed
+  targets across tenants, and revoked tenant membership after claim.
+
+### 220. Contract-bound execution tables have tenant columns but no RLS policies
+
+Evidence:
+
+- `20260725000000_contract_bound_work_execution` creates
+  `work_item_specification_bindings`, `development_scopes`,
+  `handoff_generations`, `work_item_finalization_records`,
+  `work_item_creation_commands`, `workflow_start_commands`, `generation_plans`,
+  and `generation_plan_rows` with `tenantId` columns and tenant indexes.
+- The same migration adds foreign keys and indexes but does not call
+  `workgraph_install_tenant_policy(...)`, `ENABLE ROW LEVEL SECURITY`, or
+  `FORCE ROW LEVEL SECURITY` for those tables.
+- Older contract-bound tables are similar: `implementation_submissions` and
+  `reconciliation_runs` have tenant indexes from their migrations, but exact
+  searches for those table names show no RLS policy installation or force-RLS
+  migration.
+- By contrast, the WorkItem-family migration explicitly installs tenant policies
+  and forces RLS on `work_items`, `work_item_targets`, `work_item_events`,
+  `work_item_clarifications`, `work_item_routing_policies`,
+  `work_item_triggers`, and `workflow_triggers`.
+- Contract-bound routes query child tables directly by ids such as
+  `workItemId`, `scopeId`, `handoffId`, and `submissionId`; some routes rely on
+  the parent WorkItem visibility helper before reading child rows, but the
+  database does not enforce a tenant predicate on the child tables themselves.
+
+Impact:
+
+- The new "contract-bound work execution" authority is not protected by the same
+  tenant-isolation invariant as the core WorkItem rows.
+- A missed application-level tenant filter, direct Prisma lookup, reporting query,
+  background job, or future route can expose bindings, requirement subsets,
+  handoff content, reconciliation evidence, finalization records, and durable
+  command state across tenants.
+- Production preflight can truthfully verify WorkItem-family forced RLS while the
+  actual contract-bound proof chain remains outside forced RLS.
+- This weakens audit/compliance claims because the records that prove the exact
+  specification, scope, handoff, submission, reconciliation, and finalization are
+  less isolated than the WorkItem shell.
+
+Required fixes:
+
+- Add an RLS migration for every contract-bound table with a `tenantId` column:
+  bindings, scopes, handoffs, finalization records, creation commands, start
+  commands, generation plans, generation plan rows, submissions, reconciliation
+  runs, and their evidence/job child tables where applicable.
+- Backfill and make `tenantId` non-null for these tables before forcing RLS.
+- Add database policies using `workgraph_current_tenant_id()` plus relationship
+  policies only where a table is intentionally instance/work-item scoped.
+- Extend production preflight to enumerate all tenant-bearing tables and fail if
+  any required table lacks RLS, force-RLS, or an approved exemption.
+- Add cross-tenant tests that directly query child table ids for bindings,
+  scopes, handoffs, submissions, reconciliation runs, finalization records, and
+  command rows.
+
+### 221. WorkItem command idempotency keys are globally unique instead of tenant-scoped
+
+Evidence:
+
+- `WorkItemCreationCommand.idempotencyKey` and
+  `WorkflowStartCommand.idempotencyKey` are both declared `@unique` in the Prisma
+  schema, while each model also has a separate `tenantId` column.
+- The contract-bound migration creates global unique indexes:
+  `work_item_creation_commands_idempotencyKey_key` and
+  `workflow_start_commands_idempotencyKey_key`; it does not create composite
+  `(tenantId, idempotencyKey)` uniqueness.
+- `createWorkItem(...)` resolves existing command state with
+  `prisma.workItemCreationCommand.findUnique({ where: { idempotencyKey } })`
+  and later updates by `{ idempotencyKey }`, not by tenant plus key.
+- `startWorkItemTarget(...)` does the same for workflow starts:
+  `prisma.workflowStartCommand.findUnique({ where: { idempotencyKey } })` and
+  later updates/reuses command state by key alone.
+- The WorkItem creation `requestHash` includes `tenantId`, so a same idempotency
+  key reused by another tenant will usually be treated as a conflicting request.
+  The workflow-start `requestHash` does not include tenant, and its command lookup
+  is still global.
+
+Impact:
+
+- A client, integration, or malicious tenant can accidentally or deliberately
+  reserve an idempotency key that blocks another tenant's WorkItem create or
+  workflow-start retry.
+- Support cannot safely tell users "reuse the same idempotency key for retries"
+  unless keys are globally coordinated, which is not how tenant-local API clients
+  normally behave.
+- Global command keys leak cross-tenant existence through conflict behavior: a
+  tenant can learn that a key is already in use even though the command row
+  belongs to another tenant.
+- Command recovery, replay, and Operations views become harder because the command
+  natural key does not include the tenant boundary while the business object does.
+
+Required fixes:
+
+- Replace global command idempotency uniqueness with composite uniqueness on
+  `(tenantId, idempotencyKey)` for WorkItem creation and workflow start commands.
+- Change every command lookup/update to include the authoritative tenant id, and
+  reject missing tenant context in strict mode before reading command state.
+- Include tenant id in the workflow-start request hash and in command receipts so
+  retries can prove they are tenant-local.
+- Add migration/backfill logic for existing command rows, including conflict
+  handling if historical global keys collide across tenants.
+- Add tests where tenant A and tenant B intentionally reuse the same
+  idempotency key for WorkItem creation and workflow start; both should succeed or
+  conflict only within their own tenant.
+
+### 222. Approval decisions and escalations are outside the tenant RLS boundary
+
+Evidence:
+
+- `ApprovalRequest` has a `tenantId` column and the forced-RLS migration enables
+  and forces row-level security on `approval_requests`.
+- `ApprovalDecision` has `requestId`, `decidedById`, decision, notes,
+  conditions, and `decidedAt`, but no `tenantId` column or tenant index.
+- `ApprovalEscalation` similarly has `requestId`, escalation level, target
+  user/team/role/skill fields, and reason, but no `tenantId` column or tenant
+  index.
+- Searches across migrations show RLS policy installation and force-RLS for
+  `approval_requests`, but not for `approval_decisions` or
+  `approval_escalations`.
+- Approval routes generally read decisions through a request after
+  `assertApprovalRequestTenant(...)`, but other services also query
+  `approvalDecision` directly by `requestId` for governance, specification review,
+  receipts, and sponsor readouts.
+
+Impact:
+
+- Approval votes, notes, conditions, escalation targets, and reviewer identities
+  are tenant-sensitive evidence, yet the database does not enforce tenant
+  isolation on those child rows.
+- A future report, receipt, governance check, or maintenance job that queries
+  approval decisions/escalations directly can bypass the RLS boundary that protects
+  the parent request.
+- Production preflight can show approval request RLS as healthy while the actual
+  vote/escalation evidence remains protected only by application query discipline.
+- This weakens enterprise separation-of-duty evidence because the rows proving who
+  decided what are less isolated than the approval request itself.
+
+Required fixes:
+
+- Add `tenantId` to `approval_decisions` and `approval_escalations`, backfilled
+  from the parent `approval_requests.tenantId`, and make it non-null after
+  historical cleanup.
+- Install and force RLS policies on both child tables, using direct `tenantId` or
+  a parent-request visibility predicate.
+- Update every approval decision/escalation writer to pass the parent request
+  tenant explicitly and reject mismatches.
+- Add production preflight coverage for approval child-table RLS, not only
+  `approval_requests`.
+- Add tests for direct decision/escalation id queries, sponsor readout lookup,
+  governance waiver decisions, receipt assembly, and cross-tenant request-id
+  collisions.
+
+### 223. Governance waivers and overlay snapshots are not tenant-scoped records
+
+Evidence:
+
+- `GovernanceOverlaySnapshot` stores `workItemId`, `workflowInstanceId`,
+  `workflowNodeId`, `governedCapabilityId`, `overlayHash`, and the full
+  `resolvedOverlayJson`, but it has no `tenantId` column, tenant index, or RLS
+  policy.
+- `GovernanceWaiver` stores `workItemId`, `workflowInstanceId`, `workflowNodeId`,
+  `controlKey`, reason, status, requester/approver, expiry, and revocation
+  fields, but it also has no `tenantId` column, tenant index, or RLS policy.
+- The migrations that create `governance_overlay_snapshots` and
+  `governance_waivers` add only work-item/run/control indexes; the later roadmap
+  migration adds waiver revocation columns but still does not add tenant
+  ownership.
+- `enrichStageRequestWithGovernance(...)` writes overlay snapshots by
+  `workItemId`, `workflowNodeId`, and `overlayHash` through plain Prisma, and
+  `GovernanceGateExecutor.snapshotOverlay(...)` repeats that idempotent lookup and
+  create pattern.
+- `activeWaiverControlKeys(...)` returns approved, unexpired waiver control keys
+  by `workItemId`; `GovernanceGateExecutor.nodeScopedWaiverKeys(...)` queries
+  approved waivers by `workflowNodeId`; those waiver keys can mark controls as
+  `WAIVED` in the gate output.
+- Governance router listing and snapshot routes query snapshot/waiver tables by
+  work item, run, or node identifiers, not by a persisted tenant column on the
+  governance evidence rows themselves.
+
+Impact:
+
+- The records that say which capability governance overlay was applied, and which
+  controls were waived, are not isolated by tenant at the database layer.
+- A direct-id bug, reporting query, stuck-run sweep, or future route can read or
+  reuse governance evidence across tenants because the rows themselves do not
+  carry tenant ownership.
+- Waiver lookup is especially sensitive: an approved waiver control key can turn a
+  blocking governance control into `WAIVED`; without tenant-scoped rows, the
+  safety of that decision depends on every caller always passing the right parent
+  id and tenant context.
+- Enterprise evidence packs cannot prove a governance overlay or waiver belonged
+  to the tenant/run at the time of enforcement from the row alone.
+
+Required fixes:
+
+- Add non-null `tenantId` to `governance_overlay_snapshots` and
+  `governance_waivers`, backfilled from the related WorkItem or WorkflowInstance.
+- Change unique keys and lookup predicates to include tenant id, e.g.
+  `(tenantId, workItemId, workflowNodeId, overlayHash)` for snapshots and
+  tenant-scoped waiver lookups.
+- Install and force RLS policies on both governance evidence tables.
+- Make every snapshot/waiver writer pass the authoritative tenant and reject
+  mismatches between WorkItem, workflow instance, and node.
+- Add tests for cross-tenant waiver ids, same node id/control key in separate
+  tenants, overlay snapshot reuse, waived hard gates, and evidence-pack
+  generation.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
