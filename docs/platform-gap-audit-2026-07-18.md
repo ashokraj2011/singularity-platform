@@ -16927,6 +16927,81 @@ Required fixes:
   production, wrong tenant document, wrong run artifact, optional artifact
   omission with explicit warning, and authorized artifact injection.
 
+### 349. Prompt Composer compression can exfiltrate prompt layers to caller-supplied compressor URLs
+
+Evidence:
+
+- `compose.routes.ts` protects `POST /api/v1/compose-and-respond` with
+  `requireAuth`, but `compose.controller.ts` forwards `{ ...req.body,
+  bypassCache }` into `composeService.composeAndRespond(...)` without attaching
+  an actor, tenant, authorization decision, or compressor policy context.
+- `compose.schemas.ts` lets the caller provide `compression.enabled`,
+  `perLayerBudgetTokens`, `layerKindsAllowed`, `timeoutMs`, and an arbitrary
+  `compressorUrl` string. The schema comment states that eligible assembled
+  layer `contentSnapshot` values are posted to `${compressorUrl}/api/v1/compress`.
+- `compose.service.ts` runs compression after all prompt layers have been
+  assembled and sorted, calling `compressAssembledLayers(layers,
+  input.compression)` when `input.compression.enabled` and `compressorUrl` are
+  present.
+- `compressOneLayer(...)` constructs the target URL directly from
+  `cfg.compressorUrl`, then sends `POST` JSON containing the full layer `text`,
+  `target_token`, and layer metadata. There is no URL allowlist, HTTPS
+  requirement, private-network block, DNS/IP pinning, service registry lookup,
+  tenant-scoped compressor authorization, or outbound egress policy check in
+  this path.
+- `compressAssembledLayers(...)` builds its allowlist from caller-controlled
+  `cfg.layerKindsAllowed`, estimates each layer, posts every over-budget allowed
+  layer, then replaces the local `contentSnapshot` and `layerHash` with the
+  compressor response.
+- The compression receipt records only compressor-provided token/model/duration
+  fields. It does not record a service-owned compressor id, URL digest, actor,
+  tenant, capability, run, layer-source authorization decision, trace id, or
+  external data-transfer audit record.
+- Existing audit findings cover prompt preview, debug retrieval, artifact fetch,
+  and service-token authoring gaps; none covers caller-controlled prompt
+  compression egress.
+
+Impact:
+
+- Any authenticated caller who can hit the compose endpoint can cause Prompt
+  Composer to send selected prompt-layer bodies to an arbitrary network
+  endpoint. This is both data exfiltration and SSRF risk.
+- Sensitive layers can include code-agent rules, runtime evidence, artifact
+  context, memory/context retrieval, capability knowledge, tool contracts, and
+  execution overrides, depending on the caller-supplied allowlist and request
+  shape.
+- The returned compressor text becomes part of the final prompt and layer hash,
+  so an untrusted external service can silently mutate the agent instruction
+  stack before the prompt assembly is persisted or returned.
+- Because the receipt lacks compressor identity and authorization context, the
+  platform cannot later prove where sensitive prompt content was sent, who
+  approved the transfer, or whether a registered compressor produced the
+  replacement text.
+
+Required fixes:
+
+- Replace request-controlled `compressorUrl` with a server-side compressor
+  registry keyed by alias. Store URL, trust tier, tenant allowlist, TLS policy,
+  timeout, model, and permitted layer kinds in configuration, not in the compose
+  request.
+- Add SSRF and egress controls for any remaining dynamic URL path: require HTTPS
+  except local development, block loopback/link-local/private metadata ranges,
+  resolve and pin DNS safely, cap redirects, and enforce an outbound allowlist.
+- Gate compression behind explicit permissions such as `prompt:compress` and
+  `prompt:sensitive_layer:export`; intersect requested layer kinds with
+  server-owned policy rather than trusting `layerKindsAllowed`.
+- Default-deny compression of sensitive layer types such as `TOOL_CONTRACT`,
+  `ARTIFACT_CONTEXT`, `MEMORY_CONTEXT`, `CAPABILITY_CONTEXT`,
+  `CODE_WORLD_MODEL`, and `EXECUTION_OVERRIDE` unless redaction and explicit
+  approval are present.
+- Persist a compression transfer receipt with actor/service token id, tenant,
+  capability, workflow/run, prompt assembly id, layer ids/kinds, before/after
+  hashes, compressor alias, URL digest, decision id, trace id, and redaction
+  mode.
+- Add tests for arbitrary URL denial, private IP/metadata URL denial, unapproved
+  layer-kind denial, sensitive-layer export denial, registered compressor
+  success, oversized/bad compressor responses, and receipt/audit completeness.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
