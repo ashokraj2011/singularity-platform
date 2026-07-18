@@ -10039,6 +10039,137 @@ Required fixes:
   `AWAITING_PARENT_APPROVAL`, `COMPLETED`, `CANCELLED`, and after dynamic
   reconciliation has passed.
 
+### 227. Git History Explainer verifies identity but still does not enforce repository grants
+
+Evidence:
+
+- `agent-and-tools/web/src/app/api/git-history/explain/route.ts` now attempts
+  caller verification through IAM `/auth/verify` before using the Runtime Bridge,
+  but `runtimeIdentity(...)` still returns the first available identity from
+  `verifiedCallerIdentity(req)`, `envRuntimeIdentity()`,
+  `devRuntimeOverride(body)`, or `singleConnectedRuntimeIdentity()`.
+- `runViaRuntimeBridge(...)` builds a Context Fabric tool-run payload with
+  `tool_name = "git_history_explain"`, `capability_id =
+  "operations.git-history"`, `capability_tags = ["mcp", "tools", "git"]`, and
+  `repo_access = true`.
+- The route does not call IAM `/authz/check`, the Git broker
+  `/repository-grants` API, a capability-owned repository resolver, or any
+  repository/path authorization helper before setting `repo_access = true`.
+- The route accepts `workspaceId`, `repoPath`, optional source override
+  environment/request fields in non-production, and date/path/author filters, but
+  those values are only normalized for shape; they are not checked against a
+  repository grant for the caller.
+- If the Runtime Bridge path fails and `GIT_HISTORY_LOCAL_FALLBACK_ENABLED` is
+  true, `runLocalFallback(...)` executes `bin/explain-git-history.py` against the
+  Platform Web server checkout and returns the repo path/script metadata without
+  a repository-grant check.
+- The platform already has a Repository Grants admin surface and client
+  (`agent-and-tools/web/src/lib/git/api.ts`) whose stated purpose is authorizing
+  Git operations through the broker, but the Git History Explainer route does not
+  use it.
+- Existing `server-jsonish-routes.contract.test.ts` coverage for Git History
+  checks JSON parsing, bounded timeouts, IAM verify timeout usage, and Runtime
+  Bridge status timeout usage. It does not assert repository-grant enforcement,
+  unauthorized repository denial, path-scope denial, or local-fallback denial.
+
+Impact:
+
+- An authenticated tenant user, env-derived identity, or single connected runtime
+  identity can ask the platform to explain Git history for a runtime/server
+  workspace without proving that the caller is allowed to read that repository or
+  path.
+- `repo_access = true` becomes a declaration made by Platform Web rather than the
+  result of a repository-access decision, so downstream Runtime Bridge/MCP logic
+  may treat the request as already authorized.
+- Git history reports can expose commit messages, author names, touched paths,
+  generated change summaries, stderr, and local repository/script paths outside
+  the intended Git broker authorization model.
+- Local fallback is especially risky because it runs inside the Platform Web
+  container/process instead of a caller-owned MCP workspace, weakening the
+  separation between UI orchestration and source-code access.
+
+Required fixes:
+
+- Resolve the requested source/repository to a platform repository grant before
+  any Runtime Bridge or local fallback execution.
+- Require a caller-bound authorization decision for `git-history:read` or
+  equivalent repository read permission, scoped by tenant, user/service subject,
+  capability, repository, ref, and path prefix.
+- Treat `repo_access` as an output of that decision, not a static route constant.
+- Disable server-local fallback in production-class deployments and require an
+  explicit operator permission plus audited reason when it is enabled for local
+  debugging.
+- Add tests for authorized repository read, missing repository grant, wrong
+  tenant, wrong capability, disallowed path, single-runtime/env identity fallback,
+  and local fallback.
+
+### 228. Feature flags are global toggles without tenant or policy-scoped access
+
+Evidence:
+
+- `workgraph-studio/apps/api/prisma/schema.prisma` defines `FeatureFlag` with
+  `key`, `enabled`, `description`, `updatedById`, and `updatedAt`, but no
+  `tenantId`, `scopeType`, `scopeId`, environment, lifecycle status, approval
+  state, or rollout metadata.
+- `workgraph-studio/apps/api/src/app.ts` mounts
+  `/api/admin/feature-flags` behind `authMiddleware` and mounts
+  `/api/internal/feature-flags` without `authMiddleware`.
+- `feature-flags.router.ts` lets any authenticated caller list/read all feature
+  flags whenever `TENANT_ISOLATION_MODE` is not strict. In strict mode it only
+  requires `isAdminUser(...)`, not IAM `authz/check` with a tenant-aware
+  `feature_flag:view` permission.
+- `PUT /api/admin/feature-flags/:key` gates writes with the local
+  `isAdminUser(...)` helper and then upserts any dotted key matching
+  `KEY_PATTERN`; it does not require a named flag registry, dual approval,
+  rollout scope, or production-change reason.
+- The internal feature-flag reader accepts either `Authorization: Bearer
+  <WORKGRAPH_INTERNAL_TOKEN>` or `X-Service-Token: <WORKGRAPH_INTERNAL_TOKEN>`.
+  In strict mode `requireTenantScopedInternalToken(...)` validates the requested
+  tenant against `WORKGRAPH_INTERNAL_TOKEN_TENANT_IDS`, but the query still reads
+  the same global `feature_flags` table and returns every flag.
+- `config.ts` defaults `WORKGRAPH_INTERNAL_TOKEN` to
+  `dev-workgraph-internal-token`; production only rejects that local default,
+  not the absence of per-service scopes, per-tenant flag claims, or key-specific
+  access.
+- No searched tests reference `feature-flags`, `FeatureFlag`, or "feature flag",
+  so there is no current regression proof for reader permissions, strict
+  tenant-scoped reads, unauthorized toggles, internal-token scope, or audit
+  completeness.
+
+Impact:
+
+- A feature flag can enable or disable a platform capability globally even when
+  only one tenant, capability, environment, or rollout cohort should be affected.
+- Non-strict deployments expose global feature-flag names and descriptions to
+  any authenticated user, which can reveal hidden/experimental surfaces,
+  kill-switch names, or partially deployed capabilities.
+- A local-admin mirror or stale local admin grant can toggle feature flags without
+  an IAM policy decision tied to tenant, environment, or change-management role.
+- Internal service callers receive a full global flag list instead of only the
+  keys they are allowed to evaluate, making one leaked internal token a broad
+  feature-discovery credential.
+- Enterprise operators cannot prove who approved a production toggle, what blast
+  radius it had, or which tenant/workflow/run saw a given flag value.
+
+Required fixes:
+
+- Replace global booleans with scoped feature-flag records:
+  tenant/environment/scope type, owning capability, rollout cohort, status,
+  version, and content digest.
+- Add explicit IAM permissions such as `feature_flag:view`,
+  `feature_flag:evaluate`, and `feature_flag:toggle`, with stronger production
+  requirements for write approval and change reason.
+- Make internal evaluation endpoints accept service JWTs with allowed flag keys
+  and tenant claims rather than a single shared `WORKGRAPH_INTERNAL_TOKEN`.
+- Return only the requested/evaluable flag keys to internal callers, scoped by
+  tenant/environment, and fail closed when tenant context is missing in strict
+  mode.
+- Store immutable audit evidence for every toggle: actor, IAM decision id,
+  previous/next version, scope, reason, rollout window, and affected tenants.
+- Add tests for non-admin read/write denial, strict tenant filtering,
+  internal-token key scoping, unknown flag creation policy, production toggle
+  approval, and audit event contents.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
