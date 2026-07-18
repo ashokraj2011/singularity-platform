@@ -12637,6 +12637,54 @@ Required fixes:
 - Add tests for no upstream documents, mismatched filters, prior versus all
   scope, optional/advisory empty mode, and strict-mode missing evidence.
 
+### 273. LLM routing rules can be active while pointing at nothing usable
+
+Evidence:
+
+- `llm-routing.router.ts` defines a static `TOUCH_POINTS` list and comments that
+  adding a touch point is a code change because something must consume it.
+- The route `ruleSchema` still accepts `touchPoint` as any non-empty string,
+  `modelAlias` as any non-empty string, and `scopeId` as any string up to 200
+  characters.
+- `POST /api/llm-routing/rules` only rejects the retired `copilot` alias and
+  missing non-default `scopeId`. It does not verify that the touch point is one of
+  `TOUCH_POINTS`, that `modelAlias` maps to an enabled/credential-ready
+  `LlmConnection` or catalog entry, or that USER/CAPABILITY scope ids exist,
+  belong to the tenant, and are active.
+- `GET /api/llm-routing/resolve` and the shared `resolveLlmRouting(...)` helper
+  return only the selected `modelAlias`, not a resolved connection snapshot or a
+  readiness decision.
+- `workflow-operations.router.ts` marks the `llm-alias` readiness check as
+  `ready` when `llmConnections > 0 || llmRules > 0`, so a single dangling route
+  row can make the control plane look usable even when no runtime can call that
+  provider.
+
+Impact:
+
+- An administrator can save typo touch points that no workflow surface consumes,
+  typo model aliases that fail at runtime, or stale user/capability-specific
+  routes that are never selected for the intended actor.
+- Workflow launch, Direct LLM tasks, Agent Tasks, Workbench, and audit judges can
+  pass readiness checks and then fall back late, fail late, or call a different
+  default than the route author expected.
+- Operations cannot distinguish "an LLM row exists" from "this touch point has a
+  valid, tenant-scoped, credential-ready provider route."
+
+Required fixes:
+
+- Validate `touchPoint` against the canonical touch-point registry before storing
+  routing rows.
+- Resolve and persist a routing-rule readiness snapshot that includes rule id,
+  connection id, provider, model, base URL class, credential env name, credential
+  readiness, tenant id, and validation errors.
+- Reject enabled rules whose `modelAlias` cannot be resolved to an enabled,
+  approved, credential-ready connection or explicit catalog entry for the tenant.
+- Validate USER and CAPABILITY scoped `scopeId` values against IAM/Agent-Tools
+  ownership and active status before enabling the route.
+- Change Operations readiness from row counts to per-touch-point route resolution
+  checks, and add tests for typo touch point, missing alias, disabled alias,
+  missing credential env value, inactive capability, and cross-tenant scope ids.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
