@@ -15731,6 +15731,61 @@ Required fixes:
 - Add multi-tenant tests for same name/version with different hashes, same hash,
   workItem id differences, read visibility, and run/receipt ownership.
 
+### 331. Codegen generate can write generated files to caller-chosen server paths
+
+Evidence:
+
+- `parseGenerateBody(...)` accepts an output directory from request JSON `out` or
+  from the `x-output-dir` header.
+- `POST /api/codegen/generate` computes
+  `const outDir = parsed.out && parsed.out.trim() ? resolve(parsed.out) :
+  /workspace/codegen/${spec.id}`.
+- `writeFilesBestEffort(outDir, files)` then resolves that base path, creates
+  parent directories with `mkdirSync(dirname(abs), { recursive: true })`, and
+  writes each generated file with `writeFileSync(abs, file.content, 'utf8')`.
+- The helper prevents generated file paths from escaping the selected base
+  directory, but it does not restrict the base directory itself to a safe
+  Codegen workspace, tenant workspace, temporary directory, or repository grant.
+- Generated templates include predictable paths such as `package.json`,
+  `README.md`, `src/server.ts`, `src/routes.ts`, and `openapi.yml`, so choosing
+  an existing project directory can overwrite real files.
+- The route persists the caller-chosen `outputPath` on `CodegenRun` and returns it
+  in the API response, while `GET /api/codegen/runs/:runId/file` can later fall
+  back to reading files from that stored path when artifact content is absent.
+- The write helper swallows filesystem errors, so operators may see a successful
+  DB-backed generation response even if the filesystem write partially failed or
+  overwrote unexpected files.
+
+Impact:
+
+- Any authenticated Codegen generate caller can direct the WorkGraph API process
+  to write generated files into arbitrary writable locations on the server host or
+  container.
+- A malicious or mistaken request can overwrite files in a checked-out repo,
+  shared volume, temporary workspace, or service directory when the process has
+  filesystem permission.
+- Persisted `outputPath` values can leak server filesystem layout and become a
+  later file-read root for the fallback viewer path.
+- Best-effort error swallowing makes the side effect hard to audit: the receipt
+  records generated artifacts, but not which filesystem writes succeeded, failed,
+  or clobbered existing files.
+
+Required fixes:
+
+- Remove caller-controlled `out` and `x-output-dir` from user-facing generation
+  routes, or accept only a logical workspace id/repository target that resolves
+  through a governed server-side workspace allocator.
+- Restrict Codegen filesystem writes to a configured allowlisted root such as
+  `CODEGEN_WORKSPACE_ROOT/<tenant>/<runId>`, with path ownership and free-space
+  checks before writing.
+- Refuse to overwrite existing files unless the run is explicitly attached to a
+  governed repository/workspace and has an approved overwrite/diff policy.
+- Persist a write manifest with target root, per-file write status, previous hash
+  when overwriting is allowed, actor, tenant, trace id, and policy decision id.
+- Add tests for absolute `out`, relative traversal attempts, existing-file
+  overwrite, unwritable directory, partial write failure, safe workspace
+  allocation, and fallback file reads from stored output paths.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
