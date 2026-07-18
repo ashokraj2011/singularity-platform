@@ -13959,6 +13959,68 @@ Required fixes:
 - Add tests for priced provider, unpriced provider, mock provider, missing model
   alias, and budget aggregation across governed Workbench stages.
 
+### 300. MCP ToolInvocationGrant enforcement depends on an incomplete tool registry
+
+Evidence:
+
+- MCP grant enforcement in `tool-run.ts` calls `toolRequiresGrant(body.tool_name)`
+  and returns immediately when it is false, even in `MCP_TOOL_GRANT_MODE =
+  enforce`.
+- `toolRequiresGrant(...)` in `security/tool-grant.ts` checks whether
+  `categoryForTool(toolName)` is in the configured grant-required categories
+  (`mutate,finalize,run` by default).
+- `categoryForTool(...)` in `tools/tool-registry-loader.ts` reads
+  `tools-registry.json` and returns `"unknown"` when a tool is missing from that
+  manifest.
+- The same file comments that unknown tools require a workspace but are "NOT
+  gated by default" and that high-risk executor-only tools must be listed in the
+  registry.
+- The executable MCP local registry in `tools/registry.ts` includes tools that
+  are absent from `tools-registry.json`; a quick source/manifest comparison found
+  missing executable names including `git_commit`, `prepare_work_branch`,
+  `write_file_demo`, `apply_patch_demo`, `notify_admin`, `http_get`,
+  `web_fetch`, `record_outcome_pattern`, `query_learning_state`, and
+  `query_similar_capabilities`.
+- `git_commit` is a real filesystem/git side-effecting tool with risk
+  `MEDIUM`; `prepare_work_branch` mutates git/worktree state; `notify_admin` is
+  a `HIGH` risk approval-gated external notification tool.
+- Because missing tools resolve to category `unknown`, the default
+  required-category set does not require a Context Fabric-signed grant for those
+  tools.
+
+Impact:
+
+- `MCP_TOOL_GRANT_MODE=enforce` can still allow side-effecting or high-risk local
+  tools to run without a ToolInvocationGrant when the tool is missing from the
+  secondary registry manifest.
+- Adding or registering a new MCP tool can silently bypass grant enforcement
+  unless the developer also updates `tools-registry.json` with the correct
+  category.
+- Operators may believe every mutating/finalizing/running tool call is bound to
+  Context Fabric's phase/policy decision while several reachable handlers are
+  category-unknown at the grant layer.
+- Demo code-change tools can create believable code-change evidence without
+  grant binding, which is especially confusing in smoke/demo environments that
+  later become shared.
+- The platform has two sources of truth for local tools: executable handlers in
+  `tools/registry.ts` and governance categories in `tools-registry.json`.
+
+Required fixes:
+
+- Make unknown tool categories fail closed for grant enforcement in production,
+  or require an explicit `unknown` category only for tools proven read-only and
+  workspace-independent.
+- Add a startup/CI drift check that every executable `getLocalTool(...)` handler
+  has a manifest entry with category, risk, approval, and grant policy.
+- Move grant-required classification to the executable tool descriptor itself,
+  or generate `tools-registry.json` from the local registry to avoid hand drift.
+- Add missing manifest entries for `git_commit`, `prepare_work_branch`, demo
+  code-change tools, notification tools, learning writers, and network egress
+  tools with appropriate categories.
+- Add tests proving `MCP_TOOL_GRANT_MODE=enforce` rejects a missing-manifest
+  mutating tool, rejects a missing-manifest run tool, and fails startup when
+  executable/manifest drift is present.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
