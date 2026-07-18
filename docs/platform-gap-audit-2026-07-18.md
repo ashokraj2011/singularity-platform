@@ -16646,6 +16646,72 @@ Required fixes:
   missing operation scope, wrong tenant/capability, sensitive layer publish
   without approval, and authorized scoped service writes.
 
+### 345. Prompt Composer debug retrieval exposes raw capability context by caller-supplied id
+
+Evidence:
+
+- `prompt-composer/src/app.ts` mounts
+  `/api/v1/compose-and-respond/debug-retrieval` after generic Prompt Composer
+  authentication, and `composeDebugRoutes` only calls `requireAuth`.
+- `compose.routes.ts` documents the endpoint as debug retrieval that returns "raw
+  scored hits per kind" for a `(capabilityId, task)` pair and says it is used by
+  the SPA tuning panel.
+- The handler reads `capabilityId` and `task` directly from `req.body`, checks
+  only that both are present, embeds the caller-supplied task, and then calls
+  `composeService.semanticKnowledge(capabilityId, taskVec)`,
+  `semanticMemory(capabilityId, taskVec)`, and
+  `semanticSymbols(capabilityId, taskVec)`.
+- The route does not pass `req.user` into the retrieval helpers, validate the
+  capability against IAM membership, enforce tenant scope, require a debug/admin
+  permission, check an agent/template/run context, or record an access decision.
+- `semanticKnowledge(...)` returns active `CapabilityKnowledgeArtifact` rows with
+  `id`, `artifactType`, `title`, full `content`, score metadata, and recency
+  fallback rows when semantic matches are weak.
+- `semanticMemory(...)` returns active `DistilledMemory` rows for the supplied
+  capability with `id`, `memoryType`, `title`, full `content`, score metadata,
+  and recency fallback rows.
+- `semanticSymbols(...)` returns code context for the supplied capability:
+  symbol id/name/type, file path, start line, summary, language, repository name,
+  and score metadata.
+- The response echoes `capabilityId`, `task`, embedding provider/model/dimension,
+  retrieval tuning, and the raw `knowledge`, `memory`, and `code` arrays.
+- The searched audit doc had no existing finding for `debug-retrieval` or raw
+  retrieval debug exposure.
+
+Impact:
+
+- Any authenticated Prompt Composer caller can use the debug endpoint as a
+  capability-context search API by trying known or leaked capability ids.
+- The endpoint can disclose full knowledge artifact text, distilled lessons,
+  repository symbols, file paths, code summaries, retrieval scores, and embedding
+  provider details without the normal WorkGraph, Agent Runtime, document,
+  repository, or prompt assembly authorization path.
+- Because the endpoint is intended for tuning, it returns richer diagnostic data
+  than a normal prompt response and may leak exactly which private artifacts or
+  memories would influence an agent.
+- The lack of trace/run/actor decision metadata means retrieval-debug access
+  cannot be audited as evidence, nor can it be correlated to an authorized
+  workflow or operator action.
+
+Required fixes:
+
+- Restrict debug retrieval to explicit permissions such as
+  `prompt_retrieval:debug`, `prompt_retrieval:audit_view`, or scoped service
+  tokens; disable it by default in production unless an operator debug profile is
+  enabled.
+- Pass `req.user` and tenant context into retrieval helpers and require
+  capability membership, workflow/run visibility, repository access, and
+  sensitive-context permission before returning any raw content.
+- Require an authorized agent/template/run or prompt assembly context instead of a
+  bare caller-supplied capability id.
+- Redact or summarize `content`, code paths, repository names, scores, and
+  provider/model details unless the caller has sensitive retrieval-debug rights.
+- Record retrieval-debug audit events with actor, tenant, capability, task hash,
+  returned source ids, redaction mode, decision id, trace id, and caller surface.
+- Add IDOR tests for wrong capability, wrong tenant, service token without debug
+  scope, user without repository/document access, redacted auditor access, and
+  fully authorized operator debug access.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
