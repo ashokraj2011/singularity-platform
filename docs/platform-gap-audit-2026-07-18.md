@@ -14021,6 +14021,108 @@ Required fixes:
   mutating tool, rejects a missing-manifest run tool, and fails startup when
   executable/manifest drift is present.
 
+### 301. Rejected submissions can invalidate the latest verified scope evidence
+
+Evidence:
+
+- `registerSubmission(...)` intentionally records invalid manifests instead of
+  dropping them: `validateSubmissionManifest(...)` returns an error count and the
+  service creates an `ImplementationSubmission` with `status = 'REJECTED'` when
+  identity checks fail.
+- The same registration transaction invalidates prior reconciliation runs for the
+  same `DevelopmentScope` or legacy repository whenever it inserts a newer
+  submission, regardless of whether the new submission status is `RECEIVED` or
+  `REJECTED`.
+- `startReconciliation(...)` refuses to reconcile a rejected submission with
+  `Rejected implementation submissions cannot be reconciled`.
+- `WorkItemFinalizer` builds `latestSubmissionByScope` from all
+  `implementationSubmissions`, ordered by newest first, without filtering out
+  `REJECTED` submissions.
+- `isCurrentVerifiedScopeRun(...)` then requires the verified reconciliation run's
+  `submissionId` to equal that latest submission id.
+- The existing hardening test only proves "latest submission" behavior; it does
+  not cover a newer rejected submission after a previously verified dynamic run.
+
+Impact:
+
+- A malformed webhook/manual/API submission can make a previously verified scope
+  stop satisfying finalization even though the bad submission cannot itself be
+  reconciled into fresh `VERIFIED_PASS` evidence.
+- Finalization can dead-end with "Dynamic verification evidence is required" after
+  a transient rejected manifest, forcing manual database repair or a new valid
+  implementation attempt.
+- A bad event from an external system can effectively contest accepted code
+  without producing a contestable reconciliation run, approval request, or
+  operator-visible rework command.
+- Evidence timelines become confusing: they show the good dynamic reconciliation,
+  the rejected submission, and stale invalidation, but no first-class reason that
+  finalization now ignores the verified run.
+
+Required fixes:
+
+- Decide the lifecycle semantics explicitly: either rejected submissions must not
+  become the "latest implementation attempt" for finalization, or they must create
+  a clear `CONTESTED` / rework command that operators can resolve.
+- If rejected submissions should not invalidate verification, filter
+  `latestSubmissionByScope` to accepted/submittable statuses and avoid marking
+  prior verified runs stale for rejected manifests.
+- If rejected submissions should invalidate verification, create a durable
+  contest/rework state with reason, source, actor/service principal, and repair
+  action instead of leaving the scope impossible to verify.
+- Add tests for: verified scope + newer rejected submission, rejected submission
+  from webhook, retry with a later valid submission, and finalization behavior in
+  each policy mode.
+- Surface rejected-submission invalidation in WorkItem/Workflow Operations with a
+  retry or discard action.
+
+### 302. WorkItem creation commands can be stranded in IN_PROGRESS forever
+
+Evidence:
+
+- `WorkItemCreationCommand` has `idempotencyKey`, `requestHash`, `workItemId`,
+  `state`, `error`, and tenant timestamps, but unlike `WorkflowStartCommand` it
+  has no `leaseUntil`, `attempt`, `claimedBy`, or recovery metadata.
+- `createWorkItem(...)` creates or updates the command to `IN_PROGRESS`, creates
+  the WorkItem, then updates the command to `COMPLETED`.
+- A repeat request with the same idempotency key returns
+  `WorkItem creation command is already in progress` whenever the command state is
+  still `IN_PROGRESS`.
+- There is no timeout or stale-command recovery branch for
+  `WorkItemCreationCommand`, while `startWorkItemTarget(...)` does implement
+  `leaseUntil` expiry and `STALE` handling for `WorkflowStartCommand`.
+- If the process crashes or loses its database connection after creating the
+  command but before marking it failed/completed, the command can remain
+  `IN_PROGRESS` with no linked WorkItem and no retry path.
+- If the process crashes after creating the WorkItem but before completing the
+  command, the retry is still blocked by `IN_PROGRESS`; the command does not carry
+  enough recovery state to discover and link the created WorkItem by request hash.
+
+Impact:
+
+- Event-driven, generated, or public WorkItem creation can become permanently
+  wedged on its idempotency key after a crash in the small but important window
+  between command reservation and terminal command update.
+- Clients following the correct retry guidance can be told that their command is
+  still in progress long after no worker exists to finish it.
+- Operators cannot distinguish a legitimately active create from an abandoned
+  command because there is no lease expiry, attempt count, owner, or heartbeat.
+- A created WorkItem can exist without its creation command being completed, which
+  weakens command-to-entity traceability for the root of the SDLC flow.
+
+Required fixes:
+
+- Add `leaseUntil`, `attempt`, `claimedBy`, `heartbeatAt`, and optionally
+  `createdWorkCode` / `resultLookup` fields to `WorkItemCreationCommand`.
+- Wrap command reservation, WorkItem creation, command completion, and created
+  event/outbox writes in one transactional command service where possible.
+- When a command lease expires, recover by either linking the already-created
+  WorkItem for the matching request hash or marking the command `STALE`/`FAILED`
+  with a retryable error.
+- Add an Operations view and repair action for stale WorkItem creation commands.
+- Add crash-window tests: after command reservation, after WorkItem insert, after
+  command completion but before event/outbox, and retry with same/different
+  request hashes.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
