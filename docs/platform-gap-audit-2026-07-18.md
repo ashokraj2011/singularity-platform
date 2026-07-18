@@ -10779,6 +10779,578 @@ Required fixes:
   unavailable behavior, content hash immutability, cross-tenant payload denial,
   retention expiry, and non-inline lowering retrieval.
 
+### 238. Claim Registry local JWT mode accepts empty or weak signing secrets
+
+Evidence:
+
+- `claim-registry/src/middleware/auth.ts` chooses the authentication provider
+  from `CLAIM_REGISTRY_AUTH_PROVIDER ?? AUTH_PROVIDER ?? "iam"`.
+- When the provider is `local`, the same middleware calls
+  `verifyHs256(token, process.env.JWT_SECRET ?? "")`. There is no check that
+  `JWT_SECRET` exists, is non-default, is high entropy, or meets the 32+
+  character platform secret contract used by other production guardrails.
+- `verifyHs256(...)` computes the expected HS256 signature with the supplied
+  `secret` and accepts the token when the HMAC matches. If `JWT_SECRET` is
+  missing, that secret is the empty string, so any token deliberately signed
+  with an empty HS256 key is treated as valid local identity.
+- `claim-registry/.env.example` warns that `CLAIM_REGISTRY_AUTH_PROVIDER=local`
+  is only for isolated development with a compatible HS256 `JWT_SECRET`, but the
+  running service has no startup refusal or request-time fail-closed guard for a
+  missing or default development secret.
+- `claim-registry/README.md` says all `/api/v1` requests require a verified IAM
+  bearer token and that production should use `AUTH_PROVIDER=iam`, but the code
+  still honors local mode whenever the environment selects it.
+- `claim-registry/test/auth.test.ts` covers IAM verification, spoofed header
+  rejection, tenant membership checks, and missing bearer denial. It does not
+  test local mode, missing `JWT_SECRET`, default weak secrets, empty-secret
+  forged tokens, unsupported algorithms beyond the helper branch, or production
+  refusal when local auth is configured.
+- Docker and bare-metal defaults start Claim Registry in IAM mode, but the
+  service itself does not enforce that local mode is development-only or that a
+  local JWT secret is safe before accepting claim, knowledge, ambiguity, and
+  registry routes.
+
+Impact:
+
+- A misconfigured Claim Registry with `CLAIM_REGISTRY_AUTH_PROVIDER=local` and
+  no `JWT_SECRET` lets a caller mint their own HS256 token with arbitrary
+  `sub`, `tenant_ids`, `kind`, and service/user classification, signed by the
+  empty string.
+- Even with a default development secret, local mode turns claim governance into
+  bearer-token self-assertion: a caller can choose tenant membership and service
+  identity claims if they know or guess the shared dev secret.
+- This bypasses the stronger IAM membership verification added to the registry
+  and can compound the existing action-level authorization gap for claim
+  curation, knowledge lowering, ambiguity resolution, and job-only operations.
+- Operators can believe the service follows the README's IAM-only contract while
+  one environment variable silently changes the trust model.
+- Incident response is weaker because forged local tokens are not bound to an
+  IAM user record, active membership version, service-token id, revocation
+  state, or IAM authz decision.
+
+Required fixes:
+
+- Add a startup guard: in production-class or strict tenant mode, refuse
+  `CLAIM_REGISTRY_AUTH_PROVIDER=local` unless an explicit unsafe-development
+  override is set.
+- In local mode, require `JWT_SECRET` to be present, non-default, at least 32
+  characters, and preferably high entropy before accepting any `/api/v1`
+  request.
+- Reject empty secrets at verifier construction time; never pass `""` as an HMAC
+  key for JWT verification.
+- Restrict local-mode claims to development-only user tokens and never allow
+  `kind=service` or scheduled job access unless a separate local service-token
+  contract is explicitly configured.
+- Log a loud startup warning and health degradation when local auth is active,
+  even in development.
+- Add tests for missing secret denial, empty-secret forged token denial, default
+  weak secret denial, valid strong local token acceptance in development,
+  production local-mode refusal, and local token attempts to call service-only
+  job endpoints.
+
+### 239. Claim Registry outbox marks permanently failed deliveries as processed
+
+Evidence:
+
+- `claim-registry/prisma/schema.prisma` defines `EventOutbox.status` as a string
+  defaulting to `PENDING`, with the inline comment `PENDING | PROCESSED`. There
+  is no outbox-level `FAILED`, `PARTIAL`, `DEAD_LETTERED`, `retryCount`, or
+  `lastError` field.
+- `claim-registry/src/lib/dispatcher.ts` drains `EventOutbox` rows where
+  `status: "PENDING"`, delivers to matching `EventSubscription` rows, and then
+  calls `deliverRow(row)`.
+- `deliverRow(...)` returns `!anyStillPending`. The only condition that keeps
+  `anyStillPending=true` is a failed delivery that remains retryable according
+  to `shouldRetry(delivery.attempts)`.
+- When a delivery reaches the retry limit, the dispatcher writes the
+  `EventDelivery` row to `FAILED`, but `anyStillPending` remains false. The
+  parent outbox row is therefore considered settled.
+- Back in `drain()`, if `settled` is true, the dispatcher updates the parent
+  outbox row to `status: "PROCESSED"` even if one or more child deliveries are
+  `FAILED`.
+- If no active subscription matches an event, `matching` is empty,
+  `anyStillPending` remains false, and the outbox row is also marked
+  `PROCESSED` without an explicit `NO_SUBSCRIBERS` or dead-letter state.
+- `claim-registry/test/dispatch-core.test.ts` covers pure retry math and signed
+  delivery bytes, but it does not exercise the database dispatcher path, failed
+  child delivery aggregation, no-subscriber behavior, outbox status transitions,
+  or a replay/retry operator view.
+- The main platform audit already records that the WorkGraph event bus was
+  improved so aggregate outbox health remains failed when subscriber deliveries
+  fail; the Claim Registry dispatcher has not received the same lifecycle
+  hardening.
+
+Impact:
+
+- Claim lifecycle events can disappear from operator attention: the parent
+  outbox says `PROCESSED` even though downstream systems never received the
+  event.
+- WorkGraph, Synthesis, governance projections, and evidence-pack consumers can
+  miss claim decay, falsification, ambiguity, or promotion events while the
+  Claim Registry appears healthy at the aggregate outbox level.
+- Retry tooling that scans only `EventOutbox.status="PENDING"` will never revisit
+  permanently failed deliveries after the parent row is marked processed.
+- No-subscriber events are indistinguishable from successfully delivered events,
+  which hides wiring mistakes between the Claim Registry and WorkGraph.
+- Operations dashboards cannot answer whether a claim event was fully delivered,
+  partially delivered, dead-lettered, or ignored because no route existed.
+
+Required fixes:
+
+- Extend `EventOutbox.status` to include `DELIVERED`, `PARTIAL_FAILED`,
+  `FAILED`, `NO_SUBSCRIBERS`, and `DEAD_LETTERED`, or store equivalent aggregate
+  delivery health fields.
+- Make `deliverRow(...)` return aggregate counts: matched subscribers,
+  delivered, pending, failed, retryable, and last error summary.
+- Mark the parent outbox row failed or partial when any non-retryable child
+  delivery fails; reserve `PROCESSED` or `DELIVERED` for all required deliveries
+  succeeding.
+- Treat no-subscriber events as an explicit terminal status, with policy deciding
+  whether that is allowed, warning, or dead-lettered for required event types.
+- Add operator retry/replay APIs for failed Claim Registry deliveries that do
+  not re-run claim mutation, only resend the event to subscriptions.
+- Add database-backed dispatcher tests for all-delivered, one-failed,
+  all-failed, retryable-pending, no-subscriber, and restart-after-failure cases.
+
+### 240. Claim Registry subscription patterns can behave as unintended regular expressions
+
+Evidence:
+
+- `claim-registry/src/lib/dispatch-core.ts` documents subscription matching as
+  glob semantics: exact names or globs, where `.` is literal and `*` does not
+  cross dots.
+- In `patternToRegex(...)`, the branch for patterns without `*` builds
+  `new RegExp("^" + pattern.replace(/\./g, "\\.") + "$")`. It escapes dots but
+  does not escape other regular-expression metacharacters such as `[`, `]`,
+  `(`, `)`, `+`, `?`, `|`, `{`, `}`, `^`, or `$`.
+- The branch for patterns with `*` does use the broader escape expression before
+  replacing `*`, so exact-name subscriptions and glob subscriptions do not share
+  the same safety behavior.
+- A pattern such as `claim.created+` is treated as regex `^claim\.created+$`,
+  so it can match event names like `claim.createddddd` instead of only the
+  literal event name `claim.created+`.
+- A malformed exact pattern such as `claim.[broken` throws while constructing
+  the `RegExp`. `matchesAny(...)` does not catch that error.
+- `claim-registry/src/lib/dispatcher.ts` calls
+  `subs.filter((s) => matchesAny(s.eventTypes, row.eventType))` before creating
+  deliveries. A bad active subscription pattern can therefore throw during
+  matching and prevent the row from being delivered during that sweep.
+- `claim-registry/prisma/schema.prisma` stores `EventSubscription.eventTypes` as
+  a plain `String[]`; there is no database-level pattern validation.
+- `claim-registry/prisma/seed-subscriptions.example.sql` writes subscription
+  `eventTypes` directly with SQL and says exact names are used on purpose, but
+  it cannot enforce the intended literal/glob grammar.
+- `claim-registry/test/dispatch-core.test.ts` only asserts that `a.b` does not
+  match `aXb`, plus normal suffix/lone-star behavior. It does not test exact
+  names containing regex metacharacters, malformed exact patterns, validator
+  rejection, or dispatcher isolation when one subscription is malformed.
+
+Impact:
+
+- A typo in an operator-managed Claim Registry subscription can broaden delivery
+  to unintended event types or cause matching to throw on every sweep.
+- A malformed active subscription can poison delivery for unrelated subscribers
+  because matching happens before per-subscription delivery creation.
+- Claim decay, falsification, ambiguity, or promotion events can be repeatedly
+  skipped while logs show only dispatcher-row failures, not a clear invalid
+  subscription configuration state.
+- The platform presents event types as names/globs, but the exact-name path
+  exposes raw regex behavior to operators and migrations.
+- This repeats a class of event subscription pattern bug already found in the
+  WorkGraph dispatcher, making cross-service eventing semantics inconsistent.
+
+Required fixes:
+
+- Use one shared `escapeRegExp(...)` helper for both exact and wildcard pattern
+  branches; only `*` should have special meaning after escaping everything else.
+- Add a `validateEventTypePattern(...)` helper with maximum length, allowed
+  characters, explicit wildcard grammar, and clear errors.
+- Validate `eventTypes` before insert/update in every seed, migration helper, or
+  future subscription management API.
+- During dispatch, isolate malformed subscriptions: mark the subscription
+  disabled or `INVALID_CONFIG`, emit an operator-visible event, and continue
+  matching/delivering for other valid subscriptions.
+- Add tests for regex metacharacter literals, malformed bracket patterns,
+  wildcard semantics, max length, invalid pattern quarantine, and ensuring one
+  bad subscription cannot block delivery to another.
+
+### 241. Claim Registry LLM lowering candidates lack model and prompt provenance
+
+Evidence:
+
+- `claim-registry/src/services/knowledge.service.ts` runs `lowerEvent(...)` by
+  decoding the capture payload, generating a trace id, calling
+  `llm.complete(...)`, parsing the response, and creating `LoweringCandidate`
+  rows for each proposal.
+- `claim-registry/src/lib/gateway.ts` sends the lowering prompt directly to
+  `${LLM_GATEWAY_URL}/v1/chat/completions` with headers containing only
+  `content-type` and `x-trace-id`. It does not send an `Authorization` bearer,
+  tenant id, capability id, service identity, budget context, or a body-level
+  `trace_id`.
+- The gateway request body includes only `model_alias`, messages, and
+  temperature. It does not ask for or persist a gateway request id, model
+  version, provider id, prompt hash, response hash, token usage, cost, or safety
+  metadata.
+- `claim-registry/prisma/schema.prisma` defines `KnowledgeEvent` with
+  `contentHash`, `payloadRef`, `capabilityId`, `capturedBy`, and
+  `loweringStatus`, but no `loweringTraceId`, `modelAlias`, `promptHash`,
+  `responseHash`, `gatewayCallId`, `tokenUsage`, `cost`, `loweringError`, or
+  `loweringAttempt` fields.
+- The same schema defines `LoweringCandidate` with `proposedStatement`,
+  `proposedKind`, `modelConfidence`, `matchedClaimId`, `status`, `reviewedBy`,
+  and `resultingClaimId`, but no per-candidate provenance back to the exact
+  prompt, model, response JSON path, or parser version that produced it.
+- On lowering failure, `lowerEvent(...)` updates the event to
+  `loweringStatus: "FAILED"` and throws `LOWERING_FAILED`, but it does not
+  persist the failure reason, provider status, trace id, attempt count, or retry
+  policy on the event.
+- `claim-registry/test/lowering.test.ts` proves pure JSON parsing and schema
+  validation only. The LLM gateway client is injectable and not covered by tests
+  for authentication headers, tenant/capability context, trace propagation,
+  model alias capture, gateway failure receipts, or persisted provenance.
+
+Impact:
+
+- A candidate that later becomes a governed claim cannot prove which model,
+  prompt, payload version, response, and parser generated the original proposed
+  statement.
+- Auditors cannot distinguish two candidates produced from the same source by
+  different model aliases, prompt versions, temperatures, or retry attempts.
+- Secure LLM Gateway mode can break Claim Registry lowering because this caller
+  does not send gateway auth, while permissive mode hides provider spend behind
+  an unscoped service call.
+- Token/cost budgets, model-risk policies, and capability-specific LLM routing
+  cannot be reconstructed from the Claim Registry row after the fact.
+- A failed lowering pass leaves only a coarse `FAILED` status, making operations
+  unable to tell whether the cause was missing gateway auth, invalid model
+  alias, provider timeout, unsafe content, malformed JSON, parser rejection, or
+  network failure.
+- Human curation may accept candidates into durable claims without seeing the
+  LLM evidence bundle that explains how the text was derived.
+
+Required fixes:
+
+- Add a `KnowledgeLoweringRun` or equivalent attempt table with tenant id,
+  event id, capability id, trace id, model alias, resolved provider/model,
+  prompt hash, payload hash/ref, parser version, gateway call id, token usage,
+  cost, status, error code, and response hash.
+- Link every `LoweringCandidate` to the lowering run and record the candidate's
+  response JSON path or index, normalized statement hash, and parser validation
+  result.
+- Send scoped LLM Gateway authorization plus tenant/capability/trace context for
+  every lowering call; fail closed when gateway auth or model routing is missing
+  in strict mode.
+- Persist lowering failure details in a redacted operator-safe form and expose
+  retry only through an idempotent lowering-run command.
+- Show lowering provenance in the curation UI before a user accepts a candidate
+  into a governed claim.
+- Add tests for authenticated gateway calls, missing bearer rejection, model
+  alias persistence, prompt/payload hash stability, parser-version recording,
+  failed-attempt persistence, retry idempotency, and claim acceptance carrying
+  the lowering-run id into claim provenance.
+
+### 242. Claim Registry maturity transitions are not atomic with receipts and events
+
+Evidence:
+
+- `claim-registry/src/services/claim.service.ts` implements
+  `applyTransition(...)` as a sequence of independent Prisma writes rather than
+  one `prisma.$transaction(...)`.
+- The sequence first creates a `MaturityTransition` row, then updates the `Claim`
+  maturity/status, then writes a receipt through `emitReceipt(...)`, then writes
+  one or more outbox events through `publishEvent(...)`.
+- `emitReceipt(...)` in `claim-registry/src/lib/events.ts` inserts a `Receipt`
+  row directly and can throw independently after the claim row has already
+  changed.
+- `publishEvent(...)` inserts an `EventOutbox` row directly and can throw after
+  the transition row, claim update, and receipt write have already succeeded.
+- `SPEC_BOUND` has an additional side effect: `applyTransition(...)` calculates
+  a `snapshotId` and emits `claim.spec_bound` after the main maturity event. If
+  that final outbox insert fails, the claim is `SPEC_BOUND` but the specification
+  control plane may never receive the snapshot signal.
+- The `claim-registry/test/maturity.test.ts` and `test/mcr3.test.ts` files cover
+  pure gate math, auto-transition selection, and decay threshold detection. They
+  do not cover database write failure between transition, claim update, receipt,
+  and outbox creation.
+- `claim-registry/src/services/claim.service.ts` has the same pattern in the
+  evidence attach path: evidence object upsert, evidence link upsert, posterior
+  recompute, outbox events, and possible auto-transition are separate writes
+  without one transaction or outbox command boundary.
+
+Impact:
+
+- The registry can record that a transition happened while the claim remains in
+  the old maturity state if the claim update fails after `MaturityTransition`
+  creation.
+- The claim can move to a new maturity state without the promised receipt if
+  receipt creation fails after the claim update.
+- Downstream systems can miss `claim.maturity.changed`, `claim.falsified`, or
+  `claim.spec_bound` even though the claim state changed durably.
+- Evidence packs and audit timelines can disagree: one table may say a claim was
+  promoted, another may not have the receipt, and subscribers may never receive
+  the event that should drive specification/workflow re-evaluation.
+- Retrying after a partial failure can create duplicate transition rows or emit
+  events with a different trace id for the same logical maturity move.
+- For `SPEC_BOUND`, a missing `claim.spec_bound` event can leave locked
+  specification flows unaware that a requirement-level claim became binding.
+
+Required fixes:
+
+- Wrap transition row creation, claim update, receipt creation, and required
+  outbox event creation in one database transaction.
+- Introduce an idempotent `ClaimTransitionCommand` keyed by tenant, claim id,
+  from state, to state, actor/approval id, evidence hash, and request id.
+- Emit all outbox rows from inside the transaction and let the dispatcher handle
+  delivery; never mutate claim maturity without a matching receipt/outbox record.
+- Make `SPEC_BOUND` snapshot creation a persisted record or outbox payload within
+  the same transaction, not an extra best-effort event after the main update.
+- Add compare-and-set predicates on the claim update (`id`, tenant id, expected
+  current maturity, posterior/evidence generation) to prevent stale concurrent
+  transitions.
+- Apply the same transaction/outbox discipline to evidence attach and posterior
+  recompute when they can auto-transition the claim.
+- Add fault-injection tests for failure after each write boundary, duplicate
+  retry, concurrent transition attempts, missing outbox insert, and `SPEC_BOUND`
+  snapshot consistency.
+
+### 243. Claim evidence weight and tier are caller-asserted instead of source-verified
+
+Evidence:
+
+- `claim-registry/src/routes/claims.router.ts` defines the evidence attach body
+  with caller-supplied `tier`, `kind`, `direction`, `logLikelihoodRatio`,
+  `sourceKey`, `excerpt`, `observedAt`, `sourceMeta`, `decayExempt`, and
+  `payloadRef`.
+- The route passes those values directly to `attachEvidence(...)` with only Zod
+  type/enum validation. It does not resolve `payloadRef` to a governed artifact,
+  verify source ownership, check source freshness, validate `sourceKey`, or
+  require an evidence-quality decision for high-tier evidence.
+- `claim-registry/src/services/claim.service.ts` writes `EvidenceObject.tier`,
+  `kind`, `excerpt`, `payloadRef`, `sourceMeta`, and `observedAt` from the
+  request, then writes `EvidenceLink.direction`, `logLikelihoodRatio`,
+  `sourceKey`, and `decayExempt` from the request.
+- `recompute(...)` derives posterior probability from those persisted links, and
+  `maybeAutoTransition(...)` can then auto-transition a `HYPOTHESIS` to
+  `VALIDATED`.
+- `claim-registry/src/lib/maturity.ts` makes `HYPOTHESIS->VALIDATED` automatic
+  when posterior, effective evidence, and tier gates pass; it does not require
+  human approval for that edge.
+- The default tier caps in `claim-registry/src/lib/posterior.ts` limit LLR
+  magnitude once a tier is chosen, but they do not prove that the evidence is
+  truly `T0`, `T1`, `T2`, or `T3`.
+- `decayExempt` is caller-controlled on each evidence link. If true, the
+  evidence bypasses time decay in `computePosterior(...)`; there is no
+  policy-side check that only regulatory, contractual, or otherwise durable
+  evidence can be exempt.
+- Existing tests cover pure posterior caps, decay, same-source diminishing, and
+  maturity gate math, but not route-level evidence-source verification,
+  high-tier approval, payloadRef existence, sourceKey trust, decay-exempt policy,
+  or attempts to auto-validate a claim with self-asserted high-tier evidence.
+
+Impact:
+
+- A caller who can attach evidence can inflate a claim by labeling weak excerpts
+  as `T0`/`T1`, choosing independent `sourceKey` values to avoid same-source
+  diminishing, and marking evidence as decay-exempt.
+- Claims can cross into `VALIDATED` automatically even though the evidence tier
+  and source identity were never verified by an artifact store, telemetry system,
+  experiment registry, or human evidence steward.
+- Downstream specification generation, governance gates, and evidence packs can
+  treat a claim as validated based on self-asserted evidence quality.
+- `payloadRef` can point to a nonexistent or unauthorized object while the
+  excerpt and tier still affect the posterior.
+- The decay model becomes unreliable if durable-exemption flags are not tied to
+  a governed evidence type or source policy.
+
+Required fixes:
+
+- Introduce an evidence-source registry with allowed tiers, source owners,
+  source kinds, artifact/document requirements, and decay-exemption policy.
+- Resolve and authorize `payloadRef` before evidence affects posterior; store
+  artifact id, content hash, tenant, capability, classification, and source
+  verifier on the evidence object.
+- Require explicit evidence-quality approval or automated verifier receipts for
+  `T0`/`T1` evidence, `decayExempt=true`, and any source used for automatic
+  maturity transitions.
+- Derive or validate `sourceKey` from the governed source/artifact rather than
+  trusting arbitrary caller strings.
+- Separate draft evidence capture from posterior-affecting accepted evidence;
+  only accepted evidence should feed recompute.
+- Add route/integration tests proving weak evidence cannot self-label as high
+  tier, nonexistent payload refs are rejected, unauthorized sources are denied,
+  decay exemption requires policy, duplicate source keys are enforced, and
+  auto-validation requires verified evidence.
+
+### 244. Claim Registry promotions trust caller-supplied Rooms posterior state
+
+Evidence:
+
+- `claim-registry/src/routes/registry.router.ts` exposes
+  `POST /promotions` as the Rooms-to-Registry promotion intake.
+- The route schema accepts caller-supplied `statement`, `kind`, `alpha`, `beta`,
+  `roomClaimId`, and optional `capabilityId`. It validates only basic shape:
+  statement length, kind enum, positive numbers, non-empty room claim id, and
+  UUID-shaped capability id.
+- `claim-registry/src/services/registry.service.ts` implements
+  `promoteFromRoom(...)` by converting the supplied `alpha`/`beta` through
+  `betaToLogOdds(...)`, then creating a Registry claim with
+  `priorLogOddsOverride`, `maturity: "HYPOTHESIS"`, and provenance containing
+  `{ promotedFromRoom: true, roomClaimId, beta: { alpha, beta } }`.
+- The Claim Registry service does not call WorkGraph/Rooms to verify that
+  `roomClaimId` exists, belongs to the current tenant, belongs to the supplied
+  capability, contains the supplied statement/kind, has the supplied Beta
+  posterior, or has been approved for promotion.
+- The route does not require a source Room snapshot hash, board/room head
+  revision, promotion decision id, reviewer id, source evidence ids, or
+  idempotency key.
+- `betaToLogOdds(...)` clamps degenerate values for numerical stability, but
+  there is no upper bound or reasonability check on `alpha` and `beta` in the
+  route. A caller can submit a very high-confidence posterior as the claim's
+  Registry prior.
+- `claim-registry/test/mcr3.test.ts` covers pure Beta-to-log-odds math and
+  decay threshold detection only. It does not test source Room resolution,
+  tenant/capability binding, source-posterior verification, duplicate promotion,
+  fabricated room ids, or idempotent promotion receipts.
+
+Impact:
+
+- A promotion can create a durable Registry claim whose prior belief comes from
+  caller-provided numbers rather than the actual Rooms claim state.
+- The provenance says `promotedFromRoom` and carries a `roomClaimId`, but that id
+  may be nonexistent, cross-tenant, stale, or unrelated to the statement.
+- Auditors cannot reconstruct which Room/board revision, evidence set, or human
+  promotion decision produced the claim.
+- A fabricated high prior can make later weak evidence more likely to pass
+  maturity gates, even though the prior was not independently verified.
+- Duplicate promotion retries can create conflicts based only on canonical claim
+  text, not on a durable promotion command/receipt that proves the original
+  source and decision.
+
+Required fixes:
+
+- Make promotion a source-verified command: resolve `roomClaimId` through the
+  WorkGraph/Rooms API or a signed promotion envelope before creating the Registry
+  claim.
+- Require source tenant, project/room id, capability id, room claim version,
+  board/head revision, source evidence hash, promotion decision id, and
+  idempotency key.
+- Derive `statement`, `kind`, `alpha`, `beta`, and capability from the verified
+  source snapshot instead of trusting the request body.
+- Bound accepted Beta inputs and record the exact source posterior digest in the
+  Registry claim provenance.
+- Add a `ClaimPromotionCommand` or `PromotionReceipt` table keyed by tenant plus
+  source room claim/version so retries return the same Registry claim.
+- Add tests for nonexistent source room claim, cross-tenant source, stale source
+  version, mismatched statement/kind, fabricated Beta values, duplicate retry,
+  and successful verified promotion.
+
+### 245. Claim Registry ambiguity idempotency is code-only and race-prone
+
+Evidence:
+
+- `claim-registry/src/lib/ambiguity.ts` documents that two OPEN ambiguities with
+  the same key are the same logical tension, but also states the guard is
+  code-enforced and "NOT a DB unique".
+- `claim-registry/prisma/schema.prisma` confirms this: `Ambiguity` has
+  `@@index([dedupeKey, status])`, not a unique constraint such as
+  `(tenantId, dedupeKey, status)` for OPEN rows or a partial unique index on
+  `status = 'OPEN'`.
+- `claim-registry/src/services/ambiguity.service.ts` implements
+  `openAmbiguity(...)` as `findFirst({ tenantId, dedupeKey, status: 'OPEN' })`
+  followed by `prisma.ambiguity.create(...)` if no row is found.
+- The `findFirst` and `create` are not inside a transaction with a serializable
+  isolation level or protected by a unique key, so two concurrent sweep workers
+  can both observe no OPEN row and both create an OPEN ambiguity for the same
+  tension.
+- `runContradictionSweep(...)`, `runStarvationSweep(...)`, and
+  `runDecayRecompute(...)` all call `openAmbiguity(...)`; there is no sweep
+  lease or leader election shown in the Claim Registry service.
+- Manual `POST /ambiguities` also calls the same helper, so a human/manual open
+  can race with a nightly sweep for the same claim/tension.
+- `claim-registry/test/ambiguity.test.ts` proves that `dedupeKeyFor(...)` is
+  deterministic and order-independent, but it does not test concurrent opens,
+  database uniqueness, duplicate OPEN prevention, or reopen-after-resolution
+  semantics.
+
+Impact:
+
+- Operators can see duplicate OPEN ambiguity rows for the same contradiction,
+  missing-evidence, or starvation issue.
+- Each duplicate emits its own `ambiguity.opened` outbox event, which can
+  trigger duplicate downstream work, duplicate notifications, or duplicate
+  WorkGraph review flags.
+- Human resolution can close one duplicate while another remains OPEN, making
+  the assumption register and readiness projections keep reporting a tension the
+  team believes it resolved.
+- Because reopening after resolution is intended, this needs a state-aware
+  uniqueness model; without one, the platform gets neither clean replayability
+  nor clean human queue semantics.
+
+Required fixes:
+
+- Add a database-enforced invariant for one OPEN ambiguity per tenant and
+  dedupe key, using either a partial unique index on `(tenantId, dedupeKey)` for
+  `status = 'OPEN'` or an active-ambiguity table.
+- Rewrite `openAmbiguity(...)` to use atomic insert/upsert semantics and return
+  the existing OPEN row on unique conflict.
+- Add a `reopenGeneration` or `ambiguityEpoch` if the same logical tension can
+  reopen after resolution, and include it in events and receipts.
+- Add sweep leasing or idempotent sweep-run records so parallel scheduled jobs
+  do not repeatedly contend on the same ambiguity set.
+- Add concurrency tests for two simultaneous opens, sweep/manual race,
+  resolve-then-reopen, duplicate event suppression, and assumption-register
+  counts after duplicate attempts.
+
+### 246. Assumption register undercounts ambiguities where the assumption is the related claim
+
+Evidence:
+
+- `claim-registry/src/services/ambiguity.service.ts` stores contradiction
+  ambiguities with a primary `claimId` and optional `relatedClaimId`.
+- `runContradictionSweep(...)` opens contradiction ambiguities with
+  `claimId: rel.fromClaimId` and `relatedClaimId: rel.toClaimId`.
+- `claim-registry/prisma/schema.prisma` makes `Ambiguity.claimId` a real
+  relation to `Claim`, while `relatedClaimId` is documented as "the other side
+  of a CONTRADICTION" and is a soft ref with no FK relation.
+- `claim-registry/src/services/projections.service.ts` builds the assumption
+  register's open-ambiguity counts with:
+  `where: { status: 'OPEN', claimId: { in: claims.map((c) => c.id) } }`.
+- That query does not include `relatedClaimId`, so an assumption that appears as
+  the `toClaimId` side of a contradiction gets `openAmbiguityCount: 0` even when
+  an OPEN contradiction references it.
+- `listAmbiguities(...)` has the same directional filter: when filtering by
+  `claimId`, it adds only `{ claimId: filter.claimId }`; it does not return rows
+  where the claim is `relatedClaimId`.
+- `claim-registry/test/ambiguity.test.ts` proves the dedupe key is
+  order-independent, but there is no projection test proving both sides of a
+  contradiction see the same open ambiguity.
+
+Impact:
+
+- The assumption register can under-report risk for assumptions that are on the
+  related side of a contradiction edge.
+- Users may prioritize or promote an assumption as clean because the register
+  shows zero open ambiguities, even though a live contradiction exists.
+- Directional storage leaks into the read model: `A CONTRADICTS B` and
+  `B CONTRADICTS A` are logically the same tension but not equally visible in
+  claim-scoped queries.
+- Synthesis and specification readiness views that depend on the assumption
+  register can miss contested assumptions.
+
+Required fixes:
+
+- Count ambiguities where either `claimId` or `relatedClaimId` is in the
+  assumption claim set.
+- Update `listAmbiguities({ claimId })` to query both sides of the relation.
+- Make `relatedClaimId` a proper relation or introduce an
+  `AmbiguityParticipant` table so multi-claim tensions are symmetrical and
+  queryable.
+- Include participant ids and roles in `ambiguity.opened` events so downstream
+  projections can update every affected claim.
+- Add tests proving assumption register counts contradictions for both `from`
+  and `to` claims, including mixed assumption/non-assumption pairs and filtered
+  capability views.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
