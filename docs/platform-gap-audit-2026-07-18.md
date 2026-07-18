@@ -15786,6 +15786,67 @@ Required fixes:
   overwrite, unwritable directory, partial write failure, safe workspace
   allocation, and fallback file reads from stored output paths.
 
+### 332. Discovery question and assumption mutations bypass tenant/scope authorization
+
+Evidence:
+
+- `app.ts` mounts `/api/discovery` behind `authMiddleware`, but the Discovery
+  router itself does not perform explicit resource authorization.
+- `GET /api/discovery/sessions/:id` calls `discoveryService.getSession(id)`;
+  the service forwards directly to `store.getSession(id)`.
+- The Prisma store implements `getSession(id)` with
+  `prisma.discoverySession.findUnique({ where: { id } })`, including questions
+  and assumptions, without filtering by the request tenant or checking the
+  session's `scopeType` / `scopeId` owner.
+- `POST /api/discovery/questions/:qid/answer` and
+  `POST /api/discovery/questions/:qid/dismiss` call
+  `discoveryService.answerQuestion(...)` / `dismissQuestion(...)` using only the
+  question id and authenticated user id.
+- The service loads questions with `store.getQuestion(id)`, and the Prisma store
+  implements that as `prisma.discoveryQuestion.findUnique({ where: { id } })`;
+  the subsequent `answerQuestion(...)` and `dismissQuestion(...)` updates also
+  use only the raw question id.
+- `POST /api/discovery/assumptions/:aid/validate` follows the same pattern:
+  `store.getAssumption(id)` and `setAssumptionStatus(id, ...)` use only the
+  assumption id.
+- The schema records `tenantId` on `DiscoverySession`, `DiscoveryQuestion`, and
+  `DiscoveryAssumption`, and sessions are attached to workflow stages,
+  WorkItems, runs, and initiatives via `scopeType` / `scopeId`, so the missing
+  resource check is not a modeling limitation.
+
+Impact:
+
+- Any authenticated caller who obtains or guesses a discovery session/question
+  id can read early-stage clarification context or answer/dismiss blocking
+  questions outside their authorized workflow, WorkItem, run, or initiative.
+- Because answering a question calls `maybeResumeDiscoveryNode(...)`, an
+  unauthorized answer can resume a workflow discovery node and advance execution
+  using attacker-supplied clarification data.
+- Assumption validation can be altered by users who are not allowed to validate
+  the owning scope, weakening the evidence trail for requirements, design, and
+  governance decisions.
+- Audit events record the acting user but not an authorization decision, required
+  permission, owning capability, or scope owner, so later reviewers cannot prove
+  that a discovery mutation was legitimate.
+
+Required fixes:
+
+- Add a Discovery authorization helper that resolves session ownership through
+  `scopeType` / `scopeId`, tenant, capability, workflow/run/WorkItem/initiative,
+  and required action before every read or mutation.
+- Replace raw `findUnique({ id })` reads with tenant- and scope-authorized
+  lookups such as `getSessionForActor`, `getQuestionForActor`, and
+  `getAssumptionForActor`.
+- Require explicit actions such as `discovery:view`, `discovery:elicit`,
+  `discovery:answer`, `discovery:dismiss`, and `discovery:validate_assumption`,
+  with assignment-aware checks for blocking human questions.
+- Include decision id, policy version, tenant id, scope type/id, capability id,
+  and trace id in Discovery audit events and workflow resume receipts.
+- Add IDOR and authorization tests for cross-tenant session reads, answering
+  another user's blocking question, dismissing a question on an unauthorized
+  WorkItem/run, validating another capability's assumption, and a legitimate
+  assigned approver answer that resumes the discovery node.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
