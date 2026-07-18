@@ -13326,6 +13326,159 @@ Required fixes:
 - Add tests for create-plus-manual race, double manual click, stale lease retry,
   budget exhaustion during concurrent starts, and last-writer prevention.
 
+### 287. Automated WorkItem starts bypass the durable workflow-start command model
+
+Evidence:
+
+- Manual target starts go through `startWorkItemTarget(...)`.
+- `startWorkItemTarget(...)` creates or reuses a `WorkflowStartCommand` with
+  `idempotencyKey`, `requestHash`, `state = IN_PROGRESS`, `attempt`,
+  `leaseUntil`, `tenantId`, and later updates the same command to `COMPLETED` or
+  `FAILED`.
+- WorkItem routing uses a different helper, `startAttachedTarget(...)`, when
+  `routeWorkItem(...)` sees `options.startNow` or `routingMode = AUTO_START`.
+- `startAttachedTarget(...)` reserves the target by setting `startedAt`, calls
+  `cloneDesignToRun(...)`, stamps `_workItem` into the cloned instance context,
+  links `childWorkflowInstanceId`, updates the WorkItem to `IN_PROGRESS`, emits
+  `AUTO_STARTED`, and calls `startInstance(...)`.
+- `startAttachedTarget(...)` does not create, lease, update, or complete a
+  `WorkflowStartCommand`.
+- Canonical event intake calls `fanOutToWorkItemTriggersDetailed(...)`, which
+  routes with the trigger routing mode. The internal event and schedule sweeps
+  also call `routeWorkItem(...)` with system actors. These automated paths
+  therefore use `startAttachedTarget(...)` instead of the command-backed manual
+  start path.
+
+Impact:
+
+- Manual, event-driven, scheduled, and routing-policy auto-starts do not have the
+  same durable command evidence.
+- Workflow Operations can inspect a manual `WorkflowStartCommand`, but an
+  auto-started WorkItem run has no equivalent command row with request hash,
+  launch inputs, attempt count, lease, or terminal error.
+- A crash or failure during automated clone/link/start recovery is reconstructed
+  from target timestamps, WorkItem events, and logs instead of a single
+  idempotent start command.
+- Enterprise retry and replay semantics differ by launch source, even though the
+  user-facing outcome is the same: a WorkItem target starts a child workflow run.
+
+Required fixes:
+
+- Route every WorkItem target start, including `AUTO_START`, `SCHEDULED_START`,
+  event trigger, scheduled trigger, generation-plan, and system automation starts,
+  through a shared `WorkflowStartCommand` service.
+- Include launch source, routing policy id, trigger id, delivery/outbox id,
+  WorkItem target id, template id, vars, globals, params, model/source choices,
+  tenant id, and actor/system principal in the command request hash.
+- Make `startAttachedTarget(...)` either a thin internal wrapper around the command
+  service or remove it after migrating callers.
+- Show automated start commands in Workflow Operations with retry/replay controls
+  and command-to-run links.
+- Add regression tests proving manual start, event `AUTO_START`, scheduled start,
+  and generation-plan start all create exactly one durable command and recover
+  consistently after clone/start failures.
+
+### 288. Internal WorkItem event triggers mark events processed before routing succeeds
+
+Evidence:
+
+- `runWorkItemEventTriggers()` scans internal `OutboxEvent` rows and, for each
+  matching event, creates or attaches a WorkItem.
+- Before routing the WorkItem, the sweep updates `WorkItemTrigger.lastFiredAt` to
+  the matched event's `createdAt`, mutates the in-memory trigger cursor, and calls
+  `markEventProcessed(matched.id)`.
+- Only after those cursor/processed updates does it call
+  `routeWorkItem(workItem.id, systemRouteActor('event-trigger'), ...)`.
+- `markEventProcessed(...)` writes only to a process-local `Set`.
+- `loadMatchingOutboxEvents(...)` skips events at the `lastFiredAt` timestamp when
+  their id is present in that process-local set.
+- If `routeWorkItem(...)` throws after the event is marked processed, the outer
+  catch only logs `WorkItem event trigger error:`. It does not roll back
+  `lastFiredAt`, clear the processed marker, mark the event dead-lettered, or write
+  an operations retry record.
+- A later event with a newer `createdAt` can advance `lastFiredAt` past the failed
+  event, making the failed routing attempt disappear from normal trigger scanning.
+
+Impact:
+
+- Internal event-triggered WorkItems can be created or attached, but never routed
+  or auto-started, while the event cursor has already advanced.
+- The same process will skip the failed event on later sweeps because the
+  process-local processed set says the event was handled.
+- Recovery depends on restart timing, cursor equality, or manual operator repair
+  rather than a durable "routing failed after event claim" state.
+- Operators may see a WorkItem with `TRIGGERED` evidence but no child workflow run,
+  without a matching Workflow Operations event that says routing/start must be
+  retried.
+
+Required fixes:
+
+- Treat event-trigger processing as a durable command with phases such as
+  `MATCHED`, `WORK_ITEM_CREATED`, `ROUTING_STARTED`, `ROUTED`, `STARTED`,
+  `FAILED`, and `DEAD_LETTERED`.
+- Move the `lastFiredAt`/processed cursor update after routing and any requested
+  auto-start completes, or write a retryable failure row before advancing the
+  cursor.
+- Replace process-local `processedEventIds` with persisted per-trigger/event
+  processing state, or keep it only as a short-lived optimization backed by a
+  durable claim.
+- Surface failed internal event-trigger routing in Workflow Operations with the
+  event id, trigger id, WorkItem id, route failure, retry count, and replay action.
+- Add tests where `routeWorkItem(...)` fails after WorkItem creation, after
+  trigger dedupe binding, after attachment, and during `AUTO_START`, proving the
+  event remains retryable and visible.
+
+### 289. Synthesis sponsor and owner fields accept raw user ids that later drive approvals
+
+Evidence:
+
+- The Synthesis hub UI populates Sponsor and Product owner dropdowns from
+  `/lookup/users?size=200&status=ACTIVE`.
+- The create/update schemas in `studio-projects.router.ts` accept
+  `sponsorId` and `productOwnerId` as any trimmed string up to 200 characters.
+- `createProject(...)` writes `sponsorId` and `productOwnerId` directly to
+  `SpecificationProject`; `updateProject(...)` updates those columns directly
+  when provided.
+- No service call in the project create/update path verifies that those ids are
+  active IAM users, tenant members, capability members, sponsors, or eligible
+  product owners.
+- Business Alignment objective creation accepts `ownerId` as a plain string and
+  writes it directly to `BusinessObjective.ownerId`.
+- `requestBusinessReadoutSponsorApproval(...)` uses `readout.project.sponsorId`
+  to decide approval assignment mode. When present, it creates an
+  `ApprovalRequest` with `assignmentMode = DIRECT_USER` and
+  `assignedToId = readout.project.sponsorId`.
+- `requestBusinessChangeSponsorReview(...)` repeats the same pattern for
+  `SpecificationChangeRequest` sponsor review.
+- The only self-approval guard compares the generator/requester id to the stored
+  sponsor string. It does not prove the stored sponsor is a valid approver.
+
+Impact:
+
+- A malformed, stale, inactive, cross-tenant, or mistyped sponsor id can create a
+  direct-user approval that no eligible human can see or decide.
+- A project can appear to have sponsor ownership and a DRI/product-owner lane in
+  Synthesis while IAM has no matching active identity or capability relationship.
+- Sponsor fast-lane decisions, business readouts, and change-request approvals can
+  be routed to strings rather than governed users.
+- Objective ownership and risk ownership can become unverifiable metadata instead
+  of actionable enterprise accountability.
+
+Required fixes:
+
+- Resolve and validate `sponsorId`, `productOwnerId`, objective `ownerId`, and
+  risk `ownerId` through IAM/lookup on every create/update, not just in the UI.
+- Require active tenant membership and, where appropriate, capability membership
+  or sponsor/product-owner role eligibility before persisting those ids.
+- Store the resolved display name, tenant membership version, policy decision id,
+  and validation timestamp or a reference to an identity snapshot.
+- Fail sponsor approval request creation if the stored sponsor has become
+  inactive or unauthorized; fall back to role-based sponsor assignment only when
+  no direct sponsor was intentionally set.
+- Add tests for nonexistent user ids, inactive users, cross-tenant users, revoked
+  sponsors, direct-user sponsor assignment, role-based fallback, and objective
+  owner validation.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
