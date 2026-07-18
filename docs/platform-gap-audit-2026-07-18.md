@@ -16432,6 +16432,76 @@ Required fixes:
   capability, wrong tenant, service token without scope, auditor with redaction,
   and fully authorized operator access.
 
+### 342. Prompt Composer system prompts disclose internal instructions through generic auth
+
+Evidence:
+
+- `prompt-composer/src/app.ts` mounts `/api/v1/system-prompts` after the generic
+  Prompt Composer authentication middleware. The router also calls
+  `requireAuth`, but it performs no admin, service-principal, tenant,
+  capability, prompt-key, or sensitivity authorization.
+- The route header says `GET /api/v1/system-prompts` is an admin list endpoint
+  and names internal consumers such as WorkGraph Event Horizon, agent-service
+  distillation, tool-service summarization/entity extraction, agent-runtime
+  summarization, the prompt-context capsule compiler, and audit-governance
+  diagnosis.
+- `GET /api/v1/system-prompts` returns every active prompt's `id`, `key`,
+  `version`, `modelHint`, `description`, and `updatedAt`, exposing the internal
+  prompt catalog to any authenticated caller.
+- `GET /api/v1/system-prompts/:key` returns the active prompt's full `content`,
+  `jsonSchema`, and `modelHint` for any caller-supplied key.
+- `POST /api/v1/system-prompts/:key/render` accepts arbitrary `vars` and returns
+  the rendered prompt `content`, unresolved Mustache variables, schema, and model
+  hint without proving the caller is the service that owns that prompt or that the
+  render corresponds to a governed runtime call.
+- The `SystemPrompt` model stores `key`, `version`, raw `content`,
+  `jsonSchema`, `modelHint`, active state, and description, but has no tenant,
+  capability, owner, sensitivity classification, visibility mode, access grant,
+  created/updated actor, approval metadata, or read/render decision id.
+- The route-auth contract test only proves that `systemPromptsRoutes` uses
+  `requireAuth`; it does not prove normal users are denied, service tokens are
+  scoped to specific prompt keys, render inputs are schema-bound, or sensitive
+  prompt content is redacted.
+- The audit doc did not previously contain a specific system-prompt endpoint
+  read-authorization finding.
+
+Impact:
+
+- Any authenticated Prompt Composer caller can exfiltrate internal system
+  prompts used by core platform services and adapt their requests around the
+  platform's hidden operating instructions, schemas, model hints, and safety
+  guidance.
+- The render endpoint lets a caller probe template variables and generate prompt
+  variants that never occurred in an authorized workflow, run, tenant,
+  capability, or trace context.
+- Because system prompts are global and lack ownership metadata, a tenant or
+  low-privilege service identity can discover prompts intended for another
+  domain or backend service.
+- Audit evidence cannot prove who was allowed to view a given prompt key/version
+  or why a rendered system prompt was produced.
+
+Required fixes:
+
+- Split system-prompt metadata, content read, render, and administration into
+  distinct permissions such as `system_prompt:list`, `system_prompt:read`,
+  `system_prompt:render`, `system_prompt:audit_view`, and
+  `system_prompt:admin`.
+- Add tenant, owner service, owner capability/surface, sensitivity label,
+  visibility mode, lifecycle status, content digest, created/updated actor, and
+  approval metadata to `SystemPrompt`.
+- Restrict service prompts to scoped service tokens with explicit allowed prompt
+  keys and allowed operations; normal users should receive redacted metadata
+  unless they have prompt-audit permission.
+- Bind render calls to an intended service, tenant, capability, workflow/run
+  trace, and prompt key; validate render variables against the stored schema
+  before returning content.
+- Record list/read/render audit events with actor, service identity, tenant,
+  key, version, decision id, reason, trace id, and redaction outcome.
+- Add negative tests for ordinary authenticated users reading and rendering
+  sensitive prompts, arbitrary key access, wrong tenant/capability access,
+  service tokens without key scope, malformed render variables, and redacted
+  auditor views.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
