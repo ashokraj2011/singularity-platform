@@ -9323,6 +9323,285 @@ Required fixes:
 - Add tests for empty hard/manual/automatic gates, missing capability from
   launch parameters, and valid local-only controls.
 
+### 213. Top-level Workbench Neo launch is ambiguous for multi-Workbench runs
+
+Evidence:
+
+- The unified run page renders a top-level `Workbench Neo` action with
+  `workbenchNeoUrl({ workflowInstanceId: id, browserRunId: id })`; it does not
+  pass `workflowNodeId`, phase, rendered workbench config, source, capability, or
+  agent bindings.
+- The Platform Web launch helper can include `workflowNodeId`, `phaseId`, goal,
+  source, capability, agent template ids, gate mode, and loop definition, but it
+  only serializes fields supplied by the caller.
+- In the Workbench app, `hydrateDefaultsFromWorkflow(...)` uses the requested
+  node when `workflowNodeId` is present, otherwise it falls back to
+  `instance.nodes?.find(node => asRecord(node.config?.workbench))`, i.e. the
+  first Workbench-configured node.
+- Session matching has the same wildcard behavior:
+  `!defaults.workflowNodeId || session.workflowNodeId === defaults.workflowNodeId`.
+  If the URL omits `workflowNodeId`, any same-run Workbench session can match.
+- The stage-level WorkGraph run cockpit already has the safer pattern:
+  `RunGraphView` builds a Workbench URL with the node id and rendered node
+  workbench config via `buildWorkbenchLaunchUrl(instanceId, node.id, ...)`.
+
+Impact:
+
+- A workflow with more than one Workbench/Copilot stage can open the wrong
+  Workbench stage from the run page's top-level button.
+- Session reuse can attach the operator to an unrelated same-run Workbench
+  session because node identity is optional in matching.
+- Human review, artifact editing, or approval from the wrong stage creates a
+  serious usability and governance risk: the UI looks run-scoped, but the action
+  is actually stage-scoped.
+
+Required fixes:
+
+- Replace the generic top-level `Workbench Neo` link with an active-stage
+  selector that resolves the current pending/active Workbench node and includes
+  `workflowNodeId` plus rendered node config in the URL.
+- If multiple Workbench nodes are valid candidates, show a stage picker instead
+  of falling back to the first node.
+- Make the Workbench app refuse ambiguous workflow-scoped launches when multiple
+  Workbench-configured nodes exist and no `workflowNodeId` is supplied.
+- Include the stage/node label in the launch payload and session match UI so
+  operators can verify which stage they are reviewing.
+- Add browser tests for single-node launch, multi-node launch, ambiguous launch
+  refusal, and stale same-run session isolation.
+
+### 214. Workbench finalization messages can fall back to wildcard target origin
+
+Evidence:
+
+- `notifyWorkflowFinalized(...)` sends a large `blueprintWorkbench.finalized`
+  payload containing the session id, workflow instance id, browser run id,
+  workflow node id, final pack, consumable ids, stage consumables, artifacts, and
+  grouped Workbench documents.
+- When the Workbench is embedded in a parent, the target origin is:
+  `window.location.origin === WORKBENCH_ORIGIN ? WORKGRAPH_WEB_ORIGIN : '*'`.
+  A split-origin or misconfigured `VITE_BLUEPRINT_WORKBENCH_ORIGIN` therefore
+  broadcasts the finalization payload to whatever parent embedded the Workbench.
+- The code already has `isAllowedWorkbenchHostOrigin(...)` for incoming auth
+  messages and sends opener finalization messages to `WORKGRAPH_WEB_ORIGIN`;
+  only the parent finalization path keeps a wildcard fallback.
+- Host pages such as `WorkDetailPage` check message origin before consuming
+  finalization events, but that protects the host; it does not prevent the
+  Workbench from disclosing its artifact/final-pack payload to an unintended
+  embedding parent.
+
+Impact:
+
+- Final packs, artifact metadata, document contents, consumable ids, and run
+  correlation data can be exposed to the wrong parent window in a split-origin or
+  misconfigured deployment.
+- The risk is deployment-sensitive, which makes it brittle: local single-origin
+  testing passes while cloud or embedded deployments can silently widen the
+  message target.
+- This weakens the Workbench as an enterprise review surface because completion
+  evidence can leave the trusted shell without an explicit origin allowlist.
+
+Required fixes:
+
+- Remove the wildcard target for finalization messages; fail closed when the
+  configured Workbench origin does not match the actual origin.
+- Require an explicit allowed host origin list for split-origin Workbench
+  deployments and validate it at startup/build time.
+- Send only a minimal finalization signal across `postMessage`; let the host
+  fetch final packs and documents through authorized APIs after validating the
+  event.
+- Add tests for same-origin, configured split-origin, misconfigured origin, and
+  malicious embedding parent scenarios.
+
+### 215. Event Emit nodes can bypass the governed event subscription boundary
+
+Evidence:
+
+- The guarded EventSubscription path is administrator-only, validates target URLs
+  with `assertEventTargetUrlAllowed(...)`, encrypts subscription HMAC secrets, and
+  revalidates target URLs again in the dispatcher before `fetch(...)`.
+- The `EVENT_EMIT` workflow node is a separate runtime path. Its editor exposes
+  transport, Kafka brokers, SQS queue URL, SNS topic ARN, AWS region, AMQP URL,
+  exchange, and routing key as normal node configuration fields.
+- The executor sends directly to Kafka/SQS/SNS/AMQP from node config:
+  `emitKafka(...)` uses `cfgString(node, 'brokers')`, `emitSqs(...)` uses
+  `cfgString(node, 'queueUrl')`, `emitSns(...)` uses `cfgString(node,
+  'topicArn')`, and `emitAmqp(...)` uses `cfgString(node, 'url') ??
+  process.env.AMQP_URL`.
+- If `payloadPath` is blank, `activateEventEmit(...)` sends the whole workflow
+  context as the event body.
+- The executor does syntax/presence checks for required routing fields, but it
+  does not resolve a registered event connection/subscription, enforce an
+  allowlist, apply SSRF/private-network controls to AMQP/Kafka hosts, or require
+  explicit payload projection before external emission.
+
+Impact:
+
+- A workflow template editor can create a node that sends arbitrary run context
+  to an external broker without going through the governed subscription registry.
+- The platform has two event-delivery policy surfaces: a hardened subscription
+  path and a direct node path with broader routing authority.
+- Blank `payloadPath` makes accidental data exfiltration easy because the entire
+  workflow context can include prompt snippets, event payloads, repository
+  details, artifacts, and derived secrets/handles.
+- Enterprise operators cannot centrally answer "where can this workflow emit
+  events?" from registered subscriptions alone.
+
+Required fixes:
+
+- Make external `EVENT_EMIT` transports reference registered, tenant-scoped event
+  bus connections rather than raw broker URLs/ARNs/broker lists in node config.
+- Restrict raw external transport fields to local debug mode; production should
+  fail closed unless the connection id resolves to an approved destination.
+- Require `payloadPath` or a visual payload mapping for all external transports;
+  do not allow whole-context emission by default.
+- Apply destination policy checks equivalent to EventSubscription target guards
+  for AMQP/Kafka hosts and account/ARN allowlists for SQS/SNS.
+- Add workflow-design validation and runtime tests proving external Event Emit
+  nodes cannot publish to unregistered destinations or emit whole context in
+  production mode.
+
+### 216. Live workflow signals can wake unrelated same-tenant runs
+
+Evidence:
+
+- `SignalEmitExecutor.ts` still describes `SIGNAL_EMIT` as broadcasting a named
+  signal "across all workflow instances."
+- The durable signal store is instance-scoped: `persistSignal(...)` writes
+  `instanceId`, and `consumePendingSignal(...)` queries by the same `instanceId`.
+- Live delivery behaves differently. `activateSignalEmit(...)` queries all active
+  `SIGNAL_WAIT` nodes in the tenant with `where: { nodeType: 'SIGNAL_WAIT',
+  status: 'ACTIVE' }`; it does not filter by the emitting workflow instance.
+- Correlation is permissive: if the emitter has `correlationKey` but the waiting
+  node has none, the wait still receives the signal because the mismatch check
+  only runs when both sides set a key.
+- The UI copy in `NodeInspector` reinforces this behavior: "Wakes any
+  SIGNAL_WAIT node across all workflow instances that is listening for the same
+  signal name."
+
+Impact:
+
+- Two same-tenant workflow runs using common signal names such as `approved`,
+  `done`, `ready`, or `review_complete` can wake each other.
+- The durable and live semantics differ: a waiter activated later only sees
+  same-instance persisted signals, while an already-active waiter can be woken by
+  another run.
+- A missing correlation key on either side turns a signal into a tenant-wide
+  broadcast, which is dangerous for human approvals, external callbacks, and
+  generated SDLC workflow templates.
+- Debugging is hard because the wake-up may look like a valid signal event, not a
+  cross-run collision.
+
+Required fixes:
+
+- Make live `SIGNAL_EMIT` instance-scoped by default, matching durable signal
+  semantics.
+- Add an explicit cross-instance signal mode with a required namespace,
+  correlation key, authorization check, and audit event if tenant-wide signaling
+  is truly needed.
+- Require both emitter and waiter correlation keys for cross-instance delivery;
+  missing correlation should fail validation rather than widen delivery.
+- Add design-time warnings for common/unqualified signal names and runtime
+  receipts that record the emitting instance, receiving instance, correlation
+  policy, and delivery mode.
+- Add tests for two active runs with the same signal name, missing correlation,
+  mismatched correlation, same-instance live delivery, and persisted pre-wait
+  delivery.
+
+### 217. Durable workflow signals fail open when persistence fails
+
+Evidence:
+
+- The Prisma schema describes `WorkflowSignal` as the durable store for
+  emit-before-wait correctness: "An emitted signal is persisted here so a
+  SIGNAL_WAIT that parks AFTER the emit can still consume it."
+- `persistSignal(...)` catches all persistence errors and returns `null` with the
+  comment "Durability is best-effort -- a failure here must not break live
+  delivery."
+- `activateSignalEmit(...)` persists before live delivery, but if persistence
+  fails and there is no active same-instance waiter, nothing records the signal
+  for a later `SIGNAL_WAIT`.
+- `WorkflowRuntime` always advances the `SIGNAL_EMIT` node after
+  `activateSignalEmit(...)` returns; the emit path has no output or error state
+  that tells the run the durable signal was lost.
+
+Impact:
+
+- The platform advertises durable signal semantics, but an infrastructure,
+  tenant-context, migration, or database error can silently downgrade the signal
+  to live-only delivery.
+- A workflow branch can emit a signal, advance successfully, and later leave a
+  downstream wait node parked forever because the signal was never persisted.
+- Operators will see the emitter as complete and have no receipt explaining why
+  the later wait did not resume.
+- This undercuts event-driven workflow reliability, especially for parallel
+  branch coordination, external callbacks, and replay/debug scenarios.
+
+Required fixes:
+
+- Treat signal persistence failure as a node failure for workflows that depend on
+  durable signaling, or add an explicit `durabilityMode: live_only |
+  durable_required` with `durable_required` as the enterprise default.
+- Return persistence status from `activateSignalEmit(...)` and record it in the
+  node output/receipt.
+- Add retry/dead-letter behavior for failed signal persistence instead of
+  swallowing the error.
+- Add a stuck-run sweep that can identify `SIGNAL_WAIT` nodes whose matching
+  emitter completed without a persisted signal.
+- Add tests for database write failure, tenant transaction failure, emit before
+  wait with persistence success, and emit before wait with persistence failure.
+
+### 218. WorkItem IAM permissions enforced by WorkGraph are missing from the default IAM catalog
+
+Evidence:
+
+- WorkGraph's `assertCanMutateWorkItem(...)` maps WorkItem actions to dedicated
+  IAM permission keys: `workflow:cancel`, `workflow:finalize`,
+  `workflow:submit`, `workflow:reconcile`, and `workflow:approve`.
+- Contract-bound routes use those actions directly: finalize calls
+  `assertCanMutateWorkItem(..., 'finalize')`, submissions use `'submit'`,
+  reconciliation uses `'reconcile'`, start uses `'start'`, and cancel paths use
+  `'cancel'`.
+- The IAM service default permission catalog includes workflow create/view/update,
+  execute, approve, assign, audit, template, operations, event, and runtime
+  permissions, but does not include `workflow:cancel`, `workflow:finalize`,
+  `workflow:submit`, or `workflow:reconcile`.
+- The IAM default roles also omit those keys. Capability admins get
+  `workflow:update`, `workflow:execute`, `workflow:assign`, and
+  `workflow:approve`, but not the WorkItem-specific permissions that WorkGraph
+  now checks.
+- The WorkGraph local Prisma seed only creates `workflow:approve` plus unrelated
+  approval permissions; it also does not seed the WorkItem-specific keys.
+- IAM authorization checks exact permission strings, or `platform:all`; an
+  unknown/missing permission key is not equivalent to `workflow:update`.
+
+Impact:
+
+- Enterprise users with normal seeded roles can be blocked from WorkItem
+  submission, reconciliation, cancellation, or finalization even though the UI
+  and route layer now expose those actions.
+- Teams may "fix" the blockage by giving users broad `platform:all` or
+  `workflow:update`, which defeats the new explicit WorkItem action model.
+- Fresh-clone and bare-metal demos can fail unpredictably when WorkGraph asks IAM
+  for permissions that the IAM seed never created.
+- Access reviews and the Identity permission catalog will not show the full set
+  of permissions required to operate contract-bound WorkItems.
+
+Required fixes:
+
+- Add `workflow:cancel`, `workflow:finalize`, `workflow:submit`, and
+  `workflow:reconcile` to the IAM default permission catalog and migration/seed
+  scripts.
+- Assign the keys intentionally to seeded roles: e.g. executor can submit,
+  verifier/reconciler can reconcile, approver/finalizer can finalize, and
+  operator/admin can cancel.
+- Update WorkGraph local seed and any docs/UI permission catalogs to include the
+  same keys.
+- Add startup/readiness checks that compare WorkGraph's hard-coded permission
+  vocabulary against IAM's advertised permission catalog.
+- Add tests proving a seeded non-super-admin can complete the intended WorkItem
+  lifecycle without `platform:all`, and that users lacking each specific key are
+  denied only that action.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
