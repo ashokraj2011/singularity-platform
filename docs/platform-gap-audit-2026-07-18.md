@@ -16712,6 +16712,72 @@ Required fixes:
   scope, user without repository/document access, redacted auditor access, and
   fully authorized operator debug access.
 
+### 346. Event Horizon quick-action prompt catalog is cross-surface readable without surface authorization
+
+Evidence:
+
+- `prompt-composer/src/app.ts` mounts `/api/v1/event-horizon-actions` after
+  generic Prompt Composer authentication, and `eventHorizonActionsRoutes` only
+  calls `requireAuth`.
+- `GET /api/v1/event-horizon-actions` accepts an optional `surface` query
+  parameter. If `surface` is omitted, the handler sets `where = { isActive: true }`
+  and returns every active action for every surface.
+- The route returns each action's `id`, `surface`, `intent`, `label`, literal
+  `prompt`, and `displayOrder`. The route comment says the SPA fires
+  `action.prompt` as the LLM user message and tags audit with `action.intent`.
+- The seeded catalog includes Workflow Manager actions such as summarizing a run,
+  explaining stuck nodes, finding prompt/model/artifact evidence, drafting
+  approval notes, and recommending budget/model settings, plus Capability Admin
+  actions for explaining capability setup, finding runtime evidence, drafting
+  review notes, recommending agent teams, and explaining the prompt stack.
+- The `EventHorizonAction` model stores `surface`, `intent`, `label`, `prompt`,
+  display order, active flag, and description, but no tenant, capability, role,
+  surface owner, allowed caller app, sensitivity label, permission key, prompt
+  version, approval metadata, or read decision id.
+- Platform Web's Next proxy defaults to `surface=capability-admin`, but also
+  allows callers to override `?surface=...` and forwards the browser bearer token
+  to Prompt Composer. Prompt Composer itself also allows direct calls and all-
+  surface reads.
+- `EventHorizonChat.tsx` validates fetched rows and only renders locally known
+  intents, but the backend catalog still discloses prompt templates for any
+  surface and has no server-side caller/surface binding.
+- The searched audit doc has an Event Horizon execution finding, but no finding
+  for the centralized quick-action prompt catalog disclosure/control plane.
+
+Impact:
+
+- Any authenticated Prompt Composer or Platform Web caller can enumerate
+  assistant action prompts for surfaces they may not be authorized to use.
+- Quick-action prompts are executable user-message templates, not harmless labels;
+  exposing them reveals internal operator workflows, evidence surfaces, approval
+  guidance, budget/model tuning language, and prompt-stack inspection prompts.
+- Future surfaces could add higher-risk prompts and assume they are hidden by UI
+  navigation, while this endpoint would still expose them cross-surface.
+- Because catalog reads are not tied to a tenant, surface, capability, role, or
+  decision id, audit cannot prove which user was allowed to see or invoke a given
+  action prompt.
+
+Required fixes:
+
+- Require explicit action-catalog permissions such as
+  `event_horizon_action:list`, `event_horizon_action:read`,
+  `event_horizon_action:surface:<surface>`, and
+  `event_horizon_action:admin`.
+- Make `surface` mandatory for normal callers; reject all-surface reads unless the
+  caller has catalog-admin/audit permission.
+- Bind each action to tenant/surface owner, capability or route scope, allowed
+  caller apps, roles, sensitivity, prompt version, lifecycle status, and approval
+  metadata.
+- Return only labels/intent metadata by default; return literal `prompt` text only
+  when the caller is authorized to invoke or audit that action.
+- Make Platform Web's proxy refuse arbitrary surface overrides unless the current
+  route/app owns that surface or the caller has a cross-surface admin permission.
+- Record action catalog read/invoke audit events with actor, tenant, surface,
+  action id, intent, prompt version/hash, decision id, and trace id.
+- Add tests for omitted surface denial, wrong-surface reads, normal metadata-only
+  responses, authorized prompt reads, cross-surface admin reads, and proxy surface
+  override refusal.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
