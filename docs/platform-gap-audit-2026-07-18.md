@@ -15683,6 +15683,54 @@ Required fixes:
 - Add API tests for JSON `actorId`, `x-actor-id`, service-principal delegation,
   receipt attribution, and lifecycle event attribution.
 
+### 330. Codegen specs use globally unique names and versions across tenants
+
+Evidence:
+
+- `CodegenSpec` stores `specName`, `version`, `workItemId`, `createdById`, and
+  optional `tenantId`.
+- The Prisma model declares `@@unique([specName, version])`, not a tenant-scoped
+  unique key such as `(tenantId, specName, version)`.
+- `upsertSpec(...)` looks up existing specs with
+  `findUnique({ where: { specName_version: { specName, version } } })`, which is
+  necessarily global.
+- If the existing row has a different hash, `upsertSpec(...)` throws
+  `Spec '<name>@<version>' already exists with a different hash. Bump
+  metadata.version.` even when the conflict could be from another tenant.
+- If the existing row has the same hash, `upsertSpec(...)` updates that existing
+  row and writes `workItemId: args.workItemId ?? existing.workItemId` and
+  `tenantId: args.tenantId ?? existing.tenantId`.
+- Codegen read routes such as `GET /api/codegen/specs/:id` and
+  `/api/codegen/runs` filter by `tenantWhere(req)`, so ownership and visibility
+  are treated as tenant-scoped after the global upsert has already happened.
+- Searched tests do not cover two tenants using the same Codegen spec name/version
+  with either different hashes or identical hashes.
+
+Impact:
+
+- Two tenants cannot independently use the same natural spec id and version,
+  even though tenant-scoped reads imply they should be isolated.
+- A tenant can deny another tenant's Codegen spec freeze/generate by pre-creating
+  the same `metadata.id` and `metadata.version` with a different hash.
+- A same-hash submission from another tenant can move or rewrite the existing
+  `CodegenSpec.tenantId` and `workItemId`, making the original tenant lose
+  visibility or attach future runs to the wrong WorkItem context.
+- Codegen receipts and lifecycle events can point at a spec whose apparent tenant
+  ownership changed after the original freeze/generate operation.
+
+Required fixes:
+
+- Replace global `@@unique([specName, version])` with tenant-scoped uniqueness,
+  treating `tenantId` as non-null in enterprise mode.
+- Change `upsertSpec(...)` to resolve by `(tenantId, specName, version)` and to
+  reject cross-tenant matches rather than updating them.
+- Include `tenantId`, `workItemId`, and a spec ownership digest in Codegen
+  receipts and lifecycle events so later ownership drift is detectable.
+- Add a migration/backfill plan for existing global Codegen specs, including
+  conflict reporting for duplicate names across tenants.
+- Add multi-tenant tests for same name/version with different hashes, same hash,
+  workItem id differences, read visibility, and run/receipt ownership.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
