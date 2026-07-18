@@ -16778,6 +16778,85 @@ Required fixes:
   responses, authorized prompt reads, cross-surface admin reads, and proxy surface
   override refusal.
 
+### 347. Prompt Composer preview-only compose can manufacture and return full prompt stacks without resource authorization
+
+Evidence:
+
+- `prompt-composer/src/app.ts` mounts `/api/v1/compose-and-respond` after generic
+  Prompt Composer authentication, and `composeRoutes` only calls `requireAuth`.
+- `compose.controller.ts` calls `composeService.composeAndRespond(...)` with the
+  request body and cache-bypass flags, but it does not pass `req.user`, tenant
+  context, caller permissions, service-token scope, or a WorkGraph run/resource
+  authorization decision.
+- `compose.schemas.ts` allows callers to set `previewOnly: true`, optional
+  `capabilityId`, `agentBindingId`, `workflowContext`, `modelOverrides`,
+  `contextPolicy`, `artifacts`, `worldModel`, `codeContextPackage`, and
+  node-level overrides such as `additionalLayers`, `systemPromptAppend`, and
+  `extraContext`.
+- The controller accepts preview/cache-bypass through request body,
+  `?nocache=...`, or `Bypass-Cache` header, allowing callers to force fresh
+  retrieval instead of serving a cached capsule.
+- `compose.service.ts` documents that when `previewOnly` is true it skips the LLM
+  call and returns the assembled package.
+- The service reads an `AgentTemplate` by raw `agentTemplateId`, optional
+  `AgentCapabilityBinding` by raw id, optional `Capability` by raw
+  `capabilityId`, and then loads base/overlay prompt layers, inline agent
+  instructions, capability context, knowledge artifacts, distilled memory,
+  learned patterns, workflow-phase layers, tool contracts, agent skill-source
+  metadata, caller-supplied artifacts, task context, and execution overrides.
+- When `previewOnly` is true, the response includes `assembled.systemPrompt:
+  finalPrompt`, `assembled.message`, `contextPlan`, `retrievalStats`, warnings,
+  prompt hash, prompt assembly id, and token estimates.
+- The service also persists a `PromptAssembly` row before returning preview data,
+  including `finalPromptPreview`, `evidenceRefs`, and per-layer
+  `contentSnapshot` values, but the audit event does not record the authenticated
+  actor or a resource authorization decision.
+- Existing audit findings cover prompt assembly reads, stage prompt resolution,
+  compiled contexts, and debug retrieval, but not this preview-only full prompt
+  manufacturing path.
+
+Impact:
+
+- Any authenticated Prompt Composer caller can manufacture a full prompt for an
+  arbitrary agent/capability/run shape and receive the entire assembled system
+  prompt without going through Context Fabric, a workflow run, or model execution.
+- The returned prompt can include platform prompt layers, agent instructions,
+  capability knowledge, distilled memory, learned failure patterns, tool
+  contracts, skill-source permissions, workflow phase policy text, code context,
+  and caller-supplied artifact content.
+- Because this is a preview path, it can exfiltrate sensitive prompt/context
+  material while avoiding the governed model-call receipts that operators may
+  monitor for real executions.
+- Cache-bypass support makes the endpoint useful as a fresh retrieval probe,
+  overlapping with the debug retrieval disclosure but returning the final prompt
+  as the agent would see it.
+- Persisted preview assemblies can pollute prompt evidence history with
+  unauthorized or synthetic workflow context that looks like a normal assembly
+  unless downstream readers inspect `previewOnly` audit payloads.
+
+Required fixes:
+
+- Pass `req.user`, tenant id, service identity, and a required caller surface into
+  `composeAndRespond(...)`; authorize `previewOnly` separately from real
+  execution.
+- Require explicit permissions such as `prompt_preview:create`,
+  `prompt_preview:sensitive_view`, and `prompt_preview:bypass_cache`, plus
+  capability, agent-template, workflow/run, artifact, repository, and memory
+  access checks before assembling any prompt.
+- Disable full `assembled.systemPrompt` responses in production by default; return
+  hashes and redacted layer summaries unless the caller has sensitive prompt
+  preview rights.
+- Bind preview requests to an authorized workflow/run, approved prompt-workbench
+  session, or audited admin debugging session rather than accepting arbitrary
+  `workflowContext` and `capabilityId` combinations.
+- Record preview audit events with actor, tenant, service token id, capability,
+  agent template, workflow/run, bypass-cache flag, layer ids, source resource ids,
+  redaction mode, decision id, and trace id.
+- Add tests for unauthorized preview, wrong capability, wrong agent template,
+  wrong workflow/run, cache bypass without permission, redacted preview,
+  authorized sensitive preview, and synthetic preview assembly isolation from
+  production run evidence.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
