@@ -11351,6 +11351,221 @@ Required fixes:
   and `to` claims, including mixed assumption/non-assumption pairs and filtered
   capability views.
 
+### 247. Concept Studio proposal promotion drops generated claims
+
+Evidence:
+
+- `workgraph-studio/apps/api/src/modules/concept-archive/archive.service.ts`
+  implements direct card promotion in `promoteCard(...)`.
+- In that direct path, the service parses the card body, loops through
+  `body.assumptions`, creates one WorkGraph `Claim` per assumption, updates the
+  card to `status: 'PROMOTED'`, and stores the generated ids in
+  `claimRefs`.
+- The proposal-inbox path uses the same business word, `PROMOTE`, inside
+  `decideProposal(...)`.
+- When accepting a `CONCEPT_CARD` proposal with `kind === 'PROMOTE'`, the code
+  only updates the card's `status`, `promotedRef`, and `operatorNote`; it does
+  not parse the target card body, create assumption claims, preserve existing
+  `claimRefs`, or write new `claimRefs`.
+- The proposal path appends a `CARD_PROMOTED` archive event with only
+  `{ proposalId }`, while the direct promotion event includes the generated
+  `claimIds`.
+- `workgraph-studio/apps/api/test/archive.engine.test.ts` covers engine
+  behavior such as cell keys, scoring, dedupe, and pathfinder ranking. It does
+  not cover archive service promotion, proposal acceptance, claim creation, or
+  promoted-card evidence parity.
+
+Impact:
+
+- Two user-visible paths that both say "promote" create different evidence
+  chains.
+- A human who accepts an agent's promote proposal can end up with a promoted
+  concept that has no generated claims, while a direct promotion would have
+  created those claims.
+- Downstream specification, decision, generation-plan, and readiness views that
+  expect `claimRefs` can treat proposal-promoted concepts as weaker or empty
+  evidence.
+- Auditors cannot reconstruct why the proposal-promoted concept was trusted,
+  because the event lacks the assumption claim ids that the direct path records.
+
+Required fixes:
+
+- Factor claim generation into a shared promotion helper used by both
+  `promoteCard(...)` and the accepted `PROMOTE` proposal branch.
+- Make accepted `PROMOTE` proposals produce the same `claimRefs` and archive
+  event payload shape as direct promotions.
+- Preserve existing claim refs when a card is re-promoted, and make repeated
+  proposal acceptance idempotent.
+- Add API/service tests for direct promotion, proposal promotion, no-assumption
+  promotion, repeated promotion, and generated claim/event parity.
+
+### 248. Concept Studio tables are not covered by forced tenant RLS and child queries omit tenant filters
+
+Evidence:
+
+- `workgraph-studio/apps/api/prisma/schema.prisma` gives `Studio`,
+  `ConceptArchive`, `ConceptCard`, `ArchiveCellState`, `ConceptCardVote`, and
+  `StudioProposal` `tenantId` fields, but `ArchiveEvent` has no `tenantId`
+  field at all.
+- `workgraph-studio/apps/api/prisma/migrations/20260805020000_synthesis_tenant_rls/migration.sql`
+  enables and forces RLS for decision/economics tables only:
+  `decision_dossiers`, `decision_options`, `project_budget_envelopes`, and
+  `project_token_ledger`.
+- `workgraph-studio/apps/api/prisma/rls-cutover-manual-apply-only.sql` and the
+  checked migrations enable forced RLS for workflow, board, business-alignment,
+  work-item, and decision/economics tables, but there is no matching forced-RLS
+  policy for `studios`, `concept_archives`, `concept_cards`,
+  `archive_cell_states`, `archive_events`, `concept_card_votes`, or
+  `studio_proposals`.
+- `archive.service.ts` mixes tenant-aware and tenant-unaware queries. For
+  example, `getArchive(...)` reads cards with `{ archiveId, ...tenantWhere() }`
+  but reads cells with only `{ archiveId }` and events with only `{ archiveId }`.
+- `confirmCardCoords(...)` reads `archiveCellState` by the composite key
+  `{ archiveId, axesRevision, cellKey }` without tenant filtering, then updates
+  the cell by `id`.
+- `voteCard(...)` scopes the card read by tenant, but then reads all votes with
+  `{ cardId }` and updates the card by `{ id: cardId }`.
+- `freezeArchive(...)`, `recutArchive(...)`, and proposal swap handling also
+  include child-card or child-cell reads and writes without consistently adding
+  `tenantId`.
+- The only searched Concept Archive test is `archive.engine.test.ts`; it is
+  DB-free and cannot prove table RLS, cross-tenant direct-id denial, or child-row
+  tenant scoping.
+
+Impact:
+
+- In non-forced-RLS deployments, a bug, stale row, manual data repair, or direct
+  id path can leak archive events/cells/votes across tenant boundaries.
+- Even in strict-mode code paths, Concept Studio is not protected by the same
+  database backstop that exists for WorkItems, workflow runtime, boards,
+  business alignment, and decision/economics data.
+- Board/idea data can contain unreleased strategy, customer evidence, proposed
+  capabilities, and assumption notes, so child-row leakage is not harmless.
+- Missing `tenantId` on `ArchiveEvent` also makes tenant-scoped event retention,
+  replay, export, and audit filtering weaker than the rest of the platform.
+
+Required fixes:
+
+- Add `tenantId` to `ArchiveEvent` and backfill it from the owning archive.
+- Add forced RLS policies for all Concept Studio tables:
+  `studios`, `concept_archives`, `concept_cards`, `archive_cell_states`,
+  `archive_events`, `concept_card_votes`, and `studio_proposals`.
+- Update every Concept Archive child query and mutation to include tenant scope
+  or run inside a tenant transaction whose RLS policy is proven active.
+- Add direct-id cross-tenant tests for archives, cards, cells, events, votes,
+  proposals, pathfinder, freeze, recut, promotion, and proposal decision.
+- Extend the WorkGraph tenant-isolation doctor to include Concept Studio tables.
+
+### 249. Concept Archive budget counters are race-prone JSON snapshots
+
+Evidence:
+
+- `archive.service.ts` stores archive usage in
+  `ConceptArchive.budgetUsage`, a JSON object with `cards`, `proposals`,
+  `embeddingCalls`, and `searchExpansions`.
+- `stageCardInTx(...)` reads `usage = usageOf(archive.budgetUsage)`, checks
+  `usage.cards >= budget.maxCards`, creates a card, and writes a whole JSON
+  replacement with `cards: usage.cards + 1`.
+- The same function increments `embeddingCalls` by rewriting the same JSON
+  snapshot.
+- `confirmCardCoords(...)`, `createProposal(...)`, and `rebaseProposal(...)`
+  increment `proposals` with the same read-check-rewrite pattern.
+- `pathfinder(...)` reads usage outside the update path, ranks cards, then
+  rewrites `searchExpansions` to `usage.searchExpansions + ranked.expansions`.
+- None of these updates use a row lock, serializable transaction, compare-and-set
+  on the previous `budgetUsage` value, SQL-side JSON increment, or separate
+  counter table with atomic numeric columns.
+- Under PostgreSQL's normal read-committed behavior, two concurrent requests can
+  both read `cards = N`, both pass the max-card check, both create cards, and
+  both write `cards = N + 1`.
+- The Concept Archive tests are engine-only and do not exercise concurrent
+  staging, proposal creation, pathfinder budget exhaustion, or lost-update
+  behavior.
+
+Impact:
+
+- A busy idea board can exceed card, proposal, embedding-call, or search
+  expansion budgets without the stored usage showing the real amount consumed.
+- Token/cost controls for agent-generated ideas become advisory instead of
+  enforceable under concurrency.
+- Later budget decisions can be made from stale or undercounted usage, which is
+  especially risky when agents are allowed to generate many proposals.
+- Operators can see confusing budget UI: the board appears within budget while
+  more cards/proposals exist than the configured cap allows.
+
+Required fixes:
+
+- Replace JSON budget counters with first-class numeric columns or a
+  `ConceptArchiveBudgetLedger` table.
+- If JSON must remain for compatibility, update counters with SQL-side atomic
+  expressions and compare-and-set guards.
+- Lock the archive row before checking and consuming budget, or use serializable
+  transactions with retry on serialization failure.
+- Record each budget-consuming action in an immutable ledger with request id,
+  actor, action type, trace id, and consumed amount.
+- Add concurrency tests for card staging, proposal creation, pathfinder search,
+  embedding budget exhaustion, and UI summary consistency after races.
+
+### 250. Synthesis claim references are split between WorkGraph local claims and Claim Registry claims
+
+Evidence:
+
+- `workgraph-studio/apps/api/prisma/schema.prisma` defines a WorkGraph-local
+  `Claim` model with posterior fields, stewardship, provenance, evidence, and
+  project/capability scoping.
+- Concept Studio and Rooms create these WorkGraph-local claims directly. For
+  example, `promoteCard(...)`, `killCell(...)`, Rooms claim creation, and
+  Experience claim extraction all call `tx.claim.create(...)` or
+  `prisma.claim.create(...)`.
+- `studio-spec.schemas.ts` allows project requirements and decisions to carry
+  `claimRefs` as UUIDs, and `contract-bound.router.ts` validates generation
+  plan row `claimRefs` by querying `prisma.claim.findMany(...)` for claims that
+  belong to the same WorkGraph project.
+- Separately, `lookup/resolver.ts` defines the workflow-template `claim` resolver
+  as a live call to the external `claim-registry` service at
+  `/api/v1/claims/:id`.
+- `workgraph-studio/apps/api/src/modules/claims/README.md` says
+  `Workflow.metadata.claimRefs` are written for SPEC_BOUND Claim Registry claims
+  and are validated by the resolver's `claim` kind.
+- That README also says Claim Registry decay/falsification events re-flag
+  workflow templates that reference registry claim ids.
+- There is no searched code path that automatically mirrors WorkGraph-local
+  `Claim` rows into Claim Registry, or normalizes Claim Registry claim ids back
+  into WorkGraph project claims before specification/generation validation.
+
+Impact:
+
+- The same field name, `claimRefs`, means different claim authorities depending
+  on where it appears: WorkGraph-local project claims in Synthesis and
+  Claim-Registry claims in workflow metadata.
+- A claim created from a concept promotion can satisfy generation-plan
+  validation, but the Claim Registry decay/falsification loop will not know
+  about it unless an explicit sync exists.
+- A Claim Registry SPEC_BOUND claim can validate workflow metadata, but it will
+  not satisfy Synthesis generation-plan validation unless it also exists as a
+  WorkGraph-local claim.
+- Users and auditors can follow a `claimRefs` chain and land in a different
+  registry depending on the screen, breaking the "one evidence spine" promise.
+- Claim lifecycle events, ambiguity sweeps, assumption register projections, and
+  WorkGraph specification readiness can diverge for the same business belief.
+
+Required fixes:
+
+- Define one canonical claim authority for new Synthesis evidence, or introduce
+  explicit typed refs such as `{ authority: 'workgraph' | 'claim-registry',
+  claimId, snapshotId }`.
+- Add a deterministic sync/binding layer if WorkGraph-local claims remain:
+  local claim id, registry claim id, content hash, snapshot id, tenant id,
+  capability id, and lifecycle status.
+- Rename or version `claimRefs` payloads so workflow metadata and Synthesis
+  specification packages cannot silently mix incompatible claim ids.
+- Extend Claim Registry events to update or invalidate bound WorkGraph-local
+  claims, and extend WorkGraph claim changes to publish registry-compatible
+  evidence.
+- Add end-to-end tests proving a concept promotion claim can be traced through
+  specification, generation plan, workflow metadata, Claim Registry decay, and
+  UI audit links without changing authority midstream.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
