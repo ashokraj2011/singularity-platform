@@ -10428,6 +10428,357 @@ Required fixes:
   forged subject/capability, restart revocation behavior, and a valid scoped
   mint through an authorized Context Fabric/runtime issuer.
 
+### 233. LLM Gateway provider spend and catalog writes are protected by one raw bearer
+
+Evidence:
+
+- `context-fabric/services/llm_gateway_service/app/router.py` defines
+  `_check_auth(...)` as a single string comparison against
+  `settings.gateway_bearer`. If `LLM_GATEWAY_BEARER` is empty, the function
+  returns successfully and auth is disabled.
+- The same `_check_auth(...)` protects `/llm/providers`, `/llm/models`,
+  `POST/PUT/DELETE /llm/models`, `POST /v1/chat/completions`, and
+  `POST /v1/embeddings`. It does not verify an IAM JWT, service identity,
+  tenant allowlist, scopes, caller class, model budget, capability ownership,
+  or per-route permission.
+- `context-fabric/services/llm_gateway_service/app/config.py` fails closed only
+  in production-like environments when real provider credentials exist and the
+  bearer is empty. When the bearer is present, it is still one shared raw secret
+  for every read, write, chat, and embedding operation.
+- `context-fabric/services/llm_gateway_service/app/platform_registry.py`
+  advertises the gateway `auth_mode` as `"bearer-static"` or `"none"`, not as an
+  IAM-scoped service-token mode.
+- `context-fabric/services/llm_gateway_service/app/types.py` exposes
+  `trace_id`, `run_id`, and `capability_id` as optional request body fields for
+  chat completions and embeddings. The router does not require or validate those
+  fields before provider dispatch.
+- `context-fabric/services/llm_gateway_service/app/provider_config.py` persists
+  model catalog changes to the shared `llm-models.json` file via
+  `add_model(...)`, `update_model(...)`, and `delete_model(...)`. The route guard
+  for those writes is the same raw bearer used for provider-funded inference.
+- Several callers post directly to `/v1/chat/completions` with only
+  `content-type` headers in the searched code, including
+  `audit-governance-service/src/engine/llm-judge.ts`,
+  `audit-governance-service/src/engine/diagnose.ts`, and
+  `agent-and-tools/apps/agent-runtime/src/modules/capabilities/bootstrap-phase3-distill.ts`.
+  Those calls rely on deployments where the gateway accepts unauthenticated or
+  network-local traffic, or they fail when auth is enabled.
+- Existing searched gateway tests cover config hardening, provider readiness,
+  upstream parsing, retry behavior, prompt-cache handling, and platform
+  registration, but not IAM-scoped gateway tokens, tenant-scoped catalog
+  mutation, per-model budget enforcement, forbidden capability/run ids, or
+  route-specific service permissions.
+
+Impact:
+
+- A leaked `LLM_GATEWAY_BEARER` is equivalent to provider spend authority and
+  model catalog administration for the whole gateway.
+- Any service holding the gateway bearer for embeddings or provider status can
+  also call chat completions, mutate model aliases, change default routing, or
+  delete aliases unless additional network controls happen to prevent it.
+- Model costs, default aliases, and provider routing are global file state, so
+  one caller can change the effective model behavior for unrelated tenants,
+  runs, agents, and evidence exports.
+- Optional body-level `trace_id`, `run_id`, and `capability_id` cannot prove who
+  caused provider spend or which tenant/capability was authorized for the call.
+- Services that still call the gateway without a bearer create a deployment
+  split-brain: secure gateway mode breaks those features, while permissive mode
+  exposes provider-funded endpoints.
+- Enterprise budget, tenant isolation, and audit evidence cannot rely on the
+  gateway as the final provider-spend control point.
+
+Required fixes:
+
+- Replace `LLM_GATEWAY_BEARER` with IAM-signed service JWTs carrying
+  `service_name`, tenant allowlist, allowed routes, allowed model aliases,
+  allowed capabilities, expiry, key id, token id, and budget class.
+- Split scopes for provider status, model catalog read, model catalog write,
+  chat completion, embeddings, provider health, and admin/debug operations.
+- Require tenant id, actor/service id, capability id, trace id, and run/workflow
+  context for production chat and embedding calls; derive the authoritative
+  caller context from the verified token rather than optional body fields.
+- Move model catalog writes behind a tenant/platform policy decision and record
+  immutable catalog version, actor, tenant, reason, and diff audit events.
+- Add per-tenant/per-service/per-model rate limits and budget checks before
+  provider dispatch, with fail-closed behavior when budget context is missing.
+- Update all direct callers to send scoped gateway tokens or route through the
+  governed Context Fabric/MCP path consistently; reject unauthenticated direct
+  calls in strict mode.
+- Add tests for read-only token attempting chat, embedding-only token attempting
+  catalog mutation, tenant A token mutating tenant B/global aliases, missing
+  trace/capability in strict mode, over-budget provider dispatch, expired token,
+  and legacy no-bearer callers in secure deployments.
+
+### 234. Synthesis workspaces store important artifacts only in browser localStorage
+
+Evidence:
+
+- `agent-and-tools/web/src/components/synthesis/hooks/useLocalWorkspace.ts`
+  reads and writes arbitrary workspace state through `window.localStorage` using
+  the supplied key. It has no server write-through, revision, author, tenant,
+  lock, branch, or audit event.
+- `DiagramWorkspaceScreen.tsx` stores React Flow nodes and edges under
+  `synthesis:diagram:${projectId}` and offers only a client-side JSON export.
+  The diagram is not written to WorkGraph, the specification package, the claim
+  evidence graph, or a project artifact record.
+- `JourneyMapScreen.tsx` stores journey stages, lanes, and observations under
+  `synthesis:journey:${projectId}`. The screen labels the data as the
+  initiative journey, but it is scoped to the current browser profile rather
+  than the initiative system of record.
+- `PseudoCodeStudioScreen.tsx` stores `initiative.logic` under
+  `synthesis:pseudocode:${projectId}` and displays "Auto-saved", but the
+  auto-save is localStorage only. The validation result is client-side state and
+  is not persisted as evidence.
+- `FactVotingView.tsx` fetches governed claims from WorkGraph but stores team
+  votes under `synthesis:fact-votes:${projectId}`. The UI uses those votes to
+  rank facts and summarize supported/contested signals, but the votes are not
+  shared, audited, or visible to another user.
+- Exact searches found no WorkGraph route or Prisma model for Synthesis diagram,
+  journey-map, pseudocode-workspace, or fact-vote persistence. Related
+  specification schemas support diagrams and pseudocode, but these Synthesis
+  screens do not call those specification APIs.
+- The Synthesis shell presents these surfaces as phase-level workspaces:
+  Journey Map in Explore and System Diagrams/Pseudocode in Specify, so users see
+  them as part of the primary initiative flow rather than throwaway scratchpads.
+
+Impact:
+
+- Two users looking at the same initiative can see different diagrams, journey
+  maps, pseudocode, and fact-vote rankings because the state lives in each
+  browser.
+- Clearing browser storage, changing machines, using an incognito window, or
+  opening the platform from a different host loses those artifacts.
+- Specification lock, generation-plan validation, impact assessment, evidence
+  pack export, and WorkItem creation cannot reliably include these artifacts
+  because they are not part of the backend evidence graph.
+- "Auto-saved" copy is misleading for enterprise users: it suggests durable
+  platform persistence while only saving to local browser storage.
+- Local fact votes can change perceived claim support without an auditable
+  decision record, reviewer identity, quorum, or tenant/capability guard.
+
+Required fixes:
+
+- Add tenant-scoped WorkGraph records or project artifact records for Synthesis
+  diagrams, journey maps, pseudocode modules, and fact votes.
+- Reuse the existing specification package diagram/pseudocode schema where these
+  artifacts are intended to become locked specification content; otherwise store
+  them as draft project artifacts with explicit promotion into the spec package.
+- Replace `useLocalWorkspace` persistence with API-backed save/load hooks that
+  carry project id, capability id, actor id, revision, branch, and trace id.
+- Add optimistic concurrency, autosave status, conflict resolution, and recovery
+  for multi-user edits.
+- Persist fact votes as governed review signals with voter identity, optional
+  role/team eligibility, idempotency key, and audit events; distinguish informal
+  signals from formal approvals.
+- Change UI copy from "Auto-saved" to "Saved locally" until backend persistence
+  is implemented.
+- Add tests proving artifacts survive browser reload/storage clear, are visible
+  to another authorized user, are denied cross-capability, are included in
+  specification/evidence exports only after promotion, and preserve revision
+  history.
+
+### 235. Claim Registry has tenant scoping but no action-level claim permissions
+
+Evidence:
+
+- `claim-registry/src/middleware/auth.ts` verifies a bearer token through IAM or
+  local HS256, derives `userId`, `tenantId`, and `kind`, and rejects tenant
+  headers outside the verified token membership. This gives the service a tenant
+  boundary.
+- The same middleware exposes only `registryActor` and `requireServicePrincipal`.
+  There is no equivalent of `requireClaimPermission(...)`,
+  `requireCapabilityMembership(...)`, `requireCuratorRole(...)`, or
+  IAM `/authz/check` call for normal claim operations.
+- `claim-registry/src/index.ts` mounts all `/api/v1` routes behind
+  `registryAuth`, then mounts `claimsRouter`, `knowledgeRouter`,
+  `registryRouter`, and `ambiguityRouter` without route-specific permission
+  middleware.
+- `claims.router.ts` lets any authenticated tenant actor create claims, attach
+  evidence, and transition maturity. The transition route accepts
+  `approvedBy` from the request body and falls back to the caller id; it does not
+  verify that the caller is allowed to approve, bind requirements, falsify, or
+  transition that capability's claims.
+- `knowledge.router.ts` lets any authenticated tenant actor capture raw
+  knowledge events, run the lowering pass, list all lowering candidates, and
+  accept or reject candidates. Accepting a candidate creates or merges governed
+  claims.
+- `registry.router.ts` lets any authenticated tenant actor call
+  `/lookup/resolve` and `/promotions`. Only the scheduled `/jobs/*` endpoints
+  require `requireServicePrincipal`.
+- `ambiguity.router.ts` lets any authenticated tenant actor open, acknowledge,
+  resolve, dismiss ambiguities, assert claim relations, and read the assumption
+  register. These operations influence contradiction sweeps and projected
+  readiness.
+- The Prisma schema stores `capabilityId`, `createdBy`, `attachedBy`,
+  `approvedBy`, `reviewedBy`, and tenant ids, but it has no grant, reviewer,
+  steward, role, quorum, or capability-membership enforcement table for claim
+  actions.
+- `claim-registry/test/auth.test.ts` verifies bearer requirement, IAM-derived
+  actor identity, tenant header validation, and fail-closed missing tenant
+  membership. Searched tests do not cover role/capability permission denial,
+  unauthorized evidence attachment, unauthorized maturity transition,
+  unauthorized candidate acceptance, or forged `approvedBy`.
+
+Impact:
+
+- Any authenticated user in a tenant can potentially turn source documents into
+  governed claims, attach evidence, transition maturity, bind requirements, or
+  reject/accept LLM-lowered candidates for capabilities they should not curate.
+- Claim maturity and ambiguity resolution become tenant-wide writable state
+  instead of controlled epistemic governance decisions.
+- A user can submit another user's id in `approvedBy`, making maturity-transition
+  receipts look like a different approver approved the move.
+- Capability-specific evidence quality can be weakened even though the tenant
+  boundary itself is enforced.
+- Downstream specification compilation, generation-plan validation, governance
+  gates, and evidence packs can trust claims that were curated by users without
+  the right role, skill, or capability authority.
+
+Required fixes:
+
+- Add explicit Claim Registry permissions such as `claim:view`, `claim:create`,
+  `claim:evidence:attach`, `claim:maturity:transition`, `claim:approve`,
+  `claim:promote`, `claim:lowering:review`, `claim:ambiguity:resolve`, and
+  `claim:relation:assert`.
+- Resolve claim/candidate/event/ambiguity/capability context before mutation and
+  call IAM `/authz/check` or a shared policy service with tenant, actor,
+  capability, resource id, and action.
+- Remove caller-controlled `approvedBy` from normal user routes; derive the
+  approver from the authenticated actor or from a verified delegation/approval
+  decision.
+- Enforce capability membership or curator/steward assignment for capability
+  scoped claims and knowledge events.
+- Split read-only assumption/register lookup from mutating curation actions.
+- Add audit decisions for allow/deny, evidence attachment, maturity transition,
+  lowering candidate acceptance/rejection, promotion, relation assertion, and
+  ambiguity resolution.
+- Add tests for tenant user without curator role attempting each mutation,
+  capability A user mutating capability B claim, forged `approvedBy`, service
+  token without curation scope, read-only auditor behavior, and successful
+  authorized curator flows.
+
+### 236. Claim Registry event dispatcher can deliver tenant events to other tenants' subscriptions
+
+Evidence:
+
+- `claim-registry/prisma/schema.prisma` gives `EventOutbox`,
+  `EventSubscription`, and `EventDelivery` a `tenantId` column. Subscription
+  names are unique per tenant.
+- `claim-registry/src/lib/events.ts` writes outbox rows with
+  `tenantId: currentRegistryTenant()`, so emitted claim events are tenant
+  labeled at creation time.
+- `claim-registry/src/lib/dispatcher.ts` drains `EventOutbox` rows with
+  `where: { status: 'PENDING' }` and passes each row to `deliverRow(...)`, but
+  the row shape used by `deliverRow(...)` omits `tenantId`.
+- `deliverRow(...)` loads subscriptions with
+  `prisma.eventSubscription.findMany({ where: { active: true } })`; it does not
+  filter `EventSubscription.tenantId` to the outbox row tenant.
+- The same function creates `EventDelivery` rows without setting `tenantId`, so
+  delivery rows use the Prisma default `"default"` instead of the outbox tenant
+  or subscription tenant.
+- Delivery sends the signed payload to `sub.targetUrl` for every matching event
+  pattern. The signed envelope built by `dispatch-core.ts` includes source
+  service, trace id, subject, status, and payload, but not the outbox tenant id.
+- `EventSubscription.secret` and `targetUrl` are stored as plaintext strings in
+  the Claim Registry schema. The dispatcher fetches `sub.targetUrl` directly and
+  signs with `sub.secret`; there is no SSRF allowlist, encrypted secret read, or
+  per-tenant destination policy in the Claim Registry dispatcher path.
+- `claim-registry/test/dispatch-core.test.ts` covers pattern matching, envelope
+  construction, HMAC round-trip, unsigned deliveries, and retry math, but there
+  is no dispatcher test for tenant-filtered subscriptions, delivery tenant id,
+  encrypted secrets, target URL policy, or cross-tenant non-delivery.
+
+Impact:
+
+- A tenant A claim event can be delivered to tenant B's active subscription if
+  the event pattern matches.
+- Tenant-specific claim, ambiguity, knowledge, and lowering payloads can leak to
+  another tenant's webhook target.
+- Delivery records can be stored under the default tenant, making operations,
+  replay, retry, and forensic reporting misleading or incomplete.
+- Receivers cannot use the signed envelope to reject the wrong tenant because
+  the envelope does not carry an authoritative tenant id.
+- Plaintext webhook secrets and unguarded target URLs repeat an event-bus risk
+  that WorkGraph has already started hardening elsewhere.
+
+Required fixes:
+
+- Include `tenantId` in the dispatcher row shape and filter subscriptions with
+  `where: { active: true, tenantId: row.tenantId }`.
+- Persist `EventDelivery.tenantId` from the outbox row and add a migration to
+  backfill or quarantine default-tenant delivery rows.
+- Add tenant id to the signed delivery envelope and require receivers to compare
+  it with the expected source tenant.
+- Encrypt `EventSubscription.secret` at rest or reference an external secret id,
+  then decrypt only inside the dispatcher.
+- Validate subscription target URLs with the same SSRF/destination policy used by
+  the WorkGraph event-subscription path before storing and again before sending.
+- Add dispatcher integration tests for tenant A/B subscriptions, wildcard
+  patterns, delivery tenant id, wrong-tenant receiver rejection, target URL
+  denial, encrypted secret use, and failed delivery reporting.
+
+### 237. Claim Registry raw knowledge captures are stored inline and returned through the API
+
+Evidence:
+
+- `claim-registry/src/routes/knowledge.router.ts` accepts
+  `POST /knowledge-events` with `content` up to 500,000 characters for sources
+  such as transcripts, Slack, Confluence, board exports, Workbench, and manual
+  entries.
+- That route returns `res.status(201).json(await captureEvent(...))` without a
+  response DTO or redaction layer.
+- `claim-registry/src/services/knowledge.service.ts` stores the raw capture via
+  `payloadRef: putPayload(input.content)` and returns the full Prisma
+  `KnowledgeEvent` row to the caller.
+- `claim-registry/src/lib/payload-store.ts` is still an inline stub:
+  `putPayload(...)` returns `"inline:" + base64(rawContent)`, and
+  `getPayload(...)` decodes that inline value. The file comment says production
+  should back `payloadRef` with MinIO, but the implementation has a
+  `TODO(M-CR2 hardening)` and throws for non-inline refs.
+- `claim-registry/prisma/schema.prisma` stores `KnowledgeEvent.payloadRef` as a
+  plain `String` with the comment "MinIO ref to raw capture". In the current
+  code, that string can contain the full base64-encoded source document.
+- `lowerEvent(...)` reads `event.payloadRef` directly and sends the decoded raw
+  transcript/document into the LLM lowering prompt.
+- Exact searched Claim Registry tests cover authentication, dispatch-core HMAC,
+  lowering parsing, posterior math, ambiguity, maturity, and canonicalization,
+  but not encrypted payload storage, MinIO/object-store failure, payloadRef
+  redaction, retention, size pressure, or response leakage.
+
+Impact:
+
+- Sensitive source documents, transcripts, and customer data can be persisted
+  directly inside the Claim Registry database row as base64 text rather than in
+  a controlled artifact/object store.
+- API callers that create or deduplicate a knowledge event can receive a
+  `payloadRef` containing the full encoded raw document.
+- Database backups, query logs, debug dumps, Prisma inspection, and broad
+  internal reads can expose raw source material outside normal document/artifact
+  permissions.
+- Object-store controls such as encryption context, retention policy, content
+  hash, MIME type, size tiering, malware scanning, legal hold, and presigned
+  access logs are bypassed.
+- Lowering evidence cannot prove which immutable object version was sent to the
+  LLM, because the source is an inline blob rather than a versioned artifact with
+  policy metadata.
+
+Required fixes:
+
+- Replace inline `payloadRef` with an object-store artifact reference carrying
+  tenant id, capability id, content hash, byte size, media type, classification,
+  retention policy, and encryption metadata.
+- Return a redacted response DTO from `POST /knowledge-events`; expose only
+  event id, source, content hash, capability id, status, and policy metadata.
+- Make inline payload storage development-only and fail closed in production when
+  the object store is unavailable.
+- Add a bounded retrieval service for lowering that validates tenant, capability,
+  purpose, retention, scan status, and LLM-use policy before returning content.
+- Record lowering receipts with payload artifact id, content hash, extraction
+  version, prompt trace id, and redaction/classification summary.
+- Add tests for large capture storage, response redaction, object-store
+  unavailable behavior, content hash immutability, cross-tenant payload denial,
+  retention expiry, and non-inline lowering retrieval.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
