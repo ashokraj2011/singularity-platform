@@ -16372,6 +16372,66 @@ Required fixes:
   lessons, and forging `extractedBy`; add positive tests for scoped admin and
   audit-governance service principals.
 
+### 341. Compiled prompt-context capsules are readable without capability authorization
+
+Evidence:
+
+- `prompt-composer/src/app.ts` mounts `/api/v1/compiled-contexts` after generic
+  Prompt Composer authentication, and `compiled-context.routes.ts` only calls
+  `requireAuth`.
+- `GET /api/v1/compiled-contexts` accepts caller-supplied `capabilityId` and
+  `agentTemplateId` filters, then returns capsule metadata for matching
+  `CapabilityCompiledContext` rows. It does not compare those filters with
+  `req.user.capability_ids`, a service-token scope, tenant context, or agent
+  profile visibility.
+- `GET /api/v1/compiled-contexts/:id` loads a row by opaque id with
+  `findUnique(...)` and returns the entire row, including `compiledContent`,
+  `citations`, `taskSignature`, `capabilityId`, `agentTemplateId`, `intent`,
+  token estimates, status, and TTL fields.
+- `GET /api/v1/compiled-contexts/:id/compare` also loads by id and returns
+  `compiledContent`, a `rawApproximation` reconstructed from citation content,
+  citation keys, source kinds, confidence scores, and excerpted citation content.
+- `CapabilityCompiledContext` stores `capabilityId`, `agentTemplateId`,
+  `taskSignature`, `intent`, `compiledContent`, and `citations`, but no
+  `tenantId`, owner, created-for user, sensitivity label, access grant,
+  redaction policy, or authorization decision id.
+- The route-auth contract test for compiled contexts only proves the router uses
+  `requireAuth`; there is no regression proof for cross-capability denial,
+  cross-tenant isolation, service-token scope, redaction, or id-based access.
+- The audit doc did not previously contain a specific compiled-context capsule
+  read-authorization finding.
+
+Impact:
+
+- Any authenticated Prompt Composer caller who knows or guesses a capsule id can
+  retrieve cached prompt context for another capability or agent template.
+- The compiled content and citation excerpts may include condensed code context,
+  knowledge snippets, memory, lessons, prompt layers, artifact context, business
+  facts, or governance evidence that the caller could not otherwise view through
+  the originating WorkGraph, Agent Runtime, document, or repository APIs.
+- The compare endpoint is an even stronger disclosure path because it exposes
+  both the compiled paragraph and raw citation excerpts meant for operator audit.
+- Since capsules are keyed by task signature rather than tenant/resource grants,
+  cache reuse and audit inspection cannot prove the viewer is authorized for the
+  source material.
+
+Required fixes:
+
+- Add tenant and authorization metadata to `CapabilityCompiledContext`: tenant id,
+  owner capability, agent template, source trace id, created-for actor/service,
+  sensitivity labels, source resource ids, and creation decision id.
+- Gate list/get/compare through a compiled-context authorization helper that
+  checks tenant, capability membership, agent-template visibility, audit role,
+  and sensitive-context permission before returning content.
+- Redact or omit `compiledContent`, raw citation excerpts, task signatures, and
+  source ids unless the caller has explicit sensitive-context/audit permission.
+- Treat service-token callers separately from users; require scoped claims for
+  `compiled_context:list`, `compiled_context:read`, and
+  `compiled_context:compare`.
+- Add IDOR tests for list filters, direct id reads, compare reads, wrong
+  capability, wrong tenant, service token without scope, auditor with redaction,
+  and fully authorized operator access.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
