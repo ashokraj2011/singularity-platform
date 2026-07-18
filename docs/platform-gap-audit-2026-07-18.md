@@ -14672,6 +14672,69 @@ Required fixes:
   approval UI warning state, strict-mode block, policy-enabled fallback handoff,
   and evidence export labelling.
 
+### 312. Agent Runtime memory mutation routes do not enforce writer capability or service scope
+
+Evidence:
+
+- `agent-and-tools/apps/agent-runtime/src/modules/memory/memory.routes.ts` mounts
+  all memory routes behind `requireAuth`, but it does not attach route-specific
+  permissions such as `memory:execution:write`, `memory:review`, or
+  `memory:distilled:promote`.
+- `agent-and-tools/apps/agent-runtime/src/modules/memory/memory.controller.ts`
+  passes `req.user` into `listExecution(...)` and `listDistilled(...)`, but
+  `storeExecution(...)`, `review(...)`, and `promote(...)` call their service
+  methods with only request body/params.
+- `agent-and-tools/apps/agent-runtime/src/modules/memory/memory.service.ts`
+  mutation method signatures do not accept `AuthUser`; they validate only
+  capability/binding state and archived status before creating
+  `WorkflowExecutionMemory`, changing review status, or creating `DistilledMemory`.
+- `validateExecutionMemoryScope(...)` verifies an optional agent binding is active
+  and belongs to the supplied capability, then calls
+  `assertMemoryCapabilityWritable(...)`; it never checks `req.user.capability_ids`,
+  IAM permissions, service-token scopes, tenant membership, workflow ownership, or
+  whether the caller is the runtime that produced the execution memory.
+- `validateDistilledMemoryPromotionScope(...)` enforces capability consistency only
+  when `scopeType === "CAPABILITY"`. Other caller-supplied scope types return
+  immediately and can be persisted without an ownership model.
+- `agent-and-tools/apps/agent-runtime/src/middleware/auth.middleware.ts` accepts
+  scoped service tokens by mapping token `scopes` into `req.user.permissions`, but
+  the memory mutation path never reads those permissions.
+- `memory-write-scope.contract.test.ts` asserts archived/cross-capability scope
+  validation, but it does not assert writer authorization, service-scope
+  enforcement, reviewer authority, or denial for users outside the capability.
+
+Impact:
+
+- Any authenticated human or service principal that can reach Agent Runtime can
+  stage execution memory for an active capability id it knows, even if it is not
+  the workflow/runtime owner for that execution.
+- The same caller can review execution memory or promote distilled memory into an
+  active capability scope without proving capability write/admin rights.
+- A low-privilege service token intended for read/list operations can become a
+  memory-writing principal because memory routes authenticate the token but ignore
+  its scopes.
+- Prompt Composer consumes active capability distilled memory in future prompt
+  assemblies, so unauthorized memory promotion can poison subsequent agent
+  context and evidence for that capability.
+- Non-CAPABILITY distilled memory scopes have no tenant or resource guard here,
+  creating an unowned memory namespace that future readers may accidentally trust.
+
+Required fixes:
+
+- Pass `req.user` into `storeExecution`, `review`, and `promote`, and enforce
+  explicit IAM permissions/scopes for each mutation route.
+- Require capability write/admin access, workflow/run ownership, or a trusted
+  service-token scope before accepting execution memory for a capability.
+- Restrict review and promote actions to authorized reviewers/operators, and
+  record `reviewedBy`, `promotedBy`, actor type, tenant id, and policy decision id.
+- Reject non-CAPABILITY distilled memory scopes until each supported scope type has
+  a tenant/resource ownership model and authorization policy.
+- Validate service token scopes such as `memory:execution:write`,
+  `memory:review`, and `memory:promote` separately from user permissions.
+- Add IDOR tests for out-of-capability user writes, read-only service token
+  promotion, cross-tenant capability ids, unauthorized review, non-capability
+  scope promotion, and successful authorized runtime/workflow writes.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
