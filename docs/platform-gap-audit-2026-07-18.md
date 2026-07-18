@@ -14401,6 +14401,78 @@ Required fixes:
 - Add tests for authenticated access, missing bearer rejection, dev/test override,
   and production startup refusal when unauthenticated mock admin is enabled.
 
+### 308. Context Memory routes expose tenantless conversation memory by caller-supplied ids
+
+Evidence:
+
+- `context-fabric/services/context_memory_service/app/routes.py` defines
+  `/memory/messages`, `/memory/messages/{session_id}`,
+  `/memory/messages/{session_id}/stats`, `/memory/summaries/update`,
+  `/memory/summaries/latest/{session_id}`, `/memory/items`, `/memory/search`,
+  `/context/compile`, `/context/compare`, and `/context/packages/{id}` without
+  any `Authorization` header, dependency, service-token check, tenant id, or
+  actor/capability validation.
+- `context-fabric/services/context_api_service/app/main.py` imports that same
+  `memory_router` and mounts it directly on Context API with `app.include_router(memory_router)`.
+  Nearby routers such as execute, receipts, and runtime bridge implement their
+  own service-token checks, so there is no shared global auth wrapper protecting
+  the folded memory routes.
+- The legacy standalone memory app in
+  `context-fabric/services/context_memory_service/app/main.py` also includes the
+  same router directly and self-registers with platform registry using
+  `"auth_mode": "none"`.
+- `context-fabric/services/context_memory_service/app/repository.py` stores
+  `conversation_messages`, `context_summaries`, `memory_items`, and
+  `context_packages` keyed by `session_id`, `agent_id`, or package id only. The
+  schemas shown in `init_db()` have no `tenant_id`, `user_id`, capability id, or
+  ownership columns.
+- `routes.py` lets `/memory/search` call `list_memory_items(limit=200)` when the
+  caller omits both `agent_id` and `session_id`, which returns the highest-ranked
+  memory rows across the store.
+- `routes.py` lets `/context/compile` and `/context/compare` read conversation
+  history for any supplied `session_id` and produce optimized context packages
+  without proving the caller owns that session.
+- No searched audit entry currently covers Context Memory route authorization or
+  tenant isolation; existing Context Fabric auth findings focus on execute,
+  receipts, runtime bridge, direct LLM, and MCP paths.
+
+Impact:
+
+- Any caller that can reach Context API or the legacy context-memory service can
+  read, summarize, search, or repackage another run's conversation memory if they
+  know or guess a `session_id`, `agent_id`, or context package id.
+- Memory search without a scope can leak distilled durable learning across
+  users, capabilities, tenants, or demos because the repository has no tenant
+  partition to filter on.
+- `/context/compile` can assemble prior messages, rolling summaries, and memory
+  items into a prompt-ready package for an unauthorized caller, turning context
+  optimization into a data-exfiltration surface.
+- Because memory rows do not carry tenant/capability/user ownership, downstream
+  receipts and evidence cannot prove which tenant was allowed to read or reuse
+  the memory that influenced an LLM call.
+- Folding the routes into Context API increases exposure: operators may assume
+  Context API's stricter execute/runtime auth posture also applies to `/memory/*`
+  and `/context/*`, but these routes remain byte-compatible and unauthenticated.
+
+Required fixes:
+
+- Add tenant, actor, capability, workflow/run, and ownership columns to memory
+  messages, summaries, memory items, and context packages, with a backfill plan
+  for existing rows.
+- Require authenticated service/user tokens on every `/memory/*` and
+  `/context/*` route, derive tenant/user from the token, and reject caller-supplied
+  ids outside the authorized tenant/capability/session scope.
+- Replace unscoped `/memory/search` with explicit tenant/capability/session
+  filters, and fail closed when no scope is supplied outside local test mode.
+- Authorize `/context/compile`, `/context/compare`, and `/context/packages/{id}`
+  against the source session and package owner before returning prompt-ready
+  context.
+- Update platform registry to advertise the real auth mode for context memory and
+  refuse production startup when the memory router is exposed without auth.
+- Add IDOR tests for reading another tenant's session messages, unscoped memory
+  search, compiling another user's context, fetching another package by id, and
+  legacy standalone service exposure.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
