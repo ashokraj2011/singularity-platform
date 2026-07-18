@@ -16502,6 +16502,85 @@ Required fixes:
   service tokens without key scope, malformed render variables, and redacted
   auditor views.
 
+### 343. Prompt Composer immutable contract bundles can be minted and read without contract authorization
+
+Evidence:
+
+- `prompt-composer/src/app.ts` mounts `/api/v1/contracts` after generic Prompt
+  Composer authentication, and `contracts.routes.ts` only calls `requireAuth`.
+- `POST /api/v1/contracts` accepts caller-supplied `agentTemplateId`,
+  `agentTemplateVersion`, optional `capabilityId`, `modelAlias`, `capturedBy`,
+  `capturedFrom`, and `consumableId`, then calls `contractsService.mint(...)`
+  without proving the caller may publish or snapshot that agent, capability, or
+  consumable.
+- `contractsService.mint(...)` trusts the caller-supplied capture fields, resolves
+  a model alias through MCP, assembles a bundle, and writes an `ImmutableContract`
+  row. The authenticated `req.user` is not bound into `capturedBy`, tenant
+  context, or a mint authorization decision.
+- `GET /api/v1/contracts/:id` and `GET /api/v1/contracts/by-hash/:bundleHash`
+  return the full `ImmutableContract` row by direct id/hash with no check that the
+  caller can view the agent template, capability, consumable, prompt profiles,
+  prompt layers, system prompts, stage bindings, tools, or model resolution in
+  the bundle.
+- `GET /api/v1/contracts?agentTemplateId=...` is labeled an admin list in the
+  route header but only requires `agentTemplateId`; it does not verify ownership,
+  capability visibility, tenant, service-token scope, or audit role.
+- The contract bundler captures full prompt material: prompt layer
+  `contentSnapshot`, all active system prompt keys/versions/content, stage binding
+  task and extra-context templates, tool pins, and model resolution.
+- The bundler explicitly reads all active `SystemPrompt` rows and all active
+  `StagePromptBinding` rows rather than tracing only the prompt keys/stage
+  bindings actually reachable by the requested agent/capability.
+- The `ImmutableContract` model stores `capabilityId`, prompt/profile/system
+  prompt snapshots, stage bindings, tool pins, model resolution, and caller-
+  supplied capture metadata, but no tenant id, owner, sensitivity label, access
+  grant, publisher/approver identity, service principal, policy decision id, or
+  read/mint audit metadata.
+- Existing contract findings cover normal executions not consuming contracts and
+  WorkGraph replay lacking authorization; they do not cover the Prompt Composer
+  contract mint/read/list API itself.
+
+Impact:
+
+- Any authenticated Prompt Composer caller can create a frozen evidence-looking
+  contract for an agent/capability they may not own, with spoofed capture
+  metadata.
+- Any authenticated caller who obtains an id or bundle hash can retrieve frozen
+  prompt layer content, system prompt content, stage task templates, tool grants,
+  and model routing details that may span unrelated agents, capabilities, or
+  tenants.
+- Because the bundle over-captures all active system prompts and stage bindings,
+  a contract minted for one agent can become a broad prompt-catalog disclosure
+  artifact rather than a minimal execution snapshot.
+- Immutable contracts are intended to be audit-grade evidence, but without
+  publisher authorization, tenant ownership, sensitivity labels, and read
+  decisions, the platform cannot prove a contract was legitimately minted or
+  viewed.
+
+Required fixes:
+
+- Add explicit `contract:mint`, `contract:view`, `contract:list`,
+  `contract:audit_view`, and `contract:admin` permissions with tenant,
+  capability, agent-template, and consumable checks before minting or reading any
+  bundle.
+- Bind mint provenance to the authenticated actor/service identity; reject or
+  ignore caller-supplied `capturedBy` unless it matches an authorized service
+  claim, and persist the mint decision id, policy version, tenant, trace id, and
+  reason.
+- Minimize contract bundles to prompt profiles, layers, system prompt keys, stage
+  bindings, tools, and model aliases actually reachable from the requested agent
+  template/capability. Do not snapshot the full active system-prompt catalog by
+  default.
+- Redact prompt layer content snapshots, system prompt contents, task templates,
+  tool details, and model-routing details unless the caller has sensitive
+  contract/audit permission.
+- Add tenant, owner capability, owner agent template, sensitivity labels,
+  publisher/approver, source workflow/run/consumable, mint decision id, read
+  decision id, and bundle-scope metadata to `ImmutableContract`.
+- Add tests for ordinary user mint denial, wrong capability mint, spoofed
+  `capturedBy`, direct id/hash IDOR reads, agent list IDOR, service token without
+  contract scope, redacted auditor reads, and minimal bundle contents.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
