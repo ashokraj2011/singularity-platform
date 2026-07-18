@@ -14608,6 +14608,70 @@ Required fixes:
   replay after failure, duplicate replay idempotency, no-capability skip with
   visible reason, and successful command-to-memory promotion.
 
+### 311. Architect self-review timeout fallback can synthesize approval-ready evidence
+
+Evidence:
+
+- `context-fabric/services/context_api_service/app/governed/stage_driver.py`
+  defines `_architect_self_review_fallback_receipt(...)`, which runs when the
+  agent role is `ARCHITECT`, the current phase is `SELF_REVIEW`, and either PLAN
+  or EXPLORE has produced a structured receipt.
+- That fallback constructs a new `self_review_receipt` after max-turn exhaustion
+  with an `acceptance_criteria_check` entry whose `status` is `"met"` and
+  evidence text says PLAN/EXPLORE receipts were produced before SELF_REVIEW timed
+  out.
+- The fallback fills missing risks with a generic default such as "Developer must
+  verify case-insensitive matching and null or empty input behavior", builds a
+  verification summary from PLAN when available, and sets
+  `recommended_for_approval: True`.
+- `_try_architect_self_review_fallback(...)` advances the phase machine with that
+  synthetic receipt, sets `result.stop_reason = "APPROVAL_PENDING"`, and emits
+  only a warning event named `governed.architect_self_review_fallback`.
+- `context-fabric/services/context_api_service/app/governed/phase_state.py`
+  explicitly sets `approval_pending` from any `SELF_REVIEW` receipt carrying
+  `recommended_for_approval=true`, so the fallback enters the same approval path
+  shape as an agent-produced self-review receipt.
+- Existing audit coverage mentions direct LLM governance bypasses and fallback
+  summaries, but no searched entry covers synthesized Architect self-review
+  receipts or timeout-to-approval-pending behavior.
+
+Impact:
+
+- A stage that failed to produce its final self-review receipt before the turn
+  budget can still present a human approver with an approval-ready receipt whose
+  criteria are marked `"met"`.
+- Operators may see "approval pending" and a plausible summary without realizing
+  the actual SELF_REVIEW agent output is missing and the receipt was synthesized
+  by fallback logic after max-turn exhaustion.
+- The fallback can downplay uncertainty: generic risks and a default verification
+  summary are mixed with real PLAN/EXPLORE evidence, making it hard to separate
+  agent-stated findings from platform-invented guardrails.
+- Governance evidence becomes weaker because approval decisions can be based on a
+  surrogate receipt rather than the explicit self-review artifact the policy
+  intended to collect.
+- Regression tests can pass the human-gate path while still allowing architect
+  stages to time out in SELF_REVIEW, masking prompt or model-quality issues that
+  should be fixed.
+
+Required fixes:
+
+- Persist a distinct receipt kind or provenance field such as
+  `self_review_fallback_receipt` / `synthetic=true`, and surface it prominently in
+  run cockpit, approval UI, receipts, and evidence packs.
+- Do not set `recommended_for_approval=true` on fallback receipts by default.
+  Require an explicit policy flag such as `allowFallbackApprovalHandoff` per
+  workflow/stage.
+- Mark fallback acceptance checks as `partial`, `unverified`, or
+  `requires_human_review` instead of `"met"` unless the original self-review
+  receipt was produced and validated.
+- Separate platform-generated default risks/verification notes from agent-authored
+  PLAN/EXPLORE evidence in the receipt schema.
+- Add strict-mode behavior that blocks or routes to rework when SELF_REVIEW times
+  out without a valid self-review receipt.
+- Add tests for max-turn Architect SELF_REVIEW timeout, fallback provenance,
+  approval UI warning state, strict-mode block, policy-enabled fallback handoff,
+  and evidence export labelling.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
