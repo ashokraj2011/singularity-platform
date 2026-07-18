@@ -8237,6 +8237,251 @@ Required fixes:
   Options -> Decisions, Economics -> Generate, and Pilot -> Spec, then assert the
   target page is not `NoProjectSelected`.
 
+### 192. Direct LLM prompt profile selections are not consistently validated or applied
+
+Evidence:
+
+- The Direct LLM node editor exposes a Prompt Profile dropdown and stores the
+  selected value as `promptProfileKey` in both `config.directLlm` and
+  `config.standard`.
+- The write-time reference resolver validates `promptProfileId` for
+  `DIRECT_LLM_TASK`, but it does not inspect `direct.promptProfileKey` or
+  `standard.promptProfileKey`.
+- Loop strategy definitions also accept `promptProfileKey`, but
+  `validateLoopStrategyDefinition(...)` only normalizes it as text; it does not
+  resolve the key against Prompt Composer for the tenant.
+- The base Direct LLM Prompt Composer path calls `composeAndRespond(...)` with
+  the agent template, capability, task, artifacts, and model overrides, but it
+  does not pass the selected `promptProfileKey`.
+- Stage prompt resolution does pass `promptProfileKey`, so the same field affects
+  loop-stage prompts but not the base agent-profile composition path.
+
+Impact:
+
+- A workflow designer can select or hand-edit a stale, unauthorized, or typoed
+  prompt profile key and still save the node because the normal lookup validator
+  is watching the wrong field name.
+- Operators may believe a Direct LLM verifier is using a chosen prompt profile
+  while the base prompt-composer call ignores that selection and uses the
+  profile/template defaults.
+- Loop strategies can be published with prompt profile keys that are not proven
+  to exist or belong to the tenant, moving the failure to runtime and increasing
+  the chance of generic prompt fallback.
+- Evidence becomes ambiguous because receipts can show a Direct LLM node had a
+  prompt profile key configured, but not prove that the base prompt was actually
+  assembled from that profile.
+
+Required fixes:
+
+- Pick one canonical field name for Direct LLM prompt-profile references
+  (`promptProfileId` or `promptProfileKey`) and use it consistently in the
+  editor, config normalizer, lookup resolver, Prompt Composer client, receipts,
+  and tests.
+- Extend `refsForNodeConfig(...)` and `validateNodeConfig(...)` to validate the
+  Direct LLM prompt profile reference, including strategy-defined prompt profile
+  keys when a pinned strategy is attached.
+- Pass the selected profile reference into the base `composeAndRespond(...)`
+  request or remove the dropdown from base Direct LLM agent-profile mode if that
+  API cannot honor it.
+- Make loop strategy creation/publishing resolve Prompt Composer profile keys in
+  the current tenant and fail closed when a referenced profile is unavailable.
+- Add regression tests proving a Direct LLM node cannot save or publish a
+  strategy with a missing prompt profile, and that a selected prompt profile
+  appears in the Prompt Composer assembly evidence used by the provider call.
+
+### 193. Direct LLM output field arrays can silently collapse duplicate names
+
+Evidence:
+
+- `normalizeFields(...)` accepts output fields as either an object or an array for
+  legacy compatibility.
+- When an array is provided, each item can carry its own `name`, but
+  `normalizeFields(...)` writes every normalized entry into a
+  `Record<string, DirectLlmOutputField>` as `fields[name] = ...` without a
+  `seen` set or duplicate failure.
+- The Direct LLM editor performs the same collapse for array-shaped legacy field
+  data with `Object.fromEntries(...)`, so duplicate field names are already lost
+  before client-side validation runs.
+- `directLlmConfigErrors(...)` tries to detect duplicate output field names by
+  iterating `Object.keys(...)`, but duplicate object keys cannot exist after the
+  array-to-object collapse.
+- The plan for Direct LLM structured output explicitly required duplicate field
+  names to block save; this implementation does not enforce that for array input.
+
+Impact:
+
+- A legacy config, pasted JSON, generated workflow, or API caller can define two
+  output fields with the same name and get a saved node where the later field
+  silently overwrites the earlier one.
+- The generated JSON Schema, prompt contract, downstream decision gates, and
+  receipts can disagree with the author intent because one field definition
+  disappeared without a validation error.
+- This is especially risky for verifier-agent flows where fields such as
+  `approved`, `riskLevel`, or `blockingReason` drive subsequent branching and
+  human approval behavior.
+
+Required fixes:
+
+- Add duplicate detection to `normalizeFields(...)` before writing into the
+  output record, mirroring the `normalizeInputBindings(...)` `seen` check.
+- Preserve array index information in the validation failure, for example
+  `outputContract.fields[3].name`, so users can fix the offending row.
+- Update `DirectLlmTaskEditor.directFromConfig(...)` to preserve duplicate array
+  rows until validation can report them, or normalize only after showing a clear
+  error.
+- Add unit tests for object fields, array fields, duplicate array names, empty
+  names, enum type mismatch, and generated JSON Schema required-field behavior.
+- Add a workflow design save regression proving duplicate output field arrays are
+  rejected by the API, not only by browser UI.
+
+### 194. Event-bus delivery retry is fixed-sweep retry, not exponential backoff
+
+Evidence:
+
+- `eventbus/dispatcher.ts` documents retry policy as "up to 5 times with
+  exponential backoff".
+- The `EventDelivery` schema has `status`, `attempts`, `lastAttemptAt`,
+  `lastError`, `deliveredAt`, and `responseStatus`, but no `nextAttemptAt`,
+  backoff bucket, lease, or dead-letter timestamp. The `nextAttemptAt` column in
+  the schema belongs to `notification_deliveries`, not `event_deliveries`.
+- On failed delivery, `deliverOne(...)` sets the delivery status back to `queued`
+  when `shouldRetry(...)` returns true, increments `attempts`, and records
+  `lastAttemptAt`.
+- `processOutboxRow(...)` leaves the aggregate outbox row in `pending` while any
+  delivery remains `queued`.
+- `sweep()` selects all `eventOutbox` rows with `status = 'pending'` every 30
+  seconds and reprocesses them immediately; it does not filter delivery rows by a
+  computed backoff time.
+- Manual retry resets `EventDelivery.attempts` to zero and sets the outbox row
+  back to `pending`, but it does not create an explicit retry command or
+  scheduled-at timestamp.
+
+Impact:
+
+- A failing subscriber can be retried on every safety sweep at a fixed cadence,
+  despite the code claiming exponential backoff.
+- During an outage, WorkGraph can repeatedly hit the same broken webhook endpoint
+  across many outbox rows, increasing load and noise exactly when downstream
+  systems are unhealthy.
+- Operators cannot tell whether a queued delivery is waiting for a backoff window
+  or merely waiting for the next sweep.
+- Retry behavior is hard to test deterministically because the schedule lives in
+  process timing rather than durable delivery state.
+
+Required fixes:
+
+- Add `nextAttemptAt`, `deadLetteredAt`, and optionally `lastClaimedBy` /
+  `claimExpiresAt` to `EventDelivery`.
+- Compute exponential backoff with jitter when a delivery fails, and query only
+  queued deliveries whose `nextAttemptAt <= now`.
+- Make max-attempt exhaustion transition to a terminal `dead_lettered` status
+  instead of overloading `failed`.
+- Make manual retry create a clear operator action that resets status and
+  `nextAttemptAt`, while preserving prior attempt history in audit evidence.
+- Add dispatcher tests for first failure, backoff scheduling, max-attempt
+  dead-lettering, manual retry, and multiple failing subscribers on one outbox
+  event.
+
+### 195. Event subscription patterns are stored as unvalidated regular-expression fragments
+
+Evidence:
+
+- `event-subscriptions.router.ts` accepts `eventPattern` with only
+  `z.string().min(1)` on create and patch.
+- `dispatcher.ts` says a subscription pattern without `*` is a literal exact
+  match.
+- The non-`*` branch of `patternToRegex(...)` builds
+  `new RegExp("^" + pattern.replace(/\./g, "\\.") + "$")`, escaping dots but not
+  other regular-expression metacharacters such as `[`, `(`, `+`, `?`, `|`, `$`,
+  or `\\`.
+- The `*` branch does escape regex metacharacters before replacing `*`, so the
+  two branches have different safety semantics.
+- `findMatchingSubscriptions(...)` calls `patternToRegex(s.eventPattern).test(...)`
+  for every active subscription during dispatch. A malformed exact pattern can
+  throw while processing an outbox row.
+
+Impact:
+
+- A subscription that looks like an exact literal can match unintended events
+  because regex metacharacters remain active.
+- A malformed pattern such as an unmatched character class can throw inside the
+  dispatcher, causing an outbox row to record sweep/listener errors instead of
+  delivering to otherwise healthy subscribers.
+- A single bad subscription can become an operational denial-of-delivery risk for
+  matching event rows until an operator finds and fixes the pattern.
+- This makes the event-bus contract harder to explain: exact patterns are not
+  actually exact unless they avoid regex syntax by convention.
+
+Required fixes:
+
+- Use one `escapeRegExp(...)` helper in both `patternToRegex(...)` branches, then
+  replace escaped `\\*` tokens with the supported glob fragment.
+- Validate event patterns at subscription create/update time: allowed
+  characters, max length, no empty segments, and a successfully compiled regex.
+- Store a normalized pattern and expose pattern validation errors in the
+  subscription UI before save.
+- Make dispatcher matching isolate bad subscriptions: mark that subscription
+  invalid/disabled or record a delivery-level failure without aborting the whole
+  outbox row.
+- Add tests for exact literal metacharacters, valid glob patterns, malformed
+  patterns, long patterns, and one invalid subscription alongside one healthy
+  subscription.
+
+### 196. Runtime prompt override and refinement mutate active node config without governed approval
+
+Evidence:
+
+- `POST /workflow-instances/:id/nodes/:nodeId/refine`,
+  `/prompt`, and `/answer-questions` require only
+  `assertInstancePermission(..., 'edit')`.
+- These routes mutate the active `WorkflowNode.config` by writing
+  `_refineFeedback`, `_promptOverride`, or `_copilotAnswers`, then call
+  `restartNode(...)`.
+- Unlike node/edge topology CRUD, these routes do not call
+  `assertInstanceGraphEditable(...)`; they are explicitly intended for active run
+  rework.
+- `AgentTaskExecutor` appends `_refineFeedback` and `_copilotAnswers` into the
+  task text used by the agent.
+- The same executor forwards `_promptOverride` into Context Fabric as
+  `run_context.prompt_override`.
+- Context Fabric's Copilot executor treats `prompt_override` as authoritative
+  and returns it verbatim, skipping normal prompt composition.
+- `restartNode(...)` records a `NODE_RESTARTED` workflow mutation with previous
+  status and reset node ids, but it does not record the prompt override,
+  reviewer feedback, question answers, old config, new config, approval request,
+  policy decision, or prompt hash in that mutation.
+
+Impact:
+
+- A user with workflow edit permission can alter the exact prompt used by a live
+  agent run and restart the node without the stronger approval, prompt-contract,
+  or governance controls expected for SDLC evidence.
+- The route comment says the operator edited the fully composed prompt, but the
+  server does not prove which prompt was shown, whether it matched a Prompt
+  Composer assembly id, or whether the edited prompt was reviewed.
+- Evidence can show a node was restarted while omitting the most important
+  semantic change: the task/prompt text that changed the agent's behavior.
+- This weakens replay and audit because the active node config is the mutable
+  carrier of human feedback and prompt override, not an immutable rework command
+  with before/after hashes.
+
+Required fixes:
+
+- Split these actions into explicit permissions such as
+  `workflow:node:restart`, `workflow:node:refine`,
+  `workflow:node:answer_questions`, and `workflow:prompt_override`.
+- Persist a `WorkflowNodeReworkCommand` or equivalent immutable command row with
+  old config hash, new config hash, prompt assembly id, prompt hash, actor,
+  reason, and approval/policy decision id.
+- For prompt override, require a dedicated approval or governance gate in
+  production mode unless the workflow/template explicitly allows operator prompt
+  editing.
+- Make Context Fabric receive prompt override evidence fields, not only the
+  override text, and include them in receipts/evidence packs.
+- Add tests proving generic workflow edit does not imply prompt override,
+  restart/rework commands are idempotent and audited, and evidence contains the
+  prompt hash used for the restarted attempt.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
@@ -8248,6 +8493,8 @@ These are not gaps in the current worktree:
   `PRIMARY` capability link plus pending impact assessment.
 - Workflow template design writes are DRAFT-only at the API revision gate;
   non-DRAFT saves now fail with `WORKFLOW_DESIGN_FROZEN`.
+- Workflow instance node/edge topology writes call `assertInstanceGraphEditable`,
+  so direct instance graph CRUD is DRAFT-only and bumps `graphGeneration`.
 - Event-bus outbox rows now remain `failed` when one or more subscriber
   deliveries fail, making aggregate delivery health match subscriber reality.
 - A database migration adds a single-link invariant for initiative capability
