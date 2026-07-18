@@ -14540,6 +14540,74 @@ Required fixes:
   fallback provenance persistence, reduced fallback confidence, and strict-mode
   refusal to use heuristic summaries.
 
+### 310. Terminal run learning is fire-and-forget without durable retry or idempotency
+
+Evidence:
+
+- `workgraph-studio/apps/api/src/modules/workflow/runtime/WorkflowRuntime.ts`
+  calls `void recordRunLearning(instanceId, 'FAILED', tenantId)` after
+  `WorkflowFailed`, `void recordRunLearning(instanceId, 'COMPLETED', tenantId)`
+  after `WorkflowCompleted`, and `void recordRunLearning(instanceId, 'CANCELLED',
+  tenantId)` after `WorkflowCancelled`.
+- `workgraph-studio/apps/api/src/lib/learning/record-run-learning.ts` states that
+  callers must not await the writer and that it "swallows its own errors"; the
+  catch block only writes `console.warn(...)`.
+- The same writer skips learning when no service token is available, when the
+  workflow has no capability, when Agent Runtime returns non-2xx, when the
+  response body is invalid, or when the execution-memory creation returns no id.
+  Each of those paths returns `null` or exits without a durable failure row.
+- `runtimePost(...)` uses a single 10 second fetch timeout and has no retry,
+  backoff, outbox, dead-letter state, health signal, or operator-visible repair
+  command.
+- `agent-and-tools/apps/agent-runtime/src/modules/memory/memory.schemas.ts`
+  defines `storeExecutionMemorySchema` and `promoteSchema` without an idempotency
+  key, source terminal event id, workflow terminal generation, or unique
+  run-learning key.
+- `agent-and-tools/apps/agent-runtime/src/modules/memory/memory.service.ts`
+  creates a new `WorkflowExecutionMemory` row and then a new `DistilledMemory` row
+  for every successful call; promotion marks the source as `PROMOTED` but does
+  not make the pair idempotent for a specific workflow terminal event.
+- Existing audit coverage mentions capability-memory read authorization and
+  Context Memory fallback durable learning, but not this WorkGraph terminal
+  run-outcome learning write path.
+
+Impact:
+
+- A completed, failed, or cancelled run can lose the "what happened last time"
+  learning signal permanently if Agent Runtime, IAM service-token minting, the
+  network, or JSON parsing fails during the fire-and-forget window.
+- Operators and adoption-health checks can see a successful terminal workflow
+  receipt while the closed learning loop silently did not update the capability
+  memory used by Prompt Composer on the next run.
+- Manual repair is hard because there is no durable `RunLearningCommand`,
+  `terminalEventId`, retry count, last error, or replay action to reconstruct the
+  intended memory write from Workflow Operations.
+- If a future repair script or duplicate terminal side-effect path retries the
+  same learning write, Agent Runtime has no idempotency key to prevent duplicate
+  `RUN_OUTCOME` distilled memories for the same terminal event.
+- Portfolio execution evidence can overstate "the run teaches the next one" as a
+  product guarantee, while the implementation treats learning as best-effort
+  console logging.
+
+Required fixes:
+
+- Write a durable `RunLearningCommand` or outbox row inside the same terminal
+  side-effect transaction as the workflow receipt/outbox event, with
+  `instanceId`, terminal status, terminal event id, tenant id, capability id,
+  summary hash, status, attempts, and last error.
+- Process run-learning commands with retry/backoff/dead-letter semantics and
+  surface failures in Workflow Operations, run cockpit, and adoption health.
+- Add an idempotency key to Agent Runtime memory writes and promotions, such as
+  `runOutcome:<tenantId>:<instanceId>:<terminalGeneration>`, and enforce a unique
+  key for promoted `RUN_OUTCOME` memory.
+- Return and persist Agent Runtime request ids/memory ids on the command record so
+  evidence can prove whether learning was staged and promoted.
+- Keep terminal workflow completion non-blocking, but make learning-write loss
+  observable and replayable rather than only printing `console.warn`.
+- Add tests for missing service token, Agent Runtime 500, timeout, invalid JSON,
+  replay after failure, duplicate replay idempotency, no-capability skip with
+  visible reason, and successful command-to-memory promotion.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
