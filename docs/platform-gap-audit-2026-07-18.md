@@ -13096,6 +13096,140 @@ Required fixes:
   policy evaluation failure, and evidence-pack reconstruction from only receipts
   plus evaluation ids.
 
+### 282. Template migrations can relabel active runs without migrating runtime topology
+
+Evidence:
+
+- `workflowDebugRouter.post('/templates/:id/migrations', ...)` accepts
+  `applyToInFlight`.
+- The route requires template `edit` permission, but there is no separate
+  migration, runtime-mutation, operations, or approval permission.
+- `createTemplateMigration(...)` validates only that every old graph snapshot
+  node id has a corresponding new graph snapshot node id.
+- When `applyToInFlight` is true, the service finds active runs with
+  `status in ['DRAFT', 'ACTIVE', 'PAUSED']` and updates only
+  `WorkflowInstance.templateVersion` plus a `_templateMigration` object in
+  `context`.
+- The service does not rewrite `WorkflowNode`, `WorkflowEdge`, `WorkflowPhase`,
+  node configs, edge conditions, node type snapshots, pending executions,
+  checkpoints, authorization snapshots, or `graphGeneration`.
+- The `WorkflowTemplateMigration` row stores `nodeMap` and `status`, but no
+  safety-analysis result, approval id, migration digest, affected-run list, or
+  per-run application status.
+
+Impact:
+
+- A run can claim to be on template version N while its actual executable graph
+  remains the cloned topology from version N-1.
+- Run cockpits, evidence packs, replay, budget attribution, and migration reports
+  can disagree about which version really executed.
+- Active and paused runs can be changed by a template editor without an explicit
+  governed runtime-mutation proposal.
+- Pending external/client nodes may keep old node ids/config while the migration
+  context advertises a new mapping, making runner completion and replay harder to
+  trust.
+- Enterprise operators cannot reconstruct which in-flight runs were safely
+  migrated, skipped, failed, or approved.
+
+Required fixes:
+
+- Treat in-flight template migration as a governed graph-mutation proposal, not a
+  direct debug update.
+- Require an explicit permission such as `workflow:migration:apply` or
+  `workflow:runtime_mutation:approve`.
+- Store migration digest, safety analysis, approval decision, affected run ids,
+  per-run status, and before/after graph hashes.
+- Either actually migrate runtime nodes/edges/phases with fencing and
+  `graphGeneration` increments, or mark the migration as metadata-only and keep
+  `templateVersion` unchanged for already-cloned runs.
+- Add tests for active, paused, pending-execution, completed, failed, and
+  cross-tenant runs, plus a test proving a template editor cannot apply an
+  in-flight migration without the runtime-mutation permission.
+
+### 283. Workflow time-travel GET creates persistent forensic snapshots
+
+Evidence:
+
+- `workflowDebugRouter.get('/instances/:id/time-travel', ...)` calls
+  `createTimeTravelSnapshot(...)`.
+- `createTimeTravelSnapshot(...)` inserts a new `WorkflowTimeTravelSnapshot` row
+  every time it is called.
+- The persisted snapshot includes checkpoint context, node states, routing
+  decisions, prompt references, policy snapshot, and artifact references derived
+  from workflow events matching `ARTIFACT`, `DOCUMENT`, or `RECEIPT`.
+- The permission used for both GET and POST time-travel is the generic
+  `checkpoint` action.
+- `checkpoint` maps to IAM permission `workflow:update`, not to a dedicated
+  forensic-read, audit, debug, or evidence-export permission.
+- The function does not record a normal audit event or outbox event for the
+  snapshot creation.
+
+Impact:
+
+- A nominally read-style GET request mutates durable forensic state, so page
+  refreshes, crawlers, or preview panels can create many snapshots.
+- Users with workflow update rights can materialize historical context, prompt
+  references, and artifact payload references without an explicit audit/evidence
+  export permission.
+- Retention, storage growth, and sensitive-evidence minimization are hard to
+  enforce because snapshot creation is hidden behind a read endpoint.
+- Operators cannot distinguish a deliberate forensic capture from a UI refresh
+  because no audit/outbox event records why the snapshot was created.
+
+Required fixes:
+
+- Make GET time-travel a pure computed preview that does not persist rows.
+- Keep persistent snapshot creation behind POST only, with an explicit reason and
+  permission such as `workflow:debug:snapshot` or `workflow:audit:capture`.
+- Redact artifact/prompt references unless the caller has the corresponding
+  sensitive-evidence permission.
+- Emit an audit/outbox event containing actor, tenant, instance id, checkpoint id,
+  reason, redaction mode, and snapshot id.
+- Add tests proving GET is idempotent and non-mutating, POST is permission-gated,
+  and sensitive references are redacted for non-auditors.
+
+### 284. Workflow checkpoints and replay records are not tenant-stamped
+
+Evidence:
+
+- `WorkflowCheckpoint` has `instanceId`, `sequence`, `nodeStates`, `context`,
+  `traceId`, `reason`, and `createdById`, but no `tenantId`.
+- `WorkflowReplay` has `instanceId`, `checkpointId`, `requestedById`, `status`,
+  `input`, `result`, and `error`, but no `tenantId`.
+- The migrations that create `workflow_checkpoints` and `workflow_replays` add
+  indexes only on instance/checkpoint fields; searched migrations do not add
+  tenant columns or forced RLS policies for these tables.
+- `createWorkflowCheckpoint(...)`, `listWorkflowCheckpoints(...)`, and
+  `replayWorkflow(...)` rely on the caller's instance-level tenant check and the
+  current transaction tenant context, but they never persist tenant evidence onto
+  checkpoint or replay rows.
+- Newer debug tables such as `WorkflowTimeTravelSnapshot` and
+  `WorkflowTemplateMigration` do include tenant fields, making checkpoint/replay
+  the outliers in the workflow-debug data family.
+
+Impact:
+
+- Database-level tenant isolation cannot be enforced directly on checkpoint and
+  replay rows.
+- Admin/reporting/export code that queries checkpoint or replay rows without an
+  instance join can accidentally cross tenant boundaries.
+- Replay and forensic evidence lacks a first-class tenant stamp, making audit
+  reconstruction depend on the current instance relation rather than immutable
+  row-local provenance.
+- Backups, retention jobs, tenant data export, and tenant deletion jobs have to
+  infer ownership through joins instead of filtering by tenant.
+
+Required fixes:
+
+- Add `tenantId` to `WorkflowCheckpoint` and `WorkflowReplay`, backfilled from
+  `WorkflowInstance.tenantId`.
+- Update checkpoint and replay writes to persist tenant id and reject mismatched
+  tenant context.
+- Add forced RLS policies and tenant indexes for both tables.
+- Include tenant id in replay/checkpoint audit events and trace exports.
+- Add tests for cross-tenant checkpoint list/create/replay denial, tenant data
+  export, and direct DB RLS rejection without an instance join.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
