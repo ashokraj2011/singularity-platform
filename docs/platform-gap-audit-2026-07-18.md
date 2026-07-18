@@ -12006,6 +12006,423 @@ Required fixes:
 - Add tests for missing tenant, placeholder `default`, mismatched tenant claim,
   mismatched runtime id, expired token, and tenantless personal runtime mode.
 
+### 260. Desktop and CLI runtime clients have divergent token storage and session contracts
+
+Evidence:
+
+- `workgraph-studio/apps/sgl-cli/src/index.ts` writes `token` directly into
+  `~/.singularity/sgl.json` through `saveConfig()`.
+- `singularity-desktop/src/App.tsx` stores the IAM bearer token in
+  `window.localStorage` under `singularityDesk.token`.
+- The same legacy desktop renderer keeps development credentials in code:
+  `DEFAULT_EMAIL = admin@singularity.local` and
+  `DEFAULT_PASSWORD = Admin1234!`, then offers a `Dev Login` button.
+- `singularity-desktop/src/App.tsx` answers Workbench auth requests with
+  `postMessage({ type: 'blueprintWorkbench.auth', token }, '*')`, so the bearer
+  token is sent with a wildcard target origin.
+- `clients/singularity-desktop/src/main.js` is a separate Electron app that uses
+  `safeStorage`, but falls back to `Buffer.from(token, 'utf8')` when OS
+  encryption is unavailable.
+- The two desktop app folders (`singularity-desktop` and
+  `clients/singularity-desktop`) present different maturity, security, and
+  runtime models while both remain runnable.
+
+Impact:
+
+- Users and support teams can pick the weaker desktop path without realizing it.
+- Bearer tokens can persist outside the platform web session contract and outside
+  a revocation-aware keychain.
+- Workbench token handoff can leak a platform bearer token to an unexpected
+  window or embedded surface if a spoofed message source is present.
+- Development defaults can accidentally become a real authentication path in a
+  packaged or shared-machine desktop install.
+- Enterprise policy cannot currently say, "this is the one supported desktop
+  runtime client and this is how its token storage is certified."
+
+Required fixes:
+
+- Retire or hard-disable the legacy `singularity-desktop` app, or mark it as
+  local-dev-only with startup refusal outside explicit development mode.
+- Move CLI token storage to OS keychain where available, with strict file mode
+  fallback and short-lived device/runtime tokens.
+- Remove hard-coded development login defaults from desktop production builds.
+- Replace wildcard Workbench token `postMessage` with exact origin validation and
+  a one-time, audience-bound handoff token.
+- Add a desktop/CLI security contract test that rejects new bearer-token
+  `localStorage`, plaintext config, or wildcard token postMessage usage.
+
+### 261. Laptop invocation APIs allow execution and completion with view-only WorkItem access
+
+Evidence:
+
+- `workgraph-studio/apps/api/src/modules/laptop/laptop.router.ts` mounts
+  laptop start, heartbeat, complete, question, stream, wait, and answer routes
+  behind only the generic `authMiddleware`.
+- `startLaptopInvocation()` in
+  `workgraph-studio/apps/api/src/modules/laptop/laptop.service.ts` loads the
+  WorkItem and calls only `assertCanViewWorkItem(actorId, workItem)` before
+  creating an `AgentRun`, minting an MCP session token, creating a
+  `LaptopInvocation`, and emitting `STARTED`.
+- `loadInvocationForActor()` also calls only `assertCanViewWorkItem()` before
+  heartbeat, completion, question creation, question wait, and question stream.
+- `completeLaptopInvocation()` updates the laptop invocation and sets the linked
+  `AgentRun.status` to `APPROVED` when the client posts `COMPLETED`.
+- `answerLaptopQuestion()` checks only WorkItem view access before recording the
+  answer.
+- `work-items.service.ts` already has action-specific guards such as
+  `assertCanMutateWorkItem(..., 'start')`, `workflow:execute`,
+  `workflow:submit`, and `workflow:approve`, but the laptop routes do not use
+  those checks.
+- `laptop.service.ts` defines `requireInvocationOwner()`, but the current route
+  path does not call it.
+
+Impact:
+
+- A user who can view a WorkItem can start a laptop execution session even if
+  they do not have `workflow:execute`.
+- A user who can view the WorkItem and knows an invocation id can heartbeat or
+  complete another user's laptop invocation because invocation ownership is not
+  enforced.
+- A viewer can answer open laptop questions without being the assigned owner,
+  approver, or requested human-in-the-loop participant.
+- Direct-Copilot completions can move agent evidence to `APPROVED` without the
+  same policy gate used by governed workflow nodes.
+
+Required fixes:
+
+- Require `workflow:execute` or a dedicated `laptop:invoke` permission before
+  starting a laptop invocation.
+- Require invocation ownership, runner lease identity, or a service-scoped
+  session token for heartbeat and completion.
+- Require explicit question assignment or `workflow:approve`/`workflow:respond`
+  permission before answering laptop questions.
+- Use `assertCanMutateWorkItem()` or the centralized workflow authorization
+  service instead of view-only checks for mutating laptop routes.
+- Add regression tests where a viewer can list a WorkItem but cannot start,
+  complete, heartbeat, or answer laptop-session questions.
+
+### 262. Laptop invocation lifecycle updates are not fenced against stale or terminal sessions
+
+Evidence:
+
+- `recordLaptopHeartbeat()` updates a `LaptopInvocation` by id and unconditionally
+  sets `status` to `RUNNING`.
+- `completeLaptopInvocation()` updates the invocation by id and unconditionally
+  writes `status`, `endedAt`, merged payload data, and linked `AgentRun`
+  completion state.
+- The heartbeat watchdog marks stale sessions as `ENDED`, but a later heartbeat
+  can set the same row back to `RUNNING`.
+- There is no compare-and-set condition on status, `userId`, heartbeat lease,
+  work-item generation, source workflow generation, or cancellation state.
+- There is no check that the WorkItem, target, workflow instance, or parent node
+  is still active before accepting a late laptop completion.
+- `LocalRetryQueue` in `workgraph-studio/packages/laptop-sdk/src/index.ts` can
+  durably replay failed heartbeat and completion requests later, but the server
+  side does not reject stale generation or terminal-state completions.
+
+Impact:
+
+- A stale laptop process can revive an ended session with a heartbeat.
+- A queued retry can complete an invocation after the WorkItem was cancelled,
+  rebased, reassigned, or superseded by a newer run.
+- Multiple clients can race to complete the same invocation because completion is
+  not guarded by terminal-state fencing.
+- Evidence from a previous prompt, branch, binding, or WorkItem generation can be
+  accepted as current.
+
+Required fixes:
+
+- Add explicit laptop invocation states and allowlisted transitions.
+- Make heartbeat and completion conditional updates that include current status,
+  owner/session token, tenant, and lease/generation fences.
+- Reject heartbeats after terminal states such as `COMPLETED`, `FAILED`,
+  `CANCELLED`, or `ENDED`.
+- Reject completion if the WorkItem, target, source workflow node, or
+  authorization snapshot is no longer current.
+- Include generation and invocation-owner checks in the SDK retry replay path and
+  server-side tests.
+
+### 263. Laptop session rows are not tenant-stamped even though the schema has tenant fields
+
+Evidence:
+
+- `LaptopInvocation` in
+  `workgraph-studio/apps/api/prisma/schema.prisma` has an optional `tenantId`
+  column.
+- `startLaptopInvocation()` creates the linked `AgentRun` with
+  `tenantId: currentTenantIdForDb()`, but the subsequent
+  `prisma.laptopInvocation.create()` call does not set `tenantId`.
+- `LaptopQuestion` has no `tenantId` column at all; it is scoped only indirectly
+  through `invocationId` and `workItemId`.
+- The RLS cutover documentation focuses on six standalone-capable tables such as
+  `agent_runs`, but `laptop_invocations` is a newer runtime-control table with
+  tenant-sensitive prompts, MCP token ids, repo metadata, and completion payloads.
+- Searches for `laptop_invocations` tenant stamping found the schema field and
+  service routes, but no write-path assignment or RLS policy for the laptop
+  session tables.
+
+Impact:
+
+- Operations, audit, and future RLS policies cannot reliably filter laptop
+  sessions by their own tenant column.
+- Tenant isolation depends on joining back through the WorkItem every time,
+  which is brittle for logs, outbox deliveries, watchdog sweeps, and incident
+  forensics.
+- If a laptop invocation ever becomes detached from its WorkItem context, the row
+  has no direct tenant anchor.
+- A future developer can assume `LaptopInvocation.tenantId` is authoritative
+  because it exists in the Prisma model, but current writes leave it null.
+
+Required fixes:
+
+- Set `tenantId` on every `LaptopInvocation` at creation from the request tenant
+  or WorkItem tenant.
+- Add `tenantId` to `LaptopQuestion` or enforce a tenant-aware RLS/join policy
+  that is tested explicitly.
+- Add indexes and RLS policies for laptop runtime-control tables before strict
+  production cutover.
+- Backfill existing laptop invocation rows from their WorkItem tenant.
+- Add a migration/test that fails when new laptop invocation or question rows
+  are created without tenant scope.
+
+### 264. Direct-Copilot evidence can be accepted without trustworthy verification provenance
+
+Evidence:
+
+- `bin/copilot-execute.js` runs `copilot -p <task> --allow-all` inside the local
+  workspace, then captures git status, diff, and summary as a receipt.
+- The same script completes the platform invocation by posting arbitrary
+  `payload` to `/laptop-invocations/:id/complete` with the user's platform
+  bearer token.
+- `singularity-desktop/electron/main.cjs` collects evidence by reading
+  `git diff`, `git diff --stat`, and a 24 KB patch excerpt, but initializes
+  `verificationReceipts` as an empty array.
+- `singularity-desktop/src/App.tsx` warns that verification receipts are not
+  captured automatically in the v1 evidence panel.
+- `normalizeLaptopCompletionEvidence()` treats caller-supplied
+  `verificationReceipts` as enough to clear the verification gap; the package
+  tests confirm a supplied passing receipt changes `gap` to `false`.
+- There is no server-side provenance check that the supplied receipt came from a
+  governed runner, a signed local harness, a command allowlist, or an isolated
+  execution environment.
+
+Impact:
+
+- Direct laptop execution can produce code-change evidence without a trusted
+  test or verification trail.
+- A compromised or buggy desktop/CLI client can mark a receipt as passing without
+  the platform knowing what command actually ran.
+- `--allow-all` gives Copilot broad local action capability, while the platform
+  receives only post-hoc evidence.
+- Governance gates can confuse "client supplied a passing receipt" with
+  "platform verified the code under an approved harness."
+
+Required fixes:
+
+- Require signed or server-issued verification receipts for direct-Copilot
+  completions in enterprise mode.
+- Route local test execution through a governed harness with command allowlists,
+  arguments as arrays, resource limits, and attested exit codes.
+- Record receipt provenance, runner version, command digest, worktree base,
+  output hash, and generated evidence hash.
+- Treat client-supplied verification receipts as advisory unless an enterprise
+  trust policy explicitly accepts that runner.
+- Add negative tests proving a fabricated passing receipt cannot satisfy a hard
+  verification gate.
+
+### 265. Two desktop applications are maintained with incompatible runtime assumptions
+
+Evidence:
+
+- `singularity-desktop/package.json` defines a Vite/React Electron app named
+  `singularity-desktop-workbench`.
+- `clients/singularity-desktop/package.json` defines a second Electron app named
+  `singularity-desktop`.
+- `singularity-desktop/README.md` describes an independently packaged
+  WorkItem execution app with Workbench Neo embedding, direct-Copilot mode, and
+  runtime-policy requirements.
+- `clients/singularity-desktop/README.md` calls that app a "prototype scaffold"
+  and says allowed-path sandbox, scope-gated mint, per-action prompts,
+  signing/notarization, and auto-update are still future work.
+- The newer `clients/singularity-desktop/src/main.js` launches an MCP runner and
+  optionally a local LLM gateway/shim, while `singularity-desktop/src/App.tsx`
+  embeds Workbench Neo and starts Copilot directly through its Electron main
+  process.
+- The two apps use different ports, settings files, token storage mechanisms,
+  pairing flows, and assumptions about whether MCP+LLM are the primary runtime
+  bridge.
+
+Impact:
+
+- It is unclear which desktop runtime is canonical for laptop/cloud split
+  deployments.
+- Security work can land in one desktop path while users continue to run the
+  other.
+- Packaging, auto-update, runtime-policy enforcement, support docs, and tenant
+  rollout cannot be certified against a single binary.
+- Runtime bridge behavior observed by operators can differ by which desktop app
+  a user installed.
+
+Required fixes:
+
+- Declare one desktop app canonical and move the other under an explicit
+  `legacy/` or `experiments/` path with no production packaging.
+- Consolidate runtime pairing, keychain storage, workspace consent,
+  MCP+LLM launch, Workbench launch, and evidence upload into the canonical app.
+- Add a desktop release checklist that covers signing, notarization, auto-update,
+  minimum-version enforcement, runtime-policy enrollment, and tenant-scoped
+  device revocation.
+- Update scripts/docs so operators have one "install desktop runtime" path.
+- Add a repository guard that fails if production docs reference the retired
+  desktop client.
+
+### 266. Workflow Operations does not show every event-driven WorkItem path
+
+Evidence:
+
+- `workflow-operations.router.ts` defines `INBOUND_EVENT_TYPES` as only
+  `WorkflowInboundEventReceived`, `WorkflowInboundEventDeadLettered`,
+  `WorkflowInboundEventFailed`, and `WorkflowInboundEventReplayed`.
+- `/api/workflow-operations/events` reads only `EventLog` rows with those event
+  types.
+- The canonical authenticated intake route logs one of those
+  `WorkflowInboundEvent*` rows after `fanOutToWorkItemTriggersDetailed(...)`.
+- The WorkItem webhook receiver in `triggers.router.ts` creates or attaches a
+  WorkItem, writes a `WorkItemEvent` with `eventType: 'TRIGGERED'`, updates
+  `lastFiredAt`, and routes the WorkItem, but does not log a
+  `WorkflowInboundEvent*` operation row.
+- `TriggerScheduler.runWorkItemScheduleTriggers()` and
+  `runWorkItemEventTriggers()` also create or attach WorkItems and route them
+  through `TRIGGERED` WorkItem events, not `WorkflowInboundEvent*` operation
+  rows.
+- Legacy `WorkflowTrigger` webhook/schedule/event paths log
+  `WorkflowTriggered` and possible `WorkflowTriggerStartFailed`, but those event
+  types are also outside the Workflow Operations event inbox.
+
+Impact:
+
+- Operators using `/workflows/control-plane` can miss WorkItems and runs started
+  by WorkItem webhooks, schedule triggers, internal outbox event triggers, or
+  legacy workflow triggers.
+- Replay Center cannot replay those paths from the same lifecycle table because
+  they are not represented as `WorkflowInboundEvent*` rows.
+- Event-driven incidents split across WorkItem timelines, workflow trigger logs,
+  and canonical inbound-event rows, weakening the promised operations center.
+- Readiness may show active `EVENT` or `WEBHOOK` triggers while the event inbox
+  appears empty for those same trigger families.
+
+Required fixes:
+
+- Create a normalized workflow-operation event record for every trigger family:
+  authenticated event intake, signed service ingress, WorkItem webhook,
+  WorkItem schedule, WorkItem internal event trigger, and legacy workflow
+  trigger.
+- Include trigger family, trigger id, tenant, capability, source delivery id,
+  correlation key, WorkItem id, workflow instance id, and replay eligibility.
+- Make `/api/workflow-operations/events` query that normalized operation model
+  instead of only `WorkflowInboundEvent*` audit rows.
+- Add replay support or an explicit "not replayable from this surface" reason
+  for schedule and webhook-originated work.
+- Add tests proving each trigger type appears in Operations after it creates or
+  routes work.
+
+### 267. WorkItem webhook triggers have no first-class secret lifecycle
+
+Evidence:
+
+- `work-item-routing.router.ts` accepts `WorkItemTrigger` creation with
+  `triggerType: 'WEBHOOK'`, `scheduleConfig`, and `payloadMapping`, but it does
+  not require or generate a webhook secret.
+- The public webhook receiver in `triggers.router.ts` tries to match WorkItem
+  webhook triggers by checking `recordOf(t.scheduleConfig).secret` or
+  `recordOf(t.payloadMapping).secret`.
+- `WorkItemTrigger` stores `scheduleConfig` and `payloadMapping` as generic JSON
+  fields; there is no typed `secretHash`, `secretId`, `createdBy`, `rotatedAt`,
+  `lastUsedAt`, or `disabledReason`.
+- `MetadataRegistryPage.tsx` exposes WorkItem trigger `scheduleConfig` and
+  `payloadMapping` as raw JSON fields.
+- By contrast, legacy workflow triggers auto-generate a webhook secret during
+  `triggersRouter.post('/')` when the type is `WEBHOOK`.
+- The webhook receiver must scan active workflow triggers and active WorkItem
+  webhook triggers because the secret is hidden inside JSON rather than indexed
+  or hashed.
+
+Impact:
+
+- A user can create an active WorkItem webhook trigger that has no usable secret
+  and therefore cannot ever receive traffic.
+- Operators must hand-edit JSON to create or rotate the trigger secret.
+- Secrets are stored in plaintext JSON instead of a hashed or secret-managed
+  field.
+- Public webhook lookup cost grows with active trigger count and cannot use a
+  unique index to reject duplicate secrets.
+- There is no lifecycle evidence for when a secret was generated, revealed,
+  rotated, revoked, or last used.
+
+Required fixes:
+
+- Add first-class WorkItem webhook credential fields: hashed secret, display
+  handle, generated-at, rotated-at, last-used-at, and revoked/disabled status.
+- Auto-generate a secret for WorkItem `WEBHOOK` triggers and reveal it only once.
+- Store only a hash or external secret reference; never store reusable secrets in
+  arbitrary JSON.
+- Add indexed lookup by secret hash and tenant/trigger id instead of full scans.
+- Add UI controls for generate, copy-once, rotate, disable, and audit history.
+- Add tests for missing secret rejection, duplicate secret prevention, rotation,
+  old-secret denial, and successful new-secret delivery.
+
+### 268. GitHub PR webhook submission matching is global by repository, not tenant-scoped
+
+Evidence:
+
+- `github-webhook.router.ts` is public and validates a single
+  `GITHUB_WEBHOOK_SECRET` before handling `pull_request` events.
+- `handleGithubPullRequest(...)` queries
+  `prisma.developmentTarget.findMany({ where: { status: 'PUBLISHED',
+  repository: { equals: pr.repository, mode: 'insensitive' } } })`.
+- `DevelopmentTarget` has a `tenantId` column and tenant index, but the GitHub
+  webhook query does not filter by tenant.
+- When multiple targets share the same repository, the service tries to
+  disambiguate by finding a WorkItem code in the PR title, body, or head branch.
+- If exactly one published target exists for a repository, the service accepts
+  it without tenant context.
+- The webhook registers a submission through `registerSubmission(...)` using the
+  synthetic actor id `github-webhook`; it does not perform the user-route
+  `loadAuthorizedWorkItem(..., 'submit')` check.
+- The webhook result is not logged as a `WorkflowInboundEvent*` operation row,
+  so tenant/operator replay and visibility depend on the submission and WorkItem
+  timeline records.
+
+Impact:
+
+- In a multi-tenant deployment, a globally signed GitHub PR event can match any
+  tenant's published development target for the same repository.
+- Repository name plus WorkItem code becomes the effective tenant boundary.
+- If two tenants use the same GitHub repository name pattern or a shared
+  mono-repo, webhook correlation can skip, misroute, or register against the
+  wrong tenant's WorkItem.
+- A shared `GITHUB_WEBHOOK_SECRET` makes tenant rotation and revocation coarse:
+  rotating one tenant's webhook secret can affect all tenants.
+- Submission authorization for webhooks is not expressed as a tenant-scoped
+  service principal permission.
+
+Required fixes:
+
+- Model GitHub webhook installations or repository bindings per tenant and
+  capability.
+- Use a tenant-scoped webhook secret or GitHub App installation id to select the
+  tenant before querying `DevelopmentTarget`.
+- Filter development targets by tenant and repository binding, not repository
+  string alone.
+- Register webhook submissions as a tenant-scoped service principal with
+  explicit `workflow:submit` or `submission:register` permission.
+- Emit normalized Workflow Operations events for webhook PR registration,
+  including ignored, skipped, registered, rejected, and already-registered
+  outcomes.
+- Add tests for same repository across two tenants, global secret rotation,
+  ambiguous WorkItem code, wrong installation id, and authorized tenant-specific
+  registration.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
