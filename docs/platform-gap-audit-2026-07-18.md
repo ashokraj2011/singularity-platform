@@ -15236,6 +15236,60 @@ Required fixes:
   evidence key in two initiatives, restored seed/demo rows, and rollup behavior
   after a rejected collision.
 
+### 322. Postgres connector runs against the platform database instead of an external connector boundary
+
+Evidence:
+
+- `PostgresAdapter` imports the WorkGraph Prisma singleton and its file comment
+  says it "uses the app's own Prisma connection" while external database support
+  through `pg` is deferred.
+- `testConnection()` runs `SELECT 1` through `prisma.$queryRaw`, so a configured
+  POSTGRES connector can look healthy even if its supplied `connectionString` is
+  unused or invalid.
+- `rawQuery(...)` accepts caller-supplied SQL, checks only that the text starts
+  with `SELECT`, and executes it with `prisma.$queryRawUnsafe(sql)` against the
+  platform database.
+- `upsertJson(...)` also ignores connector credentials and writes to
+  `outbox_events` through `prisma.outboxEvent.create(...)`; the created row has
+  no tenant id, actor id, connector id, or operation evidence.
+- The generic connector router exposes `POST /api/connectors/:id/invoke`, so this
+  adapter can be reached through the same direct connector invocation path as
+  ordinary external integrations.
+
+Impact:
+
+- Operators can create what appears to be an external Postgres connector, but
+  reads and sink writes actually use the WorkGraph application's database role.
+- A caller with connector invoke access can run arbitrary platform-database
+  `SELECT` statements, including broad tenant data reads, expensive queries,
+  timing/lock probes, or database functions that are not appropriate for an
+  integration connector.
+- Connector health is misleading because it proves only that WorkGraph can reach
+  its own database, not that an external database credential or network path is
+  valid.
+- Outbox sink writes lose tenant, actor, connector, trace, and authorization
+  provenance, weakening replay, audit, and incident triage.
+
+Required fixes:
+
+- Disable the POSTGRES connector in production until it uses an actual external
+  connection boundary or an explicitly approved internal-reporting mode.
+- If external Postgres is supported, create a dedicated `pg` connection from an
+  encrypted secret reference, enforce host/network allowlists, timeouts, row
+  limits, statement timeouts, and read-only credentials by default.
+- Never execute arbitrary SQL against the WorkGraph application database through
+  a connector. Expose approved reporting views or parameterized named queries
+  instead.
+- Require operation-level grants such as `connector:postgres:query` and
+  `connector:postgres:sink_write`, with tenant/capability scope and audit
+  decision ids.
+- Persist connector invocation evidence with tenant id, actor id, connector id,
+  target database identity, query digest, row count, trace id, and sink event id.
+- Add tests proving invalid external credentials fail health checks, platform DB
+  reads are denied, non-SELECT and unsafe SELECT/function calls are rejected,
+  long queries time out, row limits apply, and sink writes include tenant/actor
+  provenance.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
