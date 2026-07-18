@@ -16175,6 +16175,71 @@ Required fixes:
   `reviewed_by`, expected-output overwrite, valid curator review, and
   audit-governance receiving the human actor context.
 
+### 338. Deliverable lifecycle routes are tenant-checked but not workflow-authorized
+
+Evidence:
+
+- `app.ts` mounts `/api/consumables` behind `authMiddleware`, and
+  `consumables.router.ts` mostly relies on `assertConsumableTenant(...)` or
+  `assertWorkflowInstanceTenant(...)` for create/read/update transitions.
+- `POST /api/consumables` verifies the optional workflow instance tenant, then
+  creates a consumable with caller-supplied `typeId`, `instanceId`, and `name`;
+  it does not check whether the caller can create deliverables for that workflow,
+  node, WorkItem, capability, or stage.
+- `GET /api/consumables` lists tenant consumables by caller-supplied filters and
+  does not filter by workflow/resource access, owning capability, stage owner,
+  reviewer role, or audit permission.
+- `POST /api/consumables/:id/versions`, `PATCH /api/consumables/:id/content`,
+  and `POST /api/consumables/:id/form-submission` can write payloads, document
+  content, attachments, and new versions after tenant checks; they do not prove
+  the caller is the producing agent, assigned human owner, workflow operator, or
+  authorized editor for that deliverable.
+- `POST /api/consumables/:id/submit-review`, `/verify`, `/publish`, and
+  `/supersede` move deliverable lifecycle state or store verifier verdicts after
+  tenant checks. Only `/approve` and `/reject` call
+  `assertCanDecideApproval(...)` with the consumable assignment context.
+- `runVerification(...)` reads workflow standards from the linked instance,
+  calls Context Fabric, and writes `_verification` back to `formData`, but the
+  on-demand `/verify` route does not require a verifier service principal,
+  stage owner, workflow operator, or evidence-review permission.
+- Search found no consumable route tests proving non-owner tenant users cannot
+  list, edit, version, verify, submit, publish, supersede, or attach documents
+  to deliverables from workflows they cannot otherwise operate.
+
+Impact:
+
+- Any authenticated user inside a tenant can potentially inspect or alter
+  deliverable records for another team, workflow, WorkItem, stage, or capability,
+  even when they should not see or edit the underlying run.
+- A user who cannot approve a consumable can still change its content, append a
+  new version, submit it for review, trigger verifier output, publish it, or
+  supersede it before an authorized approver acts.
+- Delivery evidence packs can contain documents, attachments, lifecycle events,
+  and verification verdicts created outside the workflow's resource-grant model.
+- Because publication side effects can follow `APPROVED` or `PUBLISHED`
+  transitions, weak lifecycle authorization can become an indirect path to git,
+  runtime, or event-bus side effects.
+
+Required fixes:
+
+- Add a typed consumable authorization layer with actions such as
+  `consumable:view`, `consumable:create`, `consumable:edit`,
+  `consumable:submit_review`, `consumable:verify`, `consumable:publish`, and
+  `consumable:supersede`.
+- Resolve every consumable to its workflow instance, node, WorkItem, capability,
+  stage owner, assignment context, and tenant before reads or mutations.
+- Restrict content/version/form submission to the assigned producer, authorized
+  workflow operator, capability editor, or service principal; keep approval
+  decisions on the existing assignment-aware approval path.
+- Restrict on-demand verification to a verifier service principal, stage owner,
+  explicitly authorized operator, or auditor; persist verifier identity, trace
+  id, model alias, standards digest, and source content hash.
+- Make `publish` and `supersede` guarded lifecycle transitions with state-machine
+  preconditions, policy checks, and idempotent receipts.
+- Add IDOR and role-matrix tests for list/get/create/edit/version/submit/verify/
+  publish/supersede across same-tenant different capability, different workflow,
+  assigned user, team owner, auditor, and service-principal cases.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
