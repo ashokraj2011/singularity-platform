@@ -17060,6 +17060,63 @@ Required fixes:
   layer kind, debug-port disabled by default, quota/rate denial, llmlingua
   lazy-load abuse limits, and receipt/audit completeness.
 
+### 351. Context Fabric still serves the sunset `/chat/respond` compatibility path
+
+Evidence:
+
+- `context-fabric/services/context_api_service/app/main.py` still registers
+  `POST /chat/respond` directly on the Context API FastAPI app.
+- The route adds `Deprecation: true`, `Sunset: 2026-07-01`, and
+  `Link: </execute>; rel="successor-version"` headers, but it continues to
+  execute instead of returning `410 Gone`, a strict-mode denial, or a migration
+  error after the advertised sunset date.
+- The route is service-token protected, but it accepts a legacy
+  `ChatRespondRequest` with `session_id`, `agent_id`, free-form provider/model
+  fields, optional `system_prompt`, and caller metadata. It does not require the
+  current governed context fields such as tenant id, capability id, workflow/run
+  id, authorization snapshot id, WorkItem id, or policy decision id.
+- The route still writes memory messages, compiles context, calls legacy MCP
+  `/mcp/invoke`, writes assistant memory, and best-effort posts optimization
+  metrics. Its `runContext` contains only `sessionId`, `agentId`, and a synthetic
+  `traceId`.
+- `agent-and-tools/apps/prompt-composer/src/clients/context-fabric.client.ts`
+  still ships `chatRespond(...)`, which posts to `${CONTEXT_FABRIC_URL}/chat/respond`.
+  The newer compose path uses `executeRespond(...)`, but the legacy client method
+  remains available to any future or overlooked caller.
+- Existing findings cover token-savings ledger failure on this path, but not the
+  lifecycle problem that a sunset compatibility endpoint remains live with a
+  weaker execution contract.
+
+Impact:
+
+- A legacy or newly added internal caller can continue using a post-sunset route
+  that bypasses the platform's current governed-single-turn contract and runtime
+  identity model.
+- Evidence emitted through this path lacks the tenant/capability/workflow/run
+  binding expected by newer traces, receipts, prompt assemblies, authorization
+  snapshots, and cost/evidence views.
+- Operators cannot tell from the route alone whether `/chat/respond` is still an
+  allowed production interface, a debug-only escape hatch, or dead compatibility
+  code waiting to be removed.
+- Keeping a sunset route live increases regression risk: future maintenance can
+  accidentally improve or rely on the old client instead of the authoritative
+  `/execute` or `/api/v1/execute-governed-single-turn` paths.
+
+Required fixes:
+
+- In production-class modes, return `410 Gone` for `/chat/respond` after the
+  sunset date, or remove the route entirely once callers are migrated.
+- If the route must remain for development, gate it behind an explicit
+  `CONTEXT_FABRIC_LEGACY_CHAT_RESPOND_ENABLED=true` debug flag and label it in
+  health/readiness as non-enterprise compatibility.
+- Delete or deprecate `contextFabricClient.chatRespond(...)` from Prompt
+  Composer, or make it throw unless an explicit legacy test/debug flag is set.
+- Add a startup/preflight check that fails production when any past-sunset API is
+  still enabled.
+- Add tests proving the route is denied in production, allowed only under debug
+  opt-in, no production caller imports `chatRespond(...)`, and any remaining
+  compatibility response includes a migration warning plus tenant/trace audit.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
