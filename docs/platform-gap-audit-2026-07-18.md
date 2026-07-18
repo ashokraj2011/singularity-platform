@@ -14171,6 +14171,64 @@ Required fixes:
 - Add tests for current-head export, stale revision export, redaction, permission
   denial, artifact creation, audit event creation, and evidence-pack inclusion.
 
+### 304. Synthesis scaffold acceptance is not idempotently fenced
+
+Evidence:
+
+- The Synthesis intake UI posts
+  `/studio/experience/intake/scaffolds/:proposalId/accept` when the user accepts
+  a `SCAFFOLD_BATCH` proposal.
+- `acceptIntakeScaffold(...)` first reads the `StudioProposal`, checks
+  `proposal.status === 'PENDING'`, then creates or finds a board, creates rooms,
+  creates claims, creates probes, creates business objectives, merges the project
+  specification draft, updates the project mission, resolves the discovery
+  session, and finally updates the proposal to `ACCEPTED`.
+- The update to `StudioProposal.status = 'ACCEPTED'` is not a compare-and-set
+  write such as `where: { id, status: 'PENDING' }`, and there is no
+  `ScaffoldApplyAttempt` / idempotency key / applied payload digest.
+- Under normal read-committed database isolation, two accept requests can both
+  read the proposal as `PENDING` before either transaction commits, then both
+  create rooms, claims, probes, objectives, and spec-draft changes before the
+  final status write.
+- Prisma models do not enforce uniqueness that would make this retry safe:
+  `StudioProposal` has indexes but no unique constraint for
+  `(studioId, kind, scopeType, scopeRef)`, `Board` has no unique
+  `(projectId, name)`, `Room` has no unique `(projectId, title)`, `Claim` has no
+  uniqueness on provenance/source statement, and `BusinessObjective` has no
+  uniqueness on intake-origin/source.
+
+Impact:
+
+- Double-clicks, browser retries, proxy retries, or two reviewers acting at the
+  same time can duplicate the belief room, claims, probes, business objectives,
+  and draft-spec analysis for one intake session.
+- The proposal may end as `ACCEPTED`, but the project can contain multiple
+  accepted copies of the same generated scaffold, making traceability and
+  posterior claim confidence misleading.
+- Retrying after a lost HTTP response cannot safely return the previous apply
+  result because no durable apply attempt records the created board, claims,
+  objectives, spec revision, and proposal payload hash.
+- Downstream Synthesis surfaces such as Evidence Wiki, generation planning,
+  objective readouts, and claim voting may treat duplicated scaffold content as
+  independent evidence.
+
+Required fixes:
+
+- Add a durable `StudioProposalApplyAttempt` or scaffold-specific apply command
+  with actor, tenant, proposal id, payload digest, started/completed timestamps,
+  created entity ids, spec revision before/after, and terminal state.
+- Claim proposal acceptance with a compare-and-set transition from `PENDING` to
+  `APPLYING`; return the existing apply result for repeated requests once the
+  attempt is terminal.
+- Make created board/room/claim/objective rows carry the proposal id and source
+  ordinal, with uniqueness that prevents duplicate apply of the same proposal
+  payload.
+- Publish audit/outbox events for apply started, per-entity creation, apply
+  completed, and apply failed.
+- Add concurrency tests for two simultaneous accept requests, lost-response
+  retry, failure after room creation, failure after claims/probes, and failure
+  after spec update.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
