@@ -13619,6 +13619,247 @@ Required fixes:
 - Add a topology/doctor test that fails when active packages omit engines or when
   setup would accept an unsupported Node/pnpm combination.
 
+### 293. Agent template snapshots fail open into unknown-agent provenance
+
+Evidence:
+
+- `AgentTaskExecutor.ts` resolves a local `agentId` by calling
+  `snapshotAgentTemplate(cfgAgentTemplate, ...)` before it validates the full
+  `agentTemplateId`, `task`, and `capabilityId` execution prerequisites.
+- `snapshotAgentTemplate(...)` initializes fallback values such as
+  `name = agent-template:<prefix>` and `model = 'unknown'`.
+- If `getAgentTemplate(...)` throws, the catch block intentionally suppresses
+  the error with the comment `upstream unreachable — fall through; placeholder
+  snapshot keeps the run unblocked`.
+- The helper can then create or update the local `Agent` row with
+  `sourceHash = null`, `sourceVersion = undefined`, and the fallback model/name.
+- `AgentTaskExecutor` creates an `AgentRun` against that local agent snapshot and
+  only later calls Context Fabric with the original `agentTemplateId`.
+
+Impact:
+
+- Agent provenance can show a runnable local agent even when Agent Runtime was
+  unreachable and no template prompt/model/profile was actually fetched.
+- A transient dependency outage can overwrite a previously useful local snapshot
+  with `model = unknown` and `sourceHash = null`, weakening evidence replay.
+- Operators may debug Context Fabric or Prompt Composer failures from a run whose
+  WorkGraph-side agent evidence already lost the real upstream template state.
+- Enterprise audit needs to distinguish "fresh signed snapshot", "reused prior
+  snapshot", and "placeholder because source unavailable"; the current result
+  only returns `{ fetchedFresh: true, sourceHash: null }`.
+
+Required fixes:
+
+- Fail closed for new agent-template snapshots when the upstream template cannot
+  be fetched, unless an explicit debug/degraded mode is enabled.
+- Never overwrite a known-good `Agent.sourceHash` with `null` just because a
+  later fetch failed; keep the prior snapshot and record a separate stale-source
+  warning.
+- Add snapshot status fields such as `sourceStatus`, `sourceError`,
+  `staleSince`, and `lastVerifiedHash`, and surface them in run evidence.
+- Move agent snapshot resolution after node config validation, and make run
+  activation block when a required agent template cannot be proven current.
+- Add tests for fresh fetch, unchanged fetch, changed fetch, upstream outage
+  with prior snapshot, upstream outage without prior snapshot, and strict-mode
+  fail-closed behavior.
+
+### 294. Team variables use unchecked capability/workflow scope ids
+
+Evidence:
+
+- `TeamVariablesPage.tsx` asks users to type `Capability id (from IAM)` or
+  `Workflow id` when visibility is `CAPABILITY` or `WORKFLOW`; there is no
+  capability/workflow picker in that form.
+- `teams.router.ts` accepts `visibilityScopeId` as an optional nullable string
+  for both create and patch. It does not verify that a CAPABILITY scope exists in
+  IAM/Agent Runtime, that a WORKFLOW scope exists in WorkGraph, or that either
+  belongs to the same team/tenant.
+- The `TeamVariable` table stores `visibilityScopeId String?` with no foreign key
+  and no tenant column. Its indexes only support lookup by `(visibility,
+  visibilityScopeId)`.
+- Runtime injection in `cloneDesignToRun.ts` applies CAPABILITY variables only
+  when `v.visibilityScopeId === template.capabilityId`, and applies WORKFLOW
+  variables only when `v.visibilityScopeId === template.id`.
+- The live instance variable reader in `instances.router.ts` repeats the same
+  exact string comparison against `capabilityId` and `workflowId`.
+
+Impact:
+
+- A typo, stale UUID, copied IAM slug, or wrong environment id can make a
+  variable look configured in the admin UI while silently never appearing in
+  workflow `_globals`.
+- A team member can store scope ids for workflows or capabilities outside the
+  intended resource boundary, with no validation or warning that the variable is
+  orphaned or cross-scope.
+- Since variables can feed LLM routing, runtime source paths, event payloads, and
+  approval placeholders, silent non-application can change workflow behavior at
+  launch time without a clear diagnostic.
+- Operators cannot safely refactor or rename capabilities/workflows because
+  variable visibility is not backed by referential integrity or an effective-use
+  preview.
+
+Required fixes:
+
+- Replace raw scope text with capability and workflow pickers populated from the
+  authoritative IAM/Agent Runtime and WorkGraph APIs.
+- Validate `visibilityScopeId` server-side on create/patch, including tenant,
+  team ownership, active status, and resource existence.
+- Add an "effective variables for this workflow/capability" preview before
+  launch, showing missing/orphaned variables as blocking or warning diagnostics.
+- Add migration/backfill checks that mark existing scoped variables as valid,
+  orphaned, or cross-scope before enforcing strict validation.
+- Add tests for invalid capability id, valid capability id, invalid workflow id,
+  cross-team workflow id, deleted workflow id, and variable injection precedence.
+
+### 295. Published deliverables can skip git publication without evidence
+
+Evidence:
+
+- `transitionConsumable(...)` logs `ConsumableAPPROVED` or
+  `ConsumablePUBLISHED`, creates the status receipt, and publishes the outbox
+  event before starting git publication side effects.
+- For approved/published consumables, it calls `commitDeliverableConsumable(...)`
+  and `pushCodeForConsumable(...)` as fire-and-forget promises. Only thrown
+  errors are logged as `DeliverableCommitFailed` or `PhaseCodePushFailed`.
+- `commitDeliverableConsumable(...)` intentionally returns without logging when
+  key preconditions are missing: no consumable/instance, no document content, no
+  `workCode`, no `repoUrl`, or no active `GIT` connector.
+- The helper comment says missing preconditions such as "no work-item code, no
+  content, no GIT connector" silently no-op because the runtime working-tree
+  push may still carry the artifact.
+- `pushCodeForConsumable(...)` also returns without logging when there is no
+  consumable/instance/node, `globals.pushEachPhase !== true`, no work code, or
+  missing node.
+- Successful document commits log `DeliverableCommitted`, but skipped paths have
+  no corresponding `DeliverableCommitSkipped` receipt/event with the missing
+  prerequisite.
+
+Impact:
+
+- A run can show a deliverable as approved or published while the expected
+  `deliverables/<workCode>/<role>/...` file was never committed and no operator
+  can tell whether git publication was skipped, pending, or unavailable.
+- Evidence packs and PR handoff may claim published work that exists only in the
+  database/S3/runtime workspace, not in the repository branch where downstream
+  SDLC tools expect to find it.
+- Missing repository, missing connector, or missing work-code wiring becomes an
+  invisible configuration problem instead of an actionable blocked/warning state.
+- Fire-and-forget side effects are difficult to retry safely because skipped
+  preconditions do not create a durable delivery record.
+
+Required fixes:
+
+- Create a `DeliverablePublication` or outbox row for every approved/published
+  consumable before attempting git/S3/runtime publication.
+- Record terminal states for `COMMITTED`, `PUSHED`, `SKIPPED`, `FAILED`, and
+  `RETRYABLE`, with explicit missing-precondition codes.
+- Surface skipped/failed publication in the run cockpit, Documents tab, evidence
+  pack, and Operations delivery tables.
+- Make release/readiness workflows optionally require all mandatory deliverables
+  to be published to the selected repository before final approval.
+- Add tests for missing work code, missing repo, no Git connector, empty content,
+  runtime push disabled, runtime push failed, successful cloud commit, and retry.
+
+### 296. Workbench Copilot exports can download with unresolved stage prompts
+
+Evidence:
+
+- `workbenchDefinitionsRouter.get('/export-copilot')` resolves each workbench
+  stage prompt through `promptComposerClient.resolveStage(...)`.
+- The route catches each per-stage Prompt Composer failure, sets
+  `resolved: false`, stores an empty `task`, `systemPromptAppend`, and
+  `extraContext`, and continues building the export.
+- The comment says a single failed resolve should not sink the whole export and
+  should fall back to a noted placeholder so the operator still gets a usable
+  file.
+- `buildCopilotAgentMd(...)` emits only a note when a stage is unresolved:
+  "No bound prompt could be resolved for this stage... Follow the agent role and
+  the documents below."
+- `buildCopilotYaml(...)` uses an empty `prompt` for unresolved stages and puts
+  the Prompt Composer error into `metadata.prompt_resolution_note`.
+- The HTTP response still returns a downloadable YAML/Markdown file with normal
+  attachment headers rather than a blocked status or explicit degraded export
+  response.
+
+Impact:
+
+- Operators can hand a Copilot CLI workflow to another environment that is
+  missing the actual stage prompts, while the export still looks structurally
+  valid and executable.
+- The most important governed content, the prompt contract, can be replaced by a
+  generic note during an infrastructure outage.
+- A downstream run may produce code/evidence from role names and documents
+  rather than from the approved Workbench stage prompt profile, weakening
+  reproducibility.
+- The current behavior is helpful for debugging, but in enterprise mode it should
+  not be indistinguishable from a complete export.
+
+Required fixes:
+
+- Add an export policy: `fail_closed`, `metadata_only_degraded`, or
+  `debug_allow_placeholders`, with fail-closed as the production default.
+- Return a 422 or explicit degraded response when mandatory stage prompts cannot
+  be resolved, unless the caller asks for a debug placeholder export and has the
+  corresponding permission.
+- Include per-stage prompt resolution status, assembly id, profile key, prompt
+  hash, and error code in an export receipt.
+- Add UI warnings that block handoff/download when any mandatory stage prompt is
+  unresolved.
+- Add tests for all prompts resolved, one prompt unavailable, Prompt Composer
+  unauthorized, debug placeholder export, YAML prompt hash metadata, and
+  production fail-closed behavior.
+
+### 297. Immutable contract replay is executable without contract/resource authorization
+
+Evidence:
+
+- `app.ts` mounts `/api/contracts` with `authMiddleware` only.
+- `contracts.router.ts` exposes `POST /api/contracts/:contractId/replay` as an
+  executable route that fetches a contract bundle from Prompt Composer, renders a
+  frozen prompt, and calls `contextFabricClient.executeGovernedTurn(...)`.
+- The replay request body accepts caller-supplied `agentTemplateId`,
+  `capabilityId`, `workflowInstanceId`, `originalInput`, and optional
+  `originalRunId`.
+- The route checks tenant access only when `originalRunId` is supplied, through
+  `assertAgentRunTenant(req, originalRunId)`, so a replay with no original run id
+  performs no WorkGraph tenant/resource lookup before invoking Context Fabric.
+- The contract fetch is by raw `contractId` through WorkGraph's Prompt Composer
+  service credentials. The route does not verify that the authenticated caller can
+  view or replay that contract, that the contract belongs to the requested agent
+  template/capability, or that the requested capability is visible to the caller.
+- The generated `run_context` can use `workflow_instance_id =
+  replay-<contractId>` when no workflow instance is supplied, so the replay need
+  not be anchored to an authorized run.
+
+Impact:
+
+- Any authenticated WorkGraph caller can potentially execute model calls using a
+  frozen prompt contract id they know or can guess, paired with an arbitrary
+  capability id and input.
+- Contract replay can become a side channel for prompt contents, model/provider
+  behavior, and capability-scoped execution without the normal workflow/run
+  authorization snapshot.
+- The replay evidence is weaker than normal run evidence because it lacks a
+  required workflow instance, actor authorization decision, contract ownership
+  check, and capability membership proof.
+- This undermines the intended value of immutable contracts as an enterprise
+  evidence primitive: the replay surface itself is not governed like a sensitive
+  execution action.
+
+Required fixes:
+
+- Add explicit `contract:view` and `contract:replay` authorization checks before
+  fetching or executing a contract bundle.
+- Require contract replay to be anchored to an authorized workflow instance,
+  agent run, or approved replay request in production-class environments.
+- Verify the contract's agent template, capability, tenant, and bundle hash
+  against the requested replay context before provider invocation.
+- Record a replay authorization snapshot with actor, tenant, contract id,
+  capability id, workflow/run id, policy version, and trace id.
+- Add tests for no original run id, wrong capability id, unauthorized contract
+  id, cross-tenant contract replay, stale contract version, and successful
+  authorized replay.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
