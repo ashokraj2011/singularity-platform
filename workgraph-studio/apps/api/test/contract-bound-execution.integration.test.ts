@@ -17,6 +17,21 @@ import { foldReconciliationIntoClaims } from '../src/modules/reconciliations/rec
 const HAS_DB = Boolean(process.env.TEST_DATABASE_URL)
 const tenantId = 'contract-e2e'
 
+function initiativeCapability(capabilityId: string, capabilityName: string) {
+  return {
+    primaryCapabilityId: capabilityId,
+    primaryCapabilityName: capabilityName,
+    capabilityLinks: {
+      create: {
+        capabilityId,
+        capabilityName,
+        role: 'PRIMARY' as const,
+        tenantId,
+      },
+    },
+  }
+}
+
 describe.runIf(HAS_DB)('contract-bound work execution — real Postgres', () => {
   afterAll(async () => {
     await prisma.$disconnect().catch(() => undefined)
@@ -292,7 +307,13 @@ describe.runIf(HAS_DB)('contract-bound work execution — real Postgres', () => 
     const reviewer = await prisma.user.create({ data: { email: `decision-reviewer-${suffix}@example.test`, displayName: 'Decision reviewer' } })
     const { project, dossier, request } = await withTenantDbTransaction(prisma, async tx => {
       const project = await tx.specificationProject.create({
-        data: { code: `DEC-${suffix}`, name: 'Decision governance', createdById: author.id, tenantId },
+        data: {
+          code: `DEC-${suffix}`,
+          name: 'Decision governance',
+          createdById: author.id,
+          tenantId,
+          ...initiativeCapability(`cap-decision-${suffix}`, 'Decision governance capability'),
+        },
       })
       const dossier = await tx.decisionDossier.create({
         data: {
@@ -363,7 +384,12 @@ describe.runIf(HAS_DB)('contract-bound work execution — real Postgres', () => 
     const suffix = randomUUID().slice(0, 8)
     const traceId = `contract-drift-${suffix}`
     const project = await prisma.specificationProject.create({
-      data: { code: `DRIFT-${suffix}`, name: 'Drift feedback loop', tenantId },
+      data: {
+        code: `DRIFT-${suffix}`,
+        name: 'Drift feedback loop',
+        tenantId,
+        ...initiativeCapability(`cap-drift-${suffix}`, 'Drift feedback capability'),
+      },
     })
     const claim = await prisma.claim.create({
       data: {
@@ -467,7 +493,13 @@ describe.runIf(HAS_DB)('contract-bound work execution — real Postgres', () => 
   it('enforces the initiative envelope when a workflow stage has no narrower budget', async () => {
     const suffix = randomUUID().slice(0, 8)
     const project = await prisma.specificationProject.create({
-      data: { code: `BUDGET-${suffix}`, name: 'Hierarchical budget controls', tokenBudget: 100, tenantId },
+      data: {
+        code: `BUDGET-${suffix}`,
+        name: 'Hierarchical budget controls',
+        tokenBudget: 100,
+        tenantId,
+        ...initiativeCapability(`cap-budget-${suffix}`, 'Budget control capability'),
+      },
     })
     await prisma.projectBudgetEnvelope.create({
       data: {

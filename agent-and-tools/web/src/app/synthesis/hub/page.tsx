@@ -19,7 +19,6 @@ import {
   ShieldAlert,
   Sparkles,
   Target,
-  Users,
 } from "lucide-react";
 import { SynthesisShell } from "@/components/synthesis/SynthesisShell";
 import {
@@ -37,17 +36,11 @@ import type { SynProject } from "@/components/synthesis/types";
 
 type LookupItem = Record<string, unknown>;
 type SelectOption = { id: string; name: string };
-type CapabilityRelationRole = "IMPACTED" | "SUPPORTING" | "CONSUMES" | "PROPOSED";
-type CapabilityRelationField = "impactedCapabilityIds" | "supportingCapabilityIds" | "consumedCapabilityIds" | "proposedCapabilityIds";
 
 type InitiativeForm = {
   name: string;
   mission: string;
   primaryCapabilityId: string;
-  impactedCapabilityIds: string[];
-  supportingCapabilityIds: string[];
-  consumedCapabilityIds: string[];
-  proposedCapabilityIds: string[];
   tokenBudget: string;
   costBudgetUsd: string;
   businessValue: string;
@@ -71,10 +64,6 @@ const EMPTY_FORM: InitiativeForm = {
   name: "",
   mission: "",
   primaryCapabilityId: "",
-  impactedCapabilityIds: [],
-  supportingCapabilityIds: [],
-  consumedCapabilityIds: [],
-  proposedCapabilityIds: [],
   tokenBudget: "250000",
   costBudgetUsd: "",
   businessValue: "",
@@ -137,7 +126,7 @@ export default function WorkspaceHubPage() {
       setForm(EMPTY_FORM);
       setCreating(false);
       setShowPortfolioFields(false);
-      setNotice(`${project.name} is ready. Capability agents are preparing an impact brief.`);
+      setNotice(`${project.name} is ready. The assigned capability agent is preparing an impact brief.`);
       await mutate();
     } catch (caught) {
       setFormError(caught instanceof Error ? caught.message : "The initiative could not be created.");
@@ -163,7 +152,7 @@ export default function WorkspaceHubPage() {
         <div>
           <MonoMeta className="mb-1 block">Portfolio command</MonoMeta>
           <h1 className="font-display text-2xl font-semibold tracking-tight text-on-surface">Active initiatives</h1>
-          <p className="mt-1 max-w-2xl text-sm text-on-surface-variant">Fund outcomes, watch risk and aging, and bring impacted capabilities into the decision before delivery starts.</p>
+          <p className="mt-1 max-w-2xl text-sm text-on-surface-variant">Fund outcomes, watch risk and aging, and keep every initiative accountable to one platform capability.</p>
         </div>
         {data ? <MonoMeta>{projects.length} initiatives · {data.standaloneWorkItems.length} standalone work items</MonoMeta> : null}
       </div>
@@ -188,7 +177,7 @@ export default function WorkspaceHubPage() {
       {error ? <SynError message={`Could not load the portfolio: ${(error as Error).message}`} /> : isLoading ? (
         <SynSkeleton rows={4} />
       ) : filtered.length === 0 ? (
-        <EmptyState icon={FolderKanban} title={query ? "No matching initiatives" : "No initiatives yet"} description={query ? "Try a different search term." : "Create an initiative with a capability and guardrail, then let capability agents identify impact and claims."} action={!query ? <SynButton icon={Plus} onClick={() => setCreating(true)}>New initiative</SynButton> : undefined} />
+        <EmptyState icon={FolderKanban} title={query ? "No matching initiatives" : "No initiatives yet"} description={query ? "Try a different search term." : "Create an initiative, attach it to one capability, and let that capability agent identify impact and claims."} action={!query ? <SynButton icon={Plus} onClick={() => setCreating(true)}>New initiative</SynButton> : undefined} />
       ) : (
         <div className="grid grid-cols-1 items-start gap-5 md:grid-cols-2 xl:grid-cols-3">
           {filtered.map((project) => <ProjectCard key={project.id} project={project} onRefresh={() => mutate()} />)}
@@ -232,47 +221,17 @@ function InitiativeComposer({
     ["technicalRisk", "Technical risk", "Architecture and engineering uncertainty"],
     ["regulatoryRisk", "Regulatory risk", "Compliance and control exposure"],
   ];
-  const impacted = capabilities.filter((item) => item.id !== form.primaryCapabilityId);
-  const relationFields: Record<CapabilityRelationRole, CapabilityRelationField> = {
-    IMPACTED: "impactedCapabilityIds",
-    SUPPORTING: "supportingCapabilityIds",
-    CONSUMES: "consumedCapabilityIds",
-    PROPOSED: "proposedCapabilityIds",
-  };
-  const relationOptions: Array<{ value: CapabilityRelationRole; label: string }> = [
-    { value: "IMPACTED", label: "Impacted" },
-    { value: "SUPPORTING", label: "Supporting" },
-    { value: "CONSUMES", label: "Consumed dependency" },
-    { value: "PROPOSED", label: "Proposed relationship" },
-  ];
-
-  function relationFor(capabilityId: string): CapabilityRelationRole | "" {
-    return relationOptions.find(({ value }) => form[relationFields[value]].includes(capabilityId))?.value ?? "";
-  }
-
-  function assignRelation(capabilityId: string, role: CapabilityRelationRole | "") {
-    for (const [candidateRole, field] of Object.entries(relationFields) as Array<[CapabilityRelationRole, CapabilityRelationField]>) {
-      const withoutCapability = form[field].filter((id) => id !== capabilityId);
-      setField(field, candidateRole === role ? [...withoutCapability, capabilityId] : withoutCapability);
-    }
-  }
-
-  function assignPrimary(capabilityId: string) {
-    setField("primaryCapabilityId", capabilityId);
-    if (capabilityId) assignRelation(capabilityId, "");
-  }
-
   return (
     <SynCard className="mb-8 overflow-hidden">
       <div className="border-b border-outline-variant px-5 py-4">
         <div className="flex items-center gap-3">
           <span className="grid h-9 w-9 place-items-center rounded-lg bg-secondary-container text-on-secondary-container"><Target size={18} /></span>
-          <div><h2 className="font-display text-lg font-semibold text-on-surface">Frame the initiative</h2><p className="text-xs text-on-surface-variant">Capability and token budget are required. Everything else sharpens prioritization.</p></div>
+          <div><h2 className="font-display text-lg font-semibold text-on-surface">Frame the initiative</h2><p className="text-xs text-on-surface-variant">Exactly one platform capability and a token budget are required. Everything else sharpens prioritization.</p></div>
         </div>
       </div>
       <div className="grid gap-4 p-5 lg:grid-cols-2">
         <Field label="Initiative name" required><input autoFocus value={form.name} onChange={(event) => setField("name", event.target.value)} placeholder="e.g. Unified billing experience" className={inputClass} /></Field>
-        <Field label="Primary capability" required hint="IAM is the source of truth"><select value={form.primaryCapabilityId} onChange={(event) => assignPrimary(event.target.value)} className={inputClass}><option value="">Choose capability</option>{capabilities.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
+        <Field label="Capability" required hint="One initiative belongs to one platform capability"><select value={form.primaryCapabilityId} onChange={(event) => setField("primaryCapabilityId", event.target.value)} className={inputClass}><option value="">Choose capability</option>{capabilities.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
         <Field label="Outcome / mission" className="lg:col-span-2"><textarea value={form.mission} onChange={(event) => setField("mission", event.target.value)} placeholder="What changes for customers or the business when this succeeds?" className={`${inputClass} min-h-20 py-2`} /></Field>
         <Field label="Token budget" required hint="Shared by capability analysis and workflow LLM usage"><input type="number" min={10000} step={10000} value={form.tokenBudget} onChange={(event) => setField("tokenBudget", event.target.value)} className={inputClass} /></Field>
         <Field label="Optional cost guardrail (USD)"><input type="number" min={0} step="10" value={form.costBudgetUsd} onChange={(event) => setField("costBudgetUsd", event.target.value)} placeholder="No cost cap" className={inputClass} /></Field>
@@ -296,23 +255,6 @@ function InitiativeComposer({
             <Field label="Review cadence"><select value={form.reviewCadenceDays} onChange={(event) => setField("reviewCadenceDays", event.target.value)} className={inputClass}>{[14, 30, 60, 90].map((days) => <option key={days} value={days}>Every {days} days</option>)}</select></Field>
             <Field label="Sponsor"><select value={form.sponsorId} onChange={(event) => setField("sponsorId", event.target.value)} className={inputClass}><option value="">Unassigned</option>{users.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
             <Field label="Product owner"><select value={form.productOwnerId} onChange={(event) => setField("productOwnerId", event.target.value)} className={inputClass}><option value="">Unassigned</option>{users.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></Field>
-          </section>
-          <section>
-            <MonoMeta className="mb-1 block">Capability map · one relationship per IAM capability</MonoMeta>
-            <p className="mb-3 text-xs text-on-surface-variant">Impacted and supporting capabilities participate in agent review. Consumed capabilities expose dependencies. Proposed records a relationship for later human decision.</p>
-            {impacted.length === 0 ? <p className="text-sm text-on-surface-variant">Choose a primary capability to map the other active capabilities.</p> : (
-              <div className="max-h-72 overflow-y-auto rounded-lg border border-outline-variant">
-                {impacted.map((item) => (
-                  <div key={item.id} className="grid min-h-12 items-center gap-3 border-b border-outline-variant px-3 py-2 last:border-b-0 sm:grid-cols-[minmax(0,1fr)_220px]">
-                    <span className="truncate text-sm font-medium text-on-surface">{item.name}</span>
-                    <select value={relationFor(item.id)} onChange={(event) => assignRelation(item.id, event.target.value as CapabilityRelationRole | "")} className={inputClass} aria-label={`Relationship for ${item.name}`}>
-                      <option value="">No relationship</option>
-                      {relationOptions.map((option) => <option key={option.value} value={option.value} disabled={relationFor(item.id) !== option.value && form[relationFields[option.value]].length >= 8}>{option.label}</option>)}
-                    </select>
-                  </div>
-                ))}
-              </div>
-            )}
           </section>
           <section className="grid gap-3 lg:grid-cols-2">
             <Field label="Success metrics" hint="One measurable outcome per line"><textarea value={form.successMetrics} onChange={(event) => setField("successMetrics", event.target.value)} placeholder={"Reduce cycle time by 20%\nIncrease successful self-service to 80%"} className={`${inputClass} min-h-24 py-2`} /></Field>
@@ -359,7 +301,7 @@ function ProjectCard({ project, onRefresh }: { project: SynProject; onRefresh: (
           <p className="mt-1.5 line-clamp-2 min-h-10 text-sm text-on-surface-variant">{project.mission || "Outcome has not been framed yet."}</p>
         </Link>
 
-        <div className="mt-4 flex items-center gap-2 text-xs font-semibold text-on-surface"><Target size={14} className="text-secondary" />{project.primaryCapabilityName ?? "Legacy initiative · capability not assigned"}</div>
+        <div className="mt-4 flex items-center gap-2 text-xs font-semibold text-on-surface"><Target size={14} className="text-secondary" />{project.assignedCapability?.name ?? project.primaryCapabilityName ?? "Capability not assigned"}</div>
 
         <div className="mt-4">
           <div className="mb-1.5 flex items-center justify-between text-[11px] text-on-surface-variant"><span>Token guardrail</span><span className="font-mono tabular-nums">{compact(project.tokenUsed)} / {compact(project.tokenBudget)}</span></div>
@@ -374,7 +316,7 @@ function ProjectCard({ project, onRefresh }: { project: SynProject; onRefresh: (
 
         <div className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-xs text-on-surface-variant">
           <span className="flex items-center gap-1.5"><Lightbulb size={13} />{project.claimCount ?? 0} claims</span>
-          <span className="flex items-center gap-1.5"><Users size={13} />{project.workItemCount} work items</span>
+          <span className="flex items-center gap-1.5"><Target size={13} />{project.workItemCount} work items</span>
           <span className="flex items-center gap-1.5"><Bot size={13} />{recommendationCount} suggestions</span>
         </div>
       </div>
@@ -394,7 +336,7 @@ function CapabilityBrief({ project }: { project: SynProject }) {
   const assessments = project.impactAssessments ?? [];
   return (
     <div className="space-y-3 border-t border-outline-variant p-4">
-      {assessments.length === 0 ? <p className="text-xs text-on-surface-variant">No capability brief exists yet. Assign a capability or refresh the assessment.</p> : assessments.map((item) => (
+      {assessments.length === 0 ? <p className="text-xs text-on-surface-variant">No capability brief exists yet. Assign one capability or refresh the assessment.</p> : assessments.map((item) => (
         <div key={item.id} className="rounded-lg border border-outline-variant p-3">
           <div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold text-on-surface">{item.capabilityName ?? item.capabilityId}</span><SynChip tone={item.status === "COMPLETED" ? "success" : item.status === "FAILED" ? "error" : "tertiary"} mono>{item.status}</SynChip></div>
           {item.agentTemplateName ? <div className="mt-1 flex items-center gap-1 text-[11px] text-on-surface-variant"><Bot size={11} />{item.agentTemplateName}</div> : null}
@@ -437,10 +379,6 @@ function toPayload(form: InitiativeForm) {
     name: form.name.trim(),
     mission: form.mission.trim() || undefined,
     primaryCapabilityId: form.primaryCapabilityId,
-    impactedCapabilityIds: form.impactedCapabilityIds,
-    supportingCapabilityIds: form.supportingCapabilityIds,
-    consumedCapabilityIds: form.consumedCapabilityIds,
-    proposedCapabilityIds: form.proposedCapabilityIds,
     tokenBudget: Number(form.tokenBudget),
     costBudgetUsd: form.costBudgetUsd ? Number(form.costBudgetUsd) : undefined,
     ...scores,

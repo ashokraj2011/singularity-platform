@@ -75,6 +75,8 @@ assert.match(shell, /label: "Idea Board"/, "the primary synthesis capture surfac
 for (const phase of ["Orient", "Explore", "Decide", "Specify", "Govern"]) {
   assert.ok(shell.includes(`"${phase}"`), `Synthesis should expose the ${phase} phase`);
 }
+assert.match(shell, /"Online"/, "Synthesis shell should label browser connectivity as Online");
+assert.doesNotMatch(shell, /"Synced"/, "Synthesis shell must not imply persistence sync from browser network status");
 for (const surface of ["Journey Map", "Evidence Wiki", "System Diagrams", "Pseudocode"]) {
   assert.ok(shell.includes(surface), `Synthesis should expose ${surface}`);
 }
@@ -92,6 +94,51 @@ const synthesisIndex = fs.readFileSync(
 );
 assert.doesNotMatch(synthesisIndex, /from ["']next\/navigation["'];?\s*\n.*redirect/, "Synthesis entry must not throw a server redirect below the client auth gate");
 assert.match(synthesisIndex, /router\.replace\("\/synthesis\/hub"\)/, "Synthesis entry should navigate after the session gate renders");
+
+const synthesisHub = fs.readFileSync(
+  path.join(process.cwd(), "src/app/synthesis/hub/page.tsx"),
+  "utf8",
+);
+assert.match(synthesisHub, /One initiative belongs to one platform capability/, "Initiative creation should attach to exactly one platform capability");
+assert.doesNotMatch(synthesisHub, /impactedCapabilityIds|supportingCapabilityIds|consumedCapabilityIds|proposedCapabilityIds|Capability map/, "Synthesis hub must not expose secondary capability mapping for initiatives");
+assert.match(synthesisHub, /assignedCapability\?\.name/, "Synthesis hub should render the singular assigned capability, not a multi-capability map");
+
+const synthesisTypes = fs.readFileSync(
+  path.join(process.cwd(), "src/components/synthesis/types.ts"),
+  "utf8",
+);
+const capabilityLinkType = synthesisTypes.match(/export interface SynCapabilityLink \{[\s\S]*?\n\}/)?.[0] ?? "";
+assert.match(capabilityLinkType, /role:\s*"PRIMARY"/, "Synthesis capability links should be primary-only in the frontend contract");
+assert.doesNotMatch(capabilityLinkType, /"IMPACTED"|"SUPPORTING"|"CONSUMES"|"PROPOSED"/, "Synthesis capability link types must not expose secondary initiative roles");
+assert.match(synthesisTypes, /assignedCapability\?: \{ id: string; name: string \} \| null;/, "Synthesis project type should expose one assigned capability");
+
+const legacyStudioIndex = fs.readFileSync(
+  path.join(process.cwd(), "src/app/studio/page.tsx"),
+  "utf8",
+);
+assert.match(legacyStudioIndex, /redirect\("\/synthesis\/hub"\)/, "Legacy /studio should redirect to Synthesis");
+
+const legacyStudioProject = fs.readFileSync(
+  path.join(process.cwd(), "src/app/studio/[projectId]/page.tsx"),
+  "utf8",
+);
+assert.match(legacyStudioProject, /\/synthesis\/overview\?project=/, "Legacy /studio/:projectId should redirect to Synthesis overview");
+
+const projectGeneration = fs.readFileSync(
+  path.join(process.cwd(), "src/components/studio/ProjectGeneration.tsx"),
+  "utf8",
+);
+assert.match(projectGeneration, /Rows inherit the initiative capability/, "Generation planning should inherit the initiative capability");
+assert.match(projectGeneration, /\/studio\/projects\/\$\{projectId\}/, "Generation planning should load the initiative's assigned capability");
+assert.doesNotMatch(projectGeneration, /\/lookup\/capabilities\?size=200/, "Generation planning must not expose an arbitrary target-capability picker");
+assert.match(projectGeneration, /targetCapabilityId:\s*capabilityId/, "Generated rows should use the single initiative capability in the payload");
+
+const nextConfig = fs.readFileSync(
+  path.join(process.cwd(), "next.config.mjs"),
+  "utf8",
+);
+assert.match(nextConfig, /source: "\/studio", destination: "\/synthesis\/hub"/, "Next config should issue an HTTP redirect for /studio");
+assert.match(nextConfig, /source: "\/studio\/:projectId", destination: "\/synthesis\/overview\?project=:projectId"/, "Next config should issue an HTTP redirect for /studio/:projectId");
 
 const ideaScreen = fs.readFileSync(
   path.join(process.cwd(), "src/components/synthesis/screens/IdeaWallScreen.tsx"),

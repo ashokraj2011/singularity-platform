@@ -53,7 +53,7 @@ export function StudioProjectsHome() {
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12 }}>
           {projects.map((p) => (
-            <Link key={p.id} href={`/studio/${p.id}`} className="card" style={cardStyle}>
+            <Link key={p.id} href={`/synthesis/overview?project=${encodeURIComponent(p.id)}`} className="card" style={cardStyle}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span style={codeChip}>{p.code}</span>
                 <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--color-outline)" }}>{p.workItemCount ?? 0} items</span>

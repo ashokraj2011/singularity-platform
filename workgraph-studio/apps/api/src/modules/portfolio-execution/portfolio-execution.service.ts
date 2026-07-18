@@ -737,7 +737,7 @@ async function upsertTenantBudgetInternal(input: Record<string, unknown>, actorI
 
 async function getProjectPilotReadinessInternal(projectId: string) {
   const project = await projectOrThrow(projectId)
-  const [traceability, learning, plans, workItems, budgetEvents, slaEvents, readouts, objectives, projectSpecification, capabilityLinks, impactAssessments, validationReports, acceptedDossiers, resolvedAttentionItems, changeRequests] = await Promise.all([
+  const [traceability, learning, plans, workItems, budgetEvents, slaEvents, readouts, objectives, projectSpecification, impactAssessments, validationReports, acceptedDossiers, resolvedAttentionItems, changeRequests] = await Promise.all([
     getProjectTraceabilityInternal(projectId),
     getProjectLearningInternal(projectId),
     db().generationPlan.findMany({ where: { specificationProjectId: projectId, tenantId: tenantId() }, include: { rows: true } }),
@@ -747,7 +747,6 @@ async function getProjectPilotReadinessInternal(projectId: string) {
     db().businessReadout.findMany({ where: { studioProjectId: projectId, tenantId: tenantId() } }),
     db().businessObjective.findMany({ where: { tenantId: tenantId(), OR: [{ studioProjectId: projectId }, { projectLinks: { some: { projectId } } }] } }),
     db().projectSpecification.findUnique({ where: { projectId } }),
-    db().specificationProjectCapability.findMany({ where: { projectId, tenantId: tenantId(), role: { not: 'PROPOSED' } } }),
     db().capabilityImpactAssessment.findMany({ where: { projectId, tenantId: tenantId(), status: 'COMPLETED' } }),
     db().artifactValidationReport.findMany({ where: { projectId, tenantId: tenantId() }, select: { tensions: true } }),
     db().decisionDossier.findMany({ where: { projectId, tenantId: tenantId(), status: 'ACCEPTED' }, select: { resolvesTensions: true, createdById: true, decidedById: true } }),
@@ -796,9 +795,10 @@ async function getProjectPilotReadinessInternal(projectId: string) {
     Object.keys(jsonRecord(change.requirementDeltas)).length > 0
     && (Object.keys(jsonRecord(change.costDelta)).length > 0 || Object.keys(jsonRecord(change.scheduleDelta)).length > 0 || jsonRecords(change.milestoneImpacts).length > 0),
   ).length
-  const capabilityIds = new Set(capabilityLinks.map(link => link.capabilityId))
-  if (project.primaryCapabilityId) capabilityIds.add(project.primaryCapabilityId)
-  const assessedCapabilityIds = new Set(impactAssessments.map(assessment => assessment.capabilityId))
+  const capabilityIds = new Set(project.primaryCapabilityId ? [project.primaryCapabilityId] : [])
+  const assessedCapabilityIds = new Set(impactAssessments
+    .filter(assessment => assessment.capabilityId === project.primaryCapabilityId)
+    .map(assessment => assessment.capabilityId))
   const independentlyApprovedSponsorRequestIds = new Set(sponsorApprovals.filter(request =>
     request.decisions.some(decision => ['APPROVED', 'APPROVED_WITH_CONDITIONS'].includes(decision.decision) && decision.decidedById !== request.requestedById),
   ).map(request => request.id))

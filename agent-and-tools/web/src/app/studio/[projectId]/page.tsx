@@ -1,12 +1,15 @@
-"use client";
+import { redirect } from "next/navigation";
 
-import { useParams } from "next/navigation";
-import { ProjectWorkspace } from "@/components/studio/ProjectWorkspace";
+type ProjectWorkspacePageProps = {
+  params?: Promise<{ projectId?: string | string[] }>;
+};
 
-export default function ProjectWorkspacePage() {
-  const params = useParams();
-  const raw = params?.projectId;
+export default async function ProjectWorkspacePage({ params }: ProjectWorkspacePageProps) {
+  const resolvedParams = await params;
+  const raw = resolvedParams?.projectId;
   const projectId = typeof raw === "string" ? raw : Array.isArray(raw) ? raw[0] : "";
-  if (!projectId) return null;
-  return <ProjectWorkspace projectId={projectId} />;
+  if (!projectId) {
+    redirect("/synthesis/hub");
+  }
+  redirect(`/synthesis/overview?project=${encodeURIComponent(projectId)}`);
 }

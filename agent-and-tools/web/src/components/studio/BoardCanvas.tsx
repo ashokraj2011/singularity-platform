@@ -10,6 +10,7 @@ import {
 } from "react";
 import ReactFlow, {
   Background,
+  BackgroundVariant,
   Controls,
   Handle,
   MarkerType,
@@ -29,9 +30,10 @@ import ReactFlow, {
 import {
   Check,
   Copy,
-  Download,
+  Braces,
   Eye,
   EyeOff,
+  FileImage,
   FileUp,
   FileText,
   Frame,
@@ -798,15 +800,15 @@ function BoardCanvasInner({ projectId, boardId, mode }: { projectId: string; boa
 
   return (
     <section className="syn-board relative flex h-full min-h-[520px] flex-col overflow-hidden border border-outline-variant bg-surface-container-lowest shadow-sm">
-      <div className="flex min-h-14 flex-wrap items-center gap-2 border-b border-outline-variant bg-surface-container-lowest px-3 py-2">
-        <div className="mr-1 flex items-center gap-2">
+      <div className="flex min-h-12 flex-nowrap items-center gap-1.5 overflow-x-auto border-b border-outline-variant bg-surface-container-lowest px-2 py-1.5">
+        <div className="mr-1 flex shrink-0 items-center gap-2 px-1">
           <span className={`h-2 w-2 rounded-full ${ready ? "bg-secondary" : "bg-outline"}`} />
           <span className="font-display text-sm font-semibold text-on-surface">{mode === "ideas" ? "Idea Board" : "Board"}</span>
           <span className="font-mono text-[10px] uppercase text-on-surface-variant">{shown.length} objects</span>
         </div>
         <ToolButton icon={Undo2} label="Undo" onClick={undo} disabled={isPast || undoStack.length === 0} />
         <ToolButton icon={Redo2} label="Redo" onClick={redo} disabled={isPast || redoStack.length === 0} />
-        <span className="mx-1 h-6 w-px bg-outline-variant" />
+        <span className="mx-1 h-6 w-px shrink-0 bg-outline-variant" />
         <ToolButton icon={MousePointer2} label="Select" active />
         <ToolButton icon={StickyNote} label="Sticky" onClick={() => addObject("sticky")} disabled={isPast} />
         <ToolButton icon={MessageSquarePlus} label="Text" onClick={() => addObject("text")} disabled={isPast} />
@@ -814,7 +816,7 @@ function BoardCanvasInner({ projectId, boardId, mode }: { projectId: string; boa
         <ToolButton icon={Frame} label="Frame" onClick={() => addObject("frame")} disabled={isPast} />
         <ToolButton icon={Shapes} label="Templates" onClick={() => setTemplateOpen(true)} disabled={isPast} />
         <ToolButton icon={FileUp} label="Upload" onClick={() => fileInputRef.current?.click()} disabled={isPast} />
-        <span className="mx-1 h-6 w-px bg-outline-variant" />
+        <span className="mx-1 h-6 w-px shrink-0 bg-outline-variant" />
         <ToolButton icon={Link2} label="Connect" onClick={connectSelected} disabled={isPast || selection.length !== 2} />
         <ToolButton icon={Copy} label="Copy" onClick={copySelection} disabled={!selection.length} />
         <ToolButton icon={Copy} label="Paste" onClick={pasteClipboard} disabled={isPast || clipboardObjects.length === 0} />
@@ -822,17 +824,17 @@ function BoardCanvasInner({ projectId, boardId, mode }: { projectId: string; boa
         <ToolButton icon={selectedLocked ? Unlock : Lock} label={selectedLocked ? "Unlock" : "Lock"} onClick={toggleLockSelected} disabled={isPast || !selectedObjects.length} />
         <ToolButton icon={Trash2} label="Delete" onClick={deleteSelected} disabled={isPast || !selection.length} danger />
         {selection.length > 0 ? (
-          <div className="ml-1 flex items-center gap-1 rounded-md border border-outline-variant bg-surface px-1.5 py-1" aria-label="Card color">
+          <div className="ml-1 hidden shrink-0 items-center gap-1 rounded-md border border-outline-variant bg-surface px-1.5 py-1 lg:flex" aria-label="Card color">
             {COLORS.map(color => <button key={color} type="button" onClick={() => recolorSelected(color)} className="h-4 w-4 rounded-sm border border-black/10" style={{ background: color }} title={`Set color ${color}`} />)}
           </div>
         ) : null}
         {selection.length > 1 ? (
-          <div className="flex items-center gap-1 rounded-md border border-outline-variant bg-surface px-1.5 py-1">
+          <div className="hidden shrink-0 items-center gap-1 rounded-md border border-outline-variant bg-surface px-1.5 py-1 xl:flex">
             <button type="button" className="h-7 rounded px-2 text-[11px] font-semibold text-on-surface-variant hover:bg-surface-container-high" onClick={() => alignSelected("x")} disabled={isPast}>Align X</button>
             <button type="button" className="h-7 rounded px-2 text-[11px] font-semibold text-on-surface-variant hover:bg-surface-container-high" onClick={() => alignSelected("y")} disabled={isPast}>Align Y</button>
           </div>
         ) : null}
-        <div className="relative flex h-9 min-w-[180px] items-center rounded-md border border-outline-variant bg-surface px-2">
+        <div className="relative ml-1 flex h-8 w-44 shrink-0 items-center rounded-md border border-outline-variant bg-surface px-2 md:w-56">
           <Search size={14} className="shrink-0 text-on-surface-variant" />
           <input
             value={search}
@@ -855,27 +857,25 @@ function BoardCanvasInner({ projectId, boardId, mode }: { projectId: string; boa
           ) : null}
         </div>
         {mode === "ideas" ? (
-          <div className="ml-auto flex items-center gap-2">
-            <button type="button" className={`btn-secondary h-9 text-xs ${privateMode ? "border-amber-300 bg-amber-50 text-amber-900" : ""}`} onClick={() => setPrivateMode(value => !value)} title="Private notes stay local until you reveal them">
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            <button type="button" className={`btn-secondary h-8 px-2 text-xs ${privateMode ? "border-amber-300 bg-amber-50 text-amber-900" : ""}`} onClick={() => setPrivateMode(value => !value)} title="Private notes stay local until you reveal them">
               {privateMode ? <EyeOff size={14} /> : <Eye size={14} />} Private{privateDrafts.length ? ` ${privateDrafts.length}` : ""}
             </button>
-            {privateDrafts.length ? <button type="button" className="btn-secondary h-9 text-xs" onClick={revealPrivateDrafts} disabled={isPast}><Eye size={14} /> Reveal</button> : null}
-            <button type="button" className="btn-secondary h-9 text-xs" onClick={() => setCollaborationOpen(true)} title="Live cursors and follow mode"><Users size={14} /> Collaborate</button>
-            <button type="button" className={`btn-secondary h-9 text-xs ${voteMode ? "border-secondary bg-secondary-container text-on-secondary-container" : ""}`} onClick={() => setVoteMode(value => !value)} title="Start a lightweight dot-voting session">
+            {privateDrafts.length ? <button type="button" className="btn-secondary h-8 px-2 text-xs" onClick={revealPrivateDrafts} disabled={isPast}><Eye size={14} /> Reveal</button> : null}
+            <button type="button" className="btn-secondary h-8 px-2 text-xs" onClick={() => setCollaborationOpen(true)} title="Live cursors and follow mode"><Users size={14} /><span className="hidden 2xl:inline">Collaborate</span></button>
+            <button type="button" className={`btn-secondary h-8 px-2 text-xs ${voteMode ? "border-secondary bg-secondary-container text-on-secondary-container" : ""}`} onClick={() => setVoteMode(value => !value)} title="Start a lightweight dot-voting session">
               <Vote size={14} /> Vote
             </button>
-            {voteMode ? <button type="button" className="btn-secondary h-9 text-xs" onClick={addVoteToSelection} disabled={!selectedContent.length || isPast}>+1</button> : null}
-            <button type="button" className="btn-secondary h-9 text-xs" onClick={() => setFacilitationOpen(true)} title="Timer, voting, and workshop tools"><Timer size={14} /> Facilitate</button>
-            <button type="button" className="btn-secondary h-9 text-xs" onClick={() => setInspectorOpen(value => !value)} disabled={!selectedObjects.length} title="Comments and object details">
-              <PanelRightOpen size={14} /> Details{selectedCommentCount ? ` ${selectedCommentCount}` : ""}
+            {voteMode ? <button type="button" className="btn-secondary h-8 px-2 text-xs" onClick={addVoteToSelection} disabled={!selectedContent.length || isPast}>+1</button> : null}
+            <button type="button" className="btn-secondary h-8 px-2 text-xs" onClick={() => setFacilitationOpen(true)} title="Timer, voting, and workshop tools"><Timer size={14} /><span className="hidden 2xl:inline">Facilitate</span></button>
+            <button type="button" className="btn-secondary h-8 px-2 text-xs" onClick={() => setInspectorOpen(value => !value)} disabled={!selectedObjects.length} title="Comments and object details">
+              <PanelRightOpen size={14} /> {selectedCommentCount ? selectedCommentCount : <span className="hidden 2xl:inline">Details</span>}
             </button>
-            <button type="button" className="btn-secondary h-9 text-xs" onClick={() => exportBoard("svg")} title="Download an SVG image of the board"><Download size={14} /> SVG</button>
-            <button type="button" className="btn-secondary h-9 text-xs" onClick={() => exportBoard("print")} title="Open a print-ready board for Save as PDF"><Download size={14} /> PDF</button>
-            <button type="button" className="btn-secondary h-9 text-xs" onClick={() => exportBoard("json")} title="Download board data as JSON"><Download size={14} /> JSON</button>
-            <button type="button" className="btn-secondary h-9 text-xs" onClick={promoteToClaims} disabled={!selectedContent.length || promoting || isPast} title="Turn selected notes into governed claims with board provenance">
-              {promoting ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Promote
-            </button>
-            <button type="button" className="btn-primary h-9 text-xs" onClick={runSynthesis} disabled={!contentObjects.length || synthesizing}>
+            <ToolButton icon={FileImage} label="SVG export" onClick={() => exportBoard("svg")} />
+            <ToolButton icon={FileText} label="PDF export" onClick={() => exportBoard("print")} />
+            <ToolButton icon={Braces} label="JSON export" onClick={() => exportBoard("json")} />
+            <ToolButton icon={promoting ? Loader2 : Send} label="Promote" onClick={promoteToClaims} disabled={!selectedContent.length || promoting || isPast} />
+            <button type="button" className="btn-primary h-8 px-3 text-xs" onClick={runSynthesis} disabled={!contentObjects.length || synthesizing}>
               {synthesizing ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Synthesize
             </button>
           </div>
@@ -884,11 +884,9 @@ function BoardCanvasInner({ projectId, boardId, mode }: { projectId: string; boa
       </div>
 
       {isPast ? <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900">Viewing event {atSeq} of {head}. This state is read-only.</div> : null}
-      {error ? <div className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-800"><X size={13} />{error}<button className="ml-auto" onClick={() => setError(null)} aria-label="Dismiss error"><X size={13} /></button></div> : null}
-      {notice ? <div className="flex items-center gap-2 border-b border-emerald-200 bg-emerald-50 px-4 py-2 text-xs text-emerald-800"><Check size={13} />{notice}<button className="ml-auto" onClick={() => setNotice(null)} aria-label="Dismiss message"><X size={13} /></button></div> : null}
 
       <div
-        className="relative min-h-0 flex-1 bg-surface-container-low"
+        className="relative min-h-0 flex-1 bg-white"
         onPointerMove={event => {
           const now = Date.now();
           if (now - cursorThrottleRef.current < 120) return;
@@ -904,6 +902,16 @@ function BoardCanvasInner({ projectId, boardId, mode }: { projectId: string; boa
           void handleFiles(event.dataTransfer.files);
         }}
       >
+        {error ? (
+          <div className="absolute left-1/2 top-2 z-30 flex max-w-[min(720px,calc(100%-24px))] -translate-x-1/2 items-center gap-2 rounded-full border border-red-200 bg-red-50/95 px-3 py-2 text-xs font-semibold text-red-800 shadow-lg backdrop-blur">
+            <X size={13} /> <span className="truncate">{error}</span><button className="ml-1" onClick={() => setError(null)} aria-label="Dismiss error"><X size={13} /></button>
+          </div>
+        ) : null}
+        {notice ? (
+          <div className="absolute left-1/2 top-2 z-30 flex max-w-[min(720px,calc(100%-24px))] -translate-x-1/2 items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50/95 px-3 py-2 text-xs font-semibold text-emerald-800 shadow-lg backdrop-blur">
+            <Check size={13} /> <span className="truncate">{notice}</span><button className="ml-1" onClick={() => setNotice(null)} aria-label="Dismiss message"><X size={13} /></button>
+          </div>
+        ) : null}
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -942,15 +950,16 @@ function BoardCanvasInner({ projectId, boardId, mode }: { projectId: string; boa
           maxZoom={2.2}
           deleteKeyCode={null}
           proOptions={{ hideAttribution: true }}
+          style={{ backgroundColor: "#ffffff" }}
         >
-          <Background gap={24} size={1} color="rgba(100,116,139,0.22)" />
+          <Background variant={BackgroundVariant.Dots} gap={18} size={1.1} color="rgba(15,23,42,0.14)" />
           <Controls showInteractive={false} position="bottom-left" />
           <MiniMap
             position="bottom-right"
             pannable
             zoomable
             nodeColor={node => colorOf(node.data?.object as BoardObj | undefined)}
-            maskColor="rgba(248,250,252,0.72)"
+            maskColor="rgba(255,255,255,0.78)"
           />
           {mode === "ideas" ? (
             <Panel position="top-right">
@@ -1201,24 +1210,35 @@ function FileNode({ data, selected }: NodeProps<CanvasNodeData>) {
 const NODE_TYPES = { idea: IdeaNode, synthesis: SynthesisNode, ideaFrame: IdeaFrame, shape: ShapeNode, boardImage: ImageNode, boardFile: FileNode };
 
 function ToolButton({ icon: Icon, label, onClick, disabled, active, danger }: { icon: typeof MousePointer2; label: string; onClick?: () => void; disabled?: boolean; active?: boolean; danger?: boolean }) {
-  return <button type="button" onClick={onClick} disabled={disabled} title={label} aria-label={label} className={`inline-flex h-9 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${active ? "bg-secondary-container text-on-secondary-container" : danger ? "text-red-700 hover:bg-red-50" : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"}`}><Icon size={15} /><span className="hidden xl:inline">{label}</span></button>;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      className={`inline-flex h-8 min-w-8 shrink-0 items-center justify-center rounded-md px-2 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${active ? "bg-secondary-container text-on-secondary-container" : danger ? "text-red-700 hover:bg-red-50" : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"}`}
+    >
+      <Icon size={15} className={Icon === Loader2 ? "animate-spin" : undefined} />
+    </button>
+  );
 }
 
 function SynthesisDrawer({ result, onClose, onPlace, projectId }: { result: BoardSynthesisResult; onClose: () => void; onPlace: () => void; projectId: string }) {
   return (
-    <aside className="absolute bottom-3 right-3 top-3 z-20 flex w-[370px] max-w-[calc(100%-24px)] flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-xl">
-      <div className="flex items-start gap-3 border-b border-outline-variant px-4 py-4">
-        <div className="grid h-9 w-9 place-items-center rounded-md bg-secondary-container text-on-secondary-container"><Sparkles size={17} /></div>
+    <aside className="absolute bottom-2 right-2 top-2 z-20 flex w-[min(340px,calc(100%-16px))] flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-xl">
+      <div className="flex items-start gap-3 border-b border-outline-variant px-3 py-3">
+        <div className="grid h-8 w-8 place-items-center rounded-md bg-secondary-container text-on-secondary-container"><Sparkles size={16} /></div>
         <div className="min-w-0 flex-1"><h3 className="font-display text-sm font-semibold text-on-surface">Board synthesis</h3><p className="mt-0.5 text-xs text-on-surface-variant">{result.coveredSourceCount}/{result.sourceCount} ideas covered</p></div>
         <button type="button" onClick={onClose} className="icon-button" aria-label="Close synthesis"><X size={16} /></button>
       </div>
-      <div className="flex-1 space-y-5 overflow-y-auto p-4">
+      <div className="flex-1 space-y-4 overflow-y-auto p-3">
         <InsightGroup title="Themes" items={result.themes} />
         <InsightGroup title="Tensions" items={result.tensions} />
         <InsightGroup title="Opportunities" items={result.opportunities} />
         {result.warnings.map(warning => <div key={warning} className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">{warning}</div>)}
       </div>
-      <div className="grid gap-2 border-t border-outline-variant p-4">
+      <div className="grid gap-2 border-t border-outline-variant p-3">
         <button type="button" className="btn-primary w-full text-xs" onClick={onPlace}><Sparkles size={14} /> Place synthesis on board</button>
         <Link href={`/synthesis/spec?project=${encodeURIComponent(projectId)}`} className="btn-secondary w-full justify-center text-xs"><FileText size={14} /> Continue to specification</Link>
       </div>
@@ -1228,18 +1248,18 @@ function SynthesisDrawer({ result, onClose, onPlace, projectId }: { result: Boar
 
 function TemplateDrawer({ templates, onClose, onPlace }: { templates: BoardTemplate[]; onClose: () => void; onPlace: (template: BoardTemplate) => void }) {
   return (
-    <aside className="absolute bottom-3 right-3 top-3 z-20 flex w-[390px] max-w-[calc(100%-24px)] flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-xl">
-      <div className="flex items-start gap-3 border-b border-outline-variant px-4 py-4">
-        <div className="grid h-9 w-9 place-items-center rounded-md bg-secondary-container text-on-secondary-container"><Shapes size={17} /></div>
+    <aside className="absolute bottom-2 right-2 top-2 z-20 flex w-[min(340px,calc(100%-16px))] flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-xl">
+      <div className="flex items-start gap-3 border-b border-outline-variant px-3 py-3">
+        <div className="grid h-8 w-8 place-items-center rounded-md bg-secondary-container text-on-secondary-container"><Shapes size={16} /></div>
         <div className="min-w-0 flex-1">
           <h3 className="font-display text-sm font-semibold text-on-surface">Board templates</h3>
           <p className="mt-0.5 text-xs text-on-surface-variant">Drop a workshop structure onto the canvas.</p>
         </div>
         <button type="button" onClick={onClose} className="icon-button" aria-label="Close templates"><X size={16} /></button>
       </div>
-      <div className="grid gap-3 overflow-y-auto p-4">
+      <div className="grid gap-2 overflow-y-auto p-3">
         {templates.map(template => (
-          <button key={template.id} type="button" onClick={() => onPlace(template)} className="rounded-lg border border-outline-variant bg-surface-container-lowest p-4 text-left transition hover:border-secondary hover:bg-secondary-container/25">
+          <button key={template.id} type="button" onClick={() => onPlace(template)} className="rounded-lg border border-outline-variant bg-surface-container-lowest p-3 text-left transition hover:border-secondary hover:bg-secondary-container/25">
             <div className="flex items-center justify-between gap-3">
               <h4 className="text-sm font-semibold text-on-surface">{template.title}</h4>
               <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[10px] font-bold uppercase text-on-surface-variant">{template.objects.length} items</span>
@@ -1274,17 +1294,17 @@ function FacilitationDrawer({
   onClearVotes: () => void;
 }) {
   return (
-    <aside className="absolute bottom-3 right-3 top-3 z-20 flex w-[360px] max-w-[calc(100%-24px)] flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-xl">
-      <div className="flex items-start gap-3 border-b border-outline-variant px-4 py-4">
-        <div className="grid h-9 w-9 place-items-center rounded-md bg-secondary-container text-on-secondary-container"><Timer size={17} /></div>
+    <aside className="absolute bottom-2 right-2 top-2 z-20 flex w-[min(320px,calc(100%-16px))] flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-xl">
+      <div className="flex items-start gap-3 border-b border-outline-variant px-3 py-3">
+        <div className="grid h-8 w-8 place-items-center rounded-md bg-secondary-container text-on-secondary-container"><Timer size={16} /></div>
         <div className="min-w-0 flex-1">
           <h3 className="font-display text-sm font-semibold text-on-surface">Facilitation</h3>
           <p className="mt-0.5 text-xs text-on-surface-variant">Timer and lightweight dot voting.</p>
         </div>
         <button type="button" onClick={onClose} className="icon-button" aria-label="Close facilitation"><X size={16} /></button>
       </div>
-      <div className="space-y-4 overflow-y-auto p-4">
-        <section className="rounded-lg border border-outline-variant bg-surface-container-lowest p-4">
+      <div className="space-y-3 overflow-y-auto p-3">
+        <section className="rounded-lg border border-outline-variant bg-surface-container-lowest p-3">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h4 className="text-sm font-semibold text-on-surface">Workshop timer</h4>
@@ -1307,7 +1327,7 @@ function FacilitationDrawer({
             <button type="button" className="btn-secondary h-9 text-xs" onClick={onResetTimer}>Reset</button>
           </div>
         </section>
-        <section className="rounded-lg border border-outline-variant bg-surface-container-lowest p-4">
+        <section className="rounded-lg border border-outline-variant bg-surface-container-lowest p-3">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h4 className="text-sm font-semibold text-on-surface">Dot voting</h4>
@@ -1360,21 +1380,21 @@ function CollaborationDrawer({
   onFollow: (userId: string | null) => void;
 }) {
   return (
-    <aside className="absolute bottom-3 right-3 top-3 z-20 flex w-[370px] max-w-[calc(100%-24px)] flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-xl">
-      <div className="flex items-start gap-3 border-b border-outline-variant px-4 py-4">
-        <div className="grid h-9 w-9 place-items-center rounded-md bg-secondary-container text-on-secondary-container"><Users size={17} /></div>
+    <aside className="absolute bottom-2 right-2 top-2 z-20 flex w-[min(330px,calc(100%-16px))] flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-xl">
+      <div className="flex items-start gap-3 border-b border-outline-variant px-3 py-3">
+        <div className="grid h-8 w-8 place-items-center rounded-md bg-secondary-container text-on-secondary-container"><Users size={16} /></div>
         <div className="min-w-0 flex-1">
           <h3 className="font-display text-sm font-semibold text-on-surface">Collaboration</h3>
           <p className="mt-0.5 text-xs text-on-surface-variant">Live cursors and follow mode for facilitation.</p>
         </div>
         <button type="button" onClick={onClose} className="icon-button" aria-label="Close collaboration"><X size={16} /></button>
       </div>
-      <div className="flex-1 space-y-3 overflow-y-auto p-4">
+      <div className="flex-1 space-y-2 overflow-y-auto p-3">
         {!present.length ? <p className="text-sm text-on-surface-variant">No collaborators are currently present.</p> : present.map((user, index) => {
           const label = user.displayName || user.userId;
           const following = followUserId === user.userId;
           return (
-            <div key={user.userId} className="flex items-center gap-3 rounded-lg border border-outline-variant bg-surface-container-lowest p-3">
+            <div key={user.userId} className="flex items-center gap-3 rounded-lg border border-outline-variant bg-surface-container-lowest p-2.5">
               <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-xs font-black text-white" style={{ background: collaborationColor(user.userId, index) }}>{initialsFrom(label)}</span>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-semibold text-on-surface">{label}</div>
@@ -1409,17 +1429,17 @@ function ObjectInspector({
   const comments = commentsOf(object);
   const locked = isLocked(object);
   return (
-    <aside className="absolute bottom-3 right-3 top-3 z-20 flex w-[380px] max-w-[calc(100%-24px)] flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-xl">
-      <div className="flex items-start gap-3 border-b border-outline-variant px-4 py-4">
-        <div className="grid h-9 w-9 place-items-center rounded-md bg-secondary-container text-on-secondary-container"><PanelRightOpen size={17} /></div>
+    <aside className="absolute bottom-2 right-2 top-2 z-20 flex w-[min(330px,calc(100%-16px))] flex-col overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-xl">
+      <div className="flex items-start gap-3 border-b border-outline-variant px-3 py-3">
+        <div className="grid h-8 w-8 place-items-center rounded-md bg-secondary-container text-on-secondary-container"><PanelRightOpen size={16} /></div>
         <div className="min-w-0 flex-1">
           <h3 className="font-display text-sm font-semibold text-on-surface">Object details</h3>
           <p className="mt-0.5 text-xs text-on-surface-variant">{selectionCount > 1 ? `${selectionCount} selected · showing first` : objectText(object) || String(object.type)}</p>
         </div>
         <button type="button" onClick={onClose} className="icon-button" aria-label="Close details"><X size={16} /></button>
       </div>
-      <div className="flex-1 space-y-4 overflow-y-auto p-4">
-        <section className="rounded-lg border border-outline-variant bg-surface-container-lowest p-4">
+      <div className="flex-1 space-y-3 overflow-y-auto p-3">
+        <section className="rounded-lg border border-outline-variant bg-surface-container-lowest p-3">
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-[10px] font-bold uppercase tracking-wide text-on-surface-variant">Selected object</div>
@@ -1427,14 +1447,14 @@ function ObjectInspector({
             </div>
             <button type="button" className="btn-secondary h-8 text-xs" onClick={() => onJump(object.id)}><Maximize2 size={13} /> Jump</button>
           </div>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+          <div className="mt-3 grid grid-cols-3 gap-1.5 text-center">
             <Metric label="Votes" value={String(numberOf(object.votes, 0))} />
             <Metric label="Comments" value={String(comments.length)} />
             <Metric label="State" value={locked ? "Locked" : "Open"} />
           </div>
         </section>
         {String(object.type) === "connector" ? (
-          <section className="rounded-lg border border-outline-variant bg-surface-container-lowest p-4">
+          <section className="rounded-lg border border-outline-variant bg-surface-container-lowest p-3">
             <div className="mb-3 flex items-center gap-2"><Link2 size={15} className="text-secondary" /><h4 className="text-sm font-semibold text-on-surface">Connector style</h4></div>
             <label className="grid gap-1 text-xs font-bold text-on-surface-variant">
               Label
@@ -1462,7 +1482,7 @@ function ObjectInspector({
           </section>
         ) : null}
         {String(object.type) === "shape" ? (
-          <section className="rounded-lg border border-outline-variant bg-surface-container-lowest p-4">
+          <section className="rounded-lg border border-outline-variant bg-surface-container-lowest p-3">
             <div className="mb-3 flex items-center gap-2"><Shapes size={15} className="text-secondary" /><h4 className="text-sm font-semibold text-on-surface">Shape style</h4></div>
             <div className="grid grid-cols-3 gap-2">
               {["rounded", "circle", "diamond"].map(kind => (
@@ -1473,7 +1493,7 @@ function ObjectInspector({
             </div>
           </section>
         ) : null}
-        <section className="rounded-lg border border-outline-variant bg-surface-container-lowest p-4">
+        <section className="rounded-lg border border-outline-variant bg-surface-container-lowest p-3">
           <div className="mb-3 flex items-center gap-2"><MessageSquarePlus size={15} className="text-secondary" /><h4 className="text-sm font-semibold text-on-surface">Comments</h4></div>
           <div className="space-y-2">
             {comments.length ? comments.map(comment => (
@@ -1522,7 +1542,7 @@ function ObjectInspector({
             value={draft}
             onChange={event => setDraft(event.target.value)}
             placeholder="Add a comment…"
-            className="mt-3 min-h-20 w-full resize-none rounded-md border border-outline-variant bg-surface px-3 py-2 text-xs text-on-surface outline-none focus:border-secondary"
+            className="mt-3 min-h-16 w-full resize-none rounded-md border border-outline-variant bg-surface px-3 py-2 text-xs text-on-surface outline-none focus:border-secondary"
           />
           <button
             type="button"

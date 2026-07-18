@@ -183,10 +183,6 @@ enum SpecificationProjectStatus {
 
 enum ProjectCapabilityRole {
   PRIMARY
-  IMPACTED
-  SUPPORTING
-  CONSUMES
-  PROPOSED
 }
 
 enum ImpactAssessmentStatus {
@@ -1474,8 +1470,8 @@ model SpecificationProject {
   tenantId    String?                    @default("default")
   archivedAt  DateTime?
   completionProgramId String?
-  primaryCapabilityId String?
-  primaryCapabilityName String?
+  primaryCapabilityId String
+  primaryCapabilityName String
   tokenBudget          Int                        @default(250000)
   tokenUsed            Int                        @default(0)
   costBudgetUsd        Float?
@@ -1528,6 +1524,7 @@ model SpecificationProject {
   @@index([status])
   @@index([completionProgramId], map: "ix_specification_projects_completion_program")
   @@index([tenantId], map: "ix_specification_projects_tenant")
+  @@index([tenantId, primaryCapabilityId], map: "ix_specification_projects_tenant_primary_capability")
   @@map("specification_projects")
 }
 
@@ -1683,13 +1680,15 @@ model SpecificationProjectCapability {
   projectId      String
   capabilityId   String
   capabilityName String?
-  role           ProjectCapabilityRole @default(IMPACTED)
+  role           ProjectCapabilityRole @default(PRIMARY)
   impactArea     String?
   tenantId       String?               @default("default")
   createdAt      DateTime              @default(now())
   project        SpecificationProject  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
-  @@unique([projectId, capabilityId])
+  // The database migration also installs a deferred trigger that requires this
+  // single row to match SpecificationProject.primaryCapabilityId at commit time.
+  @@unique([projectId], map: "ux_specification_project_capabilities_one_per_project")
   @@index([capabilityId, role])
   @@index([tenantId], map: "ix_specification_project_capabilities_tenant")
   @@map("specification_project_capabilities")

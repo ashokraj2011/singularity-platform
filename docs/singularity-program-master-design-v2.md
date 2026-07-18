@@ -41,8 +41,10 @@ replanning. Budget enforcement must never strand a human action.
 
 ### D. Business alignment and capability anchoring
 
-Objectives justify requirements; initiatives carry one primary capability plus
-supporting/consumed capability relationships; claims are capability-tagged.
+Objectives justify requirements; every initiative is owned by exactly one primary
+capability. Capability agents may assess downstream impact through claims,
+evidence, and generated recommendations, but the initiative itself does not store
+secondary capability relationships. Claims remain capability-tagged.
 Sponsor consent signs a generated, hash-addressed readout. Milestones are derived,
 risks are composed from durable signals, and change requests present consequences
 rather than raw diffs. Exports are one-way and auditable.
@@ -78,7 +80,7 @@ role-shaped, spend-disclosed, no more than eight sentences, and citation-or-reje
 - `IngestedArtifact` plus `ArtifactValidationReport`: source pile and cited validation result.
 - `ProjectTokenLedgerEntry` and `ProjectBudgetEnvelope`: cost truth.
 - `BusinessReadout`: immutable sponsor, weekly, and morning communication.
-- `SpecificationProjectCapability`: primary, impacted, supporting, consumed, or proposed capability relation.
+- `SpecificationProjectCapability`: the single primary capability relation for an initiative.
 - `Claim.capabilityId`: capability ownership of a belief.
 
 ## Pilot Acceptance

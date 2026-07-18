@@ -12,7 +12,7 @@ export interface SynCapabilityLink {
   id: string;
   capabilityId: string;
   capabilityName?: string | null;
-  role: "PRIMARY" | "IMPACTED" | "SUPPORTING" | "CONSUMES" | "PROPOSED";
+  role: "PRIMARY";
   impactArea?: string | null;
 }
 
@@ -43,8 +43,9 @@ export interface SynProject {
   status: ProjectStatus;
   createdById?: string | null;
   archivedAt?: string | null;
-  primaryCapabilityId?: string | null;
-  primaryCapabilityName?: string | null;
+  primaryCapabilityId: string;
+  primaryCapabilityName: string;
+  assignedCapability?: { id: string; name: string } | null;
   capabilityLinks?: SynCapabilityLink[];
   impactAssessments?: SynImpactAssessment[];
   tokenBudget: number;

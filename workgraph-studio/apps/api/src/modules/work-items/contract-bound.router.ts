@@ -21,6 +21,7 @@ import { scheduleGenerationPlan, type ScheduleCapacityCalendar } from '../planni
 import { assertCapabilityPermission, type WorkflowAction } from '../../lib/permissions/workflowTemplate'
 import { getObjectiveCoverage } from '../business-alignment/business-alignment.service'
 import { buildValueDeliveredCurve, maxObjectiveValueScore } from '../business-alignment/business-alignment'
+import { resolveOne } from '../lookup/resolver'
 
 export const contractBoundRouter: Router = Router()
 
@@ -56,6 +57,7 @@ const specificationCreateSchema = z.object({
   code: z.string().min(1).max(100),
   name: z.string().min(1).max(200),
   mission: z.string().optional(),
+  primaryCapabilityId: z.string().trim().min(1).max(200),
 })
 
 const specificationVersionSchema = z.object({
@@ -201,6 +203,20 @@ async function assertGenerationProjectAccess(req: Request, projectId: string, ac
     project.tenantId,
   )
   return project
+}
+
+async function resolvePrimaryCapability(req: Request, capabilityId: string) {
+  const hit = await resolveOne('capability', capabilityId, req)
+  if (!hit.exists) {
+    throw new ValidationError(`The platform capability is not available: ${capabilityId}${hit.error ? ` (${hit.error})` : ''}`)
+  }
+  if (hit.raw && typeof hit.raw === 'object' && !Array.isArray(hit.raw)) {
+    const status = String((hit.raw as Record<string, unknown>).status ?? '').trim().toUpperCase()
+    if (status && status !== 'ACTIVE') {
+      throw new ValidationError(`Initiatives can only use ACTIVE platform capabilities: ${hit.label ?? capabilityId}`)
+    }
+  }
+  return { id: hit.id, name: hit.label?.trim() || hit.id }
 }
 
 async function assertGenerationPlanAccess(req: Request, planId: string, action: WorkflowAction) {
@@ -352,14 +368,33 @@ contractBoundRouter.post('/specifications', validate(specificationCreateSchema),
   try {
     const input = req.body as z.infer<typeof specificationCreateSchema>
     const tenantId = tenantOf(req)
+    const capability = await resolvePrimaryCapability(req, input.primaryCapabilityId)
     const project = await prisma.specificationProject.create({
       data: {
         id: randomUUID(),
         code: input.code,
         name: input.name,
         mission: input.mission,
+        primaryCapabilityId: capability.id,
+        primaryCapabilityName: capability.name,
         createdById: req.user!.userId,
         tenantId,
+        capabilityLinks: {
+          create: {
+            capabilityId: capability.id,
+            capabilityName: capability.name,
+            role: 'PRIMARY',
+            tenantId,
+          },
+        },
+        impactAssessments: {
+          create: {
+            capabilityId: capability.id,
+            capabilityName: capability.name,
+            status: 'PENDING',
+            tenantId,
+          },
+        },
         specification: {
           create: {
             package: emptySpecificationPackageBody() as unknown as Prisma.InputJsonValue,
@@ -512,10 +547,14 @@ contractBoundRouter.post('/generation-plans', validate(planSchema), async (req, 
     const input = req.body as z.infer<typeof planSchema>
     await assertGenerationProjectAccess(req, input.specificationProjectId, 'edit')
     const project = await prisma.specificationProject.findFirstOrThrow({ where: { id: input.specificationProjectId, tenantId: tenantOf(req) } })
+    await resolvePrimaryCapability(req, project.primaryCapabilityId)
     const keys = new Set<string>()
     for (const row of input.rows) {
       if (keys.has(row.rowKey)) throw new ValidationError(`Duplicate generation plan row ${row.rowKey}`)
       keys.add(row.rowKey)
+      if (row.targetCapabilityId !== project.primaryCapabilityId) {
+        throw new ValidationError(`Generation plan row ${row.rowKey} targets capability ${row.targetCapabilityId}, but this initiative is owned by ${project.primaryCapabilityId}. Create a separate initiative or capture cross-capability impact as claims/evidence.`)
+      }
       if (input.specificationVersionId && (!row.repository || !row.baseBranch || !row.baseCommitSha)) {
         throw new ValidationError(`Generation plan row ${row.rowKey} requires repository, baseBranch, and baseCommitSha when a specification version is selected`)
       }
@@ -550,6 +589,12 @@ contractBoundRouter.post('/generation-plans/:planId/validate', async (req, res, 
     if (!plan) throw new NotFoundError('GenerationPlan', String(req.params.planId))
     const rowKeys = new Set(plan.rows.map(row => row.rowKey))
     const errors: string[] = []
+    await resolvePrimaryCapability(req, plan.specificationProject.primaryCapabilityId)
+    for (const row of plan.rows) {
+      if (row.targetCapabilityId !== plan.specificationProject.primaryCapabilityId) {
+        errors.push(`Row ${row.rowKey} targets capability ${row.targetCapabilityId}, but this initiative is owned by ${plan.specificationProject.primaryCapabilityId}`)
+      }
+    }
     const visiting = new Set<string>()
     const visited = new Set<string>()
     const visit = (key: string) => {
@@ -629,6 +674,12 @@ contractBoundRouter.post('/generation-plans/:planId/apply', async (req, res, nex
     const plan = await prisma.generationPlan.findFirst({ where: { id: String(req.params.planId), tenantId: tenantOf(req) }, include: { rows: true, specificationProject: true, specificationVersion: true } })
     if (!plan) throw new NotFoundError('GenerationPlan', String(req.params.planId))
     if (plan.status !== 'VALIDATED' && plan.status !== 'PARTIAL') throw new ConflictError('Generation plan must be validated before apply')
+    await resolvePrimaryCapability(req, plan.specificationProject.primaryCapabilityId)
+    for (const row of plan.rows) {
+      if (row.targetCapabilityId !== plan.specificationProject.primaryCapabilityId) {
+        throw new ValidationError(`Generation plan row ${row.rowKey} targets capability ${row.targetCapabilityId}, but this initiative is owned by ${plan.specificationProject.primaryCapabilityId}. Create a separate initiative or capture cross-capability impact as claims/evidence.`)
+      }
+    }
     const byKey = new Map<string, string>()
     let applied = 0
     for (const row of plan.rows) {

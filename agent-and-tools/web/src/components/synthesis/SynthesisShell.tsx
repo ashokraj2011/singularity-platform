@@ -120,8 +120,11 @@ export function SynthesisShell({
           ))}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <span className={`hidden items-center gap-1.5 text-xs font-semibold sm:inline-flex ${online ? "text-emerald-700" : "text-error"}`}>
-            {online ? <Wifi size={14} /> : <WifiOff size={14} />}{online ? "Synced" : "Offline"}
+          <span
+            className={`hidden items-center gap-1.5 text-xs font-semibold sm:inline-flex ${online ? "text-emerald-700" : "text-error"}`}
+            title={online ? "Browser network is online. Save status is shown by each workspace action." : "Browser network is offline."}
+          >
+            {online ? <Wifi size={14} /> : <WifiOff size={14} />}{online ? "Online" : "Offline"}
           </span>
           <Link href="/" className="icon-button" title="Back to Platform" aria-label="Back to Platform"><ArrowLeft size={16} /></Link>
         </div>

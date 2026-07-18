@@ -80,7 +80,7 @@ export const ROUTES: RouteMeta[] = [
   { id: "concept-studio", label: "Concept Maps", href: "/concept-studio", group: "Discover", icon: Lightbulb, advanced: true, priority: "secondary", surfaceType: "agent", description: "Open the focused concept-map surface outside the broader Synthesis workspace.", keywords: ["creative studio", "ideas", "concept map", "concept", "proposal"] },
 
   // 02 Define
-  { id: "studio-projects", label: "Specifications", href: "/studio", group: "Define", icon: Layers, priority: "journey", surfaceType: "workflow", description: "Shape requirements, designs, assumptions, and the contract that governs generated Work Items.", keywords: ["studio", "project", "specification", "requirements", "design", "board", "rooms", "work items", "workspace"] },
+  { id: "studio-projects", label: "Specifications", href: "/synthesis/overview", group: "Define", icon: Layers, priority: "journey", surfaceType: "workflow", description: "Shape requirements, designs, assumptions, and the contract that governs generated Work Items.", keywords: ["synthesis", "project", "specification", "requirements", "design", "board", "rooms", "work items", "workspace"] },
   { id: "agents", label: "Agent Studio", href: "/agents/studio", group: "Define", icon: Bot, priority: "primary", surfaceType: "agent" },
   { id: "tools", label: "Tool Registry", href: "/tools", group: "Define", icon: Boxes, priority: "primary", surfaceType: "agent" },
   { id: "prompt-workbench", label: "Prompt Workbench", href: "/prompt-workbench", group: "Define", icon: WandSparkles, priority: "primary", surfaceType: "knowledge" },

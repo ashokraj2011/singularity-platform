@@ -184,7 +184,6 @@ ARCHIVED ARCHIVED
 
         ProjectCapabilityRole {
             PRIMARY PRIMARY
-IMPACTED IMPACTED
         }
 
 
@@ -1247,8 +1246,8 @@ INVALIDATED INVALIDATED
     String createdById "❓"
     String tenantId "❓"
     DateTime archivedAt "❓"
-    String primaryCapabilityId "❓"
-    String primaryCapabilityName "❓"
+    String primaryCapabilityId
+    String primaryCapabilityName
     Int tokenBudget
     Int tokenUsed
     Float costBudgetUsd "❓"

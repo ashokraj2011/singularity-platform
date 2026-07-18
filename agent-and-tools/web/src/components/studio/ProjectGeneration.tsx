@@ -6,38 +6,44 @@ import { workgraphFetch, WorkgraphError } from "@/lib/workgraph";
 /**
  * Generate work items from the project's spec — plan → validate → apply, Terraform-style,
  * so a governed platform never materializes N work items as a side effect of a button click.
- * Compose plan rows (title + target capability + requirement slice), validate (dependency DAG
- * + coverage), then apply → each row becomes one SPEC_GENERATED work item with a specSourceRef.
+ * Compose plan rows (title + requirement slice) under the initiative capability,
+ * validate dependency DAG + coverage, then apply each row as one SPEC_GENERATED work item.
  * Wires the existing /generation-plans endpoints.
  */
 interface EditRow { key: string; title: string; targetCapabilityId: string; requirementIds: string[]; decisionRefs: string[]; estimatedHours: number; estimatedCostHigh?: number; estimatedTokens?: number; capacityCalendarId?: string }
 interface PlanRow { id: string; rowKey: string; title: string; state: string; workItemId?: string | null; error?: string | null; projectedStartAt?: string | null; projectedFinishAt?: string | null; criticalPath?: boolean; capacityCalendarId?: string | null; objectiveValueScore?: number }
 interface Plan { id: string; status: string; totalRows: number; appliedRows: number; rows: PlanRow[]; validation?: { valid?: boolean; errors?: string[]; warnings?: string[]; valueDeliveredByDate?: Array<{ date: string; cumulativeValue: number }> } }
-interface Cap { id: string; name: string }
+interface ProjectSummary { id: string; primaryCapabilityId: string; primaryCapabilityName?: string | null; assignedCapability?: { id: string; name: string } | null }
 interface Req { id: string; statement: string }
 interface Decision { id: string; title: string; status: string; claimRefs?: string[] }
 interface SpecVersion { id: string; version: number; status: string; contentHash?: string | null }
 interface CapacityCalendar { id: string; ownerType: string; ownerId: string; timezone: string; wipLimit?: number | null }
 
-const emptyRow = (): EditRow => ({ key: crypto.randomUUID().slice(0, 8), title: "", targetCapabilityId: "", requirementIds: [], decisionRefs: [], estimatedHours: 8 });
+const emptyRow = (targetCapabilityId = ""): EditRow => ({ key: crypto.randomUUID().slice(0, 8), title: "", targetCapabilityId, requirementIds: [], decisionRefs: [], estimatedHours: 8 });
 
 export function ProjectGeneration({ projectId }: { projectId: string }) {
   const [rows, setRows] = useState<EditRow[]>([emptyRow()]);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [caps, setCaps] = useState<Cap[]>([]);
+  const [project, setProject] = useState<ProjectSummary | null>(null);
   const [reqs, setReqs] = useState<Req[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [versions, setVersions] = useState<SpecVersion[]>([]);
   const [calendars, setCalendars] = useState<CapacityCalendar[]>([]);
   const [specificationVersionId, setSpecificationVersionId] = useState("");
+  const assignedCapability = project?.assignedCapability ?? (project?.primaryCapabilityId ? { id: project.primaryCapabilityId, name: project.primaryCapabilityName ?? project.primaryCapabilityId } : null);
 
   useEffect(() => {
     let active = true;
-    workgraphFetch<{ items?: Array<Record<string, unknown>> }>(`/lookup/capabilities?size=200`)
-      .then((r) => { if (active) setCaps((r.items ?? []).map((c) => ({ id: String(c.id ?? c.iamCapabilityId ?? ""), name: String(c.name ?? c.displayName ?? c.label ?? c.id ?? "") })).filter((c) => c.id)); })
-      .catch(() => { /* ignore — the picker falls back to a text input */ });
+    workgraphFetch<ProjectSummary>(`/studio/projects/${projectId}`)
+      .then((item) => {
+        if (!active) return;
+        setProject(item);
+        const capabilityId = item.assignedCapability?.id ?? item.primaryCapabilityId ?? "";
+        setRows((current) => current.map((row) => ({ ...row, targetCapabilityId: capabilityId })));
+      })
+      .catch((e) => { if (active) setError(e instanceof WorkgraphError ? e.message : "Could not load the initiative capability."); });
     workgraphFetch<{ package?: { requirements?: Req[] } }>(`/studio/projects/${projectId}/specification`)
       .then((s) => { if (active) setReqs(s.package?.requirements ?? []); })
       .catch(() => { /* ignore */ });
@@ -62,8 +68,10 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
   const setRow = (i: number, patch: Partial<EditRow>) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
 
   const createPlan = useCallback(async () => {
-    const valid = rows.filter((r) => r.title.trim() && r.targetCapabilityId.trim());
-    if (!valid.length) { setError("Add at least one row with a title and a target capability."); return; }
+    const capabilityId = assignedCapability?.id ?? "";
+    if (!capabilityId) { setError("This initiative must have one assigned capability before work can be generated."); return; }
+    const valid = rows.filter((r) => r.title.trim());
+    if (!valid.length) { setError("Add at least one row with a title."); return; }
     setBusy("create"); setError(null);
     try {
       const created = await workgraphFetch<Plan>(`/generation-plans`, {
@@ -74,7 +82,7 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
           rows: valid.map((r) => ({
             rowKey: r.key,
             title: r.title.trim(),
-            targetCapabilityId: r.targetCapabilityId.trim(),
+            targetCapabilityId: capabilityId,
             requirementIds: r.requirementIds,
             decisionRefs: r.decisionRefs,
             claimRefs: decisions.filter(decision => r.decisionRefs.includes(decision.id)).flatMap(decision => decision.claimRefs ?? []),
@@ -87,7 +95,7 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
       });
       setPlan(created);
     } catch (e) { setError(e instanceof WorkgraphError ? e.message : "Failed to create plan."); } finally { setBusy(null); }
-  }, [decisions, projectId, rows, specificationVersionId]);
+  }, [assignedCapability?.id, decisions, projectId, rows, specificationVersionId]);
 
   const validate = useCallback(async () => {
     if (!plan) return;
@@ -105,7 +113,7 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
     } catch (e) { setError(e instanceof WorkgraphError ? e.message : "Apply failed."); } finally { setBusy(null); }
   }, [plan]);
 
-  const reset = () => { setPlan(null); setRows([emptyRow()]); setError(null); };
+  const reset = () => { setPlan(null); setRows([emptyRow(assignedCapability?.id ?? "")]); setError(null); };
 
   if (plan) {
     const validated = plan.status === "VALIDATED" || plan.validation?.valid === true;
@@ -152,8 +160,13 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
       <div>
         <b style={{ fontSize: 13 }}>Generate work items</b>
         <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--color-outline)", lineHeight: 1.5 }}>
-          Compose the decomposition: one row per work item, each with a target capability and its requirement slice. Nothing is created until you review and apply — plan → validate → apply.
+          Compose the decomposition: one row per work item. Rows inherit the initiative capability; cross-capability impact stays as claims, evidence, and recommendations. Nothing is created until you review and apply — plan → validate → apply.
         </p>
+      </div>
+      <div style={capabilityBanner}>
+        <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", color: "var(--color-outline)", textTransform: "uppercase" }}>Initiative capability</span>
+        <strong style={{ fontSize: 12.5 }}>{assignedCapability?.name ?? "Loading capability…"}</strong>
+        {assignedCapability?.id ? <code style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--color-outline)" }}>{assignedCapability.id}</code> : null}
       </div>
       <label style={{ display: "grid", gap: 4, maxWidth: 420, fontSize: 11.5, color: "var(--color-outline)" }}>
         Pinned specification version
@@ -166,14 +179,9 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
         {rows.map((r, i) => (
           <div key={r.key} style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input value={r.title} onChange={(e) => setRow(i, { title: e.target.value })} placeholder="Work item title" style={{ ...inp, flex: 2 }} />
-            {caps.length ? (
-              <select value={r.targetCapabilityId} onChange={(e) => setRow(i, { targetCapabilityId: e.target.value, capacityCalendarId: undefined })} style={{ ...inp, flex: 1.4 }}>
-                <option value="">Target capability…</option>
-                {caps.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-            ) : (
-              <input value={r.targetCapabilityId} onChange={(e) => setRow(i, { targetCapabilityId: e.target.value })} placeholder="Target capability id" style={{ ...inp, flex: 1.4 }} />
-            )}
+            <div title="Generated work inherits the initiative capability" style={{ ...readonlyCapability, flex: 1.4 }}>
+              {assignedCapability?.name ?? "Assigned capability"}
+            </div>
             <select
               multiple value={r.requirementIds}
               onChange={(e) => setRow(i, { requirementIds: Array.from(e.target.selectedOptions, (o) => o.value) })}
@@ -193,7 +201,7 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
               {decisions.map(decision => <option key={decision.id} value={decision.id}>{decision.title}</option>)}
             </select>
             <input type="number" min={0.5} step={0.5} value={r.estimatedHours} onChange={(e) => setRow(i, { estimatedHours: Math.max(0.5, Number(e.target.value) || 0.5) })} title="Estimated effort in hours" style={{ ...inp, width: 72 }} />
-            <select value={r.capacityCalendarId ?? ""} onChange={(event) => setRow(i, { capacityCalendarId: event.target.value || undefined })} title="Capacity calendar; Auto uses the target capability calendar" style={{ ...inp, width: 150 }}>
+            <select value={r.capacityCalendarId ?? ""} onChange={(event) => setRow(i, { capacityCalendarId: event.target.value || undefined })} title="Capacity calendar; Auto uses the initiative capability calendar" style={{ ...inp, width: 150 }}>
               <option value="">Capacity: Auto</option>
               {calendars.filter(calendar => !r.targetCapabilityId || calendar.ownerType !== "CAPABILITY" || calendar.ownerId === r.targetCapabilityId).map(calendar => <option key={calendar.id} value={calendar.id}>{calendar.ownerType}: {calendar.ownerId.slice(0, 12)} · {calendar.timezone}</option>)}
             </select>
@@ -203,14 +211,16 @@ export function ProjectGeneration({ projectId }: { projectId: string }) {
       </div>
       {error && <div style={errorBox}>{error}</div>}
       <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={() => setRows((rs) => [...rs, emptyRow()])} style={btn(false)}>+ Row</button>
-        <button onClick={() => void createPlan()} disabled={!!busy} style={primaryBtn(false)}>{busy === "create" ? "Creating…" : "Create plan"}</button>
+        <button onClick={() => setRows((rs) => [...rs, emptyRow(assignedCapability?.id ?? "")])} style={btn(false)}>+ Row</button>
+        <button onClick={() => void createPlan()} disabled={!!busy || !assignedCapability?.id} style={primaryBtn(!!busy || !assignedCapability?.id)}>{busy === "create" ? "Creating…" : "Create plan"}</button>
       </div>
     </div>
   );
 }
 
 const inp: CSSProperties = { fontSize: 12.5, padding: "6px 10px", borderRadius: 7, border: "1px solid var(--color-outline-variant)", background: "var(--color-surface)", color: "var(--color-on-surface)", minWidth: 0 };
+const readonlyCapability: CSSProperties = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12.5, padding: "6px 10px", borderRadius: 7, border: "1px solid var(--color-outline-variant)", background: "var(--color-surface-container-low, rgba(15,23,42,0.04))", color: "var(--color-on-surface)", fontWeight: 650 };
+const capabilityBanner: CSSProperties = { display: "flex", alignItems: "center", gap: 10, borderRadius: 9, border: "1px solid var(--color-outline-variant)", background: "var(--color-surface-container-low, rgba(15,23,42,0.04))", padding: "9px 11px", color: "var(--color-on-surface)" };
 function btn(disabled: boolean): CSSProperties {
   return { fontSize: 12, fontWeight: 600, padding: "6px 11px", borderRadius: 7, border: "1px solid var(--color-outline-variant)", background: "var(--color-surface)", color: "var(--color-on-surface)", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1 };
 }

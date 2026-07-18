@@ -147,7 +147,7 @@ async function shouldRetry(outboxId: string, subscriptionId: string): Promise<bo
 
 async function processOutboxRow(outboxId: string): Promise<void> {
   const row = await prisma.eventOutbox.findUnique({ where: { id: outboxId } })
-  if (!row || row.status === 'dispatched') return
+  if (!row || row.status === 'dispatched' || row.status === 'failed') return
 
   const subs = await findMatchingSubscriptions(row.eventName, row.tenantId)
   // Create delivery rows (idempotent via unique [outboxId, subscriptionId]).
@@ -168,14 +168,24 @@ async function processOutboxRow(outboxId: string): Promise<void> {
     await deliverOne(row.id, s.id, s.targetUrl, row.envelope, row.eventName, s.secret)
   }
 
-  // If every delivery for this row is sent or failed, mark dispatched.
+  // If every delivery for this row is sent or failed, close the outbox row.
+  // A single failed subscriber keeps the aggregate outbox health failed until
+  // an operator retries the delivery, instead of hiding it behind "dispatched".
   const remaining = await prisma.eventDelivery.count({
     where: { outboxId: row.id, status: 'queued' },
   })
   if (remaining === 0) {
+    const failed = await prisma.eventDelivery.count({
+      where: { outboxId: row.id, status: 'failed' },
+    })
     await prisma.eventOutbox.update({
       where: { id: row.id },
-      data:  { status: 'dispatched', lastAttemptAt: new Date(), attempts: { increment: 1 } },
+      data:  {
+        status: failed > 0 ? 'failed' : 'dispatched',
+        lastAttemptAt: new Date(),
+        attempts: { increment: 1 },
+        lastError: failed > 0 ? `${failed} event delivery subscriber(s) failed` : null,
+      },
     })
   }
 }

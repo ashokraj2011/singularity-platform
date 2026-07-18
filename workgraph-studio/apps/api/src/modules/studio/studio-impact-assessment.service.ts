@@ -19,6 +19,22 @@ function tenantTx<T>(callback: (tx: Prisma.TransactionClient) => Promise<T>): Pr
   return withTenantDbTransaction(prisma, callback, tenantId())
 }
 
+function assignedCapabilityLink(project: {
+  primaryCapabilityId: string | null
+  primaryCapabilityName: string | null
+  capabilityLinks: Array<{ capabilityId: string; capabilityName: string | null; role: string }>
+}) {
+  if (!project.primaryCapabilityId) return []
+  const primary = project.capabilityLinks.find((link) =>
+    link.role === 'PRIMARY' && link.capabilityId === project.primaryCapabilityId,
+  )
+  return [primary ?? {
+    capabilityId: project.primaryCapabilityId,
+    capabilityName: project.primaryCapabilityName ?? project.primaryCapabilityId,
+    role: 'PRIMARY',
+  }]
+}
+
 type ImpactLlmResponse = {
   text: string
   traceId: string
@@ -99,11 +115,11 @@ const assessmentSelect = {
 export async function listCapabilityImpactAssessments(projectId: string) {
   const project = await tenantTx(tx => tx.specificationProject.findFirst({
     where: { id: projectId, tenantId: tenantId() },
-    select: { id: true },
+    select: { id: true, primaryCapabilityId: true },
   }))
   if (!project) throw new NotFoundError('SpecificationProject', projectId)
   const items = await tenantTx(tx => tx.capabilityImpactAssessment.findMany({
-    where: { projectId, tenantId: tenantId() },
+    where: { projectId, tenantId: tenantId(), ...(project.primaryCapabilityId ? { capabilityId: project.primaryCapabilityId } : { capabilityId: '__none__' }) },
     select: assessmentSelect,
     orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
   }))
@@ -122,9 +138,10 @@ export async function runCapabilityImpactAssessments(
   }))
   if (!project) throw new NotFoundError('SpecificationProject', projectId)
 
+  const assignedCapabilityLinks = assignedCapabilityLink(project)
   let consumedTokens = project.tokenUsed
   let consumedCost = project.costUsedUsd
-  for (const link of project.capabilityLinks) {
+  for (const link of assignedCapabilityLinks) {
     const remainingTokens = Math.max(0, project.tokenBudget - consumedTokens)
     const remainingCost = project.costBudgetUsd == null ? null : Math.max(0, project.costBudgetUsd - consumedCost)
     if (remainingTokens < 500 || remainingCost === 0) {

@@ -165,11 +165,10 @@ const nextConfig = {
       { source: "/curation", destination: "/audit/curation", permanent: false },
       { source: "/team-variables", destination: "/identity/variables", permanent: false },
       { source: "/global-variables", destination: "/identity/variables", permanent: false },
-      // /studio and /studio/:projectId are the standalone Project workspace again — the
-      // top-level, project-first surface (its activities: analysis, requirements, design,
-      // rooms, board, co-edit, generate, work items). Routes live at app/studio. The old
-      // redirect-to-inbox (from when the studio was folded into the Work Item IDE's
-      // "Project baseline" scope) is intentionally removed so these routes render.
+      // Legacy Project Studio now folds into Synthesis. Keep backend /studio APIs,
+      // but do not expose a second user-facing workspace.
+      { source: "/studio", destination: "/synthesis/hub", permanent: false },
+      { source: "/studio/:projectId", destination: "/synthesis/overview?project=:projectId", permanent: false },
       // The green native workbench console (/workbench/<view>) was retired; the
       // blue in-process cockpit at /workbench handles every view internally.
       { source: "/workbench/:view(cockpit|artifacts|stage-chat|code-review|audit|loop-theater|milestones|governance|export)", destination: "/workbench", permanent: false },

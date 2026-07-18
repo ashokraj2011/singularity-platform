@@ -130,10 +130,17 @@ async function seed() {
       where: { objectiveId_projectId: { objectiveId: objective.id, projectId: project.id } },
       update: {}, create: { id: ids.objectiveLink, objectiveId: objective.id, projectId: project.id, tenantId, createdById: author.id },
     })
-    await tx.specificationProjectCapability.upsert({
-      where: { projectId_capabilityId: { projectId: project.id, capabilityId } },
-      update: { capabilityName: 'Reference Delivery Capability', role: 'PRIMARY', impactArea: 'Contract-bound delivery' },
-      create: { id: ids.capabilityLink, projectId: project.id, capabilityId, capabilityName: 'Reference Delivery Capability', role: 'PRIMARY', impactArea: 'Contract-bound delivery', tenantId },
+    await tx.specificationProjectCapability.deleteMany({ where: { projectId: project.id } })
+    await tx.specificationProjectCapability.create({
+      data: {
+        id: ids.capabilityLink,
+        projectId: project.id,
+        capabilityId,
+        capabilityName: 'Reference Delivery Capability',
+        role: 'PRIMARY',
+        impactArea: 'Contract-bound delivery',
+        tenantId,
+      },
     })
     await tx.capabilityImpactAssessment.upsert({
       where: { projectId_capabilityId: { projectId: project.id, capabilityId } },

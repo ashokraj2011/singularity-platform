@@ -964,11 +964,16 @@ function requestedDesignRevision(req: Request): number | undefined {
 async function bumpDesignRevision(id: string, req: Request, res: Response): Promise<number> {
   const expected = requestedDesignRevision(req)
   const updated = await prisma.workflow.updateMany({
-    where: { id, ...(expected === undefined ? {} : { designRevision: expected }) },
+    where: { id, status: 'DRAFT', ...(expected === undefined ? {} : { designRevision: expected }) },
     data: { designRevision: { increment: 1 } },
   })
-  if (updated.count !== 1) throw new ConflictError('Workflow design changed while saving; refresh before retrying')
-  const current = await prisma.workflow.findUniqueOrThrow({ where: { id }, select: { designRevision: true } })
+  const current = await prisma.workflow.findUniqueOrThrow({ where: { id }, select: { designRevision: true, status: true } })
+  if (updated.count !== 1) {
+    if (String(current.status) !== 'DRAFT') {
+      throw new ConflictError('WORKFLOW_DESIGN_FROZEN: workflow template design can only be edited while the template is DRAFT. Duplicate the workflow or create a governed graph-mutation proposal.')
+    }
+    throw new ConflictError('Workflow design changed while saving; refresh before retrying')
+  }
   res.setHeader('X-Workflow-Design-Revision', String(current.designRevision))
   return current.designRevision
 }

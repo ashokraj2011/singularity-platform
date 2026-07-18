@@ -32,13 +32,16 @@ import { syncCoedit } from './studio-coedit.service'
 export const studioProjectsRouter: Router = Router()
 
 const score = z.number().int().min(1).max(5)
-const capabilityIds = z.array(z.string().trim().min(1).max(200)).max(8)
+const capabilityId = z.string().trim().min(1).max(200)
+const secondaryCapabilityIds = z.array(capabilityId).max(0, 'An initiative can only be attached to one capability. Use primaryCapabilityId.')
 const projectGovernanceSchema = z.object({
-  primaryCapabilityId: z.string().trim().min(1).max(200),
-  impactedCapabilityIds: capabilityIds.default([]),
-  supportingCapabilityIds: capabilityIds.default([]),
-  consumedCapabilityIds: capabilityIds.default([]),
-  proposedCapabilityIds: capabilityIds.default([]),
+  primaryCapabilityId: capabilityId,
+  // Compatibility guards for pre-single-capability clients. Empty arrays are
+  // accepted and stripped below; any secondary capability id fails validation.
+  impactedCapabilityIds: secondaryCapabilityIds.optional(),
+  supportingCapabilityIds: secondaryCapabilityIds.optional(),
+  consumedCapabilityIds: secondaryCapabilityIds.optional(),
+  proposedCapabilityIds: secondaryCapabilityIds.optional(),
   tokenBudget: z.number().int().min(10_000).max(50_000_000).default(250_000),
   costBudgetUsd: z.number().positive().max(1_000_000).optional(),
   businessValue: score.optional(),
@@ -65,11 +68,11 @@ export const createProjectSchema = z.object({
 export const updateProjectSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   mission: z.string().trim().max(2000).nullable().optional(),
-  primaryCapabilityId: z.string().trim().min(1).max(200).optional(),
-  impactedCapabilityIds: capabilityIds.optional(),
-  supportingCapabilityIds: capabilityIds.optional(),
-  consumedCapabilityIds: capabilityIds.optional(),
-  proposedCapabilityIds: capabilityIds.optional(),
+  primaryCapabilityId: capabilityId.optional(),
+  impactedCapabilityIds: secondaryCapabilityIds.optional(),
+  supportingCapabilityIds: secondaryCapabilityIds.optional(),
+  consumedCapabilityIds: secondaryCapabilityIds.optional(),
+  proposedCapabilityIds: secondaryCapabilityIds.optional(),
   tokenBudget: z.number().int().min(10_000).max(50_000_000).optional(),
   costBudgetUsd: z.number().positive().max(1_000_000).nullable().optional(),
   businessValue: score.nullable().optional(),
@@ -134,21 +137,12 @@ function validateCapabilityAssignments(input: CapabilityAssignments, ctx: z.Refi
 
 async function resolveCapabilities(req: Request, assignments: CapabilityAssignments) {
   const { primaryCapabilityId: primaryId } = assignments
-  const groups = {
-    impactedCapabilities: assignments.impactedCapabilityIds,
-    supportingCapabilities: assignments.supportingCapabilityIds,
-    consumedCapabilities: assignments.consumedCapabilityIds,
-    proposedCapabilities: assignments.proposedCapabilityIds,
-  }
-  const ids = [...new Set([
-    primaryId,
-    ...Object.values(groups).flatMap((group) => group ?? []),
-  ].filter((id): id is string => Boolean(id)))]
+  const ids = [...new Set([primaryId].filter((id): id is string => Boolean(id)))]
   const hits = await Promise.all(ids.map((id) => resolveOne('capability', id, req)))
   const unresolved = hits.filter((hit) => !hit.exists)
   if (unresolved.length > 0) {
     const details = unresolved.map((hit) => `${hit.id}${hit.error ? ` (${hit.error})` : ''}`).join(', ')
-    throw new ValidationError(`The following IAM capabilities are not available: ${details}`)
+    throw new ValidationError(`The following platform capabilities are not available: ${details}`)
   }
   const inactive = hits.filter((hit) => {
     if (!hit.raw || typeof hit.raw !== 'object' || Array.isArray(hit.raw)) return false
@@ -156,19 +150,18 @@ async function resolveCapabilities(req: Request, assignments: CapabilityAssignme
     return status !== '' && status !== 'ACTIVE'
   })
   if (inactive.length > 0) {
-    throw new ValidationError(`Initiatives can only use ACTIVE IAM capabilities: ${inactive.map((hit) => hit.label ?? hit.id).join(', ')}`)
+    throw new ValidationError(`Initiatives can only use ACTIVE platform capabilities: ${inactive.map((hit) => hit.label ?? hit.id).join(', ')}`)
   }
   const byId = new Map(hits.map((hit) => [hit.id, {
     id: hit.id,
     name: hit.label?.trim() || hit.id,
   } satisfies CapabilityRef]))
-  const resolveGroup = (ids?: string[]) => ids?.map((id) => byId.get(id)).filter((item): item is CapabilityRef => Boolean(item))
   return {
     primaryCapability: primaryId ? byId.get(primaryId) : undefined,
-    impactedCapabilities: resolveGroup(assignments.impactedCapabilityIds),
-    supportingCapabilities: resolveGroup(assignments.supportingCapabilityIds),
-    consumedCapabilities: resolveGroup(assignments.consumedCapabilityIds),
-    proposedCapabilities: resolveGroup(assignments.proposedCapabilityIds),
+    impactedCapabilities: [],
+    supportingCapabilities: [],
+    consumedCapabilities: [],
+    proposedCapabilities: [],
   }
 }
 
@@ -201,10 +194,6 @@ studioProjectsRouter.post('/projects', validate(createProjectSchema), async (req
     const project = await createProject({
       ...input,
       primaryCapability: resolved.primaryCapability,
-      impactedCapabilities: resolved.impactedCapabilities,
-      supportingCapabilities: resolved.supportingCapabilities,
-      consumedCapabilities: resolved.consumedCapabilities,
-      proposedCapabilities: resolved.proposedCapabilities,
     }, userIdOf(req))
     res.status(201).json(project)
     // Creation is fast and deterministic; capability-agent review continues in
@@ -221,11 +210,10 @@ studioProjectsRouter.get('/projects/:projectId', async (req, res, next) => {
 
 studioProjectsRouter.patch('/projects/:projectId', validate(updateProjectSchema), async (req, res, next) => {
   try {
-    const capabilityFields = ['primaryCapabilityId', 'impactedCapabilityIds', 'supportingCapabilityIds', 'consumedCapabilityIds', 'proposedCapabilityIds'] as const
-    const shouldResolve = capabilityFields.some((field) => req.body[field] !== undefined)
+    const shouldResolve = req.body.primaryCapabilityId !== undefined
     const resolved: Awaited<ReturnType<typeof resolveCapabilities>> = shouldResolve
       ? await resolveCapabilities(req, req.body)
-      : { primaryCapability: undefined, impactedCapabilities: undefined, supportingCapabilities: undefined, consumedCapabilities: undefined, proposedCapabilities: undefined }
+      : { primaryCapability: undefined, impactedCapabilities: [], supportingCapabilities: [], consumedCapabilities: [], proposedCapabilities: [] }
     const {
       primaryCapabilityId: _primaryCapabilityId,
       impactedCapabilityIds: _impactedCapabilityIds,
@@ -237,10 +225,6 @@ studioProjectsRouter.patch('/projects/:projectId', validate(updateProjectSchema)
     res.json(await updateProject(projectIdOf(req), {
       ...input,
       ...(resolved.primaryCapability ? { primaryCapability: resolved.primaryCapability } : {}),
-      ...(req.body.impactedCapabilityIds !== undefined ? { impactedCapabilities: resolved.impactedCapabilities ?? [] } : {}),
-      ...(req.body.supportingCapabilityIds !== undefined ? { supportingCapabilities: resolved.supportingCapabilities ?? [] } : {}),
-      ...(req.body.consumedCapabilityIds !== undefined ? { consumedCapabilities: resolved.consumedCapabilities ?? [] } : {}),
-      ...(req.body.proposedCapabilityIds !== undefined ? { proposedCapabilities: resolved.proposedCapabilities ?? [] } : {}),
     }, userIdOf(req)))
   } catch (err) { next(err) }
 })

@@ -306,9 +306,9 @@ function RequirementRow({ req }: { req: SpecRequirement }) {
 /** Exported so the traceability hub can be embedded elsewhere later. */
 export const SpecStudioLink = ({ projectId }: { projectId: string }) => (
   <Link
-    href={`/studio/${projectId}`}
+    href={`/synthesis/overview?project=${encodeURIComponent(projectId)}`}
     className="inline-flex items-center gap-1.5 text-sm text-secondary hover:underline"
   >
-    Open in studio <ExternalLink size={14} />
+    Open in Synthesis <ExternalLink size={14} />
   </Link>
 );

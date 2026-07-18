@@ -26,6 +26,8 @@ describe('workflow authorization hardening contracts', () => {
     expect(operations).toMatch(/canViewWorkflowOperations\(req\.user\.userId, 'audit_view', tenantId\)/)
     expect(templates).toContain("assertTemplatePermission(req.user!.userId, req.params.id, 'view')")
     expect(templates).toContain('workflowAccessGrant')
+    expect(templates).toContain("where: { id, status: 'DRAFT'")
+    expect(templates).toContain('WORKFLOW_DESIGN_FROZEN')
   })
 
   it('protects trigger and routing configuration with capability-scoped decisions', () => {
@@ -45,6 +47,11 @@ describe('workflow authorization hardening contracts', () => {
     expect(contractBound).toContain('assertGenerationProjectAccess')
     expect(contractBound).toContain('assertGenerationPlanAccess')
     expect(contractBound).toContain("assertGenerationPlanAccess(req, String(req.params.planId), 'edit')")
+    expect(contractBound).toContain('await resolvePrimaryCapability(req, project.primaryCapabilityId)')
+    expect(contractBound).toContain('await resolvePrimaryCapability(req, plan.specificationProject.primaryCapabilityId)')
+    expect(contractBound).toContain('row.targetCapabilityId !== project.primaryCapabilityId')
+    expect(contractBound).toContain('row.targetCapabilityId !== plan.specificationProject.primaryCapabilityId')
+    expect(contractBound).toContain('Create a separate initiative or capture cross-capability impact as claims/evidence')
     expect(contractBound).toContain("req.body.status === 'APPLIED' ? 'edit' : 'approve'")
   })
 })

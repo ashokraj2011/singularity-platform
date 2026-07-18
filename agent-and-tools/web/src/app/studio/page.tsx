@@ -1,5 +1,5 @@
-import { StudioProjectsHome } from "@/components/studio/StudioProjectsHome";
+import { redirect } from "next/navigation";
 
 export default function StudioPage() {
-  return <StudioProjectsHome />;
+  redirect("/synthesis/hub");
 }

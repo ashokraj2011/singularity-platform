@@ -58,4 +58,10 @@ describe('workflow operations hardening contract', () => {
     expect(dispatcher).toMatch(/sealSubscriptionSecret\(row\.secret\)/)
     expect(dispatcher).toMatch(/startEventDispatcher[\s\S]*?migrateLegacySubscriptionSecrets\(\)/)
   })
+
+  it('keeps aggregate outbox status failed when any subscriber delivery fails', () => {
+    expect(dispatcher).toMatch(/failed > 0 \? 'failed' : 'dispatched'/)
+    expect(dispatcher).toMatch(/event delivery subscriber\(s\) failed/)
+    expect(dispatcher).toMatch(/row\.status === 'dispatched' \|\| row\.status === 'failed'/)
+  })
 })
