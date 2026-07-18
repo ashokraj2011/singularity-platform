@@ -16240,6 +16240,69 @@ Required fixes:
   publish/supersede across same-tenant different capability, different workflow,
   assigned user, team owner, auditor, and service-principal cases.
 
+### 339. WorkbenchDefinition writes bypass the DRAFT-only workflow design freeze
+
+Evidence:
+
+- `app.ts` mounts `workbenchDefinitionsRouter` under
+  `/api/workflow-nodes/:nodeId/workbench`, and the router exposes many mutating
+  routes: `PATCH /`, `POST /stages`, `PATCH /stages/:stageId`,
+  `DELETE /stages/:stageId`, `POST /stages/reorder`, artifact/question/edge
+  mutation routes, and `POST /consumes`.
+- `workbench-definitions.service.ts` resolves a supplied node id from either
+  runtime `workflowNode` or design-time `workflowDesignNode`.
+- The shared `requireEditAccess(...)` helper only calls
+  `assertWorkbenchNodeAccess(node, userId, 'edit')`, which delegates to
+  `assertInstancePermission(..., 'edit')` for runtime nodes or
+  `assertTemplatePermission(..., 'edit')` for design nodes.
+- `assertTemplatePermission(...)` evaluates grants/IAM capability permission but
+  does not check `Workflow.status === 'DRAFT'`. The direct template graph save
+  path has a separate revision gate that fails non-DRAFT saves with
+  `WORKFLOW_DESIGN_FROZEN`, but the WorkbenchDefinition service does not call
+  that guard.
+- `assertInstancePermission(...)` similarly checks workflow permissions but does
+  not enforce that runtime graph/config mutation is limited to DRAFT instances.
+- After edit permission, WorkbenchDefinition mutations write directly to
+  `WorkbenchDefinition`, stage/artifact/question/edge/consumes tables, then call
+  `writeThroughToLegacy(...)` to mutate the legacy
+  `WorkflowNode.config.workbench.loopDefinition` or `workflowDesignNode.config`
+  blob.
+- Existing verified improvements state that workflow template design writes and
+  instance topology writes are DRAFT-only at their direct APIs, but this alternate
+  WorkbenchDefinition mutation API is not covered by that freeze.
+
+Impact:
+
+- A user with edit permission can alter Workbench stage order, agent roles,
+  prompt profile keys, source/repo access, governance policy ids, expected
+  artifacts, questions, edges, or handoff bindings on a published/final workflow
+  template without creating a governed graph-mutation proposal.
+- Active runtime nodes can have their workbench loop definition changed while a
+  run is in progress, creating drift between the run's authorization snapshot,
+  exported Copilot handoff, receipts, and actual stage behavior.
+- Because writes are mirrored back into the legacy JSON blob, the bypass affects
+  both first-class workbench tables and the runtime path that still reads legacy
+  `loopDefinition`.
+- The platform can truthfully say direct node/edge topology writes are frozen
+  while still allowing semantically equivalent Workbench stage graph/config edits
+  through a different API.
+
+Required fixes:
+
+- Add a shared `assertWorkbenchDefinitionEditable(...)` guard that resolves the
+  node to runtime/design ownership and enforces DRAFT status, graph generation,
+  and governed mutation-proposal requirements before any WorkbenchDefinition
+  write.
+- For design nodes, reject writes unless the parent workflow template is `DRAFT`
+  or an approved graph-mutation proposal is being applied.
+- For runtime nodes, reject writes unless the workflow instance is `DRAFT` or the
+  mutation is an approved, generation-fenced runtime amendment.
+- Include the template/instance status, graph generation, mutation proposal id,
+  decision id, and before/after digest in WorkbenchDefinition receipts.
+- Add API regression tests proving every WorkbenchDefinition mutating route fails
+  on PUBLISHED/FINAL templates and ACTIVE/RUNNING instances, while still allowing
+  DRAFT edits.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
