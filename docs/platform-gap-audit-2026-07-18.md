@@ -15021,6 +15021,59 @@ Required fixes:
   primary pointer, cross-tenant primary project ids, stale project ids, and
   traceability/spend exports after objective relinking.
 
+### 318. Initiative aging can be reset by generic metadata edits instead of governed reviews
+
+Evidence:
+
+- `SpecificationProject` stores `reviewCadenceDays`, `lastReviewedAt`, and
+  `updatedAt`.
+- The Synthesis hub displays an `AgingChip` using `project.agingStatus` and
+  `project.ageDays`, making this status a visible operator signal for initiative
+  freshness.
+- `shapeProject(...)` computes `latestActivityAt` from the project row's generic
+  `updatedAt`, latest claim update, latest WorkItem update, and latest impact
+  assessment update.
+- The same function derives `inactiveDays` from that `latestActivityAt` and marks
+  the initiative `CURRENT`, `REVIEW_DUE`, `STALE`, or `OVERDUE`.
+- `shapeProject(...)` does not use `lastReviewedAt` when deriving aging status,
+  even though `lastReviewedAt` is selected and exposed in the frontend type.
+- `updateProjectSchema` accepts caller-supplied `lastReviewedAt` and
+  `reviewCadenceDays` on the generic project PATCH route.
+- `updateProject(...)` writes `lastReviewedAt` directly from the request and also
+  updates normal metadata such as name, mission, tags, scores, owners, target date,
+  and review cadence. Any such PATCH advances the row's `updatedAt` timestamp.
+
+Impact:
+
+- A minor metadata edit can make a stale initiative look freshly active because
+  `updatedAt` is treated as meaningful initiative activity.
+- A caller can set or clear `lastReviewedAt`, but the aging algorithm does not
+  treat it as the authoritative review signal, so the field is both mutable and
+  semantically confusing.
+- Operators may believe an initiative was recently reviewed, refreshed, or
+  actively worked when the only change was cosmetic metadata.
+- Portfolio aging, sponsor follow-up, capability-agent reassessment, and stale
+  initiative queues can become unreliable because there is no durable
+  "review completed" event with reviewer, scope, notes, and evidence.
+- Auditors cannot distinguish genuine review activity from a PATCH that only
+  changed tags, display text, or cadence.
+
+Required fixes:
+
+- Introduce a first-class `InitiativeReview` or `SpecificationProjectReview`
+  record with reviewer, tenant, capability, scope, notes, decision, trace id, and
+  reviewed-at timestamp.
+- Derive `agingStatus` from the latest review event plus meaningful execution
+  activity, not from the generic project `updatedAt`.
+- Remove `lastReviewedAt` from the generic PATCH schema or make it server-owned
+  and set only through a review-completion endpoint.
+- Separate cosmetic metadata updates from material activity timestamps, for
+  example `metadataUpdatedAt`, `lastExecutionActivityAt`, and `lastReviewedAt`.
+- Add audit/outbox events for review completion and cadence changes.
+- Add tests proving name/tag/score edits do not reset stale status, review
+  completion does reset it, caller-supplied `lastReviewedAt` is rejected or
+  ignored, and aging queues remain stable across cosmetic PATCHes.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
