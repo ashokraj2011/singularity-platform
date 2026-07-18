@@ -15847,6 +15847,71 @@ Required fixes:
   WorkItem/run, validating another capability's assumption, and a legitimate
   assigned approver answer that resumes the discovery node.
 
+### 333. Event Horizon chat executes under arbitrary or default capability context
+
+Evidence:
+
+- `app.ts` mounts `/api/event-horizon` with `authMiddleware` only.
+- `event-horizon.router.ts` makes `capabilityId` optional in the chat body. If it
+  is absent, `defaultCapabilityId()` falls back to `EVENT_HORIZON_CAPABILITY_ID`,
+  `DEFAULT_CAPABILITY_ID`, or the hardcoded
+  `00000000-0000-0000-0000-00000000aaaa`.
+- The frontend `EventHorizonChat.tsx` has the same hardcoded
+  `DEFAULT_CAPABILITY_ID` fallback and posts `capabilityId` to
+  `/api/workgraph/event-horizon/chat`.
+- `POST /api/event-horizon/chat` accepts the caller-provided or defaulted
+  capability id, calls `resolveLlmRouting('CHAT', { userId, capabilityId })`, and
+  places that id in the Context Fabric `run_context.capability_id`.
+- The route does not verify that the authenticated user can view or use the
+  requested capability, that the capability belongs to the current tenant, or that
+  the caller may invoke the routed model alias for Event Horizon.
+- Before the model call, `platformSnapshot()` adds live summary data into the
+  prompt. Its own comment says workflow and WorkItem counts are non-RLS tables and
+  stay platform-wide, and the code uses bare `prisma.workflow.count()` and
+  `prisma.workItem.count(...)` for those two values.
+- The route then invokes `contextFabricClient.executeGovernedTurn(...)` or
+  `contextFabricClient.execute(...)` with the assembled system prompt, user
+  message, page context, platform map, and platform summary.
+- Existing searched tests cover Event Horizon response parsing, Prompt Composer
+  auth headers, governance defaults, localStorage restoration, and action catalog
+  shape guards, but not capability authorization, tenant-scoped platform summary
+  data, or arbitrary/default capability ids on `/chat`.
+
+Impact:
+
+- Any authenticated user can potentially run Event Horizon under a capability id
+  they are not allowed to use, or under a synthetic default capability that is not
+  tied to an authorized business capability.
+- LLM routing, cost attribution, trace evidence, and Context Fabric run context
+  can all be stamped with an unauthorized or fake capability id.
+- The assistant prompt can include platform-wide workflow/template and WorkItem
+  counts in a tenant user's chat, creating a low-friction metadata side channel.
+- If a privileged CHAT route is configured for a capability, an unauthorized user
+  may be able to select that route by supplying the capability id.
+- Event Horizon responses and receipts lack an explicit authorization decision,
+  policy version, and allowed context manifest proving that the side-channel chat
+  stayed inside the user's tenant/capability boundary.
+
+Required fixes:
+
+- Require an authorized, tenant-visible capability for Event Horizon chat in
+  enterprise mode; remove the hardcoded fallback from both frontend and backend
+  except for explicitly labeled local demo mode.
+- Add an `event_horizon:chat` / `capability:assistant:invoke` authorization check
+  before routing or model invocation, and include the decision id in the Context
+  Fabric run context.
+- Scope `platformSnapshot()` through the same tenant and resource-access helpers
+  used by workflow and WorkItem list APIs, or omit aggregate values the caller
+  cannot prove they may see.
+- Restrict CHAT LLM routing resolution to aliases the actor, tenant, and
+  capability are allowed to invoke.
+- Store an Event Horizon receipt containing actor, tenant, capability, selected
+  model alias, context fields included, redactions applied, trace id, and policy
+  version.
+- Add tests for missing capability in enterprise mode, hardcoded default rejection,
+  unauthorized capability id, cross-tenant capability id, privileged CHAT alias
+  selection, tenant-scoped snapshot counts, and a valid authorized chat call.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
