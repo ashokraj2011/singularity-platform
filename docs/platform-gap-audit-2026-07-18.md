@@ -14354,6 +14354,53 @@ Required fixes:
   to non-streaming, stream cancellation, redaction before event publication,
   sequence ordering, and run UI transcript reconstruction from deltas.
 
+### 307. LLM Gateway mock admin endpoints bypass the gateway auth guard
+
+Evidence:
+
+- `context-fabric/services/llm_gateway_service/app/main.py` mounts the normal
+  LLM router on the production FastAPI app, then defines `POST /v1/mock/reset`
+  and `GET /v1/mock/counts` directly on `app`.
+- The comment above those endpoints says they are "intentionally unprotected"
+  because they are intended for the chaos smoke harness and only touch mock
+  provider state.
+- `context-fabric/services/llm_gateway_service/app/router.py` centralizes gateway
+  auth in `_check_auth(...)` and calls it from `/llm/providers`, `/llm/models`,
+  model-catalog writes, `/v1/chat/completions`, and `/v1/embeddings`.
+- The mock reset/counts endpoints do not call `_check_auth(...)`, are not mounted
+  through the authenticated router, and do not check environment mode, localhost
+  binding, caller identity, tenant, or service scope.
+- Searched LLM Gateway tests mention `LLM_GATEWAY_BEARER` only in platform
+  registration tests; no test currently proves `/v1/mock/reset` or
+  `/v1/mock/counts` require auth in non-test deployments.
+
+Impact:
+
+- Any caller that can reach the LLM Gateway can reset mock fail-N counters or read
+  mock counter state even when the rest of the gateway is configured with
+  `LLM_GATEWAY_BEARER`.
+- Fresh-clone demos, chaos smoke runs, and mock-mode readiness checks can become
+  non-reproducible if another browser, script, or network-local caller resets the
+  counters mid-run.
+- Exposing these endpoints under `/v1/*` makes them look like part of the
+  provider API surface, so reverse proxies and operators can accidentally publish
+  them with normal gateway routes.
+- Because resets are unauthenticated and unaudited, evidence that depends on mock
+  failure/retry behavior cannot prove who changed the provider state.
+
+Required fixes:
+
+- Move mock admin routes behind the same gateway auth guard by default, with a
+  separate `llm:debug:mock-admin` or equivalent service-token scope.
+- Allow unauthenticated mock reset/counts only under an explicit test/dev flag
+  that is refused in production-like environments.
+- Prefer a separate `/debug/mock/*` route group or test-only app mount so
+  provider-compatible `/v1/*` traffic does not include administrative controls.
+- Emit a structured audit/log event for each mock reset, including trace id,
+  caller service/user, reason, and previous counter snapshot when available.
+- Add tests for authenticated access, missing bearer rejection, dev/test override,
+  and production startup refusal when unauthenticated mock admin is enabled.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
