@@ -13230,6 +13230,102 @@ Required fixes:
 - Add tests for cross-tenant checkpoint list/create/replay denial, tenant data
   export, and direct DB RLS rejection without an instance join.
 
+### 285. Generation plan partial retry can downgrade an already-applied plan to failed
+
+Evidence:
+
+- `POST /generation-plans/:planId/apply` allows retry when a plan is in
+  `VALIDATED` or `PARTIAL`.
+- The route initializes `let applied = 0` for the current HTTP request.
+- When a row already has `row.workItemId`, the route records the row in `byKey`,
+  ensures its capacity allocation, and then `continue`s without incrementing
+  `applied`.
+- New row failures are caught per row and stored as `GenerationPlanRow.state =
+  'FAILED'`.
+- After the loop, the plan status is computed only from the current request's
+  newly applied count:
+  `applied === plan.rows.length ? 'APPLIED' : applied > 0 ? 'PARTIAL' : 'FAILED'`.
+- Therefore, retrying a `PARTIAL` plan where earlier rows already have WorkItems
+  and the remaining rows fail again will set the whole plan to `FAILED`, even
+  though some rows are still applied and linked to WorkItems.
+- The `GenerationPlanStatus` enum includes `PARTIAL`, `APPLIED`, and `FAILED`,
+  but the retry computation does not count persisted row state or existing
+  `workItemId`s when deciding the aggregate state.
+
+Impact:
+
+- Operators can see a plan marked `FAILED` while it has already-created
+  WorkItems, bindings, scopes, handoffs, dependencies, or capacity allocations.
+- Dashboards and readiness checks that key off `GenerationPlan.status` can hide
+  or misclassify partially delivered work.
+- A retry after transient row failure can make the aggregate state less accurate
+  than before the retry.
+- Evidence packs may have to infer truth from row state and WorkItems instead of
+  trusting the plan aggregate.
+
+Required fixes:
+
+- Compute final plan status from the persisted row set after the attempt:
+  applied rows are rows with `state = APPLIED` or `workItemId IS NOT NULL`;
+  failed rows are rows with terminal failure and no WorkItem.
+- Do not allow a plan with any applied rows to downgrade to `FAILED`; keep it
+  `PARTIAL` until all rows apply or an explicit operator abandons the remainder.
+- Store retry attempt metadata separately from durable row outcome so "failed
+  this attempt" and "failed overall" are not conflated.
+- Add tests for retrying `PARTIAL` plans with already-applied rows, all remaining
+  rows failing, and all remaining rows later succeeding.
+
+### 286. Capability impact assessment reruns are not leased or budget-fenced
+
+Evidence:
+
+- Initiative creation returns `201` and then starts
+  `runCapabilityImpactAssessments(...)` as a detached background promise.
+- The same project exposes `POST /projects/:projectId/impact-assessments/run`,
+  which calls `runCapabilityImpactAssessments(...)` synchronously and returns
+  `202`.
+- `runCapabilityImpactAssessments(...)` reads `project.tokenUsed` and
+  `project.costUsedUsd` once into local variables, then checks remaining budget
+  before each model call.
+- Before calling the LLM it upserts the single
+  `(projectId, capabilityId)` `CapabilityImpactAssessment` row to `RUNNING` and
+  clears `summary`, `recommendations`, `risks`, `dependencies`, `suggestedClaims`,
+  `traceId`, tokens, cost, error, and `assessedAt`.
+- There is no assessment-run attempt table, idempotency key, lease, status
+  compare-and-set, `startedById`, `leaseUntil`, or "already running" guard.
+- After the LLM call, each concurrent caller updates the same assessment row to
+  `COMPLETED` or `FAILED`, increments `SpecificationProject.tokenUsed`, and
+  optionally increments `costUsedUsd`.
+- The Prisma model has a unique row per `(projectId, capabilityId)`, but no
+  durable attempt identity for multiple runs of that row.
+
+Impact:
+
+- A create-triggered background assessment and a manual rerun can execute the same
+  capability-agent assessment at the same time.
+- Concurrent runs can overspend initiative token/cost budgets because each run
+  makes the pre-call budget decision from stale counters.
+- The last writer wins on the single assessment row, so a later failure can erase
+  a successful summary or a later success can hide a failed attempt that consumed
+  tokens.
+- Audit and outbox events contain separate trace ids, but the UI has only the
+  final row state, making it hard to explain duplicate model spend or compare
+  attempts.
+
+Required fixes:
+
+- Add a `CapabilityImpactAssessmentRun` or generic `ModelAssessmentCommand` with
+  idempotency key, request hash, actor, trace id, status, lease owner,
+  `leaseUntil`, token/cost reservation, and terminal result.
+- Use compare-and-set leasing so only one active assessment run per project and
+  capability can execute unless the operator explicitly starts a new generation.
+- Reserve or re-check token/cost budget inside the same transaction that claims
+  the run, then reconcile actual usage on completion.
+- Keep the parent `CapabilityImpactAssessment` as the latest projection while
+  preserving all attempt records for audit, comparison, and cost evidence.
+- Add tests for create-plus-manual race, double manual click, stale lease retry,
+  budget exhaustion during concurrent starts, and last-writer prevention.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
