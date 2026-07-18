@@ -16581,6 +16581,71 @@ Required fixes:
   `capturedBy`, direct id/hash IDOR reads, agent list IDOR, service token without
   contract scope, redacted auditor reads, and minimal bundle contents.
 
+### 344. Prompt Composer service tokens are globally privileged for prompt profile and layer authoring
+
+Evidence:
+
+- `prompt-composer/src/middleware/auth.middleware.ts` accepts either
+  `PROMPT_COMPOSER_SERVICE_TOKEN` or `CONTEXT_FABRIC_SERVICE_TOKEN` as a static
+  service token and converts both into the same principal:
+  `user_id: "service:prompt-composer-client", roles: ["service"]`.
+- The resulting service principal has no tenant id, service name, caller system,
+  allowed prompt operations, allowed prompt keys, allowed scope types, allowed
+  capability ids, or token scopes.
+- `prompt-authz.ts` treats any actor with role `service` as `isPrivileged(...)`.
+  Privileged actors bypass all profile and layer scope filters, can view every
+  prompt profile/layer, and can manage every scope.
+- The comments in `prompt-authz.ts` explicitly say service tokens "must NOT be
+  capability-filtered" because Context Fabric and Agent Runtime call Composer on
+  the system's behalf.
+- `prompt.routes.ts` exposes prompt authoring routes behind `requireAuth`:
+  `POST /api/v1/prompt-profiles`, `POST /api/v1/prompt-layers`,
+  `PATCH /api/v1/prompt-layers/:id`, and
+  `POST /api/v1/prompt-profiles/:profileId/layers`.
+- `prompt.service.ts` allows privileged actors to create/update layers and attach
+  layers across all scopes; a service-token caller can create active prompt
+  layers immediately because `createLayer(...)` persists `status: "ACTIVE"`.
+- `prompt.schemas.ts` allows sensitive layer types such as
+  `PLATFORM_CONSTITUTION`, `TOOL_CONTRACT`, `OUTPUT_CONTRACT`,
+  `APPROVAL_POLICY`, and `DATA_ACCESS_POLICY`.
+- `prompt-authz.contract.test.ts` asserts this behavior as expected:
+  `isPrivileged(service)` is true and `layerScopeWhere(service)` returns `{}`.
+  It does not test scoped service-token denial, tenant allowlists, per-operation
+  scopes, or service-specific prompt authoring rights.
+
+Impact:
+
+- A service token intended only for Context Fabric or another internal read/resolve
+  path can create or modify platform-wide prompt instructions, tool contracts,
+  output contracts, approval policy, or data-access policy layers.
+- Since service-token calls are collapsed to one generic service principal, audit
+  evidence cannot distinguish which backend minted or changed a prompt asset.
+- A compromised or overused internal token can poison prompts across tenants,
+  capabilities, workflows, and agents without requiring a prompt-admin user
+  permission or publication approval.
+- Creating layers as `ACTIVE` skips a draft/review/publish lifecycle, so a service
+  call can immediately affect future prompt assemblies and governed execution.
+
+Required fixes:
+
+- Replace the generic `roles: ["service"]` privilege with parsed service-token
+  claims: service identity, tenant allowlist, allowed capability ids, allowed
+  prompt scopes, allowed prompt keys, allowed operations, expiry, and token id.
+- Split service capabilities into narrow permissions such as `prompt:resolve`,
+  `prompt:assemble`, `prompt_profile:create`, `prompt_layer:update`,
+  `prompt_layer:publish`, and `prompt_layer:attach`.
+- Require explicit prompt-admin or scoped service-token authority for each
+  authoring route; Context Fabric runtime-resolution tokens should not be able to
+  author prompt profiles/layers by default.
+- Add a draft/review/publish lifecycle for sensitive prompt layers and require
+  approval before they become `ACTIVE`, especially for platform, policy, tool,
+  output, and data-access layers.
+- Persist actor/service identity, tenant, token id, policy decision id, approval
+  id, trace id, and before/after content digest on prompt profile/layer writes.
+- Add regression tests for read-only service tokens, wrong service identity,
+  missing operation scope, wrong tenant/capability, sensitive layer publish
+  without approval, and authorized scoped service writes.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
