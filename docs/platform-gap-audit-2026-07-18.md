@@ -14840,6 +14840,56 @@ Required fixes:
 - Add tests for event intake with no tenant selector, explicit tenant selector,
   strict tenant mode, replay, and Operations tenant filtering.
 
+### 315. Role and skill approval queues do not create actionable notifications
+
+Evidence:
+
+- `createApprovalSchema` supports `assignedToId`, `teamId`, `roleKey`,
+  `skillKey`, `capabilityId`, and `assignmentMode`.
+- `validateApprovalRouting(...)` treats `ROLE_BASED` and `SKILL_BASED` as
+  first-class approval routing modes.
+- `/approvals/my-approvals` compensates for delegated approvals by scanning
+  pending requests with `roleKey`, `skillKey`, `teamId`, or `capabilityId` and
+  calling `canDecideApproval(...)` for each candidate.
+- `WorkNotification` has `userId` and `teamId`, but no `roleKey`, `skillKey`,
+  `capabilityId`, assignment mode, or eligibility snapshot field.
+- `createNotification(...)` accepts only `userId` and `teamId` as delivery
+  selectors. It looks up user preferences only when `input.userId` exists.
+- Approval quorum and escalation paths call `createNotification(...)` with
+  `assignedToId` and `teamId`, while escalation only stores `roleKey` and
+  `skillKey` inside payload metadata.
+- `listNotifications(...)` returns notifications where `userId` is the caller or
+  `teamId` equals the caller's mirrored single `User.teamId`; it does not resolve
+  role-based, skill-based, or capability-member notification eligibility.
+
+Impact:
+
+- Role-based and skill-based approval requests can be valid and actionable in the
+  approval inbox, but they do not naturally appear as durable bell notifications
+  for eligible approvers.
+- Users must know to visit the approvals inbox; the topbar notification center can
+  stay quiet while a workflow is blocked on their role or skill.
+- Approval escalation for `roleKey` / `skillKey` can update routing and create an
+  audit payload, but it still lacks a real notification audience unless a user or
+  team is also selected.
+- Enterprise approval SLAs and "next action" UX are weakened because notification
+  targeting is less expressive than approval targeting.
+
+Required fixes:
+
+- Extend `WorkNotification` with routed audience fields such as `assignmentMode`,
+  `roleKey`, `skillKey`, `capabilityId`, and an optional resolved-eligible-user
+  snapshot.
+- Update `createNotification(...)` to accept the same routing contract as
+  approvals and either materialize per-user notification rows or evaluate
+  role/skill/capability eligibility consistently at read time.
+- Make `listNotifications(...)` reuse the same IAM/local eligibility logic used by
+  `resolveDelegatedApprovalIds(...)`, not only direct user and single team fields.
+- When escalation targets a role or skill, create a notification with that routed
+  audience rather than storing role/skill only in payload metadata.
+- Add tests for direct-user, team, role, skill, and capability-member approval
+  notifications, including IAM role changes and users with multiple teams.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
