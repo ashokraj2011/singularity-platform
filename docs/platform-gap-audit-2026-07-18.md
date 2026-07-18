@@ -15457,6 +15457,73 @@ Required fixes:
 - Update readiness/docs so provider aliases show whether they are protected by
   the shared retry policy.
 
+### 326. Synthesis AI assistants use static capabilities instead of the initiative capability
+
+Evidence:
+
+- `SpecificationProject` now has a required `primaryCapabilityId`, a
+  `primaryCapabilityName`, and a single `SpecificationProjectCapability` primary
+  link. The UI and API have been hardened so an initiative is attached to one
+  capability.
+- `studio-impact-assessment.service.ts` shows the intended pattern: it sends
+  Context Fabric `run_context.project_id`, `capability_id`,
+  `agent_template_id`, `user_id`, and `surface`, and the caller passes the actual
+  `link.capabilityId` for the initiative.
+- `board-ingestion.service.ts` still sends source-claim extraction turns with
+  `run_context.capability_id = process.env.BLUEPRINT_CAPABILITY_ID ??
+  'studio-blueprint'`. It passes `board_id` and `surface`, but not the owning
+  project's `primaryCapabilityId`, project id, or actor id in that run context.
+- `room-copilot.service.ts` sends AI-peer proposal turns with
+  `run_context.capability_id = process.env.ROOM_COPILOT_CAPABILITY_ID ??
+  'studio-room'`, even though the room belongs to a `SpecificationProject` and
+  the resulting accepted claim is attached to that project.
+- `board-moments.service.ts` sends Chronicler narration turns with
+  `run_context.capability_id = process.env.CHRONICLER_CAPABILITY_ID ??
+  'studio-chronicler'`, while board rows belong to a project that already has a
+  primary capability.
+- Existing gap 277 covers specification-generation capability attribution. This
+  is a separate Synthesis assistant family: board source extraction, room AI peer
+  proposals, and board moment narration.
+
+Impact:
+
+- Synthesis model calls can be billed, budgeted, routed, authorized, and audited
+  under platform pseudo-capabilities such as `studio-blueprint`, `studio-room`,
+  or `studio-chronicler` instead of the business capability that owns the
+  initiative.
+- Capability-specific LLM routing, provider allowlists, data-classification
+  rules, prompt policies, and token budgets can be bypassed by these assistant
+  paths even when initiative creation correctly captured the primary capability.
+- A capability owner reviewing evidence cannot reconstruct which model calls
+  were triggered by their initiative from Context Fabric receipts alone.
+- Environment-wide assistant capability ids make multi-tenant deployments brittle:
+  one tenant's synthesis assistant configuration can accidentally become the
+  routing/audit identity for another tenant's initiative work.
+- The platform now has two Synthesis AI attribution patterns: impact assessment
+  is capability-bound, while extraction, AI-peer proposals, and chronicler
+  narration are static. That inconsistency will confuse readiness, budget, and
+  compliance reporting.
+
+Required fixes:
+
+- Resolve the owning project and primary capability before every Synthesis
+  assistant call: board ingestion, room copilot, board moments, source
+  extraction, and future studio assistants.
+- Include `tenant_id`, `project_id`, `board_id` or `room_id`, `user_id`,
+  `surface`, and the resolved `capability_id` in each Context Fabric
+  `run_context`.
+- Remove static capability fallbacks from production mode. Keep local/demo
+  pseudo-capabilities only behind an explicit non-enterprise flag and label them
+  as demo-only in receipts.
+- Add a shared `resolveStudioAssistantRunContext(...)` helper so every Studio AI
+  call uses the same project/capability/actor lookup and fail-closed behavior.
+- Extend token-budget and LLM-routing checks so assistant calls debit the
+  initiative's primary capability and remaining initiative budget before calling
+  Context Fabric.
+- Add tests for each assistant path proving the run context contains the project
+  capability, fails when the project has no active capability, rejects
+  cross-tenant board/room ids, and emits receipts with the expected capability.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
