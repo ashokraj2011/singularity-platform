@@ -14784,6 +14784,62 @@ Required fixes:
   compressed expansion, slow bodies, huge provider JSON, and huge URL document
   text.
 
+### 314. Authenticated event intake can create tenantless operation rows on default-tenant fallback
+
+Evidence:
+
+- `app.ts` mounts canonical user event ingress at `/api/events/ingest` behind
+  `authMiddleware`.
+- `event-intake.router.ts` resolves `tenantId` as
+  `requireTenantFromRequest(...) ?? resolveTenantFromRequest(...) ?? "default"`.
+  In non-strict/default deployments this can choose `"default"` even when the
+  request did not carry an explicit tenant selector.
+- The route wraps only `fanOutToWorkItemTriggersDetailed(...)` in
+  `runWithTenantDbContext(tenantId, ...)`, so created WorkItems and routing use
+  that computed tenant.
+- The subsequent `logEvent(eventLogType, "WorkflowInboundEvent", ...)` call runs
+  after that scoped callback returns. Its payload includes `status`, `eventType`,
+  `deliveryId`, `capabilityId`, `payload`, `workItemIds`, trigger results, and
+  trace ids, but does not include `tenantId` or `tenant_id`.
+- `logEvent(...)` derives `EventLog.tenantId` only from
+  `currentTenantIdForDb()` or the payload's `tenantId` / `tenant_id`. When the
+  authenticated request had no explicit tenant selector, the auth middleware's
+  tenant context remains unset even though event intake selected `"default"`.
+- Workflow Operations counts, event lists, and replay lookups filter inbound
+  events by `EventLog.tenantId` whenever a tenant is supplied.
+- The signed `/api/events/incoming` path avoids this by explicitly writing
+  `tenantId` and `tenant_id` while also wrapping persistence and fan-out in the
+  selected tenant context.
+
+Impact:
+
+- In bare-metal, demo, or non-strict default-tenant installs, a user event can
+  create and route WorkItems under `"default"` while the corresponding
+  `WorkflowInboundEvent*` operation row is tenantless.
+- Operators filtering Workflow Operations by tenant can miss the inbound event
+  that created a WorkItem and started a workflow, weakening replay and incident
+  reconstruction.
+- Replay and dead-letter workflows depend on inbound operation rows; a tenantless
+  row can be visible in broad, unfiltered views but disappear from tenant-scoped
+  operational views.
+- The platform's event evidence story differs between signed service ingress and
+  authenticated user ingress even though both can trigger the same WorkItem
+  routing path.
+
+Required fixes:
+
+- Wrap both fan-out and `logEvent(...)` in the same
+  `runWithTenantDbContext(tenantId, ...)` block for canonical event intake.
+- Include `tenantId` and `tenant_id` in every `WorkflowInboundEvent*` payload and
+  set `EventLog.tenantId` explicitly in the persistence call.
+- Apply the same tenant scoping to Workflow Operations replay: load the source
+  tenant, run fan-out under that tenant, and stamp the replay event row with that
+  tenant.
+- In non-strict mode, make the chosen default tenant explicit in the API response
+  and Operations UI instead of relying on null tenant context.
+- Add tests for event intake with no tenant selector, explicit tenant selector,
+  strict tenant mode, replay, and Operations tenant filtering.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
