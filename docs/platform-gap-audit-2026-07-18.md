@@ -14890,6 +14890,74 @@ Required fixes:
 - Add tests for direct-user, team, role, skill, and capability-member approval
   notifications, including IAM role changes and users with multiple teams.
 
+### 316. Direct notification send endpoints bypass governed message policy
+
+Evidence:
+
+- `app.ts` mounts `/api/notify` with `authMiddleware` only.
+- `notify.router.ts` documents `POST /api/notify/email` and
+  `POST /api/notify/teams` as thin templating plus dispatcher endpoints over
+  Email and Teams connector adapters.
+- `pickConnector(...)` resolves an explicit connector by global id or falls back
+  to the most recently updated active connector of the requested type. It does
+  not filter by tenant, capability, workflow, WorkItem, approval assignment,
+  notification policy, or connector grant.
+- The email payload schema accepts arbitrary `to`, `cc`, `bcc`, `subject`,
+  `body`, `html`, `context`, and `connectorId`, then calls
+  `adapter.invoke('sendEmail', ...)` directly.
+- The Teams payload schema accepts arbitrary `webhookUrl`, `channelId`,
+  `teamId`, `card`, `message`, `html`, `context`, and `connectorId`, then calls
+  `adapter.invoke('postWebhook' | 'postAdaptiveCard' |
+  'postChannelMessage', ...)` directly.
+- The email adapter forwards caller-supplied recipients to SendGrid or Mailgun
+  without a recipient allowlist, tenant membership check, domain policy, DLP
+  check, notification preference check, or workflow approval requirement.
+- The Teams adapter does validate webhook URLs through the outbound URL guard,
+  but it still permits caller-selected webhook/channel targets without a
+  workflow notification policy, channel allowlist, or delivery record.
+- Successful sends write only `NotifyEmailSent` or `NotifyTeamsSent` audit
+  events; they do not create a `WorkNotification`, `NotificationDelivery`,
+  workflow operation record, event outbox row, approval evidence row, or
+  retry/dead-letter record.
+
+Impact:
+
+- Any authenticated WorkGraph caller can use platform-owned email or Teams
+  credentials to send external messages outside the governed workflow,
+  approval, notification, and trace evidence path.
+- Direct sends can disclose workflow context because caller-provided template
+  data is rendered into email or Teams bodies without resource access checks or
+  sensitive-data policy.
+- Tenants or teams can accidentally use the wrong connector because the
+  fallback path selects an active connector globally by type.
+- Operators cannot reliably answer who should have received the message, which
+  policy authorized it, whether it was retried, or whether failure became a
+  durable incident.
+- This weakens enterprise controls even if the future notification dispatcher
+  is implemented, because callers could still bypass that dispatcher through
+  `/api/notify/*`.
+
+Required fixes:
+
+- Treat `/api/notify/*` as an administrative/debug compatibility surface or
+  move it behind the same governed notification delivery service used by
+  workflow approvals, mentions, escalations, and event subscriptions.
+- Require explicit permissions such as `notification:send`,
+  `connector:invoke`, and channel-specific send grants, plus tenant,
+  capability, workflow or WorkItem, actor, trace, and approval context.
+- Resolve connectors only through tenant/capability-scoped connector grants and
+  remove the global "latest active connector" fallback for production.
+- Enforce recipient/domain/webhook/channel allowlists, notification
+  preferences, rate limits, DLP/sensitive-field scanning, and body redaction
+  before any external send.
+- Persist `WorkNotification` and `NotificationDelivery` rows before sending, and
+  let a dispatcher handle retries, provider ids, failures, dead-lettering, and
+  delivery audit.
+- Add tests proving unauthorized users cannot send, cross-tenant connector ids
+  are rejected, arbitrary external recipients/channels are blocked by policy,
+  DLP failures prevent send, and successful sends produce durable delivery and
+  trace evidence.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
