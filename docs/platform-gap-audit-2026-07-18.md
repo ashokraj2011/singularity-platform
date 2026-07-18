@@ -16106,6 +16106,75 @@ Required fixes:
   unauthorized users, wrong teams, wrong capabilities, cross-tenant WorkItems,
   invalid parent ids, inaccessible anchors, and valid participant actions.
 
+### 337. Evaluation curation proxy lacks curation-specific authorization and reviewer binding
+
+Evidence:
+
+- `workgraph-studio/apps/api/src/app.ts:224-228` mounts the engine curation proxy
+  at `/api/engine` behind `authMiddleware`, but there is no route-specific
+  permission middleware for evaluation curation, dataset access, capability
+  ownership, or audit-governance operation scope.
+- `workgraph-studio/apps/api/src/modules/audit/curation.router.ts:1-31`
+  describes the proxy as an operator curation gate and says WorkGraph auth
+  preserves the operator-level access check, but the router only forwards
+  requests to audit-governance.
+- `curation.router.ts:73-116` exposes dataset list, examples,
+  unreviewed examples, and `PATCH /dataset-examples/:id` without checking
+  permissions such as `engine:dataset:view`, `engine:example:curate`, or
+  `audit:curation:operate`.
+- `curation.router.ts:51-70` lets a caller-supplied `reviewed_by` body field win
+  over the authenticated WorkGraph user, even though the file header says the
+  audit trail should identify a real reviewer instead of trusting browser input.
+- `audit-governance-service/src/engine/routes.ts:43-47` protects the upstream
+  engine API with only the audit-governance service token; once WorkGraph proxies
+  the call, audit-governance no longer sees the human actor or their resource
+  permissions.
+- `audit-governance-service/src/engine/routes.ts:321-411` returns all engine
+  datasets and dataset examples and allows `PATCH /dataset-examples/:id` to set
+  `reviewed_at`, `reviewed_by`, `review_notes`, and optionally overwrite
+  `expected_output`.
+- `audit-governance-service/src/db.ts:77-98` and
+  `audit-governance-service/db/init.sql:216-238` show these records include
+  `capability_id`, trace ids, input, expected output, actual output, criteria,
+  and metadata. This is evaluation evidence that can shape future gates.
+- `workgraph-studio/apps/web/src/features/audit/CurationPage.tsx:1-31` states
+  that this human review flips the eval gate so future runs score against the
+  example instead of refusing unreviewed candidates.
+
+Impact:
+
+- Any authenticated WorkGraph user who can reach `/audit/curation` or call the
+  proxy directly can inspect eval datasets and examples across capabilities
+  visible to audit-governance, including trace-linked inputs and outputs.
+- A non-curator can mark examples reviewed or overwrite expected outputs, causing
+  future evaluators to gate production behavior on a target value they were not
+  authorized to approve.
+- Because `reviewed_by` can be supplied by the caller, the durable curation record
+  can misattribute who approved an example. This weakens separation of duties and
+  makes model/evaluator regression evidence disputable.
+- Capability-level governance becomes inconsistent: engine datasets carry
+  `capability_id`, but neither WorkGraph nor audit-governance enforces that the
+  current user may curate that capability's evaluation data.
+
+Required fixes:
+
+- Add explicit IAM-backed permissions for `engine:dataset:view`,
+  `engine:example:view`, `engine:example:curate`, `engine:expected_output:edit`,
+  and `audit:curation:operate`; enforce them in the WorkGraph proxy before any
+  upstream request.
+- Resolve each dataset/example's `capability_id` before returning or mutating it,
+  and require the caller to have curation permission for that capability.
+- Bind `reviewed_by` to the authenticated subject; if delegated review is needed,
+  add a separate `reviewed_on_behalf_of` field plus an authorization check and
+  audit reason.
+- Pass human actor, tenant, capability, decision id, and trace id to
+  audit-governance so upstream rows and logs can prove who curated the example.
+- Redact or field-filter `input`, `actual_output`, `expected_output`, and metadata
+  unless the caller has sensitive eval-data permission.
+- Add tests for non-curator reads, cross-capability dataset ids, forged
+  `reviewed_by`, expected-output overwrite, valid curator review, and
+  audit-governance receiving the human actor context.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
