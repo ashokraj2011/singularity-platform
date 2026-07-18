@@ -15912,6 +15912,68 @@ Required fixes:
   unauthorized capability id, cross-tenant capability id, privileged CHAT alias
   selection, tenant-scoped snapshot counts, and a valid authorized chat call.
 
+### 334. Browser run snapshots bypass workflow authorization
+
+Evidence:
+
+- `workgraph-studio/apps/api/src/app.ts:247-249` mounts both
+  `snapshotsRouter` and `codeChangesRouter` under `/api/runs` behind only the
+  generic `authMiddleware`.
+- `workgraph-studio/apps/api/src/modules/runtime/snapshots.router.ts:36-98`
+  lets an authenticated caller create or update a `RunSnapshot` for any
+  `workflowId` that exists. The route checks tenant headers in strict mode, but
+  it never calls `assertTemplatePermission(..., 'start' | 'edit')` for snapshot
+  writes or records an authorization decision.
+- `workgraph-studio/apps/api/src/modules/runtime/snapshots.router.ts:108-120`
+  returns the full snapshot JSON blob by `runId`, and
+  `workgraph-studio/apps/api/src/modules/runtime/snapshots.router.ts:128-153`
+  lists up to 200 tenant snapshots with their stored payloads unless the caller
+  voluntarily passes `mine=true`.
+- `workgraph-studio/apps/api/src/modules/runtime/snapshots.router.ts:161-178`
+  deletes snapshots by `runId` with no workflow/template permission check.
+- The neighboring
+  `workgraph-studio/apps/api/src/modules/runtime/code-changes.router.ts:44-63`
+  already has the missing pattern: try `assertInstancePermission(..., 'view')`,
+  then fall back to `assertTemplatePermission(..., 'view')` when the run id is a
+  browser `RunSnapshot`. Snapshot CRUD does not reuse that guard.
+- `workgraph-studio/apps/api/prisma/schema.prisma:910-927` confirms
+  `RunSnapshot.payload` is the entire browser `RunState` JSON, so unauthorized
+  reads are not just metadata exposure; they can leak run context, node outputs,
+  questions, artifacts, local execution state, and evidence hints.
+
+Impact:
+
+- Any authenticated user with tenant reach can enumerate or fetch browser-driven
+  run snapshots for workflows they may not be allowed to view, start, or edit.
+- A caller can create spoofed run snapshots against another workflow template,
+  making the run list and evidence surfaces trust client-authored state that did
+  not pass workflow authorization.
+- Deleting another user's browser run snapshot can erase local-runtime run
+  continuity and break evidence reconstruction.
+- Because the code-change route is better guarded than the snapshot route, the
+  UI may protect diffs while still exposing the surrounding snapshot payload that
+  contains correlation ids, phase names, and artifact references.
+
+Required fixes:
+
+- Add a shared `assertRunSnapshotAccess(req, runId, action)` helper that maps
+  snapshot actions to workflow permissions:
+  - create: `assertTemplatePermission(userId, workflowId, 'start')`
+  - update/delete: snapshot owner, template `edit`, or explicit run-operation
+    grant
+  - read/list: template `view`, instance `view`, or explicit snapshot grant.
+- Default list APIs to `mine=true` unless the caller has
+  `workflow:audit:view`/`workflow:operations:view`; never return full payloads in
+  list responses without an explicit detail read.
+- Store `authorizationDecisionId`, `policyVersion`, `workflowCapabilityId`, and
+  `ownerUserId` on each new snapshot, and include those fields in audit events.
+- Redact snapshot payload fields such as prompts, secrets, local paths, code
+  context, artifact bodies, and approval answers unless the caller has the
+  matching sensitive-data permission.
+- Add IDOR tests for read/list/update/delete across users, teams,
+  capabilities, and tenants; include browser snapshot ids in the same workflow
+  authorization matrix as server `WorkflowInstance` ids.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
