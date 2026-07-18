@@ -14735,6 +14735,55 @@ Required fixes:
   promotion, cross-tenant capability ids, unauthorized review, non-capability
   scope promotion, and successful authorized runtime/workflow writes.
 
+### 313. Agent skill-source previews fetch unbounded remote bodies
+
+Evidence:
+
+- `agent.routes.ts` exposes `POST /skill-sources/preview` to any authenticated
+  caller and bounds uploaded files to 25 MB, but the remote preview path has no
+  equivalent response-size limit.
+- `previewSkillSourceSchema` accepts a `providerManifestUrl`, `url`, or
+  `sourceRef`; it does not require a capability context and has no max-bytes
+  field.
+- `fetchJsonWithTimeout(...)` validates the provider manifest URL and content
+  type, then calls `await res.text()` before signature verification, digesting,
+  or JSON parsing.
+- The `url_document` preview path validates the URL, then calls
+  `await res.text()` and only afterwards normalizes whitespace and truncates the
+  preview to 500 characters.
+- `agent-source-url-policy.ts` blocks unsafe protocols, embedded credentials,
+  private hosts, and private DNS results, but it does not cap `Content-Length`,
+  chunked transfer size, or decompressed response size.
+- `AGENT_SOURCE_FETCH_TIMEOUT_SEC` is bounded by time, not bytes, so a large
+  fast response can still be fully buffered in Agent Runtime memory.
+
+Impact:
+
+- A normal authenticated user can turn skill-source preview into a generic
+  server-side large-response fetch workload without owning a capability or
+  creating a profile.
+- Provider manifest previews can consume memory and CPU while hashing,
+  signature-checking, and parsing a huge JSON document.
+- URL-document previews appear safe because only 500 characters are returned, but
+  the full body is already downloaded and buffered before truncation.
+- Remote previews have a weaker resource-exhaustion boundary than uploaded
+  documents, even though both are part of the same agent creation workflow.
+
+Required fixes:
+
+- Add an environment-configured remote preview byte cap and enforce both
+  `Content-Length` preflight checks and streaming reader limits for provider
+  manifests and URL documents.
+- Reject compressed responses whose decompressed body exceeds the limit, and cap
+  manifest capability/schema counts before storing or returning them.
+- Reuse one safe fetch helper that performs redirect revalidation, timeout,
+  content-type checks, byte limits, digesting, and audited outcome logging.
+- Require a capability id plus owner/editor permission for remote previews, or
+  enforce strict per-user rate limits before the fetch starts.
+- Add tests for oversized `Content-Length`, chunked bodies that exceed the cap,
+  compressed expansion, slow bodies, huge provider JSON, and huge URL document
+  text.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
