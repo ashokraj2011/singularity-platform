@@ -16037,6 +16037,75 @@ Required fixes:
   wrong-role profiles, cross-tenant ids, visible-but-incompatible shared profiles,
   and a valid same-capability/global profile binding.
 
+### 336. WorkItem spec comments bypass WorkItem authorization
+
+Evidence:
+
+- `workgraph-studio/apps/api/src/app.ts:181-186` mounts WorkItem child
+  resources behind `authMiddleware`, including `commentsRouter` at
+  `/api/work-items`.
+- Neighboring child-resource routers enforce WorkItem access before returning or
+  mutating data: `development-targets.router.ts:21-45`,
+  `submissions.router.ts:22-48`, and `reconciliations.router.ts:25-45` all call
+  `loadAuthorizedWorkItem(...)`.
+- `workgraph-studio/apps/api/src/modules/comments/comments.router.ts:23-46`
+  lists, creates, resolves, and deletes `/api/work-items/:workItemId/comments`
+  by passing the route id and actor id directly to `comments.service.ts`; it
+  never calls `loadAuthorizedWorkItem(...)` with view, comment, edit, or resolve
+  actions.
+- `workgraph-studio/apps/api/src/modules/comments/comments.service.ts:8-11`
+  only checks that the WorkItem exists and reads its tenant id. `listComments`,
+  `createComment`, `resolveComment`, and `deleteComment` then operate on
+  `specComment` records without checking whether the actor can view or comment
+  on that WorkItem.
+- `comments.service.ts:35-45` writes `anchorKind`, `anchorId`, `body`,
+  `mentions`, and `parentId` directly. The service does not verify that
+  `parentId` belongs to the same WorkItem or that the anchor points to a
+  requirement, decision, diagram, document, or artifact the actor can access.
+- `comments.service.ts:48-49` publishes a `CommentMention` outbox event after
+  comment creation, so an unauthorized comment can also create notification
+  noise for mentioned users.
+- `workgraph-studio/apps/api/prisma/schema.prisma:3071-3091` shows
+  `SpecComment` stores WorkItem anchors, comment body, author, mentions,
+  parent thread id, resolution metadata, and tenant id; this is collaboration
+  and evidence data, not harmless UI chrome.
+
+Impact:
+
+- Any authenticated user who can guess or learn a WorkItem id can read comment
+  threads attached to requirements, decisions, diagrams, and review anchors even
+  if they do not have WorkItem access.
+- Unauthorized actors can inject comments, mentions, and resolution changes into
+  another WorkItem's collaboration/evidence trail. Deletion only checks comment
+  authorship, so the injected records can be partially self-managed without any
+  WorkItem-level permission.
+- Tenant/RLS context is applied inconsistently: comment writes use the loaded
+  WorkItem tenant, but reads and authorization decisions are not scoped through
+  the same WorkItem access model as other child resources.
+- The platform cannot prove that comments and mention notifications were created
+  by someone allowed to participate in the WorkItem, which weakens review,
+  approval, and audit evidence.
+
+Required fixes:
+
+- Gate every comment route through the shared WorkItem authorization service:
+  list requires `work_item:view` or `comment:view`, create requires
+  `work_item:comment`, resolve requires `comment:resolve` or an approval/edit
+  permission, and delete requires author ownership plus moderation permission
+  when deleting non-own comments.
+- Move the access check into a shared service helper so direct service callers
+  cannot bypass it, matching the defensive pattern required for other WorkItem
+  child resources.
+- Validate `parentId` against the same WorkItem and validate `anchorKind` /
+  `anchorId` against accessible specification bindings, requirements, decisions,
+  diagrams, documents, or artifacts before saving.
+- Apply tenant-scoped reads and writes consistently, emit audit events with the
+  authorization decision id, and publish mention notifications only after the
+  authorized write commits.
+- Add IDOR and permission tests for comment list/create/resolve/delete across
+  unauthorized users, wrong teams, wrong capabilities, cross-tenant WorkItems,
+  invalid parent ids, inaccessible anchors, and valid participant actions.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
