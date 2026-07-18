@@ -8482,6 +8482,223 @@ Required fixes:
   restart/rework commands are idempotent and audited, and evidence contains the
   prompt hash used for the restarted attempt.
 
+### 197. Runtime control endpoints bypass explicit workflow authorization
+
+Evidence:
+
+- `POST /workflow-instances/:id/signals/:name` persists a workflow signal, advances
+  matching `SIGNAL_WAIT` nodes, and starts event-gated nodes without calling
+  `assertInstancePermission(...)`.
+- `POST /workflow-instances/:id/nodes/:nodeId/start` calls
+  `startAwaitingNode(...)` directly without an instance permission check.
+- `POST /workflow-instances/:id/nodes/:nodeId/create-branch` calls
+  `provideCreateBranchInput(...)` directly without an instance permission check.
+- `POST /workflow-instances/:id/nodes/:nodeId/fail` calls `failNode(...)`
+  directly without an instance permission check.
+- `POST /workflow-instances/:id/advance` calls `advance(...)` directly without
+  an instance permission check.
+- The service helpers are runtime mutation helpers, not authorization guards:
+  `startAwaitingNode(...)` flips `_awaitingStart` and executes the server node;
+  `provideCreateBranchInput(...)` writes branch/source choices into run globals
+  and re-runs the `CREATE_BRANCH` node; `failNode(...)` retries, activates error
+  boundaries, or pauses/fails workflow state; `advance(...)` marks node progress
+  and activates downstream nodes.
+- Neighboring routes such as node restart explicitly call
+  `assertInstancePermission(req.user!.userId, id, 'edit')`, so the omission is
+  not a router-wide pattern.
+
+Impact:
+
+- Any authenticated caller who can address a run and node id can potentially send
+  signals, start a manual/event-gated stage, supply source branch/clone settings,
+  or force a node into retry/failure behavior unless tenant/RLS alone blocks the
+  row.
+- Signal delivery can become an ungoverned control-plane API instead of a scoped
+  event ingress contract, which is risky for human approvals, external callbacks,
+  and event-driven WorkItem flows.
+- Branch/source selection affects what code is read or changed downstream; it
+  should not be writable by a user who merely has visibility into the run.
+- Audit evidence records mutation events such as `NodeStartTriggered` and
+  `CreateBranchInputProvided`, but it does not record an authorization decision id
+  for those control actions.
+
+Required fixes:
+
+- Add explicit action checks before each route, for example `signal`, `start`,
+  `operate`, `branch_input`, and `fail` / `retry`, mapped to real IAM workflow
+  permissions rather than generic edit.
+- Keep a defense-in-depth authorization guard in the service helpers for callers
+  outside the HTTP router, or split internal trusted runtime calls from
+  user-facing control APIs.
+- For signal ingestion, validate allowed signal names, expected correlation keys,
+  source identity, and replay policy against the workflow/run contract.
+- Persist authorization decision ids and control-action payload hashes in
+  `WorkflowMutation` / audit events for start, signal, branch input, and fail.
+- Add direct-ID tests proving a run viewer, unrelated capability user,
+  cross-tenant user, and stale runner token cannot use these control endpoints.
+
+### 198. Workflow instance subresource reads and params writes bypass view/edit checks
+
+Evidence:
+
+- `GET /workflow-instances/:id/trust-summary` reads node configs and consumable
+  verification data without `assertInstancePermission(..., 'view')`.
+- `GET /workflow-instances/:id/nodes` and
+  `GET /workflow-instances/:id/nodes/:nodeId` return node configs, decision
+  records, AgentRun ids, document storage keys, and consumable verification data
+  without a view check.
+- `GET /workflow-instances/:id/mutations`,
+  `GET /workflow-instances/:id/history`, and
+  `GET /workflow-instances/:id/receipts` return workflow mutation/audit/evidence
+  rows without a view check.
+- The receipts route uses `prisma.receipt.findMany(...)` directly instead of
+  `withTenantDbTransaction(...)`, so it is weaker than the tenant-scoped
+  neighboring subresource queries.
+- `GET /workflow-instances/:id/params` returns runtime parameter definitions and
+  values without a view check.
+- `PATCH /workflow-instances/:id/params` mutates `_paramDefs` and `_params` in
+  the workflow instance context without an edit/operate permission check.
+- `GET /workflow-instances/:id/globals` exposes visible TeamVariable defaults,
+  current run-global values, and editability metadata without a view check.
+- `POST /workflow-instances/:id/test-branches` evaluates branch conditions for a
+  caller-provided sample context without checking that the caller can view or edit
+  the run.
+- `GET /workflow-instances/:id/pending-executions` returns live pending runner
+  rows with node type, label, and config. It strips `claimToken`, but it does not
+  check view/operate/manage-runner permission before disclosing the queue.
+
+Impact:
+
+- A caller who cannot fetch the main run detail can still learn graph structure,
+  node configs, artifact/document identifiers, decision metadata, receipts,
+  parameters, globals, and pending runner work by calling direct subresource URLs.
+- Runtime params are executable context: changing them can alter later branch
+  decisions, prompts, tool arguments, or workflow behavior without any matching
+  authorization decision.
+- The receipts endpoint is especially risky because it bypasses the tenant helper
+  used by most adjacent routes and can expose evidence rows by direct
+  `WorkflowInstance` id.
+- Queue visibility leaks operational timing and node config for client/edge/
+  external work even when runner management should be a separate permission.
+
+Required fixes:
+
+- Add `assertInstancePermission(..., 'view')` to every read subresource and
+  `assertInstancePermission(..., 'edit'|'operate')` to params/test-branch writes,
+  then migrate to explicit actions such as `view_evidence`, `view_runtime_state`,
+  `edit_runtime_params`, and `manage_runner_queue`.
+- Wrap receipts and every adjacent subresource query in `withTenantDbTransaction`
+  or equivalent strict tenant scoping.
+- Redact sensitive node config fields, document storage keys, param/global values,
+  and pending-execution payload/config unless the caller has sensitive-evidence or
+  runner-management permission.
+- Treat `PATCH /params` as a governed runtime-input command with before/after
+  hashes, actor id, authorization decision id, and stale-run fencing.
+- Add direct-ID tests for a run viewer, non-viewer same-tenant user, cross-tenant
+  user, and runner-scoped token across all workflow instance subresources.
+
+### 199. Generation plan actuals can rewrite delivery economics without governed evidence
+
+Evidence:
+
+- `PATCH /generation-plans/:planId/rows/:rowId/actuals` requires only
+  `assertGenerationProjectAccess(..., 'edit')`.
+- The route writes `GenerationPlanRow.actualStartAt`, `actualFinishAt`,
+  `actualHours`, and `actualCostUsd` directly from the request body.
+- If the row has a `capacityAllocationId`, the same request updates the matching
+  `CapacityAllocation.startAt`, `endAt`, `estimatedHours`, and status to
+  `IN_PROGRESS` or `COMPLETED`.
+- `GenerationPlanRow` stores actual hours/costs as mutable columns, with no
+  actor, source, evidence id, approval id, row-version, or finalization reference
+  attached to the actuals themselves.
+- `CapacityAllocation` has metadata and `createdById`, but no updated-by,
+  actuals-source, approval, or immutable adjustment history fields.
+- The route emits `GenerationPlanActualsRecorded` via `logEvent(...)`, but it does
+  not store before/after hashes, the previous row values, the capacity allocation
+  before/after state, evidence source, or approval decision id.
+
+Impact:
+
+- A user who can edit the initiative/generation plan can rewrite realized hours,
+  cost, dates, and capacity status without tying the numbers to a WorkItem
+  finalization record, timesheet, CI evidence, invoice, approval, or audit-grade
+  adjustment command.
+- Business value dashboards, budget variance, milestone reports, and sponsor
+  readouts can consume mutable actuals that are not provenance-bound.
+- Capacity allocations can be marked complete through the plan row route even if
+  the linked WorkItem is not finalized or the delivery evidence is contested.
+- Because the event omits before/after values, investigators cannot reconstruct
+  how actuals changed over time from durable evidence alone.
+
+Required fixes:
+
+- Replace direct actuals mutation with an append-only `GenerationPlanActualsEvent`
+  or `DeliveryActualsAdjustment` table containing old values, new values, source,
+  evidence refs, actor, approval decision id, and content hash.
+- Gate actual-cost/hour changes behind finance or delivery-owner permissions,
+  separate from general generation-plan edit.
+- Derive capacity allocation status from WorkItem target/finalization state or
+  require a governed capacity adjustment command before changing it.
+- Link actuals to WorkItem finalization, reconciliation, artifact/evidence, or an
+  explicit manual adjustment reason so sponsor readouts can explain provenance.
+- Add tests proving a generic plan editor cannot rewrite actuals, completed
+  WorkItems produce immutable actuals evidence, and repeated adjustments preserve
+  a full before/after history.
+
+### 200. WorkItem start commands are created before authorization and hash too little launch input
+
+Evidence:
+
+- `startWorkItemTarget(...)` creates or updates a `WorkflowStartCommand` with
+  `state = IN_PROGRESS`, `requestHash`, `attempt`, and a ten-minute `leaseUntil`
+  before it verifies template start permission.
+- The same function calls `assertTemplatePermission(...)` and
+  `assertStartableWorkItemTemplate(...)` only after the command row is already
+  created or leased.
+- Strict tenant validation via `tenantIdForCreate(...)` also happens after the
+  command row is created.
+- The failure cleanup that marks the command `FAILED` only wraps
+  `cloneDesignToRun(...)`. Permission, template-scope, and tenant validation
+  failures happen before that `try/catch`, so they can leave the command in
+  `IN_PROGRESS` until its lease expires.
+- While the command lease is live, a repeated call with the same idempotency key
+  receives "already in progress"; a call with a different request hash receives
+  "idempotency key was already used with a different workflow start request."
+- The `requestHash` includes `workItemId`, `targetId`, `templateId`, `vars`,
+  `globals`, and `params`, but it does not include launch options that materially
+  change execution: `modelAlias`, `sourceRef`, `sourceType`, `sourceUri`,
+  `cloneDir`, or `pushEachPhase`.
+- Those omitted fields are later threaded into run globals before
+  `cloneDesignToRun(...)`, so they do affect the launched workflow.
+
+Impact:
+
+- A failed unauthorized or mis-scoped start attempt can poison the idempotency key
+  and block the user/operator from correcting the launch until the lease expires.
+- Operations sees an `IN_PROGRESS` start command with no created run and no
+  persisted failure reason for pre-clone authorization/template/tenant errors.
+- Two launch requests that differ in source branch, repository/source URI, model,
+  clone directory, or push behavior can be treated as the same idempotent request
+  because those fields are excluded from the hash.
+- A completed command can return an old child workflow run even when the caller
+  retries with a different model/source selection under the same idempotency key,
+  weakening replay and evidence about what was actually launched.
+
+Required fixes:
+
+- Perform template permission, template/capability scope validation, and tenant
+  validation before creating or leasing `WorkflowStartCommand`, or wrap the whole
+  pre-clone path in a command transaction that records failures immediately.
+- Expand `requestHash` to include every execution-shaping launch field, including
+  model, source, clone, and push options.
+- Persist failed preflight reason, authorization decision id, template id,
+  target capability id, and request hash on the command when any preflight fails.
+- Add a recovery path that can safely clear or retry stale preflight-failed start
+  commands without waiting for a generic lease expiry.
+- Add tests for unauthorized template start, mismatched template capability,
+  strict-tenant failure, reused idempotency key with different source/model
+  options, and retry after a failed preflight command.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
