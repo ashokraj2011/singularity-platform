@@ -12940,6 +12940,49 @@ Required fixes:
   simulate for a capability unless they have the required authoring and routing
   permissions.
 
+### 279. The tested WorkItems console is not the live `/work-items` route
+
+Evidence:
+
+- `agent-and-tools/web/src/app/work-items/page.tsx` renders
+  `LegacyWorkItemsRoute`.
+- `LegacyWorkgraphAdminRoute.tsx` imports `WorkItemsPage` from
+  `workgraph-web/features/runtime/WorkItemsPage` and returns it from
+  `LegacyWorkItemsRoute`.
+- `agent-and-tools/web/src/components/workflows/WorkItemsConsole.tsx` contains
+  the newer Platform Web WorkItems console with Agent-and-Tools capability
+  dropdowns, template diagnostics, event history, and a contract-bound
+  execution panel.
+- Repository route search shows no app page importing `WorkItemsConsole`; the
+  direct imports are contract tests such as
+  `work-items-normalization.contract.test.ts`,
+  `work-items-template-status.contract.test.ts`, and
+  `work-item-capability-picker.contract.test.ts`.
+- Those tests assert behavior on `WorkItemsConsole`, while the actual
+  `/work-items` route continues to use the legacy Workgraph page. Some
+  protections are duplicated in the legacy page and API, but the tested
+  contract-bound WorkItems console is not what users open from navigation.
+
+Impact:
+
+- A test can pass for the WorkItems UX while the canonical Work Hub still
+  renders a different component.
+- Users see WorkItem creation, routing, contract-bound evidence, and capability
+  selection through a different mental model than the one the Platform Web
+  tests describe.
+- Future fixes may continue landing in `WorkItemsConsole` without improving the
+  live `/work-items` experience.
+
+Required fixes:
+
+- Choose one canonical WorkItems surface.
+- Either wire `WorkItemsConsole` to `/work-items` and retire the legacy wrapper,
+  or delete/merge `WorkItemsConsole` and move its tests/features onto the live
+  `workgraph-web` page.
+- Add a route-level contract test proving `/work-items` renders the intended
+  Work Hub component and includes the expected capability, routing, evidence,
+  and contract-bound controls.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
