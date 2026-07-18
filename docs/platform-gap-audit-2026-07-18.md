@@ -13860,6 +13860,105 @@ Required fixes:
   id, cross-tenant contract replay, stale contract version, and successful
   authorized replay.
 
+### 298. Governed coding stages synthesize non-authoritative Context Fabric call ids
+
+Evidence:
+
+- `coding-agent/orchestrator.ts` documents that the governed-stage endpoint does
+  not mint a `cf_call_id`, so the adapter "synthesize[s] a UUID-like value from
+  the run_context.work_item_id + turn count" and leaves a TODO to emit
+  `cf_call_id` from the stage runner.
+- The actual adapter builds `const cfCallId =
+  \`governed:${resp.final_state.stage_key}:${resp.turns.length}\``.
+- That synthetic value is stored in the ExecuteResponse-shaped wrapper under
+  both top-level `cfCallId` and `correlation.cfCallId`.
+- `blueprint.router.ts` persists `result.correlation?.cfCallId` into
+  `BlueprintStageRun.correlation`, stage attempts, review events, and
+  Blueprint audit records.
+- The code-change panel path builds lookup maps from stored `cfCallId` values
+  and calls `contextFabricClient.listCodeChanges(cfCallId, ...)`.
+- `context-fabric/client.ts` defines `listCodeChanges(...)` as an API request
+  keyed by `cf_call_id`; the synthetic `governed:<stage>:<turns>` value is not a
+  server-minted Context Fabric call record.
+
+Impact:
+
+- Workbench evidence can display a "Context Fabric call" id that is not actually
+  queryable as a Context Fabric call.
+- Code-change lookup, trace cockpit joins, audit searches, and replay debugging
+  can fail or collide because the id is based only on stage key and turn count.
+- Multiple workflow runs with the same stage and same number of turns can produce
+  identical synthetic `cfCallId` values.
+- Operators may chase missing Context Fabric logs even though WorkGraph created
+  the apparent id locally.
+- This weakens the platform trace spine precisely on governed coding stages,
+  where code diffs, verifier receipts, and approval evidence need the strongest
+  correlation.
+
+Required fixes:
+
+- Make `execute-governed-stage` return a real server-minted `cf_call_id` and
+  include it in every governed stage response.
+- Treat missing `cf_call_id` as a degraded/blocked evidence condition in strict
+  mode instead of fabricating a normal-looking call id.
+- If a temporary local id remains necessary, store it in a separate field such as
+  `workgraphStageCorrelationId`, never in `correlation.cfCallId`.
+- Update code-change lookup and trace cockpit joins to use authoritative
+  Context Fabric ids only, with inline WorkGraph code-change records as an
+  explicitly labelled fallback.
+- Add tests for two same-stage same-turn runs proving call ids are unique,
+  queryable, and trace-linked; add a strict-mode test that rejects missing
+  governed-stage `cf_call_id`.
+
+### 299. Workbench governed coding usage records hard-code zero cost
+
+Evidence:
+
+- In `adaptGovernedStageToCodingRun(...)`, the synthetic `modelUsage` object is
+  built from the governed-stage response turns and totals.
+- It copies provider and model from the last LLM turn and input/output tokens
+  from `resp.totals`, but sets `estimatedCost: 0`.
+- The same synthetic response does not carry a `modelAlias`, pricing source, or
+  pricing status that would distinguish "free", "mock", "unpriced", and
+  "priced as zero".
+- `recordBlueprintBudgetUsage(...)` reads
+  `result.modelUsage?.estimatedCost ?? result.usage?.estimatedCost ??
+  result.tokensUsed?.estimatedCost ...` and records that value into workflow LLM
+  usage.
+- `buildExecutionFallbackMarkdown(...)` renders `Estimated cost:
+  ${estimatedCost}` whenever the value is non-null, so a hard-coded zero appears
+  as real receipt evidence.
+- Run Insights renders priced rows and budget bars from recorded
+  `estimatedCost`; it distinguishes `UNPRICED` only when cost is null, not when
+  the adapter writes zero.
+
+Impact:
+
+- Governed Workbench stages can consume real Anthropic/OpenAI/OpenRouter/Copilot
+  model tokens while WorkGraph records the stage as `$0.00`.
+- Initiative budget, run economics, evidence packs, and release reports can
+  understate cost for the highest-value code-generation stages.
+- Because zero is a valid numeric cost, downstream UIs cannot tell that the
+  adapter lacked authoritative pricing.
+- Fixing Context Fabric placeholder pricing will not correct this path unless
+  WorkGraph stops overwriting governed-stage cost with zero.
+- Tenant admins cannot rely on Workbench budget data to compare providers or
+  enforce initiative token/cost envelopes.
+
+Required fixes:
+
+- Propagate authoritative per-turn cost or pricing status from Context Fabric's
+  governed-stage response.
+- If no authoritative price exists, set `estimatedCost` to `null` and
+  `pricingStatus = UNPRICED`; do not use zero unless the provider/model catalog
+  proves a zero-price route such as mock.
+- Include model alias, provider, model, pricing source, catalog version/digest,
+  and effective rates in WorkGraph usage records.
+- Update fallback artifacts and Run Insights to label unpriced governed stages
+  explicitly instead of rendering `$0.0000`.
+- Add tests for priced provider, unpriced provider, mock provider, missing model
+  alias, and budget aggregation across governed Workbench stages.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
