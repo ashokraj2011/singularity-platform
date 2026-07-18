@@ -12685,6 +12685,97 @@ Required fixes:
   checks, and add tests for typo touch point, missing alias, disabled alias,
   missing credential env value, inactive capability, and cross-tenant scope ids.
 
+### 274. Context Fabric registers the wrong authentication contract in the platform registry
+
+Evidence:
+
+- `context_api_service/app/main.py` self-registers Context Fabric with
+  `auth_mode: "none"` and `health_path: "/health"` on startup.
+- The same service's execution router requires a service token whenever the
+  environment is production-class or `REQUIRE_TENANT_ID=true`; missing
+  `IAM_SERVICE_TOKEN` returns `503`, and an invalid or missing caller token
+  returns `401`.
+- Runtime Bridge HTTP control-plane routes independently require one of the
+  configured Context Fabric/IAM service tokens unless an explicit non-production
+  `RUNTIME_BRIDGE_ALLOW_UNAUTHENTICATED_HTTP` escape hatch is enabled.
+- Runtime WebSocket connect requires a runtime/device JWT with `kind`, `sub`,
+  runtime id, and allowed frame types.
+- Other services advertise stronger registry auth modes: WorkGraph uses
+  `bearer-iam` or `bearer-static`, Prompt Composer and Agent Runtime use
+  `bearer-iam`, and MCP uses `bearer-static`.
+
+Impact:
+
+- Operations live maps and service-discovery consumers can show Context Fabric as
+  unauthenticated even when its critical execution and runtime bridge APIs are
+  token-protected.
+- Operators troubleshooting runtime dial-in or `/execute` failures can be pointed
+  at the wrong contract: the registry says "none" while the API returns
+  `401`/`503` for missing service tokens.
+- Future clients that trust the registry may omit required service-token or
+  runtime-JWT setup and fail late, or incorrectly classify Context Fabric as a
+  public/open service in readiness and trust evidence.
+
+Required fixes:
+
+- Register Context Fabric with route-aware authentication metadata, at minimum
+  `bearer-iam` or `bearer-static` for service-token HTTP APIs and
+  `runtime-jwt` for `/api/runtime-bridge/connect`.
+- Split public health metadata from protected execution/control-plane contracts
+  rather than using one service-level `auth_mode` for every route.
+- Add a registry contract test that compares Context Fabric's advertised
+  `auth_mode` with `check_execute_service_token(...)`,
+  `check_runtime_bridge_service_token(...)`, and runtime JWT handshake behavior.
+- Make Operations render "Public health, protected execution" instead of a single
+  misleading service auth badge.
+
+### 275. Approval form submissions can relink arbitrary documents into approval evidence
+
+Evidence:
+
+- `POST /api/approvals/:id/form-submission` checks that the approval request is
+  pending and that the caller may decide the approval.
+- When `attachmentIds` are supplied, the route runs
+  `tx.document.updateMany({ where: { id: { in: attachmentIds },
+  ...(found.instanceId ? { instanceId: found.instanceId } : {}) },
+  data: { nodeId: found.nodeId, instanceId: found.instanceId } })`.
+- The route does not call `assertDocumentTenant(...)` for each document id, does
+  not require `uploadedById === req.user.userId` or an attachment permission, and
+  does not check that the update count equals the requested attachment count.
+- If the approval has an `instanceId`, any document already attached somewhere in
+  that workflow instance can be moved into the approval node's evidence by any
+  eligible approver. If the approval is a tenant-scoped non-instance approval,
+  the `where` clause falls back to only `id in attachmentIds`.
+- `documents.router.ts` is stricter for deletion: only the uploader or an admin
+  can delete a document, showing that document ownership is treated as meaningful
+  elsewhere.
+
+Impact:
+
+- An approver can attach, or effectively reclassify, another user's workflow
+  document as approval evidence without the uploader's consent or a document-level
+  permission check.
+- Missing or cross-context attachment ids can be silently ignored, so the UI may
+  tell the user attachments were submitted while the stored approval evidence is
+  incomplete.
+- In regulated flows, approval evidence can be contaminated by documents from
+  unrelated nodes in the same run, weakening the proof of exactly what the human
+  reviewed when approving or rejecting.
+
+Required fixes:
+
+- Resolve every `attachmentId` first and require a full count match before
+  mutating any document rows.
+- Enforce tenant, workflow instance, node/task context, uploader ownership, or an
+  explicit `approval:attach_document` / `document:attach_to_approval` permission
+  for each attachment.
+- Avoid moving existing document ownership/context when attaching to approvals;
+  use a join table such as `ApprovalAttachment` with immutable document id,
+  approval request id, attachedBy id, timestamp, content hash, and evidence role.
+- Add tests for another user's document, wrong node document, wrong instance
+  document, missing document id, non-instance approval attachment, and partial
+  update-count mismatch.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
