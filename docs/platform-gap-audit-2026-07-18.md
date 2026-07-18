@@ -15585,6 +15585,55 @@ Required fixes:
   objective updates, milestone creation, risk closure, readout generation,
   change-request creation, and taxonomy updates.
 
+### 328. Synthesis intake economics can be supplied by the client instead of authoritative usage
+
+Evidence:
+
+- `experience.router.ts` defines the intake turn schema with optional
+  client-provided `tokensUsed` and `costUsd` fields, bounded only by maximum
+  numeric ranges.
+- `POST /experience/intake/sessions/:sessionId/turn` passes those values directly
+  to `recordIntakeTurn(...)`.
+- `recordIntakeTurn(...)` increments `DiscoverySession.tokensUsed` by
+  `input.tokensUsed ?? 0` and `DiscoverySession.sessionCostUsd` by
+  `input.costUsd ?? 0`.
+- The Synthesis intake UI currently posts only `{ stage, text, confidence }`,
+  but the route remains a public authenticated API that can be called directly
+  with arbitrary usage values.
+- `intakePayload(...)` copies the accumulated session economics into the
+  `SCAFFOLD_BATCH` proposal payload, so the generated scaffold can carry
+  client-supplied or omitted cost/token evidence.
+- Searches found no link from intake session usage to Context Fabric model
+  receipts, prompt-composer assemblies, `ProjectTokenLedgerEntry`, or a
+  server-side estimator.
+
+Impact:
+
+- Intake economics can be understated by omitting `tokensUsed` and `costUsd`, or
+  overstated by submitting large values, without matching provider receipts.
+- Synthesis budget displays and scaffold proposals can present costs as if they
+  were platform evidence even though they were caller-declared metadata.
+- Tenant or initiative token budgets cannot reliably include intake/interview
+  usage, especially once AI-assisted intake turns are added.
+- Auditors cannot reconcile a scaffold's `economics` block to a prompt assembly,
+  Context Fabric trace, model call id, or token ledger entry.
+
+Required fixes:
+
+- Remove client-writable usage fields from normal intake turn requests. If local
+  demo mode needs manual values, gate them behind an explicit non-enterprise flag.
+- Derive intake usage from server-owned sources: Context Fabric receipts for
+  AI-assisted turns, prompt-composer assembly usage, or a deterministic
+  server-side text-size estimate labeled as an estimate.
+- Write intake/interview usage into the same project token ledger used by other
+  Synthesis assistant calls, with tenant, project, session id, stage, trace id,
+  evidence key, and source classification.
+- Store `usageSource`, `usageReceiptId` or `estimatorVersion`, and a usage hash on
+  `DiscoverySession` or per-turn rows so scaffold economics can be audited.
+- Add API tests proving forged `tokensUsed`/`costUsd` values are ignored or
+  rejected in enterprise mode, real model receipts are recorded, and omitted
+  browser values cannot hide server-observed usage.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
