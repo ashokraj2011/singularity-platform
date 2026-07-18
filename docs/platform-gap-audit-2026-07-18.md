@@ -15336,6 +15336,63 @@ Required fixes:
   suppression, permission redaction during replay, and multi-instance deployment
   behavior once the stream moves beyond in-process fanout.
 
+### 324. RLS-exempt WorkGraph admin connection usage has outgrown its guardrails
+
+Evidence:
+
+- `workgraph-studio/apps/api/src/lib/admin-prisma.ts` says the owner/admin DB
+  connection is "used ONLY for TimerSweep's one cross-tenant discovery read" and
+  that "nothing else in the app should import it."
+- Current imports contradict that contract. `adminPrisma` is imported by approval
+  escalation, business readout scheduling, experience overnight shifts,
+  reconciliation lease reaping, WorkItem/workflow trigger scheduling, stuck-run
+  recovery, and TimerSweep.
+- `sweepApprovalEscalations(...)` reads pending `ApprovalRequest` rows through
+  `adminPrisma ?? prisma`, then mutates the row in the discovered tenant.
+- `generateWeeklyReadouts(...)` reads active `SpecificationProject` rows and
+  checks existing `BusinessReadout` rows through the same scheduler reader before
+  entering tenant context.
+- `runExperienceShiftSweep(...)`, `reapExpiredReconciliationJobs(...)`,
+  `TriggerScheduler`, and `StuckRunSweep` use the same pattern for cross-tenant
+  discovery.
+- Existing tests around `admin-prisma` prove only that the optional client is
+  constructed from `WORKGRAPH_DATABASE_URL_ADMIN` and defaults to undefined. They
+  do not assert an allowlist of permitted importers, read-only query behavior, or
+  required tenant handoff for every discovered row.
+
+Impact:
+
+- A connection intended as a narrow RLS-prep escape hatch has become a general
+  cross-tenant scheduler primitive without a registry, owner review, or automated
+  guardrail.
+- Future sweep code can accidentally read more columns or perform writes through
+  the admin client, bypassing the forced-RLS posture that production deployment
+  is supposed to prove.
+- When `WORKGRAPH_DATABASE_URL_ADMIN` is absent, the fallback to the normal app
+  Prisma client can make strict-RLS deployments behave differently from admin-URL
+  deployments; some sweeps may silently miss due work or rely on nullable
+  tenant ids.
+- Audit evidence can say a per-tenant mutation was made, but not which
+  cross-tenant admin discovery query selected that row, which service principal
+  was allowed to run it, or whether the discovery query was policy-approved.
+
+Required fixes:
+
+- Replace direct `adminPrisma` imports with a small `crossTenantSweepReader`
+  helper that requires a named sweep id, expected model list, read-only
+  operation type, reason, and owner.
+- Add a static allowlist/contract test for every file permitted to use the
+  RLS-exempt reader, failing CI on new imports until the sweep is reviewed.
+- Ensure the helper exposes only read methods or explicit read-only wrappers; no
+  raw Prisma client should leak into scheduler modules.
+- Require every discovered row to include a non-null tenant id before mutation in
+  strict mode, and dead-letter or health-fail rows whose tenant cannot be proven.
+- Emit admin-discovery audit events or metrics containing sweep id, tenant count,
+  row count, query class, trace id, and failures.
+- Add integration tests that run the key schedulers with and without
+  `WORKGRAPH_DATABASE_URL_ADMIN` under forced-RLS fixtures and prove equivalent
+  behavior, tenant handoff, and no writes through the admin client.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
