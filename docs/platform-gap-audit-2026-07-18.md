@@ -16303,6 +16303,75 @@ Required fixes:
   on PUBLISHED/FINAL templates and ACTIVE/RUNNING instances, while still allowing
   DRAFT edits.
 
+### 340. Prompt Composer stage policies and lessons are mutable by any authenticated caller
+
+Evidence:
+
+- `prompt-composer/src/app.ts` mounts `/api/v1/stage-policies` and
+  `/api/v1/lessons` after generic authentication, and each router also calls
+  `requireAuth`, but neither route performs admin, service-principal, tenant,
+  capability, or policy-specific authorization.
+- `stage-policies.routes.ts` comments label `POST /api/v1/stage-policies` as an
+  "admin upsert", but the handler simply validates `upsertStagePolicySchema` and
+  calls `stagePoliciesService.upsert(req.body)`.
+- `stagePoliciesService.upsert(...)` can create or update a `StagePolicy`, then
+  delete and recreate all `StagePhasePolicy` rows for that version. The payload
+  controls `approvalModel`, `limits`, `contextPolicy`, `editPolicy`,
+  `verificationPolicy`, `riskPolicy`, per-phase `allowedTools`,
+  `forbiddenTools`, required output schema, token budgets, and tool-call limits.
+- `lessons.routes.ts` comments say `POST /api/v1/lessons` is called by
+  audit-governance and `GET`/deactivate are admin surfaces, but the handlers call
+  `lessonsService.create(...)`, `list(...)`, and `deactivate(...)` with no check
+  that the caller is audit-governance, an administrator, or authorized for the
+  lesson's `capabilityId`.
+- `lessonsService.create(...)` writes `EngineLesson` rows using caller-supplied
+  `capabilityId`, `toolName`, `ruleText`, `sourceTraceIds`, `confidence`, and
+  `extractedBy`; the authenticated `req.user` is not bound into the row.
+- Prompt assembly includes active `EngineLesson` rows as `GLOBAL_LESSON` layers
+  when `LESSONS_LEARNED_ENABLED !== "false"`, so these rows can directly steer
+  future prompts for that capability.
+- The Prisma models for `EngineLesson`, `StagePolicy`, and `StagePhasePolicy`
+  have no tenant id, owner, created-by, updated-by, approved-by, published-by,
+  immutable digest, or policy decision fields.
+- The searched route-auth contract tests only assert that these routers use
+  `requireAuth`; there is no regression proof for non-admin denial, service-token
+  scoping, cross-capability writes, actor provenance, or immutable publication.
+
+Impact:
+
+- Any authenticated Prompt Composer caller can weaken or replace hard stage
+  policies that Context Fabric relies on for phase tool allowlists, output
+  schemas, approval posture, context limits, edit policy, and verification rules.
+- A caller can inject or deactivate "lessons learned" for any capability and have
+  those lessons appear in future prompt assemblies as authoritative prior
+  learning.
+- Because the records are global and unversioned by tenant/capability ownership,
+  one tenant or service identity can affect prompts and governed-loop policy used
+  by another tenant or workflow domain.
+- Audit evidence cannot prove who approved a stage policy change or whether a
+  lesson came from audit-governance versus a normal user token.
+
+Required fixes:
+
+- Split resolve/read APIs from mutation APIs. Keep `/resolve` callable by scoped
+  service tokens, but require `prompt_policy:admin` / `prompt_policy:publish`
+  for stage-policy upserts.
+- Require audit-governance service identity or explicit
+  `lesson:create`/`lesson:curate` permissions for lessons create/deactivate, and
+  validate the caller's authority over the supplied `capabilityId`.
+- Add tenant, owner capability, created/updated actor, approved/published actor,
+  status, version, content digest, and source service identity to `StagePolicy`,
+  `StagePhasePolicy`, and `EngineLesson` records.
+- Make published stage-policy versions immutable; introduce draft/publish/archive
+  flows with audit receipts and policy decision ids.
+- Persist lesson provenance: source trace id verification, source issue link,
+  source service principal, extraction model/version, confidence rationale, and
+  curator decision.
+- Add negative tests for ordinary authenticated users posting stage policies,
+  replacing phase rows, creating lessons for another capability, deactivating
+  lessons, and forging `extractedBy`; add positive tests for scoped admin and
+  audit-governance service principals.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
