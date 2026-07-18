@@ -11566,6 +11566,446 @@ Required fixes:
   specification, generation plan, workflow metadata, Claim Registry decay, and
   UI audit links without changing authority midstream.
 
+### 251. Platform Registry registration authority is shared and caller-controlled
+
+Evidence:
+
+- `platform-registry/src/routes/registry.ts` documents that `POST /register`
+  uses tokens from `REGISTER_TOKENS`, while GET routes are public.
+- `requireRegisterToken(...)` only checks whether the bearer token is present in
+  the global `allowedRegisterTokens` set.
+- `POST /register` trusts the caller-supplied `service_name` and performs an
+  `ON CONFLICT (service_name) DO UPDATE` that replaces `display_name`,
+  `version`, `base_url`, `internal_url`, `health_path`, `auth_mode`,
+  `owner_team`, and `metadata`.
+- The same registration path deletes and replaces all
+  `service_capabilities` for that `service_name`.
+- `POST /services/:name/heartbeat` uses the same shared token check and lets a
+  caller update any `:name` to `last_status = 'healthy'`.
+- There is no service-specific credential, JWT subject binding, mTLS subject,
+  service allowlist, owner lock, registration generation, or audit trail in
+  `platform-registry/db/001_init.sql`.
+- `context-fabric/services/context_api_service/app/governed/llm_client.py`
+  resolves the live LLM gateway by reading public
+  `/api/v1/services/{LLM_GATEWAY_SERVICE_NAME}` and trusting
+  `internal_url` or `base_url`.
+
+Impact:
+
+- Any holder of a shared register token can clobber `llm-gateway`,
+  `workgraph-api`, `prompt-composer`, or another registered service.
+- A bad or compromised service can redirect Context Fabric LLM calls to a wrong
+  or hostile URL by overwriting the LLM gateway registry row.
+- A caller can keep a dead or replaced service looking healthy by heartbeating
+  its name.
+- Capabilities and contracts become last-writer-wins metadata, not a trusted
+  platform service inventory.
+
+Required fixes:
+
+- Bind registration credentials to a specific `service_name`, tenant or
+  deployment boundary, and expected service identity.
+- Use IAM service JWTs or mTLS identities with an explicit service registration
+  permission instead of a global shared token.
+- Reject conflicting owner, URL, auth mode, or capability changes unless a
+  privileged operator approves a registration generation change.
+- Add immutable registration audit records with actor, service identity, old
+  value, new value, trace id, and decision id.
+- Make Context Fabric discovery accept only registry rows with verified
+  ownership and fresh health.
+
+### 252. Platform Registry can run unauthenticated in production when `REGISTER_TOKENS` is empty
+
+Evidence:
+
+- `platform-registry/src/config.ts` defaults `NODE_ENV` to `development` and
+  `REGISTER_TOKENS` to an empty string.
+- The same config builds `allowedRegisterTokens` by splitting
+  `REGISTER_TOKENS`; an empty value produces an empty set.
+- `requireRegisterToken(...)` immediately calls `next()` when
+  `allowedRegisterTokens.size === 0`, with the comment `// dev mode`.
+- There is no startup refusal when `NODE_ENV === 'production'` and
+  `REGISTER_TOKENS` is empty.
+- `platform-registry/docker-compose.yml` passes
+  `REGISTER_TOKENS: "${REGISTER_TOKENS:-}"`, preserving the empty default.
+- The route comment says empty tokens are dev-only, but the code does not
+  enforce that boundary.
+
+Impact:
+
+- A production or shared staging registry can become unauthenticated through a
+  single missing environment variable.
+- In that state, any network caller can register or overwrite services and
+  heartbeat arbitrary service names.
+- The failure mode is silent: health can still return ok, and public GET routes
+  can look normal after untrusted writes have happened.
+
+Required fixes:
+
+- Refuse startup in `production` or strict deployment mode unless registration
+  auth is configured.
+- Treat empty `REGISTER_TOKENS` as allowed only when an explicit
+  `ALLOW_OPEN_REGISTRY_DEV=true` flag is set.
+- Add startup and unit tests for production empty-token refusal.
+- Surface `unsafe_auth` or `open_registration` in registry health/readiness so
+  Operations cannot mistake an open registry for an enterprise-ready one.
+- Include platform-registry auth checks in deployment guardrails and doctor
+  scripts.
+
+### 253. Platform Registry liveness is self-reported and never marks stale services unhealthy
+
+Evidence:
+
+- `platform-registry/db/001_init.sql` documents `last_status` values of
+  `registered`, `healthy`, `unhealthy`, and `stale`.
+- `POST /register` writes `last_status = 'registered'`.
+- `POST /services/:name/heartbeat` writes `last_seen_at = now()` and
+  `last_status = 'healthy'`.
+- No searched registry route, worker, or sweeper probes
+  `base_url + health_path`, checks missed heartbeats, or transitions rows to
+  `unhealthy` or `stale`.
+- `GET /services` and `GET /services/:name` return whatever `last_status` is
+  stored; they do not compute freshness from `last_seen_at`.
+- `workgraph-studio/apps/api/src/lib/platform-registry/register.ts` fires the
+  initial register once, starts a heartbeat timer, and silently ignores
+  heartbeat failures.
+- The Python helpers in `context_api_service` and `singularity-iam-service`
+  catch exceptions but do not log non-2xx responses, so schema/auth failures can
+  be easy to miss.
+- `context-fabric/services/llm_gateway_service/app/platform_registry.py` logs
+  non-2xx registration failures, but its heartbeat loop also does not
+  re-register when the registry row is missing.
+
+Impact:
+
+- Operations live maps can report stale rows as healthy long after the backing
+  service is gone.
+- Context Fabric LLM gateway discovery can use an obsolete gateway URL until an
+  operator notices or the static fallback happens to mask the issue.
+- If the initial registration fails, several services can continue running
+  normally while their registry row never appears; later 404 heartbeat failures
+  do not repair the missing row.
+- Operators cannot distinguish "service is healthy", "service self-reported
+  recently", and "registry has not checked it".
+
+Required fixes:
+
+- Add a registry-side health sweeper that probes registered health endpoints,
+  marks stale rows after missed heartbeat thresholds, and records last probe
+  error.
+- Make GET responses include computed freshness, heartbeat age, probe age, and
+  whether health is self-reported or verified.
+- Have service helpers re-run full registration when heartbeat returns 404.
+- Log non-2xx registration and heartbeat responses consistently in every helper.
+- Make Context Fabric reject stale discovered LLM gateway rows unless explicit
+  debug fallback is enabled.
+- Add tests for missed heartbeats, stale status, re-registration after 404, and
+  discovery rejection of stale rows.
+
+### 254. Platform Registry validation tests do not exercise the actual API schema
+
+Evidence:
+
+- `platform-registry/test/smoke.test.ts` defines
+  `SERVICE_NAME_RE = /^[a-z][a-z0-9-]{2,63}$/` and says it mirrors the
+  canonical service-name regex used by the registry capability index.
+- `platform-registry/src/routes/registry.ts` defines
+  `registerSchema.service_name` as `z.string().min(1)`, not that regex.
+- The same route accepts `capability_key` and `contract_key` as only
+  `z.string().min(1)`.
+- `platform-registry/db/001_init.sql` stores `service_name`,
+  `capability_key`, and `contract_key` as `TEXT` columns without CHECK
+  constraints or length bounds.
+- The smoke test that claims to detect source import failures catches import
+  errors and substitutes `{ version: "?" }`, so it cannot fail on a missing
+  `src/lib/version` module.
+- There are no searched integration tests that POST invalid registrations to
+  `/api/v1/register` and assert rejection from the actual zod schema plus DB
+  constraints.
+
+Impact:
+
+- Uppercase, underscored, overly long, or otherwise non-canonical service names
+  can be accepted even though the tests imply they are rejected.
+- Capability and contract keys can drift into arbitrary strings, making search,
+  topology, docs, and service discovery inconsistent.
+- The test suite gives false confidence because it tests a local regex constant
+  rather than the production parser or database.
+- Later consumers may add assumptions around canonical keys that the registry
+  does not actually enforce.
+
+Required fixes:
+
+- Export and reuse one shared validator for service names, capability keys, and
+  contract keys in both routes and tests.
+- Add DB CHECK constraints for canonical key format and bounded length.
+- Replace the catch-and-substitute import smoke test with a real import
+  assertion.
+- Add supertest or integration tests for malformed service names, malformed
+  capability keys, malformed contract keys, invalid URLs, invalid auth modes,
+  and DB constraint failures.
+- Add a migration/backfill check for any existing non-canonical registry rows
+  before tightening constraints.
+
+### 255. Observability log export has no per-target tenant or data-class policy
+
+Evidence:
+
+- `audit-governance-service/src/log-operations.ts` reads export targets from
+  `LOG_EXPORT_TARGETS_JSON` with fields `id`, `type`, `url`, `credentialEnv`,
+  and `enabled`.
+- `queueLogExports(...)` filters only by `target.ready` and an optional
+  `onlyTargetId`, then inserts the same batch payload for every ready target.
+- `safeExportRecords(...)` truncates large messages/payloads but does not apply
+  tenant, capability, service, environment, sensitivity, prompt/document, or
+  data-class policy.
+- `targetBody(...)` sends the full safe record to Datadog, Splunk, or an
+  `http-json` endpoint.
+- `validateTarget(...)` checks URL scheme, optional private/local URL allowance,
+  and credential presence, but not allowed tenants, services, regions,
+  compliance domains, retention class, redaction mode, or data residency.
+- `audit-governance-service/src/routes-logs.ts` queues exports from every log
+  ingest batch by calling `queueLogExports(logs)` after writing the logs.
+- `audit-governance-service/test/log-operations.contract.test.ts` only checks
+  that export credentials are read from env and that export routes exist; it
+  does not test tenant filtering, data-class filtering, or external egress
+  denial.
+
+Impact:
+
+- A single configured Datadog/Splunk target receives logs for all tenants,
+  services, capabilities, traces, and environments that ingest into the log
+  lake.
+- Operators cannot say "export tenant A to this vendor but keep tenant B local"
+  or "export metrics/errors but not prompts, documents, repository paths, or
+  provider payloads."
+- A misconfigured target can create cross-tenant or cross-region data egress
+  even when the in-platform log search is later permission-scoped.
+- The export queue becomes a second copy of broad operational data with no
+  explicit data-handling policy attached to each queued item.
+
+Required fixes:
+
+- Extend export targets with allowlists for tenant, capability, service,
+  environment, level, event type, and data class.
+- Add a redaction mode per target, with `metadata-only` or `operator-safe` as
+  the default and full payload export requiring an explicit sensitive-egress
+  flag.
+- Tag each normalized log with data classes such as `secret`, `prompt`,
+  `document`, `repo-path`, `provider-error`, `runtime-diagnostic`, and
+  `business-payload`.
+- Apply egress policy before inserting export queue rows, not only before HTTP
+  delivery.
+- Add tests proving tenant A logs do not go to tenant B targets, prompt/document
+  payloads are not exported in default mode, private targets remain blocked by
+  default, and a disabled/missing target cannot receive queued data.
+
+### 256. Observability raw log storage is searchable but not tamper-evident evidence
+
+Evidence:
+
+- `audit-governance-service/src/db.ts` creates
+  `audit_governance.observability_logs` with `raw_storage_uri`,
+  `raw_storage_offset`, and `raw_storage_bytes`.
+- The same table has no `raw_storage_hash`, `batch_hash`, `previous_hash`,
+  `signature`, `producer_token_id`, `ingest_decision_id`, or immutable sequence
+  field.
+- `audit-governance-service/src/log-storage.ts` writes filesystem records by
+  appending JSON lines to a day/service `logs.ndjson` file and stores only URI,
+  offset, and byte count.
+- The S3 storage path creates one NDJSON object per batch and uses AWS request
+  signing to upload, but it does not persist the object content hash or an
+  application-level signature in `observability_logs`.
+- `routes-logs.ts` writes parsed/redacted records to Postgres and raw NDJSON
+  storage, but there is no verification route that rereads the raw bytes and
+  proves they still match the indexed row.
+- Retention sweeps delete old indexed rows and filesystem partitions, but there
+  is no legal-hold marker, evidence-hold policy, or signed deletion receipt for
+  traces tied to governance evidence.
+- The searched log tests cover redaction, route existence, and worker startup,
+  but not raw-object hash verification, append-chain integrity, deletion
+  receipts, or tamper detection.
+
+Impact:
+
+- `/operations/logs` can help operators troubleshoot, but the raw log lake is
+  not strong enough to serve as authoritative governance evidence.
+- A filesystem admin, buggy retention sweep, or object-store mutation can alter
+  or remove raw NDJSON without the indexed row showing a broken hash chain.
+- Investigators cannot prove that the raw log bytes behind a trace are the same
+  bytes originally ingested.
+- Compliance retention and litigation-hold needs conflict with a simple
+  age-based sweep when workflow evidence traces must be preserved longer than
+  the default log retention period.
+
+Required fixes:
+
+- Persist a content hash for each raw storage span or batch and include it in the
+  indexed row.
+- Add an append-only hash chain or Merkle batch manifest with producer identity,
+  ingest time, row ids, storage URI, byte ranges, and previous batch hash.
+- Sign batch manifests with an audit-governance signing key and expose a
+  verification endpoint for trace/evidence bundles.
+- Add legal/evidence hold metadata so retention sweeps skip logs tied to active
+  investigations, approvals, or release evidence packs.
+- Emit signed deletion receipts for expired log partitions and include them in
+  Operations trust evidence.
+- Add tests for raw byte verification, tamper detection, missing object
+  detection, retention skip on hold, and signed deletion receipts.
+
+### 257. Production preflight omits Platform Registry and log-egress posture checks
+
+Evidence:
+
+- `bin/check-deploy-env.sh` checks production-class settings such as
+  `AUTH_PROVIDER=iam`, `AUTH_OPTIONAL=false`, `TENANT_ISOLATION_MODE=strict`,
+  `REQUIRE_TENANT_ID=true`, fail-closed governance, tool grants, provider
+  manifest signatures, tenant-scoped service tokens, audit-governance
+  reachability, and WorkGraph tenant DB posture.
+- Exact searches of `bin/check-deploy-env.sh`, `bin/check-deployment-env.sh`,
+  `bin/doctor.sh`, and `bin/configure-platform.py` find no checks for
+  `REGISTER_TOKENS`, `PLATFORM_REGISTER_TOKEN`, `PLATFORM_REGISTRY_URL`, or
+  platform-registry production auth mode.
+- `bin/check-deployment-env.sh` server mode checks core service tokens,
+  backend URLs, governance mode, provider manifest mode, and private agent-source
+  URL posture, but not Platform Registry auth/liveness or observability storage
+  and export settings.
+- Exact searches of the same deployment check scripts find no checks for
+  `LOG_EXPORT_TARGETS_JSON`, `LOG_STORAGE_BACKEND`, `LOG_RETENTION_DAYS`,
+  `LOG_EXPORT_ALLOW_INSECURE_HTTP`, or `LOG_EXPORT_ALLOW_PRIVATE_URLS`.
+- `platform-registry/docker-compose.yml` keeps
+  `REGISTER_TOKENS: "${REGISTER_TOKENS:-}"`, while
+  `audit-governance-service/docker-compose.yml` exposes log storage/export
+  knobs such as `LOG_STORAGE_BACKEND` and `LOG_EXPORT_TARGETS_JSON`.
+- `docs/observability-log-lake.md` documents external Datadog/Splunk forwarding,
+  but the deploy preflight does not prove any vendor target is policy-safe or
+  that a durable central log storage backend is configured.
+
+Impact:
+
+- A production preparation run can pass while Platform Registry remains open to
+  unauthenticated registration or while services are not securely registered.
+- The same deploy can pass while log egress is globally enabled without tenant,
+  data-class, or redaction policy.
+- Operators may believe the production guardrail script covers all enterprise
+  control-plane boundaries, while two evidence-sensitive boundaries remain
+  outside the blocking preflight.
+
+Required fixes:
+
+- Add Platform Registry checks to `bin/check-deploy-env.sh` and
+  `bin/check-deployment-env.sh`: non-empty strong register auth, no open
+  registration in production, reachable registry when service discovery is
+  enabled, and stale-health policy configured.
+- Add observability checks: durable storage backend, explicit retention policy,
+  export targets disabled by default, and policy metadata for every enabled
+  external target.
+- Fail production-class preflight when `LOG_EXPORT_ALLOW_INSECURE_HTTP=true` or
+  `LOG_EXPORT_ALLOW_PRIVATE_URLS=true` unless an explicit break-glass evidence
+  reference is supplied.
+- Add doctor/preflight tests proving missing registry auth and unsafe log egress
+  fail the production path.
+
+### 258. Copilot setup scripts and docs still describe a retired gateway route
+
+Evidence:
+
+- `bin/check-deployment-env.sh` explicitly rejects
+  `DEFAULT_PROVIDER=copilot` or `github_copilot` with the message:
+  "Copilot is incorrectly configured as a Gateway provider" and tells operators
+  to use `AGENT_TASK executor=copilot` plus `copilot_execute`.
+- `bin/llm-use-copilot.sh` exits immediately with
+  "Copilot gateway mode is retired. Copilot is executed only through an
+  AGENT_TASK with executor=copilot..."
+- The same `bin/llm-use-copilot.sh` file still contains extensive dead
+  instructions and code for routing all LLM traffic through a Copilot
+  OpenAI-compatible server via the LLM Gateway.
+- `bin/setup-mcp-server.sh` still has a top-level example titled "Copilot
+  through the bundled local OpenAI-compatible bridge", defines
+  `start_copilot_bridge(...)`, and its preflight `case "$provider"` branch
+  checks for a Copilot bridge and `bin/copilot-cli-server.js`.
+- Later in the same `bin/setup-mcp-server.sh`, any `--provider copilot`,
+  `--copilot-base-url`, `--copilot-token`, or `--start-copilot-bridge` exits
+  with "Copilot gateway/bridge mode is retired."
+- `docs/office-cloud-deployment.md` still says "Run LLM on this laptop via
+  Copilot" by starting `npx copilot-api@latest`.
+- `README.md` still contains older guidance about an OpenAI-compatible Copilot
+  bridge and warns that the GitHub Copilot CLI is not an OpenAI-compatible HTTP
+  server.
+
+Impact:
+
+- Fresh-clone users can follow checked-in docs or script examples that lead
+  directly to a retired path and immediate script failure.
+- Operators cannot tell whether Copilot should be configured as an LLM Gateway
+  provider, a local bridge, GitHub Models, or the governed MCP
+  `copilot_execute` path.
+- A setup screen or support runbook can accidentally revive the gateway route
+  even though runtime policy now blocks it, creating inconsistent demos and
+  broken split-runtime setup.
+
+Required fixes:
+
+- Remove retired Copilot gateway code and examples from
+  `bin/llm-use-copilot.sh` and `bin/setup-mcp-server.sh`, or move them behind an
+  explicit legacy/development command that is not shown in normal help.
+- Update `README.md`, `docs/office-cloud-deployment.md`, and provider setup docs
+  so the only normal Copilot path is `AGENT_TASK executor=copilot` through the
+  governed MCP `copilot_execute` tool.
+- Rename any remaining OpenAI-compatible GitHub Models path so it is not called
+  "Copilot" unless it is actually the governed Copilot CLI route.
+- Add a docs/script drift test that fails if normal setup docs mention Copilot as
+  an LLM Gateway provider or bridge.
+
+### 259. Runtime preflight can pass with placeholder tenant metadata that disagrees with the JWT
+
+Evidence:
+
+- `bin/runtime-preflight.sh` sets
+  `RUNTIME_TENANT_ID="${RUNTIME_TENANT_ID:-${TENANT_ID:-default}}"` before
+  running required checks.
+- The same script then calls `check_required RUNTIME_TENANT_ID`, so a missing
+  tenant silently becomes the string `default` and passes.
+- `bin/runtime-preflight.sh` validates the runtime token only for JWT shape,
+  expiry, and `kind` being `runtime` or `device`.
+- The token validation block does not compare JWT claims such as `runtime_id`,
+  `device_id`, `sub`, `tenant_id`, `tenant_ids`, or allowed frame types against
+  `RUNTIME_ID`, `RUNTIME_USER_ID`, `RUNTIME_TENANT_ID`, or
+  `RUNTIME_BRIDGE_URL`.
+- `bin/setup-mcp-server.sh check` is stricter in one direction: it warns when
+  `tenant_id` is not configured, but it still delegates the full environment
+  inventory to `check-deployment-env.sh` rather than making
+  `runtime-preflight.sh` authoritative.
+- Context Fabric correctly treats JWT claims as authoritative, so any local
+  preflight mismatch is an operator/debugging problem, not something Context
+  Fabric will reconcile from the hello metadata.
+
+Impact:
+
+- A multi-user or server-hosted MCP+LLM runtime can pass local preflight while
+  the operator has not selected a real tenant.
+- The runtime process can display or send `default` tenant metadata while
+  Context Fabric routes by a different tenant claim or by a tenantless personal
+  token.
+- Troubleshooting becomes confusing: the terminal says the runtime is ready, but
+  `/api/runtime-bridge/status` may show a different tenant/user/runtime identity
+  or reject tenant-scoped work.
+- Server-shared runtime deployments are especially prone to this because
+  placeholder tenant metadata looks like a successful enterprise preflight.
+
+Required fixes:
+
+- Make `bin/runtime-preflight.sh` fail when tenant is missing in strict or
+  shared-runtime mode instead of defaulting to `default`.
+- Decode the JWT and compare token claims to configured runtime id, user id,
+  tenant id, allowed frame types, and expiry.
+- Show the token-derived identity as authoritative and mark local env values as
+  mismatches when they differ.
+- Add an explicit `--allow-personal-tenantless-runtime` or local-dev flag for
+  compatibility with old laptop device tokens.
+- Add tests for missing tenant, placeholder `default`, mismatched tenant claim,
+  mismatched runtime id, expired token, and tenantless personal runtime mode.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
