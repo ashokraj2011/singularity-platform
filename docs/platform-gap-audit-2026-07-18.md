@@ -8941,6 +8941,199 @@ Required fixes:
   malformed, valid zero-claim result, partial invalid claims, retry after failure,
   and evidence-pack rendering of extraction health.
 
+### 205. Runtime bridge revocation checks treat unknown devices as active
+
+Evidence:
+
+- `singularity-iam-service/app/devices/routes.py` implements
+  `GET /internal/devices/status`.
+- That endpoint depends on `require_reference_read`, which permits any real user
+  token and any service token with `read:reference-data`; it does not require the
+  caller to be the device owner or a runtime-bridge-only service principal.
+- The endpoint accepts arbitrary `user_id` and `device_id` query parameters.
+- When no `UserDevice` row is found, it returns
+  `{ "found": false, "revoked": false }`.
+- `context-fabric/services/context_api_service/app/laptop_bridge.py`
+  `_device_revoked(...)` calls that endpoint and returns only
+  `bool(data.get("revoked"))`, discarding the `found` value.
+- Runtime WebSocket admission rejects a runtime only when `_device_revoked(...)`
+  returns `True`, or when the IAM status check is unavailable and
+  `REVOCATION_FAIL_OPEN` is false.
+- Therefore, a signed runtime/device JWT whose `(sub, device_id/runtime_id)` no
+  longer maps to a `UserDevice` row is treated exactly like an active,
+  non-revoked runtime.
+- The mid-session recheck has the same issue: unknown device status is collapsed
+  to false, so it does not disconnect the runtime.
+
+Impact:
+
+- Deleting or failing to persist a runtime/device row does not reliably disable
+  a still-valid signed JWT; it can be admitted until JWT expiry.
+- Operators cannot distinguish "known active runtime" from "unknown device id"
+  in Context Fabric admission behavior.
+- The internal device-status API is also a cross-user device existence probe for
+  any authenticated real user, because it returns `found` for arbitrary
+  `(user_id, device_id)` pairs.
+- Runtime bridge audit evidence can imply revocation enforcement was checked
+  even though the decisive registered-device existence check was ignored.
+
+Required fixes:
+
+- Make the IAM status endpoint service-only, or require owner/super-admin access
+  for human callers and a dedicated `runtime:device-status` service scope for
+  Context Fabric.
+- Include tenant/runtime-scope checks in the status lookup and reject caller
+  tenant mismatches.
+- Change Context Fabric to treat `found=false` as fail-closed in strict mode and
+  as a separate `RUNTIME_DEVICE_NOT_REGISTERED` admission error.
+- Return and consume a richer status envelope such as
+  `registered`, `revoked`, `owner_active`, `tenant_active`, `runtime_scope`, and
+  `policy_version`.
+- Add tests for unknown device rows, deleted device rows, cross-user status
+  probes, revoked rows, IAM unavailable, and mid-session transition from found
+  to missing.
+
+### 206. IAM token verification does not refresh tenant membership claims
+
+Evidence:
+
+- `singularity-iam-service/app/auth/routes.py` local login computes tenant
+  membership from the database with `active_tenant_ids(...)`, then stamps that
+  list into the JWT through `create_access_token(...)`.
+- OIDC login follows the same pattern before minting the user token.
+- The same file's `/auth/verify` endpoint decodes the presented token and checks
+  only that the `User` row still exists and has `status == "active"`.
+- `/auth/verify` returns `tenant_ids=list(payload.get("tenant_ids") or [])`
+  from the JWT payload instead of recomputing active `UserTenantMembership` rows.
+- `workgraph-studio/apps/api/src/lib/iam/client.ts` prefers `/auth/verify` for
+  bearer introspection and caches the returned `IamUser` object for
+  `IAM_VERIFY_CACHE_TTL` seconds.
+- `workgraph-studio/apps/api/src/middleware/auth.ts` uses the returned
+  `iamUser.tenant_ids` to bind `X-Tenant-Id` / tenant selectors before route
+  authorization runs.
+
+Impact:
+
+- Removing a user's tenant membership does not immediately remove that tenant
+  from already-issued user JWTs. Downstream services can continue accepting the
+  old tenant claim until JWT expiry, plus any WorkGraph verification cache TTL.
+- WorkGraph's strict tenant selector check can pass with stale tenant claims
+  even though IAM's current membership table would reject the same user.
+- Enterprise offboarding and emergency tenant revocation are weaker than the UI
+  implies: disabling the whole user is live, but removing one tenant from an
+  otherwise active user is not live.
+- Audit decisions that record the token tenant context can overstate the user's
+  current tenant membership at the time of use.
+
+Required fixes:
+
+- Have `/auth/verify` recompute active tenant memberships from
+  `UserTenantMembership` for user tokens, or include a token version /
+  membership-version claim and reject stale versions after membership changes.
+- Clear or shorten WorkGraph `IAM_VERIFY_CACHE_TTL` for tenant-sensitive actions,
+  and provide an explicit cache-invalidation path for user membership changes.
+- Record tenant-membership version or evaluated membership source in authz
+  decisions.
+- Add tests for removing one tenant from a multi-tenant user, keeping the user
+  active, then verifying that old JWTs cannot select the removed tenant in IAM,
+  WorkGraph, Context Fabric, approvals, and runtime dispatch.
+
+### 207. WorkItem trigger dedupe claims can suppress retry after partial failure
+
+Evidence:
+
+- `fanOutToWorkItemTriggersDetailed(...)` computes a `dedupeValue` from
+  `deliveryId` or the resolved trigger correlation key.
+- When no existing WorkItem is attachable, the helper calls
+  `claimTriggerEvent(...)` before `createWorkItem(...)`, `recordTriggerEventWorkItem(...)`,
+  and `routeWorkItem(...)`.
+- `claimTriggerEvent(...)` creates `WorkItemEventDedup(triggerId, dedupeValue)`
+  first and returns `claimed`.
+- If any later step throws before `recordTriggerEventWorkItem(...)`, the catch
+  block returns a fan-out result with `status: 'failed'`, but the dedupe row
+  remains with `workItemId == null`.
+- A retry with the same delivery/correlation key inside `DEDUP_WINDOW_MS` hits
+  the unique key, returns `duplicate` with `workItemId: null`, and
+  `fanOutToWorkItemTriggersDetailed(...)` continues without creating or routing
+  a WorkItem.
+- The stale claim is released only after the window expires, at which point a
+  later retry updates `claimedAt` and tries again.
+- The schema has only `triggerId`, `dedupeValue`, `workItemId`, and `claimedAt`
+  on `WorkItemEventDedup`; it has no claim status, error, attempt count, lease,
+  expiration, tenant id, or recovery marker.
+
+Impact:
+
+- A transient failure after claim creation can turn an otherwise retryable
+  inbound event into a silent duplicate/no-op for the dedupe window.
+- Producers and operators can receive retryable errors, retry promptly, and still
+  fail to create or route the WorkItem because the stale claim blocks them.
+- Workflow Operations may show a failed event without a durable way to clear or
+  replay the orphaned dedupe claim.
+- The SDLC event-driven path is not strongly at-least-once: the idempotency
+  guard protects against duplicate creation but can also suppress the only valid
+  retry.
+
+Required fixes:
+
+- Treat `WorkItemEventDedup` as a leased command/claim with statuses such as
+  `CLAIMED`, `CREATED`, `ROUTED`, `FAILED`, `EXPIRED`, and `REPLAYING`.
+- Commit claim, WorkItem creation, claim-to-WorkItem binding, and routing command
+  in one transaction or transactional outbox flow.
+- On failure before `workItemId` is bound, mark the claim retryable instead of
+  returning duplicate/no-op on the next delivery.
+- Expose orphaned/failed dedupe claims in Workflow Operations with repair and
+  replay actions.
+- Add tests for failures after claim, after WorkItem create, after
+  `recordTriggerEventWorkItem`, after route, concurrent retries, and manual
+  replay of an orphaned claim.
+
+### 208. Signed ingress records events before routing without an idempotent operation record
+
+Evidence:
+
+- `incoming-events.router.ts` requires an upstream outbox id and HMAC signature,
+  then creates an `EventLog` row with `eventType: incoming.${eventName}` before
+  it calls `fanOutToWorkItemTriggers(...)`.
+- If the event-log write succeeds but trigger fan-out fails, the route returns
+  `503 EVENT_FANOUT_FAILED` with `retryable: true`.
+- The route does not upsert by upstream `outboxId`; `EventLog` has no unique key
+  on event type, source service, upstream outbox id, tenant, or trace id.
+- Re-delivery after that 503 can therefore create another `incoming.${eventName}`
+  row before attempting fan-out again.
+- The already-recorded row is not updated with routing status, trigger results,
+  WorkItem ids, workflow instance ids, or a terminal dead-letter state.
+- Workflow Operations currently reads only `WorkflowInboundEventReceived`,
+  `WorkflowInboundEventDeadLettered`, `WorkflowInboundEventFailed`, and
+  `WorkflowInboundEventReplayed`, so these partial signed-ingress rows do not
+  become first-class operations records.
+
+Impact:
+
+- A signed event can be durably recorded many times while never producing a
+  visible operation record that explains whether routing is pending, failed, or
+  replayable.
+- Upstream retry behavior can multiply audit rows without providing a stronger
+  recovery path.
+- Operators cannot safely answer "did this upstream outbox event start work?"
+  from the event log alone, because the routing result is not part of the same
+  idempotent operation record.
+- Downstream work may eventually be created by a later retry, while earlier
+  `incoming.*` rows remain as ambiguous partial evidence.
+
+Required fixes:
+
+- Normalize signed ingress into the same `WorkflowInboundEvent*` operation model
+  used by authenticated event intake.
+- Add a tenant-scoped unique idempotency key for source service + upstream
+  outbox id + event name.
+- Store routing status, trigger results, WorkItem ids, workflow instance ids,
+  last error, and retry/replay state on that operation record.
+- Make retries resume or update the existing operation record instead of writing
+  a new ambiguous `incoming.*` audit row.
+- Add tests for persist-then-fanout failure, repeated upstream retry,
+  eventual-success retry, operation visibility, and replay of signed ingress.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
