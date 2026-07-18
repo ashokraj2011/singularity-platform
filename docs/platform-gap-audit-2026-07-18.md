@@ -17002,6 +17002,64 @@ Required fixes:
   layer-kind denial, sensitive-layer export denial, registered compressor
   success, oversized/bad compressor responses, and receipt/audit completeness.
 
+### 350. Prompt Compressor sidecar exposes unauthenticated compression on a host port
+
+Evidence:
+
+- `context-fabric/services/prompt_compressor_service/app/main.py` creates a
+  plain FastAPI app and mounts the compression router with `app.include_router`
+  but does not install authentication, service-token, tenant, rate-limit, or
+  audit middleware.
+- `context-fabric/services/prompt_compressor_service/app/api.py` exposes
+  `POST /api/v1/compress` and `GET /api/v1/status`. The request model validates
+  target/rate and input size, but the route receives no `Authorization` header,
+  caller identity, tenant, prompt assembly, or permission decision.
+- `context-fabric/services/prompt_compressor_service/app/config.py` has
+  compression sizing and model settings only. There is no configured
+  `COMPRESSOR_SERVICE_TOKEN`, caller allowlist, tenant allowlist, per-tenant
+  quota, or network exposure mode.
+- `docker-compose.yml` maps the optional service to the host with
+  `8011:8011` when the `compression`/`full` profile is used. The comments say
+  Prompt Composer is the intended consumer, but the compose boundary exposes
+  the service to any process that can reach the host port.
+- Existing finding 349 covers Prompt Composer sending prompt layers to
+  caller-supplied compressor URLs. This finding covers the compressor sidecar
+  itself being callable without platform identity or authorization.
+
+Impact:
+
+- A local or adjacent actor can use the sidecar as a free unauthenticated text
+  processing endpoint and consume CPU/model memory, especially when
+  `COMPRESSION_STRATEGY=llmlingua` lazy-loads the model.
+- If another service accidentally points at this sidecar, the compressor cannot
+  prove the caller was Prompt Composer, that the tenant authorized compression,
+  or that the compressed text belongs to an allowed prompt assembly/layer kind.
+- Compression receipts are not platform evidence. They return a generated
+  receipt id and log caller-provided metadata, but they do not bind the request
+  to tenant, actor, service token id, prompt assembly id, trace id, or a
+  compression-policy decision.
+- Host-port exposure makes it easy for development, laptop, or office-network
+  deployments to accidentally turn an internal sidecar into a shared endpoint
+  with no abuse controls or tenant accounting.
+
+Required fixes:
+
+- Make the compressor an internal-only sidecar by default. Remove host port
+  publication from normal profiles and expose it only under an explicit debug
+  profile.
+- Add service-to-service authentication for `/api/v1/compress`; require a
+  Prompt Composer service token or mTLS identity, tenant id, trace id, prompt
+  assembly id, and permitted layer kind.
+- Add a server-side compressor policy that enforces caller allowlist, tenant
+  allowlist, allowed layer kinds, max input, max target, timeout, request rate,
+  and strategy/model eligibility before compression starts.
+- Persist or emit a real compression evidence event containing caller identity,
+  tenant, prompt assembly, layer ids/kinds, before/after hashes, model/strategy,
+  duration, policy decision id, and trace id.
+- Add tests for missing auth, wrong service token, missing tenant/trace, denied
+  layer kind, debug-port disabled by default, quota/rate denial, llmlingua
+  lazy-load abuse limits, and receipt/audit completeness.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
