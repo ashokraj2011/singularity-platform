@@ -13479,6 +13479,146 @@ Required fixes:
   sponsors, direct-user sponsor assignment, role-based fallback, and objective
   owner validation.
 
+### 290. Team hierarchy creation still depends on raw parent-team ids
+
+Evidence:
+
+- Platform Web improved several Identity forms with populated selectors:
+  business-unit parent uses a `business-units` dropdown, role scope uses fixed
+  `platform` / `capability` options, permission category uses the platform
+  taxonomy, and user team/role assignment uses relation pickers.
+- The same `IdentityConsole.tsx` team create/edit definitions still expose
+  `parent_team_id` as `"Parent team ID"` with placeholder `"(optional UUID)"`,
+  not as a team picker that excludes the current team and descendants.
+- IAM's team update path validates `parent_team_id` existence and calls
+  `_assert_no_team_cycle(...)`, but the create path writes
+  `parent_team_id=body.parent_team_id` directly into the new `Team` row and
+  relies on database constraints or later update validation if the operator
+  entered a bad raw id.
+
+Impact:
+
+- Identity admins can create or edit team hierarchy by copying UUIDs instead of
+  selecting governed teams, which is error-prone and inconsistent with the rest
+  of the newer Identity UX.
+- A bad parent id on create can surface as a low-level persistence failure rather
+  than a clear field-level validation error. Even when the database rejects it,
+  the operator sees a brittle admin workflow.
+- Hierarchy mistakes matter because team membership feeds capability ownership,
+  workflow access grants, approvals, routing, and notification targeting.
+
+Required fixes:
+
+- Change team create/edit `parent_team_id` to a populated parent-team dropdown
+  with search, root/detach option, current-team exclusion, and descendant
+  exclusion for edits.
+- Validate parent existence and cycle safety in the create route as well as the
+  update route, returning a clear `400` field error before attempting the insert.
+- Include tenant-aware parent filtering once IAM tenant ownership is strict, so a
+  team can only be nested under an eligible team in the same tenant/business
+  hierarchy.
+- Add UI/API tests for valid parent selection, missing parent, self-parent,
+  descendant-parent, root detach, and cross-tenant parent rejection.
+
+### 291. Capacity forecasts use one-day availability instead of a schedulable horizon
+
+Evidence:
+
+- `capacity.router.ts` exposes `POST /api/planning/capacity/forecast` with
+  `workItems`, optional `calendarIds`, optional `scenario`, and per-work-item
+  `dueAt`, but the request schema has no explicit forecast start/end horizon,
+  working-day policy, or scheduling granularity.
+- `forecastCapacity(...)` loads all selected calendars and all active
+  allocations for those calendars, regardless of allocation dates or overlap with
+  the forecast scenario.
+- The same function computes `availableHours` by calling
+  `hoursForDay(calendar, new Date())` once per calendar, so `totalAvailableHours`
+  represents today's capacity only.
+- Conflict detection compares each work item's `effortHours` to that one-day
+  `totalAvailableHours`; it does not calculate cumulative capacity until the
+  item's `dueAt`, respect the calendar timezone, subtract allocations in the same
+  date window, or build a real schedule.
+- `predictedCompletionDays` is derived as
+  `ceil(totalEffort / totalAvailable)`, where `totalAvailable` is again today's
+  available hours, not capacity across the delivery horizon.
+
+Impact:
+
+- Capacity dashboards can label a plan low/medium/high risk based on today's
+  capacity rather than actual capacity before the requested due dates.
+- A plan with work due next month can look falsely risky if today's hours are
+  low, while a plan due tomorrow can look falsely safe if long-range allocations
+  were counted outside the relevant window.
+- Generation plans and portfolio views that consume these forecasts can produce
+  misleading staffing, WIP, and delivery-date evidence.
+
+Required fixes:
+
+- Add a forecast horizon to the API contract: start date, end date or per-item
+  due-date window, timezone behavior, working-day policy, and scheduling
+  granularity.
+- Compute cumulative calendar capacity over the requested horizon, subtracting
+  only allocations that overlap the same window and respecting holidays and
+  timezone-local working days.
+- Return a schedule-oriented result: earliest feasible date, overloaded days,
+  blocking allocation ids, utilization by week, WIP-limit violations, and per
+  WorkItem risk.
+- Store a forecast input digest and calendar/allocation snapshot references so
+  generation-plan and portfolio evidence can prove which capacity state produced
+  the recommendation.
+- Add tests for due tomorrow versus due next month, timezone boundary days,
+  holidays, overlapping allocations, non-overlapping allocations, zero-capacity
+  calendars, and WIP-limit breaches.
+
+### 292. Bare-metal setup does not pin or validate the Node and package-manager toolchain
+
+Evidence:
+
+- `bin/bare-metal.sh` performs a real Python minimum-version check through
+  `PYTHON_MIN_VERSION="3.11"` and `select_python_bin(...)`, but the same `cmd_up`
+  path only calls `require node` and `require npm`.
+- The WorkGraph package manager is only presence-checked:
+  `command -v pnpm ... || warn "pnpm not found — workgraph install will fail"`.
+  There is no minimum pnpm version, Corepack activation, or package-manager
+  lockfile version check before install.
+- `bin/check-deployment-env.sh` similarly checks that `node` and `npm` exist, but
+  does not validate a Node major/minor range.
+- Active packages launched by setup, including `agent-and-tools`,
+  `agent-and-tools/web`, `agent-runtime`, `agent-service`, `prompt-composer`,
+  `mcp-server`, `workgraph-studio`, `workgraph-studio/apps/api`,
+  `audit-governance-service`, `platform-registry`, and `claim-registry`, have no
+  `engines.node` or `packageManager` declaration. The retired/hidden
+  `singularity-code-foundry` package is the only inspected package declaring
+  `engines: { node: ">=20" }`.
+- The current local shell used for this audit reports `node v25.5.0`,
+  `npm 11.8.0`, and `pnpm 10.33.2`; the setup scripts would accept that toolchain
+  without telling the operator whether it is supported.
+
+Impact:
+
+- Fresh-clone and office-laptop installs can fail in inconsistent ways depending
+  on the user's globally installed Node, npm, and pnpm versions.
+- Next, Prisma, ts-node, Vite, Electron, and WorkGraph VM packages can break on
+  unsupported Node majors or lockfile/package-manager mismatches, but setup will
+  discover that only after dependency install, code generation, build, or runtime
+  boot.
+- Support cannot give a single reproducible setup recipe because the platform
+  does not encode the toolchain contract it expects.
+
+Required fixes:
+
+- Add a repository-level toolchain contract such as `.nvmrc` / `.node-version`,
+  `packageManager`, and `engines` for each active package family.
+- Teach `bin/setup.sh`, `bin/bare-metal.sh`, `bin/doctor.sh`, and
+  `bin/check-deployment-env.sh` to validate Node and pnpm ranges before
+  dependency installation.
+- Prefer Corepack-managed pnpm with a pinned version for WorkGraph and fail early
+  when the wrong package manager/version is active.
+- Document one supported Node line for Docker, bare-metal server, and laptop MCP
+  runtime, plus an explicit "known unsupported" warning for newer untested majors.
+- Add a topology/doctor test that fails when active packages omit engines or when
+  setup would accept an unsupported Node/pnpm combination.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
