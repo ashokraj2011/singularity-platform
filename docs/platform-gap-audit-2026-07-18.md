@@ -14289,6 +14289,71 @@ Required fixes:
   insert failure, retry after lost response, state-file loss, duplicate
   suppression, and export queue dedupe.
 
+### 306. Direct LLM and gateway calls cannot stream tokens into the run cockpit
+
+Evidence:
+
+- `context-fabric/services/llm_gateway_service/app/types.py` exposes
+  `ChatCompletionRequest.stream` only for OpenAI-shape parity and documents that
+  streaming is not implemented.
+- `context-fabric/services/llm_gateway_service/app/router.py` rejects any
+  `/v1/chat/completions` request with `stream=true` by returning
+  `400 streaming is not yet supported by the gateway; set stream=false`.
+- `context-fabric/services/llm_gateway_service/app/providers/openai_compat.py`
+  explicitly says streaming is not implemented and callers fall back to
+  non-streaming final-response assembly.
+- `workgraph-studio/apps/api/src/modules/workflow/runtime/executors/DirectLlmTaskExecutor.ts`
+  calls OpenAI-compatible and Anthropic endpoints with ordinary `fetch(...)`
+  JSON requests, then parses the full JSON body through `parseJsonResponse(...)`.
+  It never sends `stream: true`, never reads an SSE/body stream, and never emits
+  per-token or per-chunk workflow events during the provider call.
+- The same Direct LLM executor creates `EXECUTION_TRACE` and `LLM_RESPONSE`
+  outputs only after the provider/harness call returns.
+- The run UI already has live-token affordances: `LiveEventsPanel.tsx` renders
+  `llm.stream.delta` events into `liveText`, and `RunInsightsPage.tsx` counts
+  `llm.stream.delta` as "stream chunks".
+- `LiveEventsPanel.tsx` describes its source as "Streamed from MCP via
+  context-fabric", so WorkGraph-direct LLM nodes and LLM Gateway calls do not
+  match the live interaction model shown to operators.
+
+Impact:
+
+- Direct LLM co-work/review nodes can sit silent until the full model call
+  returns, even though users expect a Copilot-like live window with incremental
+  reasoning, partial outputs, and early cancel/send-back options.
+- Long verifier, document-review, or multi-phase loop calls provide no live
+  heartbeat beyond the surrounding workflow node status, making timeouts,
+  provider stalls, and prompt mistakes harder to diagnose.
+- Run insights can show zero stream chunks for successful direct LLM work, which
+  makes the "live events" metric misleading when users mix MCP-routed agents and
+  WorkGraph-direct LLM nodes in one workflow.
+- Governance review happens after a completed output exists; reviewers cannot
+  intervene on suspicious intermediate content, runaway output, or an obviously
+  wrong prompt before the full token spend occurs.
+- The platform cannot offer a consistent enterprise co-work experience across
+  Context Fabric/MCP agent nodes, WorkGraph-direct LLM nodes, and LLM Gateway
+  aliases.
+
+Required fixes:
+
+- Add a streaming contract to LLM Gateway, such as
+  `POST /v1/chat/completions/stream` or `stream=true` returning normalized SSE
+  frames for OpenAI-compatible, Anthropic, Copilot, and mock providers.
+- Normalize provider deltas into platform events with trace id, workflow instance
+  id, node id, agent run id, model alias, provider request id, sequence number,
+  content delta, finish reason, and redaction class.
+- Update WorkGraph Direct LLM execution to request streaming when the selected
+  connection supports it and publish `llm.stream.delta`, `llm.stream.done`, and
+  `llm.stream.error` events before final `LLM_RESPONSE` persistence.
+- Add cancel/stop controls that can abort the active provider stream and persist
+  a reviewable partial-output artifact with clear status.
+- Keep non-streaming as a provider capability fallback, but surface that fallback
+  in run cockpit and `/llm-settings` readiness instead of silently behaving as a
+  dead live panel.
+- Add tests for OpenAI-compatible SSE, Anthropic event streams, provider fallback
+  to non-streaming, stream cancellation, redaction before event publication,
+  sequence ordering, and run UI transcript reconstruction from deltas.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
