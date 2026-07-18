@@ -9134,6 +9134,195 @@ Required fixes:
 - Add tests for persist-then-fanout failure, repeated upstream retry,
   eventual-success retry, operation visibility, and replay of signed ingress.
 
+### 209. Direct LLM execution records budget after the call instead of enforcing the preflight gate
+
+Evidence:
+
+- The governed Agent Task path calls `prepareLlmBudget(...)` before invoking the
+  model, passing the workflow instance, node, AgentRun id, context policy,
+  limits, and model overrides.
+- `prepareLlmBudget(...)` checks workflow and initiative budgets, blocks or
+  fails exhausted/hard-cap runs, clamps token limits to remaining budget, and
+  can route budget overruns to a human budget approval request before any LLM
+  call is made.
+- The Direct LLM executor does not call `prepareLlmBudget(...)` before
+  `callProvider(...)`, `runDirectLlmHarness(...)`, or
+  `runDirectLlmToolLoop(...)`.
+- After the Direct LLM provider returns, the executor calls
+  `recordWorkflowLlmUsage(...)` and catches failures by logging
+  `WorkflowBudgetUsageRecordFailed`; the Direct LLM node can still complete or
+  move to review even if budget usage persistence failed.
+- Direct LLM config validation bounds individual values such as `maxTokens` and
+  loop turns, but those are static per-node safety bounds, not a live
+  workflow/initiative remaining-budget decision.
+
+Impact:
+
+- A workflow or initiative that has already exhausted its approved token/cost
+  envelope can still perform direct provider calls, especially through phase or
+  tool loops, before the platform records any budget event.
+- Budget enforcement is inconsistent: governed Agent Task calls can pause or
+  fail before spending, while Direct LLM calls only reconcile spend after the
+  fact.
+- If the budget ledger write fails, operations can show a successful Direct LLM
+  artifact or approval request without the corresponding cost/token evidence.
+- This weakens initiative token-budget controls and makes Direct LLM an
+  attractive bypass path for expensive verifier or co-work flows.
+
+Required fixes:
+
+- Route Direct LLM execution through `prepareLlmBudget(...)` before any provider
+  call, using the same workflow and initiative budget policy as Agent Task.
+- Convert the budget decision into Direct LLM behavior: fail for hard caps,
+  pause with `BUDGET_APPROVAL_REQUIRED` for approval-required budgets, clamp
+  prompt/output limits, and apply economy-model aliases when configured.
+- Pass the clamped limits into single-call, phase-loop, and read-only tool-loop
+  execution so multi-turn Direct LLM cannot exceed the remaining envelope.
+- Make budget usage persistence failure visible as a recoverable blocked state
+  or durable outbox item instead of a catch-and-log side effect.
+- Add tests for exhausted workflow budget, exhausted initiative budget, warning
+  clamp, economy model override, loop turn budget, and budget-ledger write
+  failure on Direct LLM nodes.
+
+### 210. Generation plan apply lacks a durable plan-level evidence event
+
+Evidence:
+
+- `POST /generation-plans/:planId/apply` creates WorkItems, optional
+  specification bindings, DevelopmentScopes, HandoffGenerations, capacity
+  allocations, WorkItem dependency rows, and updates `GenerationPlanRow.state`.
+- The route catches each row failure and stores `state = FAILED` plus
+  `error = String(error)`, then continues applying the remaining rows.
+- At the end, it updates the plan `status` and increments `appliedRows`, then
+  returns JSON to the caller.
+- Searches found no `logEvent(...)`, `publishOutbox(...)`, or explicit
+  `GenerationPlanApplied`, `GenerationPlanApplyFailed`,
+  `GenerationPlanRowApplied`, or `GenerationPlanRowFailed` event in this apply
+  route.
+- Nearby related paths do emit audit events: actuals writes log
+  `GenerationPlanActualsRecorded`, amendment creation logs
+  `GenerationPlanAmendmentProposed`, and amendment transitions log
+  `GenerationPlanAmendmentTransitioned`.
+
+Impact:
+
+- Applying a generation plan is the bridge from approved specification intent to
+  executable WorkItems, but the bridge has no durable first-class event that
+  says who applied it, what rows succeeded, what rows failed, which WorkItems
+  were produced, and which dependencies/allocations were created.
+- Row failures become local row state, not an operator-visible event stream or
+  retryable outbox item.
+- Evidence packs and Operations timelines must infer generation behavior from
+  downstream WorkItems and row state, which is weaker than a single authoritative
+  apply receipt.
+- If the HTTP response is lost after partial success, operators cannot
+  reconstruct the apply attempt cleanly from audit/outbox data alone.
+
+Required fixes:
+
+- Add a durable `GenerationPlanApplyCommand` or apply-attempt record with actor,
+  tenant, request hash, plan content hash, validation snapshot id, started/completed
+  timestamps, row results, produced WorkItem ids, dependency ids, allocation ids,
+  and terminal status.
+- Emit `GenerationPlanApplyStarted`, `GenerationPlanRowApplied`,
+  `GenerationPlanRowFailed`, and `GenerationPlanApplyCompleted/Failed` audit and
+  outbox events.
+- Link each generated WorkItem, binding, scope, handoff, dependency, and capacity
+  allocation back to the apply attempt id.
+- Make row failure retry operate from the apply attempt/command record rather
+  than only from mutable row state.
+- Add tests proving successful apply, partial apply, all-row failure, lost HTTP
+  response retry, and dependency/allocation side effects are all reconstructable
+  from audit and outbox evidence.
+
+### 211. Governance Gate controls can be marked satisfied from node config
+
+Evidence:
+
+- `GovernanceGateExecutor.ts` collects satisfied controls from run context keys
+  such as `_satisfiedEvidence` / `_governanceEvidence`.
+- The same helper also adds every value from node config
+  `preSatisfiedControls` directly into the satisfied-control set.
+- The rich WorkGraph node inspector exposes `preSatisfiedControls` as a normal
+  Governance Gate field with the placeholder "comma-separated controlKeys
+  (optional)".
+- The resolved gate output reports `satisfied: [...satisfied]` and evidence refs
+  from check status, so pre-satisfied controls can appear in the same satisfied
+  list as controls proven by artifact, receipt, evaluator, formal, diff,
+  evidence-pack, predicate, or standard bindings.
+- Searches found no save-time validation that restricts `preSatisfiedControls`
+  to migrations, test fixtures, platform-authored templates, or signed overlay
+  data.
+
+Impact:
+
+- A workflow author who can edit node config can bypass a hard gate by listing
+  required control keys as pre-satisfied instead of producing the required
+  evidence.
+- This undermines the governance promise that release gates check documents,
+  artifacts, code diffs, standards, or formal evidence before progress.
+- Audit readers may see a control in the satisfied list without a durable
+  receipt/evaluator/artifact/formal proof explaining who satisfied it and why it
+  should be trusted.
+- Capability-owned governance overlays are weakened because local workflow
+  config can satisfy overlay-required controls unless additional policy forbids
+  the field.
+
+Required fixes:
+
+- Remove `preSatisfiedControls` from the normal node editor and reject it in
+  production workflow saves unless the template is platform-seeded or signed by
+  a trusted migration.
+- If historical pre-satisfied controls are needed, model them as explicit
+  `GovernanceControlAttestation` records with actor, tenant, capability,
+  reason, expiry, evidence reference, and approval decision id.
+- Make gate output distinguish proven, waived, manually attested, and
+  config-preseeded controls instead of merging them all into `satisfied`.
+- Add validation tests proving a normal workflow designer cannot publish a hard
+  Governance Gate with `preSatisfiedControls`, and runtime tests proving overlay
+  controls require real evidence or approved waivers.
+
+### 212. Empty Governance Gate nodes pass as skipped instead of failing configuration
+
+Evidence:
+
+- Platform guidance says a Governance Gate checks documents, artifacts, code,
+  standards, or combinations before allowing progress, and warns: "A gate
+  without inputs can only report configuration failure."
+- Runtime behavior differs: when the node has no governing capability and no
+  local controls, `activateGovernanceGate(...)` emits `status: SKIPPED` with the
+  note `no governing capability configured`, then returns `{ passed: true }`.
+- This branch is reached before overlay resolution, evidence binding, artifact
+  checks, formal verification, manual approval, or hard-block evaluation.
+- The WorkGraph inspector makes governing capability and control inputs editable
+  but not required fields, so a designer can accidentally leave a Governance
+  Gate empty.
+
+Impact:
+
+- A workflow can visually contain a release/governance gate while the runtime
+  treats it as a no-op success.
+- Operators may assume a stage was gated because the graph includes a Governance
+  Gate node, while the receipt only says `SKIPPED` and downstream execution has
+  already continued.
+- This is especially risky for generated or template-based workflows where a
+  missing capability id, missing local controls, or failed parameter capture can
+  silently remove the intended gate.
+
+Required fixes:
+
+- Treat an empty Governance Gate as a configuration error in `HARD_BLOCK`,
+  `AUTOMATIC`, and `MANUAL_REVIEW` modes; it should block before downstream
+  execution and report the missing capability/control inputs.
+- Add design-time validation that requires at least one governing capability,
+  local control, required artifact, formal verifier, diff validation, standard,
+  predicate, or evidence-pack binding.
+- Allow an explicit `disabled` or `advisoryNoop` field only for deliberate
+  no-op gates, and make that state visually distinct in designer and run
+  cockpit.
+- Add tests for empty hard/manual/automatic gates, missing capability from
+  launch parameters, and valid local-only controls.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
