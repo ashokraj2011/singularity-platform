@@ -14123,6 +14123,54 @@ Required fixes:
   command completion but before event/outbox, and retry with same/different
   request hashes.
 
+### 303. Synthesis Evidence Wiki export is browser-only and loses provenance
+
+Evidence:
+
+- `/synthesis/wiki` is presented as an "Evidence Wiki" and renders a living
+  initiative record from `useProject(...)`, `useClaims(...)`, and
+  `useProjectSpec(...)`.
+- `ProjectWikiScreen.tsx` builds the downloaded Markdown in the browser from
+  project name/mission, claims with `mean >= 0.65`, requirements, and decisions.
+- The download path creates a `Blob`, object URL, and `<a download>` click with
+  `${project.code}-wiki.md`; no WorkGraph API route is called to materialize the
+  export.
+- The generated Markdown does not include an export id, actor, tenant, policy
+  decision id, project revision, specification version id, specification content
+  hash, claim estimate ids, claim evidence citations, board/event sequence,
+  trace id, or artifact-store reference.
+- Exact searches found no server route or Prisma model for Synthesis Evidence
+  Wiki export, while other platform evidence surfaces such as workflow evidence
+  packs and business readout exports have server-side render/export code.
+
+Impact:
+
+- Users can circulate an Evidence Wiki as if it were governed SDLC evidence, but
+  the platform has no durable record of who exported it, when, under which
+  permission, and from which exact project/spec/claim state.
+- The export collapses probabilistic claims, requirements, and decisions into a
+  citation-light Markdown snapshot, making later audit or dispute resolution
+  unable to prove which evidence supported each statement.
+- Two users can download different wiki content seconds apart without any
+  snapshot id or hash that tells downstream reviewers which one is authoritative.
+- Evidence packs, trace cockpits, and release gates cannot cite the wiki as a
+  governed artifact because the download never enters artifact storage or audit.
+
+Required fixes:
+
+- Add a server-side `/studio/projects/:id/wiki/export` route that resolves the
+  project, active specification version, claims, decisions, citations, and
+  requested redaction mode under explicit `synthesis:wiki:export` permission.
+- Store a `SynthesisWikiExport` or generic artifact record with actor, tenant,
+  project id, spec version id, revision/hash, claim/evidence refs, format,
+  byte hash, trace id, and policy decision id.
+- Render citations per fact/requirement/decision and include both the platform
+  trace id and source ids needed to reopen the original evidence.
+- Make the UI download from the governed export endpoint and show the artifact id
+  plus generated-at snapshot metadata.
+- Add tests for current-head export, stale revision export, redaction, permission
+  denial, artifact creation, audit event creation, and evidence-pack inclusion.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
