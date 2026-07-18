@@ -15290,6 +15290,52 @@ Required fixes:
   long queries time out, row limits apply, and sink writes include tenant/actor
   provenance.
 
+### 323. Audit live-tail streams can lose events across reconnects
+
+Evidence:
+
+- `audit-governance-service/src/routes-stream.ts` documents `/audit/stream` as
+  the Splunk-like live-tail surface and keeps subscribers only in an in-process
+  `Set`.
+- `serialize(...)` emits an SSE `id` for each audit event, but the adjacent
+  comment says Last-Event-ID catch-up is "left as a follow-up" and "today
+  reconnect starts fresh."
+- The HTTP handler writes only a hello frame and future broadcasts; it never reads
+  `Last-Event-ID`, `lastEventId`, or a cursor query, and it does not run a
+  Postgres catch-up query for missed rows.
+- `agent-and-tools/web/src/app/audit/page.tsx` opens `new EventSource(url)` and
+  logs auto-reconnect errors, but it does not track the last received event id or
+  re-run `/audit/search` to fill the gap after reconnect.
+- `audit-governance-service/RELEASE.md` lists "Last-Event-ID resume on SSE
+  reconnect not implemented" as a known limitation.
+
+Impact:
+
+- Operators watching `/audit` or `/operations/logs` can miss governance events,
+  approval decisions, policy failures, or incident signals during network blips,
+  proxy restarts, browser sleep, service restarts, or queue overflow.
+- The stream looks live again after reconnect, so the missing interval can be
+  invisible unless the user manually repeats a historical search.
+- Datadog/Splunk-like workflows rely on "no gaps" expectations; a best-effort
+  live tail weakens incident response, trace reconstruction, and audit evidence.
+
+Required fixes:
+
+- Honor `Last-Event-ID` or an explicit cursor on `/audit/stream`, resolve it to
+  event `created_at`/id ordering, and replay matching missed events before the
+  live subscription starts.
+- Persist per-subscriber or per-client stream cursors only as a convenience; the
+  authoritative catch-up source should be `audit_events` filtered by the same
+  search predicates and tenant/access policy.
+- In the UI, store the last accepted event id and run an automatic catch-up search
+  after `EventSource` reconnects, with a visible "gap repaired" or "gap could not
+  be repaired" status.
+- Include dropped-count and reconnect-gap warnings in the stream stats and log
+  explorer.
+- Add tests for reconnect with `Last-Event-ID`, filtered catch-up, duplicate
+  suppression, permission redaction during replay, and multi-instance deployment
+  behavior once the stream moves beyond in-process fanout.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
