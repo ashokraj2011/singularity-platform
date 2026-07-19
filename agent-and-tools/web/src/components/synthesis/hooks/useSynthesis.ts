@@ -121,6 +121,30 @@ export function useProbes(
   );
 }
 
+/**
+ * Fetch probes for many claims at once (there is no project-level probes
+ * endpoint). Keyed by the sorted claim ids so the request is stable and
+ * revalidates only when the claim set actually changes. Per-claim failures are
+ * tolerated so one missing claim never blanks the whole board.
+ */
+export function useProjectProbes(
+  claimIds: string[],
+  config?: SWRConfiguration<SynProbe[]>,
+) {
+  const sorted = [...claimIds].sort();
+  const key = sorted.length ? (["syn-probes", ...sorted] as const) : null;
+  return useSWR<SynProbe[]>(
+    key,
+    async () => {
+      const results = await Promise.allSettled(
+        sorted.map((id) => workgraphFetch<{ items: SynProbe[] }>(`/studio/claims/${id}/probes`)),
+      );
+      return results.flatMap((r) => (r.status === "fulfilled" ? r.value.items ?? [] : []));
+    },
+    { revalidateOnFocus: false, ...config },
+  );
+}
+
 export async function createRoom(projectId: string, title: string): Promise<SynRoom> {
   return workgraphFetch<SynRoom>(`/studio/projects/${projectId}/rooms`, {
     method: "POST",
