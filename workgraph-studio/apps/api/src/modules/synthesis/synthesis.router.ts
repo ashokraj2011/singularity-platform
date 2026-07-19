@@ -14,6 +14,7 @@ import { buildManifest, getManifest } from './context-manifest.service'
 import { createDocument, getDocument, listDocuments, transitionDocument } from './document.service'
 import { addBlock, updateBlock, removeBlock, pinBlock } from './block.service'
 import { createWorkspaceProposal, listProposals, getProposal, decideProposalItems, rebaseProposalItem } from './proposal.service'
+import { runAgentTurn } from './synthesis-agent.service'
 
 export const synthesisRouter: Router = Router()
 
@@ -214,4 +215,13 @@ synthesisRouter.post('/proposals/:proposalId/decide', validate(decideSchema), wr
 }))
 synthesisRouter.post('/proposals/:proposalId/items/:itemId/rebase', validate(rebaseItemSchema), wrap(async (req, res) => {
   res.json(await rebaseProposalItem(String(req.params.proposalId), String(req.params.itemId), req.body))
+}))
+
+// ── Agent turn (governed; emits proposal items behind the autonomy ladder) ────────
+const agentTurnSchema = z.object({
+  role: z.enum(['FACILITATOR', 'EVIDENCE_CURATOR', 'REQUIREMENTS_EDITOR']),
+  message: z.string().trim().min(1).max(10000),
+})
+synthesisRouter.post('/workspaces/:workspaceId/threads/:threadId/agent-turn', validate(agentTurnSchema), wrap(async (req, res) => {
+  res.json(await runAgentTurn(String(req.params.workspaceId), String(req.params.threadId), req.body.role, req.body.message, req, userIdOf(req)))
 }))
