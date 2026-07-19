@@ -18567,6 +18567,61 @@ Required fixes:
   creation, spec patch, board event append, ingestion, validation transmutation,
   overnight shift, and WorkItem attachment.
 
+### 376. Idea Board has create-only board lifecycle and silently falls back to the first board
+
+Evidence:
+
+- `Board` stores `id`, `projectId`, `name`, `createdById`, `tenantId`,
+  `createdAt`, and `updatedAt`, plus relations to branches, events, snapshots,
+  moments, ingested artifacts, and validation reports. It has no `status`,
+  `archivedAt`, `deletedAt`, `isDefault`, `purpose`, or ordering field.
+- The Studio Board router exposes `POST /projects/:projectId/boards` and
+  `GET /projects/:projectId/boards`, then jumps directly to event/state/branch,
+  ingestion, moment, and merge routes. There is no route to rename, archive,
+  delete, restore, reorder, mark default, or describe a board.
+- `createBoard(...)` creates a board and an active `main` branch, logs
+  `BoardCreated`, and publishes outbox, while `listBoards(...)` returns every
+  board for the project ordered by `createdAt asc`.
+- `IdeaBoardWorkspace.load(...)` sets the selected board to the existing current
+  id when present, otherwise `items[0]?.id`, so returning users can be placed on
+  the oldest board without an explicit default or persisted preference.
+- The same workspace creates names from the client-side board count:
+  `Idea Board`, then `Idea Board ${boards.length + 1}`. The database has no
+  per-project uniqueness constraint, so concurrent clients or alternate entry
+  points can create duplicate names.
+- `ArtifactPile` in Source Intake independently picks `boards.data.items[0].id`
+  when no board is selected and creates every new source board with the literal
+  name `Source Intake`.
+
+Impact:
+
+- Users can create many boards but cannot retire stale experiments, correct
+  names, mark the canonical board, or make Source Intake target the intended
+  board by default.
+- Evidence, source ingestion, validation reports, and synthesis work can land on
+  the wrong board when the UI auto-selects the first-created board.
+- Duplicate board names make audit logs, topology nodes, source piles, and
+  export filenames ambiguous.
+- Enterprise retention and governance policies cannot distinguish active,
+  archived, superseded, private, source-only, or canonical boards because the
+  board itself has no lifecycle state.
+
+Required fixes:
+
+- Add first-class board lifecycle fields: `status`, `archivedAt`, `deletedAt` or
+  soft-delete marker, `isDefault`, `purpose`, display order, and optional board
+  type such as `IDEA`, `SOURCE_INTAKE`, `STRATEGY`, or `REFERENCE`.
+- Add governed board management APIs for rename, archive, restore, delete,
+  reorder, and set-default, with tenant/capability authorization and audit/outbox
+  events.
+- Make list routes hide archived/deleted boards by default and offer explicit
+  include flags for operators.
+- Persist or derive the selected/default board per project and surface, instead
+  of silently selecting the first row.
+- Add uniqueness or disambiguation for board names within a project.
+- Add tests for board rename/archive/default selection, duplicate-name handling,
+  source-intake targeting, archived-board writes, and audit/outbox evidence.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
