@@ -93,6 +93,14 @@ enum PromptLayerType {
   // they're cacheable.
   CODE_AGENT_RULES
   CODE_WORLD_MODEL
+  // Layered world model — the role-scoped prose views an agent actually reads
+  // (core + its role view + any relevant domain or task guide). ONE enum value
+  // for all ten kinds: the kind rides the heading and inclusionReason, so adding
+  // a view kind never needs another enum value or another migration.
+  //
+  // Sits just after CODE_WORLD_MODEL: the capability-wide model is the ambient
+  // ground, and the role view narrows it for this particular agent.
+  WORLD_MODEL_VIEW
   OUTPUT_CONTRACT
   APPROVAL_POLICY
   DATA_ACCESS_POLICY

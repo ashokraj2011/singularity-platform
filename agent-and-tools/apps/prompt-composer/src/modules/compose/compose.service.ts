@@ -185,6 +185,11 @@ const PRIORITY = {
   // workflows targeting the same repo, making them cache-friendly.
   CODE_AGENT_RULES:        305,
   CODE_WORLD_MODEL:        308,
+  // Layered world model — the role-scoped views for THIS agent. After the
+  // capability-wide model (308) that grounds every role, before anything
+  // task-specific (310+): the view narrows the ambient model, then the task
+  // narrows the view.
+  WORLD_MODEL_VIEW:        309,
   // M52 — Code Context Budgeter slots. The 7 CODE_* layers sit between
   // MEMORY_CONTEXT (300) and the legacy CODE_CONTEXT (320). When a
   // codeContextPackage is supplied on the compose request, these layers
@@ -518,6 +523,19 @@ export const composeService = {
         // (Story Intake, Plan, Design) get these too.
         if (input.worldModel) {
           appendWorldModelLayers(layers, input.worldModel);
+        }
+
+        // Layered world model — the role-scoped views context-fabric selected
+        // for this agent. Appended alongside the world-model layers and for the
+        // same reason: they derive purely from the request input, not from
+        // semantic retrieval, so they are not in a cached capsule's layer set
+        // and must be added BEFORE the capsule-cache branch to survive a hit.
+        //
+        // Guarded on length, not just presence: an empty array is the normal
+        // state for a capability whose views nobody has built, and it must
+        // produce exactly the layer set it produces today.
+        if (input.worldModelViews?.length) {
+          appendWorldModelViewLayers(layers, input.worldModelViews, budget.maxLayerChars * 2);
         }
 
         // ── M25.5 — Context Compiler cache lookup ──────────────────────────
@@ -2123,6 +2141,61 @@ export function appendWorldModelLayers(layers: AssembledLayer[], wm: WorldModelI
   };
   push("CODE_AGENT_RULES" as never, PRIORITY.CODE_AGENT_RULES, "capability world model — agent rules", renderCodeAgentRulesLayer(wm));
   push("CODE_WORLD_MODEL" as never, PRIORITY.CODE_WORLD_MODEL, "capability world model",              renderCodeWorldModelLayer(wm));
+}
+
+type WorldModelViewInput = NonNullable<ComposeInput["worldModelViews"]>[number];
+
+/**
+ * Render one role-scoped view.
+ *
+ * The kind rides the heading rather than the enum, which is why ten view kinds
+ * need one layer type and one migration. A stale view is rendered with a note
+ * instead of being dropped: grounding a commit or two behind is still worth far
+ * more than none, and the note lets the model discount it.
+ */
+export function renderWorldModelViewLayer(view: WorldModelViewInput, maxChars: number): string | null {
+  const body = (view.contentMd ?? "").trim();
+  if (!body) return null;
+
+  const scope = view.domainKey ? `${view.kind}: ${view.domainKey}` : view.kind;
+  const heading = `## Capability View — ${view.title} [${scope}]`;
+  const note = view.stale
+    ? "_This view was built against an earlier revision of the repository and may be out of date._"
+    : null;
+
+  return [heading, "", note, note ? "" : null, trimText(body, maxChars)].filter((l) => l !== null).join("\n");
+}
+
+/**
+ * Push one WORLD_MODEL_VIEW layer per view supplied.
+ *
+ * Priority 309 slots between CODE_WORLD_MODEL (308) and CODE_TASK_INTENT (310):
+ * after the capability-wide ambient model, before anything task-specific. Sort is
+ * stable, so views keep the order the slice returned them in — which is the
+ * routing priority agent-runtime already decided.
+ *
+ * No re-filtering happens here. The slice endpoint owns which views a role reads
+ * and how many fit; duplicating that judgement in the composer would give two
+ * places to change it and two ways for them to disagree.
+ */
+export function appendWorldModelViewLayers(
+  layers: AssembledLayer[],
+  views: WorldModelViewInput[],
+  maxChars: number,
+): void {
+  for (const view of views) {
+    const content = renderWorldModelViewLayer(view, maxChars);
+    if (!content) continue;
+    layers.push({
+      layerType: "WORLD_MODEL_VIEW" as never,
+      priority: PRIORITY.WORLD_MODEL_VIEW,
+      inclusionReason: view.domainKey
+        ? `world model view — ${view.kind} (${view.domainKey})`
+        : `world model view — ${view.kind}`,
+      contentSnapshot: content,
+      layerHash: sha256(content),
+    });
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
