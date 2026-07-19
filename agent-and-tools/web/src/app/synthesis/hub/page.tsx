@@ -13,6 +13,7 @@ import {
   FolderKanban,
   Gauge,
   Lightbulb,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -275,6 +276,38 @@ function InitiativeComposer({
 function ProjectCard({ project, onRefresh }: { project: SynProject; onRefresh: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [assessing, setAssessing] = useState(false);
+  // Editing an initiative in place. The PATCH route already existed with a rich
+  // updateProjectSchema; only the UI was missing, so name and mission were
+  // write-once and a mis-framed outcome had to be lived with.
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editName, setEditName] = useState(project.name);
+  const [editMission, setEditMission] = useState(project.mission ?? "");
+
+  const cancelEdit = () => { setEditName(project.name); setEditMission(project.mission ?? ""); setEditError(null); setEditing(false); };
+
+  // Send only what changed: the route validates a partial body, and echoing
+  // untouched fields would re-assert values a concurrent edit may have moved past.
+  const edits: Record<string, unknown> = {};
+  if (editName.trim() && editName !== project.name) edits.name = editName.trim();
+  if (editMission !== (project.mission ?? "")) edits.mission = editMission.trim() || null;
+  const editDirty = Object.keys(edits).length > 0;
+
+  async function saveEdit() {
+    if (!editDirty || saving) return;
+    setSaving(true);
+    setEditError(null);
+    try {
+      await workgraphFetch(`/studio/projects/${project.id}`, { method: "PATCH", body: JSON.stringify(edits) });
+      setEditing(false);
+      onRefresh();
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : "Could not save changes.");
+    } finally {
+      setSaving(false);
+    }
+  }
   const assessments = project.impactAssessments ?? [];
   const completed = assessments.filter((item) => item.status === "COMPLETED");
   const recommendationCount = completed.reduce((sum, item) => sum + (item.recommendations?.length ?? 0), 0);
@@ -294,12 +327,31 @@ function ProjectCard({ project, onRefresh }: { project: SynProject; onRefresh: (
       <div className="p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2"><MonoMeta>{project.code}</MonoMeta><AgingChip project={project} /></div>
-          <SynChip tone={project.status === "ACTIVE" ? "secondary" : "neutral"} mono>{project.status}</SynChip>
+          <div className="flex items-center gap-1.5">
+            <SynChip tone={project.status === "ACTIVE" ? "secondary" : "neutral"} mono>{project.status}</SynChip>
+            {editing ? null : <button type="button" onClick={() => setEditing(true)} title="Edit name and outcome" aria-label="Edit initiative" className="rounded-md p-1 text-on-surface-variant transition-colors hover:text-on-surface"><Pencil size={14} /></button>}
+          </div>
         </div>
-        <Link href={`/synthesis/ideas?project=${project.id}`} className="mt-4 block rounded-md focus:outline-none focus:ring-2 focus:ring-secondary">
-          <h3 className="font-display text-lg font-semibold leading-snug text-on-surface">{project.name}</h3>
-          <p className="mt-1.5 line-clamp-2 min-h-10 text-sm text-on-surface-variant">{project.mission || "Outcome has not been framed yet."}</p>
-        </Link>
+        {editing ? (
+          <div className="mt-4 grid gap-2">
+            <label className="grid gap-1 text-[11px] font-bold text-on-surface-variant">Initiative name
+              <input value={editName} onChange={(event) => setEditName(event.target.value)} className={inputClass} />
+            </label>
+            <label className="grid gap-1 text-[11px] font-bold text-on-surface-variant">Outcome / mission
+              <textarea value={editMission} onChange={(event) => setEditMission(event.target.value)} className={`${inputClass} min-h-16 py-2`} />
+            </label>
+            {editError ? <p className="text-xs text-error">{editError}</p> : null}
+            <div className="flex items-center gap-2">
+              <SynButton disabled={saving || !editDirty || !editName.trim()} onClick={() => void saveEdit()}>{saving ? "Saving…" : "Save"}</SynButton>
+              <SynButton variant="ghost" onClick={cancelEdit}>Cancel</SynButton>
+            </div>
+          </div>
+        ) : (
+          <Link href={`/synthesis/ideas?project=${project.id}`} className="mt-4 block rounded-md focus:outline-none focus:ring-2 focus:ring-secondary">
+            <h3 className="font-display text-lg font-semibold leading-snug text-on-surface">{project.name}</h3>
+            <p className="mt-1.5 line-clamp-2 min-h-10 text-sm text-on-surface-variant">{project.mission || "Outcome has not been framed yet."}</p>
+          </Link>
+        )}
 
         <div className="mt-4 flex items-center gap-2 text-xs font-semibold text-on-surface"><Target size={14} className="text-secondary" />{project.assignedCapability?.name ?? project.primaryCapabilityName ?? "Capability not assigned"}</div>
 
