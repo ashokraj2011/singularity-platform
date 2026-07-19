@@ -20367,6 +20367,63 @@ Required fixes:
 - Consider storing the policy as one enum/value object instead of two independent
   fields so impossible pairs cannot be represented.
 
+### 412. Run insights evidence reports fetch audit-governance timelines without tenant scope
+
+Evidence:
+
+- `workgraph-studio/apps/api/src/modules/workflow/insights.router.ts:181-197`
+  shows the intended strict-mode pattern for Copilot activity: after instance
+  tenant/access checks, it resolves the run tenant and passes that tenant into
+  `searchByTracePrefix(...)`.
+- The shared audit client supports tenant-scoped search only on
+  `searchByTracePrefix(prefix, limit, tenantId)` and explicitly documents that
+  audit-governance filters on `tenant_id` when provided
+  (`workgraph-studio/apps/api/src/lib/audit-gov/client.ts:197-200`).
+- `fetchEventsForInstance(instanceId, limit)` has no tenant parameter. It queries
+  audit-governance by `subject_id=instanceId` and `trace_id=instanceId` only
+  (`client.ts:167-184`).
+- `fetchEventsForTrace(traceId, limit)` also has no tenant parameter and queries
+  only `trace_id` (`client.ts:186-191`).
+- `GET /:id/ai-causality-report` performs local `assertWorkflowInstanceTenant`
+  and `assertInstancePermission`, but then calls
+  `fetchEventsForInstance(id, 500)` outside that tenant context
+  (`insights.router.ts:749-823`).
+- `buildInsightsResponse(...)`, which feeds `/insights`, `/evidence-pack`, and
+  `/delivery-receipt`, calls `fetchEventsForInstance(id, 500)` with no tenant
+  (`insights.router.ts:1091-1094`, `2127-2166`).
+- `GET /:id/trust-trace` derives trace ids for the authorized run and then calls
+  `fetchEventsForTrace(traceId, 500)` for each trace without tenant scope
+  (`insights.router.ts:1983-1998`).
+
+Impact:
+
+- In strict-tenant deployments, the local WorkGraph read can be tenant-checked
+  while the audit-governance join that enriches the response is not tenant-bound.
+- If trace ids, subject ids, imported historical ids, or debug/direct-call trace
+  ids collide across tenants, run insights can merge another tenant's audit events
+  into causality reports, trust traces, evidence packs, and delivery receipts.
+- Even without a collision, the code creates two different evidence semantics:
+  Copilot activity is tenant-scoped, but the canonical evidence reports are not.
+- Evidence packs are exportable as JSON, Markdown, and PDF, so any accidental
+  cross-tenant audit event becomes a durable downloadable artifact.
+- The platform cannot prove tenant-isolated evidence reconstruction if the central
+  report builders do not pass tenant context to audit-governance.
+
+Required fixes:
+
+- Extend `fetchEventsForInstance(...)` and `fetchEventsForTrace(...)` to accept
+  `tenantId` and include it in the audit-governance query/search body.
+- Resolve the runtime tenant from the authorized workflow instance once and pass it
+  through `buildInsightsResponse`, causality report, trust trace, evidence pack,
+  and delivery receipt builders.
+- Fail closed or emit an explicit incomplete-evidence warning in strict mode when
+  tenant context cannot be resolved for an audit-governance read.
+- Add regression tests with same trace/subject ids across two tenants proving
+  `/insights`, `/ai-causality-report`, `/trust-trace`, `/evidence-pack`, and
+  `/delivery-receipt` only include the caller's tenant audit rows.
+- Keep the Copilot activity, live stream, and report builders on one shared
+  tenant-scoped audit-read helper so future surfaces do not drift again.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
