@@ -19517,6 +19517,50 @@ Required fixes:
   `OBJECT_EDITED` event, followed by an in-window coalesce and a later
   `readState(...)` / `materializeBoardState(...)`.
 
+### 396. Agent exploration branch `maxTurns` is accepted but never enforced
+
+Evidence:
+
+- `forkSchema` accepts `maxEvents` and `maxTurns` for
+  `mode: 'AGENT_EXPLORATION'`.
+- `ForkInput` also exposes both `maxEvents` and `maxTurns`.
+- `parseExplorationBudget(...)` stores both values into the branch
+  `explorationBudget` JSON.
+- `budgetExhausted(...)` can enforce both an event cap and a turn cap, but it
+  defaults `turnCount` to `0` when callers do not pass one.
+- The only runtime enforcement call in `appendEvent(...)` is
+  `budgetExhausted(parseExplorationBudget(branch.explorationBudget), head + 1)`,
+  which passes an event count but no turn count.
+- Repository search shows no other Studio Board path that increments, stores, or
+  passes an exploration turn count into `budgetExhausted(...)`.
+- The branch suspension audit uses reason `exploration-budget-exhausted`, but it
+  cannot distinguish whether events or turns caused the exhaustion.
+
+Impact:
+
+- A user can create an agent exploration branch with `maxTurns`, receive no
+  validation error, and believe agent turns are bounded when the platform never
+  evaluates that limit.
+- Agent exploration can continue past the intended conversational/agent-turn
+  budget as long as the event cap is absent or not yet reached.
+- Governance evidence cannot prove the branch stayed within the configured turn
+  budget, because no turn ledger or turn count exists.
+- Operations/UI budget displays can be misleading if they show a configured turn
+  limit that runtime writes ignore.
+
+Required fixes:
+
+- Decide what constitutes an exploration "turn" and record it as durable branch
+  usage, separate from event count.
+- Pass the current turn count into `budgetExhausted(...)` whenever appending or
+  accepting agent-originated board events.
+- Reject or hide `maxTurns` until a real turn ledger exists.
+- Include the exhausted dimension (`maxEvents` or `maxTurns`), current usage, and
+  configured budget in `BoardBranchSuspended` audit/outbox events.
+- Add tests for max-turn-only budgets, combined max-event/max-turn budgets,
+  coalesced events, agent-originated events, and branch UI/API reporting after
+  suspension.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
