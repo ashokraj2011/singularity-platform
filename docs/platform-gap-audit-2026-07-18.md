@@ -18512,6 +18512,61 @@ Required fixes:
 - Add tests for validating main vs forked branches, cross-branch artifact
   exclusion, stale-branch transmutation denial, and canonical brief provenance.
 
+### 375. Archived Synthesis initiatives remain writable through child APIs
+
+Evidence:
+
+- `setProjectArchived(...)` only updates `SpecificationProject.status` to
+  `ARCHIVED` and sets `archivedAt`; it does not create a lifecycle fence or
+  project-level write lock.
+- `getProject(id)` returns any tenant-visible project by id without filtering or
+  flagging `ARCHIVED` status.
+- Many Synthesis write paths use `getProject(...)` as their only project gate:
+  `createRoom(...)`, `addClaim(...)`, `listClaims(...)`, `getProjectSpec(...)`,
+  and `patchProjectSpecSection(...)`.
+- `getProjectSpec(...)` can create a new `ProjectSpecification` row on read for
+  an archived project, and `patchProjectSpecSection(...)` can update analysis,
+  requirements, or decisions afterward.
+- `createBoard(projectId, ...)` also only calls `getProject(projectId)`, while
+  lower-level board writes such as `appendEvent(...)` load a board by id/tenant
+  and do not join back to the owning project status.
+- `runOvernightShift(projectId, ...)` skips only when `project.status ===
+  'LOCKED'`; the scheduler avoids archived projects, but the direct route
+  `/experience/projects/:projectId/overnight/run` can still run against an
+  archived initiative.
+- The normal project list defaults to `ACTIVE`, so archived projects are hidden
+  from the hub, but direct-id routes and child-resource routes can continue
+  mutating them.
+
+Impact:
+
+- "Archive" behaves like a list filter rather than a governed lifecycle state.
+- Archived initiatives can still accumulate rooms, claims, specification edits,
+  board events, source artifacts, validation proposals, and AI overnight changes.
+- Evidence packs and portfolio reports can treat an archived initiative as
+  historical while the underlying source-of-truth records continue changing.
+- Users may believe they safely froze a stale initiative, while hidden direct
+  links, background routes, or integrations keep modifying it.
+- Audit disputes become hard because there is no single archived-at fence proving
+  which facts/spec/board state existed when the initiative was archived.
+
+Required fixes:
+
+- Add a centralized `assertProjectWritable(projectId, action)` helper that rejects
+  writes for `ARCHIVED`, locked, or otherwise terminal initiative states unless a
+  narrowly scoped restore/admin action is being performed.
+- Use that helper in rooms, claims, specification patching, board creation,
+  board event append, ingestion, validation/transmutation, business alignment,
+  WorkItem attach/detach, and background experience routes.
+- Make archived projects read-only by default in the UI, with explicit restore
+  before edits and a visible archived banner on direct links.
+- Pin archive evidence with archived-at revision metadata: project spec revision,
+  board branch heads, source artifact hashes, open proposals, and outstanding
+  decisions.
+- Add tests that archive an initiative and then attempt room creation, claim
+  creation, spec patch, board event append, ingestion, validation transmutation,
+  overnight shift, and WorkItem attachment.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
