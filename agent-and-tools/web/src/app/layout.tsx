@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/AppShell";
 import { PlatformThemeProvider } from "@/components/ui/PlatformThemeProvider";
+import { GlobalRejectionDiagnostics } from "@/components/GlobalRejectionDiagnostics";
 
 export const metadata: Metadata = {
   title: "Singularity Platform",
@@ -15,6 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
+        <GlobalRejectionDiagnostics />
         <PlatformThemeProvider>
           <AppShell>{children}</AppShell>
         </PlatformThemeProvider>
