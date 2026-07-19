@@ -18722,6 +18722,58 @@ Required fixes:
 - Add tests for nonexistent target refs, same target ref on two boards, same
   target ref across tenants, stale branch targets, and target-ref collision races.
 
+### 379. Board Moment auto-confirm is a read-time projection without durable evidence
+
+Evidence:
+
+- `BoardMoment` is documented as a low-stakes proposal that is `VISIBLE`
+  immediately and "auto-confirms after 72h"; its schema stores `status`,
+  `editedById`, and `createdAt`, but no `confirmedAt`, `confirmedById`,
+  confirmation policy version, or review deadline.
+- `effectiveMomentStatus(...)` returns `CONFIRMED` when the raw status is
+  `VISIBLE` and `nowMs - createdAtMs >= MOMENT_AUTOCONFIRM_MS`; it does not
+  update the database.
+- `shapeMoment(...)` exposes the computed `status` and the raw stored status as
+  `rawStatus`, so the API can show `CONFIRMED` even while the row remains
+  `VISIBLE`.
+- There is no `BoardMomentConfirmed` audit/outbox event in the current source
+  tree. Detection emits `BoardMomentMarked`, human edits emit
+  `BoardMomentEdited`, and rejection emits `BoardMomentRejected`.
+- `editMoment(...)` and `rejectMoment(...)` call `loadMoment(...)` and then
+  update the row by id to `EDITED` or `REJECTED`; they do not check whether the
+  effective status had already become `CONFIRMED`.
+- `listMoments(...)` computes effective status at read time from `Date.now()`,
+  making the same stored row appear as different lifecycle states depending on
+  read time rather than a durable transition.
+
+Impact:
+
+- A moment can appear confirmed in the UI or API without any durable confirmation
+  event, actor, policy version, or timestamp that auditors can cite.
+- Confirmation is not idempotent or replayable because it is never written as a
+  state transition; historical reads can change meaning as wall-clock time moves.
+- A supposedly confirmed moment can still be edited or rejected through the same
+  endpoint without an explicit reopen/rework path because the stored status
+  remains `VISIBLE`.
+- Downstream timelines, evidence packs, and synthesis decisions can treat a
+  computed confirmation as governed evidence even though no confirmation decision
+  happened.
+
+Required fixes:
+
+- Persist moment confirmation through a scheduled or read-repair transition that
+  writes `status = CONFIRMED`, `confirmedAt`, `confirmedById`, and policy/version
+  metadata in a transaction.
+- Emit `BoardMomentConfirmed` audit and outbox events with board id, branch id,
+  moment id, deadline, actor/policy, and trace id.
+- Add lifecycle guards so `CONFIRMED`, `REJECTED`, and `EDITED` moments can only
+  move through explicit governed transitions such as reopen, supersede, or
+  reject-before-deadline.
+- Make list/read APIs distinguish pending auto-confirm candidates from durable
+  confirmations and expose the review deadline.
+- Add tests for read-time aging, durable confirmation, edit/reject after
+  confirmation, replaying timelines at historical times, and audit evidence.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
