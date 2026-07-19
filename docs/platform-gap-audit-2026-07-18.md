@@ -17634,6 +17634,61 @@ Required fixes:
   pending execution and audit views, and failed external deliveries appear in
   Workflow Operations.
 
+### 360. Codegen LLM patch task routes bypass tenant and run authorization
+
+Evidence:
+
+- `app.ts` mounts `/api/codegen` behind the generic `authMiddleware` only. The
+  Codegen compatibility surface does not add a Codegen/Foundry-specific
+  resource permission layer before serving LLM patch task routes.
+- The run-scoped routes are tenant-aware:
+  `POST /api/codegen/runs/:runId/llm-tasks` and
+  `GET /api/codegen/runs/:runId/llm-tasks` first resolve the parent
+  `CodegenRun` with `findFirst({ where: { id: runId, ...tenantWhere(req) } })`.
+- The direct task-id routes do not preserve that boundary. `GET
+  /api/codegen/llm-tasks/:taskId`, `POST
+  /api/codegen/llm-tasks/:taskId/dispatch`, and `POST
+  /api/codegen/llm-tasks/:taskId/apply-patch` all call
+  `prisma.codegenLlmPatchTask.findUnique({ where: { id: taskId } })`.
+- `CodegenLlmPatchTask` has `runId` but no `tenantId`. Tenant ownership lives on
+  `CodegenRun.tenantId`, so any task-id route must join through the run before
+  reading or mutating a task.
+- Dispatch and apply currently return workflow-owned `501` responses, but they
+  still reveal whether a task id exists and return the task id across tenant
+  boundaries. If the feature is completed later in the same shape, the mutation
+  path will already be an IDOR.
+- Existing Codegen findings cover caller-supplied actor ids, globally unique
+  spec names, and caller-chosen output paths. They do not cover direct-id LLM
+  patch task reads or mutations.
+
+Impact:
+
+- An authenticated user can probe LLM patch task ids outside their tenant or
+  resource grant and distinguish missing tasks from existing foreign tasks.
+- When the workflow-owned dispatch/apply placeholders are replaced with real
+  behavior, the same route shape can dispatch or apply patches for another
+  tenant's Codegen run without passing through run, capability, or workflow
+  authorization.
+- Patch-task metadata can include target files, regions, prompt/response hashes,
+  bundle hashes, and model call identifiers, all of which are SDLC evidence and
+  should remain scoped to the owning run.
+
+Required fixes:
+
+- Resolve direct task ids through the parent run, for example
+  `codegenLlmPatchTask.findFirst({ where: { id: taskId, run: { ...tenantWhere(req) } } })`,
+  or add and enforce a `tenantId` column on `CodegenLlmPatchTask`.
+- Require explicit permissions such as `codegen:run:view`,
+  `codegen:patch:dispatch`, and `codegen:patch:apply` before returning task
+  metadata or accepting state transitions.
+- Record task dispatch/apply decisions with actor id, tenant id, run id, task id,
+  authorization decision id, trace id, and patch/bundle digest.
+- Use compare-and-set state transitions for patch tasks so stale dispatch/apply
+  attempts cannot overwrite newer workflow-owned results.
+- Add regression tests for cross-tenant task id probes, authorized same-tenant
+  reads, unauthorized dispatch/apply, feature-flag-disabled paths, and future
+  real dispatch/apply transitions.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
