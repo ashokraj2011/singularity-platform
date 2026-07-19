@@ -7,7 +7,10 @@ import { normalizeMetadataKey } from './metadata.service'
 
 export const metadataDefinitionsRouter: Router = Router()
 
-const kinds = ['WORK_ITEM_TYPE', 'WORKFLOW_TYPE', 'NODE_TYPE', 'EVENT_TYPE', 'TRIGGER_PROFILE'] as const
+// MUST mirror MetadataDefinitionKind in schema.prisma. This array is the query
+// filter as well as the create-validation set, so a kind missing here is not a
+// validation error -- it is silently dropped from every list response.
+const kinds = ['WORK_ITEM_TYPE', 'WORKFLOW_TYPE', 'NODE_TYPE', 'EVENT_TYPE', 'TRIGGER_PROFILE', 'BUSINESS_METRIC'] as const
 const statuses = ['DRAFT', 'ACTIVE', 'DEPRECATED', 'ARCHIVED'] as const
 const scopeTypes = ['GLOBAL', 'CAPABILITY', 'WORKFLOW', 'NODE'] as const
 

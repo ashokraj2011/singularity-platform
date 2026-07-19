@@ -1,6 +1,9 @@
 import { Router, type Response } from 'express'
 import { z } from 'zod'
 import { validate } from '../../middleware/validate'
+import { prisma } from '../../lib/prisma'
+import { ValidationError } from '../../lib/errors'
+import { normalizeMetadataKey } from '../metadata/metadata.service'
 import {
   composeBusinessRisks,
   createBusinessChangeRequest,
@@ -43,6 +46,12 @@ const objectiveSchema = z.object({
     target: z.union([z.string(), z.number()]),
     unit: z.string().trim().max(80).optional(),
     byDate: z.string().datetime().optional(),
+    // Optional reference into the BUSINESS_METRIC catalog. A SOFT key, not a FK:
+    // targetMetric is JSON and the catalog is versioned + scoped, so a relational
+    // constraint does not fit -- and more importantly a soft key lets every
+    // existing free-text objective keep working untouched. Absent => today's
+    // free-text behaviour exactly.
+    metricKey: z.string().trim().min(1).max(120).optional(),
   }),
   valueScore: z.number().int().min(1).max(5),
   valueRationale: z.string().trim().min(1).max(2000).optional().nullable(),
@@ -53,16 +62,58 @@ const objectiveSchema = z.object({
   studioProjectId: z.string().uuid().optional().nullable(),
 })
 
+
+/**
+ * Resolve targetMetric.metricKey against the BUSINESS_METRIC catalog.
+ *
+ * Two jobs: reject a key that names nothing usable, and fill `unit` / `direction`
+ * from the definition when the caller omitted them, so a catalogued metric is
+ * described consistently no matter who created the objective.
+ *
+ * Only ACTIVE definitions resolve. A DEPRECATED or ARCHIVED metric is exactly the
+ * one nobody should be attaching new objectives to, and silently accepting it
+ * would defeat having a lifecycle at all.
+ *
+ * Caller-supplied values WIN over the catalog. The catalog is a default, not an
+ * override -- an objective measuring the same metric in a different unit is a
+ * real case, and rewriting the caller's unit under them would be worse than
+ * letting it differ.
+ */
+async function resolveMetricKey(targetMetric: Record<string, unknown> | undefined): Promise<void> {
+  const key = typeof targetMetric?.metricKey === 'string' ? targetMetric.metricKey.trim() : ''
+  if (!key) return
+  const definition = await prisma.metadataDefinition.findFirst({
+    where: { kind: 'BUSINESS_METRIC', key: normalizeMetadataKey(key), status: 'ACTIVE' },
+    orderBy: { version: 'desc' },
+  })
+  if (!definition) {
+    throw new ValidationError(
+      `Metric "${key}" is not an active entry in the business metric catalog. `
+      + 'Pick a catalogued metric, add it to the catalog first, or leave metricKey empty and type the metric name.',
+    )
+  }
+  const ui = (definition.ui ?? {}) as Record<string, unknown>
+  const schemaJson = (definition.schema ?? {}) as Record<string, unknown>
+  if (targetMetric && targetMetric.unit == null) {
+    const unit = ui.unit ?? schemaJson.unit
+    if (typeof unit === 'string' && unit.trim()) targetMetric.unit = unit.trim()
+  }
+  if (targetMetric && targetMetric.direction == null) {
+    const direction = ui.direction ?? schemaJson.direction
+    if (direction === 'HIGHER_IS_BETTER' || direction === 'LOWER_IS_BETTER') targetMetric.direction = direction
+  }
+}
+
 businessAlignmentRouter.get('/business-alignment/objectives', async (req, res, next) => {
   try { res.json({ items: await listBusinessObjectives(typeof req.query.projectId === 'string' ? req.query.projectId : undefined) }) } catch (error) { next(error) }
 })
 
 businessAlignmentRouter.post('/business-alignment/objectives', validate(objectiveSchema), async (req, res, next) => {
-  try { res.status(201).json(await createBusinessObjective(req.body, req.user!.userId)) } catch (error) { next(error) }
+  try { await resolveMetricKey(req.body?.targetMetric); res.status(201).json(await createBusinessObjective(req.body, req.user!.userId)) } catch (error) { next(error) }
 })
 
 businessAlignmentRouter.patch('/business-alignment/objectives/:objectiveId', validate(objectiveSchema.partial()), async (req, res, next) => {
-  try { res.json(await updateBusinessObjective(String(req.params.objectiveId), req.body, req.user!.userId)) } catch (error) { next(error) }
+  try { await resolveMetricKey(req.body?.targetMetric); res.json(await updateBusinessObjective(String(req.params.objectiveId), req.body, req.user!.userId)) } catch (error) { next(error) }
 })
 
 businessAlignmentRouter.get('/business-alignment/projects/:projectId/coverage', async (req, res, next) => {

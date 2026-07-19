@@ -332,6 +332,11 @@ enum MetadataDefinitionKind {
   NODE_TYPE
   EVENT_TYPE
   TRIGGER_PROFILE
+  // Business metric vocabulary. A definition names a metric once (key + label)
+  // and carries its unit and direction, so an objective can reference it instead
+  // of re-typing free text. Direction is what makes a metric interpretable:
+  // "churn 5%" is good or bad depending on it, and nothing recorded that before.
+  BUSINESS_METRIC
 }
 
 enum MetadataDefinitionStatus {
