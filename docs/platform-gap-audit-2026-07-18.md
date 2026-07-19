@@ -19470,6 +19470,53 @@ Required fixes:
   edit/reject outbox emission, lost-response retry, and evidence-pack replay after
   a human rejection.
 
+### 395. Board snapshots can freeze pre-coalesced event payloads
+
+Evidence:
+
+- `appendEvent(...)` coalesces a new request into the branch's last event when
+  `last && shouldCoalesce(...)`.
+- The coalescing path updates the existing `BoardEvent` row's `payload` and
+  `objectIds`, then immediately returns without re-running branch-head or snapshot
+  logic.
+- The fresh-append path can create a `BoardSnapshot` at `nextSeq` whenever
+  `isSnapshotDue(...)` returns true.
+- That snapshot is materialized from the event log at `head + 1` and stored with
+  `eventSeq: nextSeq`.
+- `materializeInternal(...)` later chooses the latest snapshot with
+  `eventSeq <= atSeq`, uses its stored state as the base, and only replays board
+  events with `eventSeq > baseSeq`.
+- If an event at sequence `N` creates a snapshot at `N`, and a later in-window
+  coalesced request updates that same event row at `N`, the snapshot at `N` is not
+  recomputed, invalidated, or bypassed.
+- Future materialization at `N` or beyond can therefore start from the stale
+  snapshot and skip the updated event row that would have corrected it.
+
+Impact:
+
+- A drag/edit that is correctly coalesced into the event row can still disappear
+  from reload, export, time travel, branch diff, branch merge, and synthesis paths
+  that materialize from snapshots.
+- `readState(...)` can return a `stateHash` computed from stale snapshot state
+  rather than the current event-log payload.
+- Snapshot evidence can contradict the durable `BoardEvent` row for the same
+  sequence, weakening the event-sourcing guarantee.
+- The problem appears only around snapshot boundaries or time-based snapshots,
+  making it hard to reproduce without targeted tests.
+
+Required fixes:
+
+- Do not coalesce into an event whose sequence is covered by the latest snapshot,
+  unless the snapshot is recomputed in the same transaction.
+- Alternatively delay snapshot creation until coalesce windows expire, or mark
+  snapshots invalid/stale when an event at or before the snapshot sequence is
+  updated.
+- Add a snapshot integrity check that recomputes from the event log and detects
+  stale snapshot state/hash after coalesced edits.
+- Add tests for a snapshot created at the same sequence as an `OBJECT_MOVED` or
+  `OBJECT_EDITED` event, followed by an in-window coalesce and a later
+  `readState(...)` / `materializeBoardState(...)`.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
