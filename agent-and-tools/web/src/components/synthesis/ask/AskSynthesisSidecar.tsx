@@ -9,7 +9,8 @@
  * as a chip; humans review it in a Working Session.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Sparkles, X, Send, FileClock, BookMarked } from "lucide-react";
+import Link from "next/link";
+import { Sparkles, X, Send, FileClock, BookMarked, PenLine } from "lucide-react";
 import { useSelectedProjectId } from "../ProjectPicker";
 import { workgraphFetch } from "@/lib/workgraph";
 import { SynChip, EmptyState, SynError } from "../ui/kit";
@@ -147,9 +148,21 @@ export function AskSynthesisSidecar() {
                 <div className="truncate text-sm font-black text-on-surface">Ask Synthesis</div>
                 <div className="text-[10px] font-semibold uppercase tracking-wider text-on-surface-variant">Facilitator · governed</div>
               </div>
-              <button type="button" onClick={() => setOpen(false)} className="icon-button ml-auto" title="Close" aria-label="Close">
-                <X size={16} />
-              </button>
+              <div className="ml-auto flex items-center gap-1">
+                {projectId ? (
+                  <Link
+                    href={`/synthesis/session?project=${encodeURIComponent(projectId)}`}
+                    onClick={() => setOpen(false)}
+                    title="Open a full Working Session for this initiative"
+                    className="inline-flex h-7 items-center gap-1.5 rounded-full border border-outline-variant px-2.5 text-[11px] font-bold text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
+                  >
+                    <PenLine size={13} /><span className="hidden sm:inline">Working Session</span>
+                  </Link>
+                ) : null}
+                <button type="button" onClick={() => setOpen(false)} className="icon-button" title="Close" aria-label="Close">
+                  <X size={16} />
+                </button>
+              </div>
             </header>
 
             <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
