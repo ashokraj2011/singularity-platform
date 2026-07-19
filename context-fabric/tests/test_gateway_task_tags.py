@@ -196,3 +196,40 @@ def test_the_infra_callers_this_change_tags_are_in_the_vocabulary():
     vocabulary that omits one would warn on every real call."""
     for tag in ["agent_turn", "world_model_distill", "claim_lowering", "embedding"]:
         assert tag in task_tags.KNOWN_TASK_TAGS
+
+
+# ── context-fabric's own governed calls ──────────────────────────────────────
+def test_the_governed_loop_tags_its_gateway_calls():
+    """The governed loop is the platform's highest-volume agent path, and it was
+    reaching the gateway UNTAGGED -- so GATEWAY_REQUIRE_TASK_TAG would have 400'd
+    every governed turn, and until then the biggest cost line was the one nobody
+    could attribute. Pinned so the gap cannot silently reopen."""
+    from context_api_service.app.governed.llm_client import _build_chat_body
+
+    body = _build_chat_body(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None,
+        model_alias="fast",
+        expected_provider=None,
+        expected_model=None,
+        temperature=None,
+        max_output_tokens=None,
+        thinking_budget=None,
+        prompt_cache=False,
+        prompt_cache_key=None,
+    )
+    assert body["task_tag"] == "agent_turn"
+    assert body["task_tag"] in task_tags.KNOWN_TASK_TAGS
+
+
+def test_the_governed_loop_tag_can_be_overridden():
+    from context_api_service.app.governed.llm_client import _build_chat_body
+
+    body = _build_chat_body(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None, model_alias=None, expected_provider=None, expected_model=None,
+        temperature=None, max_output_tokens=None, thinking_budget=None,
+        prompt_cache=False, prompt_cache_key=None,
+        task_tag="planning",
+    )
+    assert body["task_tag"] == "planning"

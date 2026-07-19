@@ -416,10 +416,16 @@ def _build_chat_body(
     thinking_budget: int | None,
     prompt_cache: bool | None,
     prompt_cache_key: str | None,
+    task_tag: str | None = None,
 ) -> dict[str, Any]:
     """Build the /v1/chat/completions request body. Shared by the cloud-gateway
     path and the laptop `model-run` path so both send byte-identical requests."""
     body: dict[str, Any] = {"messages": messages}
+    # W2-2 follow-through: the governed loop is the platform's highest-volume
+    # agent path, and it was reaching the gateway UNTAGGED -- so flipping
+    # GATEWAY_REQUIRE_TASK_TAG would have 400'd every governed turn, and until
+    # then the biggest cost line was the one nobody could attribute.
+    body["task_tag"] = task_tag or "agent_turn"
     if tools:
         body["tools"] = tools
     if model_alias:
