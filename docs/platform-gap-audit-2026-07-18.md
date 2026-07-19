@@ -20093,6 +20093,64 @@ Required fixes:
   multiple tenants/capabilities, and limit values that would otherwise under-fill
   or miscount the overview.
 
+### 407. Planner graph preview can mint runnable-looking nodes without launch-equivalent validation
+
+Evidence:
+
+- `workgraph-studio/apps/api/src/modules/planner/planner.router.ts:117-136`
+  exposes `POST /api/planner/preview-graph` and passes caller-supplied
+  `capabilityId`, `modelAlias`, `loopStrategyId`, `governancePreset`, `goal`, and
+  roadmap milestones straight into `buildPlanWorkflowGraph(...)`.
+- Unlike `converse`, `commit`, and `launch`, the preview route does not call
+  `assertPlannerCapabilityActive(...)`, `resolveAssignableCapabilities(...)`,
+  `assertPlannerAssignmentsActive(...)`, or any equivalent check that the selected
+  capability and child task assignments are active and assignable to the actor.
+- `buildPlanWorkflowGraph(...)` then emits real `DIRECT_LLM_TASK` and
+  `GOVERNANCE_GATE` node configs using those supplied values, including
+  `config.capabilityId`, `config.modelAlias`, and `config.governancePreset`, but it
+  does not validate that the model alias resolves to a ready LLM connection, that
+  the loop strategy exists/published/belongs to the tenant, or that the governance
+  preset is a known policy.
+- The live planner UI calls this route from `WorkflowPlannerConsole.tsx:343-362`
+  and presents the result as "Preview graph". The same panel exposes free-text
+  `Model alias`, `Runtime`, and `Governance` fields at
+  `WorkflowPlannerConsole.tsx:589-597`.
+- `launchRoadmap(...)` performs workflow-template and assignment checks before
+  creating WorkItems, but it only reports selected runtime values in the response;
+  the preview graph path is a separate authoring contract and can therefore show a
+  graph that launch or runtime later treats differently.
+
+Impact:
+
+- Operators can see a runnable-looking SDLC graph even when the capability is
+  inactive, child assignments are not valid, the loop strategy is unpublished or
+  missing, or the model/governance selection is a typo.
+- The preview can be used as design evidence or copied into a workflow template
+  while carrying invalid Direct LLM and Governance Gate configuration that fails
+  late during launch/runtime.
+- This weakens the guided happy path because "Preview graph" is supposed to build
+  confidence before launch, but it currently proves only that the structural graph
+  can be drawn.
+- Existing runtime findings cover Direct LLM alias fallback and loop strategy
+  execution behavior, but this separate planner preview surface can mislead users
+  before those runtime guards are reached.
+
+Required fixes:
+
+- Route graph preview through the same planner capability and assignment
+  validation used by launch, including Agent-and-Tools/IAM active capability checks
+  and child-capability eligibility.
+- Validate `modelAlias` against tenant LLM routing readiness, `loopStrategyId`
+  against a published accessible loop strategy version, and `governancePreset`
+  against the governance policy registry before emitting executable node configs.
+- Return structured preview diagnostics with `blocking` and `warning` entries
+  instead of drawing invalid configs as normal nodes.
+- Distinguish visual-only roadmap sketches from executable graph previews in the
+  API response and UI.
+- Add tests for inactive capability, invalid child assignment, missing model alias,
+  unpublished loop strategy, unknown governance preset, and a valid preview that
+  matches the later launch/runtime contract.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
