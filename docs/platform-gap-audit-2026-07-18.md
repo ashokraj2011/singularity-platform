@@ -18355,6 +18355,60 @@ Required fixes:
   reload, and verify the claim appears in the intended room and frame with
   correct provenance.
 
+### 372. Synthesis claims do not inherit the initiative capability
+
+Evidence:
+
+- `SpecificationProject` now requires `primaryCapabilityId` and project creation
+  writes both the project row and a single `SpecificationProjectCapability`
+  primary link.
+- The `Claim` Prisma model still has nullable `capabilityId` even though claims
+  are child records of a single-capability `SpecificationProject`.
+- `rooms.service.ts` accepts optional `AddClaimInput.capabilityId`, but
+  `addClaim(...)` stores `capabilityId: input.capabilityId ?? null`; it does not
+  load the project primary capability or validate a supplied capability against
+  the project.
+- `IdeaWallScreen` creates claims through `createClaim(projectId, { roomId,
+  statement, claimType, initialEstimate })` without passing a capability.
+- `StrategyCanvas` creates notes/claims the same way, also without a capability.
+- `acceptCopilotClaim(...)` calls `addClaim(...)` with room id, statement, claim
+  type, steward, and AI provenance, but no capability id.
+- `listClaims(...)` returns project claims without capability filtering and
+  `shapeClaim(...)` faithfully returns `claim.capabilityId`, so these capability
+  holes are visible but not repaired on read.
+- A newer path already shows the intended pattern: the intake/artifact scaffold
+  code stamps generated claims with `project.primaryCapabilityId` /
+  `report.project.primaryCapabilityId`.
+
+Impact:
+
+- A single-capability initiative can accumulate capability-null claims through
+  the primary Idea Board, Strategy Canvas, and room copilot flows.
+- Capability-scoped authorization, impact assessment, prior-art inheritance,
+  drift detection, prompt context, and evidence rollups cannot reliably select
+  or enforce against those claims.
+- Downstream specification and WorkItem generation can cite claims that belong to
+  a project but not to the project capability, weakening the contract that an
+  initiative is owned by exactly one capability.
+- If an API caller supplies an arbitrary `capabilityId`, `addClaim(...)` stores it
+  without proving it matches the owning project, so future UI/API paths could
+  reintroduce cross-capability claim drift.
+
+Required fixes:
+
+- Make `addClaim(...)` load the owning project inside the tenant-scoped
+  transaction and default `capabilityId` to `project.primaryCapabilityId`.
+- If a caller supplies `capabilityId`, reject it unless it exactly matches the
+  project's primary capability or a governed cross-capability reference flow is
+  explicitly being used.
+- Backfill existing claims where `claim.projectId -> SpecificationProject` has a
+  primary capability and `Claim.capabilityId IS NULL`.
+- Consider a database trigger or check that project claims cannot be inserted
+  with a mismatched capability after the single-capability migration is applied.
+- Add tests for board claim creation, Strategy Canvas note creation, room copilot
+  acceptance, arbitrary capability injection, backfill behavior, and claim list
+  filtering by capability.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
