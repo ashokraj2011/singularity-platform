@@ -18298,6 +18298,63 @@ Required fixes:
   export/evidence inclusion, and denial when the caller can view claims but
   cannot mutate the governed board.
 
+### 371. Strategy Canvas note creation is not frame or room aware
+
+Evidence:
+
+- `StrategyCanvas` groups notes into visual "THEME AREA" frames by claim
+  `roomId`; `boardModel.ts` builds `frames` from rooms with claims and puts
+  claims/probes inside their room frame.
+- The note tool does not capture the click coordinate or target frame. In
+  `beginPan(...)`, when `tool === "note"` it only opens `AddNoteComposer` and
+  returns.
+- `AddNoteComposer` receives the raw `rooms` array, has no room picker, and
+  `ensureRoom()` returns `rooms[0].id` whenever any room exists.
+- The backend `listRooms(projectId)` returns rooms ordered by `createdAt: "desc"`,
+  so `rooms[0]` is the newest room, not necessarily the frame under the pointer
+  or the visible theme the user intended.
+- `boardModel.ts` independently sorts rooms by id before laying out frames, so
+  the first room returned by the API is not even guaranteed to be the first frame
+  shown on the canvas.
+- Creating a note then calls `createClaim(projectId, { roomId, statement,
+  claimType, initialEstimate })` with no coordinate, frame, source board object,
+  or provenance describing where the user added it.
+- The older list-style `ClaimsView` intentionally writes to an "Idea Board" room
+  by title, but the canvas composer uses `rooms[0]` and presents spatial frames,
+  making the user expectation different.
+
+Impact:
+
+- On a multi-room initiative, clicking "add note" while looking at a specific
+  theme can create the claim in a different room, so it reappears under the wrong
+  frame after refresh or refit.
+- AI expansion, fact review, specification source grouping, and downstream
+  traceability inherit the wrong room/theme because the claim record itself has
+  the wrong `roomId`.
+- Users trying to organize ideas spatially can lose trust quickly: the note
+  appears where the deterministic layout puts the newest-room claim, not where
+  they clicked or what they selected.
+- The mismatch compounds the source-of-truth problem because the spatial action
+  is reduced to a room assignment chosen by array order, while the governed board
+  path has explicit object position and event metadata.
+
+Required fixes:
+
+- Make note creation capture the canvas coordinate and resolve the target frame
+  from the pointer position, or require the user to choose a room/theme in the
+  composer before saving.
+- Add a visible room/theme picker to `AddNoteComposer`, defaulting to the frame
+  under the pointer when available and to an explicit "Unassigned" option
+  otherwise.
+- Persist provenance on new claims, including `origin = "strategy-canvas"`,
+  target room id/title, source coordinate, and any linked board object id once
+  the canvas is backed by governed board events.
+- Make room/frame ordering consistent between API list order and canvas layout,
+  or include an explicit display order field for Strategy Canvas frames.
+- Add tests for multi-room note creation: click inside each frame, save a note,
+  reload, and verify the claim appears in the intended room and frame with
+  correct provenance.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
