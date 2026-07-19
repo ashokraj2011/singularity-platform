@@ -31,6 +31,9 @@ import { routeWorkItem } from '../work-items/work-item-routing.service'
 import { createWorkItem } from '../work-items/work-items.service'
 import { ValidationError } from '../../lib/errors'
 import { currentTenantIdForDb } from '../../lib/tenant-db-context'
+import { resolveDefaultTeamId, ensureWorkflowOwnerAccess } from '../../lib/permissions/workflowTemplate'
+import { buildPlanWorkflowGraph, designNodeCreateData, remapEdgeCreateData } from './planner-graph'
+import type { Prisma } from '@prisma/client'
 
 export const PRIORITIES = ['HIGH', 'MEDIUM', 'LOW'] as const
 export type Priority = (typeof PRIORITIES)[number]
@@ -885,6 +888,9 @@ export interface LaunchInput {
   governancePreset?: string
   loopStrategyId?: string
   sessionId?: string
+  // Phase 2: persist the generated DAG as a runnable Workflow template and launch THAT
+  // (instead of routing to a seeded template). Opt-in; default keeps prior behavior.
+  persistGraph?: boolean
 }
 
 type LaunchTarget = {
@@ -995,6 +1001,70 @@ async function summarizeWorkflowInstance(id?: string | null) {
   }))
 }
 
+/**
+ * Phase 2 — persist the planner's generated roadmap DAG as a real, runnable Workflow template
+ * (design nodes + edges), so Launch can route to it instead of a hand-seeded template. The
+ * roadmap is already LLM-grounded, so buildPlanWorkflowGraph is a pure structural transform
+ * (no second LLM call); this function is only the DB write, mirroring templates.router's
+ * `prisma.workflow.create` + createCapabilityWorkbenchBridgeGraph node/edge shape. Node ids
+ * are DB-assigned, so edges are remapped temp→real via remapEdgeCreateData inside the tx.
+ */
+async function persistPlanGraph(params: {
+  milestones: Milestone[]
+  capabilityId: string
+  workflowTypeKey?: string
+  modelAlias?: string
+  loopStrategyId?: string
+  governancePreset?: string
+  goal?: string
+  actorId: string
+}): Promise<{ id: string; name: string }> {
+  const graph = buildPlanWorkflowGraph({
+    milestones: params.milestones,
+    capabilityId: params.capabilityId,
+    modelAlias: params.modelAlias,
+    loopStrategyId: params.loopStrategyId,
+    governancePreset: params.governancePreset,
+    goal: params.goal,
+  })
+  const tenantId = currentTenantIdForDb() ?? 'default'
+  const teamId = await resolveDefaultTeamId(params.actorId)
+  const name = `Planner — ${(params.goal?.trim() || 'Generated workflow').slice(0, 80)}`
+
+  const template = await prisma.workflow.create({
+    data: {
+      name,
+      description: params.goal?.trim() || null,
+      teamId,
+      tenantId,
+      capabilityId: params.capabilityId,
+      createdById: params.actorId,
+      ...(params.workflowTypeKey ? { workflowTypeKey: params.workflowTypeKey } : {}),
+      defaultRoutingMode: 'AUTO_START',
+      profile: 'main', // planner launch requires a main (non-workbench) template
+      metadata: { generatedBy: 'planner', source: 'roadmap-graph', milestoneCount: params.milestones.length } as Prisma.InputJsonValue,
+    },
+    select: { id: true, name: true },
+  })
+  await ensureWorkflowOwnerAccess(template.id, tenantId, params.actorId)
+
+  await prisma.$transaction(async (tx) => {
+    const idMap = new Map<string, string>()
+    for (const node of graph.nodes) {
+      const created = await tx.workflowDesignNode.create({
+        data: designNodeCreateData(node, template.id) as unknown as Prisma.WorkflowDesignNodeUncheckedCreateInput,
+        select: { id: true },
+      })
+      idMap.set(node.id, created.id)
+    }
+    const edges = remapEdgeCreateData(graph.edges, idMap, template.id)
+    if (edges.length) {
+      await tx.workflowDesignEdge.createMany({ data: edges as unknown as Prisma.WorkflowDesignEdgeCreateManyInput[] })
+    }
+  })
+  return template
+}
+
 export async function launchRoadmap(input: LaunchInput, actorId: string, callerToken?: string) {
   const intent = getSdlcIntent(input.intent)
   const milestones = input.plan?.length
@@ -1003,6 +1073,24 @@ export async function launchRoadmap(input: LaunchInput, actorId: string, callerT
       ? input.milestones
       : localLaunchMilestones(input.story ?? '', input.capabilityId)
   await assertPlannerWorkflowTemplateLaunchable(input.capabilityId, milestones, input.workflowTemplateId, callerToken)
+
+  // Phase 2: optionally compile the (already LLM-grounded) roadmap into a runnable Workflow
+  // template and launch THAT, instead of routing to a hand-seeded template.
+  let generatedTemplate: { id: string; name: string } | null = null
+  if (input.persistGraph) {
+    generatedTemplate = await persistPlanGraph({
+      milestones,
+      capabilityId: input.capabilityId,
+      workflowTypeKey: intent.workflowTypeKeys[0],
+      modelAlias: input.modelAlias ?? intent.defaultModelAlias,
+      loopStrategyId: input.loopStrategyId,
+      governancePreset: input.governancePreset ?? intent.governancePreset,
+      goal: input.story,
+      actorId,
+    })
+  }
+  const targetTemplateId = generatedTemplate?.id ?? input.workflowTemplateId
+
   const commit = await commitRoadmap({ capabilityId: input.capabilityId, milestones, loopStrategyId: input.loopStrategyId }, actorId, callerToken)
   const warnings: string[] = []
   let routedWorkItem: unknown = null
@@ -1014,7 +1102,7 @@ export async function launchRoadmap(input: LaunchInput, actorId: string, callerT
     for (const created of commit.created) {
       try {
         const routed = await routeWorkItem(created.id, actorId, {
-          workflowId: input.workflowTemplateId,
+          workflowId: targetTemplateId,
           workflowTypeKey: intent.workflowTypeKeys[0],
           routingMode: 'AUTO_START',
           startNow: true,
@@ -1039,7 +1127,7 @@ export async function launchRoadmap(input: LaunchInput, actorId: string, callerT
   }
 
   const workflowTemplate = await summarizeWorkflowTemplate(
-    launchTarget?.childWorkflowTemplateId ?? input.workflowTemplateId ?? null,
+    launchTarget?.childWorkflowTemplateId ?? generatedTemplate?.id ?? input.workflowTemplateId ?? null,
   )
   const workflowInstance = await summarizeWorkflowInstance(launchTarget?.childWorkflowInstanceId ?? null)
 
@@ -1050,6 +1138,7 @@ export async function launchRoadmap(input: LaunchInput, actorId: string, callerT
     workItems: commit.created,
     failedWorkItems: commit.failed,
     workflowTemplate,
+    generatedWorkflowTemplate: generatedTemplate,
     workflowInstance,
     runUrl: workflowInstance?.id ? `/runs/${workflowInstance.id}` : null,
     workItemsUrl: '/work-items',

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildPlanWorkflowGraph } from '../src/modules/planner/planner-graph'
+import { buildPlanWorkflowGraph, designNodeCreateData, remapEdgeCreateData } from '../src/modules/planner/planner-graph'
 import type { Milestone } from '../src/modules/planner/planner.service'
 
 function counter(): () => string {
@@ -60,5 +60,40 @@ describe('buildPlanWorkflowGraph', () => {
       expect(ids.has(edge.sourceNodeId)).toBe(true)
       expect(ids.has(edge.targetNodeId)).toBe(true)
     }
+  })
+})
+
+describe('persistence mapping (pure) — generated graph → design rows', () => {
+  it('designNodeCreateData carries workflowId, SERVER execution, and a defaulted config', () => {
+    const [start] = buildPlanWorkflowGraph({ capabilityId: 'cap', milestones: [milestone('M1', 'A')], makeId: counter() }).nodes
+    const data = designNodeCreateData(start, 'wf-1')
+    expect(data).toMatchObject({ workflowId: 'wf-1', nodeType: 'START', label: 'Start', executionLocation: 'SERVER', config: {} })
+    expect(typeof data.positionX).toBe('number')
+    expect(typeof data.positionY).toBe('number')
+  })
+
+  it('remapEdgeCreateData rewrites temp node ids to persisted DB ids, preserving the chain', () => {
+    const graph = buildPlanWorkflowGraph({
+      capabilityId: 'cap',
+      milestones: [milestone('M1', 'A'), milestone('M2', 'B')],
+      governancePreset: 'standard',
+      makeId: counter(),
+    })
+    const idMap = new Map(graph.nodes.map((node, i) => [node.id, `db-${i}`])) // simulate DB-assigned ids
+    const edges = remapEdgeCreateData(graph.edges, idMap, 'wf-1')
+    expect(edges).toHaveLength(graph.edges.length)
+    for (const edge of edges) {
+      expect(edge.workflowId).toBe('wf-1')
+      expect(edge.sourceNodeId).toMatch(/^db-/)
+      expect(edge.targetNodeId).toMatch(/^db-/)
+      expect(edge.edgeType).toBe('SEQUENTIAL')
+    }
+    expect(edges[0].sourceNodeId).toBe('db-0') // the START node
+  })
+
+  it('remapEdgeCreateData throws on a dangling reference — a persistence bug, not user input', () => {
+    const graph = buildPlanWorkflowGraph({ capabilityId: 'cap', milestones: [milestone('M1', 'A')], makeId: counter() })
+    const incomplete = new Map([[graph.nodes[0].id, 'db-0']]) // only START mapped
+    expect(() => remapEdgeCreateData(graph.edges, incomplete, 'wf-1')).toThrow(/unpersisted node/)
   })
 })
