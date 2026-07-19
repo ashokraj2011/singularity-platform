@@ -286,6 +286,8 @@ export async function enrichWorldModelViaLLM(markdown: string): Promise<WorldMod
         messages: buildEnrichMessages(markdown.trim()),
         temperature: 0,
         max_output_tokens: 1200,
+        task_tag: "world_model_distill",
+        purpose: "readme_enrichment",
       }),
       signal: AbortSignal.timeout(DISTILL_TIMEOUT_MS),
     });

@@ -99,6 +99,19 @@ class ChatCompletionRequest(BaseModel):
     run_id:   Optional[str] = None
     capability_id: Optional[str] = None
 
+    # WHAT this call is for. Until now the gateway knew which model it was
+    # asked for and nothing about why — task identity lived inside context-fabric
+    # and never crossed the hop, so gateway logs could not answer "how much did
+    # planning cost" or "which subsystem is retrying".
+    #
+    # task_tag is the coarse bucket (agent_turn, world_model_distill, embedding,
+    # claim_lowering, …). stage/purpose narrow it when the caller knows more.
+    # Optional for now so no caller breaks; GATEWAY_REQUIRE_TASK_TAG flips
+    # missing tags from a warning to a 400 once every caller has migrated.
+    task_tag: Optional[str] = None
+    stage:    Optional[str] = None
+    purpose:  Optional[str] = None
+
 
 class ToolCall(BaseModel):
     id: str
@@ -155,6 +168,13 @@ class EmbeddingsRequest(BaseModel):
 
     trace_id: Optional[str] = None
     capability_id: Optional[str] = None
+
+    # Same task identity as ChatCompletionRequest — embeddings are the highest-
+    # volume gateway traffic, so leaving them untagged would leave the biggest
+    # cost line unattributable.
+    task_tag: Optional[str] = None
+    stage:    Optional[str] = None
+    purpose:  Optional[str] = None
 
 
 class EmbeddingsResponse(BaseModel):

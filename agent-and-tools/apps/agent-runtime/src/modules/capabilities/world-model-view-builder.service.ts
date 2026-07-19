@@ -245,6 +245,10 @@ async function callGateway(messages: Array<{ role: string; content: string }>): 
         messages,
         temperature: 0,
         max_output_tokens: VIEW_MAX_OUTPUT_TOKENS,
+        // Infrastructure work, not an agent turn: composer/CF-exempt by policy,
+        // but tagged so its spend is attributable at the gateway.
+        task_tag: "world_model_distill",
+        purpose: "world_model_view",
       }),
       signal: AbortSignal.timeout(VIEW_TIMEOUT_MS),
     });

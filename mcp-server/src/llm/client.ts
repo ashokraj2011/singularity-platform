@@ -41,6 +41,10 @@ interface GatewayChatRequest {
   temperature?: number;
   max_output_tokens?: number;
   prompt_cache?: LlmRequest["prompt_cache"];
+  // What this call is FOR. This leg carries composed agent turns, so the tag is
+  // fixed here rather than threaded from every caller — anything reaching the
+  // gateway through mcp-server is an agent turn by construction.
+  task_tag?: string;
 }
 
 interface GatewayChatResponse {
@@ -106,7 +110,8 @@ function gatewayErrorCodeForStatus(status: number, text: string): string {
   return "LLM_GATEWAY_UPSTREAM";
 }
 
-async function callGateway(body: GatewayChatRequest): Promise<GatewayChatResponse> {
+async function callGateway(rawBody: GatewayChatRequest): Promise<GatewayChatResponse> {
+  const body: GatewayChatRequest = { task_tag: "agent_turn", ...rawBody };
   const url = gatewayUrl();
   if (url === "mock") {
     // In-process deterministic mock for unit tests / smoke runs that don't

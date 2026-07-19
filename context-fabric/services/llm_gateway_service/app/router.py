@@ -16,6 +16,7 @@ from fastapi import APIRouter, Body, Header, HTTPException
 
 from .config import settings
 from . import provider_config
+from . import task_tags
 from .providers import anthropic as anthropic_provider
 from .providers import mock as mock_provider
 from .providers import openai_compat as openai_provider
@@ -185,6 +186,10 @@ async def chat_completions(
     if req.stream:
         raise HTTPException(status_code=400, detail="streaming is not yet supported by the gateway; set stream=false")
 
+    # Who is asking and why. Resolved before provider selection so an untagged
+    # call is rejected (when required) before it costs anything upstream.
+    identity = task_tags.resolve_task_identity(req, endpoint="chat_completions")
+
     provider, model, alias = _resolve_provider_and_model(
         model_alias=req.model_alias,
         provider=req.provider,
@@ -206,7 +211,13 @@ async def chat_completions(
     if provider == "mock":
         resp = await mock_provider.respond(req, resolved_model=model)
         # Mock has no real cost; leave as zero (the mock provider already
-        # sets estimated_cost=0 on its responses).
+        # sets estimated_cost=0 on its responses). Still audited: a mock run
+        # that never appears in the log looks like a run that never happened.
+        task_tags.emit_call_audit(
+            endpoint="chat_completions", identity=identity, provider=provider, model=model,
+            model_alias=alias or req.model_alias, req=req,
+            input_tokens=resp.input_tokens, output_tokens=resp.output_tokens, estimated_cost=0.0,
+        )
         return resp
 
     credential = settings.credential_for(provider)
@@ -240,6 +251,12 @@ async def chat_completions(
         resp.input_tokens,
         resp.output_tokens,
     )
+    task_tags.emit_call_audit(
+        endpoint="chat_completions", identity=identity, provider=provider, model=model,
+        model_alias=alias or req.model_alias, req=req,
+        input_tokens=resp.input_tokens, output_tokens=resp.output_tokens,
+        estimated_cost=resp.estimated_cost,
+    )
     return resp
 
 
@@ -251,6 +268,8 @@ async def embeddings(
     _check_auth(authorization)
     if not req.input:
         raise HTTPException(status_code=400, detail="input must be a non-empty list of strings")
+
+    identity = task_tags.resolve_task_identity(req, endpoint="embeddings")
 
     provider, model, alias = _resolve_provider_and_model(
         model_alias=req.model_alias,
@@ -265,6 +284,10 @@ async def embeddings(
     if provider == "mock":
         vectors, tokens = await mock_provider.embed(req.input, resolved_model=model or "mock-embed")
         dim = len(vectors[0]) if vectors else 0
+        task_tags.emit_call_audit(
+            endpoint="embeddings", identity=identity, provider="mock", model=model or "mock-embed",
+            model_alias=alias, req=req, input_tokens=tokens,
+        )
         return EmbeddingsResponse(
             embeddings=vectors,
             dim=dim,
@@ -285,6 +308,10 @@ async def embeddings(
                 req.input, provider=provider, resolved_model=model, api_key=credential,
             )
             dim = len(vectors[0]) if vectors else 0
+            task_tags.emit_call_audit(
+                endpoint="embeddings", identity=identity, provider=provider, model=model,
+                model_alias=alias, req=req, input_tokens=tokens,
+            )
             return EmbeddingsResponse(
                 embeddings=vectors,
                 dim=dim,
