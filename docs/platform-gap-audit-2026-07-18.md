@@ -19193,6 +19193,50 @@ Required fixes:
 - Add tests for stale ids, nonexistent ids, already-applied ids, duplicate ids,
   conflict ids, and mixed valid/invalid apply batches.
 
+### 389. Board event replay stream silently truncates after 2,000 events
+
+Evidence:
+
+- `board.service.ts` documents `listEvents(...)` as the "Replay stream: events on
+  a branch in [from, to]".
+- The `/boards/:boardId/events` route parses optional `from` and `to` query
+  values and passes them straight to `listEvents(...)`.
+- `listEvents(...)` queries `boardEvent.findMany(...)` ordered by ascending
+  `eventSeq`, but hard-caps the result with `take: 2000`.
+- The response contains only `{ items, headEventSeq }`; it does not return
+  `returnedCount`, `truncated`, `nextFrom`, `nextCursor`, `rangeStart`,
+  `rangeEnd`, or the last returned `eventSeq`.
+- When neither `from` nor `to` is supplied, the API still returns only the first
+  2,000 branch events, even if `headEventSeq` is much larger.
+- There is no server-side validation that a requested `[from, to]` range fits
+  inside the returned page, and no contract that clients must page until the
+  branch head is reached.
+
+Impact:
+
+- Time-travel debugging, replay export, audit review, and synthesis evidence can
+  operate on a prefix of the event log while looking like they received the full
+  replay stream.
+- Long-running boards can lose late events from replay consumers exactly where
+  governance and branch provenance matter most.
+- Operators can see `headEventSeq` but cannot know from the response whether the
+  returned `items` cover the requested range or where to resume safely.
+- Any client that materializes state from this endpoint instead of `readState(...)`
+  can produce stale or incomplete board state after the 2,000-event boundary.
+
+Required fixes:
+
+- Make event replay a paginated API with explicit `limit`, `nextCursor` or
+  `nextFrom`, `returnedCount`, `rangeStart`, `rangeEnd`, and `truncated` fields.
+- Default to a safe page size but require clients to follow pagination until
+  `lastReturnedEventSeq >= min(to, headEventSeq)`.
+- Validate `from` and `to` as finite non-negative integers and reject invalid
+  ranges before calling `BigInt(...)`.
+- Add tests for branches with 1,999, 2,000, 2,001, and multi-page event counts,
+  including bounded `[from, to]` ranges and no-range replay.
+- Update any replay/export/time-travel clients to detect and surface incomplete
+  pages instead of silently rendering partial history.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
