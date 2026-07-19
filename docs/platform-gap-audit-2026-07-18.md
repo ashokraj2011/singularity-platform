@@ -19835,6 +19835,50 @@ Required fixes:
   concurrent recompute is fenced, and readout/export generation cannot silently
   change milestone status.
 
+### 402. Business weekly readout generation lacks period-level idempotency
+
+Evidence:
+
+- `startBusinessReadoutScheduler()` is called during WorkGraph API startup, so
+  every API process that has `BUSINESS_WEEKLY_READOUT_ENABLED=true` schedules the
+  same weekly sweep.
+- `generateWeeklyReadouts(...)` prevents duplicates with a read-before-write
+  lookup on `studioProjectId`, `tenantId`, `kind`, `periodStart`, and
+  `periodEnd`, then calls `generateBusinessReadout(...)` if no row is found.
+- The `BusinessReadout` schema has `@@unique([studioProjectId, contentHash,
+  kind])`, but no unique key on tenant/project/kind/reporting period.
+- `generateReadoutInternal(...)` includes `generatedAt: new Date().toISOString()`
+  in the content that feeds `contentHash`, so two concurrent schedulers can
+  produce different content hashes for the same reporting week.
+- If the hashes differ, duplicate weekly readouts can be created for one
+  project/period. If the hashes match, the loser sees a database unique failure
+  and is counted as `failed`, not as an idempotent skip.
+
+Impact:
+
+- Multi-instance deployments can generate duplicate sponsor/weekly evidence for
+  the same reporting window, making signed readouts and audit timelines
+  ambiguous.
+- Operators cannot tell whether a failed weekly sweep means the readout already
+  exists, the scheduler raced another instance, or real readout generation failed.
+- Downstream sponsor approval and business reporting can attach to the wrong
+  weekly artifact if two readouts exist for the same period.
+
+Required fixes:
+
+- Add a durable period-level idempotency key, ideally unique on
+  `tenantId + studioProjectId + kind + periodStart + periodEnd` for scheduled
+  weekly readouts.
+- Create weekly readouts through a transactional upsert or generation-command
+  table so concurrent schedulers resolve to one canonical row.
+- Move volatile timestamps outside the hashed business content, or use a stable
+  period digest for duplicate detection.
+- Add a scheduler lease/job-owner record and classify duplicate races as
+  idempotent skips rather than generation failures.
+- Add tests for two simultaneous weekly sweeps, multi-process startup, same
+  period/different hash generation, retry after partial failure, and sponsor
+  approval selection when a period already has a readout.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
