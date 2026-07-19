@@ -17881,6 +17881,64 @@ Required fixes:
   explicit deny policy, inactive tools, invalid actions, compensation policy, and
   tenant assignment exactly like `/api/tools/:id/request-run`.
 
+### 364. ToolRun idempotency is not tenant-scoped or request-hash guarded
+
+Evidence:
+
+- `ToolRun` declares `@@unique([toolId, idempotencyKey])` in the Prisma schema.
+  The uniqueness key does not include tenant id, workflow instance id, action id,
+  requester id, or a request digest.
+- `requestToolRun(...)` treats the same pair as the full idempotency identity:
+  `prisma.toolRun.findFirst({ where: { toolId, idempotencyKey } })`, then returns
+  the existing run id immediately when a row is found.
+- That early return happens before evaluating `evaluateToolPolicy(...)`, before
+  checking whether the new `actionId`, `instanceId`, or `inputPayload` matches
+  the original request, and before recording a replay/audit event.
+- `tools.router.ts` lets callers supply arbitrary `idempotencyKey` values to
+  `POST /api/tools/:id/request-run`; it validates only string length.
+- `executeToolRun(...)`, direct workflow `ToolRequestExecutor`, and compensation
+  all persist the same bare `idempotencyKey` field without a stored request hash
+  or comparison result.
+- Under strict tenant isolation, code may try to hide another tenant's row via
+  RLS/tenant DB context, but the database uniqueness constraint remains global
+  for the same `toolId` and key. Under relaxed/local modes, the `findFirst`
+  lookup can return an existing run from a different workflow context.
+- Existing findings cover the approval path losing the pending row's
+  idempotency key and workflow Tool Request nodes bypassing the gateway. They do
+  not cover ToolRun idempotency itself being too weak and unguarded by request
+  hash/tenant scope.
+
+Impact:
+
+- A retried or malicious request can reuse the same key with a different action,
+  payload, instance, or requester and receive a previous ToolRun id instead of a
+  conflict.
+- A failed or unauthorized run can poison an idempotency key for later legitimate
+  requests against the same tool.
+- Tenants can collide on the same tool snapshot and key when strict database RLS
+  is not fully active, and the global unique index can still turn tenant-local
+  retry keys into cross-tenant operational coupling.
+- Audit cannot prove that an idempotent replay was the same request because no
+  canonical input digest, actor, instance, action, or policy decision is stored
+  with the idempotency decision.
+
+Required fixes:
+
+- Replace global `@@unique([toolId, idempotencyKey])` with a tenant-aware unique
+  key such as `(tenantId, toolId, idempotencyKey)` or
+  `(tenantId, instanceId, toolId, idempotencyKey)` after backfilling tenant ids.
+- Store a canonical `requestHash` over tenant, tool id, action id, instance id,
+  requester/effective actor, input payload, and source path.
+- On idempotency replay, return the previous run only when the request hash
+  matches. If the key is reused with different content, return a conflict and log
+  the attempted mismatch.
+- Apply the same idempotency command helper to API requests, workflow nodes,
+  compensation, and approval execution so every path has the same replay rules.
+- Add tests for same-key/same-request replay, same-key/different-payload
+  conflict, same-key/different-action conflict, same-key/different-instance
+  conflict, same-key/two-tenant independence, and RLS-disabled local-mode
+  warning behavior.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
