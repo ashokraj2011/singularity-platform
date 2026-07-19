@@ -18184,6 +18184,61 @@ Required fixes:
   program, a project-level completion program, no completion program, a stale
   program, and concurrent finalization/spawn attempts.
 
+### 369. Task SLA overdue events are emitted without tenant-scoped evidence
+
+Evidence:
+
+- `Task` has a direct nullable `tenantId` column for standalone task RLS.
+- In `TimerSweep.ts`, the Task SLA branch scans overdue tasks through the
+  cross-tenant `sweepReader.task.findMany(...)`, but selects only `id`, `status`,
+  `dueAt`, and `instanceId`; it does not select `tenantId` or the owning
+  workflow instance tenant.
+- The "avoid spamming" check reads `prisma.eventLog.findFirst(...)` by
+  `eventType = 'TaskOverdue'`, `entityId = task.id`, and recent timestamp. It
+  does not filter by tenant, and it is not an atomic insert/claim.
+- `logEvent('TaskOverdue', ...)` is called outside a tenant-scoped DB context and
+  its payload includes `dueAt`, `instanceId`, and `status`, but no `tenantId` or
+  `tenant_id`. `logEvent(...)` can only stamp `EventLog.tenantId` from the
+  current tenant context or payload tenant field, so this path can write a
+  tenantless event.
+- `publishOutbox('Task', ...)` is called with a payload containing `taskId`,
+  `instanceId`, and `dueAt`, but no tenant. The canonical event-bus envelope
+  therefore gets `tenant_id: null` when no request tenant context exists.
+- The WorkItem SLA branch in the same file does select `tenantId`, writes a
+  `WorkItemEvent` with tenant, wraps the write in `withTenantDbTransaction(...)`,
+  and includes `tenantId` in its payload. Task SLA events do not follow that
+  stronger pattern.
+- Search found no tests for `TaskOverdue` tenant stamping, duplicate suppression,
+  tenant-filtered event visibility, or outbox tenant propagation.
+
+Impact:
+
+- Operations, audit, and event-bus consumers can receive overdue-task signals
+  without tenant identity even though the underlying task row is tenant-scoped.
+- Tenant-filtered timelines and trace/evidence views can miss SLA breaches for
+  human or agent tasks, while unfiltered admin views show them as tenantless
+  platform noise.
+- Duplicate suppression is best-effort and not tenant-aware; multiple API
+  replicas can race between the recent-event check and the event write.
+- Enterprise SLA reporting can diverge between WorkItems and Tasks: WorkItem
+  breaches carry tenant context, while task breaches do not.
+
+Required fixes:
+
+- Select `Task.tenantId` and, when needed, the linked workflow instance tenant in
+  the overdue Task sweep, then derive one authoritative tenant for each task.
+- Wrap the per-task overdue event write in `withTenantDbTransaction(...)` using
+  that tenant and include `tenantId` / `tenant_id` in both `logEvent(...)` and
+  `publishOutbox(...)` payloads.
+- Replace the non-atomic recent-event check with an idempotent claim, such as a
+  task SLA event table/unique key or a conditional insert keyed by task, tenant,
+  breach bucket, and SLA policy.
+- Add an explicit `TaskSlaBreached`/`TaskOverdue` task event or receipt row if
+  task timelines need the same first-class evidence model as WorkItems.
+- Add tests for standalone task tenant, workflow-linked task tenant, missing
+  tenant in strict mode, concurrent sweeps, duplicate suppression, and event-bus
+  envelope tenant propagation.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
