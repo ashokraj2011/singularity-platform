@@ -77,6 +77,7 @@ _post = _prompt_mod._post
 _build_code_context_package = _prompt_mod.build_code_context_package
 _fetch_capability_world_model = _prompt_mod.fetch_capability_world_model
 _fetch_capability_world_model_slice = _prompt_mod.fetch_capability_world_model_slice
+from .execute_modules import single_turn_compose as _single_turn_compose
 _composer_context_policy = _prompt_mod.composer_context_policy
 _compile_execute_context = _prompt_mod.compile_execute_context
 _int_limit = _response_mod.int_limit
@@ -2718,10 +2719,70 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
         fallback=settings.default_governance_mode,
     )
 
+    # The VERBATIM messages -- what this endpoint has always sent, and the
+    # fallback for every path below that cannot compose.
     messages: list[dict[str, Any]] = []
     if req.system_prompt and req.system_prompt.strip():
         messages.append({"role": "system", "content": req.system_prompt})
     messages.append({"role": "user", "content": req.task})
+
+    # Run the turn through prompt-composer when enabled, so these callers stop
+    # being the one path that reaches an LLM with no platform layers and no
+    # capability grounding. The caller's own prompt still wins: it rides as an
+    # EXECUTION_OVERRIDE layer at priority 9999, above everything the composer
+    # adds. Composition NEVER fails the turn -- any problem falls back to the
+    # verbatim messages built above.
+    single_turn_warnings: list[str] = []
+    prompt_assembly_id: Optional[str] = None
+    composed_turn = False
+    do_compose, skip_reason = _single_turn_compose.should_compose(rc, req.system_prompt or "")
+    if skip_reason:
+        single_turn_warnings.append(skip_reason)
+    if do_compose:
+        try:
+            world_model, world_model_views = None, []
+            capability_for_grounding = rc.get("capability_id") or rc.get("capabilityId")
+            if settings.agent_runtime_url and capability_for_grounding:
+                world_model, world_model_views, _slice_warning = await _fetch_capability_world_model_slice(
+                    settings.agent_runtime_url,
+                    capability_for_grounding,
+                    settings.agent_runtime_world_model_slice_timeout_sec,
+                    role=rc.get("agent_role") or rc.get("agentRole"),
+                    task=req.task,
+                )
+            compose_payload = _single_turn_compose.build_compose_payload(
+                run_context=rc,
+                system_prompt=req.system_prompt or "",
+                task=req.task,
+                trace_id=trace_id,
+                model_overrides=mo,
+                world_model=world_model,
+                world_model_views=world_model_views,
+            )
+            composer_headers: dict[str, str] = {}
+            composer_bearer = (
+                os.environ.get("PROMPT_COMPOSER_SERVICE_TOKEN")
+                or os.environ.get("CONTEXT_FABRIC_SERVICE_TOKEN")
+            )
+            if composer_bearer:
+                composer_headers["authorization"] = f"Bearer {composer_bearer}"
+            composed = await _post(
+                f"{settings.composer_url.rstrip('/')}/api/v1/compose-and-respond",
+                compose_payload,
+                timeout=_prompt_composer_compose_timeout_sec(),
+                headers=composer_headers or None,
+            )
+            composed_messages, prompt_assembly_id, compose_warnings = _single_turn_compose.extract_composed_messages(
+                composed, fallback_task=req.task,
+            )
+            single_turn_warnings.extend(compose_warnings)
+            if composed_messages:
+                messages = composed_messages
+                composed_turn = True
+        except Exception as exc:  # pylint: disable=broad-except
+            # Composer unreachable, slow, or erroring. The verbatim messages are
+            # already built, so the turn proceeds exactly as it does today.
+            single_turn_warnings.append(f"single_turn_compose.fallback: {exc!s}")
 
     direct_route = is_context_fabric_direct_route(rc)
     try:
@@ -2776,6 +2837,8 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
             "governanceOverlay": overlay,
             "governanceWaivers": req.governance_waivers,
             "llmRoute": "context-fabric-direct" if direct_route else "gateway-or-runtime",
+            "promptComposed": composed_turn,
+            "promptAssemblyId": prompt_assembly_id,
             "provider": resp.provider, "model": resp.model, "modelAlias": resp.model_alias,
             "inputTokens": resp.input_tokens, "outputTokens": resp.output_tokens,
         },
@@ -2799,11 +2862,16 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
             "governanceMode": governance_mode,
             "executionPosture": "governed",
             "llmRoute": "context-fabric-direct" if direct_route else "gateway-or-runtime",
+            # Whether this turn was composed or sent verbatim, and the assembly
+            # it produced. Without this a rollout is invisible: a composed turn
+            # and a fallback-to-verbatim turn look identical from the outside.
+            "promptComposed": composed_turn,
+            "promptAssemblyId": prompt_assembly_id,
             "llmCallIds": [], "toolInvocationIds": [], "artifactIds": [], "codeChangeIds": [],
         },
         "tokensUsed": {"input": resp.input_tokens, "output": resp.output_tokens, "total": total_tokens},
         "usage": usage,
         "modelUsage": usage,
-        "warnings": [],
+        "warnings": single_turn_warnings,
         "pendingApproval": None,
     }
