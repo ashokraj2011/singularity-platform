@@ -20043,6 +20043,56 @@ Required fixes:
   mixed legacy/scoped WorkItems, stale base commits, and finalization after a
   legacy developer-package publish.
 
+### 406. Reconciliation overview tallies are computed from a capped post-filter window
+
+Evidence:
+
+- `/api/reconciliation-overview` is mounted as a cross-WorkItem operator cockpit
+  and `ReconciliationOverviewConsole` renders headline metrics for
+  `Reconciliations`, `Passed`, `Failed`, `Running`, `Submissions`, and `Rejected`.
+- `getReconciliationOverview(...)` fetches recent reconciliation runs and
+  implementation submissions with `take = candidateTake`, where
+  `candidateTake = Math.min(take * 4, 400)`.
+- Those database queries have no effective access predicate; they order globally
+  by `createdAt desc`, include the WorkItem, and only then call
+  `canViewWorkItem(...)` for each candidate WorkItem.
+- The visible row lists are `runs.filter(...).slice(0, take)` and
+  `submissions.filter(...).slice(0, take)`.
+- The summary counts are then produced by grouping only `visibleRuns` and
+  `visibleSubmissions`, not by counting all reconciliation runs/submissions that
+  the caller can view.
+- The only local test found for this module exercises `tallyByStatus(...)` as a
+  pure reducer; it does not cover post-filter pagination, authorized older rows,
+  or summary accuracy when inaccessible rows dominate the newest candidate window.
+
+Impact:
+
+- The cockpit can show `0` or low counts for failed/running reconciliations even
+  when the caller has visible work just outside the capped candidate window.
+- A tenant/capability operator may miss reconciliation failures because newer
+  inaccessible rows consume the sample before access filtering happens.
+- The headline metrics look like status totals but actually describe only the
+  filtered recent sample, making Operations, readiness, and SDLC evidence
+  misleading.
+- Raising the `limit` only grows the candidate window up to 400, so large
+  multi-tenant/shared deployments can still undercount.
+
+Required fixes:
+
+- Push tenant and effective WorkItem/capability access predicates into the
+  reconciliation and submission database queries before applying `take`.
+- Compute summary totals with authorized `groupBy` queries or return clearly named
+  `sampleSummary` metrics if the endpoint intentionally reports only a recent
+  sample.
+- Add pagination cursors that continue scanning until the requested number of
+  visible rows is returned or an explicit bounded search limit is reached and
+  surfaced.
+- Expose `truncated`, `candidateCount`, and `visibleCount` diagnostics when the
+  endpoint cannot prove complete metrics.
+- Add regression tests with inaccessible newest rows, authorized older failures,
+  multiple tenants/capabilities, and limit values that would otherwise under-fill
+  or miscount the overview.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
