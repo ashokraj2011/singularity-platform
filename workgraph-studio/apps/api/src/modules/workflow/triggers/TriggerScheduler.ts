@@ -1,5 +1,6 @@
 import cron from 'node-cron'
 import { prisma } from '../../../lib/prisma'
+import { config } from '../../../config'
 import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { runWithTenantDbContext } from '../../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../../lib/audit'
@@ -8,7 +9,7 @@ import { routeWorkItem } from '../../work-items/work-item-routing.service'
 import { systemRouteActor } from '../../work-items/work-item-actors'
 import { findAttachableWorkItemForTrigger, resolveTriggerCorrelationKey, triggerDocumentsFromPayload, triggerStringAt, claimTriggerEvent, recordTriggerEventWorkItem, type TriggerDocument } from '../../work-items/work-item-trigger-attach'
 import { normalizeMetadataKey, recordOf } from '../../metadata/metadata.service'
-import { tenantIdForCreate } from '../../../lib/tenant-isolation'
+import { tenantIdForCreate, tenantIsolationStrict } from '../../../lib/tenant-isolation'
 import { startInstance } from '../runtime/WorkflowRuntime'
 import { adminPrisma } from '../../../lib/admin-prisma'
 import { redactEventPayload } from '../../events/event-payload'
@@ -25,6 +26,14 @@ function markEventProcessed(id: string) {
   if (processedEventIds.size > 10000) {
     processedEventIds.clear()
   }
+}
+
+function triggerTenantOrThrow(triggerId: string, triggerTenantId?: string | null, templateTenantId?: string | null): string {
+  const tenantId = triggerTenantId ?? templateTenantId ?? (tenantIsolationStrict() ? undefined : config.WORKGRAPH_DEFAULT_TENANT_ID)
+  if (!tenantId) {
+    throw new Error(`WorkflowTrigger ${triggerId} has no tenant; backfill trigger/template tenant before automatic execution`)
+  }
+  return tenantId
 }
 
 /**
@@ -283,19 +292,21 @@ async function runScheduleTriggers(): Promise<void> {
       if (!matchesCronNow(cronExpr, now, timezone)) continue
 
       const previousLastFiredAt = t.lastFiredAt
+      const triggerTenantId = triggerTenantOrThrow(t.id, t.tenantId, t.template.tenantId)
       const claimed = await withTenantDbTransaction(prisma, tx => tx.workflowTrigger.updateMany({
         where: { id: t.id, lastFiredAt: t.lastFiredAt }, data: { lastFiredAt: now },
-      }), t.tenantId ?? t.template.tenantId ?? undefined)
+      }), triggerTenantId)
       if (claimed.count !== 1) continue
       try {
         await spawnInstance(t.id, t.templateId, t.template.name, {
+          tenantId: triggerTenantId,
           _triggeredAt: now.toISOString(),
           _trigger: { type: 'SCHEDULE', cron: cronExpr, timezone: timezone ?? 'server-local' },
-        }, t.tenantId ?? t.template.tenantId)
+        }, triggerTenantId)
       } catch (err) {
         await withTenantDbTransaction(prisma, tx => tx.workflowTrigger.updateMany({
           where: { id: t.id, lastFiredAt: now }, data: { lastFiredAt: previousLastFiredAt },
-        }), t.tenantId ?? t.template.tenantId ?? undefined).catch(() => {})
+        }), triggerTenantId).catch(() => {})
         throw err
       }
     }
@@ -326,19 +337,21 @@ async function runEventTriggers(): Promise<void> {
 
       for (const matched of matchedEvents) {
         const previousLastFiredAt = t.lastFiredAt
+        const triggerTenantId = triggerTenantOrThrow(t.id, t.tenantId, t.template.tenantId)
         const claimed = await withTenantDbTransaction(prisma, tx => tx.workflowTrigger.updateMany({
           where: { id: t.id, lastFiredAt: t.lastFiredAt }, data: { lastFiredAt: matched.createdAt },
-        }), t.tenantId ?? t.template.tenantId ?? undefined)
+        }), triggerTenantId)
         if (claimed.count !== 1) continue
         try {
           await spawnInstance(t.id, t.templateId, t.template.name, {
+            tenantId: triggerTenantId,
             _triggeredAt: matched.createdAt.toISOString(),
             _triggerEvent: { type: matched.eventType, payload: matched.payload },
-          }, t.tenantId ?? t.template.tenantId)
+          }, triggerTenantId)
         } catch (err) {
           await withTenantDbTransaction(prisma, tx => tx.workflowTrigger.updateMany({
             where: { id: t.id, lastFiredAt: matched.createdAt }, data: { lastFiredAt: previousLastFiredAt },
-          }), t.tenantId ?? t.template.tenantId ?? undefined).catch(() => {})
+          }), triggerTenantId).catch(() => {})
           throw err
         }
         t.lastFiredAt = matched.createdAt
@@ -514,17 +527,8 @@ async function spawnInstance(
   context: Record<string, unknown>,
   tenantIdHint?: string | null,
 ): Promise<void> {
-  // RLS prep — tenantIdForCreate(context) resolves to undefined here today:
-  // the SCHEDULE/EVENT trigger contexts built above (_triggeredAt/_trigger/
-  // _triggerEvent) never carry a tenantId, because WorkflowTrigger/Workflow
-  // have no tenant column to source one from (a separate, deferred product
-  // decision — see the RLS cutover plan's Decision C). Wrapping the write
-  // anyway keeps the mechanism consistent with every other instance-creating
-  // path and makes the gap LOUD (a ValidationError under
-  // TENANT_ISOLATION_MODE=strict) instead of a silent bypass; behavior is
-  // otherwise unchanged (tenantId: undefined here is exactly what the bare
-  // `prisma.workflowInstance.create` call already did).
   const tenantId = tenantIdHint ?? tenantIdForCreate(context)
+  if (!tenantId) throw new Error(`WorkflowTrigger ${triggerId} has no tenant; refusing to create a tenantless workflow instance`)
   const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.create({
     data: {
       templateId,

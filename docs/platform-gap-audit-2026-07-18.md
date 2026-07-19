@@ -1229,28 +1229,26 @@ Required fixes:
 Evidence:
 
 - `workgraph-studio/apps/api/src/modules/workflow/triggers/triggers.router.ts`
-  correctly treats the webhook secret as the authority and never lets the public
-  payload choose the tenant.
-- The legacy `WorkflowTrigger` path sets `payloadTenantId = match.tenantId ??
-  undefined`, then creates the `WorkflowInstance` with
-  `tenantId: tenantIdForCreate(context)`.
-- The inline comment says public webhook runs without a request tenant and that
-  `NULL` tenant instances still need the trigger-tenant gap resolved before
-  forced RLS.
+  treats the webhook secret as the authority, scopes the write to the trigger
+  or template tenant, and never lets the public payload choose the tenant.
+- In strict mode, legacy webhook execution now rejects a trigger/template pair
+  with no tenant before creating a workflow instance.
+- `workgraph-studio/apps/api/src/modules/workflow/triggers/TriggerScheduler.ts`
+  now applies the same tenant requirement to scheduled and outbox-event
+  trigger execution, and refuses to create a tenantless instance when no trigger
+  or template tenant is available.
 - The newer WorkItem trigger path uses `workItemMatch.tenantId` directly and is
   safer.
 
 Impact:
 
-- Old trigger rows with missing tenant IDs can still create tenantless workflow
-  instances. That conflicts with strict tenant isolation and makes event-driven
-  workflow behavior dependent on historical row quality.
+- Old trigger rows with missing tenant IDs no longer create tenantless workflow
+  instances in strict mode, but historical data still needs a tenant backfill so
+  legacy triggers continue to execute after forced RLS.
 
 Required fixes:
 
 - Backfill every `workflow_triggers.tenantId` from its owning workflow.
-- In strict mode, reject legacy webhook triggers whose row or template lacks a
-  tenant before creating an instance.
 - Add tests for public webhook event creation in strict mode, including legacy
   rows with missing tenant IDs.
 

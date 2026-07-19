@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import crypto from 'node:crypto'
 import { prisma } from '../../../lib/prisma'
+import { config } from '../../../config'
 import { withTenantDbTransaction } from '../../../lib/tenant-db-context'
 import { validate } from '../../../middleware/validate'
 import { logEvent, publishOutbox } from '../../../lib/audit'
@@ -14,6 +15,7 @@ import { tenantIdForCreate, resolveTenantFromRequest, tenantIsolationStrict, req
 import { assertTemplatePermission, canViewTemplate } from '../../../lib/permissions/workflowTemplate'
 import { startInstance } from '../runtime/WorkflowRuntime'
 import { assertEventPayloadSize, redactEventPayload } from '../../events/event-payload'
+import { ValidationError } from '../../../lib/errors'
 
 // Constant-time secret comparison. Hash both sides to a fixed 32-byte digest
 // first so timingSafeEqual never sees unequal lengths (which throws and would
@@ -178,20 +180,23 @@ webhookRouter.post('/:secret', async (req, res, next) => {
       return
     }
 
-    // The webhook secret identifies a trigger, so the trigger's tenant is the
-    // authority. Never let an unauthenticated payload choose the DB tenant.
-    const payloadTenantId = match.tenantId ?? undefined
+    // The webhook secret identifies a trigger, so the trigger/template tenant
+    // is the authority. Never let an unauthenticated payload choose the DB
+    // tenant, and never create a tenantless legacy-trigger run in strict mode.
+    const triggerTenantId = match.tenantId ?? match.template.tenantId ?? (tenantIsolationStrict() ? undefined : config.WORKGRAPH_DEFAULT_TENANT_ID)
+    if (!triggerTenantId) {
+      throw new ValidationError(`WorkflowTrigger ${match.id} has no tenant; backfill trigger/template tenant before webhook execution`)
+    }
     assertEventPayloadSize(req.body)
     const safeWebhookPayload = redactEventPayload(req.body)
     const context = {
-      ...(payloadTenantId ? { tenantId: payloadTenantId } : {}),
+      tenantId: triggerTenantId,
       _webhookPayload: safeWebhookPayload,
       _triggeredAt: new Date().toISOString(),
     }
-    // Public webhook — no request tenant; scope to the tenant derived from the
-    // payload (Decision C: NULL when the payload carries none, same as
-    // TriggerScheduler.spawnInstance — such instances need the trigger-tenant gap
-    // resolved before FORCE RLS, per the cutover readiness audit).
+    // Public webhook — no request tenant. Scope to the trigger/template tenant
+    // only; payload tenant selection would be an unauthenticated cross-tenant
+    // write primitive.
     const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.create({
       data: {
         templateId: match.templateId,
@@ -200,7 +205,7 @@ webhookRouter.post('/:secret', async (req, res, next) => {
         tenantId: tenantIdForCreate(context),
         context: context as object,
       },
-    }), tenantIdForCreate(context))
+    }), triggerTenantId)
     await prisma.workflowTrigger.update({
       where: { id: match.id },
       data: { lastFiredAt: new Date() },
