@@ -18972,6 +18972,51 @@ Required fixes:
 - Add tests for abandoning active, merged, suspended, already-abandoned, and main
   branches, plus evidence-pack rendering for each terminal status.
 
+### 384. Board merge completion hardcodes `main` even though merge/apply support other targets
+
+Evidence:
+
+- `mergeSchema` accepts both `fromBranch` and `toBranch`, with `toBranch`
+  defaulting to `main`.
+- `POST /boards/:boardId/merge` passes both values to `mergeBranch(...)`.
+- `POST /boards/:boardId/merge/apply` also passes both values to
+  `applyMergeItems(...)`, so material changes can be replayed into a non-main
+  target branch.
+- `mergeCompleteSchema` accepts only `fromBranch`; there is no `toBranch` field
+  on the completion route.
+- `completeMerge(boardId, fromBranch, userId)` calls
+  `diffBranches(boardId, fromBranch, 'main')` unconditionally.
+- `BoardBranchMergeCompleted` audit/outbox payload includes `boardId` and
+  `from`, but not the target branch that was actually merged into.
+
+Impact:
+
+- A branch can be merged and applied into a non-main target branch, but completion
+  still checks whether it is identical to `main`, producing false failures or
+  false lifecycle decisions.
+- If the source branch happens to match `main` while the intended target branch
+  still differs, completion can mark the source branch `MERGED` without proving
+  the requested target branch received the changes.
+- Audit evidence loses the merge destination, making it impossible to reconstruct
+  whether a branch was merged into `main`, an exploration branch, a release
+  branch, or another review branch.
+- Operators cannot reliably use the API for nested review branches, staged
+  branch promotion, or agent exploration fan-in.
+
+Required fixes:
+
+- Add `toBranch` to `mergeCompleteSchema` with the same defaulting behavior as
+  merge/apply, or require a merge proposal/session id that already stores the
+  target branch.
+- Make `completeMerge(...)` validate remaining diffs against the requested target
+  branch, not hardcoded `main`.
+- Persist merge destination on the source branch lifecycle event or merge
+  proposal/session.
+- Include `toBranch`, target head sequence, source head sequence, and state
+  hashes in `BoardBranchMergeCompleted` audit/outbox events.
+- Add tests for completing merges into `main`, non-main branches, stale target
+  branches, and cases where the source matches one target but not another.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
