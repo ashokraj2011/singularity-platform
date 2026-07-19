@@ -176,6 +176,61 @@ PROMOTED PROMOTED
     }
   
 
+  "CapabilityWorldModelViewDoc" {
+    String id "🗝️"
+    String kind 
+    String domainKey 
+    String title 
+    String contentMd 
+    Json structured "❓"
+    Json evidence 
+    String sourceCommit "❓"
+    String repoFingerprint "❓"
+    Int tokenEstimate 
+    String contentHash "❓"
+    String status 
+    String buildError "❓"
+    String generatedBy "❓"
+    DateTime generatedAt 
+    DateTime updatedAt 
+    }
+  
+
+  "CapabilityLearningStatus" {
+    String id "🗝️"
+    String status 
+    String message "❓"
+    DateTime lastAttemptAt "❓"
+    DateTime lastSuccessAt "❓"
+    DateTime lastFailureAt "❓"
+    String lastFailureCode "❓"
+    String lastFailureMessage "❓"
+    String runtimeId "❓"
+    String runtimeUserId "❓"
+    String runtimeTenantId "❓"
+    String sourceFingerprint "❓"
+    Int repoProfileVersion 
+    Int activeSourceCount 
+    Int learnedSourceCount 
+    Json lastGoodStack 
+    Json lastRepoProfiles 
+    Json diagnostics 
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
+  "CapabilityLearningWorkerLock" {
+    String id "🗝️"
+    String operation 
+    String ownerId 
+    DateTime startedAt 
+    DateTime expiresAt 
+    DateTime createdAt 
+    DateTime updatedAt 
+    }
+  
+
   "AgentCapabilityBinding" {
     String id "🗝️"
     String bindingName 
@@ -483,6 +538,9 @@ PROMOTED PROMOTED
     "Capability" |o--|| "EntityStatus" : "enum:status"
     "Capability" |o--|o "Capability" : "parent"
     "CapabilityWorldModel" |o--|| "Capability" : "capability"
+    "CapabilityWorldModelViewDoc" }o--|| "Capability" : "capability"
+    "CapabilityLearningStatus" |o--|| "Capability" : "capability"
+    "CapabilityLearningWorkerLock" |o--|| "Capability" : "capability"
     "AgentCapabilityBinding" |o--|| "EntityStatus" : "enum:status"
     "AgentCapabilityBinding" }o--|| "AgentTemplate" : "agentTemplate"
     "AgentCapabilityBinding" }o--|| "Capability" : "capability"

@@ -129,6 +129,27 @@ capabilityRoutes.post(
   capabilityController.redistillWorldModel,
 );
 
+// Layered world-model views — the prose layers agents load narrowly (core +
+// role view + relevant domain/task guide). Build is OPERATOR-TRIGGERED: nothing
+// here runs during onboarding or lazily on read, so a capability has no views
+// until someone asks and every consumer degrades to the capability-wide model.
+capabilityRoutes.post(
+  "/:id/world-model/views/build",
+  capabilityController.buildWorldModelViews,
+);
+capabilityRoutes.get(
+  "/:id/world-model/views",
+  capabilityController.listWorldModelViews,
+);
+capabilityRoutes.get(
+  "/:id/world-model/views/:kind",
+  capabilityController.getWorldModelView,
+);
+capabilityRoutes.delete(
+  "/:id/world-model/views/:kind",
+  capabilityController.deleteWorldModelView,
+);
+
 // M61 Slice E — repo fingerprint drift detector. Body:
 //   { fingerprint: string, hashedBuildFiles?: string[], topLevelEntries?: string[] }
 // Idempotent: callers may safely re-POST every workflow start.

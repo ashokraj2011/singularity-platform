@@ -14,7 +14,7 @@
  *    tokens it took to build, so the cap is stated to the model up front.
  */
 
-import type { WorldModelViewKind } from "./world-model-views.types";
+import { isWorldModelViewKind, requiresDomainKey, type WorldModelViewKind } from "./world-model-views.types";
 
 /** Which grounding inputs a view needs. Keeps repo-less capabilities honest. */
 export type GroundingSelector =
@@ -311,6 +311,54 @@ export function allViewSpecs(): ViewSpec[] {
 /** The default "auto" build set: the shared core plus the seven role views. */
 export function defaultBuildKinds(): WorldModelViewKind[] {
   return ["core_summary", "business", "architecture", "development", "testing", "release", "operations", "security"];
+}
+
+export type PlannedView = { kind: WorldModelViewKind; domainKey: string };
+export type BuildPlan = { ok: true; views: PlannedView[] } | { ok: false; error: string };
+
+/**
+ * Turn a build request into the exact list of views to build.
+ *
+ * Pure so the expansion rules are testable without a database: "auto" means the
+ * core plus the seven role views; a keyed kind fans out over the supplied keys.
+ * A keyed kind with no key is a client error rather than a silently-skipped
+ * build — an operator who asks for a domain view and gets a 202 with nothing
+ * built has no way to tell that from a build still in flight.
+ */
+export function planViewBuild(input: {
+  views?: unknown;
+  domainKeys?: unknown;
+  task?: unknown;
+}): BuildPlan {
+  const requested = input.views === "auto" || input.views === undefined ? defaultBuildKinds() : input.views;
+  if (!Array.isArray(requested) || requested.length === 0) {
+    return { ok: false, error: 'views must be "auto" or a non-empty array of view kinds' };
+  }
+  const invalid = requested.filter((k) => !isWorldModelViewKind(k));
+  if (invalid.length) {
+    return { ok: false, error: `unknown view kinds: ${invalid.map(String).join(", ")}` };
+  }
+
+  const domainKeys = Array.isArray(input.domainKeys)
+    ? input.domainKeys.filter((k): k is string => typeof k === "string" && k.trim().length > 0).map((k) => k.trim())
+    : [];
+  const task = typeof input.task === "string" ? input.task.trim() : "";
+
+  const planned: PlannedView[] = [];
+  const seen = new Set<string>();
+  for (const kind of requested as WorldModelViewKind[]) {
+    const keys = !requiresDomainKey(kind) ? [""] : kind === "task_guide" && task ? [task] : domainKeys;
+    if (keys.length === 0) {
+      return { ok: false, error: `${kind} requires ${kind === "task_guide" ? "task" : "domainKeys"}` };
+    }
+    for (const domainKey of keys) {
+      const dedupe = `${kind}\u0000${domainKey}`;
+      if (seen.has(dedupe)) continue;
+      seen.add(dedupe);
+      planned.push({ kind, domainKey });
+    }
+  }
+  return { ok: true, views: planned };
 }
 
 /**
