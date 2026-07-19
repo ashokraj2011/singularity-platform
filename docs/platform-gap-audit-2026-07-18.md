@@ -370,6 +370,13 @@ Required fixes:
 
 ### 12. Loop strategy publishing has tenant scope but no explicit workflow permission
 
+Progress note 2026-07-19:
+
+- `loop-strategy.router.ts` now requires platform-scoped workflow permissions for
+  create, edit/version, and publish operations. This closes the immediate
+  "any authenticated tenant user can publish execution strategy" bug. Dedicated
+  loop-strategy permission keys and resource grants remain a deeper model change.
+
 Evidence:
 
 - `app.ts` mounts `/api/loop-strategies` behind `authMiddleware`, but no
@@ -2063,6 +2070,14 @@ Required fixes:
   workflows that are guaranteed to fail at runtime.
 
 ### 62. Workflow node config validation misses operational node contracts
+
+Progress note 2026-07-19:
+
+- `validateNodeConfig(...)` now performs design-time operational checks for
+  `CALL_WORKFLOW`, `EVENT_EMIT`, `DATA_SINK`, `SET_CONTEXT`, `SIGNAL_WAIT`,
+  `SIGNAL_EMIT`, `TIMER`, and unsupported `EVENT_GATEWAY`, while still allowing
+  explicit runtime placeholders. Broader publish-time validation APIs and
+  connector/repo-scope checks remain open.
 
 Evidence:
 
@@ -7285,6 +7300,12 @@ Evidence:
   custom types.
 - The custom type `fields` payload is only an array of labels/placeholders; it is
   not a server-validated per-executor config schema.
+
+Progress note 2026-07-19:
+
+- Custom node type create, patch, and delete routes now require platform-scoped
+  workflow create/update/delete authorization. Tenant ownership, publishing,
+  version pinning, and marketplace-style approval remain open.
 
 Impact:
 

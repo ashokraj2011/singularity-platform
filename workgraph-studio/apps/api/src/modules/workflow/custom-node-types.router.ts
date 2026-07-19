@@ -3,6 +3,8 @@ import { z } from 'zod'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { NotFoundError } from '../../lib/errors'
+import { resolveTenantFromRequest } from '../../lib/tenant-isolation'
+import { assertPlatformWorkflowPermission } from '../../lib/permissions/workflowTemplate'
 
 export const customNodeTypesRouter: Router = Router()
 
@@ -46,6 +48,8 @@ customNodeTypesRouter.get('/', async (req, res, next) => {
 customNodeTypesRouter.post('/', validate(createSchema), async (req, res, next) => {
   try {
     const body = req.body as z.infer<typeof createSchema>
+    const tenantId = resolveTenantFromRequest(req)
+    await assertPlatformWorkflowPermission(req.user!.userId, 'create', 'CustomNodeType', undefined, tenantId)
     const type = await prisma.customNodeType.create({
       data: { ...body, createdById: req.user!.userId },
     })
@@ -67,6 +71,8 @@ customNodeTypesRouter.get('/:id', async (req, res, next) => {
 
 customNodeTypesRouter.patch('/:id', validate(patchSchema), async (req, res, next) => {
   try {
+    const tenantId = resolveTenantFromRequest(req)
+    await assertPlatformWorkflowPermission(req.user!.userId, 'edit', 'CustomNodeType', req.params.id as string, tenantId)
     const type = await prisma.customNodeType.update({
       where: { id: req.params.id as string },
       data: req.body,
@@ -79,6 +85,8 @@ customNodeTypesRouter.patch('/:id', validate(patchSchema), async (req, res, next
 
 customNodeTypesRouter.delete('/:id', async (req, res, next) => {
   try {
+    const tenantId = resolveTenantFromRequest(req)
+    await assertPlatformWorkflowPermission(req.user!.userId, 'delete', 'CustomNodeType', req.params.id as string, tenantId)
     await prisma.customNodeType.delete({ where: { id: req.params.id as string } })
     res.status(204).end()
   } catch (err) {

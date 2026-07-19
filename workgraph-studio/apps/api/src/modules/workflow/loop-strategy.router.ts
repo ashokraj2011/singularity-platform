@@ -11,6 +11,8 @@ import {
   updateLoopStrategy,
   validateLoopStrategyDefinition,
 } from './loop-strategy.service'
+import { resolveTenantFromRequest } from '../../lib/tenant-isolation'
+import { assertPlatformWorkflowPermission } from '../../lib/permissions/workflowTemplate'
 
 export const loopStrategyRouter: Router = Router()
 const definitionSchema = z.record(z.unknown())
@@ -34,6 +36,8 @@ loopStrategyRouter.post('/', validate(z.object({
   publish: z.boolean().optional(),
 })), async (req, res, next) => {
   try {
+    const tenantId = resolveTenantFromRequest(req)
+    await assertPlatformWorkflowPermission(req.user!.userId, 'create', 'LoopStrategy', undefined, tenantId)
     const result = await createLoopStrategy({ ...req.body, actorId: req.user!.userId })
     res.status(201).json(result)
   } catch (err) { next(err) }
@@ -44,16 +48,25 @@ loopStrategyRouter.get('/:id', async (req, res, next) => {
 })
 
 loopStrategyRouter.patch('/:id', validate(z.object({ name: z.string().trim().min(1).max(120).optional(), description: z.string().trim().max(2000).optional() })), async (req, res, next) => {
-  try { res.json(await updateLoopStrategy(req.params.id, { ...req.body, actorId: req.user!.userId })) } catch (err) { next(err) }
+  try {
+    const tenantId = resolveTenantFromRequest(req)
+    await assertPlatformWorkflowPermission(req.user!.userId, 'edit', 'LoopStrategy', req.params.id, tenantId)
+    res.json(await updateLoopStrategy(req.params.id, { ...req.body, actorId: req.user!.userId }))
+  } catch (err) { next(err) }
 })
 
 loopStrategyRouter.post('/:id/versions', validate(z.object({ definition: definitionSchema, publish: z.boolean().optional() })), async (req, res, next) => {
   try {
+    const tenantId = resolveTenantFromRequest(req)
+    await assertPlatformWorkflowPermission(req.user!.userId, req.body.publish ? 'publish' : 'edit', 'LoopStrategy', req.params.id, tenantId)
     res.status(201).json(await createLoopStrategyVersion(req.params.id, { ...req.body, actorId: req.user!.userId }))
   } catch (err) { next(err) }
 })
 
 loopStrategyRouter.post('/:id/publish', validate(z.object({ version: z.number().int().positive().optional() })), async (req, res, next) => {
-  try { res.json(await publishLoopStrategy(req.params.id, req.body.version, req.user!.userId)) } catch (err) { next(err) }
+  try {
+    const tenantId = resolveTenantFromRequest(req)
+    await assertPlatformWorkflowPermission(req.user!.userId, 'publish', 'LoopStrategy', req.params.id, tenantId)
+    res.json(await publishLoopStrategy(req.params.id, req.body.version, req.user!.userId))
+  } catch (err) { next(err) }
 })
-

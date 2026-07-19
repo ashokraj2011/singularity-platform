@@ -384,6 +384,29 @@ export async function assertWorkflowCreatePermission(
   }
 }
 
+export async function assertPlatformWorkflowPermission(
+  userId: string,
+  action: WorkflowAction,
+  resourceType: string,
+  resourceId?: string,
+  tenantId?: string | null,
+): Promise<void> {
+  const actor = await loadActor(userId)
+  if (config.AUTH_PROVIDER === 'local' && actor.isAdmin) return
+  if (!actor.iamUserId) {
+    throw new ForbiddenError(`IAM identity is required for ${resourceType} ${action}`)
+  }
+  const result = await authzCheck(
+    actor.iamUserId,
+    '__platform__',
+    IAM_PERMISSION_BY_ACTION[action],
+    { resourceType, resourceId, tenantId: tenantId ?? config.WORKGRAPH_DEFAULT_TENANT_ID },
+  )
+  if (!result.allowed) {
+    throw new ForbiddenError(`User does not have ${IAM_PERMISSION_BY_ACTION[action]} for ${resourceType} (${result.reason ?? 'IAM denied the request'})`)
+  }
+}
+
 export type WorkflowOperationsAction = 'view' | 'replay' | 'retry_delivery' | 'manage_runners' | 'audit_view'
 
 const OPERATIONS_PERMISSION_BY_ACTION: Record<WorkflowOperationsAction, string> = {
