@@ -18239,6 +18239,65 @@ Required fixes:
   tenant in strict mode, concurrent sweeps, duplicate suppression, and event-bus
   envelope tenant propagation.
 
+### 370. Strategy Canvas bypasses the governed Idea Board event stream
+
+Evidence:
+
+- `/synthesis/ideas` now defaults `IdeaWallScreen` to `view = "canvas"` and
+  renders `StrategyCanvas` before the durable `IdeaBoardWorkspace` / `BoardCanvas`
+  path.
+- `boardModel.ts` explicitly documents the Strategy Canvas as "v1 is a visual
+  projection only" and says positions are seeded from claim/probe ids and never
+  persisted.
+- `StrategyCanvas.tsx` keeps note positions in component state and drag updates
+  call `setPositions(...)`; there is no call to `/studio/boards/:boardId/events`,
+  `appendEvent(...)`, board branch state, merge, moments, or board artifacts.
+- The add-note composer writes directly to project rooms and claims through
+  `createRoom(...)` and `createClaim(...)`, so creating a note on the default
+  canvas does not create a board object, board event, board snapshot, or source
+  span in the Idea Board event-sourcing model.
+- The Strategy Canvas still renders board-like controls: `Share`, `Lock board`,
+  `History`, pen, text, image, shapes, table, and upload. Those controls are
+  explicit preview placeholders, but the route presents them as part of the main
+  Idea Board experience.
+- Current contract tests only assert that `StrategyCanvas` is selectable, uses
+  `buildBoardModel(...)`, and renders/pans; they do not prove durable persistence,
+  reload behavior, event replay, collaboration, or audit evidence.
+
+Impact:
+
+- Users get three subtly different ideation models: durable board objects,
+  project claims, and a Strategy Canvas projection. The default surface can make
+  a drag/layout/lock/share/history action look governed when only the underlying
+  claim text exists server-side.
+- Reload, another browser, export, synthesis replay, branch merge, and evidence
+  audit cannot reproduce the user's Strategy Canvas layout because positions and
+  many controls are not in the board event stream.
+- Claims created from the Strategy Canvas lose spatial context. Downstream
+  specification, impact analysis, and WorkItem generation can see the claim but
+  cannot prove where it sat, what it was connected to, who moved it, or what
+  board moment produced it.
+- This partially reintroduces the source-of-truth confusion already identified
+  between Idea Board and Concept Map surfaces, now inside the primary
+  `/synthesis/ideas` experience itself.
+
+Required fixes:
+
+- Decide whether Strategy Canvas is a read-only projection or a first-class board
+  editor. If it is read-only, disable drag/edit/share/history/lock controls and
+  label it as a generated view over claims.
+- If it is editable, back it with the same `/studio/boards/:boardId/events`
+  stream as `BoardCanvas`, including branch, expected head, actor, event id,
+  object ids, positions, source claim/probe ids, and audit/outbox evidence.
+- When creating a claim from the canvas, also create or link a durable board
+  object and preserve the board object id in the claim provenance/source span.
+- Add a clear bridge from Strategy Canvas notes to durable Idea Board objects and
+  Concept Map cells so the user sees one ideation lifecycle instead of three
+  competing stores.
+- Add tests for create note, drag note, reload, event replay, another browser,
+  export/evidence inclusion, and denial when the caller can view claims but
+  cannot mutate the governed board.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
