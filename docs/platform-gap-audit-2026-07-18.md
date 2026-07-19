@@ -17689,6 +17689,62 @@ Required fixes:
   reads, unauthorized dispatch/apply, feature-flag-disabled paths, and future
   real dispatch/apply transitions.
 
+### 361. WorkGraph tool snapshots are still mutable through local action CRUD
+
+Evidence:
+
+- `tools.router.ts` explicitly says local Tool CRUD was removed and that tools
+  are snapshots of tool-service entries. `POST /api/tools` returns `410 GONE`
+  with instructions to author tools in agent-and-tools.
+- The same router still exposes `POST /api/tools/:id/actions`, validates only
+  `name`, schemas, and risk, then calls
+  `prisma.toolAction.create({ data: { toolId: req.params.id, ...req.body } })`.
+- `app.ts` mounts `/api/tools` behind `authMiddleware` only; the action-create
+  route does not require tool-admin, tool-registry, capability, tenant, or
+  workflow permissions.
+- `Tool` rows are described in the schema as immutable snapshots of tool-service
+  registrations, but `ToolAction` rows have no tenant id, no upstream source
+  hash/version, no immutable snapshot digest, and no uniqueness boundary.
+- `requestToolRun(...)` loads `tool.actions`, picks
+  `tool.actions.find(a => a.id === actionId)` when an action id is supplied, but
+  does not reject an unknown or foreign action id. It can continue with an
+  undefined action and execute using the fallback action name `execute`.
+- `ToolRun.actionId` is only a string field; it is not a foreign key to
+  `ToolAction`, so the database does not enforce that the requested action
+  belongs to the requested tool.
+- Source search found no local tests around `tools.router.ts`,
+  `POST /api/tools/:id/actions`, invalid action ids, or action ownership.
+
+Impact:
+
+- Any authenticated caller can mutate a WorkGraph-local tool snapshot by adding
+  actions that did not come from the canonical tool-service registration.
+- Tool-run evidence can reference action ids or action names that were locally
+  invented after the snapshot, weakening the claim that a run used a governed
+  published tool contract.
+- Invalid or cross-tool action ids can be persisted on `ToolRun` rows and still
+  produce execution receipts using the generic fallback action name, making
+  audit output ambiguous.
+- Tenant and capability isolation cannot be reliably enforced at the tool-action
+  layer because actions inherit neither tenant ownership nor an upstream
+  tool-service version.
+
+Required fixes:
+
+- Remove or disable `POST /api/tools/:id/actions` in the compatibility router,
+  or gate it behind an explicit internal snapshot-sync/service-token path that
+  writes only verified upstream tool-service actions.
+- Add snapshot provenance to tool actions: upstream action id/name, source
+  version/hash, fetched-at timestamp, and snapshot digest tied to the parent
+  tool registration.
+- Require `requestToolRun(...)` to reject missing, inactive, foreign, or
+  non-snapshot-matching action ids before policy evaluation or run creation.
+- Add a real relation or composite constraint so `ToolRun.actionId` must refer
+  to a `ToolAction` for the same `toolId` when an action is supplied.
+- Add tests proving authenticated users cannot create local actions, invalid
+  action ids are rejected, cross-tool action ids are rejected, and snapshot-sync
+  can only write actions with trusted upstream provenance.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
