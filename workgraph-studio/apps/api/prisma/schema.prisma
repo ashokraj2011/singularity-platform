@@ -1894,12 +1894,21 @@ model StudioProposal {
   decidedAt     DateTime?
   expiresAt     DateTime?
   tenantId      String?  @default("default")
+  // R1A Proposals — reuse-with-additive. v1 = legacy concept-archive path (unchanged);
+  // v2 = workspace universal proposal with independently-reviewable ProposalItems.
+  contractVersion Int      @default(1)
+  workspaceId     String?
+  workItemId      String?
+  baseContentHash String? // content-hash stale fence (v2; v1 keeps the integer baseRevision)
+  contract        Json? // envelope contract fields (evidence tier, reversibility, cost, policy, receipts)
 
-  studio Studio @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  studio Studio         @relation(fields: [studioId], references: [id], onDelete: Cascade)
+  items  ProposalItem[]
 
   @@index([studioId, status, createdAt])
   @@index([studioId, agentRole, status])
   @@index([tenantId, status])
+  @@index([workspaceId, status])
   @@map("studio_proposals")
 }
 
@@ -5866,4 +5875,51 @@ model DocumentBlock {
   @@index([tenantId], map: "ix_document_blocks_tenant")
   @@index([documentVersionId, ordinal])
   @@map("document_blocks")
+}
+
+// ── Synthesis Studio — universal proposal items (R1A Proposals phase) ──────────
+// A v2 StudioProposal (contractVersion=2) carries independently-reviewable items — the
+// mutation boundary. Agents EMIT items; nothing mutates until a human accepts and the
+// typed-tool apply-registry runs. Each item has a per-item content-hash stale fence.
+enum ProposalItemStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EDITED
+  APPLIED
+  STALE
+}
+
+model ProposalItem {
+  id               String             @id @default(uuid())
+  tenantId         String?            @default("default")
+  proposalId       String
+  ordinal          Int
+  kind             String // typed-tool verb (EDIT_DOC_BLOCK, PROPOSE_CLAIM, ADD_REQUIREMENT, …)
+  title            String?
+  targetEntityType String?
+  targetEntityId   String?
+  targetVersionId  String?
+  baseContentHash  String? // per-item stale fence: target + base version + base hash
+  diff             Json               @default("{}")
+  citations        Json               @default("[]")
+  evidenceTier     String?
+  uncertainty      Float?
+  reversibility    String?
+  cost             Json?
+  policyChecks     Json?
+  requiredApproval String?
+  status           ProposalItemStatus @default(PENDING)
+  decidedById      String?
+  editedDiff       Json?
+  appliedReceipt   Json? // row-as-receipt (GenerationPlanRow pattern)
+  rebaseOfItemId   String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  proposal StudioProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId], map: "ix_proposal_items_tenant")
+  @@index([proposalId, ordinal])
+  @@map("proposal_items")
 }
