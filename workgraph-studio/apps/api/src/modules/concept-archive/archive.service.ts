@@ -457,6 +457,9 @@ export async function decideProposal(proposalId: string, decision: 'ACCEPTED' | 
   const result = await withTenantDbTransaction(prisma, async tx => {
     const proposal = await tx.studioProposal.findFirst({ where: { id: proposalId, ...tenantWhere() }, include: { studio: true } })
     if (!proposal) throw new NotFoundError('StudioProposal', proposalId)
+    // Belt-and-suspenders: a universal (v2) workspace proposal must never fall into the
+    // concept-archive kind-switch. It is decided via the Synthesis proposal-items endpoint.
+    if (proposal.contractVersion !== 1) throw new ConflictError('This is a universal (v2) proposal — decide its items via the Synthesis proposal endpoint.')
     if (proposal.status !== 'PENDING') throw new ConflictError(`Proposal is already ${proposal.status}.`)
     if (proposal.expiresAt && proposal.expiresAt <= new Date()) {
       await tx.studioProposal.update({ where: { id: proposalId }, data: { status: 'EXPIRED', decidedAt: new Date(), decidedById: userId } })

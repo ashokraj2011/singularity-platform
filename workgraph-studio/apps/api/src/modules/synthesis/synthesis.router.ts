@@ -13,6 +13,7 @@ import { addContextRef, listContextRefs, removeContextRef } from './context-refe
 import { buildManifest, getManifest } from './context-manifest.service'
 import { createDocument, getDocument, listDocuments, transitionDocument } from './document.service'
 import { addBlock, updateBlock, removeBlock, pinBlock } from './block.service'
+import { createWorkspaceProposal, listProposals, getProposal, decideProposalItems, rebaseProposalItem } from './proposal.service'
 
 export const synthesisRouter: Router = Router()
 
@@ -165,4 +166,52 @@ synthesisRouter.delete('/documents/:documentId/blocks/:blockId', wrap(async (req
 }))
 synthesisRouter.post('/documents/:documentId/blocks/:blockId/pin', wrap(async (req, res) => {
   res.json(await pinBlock(String(req.params.documentId), String(req.params.blockId)))
+}))
+
+// ── Universal (v2) proposals + items ─────────────────────────────────────────────
+const proposalItemInputSchema = z.object({
+  kind: z.string().trim().min(1).max(80),
+  title: z.string().trim().max(300).optional(),
+  targetEntityType: z.string().trim().max(80).optional(),
+  targetEntityId: z.string().trim().max(200).optional(),
+  targetVersionId: z.string().trim().max(200).optional(),
+  baseContentHash: z.string().trim().max(200).optional(),
+  diff: z.record(z.unknown()).optional(),
+  citations: z.array(z.unknown()).optional(),
+  evidenceTier: z.string().trim().max(40).optional(),
+  uncertainty: z.number().min(0).max(1).optional(),
+  reversibility: z.string().trim().max(40).optional(),
+  cost: z.record(z.unknown()).optional(),
+  requiredApproval: z.string().trim().max(80).optional(),
+})
+const createProposalSchema = z.object({
+  workItemId: z.string().trim().min(1).nullable().optional(),
+  agentRole: z.string().trim().max(100).optional(),
+  contract: z.record(z.unknown()).optional(),
+  items: z.array(proposalItemInputSchema).min(1).max(100),
+})
+const decideSchema = z.object({
+  decisions: z.array(z.object({
+    itemId: z.string().trim().min(1),
+    decision: z.enum(['ACCEPT', 'REJECT', 'EDIT']),
+    editedDiff: z.record(z.unknown()).optional(),
+    currentContentHash: z.string().trim().max(200).optional(),
+  })).min(1).max(100),
+})
+const rebaseItemSchema = z.object({ diff: z.record(z.unknown()).optional(), baseContentHash: z.string().trim().max(200).optional() })
+
+synthesisRouter.post('/workspaces/:workspaceId/proposals', validate(createProposalSchema), wrap(async (req, res) => {
+  res.status(201).json(await createWorkspaceProposal({ workspaceId: String(req.params.workspaceId), ...req.body }, userIdOf(req)))
+}))
+synthesisRouter.get('/workspaces/:workspaceId/proposals', wrap(async (req, res) => {
+  res.json(await listProposals(String(req.params.workspaceId)))
+}))
+synthesisRouter.get('/proposals/:proposalId', wrap(async (req, res) => {
+  res.json(await getProposal(String(req.params.proposalId)))
+}))
+synthesisRouter.post('/proposals/:proposalId/decide', validate(decideSchema), wrap(async (req, res) => {
+  res.json(await decideProposalItems(String(req.params.proposalId), req.body.decisions, userIdOf(req)))
+}))
+synthesisRouter.post('/proposals/:proposalId/items/:itemId/rebase', validate(rebaseItemSchema), wrap(async (req, res) => {
+  res.json(await rebaseProposalItem(String(req.params.proposalId), String(req.params.itemId), req.body))
 }))
