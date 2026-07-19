@@ -34,6 +34,9 @@ type DirectLlmOutput = {
     provider?: string
     model?: string
     modelAlias?: string
+    requestedAlias?: string
+    connectionId?: string
+    connectionTenantId?: string | null
     response?: string
     traceId?: string
     agentRunId?: string
@@ -69,6 +72,9 @@ type ResolvedDirectLlmConfig = {
   model: string
   baseUrl?: string
   modelAlias?: string
+  requestedAlias?: string
+  connectionId?: string
+  connectionTenantId?: string | null
   credentialEnv?: string
   systemPrompt?: string
   prompt: string
@@ -340,6 +346,15 @@ function envFlag(name: string, fallback = false): boolean {
   const value = process.env[name]
   if (value == null || value === '') return fallback
   return ['1', 'true', 'yes', 'y', 'on'].includes(value.trim().toLowerCase())
+}
+
+function productionClassRuntime(): boolean {
+  const env = (process.env.APP_ENV ?? process.env.ENVIRONMENT ?? process.env.SINGULARITY_ENV ?? process.env.NODE_ENV ?? '').toLowerCase()
+  return ['production', 'prod', 'staging', 'perf'].includes(env)
+}
+
+function tenantStrictRuntime(): boolean {
+  return config.TENANT_ISOLATION_MODE === 'strict'
 }
 
 function promptUrlMaxBytes(): number {
@@ -910,7 +925,7 @@ function resolveToolLoopOptions(node: WorkflowNode, outputSchema: Record<string,
   }
 }
 
-async function resolveDirectLlmConfig(
+export async function resolveDirectLlmConfig(
   node: WorkflowNode,
   instance: WorkflowInstance,
 ): Promise<{ config: ResolvedDirectLlmConfig } | { error: string; code: string }> {
@@ -961,9 +976,23 @@ async function resolveDirectLlmConfig(
   const effectiveNode = materializeCanonicalConfig(node, directValidation.config, loopStrategy)
   const alias = cfgString(effectiveNode, 'connectionAlias', 'modelAlias', 'llmAlias')
   const connection = alias
-    ? await prisma.llmConnection.findFirst({ where: { alias, ...(instance.tenantId ? { tenantId: instance.tenantId } : {}) } }).catch(() => null)
+    ? await prisma.llmConnection.findFirst({
+      where: {
+        alias,
+        OR: [
+          { tenantId: instance.tenantId ?? null },
+          ...(instance.tenantId && !tenantStrictRuntime() ? [{ tenantId: null }] : []),
+        ],
+      },
+    }).catch(() => null)
     : null
 
+  if (alias && !connection) {
+    return {
+      error: `LLM connection alias "${alias}" was not found for this workflow tenant.`,
+      code: 'DIRECT_LLM_CONNECTION_NOT_FOUND',
+    }
+  }
   if (alias && connection && !connection.enabled) {
     return { error: `LLM connection alias "${alias}" is disabled.`, code: 'DIRECT_LLM_CONNECTION_DISABLED' }
   }
@@ -975,6 +1004,13 @@ async function resolveDirectLlmConfig(
     return {
       error: 'Copilot is available only through the governed copilot_execute MCP path. Configure this node as an AGENT_TASK with executor=copilot.',
       code: 'COPILOT_CLI_ONLY',
+    }
+  }
+  const resolvedFromMockConnection = Boolean(connection && normalizeProvider(connection.provider) === 'mock')
+  if (provider === 'mock' && !resolvedFromMockConnection && !envFlag('WORKGRAPH_DIRECT_LLM_ALLOW_MOCK', false) && (tenantStrictRuntime() || productionClassRuntime())) {
+    return {
+      error: 'Direct LLM mock execution is disabled in strict/production mode unless WORKGRAPH_DIRECT_LLM_ALLOW_MOCK=true or the node uses an explicit mock LLM connection.',
+      code: 'DIRECT_LLM_MOCK_DISABLED',
     }
   }
   const model = connection?.model ?? cfgString(effectiveNode, 'model') ?? (provider === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o-mini')
@@ -1005,6 +1041,9 @@ async function resolveDirectLlmConfig(
       model,
       baseUrl,
       modelAlias,
+      requestedAlias: alias,
+      connectionId: connection?.id,
+      connectionTenantId: connection?.tenantId ?? null,
       credentialEnv,
       systemPrompt: cfgString(effectiveNode, 'systemPrompt'),
       prompt,
@@ -1368,6 +1407,9 @@ export async function activateDirectLlmTask(
             provider: llm.provider,
             model: llm.model,
             modelAlias: llm.modelAlias,
+            requestedAlias: llm.requestedAlias,
+            connectionId: llm.connectionId,
+            connectionTenantId: llm.connectionTenantId,
             baseUrl: llm.baseUrl,
             credentialEnv: llm.credentialEnv,
             prompt: llm.prompt,
@@ -1398,6 +1440,9 @@ export async function activateDirectLlmTask(
     provider: llm.provider,
     model: llm.model,
     modelAlias: llm.modelAlias,
+    requestedAlias: llm.requestedAlias,
+    connectionId: llm.connectionId,
+    connectionTenantId: llm.connectionTenantId,
     bypassedRuntimeFabric: true,
     coWork: llm.coWork,
     promptUrl: llm.promptUrl,
@@ -1489,6 +1534,9 @@ export async function activateDirectLlmTask(
     traceId,
     modelCallId: chat.providerRequestId,
     modelAlias: llm.modelAlias,
+    requestedAlias: llm.requestedAlias,
+    connectionId: llm.connectionId,
+    connectionTenantId: llm.connectionTenantId,
     provider: llm.provider,
     model: llm.model,
     baseUrl: llm.baseUrl,
@@ -1568,6 +1616,9 @@ export async function activateDirectLlmTask(
     model: llm.model,
     metadata: {
       modelAlias: llm.modelAlias,
+      requestedAlias: llm.requestedAlias,
+      connectionId: llm.connectionId,
+      connectionTenantId: llm.connectionTenantId,
       direct: true,
       bypassedRuntimeFabric: true,
       modelCallId: chat.providerRequestId,
@@ -1601,6 +1652,9 @@ export async function activateDirectLlmTask(
       provider: llm.provider,
       model: llm.model,
       modelAlias: llm.modelAlias,
+      requestedAlias: llm.requestedAlias,
+      connectionId: llm.connectionId,
+      connectionTenantId: llm.connectionTenantId,
       response: chat.content,
       traceId,
       agentRunId: run.id,

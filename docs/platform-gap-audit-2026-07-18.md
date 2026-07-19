@@ -368,6 +368,20 @@ Required fixes:
 - Add regression tests for missing alias, disabled alias, cross-tenant alias,
   explicit mock, and valid tenant connection.
 
+Progress:
+
+- Direct LLM runtime now returns `DIRECT_LLM_CONNECTION_NOT_FOUND` when an
+  operator-supplied alias cannot be resolved for the workflow tenant instead of
+  falling through to provider defaults.
+- Disabled aliases still fail closed with `DIRECT_LLM_CONNECTION_DISABLED`.
+- Strict/production runs cannot use implicit `provider: mock` unless
+  `WORKGRAPH_DIRECT_LLM_ALLOW_MOCK=true` is set or the node resolves through an
+  explicit mock connection alias.
+- Direct LLM request/trace/output receipts now record the requested alias,
+  resolved connection id, and connection tenant in addition to provider/model.
+- Added a strict-mode contract test covering missing aliases, disabled aliases,
+  a valid tenant alias, and explicit mock allowance.
+
 ### 12. Loop strategy publishing has tenant scope but no explicit workflow permission
 
 Progress note 2026-07-19:
