@@ -24,6 +24,7 @@ import { buildCodeContextPackage, getStoredPackageSlices } from "./mcp/code-cont
 // call that carries a capability_id. No-op when AGENT_RUNTIME_URL is
 // unset.
 import { computeRepoFingerprint, reportFingerprintToAgentRuntime, reportAstIndexBuiltToAgentRuntime } from "./mcp/repo-fingerprint";
+import { exportWorldModelToWorkspace } from "./workspace/world-model-export";
 import { statsForIndex, indexWorkspace } from "./workspace/ast-index";
 import { ensureWorkspaceSource } from "./workspace/source-materializer";
 import { listConfiguredProviders, ensureFreshGatewayStatus, llmEmbed } from "./llm/client";
@@ -314,6 +315,23 @@ app.post("/mcp/source/ground", requireMcpScope("resources:read"), async (req, re
       void reportAstIndexBuiltToAgentRuntime(agentRuntimeUrl, capability_id, stats.indexedFiles)
         // eslint-disable-next-line no-console
         .catch((err) => console.warn(`[source/ground ast-index-built] ${(err as Error).message}`));
+
+      // Re-export the layered world model into `.agent/world-model/`. This has
+      // to run on EVERY ground, not once: the central workspace is wiped and
+      // re-cloned here, so anything written previously is already gone.
+      void exportWorldModelToWorkspace({
+        agentRuntimeUrl,
+        capabilityId: capability_id,
+        workspaceRoot: config.MCP_SANDBOX_ROOT,
+      })
+        .then((r) => {
+          if (r.exported) {
+            // eslint-disable-next-line no-console
+            console.log(`[world-model export] capability ${capability_id}: ${r.views} views, ${r.files} files`);
+          }
+        })
+        // eslint-disable-next-line no-console
+        .catch((err) => console.warn(`[world-model export] ${(err as Error).message}`));
     });
   }
 
@@ -322,6 +340,34 @@ app.post("/mcp/source/ground", requireMcpScope("resources:read"), async (req, re
     data: { grounded: true, indexedFiles: stats.indexedFiles, headSha: materialized.headSha },
     requestId: res.locals.requestId,
   });
+});
+
+// Refresh `.agent/world-model/` without a full re-ground. agent-runtime calls
+// this when an operator finishes building views, so the exported copy catches up
+// with the DB immediately instead of waiting for the next ground.
+//
+// Synchronous (unlike the ground hook) because the caller wants to know whether
+// the export landed. It is bounded — a handful of file writes after two short
+// HTTP reads — and never throws, so a failure reports rather than 500s.
+app.post("/mcp/world-model/export", requireMcpScope("resources:read"), async (req, res) => {
+  const parsed = z.object({ capability_id: z.string().min(1, "capability_id is required") }).safeParse(req.body);
+  if (!parsed.success) {
+    throw new AppError("invalid /mcp/world-model/export payload", 400, "VALIDATION_ERROR", parsed.error.flatten());
+  }
+  const agentRuntimeUrl = config.AGENT_RUNTIME_URL;
+  if (!agentRuntimeUrl) {
+    return res.json({
+      success: true,
+      data: { exported: false, reason: "AGENT_RUNTIME_URL is not configured", files: 0, views: 0 },
+      requestId: res.locals.requestId,
+    });
+  }
+  const result = await exportWorldModelToWorkspace({
+    agentRuntimeUrl,
+    capabilityId: parsed.data.capability_id,
+    workspaceRoot: config.MCP_SANDBOX_ROOT,
+  });
+  res.json({ success: true, data: result, requestId: res.locals.requestId });
 });
 
 // (#10) Selective slice fetch — return stashed slice content for a package built
