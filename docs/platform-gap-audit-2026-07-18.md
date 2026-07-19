@@ -18460,6 +18460,58 @@ Required fixes:
   branch-specific artifact lists, claim status isolation, and branch replay/merge
   after duplicate source ingestion.
 
+### 374. Source Intake and artifact validation are branch-blind
+
+Evidence:
+
+- The board API exposes branch-aware operations: `/boards/:boardId/state`,
+  `/events`, `/synthesize`, `/branches`, `/fork`, and `/ingest` all accept or
+  derive a branch name.
+- The Synthesis Source Intake `ArtifactPile` only loads boards through
+  `/studio/projects/:projectId/boards`; it never calls `/boards/:boardId/branches`
+  and renders no branch picker.
+- The same component calls `/studio/boards/:boardId/ingest` with
+  `branch: "main"` hardcoded for every document or URL source.
+- Source Intake loads the document pile from `/studio/boards/:boardId/artifacts`
+  and validation reports from
+  `/studio/experience/boards/:boardId/validation-reports`; neither call includes
+  branch context.
+- `validateBoardArtifacts(boardId, actorId)` loads all `IngestedArtifact` rows
+  with `{ boardId, tenantId }`; it does not filter by `branchId`.
+- `ArtifactValidationReport` stores `boardId` and `contentHash`, and its unique
+  key is `@@unique([boardId, contentHash])`; it has no `branchId`, branch head,
+  or source branch metadata.
+- `transmuteValidationReport(...)` turns every non-rejected claim from the report
+  sources into a proposal, so a board-wide validation report can feed claims from
+  the wrong branch into the governed artifact scaffold.
+
+Impact:
+
+- Users working in a forked board branch cannot add or validate a source pile for
+  that branch from the primary Source Intake screen.
+- Validation reports can combine artifacts from multiple branch experiments and
+  present them as one authoritative pile.
+- A contradiction, canonical brief, or artifact scaffold can cite a source from a
+  branch that was never merged or approved into the current initiative path.
+- The UI labels the surface as a governed document pile, but the evidence lacks
+  the branch/head metadata needed for replay, merge review, audit, or dispute
+  resolution.
+
+Required fixes:
+
+- Add branch selection to Source Intake, backed by `/boards/:boardId/branches`,
+  and persist the selected branch in the current synthesis project/session state.
+- Pass branch context to ingest, artifact list, validation-report list/create,
+  canonical document generation, and transmutation flows.
+- Add `branchId`, branch name, and head event sequence or state hash to
+  `ArtifactValidationReport` and validation sources.
+- Make validation report uniqueness branch-aware, such as `(boardId, branchId,
+  contentHash)` or `(boardId, branchName, headEventSeq, contentHash)`.
+- Block transmutation if the report branch is stale, abandoned, unmerged, or not
+  the branch the user is currently governing.
+- Add tests for validating main vs forked branches, cross-branch artifact
+  exclusion, stale-branch transmutation denial, and canonical brief provenance.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
