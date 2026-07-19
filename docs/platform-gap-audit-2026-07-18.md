@@ -19615,6 +19615,63 @@ Required fixes:
 - Add a server-side guard that rejects board events or coedit objects carrying
   `privateDraft: true` unless they use an explicit private/local-only channel.
 
+### 398. Idea Board connectors can leak private-note relationships without reveal
+
+Evidence:
+
+- Finding 397 covers private draft object/text persistence through copy/paste.
+  This is a separate topology leak: public connector objects can reference local
+  private draft ids even when the private note itself is never revealed.
+- `createPossiblyPrivateObject(...)` intentionally keeps private notes in
+  `privateDrafts` with ids like `private:<uuid>` and tells the user to use
+  `Reveal private notes` when ready.
+- `shown` includes `privateDrafts`, so private notes can be selected like normal
+  board objects.
+- `connectSelected(...)` only checks `selection.length === 2`. It does not reject
+  private ids, require both endpoints to be durable board objects, or route the
+  connector through private state.
+- `connectSelected(...)` calls `createBoardObject(...)` with a normal
+  `connector` object whose `sourceId` and `targetId` are copied directly from
+  the current selection.
+- `createBoardObject(...)` always calls `commitOperations(...)`. Because the
+  connector itself has a normal id, `applyOperation(...)` persists it through the
+  shared board document and semantic event stream.
+- The explicit reveal path later assigns each private note a new normal UUID, so
+  a connector that already references `private:<uuid>` does not automatically
+  reconnect to the revealed note.
+- Search only found the private-draft copy/paste finding and a requested
+  connector-copy test under finding 397; no entry documents this durable
+  relationship leak and dangling-reference path.
+
+Impact:
+
+- A collaborator or evidence reader can infer that a hidden private note existed
+  and was related to another object, even though the user never revealed that
+  note.
+- The board history can contain connectors pointing at ids that are not present
+  in durable materialized board state, producing dangling topology in replay,
+  export, synthesis, diff, and merge paths.
+- After reveal, the visible note receives a new id while the previously persisted
+  connector still points at the old private id, making the workshop state look
+  inconsistent or causing relationships to disappear.
+- Private mode becomes unsafe for pre-decision mapping because relationship
+  metadata can escape without the explicit reveal ceremony.
+
+Required fixes:
+
+- Treat any selection containing a `privateDraft` or `private:` id as ineligible
+  for durable connector creation unless the user reveals the private objects
+  first.
+- Alternatively, keep connectors involving private notes in the same local
+  private state and remap them atomically during reveal.
+- Add server-side validation that rejects connector events whose endpoints do not
+  both resolve to durable objects on the same board branch.
+- Make reveal preserve or explicitly remap connector relationships if private
+  connectors are supported.
+- Add tests for private-to-public connector attempts, private-to-private connector
+  attempts, reveal after a private connector, reload/replay with dangling
+  connector ids, and branch merge/diff behavior for rejected private endpoints.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
