@@ -19981,6 +19981,68 @@ Required fixes:
   cross-tenant alias, catalog drift between UI load and compare, and audit
   provenance on successful comparisons.
 
+### 405. Legacy developer-package handoffs drift from contract-bound scopes
+
+Evidence:
+
+- `development-targets.router.ts` exposes the legacy WorkItem child routes:
+  `GET/PUT /:workItemId/development-target`,
+  `POST /:workItemId/development-target/publish`, and
+  `GET /:workItemId/developer-package`.
+- `putDevelopmentTarget(...)` resolves an approved `SpecificationVersion`, then
+  upserts a single `DevelopmentTarget` row keyed by `workItemId`. It writes
+  repository, component, base branch/commit, requirement ids, required evidence,
+  forbidden paths, and reconciliation policy, but it does not create or update a
+  `WorkItemSpecificationBinding`, `DevelopmentScope`, or `HandoffGeneration`.
+- `publishDevelopmentTarget(...)` only sets `DevelopmentTarget.status =
+  PUBLISHED`, creates a `DEVELOPER_PACKAGE_PUBLISHED` WorkItem event, and emits
+  audit/outbox events. It does not pin a binding generation, publish a handoff
+  generation, or set `DevelopmentScope.currentHandoffGenerationId`.
+- The schema comment on `DevelopmentScope` says it replaces the single
+  WorkItem-wide `DevelopmentTarget` for new execution paths, but the legacy
+  routes remain mutable and user-facing.
+- `submissions.service.ts` still has two paths: without scoped context it loads
+  only the legacy `DevelopmentTarget`; with scoped context it requires a
+  published current `HandoffGeneration` attached to a non-cancelled
+  `DevelopmentScope`.
+- `reconciliations.service.ts` can reconcile a legacy submission against
+  `DevelopmentTarget`, but `WorkItemFinalizer` evaluates mandatory
+  `DevelopmentScope` rows, current specification bindings, and published
+  handoff generations. Legacy `DevelopmentTarget` publication is not part of
+  that finalization contract.
+
+Impact:
+
+- A team can publish a "developer package" from the legacy API and believe the
+  WorkItem is ready for contract-bound execution, while the new scope/handoff
+  records required for finalization are missing or stale.
+- Legacy submissions and reconciliation can produce evidence against
+  `DevelopmentTarget` without satisfying the mandatory `DevelopmentScope`
+  acceptance and current-handoff checks.
+- If both legacy targets and contract-bound scopes exist for the same WorkItem,
+  repository, requirement scope, base commit, and evidence policy can diverge
+  across two handoff models.
+- Operators may see `DEVELOPER_PACKAGE_PUBLISHED` evidence but still hit
+  finalizer failures such as missing current binding, missing published handoff,
+  or unaccepted mandatory scopes.
+
+Required fixes:
+
+- Make the legacy DevelopmentTarget routes compatibility views over
+  `WorkItemSpecificationBinding`, `DevelopmentScope`, and `HandoffGeneration`, or
+  mark them read-only/migration-only once contract-bound execution is enabled.
+- When publishing a developer package, create or update the matching binding,
+  scope, and handoff generation in one transaction, including a content digest and
+  current-handoff pointer.
+- Reject legacy submissions/reconciliations for WorkItems that already have
+  contract-bound scopes unless the submission references the current scope and
+  handoff generation.
+- Surface the authoritative handoff model in the WorkItem UI so users cannot
+  confuse `DevelopmentTarget.status = PUBLISHED` with a finalizer-ready scope.
+- Add migration and regression tests for legacy-only WorkItems, scoped WorkItems,
+  mixed legacy/scoped WorkItems, stale base commits, and finalization after a
+  legacy developer-package publish.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
