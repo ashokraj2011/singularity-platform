@@ -18622,6 +18622,54 @@ Required fixes:
 - Add tests for board rename/archive/default selection, duplicate-name handling,
   source-intake targeting, archived-board writes, and audit/outbox evidence.
 
+### 377. Board verdict direct-ID transitions are not tenant or board scoped
+
+Evidence:
+
+- `app.ts` mounts `studioBoardVerdictRouter` behind `authMiddleware` and
+  `studioAuthz`, but `studioAuthz` only checks a coarse Studio permission:
+  `workflow:view` for reads and `workflow:update` for writes, with resource type
+  inferred from whether the path contains `/boards`.
+- Human answer and dismiss routes use `/verdicts/:verdictId/answer` and
+  `/verdicts/:verdictId/dismiss`; those paths do not include the board id,
+  project id, capability id, or tenant-scoped parent resource.
+- Agent concede and reopen routes similarly use `/verdicts/:verdictId/concede`
+  and `/verdicts/:verdictId/reopen` behind only the raw service-token router.
+- `loadVerdict(id)` uses `prisma.agentVerdict.findUnique({ where: { id } })`
+  with no tenant filter.
+- `transition(...)` updates the verdict by `{ id: verdictId }` and does not
+  verify that the verdict belongs to the caller's tenant, visible board, project,
+  or capability before changing status and writing audit/outbox events.
+- `listVerdicts(...)` and `verdictSummary(...)` filter by board id/status, but
+  also omit `tenantId`; the schema does have `@@index([tenantId, boardId,
+  status])`, showing tenant metadata exists but is not used here.
+
+Impact:
+
+- A user with broad Studio edit permission could answer or dismiss another
+  tenant's or another capability's verdict if they learn the verdict id.
+- A leaked or misrouted service token could concede/reopen verdicts across
+  tenants because the route does not bind the verdict to a tenant-scoped runtime
+  or board context.
+- Board gate panels may count or expose verdicts for a board id without proving
+  that the board is visible in the current tenant.
+- Governance evidence becomes unreliable because the transition audit records
+  show a status change, but not a resource-scoped authorization decision for the
+  specific verdict, board, project, and capability.
+
+Required fixes:
+
+- Replace direct-id verdict transition routes with board-scoped routes, or make
+  `loadVerdictForTenant(id, tenantId)` join/validate the owning board and project
+  before any read or mutation.
+- Add `tenantId` to all verdict reads, pre-checks, summaries, and updates.
+- Include board id, project id, capability id, tenant id, and authorization
+  decision id in answer/dismiss/concede/reopen audit events.
+- Replace the raw service-token agent router with an IAM service principal whose
+  token is tenant-scoped and limited to specific agent verdict actions.
+- Add IDOR tests for answer, dismiss, concede, reopen, list, and summary routes
+  using verdict ids and board ids from another tenant/capability.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
