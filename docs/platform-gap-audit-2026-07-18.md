@@ -19561,6 +19561,60 @@ Required fixes:
   coalesced events, agent-originated events, and branch UI/API reporting after
   suspension.
 
+### 397. Idea Board private drafts can be persisted by copy/paste
+
+Evidence:
+
+- `BoardCanvas.tsx` keeps private board notes only in React state as
+  `privateDrafts`, and the toolbar tooltip says private notes "stay local until
+  you reveal them".
+- `createPossiblyPrivateObject(...)` marks local-only objects with both an id
+  prefixed by `private:` and `privateDraft: true`.
+- `applyOperation(...)` preserves privacy only by checking whether the operation
+  id starts with `private:`. If the id has that prefix, it updates
+  `privateDrafts`; otherwise it calls `createObject(...)`, `editObject(...)`, or
+  `deleteObject(...)` against the shared board document.
+- `copySelection(...)` copies selected objects verbatim from `selectedObjects`,
+  which includes `privateDrafts` because `shown = [...baseShown,
+  ...privateDrafts]`.
+- `pasteClipboard(...)` assigns every copied object a fresh `crypto.randomUUID()`
+  without preserving the `private:` prefix or stripping `privateDraft`.
+- The pasted private object therefore has `privateDraft: true` but a normal id.
+  `commitOperations("Paste objects", ...)` calls `applyOperation(...)`, which no
+  longer recognizes it as private and persists it through `createObject(...)`.
+- `useBoardDoc.createObject(...)` writes the object into the shared Yjs map and
+  emits a local `create` mutation.
+- `useBoardProducer.emit(...)` turns that mutation into an `OBJECT_CREATED`
+  semantic event posted to `/studio/boards/:boardId/events`.
+- Searches found no existing audit finding for private-draft clipboard leakage;
+  prior export findings cover client-side export governance, not this local-only
+  privacy bypass.
+
+Impact:
+
+- A user can accidentally reveal a supposedly private note by using copy/paste
+  instead of the explicit `Reveal private notes` action.
+- The object can be synchronized to other collaborators through the CRDT relay and
+  written into durable board history as a normal `OBJECT_CREATED` event.
+- The durable event payload may retain `privateDraft: true`, creating confusing
+  evidence where an object is both marked private and already public.
+- Enterprise workshops cannot rely on private mode for safe pre-decision
+  thinking, because a common editing shortcut bypasses the reveal gate.
+
+Required fixes:
+
+- Treat `privateDraft` as authoritative in `applyOperation(...)`, not only the id
+  prefix.
+- When copying private drafts, either keep pasted copies private with a
+  `private:` id or block copying them until revealed.
+- Strip `privateDraft` only inside the explicit reveal path that records a
+  governed reveal event.
+- Add tests for copying/pasting private notes, undo/redo of pasted private notes,
+  connector copies involving private notes, export exclusion, and durable event
+  absence until reveal.
+- Add a server-side guard that rejects board events or coedit objects carrying
+  `privateDraft: true` unless they use an explicit private/local-only channel.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
