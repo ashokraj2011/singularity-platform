@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { AskSynthesisSidecar } from "./ask/AskSynthesisSidecar";
 import { OpenInWorkingSessionButton } from "./working-session/OpenInWorkingSessionButton";
+import { useSelectedProjectId } from "./ProjectPicker";
 
 export interface SynNavItem {
   href: string;
@@ -99,6 +100,10 @@ export function SynthesisShell({
   fullBleed?: boolean;
 }) {
   const pathname = usePathname() ?? "";
+  // The selected initiative lives in ?project=; carry it across every nav hop so the choice
+  // sticks on every synthesis page (the picker sets it; the links must preserve it).
+  const selectedProjectId = useSelectedProjectId();
+  const withProject = (href: string) => (selectedProjectId ? `${href}?project=${encodeURIComponent(selectedProjectId)}` : href);
   const online = useOnline();
   const [collapsed, setCollapsed] = useState(false);
   const active = useMemo(() => SYN_NAV
@@ -151,7 +156,7 @@ export function SynthesisShell({
                     const Icon = item.icon;
                     const isActive = active?.href === item.href;
                     return (
-                      <Link key={item.href} href={item.href} title={collapsed ? item.label : item.hint} aria-current={isActive ? "page" : undefined} className={`group flex h-9 items-center gap-2.5 rounded-md px-2 text-xs font-semibold transition-colors ${isActive ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-surface-container hover:text-on-surface"}`}>
+                      <Link key={item.href} href={withProject(item.href)} title={collapsed ? item.label : item.hint} aria-current={isActive ? "page" : undefined} className={`group flex h-9 items-center gap-2.5 rounded-md px-2 text-xs font-semibold transition-colors ${isActive ? "bg-secondary-container text-on-secondary-container" : "text-on-surface-variant hover:bg-surface-container hover:text-on-surface"}`}>
                         <span className="grid h-6 w-6 shrink-0 place-items-center"><Icon size={15} /></span>
                         {!collapsed ? <span className="truncate">{item.label}</span> : null}
                       </Link>
@@ -176,7 +181,7 @@ export function SynthesisShell({
             {SYN_NAV.map(item => {
               const Icon = item.icon;
               const isActive = active?.href === item.href;
-              return <Link key={item.href} href={item.href} className={`inline-flex h-10 shrink-0 items-center gap-1.5 border-b-2 px-3 text-[11px] font-bold ${isActive ? "border-secondary text-secondary" : "border-transparent text-on-surface-variant"}`}><Icon size={14} />{item.label}</Link>;
+              return <Link key={item.href} href={withProject(item.href)} className={`inline-flex h-10 shrink-0 items-center gap-1.5 border-b-2 px-3 text-[11px] font-bold ${isActive ? "border-secondary text-secondary" : "border-transparent text-on-surface-variant"}`}><Icon size={14} />{item.label}</Link>;
             })}
           </nav>
           {!online ? <div className="shrink-0 border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700"><strong>Offline.</strong> Local edits remain available; server-backed synthesis will resume after reconnecting.</div> : null}
