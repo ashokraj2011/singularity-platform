@@ -19782,6 +19782,59 @@ Required fixes:
   snapshot, upstream outage with no prior snapshot, strict-mode failure, stale
   capability status, and audit/evidence rendering.
 
+### 401. Business milestone reads mutate status without an explicit recompute command
+
+Evidence:
+
+- The Prisma schema comments say `BusinessMilestone.status` is a last-derived
+  snapshot for queryability and that the business-alignment service recomputes it
+  from delivery data on every read.
+- `GET /business-alignment/projects/:projectId/milestones` calls
+  `listBusinessMilestones(...)`, which enters `listMilestonesInternal(...)`.
+- `listMilestonesInternal(...)` derives `projectedFinishAt`, completed WorkItems,
+  and the current status from generation plan rows and finalization records.
+- If the derived status differs from the stored status, the read path executes
+  `businessMilestone.update({ where: { id: milestone.id }, data: { status } })`.
+- That update is not wrapped in a named milestone recomputation command, does not
+  call `logEvent(...)`, does not publish outbox, and does not record which
+  evidence rows caused the transition.
+- The same helper is reused by project rollups and readout generation, so opening
+  a dashboard or generating a readout can change durable milestone status as an
+  incidental side effect.
+- Existing audit coverage includes a generic time-travel GET side-effect finding,
+  but searches found no finding for business milestone status mutation on read.
+
+Impact:
+
+- A user with read access can cause durable business milestone state to change,
+  including `PLANNED`, `AT_RISK`, `LATE`, and `DELIVERED`, simply by loading a
+  page or export path.
+- Executive readouts and evidence packs can show a milestone transition without a
+  corresponding business event explaining who recomputed it, from which plan rows,
+  and against which WorkItem finalization snapshot.
+- Because the update happens per row during a list operation, concurrent readers
+  can race with plan-row schedule updates, WorkItem finalization, or amendment
+  application and leave `updatedAt` churn that looks like an intentional business
+  action.
+- This blurs the contract between query-time projections and governed business
+  state, making milestone history hard to audit.
+
+Required fixes:
+
+- Split milestone status into a pure computed projection for reads and an
+  explicit durable recompute/transition command for stored status changes.
+- If stored status snapshots remain, write them through an idempotent
+  `BusinessMilestoneStatusRecomputed` command with actor/system principal,
+  trace id, input digest, plan row ids, WorkItem ids, prior status, and new
+  status.
+- Make read endpoints return derived status without mutating, or clearly mark the
+  recompute as a scheduled/background operation with its own audit and outbox.
+- Add compare-and-set protection so milestone recomputation cannot overwrite a
+  newer amendment/finalization-derived status.
+- Add tests proving milestone GET is non-mutating, explicit recompute is audited,
+  concurrent recompute is fenced, and readout/export generation cannot silently
+  change milestone status.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
