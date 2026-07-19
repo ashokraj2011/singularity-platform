@@ -17939,6 +17939,67 @@ Required fixes:
   conflict, same-key/two-tenant independence, and RLS-disabled local-mode
   warning behavior.
 
+### 365. ToolGateway policy ignores ToolPermission and most tool-run context
+
+Evidence:
+
+- The Prisma schema defines `ToolPermission` with `toolId`, optional `roleId`,
+  and optional `actionId`, implying a role/action grant model for tool use.
+- Source search under `workgraph-studio/apps/api/src` found no reads of
+  `ToolPermission`, `tool_permissions`, or `toolPermission` in runtime code.
+- `requestToolRun(...)` calls `evaluateToolPolicy(toolId, requestedById,
+  inputPayload)` and then gates only on the returned policy decision plus
+  `tool.requiresApproval`.
+- `evaluateToolPolicy(...)` accepts no `actionId`, `instanceId`, tenant id,
+  workflow id, capability id, tool risk, action risk, or source path.
+- The policy lookup reads every active `Policy` with
+  `resourceType = 'TOOL_RUN'`; `Policy` has no tenant column in the schema and
+  the query does not scope decisions by tenant or capability.
+- Policy conditions are evaluated only for `fieldPath === 'toolId'` and
+  `fieldPath === 'requestedById'`. Any other configured field path resolves to
+  `undefined`.
+- `PolicyCondition.logicalOperator` is present in the schema but ignored; all
+  conditions are combined with `every(...)`.
+- The `input` argument is explicitly discarded with `void input`, so policy
+  conditions cannot inspect declared input fields even though tool risk often
+  depends on parameters.
+- `PolicyAction.actionConfig` is ignored; the first `DENY`,
+  `REQUIRE_APPROVAL`, or `ALLOW` action determines the whole result.
+- Existing findings cover workflow Tool Request nodes bypassing the gateway,
+  mutable local tool actions, and ToolRun idempotency. They do not cover the
+  gateway's own policy/permission evaluator being too narrow.
+
+Impact:
+
+- Tool grants stored in `ToolPermission` do not actually authorize or deny
+  tool-run requests.
+- Operators can configure policies that look action-, tenant-, capability-, or
+  input-aware, but the runtime only evaluates tool id and requester id.
+- Unsupported `fieldPath` values can produce surprising behavior, especially for
+  `!=` conditions against `undefined`.
+- A low-risk action and a high-risk action on the same tool cannot be governed
+  differently through the gateway, even though `ToolAction.riskLevel` exists.
+- Approval and denial evidence lacks the role grant, policy tenant, capability,
+  action, input digest, and evaluated rule details needed for enterprise audit.
+
+Required fixes:
+
+- Either remove `ToolPermission` until it is wired, or make it authoritative in
+  `requestToolRun(...)` before policy evaluation.
+- Extend the policy context with tenant id, user roles, team/capability
+  membership, workflow instance id, node id, tool id, action id, tool/action risk,
+  source path, and canonical input fields.
+- Scope policies by tenant and capability, with explicit platform-global policy
+  support only for read-only defaults.
+- Implement `logicalOperator`, validate supported `fieldPath` names at policy
+  create/update time, and reject unknown fields instead of resolving them to
+  `undefined`.
+- Persist the evaluated policy id/version, matched conditions, ToolPermission
+  grant id, and decision reason on each `ToolRun`.
+- Add tests for role/action grants, action-specific deny, input-sensitive deny,
+  tenant-scoped policy isolation, unknown field rejection, OR-condition behavior,
+  and policy action config handling.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
