@@ -160,6 +160,12 @@ jobs:
         run: bash bin/check-monorepo-versions.sh
       - name: Compose profile matrix
         run: bash bin/check-compose-profiles.sh
+      # M33 single-gateway invariant: every LLM/embedding egress goes through the
+      # one tagged gateway (agent/task turns additionally via composer + context
+      # fabric). The guard existed but was never wired in, so the invariant was
+      # unenforced on PRs — blocking now that main passes clean.
+      - name: LLM single-gateway guard
+        run: bash bin/check-llm-gateway-single-source.sh
       # Secret guardrail — informational for now (flip to blocking once a first
       # green run confirms it behaves in CI).
       - name: Secret guardrails
