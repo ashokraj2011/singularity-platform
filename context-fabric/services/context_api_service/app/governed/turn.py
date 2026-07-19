@@ -138,6 +138,7 @@ from .audit_emit import emit_governed_event
 from . import placement as _placement
 from .llm_client import ChatResponse, ChatToolCall, LLMGatewayError, call_gateway_chat
 from .direct_llm_client import call_direct_chat, is_context_fabric_direct_route
+from .stage_grounding import fetch_stage_grounding
 from .code_context import (
     build_code_context_for_governed_turn,
     package_markdown,
@@ -238,7 +239,11 @@ class TurnResult:
         }
 
 
-def _build_messages(prompt: ResolvedPrompt, history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_messages(
+    prompt: ResolvedPrompt,
+    history: list[dict[str, Any]],
+    grounding: str | None = None,
+) -> list[dict[str, Any]]:
     """Compose the OpenAI-style message list the gateway expects.
 
     System message = prompt.system_prompt_append.
@@ -256,8 +261,16 @@ def _build_messages(prompt: ResolvedPrompt, history: list[dict[str, Any]]) -> li
     persistence) operates on the un-wrapped messages.
     """
     messages: list[dict[str, Any]] = []
+    # Capability grounding rides at the TOP of the system message, before the
+    # stage rules. It is context the stage instructions then act on, and putting
+    # it after them would read as an afterthought appended to the contract.
+    system_parts: list[str] = []
+    if grounding and grounding.strip():
+        system_parts.append(grounding.strip())
     if prompt.system_prompt_append.strip():
-        messages.append({"role": "system", "content": prompt.system_prompt_append})
+        system_parts.append(prompt.system_prompt_append)
+    if system_parts:
+        messages.append({"role": "system", "content": "\n\n".join(system_parts)})
     body = prompt.task
     if prompt.extra_context.strip():
         body = f"{body}\n\n{prompt.extra_context}"
@@ -1039,7 +1052,15 @@ async def run_turn(
     )
 
     # 3. Messages + tool descriptors.
-    messages = _build_messages(prompt, history)
+    # Governed-stage grounding: this path resolves a phase-prompt TEMPLATE rather
+    # than running a full compose, so it never saw the capability world model or
+    # the role views. Off by default; never raises.
+    stage_grounding = await fetch_stage_grounding(
+        run_context=run_context,
+        agent_role=agent_role,
+        task=prompt.task,
+    )
+    messages = _build_messages(prompt, history, stage_grounding)
     # G4 governance overlay — tools the governing entity blocks (or requires
     # approval for) are enforced, not just rendered as advisory text: excluded
     # from the LLM's tool list here and hard-refused at dispatch (governed_step).
