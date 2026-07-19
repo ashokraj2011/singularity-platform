@@ -228,6 +228,25 @@ export const composeSchema = z.object({
       entrypoints: z.array(z.object({ kind: z.string(), target: z.string(), command: z.string().optional() })).default([]),
     })).default([]),
   }).optional(),
+  // Layered world model — the role-scoped views context-fabric selected for THIS
+  // agent, already narrowed and budgeted by agent-runtime's slice endpoint. The
+  // composer renders what it is given and does not re-filter; deciding what a
+  // role should read lives in one place, and it is not here.
+  //
+  // A SIBLING of worldModel rather than a field inside it: a capability with no
+  // repository can have views (built from its description, knowledge artifacts
+  // and children) while having no world model at all, and that is a valid input.
+  worldModelViews: z.array(z.object({
+    kind: z.string(),
+    domainKey: z.string().optional(),
+    title: z.string(),
+    contentMd: z.string(),
+    tokenEstimate: z.number().optional(),
+    contentHash: z.string().nullable().optional(),
+    /** Built against an older repo fingerprint. Rendered with a note rather than
+     *  dropped — stale grounding beats none, and the reader can discount it. */
+    stale: z.boolean().optional(),
+  })).optional(),
   // M62 Slice D — LLMLingua-2 prompt compression. Opt-in per-layer.
   //
   // When `compression.enabled` is true, after all layers are assembled,
