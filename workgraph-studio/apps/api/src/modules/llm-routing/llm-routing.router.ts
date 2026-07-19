@@ -21,6 +21,8 @@ import { prisma } from '../../lib/prisma'
 import { requireTenantFromRequest, resolveTenantFromRequest, tenantIsolationStrict } from '../../lib/tenant-isolation'
 import { isAdminUser } from '../../lib/permissions/admin'
 import { ForbiddenError } from '../../lib/errors'
+import { assertPlatformWorkflowPermission } from '../../lib/permissions/workflowTemplate'
+import { resolveLlmRoutingDecision } from './resolve'
 
 export const llmRoutingRouter: ExpressRouter = Router()
 
@@ -35,6 +37,13 @@ async function requireAdmin(req: Request): Promise<void> {
   if (!req.user?.userId || !(await isAdminUser(req.user.userId))) {
     throw new ForbiddenError('LLM routing configuration requires an administrator role.')
   }
+}
+
+async function requireViewer(req: Request, resourceType: string, resourceId?: string): Promise<void> {
+  if (!req.user?.userId) {
+    throw new ForbiddenError('LLM routing requires an authenticated user.')
+  }
+  await assertPlatformWorkflowPermission(req.user.userId, 'view', resourceType, resourceId, tenantFilter(req).tenantId)
 }
 
 // The surfaces that pick a model today (see the LLM routing map). Static list —
@@ -143,6 +152,7 @@ function loadConnections(): Connection[] {
 // and presence booleans are returned; never secret values.
 llmRoutingRouter.get('/connections', async (req, res, next) => {
   try {
+    await requireViewer(req, 'LlmConnection')
     const rows = await prisma.llmConnection.findMany({ where: { enabled: true, ...tenantFilter(req) }, orderBy: { name: 'asc' } })
     const visibleRows = rows.filter(row => !isCopilotProvider(row.provider))
     if (visibleRows.length > 0) {
@@ -204,7 +214,10 @@ llmRoutingRouter.delete('/connections/:id', async (req, res, next) => {
 llmRoutingRouter.get('/touch-points', (_req, res) => { res.json({ items: TOUCH_POINTS }) })
 
 llmRoutingRouter.get('/rules', async (req, res, next) => {
-  try { res.json({ items: await prisma.llmRouting.findMany({ where: tenantFilter(req), orderBy: [{ touchPoint: 'asc' }, { scopeType: 'asc' }] }) }) }
+  try {
+    await requireViewer(req, 'LlmRouting')
+    res.json({ items: await prisma.llmRouting.findMany({ where: tenantFilter(req), orderBy: [{ touchPoint: 'asc' }, { scopeType: 'asc' }] }) })
+  }
   catch (e) { next(e) }
 })
 
@@ -257,17 +270,23 @@ llmRoutingRouter.delete('/rules/:id', async (req, res, next) => {
 // rule matches so the caller falls back to its own default.
 llmRoutingRouter.get('/resolve', async (req, res, next) => {
   try {
+    await requireViewer(req, 'LlmRouting')
     const touchPoint = String(req.query.touchPoint ?? '')
-    const userId = req.query.userId ? String(req.query.userId) : ''
+    const requestedUserId = req.query.userId ? String(req.query.userId) : ''
+    const authenticatedUserId = req.user?.userId ?? ''
+    if (requestedUserId && requestedUserId !== authenticatedUserId) {
+      await requireAdmin(req)
+    }
+    const userId = requestedUserId || authenticatedUserId
     const capabilityId = req.query.capabilityId ? String(req.query.capabilityId) : ''
     if (!touchPoint) return res.status(400).json({ error: 'touchPoint is required' })
-    const rules = await prisma.llmRouting.findMany({ where: { touchPoint, enabled: true, ...tenantFilter(req) } })
-    const pick = (scopeType: string, scopeId: string) => rules.find(r => r.scopeType === scopeType && r.scopeId === scopeId)
-    const match =
-      (userId && pick('USER', userId)) ||
-      (capabilityId && pick('CAPABILITY', capabilityId)) ||
-      pick('DEFAULT', '') ||
-      null
-    res.json({ touchPoint, modelAlias: match?.modelAlias ?? null, scopeType: match?.scopeType ?? null, ruleId: match?.id ?? null })
+    const decision = await resolveLlmRoutingDecision(touchPoint, {
+      userId,
+      capabilityId,
+      tenantId: tenantFilter(req).tenantId,
+      strictTenant: tenantIsolationStrict(),
+      failClosed: true,
+    })
+    res.json(decision)
   } catch (e) { next(e) }
 })

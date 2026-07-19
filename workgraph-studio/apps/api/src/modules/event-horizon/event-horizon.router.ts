@@ -7,6 +7,7 @@ import { contextFabricClient, type ExecuteRequest } from '../../lib/context-fabr
 import { promptComposerAuthHeaders, promptComposerClient } from '../../lib/prompt-composer/client'
 import { prisma } from '../../lib/prisma'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
+import { resolveTenantFromRequest } from '../../lib/tenant-isolation'
 import { resolveLlmRouting } from '../llm-routing/resolve'
 import { isJsonObject, readUpstreamJsonBody, upstreamSnippet } from '../../lib/upstream-json'
 
@@ -153,7 +154,7 @@ eventHorizonRouter.post('/chat', async (req, res) => {
   const [snapshot, platformContext] = await Promise.all([platformSnapshot(), loadPlatformContext()])
   // LLM routing: the CHAT touch point may be wired to a specific connection (per
   // user / capability / default) in the routing canvas; fall back to the env default.
-  const routedAlias = await resolveLlmRouting('CHAT', { userId: req.user?.userId, capabilityId })
+  const routedAlias = await resolveLlmRouting('CHAT', { userId: req.user?.userId, capabilityId, tenantId: resolveTenantFromRequest(req) })
   const now = Date.now()
   const traceId = traceIdFromParts(['event-horizon', body.sessionId, now], ':')
   const sessionTraceId = traceIdFromParts(['event-horizon', body.sessionId], ':')

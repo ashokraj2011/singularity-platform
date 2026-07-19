@@ -1136,7 +1136,7 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
     }
     // LLM routing: the WORKBENCH touch point may be wired to a connection (per user
     // / default) in the routing canvas; falls back to the env default below.
-    const routedWorkbenchAlias = await resolveLlmRouting('WORKBENCH', { userId: req.user?.userId })
+    const routedWorkbenchAlias = await resolveLlmRouting('WORKBENCH', { userId: req.user?.userId, tenantId: currentTenantIdForDb() })
     const initialLoopState: LoopState = {
       workflowNodeId: resolvedWorkflowNodeId,
       browserRunId: resolvedBrowserRunId,

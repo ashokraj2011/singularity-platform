@@ -29,13 +29,15 @@ function structuralFindings(content: string): string[] {
 
 async function gatherStandards(
   consumable: { instanceId: string | null },
-): Promise<{ text: string; capabilityId: string | null }> {
+): Promise<{ text: string; capabilityId: string | null; tenantId: string | null }> {
   const parts: string[] = []
   let capabilityId: string | null = null
+  let tenantId: string | null = null
   if (consumable.instanceId) {
     const inst = await prisma.workflowInstance
-      .findUnique({ where: { id: consumable.instanceId }, select: { context: true } })
+      .findUnique({ where: { id: consumable.instanceId }, select: { context: true, tenantId: true } })
       .catch(() => null)
+    tenantId = inst?.tenantId ?? null
     const ctx = (inst?.context ?? {}) as Record<string, unknown>
     const vars = (ctx._vars ?? ctx.vars ?? {}) as Record<string, unknown>
     const globals = (ctx._globals ?? ctx.globals ?? {}) as Record<string, unknown>
@@ -57,7 +59,7 @@ async function gatherStandards(
     '- Well structured (clear headings / sections) and internally consistent.\n' +
     '- Specific and unambiguous; claims are actionable and testable where applicable.',
   )
-  return { text: parts.join('\n\n'), capabilityId }
+  return { text: parts.join('\n\n'), capabilityId, tenantId }
 }
 
 function parseVerdict(text: string): { passed: boolean; findings: string[]; rationale?: string } | null {
@@ -93,7 +95,7 @@ export async function runVerification(
   const standards = extraPolicy?.trim()
     ? `Stage verification criteria:\n${extraPolicy.trim()}\n\n${gathered.text}`
     : gathered.text
-  const modelAlias = await resolveLlmRouting('AUDIT_JUDGE', { userId, capabilityId })
+  const modelAlias = await resolveLlmRouting('AUDIT_JUDGE', { userId, capabilityId, tenantId: gathered.tenantId })
 
   const systemPrompt =
     'You are a meticulous compliance verifier. You are given a DOCUMENT and the STANDARDS/POLICIES it must satisfy. ' +
@@ -111,7 +113,7 @@ export async function runVerification(
       task,
       model_overrides: { modelAlias: modelAlias ?? undefined, temperature: 0, maxOutputTokens: 1200 },
       limits: { timeoutSec: 120 },
-      run_context: { userId, capability_id: capabilityId ?? undefined, purpose: 'document_verification' },
+      run_context: { userId, tenant_id: gathered.tenantId ?? undefined, capability_id: capabilityId ?? undefined, purpose: 'document_verification' },
     })
     const parsed = parseVerdict(resp.finalResponse ?? '')
     if (parsed) {

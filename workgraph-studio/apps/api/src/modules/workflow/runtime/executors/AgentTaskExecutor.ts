@@ -303,7 +303,7 @@ export async function activateAgentTask(
   const workflowUsesCopilot = await resolveWorkflowUsesCopilot(instance.templateId)
   const routedTouchPoint = workflowUsesCopilot ? 'COPILOT_SDLC' : 'GOVERNED_AGENT'
   const routedModelAlias = (!_nodeAliasExplicit && !workflowDefaultModelAlias)
-    ? await resolveLlmRouting(routedTouchPoint, { capabilityId, userId: instance.createdById })
+    ? await resolveLlmRouting(routedTouchPoint, { capabilityId, userId: instance.createdById, tenantId })
     : null
   const modelOverrides: Record<string, unknown> = {
     maxOutputTokens: 1200,

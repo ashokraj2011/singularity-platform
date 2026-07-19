@@ -1642,6 +1642,23 @@ Required fixes:
 - Verify the selected `modelAlias` maps to an enabled `LlmConnection` with
   credential readiness before a workflow or governed surface launches.
 
+Progress:
+
+- `resolveLlmRouting` now resolves through a tenant-local helper, uses the
+  current DB tenant context when available, restricts no-tenant development
+  resolution to global rows only, and raises a typed
+  `LlmRoutingResolutionError` when strict tenant mode lacks tenant context or
+  the routing query fails.
+- Workbench, Event Horizon chat, governed Agent Task nodes, and consumable
+  verification now pass tenant context into the shared resolver.
+- `GET /api/llm-routing/resolve` now uses the same resolver and binds
+  user-scoped resolution to the authenticated caller unless the caller is an
+  administrator.
+- Added a resolver contract test proving user-scope precedence stays
+  tenant-local and strict mode fails closed without a tenant.
+- Remaining follow-up: validate every matched `modelAlias` against an enabled,
+  tenant-visible connection/catalog entry with readiness before launch.
+
 ### 51. LLM routing read APIs expose provider metadata without an explicit permission
 
 Evidence:
@@ -1679,6 +1696,18 @@ Required fixes:
   admin/sensitive config permission.
 - Add browser/API tests for viewer, workflow author, and admin LLM-routing
   responses.
+
+Progress:
+
+- `GET /api/llm-routing/connections`, `GET /api/llm-routing/rules`, and
+  `GET /api/llm-routing/resolve` now require a platform workflow `view`
+  authorization decision before returning model routing metadata. Mutating
+  routes still require the administrator role.
+- `GET /api/llm-routing/resolve` no longer lets a normal authenticated user
+  spoof another user's scoped route via query string.
+- Remaining follow-up: split the payload into a reduced workflow-author catalog
+  versus admin/sensitive config response once dedicated
+  `workflow:llm_routing:*` permissions are added to IAM and seeds.
 
 ### 52. Outbound event dispatcher failure is non-fatal and not health-gated
 
