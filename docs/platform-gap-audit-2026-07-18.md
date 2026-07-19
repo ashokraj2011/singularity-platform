@@ -19060,6 +19060,51 @@ Required fixes:
   replayed, intentionally ignored with policy metadata, or surfaced as a
   non-applicable warning.
 
+### 386. Board merge detects top-level coordinate moves but replay can drop them
+
+Evidence:
+
+- `board-merge.ts` includes nested `position` plus top-level `x`, `y`, and `z`
+  in `positionSig(...)`.
+- `classifyChange(...)` returns `MOVED` whenever that signature changes, so a
+  branch that changes only top-level coordinates is treated as a spatial merge
+  item.
+- `mergeEvent(...)` handles `MOVED` by emitting `OBJECT_MOVED` with payload
+  `{ to: asRec(branchObj)['position'] ?? {} }`.
+- The merge replay event does not fall back to top-level `x`, `y`, or `z` even
+  though those fields caused the `MOVED` classification.
+- The `OBJECT_MOVED` reducer applies only `payload.to`; it writes top-level `x`
+  and `y` only when `to.x` and `to.y` are numeric.
+- `BoardCanvas.tsx` still treats top-level coordinates as part of the board
+  object model by reading `object.x`/`object.y` when `position.x`/`position.y`
+  are absent, and by writing both top-level and nested coordinates in
+  `withPosition(...)`.
+
+Impact:
+
+- A branch can move an object represented with top-level coordinates, the merge
+  can report and replay an `OBJECT_MOVED` event, and the target branch can remain
+  visually unmoved because the replay payload is `{}` or stale nested
+  `position`.
+- The reducer can overwrite `position` with `{}` while leaving old top-level
+  coordinates in place, creating contradictory board state.
+- A `z`-only change is detected as a move but is never represented by the replay
+  event, so stacking/order evidence can diverge from the branch being merged.
+- Merge audit evidence can claim a move was applied while the visible board and
+  durable object state do not match the source branch.
+
+Required fixes:
+
+- Normalize board objects before diff/replay, or build `OBJECT_MOVED.to` from
+  nested `position` with top-level `x`, `y`, and `z` fallbacks.
+- Decide whether `z` belongs in the move event shape and replay it explicitly, or
+  remove it from `positionSig(...)` and handle stacking as a separate change.
+- Add merge-event tests for position-only, top-level x/y-only, mixed stale
+  position versus x/y, z-only, and coordinate-clearing cases.
+- Add an invariant that every field represented by `positionSig(...)` is either
+  replayed, intentionally ignored with policy metadata, or rejected before the
+  merge event is emitted.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
