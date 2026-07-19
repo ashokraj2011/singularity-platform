@@ -17745,6 +17745,75 @@ Required fixes:
   action ids are rejected, cross-tool action ids are rejected, and snapshot-sync
   can only write actions with trusted upstream provenance.
 
+### 362. Legacy WorkGraph agent-run adapter can invoke agent snapshots outside workflow authorization
+
+Evidence:
+
+- `agents.router.ts` says local Agent CRUD was removed and that `Agent` rows are
+  snapshots of agent-and-tools templates created on demand by
+  `AgentTaskExecutor`.
+- `app.ts` still mounts `/api/agents` behind generic `authMiddleware`, then
+  `agents.router.ts` exposes `GET /api/agents`, `GET /api/agents/:id`, and
+  `POST /api/agents/:id/runs`.
+- `GET /api/agents` returns every local `Agent` snapshot with joined skills, and
+  `GET /api/agents/:id` fetches a raw agent id with joined skills plus the last
+  ten runs. Neither route filters by tenant, capability, upstream template
+  access, or workflow permission.
+- `POST /api/agents/:id/runs` loads the local `Agent` by raw id, accepts arbitrary
+  caller-provided `instructions`, optional `instanceId`, optional `nodeId`, and
+  arbitrary `inputPayload`, then creates an `AgentRun`.
+- The route does not call `assertWorkflowInstanceTenant(...)` when an
+  `instanceId` is supplied, does not require `instanceId` in strict mode, and
+  does not verify that the selected `nodeId` belongs to that instance.
+- It immediately calls `GatewayProvider.complete(...)`, which invokes Context
+  Fabric's governed single-turn endpoint with `source_type =
+  workgraph-legacy-agent-run`, a synthetic trace id based only on
+  `legacy-agent-run` plus `Date.now()`, and no workflow instance, WorkItem,
+  capability, authorization snapshot, or node authorization context.
+- The `Agent` schema has no tenant id, capability id, owner, or immutable run
+  authorization link; only `AgentRun` can carry a tenant id after the standalone
+  run is created.
+- Existing findings cover Agent Runtime profile read authorization and
+  `AgentTaskExecutor` placeholder snapshots. They do not cover this legacy
+  WorkGraph `/api/agents/:id/runs` invocation adapter.
+
+Impact:
+
+- Any authenticated caller can enumerate local agent snapshots and start
+  standalone LLM-backed agent runs with arbitrary prompt text, bypassing the
+  normal workflow, Agent Runtime profile resolution, Prompt Composer contract,
+  run authorization snapshot, and capability gate.
+- A caller can attach an agent run to another workflow instance id or node id in
+  the request body unless later reads happen to hide it, producing confusing or
+  misleading evidence.
+- Context Fabric receives insufficient identity/resource context for enterprise
+  policy enforcement, so governed execution evidence can exist without the
+  WorkItem/capability/workflow trace spine the platform promises.
+- Cost, prompt, and output records from this route land in `AgentRun` evidence
+  and pending-review queues even though no workflow launch or resource
+  authorization proved the caller should be allowed to create them.
+
+Required fixes:
+
+- Remove the legacy `POST /api/agents/:id/runs` adapter from normal deployments,
+  or restrict it to an explicit debug profile that is disabled in enterprise
+  mode.
+- If retained, require a valid workflow instance and node, verify the node belongs
+  to the instance, resolve the owning capability, and enforce
+  `workflow:run_agent` / `agent_run:create` authorization before creating an
+  `AgentRun`.
+- Resolve the upstream agent template through Agent Runtime at invocation time
+  and require the local snapshot hash/version to match the authorized profile
+  contract.
+- Pass tenant id, IAM user id, workflow instance id, WorkItem id, capability id,
+  authorization snapshot id, node id, and platform trace id to Context Fabric.
+- Filter `GET /api/agents` and `GET /api/agents/:id` by effective access, or
+  replace them with read-only snapshot evidence routes scoped to an authorized
+  run.
+- Add tests for unauthenticated, cross-tenant instance id, mismatched node id,
+  no-instance strict mode, unauthorized capability, authorized workflow node, and
+  debug-only standalone invocation.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
