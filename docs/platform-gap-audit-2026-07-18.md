@@ -17454,6 +17454,61 @@ Required fixes:
   environments, authenticated users receive only launch-relevant prerequisites,
   and operations admins receive the full fix-command/readiness envelope.
 
+### 357. Raw `/ops-health/*` rewrites expose backend health checks outside the Platform Web BFF contract
+
+Evidence:
+
+- `agent-and-tools/web/next.config.mjs` defines rewrite-level routes for
+  `/ops-health/iam`, `/ops-health/workgraph-api`, `/ops-health/prompt-composer`,
+  `/ops-health/context-api`, `/ops-health/agent-runtime`,
+  `/ops-health/tool-service`, and `/ops-health/agent-service`.
+- These are `next.config.mjs` rewrites, not `src/app/.../route.ts` handlers. A
+  filesystem search only found `src/app/healthz/route.ts` and
+  `src/app/api/adoption/health/route.ts`; there is no typed
+  `/ops-health/:service` route where Platform Web can enforce caller
+  verification, permission checks, redaction, audit logging, or normalized
+  errors.
+- `agent-and-tools/web/src/components/OperationsStatusPage.tsx` probes the
+  `/ops-health/*` paths directly for IAM, Agent Service, Tool Service, Agent
+  Runtime, Prompt Composer, WorkGraph API, and Context API readiness.
+- `agent-and-tools/web/src/app/api/adoption/health/route.ts` also calls
+  `/ops-health/iam` and `/ops-health/prompt-composer`, so the same raw health
+  surface feeds higher-level launch/readiness decisions.
+- `agent-and-tools/web/src/lib/identity/session.ts` treats `/ops-health/` as a
+  path that should not be used as a post-login redirect target, but that client
+  helper does not protect direct requests to the rewritten routes.
+- Existing gap 356 covers the aggregated adoption/start readiness envelope. This
+  gap covers the lower-level direct rewrite surface that remains reachable even
+  if the aggregator is later protected.
+
+Impact:
+
+- Callers can enumerate core backend availability through same-origin Platform
+  Web routes without passing through the normal BFF route handlers.
+- Health responses may reveal which internal services exist, which dependencies
+  are unhealthy, and which deployment boundary is failing before the caller has
+  an Operations permission.
+- Because the routes are raw rewrites, Platform Web cannot consistently apply
+  per-service authorization, tenant-aware redaction, request-id/trace
+  correlation, rate limits, or audit records.
+- Future health endpoints can accidentally expose stricter readiness details
+  under the same public path family because the protection boundary is encoded
+  as static rewrites instead of handler logic.
+
+Required fixes:
+
+- Replace `/ops-health/*` rewrites with a typed
+  `/api/ops-health/:service` route handler.
+- Require a verified caller and an Operations/readiness permission for internal
+  service health. If anonymous setup mode is needed, expose only coarse
+  `available/unavailable` status through a separate explicitly enabled route.
+- Redact dependency names, migration errors, fix commands, internal URLs, and
+  stack-specific health payloads unless the caller has operations-admin or
+  audit-view permission.
+- Add contract tests proving missing bearer requests are denied in normal mode,
+  non-Operations users receive redacted coarse status, Operations users receive
+  full health, and no `/ops-health/*` raw rewrites remain in `next.config.mjs`.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
