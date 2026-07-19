@@ -19426,6 +19426,50 @@ Required fixes:
   response, background worker plus manual call, and different detector profiles
   over the same event window.
 
+### 394. Board Moment lifecycle evidence is split from the row mutations
+
+Evidence:
+
+- `detectAndNarrate(...)` creates each `BoardMoment` row with
+  `prisma.boardMoment.create(...)`.
+- Only after the row exists does it call `logEvent('BoardMomentMarked', ...)` and
+  then `publishOutbox('BoardMoment', ..., 'BoardMomentMarked', ...)`.
+- Those three writes are not inside one database transaction or transactional
+  outbox command.
+- If `logEvent(...)` or `publishOutbox(...)` fails after the moment create, the
+  moment row remains visible but external audit/outbox evidence can be missing.
+- `editMoment(...)` updates the moment title/narrative/status to `EDITED` and then
+  calls `logEvent('BoardMomentEdited', ...)`.
+- `rejectMoment(...)` updates the moment status to `REJECTED` and then calls
+  `logEvent('BoardMomentRejected', ...)`.
+- Human edit/reject transitions do not call `publishOutbox(...)` at all, so
+  downstream timeline/evidence consumers that rely on outbox events see creation
+  but not later human correction or rejection.
+
+Impact:
+
+- Operators can see a moment as visible, edited, or rejected in the API while the
+  audit stream or event bus has no corresponding transition record.
+- Evidence packs and replay consumers can overstate a moment's validity by seeing
+  `BoardMomentMarked` but never receiving the later `BoardMomentRejected`.
+- A failure in the evidence-writing step leaves no durable retry/dead-letter path
+  for repairing the missing audit/outbox transition.
+- Human correction of generated timeline evidence is weaker than the generated
+  moment itself, because only the generated mark has an outbox path.
+
+Required fixes:
+
+- Move moment create/edit/reject and audit/outbox creation into a transactional
+  command service or transactional outbox pattern.
+- Emit outbox events for `BoardMomentEdited` and `BoardMomentRejected`, not only
+  for `BoardMomentMarked`.
+- Add event ids, transition generation, previous status, new status, actor, board,
+  branch, detector key, event window, and trace id to all moment lifecycle events.
+- Add retry/dead-letter handling for failed moment lifecycle evidence publication.
+- Add tests for moment create with audit failure, create with outbox failure,
+  edit/reject outbox emission, lost-response retry, and evidence-pack replay after
+  a human rejection.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
