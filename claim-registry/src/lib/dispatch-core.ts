@@ -36,12 +36,18 @@ export interface OutboxRowLike {
   payload: unknown
   traceId: string | null
   createdAt: Date
+  // Stamped at publish time from the request's registry actor (events.ts) and carried
+  // into the envelope so receivers running strict tenant isolation don't reject the event.
+  tenantId: string | null
 }
 
 /** Canonical envelope shape (matches the receiver's EventEnvelope interface). */
 export interface CanonicalEnvelope {
   receipt_id: string
   source_service: string
+  // The receiver (e.g. workgraph /api/events/incoming) reads envelope.tenant_id and, under
+  // TENANT_ISOLATION_MODE=strict, 403s (MISSING_EVENT_TENANT) when it is absent.
+  tenant_id: string | null
   trace_id: string | null
   subject: { kind: string; id: string }
   status: string
@@ -64,6 +70,7 @@ export function buildEnvelope(row: OutboxRowLike): CanonicalEnvelope {
   return {
     receipt_id: row.id,
     source_service: SOURCE_SERVICE,
+    tenant_id: row.tenantId ?? null,
     trace_id: row.traceId,
     subject: { kind: subjectKindFor(row.eventType), id: row.aggregateId },
     status: 'emitted',
