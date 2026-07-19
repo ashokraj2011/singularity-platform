@@ -15,6 +15,7 @@ import { createDocument, getDocument, listDocuments, transitionDocument } from '
 import { addBlock, updateBlock, removeBlock, pinBlock } from './block.service'
 import { createWorkspaceProposal, listProposals, getProposal, decideProposalItems, rebaseProposalItem } from './proposal.service'
 import { runAgentTurn } from './synthesis-agent.service'
+import { ask, askHistory } from './ask.service'
 
 export const synthesisRouter: Router = Router()
 
@@ -224,4 +225,27 @@ const agentTurnSchema = z.object({
 })
 synthesisRouter.post('/workspaces/:workspaceId/threads/:threadId/agent-turn', validate(agentTurnSchema), wrap(async (req, res) => {
   res.json(await runAgentTurn(String(req.params.workspaceId), String(req.params.threadId), req.body.role, req.body.message, req, userIdOf(req)))
+}))
+
+// ── Ask Synthesis (5.1) — always-available Facilitator sidecar; project- OR session-scoped ─
+const askSchema = z.object({
+  workspaceId: z.string().trim().min(1).optional(),
+  specificationProjectId: z.string().trim().min(1).optional(),
+  workItemId: z.string().trim().min(1).nullable().optional(),
+  question: z.string().trim().min(1).max(10000),
+}).refine((v) => Boolean(v.workspaceId || v.specificationProjectId), {
+  message: 'workspaceId or specificationProjectId is required',
+})
+const strParam = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
+
+synthesisRouter.post('/ask', validate(askSchema), wrap(async (req, res) => {
+  const { question, ...target } = req.body
+  res.json(await ask(target, question, req, userIdOf(req)))
+}))
+synthesisRouter.get('/ask', wrap(async (req, res) => {
+  const target = { workspaceId: strParam(req.query.workspaceId), specificationProjectId: strParam(req.query.specificationProjectId), workItemId: strParam(req.query.workItemId) }
+  if (!target.workspaceId && !target.specificationProjectId) { res.status(400).json({ code: 'BAD_REQUEST', message: 'workspaceId or specificationProjectId is required' }); return }
+  const raw = strParam(req.query.afterSeq)
+  const afterSeq = raw !== undefined && Number.isFinite(Number(raw)) ? Number(raw) : undefined
+  res.json(await askHistory(target, { afterSeq }))
 }))
