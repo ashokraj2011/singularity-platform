@@ -17117,6 +17117,66 @@ Required fixes:
   opt-in, no production caller imports `chatRespond(...)`, and any remaining
   compatibility response includes a migration warning plus tenant/trace audit.
 
+### 352. Context Fabric savings proxy omits auth and Audit Governance service credentials
+
+Evidence:
+
+- `context-fabric/services/context_api_service/app/main.py` exposes
+  `GET /metrics/dashboard` and `GET /sessions/{session_id}/metrics` directly on
+  the Context API FastAPI app.
+- Unlike `/execute`, `/receipts`, runtime bridge status, and internal MCP routes,
+  these two proxy handlers do not accept or validate `X-Service-Token`,
+  `Authorization`, tenant id, actor id, capability id, or an audit/economics read
+  permission.
+- Both handlers call shared `get_json(...)` from
+  `context-fabric/shared/context_fabric_shared/http_client.py`. That helper sends
+  a plain `httpx.AsyncClient().get(url)` with no `Authorization` or
+  `X-Service-Token` header.
+- The downstream Audit Governance savings router explicitly installs
+  `savingsRouter.use(requireServiceAuth)` and comments that `/api/v1/savings/*`
+  is "Service-token only" and consumed by server-side proxies, not browsers.
+- `routes-savings.ts` returns full `token_savings_runs` rows for a supplied
+  session id, including context package id, model call id, provider/model,
+  estimated costs, capability id, tenant id, and timestamps.
+- Existing findings cover placeholder pricing and silent token-savings writes,
+  but not this broken/weak read proxy boundary.
+
+Impact:
+
+- In hardened deployments, the Context API proxy will call Audit Governance
+  without the required service token, causing the metrics endpoints to fail even
+  when `AUDIT_GOV_SERVICE_TOKEN` is configured correctly.
+- In relaxed or anonymous-dev Audit Governance deployments, anyone who can reach
+  Context API can read global savings aggregates or session-level LLM
+  optimization/cost rows by guessing a `session_id`.
+- The proxy bypasses the platform's normal UI/API authorization model for
+  economics data. There is no proof that the caller is an auditor, run owner,
+  tenant admin, or capability operator.
+- Session-level savings rows can disclose operational metadata such as model
+  alias/provider usage, cost estimates, context package ids, model call ids, and
+  tenant/capability linkage.
+- Operators may assume the hardened Audit Governance service-token guard applies
+  because the canonical `/api/v1/savings/*` routes are protected, while Context
+  API re-exposes the same data through unauthenticated compatibility paths.
+
+Required fixes:
+
+- Add `X-Service-Token`/IAM service-token validation to Context API
+  `/metrics/dashboard` and `/sessions/{id}/metrics`, plus explicit tenant and
+  economics-read authorization checks before proxying.
+- Forward `AUDIT_GOV_SERVICE_TOKEN` or a scoped Audit Governance read token to
+  `/api/v1/savings/*`; fail closed with a clear `AUDIT_GOV_AUTH_MISSING` error
+  when the token is absent.
+- Filter dashboard and session metrics by authorized tenant/capability/run
+  context. Do not expose global aggregates through Context API unless the caller
+  has an explicit platform-audit permission.
+- Consider removing these compatibility routes and routing all UI reads through
+  the existing Platform Web/Audit Governance proxy that already injects the audit
+  token server-side.
+- Add tests for missing caller token, missing audit-gov token, wrong tenant
+  session id, auditor read, run-owner read, relaxed Audit Governance mode, and
+  successful authorized proxying with the service token attached.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
