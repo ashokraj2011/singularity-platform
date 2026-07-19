@@ -17256,6 +17256,72 @@ Required fixes:
   mutation paths. Include direct attempts to decide approvals, mutate budgets,
   search logs, run sweeps, and read global cost/savings data.
 
+### 354. Platform access-key inventory is visible to any verified user
+
+Evidence:
+
+- `agent-and-tools/web/src/app/api/platform-access-keys/route.ts` exposes
+  `GET /api/platform-access-keys`.
+- The route only calls `requireVerifiedCallerBearer(request, "Platform access
+  keys")`. That helper verifies the bearer token identifies a user, but it does
+  not check operations-admin, security-admin, tenant-admin, auditor, or
+  deployment-owner permissions.
+- The response intentionally avoids raw secret values, but returns detailed
+  deployment metadata: `productionClass`, `productionSignal`, `APP_ENV`,
+  `SINGULARITY_ENV`, total configured counts, configured visible-to-web counts,
+  missing required counts, default/weak counts, production blocker counts, and
+  `providerCredentialsPresent`.
+- Each key row includes the credential id, label, owner service, kind, exact
+  `envKeys`, scope, consumers, rotation guidance, `configured`, the specific
+  `configuredEnvKey`, `requiredNow`, `status`, `severity`, and a message such as
+  missing/default/weak/ready.
+- The inventory covers high-value deployment boundaries including
+  `IAM_BOOTSTRAP_PASSWORD`, `WORKGRAPH_PROXY_SERVICE_TOKEN`,
+  `PROMPT_COMPOSER_SERVICE_TOKEN`, `MCP_BEARER_TOKEN`,
+  `LLM_GATEWAY_BEARER`, `CONTEXT_FABRIC_SERVICE_TOKEN`,
+  `AUDIT_GOV_SERVICE_TOKEN`, `JWT_SECRET`, and GitHub provider token env names.
+- `AccessKeysConsole` fetches the endpoint with normal browser auth headers and
+  refreshes it every 15 seconds. The page being under an advanced Operations menu
+  is only navigation hygiene; it is not an authorization boundary.
+- Searches did not find an existing audit finding for `/api/platform-access-keys`
+  or this secret-inventory disclosure pattern.
+
+Impact:
+
+- A low-privilege authenticated user can enumerate the platform's secret
+  contract, learn which services are wired, identify missing or weak deployment
+  controls, and see which exact environment variable name is active for a given
+  credential class.
+- `providerCredentialsPresent` and configured key counts reveal whether GitHub or
+  other provider credentials are present on the deployment, even though the raw
+  token is not returned.
+- Attack planning becomes easier: the endpoint tells an attacker which trust
+  boundary to target, whether defaults/weak values are likely, which services have
+  server-side tokens, and whether the deployment is production-class.
+- Multi-tenant or shared enterprise users may see infrastructure posture that is
+  unrelated to their tenant or capability. This is especially risky for managed
+  deployments where most users should not know global token readiness.
+- Operators may mistake "rawSecretsReturned: false" for sufficient protection,
+  while secret existence, weakness/default classification, and configured env-key
+  names are still sensitive operational metadata.
+
+Required fixes:
+
+- Gate `/api/platform-access-keys` behind an explicit permission such as
+  `platform:secrets:read_status` or `operations:security:view`, with tenant/admin
+  scoping where appropriate.
+- Split the response by audience. General users should only see a coarse
+  prerequisite status for actions they are trying to launch; security admins can
+  see configured/missing/weak status; deployment owners can see env var names.
+- Remove `configuredEnvKey`, `providerCredentialsPresent`, production blocker
+  counts, and exact env-key lists from non-admin responses.
+- Add audit events for access-key inventory reads, including caller, tenant,
+  permission decision, and whether sensitive fields were included.
+- Add tests for viewer, workflow designer, tenant admin, security admin, platform
+  admin, and cross-tenant callers. Verify raw values are never returned and that
+  sensitive inventory fields are redacted unless the caller has the explicit
+  deployment/security permission.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
