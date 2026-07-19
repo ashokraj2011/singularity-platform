@@ -24,6 +24,8 @@ import { resolveDirectLlmTools } from './direct-llm-tools'
 import type { ComposeArtifact } from '../../../../lib/prompt-composer/client'
 import { validateDirectLlmConfig, type CanonicalDirectLlmConfig } from './direct-llm-config'
 import { resolveLoopStrategyVersion, getLoopStrategy, type LoopStrategyDefinition } from '../../loop-strategy.service'
+import { config } from '../../../../config'
+import { assertCanRequestApproval, validateApprovalRouting } from '../../../../lib/permissions/approval'
 
 type DirectLlmOutput = {
   directLlmFields?: Record<string, unknown> | null
@@ -1232,9 +1234,25 @@ async function ensureDirectLlmApprovalRequest(args: {
   const teamId = cfgStringFromRecord(approvalConfig, 'teamId')
   const roleKey = cfgStringFromRecord(approvalConfig, 'roleKey')
   const skillKey = cfgStringFromRecord(approvalConfig, 'skillKey')
+  const workEvent = isRecord(args.output.directLlm.workEvent) ? args.output.directLlm.workEvent : {}
   const capabilityId = cfgStringFromRecord(approvalConfig, 'capabilityId', 'governingCapabilityId')
+    ?? cfgStringFromRecord(workEvent, 'capabilityId')
   const assignmentMode = cfgStringFromRecord(approvalConfig, 'assignmentMode')
     ?? (assignedToId ? 'DIRECT_USER' : teamId ? 'TEAM_QUEUE' : roleKey ? 'ROLE_BASED' : skillKey ? 'SKILL_BASED' : undefined)
+  const routing = { assignedToId, assignmentMode, teamId, roleKey, skillKey, capabilityId }
+  try {
+    validateApprovalRouting(routing)
+  } catch (error) {
+    throw new Error(`Direct LLM review has invalid human routing: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  const requestedById = args.actorId ?? args.instance.createdById
+  if (!requestedById) throw new Error('Direct LLM review requires a requester identity before creating an approval request')
+  await assertCanRequestApproval(
+    requestedById,
+    capabilityId,
+    config.APPROVAL_WORKFLOW_PERMISSION,
+    args.instance.tenantId ?? undefined,
+  )
 
   const created = await withTenantDbTransaction(prisma, (tx) => tx.approvalRequest.create({
     data: {
@@ -1243,7 +1261,7 @@ async function ensureDirectLlmApprovalRequest(args: {
       nodeId: args.node.id,
       subjectType: 'DirectLlmTask',
       subjectId: args.node.id,
-      requestedById: args.actorId ?? args.instance.createdById ?? 'system',
+      requestedById,
       assignedToId,
       assignmentMode,
       teamId,

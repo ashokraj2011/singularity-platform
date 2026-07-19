@@ -412,6 +412,13 @@ Required fixes:
 
 ### 13. Direct LLM review requests bypass approval-request authorization
 
+Progress note 2026-07-19:
+
+- `DirectLlmTaskExecutor` now validates approval routing and calls
+  `assertCanRequestApproval(...)` before persisting a `DirectLlmTask`
+  `ApprovalRequest`. Missing requester identity or governed capability scope now
+  fails before a pending approval row is created.
+
 Evidence:
 
 - `ApprovalExecutor.ts` validates approval routing before creating an approval
