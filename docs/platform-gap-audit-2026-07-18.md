@@ -17814,6 +17814,73 @@ Required fixes:
   no-instance strict mode, unauthorized capability, authorized workflow node, and
   debug-only standalone invocation.
 
+### 363. Workflow Tool Request nodes bypass the ToolGateway policy and approval gate
+
+Evidence:
+
+- The public tool-run request path goes through `requestToolRun(...)` in
+  `ToolGatewayService.ts`. That helper loads the tool, checks `isActive`,
+  evaluates `evaluateToolPolicy(...)`, writes `REJECTED` when policy denies, and
+  writes `PENDING_APPROVAL` when policy or `tool.requiresApproval` requires a
+  human gate.
+- `tools.router.ts` calls this gateway helper from
+  `POST /api/tools/:id/request-run`.
+- Workflow runtime does not use that same gateway for `TOOL_REQUEST` nodes.
+  `WorkflowRuntime.ts` dispatches `TOOL_REQUEST` to
+  `activateToolRequest(node, instance)`.
+- `ToolRequestExecutor.ts` directly creates a `ToolRun` row with `toolId`,
+  `actionId`, `instanceId`, `inputPayload`, `requestedById`, and an idempotency
+  key. It does not load the tool, check `tool.isActive`, call
+  `evaluateToolPolicy(...)`, inspect `ToolPermission`, or set
+  `PENDING_APPROVAL` when `tool.requiresApproval` is true.
+- The direct row create omits `tenantId` and relies only on the surrounding
+  tenant DB context, while `requestToolRun(...)` explicitly sets
+  `tenantId: currentTenantIdForDb()`.
+- Compensation has the same shape: `WorkflowRuntime.ts` creates a `ToolRun`
+  directly for `compensationConfig.type === 'tool_request'` instead of using
+  `requestToolRun(...)`.
+- The emitted outbox events from these direct paths are generic
+  `ToolRequested` records and do not carry the policy decision or
+  `needsApproval` flag that the gateway request path emits.
+- Existing ToolRun findings cover approval-route semantics, pending approval
+  queue visibility, double execution rows, and mutable local tool actions. They
+  do not cover workflow node activation bypassing the ToolGateway policy entry
+  point.
+
+Impact:
+
+- A tool marked `requiresApproval` can be requested by workflow runtime as a
+  plain `REQUESTED` row instead of entering the approval queue, so downstream
+  operators and runners see different governance state depending on how the run
+  was created.
+- Tool deny policies in `PolicyEngine` are not applied to Tool Request workflow
+  nodes or compensation tool requests.
+- Inactive or stale tool snapshots can still be referenced by workflow node
+  config and turned into ToolRun rows.
+- Compensation can create side-effecting tool requests during rollback without
+  the same approval/policy envelope used for normal public tool-run requests.
+- Audit/outbox evidence cannot prove which policy version, approval requirement,
+  tool permission, or tenant write context authorized the workflow-created
+  ToolRun.
+
+Required fixes:
+
+- Make `activateToolRequest(...)` and compensation tool requests call
+  `requestToolRun(...)` or a shared lower-level gateway command that enforces
+  tool active status, action validation, tenant assignment, policy, approval,
+  and idempotency consistently.
+- Add workflow/capability context to the gateway decision: workflow instance id,
+  node id, capability id, actor id, authorization snapshot id, trace id, and
+  source path (`api`, `workflow_node`, or `compensation`).
+- Persist policy decision id/version, approval requirement, and tool/action
+  contract hash on each `ToolRun`.
+- If a Tool Request node is blocked on approval, mark the workflow node and run
+  cockpit with a clear pending-approval state instead of silently leaving a
+  generic requested row.
+- Add tests proving `TOOL_REQUEST` nodes respect `tool.requiresApproval`,
+  explicit deny policy, inactive tools, invalid actions, compensation policy, and
+  tenant assignment exactly like `/api/tools/:id/request-run`.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
