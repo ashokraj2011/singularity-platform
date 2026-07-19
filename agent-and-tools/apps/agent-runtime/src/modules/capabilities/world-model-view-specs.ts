@@ -1,10 +1,15 @@
 /**
- * Per-view content specifications — PURE data, no I/O.
+ * Per-view content specifications — the build prompts, as data.
  *
  * Each spec says what one view must contain, who reads it, how long it may be,
  * and which grounding inputs it needs. The builder turns a spec into an LLM
  * system prompt; nothing else encodes view content, so changing what (say) the
  * testing view covers is a one-object edit here.
+ *
+ * The spec VALUES below are pure. The module also reads an operator override
+ * (see loadViewSpecsWithMeta) so prompt tuning does not require a deploy —
+ * hardcoding them made the edit loop a release cycle, which is the wrong loop
+ * for prompt work.
  *
  * Two rules shape every spec:
  *  - Views are written for ONE audience. The business view does not explain
@@ -14,6 +19,8 @@
  *    tokens it took to build, so the cap is stated to the model up front.
  */
 
+import fs from "node:fs";
+import path from "node:path";
 import { isWorldModelViewKind, requiresDomainKey, viewKey, type WorldModelViewKind } from "./world-model-views.types";
 
 /** Which grounding inputs a view needs. Keeps repo-less capabilities honest. */
@@ -287,7 +294,7 @@ const TASK_GUIDE: ViewSpec = {
     "This is the smallest sufficient grounding package for ONE task. Ruthlessly exclude anything the task does not touch — a task guide that restates the development view has failed.",
 };
 
-const SPECS: Record<WorldModelViewKind, ViewSpec> = {
+export const DEFAULT_SPECS: Record<WorldModelViewKind, ViewSpec> = {
   core_summary: CORE,
   business: BUSINESS,
   architecture: ARCHITECTURE,
@@ -300,12 +307,143 @@ const SPECS: Record<WorldModelViewKind, ViewSpec> = {
   task_guide: TASK_GUIDE,
 };
 
+/**
+ * Operator override of the build prompts.
+ *
+ * The specs ARE the prompt: sections become the required headings, minWords /
+ * maxWords become the stated budget, emphasis becomes the per-view instruction.
+ * Hardcoding them meant that tuning what a view says -- or even reading what it
+ * was told -- required a deploy, which is the wrong loop for prompt work.
+ *
+ * Overrides are a PARTIAL, DEEP merge per kind. Restating all ten specs to widen
+ * one word cap is exactly the friction this exists to remove, so
+ * `{"testing": {"maxWords": 4000}}` is a complete and valid override.
+ *
+ * Mirrors agent-catalog-config: compiled default, env JSON or file, memo cache
+ * keyed on the source, and degrade-to-default with a warning rather than a throw.
+ * A bad override on a prompt config must not stop a service booting.
+ */
+export type LoadedViewSpecs = {
+  specs: Record<WorldModelViewKind, ViewSpec>;
+  source: string;
+  warnings: string[];
+};
+
+let cachedSpecs: LoadedViewSpecs | null = null;
+let cachedSpecsKey = "";
+
+function specsCacheKey(): string {
+  const inline = process.env.WORLD_MODEL_VIEW_SPECS_JSON?.trim() ?? "";
+  const filePath = process.env.WORLD_MODEL_VIEW_SPECS_PATH?.trim() ?? "";
+  if (inline) return `inline:${inline.length}:${inline.slice(0, 64)}`;
+  if (!filePath) return "default";
+  const resolved = path.resolve(filePath);
+  try {
+    return `${resolved}:${fs.statSync(resolved).mtimeMs}`;
+  } catch {
+    return `${resolved}:missing`;
+  }
+}
+
+/** Apply one kind's overrides onto its default. Unknown fields are dropped, and
+ *  bad values keep the default rather than poisoning the whole spec. */
+function mergeSpec(base: ViewSpec, raw: unknown, kind: string, warnings: string[]): ViewSpec {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    warnings.push(`view spec override for "${kind}" must be an object; ignored`);
+    return base;
+  }
+  const over = raw as Record<string, unknown>;
+  const next: ViewSpec = { ...base };
+
+  if (typeof over.title === "string" && over.title.trim()) next.title = over.title.trim();
+  if (typeof over.audience === "string" && over.audience.trim()) next.audience = over.audience.trim();
+  if (typeof over.emphasis === "string") next.emphasis = over.emphasis.trim() || undefined;
+
+  if (Array.isArray(over.sections)) {
+    const sections = over.sections.filter((v): v is string => typeof v === "string" && v.trim().length > 0).map((v) => v.trim());
+    if (sections.length) next.sections = sections;
+    else warnings.push(`view spec "${kind}": sections override was empty; kept the default`);
+  }
+
+  if (Array.isArray(over.grounding)) {
+    const known = new Set(base.grounding.concat(DEFAULT_SPECS.architecture.grounding, DEFAULT_SPECS.business.grounding));
+    const grounding = over.grounding.filter((v): v is GroundingSelector => typeof v === "string" && known.has(v as GroundingSelector));
+    if (grounding.length) next.grounding = grounding;
+    else warnings.push(`view spec "${kind}": grounding override named no known selectors; kept the default`);
+  }
+
+  const min = typeof over.minWords === "number" ? over.minWords : undefined;
+  const max = typeof over.maxWords === "number" ? over.maxWords : undefined;
+  const nextMin = Number.isFinite(min) && (min as number) > 0 ? Math.floor(min as number) : next.minWords;
+  const nextMax = Number.isFinite(max) && (max as number) > 0 ? Math.floor(max as number) : next.maxWords;
+  // A range where the floor exceeds the ceiling would tell the model to write
+  // both more and less than a number, so the pair is rejected together.
+  if (nextMax > nextMin) {
+    next.minWords = nextMin;
+    next.maxWords = nextMax;
+  } else if (min !== undefined || max !== undefined) {
+    warnings.push(`view spec "${kind}": maxWords must exceed minWords; kept the default range`);
+  }
+
+  return next;
+}
+
+export function parseViewSpecs(raw: unknown, label: string): LoadedViewSpecs {
+  if (raw === null || raw === undefined) return { specs: DEFAULT_SPECS, source: "default", warnings: [] };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { specs: DEFAULT_SPECS, source: "degraded-default", warnings: [`${label} must be a JSON object keyed by view kind; using the built-in specs`] };
+  }
+  const warnings: string[] = [];
+  const specs = { ...DEFAULT_SPECS };
+  for (const [kind, over] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isWorldModelViewKind(kind)) {
+      warnings.push(`unknown view kind "${kind}" in ${label}; ignored`);
+      continue;
+    }
+    specs[kind] = mergeSpec(DEFAULT_SPECS[kind], over, kind, warnings);
+  }
+  return { specs, source: label, warnings };
+}
+
+export function loadViewSpecsWithMeta(): LoadedViewSpecs {
+  const key = specsCacheKey();
+  if (cachedSpecs && key === cachedSpecsKey) return cachedSpecs;
+  cachedSpecsKey = key;
+  try {
+    const inline = process.env.WORLD_MODEL_VIEW_SPECS_JSON?.trim();
+    if (inline) cachedSpecs = parseViewSpecs(JSON.parse(inline), "WORLD_MODEL_VIEW_SPECS_JSON");
+    else {
+      const filePath = process.env.WORLD_MODEL_VIEW_SPECS_PATH?.trim();
+      if (filePath) {
+        const resolved = path.resolve(filePath);
+        cachedSpecs = parseViewSpecs(JSON.parse(fs.readFileSync(resolved, "utf8")), `WORLD_MODEL_VIEW_SPECS_PATH (${resolved})`);
+      } else {
+        cachedSpecs = { specs: DEFAULT_SPECS, source: "default", warnings: [] };
+      }
+    }
+  } catch (err) {
+    cachedSpecs = {
+      specs: DEFAULT_SPECS,
+      source: "degraded-default",
+      warnings: [`ConfigurationError: failed to read view-spec overrides; using the built-in specs. ${err instanceof Error ? err.message : String(err)}`],
+    };
+  }
+  for (const warning of cachedSpecs.warnings) console.warn(`[world-model-view-specs] ${warning}`);
+  return cachedSpecs;
+}
+
+/** Test-only: drop the memoized specs so the next read re-consults the environment. */
+export function resetViewSpecsCache(): void {
+  cachedSpecs = null;
+  cachedSpecsKey = "";
+}
+
 export function viewSpec(kind: WorldModelViewKind): ViewSpec {
-  return SPECS[kind];
+  return loadViewSpecsWithMeta().specs[kind];
 }
 
 export function allViewSpecs(): ViewSpec[] {
-  return Object.values(SPECS);
+  return Object.values(loadViewSpecsWithMeta().specs);
 }
 
 /** The default "auto" build set: the shared core plus the seven role views. */

@@ -35,6 +35,10 @@ capabilityRoutes.use(requireAuth);
 
 capabilityRoutes.post("/bootstrap", validate(bootstrapCapabilitySchema), capabilityController.bootstrap);
 capabilityRoutes.get("/bootstrap-agent-catalog", capabilityController.bootstrapAgentCatalog);
+// The world-model view build prompts, as effectively configured. Platform-wide,
+// so it sits above the /:id routes -- registered here it cannot be captured by
+// "/:id" treating "world-model" as a capability id.
+capabilityRoutes.get("/world-model/view-specs", capabilityController.getWorldModelViewSpecs);
 capabilityRoutes.post("/", validate(createCapabilitySchema), capabilityController.create);
 capabilityRoutes.get("/", capabilityController.list);
 capabilityRoutes.get("/:id/readiness", capabilityController.readiness);
