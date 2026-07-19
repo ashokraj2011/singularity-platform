@@ -19337,6 +19337,51 @@ Required fixes:
   accept-after-reject, reject-after-accept, stale artifact reads, and audit
   reconstruction.
 
+### 392. Board Moment detection can starve after a large no-moment event prefix
+
+Evidence:
+
+- `detectAndNarrate(...)` finds the latest persisted moment by ordering
+  `BoardMoment` rows by `eventSeqEnd`.
+- It sets `sinceSeq` to that latest moment's `eventSeqEnd`, or `0` when no moment
+  exists.
+- It then reads board events with `eventSeq > sinceSeq`, ordered ascending, but
+  hard-caps the scan with `take: 5000`.
+- The detector runs only against those fetched rows and returns
+  `{ detected: detected.length, created }`.
+- If `detectMoments(...)` finds no moment inside that first 5,000-event window,
+  no `BoardMoment` is created and therefore no `eventSeqEnd` cursor advances.
+- The next detection run starts from the same `sinceSeq` and re-reads the same
+  first 5,000 rows, never reaching a later event that might actually contain a
+  burst, source addition, phase boundary, or stall signal.
+- There is no separate detector scan checkpoint, processed-through sequence,
+  empty-window marker, or per-detector cursor that advances when no moment is
+  emitted.
+
+Impact:
+
+- A long board session can permanently hide later important moments if the first
+  scanned page after the last moment is quiet or below threshold.
+- Adding a background worker would not fix this by itself; the worker would keep
+  looping over the same unproductive prefix.
+- Operators have no visible detector lag/cursor explaining that moment detection
+  is stuck before the current branch head.
+- Source-added, phase-boundary, and decision evidence can exist in the board event
+  log but never become timeline evidence because an earlier no-moment page blocks
+  progress.
+
+Required fixes:
+
+- Store detector scan cursors separately from emitted moment rows, scoped by
+  tenant, board, branch, detector profile/version, and processed-through event
+  sequence.
+- Advance the scan cursor after evaluating a page even when no moments are
+  emitted, while preserving enough overlap/lookback for detectors that need
+  cross-page context.
+- Return detector lag and processed-through sequence in Operations/UI readiness.
+- Add tests for no-moment first page, moment after event 5,000, cross-page burst,
+  source event after a quiet prefix, and replay under a new detector profile.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
