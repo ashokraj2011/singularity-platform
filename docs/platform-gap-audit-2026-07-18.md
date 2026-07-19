@@ -18670,6 +18670,58 @@ Required fixes:
 - Add IDOR tests for answer, dismiss, concede, reopen, list, and summary routes
   using verdict ids and board ids from another tenant/capability.
 
+### 378. Board verdict creation does not validate targets and uses a global anti-nag key
+
+Evidence:
+
+- `VERDICT_TARGET_TYPES` allows `BOARD_OBJECT`, `CLAIM`, `REQUIREMENT`,
+  `CONCEPT_CARD`, `DECISION`, and `MOMENT`, but `verdictBaseSchema` validates
+  only that `targetRef` is a non-empty string up to 200 characters.
+- `createVerdict(...)` writes `boardId`, `targetType`, and `targetRef` directly
+  to `agentVerdict` without verifying that the board exists in the current tenant
+  or that the referenced board object, claim, requirement, concept card,
+  decision, or moment belongs to that board/project/capability.
+- The friendly anti-nag pre-check looks for an open verdict using only
+  `{ targetType, targetRef, agentRole, stance, status: 'OPEN' }`; it omits
+  `tenantId` and `boardId`.
+- The M100 migration creates the race-safe partial unique index
+  `agent_verdicts_open_unique` on only `"targetType", "targetRef", "agentRole",
+  "stance"` where status is `OPEN`; it also omits tenant and board scope.
+- `AgentVerdict` has `tenantId` and `boardId`, but `targetRef` is not a foreign
+  key and there is no normalized target table tying each verdict to the target
+  object's current branch, project, capability, or source revision.
+- The creation audit/outbox payload includes board id, stance, agent role, target
+  type/ref, but not a validated target resource, target branch/head, or decision
+  proving the target existed and was in scope.
+
+Impact:
+
+- A verdict can be opened against a stale, typoed, nonexistent, wrong-board, or
+  wrong-project target id and still appear as governance evidence.
+- One tenant or board can block another from opening a legitimate verdict on the
+  same local-looking target id because both the pre-check and unique index are
+  global by target ref.
+- Gate summaries and downstream business-alignment projections can count verdicts
+  whose `targetRef` does not belong to the board or initiative currently being
+  governed.
+- Auditors cannot reconstruct which exact artifact/revision/branch the verdict
+  challenged or endorsed because the target relation is a free-form string.
+
+Required fixes:
+
+- Add target-resolution logic per `targetType` that verifies existence,
+  tenant/project/capability ownership, board/branch membership, and current
+  revision before inserting a verdict.
+- Store normalized target metadata such as `targetResourceId`, `targetRevision`,
+  `targetBranchId`, `projectId`, and `capabilityId` or introduce a first-class
+  verdict-target table.
+- Scope the open-verdict anti-nag pre-check and partial unique index by
+  `tenantId` and `boardId` or by normalized target resource identity.
+- Reject verdict creation when the target is stale, archived, unmerged, or not in
+  the actor's authorized board/capability scope.
+- Add tests for nonexistent target refs, same target ref on two boards, same
+  target ref across tenants, stale branch targets, and target-ref collision races.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
