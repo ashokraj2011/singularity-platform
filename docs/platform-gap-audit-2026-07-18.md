@@ -19672,6 +19672,57 @@ Required fixes:
   attempts, reveal after a private connector, reload/replay with dangling
   connector ids, and branch merge/diff behavior for rejected private endpoints.
 
+### 399. Event Horizon hides platform-context degradation inside the model prompt
+
+Evidence:
+
+- `loadPlatformContext()` fetches `platform.context.singularity` from Prompt
+  Composer, but catches every failure and returns a minimal `{ name,
+  warning }` object instead of failing the request or marking the response as
+  degraded.
+- The fallback comment says Event Horizon "still answers" while losing the
+  platform overview, so a cold-start or Prompt Composer outage can produce a
+  normal-looking chat answer with incomplete product map context.
+- The chat task includes `Singularity platform map JSON:
+  ${JSON.stringify(platformContext)}`, which means the fallback warning is passed
+  only as prompt content to the LLM.
+- The HTTP response exposes `response`, `status`, `correlation`, `usage`, and
+  `result.warnings`; it does not add an explicit `platformContextDegraded`
+  flag, missing system-prompt key, upstream error code, or operator-visible
+  degraded reason when `loadPlatformContext()` falls back.
+- `EventHorizonChat.tsx` renders only messages, action chips, and a generic
+  "routing through Context Fabric and MCP" thinking state; it has no UI state
+  for platform-map degradation or Prompt Composer unavailability.
+- Existing audit findings cover Event Horizon capability authorization and
+  quick-action catalog authorization, but searches found no finding that covers
+  this specific hidden platform-context fallback.
+
+Impact:
+
+- Users can receive confident assistant guidance while the assistant lacks the
+  curated platform map it is supposed to use to explain screens, services,
+  ownership, and next actions.
+- Operations teams cannot distinguish a healthy answer from a degraded answer
+  unless the model happens to repeat the warning from prompt context.
+- Readiness and audit evidence can overstate Event Horizon health: Context
+  Fabric and the model can be up while Prompt Composer context is missing.
+- This weakens trust in the embedded assistant exactly on setup/debug pages,
+  where users ask what is broken and need crisp dependency status.
+
+Required fixes:
+
+- Return structured degradation metadata from `loadPlatformContext()` such as
+  `platformContextStatus`, `missingPromptKey`, `upstream`, and `errorCode`, and
+  copy it into the `/api/event-horizon/chat` response warnings.
+- Render a visible degraded banner or inline assistant notice in
+  `EventHorizonChat.tsx` when the platform map or system prompt is unavailable.
+- Feed the same status into Operations readiness so Prompt Composer context
+  seed failures are visible outside the chat.
+- In production/strict mode, consider failing closed or requiring explicit
+  user acknowledgement before answering without the platform context.
+- Add tests for missing system prompt, Prompt Composer outage, degraded response
+  shape, UI warning rendering, and strict-mode fail-closed behavior.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
