@@ -2,12 +2,14 @@
 
 import { useState } from "react";
 import { usePathname } from "next/navigation";
-import { PenLine, Plus, Send, FileText, Library, Bot, Sparkles } from "lucide-react";
+import { PenLine, Plus, Send, FileText, Library, Bot, Sparkles, Eye } from "lucide-react";
 import { workgraphFetch } from "@/lib/workgraph";
 import { SynthesisShell } from "@/components/synthesis/SynthesisShell";
 import { NoProjectSelected, ProjectPicker, useSelectedProjectId } from "@/components/synthesis/ProjectPicker";
 import { useSyn } from "@/components/synthesis/hooks/useSynthesis";
 import { EmptyState, StageHeader, SynButton, SynChip, SynError, SynSkeleton, MonoMeta } from "@/components/synthesis/ui/kit";
+import { DocumentEditor } from "@/components/synthesis/working-session/DocumentEditor";
+import { ProposalReview } from "@/components/synthesis/working-session/ProposalReview";
 
 /**
  * Synthesis — Working Session. The agentic co-authoring surface: tag sources (Context
@@ -168,6 +170,7 @@ function ContextLibrary({ workspaceId }: { workspaceId: string }) {
 function WorkingArtifact({ workspaceId }: { workspaceId: string }) {
   const docs = useSyn<{ items: Doc[] }>(`/synthesis/documents?workspaceId=${encodeURIComponent(workspaceId)}`);
   const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState<string | null>(null);
 
   async function newDoc() {
     setBusy(true);
@@ -176,10 +179,13 @@ function WorkingArtifact({ workspaceId }: { workspaceId: string }) {
       const ws = await workgraphFetch<Workspace & { specificationProjectId?: string }>(`/synthesis/workspaces/${workspaceId}`);
       const projectId = (ws as { specificationProjectId?: string }).specificationProjectId;
       if (!projectId) return;
-      await workgraphFetch(`/synthesis/documents`, { method: "POST", body: JSON.stringify({ specificationProjectId: projectId, workspaceId, docType: "NARRATIVE", title: "Untitled document" }) });
+      const d = await workgraphFetch<Doc>(`/synthesis/documents`, { method: "POST", body: JSON.stringify({ specificationProjectId: projectId, workspaceId, docType: "NARRATIVE", title: "Untitled document" }) });
       await docs.mutate();
+      setSelected(d.id);
     } finally { setBusy(false); }
   }
+
+  if (selected) return <DocumentEditor documentId={selected} onBack={() => { setSelected(null); void docs.mutate(); }} />;
 
   const items = docs.data?.items ?? [];
   return (
@@ -188,14 +194,17 @@ function WorkingArtifact({ workspaceId }: { workspaceId: string }) {
       {docs.isLoading ? <SynSkeleton rows={4} /> : items.length === 0 ? (
         <EmptyState icon={FileText} title="No documents" description="Draft a PRD, brief, or readout — or ask an agent to." />
       ) : items.map((d) => (
-        <div key={d.id} className="rounded-lg bg-surface-container px-3 py-2.5">
-          <div className="flex items-center gap-2"><SynChip tone="tertiary">{d.docType}</SynChip><SynChip tone="neutral">{d.status}</SynChip></div>
+        <button key={d.id} type="button" onClick={() => setSelected(d.id)} className="block w-full rounded-lg bg-surface-container px-3 py-2.5 text-left hover:bg-surface-container-high">
+          <div className="flex items-center gap-2"><SynChip tone="tertiary">{d.docType}</SynChip><SynChip tone="neutral">{d.status.toLowerCase()}</SynChip></div>
           <p className="mt-1.5 text-sm font-semibold text-on-surface">{d.title}</p>
-        </div>
+        </button>
       ))}
     </div>
   );
 }
+
+interface ManifestSummary { tokenEstimate: number; pinnedCount: number; followingCount: number; unresolvedCount: number }
+interface ManifestResp { manifest: { id: string; tokenEstimate?: number; pinnedCount?: number; followingCount?: number; summary?: ManifestSummary } }
 
 function AgentConversation({ workspaceId, threadId }: { workspaceId: string; threadId: string }) {
   const messages = useSyn<{ items: WMessage[] }>(`/synthesis/workspaces/${workspaceId}/threads/${threadId}/messages`);
@@ -203,34 +212,57 @@ function AgentConversation({ workspaceId, threadId }: { workspaceId: string; thr
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [manifest, setManifest] = useState<ManifestResp["manifest"] | null>(null);
+
+  async function preview() {
+    setError(null);
+    try {
+      const r = await workgraphFetch<ManifestResp>(`/synthesis/workspaces/${workspaceId}/threads/${threadId}/manifest`, { method: "POST" });
+      setManifest(r.manifest);
+    } catch (e) { setError(msg(e)); }
+  }
 
   async function send() {
     if (!text.trim()) return;
     setBusy(true); setError(null);
     try {
       await workgraphFetch(`/synthesis/workspaces/${workspaceId}/threads/${threadId}/agent-turn`, { method: "POST", body: JSON.stringify({ role, message: text.trim() }) });
-      setText(""); await messages.mutate();
+      setText(""); setManifest(null); await messages.mutate();
     } catch (e) { setError(msg(e)); } finally { setBusy(false); }
   }
 
   const items = messages.data?.items ?? [];
+  const tok = manifest ? (manifest.tokenEstimate ?? manifest.summary?.tokenEstimate ?? 0) : 0;
+  const pinned = manifest ? (manifest.pinnedCount ?? manifest.summary?.pinnedCount ?? 0) : 0;
+  const following = manifest ? (manifest.followingCount ?? manifest.summary?.followingCount ?? 0) : 0;
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 space-y-2.5 overflow-y-auto">
         {messages.isLoading ? <SynSkeleton rows={3} /> : items.length === 0 ? (
           <p className="text-xs text-on-surface-variant px-1 py-4">Ask an agent to draft, curate evidence, or refine requirements. Every material change lands as a reviewable proposal.</p>
         ) : items.map((m) => (
-          <div key={m.id} className={["rounded-lg px-3 py-2", m.authorType === "AGENT" ? "bg-secondary-container/60" : m.authorType === "SYSTEM" ? "bg-error-container/40" : "bg-surface-container"].join(" ")}>
-            <div className="flex items-center gap-2 mb-1"><MonoMeta>{m.agentRole ?? m.authorType}</MonoMeta>{m.proposalId ? <SynChip tone="tertiary">proposal</SynChip> : null}</div>
-            <p className="text-xs text-on-surface whitespace-pre-wrap">{String((m.content as { text?: string; error?: string }).text ?? (m.content as { error?: string }).error ?? "")}</p>
+          <div key={m.id}>
+            <div className={["rounded-lg px-3 py-2", m.authorType === "AGENT" ? "bg-secondary-container/60" : m.authorType === "SYSTEM" ? "bg-error-container/40" : "bg-surface-container"].join(" ")}>
+              <div className="flex items-center gap-2 mb-1"><MonoMeta>{m.agentRole ?? m.authorType}</MonoMeta>{m.proposalId ? <SynChip tone="tertiary">proposal</SynChip> : null}</div>
+              <p className="text-xs text-on-surface whitespace-pre-wrap">{String((m.content as { text?: string; error?: string }).text ?? (m.content as { error?: string }).error ?? "")}</p>
+            </div>
+            {m.proposalId ? <ProposalReview proposalId={m.proposalId} /> : null}
           </div>
         ))}
       </div>
       {error ? <div className="mt-2"><SynError message={error} /></div> : null}
+      {manifest ? (
+        <div className="mt-2 flex items-center gap-3 rounded-lg bg-surface-container px-3 py-2 text-[11px] text-on-surface-variant">
+          <MonoMeta>manifest</MonoMeta><span>~{tok} tok</span><span>{pinned} pinned</span><span>{following} following</span>
+        </div>
+      ) : null}
       <div className="mt-3 border-t border-outline-variant pt-3 space-y-2">
-        <select value={role} onChange={(e) => setRole(e.target.value)} className="h-8 w-full rounded-lg bg-surface-container text-on-surface text-xs px-2 border border-outline-variant">
-          {AGENTS.map((a) => <option key={a.role} value={a.role}>{a.label}</option>)}
-        </select>
+        <div className="flex items-center gap-1.5">
+          <select value={role} onChange={(e) => setRole(e.target.value)} className="h-8 flex-1 rounded-lg bg-surface-container text-on-surface text-xs px-2 border border-outline-variant">
+            {AGENTS.map((a) => <option key={a.role} value={a.role}>{a.label}</option>)}
+          </select>
+          <SynButton variant="ghost" icon={Eye} onClick={preview} disabled={busy} title="Preview the context manifest">Context</SynButton>
+        </div>
         <div className="flex gap-1.5">
           <textarea value={text} onChange={(e) => setText(e.target.value)} rows={2} placeholder="Ask the agent…" className="flex-1 min-w-0 rounded-lg bg-surface-container text-on-surface text-xs p-2 border border-outline-variant resize-none" />
           <SynButton icon={Send} onClick={send} disabled={busy || !text.trim()} />
