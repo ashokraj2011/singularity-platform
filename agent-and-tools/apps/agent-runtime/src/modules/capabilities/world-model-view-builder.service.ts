@@ -337,6 +337,37 @@ async function buildOne(capabilityId: string, req: ViewBuildRequest): Promise<Vi
   return { kind: req.kind, domainKey, status: "READY", warnings: parsed.warnings };
 }
 
+const WORKSPACE_EXPORT_TIMEOUT_MS = 15_000;
+
+/**
+ * Ask mcp-server to re-export .agent/world-model/ for this capability.
+ *
+ * Mirrors triggerCentralCodeGrounding: same base URL, same bearer, warn-only.
+ * Only meaningful for repo-backed capabilities — a capability with no repository
+ * has no workspace to export into — but the check lives on the mcp-server side,
+ * which knows whether a workspace exists at all.
+ */
+async function triggerWorkspaceExport(capabilityId: string): Promise<void> {
+  const base = (process.env.MCP_SERVER_URL ?? "").replace(/\/+$/, "");
+  if (!base || base === "mock") return;
+  try {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    const token = process.env.MCP_BEARER_TOKEN ?? "";
+    if (token) headers.authorization = `Bearer ${token}`;
+    const res = await fetch(`${base}/mcp/world-model/export`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ capability_id: capabilityId }),
+      signal: AbortSignal.timeout(WORKSPACE_EXPORT_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      console.warn(`[world-model.export] capabilityId=${capabilityId} /mcp/world-model/export HTTP ${res.status}`);
+    }
+  } catch (err) {
+    console.warn(`[world-model.export] capabilityId=${capabilityId} failed: ${(err as Error).message}`);
+  }
+}
+
 /**
  * Build the requested views, sequentially. Sequential is deliberate: the gateway
  * is a shared, rate-limited resource and a capability's views are not urgent.
@@ -359,6 +390,14 @@ export async function buildViews(capabilityId: string, requests: ViewBuildReques
     const outcomes: ViewBuildOutcome[] = [];
     for (const req of requests) {
       outcomes.push(await buildOne(capabilityId, req));
+    }
+    // Push the new views into the central workspace's .agent/world-model/ so
+    // filesystem-bound agents see them without waiting for the next re-ground.
+    // Fire-and-forget and warn-only: the views are already committed to the DB,
+    // which is the system of record, so a failed export costs a stale file copy
+    // and nothing more.
+    if (outcomes.some((o) => o.status === "READY")) {
+      void triggerWorkspaceExport(capabilityId);
     }
     return outcomes;
   })();
