@@ -19879,6 +19879,57 @@ Required fixes:
   period/different hash generation, retry after partial failure, and sponsor
   approval selection when a period already has a readout.
 
+### 403. Capability pickers can reintroduce runtime-only capabilities as usable memberships
+
+Evidence:
+
+- `/api/lookup/capabilities` returns Agent Runtime capabilities as selectable
+  rows and marks rows with no IAM match as `source: 'agent-runtime'` plus
+  `authorizationOverlay: 'unlinked'`.
+- `/api/lookup/me/memberships` first asks IAM for real memberships, but when the
+  caller is `is_super_admin` and IAM returns no membership rows, it fabricates
+  `capability_admin` membership rows from every IAM capability and then from
+  every Agent Runtime capability, including runtime-only capabilities.
+- The shared Workgraph `CapabilityPicker` says it filters to capabilities in the
+  user's memberships, but its filter includes every row where
+  `c.source === 'agent-runtime'` even when `filterToMemberships` is enabled.
+- The richer React Flow `NodeInspector` capability picker uses a different
+  filter and excludes rows not present in memberships, so two workflow authoring
+  surfaces can show different capability lists for the same actor.
+- Searched audit content already covers the broad IAM-vs-Agent-Runtime ownership
+  split, but not this UI/lookup path where runtime-only rows are turned back
+  into apparently selectable capability memberships.
+
+Impact:
+
+- Users can see and select runtime-only capabilities in some dropdowns even
+  though the IAM overlay is missing and downstream authorization may later fail
+  or behave differently.
+- A super-admin fallback can make synthetic capability ownership look like real
+  IAM membership evidence, hiding the fact that no tenant/team/capability grant
+  exists.
+- Different pickers can disagree about which capabilities the user can act on,
+  causing confusing launch, WorkItem, planner, and workflow-node failures.
+- Audit and support output can conflate "runtime metadata exists" with "the user
+  is authorized to operate this capability."
+
+Required fixes:
+
+- Treat `/lookup/me/memberships` as an IAM membership read model only; do not
+  synthesize memberships from Agent Runtime capability rows.
+- Return runtime-only capability rows as readiness metadata only, not as
+  membership or ownership evidence.
+- Remove the `c.source === 'agent-runtime'` bypass from membership-filtered
+  capability pickers, or require a deliberate admin/debug mode that is visibly
+  labeled as ungoverned.
+- Standardize all Platform Web and Workgraph pickers on one
+  `authorizedCapabilities` helper that intersects IAM authority with runtime
+  readiness and explains unlinked rows.
+- Add tests for member user, non-member user, super-admin with no memberships,
+  runtime-only capability, IAM-only capability, and linked capability behavior
+  across Synthesis, WorkItem creation, workflow designer, and Direct LLM node
+  pickers.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
