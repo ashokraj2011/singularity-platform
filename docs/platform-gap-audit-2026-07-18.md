@@ -19930,6 +19930,57 @@ Required fixes:
   across Synthesis, WorkItem creation, workflow designer, and Direct LLM node
   pickers.
 
+### 404. Prompt Workbench model comparison can use unapproved or gateway-default aliases
+
+Evidence:
+
+- `PromptWorkbenchPage` loads model rows from `/api/llm-settings`, derives up to
+  three ready/default aliases client-side in `defaultModelAliases(...)`, and
+  presents the comparison panel as "Model aliases."
+- The compare action sends `{ compose, modelAliases }` to
+  `/api/prompt-workbench/compare`; the client normally chooses aliases from the
+  rendered catalog, but the API body is caller-controlled.
+- `selectedAliases(...)` in the Prompt Workbench BFF trusts any array value by
+  stringifying, trimming, deduplicating, and returning it. If the array is empty it
+  falls back to `baseOverrides.modelAlias`, and if that is also empty it returns
+  `[""]`.
+- `compare/route.ts` iterates those aliases and forwards each composed request to
+  Prompt Composer. For the empty alias case, it deliberately omits
+  `modelOverrides.modelAlias`, causing the downstream provider/gateway default to
+  be used.
+- The route does not re-read the model catalog server-side, reject disabled or
+  unknown aliases, enforce tenant/user/capability model permissions, cap the
+  number of compared aliases, or record the resolved connection/catalog version
+  used for the estimate.
+
+Impact:
+
+- A user or script can compare arbitrary alias strings that were never shown in
+  the UI, including stale, privileged, cross-tenant, typoed, or future provider
+  aliases if a downstream service accepts them.
+- Empty selection can silently produce a "Gateway default" result, so token/cost
+  estimates may not represent any approved alias the user intentionally selected.
+- Prompt optimization recommendations, evidence, and model-selection decisions can
+  be based on a mutable gateway default rather than a pinned model catalog entry.
+- Enterprise model-governance controls are weakened because the comparison path is
+  an execution-adjacent prompt surface but lacks the same alias allowlist and
+  provenance contract expected from runtime nodes.
+
+Required fixes:
+
+- Validate Prompt Workbench compare requests server-side against the same
+  tenant/user/capability-aware model catalog shown by `/api/llm-settings`.
+- Reject empty alias comparison in enterprise mode unless an explicit approved
+  `gateway-default` catalog entry exists.
+- Cap alias count and reject disabled, unknown, cross-tenant, or unready aliases
+  before calling Prompt Composer.
+- Persist comparison provenance: requested alias, resolved connection id/provider,
+  catalog version/digest, caller, tenant, capability, prompt assembly id, and trace
+  id.
+- Add tests for arbitrary alias injection, empty-alias fallback, disabled alias,
+  cross-tenant alias, catalog drift between UI load and compare, and audit
+  provenance on successful comparisons.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
