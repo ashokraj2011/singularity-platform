@@ -3,17 +3,21 @@
  * on a workspace (optionally scoped to a thread). On add, the ref is resolved once (for
  * label/versionId/contentHash/authz) and the resolution is stored; the manifest re-resolves
  * fresh at run time. Every path is tenant-scoped and gated by the tenant-scoped workspace.
+ *
+ * RLS: DB work runs inside a tenant transaction (app.tenant_id set → the prisma Proxy routes
+ * every call inside to it). HTTP resolution stays OUTSIDE the tx (no long-held transaction).
  */
 import type { Prisma } from '@prisma/client'
 import type { Request } from 'express'
 import { prisma } from '../../lib/prisma'
-import { currentTenantIdForDb } from '../../lib/tenant-db-context'
+import { currentTenantIdForDb, withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { config } from '../../config'
 import { NotFoundError } from '../../lib/errors'
 import { assertWorkspace } from './workspace.service'
 import { resolveContextRef, type ContextRefInput } from './context-reference.resolver'
 
 const tenantId = (): string => currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID
+const inTenantTx = <T>(cb: () => Promise<T>): Promise<T> => withTenantDbTransaction(prisma, cb, tenantId())
 
 export interface AddContextRefInput extends ContextRefInput {
   threadId?: string | null
@@ -25,8 +29,8 @@ export interface AddContextRefInput extends ContextRefInput {
 
 export async function addContextRef(workspaceId: string, input: AddContextRefInput, userId: string, req: Request) {
   await assertWorkspace(workspaceId)
-  const resolved = await resolveContextRef(input, req)
-  const ref = await prisma.contextReference.create({
+  const resolved = await resolveContextRef(input, req) // HTTP — kept outside the tx
+  const ref = await inTenantTx(() => prisma.contextReference.create({
     data: {
       tenantId: tenantId(),
       workspaceId,
@@ -45,22 +49,24 @@ export async function addContextRef(workspaceId: string, input: AddContextRefInp
       resolvedAt: new Date(),
       ...(input.span ? { span: input.span as Prisma.InputJsonValue } : {}),
     },
-  })
+  }))
   return { ...ref, resolved }
 }
 
 export async function listContextRefs(workspaceId: string, opts: { threadId?: string } = {}) {
   await assertWorkspace(workspaceId)
-  const items = await prisma.contextReference.findMany({
+  const items = await inTenantTx(() => prisma.contextReference.findMany({
     where: { workspaceId, tenantId: tenantId(), ...(opts.threadId ? { threadId: opts.threadId } : {}) },
     orderBy: { createdAt: 'asc' },
-  })
+  }))
   return { items }
 }
 
 export async function removeContextRef(workspaceId: string, refId: string) {
-  const existing = await prisma.contextReference.findFirst({ where: { id: refId, workspaceId, tenantId: tenantId() }, select: { id: true } })
-  if (!existing) throw new NotFoundError('ContextReference', refId)
-  await prisma.contextReference.delete({ where: { id: existing.id } })
-  return { deleted: true }
+  return inTenantTx(async () => {
+    const existing = await prisma.contextReference.findFirst({ where: { id: refId, workspaceId, tenantId: tenantId() }, select: { id: true } })
+    if (!existing) throw new NotFoundError('ContextReference', refId)
+    await prisma.contextReference.delete({ where: { id: existing.id } })
+    return { deleted: true }
+  })
 }

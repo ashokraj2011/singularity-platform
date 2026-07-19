@@ -76,10 +76,11 @@ export async function appendMessage(workspaceId: string, threadId: string, input
 }
 
 export async function listMessages(workspaceId: string, threadId: string, opts: { afterSeq?: number } = {}) {
-  const items = await prisma.workspaceMessage.findMany({
-    where: { workspaceId, threadId, tenantId: tenantId(), ...(opts.afterSeq !== undefined ? { seq: { gt: BigInt(opts.afterSeq) } } : {}) },
+  const tid = tenantId()
+  const items = await withTenantDbTransaction(prisma, () => prisma.workspaceMessage.findMany({
+    where: { workspaceId, threadId, tenantId: tid, ...(opts.afterSeq !== undefined ? { seq: { gt: BigInt(opts.afterSeq) } } : {}) },
     orderBy: { seq: 'asc' },
     take: 500,
-  })
+  }), tid)
   return { items: items.map(shapeMessage) }
 }
