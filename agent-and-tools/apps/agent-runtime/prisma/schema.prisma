@@ -235,6 +235,7 @@ model Capability {
   learningWorkerLock CapabilityLearningWorkerLock?
   executions         AgentExecution[]
   worldModel         CapabilityWorldModel?
+  worldModelViews    CapabilityWorldModelViewDoc[]
 }
 
 // M61 Slice A — CapabilityWorldModel
@@ -331,6 +332,63 @@ model CapabilityWorldModel {
   capability Capability @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
 
   @@index([refreshedAt])
+}
+
+// Layered world model — the prose layers an agent actually reads.
+//
+// CapabilityWorldModel above stays the machine-readable core (commands, symbols,
+// agent rules). These rows are the narrow-loading layer on top: a shared core
+// summary, one view per role, plus on-demand domain models and task guides. An
+// agent loads core + its role view + the relevant domain/task guide — never all
+// of them — which is the whole point: one capability-wide blob forces the tester
+// to read build entrypoints and the architect to read test commands.
+//
+// Built operator-triggered (never on the onboarding path), so a capability simply
+// has no view rows until someone asks for them, and every consumer degrades to
+// today's behaviour.
+model CapabilityWorldModelViewDoc {
+  id           String @id @default(uuid())
+  capabilityId String
+  // core_summary | business | architecture | development | testing | release |
+  // operations | security | domain | task_guide. A String, not an enum: adding a
+  // view kind should be a code change, not a migration + client regen.
+  kind         String
+  // Slug for the keyed kinds (domain / task_guide); "" for the rest. Empty string
+  // rather than NULL so the composite unique actually constrains — Postgres treats
+  // NULLs as distinct, which would let duplicate role views accumulate silently.
+  domainKey    String @default("")
+
+  title      String
+  contentMd  String
+  structured Json?
+  // Provenance ledger: [{claim, status: observed|inferred, confidence,
+  // locations[{path,startLine,endLine,symbol}], artifacts[{artifactId,title}], commit}].
+  // Kept beside the prose so a verifying agent can check grounding instead of
+  // trusting it. Vocabulary borrowed from claim-registry; no service coupling.
+  evidence   Json   @default("[]")
+
+  // Best-effort repo commit at build time (CapabilityRepository.lastPolledSha).
+  sourceCommit    String?
+  // CapabilityWorldModel.repoFingerprint at build time. Staleness is computed at
+  // READ time by comparing against the capability's current fingerprint, so drift
+  // needs no extra bookkeeping — it already overwrites that field. Null for
+  // capabilities with no repository (nothing to drift against).
+  repoFingerprint String?
+
+  tokenEstimate Int     @default(0)
+  contentHash   String?
+  // PENDING | BUILDING | READY | FAILED
+  status        String  @default("PENDING")
+  buildError    String?
+  generatedBy   String?
+
+  generatedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  capability Capability @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
+
+  @@unique([capabilityId, kind, domainKey])
+  @@index([capabilityId, status])
 }
 
 model CapabilityLearningStatus {

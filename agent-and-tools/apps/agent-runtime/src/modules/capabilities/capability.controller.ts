@@ -17,6 +17,9 @@ import { worldModelDriftService } from "./world-model-drift.service";
 // context-fabric calls at workflow start.
 import { upsertWorldModel, getWorldModel, getChildWorldModels } from "./world-model.service";
 import { distillAndUpsertWorldModel } from "./bootstrap-phase3-distill";
+import { buildViews, listViews, getView, deleteView, viewBuildEnabled, isBuildInFlight } from "./world-model-view-builder.service";
+import { planViewBuild } from "./world-model-view-specs";
+import { isWorldModelViewKind, isViewStale } from "./world-model-views.types";
 // M61 Wire D — Verify-now command probe powering the wizard's per-row
 // "Verify" button. Spawns the cmd in an isolated tmp dir with a 10s
 // timeout; returns exit code + capped stdout/stderr.
@@ -241,6 +244,91 @@ export const capabilityController = {
     // parent. Empty for leaf capabilities.
     const childWorldModels = await getChildWorldModels(req.params.id);
     return ok(res, childWorldModels.length > 0 ? { ...view, childWorldModels } : view, 200);
+  },
+
+  // ── Layered world-model views ──────────────────────────────────────────────
+  // Operator-triggered only: views are built when someone asks, never on the
+  // onboarding path and never lazily on read. Until then a capability has no
+  // view rows and every consumer degrades to the capability-wide world model.
+
+  // POST /capabilities/:id/world-model/views/build
+  // Body: { views?: kind[] | "auto", domainKeys?: string[], task?: string }
+  // 202 + fire-and-forget: a full build is one LLM call per view, far longer
+  // than a request should hold. Poll GET .../views for status.
+  async buildWorldModelViews(req: Request, res: Response) {
+    await assertCapabilityMutable(req.params.id, "Capability is archived; world-model maintenance is read-only.");
+    if (!viewBuildEnabled()) {
+      return res.status(409).json({
+        error: "world-model view distillation is not configured",
+        fixCommand: "set WORLD_MODEL_VIEWS_MODEL_ALIAS (or WORLD_MODEL_DISTILL_MODEL_ALIAS) to a configured gateway model alias",
+      });
+    }
+    if (isBuildInFlight(req.params.id)) {
+      return res.status(409).json({ error: "a view build is already running for this capability" });
+    }
+
+    const plan = planViewBuild(req.body ?? {});
+    if (!plan.ok) return res.status(400).json({ error: plan.error });
+
+    void buildViews(req.params.id, plan.views).catch(() => undefined);
+    return res.status(202).json({
+      success: true,
+      data: { capabilityId: req.params.id, building: plan.views },
+    });
+  },
+
+  // GET /capabilities/:id/world-model/views — the manifest, derived from rows.
+  // `stale` compares each view's build fingerprint against the capability's
+  // current one, so drift needs no extra bookkeeping. `?include=content`
+  // returns the prose + evidence too (used by the repo export).
+  async listWorldModelViews(req: Request, res: Response) {
+    assertCapabilityReadScope(req.user, req.params.id);
+    const [views, worldModel] = await Promise.all([listViews(req.params.id), getWorldModel(req.params.id)]);
+    const current = worldModel?.repoFingerprint ?? null;
+    const includeContent = req.query.include === "content";
+    return ok(
+      res,
+      {
+        capabilityId: req.params.id,
+        repoFingerprint: current,
+        views: views.map((v) => ({
+          kind: v.kind,
+          domainKey: v.domainKey,
+          title: v.title,
+          status: v.status,
+          stale: isViewStale(v.repoFingerprint, current),
+          tokenEstimate: v.tokenEstimate,
+          contentHash: v.contentHash,
+          sourceCommit: v.sourceCommit,
+          generatedBy: v.generatedBy,
+          generatedAt: v.generatedAt,
+          buildError: v.buildError,
+          ...(includeContent ? { contentMd: v.contentMd, structured: v.structured, evidence: v.evidence } : {}),
+        })),
+      },
+      200,
+    );
+  },
+
+  async getWorldModelView(req: Request, res: Response) {
+    assertCapabilityReadScope(req.user, req.params.id);
+    const kind = req.params.kind;
+    if (!isWorldModelViewKind(kind)) return res.status(400).json({ error: `unknown view kind: ${kind}` });
+    const domainKey = typeof req.query.domainKey === "string" ? req.query.domainKey : "";
+    const view = await getView(req.params.id, kind, domainKey);
+    if (!view) return res.status(404).json({ error: "view not built for this capability" });
+    const worldModel = await getWorldModel(req.params.id);
+    return ok(res, { ...view, stale: isViewStale(view.repoFingerprint, worldModel?.repoFingerprint ?? null) }, 200);
+  },
+
+  async deleteWorldModelView(req: Request, res: Response) {
+    await assertCapabilityMutable(req.params.id, "Capability is archived; world-model maintenance is read-only.");
+    const kind = req.params.kind;
+    if (!isWorldModelViewKind(kind)) return res.status(400).json({ error: `unknown view kind: ${kind}` });
+    const domainKey = typeof req.query.domainKey === "string" ? req.query.domainKey : "";
+    const deleted = await deleteView(req.params.id, kind, domainKey);
+    if (!deleted) return res.status(404).json({ error: "view not built for this capability" });
+    return ok(res, { capabilityId: req.params.id, kind, domainKey, deleted: true }, 200);
   },
 
   // POST /capabilities/:id/world-model/redistill — refresh grounding on demand
