@@ -19150,6 +19150,49 @@ Required fixes:
 - Add a concurrency test where `appendEvent(...)` lands on the source branch
   between `diffBranches(...)` and the completion update.
 
+### 388. Board merge apply silently drops requested object ids that are not currently mergeable
+
+Evidence:
+
+- `mergeApplySchema` accepts an `objectIds` array from the caller and requires only
+  that it contain at least one string.
+- `POST /boards/:boardId/merge/apply` passes that caller-supplied list directly to
+  `applyMergeItems(...)`.
+- `applyMergeItems(...)` computes the current diff and then builds `chosen` with
+  `items.filter((i) => objectIds.includes(i.objectId))`.
+- The only validation is `if (!chosen.length) throw ...`; the function does not
+  verify that every requested id was present in the current diff.
+- It applies only `chosen`, logs `count: chosen.length`, and returns the applied
+  subset, with no `missing`, `alreadyApplied`, `notMergeable`, `duplicate`, or
+  `conflicted` result for the remaining requested ids.
+- The router schema also does not reject duplicate object ids, so a caller can ask
+  to apply the same object multiple times and receive a one-item applied result
+  without an explicit idempotency decision.
+
+Impact:
+
+- A reviewer can approve a batch of object ids and have only a subset applied if
+  one id is stale, mistyped, already applied, or no longer part of the diff.
+- The API response is technically accurate but operationally ambiguous: operators
+  must manually compare the request list with the response list to notice the
+  dropped ids.
+- Audit evidence records only the applied count, not the requested set or per-id
+  disposition, so later evidence packs cannot prove what was intentionally
+  skipped versus silently filtered out.
+- Retrying a partially applied list can keep producing confusing subset results
+  instead of a clear stale-review or already-applied signal.
+
+Required fixes:
+
+- Normalize and de-duplicate the requested `objectIds` before evaluation.
+- Reject the apply request unless every requested id maps to exactly one current,
+  eligible merge diff item, or return an explicit per-id decision object and
+  require the caller to acknowledge partial application.
+- Store the requested ids, applied ids, skipped ids, reasons, source head, target
+  head, and state hashes in `BoardMergeItemsApplied` audit/outbox metadata.
+- Add tests for stale ids, nonexistent ids, already-applied ids, duplicate ids,
+  conflict ids, and mixed valid/invalid apply batches.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
