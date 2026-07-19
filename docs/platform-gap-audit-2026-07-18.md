@@ -18926,6 +18926,52 @@ Required fixes:
   and delete events eventually create or update the expected moments without a
   manual API call.
 
+### 383. Board branches can be abandoned after merge without a guarded lifecycle transition
+
+Evidence:
+
+- `BoardBranch` stores `status`, `mergedAt`, and core branch metadata, but it has
+  no `abandonedAt`, `abandonedById`, `abandonReason`, terminal transition
+  generation, or lifecycle audit pointer.
+- `completeMerge(...)` marks an active non-main branch as `MERGED`, sets
+  `mergedAt`, and emits `BoardBranchMergeCompleted`.
+- `abandonBranch(...)` only rejects `main`; it does not require the branch to be
+  `ACTIVE`, nor does it reject `MERGED`, `ABANDONED`, or `SUSPENDED` branches.
+- The abandon route takes no body, so the caller cannot provide a governed reason
+  or policy decision for abandonment.
+- `abandonBranch(...)` updates the row by id to `status: 'ABANDONED'` and emits
+  `BoardBranchAbandoned`, but it does not preserve or validate the previous
+  status in the update predicate.
+- A branch that was already merged can therefore be relabeled as abandoned even
+  though its changes may already have been replayed into `main`.
+
+Impact:
+
+- Branch lifecycle evidence can contradict the board event log: `main` may
+  contain merge events while the source branch no longer says `MERGED`.
+- Operators can accidentally or maliciously erase the visible "merged" state of a
+  branch after merge completion.
+- Abandonment has no durable reason, actor-scoped decision, timestamp, or
+  lifecycle fence beyond a generic audit event.
+- Merge replay, branch cleanup, and evidence packs cannot reliably distinguish
+  rejected experiments from completed/merged branches that were later relabeled.
+- Re-running merge completion on such a branch fails because the branch is no
+  longer `ACTIVE` or `MERGED`, even though the merge may already be complete.
+
+Required fixes:
+
+- Introduce an explicit branch lifecycle state machine with allowed transitions,
+  for example `ACTIVE -> ABANDONED`, `ACTIVE -> SUSPENDED`, `ACTIVE -> MERGED`,
+  and no direct transition from `MERGED` to `ABANDONED`.
+- Add `abandonedAt`, `abandonedById`, `abandonReason`, and lifecycle generation
+  fields, or a separate `BoardBranchLifecycleEvent` table.
+- Require a reason and authorization decision for abandonment.
+- Use compare-and-set updates that include the expected previous status.
+- Make abandon idempotent for already-abandoned branches and reject terminal
+  merged branches with a clear error.
+- Add tests for abandoning active, merged, suspended, already-abandoned, and main
+  branches, plus evidence-pack rendering for each terminal status.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
