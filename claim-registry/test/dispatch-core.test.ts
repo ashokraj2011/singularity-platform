@@ -17,6 +17,7 @@ const row = (over: Partial<OutboxRowLike> = {}): OutboxRowLike => ({
   payload: { threshold: 0.8, posteriorProb: 0.74 },
   traceId: 't-1',
   createdAt: new Date('2026-07-16T06:00:00Z'),
+  tenantId: 'tenant-a',
   ...over,
 })
 
@@ -38,6 +39,10 @@ describe('envelope + signing', () => {
     expect(env.subject).toEqual({ kind: 'claim', id: 'claim-9' })
     expect(env.payload).toEqual({ threshold: 0.8, posteriorProb: 0.74 })
     expect(subjectKindFor('ambiguity.opened')).toBe('ambiguity')
+  })
+  it('carries tenant_id so strict-tenant receivers accept the event (null when untenanted)', () => {
+    expect(buildEnvelope(row()).tenant_id).toBe('tenant-a')
+    expect(buildEnvelope(row({ tenantId: null })).tenant_id).toBeNull()
   })
   it('round-trips: dispatcher signature verifies under the receiver scheme', () => {
     const { body, headers } = buildSignedDelivery(row(), 'shared-secret', 1752645600000)

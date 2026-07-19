@@ -25,7 +25,7 @@ let listener: pg.Client | null = null
 let sweepTimer: NodeJS.Timeout | null = null
 let draining = false
 
-async function deliverRow(row: { id: string; eventType: string; aggregateId: string; payload: unknown; traceId: string | null; createdAt: Date }): Promise<boolean> {
+async function deliverRow(row: { id: string; eventType: string; aggregateId: string; payload: unknown; traceId: string | null; createdAt: Date; tenantId: string | null }): Promise<boolean> {
   const subs = await prisma.eventSubscription.findMany({ where: { active: true } })
   const matching = subs.filter((s) => matchesAny(s.eventTypes, row.eventType))
 
