@@ -18126,6 +18126,64 @@ Required fixes:
   cross-tenant board id, cross-tenant archive/card/proposal id, default-tenant
   fallback rejection, and strict-mode service calls with no tenant context.
 
+### 368. Completion Program fan-out is modeled and tested but not wired into WorkItem finalization
+
+Evidence:
+
+- `WorkItem` and `SpecificationProject` expose `completionProgramId`, and
+  `work-items.router.ts` allows updating a WorkItem's `completionProgramId`.
+- `updateWorkItem(...)` validates only that the referenced Work Program exists in
+  the WorkItem tenant, then connects or disconnects it.
+- `work-programs.service.ts` exports `spawnCompletionProgram(...)` with comments
+  saying completion fan-out runs when a WorkItem finalizes, resolves the item or
+  project completion program, creates successor WorkItems through
+  `executeWorkProgramAsSystem(...)`, and records `NEXT_STAGE_SPAWNED` or
+  `NEXT_STAGE_SPAWN_FAILED`.
+- Repository search found no production call site for `spawnCompletionProgram`;
+  it appears only in `completion-program-fanout.test.ts`.
+- `WorkItemFinalizer` completes the guarded WorkItem transition and then calls
+  `releaseDependents(...)`, `reconcileWorkProgramForWorkItem(...)`, and
+  `advanceSourceWorkflow(...)`; it does not call `spawnCompletionProgram(...)`.
+- `reconcileWorkProgramForWorkItem(...)` only marks existing
+  `WorkProgramRunStep` rows as completed and completes an existing run when all
+  steps are done. It does not resolve a WorkItem/project `completionProgramId` or
+  create the next-stage Work Program run.
+- The unit test for `spawnCompletionProgram(...)` mocks the helper directly and
+  asserts sequential behavior, but it does not prove finalization invokes the
+  helper or that an attached completion program produces successor WorkItems in
+  the real lifecycle.
+
+Impact:
+
+- Operators can attach a completion program to a WorkItem or initiative and see
+  it in the API/UI, but finalizing the WorkItem may not launch the expected next
+  stage at all.
+- The platform can present completion programs as an enterprise next-stage
+  mechanism while the authoritative finalizer only reconciles already-created
+  program runs.
+- `NEXT_STAGE_SPAWNED` evidence can be absent even though a completion program is
+  configured and a WorkItem reaches `COMPLETED`, making downstream roadmap,
+  dependency, and automation views appear stuck.
+- Because the helper is uncalled, its idempotency and failure semantics are not
+  exercised by the real WorkItem lifecycle.
+
+Required fixes:
+
+- Decide the canonical trigger for completion fan-out. If it is WorkItem
+  finalization, invoke `spawnCompletionProgram(...)` from the finalizer through a
+  durable transactional command/outbox created with `WorkItemFinalizationRecord`.
+- Replace the current best-effort `NEXT_STAGE_SPAWNED` event check with an atomic
+  idempotency key, such as a unique completion-spawn command per WorkItem,
+  program id, and finalization generation.
+- Store the attached completion-program id/version/digest on the finalization or
+  spawn command so later edits to the program do not change what a completed
+  WorkItem launches.
+- Surface completion fan-out status in WorkItem and run cockpits: not configured,
+  pending, spawned, skipped, failed, or retry required.
+- Add integration tests that finalize a WorkItem with an item-level completion
+  program, a project-level completion program, no completion program, a stale
+  program, and concurrent finalization/spawn attempts.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
