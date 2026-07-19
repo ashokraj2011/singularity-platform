@@ -17322,6 +17322,63 @@ Required fixes:
   sensitive inventory fields are redacted unless the caller has the explicit
   deployment/security permission.
 
+### 355. Platform Web runtime revocation route targets the runtime self-revoke API with a human token
+
+Evidence:
+
+- `agent-and-tools/web/src/app/api/runtime-revoke/route.ts` exposes
+  `POST /api/runtime-revoke`.
+- The route calls `requireVerifiedCallerBearer(request, "Runtime revocation")`,
+  so the Platform Web side expects a normal authenticated browser/user bearer.
+- It then reads `device_id` from the JSON body and forwards the original request
+  to IAM as `POST /runtime/revoke?device_id=<device_id>` using `proxyHeaders(...)`,
+  which preserves the browser `Authorization` header.
+- IAM's `singularity-iam-service/app/devices/routes.py` defines
+  `POST /runtime/revoke` as `revoke_current_runtime(...)` and documents it as
+  "Allow an enrolled runtime to revoke its own token without a browser session."
+- That IAM handler decodes the bearer token and rejects unless
+  `claims.get("kind") == "runtime"` and `claims.get("device_id") == device_id`.
+  A normal user token that passed Platform Web's `requireVerifiedCallerBearer`
+  therefore fails the upstream contract.
+- IAM's browser/user revocation API is a different endpoint:
+  `DELETE /devices/{device_pk}`, where `device_pk` is the `UserDevice.id` row
+  primary key, not the client-generated runtime `device_id`.
+- `docs/singularity-runtime.md` says the browser can revoke a runtime from
+  Identity -> Devices and that CLI `revoke` is the self-service equivalent, but
+  the Platform Web `/api/runtime-revoke` route mixes those two contracts.
+- Searches found no frontend caller for `/api/runtime-revoke`, which suggests the
+  route is stale. If it is wired later, it will fail or encourage callers to use
+  the wrong identifier.
+
+Impact:
+
+- Browser-based runtime revocation through this BFF cannot reliably work: the
+  upstream endpoint expects the runtime JWT itself, while Platform Web forwards a
+  human bearer.
+- Operators may believe they revoked a connected MCP/LLM runtime from the web UI
+  while the runtime token remains valid until its normal revocation check or JWT
+  expiry path is handled elsewhere.
+- The route creates API confusion between `UserDevice.id` and `device_id`, making
+  it easy to build UI that sends the wrong identifier to the wrong IAM endpoint.
+- Emergency offboarding and incident response are weaker if the intended browser
+  revocation path is not explicitly tested end-to-end.
+
+Required fixes:
+
+- Either delete `/api/runtime-revoke` if it is intentionally unused, or rename it
+  to a CLI/runtime-only self-revoke proxy that requires a `kind=runtime` token.
+- Add a browser revocation route that lists `GET /me/devices` and calls
+  `DELETE /devices/{device_pk}` with the `UserDevice.id` row id, preserving the
+  human bearer and enforcing owner-or-super-admin semantics.
+- Make UI labels distinguish `runtime_id/device_id` from the IAM device row id.
+- Add contract tests proving browser revoke uses `DELETE /devices/{device_pk}`,
+  CLI self-revoke uses `POST /runtime/revoke` with a runtime token, human tokens
+  cannot call the self-revoke path, and runtime tokens cannot revoke another
+  runtime id.
+- Add an operations smoke check that creates a runtime enrollment, exchanges it,
+  lists the device, revokes it from the browser path, and verifies
+  `/internal/devices/status` reports `revoked=true` for the runtime.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
