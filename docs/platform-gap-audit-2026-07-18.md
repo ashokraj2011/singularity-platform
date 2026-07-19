@@ -19105,6 +19105,51 @@ Required fixes:
   replayed, intentionally ignored with policy metadata, or rejected before the
   merge event is emitted.
 
+### 387. Board merge completion can close over concurrent source-branch writes
+
+Evidence:
+
+- `completeMerge(...)` loads the source branch with `id`, `name`, `status`, and
+  `mergedAt`, but it does not read or preserve `headEventSeq`.
+- It then calls `diffBranches(boardId, fromBranch, 'main')` and treats
+  `remaining.identical` as proof that the source branch has no remaining changes.
+- The final lifecycle update is `updateMany({ where: { id: branch.id, status:
+  'ACTIVE' }, data: { status: 'MERGED', mergedAt: new Date() } })`.
+- That compare-and-set predicate fences only the branch status, not the source
+  branch head that was diffed.
+- `appendEvent(...)` separately locks the branch row, checks it is `ACTIVE`, and
+  advances `headEventSeq` when it appends a fresh board event.
+- Because `completeMerge(...)` does not lock the source branch across diffing and
+  completion, a concurrent `appendEvent(...)` can add a new source-branch event
+  after the diff says identical but before the status update marks the branch
+  `MERGED`.
+
+Impact:
+
+- A branch can be marked `MERGED` even though it contains source events that were
+  never replayed into the target branch.
+- The late source event becomes unreachable through normal editing because the
+  branch is now terminal/read-only.
+- `BoardBranchMergeCompleted` audit/outbox evidence can claim the merge was
+  complete while the source branch head no longer matches the verified diff.
+- Operators lose a clean recovery path: rerunning completion is idempotent for
+  `MERGED`, while rerunning merge/apply against a terminal source branch is not
+  modeled as a governed repair.
+
+Required fixes:
+
+- Treat merge completion as a proposal/session finalization with recorded source
+  branch head, target branch head, and state hashes from the reviewed diff.
+- Include the expected source `headEventSeq` and target head/state hash in the
+  completion compare-and-set predicate, or lock both relevant branch rows while
+  validating and closing the merge.
+- Reject completion if the source head or target head changed since the reviewed
+  diff, and require the operator to refresh/re-run the merge review.
+- Include source head, target head, and state hashes in
+  `BoardBranchMergeCompleted` audit/outbox payloads.
+- Add a concurrency test where `appendEvent(...)` lands on the source branch
+  between `diffBranches(...)` and the completion update.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
