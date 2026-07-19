@@ -9,6 +9,8 @@ import { z } from 'zod'
 import { validate } from '../../middleware/validate'
 import { createWorkspace, getWorkspace, listWorkspaces, createThread, listThreads } from './workspace.service'
 import { appendMessage, listMessages } from './message.service'
+import { addContextRef, listContextRefs, removeContextRef } from './context-reference.service'
+import { buildManifest, getManifest } from './context-manifest.service'
 
 export const synthesisRouter: Router = Router()
 
@@ -72,4 +74,38 @@ synthesisRouter.get('/workspaces/:workspaceId/threads/:threadId/messages', wrap(
   const raw = typeof req.query.afterSeq === 'string' ? Number(req.query.afterSeq) : undefined
   const afterSeq = raw !== undefined && Number.isFinite(raw) ? raw : undefined
   res.json(await listMessages(String(req.params.workspaceId), String(req.params.threadId), { afterSeq }))
+}))
+
+// ── Context references (typed @-refs) ────────────────────────────────────────────
+const ENTITY_TYPES = ['SOURCE', 'CLAIM', 'DECISION', 'REQUIREMENT', 'SPECIFICATION', 'METRIC', 'WORKITEM', 'OUTCOME', 'PERSON'] as const
+const addContextRefSchema = z.object({
+  entityType: z.enum(ENTITY_TYPES),
+  entityId: z.string().trim().min(1),
+  referenceMode: z.enum(['FOLLOW_LATEST', 'PINNED']).optional(),
+  versionId: z.string().trim().min(1).nullable().optional(),
+  contentHash: z.string().trim().min(1).nullable().optional(),
+  threadId: z.string().trim().min(1).nullable().optional(),
+  specificationProjectId: z.string().trim().min(1).nullable().optional(),
+  workItemId: z.string().trim().min(1).nullable().optional(),
+  span: z.record(z.unknown()).optional(),
+  label: z.string().trim().max(500).optional(),
+})
+
+synthesisRouter.post('/workspaces/:workspaceId/context-refs', validate(addContextRefSchema), wrap(async (req, res) => {
+  res.status(201).json(await addContextRef(String(req.params.workspaceId), req.body, userIdOf(req), req))
+}))
+synthesisRouter.get('/workspaces/:workspaceId/context-refs', wrap(async (req, res) => {
+  const threadId = typeof req.query.threadId === 'string' ? req.query.threadId : undefined
+  res.json(await listContextRefs(String(req.params.workspaceId), { threadId }))
+}))
+synthesisRouter.delete('/workspaces/:workspaceId/context-refs/:refId', wrap(async (req, res) => {
+  res.json(await removeContextRef(String(req.params.workspaceId), String(req.params.refId)))
+}))
+
+// ── Context manifest (immutable per-run "what the agent will read") ──────────────
+synthesisRouter.post('/workspaces/:workspaceId/threads/:threadId/manifest', wrap(async (req, res) => {
+  res.status(201).json(await buildManifest(String(req.params.workspaceId), String(req.params.threadId), req))
+}))
+synthesisRouter.get('/workspaces/:workspaceId/manifests/:manifestId', wrap(async (req, res) => {
+  res.json(await getManifest(String(req.params.workspaceId), String(req.params.manifestId)))
 }))
