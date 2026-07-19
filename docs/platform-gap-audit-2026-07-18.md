@@ -17177,6 +17177,85 @@ Required fixes:
   session id, auditor read, run-owner read, relaxed Audit Governance mode, and
   successful authorized proxying with the service token attached.
 
+### 353. Platform Web Audit Governance proxy gives generic verified callers full audit-service authority
+
+Evidence:
+
+- `agent-and-tools/web/src/app/api/audit-gov/[...path]/route.ts` is a catch-all
+  proxy. `upstreamPath(...)` maps any suffix to `/api/v1/<suffix>` unless it is a
+  health or already-prefixed API path.
+- The same proxy only calls `requireVerifiedCallerBearer(req, "Audit Governance")`
+  before forwarding. It does not check an Audit Governance action permission,
+  tenant membership, capability access, auditor role, approval assignee, or
+  path-specific read/write policy.
+- Before forwarding, the proxy deletes the browser `Authorization` header and
+  injects `Authorization: Bearer ${AUDIT_GOV_SERVICE_TOKEN}`. It exports `GET`,
+  `POST`, `PUT`, `PATCH`, and `DELETE`, so this is not limited to read-only
+  dashboards.
+- Audit Governance itself treats that token as the trust boundary:
+  `routes-events.ts` `requireServiceAuth(...)` only compares the supplied bearer
+  or `X-Service-Token` value with the one configured shared token.
+- `routes-governance.ts` applies the same service-token middleware to
+  `/approvals`, `/approvals/:id/consume`, `/approvals/:id/decide`, `/budgets`,
+  `/rate-limits`, and `/authz/decisions`.
+- `routes-query.ts` exposes audit event lookup plus cost summary/rollup/by-model
+  APIs under the same service-token middleware. `routes-savings.ts` exposes
+  session, agent, best-mode, and dashboard token-savings data under the same
+  contract.
+- `routes-logs.ts` contains log search, retention sweep, alert-rule mutation,
+  alert acknowledgement, export drain, and export retry endpoints reachable under
+  Audit Governance route mounting. `engine/routes.ts` includes issue diagnosis,
+  resolve/dismiss, evaluator updates, evaluator runs, dataset creation, and
+  dataset-example mutation.
+- Existing gap 231 covers the backend risk of one shared Audit Governance token.
+  Existing gap 352 covers Context Fabric's savings compatibility proxy. This gap
+  is specifically the Platform Web catch-all route that can turn a normal
+  verified web caller into the shared audit service identity for arbitrary Audit
+  Governance operations.
+
+Impact:
+
+- Any user who satisfies the generic Platform Web bearer check may be able to
+  call privileged Audit Governance operations through `/api/audit-gov/*`,
+  including approval decisions, budget/rate-limit mutation, authz decision
+  writes, evaluator changes, log retention sweeps, alert-rule changes, and
+  dataset/evidence operations.
+- Browser calls lose their end-user authorization context at the proxy boundary.
+  Audit Governance receives the platform service token, not a scoped user token,
+  so downstream routes cannot distinguish an auditor from a viewer or an approval
+  assignee from an unrelated tenant user.
+- Tenant and capability isolation depend on each individual upstream route
+  implementing optional filters correctly. Several economics and savings routes
+  return global aggregates when filters are omitted, and route-level checks are
+  not bound to service-token claims.
+- The proxy makes dangerous routes look like same-origin Platform Web APIs,
+  increasing the risk that new UI or debug screens accidentally expose mutation
+  endpoints without role-specific enforcement.
+
+Required fixes:
+
+- Replace the catch-all Audit Governance proxy with an allowlisted route table.
+  Each route must declare method, upstream path, required permission, tenant
+  source, sensitivity level, and whether mutation is allowed from the browser.
+- Preserve and forward authenticated end-user context in a signed internal header
+  or scoped service JWT. Audit Governance should receive caller id, tenant id,
+  capability context, decision id, and allowed operation, not only the global
+  service token.
+- Split `AUDIT_GOV_SERVICE_TOKEN` into scoped service identities or IAM service
+  JWTs. Producer ingest, read dashboards, approval mutation, log administration,
+  evaluator administration, and dataset mutation should not share one authority.
+- Require explicit permissions such as `audit:view`, `audit:cost:view`,
+  `audit:logs:search`, `audit:approvals:decide`, `audit:budgets:manage`,
+  `audit:evaluators:manage`, and `audit:logs:admin` before Platform Web proxies
+  a request.
+- Add tenant/capability filtering at the proxy and again in Audit Governance.
+  Global reads should require a platform-auditor permission and should be visibly
+  labelled as cross-tenant/global.
+- Add regression tests that exercise `/api/audit-gov/*` as viewer, auditor,
+  approver, tenant admin, platform admin, and cross-tenant user for both read and
+  mutation paths. Include direct attempts to decide approvals, mutate budgets,
+  search logs, run sweeps, and read global cost/savings data.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
