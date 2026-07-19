@@ -602,6 +602,20 @@ Required fixes:
 - Add regression tests proving workflow edit does not imply approval, and that
   force-complete evidence is distinct from approval evidence.
 
+Progress:
+
+- The run cockpit force-complete action is now labeled `Override & advance`,
+  uses a `Manual override from run cockpit` comment, and explains that it does
+  not create a governed approval decision.
+- `POST /workflow-instances/:id/nodes/:nodeId/force-complete` now requires both
+  workflow instance `edit` and `operate` authorization before invoking the
+  manual completion path.
+- The real approval form action remains labeled `Approve & advance` because it
+  still routes through `/approvals/:id/decision`.
+- Remaining follow-up: introduce a dedicated `workflow:override_node`
+  permission and add browser/API tests proving workflow edit alone cannot use
+  force-complete.
+
 ### 17. Dual specification roots remain active
 
 Evidence:

@@ -2245,13 +2245,15 @@ workflowInstancesRouter.post('/:id/nodes/:nodeId/force-complete', validate(force
   try {
     const id = req.params.id as string
     const nodeId = req.params.nodeId as string
-    await assertInstancePermission(req.user!.userId, id, 'edit')
+    const tenantId = resolveTenantFromRequest(req)
+    await assertInstancePermission(req.user!.userId, id, 'edit', tenantId)
+    await assertInstancePermission(req.user!.userId, id, 'operate', tenantId)
     const { comment, output } = req.body as z.infer<typeof forceCompleteSchema>
-    await forceCompleteNode(id, nodeId, comment, output ?? {}, req.user!.userId, resolveTenantFromRequest(req))
+    await forceCompleteNode(id, nodeId, comment, output ?? {}, req.user!.userId, tenantId)
     const [instance, node] = await withTenantDbTransaction(prisma, (tx) => Promise.all([
       tx.workflowInstance.findUnique({ where: { id }, include: { nodes: true, edges: true } }),
       tx.workflowNode.findUnique({ where: { id: nodeId } }),
-    ]), resolveTenantFromRequest(req))
+    ]), tenantId)
     res.json({ instance, node })
   } catch (err) {
     next(err)

@@ -11,7 +11,7 @@
  *   GET  /workflow-instances/:id/nodes | /edges        (passed in as props)
  *   GET  /consumables?instanceId&nodeId                (per-node artifacts/log)
  *   POST /workflow-instances/:id/nodes/:nodeId/restart
- *   POST /workflow-instances/:id/nodes/:nodeId/force-complete   (approve/advance)
+ *   POST /workflow-instances/:id/nodes/:nodeId/force-complete   (manual override)
  */
 import { useMemo, useState, useCallback, useEffect, type CSSProperties, type ElementType } from 'react'
 import { RuntimeWidgetForm } from '../forms/widgets/RuntimeWidgetForm'
@@ -500,9 +500,9 @@ export function RunGraphView({ instanceId, instanceStatus, runName, nodes, edges
   })
   const approveMut = useMutation({
     mutationFn: (nodeId: string) =>
-      api.post(`/workflow-instances/${instanceId}/nodes/${nodeId}/force-complete`, { comment: 'Approved from run graph' }).then(r => r.data),
-    onSuccess: () => { toast.success('Stage completed — workflow advancing'); invalidate() },
-    onError: (e) => toast.error(errText(e, 'Complete & advance failed')),
+      api.post(`/workflow-instances/${instanceId}/nodes/${nodeId}/force-complete`, { comment: 'Manual override from run cockpit' }).then(r => r.data),
+    onSuccess: () => { toast.success('Manual override recorded — workflow advancing'); invalidate() },
+    onError: (e) => toast.error(errText(e, 'Manual override failed')),
   })
   // Take over the run: reassign ownership to you (your runtime drives it + clones the
   // work branch if it's not local) and resume if paused.
@@ -1245,13 +1245,13 @@ function NodePanel({ instanceId, runName, node, runContext, usesCopilot, live, t
       )}
       <div style={{ display: 'flex', gap: 8, padding: '10px 14px', borderTop: '1px solid rgba(15,23,42,0.09)', flexWrap: 'wrap' }}>
         {active && isAgent && (
-          <button onClick={onApprove} disabled={busy} style={{ ...footBtn, background: '#22c55e', borderColor: '#16a34a', color: '#fff', opacity: busy ? 0.6 : 1 }}>
-            <Check size={13} /> Approve &amp; advance
+          <button onClick={onApprove} disabled={busy} title="Manual override: marks this stage complete without creating a governed approval decision." style={{ ...footBtn, background: '#b45309', borderColor: '#92400e', color: '#fff', opacity: busy ? 0.6 : 1 }}>
+            <Check size={13} /> Override &amp; advance
           </button>
         )}
         {isCopilotNode && isAgent && (
           // Open this copilot stage in the full Workbench cockpit (review artifacts, evidence,
-          // and chat). Advancing the run stays here (Approve & advance); the cockpit is the
+          // and chat). Emergency advancement stays here as Override & advance; the cockpit is the
           // review surface. Requires WORKBENCH_ALLOW_MAIN_PROFILE for non-workbench runs.
           <a
             href={buildWorkbenchLaunchUrl(instanceId, node.id, (node.config?.workbench ?? {}) as Record<string, unknown>, 'neo', runContext ?? {})}
