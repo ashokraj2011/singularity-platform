@@ -20259,6 +20259,61 @@ Required fixes:
   preservation, tenant envelope partial update, and budget decision behavior after
   each case.
 
+### 410. Blueprint artifact editability no longer honors artifact-kind contracts
+
+Evidence:
+
+- `workgraph-studio/apps/api/src/modules/blueprint/blueprint.router.ts:442-444`
+  still documents `PATCH /sessions/:id/artifacts/:artifactId` as refused unless
+  the stage's `loopDefinition` marks that artifact kind `editable=true`.
+- The `LoopExpectedArtifact` type says the same thing at
+  `workgraph-studio/apps/api/src/modules/blueprint/blueprint.router.ts:510-515`:
+  artifact editability is supposed to default to read-only.
+- `normalizeExpectedArtifacts()` now flips that contract by defaulting every
+  artifact to editable unless the raw definition explicitly sets
+  `editable: false` (`blueprint.router.ts:3980-3985`).
+- The default lifecycle loop does not set `editable: false` on sensitive outputs
+  such as `actual_code_change`, `verification_receipt`,
+  `traceability_matrix`, or `final_handoff_notes`
+  (`blueprint.router.ts:4090-4118`).
+- `editArtifactContent()` does not re-check the artifact kind's editable flag. It
+  only checks session ownership and whether the session/stage has already been
+  approved (`blueprint.router.ts:5580-5610`).
+- Prisma still models expected-artifact editability as opt-in with
+  `editable Boolean @default(false)` on `WorkbenchExpectedArtifact`
+  (`workgraph-studio/apps/api/prisma/schema.prisma:4603-4605`), so the persisted
+  design model and runtime normalizer disagree.
+
+Impact:
+
+- Any in-flight Blueprint session owner can rewrite governance-sensitive
+  artifacts before approval, including verification receipts, traceability
+  matrices, final handoff notes, and code-change evidence summaries.
+- The UI and API can present agent-produced or verifier-produced evidence as if
+  it remained contract-bound, while the backend allows operator mutation outside
+  the declared artifact policy.
+- Audit stores prior content in `payload.revisions`, but downstream approval and
+  evidence export still read the edited artifact body, so a reviewer can approve
+  a human-altered evidence artifact without an explicit "human override" state.
+- Workflow authors cannot rely on `editable=false` / default read-only artifact
+  definitions to protect verifier outputs in enterprise SDLC gates.
+
+Required fixes:
+
+- Restore fail-closed artifact editability: artifacts are read-only unless the
+  stage or persisted expected-artifact record explicitly marks that kind
+  editable.
+- In `editArtifactContent()`, resolve the artifact's stage/kind and enforce the
+  matching `expectedArtifacts[].editable === true` before accepting edits.
+- Preserve a separate `humanOverride` or `operatorEdited` evidence state when an
+  editable artifact is changed, and require approval screens/export packs to show
+  that provenance.
+- Add tests for default read-only artifacts, explicit editable artifacts, rejected
+  edits to verification/code-change/final handoff artifacts, and approval/export
+  rendering of edited artifacts.
+- Keep Prisma defaults, loop-definition normalization, and the API edit gate
+  aligned so design-time contracts are the same contracts enforced at runtime.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
