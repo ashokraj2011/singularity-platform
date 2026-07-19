@@ -19286,6 +19286,57 @@ Required fixes:
   subset of placements, failure after artifact `COMPLETED` but before
   `INGESTION_COMPLETED`, and retry after each partial state.
 
+### 391. Extracted-claim accept/reject decisions can overwrite each other
+
+Evidence:
+
+- `IngestedArtifact.extractedClaims` is a single JSON array column rather than
+  per-claim rows with versions or decision metadata.
+- `StagedClaim` contains only `id`, `kind`, `statement`, `sourceRef`, `tier`, and
+  `status`; it has no `decidedBy`, `decidedAt`, `decisionReason`,
+  `decisionVersion`, or expected previous status.
+- `setClaimStatus(...)` loads the whole artifact, maps over the current
+  `extractedClaims` array, and replaces the matching claim with `{ ...c, status
+  }`.
+- The update writes the entire `extractedClaims` JSON value back with
+  `prisma.ingestedArtifact.update({ where: { id: artifactId }, data: {
+  extractedClaims: next } })`.
+- There is no compare-and-set predicate on artifact `updatedAt`, claim status,
+  claim version, or claim id revision.
+- The same route allows either accept or reject to be called repeatedly; it does
+  not reject transitions from `ACCEPTED` to `REJECTED` or from `REJECTED` to
+  `ACCEPTED`.
+- The audit log records only `boardId` and `claimId`, not the previous status,
+  new status, artifact version, decision reason, or a stale-write detection
+  result.
+
+Impact:
+
+- Two reviewers can decide different staged claims at nearly the same time and the
+  later whole-array JSON update can overwrite the earlier reviewer decision.
+- A rejected claim can be flipped to accepted, or an accepted claim flipped to
+  rejected, without an explicit reconsideration workflow or stale-decision
+  warning.
+- Evidence packs cannot reconstruct who made the effective staged-claim decision,
+  what status was changed from, or whether a later decision superseded an earlier
+  one intentionally.
+- Even before accepted staged claims are promoted into governed `Claim` rows, the
+  artifact-local review rail is not enterprise-safe for concurrent human review.
+
+Required fixes:
+
+- Store extracted staged claims as first-class rows keyed by tenant, artifact id,
+  claim id, and version, or add a versioned JSON decision ledger.
+- Enforce allowed status transitions with compare-and-set predicates on expected
+  previous status and artifact/claim version.
+- Record `decidedBy`, `decidedAt`, `decisionReason`, previous status, new status,
+  and decision id for every accept/reject.
+- Make repeated accept/reject idempotent only for the same decision and reject
+  conflicting flips unless a governed reconsideration action is used.
+- Add concurrent decision tests covering two different claims, the same claim,
+  accept-after-reject, reject-after-accept, stale artifact reads, and audit
+  reconstruction.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
