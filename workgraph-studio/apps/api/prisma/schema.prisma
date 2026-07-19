@@ -1396,6 +1396,7 @@ model WorkItem {
   project                 SpecificationProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
   completionProgram       WorkProgram?     @relation("WorkItemCompletionProgram", fields: [completionProgramId], references: [id], onDelete: SetNull)
   specComments            SpecComment[]
+  synthesisWorkspaces     SynthesisWorkspace[]
   createdAt               DateTime         @default(now())
   updatedAt               DateTime         @updatedAt
   tenantId                String?          @default("default")
@@ -1519,6 +1520,7 @@ model SpecificationProject {
   attentionItems            AttentionItem[]
   validationReports         ArtifactValidationReport[]
   studio        Studio?
+  synthesisWorkspaces SynthesisWorkspace[]
   completionProgram WorkProgram?         @relation("ProjectCompletionProgram", fields: [completionProgramId], references: [id], onDelete: SetNull)
 
   @@index([status])
@@ -5568,4 +5570,179 @@ model DiscoveryAssumption {
   @@index([sessionId, status])
   @@index([tenantId])
   @@map("discovery_assumptions")
+}
+
+// ── Synthesis Studio — Agentic Working Sessions (R1A Foundations) ──────────────
+// A SynthesisWorkspace is a persistent working session anchored on the existing
+// SpecificationProject (and optionally a WorkItem). Threads are linear (non-forkable)
+// conversations; messages use the board's fenced-append technique for a gap-free seq.
+// Every table carries tenantId + the tenant_isolation_policy (installed in the
+// creating migration, force-enabled by the tenant RLS cutover alongside the spine).
+
+enum SynthesisWorkspaceStatus {
+  OPEN
+  ARCHIVED
+}
+
+enum WorkspaceThreadKind {
+  WORKING_SESSION
+  ASK_SIDECAR
+}
+
+enum WorkspaceThreadStatus {
+  ACTIVE
+  CLOSED
+}
+
+enum WorkspaceMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum WorkspaceAuthorType {
+  HUMAN
+  AGENT
+  SYSTEM
+}
+
+enum ContextEntityType {
+  SOURCE
+  CLAIM
+  DECISION
+  REQUIREMENT
+  SPECIFICATION
+  METRIC
+  WORKITEM
+  OUTCOME
+  PERSON
+}
+
+enum ContextReferenceMode {
+  FOLLOW_LATEST
+  PINNED
+}
+
+model SynthesisWorkspace {
+  id                     String                   @id @default(uuid())
+  tenantId               String?                  @default("default")
+  specificationProjectId String
+  workItemId             String?
+  title                  String
+  purpose                String?
+  status                 SynthesisWorkspaceStatus @default(OPEN)
+  openedById             String
+  lastActivityAt         DateTime                 @default(now())
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
+
+  project     SpecificationProject @relation(fields: [specificationProjectId], references: [id], onDelete: Cascade)
+  workItem    WorkItem?            @relation(fields: [workItemId], references: [id], onDelete: SetNull)
+  threads     WorkspaceThread[]
+  contextRefs ContextReference[]
+  manifests   ContextManifest[]
+
+  @@index([tenantId], map: "ix_synthesis_workspaces_tenant")
+  @@index([specificationProjectId, status])
+  @@index([workItemId])
+  @@map("synthesis_workspaces")
+}
+
+model WorkspaceThread {
+  id           String                @id @default(uuid())
+  tenantId     String?               @default("default")
+  workspaceId  String
+  kind         WorkspaceThreadKind   @default(WORKING_SESSION)
+  agentRole    String?
+  title        String?
+  contextScope Json                  @default("{}")
+  // The fenced counter (mirrors BoardBranch.headEventSeq): bumped under SELECT … FOR UPDATE.
+  headSeq      BigInt                @default(0)
+  status       WorkspaceThreadStatus @default(ACTIVE)
+  createdById  String
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  workspace SynthesisWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  messages  WorkspaceMessage[]
+
+  @@index([tenantId], map: "ix_workspace_threads_tenant")
+  @@index([workspaceId, status])
+  @@map("workspace_threads")
+}
+
+model WorkspaceMessage {
+  id                String               @id @default(uuid())
+  tenantId          String?              @default("default")
+  workspaceId       String
+  threadId          String
+  seq               BigInt // fenced, gap-free per thread (@@unique([threadId, seq]) is the safety net)
+  role              WorkspaceMessageRole
+  authorType        WorkspaceAuthorType
+  authorId          String?
+  agentRole         String?
+  content           Json                 @default("{}")
+  contextManifestId String? // the frozen manifest this turn ran against
+  proposalId        String? // the StudioProposal this message produced, if any
+  correlation       Json                 @default("{}") // cfCallId / traceId / llmCallIds / toolInvocationIds
+  tokens            Json                 @default("{}")
+  receipts          Json                 @default("[]") // inline (Receipt has no tenantId yet)
+  coalesceKey       String? // idempotent retries
+  createdAt         DateTime             @default(now())
+
+  thread WorkspaceThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@unique([threadId, seq])
+  @@index([tenantId], map: "ix_workspace_messages_tenant")
+  @@index([workspaceId, createdAt])
+  @@map("workspace_messages")
+}
+
+model ContextReference {
+  id                     String               @id @default(uuid())
+  tenantId               String?              @default("default")
+  workspaceId            String
+  threadId               String?
+  specificationProjectId String? // denormalized scope carriers (no FK — kept loose)
+  workItemId             String?
+  entityType             ContextEntityType
+  entityId               String
+  versionId              String? // pinned reference target version
+  contentHash            String? // pinned reference integrity hash
+  span                   Json? // optional page/section/char span
+  referenceMode          ContextReferenceMode @default(FOLLOW_LATEST)
+  classification         String?
+  authzDecision          Json                 @default("{}")
+  label                  String?
+  addedById              String
+  resolvedAt             DateTime?
+  createdAt              DateTime             @default(now())
+
+  workspace SynthesisWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId], map: "ix_context_references_tenant")
+  @@index([workspaceId, entityType])
+  @@map("context_references")
+}
+
+model ContextManifest {
+  id                    String   @id @default(uuid())
+  tenantId              String?  @default("default")
+  workspaceId           String
+  threadId              String
+  messageId             String?
+  items                 Json     @default("[]") // FROZEN resolved snapshots — immutable once persisted
+  tokenEstimate         Int      @default(0)
+  costEstimate          Float?
+  pinnedCount           Int      @default(0)
+  followingCount        Int      @default(0)
+  classificationSummary Json     @default("{}")
+  manifestHash          String // canonical hash of items — the required immutable per-run hash
+  createdAt             DateTime @default(now())
+
+  workspace SynthesisWorkspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId], map: "ix_context_manifests_tenant")
+  @@index([workspaceId, threadId])
+  @@map("context_manifests")
 }

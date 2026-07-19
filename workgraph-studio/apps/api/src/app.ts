@@ -68,6 +68,7 @@ import { commentsRouter } from './modules/comments/comments.router'
 import { reconciliationJobsRouter } from './modules/reconciliations/reconciliation-jobs.router'
 import { reconciliationOverviewRouter } from './modules/reconciliations/reconciliation-overview.router'
 import { studioProjectsRouter } from './modules/studio/studio-projects.router'
+import { synthesisRouter } from './modules/synthesis/synthesis.router'
 import { studioBoardRouter } from './modules/studio/board.router'
 import { studioBoardVerdictRouter, studioBoardAgentVerdictRouter } from './modules/studio/board-verdicts.router'
 import { studioAuthz } from './modules/studio/studio-authz'
@@ -198,6 +199,7 @@ export function createApp(): Express {
   app.use('/api/studio-agent', studioBoardAgentVerdictRouter)
   app.use('/api/studio', authMiddleware, studioAuthz, roomsRouter)
   app.use('/api/concept-archive', authMiddleware, studioAuthz, conceptArchiveRouter)
+  app.use('/api/synthesis', authMiddleware, studioAuthz, synthesisRouter)
   app.use('/api/planner', authMiddleware, plannerRouter)
   app.use('/api/work-programs', authMiddleware, workProgramsRouter)
   app.use('/api/notifications', authMiddleware, notificationsRouter)
