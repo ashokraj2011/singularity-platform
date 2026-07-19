@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { HappyPathGuide } from "@/components/synthesis/HappyPathGuide";
 import Link from "next/link";
 import {
   LayoutDashboard,
@@ -50,6 +51,10 @@ export default function OverviewScreen() {
 
   return (
     <SynthesisShell title="Initiative Overview">
+      {/* Anchored to the most recently updated initiative -- "where was I?" is the
+          question a product owner actually opens this page with. Dismissible, and
+          it hides nothing: all 22 screens stay in the sidebar. */}
+      <HappyPathGuide project={recent[0]} />
       <div className="mb-8">
         <MonoMeta className="block mb-1">Health &amp; activity</MonoMeta>
         <h1 className="font-display font-semibold text-2xl text-on-surface tracking-tight">
