@@ -17379,6 +17379,81 @@ Required fixes:
   lists the device, revokes it from the browser path, and verifies
   `/internal/devices/status` reports `revoked=true` for the runtime.
 
+### 356. Adoption health and start preview aggregate operator readiness without caller verification
+
+Evidence:
+
+- `agent-and-tools/web/src/app/api/adoption/health/route.ts` exposes
+  `GET /api/adoption/health` and never calls `requireVerifiedCallerBearer` or an
+  equivalent authorization helper.
+- Its `authHeaders(req)` helper forwards the browser `Authorization` header only
+  when one is present. Anonymous callers therefore still reach the route, and the
+  route decides readiness from whatever downstream endpoints happen to return.
+- The adoption-health route fans out to `/api/runtime-infrastructure`,
+  `/api/workflow-templates/gallery`, `/api/llm-settings`, `/api/workgraph/health`,
+  `/api/audit-gov/health`, `/api/runtime/agents/templates`,
+  `/ops-health/iam`, `/ops-health/prompt-composer`,
+  `/api/workgraph/workflow-operations/summary`, and
+  `/api/platform-logs?limit=1`.
+- The response returns an adoption score plus operator-facing counts and states:
+  connected runtime count, ready provider count, ready model aliases, default
+  model alias/readiness, seeded intent count, runner backlog, active event trigger
+  and routing-policy counts, failed delivery count, searchable log-source count,
+  Git push readiness, and Git credential strategy.
+- Each check can include `detail`, `fixCommand`, and `fixRoute` values such as
+  Prisma migration commands, `bin/bare-metal-apps.sh up`,
+  `bin/mcp-runtime-setup.sh`, and direct routes into Operations, LLM settings,
+  workflow control plane, identity login, prompt workbench, and capabilities.
+- `agent-and-tools/web/src/app/api/start/preview/route.ts` also has no caller
+  verification. It calls `buildStartPreview(...)`, which in turn calls
+  `/api/adoption/health`, `/api/workflow-templates/gallery`,
+  `/api/runtime/capabilities`, and `/api/llm-settings`.
+- The start preview response includes the full `health` object, recommended
+  capability/template/model/runtime/governance values, sample stories, intent
+  metadata, launchable capability ids/names/status when visible, model readiness,
+  and blockers/warnings.
+- `agent-and-tools/web/src/app/api/start/launch/route.ts` also lacks a top-level
+  caller verification check before building the same preview. WorkGraph's planner
+  router is mounted behind `authMiddleware`, so the final `/api/planner/launch`
+  call is protected, but the prerequisite aggregation still happens first.
+- Existing gap 186 covers direct anonymous diagnostic reads from LLM/topology and
+  runtime-infrastructure surfaces. This gap covers the higher-level adoption/start
+  aggregators that compose those diagnostics plus workflow operations, logs,
+  gallery, agents, and fix-command guidance into one unauthenticated readiness
+  envelope.
+
+Impact:
+
+- A network caller can use `/api/adoption/health` and `/api/start/preview` as a
+  compact reconnaissance endpoint for deployment posture, runtime/LLM readiness,
+  Git push readiness, seeded workflow state, event routing health, runner backlog,
+  and observability availability.
+- Even when downstream protected APIs return `401` or `403`, the aggregators
+  expose which subsystems exist, which ones require login, and which exact setup
+  or repair command an operator would run.
+- In non-production or demo deployments where some downstream diagnostic reads are
+  intentionally anonymous, these aggregators combine partial details into a much
+  richer platform map than any one health route would reveal alone.
+- The guided start path normalizes operator diagnostics into user-facing launch
+  blockers, so frontend clients may treat sensitive readiness data as safe public
+  setup guidance and render it before authentication.
+
+Required fixes:
+
+- Require a verified caller for `/api/adoption/health`, `/api/start/preview`, and
+  `/api/start/launch` by default. Any anonymous demo mode should be explicit,
+  time-bound, and return only coarse setup states.
+- Split readiness into audience-specific views: anonymous landing/setup hints,
+  authenticated user launch prerequisites, and operator/security diagnostics.
+- Redact `detail`, `fixCommand`, internal route names, default model aliases, Git
+  credential strategy, event routing counts, runner backlog, and log-source counts
+  unless the caller has an operations/readiness permission.
+- Make `/api/start/launch` fail fast on missing caller auth before doing
+  prerequisite fan-out.
+- Add route contract tests proving missing bearer requests receive `401` in normal
+  environments, authenticated users receive only launch-relevant prerequisites,
+  and operations admins receive the full fix-command/readiness envelope.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
