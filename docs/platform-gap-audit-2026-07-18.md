@@ -18879,6 +18879,53 @@ Required fixes:
   different profiles are recorded, threshold overrides are rejected in production,
   and replay under a new profile does not silently rewrite or skip prior windows.
 
+### 382. Board Moment detection is only manually driven despite event-log promises
+
+Evidence:
+
+- `ProjectBoardSurface` tells users every board change lands in the event log for
+  "time travel, moments, and branches."
+- `board-ingestion.service.ts` says the `INGESTION_COMPLETED` event is picked up
+  by the PR-2 moment detector and should become a `SOURCE_ADDED` moment.
+- `appendEvent(...)` writes the board event, advances the branch head, snapshots
+  when needed, and publishes a `BoardEvent` outbox record, but it does not call
+  `detectAndNarrate(...)` or enqueue moment detection.
+- The board router comment says production would trigger moment detection from
+  the append path or a background sweep, but the implemented route is only
+  `POST /boards/:boardId/moments/detect`.
+- Repository search shows `detectAndNarrate(...)` is imported and invoked only by
+  that manual route; the web code does not call `/moments/detect`.
+- The only exposed read path is `GET /boards/:boardId/moments`, which lists
+  already-created moments and does not trigger detection.
+
+Impact:
+
+- Moment timelines stay empty or stale unless an operator, test, or hidden client
+  manually posts to the detect endpoint.
+- Source ingestion can emit `INGESTION_COMPLETED` while no `SOURCE_ADDED` moment
+  is ever created, contradicting the documented event flow.
+- Users may trust that the event log is automatically producing synthesis
+  timeline evidence when it is actually a manual maintenance action.
+- Background and UI behavior can diverge across deployments: one environment may
+  run an external detector sweep while another never produces moments.
+- Evidence packs and replay views cannot rely on moments as a complete projection
+  of the board event log.
+
+Required fixes:
+
+- Add a durable moment-detection worker or outbox consumer that reacts to board
+  events and processes each active branch under a governed detector profile.
+- Alternatively enqueue detection from `appendEvent(...)` after the event commit,
+  with idempotent job keys based on board id, branch id, head sequence, and
+  detector profile.
+- Expose detector lag/readiness in Operations and the board UI: last processed
+  sequence, pending events, failed jobs, and retry controls.
+- Keep the manual detect route only as an operator/debug action with explicit
+  authorization and audit metadata.
+- Add tests proving `OBJECT_CREATED`, `INGESTION_COMPLETED`, `VOTE_CAST`, phase,
+  and delete events eventually create or update the expected moments without a
+  manual API call.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
