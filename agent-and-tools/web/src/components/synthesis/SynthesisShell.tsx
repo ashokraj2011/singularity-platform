@@ -35,6 +35,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { AskSynthesisSidecar } from "./ask/AskSynthesisSidecar";
+import { OpenInWorkingSessionButton } from "./working-session/OpenInWorkingSessionButton";
 
 export interface SynNavItem {
   href: string;
@@ -169,7 +170,7 @@ export function SynthesisShell({
               <div className="text-[9px] font-black uppercase tracking-[0.14em] text-on-surface-variant">{active?.phase ?? "Workspace"}</div>
               <h1 className="truncate text-base font-black text-on-surface">{pageTitle}</h1>
             </div>
-            <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">{headerActions}</div>
+            <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2"><OpenInWorkingSessionButton />{headerActions}</div>
           </div>
           <nav className="flex shrink-0 overflow-x-auto border-b border-outline-variant bg-surface-container-lowest px-2 md:hidden" aria-label="Synthesis workspaces">
             {SYN_NAV.map(item => {
