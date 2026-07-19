@@ -20151,6 +20151,63 @@ Required fixes:
   unpublished loop strategy, unknown governance preset, and a valid preview that
   matches the later launch/runtime contract.
 
+### 408. Synthesis intake can accept a partial interview as a completed scaffold
+
+Evidence:
+
+- `experience.router.ts:61-67` exposes scaffold creation and acceptance routes, but
+  neither route schema asks for an expected intake stage, required-stage list,
+  stage coverage digest, or explicit partial-scaffold mode.
+- `recordIntakeTurn(...)` advances a session through `PROBLEM`, `BELIEFS`,
+  `SUCCESS`, `CONSTRAINTS`, and `CONTEXT`; after each saved turn it returns
+  `canScaffold: true`.
+- `proposeIntakeScaffold(...)` loads the `DiscoverySession` and immediately builds
+  `intakePayload(project, session)`. It does not require `session.status ===
+  'RESOLVING'`, does not require all `INTAKE_STAGES` to be present in
+  `stageExtracts`, and does not mark the proposal as partial.
+- `intakePayload(...)` fills missing stages with empty strings/arrays, so a
+  scaffold can have no beliefs, no success outcomes, no constraints, no context,
+  and an empty specification analysis while still carrying a normal
+  `SCAFFOLD_BATCH` kind.
+- The live Synthesis intake UI enables `Review scaffold` once
+  `Object.keys(completed).length !== 0`, and the adjacent copy says "The interview
+  can be interrupted at any stage."
+- `acceptIntakeScaffold(...)` then creates board/room/claim/objective/spec records
+  from that payload and updates the discovery session to `RESOLVED`, even if later
+  intake stages were never answered.
+
+Impact:
+
+- A user can answer only the first intake question, accept the scaffold, and freeze
+  the interview as resolved with no success criteria, constraints, context, or
+  explicit declaration that the scaffold is intentionally partial.
+- Downstream Synthesis, planning, and specification screens can treat the accepted
+  scaffold as governed intake evidence rather than as an incomplete draft.
+- Missing stages become indistinguishable from intentionally empty answers because
+  the payload uses empty strings and arrays instead of stage-status metadata.
+- If a pending scaffold was created early, later answers can drift from the
+  already-created proposal because the existing pending proposal is returned
+  without a payload digest or stale-stage warning.
+
+Required fixes:
+
+- Add an intake completion contract: required stages, optional stages, answered
+  stage count, stage content hashes, and an explicit `partial: true` flag when a
+  scaffold is intentionally generated early.
+- Make normal scaffold creation require either all required stages or a user-visible
+  partial-scaffold decision with rationale and audit event.
+- Persist the stage coverage/digest on `StudioProposal.scopeRef` or payload
+  metadata and reject acceptance if the session has advanced since the proposal was
+  generated.
+- Change acceptance to resolve the discovery session only when the accepted
+  proposal covers the required stages; otherwise keep the session open or move it
+  to a `PARTIAL_SCAFFOLD_ACCEPTED` state.
+- Update the Synthesis UI to show answered/missing stages in the review panel and
+  label partial scaffolds clearly.
+- Add tests for one-stage scaffold creation, all-stage scaffold creation, stale
+  proposal after more turns, partial acceptance, full acceptance, and attempting to
+  resolve an incomplete intake without an explicit partial decision.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
