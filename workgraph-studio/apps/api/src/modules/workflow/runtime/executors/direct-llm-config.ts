@@ -362,20 +362,54 @@ export function normalizeDirectLlmConfig(rawValue: unknown, failures: DirectLlmC
   }
   if (config.promptSource === 'INLINE' && !config.task) failures.push({ field: 'task', message: 'inline prompt mode requires a task prompt.' })
   if (config.credentialEnv && !ENV_RE.test(config.credentialEnv)) failures.push({ field: 'credentialEnv', message: 'must be an environment variable name, not a secret.' })
-  if (config.credentialEnv) {
-    const allowedCredentialEnvs = new Set(
-      (process.env.WORKGRAPH_DIRECT_LLM_ALLOWED_CREDENTIAL_ENVS ?? 'OPENAI_API_KEY,OPENROUTER_API_KEY,ANTHROPIC_API_KEY')
-        .split(',').map(value => value.trim()).filter(Boolean),
-    )
-    if (!allowedCredentialEnvs.has(config.credentialEnv)) {
-      failures.push({ field: 'credentialEnv', message: 'is not in the server-managed direct LLM credential allowlist.' })
-    }
+  if (config.credentialEnv && !credentialEnvAllowed(config.credentialEnv)) {
+    failures.push({ field: 'credentialEnv', message: 'is not in the server-managed direct LLM credential allowlist.' })
   }
   if (config.maxTokens !== undefined && (!Number.isInteger(config.maxTokens) || config.maxTokens < 1 || config.maxTokens > 32000)) failures.push({ field: 'maxTokens', message: 'must be an integer between 1 and 32,000.' })
   if (config.temperature !== undefined && (!Number.isFinite(config.temperature) || config.temperature < 0 || config.temperature > 2)) failures.push({ field: 'temperature', message: 'must be between 0 and 2.' })
   if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 600000)) failures.push({ field: 'timeoutMs', message: 'must be between 1,000 and 600,000 milliseconds.' })
   if (config.inputDocumentsPath && !PATH_RE.test(config.inputDocumentsPath)) failures.push({ field: 'inputDocumentsPath', message: 'must be a valid dotted context path.' })
   return config
+}
+
+/**
+ * Which env vars a direct LLM call may read a key from.
+ *
+ * Exported because node config is not the only source of `credentialEnv`: an
+ * llmConnection row can supply one too, and it takes PRECEDENCE. Validating only
+ * at config-parse time therefore left the higher-precedence value unchecked, so
+ * the resolver re-applies this to the merged result. Mirrors context-fabric's
+ * CONTEXT_FABRIC_DIRECT_LLM_ALLOWED_CREDENTIAL_ENVS.
+ */
+/**
+ * Whether workgraph may egress to an LLM provider directly, bypassing the
+ * platform gateway.
+ *
+ * The direct path reaches api.anthropic.com / api.openai.com without the
+ * gateway, so it carries no task tag, no gateway audit line and no cost
+ * attribution -- see docs/llm-egress-boundary.md.
+ *
+ * DEFAULTS TO ALLOWED, because unlike context-fabric's direct route there is no
+ * alternative egress in this executor to fall through to: turning it off with no
+ * migration in place would break every DIRECT_LLM_TASK rather than reroute it.
+ * This is a POLICY CONTROL, not the migration. A deployment that requires all
+ * generation to pass the gateway can set WORKGRAPH_ALLOW_DIRECT_LLM=false and
+ * have those nodes fail loudly instead of egressing quietly.
+ *
+ * Mock is exempt at the call sites: it reaches no network.
+ */
+export function directLlmEgressAllowed(): boolean {
+  const raw = (process.env.WORKGRAPH_ALLOW_DIRECT_LLM ?? '').trim().toLowerCase()
+  if (!raw) return true
+  return !['0', 'false', 'no', 'off'].includes(raw)
+}
+
+export function credentialEnvAllowed(name: string): boolean {
+  const allowed = new Set(
+    (process.env.WORKGRAPH_DIRECT_LLM_ALLOWED_CREDENTIAL_ENVS ?? 'OPENAI_API_KEY,OPENROUTER_API_KEY,ANTHROPIC_API_KEY')
+      .split(',').map(value => value.trim()).filter(Boolean),
+  )
+  return allowed.has(name)
 }
 
 export function validateDirectLlmConfig(rawValue: unknown): DirectLlmConfigValidation {

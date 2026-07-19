@@ -22,7 +22,7 @@ import {
 } from './DirectLlmToolLoop'
 import { resolveDirectLlmTools } from './direct-llm-tools'
 import type { ComposeArtifact } from '../../../../lib/prompt-composer/client'
-import { validateDirectLlmConfig, type CanonicalDirectLlmConfig } from './direct-llm-config'
+import { validateDirectLlmConfig, credentialEnvAllowed, directLlmEgressAllowed, type CanonicalDirectLlmConfig } from './direct-llm-config'
 import { resolveLoopStrategyVersion, getLoopStrategy, type LoopStrategyDefinition } from '../../loop-strategy.service'
 import { config } from '../../../../config'
 import { assertCanRequestApproval, validateApprovalRouting } from '../../../../lib/permissions/approval'
@@ -1016,6 +1016,18 @@ export async function resolveDirectLlmConfig(
   const model = connection?.model ?? cfgString(effectiveNode, 'model') ?? (provider === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o-mini')
   const baseUrl = connection?.baseUrl ?? cfgString(effectiveNode, 'baseUrl') ?? undefined
   const credentialEnv = connection?.credentialEnv ?? cfgString(effectiveNode, 'credentialEnv') ?? defaultCredentialEnv(provider)
+  // Re-check the MERGED value. validateDirectLlmConfig ran against node config
+  // only, but an llmConnection row supplies credentialEnv too and takes
+  // precedence -- so a connection naming an arbitrary env var reached
+  // process.env[...] unvalidated. baseUrl never had this hole because it is
+  // validated after the same merge, one line below; credentialEnv was not.
+  // Undefined is legitimate: mock reads no credential at all.
+  if (credentialEnv && !credentialEnvAllowed(credentialEnv)) {
+    return {
+      error: `Credential env "${credentialEnv}" is not in the server-managed direct LLM credential allowlist.`,
+      code: 'DIRECT_LLM_CREDENTIAL_ENV_BLOCKED',
+    }
+  }
   const baseUrlValidation = await validateDirectLlmBaseUrl(baseUrl, provider)
   if (!baseUrlValidation.ok) return { error: baseUrlValidation.error, code: 'DIRECT_LLM_BASE_URL_BLOCKED' }
   const promptTemplate = await resolvePromptTemplate(effectiveNode)
@@ -1163,6 +1175,15 @@ async function callProvider(args: DirectLlmProviderRequest): Promise<DirectLlmCh
       totalTokens: Math.ceil(args.prompt.length / 4) + 64,
       providerRequestId: `mock-${Date.now()}`,
     }
+  }
+
+  // Policy gate. Mock returned above, so anything reaching here opens a real
+  // provider socket outside the gateway.
+  if (!directLlmEgressAllowed()) {
+    throw new Error(
+      'Direct LLM egress is disabled (WORKGRAPH_ALLOW_DIRECT_LLM=false). This node bypasses the '
+      + 'platform LLM gateway; route it through a governed AGENT_TASK or re-enable the policy.',
+    )
   }
 
   const apiKey = args.credentialEnv ? process.env[args.credentialEnv] : undefined
