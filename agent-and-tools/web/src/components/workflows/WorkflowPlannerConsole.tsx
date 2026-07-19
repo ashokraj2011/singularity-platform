@@ -155,6 +155,8 @@ export function WorkflowPlannerConsole() {
   // Grounding inputs + execution/launch controls.
   const [documents, setDocuments] = useState<PlannerDocument[]>([]);
   const [loopStrategyId, setLoopStrategyId] = useState("");
+  // Launch the generated DAG as a fresh runnable template (planner Phase 2) vs. routing to a seeded one.
+  const [persistGraph, setPersistGraph] = useState(false);
   const [intent, setIntent] = useState("build_feature");
   const [modelAlias, setModelAlias] = useState("balanced");
   const [runtimePreference, setRuntimePreference] = useState("user_runtime");
@@ -328,6 +330,7 @@ export function WorkflowPlannerConsole() {
           runtimePreference,
           governancePreset,
           ...(loopStrategyId ? { loopStrategyId } : {}),
+          ...(persistGraph ? { persistGraph: true } : {}),
         }),
       }));
       setLaunchResult(result);
@@ -569,6 +572,13 @@ export function WorkflowPlannerConsole() {
                   {previewing ? <Loader2 size={15} className="animate-spin" /> : <GitBranch size={15} />}
                   Preview graph
                 </button>
+                <label
+                  style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+                  title="On launch, persist the generated graph (the one 'Preview graph' shows) as a new runnable workflow template and run that — instead of routing to a seeded template."
+                >
+                  <input type="checkbox" checked={persistGraph} onChange={(event) => setPersistGraph(event.target.checked)} />
+                  Launch generated graph
+                </label>
               </div>
             </div>
 
