@@ -5,10 +5,13 @@
  * SpecificationVersion stays the system-of-record (the fork the plan warns against is
  * closed by refusing block edits on spec-bound docs). Entering a frozen state forces
  * every block PINNED + stamps a canonical contentHash (mirrors the spec approval freeze).
+ *
+ * RLS: each function's DB work runs in a tenant transaction so the forced synthesis_documents /
+ * document_versions / document_blocks tables enforce isolation at the database.
  */
 import type { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
-import { currentTenantIdForDb } from '../../lib/tenant-db-context'
+import { currentTenantIdForDb, withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { config } from '../../config'
 import { hashPayload } from '../../lib/snapshot'
 import { NotFoundError, ConflictError, ValidationError } from '../../lib/errors'
@@ -16,6 +19,7 @@ import { getProject } from '../studio/studio-projects.service'
 import { canTransition, requiresPinnedBlocks, type DocStatus } from './document-lifecycle'
 
 const tenantId = (): string => currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID
+const inTenantTx = <T>(cb: () => Promise<T>): Promise<T> => withTenantDbTransaction(prisma, cb, tenantId())
 const SPEC_BOUND_TYPES = new Set(['PRD', 'BRD'])
 
 export interface CreateDocumentInput {
@@ -32,31 +36,34 @@ export async function createDocument(input: CreateDocumentInput, userId: string)
   if (SPEC_BOUND_TYPES.has(input.docType) && !input.specificationVersionId) {
     throw new ValidationError(`${input.docType} documents must bind to a specificationVersionId (they never own duplicate content).`)
   }
-  const doc = await prisma.synthesisDocument.create({
-    data: {
-      tenantId: tenantId(),
-      specificationProjectId: input.specificationProjectId,
-      docType: input.docType,
-      title: input.title,
-      workItemId: input.workItemId ?? null,
-      workspaceId: input.workspaceId ?? null,
-      specificationVersionId: input.specificationVersionId ?? null,
-      createdById: userId,
-    },
+  const doc = await inTenantTx(async () => {
+    const created = await prisma.synthesisDocument.create({
+      data: {
+        tenantId: tenantId(),
+        specificationProjectId: input.specificationProjectId,
+        docType: input.docType,
+        title: input.title,
+        workItemId: input.workItemId ?? null,
+        workspaceId: input.workspaceId ?? null,
+        specificationVersionId: input.specificationVersionId ?? null,
+        createdById: userId,
+      },
+    })
+    // Own-content docs get a v1 DocumentVersion; spec-bound docs point at the spec instead.
+    if (!created.specificationVersionId) {
+      const v = await prisma.documentVersion.create({ data: { tenantId: tenantId(), documentId: created.id, version: 1, createdById: userId } })
+      await prisma.synthesisDocument.update({ where: { id: created.id }, data: { currentVersionId: v.id } })
+    }
+    return created
   })
-  // Own-content docs get a v1 DocumentVersion; spec-bound docs point at the spec instead.
-  if (!doc.specificationVersionId) {
-    const v = await prisma.documentVersion.create({ data: { tenantId: tenantId(), documentId: doc.id, version: 1, createdById: userId } })
-    await prisma.synthesisDocument.update({ where: { id: doc.id }, data: { currentVersionId: v.id } })
-  }
   return getDocument(doc.id)
 }
 
 export async function getDocument(documentId: string) {
-  const doc = await prisma.synthesisDocument.findFirst({
+  const doc = await inTenantTx(() => prisma.synthesisDocument.findFirst({
     where: { id: documentId, tenantId: tenantId() },
     include: { versions: { orderBy: { version: 'desc' }, include: { blocks: { orderBy: { ordinal: 'asc' } } } } },
-  })
+  }))
   if (!doc) throw new NotFoundError('SynthesisDocument', documentId)
   return doc
 }
@@ -66,36 +73,38 @@ export async function listDocuments(filter: { projectId?: string; workspaceId?: 
   if (filter.projectId) where.specificationProjectId = filter.projectId
   if (filter.workspaceId) where.workspaceId = filter.workspaceId
   if (!filter.projectId && !filter.workspaceId) throw new ValidationError('projectId or workspaceId is required')
-  return { items: await prisma.synthesisDocument.findMany({ where, orderBy: { updatedAt: 'desc' }, take: 200 }) }
+  return { items: await inTenantTx(() => prisma.synthesisDocument.findMany({ where, orderBy: { updatedAt: 'desc' }, take: 200 })) }
 }
 
 export async function transitionDocument(documentId: string, to: DocStatus, actor: string) {
-  const doc = await prisma.synthesisDocument.findFirst({ where: { id: documentId, tenantId: tenantId() } })
-  if (!doc) throw new NotFoundError('SynthesisDocument', documentId)
-  const from = doc.status as DocStatus
-  if (!canTransition(from, to)) throw new ConflictError(`Illegal document transition ${from} → ${to}.`)
-  // Independent-reviewer rule for APPROVED (mirrors approveSpecificationVersion).
-  if (to === 'APPROVED' && doc.createdById === actor) {
-    throw new ValidationError('An independent reviewer must approve this document (author ≠ approver).')
-  }
-
-  let contentHash = doc.contentHash
-  // Freeze: entering a frozen state forces every block PINNED + stamps a contentHash.
-  if (requiresPinnedBlocks(to) && doc.currentVersionId) {
-    const blocks = await prisma.documentBlock.findMany({ where: { documentVersionId: doc.currentVersionId }, orderBy: { ordinal: 'asc' } })
-    for (const b of blocks) {
-      if (b.mode !== 'PINNED') {
-        await prisma.documentBlock.update({ where: { id: b.id }, data: { mode: 'PINNED', pinnedSnapshot: b.content as Prisma.InputJsonValue } })
-      }
+  return inTenantTx(async () => {
+    const doc = await prisma.synthesisDocument.findFirst({ where: { id: documentId, tenantId: tenantId() } })
+    if (!doc) throw new NotFoundError('SynthesisDocument', documentId)
+    const from = doc.status as DocStatus
+    if (!canTransition(from, to)) throw new ConflictError(`Illegal document transition ${from} → ${to}.`)
+    // Independent-reviewer rule for APPROVED (mirrors approveSpecificationVersion).
+    if (to === 'APPROVED' && doc.createdById === actor) {
+      throw new ValidationError('An independent reviewer must approve this document (author ≠ approver).')
     }
-    contentHash = hashPayload(blocks.map((b) => ({ ordinal: b.ordinal, blockType: b.blockType, content: b.content })))
-    await prisma.documentVersion.update({
-      where: { id: doc.currentVersionId },
+
+    let contentHash = doc.contentHash
+    // Freeze: entering a frozen state forces every block PINNED + stamps a contentHash.
+    if (requiresPinnedBlocks(to) && doc.currentVersionId) {
+      const blocks = await prisma.documentBlock.findMany({ where: { documentVersionId: doc.currentVersionId }, orderBy: { ordinal: 'asc' } })
+      for (const b of blocks) {
+        if (b.mode !== 'PINNED') {
+          await prisma.documentBlock.update({ where: { id: b.id }, data: { mode: 'PINNED', pinnedSnapshot: b.content as Prisma.InputJsonValue } })
+        }
+      }
+      contentHash = hashPayload(blocks.map((b) => ({ ordinal: b.ordinal, blockType: b.blockType, content: b.content })))
+      await prisma.documentVersion.update({
+        where: { id: doc.currentVersionId },
+        data: { status: to, contentHash, ...(to === 'APPROVED' ? { approvedById: actor } : {}) },
+      })
+    }
+    return prisma.synthesisDocument.update({
+      where: { id: documentId },
       data: { status: to, contentHash, ...(to === 'APPROVED' ? { approvedById: actor } : {}) },
     })
-  }
-  return prisma.synthesisDocument.update({
-    where: { id: documentId },
-    data: { status: to, contentHash, ...(to === 'APPROVED' ? { approvedById: actor } : {}) },
   })
 }
