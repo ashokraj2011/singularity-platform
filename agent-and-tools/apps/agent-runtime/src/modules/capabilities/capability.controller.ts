@@ -18,7 +18,7 @@ import { worldModelDriftService } from "./world-model-drift.service";
 import { upsertWorldModel, getWorldModel, getChildWorldModels } from "./world-model.service";
 import { distillAndUpsertWorldModel } from "./bootstrap-phase3-distill";
 import { buildViews, listViews, getView, deleteView, viewBuildEnabled, isBuildInFlight } from "./world-model-view-builder.service";
-import { planViewBuild } from "./world-model-view-specs";
+import { planViewBuild, allViewSpecs, loadViewSpecsWithMeta } from "./world-model-view-specs";
 import { getWorldModelSlice } from "./world-model-slice.service";
 import { isWorldModelViewKind, isViewStale } from "./world-model-views.types";
 // M61 Wire D — Verify-now command probe powering the wizard's per-row
@@ -330,6 +330,34 @@ export const capabilityController = {
     const deleted = await deleteView(req.params.id, kind, domainKey);
     if (!deleted) return res.status(404).json({ error: "view not built for this capability" });
     return ok(res, { capabilityId: req.params.id, kind, domainKey, deleted: true }, 200);
+  },
+
+  // GET /capabilities/world-model/view-specs
+  //
+  // The build prompts themselves, as the builder will actually use them. Reading
+  // what a view was TOLD to produce previously meant reading the source at the
+  // deployed commit; this makes the effective config inspectable, including
+  // whether an override is active and any warnings it produced.
+  //
+  // Not capability-scoped: the specs are platform-wide.
+  async getWorldModelViewSpecs(_req: Request, res: Response) {
+    const loaded = loadViewSpecsWithMeta();
+    return ok(
+      res,
+      {
+        source: loaded.source,
+        overrideActive: loaded.source !== "default",
+        warnings: loaded.warnings,
+        // The env NAMES, never their contents: an override may be a file path,
+        // and echoing raw config back over HTTP is how paths leak.
+        configuredBy: {
+          inline: Boolean(process.env.WORLD_MODEL_VIEW_SPECS_JSON?.trim()),
+          path: Boolean(process.env.WORLD_MODEL_VIEW_SPECS_PATH?.trim()),
+        },
+        specs: allViewSpecs(),
+      },
+      200,
+    );
   },
 
   // GET /capabilities/:id/world-model/slice?role=&task=&domainKey=
