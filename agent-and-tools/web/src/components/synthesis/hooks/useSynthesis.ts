@@ -2,6 +2,13 @@
 
 import useSWR, { type SWRConfiguration } from "swr";
 import { workgraphFetch } from "@/lib/workgraph";
+import { apiPath, authHeaders } from "@/lib/api";
+import type {
+  CanvasObject,
+  CanvasViewport,
+  Positions,
+  SaveLayoutPayload,
+} from "../board/canvasLayout";
 import type {
   DiscoverySession,
   ProjectSpecView,
@@ -173,6 +180,75 @@ export async function proposeClaims(roomId: string, prompt: string) {
     method: "POST",
     body: JSON.stringify({ prompt }),
   });
+}
+
+/* ─── Strategy Canvas: per-user persistent layout ───────────────────────── */
+
+/** Server-stored personal layout for a project's Strategy Canvas (see board/canvasLayout.ts). */
+export interface CanvasLayoutDto {
+  positions: Positions;
+  objects: CanvasObject[];
+  viewport: CanvasViewport | null;
+  updatedAt: string | null;
+}
+
+/**
+ * Load the signed-in user's personal Strategy Canvas layout for a project. Positions + free-form
+ * objects are personal (one row per user), so this follows the user across devices without moving
+ * anyone else's board. Revalidation on focus is off — the local editing state is authoritative while
+ * the board is open and we push saves explicitly.
+ */
+export function useCanvasLayout(
+  projectId: string | null,
+  config?: SWRConfiguration<CanvasLayoutDto>,
+) {
+  return useSyn<CanvasLayoutDto>(
+    projectId ? `/studio/projects/${projectId}/canvas-layout` : null,
+    { revalidateOnFocus: false, revalidateIfStale: false, ...config },
+  );
+}
+
+/** Persist the full personal layout (positions + objects + viewport) for a project. */
+export async function saveCanvasLayout(
+  projectId: string,
+  payload: SaveLayoutPayload,
+): Promise<CanvasLayoutDto> {
+  return workgraphFetch<CanvasLayoutDto>(`/studio/projects/${projectId}/canvas-layout`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export interface UploadedCanvasImage {
+  storageKey: string;
+  bucket: string;
+  mimeType: string;
+  url: string;
+}
+
+/**
+ * Upload an image for the canvas. Multipart, so it bypasses {@link workgraphFetch} (which forces a
+ * JSON content type) and posts a FormData body directly to the workgraph proxy with auth headers.
+ */
+export async function uploadCanvasImage(
+  projectId: string,
+  file: File,
+): Promise<UploadedCanvasImage> {
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch(
+    apiPath(`/api/workgraph/studio/projects/${projectId}/canvas-layout/images`),
+    { method: "POST", headers: authHeaders(), body },
+  );
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const message =
+      data && typeof data === "object" && typeof (data as Record<string, unknown>).message === "string"
+        ? String((data as Record<string, unknown>).message)
+        : `Image upload failed (${res.status})`;
+    throw new Error(message);
+  }
+  return data as UploadedCanvasImage;
 }
 
 /* ─── Specification + work items (the spec/traceability spine) ───────────── */
