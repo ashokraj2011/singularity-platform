@@ -33,6 +33,7 @@ import {
   WifiOff,
   type LucideIcon,
 } from "lucide-react";
+import { AskSynthesisSidecar } from "./ask/AskSynthesisSidecar";
 
 export interface SynNavItem {
   href: string;
@@ -126,6 +127,7 @@ export function SynthesisShell({
           >
             {online ? <Wifi size={14} /> : <WifiOff size={14} />}{online ? "Online" : "Offline"}
           </span>
+          <AskSynthesisSidecar />
           <Link href="/" className="icon-button" title="Back to Platform" aria-label="Back to Platform"><ArrowLeft size={16} /></Link>
         </div>
       </header>
