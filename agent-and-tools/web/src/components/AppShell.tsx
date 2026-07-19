@@ -6,6 +6,7 @@ import { Sidebar } from "@/components/ui/Sidebar";
 import { EventHorizonChat } from "@/components/EventHorizonChat";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { LogoutButton } from "@/components/LogoutButton";
+import { CurrentUserBadge } from "./CurrentUserBadge";
 import { RequireSession } from "@/components/RequireSession";
 import { useEffect, useState } from "react";
 import { Play, RadioTower, Search, Settings } from "lucide-react";
@@ -191,6 +192,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             >
               <Settings size={15} />
             </Link>
+            <CurrentUserBadge />
             <LogoutButton />
           </div>
         </header>
