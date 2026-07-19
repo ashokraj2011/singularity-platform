@@ -1,0 +1,11 @@
+-- Business metric vocabulary.
+--
+-- Additive enum value: no backfill, no rewrite of existing rows, and nothing
+-- emits it until a definition is created. Safe to apply ahead of the code.
+--
+-- Note for anyone extending MetadataDefinitionKind later: the API also keeps a
+-- hardcoded `kinds` array in src/modules/metadata/metadata.router.ts that must
+-- be updated in the same change. It is the query filter as well as the
+-- create-validation set, so a kind present here but missing there is not a
+-- validation error -- it is silently absent from every list response.
+ALTER TYPE "MetadataDefinitionKind" ADD VALUE IF NOT EXISTS 'BUSINESS_METRIC';
