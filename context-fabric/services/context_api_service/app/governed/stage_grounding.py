@@ -26,6 +26,7 @@ from typing import Any, Optional
 logger = logging.getLogger("context_fabric.stage_grounding")
 
 _TRUTHY = {"1", "true", "yes", "on"}
+_FALSY = {"0", "false", "no", "off"}
 
 # The governed loop's system message already carries stage rules, tool contracts
 # and phase instructions. Grounding is context, not instruction, so it is capped
@@ -35,8 +36,18 @@ MAX_GROUNDING_CHARS = 12_000
 
 
 def stage_grounding_enabled() -> bool:
-    """Read per call so a rollout can be reverted without a restart."""
-    return os.getenv("CF_GOVERNED_STAGE_GROUNDING", "").strip().lower() in _TRUTHY
+    """ON by default. Set CF_GOVERNED_STAGE_GROUNDING to a falsy value to revert.
+
+    Coding agents are the ones that most need to know the build system, the test
+    commands and the shape of the repository. Leaving this off was the last place
+    the layered world model did not reach.
+
+    Read per call, so reverting is an env change rather than a redeploy.
+    """
+    raw = os.getenv("CF_GOVERNED_STAGE_GROUNDING", "").strip().lower()
+    if not raw:
+        return True
+    return raw not in _FALSY
 
 
 def render_grounding_block(

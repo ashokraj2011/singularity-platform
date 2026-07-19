@@ -150,6 +150,7 @@ explicitly reports `estimated_cost: 0`.
 | Path | Control | Default |
 |---|---|---|
 | §2 CF direct | `CF_ALLOW_DIRECT_LLM` | **off** |
+| workgraph direct | `WORKGRAPH_ALLOW_DIRECT_LLM` — refuses direct provider egress from `DIRECT_LLM_TASK` and the direct tool loop | **allowed** (no alternative egress exists yet, so off would break those nodes rather than reroute them) |
 | §3 laptop | `ENTERPRISE_LLM_GATEWAY=true` — hard kill switch, laptop never dispatched | off |
 | §3 laptop | `PREFER_LAPTOP_LLM` (fleet), `run_context.prefer_laptop_llm` (per run) | off |
 | §3 laptop | `RUNTIME_HTTP_FALLBACK_ENABLED` — when off, a missing runtime fails loudly instead of silently using the cloud | off |

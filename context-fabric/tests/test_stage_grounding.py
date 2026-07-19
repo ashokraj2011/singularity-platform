@@ -28,10 +28,24 @@ def _view(**over):
 
 
 # ── the flag ─────────────────────────────────────────────────────────────────
-def test_off_by_default():
-    """Merging must not change a single coding agent's prompt until an operator
-    opts in."""
+def test_on_by_default():
+    """Coding agents most need to know the build system, the test commands and
+    the shape of the repository. Leaving this off was the last place the layered
+    world model did not reach."""
+    assert sg.stage_grounding_enabled() is True
+
+
+@pytest.mark.parametrize("off", ["0", "false", "FALSE", "no", "off"])
+def test_can_be_reverted_by_env(monkeypatch, off):
+    monkeypatch.setenv("CF_GOVERNED_STAGE_GROUNDING", off)
     assert sg.stage_grounding_enabled() is False
+
+
+def test_blank_means_the_default_not_disabled(monkeypatch):
+    """An empty env var is "unset", not "off" -- a stray export must not silently
+    strip grounding from every coding agent."""
+    monkeypatch.setenv("CF_GOVERNED_STAGE_GROUNDING", "")
+    assert sg.stage_grounding_enabled() is True
 
 
 @pytest.mark.parametrize("flag", ["1", "true", "TRUE", "yes", "on"])
@@ -47,7 +61,8 @@ def test_flag_is_read_per_call(monkeypatch):
     assert sg.stage_grounding_enabled() is False
 
 
-def test_fetch_returns_nothing_while_disabled():
+def test_fetch_returns_nothing_while_disabled(monkeypatch):
+    monkeypatch.setenv("CF_GOVERNED_STAGE_GROUNDING", "false")
     result = asyncio.run(sg.fetch_stage_grounding(run_context={"capability_id": "cap-1"}, agent_role="developer"))
     assert result is None
 
