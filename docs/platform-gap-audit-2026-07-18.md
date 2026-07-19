@@ -19382,6 +19382,50 @@ Required fixes:
 - Add tests for no-moment first page, moment after event 5,000, cross-page burst,
   source event after a quiet prefix, and replay under a new detector profile.
 
+### 393. Board Moment detection is not idempotent for concurrent detect runs
+
+Evidence:
+
+- The manual `POST /boards/:boardId/moments/detect` route directly calls
+  `detectAndNarrate(...)`.
+- `detectAndNarrate(...)` reads the latest persisted moment, derives `sinceSeq`,
+  scans board events, and computes `detected` moments outside a lock, lease, or
+  detector job row.
+- For every detected window, it unconditionally calls `prisma.boardMoment.create`.
+- The `BoardMoment` schema has only non-unique indexes on `[boardId, branchId,
+  eventSeqStart]` and `tenantId`; it has no uniqueness over tenant, board, branch,
+  detector key, event window, detector profile, or policy digest.
+- `BoardMomentMarked` audit/outbox events are emitted after each create, also
+  without an idempotency key tied to the event window.
+- Two users, retries, or future workers can call detect at the same time, both
+  read the same `lastMoment`, both scan the same event range, and both insert
+  duplicate moments for the same board-event window.
+
+Impact:
+
+- Timeline evidence can show duplicated source-added, burst, phase, or decision
+  moments for the same underlying board events.
+- Audit/outbox consumers can receive multiple `BoardMomentMarked` events and
+  treat a single board event window as multiple governance facts.
+- Later cursoring by latest `eventSeqEnd` does not repair duplicates that already
+  exist, and duplicate rows can be edited or rejected independently.
+- Operators cannot tell whether repeated moments are independent signals,
+  concurrent detector retries, threshold variations, or duplicate writes.
+
+Required fixes:
+
+- Add a detector run/lease table or idempotent command keyed by tenant, board,
+  branch, detector profile/version, source head, and scanned event range.
+- Add a uniqueness constraint or upsert key for canonical moments, such as
+  `(tenantId, boardId, branchId, detectorKey, eventSeqStart, eventSeqEnd,
+  detectorProfileVersion)`.
+- Emit `BoardMomentMarked` with an idempotency key and detector run id.
+- Make duplicate detection attempts return the existing moment rows rather than
+  creating new ones.
+- Add concurrency tests for two simultaneous manual detect calls, retry after lost
+  response, background worker plus manual call, and different detector profiles
+  over the same event window.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
