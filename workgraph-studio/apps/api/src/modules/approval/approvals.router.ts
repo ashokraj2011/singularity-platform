@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { validate } from '../../middleware/validate'
 import { parsePagination, toPageResponse } from '../../lib/pagination'
-import { NotFoundError, ValidationError } from '../../lib/errors'
+import { ForbiddenError, NotFoundError, ValidationError } from '../../lib/errors'
 import { logEvent, createReceipt, publishOutbox } from '../../lib/audit'
 import { advance, failNode } from '../workflow/runtime/WorkflowRuntime'
 import { approveBudgetIncreaseFromApproval } from '../workflow/runtime/budget'
@@ -30,6 +30,7 @@ import {
 } from '../../lib/tenant-isolation'
 import { withTenantDbTransaction } from '../../lib/tenant-db-context'
 import { evaluateApprovalQuorum } from '../../lib/permissions/approval-quorum'
+import { assertInstancePermission, assertWorkflowOperationsPermission } from '../../lib/permissions/workflowTemplate'
 import { createNotification } from '../notifications/notifications.service'
 import { approveSpecificationVersion } from '../specifications/specifications.service'
 import {
@@ -105,6 +106,52 @@ async function tenantScopedInstanceIds(tenantId: string, db: Prisma.TransactionC
     take: 5000,
   })
   return rows.map(row => row.id)
+}
+
+type ApprovalReadable = {
+  id: string
+  tenantId: string | null
+  instanceId: string | null
+  requestedById: string
+  assignedToId: string | null
+  assignmentMode: string | null
+  teamId: string | null
+  roleKey: string | null
+  skillKey: string | null
+  capabilityId: string | null
+  dueAt: Date | null
+}
+
+async function canViewApprovalRequest(userId: string, request: ApprovalReadable): Promise<boolean> {
+  if (request.requestedById === userId || request.assignedToId === userId) return true
+
+  const decision = await canDecideApproval(
+    userId,
+    approvalRequestRouting(request),
+    { resourceType: 'ApprovalRequest', resourceId: request.id, tenantId: request.tenantId },
+  ).catch(() => ({ allowed: false }))
+  if (decision.allowed) return true
+
+  if (request.instanceId) {
+    try {
+      await assertInstancePermission(userId, request.instanceId, 'view', request.tenantId ?? undefined)
+      return true
+    } catch {
+      // Fall through to audit/operations permission.
+    }
+  }
+
+  try {
+    await assertWorkflowOperationsPermission(userId, 'audit_view', request.tenantId)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function assertCanViewApprovalRequest(userId: string, request: ApprovalReadable): Promise<void> {
+  if (await canViewApprovalRequest(userId, request)) return
+  throw new ForbiddenError('User cannot view this approval request')
 }
 
 const createApprovalSchema = z.object({
@@ -223,7 +270,11 @@ approvalsRouter.get('/', async (req, res, next) => {
         tx.approvalRequest.count({ where }),
       ])
     }, tenantId)
-    res.json(toPageResponse(requests, total, pg))
+    const visible = []
+    for (const request of requests) {
+      if (await canViewApprovalRequest(req.user!.userId, request)) visible.push(request)
+    }
+    res.json(toPageResponse(visible, Math.min(total, visible.length), pg))
   } catch (err) {
     next(err)
   }
@@ -318,7 +369,10 @@ approvalsRouter.get('/my-approvals', async (req, res, next) => {
 
 approvalsRouter.post('/workflow-node/:nodeId/ensure', async (req, res, next) => {
   try {
-    const { request, requestWithDecisions } = await withTenantDbTransaction(prisma, async (tx) => {
+    const tenantId = tenantIsolationStrict()
+      ? requireTenantFromRequest(req, 'approval workflow-node ensure')
+      : resolveTenantFromRequest(req)
+    const { node, instance, capabilityId } = await withTenantDbTransaction(prisma, async (tx) => {
       await assertWorkflowNodeTenant(req, req.params.nodeId)
       const node = await tx.workflowNode.findUnique({ where: { id: req.params.nodeId } })
       if (!node) throw new NotFoundError('WorkflowNode', req.params.nodeId)
@@ -330,17 +384,29 @@ approvalsRouter.post('/workflow-node/:nodeId/ensure', async (req, res, next) => 
       }
 
       const instance = node.instanceId
-        ? await tx.workflowInstance.findUnique({ where: { id: node.instanceId } })
+        ? await tx.workflowInstance.findUnique({
+          where: { id: node.instanceId },
+          include: { template: { select: { capabilityId: true } } },
+        })
         : null
       if (!instance) throw new NotFoundError('WorkflowInstance', node.instanceId ?? undefined)
+      return { node, instance, capabilityId: instance.template?.capabilityId ?? null }
+    }, tenantId)
 
-      const created = await activateApproval(node, instance, req.user!.userId)
-      const withDecisions = await tx.approvalRequest.findUnique({
-        where: { id: created.id },
+    await assertCanRequestApproval(
+      req.user!.userId,
+      capabilityId,
+      permissionForApprovalSubject('WorkflowNode'),
+      tenantId ?? instance.tenantId ?? undefined,
+    )
+
+    const request = await activateApproval(node, instance, req.user!.userId)
+    const requestWithDecisions = await withTenantDbTransaction(prisma, async (tx) => {
+      return tx.approvalRequest.findUnique({
+        where: { id: request.id },
         include: { decisions: true },
       })
-      return { request: created, requestWithDecisions: withDecisions }
-    })
+    }, tenantId ?? instance.tenantId ?? undefined)
     res.status(201).json(requestWithDecisions ?? request)
   } catch (err) {
     next(err)
@@ -357,6 +423,7 @@ approvalsRouter.get('/:id', async (req, res, next) => {
       })
     })
     if (!request) throw new NotFoundError('ApprovalRequest', req.params.id)
+    await assertCanViewApprovalRequest(req.user!.userId, request)
     res.json(request)
   } catch (err) {
     next(err)
@@ -365,13 +432,17 @@ approvalsRouter.get('/:id', async (req, res, next) => {
 
 approvalsRouter.get('/:id/decisions', async (req, res, next) => {
   try {
-    const decisions = await withTenantDbTransaction(prisma, async (tx) => {
+    const { request, decisions } = await withTenantDbTransaction(prisma, async (tx) => {
       await assertApprovalRequestTenant(req, req.params.id)
-      return tx.approvalDecision.findMany({
+      const request = await tx.approvalRequest.findUnique({ where: { id: req.params.id } })
+      if (!request) throw new NotFoundError('ApprovalRequest', req.params.id)
+      const decisions = await tx.approvalDecision.findMany({
         where: { requestId: req.params.id },
         orderBy: { decidedAt: 'desc' },
       })
+      return { request, decisions }
     })
+    await assertCanViewApprovalRequest(req.user!.userId, request)
     res.json(decisions)
   } catch (err) {
     next(err)

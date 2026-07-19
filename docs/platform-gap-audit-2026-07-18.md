@@ -545,6 +545,22 @@ Required fixes:
 - Redact `formData` and sensitive routing details unless the caller can decide
   or audit the approval.
 
+Progress:
+
+- `GET /approvals` now filters approval rows to requests the caller requested,
+  is directly assigned to, can decide via approval routing, can view through the
+  linked workflow instance, or can view through workflow audit operations
+  permission.
+- `GET /approvals/:id` and `GET /approvals/:id/decisions` now apply the same
+  read gate after tenant isolation succeeds.
+- `POST /approvals/workflow-node/:nodeId/ensure` now requires
+  `assertCanRequestApproval(...)` using the workflow approval permission and
+  the owning workflow template capability before materializing the request.
+- Remaining follow-up: add dedicated approval-view permission keys, default
+  redaction for sensitive `formData`/routing details, and integration tests with
+  real IAM decisions for requester, assigned approver, delegated approver,
+  workflow viewer, auditor, and unrelated tenant user.
+
 ### 16. Run cockpit "Approve & advance" is a manual force-complete override
 
 Evidence:
