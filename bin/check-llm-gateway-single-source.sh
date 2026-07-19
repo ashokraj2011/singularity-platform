@@ -57,7 +57,14 @@ DIRECT_PROVIDER_PATHS='context-fabric/services/context_api_service/app/governed/
 
 # These callers do not own provider credentials; they call the configured
 # gateway for diagnostics/embeddings and are intentionally not MCP relays.
-DIRECT_GATEWAY_PATHS='agent-and-tools/packages/shared/src/llm-gateway/|agent-and-tools/apps/agent-runtime/src/modules/capabilities/bootstrap-phase3-distill\.ts|audit-governance-service/src/engine/|audit-governance-service/test/|tools/capability-harness/|tests/chaos/|context-fabric/services/context_api_service/app/governed/llm_client\.py|context-fabric/services/context_api_service/app/governed/turn\.py|context-fabric/services/context_api_service/app/laptop_registry\.py|bin/copilot-cli-server\.js'
+#
+# Infrastructure LLM calls (world-model distillation, claim lowering, judging,
+# summarisation) are exempt from prompt-composer/context-fabric by policy — they
+# are not agent turns and composing them through the agent-context pipeline is
+# meaningless. They remain bound to the single tagged gateway (model_alias), so
+# they belong here rather than in DIRECT_PROVIDER_PATHS. Agent/task turns get no
+# such exemption: those must go composer + context-fabric + tagged gateway.
+DIRECT_GATEWAY_PATHS='agent-and-tools/packages/shared/src/llm-gateway/|agent-and-tools/apps/agent-runtime/src/modules/capabilities/bootstrap-phase3-distill\.ts|claim-registry/src/lib/gateway\.ts|audit-governance-service/src/engine/|audit-governance-service/test/|tools/capability-harness/|tests/chaos/|context-fabric/services/context_api_service/app/governed/llm_client\.py|context-fabric/services/context_api_service/app/governed/turn\.py|context-fabric/services/context_api_service/app/laptop_registry\.py|bin/copilot-cli-server\.js'
 
 # Lines that are pure comments (// /* * # docstrings) don't introduce a
 # runtime call — strip them when grepping. Be a bit lenient (we strip only
