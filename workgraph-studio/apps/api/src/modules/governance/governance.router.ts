@@ -181,6 +181,7 @@ governanceRouter.post('/waivers', async (req, res, next) => {
       }
       return tx.governanceWaiver.create({
         data: {
+          tenantId,
           workItemId: b.workItemId ?? null,
           workflowInstanceId: b.workflowInstanceId ?? null,
           workflowNodeId: b.workflowNodeId ?? null,

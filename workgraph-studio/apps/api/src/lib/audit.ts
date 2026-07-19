@@ -71,7 +71,7 @@ export async function createReceipt(
 ): Promise<void> {
   const safeContent = redactSecrets(content)
   await prisma.receipt.create({
-    data: { receiptType, entityType, entityId, content: safeContent as unknown as Prisma.InputJsonValue, eventLogId },
+    data: { receiptType, entityType, entityId, content: safeContent as unknown as Prisma.InputJsonValue, eventLogId, tenantId: currentTenantIdForDb() },
   })
 }
 
