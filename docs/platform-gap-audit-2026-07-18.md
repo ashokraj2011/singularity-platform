@@ -18409,6 +18409,57 @@ Required fixes:
   acceptance, arbitrary capability injection, backfill behavior, and claim list
   filtering by capability.
 
+### 373. Board ingestion artifacts are branch-specific but deduped board-wide
+
+Evidence:
+
+- The Studio board schema is explicitly branch-aware: `BoardBranch` is the
+  event-log fence, and `IngestedArtifact` stores both `boardId` and `branchId`.
+- The ingest route accepts a `branch` in the request body and calls
+  `ingest(boardId, branch, input, actor)`.
+- `ingest(...)` resolves that branch and creates new artifacts with
+  `branchId: branch.id`.
+- Before creating the branch artifact or appending events, `ingest(...)` performs
+  dedupe with `findFirst({ where: { boardId, contentHash } })`.
+- If the same source content was already ingested on any branch of the board,
+  the function returns the existing artifact with `deduped: true` before
+  appending `INGESTION_STARTED`, `OBJECT_CREATED`, or `INGESTION_COMPLETED` to
+  the requested branch.
+- The schema index is `@@index([boardId, contentHash])`, not a branch-aware
+  uniqueness or lookup pattern.
+- `listArtifacts(boardId)` and `getArtifactClaims(boardId, artifactId)` are also
+  board-wide and the API routes do not accept branch context.
+
+Impact:
+
+- Dropping the same deck/document onto a feature branch can return success while
+  creating no source card, no ingestion events, and no moment evidence in that
+  branch.
+- Branch review, merge, replay, and synthesis can incorrectly conclude that a
+  branch did not add a source, because the only artifact row belongs to another
+  branch.
+- Extracted claim accept/reject actions are not scoped to the branch where the
+  user is working, so source-document evidence can leak between branch
+  experiments.
+- Users can lose confidence in the Idea Board because a duplicate source appears
+  to ingest successfully but does not show up in the target branch's event-sourced
+  board state.
+
+Required fixes:
+
+- Make dedupe branch-aware, for example by looking up `(boardId, branchId,
+  contentHash)` or by creating a branch-local artifact placement reference when
+  content already exists elsewhere on the board.
+- If storage-level binary dedupe is desired, separate the shared blob/source row
+  from per-branch artifact placement and append branch events for every drop.
+- Add branch filters or explicit branch metadata to artifact list and claim
+  routes, and require branch permission/context before claim accept/reject.
+- On duplicate content in another branch, append a target-branch placement event
+  that references the existing content hash instead of returning early.
+- Add tests for same file on two branches, duplicate file on the same branch,
+  branch-specific artifact lists, claim status isolation, and branch replay/merge
+  after duplicate source ingestion.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
