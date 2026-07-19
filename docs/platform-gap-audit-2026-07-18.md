@@ -19723,6 +19723,65 @@ Required fixes:
 - Add tests for missing system prompt, Prompt Composer outage, degraded response
   shape, UI warning rendering, and strict-mode fail-closed behavior.
 
+### 400. Agent Task capability snapshots are fire-and-forget evidence
+
+Evidence:
+
+- `snapshot/index.ts` describes capability snapshots as audit evidence: every
+  execute that references a capability should write or dedupe one
+  `capability_snapshots` row, and workflow reads join by external id.
+- `snapshotCapability(...)` catches upstream IAM lookup failures, falls back to
+  the latest prior snapshot by `externalId`, and returns
+  `{ snapshotId: null, fetched: false, sourceHash: null }` when no prior snapshot
+  exists.
+- `AgentTaskExecutor` calls `snapshotCapability(cfgCapabilityId, ...)` with
+  `void ...catch(() => null)`, so the Agent Task proceeds immediately and silently
+  discards every snapshot failure.
+- The same executor creates the `AgentRun` after the fire-and-forget call, but
+  does not store `capabilitySnapshotId`, `capabilitySourceHash`,
+  `capabilitySnapshotFetched`, or any fallback/error marker on `AgentRun`,
+  `AgentRunOutput`, receipts, or run context.
+- The Prisma `AgentRun` model has trace/correlation fields such as `traceId`,
+  `cfCallId`, `promptAssemblyId`, `mcpInvocationId`, and `modelCallId`, but no
+  relation or scalar field for a capability snapshot.
+- The `CapabilitySnapshot` model is keyed only by `externalId` and `sourceHash`;
+  it has no run, workflow, node, authorization snapshot, or trace correlation
+  back to the execution that needed it.
+- Existing audit coverage mentions missing capability snapshots for generation
+  plan target checks, but searches found no finding covering Agent Task runtime
+  capability snapshot failures or the missing run-to-snapshot link.
+
+Impact:
+
+- A governed Agent Task can run under a capability while leaving no durable proof
+  of the exact IAM capability record, owner, visibility, status, and payload hash
+  that were current at execution time.
+- If IAM is unavailable, deleted, or returns a different capability later, audit
+  reconstruction has to infer from live mutable capability data or a best-effort
+  prior snapshot that may not match the run.
+- Operations and run cockpits cannot warn that capability evidence is missing,
+  stale, or reused because the failure is intentionally dropped before the
+  `AgentRun` is written.
+- This undercuts the platform's capability-owned SDLC model: the node may be
+  authorized/routed by capability id, but the evidence pack cannot prove which
+  capability definition was actually bound to the run.
+
+Required fixes:
+
+- Await capability snapshot resolution before dispatching the Agent Task in
+  production/strict mode; fail closed when no fresh or policy-accepted stale
+  snapshot exists.
+- Add `capabilitySnapshotId`, `capabilitySnapshotStatus`, `capabilitySourceHash`,
+  and `capabilitySnapshotFetchedAt` to `AgentRun` or a dedicated run evidence
+  table.
+- Store the snapshot id/status in the trace/evidence output and run cockpit so
+  missing or stale capability evidence is visible.
+- Tie `CapabilitySnapshot` rows or a join table to tenant, workflow instance,
+  node id, actor, authorization snapshot, and trace id.
+- Add tests for fresh snapshot success, upstream outage with prior accepted
+  snapshot, upstream outage with no prior snapshot, strict-mode failure, stale
+  capability status, and audit/evidence rendering.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
