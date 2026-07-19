@@ -166,6 +166,15 @@ jobs:
       # unenforced on PRs — blocking now that main passes clean.
       - name: LLM single-gateway guard
         run: bash bin/check-llm-gateway-single-source.sh
+      # Embedding-provider landmine: the gateway's DEFAULT alias is an Anthropic
+      # chat model, which has no embeddings endpoint — so with EMBEDDING_MODEL_ALIAS
+      # unset every embedding 400s and semantic grounding degrades SILENTLY to
+      # recency/FTS. The guard existed and was documented in the staging runbook,
+      # but nothing ever ran it. Informational here (it exits 0 and WARNs on the
+      # repo's dev-default catalog); a deployment asserts it hard with --strict
+      # once EMBEDDING_MODEL_ALIAS points at an embedding-capable alias.
+      - name: Embedding provider guard
+        run: python3 bin/check-embedding-provider.py
       # Secret guardrail — informational for now (flip to blocking once a first
       # green run confirms it behaves in CI).
       - name: Secret guardrails
