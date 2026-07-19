@@ -9,6 +9,17 @@ governed loop passes only its synthetic ``submit_phase_output`` tool here.
 Secrets are never accepted in the workflow payload. A node may name the
 environment variable containing its provider key, but Context Fabric validates
 that name against an allowlist before reading it.
+
+GATED (W2-4). This route egresses to a provider WITHOUT the LLM gateway, so it
+has no single-source enforcement, no task tag, no gateway audit line and no cost
+attribution -- it is the bypass that survives inside Context Fabric even after
+every workgraph-side direct path is retired. It is therefore OFF unless
+CF_ALLOW_DIRECT_LLM is set.
+
+Disabling does NOT fail a node that asked for it: the request falls through to
+the tagged gateway, which does the same job with governance attached. That keeps
+the switch safe to flip and makes the escape hatch explicit rather than implied
+by a node's config.
 """
 from __future__ import annotations
 
@@ -19,6 +30,7 @@ import os
 import re
 import socket
 import time
+import logging
 from typing import Any
 from urllib.parse import urlparse
 
@@ -26,6 +38,8 @@ import httpx
 
 from .llm_client import ChatResponse, ChatToolCall, LLMGatewayError
 from ..response_json import UpstreamJsonError, response_json_object
+
+logger = logging.getLogger("context_fabric.direct_llm")
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
@@ -36,8 +50,16 @@ _DEFAULT_ALLOWED_CREDENTIAL_ENVS = {
 }
 
 
-def is_context_fabric_direct_route(run_context: dict[str, Any] | None) -> bool:
-    """Return true only for the explicit per-node direct route."""
+def direct_route_allowed() -> bool:
+    """Whether Context Fabric may egress to a provider directly at all.
+
+    Read per call so an operator can open or close the hatch without a restart.
+    """
+    return os.environ.get("CF_ALLOW_DIRECT_LLM", "").strip().lower() in _TRUTHY
+
+
+def requested_direct_route(run_context: dict[str, Any] | None) -> bool:
+    """What the node ASKED for, independent of whether it is permitted."""
     context = run_context if isinstance(run_context, dict) else {}
     raw = context.get("llm_route") or context.get("llmRoute") or context.get("llm_execution_route")
     route = str(raw or "").strip().lower().replace("-", "_")
@@ -47,6 +69,31 @@ def is_context_fabric_direct_route(run_context: dict[str, Any] | None) -> bool:
         "context_fabric_llm",
         "cf_direct",
     }
+
+
+def is_context_fabric_direct_route(run_context: dict[str, Any] | None) -> bool:
+    """Whether this turn actually takes the direct route.
+
+    Asking is no longer sufficient. A node that requests the direct route while
+    the hatch is shut is redirected to the gateway rather than refused -- same
+    work, with governance attached. Every callers' `if direct else gateway`
+    branch therefore closes the bypass without any change at the call site.
+
+    The redirect is logged, because a node silently not taking the route its
+    config names is exactly the kind of thing that should be visible.
+    """
+    if not requested_direct_route(run_context):
+        return False
+    if direct_route_allowed():
+        return True
+    logger.warning(
+        "context_fabric.direct_llm.redirected_to_gateway capability_id=%s trace_id=%s -- "
+        "node requested the direct LLM route but CF_ALLOW_DIRECT_LLM is not set; "
+        "routing through the gateway instead",
+        (run_context or {}).get("capability_id") or (run_context or {}).get("capabilityId"),
+        (run_context or {}).get("trace_id") or (run_context or {}).get("traceId"),
+    )
+    return False
 
 
 def _direct_config(run_context: dict[str, Any] | None) -> dict[str, Any]:
@@ -339,6 +386,19 @@ async def call_direct_chat(
     max_output_tokens: int | None = None,
     timeout_sec: float | None = None,
 ) -> ChatResponse:
+    # Defence in depth. is_context_fabric_direct_route already gates every
+    # current call site, but a future one that forgets the check must not be
+    # able to open a provider socket. Mock is exempt: it reaches no network, and
+    # tests rely on it without needing the hatch open.
+    if not direct_route_allowed():
+        probe_provider, _model, _base, _cred = _provider_config(run_context, model_alias)
+        if probe_provider != "mock":
+            raise LLMGatewayError(
+                "DIRECT_LLM_DISABLED",
+                "Context Fabric direct LLM egress is disabled (set CF_ALLOW_DIRECT_LLM to re-enable). "
+                "Route this call through the gateway instead.",
+            )
+
     provider, model, configured_base_url, credential_env = _provider_config(run_context, model_alias)
     if provider == "mock":
         text = "\n".join(_message_content(item.get("content")) for item in messages)
