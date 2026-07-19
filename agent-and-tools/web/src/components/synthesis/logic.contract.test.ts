@@ -145,8 +145,10 @@ const ideaScreen = fs.readFileSync(
   "utf8",
 );
 assert.match(ideaScreen, /IdeaBoardWorkspace/, "the Idea Board route should mount the durable board workspace");
-assert.match(ideaScreen, /fullBleed=\{view === "board"\}/, "the spatial canvas should use the full work area");
+assert.match(ideaScreen, /fullBleed=\{view === "board" \|\| view === "canvas"\}/, "the spatial canvas should use the full work area");
 assert.match(ideaScreen, /FactVotingView/, "the Idea Board should expose fact review and voting");
+assert.match(ideaScreen, /StrategyCanvas/, "the Idea Board should expose the freeform Strategy Canvas");
+assert.match(ideaScreen, /setView\("canvas"\)/, "the Strategy Canvas should be a selectable workspace view");
 
 const boardCanvas = fs.readFileSync(
   path.join(process.cwd(), "src/components/studio/BoardCanvas.tsx"),

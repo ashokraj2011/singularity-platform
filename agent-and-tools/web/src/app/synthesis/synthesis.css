@@ -51,6 +51,18 @@
   min-width: 0;
   --syn-collaboration: #2563eb;
   --syn-collaboration-soft: #dbeafe;
+
+  /* Strategy Canvas sticky-note palettes (decorative, canvas-only). */
+  --syn-sticky-ink: #26324a;
+  --syn-sticky-frame: color-mix(in srgb, var(--color-outline) 55%, transparent);
+  --syn-sticky-green-bg: #dcf5e3;
+  --syn-sticky-green-edge: #86c79b;
+  --syn-sticky-red-bg: #fbe0e2;
+  --syn-sticky-red-edge: #e79aa1;
+  --syn-sticky-blue-bg: #dbe9fb;
+  --syn-sticky-blue-edge: #93b7e6;
+  --syn-sticky-yellow-bg: #fdf3cf;
+  --syn-sticky-yellow-edge: #e5cf7c;
 }
 
 .synthesis-root .syn-appbar,
