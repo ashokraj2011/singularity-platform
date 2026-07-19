@@ -40,11 +40,22 @@ logger = logging.getLogger("context_fabric.single_turn_compose")
 MAX_OVERRIDE_LAYER_CHARS = 4_000
 
 _TRUTHY = {"1", "true", "yes", "on"}
+_FALSY = {"0", "false", "no", "off"}
 
 
 def single_turn_compose_enabled() -> bool:
-    """Read per call so an operator can enable or revert without a restart."""
-    return os.getenv("CF_SINGLE_TURN_COMPOSE", "").strip().lower() in _TRUTHY
+    """ON by default. Set CF_SINGLE_TURN_COMPOSE to a falsy value to revert.
+
+    Composing these callers is now the intended behaviour, not an experiment:
+    running them verbatim is what left planner, synthesis, room-copilot and the
+    board services with no platform layers and no capability grounding.
+
+    Read per call, so reverting is an env change rather than a redeploy.
+    """
+    raw = os.getenv("CF_SINGLE_TURN_COMPOSE", "").strip().lower()
+    if not raw:
+        return True
+    return raw not in _FALSY
 
 
 def compose_opt_out(run_context: dict[str, Any]) -> bool:

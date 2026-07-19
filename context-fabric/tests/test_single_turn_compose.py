@@ -33,11 +33,22 @@ def _rc(**kw):
 
 
 # ── the flag ─────────────────────────────────────────────────────────────────
-def test_off_by_default(monkeypatch):
-    """Merging this must not change a single prompt until an operator opts in."""
+def test_on_by_default(monkeypatch):
+    """Composing is now the intended behaviour. Running these callers verbatim is
+    what left planner, synthesis and the board services ungrounded."""
     do, reason = stc.should_compose(_rc(), "you are helpful")
-    assert do is False
-    assert reason is None, "the default posture is not a warning"
+    assert do is True
+    assert reason is None
+
+
+def test_can_be_reverted_by_env(monkeypatch):
+    """Revert is an env change, not a redeploy -- the escape hatch survives the
+    default flip."""
+    for off in ["0", "false", "FALSE", "no", "off"]:
+        monkeypatch.setenv("CF_SINGLE_TURN_COMPOSE", off)
+        do, reason = stc.should_compose(_rc(), "sys")
+        assert do is False
+        assert reason is None, "an operator-chosen revert is not a warning"
 
 
 @pytest.mark.parametrize("flag", ["1", "true", "TRUE", "yes", "on"])
@@ -47,10 +58,17 @@ def test_enabled_by_the_flag(monkeypatch, flag):
     assert do is True and reason is None
 
 
-@pytest.mark.parametrize("flag", ["0", "false", "no", "off", ""])
+@pytest.mark.parametrize("flag", ["0", "false", "no", "off"])
 def test_disabled_values(monkeypatch, flag):
     monkeypatch.setenv("CF_SINGLE_TURN_COMPOSE", flag)
     assert stc.single_turn_compose_enabled() is False
+
+
+def test_blank_means_the_default_not_disabled(monkeypatch):
+    """An empty env var is "unset", not "off" -- otherwise a stray export would
+    silently revert composition platform-wide."""
+    monkeypatch.setenv("CF_SINGLE_TURN_COMPOSE", "")
+    assert stc.single_turn_compose_enabled() is True
 
 
 def test_flag_is_read_per_call(monkeypatch):
@@ -82,9 +100,9 @@ def test_opting_in_explicitly_still_composes(monkeypatch, value):
 
 
 def test_opt_out_cannot_turn_composition_ON(monkeypatch):
-    """The flag is the master switch; a run_context value must not enable a
-    behaviour the operator has not enabled."""
-    monkeypatch.delenv("CF_SINGLE_TURN_COMPOSE", raising=False)
+    """The env flag is the master switch: with it explicitly off, a run_context
+    value must not re-enable a behaviour the operator turned off."""
+    monkeypatch.setenv("CF_SINGLE_TURN_COMPOSE", "false")
     do, _ = stc.should_compose(_rc(compose_single_turn=True), "sys")
     assert do is False
 
