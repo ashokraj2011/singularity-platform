@@ -19017,6 +19017,49 @@ Required fixes:
 - Add tests for completing merges into `main`, non-main branches, stale target
   branches, and cases where the source matches one target but not another.
 
+### 385. Board merge detects cluster changes but replay drops them
+
+Evidence:
+
+- `board-merge.ts` treats `cluster` and `clusterId` as spatial keys by including
+  them in `SPATIAL_KEYS`.
+- `styleSig(...)` includes cluster membership by serializing `{ style, cluster:
+  get(o, 'cluster') ?? get(o, 'clusterId') ?? null }`.
+- `classifyChange(...)` returns `RESTYLED` when `styleSig(base) !==
+  styleSig(side)`, so a branch that changes only `cluster` or `clusterId` is
+  detected as a restyle/spatial merge item.
+- `mergeEvent(...)` handles `RESTYLED` by returning an `OBJECT_EDITED` event with
+  payload `{ patch: { style: asRec(branchObj)['style'] ?? null } }`.
+- `mergeEvent(...)` does not include `cluster` or `clusterId` in that patch, even
+  though those fields were part of the signature that caused the `RESTYLED`
+  change.
+- The board reducer applies `OBJECT_EDITED` by shallow-merging only the supplied
+  patch into the target object, so omitted cluster fields remain unchanged.
+
+Impact:
+
+- A branch can move an object into or out of a cluster/frame, the diff can report
+  a `RESTYLED` change, and the merge can claim it applied that change while the
+  target branch never receives the new cluster membership.
+- If the branch object has no `style`, replay may write `style: null` while still
+  dropping the actual cluster change that triggered the merge item.
+- Merge summaries and audit events can overstate what was replayed, because the
+  applied event id exists but the semantic layout relation is missing.
+- Evidence replay, visual grouping, voting clusters, and downstream synthesis can
+  diverge from the branch the reviewer intended to merge.
+
+Required fixes:
+
+- Split restyle and regroup changes into explicit diff kinds, or include all
+  fields represented by `styleSig(...)` in the replay patch.
+- Preserve both `cluster` and `clusterId` semantics intentionally instead of
+  collapsing them into one signature and replaying neither.
+- Add merge-event tests for style-only, cluster-only, clusterId-only, style plus
+  cluster, and clearing cluster membership.
+- Add an assertion that every field contributing to a diff signature is either
+  replayed, intentionally ignored with policy metadata, or surfaced as a
+  non-applicable warning.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
