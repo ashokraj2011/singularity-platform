@@ -1521,6 +1521,7 @@ model SpecificationProject {
   validationReports         ArtifactValidationReport[]
   studio        Studio?
   synthesisWorkspaces SynthesisWorkspace[]
+  synthesisDocuments  SynthesisDocument[]
   completionProgram WorkProgram?         @relation("ProjectCompletionProgram", fields: [completionProgramId], references: [id], onDelete: SetNull)
 
   @@index([status])
@@ -5745,4 +5746,124 @@ model ContextManifest {
   @@index([tenantId], map: "ix_context_manifests_tenant")
   @@index([workspaceId, threadId])
   @@map("context_manifests")
+}
+
+// ── Synthesis Studio — Documents (R1A Documents phase) ────────────────────────
+// Versioned "Working Artifact" documents with structured, addressable blocks.
+// Spec-typed docs (PRD/BRD) BIND to a SpecificationVersion and do NOT own content
+// here (enforced in the service) — the spec stays the system-of-record. READOUT/
+// DIGEST/NARRATIVE/GENERIC own their content via DocumentVersion + DocumentBlock.
+
+enum SynthesisDocType {
+  PRD
+  BRD
+  READOUT
+  DIGEST
+  NARRATIVE
+  GENERIC
+}
+
+enum SynthesisDocumentStatus {
+  DRAFT
+  IN_REVIEW
+  CHANGES_REQUESTED
+  APPROVED
+  PUBLISHED
+  SUPERSEDED
+  ARCHIVED
+}
+
+enum DocumentBlockType {
+  NARRATIVE
+  CITATION
+  CLAIM
+  DECISION
+  REQUIREMENT
+  ACCEPTANCE
+  OBJECTIVE
+  METRIC
+  RISK
+  EXPERIMENT
+  DIAGRAM
+  WORKITEM
+  AGENT_INFERENCE
+}
+
+enum DocumentBlockMode {
+  LIVE
+  PINNED
+}
+
+model SynthesisDocument {
+  id                     String                  @id @default(uuid())
+  tenantId               String?                 @default("default")
+  specificationProjectId String
+  workItemId             String? // denormalized scope carrier (no FK)
+  workspaceId            String? // the workspace it was authored in
+  docType                SynthesisDocType        @default(GENERIC)
+  title                  String
+  status                 SynthesisDocumentStatus @default(DRAFT)
+  currentVersionId       String?
+  specificationVersionId String? // set → spec-bound (content lives in the SpecificationVersion)
+  contentHash            String?
+  supersedesId           String?
+  createdById            String
+  approvedById           String?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+
+  project  SpecificationProject @relation(fields: [specificationProjectId], references: [id], onDelete: Cascade)
+  versions DocumentVersion[]
+
+  @@index([tenantId], map: "ix_synthesis_documents_tenant")
+  @@index([specificationProjectId, status])
+  @@index([workspaceId])
+  @@map("synthesis_documents")
+}
+
+model DocumentVersion {
+  id               String                  @id @default(uuid())
+  tenantId         String?                 @default("default")
+  documentId       String
+  version          Int
+  revision         Int                     @default(1)
+  status           SynthesisDocumentStatus @default(DRAFT)
+  renderedMarkdown String?
+  contentHash      String?
+  package          Json?
+  createdById      String?
+  approvedById     String?
+  supersedesId     String?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  document SynthesisDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  blocks   DocumentBlock[]
+
+  @@unique([documentId, version])
+  @@index([tenantId], map: "ix_document_versions_tenant")
+  @@map("document_versions")
+}
+
+model DocumentBlock {
+  id                String              @id @default(uuid())
+  tenantId          String?             @default("default")
+  documentVersionId String
+  ordinal           Int
+  blockType         DocumentBlockType
+  mode              DocumentBlockMode   @default(LIVE)
+  content           Json                @default("{}")
+  sourceRef         Json? // { contextReferenceId?, entityType, entityId, versionId?, contentHash? }
+  pinnedSnapshot    Json? // frozen content captured when mode flips to PINNED
+  authorType        WorkspaceAuthorType @default(HUMAN)
+  authorId          String?
+  agentRole         String?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  documentVersion DocumentVersion @relation(fields: [documentVersionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId], map: "ix_document_blocks_tenant")
+  @@index([documentVersionId, ordinal])
+  @@map("document_blocks")
 }
