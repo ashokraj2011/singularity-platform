@@ -18827,6 +18827,58 @@ Required fixes:
   retry after model recovery, manual edit after failed narration, and evidence
   pack rendering of retryable moments.
 
+### 381. Board Moment detector thresholds are caller-supplied but not versioned or replayable
+
+Evidence:
+
+- `detectMomentsSchema` lets the caller provide `burstMinCount` and `stallFactor`
+  on every `POST /boards/:boardId/moments/detect` request.
+- The router passes those request values directly into `detectAndNarrate(...)`.
+- `detectMoments(...)` uses `cfg.burstMinCount ?? 5` for burst detection and
+  `cfg.stallFactor ?? 3` for stall detection, so different invocations can
+  produce different moments over the same event stream.
+- `detectAndNarrate(...)` persists each `BoardMoment` with board id, branch id,
+  kind, detector key, event window, narrative, causal chain, confidence, status,
+  and tenant id, but it does not store detector configuration, detector policy
+  version, caller-supplied thresholds, or whether defaults were used.
+- The `BoardMoment` schema has no fields for detector config, detector version,
+  policy digest, review profile, or run id.
+- `BoardMomentMarked` audit/outbox payload includes board id, branch, kind, and
+  detector key, but not the threshold values or detector policy that caused the
+  moment to exist.
+- `detectAndNarrate(...)` only reads events after the latest existing moment's
+  `eventSeqEnd`; once a moment is created under one threshold set, later runs
+  under stricter or canonical thresholds do not naturally re-evaluate that same
+  window.
+
+Impact:
+
+- Two operators or automations can create different timeline evidence from the
+  same board events by changing request thresholds, without any durable record of
+  the detector policy used.
+- A low `burstMinCount` or high `stallFactor` can create or suppress moments that
+  later appear as governed timeline evidence, while auditors cannot reproduce
+  the decision from stored data alone.
+- Detector defaults can change in code and make future replay disagree with old
+  moments because the old threshold/policy version was never stored.
+- The event-window cursor makes ad-hoc detection choices sticky: a moment created
+  with experimental thresholds advances the cursor and prevents the canonical
+  detector profile from reviewing that window.
+
+Required fixes:
+
+- Introduce named, versioned Board Moment detector profiles with bounded
+  thresholds, owner, tenant, policy digest, and effective dates.
+- Store detector profile id/version, resolved config, and code policy digest on
+  every `BoardMoment` and `BoardMomentMarked` audit/outbox event.
+- Restrict request-time threshold overrides to explicit debug/admin mode, and
+  label such moments as non-canonical unless approved.
+- Track detector cursors per detector profile/version or allow governed replay
+  over a selected event window without duplicating moments.
+- Add tests proving the same event stream plus same profile is deterministic,
+  different profiles are recorded, threshold overrides are rejected in production,
+  and replay under a new profile does not silently rewrite or skip prior windows.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
