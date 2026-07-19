@@ -11,6 +11,8 @@ import { createWorkspace, getWorkspace, listWorkspaces, createThread, listThread
 import { appendMessage, listMessages } from './message.service'
 import { addContextRef, listContextRefs, removeContextRef } from './context-reference.service'
 import { buildManifest, getManifest } from './context-manifest.service'
+import { createDocument, getDocument, listDocuments, transitionDocument } from './document.service'
+import { addBlock, updateBlock, removeBlock, pinBlock } from './block.service'
 
 export const synthesisRouter: Router = Router()
 
@@ -108,4 +110,59 @@ synthesisRouter.post('/workspaces/:workspaceId/threads/:threadId/manifest', wrap
 }))
 synthesisRouter.get('/workspaces/:workspaceId/manifests/:manifestId', wrap(async (req, res) => {
   res.json(await getManifest(String(req.params.workspaceId), String(req.params.manifestId)))
+}))
+
+// ── Documents ─────────────────────────────────────────────────────────────────
+const DOC_TYPES = ['PRD', 'BRD', 'READOUT', 'DIGEST', 'NARRATIVE', 'GENERIC'] as const
+const DOC_STATUSES = ['DRAFT', 'IN_REVIEW', 'CHANGES_REQUESTED', 'APPROVED', 'PUBLISHED', 'SUPERSEDED', 'ARCHIVED'] as const
+const BLOCK_TYPES = ['NARRATIVE', 'CITATION', 'CLAIM', 'DECISION', 'REQUIREMENT', 'ACCEPTANCE', 'OBJECTIVE', 'METRIC', 'RISK', 'EXPERIMENT', 'DIAGRAM', 'WORKITEM', 'AGENT_INFERENCE'] as const
+
+const createDocumentSchema = z.object({
+  specificationProjectId: z.string().trim().min(1),
+  docType: z.enum(DOC_TYPES),
+  title: z.string().trim().min(1).max(300),
+  workItemId: z.string().trim().min(1).nullable().optional(),
+  workspaceId: z.string().trim().min(1).nullable().optional(),
+  specificationVersionId: z.string().trim().min(1).nullable().optional(),
+})
+const transitionSchema = z.object({ to: z.enum(DOC_STATUSES) })
+const addBlockSchema = z.object({
+  blockType: z.enum(BLOCK_TYPES),
+  content: z.record(z.unknown()).optional(),
+  ordinal: z.number().int().min(0).optional(),
+  mode: z.enum(['LIVE', 'PINNED']).optional(),
+  sourceRef: z.record(z.unknown()).optional(),
+  authorType: z.enum(['HUMAN', 'AGENT', 'SYSTEM']).optional(),
+  authorId: z.string().trim().min(1).optional(),
+  agentRole: z.string().trim().max(100).optional(),
+})
+const updateBlockSchema = z.object({ content: z.record(z.unknown()).optional(), ordinal: z.number().int().min(0).optional() })
+
+synthesisRouter.post('/documents', validate(createDocumentSchema), wrap(async (req, res) => {
+  res.status(201).json(await createDocument(req.body, userIdOf(req)))
+}))
+synthesisRouter.get('/documents', wrap(async (req, res) => {
+  const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : undefined
+  const workspaceId = typeof req.query.workspaceId === 'string' ? req.query.workspaceId : undefined
+  res.json(await listDocuments({ projectId, workspaceId }))
+}))
+synthesisRouter.get('/documents/:documentId', wrap(async (req, res) => {
+  res.json(await getDocument(String(req.params.documentId)))
+}))
+synthesisRouter.post('/documents/:documentId/transition', validate(transitionSchema), wrap(async (req, res) => {
+  res.json(await transitionDocument(String(req.params.documentId), req.body.to, userIdOf(req)))
+}))
+
+// ── Document blocks (own-content docs only) ──────────────────────────────────────
+synthesisRouter.post('/documents/:documentId/blocks', validate(addBlockSchema), wrap(async (req, res) => {
+  res.status(201).json(await addBlock(String(req.params.documentId), req.body))
+}))
+synthesisRouter.patch('/documents/:documentId/blocks/:blockId', validate(updateBlockSchema), wrap(async (req, res) => {
+  res.json(await updateBlock(String(req.params.documentId), String(req.params.blockId), req.body))
+}))
+synthesisRouter.delete('/documents/:documentId/blocks/:blockId', wrap(async (req, res) => {
+  res.json(await removeBlock(String(req.params.documentId), String(req.params.blockId)))
+}))
+synthesisRouter.post('/documents/:documentId/blocks/:blockId/pin', wrap(async (req, res) => {
+  res.json(await pinBlock(String(req.params.documentId), String(req.params.blockId)))
 }))
