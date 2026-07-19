@@ -108,6 +108,11 @@ class Settings(BaseSettings):
     # agent-runtime is slow we'd rather drop the layers than block
     # the whole workflow.
     agent_runtime_world_model_timeout_sec: float = 2.0
+    # Role-scoped slice fetch. Slightly longer than the plain world-model
+    # timeout because the slice reads view rows as well, and a timeout here
+    # costs a fallback round-trip on top. Still short: the fetch is on the
+    # critical path of /execute, and dropping the layers beats blocking a run.
+    agent_runtime_world_model_slice_timeout_sec: float = 3.0
 
     # M65 Slice 1A/1B — audit-gov base URL. /metrics/dashboard and
     # /sessions/{id}/metrics proxy here for token-savings analytics.

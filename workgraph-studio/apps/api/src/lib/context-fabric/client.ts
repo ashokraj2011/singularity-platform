@@ -36,6 +36,11 @@ export interface ExecuteRunContext {
   capability_id: string
   tenant_id?: string
   agent_template_id?: string
+  // Which role this agent plays (developer, tester, architect, …). CF uses it to
+  // fetch the matching slice of the capability's world model, so the agent reads
+  // its own view instead of everyone's. Threaded from the node's existing
+  // governedAgentRole — no designer change needed.
+  agent_role?: string
   user_id?: string
   trace_id?: string
   branch_base?: string

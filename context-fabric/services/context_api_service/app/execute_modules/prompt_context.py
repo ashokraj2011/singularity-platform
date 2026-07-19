@@ -230,6 +230,75 @@ async def fetch_capability_world_model(
         return None, f"world_model.skipped: unexpected error {exc!s}"
 
 
+async def fetch_capability_world_model_slice(
+    agent_runtime_url: str,
+    capability_id: str,
+    timeout_sec: float,
+    role: Optional[str] = None,
+    task: Optional[str] = None,
+    domain_key: Optional[str] = None,
+) -> tuple[Optional[dict], list[dict], Optional[str]]:
+    """
+    GET ${agent_runtime_url}/capabilities/:id/world-model/slice?role=...
+
+    The role-aware replacement for fetch_capability_world_model. Returns
+    (world_model, views, warning): the capability-wide model in exactly the
+    shape ComposeInput.worldModel expects, PLUS the role-scoped views for
+    ComposeInput.worldModelViews.
+
+    Both halves are independently optional and that is deliberate:
+      - views empty  → the capability has no views built yet. This is the normal
+        state and the result is byte-identical to the pre-slice behaviour.
+      - world_model None, views present → a parent capability with no repository,
+        whose views were built from its description, knowledge artifacts and
+        children. A valid slice.
+
+    Returns a THIRD element the caller must act on: `warning` is set when the
+    slice endpoint could not be reached at all (old agent-runtime, network,
+    timeout). The caller falls back to the capability-wide fetch in that case, so
+    a runtime that predates the slice endpoint degrades to exactly today's bytes.
+
+    Never raises.
+    """
+    if not agent_runtime_url or not capability_id:
+        return None, [], None
+    url = f"{agent_runtime_url.rstrip('/')}/capabilities/{capability_id}/world-model/slice"
+    params: dict[str, str] = {}
+    if role:
+        params["role"] = role
+    if task:
+        params["task"] = task
+    if domain_key:
+        params["domainKey"] = domain_key
+    try:
+        async with httpx.AsyncClient(timeout=timeout_sec) as client:
+            resp = await client.get(url, params=params)
+        if resp.status_code == 404:
+            # Neither a world model nor any views. Not a failure, and NOT a
+            # reason to fall back — the legacy endpoint would 404 too.
+            return None, [], None
+        resp.raise_for_status()
+        body = response_json_object(resp, "agent-runtime world-model slice")
+        slice_body = body.get("data") if isinstance(body, dict) and "data" in body else body
+        if not isinstance(slice_body, dict):
+            return None, [], "world_model_slice.fallback: malformed response"
+        world_model = slice_body.get("worldModel")
+        if not isinstance(world_model, dict) or not world_model.get("capabilityId"):
+            world_model = None
+        raw_views = slice_body.get("views")
+        views = [v for v in raw_views if isinstance(v, dict) and v.get("contentMd")] if isinstance(raw_views, list) else []
+        return world_model, views, None
+    except httpx.HTTPStatusError as exc:
+        # A 404 on the ROUTE (older agent-runtime without the slice endpoint) is
+        # handled above; anything else here means the endpoint exists but failed,
+        # so fall back rather than dropping grounding entirely.
+        return None, [], f"world_model_slice.fallback: HTTP {exc.response.status_code} from {url}"
+    except (httpx.RequestError, asyncio.TimeoutError) as exc:
+        return None, [], f"world_model_slice.fallback: transport error {exc!s}"
+    except Exception as exc:  # pylint: disable=broad-except
+        return None, [], f"world_model_slice.fallback: unexpected error {exc!s}"
+
+
 def composer_context_policy(
     policy: dict[str, Any],
     limits: dict[str, Any],

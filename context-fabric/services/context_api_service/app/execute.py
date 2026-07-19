@@ -76,6 +76,7 @@ _context_plan_message = _prompt_mod.context_plan_message
 _post = _prompt_mod._post
 _build_code_context_package = _prompt_mod.build_code_context_package
 _fetch_capability_world_model = _prompt_mod.fetch_capability_world_model
+_fetch_capability_world_model_slice = _prompt_mod.fetch_capability_world_model_slice
 _composer_context_policy = _prompt_mod.composer_context_policy
 _compile_execute_context = _prompt_mod.compile_execute_context
 _int_limit = _response_mod.int_limit
@@ -167,6 +168,46 @@ def _tool_discovery_timeout_sec() -> float:
         default=_DEFAULT_TOOL_DISCOVERY_TIMEOUT_SEC,
         name="CONTEXT_FABRIC_TOOL_DISCOVERY_TIMEOUT_SEC",
     )
+
+
+def _resolve_agent_role(req: Any) -> Optional[str]:
+    """
+    Which role is this agent playing? Used to pick its world-model slice.
+
+    A ladder, most explicit first:
+      1. run_context.agent_role — what the caller declared. workgraph threads
+         this from the node's existing governedAgentRole, so a designer that
+         already names a role needs no change.
+      2. vars.agentRole — the workflow variable stage policy already reads, so
+         roles set that way keep working.
+      3. the stage's own shape — a dev stage implies developer, a QA stage
+         implies tester. Weaker than a declared role but far better than none.
+
+    None is a valid answer: the slice endpoint applies its own fallback, and
+    saying nothing is more honest than guessing wrong.
+    """
+    declared = getattr(getattr(req, "run_context", None), "agent_role", None)
+    if isinstance(declared, str) and declared.strip():
+        return declared.strip()
+
+    # Read vars directly rather than through stage_policy_value: that helper
+    # upper-cases and dash-replaces for enum fields, and a role is a name, not
+    # an enum. The slice endpoint lowercases for lookup, so passing the name
+    # through unchanged is both correct and honest about what was configured.
+    vars_obj = getattr(req, "vars", None)
+    from_vars = vars_obj.get("agentRole") if isinstance(vars_obj, dict) else None
+    if isinstance(from_vars, str) and from_vars.strip():
+        return from_vars.strip()
+
+    try:
+        is_dev, is_qa = _classify_stage_role(req)
+    except Exception:  # pylint: disable=broad-except
+        return None
+    if is_dev:
+        return "developer"
+    if is_qa:
+        return "tester"
+    return None
 
 
 def _prompt_composer_compose_timeout_sec() -> float:
@@ -324,6 +365,11 @@ class RunContext(BaseModel):
     capability_id: Optional[str] = None
     tenant_id: Optional[str] = None
     agent_template_id: Optional[str] = None
+    # Which role this agent is playing (developer, tester, architect, …). Used
+    # to fetch the matching slice of the capability's world model so the agent
+    # gets its own view rather than everyone's. Additive and optional: absent
+    # means the slice endpoint applies its own fallback role.
+    agent_role: Optional[str] = None
     user_id: Optional[str] = None
     trace_id: Optional[str] = None
     branch_base: Optional[str] = None
@@ -604,18 +650,52 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
     # Story Intake reads agent rules, Plan reads the README summary,
     # etc. So we fetch unconditionally when agent_runtime_url is set
     # and we have a capability_id.
+    #
+    # Layered world model — we now ask for the ROLE-SCOPED slice rather than the
+    # whole capability model: core + this role's views, already narrowed and
+    # budgeted by agent-runtime. The role ladder below prefers what the caller
+    # declared, then the workflow var, then what the stage implies.
+    #
+    # Degradation is layered so no step can leave a run with less grounding than
+    # it has today:
+    #   slice reachable                → world model + views (the new path)
+    #   slice reachable, no views built → world model alone (today's bytes)
+    #   slice unreachable               → fall back to the capability-wide fetch
+    #   both unreachable                → no layers, exactly as before
     world_model: Optional[dict] = None
+    world_model_views: list[dict] = []
     if settings.agent_runtime_url and req.run_context.capability_id and not _stage_is_story_only(req):
+        agent_role = _resolve_agent_role(req)
+        slice_warning: Optional[str] = None
         try:
-            world_model, wm_warning = await _fetch_capability_world_model(
+            world_model, world_model_views, slice_warning = await _fetch_capability_world_model_slice(
                 settings.agent_runtime_url,
                 req.run_context.capability_id,
-                settings.agent_runtime_world_model_timeout_sec,
+                settings.agent_runtime_world_model_slice_timeout_sec,
+                role=agent_role,
+                task=req.task,
             )
-            if wm_warning:
-                composer_warnings.append(wm_warning)
+            if slice_warning:
+                composer_warnings.append(slice_warning)
         except Exception as exc:  # pylint: disable=broad-except
-            composer_warnings.append(f"world_model.skipped: unexpected error {exc!s}")
+            slice_warning = f"world_model_slice.fallback: unexpected error {exc!s}"
+            composer_warnings.append(slice_warning)
+
+        # Only fall back when the slice endpoint itself failed. A successful
+        # slice that simply has no world model (a parent capability) must NOT
+        # trigger a second fetch — the legacy endpoint would 404 anyway, and
+        # retrying would just add latency to every parent-capability run.
+        if slice_warning:
+            try:
+                world_model, wm_warning = await _fetch_capability_world_model(
+                    settings.agent_runtime_url,
+                    req.run_context.capability_id,
+                    settings.agent_runtime_world_model_timeout_sec,
+                )
+                if wm_warning:
+                    composer_warnings.append(wm_warning)
+            except Exception as exc:  # pylint: disable=broad-except
+                composer_warnings.append(f"world_model.skipped: unexpected error {exc!s}")
 
     if req.run_context.agent_template_id:
         try:
@@ -660,6 +740,12 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
                 # composer skips those two layers and the agent reverts
                 # to discovering CLAUDE.md / test commands per run.
                 **({"worldModel": world_model} if world_model else {}),
+                # Layered world model — the role-scoped views for THIS agent.
+                # A SIBLING of worldModel, not nested in it: a capability with
+                # no repository can have views without a world model at all.
+                # Absent when nobody has built views, which is the normal state
+                # and leaves the composer's layer set exactly as it is today.
+                **({"worldModelViews": world_model_views} if world_model_views else {}),
                 # M62 Slice E — Per-layer prompt compression. When
                 # enabled (operator flag), prompt-composer POSTs
                 # over-budget allowlisted layers (default
