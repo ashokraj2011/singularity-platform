@@ -73,6 +73,7 @@ import { studioBoardRouter } from './modules/studio/board.router'
 import { studioBoardVerdictRouter, studioBoardAgentVerdictRouter } from './modules/studio/board-verdicts.router'
 import { studioAuthz } from './modules/studio/studio-authz'
 import { roomsRouter } from './modules/rooms/rooms.router'
+import { canvasLayoutRouter } from './modules/studio/canvas-layout.router'
 import { conceptArchiveRouter } from './modules/concept-archive/archive.router'
 import { plannerRouter } from './modules/planner/planner.router'
 import { workProgramsRouter } from './modules/work-program/work-programs.router'
@@ -198,6 +199,7 @@ export function createApp(): Express {
   // (authMiddleware rejects service principals). See board-verdicts.router.ts.
   app.use('/api/studio-agent', studioBoardAgentVerdictRouter)
   app.use('/api/studio', authMiddleware, studioAuthz, roomsRouter)
+  app.use('/api/studio', authMiddleware, studioAuthz, canvasLayoutRouter)
   app.use('/api/concept-archive', authMiddleware, studioAuthz, conceptArchiveRouter)
   app.use('/api/synthesis', authMiddleware, studioAuthz, synthesisRouter)
   app.use('/api/planner', authMiddleware, plannerRouter)
