@@ -2,13 +2,13 @@
 
 import { useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
-import { AlertTriangle, CalendarClock, Download, FileSignature, Flag, Plus, RefreshCw, Target } from "lucide-react";
+import { AlertTriangle, CalendarClock, Download, FileSignature, Flag, Pencil, Plus, RefreshCw, Target } from "lucide-react";
 import { apiPath, authHeaders } from "@/lib/api";
 import { workgraphFetch, WorkgraphError } from "@/lib/workgraph";
 import { SynthesisShell } from "@/components/synthesis/SynthesisShell";
 import { NoProjectSelected, ProjectPicker, useSelectedProjectId } from "@/components/synthesis/ProjectPicker";
 import { useBusinessAlignment, useGenerationPlans, useProject, useProjectLearning, useSyn } from "@/components/synthesis/hooks/useSynthesis";
-import type { SynBusinessMilestone, SynBusinessReadout, SynBusinessRisk, SynGenerationPlan, SynSpecificationVersion } from "@/components/synthesis/types";
+import type { SynBusinessMilestone, SynBusinessObjective, SynBusinessReadout, SynBusinessRisk, SynGenerationPlan, SynSpecificationVersion } from "@/components/synthesis/types";
 import { ConfidenceBar, EmptyState, MonoMeta, StageHeader, SynButton, SynCard, SynChip, SynError, SynSkeleton } from "@/components/synthesis/ui/kit";
 
 const control = "h-10 w-full rounded-md border border-outline-variant bg-surface px-3 text-sm text-on-surface outline-none focus:border-secondary";
@@ -62,7 +62,7 @@ function BusinessAlignment({ projectId }: { projectId: string }) {
     <Section title="Objectives and bidirectional coverage" description="An objective with no work is unfunded intent. Work with no objective is unexplained scope." icon={Target}>
       <ObjectiveComposer projectId={projectId} ownerId={projectQ.data.sponsorId ?? projectQ.data.productOwnerId ?? ""} users={(usersQ.data?.items ?? []).map(item => ({ id: String(item.id ?? item.userId ?? ""), label: String(item.name ?? item.displayName ?? item.email ?? item.id ?? "") })).filter(item => item.id)} busy={busy} onCreate={(payload) => act("objective", () => workgraphFetch(`/studio/business-alignment/objectives`, { method: "POST", body: JSON.stringify(payload) }))} />
       <div className="mt-5 grid gap-3 lg:grid-cols-2">
-        {rollup.objectives.map(objective => <SynCard key={objective.id} className="p-4"><div className="flex items-start justify-between gap-3"><div><h3 className="font-bold text-on-surface">{objective.title}</h3><p className="mt-1 text-sm text-on-surface-variant">{objective.description}</p></div><SynChip tone={objective.status === "ACTIVE" ? "success" : "neutral"}>{objective.status.replaceAll("_", " ")}</SynChip></div><div className="mt-4 flex items-center gap-3"><MonoMeta>Value {objective.valueScore}/5</MonoMeta><div className="min-w-28 flex-1"><ConfidenceBar value={objective.valueScore * 20} /></div>{objective.budgetLineRef ? <SynChip>{objective.budgetLineRef}</SynChip> : null}</div></SynCard>)}
+        {rollup.objectives.map(objective => <ObjectiveCard key={objective.id} objective={objective} busy={busy === `objective-${objective.id}`} onUpdate={(payload) => act(`objective-${objective.id}`, () => workgraphFetch(`/studio/business-alignment/objectives/${objective.id}`, { method: "PATCH", body: JSON.stringify(payload) }))} />)}
       </div>
       {rollup.objectives.length === 0 ? <div className="mt-5"><EmptyState icon={Target} title="No funded objective yet" description="Create the business outcome first, then attach requirements to it in Specification." /></div> : null}
       <div className="mt-5 space-y-2">{[...rollup.coverage.errors, ...rollup.coverage.warnings].map(issue => <div key={`${issue.code}-${issue.entityId}`} className={`flex items-start gap-2 rounded-md border px-3 py-2 text-sm ${issue.severity === "error" ? "border-red-200 bg-red-50 text-red-800" : "border-amber-200 bg-amber-50 text-amber-900"}`}><AlertTriangle size={15} className="mt-0.5 shrink-0" /><span>{issue.message}</span><SynChip tone={issue.severity === "error" ? "error" : "tertiary"}>{issue.severity === "error" ? "Blocks lock" : "Review"}</SynChip></div>)}</div>
@@ -117,6 +117,67 @@ function ObjectiveComposer({ projectId, ownerId, users, busy, onCreate }: { proj
   if (!open) return <SynButton variant="secondary" icon={Plus} onClick={() => setOpen(true)}>New objective</SynButton>;
   const submit = async () => { await onCreate({ title, description, ownerId: owner, targetMetric: { name: metric, target }, valueScore: value, valueRationale: rationale, budgetLineRef: budget || null, period: { start: new Date().toISOString(), end: new Date(`${end}T23:59:59.000Z`).toISOString() }, projectIds: [projectId], studioProjectId: projectId }); setOpen(false); setTitle(""); setDescription(""); };
   return <div className="grid gap-3 rounded-md border border-outline-variant bg-surface-container-lowest p-4 md:grid-cols-2 xl:grid-cols-4"><label className="grid gap-1 text-xs font-bold text-on-surface-variant">Objective title<input className={control} value={title} onChange={event => setTitle(event.target.value)} /></label><label className="grid gap-1 text-xs font-bold text-on-surface-variant">Business owner<select className={control} value={owner} onChange={event => setOwner(event.target.value)}><option value="">Choose an active user</option>{owner && !users.some(user => user.id === owner) ? <option value={owner}>{owner}</option> : null}{users.map(user => <option key={user.id} value={user.id}>{user.label}</option>)}</select></label><label className="grid gap-1 text-xs font-bold text-on-surface-variant">Target metric<input className={control} value={metric} onChange={event => setMetric(event.target.value)} placeholder="Activation rate" /></label><label className="grid gap-1 text-xs font-bold text-on-surface-variant">Target value<input className={control} value={target} onChange={event => setTarget(event.target.value)} placeholder="70%" /></label><label className="grid gap-1 text-xs font-bold text-on-surface-variant md:col-span-2">Business outcome<textarea className={textArea} value={description} onChange={event => setDescription(event.target.value)} /></label><label className="grid gap-1 text-xs font-bold text-on-surface-variant">Value score<select className={control} value={value} onChange={event => setValue(Number(event.target.value))}>{[1, 2, 3, 4, 5].map(item => <option key={item} value={item}>{item} / 5</option>)}</select></label><label className="grid gap-1 text-xs font-bold text-on-surface-variant">Target date<input type="date" className={control} value={end} onChange={event => setEnd(event.target.value)} /></label><label className="grid gap-1 text-xs font-bold text-on-surface-variant md:col-span-2">Value rationale<input className={control} value={rationale} onChange={event => setRationale(event.target.value)} /></label><label className="grid gap-1 text-xs font-bold text-on-surface-variant">Funding line<input className={control} value={budget} onChange={event => setBudget(event.target.value)} /></label><div className="flex items-end gap-2"><SynButton disabled={busy === "objective" || !title || !description || !owner || !metric || !target || !end || !rationale} onClick={() => void submit()}>{busy === "objective" ? "Creating…" : "Create objective"}</SynButton><SynButton variant="ghost" onClick={() => setOpen(false)}>Cancel</SynButton></div></div>;
+}
+
+/**
+ * An objective, editable in place.
+ *
+ * The PATCH route already existed; only the UI was missing, so an objective was
+ * write-once from the operator's side -- a typo in a funded business outcome
+ * meant creating a second one. Mirrors RiskRow: read-only until you ask to edit,
+ * and Save is disabled until something actually changed.
+ *
+ * Only the changed fields are sent. The route validates objectiveSchema.partial(),
+ * so a partial body is the contract, and sending untouched fields back would
+ * silently re-assert stale values a concurrent edit may have moved on from.
+ */
+function ObjectiveCard({ objective, busy, onUpdate }: { objective: SynBusinessObjective; busy: boolean; onUpdate: (payload: Record<string, unknown>) => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(objective.title);
+  const [description, setDescription] = useState(objective.description);
+  const [valueScore, setValueScore] = useState(objective.valueScore);
+  const [rationale, setRationale] = useState(objective.valueRationale ?? "");
+  const [budget, setBudget] = useState(objective.budgetLineRef ?? "");
+  const [status, setStatus] = useState(objective.status);
+
+  const reset = () => { setTitle(objective.title); setDescription(objective.description); setValueScore(objective.valueScore); setRationale(objective.valueRationale ?? ""); setBudget(objective.budgetLineRef ?? ""); setStatus(objective.status); setEditing(false); };
+
+  const changed: Record<string, unknown> = {};
+  if (title.trim() && title !== objective.title) changed.title = title.trim();
+  if (description.trim() && description !== objective.description) changed.description = description.trim();
+  if (valueScore !== objective.valueScore) changed.valueScore = valueScore;
+  if (rationale !== (objective.valueRationale ?? "")) changed.valueRationale = rationale.trim() || null;
+  if (budget !== (objective.budgetLineRef ?? "")) changed.budgetLineRef = budget.trim() || null;
+  if (status !== objective.status) changed.status = status;
+  const dirty = Object.keys(changed).length > 0;
+
+  if (!editing) {
+    return <SynCard className="p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div><h3 className="font-bold text-on-surface">{objective.title}</h3><p className="mt-1 text-sm text-on-surface-variant">{objective.description}</p></div>
+        <div className="flex shrink-0 items-center gap-2"><SynChip tone={objective.status === "ACTIVE" ? "success" : "neutral"}>{objective.status.replaceAll("_", " ")}</SynChip><SynButton variant="ghost" icon={Pencil} onClick={() => setEditing(true)}>Edit</SynButton></div>
+      </div>
+      <div className="mt-4 flex items-center gap-3"><MonoMeta>Value {objective.valueScore}/5</MonoMeta><div className="min-w-28 flex-1"><ConfidenceBar value={objective.valueScore * 20} /></div>{objective.budgetLineRef ? <SynChip>{objective.budgetLineRef}</SynChip> : null}</div>
+    </SynCard>;
+  }
+
+  return <SynCard className="p-4">
+    <div className="grid gap-3">
+      <label className="grid gap-1 text-xs font-bold text-on-surface-variant">Objective title<input className={control} value={title} onChange={event => setTitle(event.target.value)} /></label>
+      <label className="grid gap-1 text-xs font-bold text-on-surface-variant">Business outcome<textarea className={textArea} value={description} onChange={event => setDescription(event.target.value)} /></label>
+      <div className="grid gap-3 md:grid-cols-3">
+        <label className="grid gap-1 text-xs font-bold text-on-surface-variant">Value score<select className={control} value={valueScore} onChange={event => setValueScore(Number(event.target.value))}>{[1, 2, 3, 4, 5].map(item => <option key={item} value={item}>{item} / 5</option>)}</select></label>
+        <label className="grid gap-1 text-xs font-bold text-on-surface-variant">Status<select className={control} value={status} onChange={event => setStatus(event.target.value as SynBusinessObjective["status"])}><option value="ACTIVE">Active</option><option value="ACHIEVED_DECLARED">Achieved</option><option value="DEFERRED">Deferred</option><option value="DROPPED">Dropped</option></select></label>
+        <label className="grid gap-1 text-xs font-bold text-on-surface-variant">Funding line<input className={control} value={budget} onChange={event => setBudget(event.target.value)} /></label>
+      </div>
+      <label className="grid gap-1 text-xs font-bold text-on-surface-variant">Value rationale<input className={control} value={rationale} onChange={event => setRationale(event.target.value)} /></label>
+      <div className="flex items-center gap-2">
+        <SynButton disabled={busy || !dirty || !title.trim() || !description.trim()} onClick={() => void onUpdate(changed).then(() => setEditing(false))}>{busy ? "Saving…" : "Save changes"}</SynButton>
+        <SynButton variant="ghost" onClick={reset}>Cancel</SynButton>
+        {!dirty ? <MonoMeta>No changes yet</MonoMeta> : null}
+      </div>
+    </div>
+  </SynCard>;
 }
 
 function MilestoneComposer({ plans, busy, onCreate }: { plans: SynGenerationPlan[]; busy: string | null; onCreate: (payload: Record<string, unknown>) => Promise<void> }) {
