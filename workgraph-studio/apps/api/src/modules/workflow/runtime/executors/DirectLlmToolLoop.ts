@@ -1,3 +1,4 @@
+import { directLlmEgressAllowed } from './direct-llm-config'
 import type { WorkflowInstance, WorkflowNode } from '@prisma/client'
 import type { DirectLlmChatResult } from './DirectLlmHarness'
 import {
@@ -295,6 +296,17 @@ function mockToolTurn(req: DirectLlmToolProviderRequest): DirectLlmToolProviderR
 
 export async function defaultCallToolProvider(req: DirectLlmToolProviderRequest): Promise<DirectLlmToolProviderResult> {
   if (req.provider === 'mock') return mockToolTurn(req)
+  // Policy gate -- the second of the two egress choke points. Mock returned
+  // above, so anything past here opens a real provider socket outside the
+  // gateway. See directLlmEgressAllowed and docs/llm-egress-boundary.md.
+  if (!directLlmEgressAllowed()) {
+    throw new DirectLlmToolLoopError(
+      'DIRECT_LLM_EGRESS_DISABLED',
+      'Direct LLM egress is disabled (WORKGRAPH_ALLOW_DIRECT_LLM=false). The direct tool loop '
+      + 'bypasses the platform LLM gateway; route this node through a governed AGENT_TASK or '
+      + 're-enable the policy.',
+    )
+  }
   const apiKey = req.credentialEnv ? process.env[req.credentialEnv] : undefined
   if (!apiKey) {
     throw new DirectLlmToolLoopError(
