@@ -119,3 +119,53 @@ export function buildPlanWorkflowGraph(input: BuildPlanGraphInput): GeneratedGra
 
   return { nodes, edges }
 }
+
+/* ── Persistence mapping (pure) — consumed by planner.service.persistPlanGraph ──────────
+ * The generator emits temporary node ids and edges that reference them. Persisting creates
+ * WorkflowDesignNode rows whose DB ids differ, so edges must be remapped temp→real. Keeping
+ * that mapping in pure functions makes it unit-testable without a database. */
+
+export type DesignNodeCreateData = {
+  workflowId: string
+  nodeType: GeneratedNode['nodeType']
+  label: string
+  config: Record<string, unknown>
+  executionLocation: 'SERVER'
+  positionX: number
+  positionY: number
+}
+export type DesignEdgeCreateData = {
+  workflowId: string
+  sourceNodeId: string
+  targetNodeId: string
+  edgeType: GeneratedEdge['edgeType']
+}
+
+/** The create-row for one generated node (generated nodes run in-process → SERVER). */
+export function designNodeCreateData(node: GeneratedNode, workflowId: string): DesignNodeCreateData {
+  return {
+    workflowId,
+    nodeType: node.nodeType,
+    label: node.label,
+    config: node.config ?? {},
+    executionLocation: 'SERVER',
+    positionX: node.positionX,
+    positionY: node.positionY,
+  }
+}
+
+/**
+ * Remap generated edges (which reference temporary node ids) onto the persisted DB node ids.
+ * Throws on a dangling reference — a generated graph never emits one, so an unknown id is a
+ * persistence bug, not user input; failing loudly beats silently dropping an edge.
+ */
+export function remapEdgeCreateData(edges: GeneratedEdge[], idMap: Map<string, string>, workflowId: string): DesignEdgeCreateData[] {
+  return edges.map((edge) => {
+    const sourceNodeId = idMap.get(edge.sourceNodeId)
+    const targetNodeId = idMap.get(edge.targetNodeId)
+    if (!sourceNodeId || !targetNodeId) {
+      throw new Error(`planner graph edge ${edge.id} references an unpersisted node (${edge.sourceNodeId} -> ${edge.targetNodeId})`)
+    }
+    return { workflowId, sourceNodeId, targetNodeId, edgeType: edge.edgeType }
+  })
+}

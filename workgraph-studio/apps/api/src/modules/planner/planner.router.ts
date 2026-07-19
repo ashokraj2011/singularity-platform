@@ -97,6 +97,7 @@ const launchSchema = z.object({
   runtimePreference: z.string().max(120).optional(),
   governancePreset: z.string().max(120).optional(),
   loopStrategyId: z.string().uuid().optional(),
+  persistGraph: z.boolean().optional(),
 }).refine(body => (body.plan?.length ?? 0) > 0 || (body.milestones?.length ?? 0) > 0 || (body.story?.trim().length ?? 0) >= 8, {
   message: 'Provide a planner roadmap or a story with at least 8 characters.',
 })
