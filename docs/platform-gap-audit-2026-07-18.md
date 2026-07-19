@@ -17509,6 +17509,66 @@ Required fixes:
   non-Operations users receive redacted coarse status, Operations users receive
   full health, and no `/ops-health/*` raw rewrites remain in `next.config.mjs`.
 
+### 358. Workflow template gallery falls back to a public launch catalog after authorization failure
+
+Evidence:
+
+- `agent-and-tools/web/src/app/api/workflow-templates/gallery/route.ts` proxies
+  `GET /api/workflow-templates/gallery` to WorkGraph
+  `/api/workflow-templates/gallery`.
+- When WorkGraph returns `401` or `403` and the browser request has no
+  `Authorization` header, the route returns HTTP `200` with
+  `referenceOnlySdlcGallery(...)` and header
+  `x-singularity-reference-only: true`.
+- `referenceOnlySdlcGallery(...)` returns every built-in SDLC intent, including
+  labels, descriptions, required inputs, sample stories, default agent roles,
+  default model aliases, runtime preference, governance preset, and runtime
+  requirement text.
+- `/api/start/_shared.ts` consumes that fallback as normal gallery data:
+  `galleryItems` still drive `recommendIntent(...)`, `sampleStories`, `intents`,
+  recommended model/runtime/governance values, and the visible catalog envelope.
+- The Start preview has to infer that the data is not authoritative by checking
+  `authRequired === true` or `referenceOnly === true`, then it adds a launch
+  blocker only when no concrete `workflowTemplate.id` exists.
+- Existing gap 356 covers the higher-level adoption/start aggregators. This gap
+  covers the direct gallery endpoint's fallback contract, where an authorization
+  denial is converted into a successful reference response instead of preserving
+  an auth failure or using a separate public catalog route.
+
+Impact:
+
+- Unauthenticated callers can enumerate the platform's intended SDLC launch
+  taxonomy, default roles, model aliases, runtime assumptions, governance
+  presets, and sample-story vocabulary under a workflow-template API path.
+- Client code receives a `200` from the same endpoint used for saved workflow
+  templates, so every consumer must remember to special-case `referenceOnly` and
+  `authRequired` to avoid treating demo/reference intents as launchable
+  templates.
+- Operators troubleshooting missing seeded workflows can see a plausible catalog
+  even when the real WorkGraph gallery is denied, which blurs the difference
+  between "not logged in", "no template permission", and "no seeded templates".
+- Future clients may accidentally use the fallback intent metadata for launch,
+  analytics, or routing decisions without realizing it is not authoritative
+  tenant-scoped data.
+
+Required fixes:
+
+- Split the public reference catalog from the saved workflow-template gallery:
+  for example, keep `/api/workflow-templates/gallery` authenticated and add a
+  clearly named `/api/sdlc-intents/reference` or static client catalog for
+  anonymous onboarding copy.
+- Preserve `401`/`403` from the workflow-template gallery unless an explicit
+  `reference=true` request is made and documented as non-authoritative.
+- Make the response type a discriminated union such as
+  `{ kind: "saved_gallery", items: ... } | { kind: "reference_catalog", items:
+  ... }` so clients cannot miss the distinction.
+- Update Start preview and gallery UI to render "sign in to load saved workflow
+  templates" separately from sample intent guidance.
+- Add route tests proving missing bearer receives auth failure on the saved
+  gallery path, the public reference route contains no tenant/workflow-template
+  ids, and launch preview cannot recommend a workflow template from reference
+  data.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
