@@ -671,9 +671,11 @@ model GovernanceWaiver {
   revocationReason   String?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @default(now()) @updatedAt
+  tenantId           String?   @default("default")
 
   @@index([workItemId])
   @@index([controlKey])
+  @@index([tenantId], map: "ix_governance_waivers_tenant")
   @@map("governance_waivers")
 }
 
@@ -4186,7 +4188,9 @@ model Receipt {
   eventLogId  String?
   content     Json     @default("{}")
   generatedAt DateTime @default(now())
+  tenantId    String?  @default("default")
 
+  @@index([tenantId], map: "ix_receipts_tenant")
   @@map("receipts")
 }
 
