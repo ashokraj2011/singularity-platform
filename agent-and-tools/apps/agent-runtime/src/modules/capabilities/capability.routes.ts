@@ -150,6 +150,14 @@ capabilityRoutes.delete(
   capabilityController.deleteWorldModelView,
 );
 
+// The per-turn read: core + the caller's role views + any relevant domain or
+// task guide, budgeted to fit a prompt. context-fabric calls this instead of
+// GET /world-model once it knows the agent's role.
+capabilityRoutes.get(
+  "/:id/world-model/slice",
+  capabilityController.getWorldModelSliceForRole,
+);
+
 // M61 Slice E — repo fingerprint drift detector. Body:
 //   { fingerprint: string, hashedBuildFiles?: string[], topLevelEntries?: string[] }
 // Idempotent: callers may safely re-POST every workflow start.

@@ -14,7 +14,7 @@
  *    tokens it took to build, so the cap is stated to the model up front.
  */
 
-import { isWorldModelViewKind, requiresDomainKey, type WorldModelViewKind } from "./world-model-views.types";
+import { isWorldModelViewKind, requiresDomainKey, viewKey, type WorldModelViewKind } from "./world-model-views.types";
 
 /** Which grounding inputs a view needs. Keeps repo-less capabilities honest. */
 export type GroundingSelector =
@@ -352,7 +352,7 @@ export function planViewBuild(input: {
       return { ok: false, error: `${kind} requires ${kind === "task_guide" ? "task" : "domainKeys"}` };
     }
     for (const domainKey of keys) {
-      const dedupe = `${kind}\u0000${domainKey}`;
+      const dedupe = viewKey(kind, domainKey);
       if (seen.has(dedupe)) continue;
       seen.add(dedupe);
       planned.push({ kind, domainKey });

@@ -225,3 +225,18 @@ export function isViewStale(viewFingerprint: string | null, currentFingerprint: 
   if (!viewFingerprint || !currentFingerprint) return false;
   return viewFingerprint !== currentFingerprint;
 }
+
+/**
+ * The in-memory key for a view, matching the (kind, domainKey) unique index.
+ *
+ * It lives here so the separator is written once. Anywhere a map is BUILT with
+ * one separator and READ with another, every lookup misses and the caller
+ * silently sees zero views — a failure that looks exactly like "nobody has built
+ * views yet". A shared helper makes that mismatch unrepresentable.
+ *
+ * The separator is U+0000 rather than a space because a task_guide's domainKey
+ * is free text ("add a migration"), so a space would not reliably delimit.
+ */
+export function viewKey(kind: WorldModelViewKind | string, domainKey: string): string {
+  return `${kind}\u0000${domainKey}`;
+}
