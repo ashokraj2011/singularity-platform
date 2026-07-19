@@ -18774,6 +18774,59 @@ Required fixes:
 - Add tests for read-time aging, durable confirmation, edit/reject after
   confirmation, replaying timelines at historical times, and audit evidence.
 
+### 380. Board Moment Chronicler fallback becomes permanent with no retry path
+
+Evidence:
+
+- `detectAndNarrate(...)` only inspects board events after the latest recorded
+  moment's `eventSeqEnd`, using `lastMoment ? Number(lastMoment.eventSeqEnd) :
+  0` and querying events with `eventSeq > sinceSeq`.
+- `narrateOne(...)` wraps the Chronicler governed turn, JSON extraction, and
+  narrative schema parse in one broad `try/catch`.
+- On any Chronicler outage, timeout, malformed JSON, or citation-rule failure,
+  `narrateOne(...)` returns `fallbackNarrative(...)` instead of marking the
+  narration attempt as failed or retryable.
+- `fallbackNarrative(...)` stores a deterministic title, a narrative ending in
+  `narration pending.`, a causal chain over the event window, and `confidence:
+  0`.
+- `detectAndNarrate(...)` persists that fallback as a normal `BoardMoment` with
+  `status: 'VISIBLE'`, emits `BoardMomentMarked`, and advances the branch's
+  latest-moment cursor because the fallback has the same `eventSeqEnd` as a
+  successful narration.
+- The board moment router exposes detect, list, edit, and reject endpoints, but
+  no retry, regenerate, re-narrate, or replace-fallback endpoint.
+- Human `editMoment(...)` can rewrite title/narrative and set status `EDITED`,
+  but that is manual text replacement, not a governed retry that preserves the
+  original failure reason, model trace, or regenerated citation evidence.
+
+Impact:
+
+- A temporary Chronicler/model outage or one malformed model response can
+  permanently freeze a confidence-0 placeholder into the timeline.
+- Subsequent detection runs skip the original event window, so the system cannot
+  naturally recover when the model or prompt issue is fixed.
+- Operators see a visible timeline moment, but the platform has no structured
+  signal that narration is incomplete, retryable, failed due to citation, or
+  waiting for model recovery.
+- Evidence packs can include `narration pending` moments without a retry history
+  or failure receipt that explains why the governed narrative is missing.
+- Manual edits can mask the failure while losing the model trace and citation
+  contract that made Chronicler useful in the first place.
+
+Required fixes:
+
+- Store narration attempt state separately from the detected moment, including
+  `narrationStatus`, failure kind, retry count, model trace id, and last error.
+- Keep detector output durable but mark fallback narration as `PENDING_RETRY` or
+  `FAILED_RETRYABLE` instead of normal `VISIBLE` evidence.
+- Add a governed retry/re-narrate endpoint and background job that can regenerate
+  the narrative for the same event window without duplicating the moment.
+- Do not advance the effective narration completeness cursor just because a
+  fallback was written; track detection cursor and narration cursor separately.
+- Add tests for Chronicler timeout, malformed JSON, citation-rule failure,
+  retry after model recovery, manual edit after failed narration, and evidence
+  pack rendering of retryable moments.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
