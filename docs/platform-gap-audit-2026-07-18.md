@@ -20208,6 +20208,57 @@ Required fixes:
   proposal after more turns, partial acceptance, full acceptance, and attempting to
   resolve an incomplete intake without an explicit partial decision.
 
+### 409. Portfolio budget updates clear omitted limits instead of preserving them
+
+Evidence:
+
+- `portfolio-execution.router.ts:91-120` defines tenant and project budget
+  envelope schemas where all budget fields are optional, then exposes
+  `PUT /tenant-budget` and `PUT /projects/:projectId/budget-envelope`.
+- `upsertProjectBudgetEnvelopeInternal(...)` uses the same optional input object
+  for both create and update. In the update branch it always writes
+  `budgetLow: numberOrNull(input.budgetLow)`,
+  `budgetHigh: numberOrNull(input.budgetHigh)`, and
+  `tokenLimit: integerOrNull(input.tokenLimit)`.
+- `upsertTenantBudgetInternal(...)` has the same pattern for `costLimitUsd`,
+  `tokenLimit`, and `economyModelAlias`.
+- `numberOrNull(undefined)` returns `null`, and `integerOrNull(undefined)` also
+  returns `null`. Therefore a partial update such as changing only
+  `warningPercent` clears the existing cost and token limits.
+- Threshold fields behave differently: omitted `warningPercent` and
+  `hardCapPercent` are replaced with environment defaults rather than preserving
+  the stored envelope values.
+- The routes are named as `PUT`, but the schemas and UI-style use of optional
+  fields make them easy to call as partial updates; the response/audit event does
+  not call out which fields were cleared by omission.
+
+Impact:
+
+- Operators can accidentally remove project or tenant hard limits while intending
+  to change a single threshold or currency field.
+- Budget governance can silently become permissive because later
+  `evaluateProjectBudgetInternal(...)` falls back from the now-null envelope fields
+  to project defaults or no tenant limit.
+- Audit evidence records only `ProjectBudgetEnvelopeUpdated` with the envelope id,
+  not a before/after diff showing that limits were cleared.
+- The behavior is especially risky for tenant budgets because one partial update
+  can remove the tenant-wide cost/token guardrail for every initiative.
+
+Required fixes:
+
+- Choose one contract: make these endpoints true replace operations with required
+  fields and explicit clear controls, or change them to PATCH semantics that
+  preserves omitted fields.
+- In update branches, include only keys that are present in the request body; use
+  explicit `null` as the only way to clear a nullable limit.
+- Preserve existing threshold values when omitted instead of resetting to
+  environment defaults.
+- Add before/after budget audit metadata with actor, tenant, project id, changed
+  fields, cleared fields, and policy decision id.
+- Add tests for partial threshold update, explicit limit clear, omitted limit
+  preservation, tenant envelope partial update, and budget decision behavior after
+  each case.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
