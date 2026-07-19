@@ -22,6 +22,10 @@ export const defaultGatewayLlm: GatewayLlm = {
           { role: 'user', content: task },
         ],
         temperature: 0.2,
+        // Infrastructure call: composer/CF-exempt by the split rule, but bound
+        // to the gateway and tagged so lowering spend is attributable.
+        task_tag: 'claim_lowering',
+        trace_id: traceId,
       }),
     });
     if (!res.ok) throw new Error(`LLM gateway returned ${res.status}`);
