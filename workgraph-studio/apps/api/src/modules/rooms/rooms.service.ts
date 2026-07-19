@@ -7,12 +7,17 @@
 import type { ClaimType, EstimatorKind, Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { currentTenantIdForDb } from "../../lib/tenant-db-context";
+import { config } from "../../config";
 import { logEvent, publishOutbox } from "../../lib/audit";
 import { NotFoundError, ConflictError } from "../../lib/errors";
 import { getProject } from "../studio/studio-projects.service";
 import { poolEstimates, toBetaPrior, betaStats, decayOnRead, ignoranceRank, foldEvidence, UNIFORM_PRIOR, type ClaimTypeKey, type EvidenceTier } from "./belief";
 
 const tenant = () => currentTenantIdForDb() ?? undefined;
+// Reads scope to a CONCRETE tenant — never undefined, which would silently disable the
+// filter (mirrors studio-projects.service). Direct-by-id reads MUST carry this or they
+// leak cross-tenant (the project-scoped paths are already guarded via getProject()).
+const tenantScope = (): string => currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID;
 
 // ── Rooms ────────────────────────────────────────────────────────────────────
 export async function createRoom(projectId: string, input: { title: string }, userId: string) {
@@ -35,7 +40,7 @@ export async function listRooms(projectId: string) {
 }
 
 export async function getRoom(roomId: string) {
-  const room = await prisma.room.findUnique({ where: { id: roomId }, include: { claims: { include: { estimates: true } } } });
+  const room = await prisma.room.findFirst({ where: { id: roomId, tenantId: tenantScope() }, include: { claims: { include: { estimates: true } } } });
   if (!room) throw new NotFoundError("Room", roomId);
   return { ...room, claims: room.claims.map((c) => shapeClaim(c, c.estimates)) };
 }
@@ -143,7 +148,7 @@ export async function addClaim(projectId: string, input: AddClaimInput, userId: 
 }
 
 export async function getClaim(claimId: string) {
-  const claim = await prisma.claim.findUnique({ where: { id: claimId }, include: { estimates: true } });
+  const claim = await prisma.claim.findFirst({ where: { id: claimId, tenantId: tenantScope() }, include: { estimates: true } });
   if (!claim) throw new NotFoundError("Claim", claimId);
   return shapeClaim(claim, claim.estimates);
 }
@@ -157,7 +162,7 @@ async function upsertEstimate(claimId: string, input: { probability: number; wei
 }
 
 export async function estimateClaim(claimId: string, input: { probability: number; rationale?: string }, estimatorId: string, estimatorKind: EstimatorKind = "HUMAN") {
-  const claim = await prisma.claim.findUnique({ where: { id: claimId }, select: { id: true } });
+  const claim = await prisma.claim.findFirst({ where: { id: claimId, tenantId: tenantScope() }, select: { id: true } });
   if (!claim) throw new NotFoundError("Claim", claimId);
   await upsertEstimate(claimId, input, estimatorId, estimatorKind);
   await recomputePosterior(claimId);
@@ -180,7 +185,7 @@ export async function listClaims(projectId: string, opts: { roomId?: string; con
 /** The registry read: claims across a context, DECAYED ON READ by evidence age + claim type. */
 export async function getRegistryClaims(filter: { contextScope?: string; projectId?: string } = {}) {
   const claims = await prisma.claim.findMany({
-    where: { ...(filter.contextScope ? { contextScope: filter.contextScope } : {}), ...(filter.projectId ? { projectId: filter.projectId } : {}) },
+    where: { tenantId: tenantScope(), ...(filter.contextScope ? { contextScope: filter.contextScope } : {}), ...(filter.projectId ? { projectId: filter.projectId } : {}) },
     orderBy: { updatedAt: "desc" },
     take: 200,
   });
