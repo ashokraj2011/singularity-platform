@@ -412,6 +412,12 @@ export async function activateAgentTask(
       capability_id: capabilityId,
       tenant_id: tenantId,
       agent_template_id: agentTemplateId,
+      // The node's declared role, forwarded so CF can fetch the world-model
+      // slice this agent should read rather than the whole capability model.
+      // Reuses governedAgentRole, which the governed path already sends — the
+      // legacy path just never had anywhere to put it. Undefined is fine:
+      // agent-runtime applies its own fallback role.
+      agent_role: typeof cfg.governedAgentRole === 'string' ? cfg.governedAgentRole : undefined,
       // M26 — the calling user's IAM sub (resolved from users.iamUserId; falls
       // back to the instance creator for auto-advanced nodes). context-fabric
       // routes laptop-bridge dispatch by this id — it must equal the device
