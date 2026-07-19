@@ -18000,6 +18000,68 @@ Required fixes:
   tenant-scoped policy isolation, unknown field rejection, OR-condition behavior,
   and policy action config handling.
 
+### 366. Standalone AgentRun tenant rows are orphaned by strict-mode access helpers
+
+Evidence:
+
+- The `AgentRun` schema has a nullable `instanceId` and a separate nullable
+  `tenantId` with the comment `RLS standalone-row tenant`.
+- `agents.router.ts` creates standalone runs through
+  `POST /api/agents/:id/runs` when no `instanceId` is supplied, and explicitly
+  stamps `tenantId` with the request tenant so the row is visible.
+- `laptop.service.ts` also creates laptop/direct-Copilot `AgentRun` rows without
+  `instanceId` and comments that these standalone rows need direct `tenantId`
+  visibility under the tenant-or-instance policy.
+- `assertAgentRunTenant(...)` ignores `AgentRun.tenantId`; it selects only
+  `instanceId`, then calls `assertLinkedWorkflowInstanceTenant(...)`.
+- `assertLinkedWorkflowInstanceTenant(...)` rejects any strict-mode resource with
+  no linked workflow instance using `Tenant isolation is strict but AgentRun ...
+  is not linked to a workflow instance`.
+- `agent-runs.router.ts` uses `assertAgentRunTenant(...)` for
+  `GET /api/agent-runs/:id`, `GET /api/agent-runs/:id/outputs`,
+  `POST /api/agent-runs/:id/review`, and `POST /api/agent-runs/:id/approve`.
+- The pending review and pending approval queues filter strict-mode rows with
+  `instance: { tenantId }`, so standalone tenant-stamped AgentRuns are omitted
+  from the queues even when they are awaiting review or paused.
+- `contracts.router.ts` calls `assertAgentRunTenant(req, originalRunId)` before
+  contract replay, so a standalone laptop/direct-Copilot run id cannot pass that
+  guard in strict mode even though it has a tenant id.
+- Existing findings cover broad AgentRun evidence reads and the legacy
+  `/api/agents/:id/runs` invocation adapter. They do not cover strict-mode
+  access helpers orphaning valid standalone tenant-stamped AgentRun rows.
+
+Impact:
+
+- Laptop/direct-Copilot and standalone legacy agent runs can be created but then
+  become unreadable, unreviewable, or unapprovable through normal AgentRun APIs
+  in strict tenant-isolation deployments.
+- Pending-review operators can miss standalone `AWAITING_REVIEW` AgentRuns
+  because queues join through workflow instances instead of checking
+  `AgentRun.tenantId`.
+- Contract replay and evidence drill-down can fail for standalone runs with a
+  misleading "not linked to workflow instance" denial instead of enforcing the
+  row's tenant and resource-specific permissions.
+- Teams may compensate by disabling strict isolation or by adding ad hoc routes,
+  both of which undercut the enterprise tenant-isolation model.
+
+Required fixes:
+
+- Update `assertAgentRunTenant(...)` to authorize rows by either a linked
+  workflow instance tenant or, for standalone rows, `AgentRun.tenantId` matching
+  the request tenant.
+- Add a source-specific permission layer after tenant matching, such as
+  `agent_run:view`, `agent_run:review`, `agent_run:approve`, and
+  `laptop_invocation:view`, so direct tenant access does not become broad
+  tenant-wide access.
+- Change pending-review and pending-approval queue filters to include
+  standalone rows with matching `tenantId` and then filter by reviewer
+  eligibility.
+- Make contract replay accept standalone runs only when the caller can view that
+  AgentRun and its linked WorkItem/laptop invocation evidence.
+- Add tests for workflow-linked AgentRun access, standalone tenant-matched
+  AgentRun access, cross-tenant standalone denial, pending-review inclusion,
+  contract replay for laptop runs, and strict-mode no-instance error messages.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
