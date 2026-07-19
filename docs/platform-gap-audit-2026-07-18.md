@@ -18062,6 +18062,70 @@ Required fixes:
   AgentRun access, cross-tenant standalone denial, pending-review inclusion,
   contract replay for laptop runs, and strict-mode no-instance error messages.
 
+### 367. Studio tenant fallbacks can route Synthesis data through the default tenant
+
+Evidence:
+
+- `tenantDbContextMiddleware` derives DB tenant context only from request
+  headers, query params, or body fields; if none is supplied,
+  `currentTenantIdForDb()` remains unset.
+- `app.ts` mounts `/api/studio` and `/api/concept-archive` behind
+  `authMiddleware, studioAuthz`, so these are normal authenticated product
+  surfaces, not debug-only paths.
+- `studio-authz.ts` calls IAM with
+  `resolveTenantFromRequest(req) ?? config.WORKGRAPH_DEFAULT_TENANT_ID`, so a
+  request without explicit tenant context can still authorize against the default
+  tenant.
+- `studio-projects.service.ts` defines `tenantId()` as
+  `currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID` and passes that
+  value into `withTenantDbTransaction(...)`; this bypasses the strict-mode
+  "missing tenant context" failure because the service supplies a fallback
+  tenant.
+- The same fallback pattern is used by Synthesis boards and impact assessments:
+  `board.service.ts` reads/writes boards, branches, and events with
+  `currentTenantIdForDb() ?? config.WORKGRAPH_DEFAULT_TENANT_ID`, while
+  `studio-impact-assessment.service.ts` uses the same fallback for project and
+  capability-assessment reads/writes.
+- `concept-archive/archive.service.ts` is weaker in non-strict paths:
+  `tenantId()` returns `undefined` when there is no context, and `tenantWhere()`
+  becomes `{}`, which means archive/studio/card/proposal lookups can omit a
+  tenant predicate entirely.
+- Existing Studio tests cover schemas, board event utilities, merge logic,
+  archive engine logic, and single-capability invariants, but searches found no
+  missing-tenant or cross-tenant direct-ID tests for `/api/studio` portfolio,
+  projects, boards, impact assessments, or Concept Archive APIs.
+
+Impact:
+
+- A production or demo request that lacks tenant context can read or mutate the
+  default tenant's Synthesis projects, boards, branches, impact assessments, and
+  concept archive rows instead of failing closed.
+- IAM can approve a Studio action for the default tenant while the user's
+  intended tenant is different or absent, weakening tenant-membership evidence.
+- RLS can be set to the fallback tenant for project/board paths, and Concept
+  Archive paths can omit tenant filters in relaxed deployments, creating
+  inconsistent tenant isolation across one Synthesis workspace.
+- Capability impact reviews, board history, concept proposals, and initiative
+  evidence can be stamped onto the wrong tenant or become visible in the wrong
+  tenant-scoped view.
+
+Required fixes:
+
+- Remove `WORKGRAPH_DEFAULT_TENANT_ID` fallbacks from authenticated Studio and
+  Concept Archive service paths in IAM/strict modes; require an explicit tenant
+  resolved from the authenticated subject and validated tenant membership.
+- Pass the resolved request tenant explicitly from routers into project, board,
+  impact assessment, co-edit, merge, verdict, ingestion, moments, and concept
+  archive services instead of reading process-local context plus fallback.
+- Make `studioAuthz` fail closed when tenant context is missing; do not authorize
+  Synthesis actions against the default tenant unless the deployment is explicitly
+  local-auth development mode.
+- Replace `tenantWhere() => {}` with mandatory tenant predicates for Concept
+  Archive read/write helpers once authentication is enabled.
+- Add tests for missing tenant, explicit tenant, cross-tenant direct project id,
+  cross-tenant board id, cross-tenant archive/card/proposal id, default-tenant
+  fallback rejection, and strict-mode service calls with no tenant context.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
