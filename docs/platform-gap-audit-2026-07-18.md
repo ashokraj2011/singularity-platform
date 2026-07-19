@@ -20314,6 +20314,59 @@ Required fixes:
 - Keep Prisma defaults, loop-definition normalization, and the API edit gate
   aligned so design-time contracts are the same contracts enforced at runtime.
 
+### 411. Workbench stage partial updates can bypass StageExecutionPolicy pairing
+
+Evidence:
+
+- `workgraph-studio/apps/api/src/modules/workflow/workbench-definitions.router.ts:80-87`
+  explains that `contextPolicy` and `toolPolicy` must move together because
+  mismatches such as `STORY_ONLY + MUTATION` previously shipped mutation tools
+  while source materialization skipped repository context.
+- The allowed pairs are explicit at
+  `workbench-definitions.router.ts:88-96`: `NONE+NONE`,
+  `STORY_ONLY+NONE`, `REPO_READ_ONLY+READ_ONLY`, `CODE_EDIT+MUTATION`,
+  `VERIFY_ONLY+VERIFICATION`, and `EVIDENCE_REVIEW+READ_ONLY`.
+- `createStageSchema` validates that pair on creation
+  (`workbench-definitions.router.ts:136-164`).
+- `patchStageSchema` only validates the pair when both fields are present in the
+  same request, and its comment says one-field patches are allowed because the
+  missing field is assumed to match the existing value
+  (`workbench-definitions.router.ts:166-200`).
+- `patchStage()` does not load the existing row, merge the patch, and validate the
+  resulting pair. It calls `prisma.workbenchStage.update({ data: input })`
+  directly, writes the invalid definition through to legacy JSON, reconciles
+  governance, and records audit (`workbench-definitions.service.ts:560-589`).
+- No WorkbenchDefinition test covers partial policy updates; existing tests only
+  cover runtime Blueprint stage-policy enforcement and Copilot export rendering.
+
+Impact:
+
+- A valid stage can be made invalid through two legal partial edits, for example
+  `CODE_EDIT+MUTATION` patched with only `toolPolicy=NONE`, or
+  `STORY_ONLY+NONE` patched with only `toolPolicy=MUTATION`.
+- The UI can show one policy dimension as changed while the runtime receives a
+  mismatched pair in both first-class Workbench tables and
+  `WorkflowNode.config.workbench.loopDefinition`.
+- Source materialization, tool exposure, Copilot export guidance, governance
+  reconciliation, and stage-policy checks can disagree about whether a stage may
+  read the repo, mutate code, or run verification.
+- This undermines the platform's newer "StageExecutionPolicy" contract even when
+  users are editing a legitimate DRAFT workflow.
+
+Required fixes:
+
+- Move pair validation into the service layer: load the existing stage, merge the
+  patch, then validate the effective `contextPolicy + toolPolicy` before writing.
+- Reject one-field patches that would create an invalid pair, or require clients
+  to submit both policy fields together.
+- Run the same effective-pair validation before `writeThroughToLegacy()` so legacy
+  runtime JSON cannot receive contradictory policy state.
+- Add API tests for valid one-field no-op-safe edits, invalid one-field edits,
+  two-step bypass attempts, legacy JSON write-through refusal, and governance
+  reconciliation not running after a rejected policy patch.
+- Consider storing the policy as one enum/value object instead of two independent
+  fields so impossible pairs cannot be represented.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
