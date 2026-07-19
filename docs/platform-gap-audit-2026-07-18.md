@@ -17569,6 +17569,71 @@ Required fixes:
   ids, and launch preview cannot recommend a workflow template from reference
   data.
 
+### 359. EXTERNAL node webhook dispatch leaks node secrets and full runtime context
+
+Evidence:
+
+- `WorkflowRuntime.ts` creates a `PendingExecution` row for nodes whose
+  `executionLocation` is `EXTERNAL`, stores the full runtime `context` as the
+  pending payload, and then calls `runExternalWebhookNode(...)` immediately when
+  the node is external.
+- `runExternalWebhookNode(...)` passes `node.config`, `instanceId`,
+  `pendingExecutionId`, and the same full `context` into
+  `dispatchExternalWebhook(...)`.
+- `external-webhook.ts` correctly applies a public-address SSRF guard before
+  calling the configured `webhookUrl`, so the gap is not the missing private-IP
+  guard that exists in older dynamic-webhook findings.
+- The dispatched JSON body is built as `{ pendingExecutionId, nodeId,
+  instanceId, nodeType, config, context }`. The `config` object is the raw node
+  configuration and can include `webhookSecret`.
+- The same function reads `webhookSecret` from that raw config to create the
+  `x-signature-256` HMAC header, but it does not remove or redact the secret
+  from the body before POSTing the payload to the external executor.
+- The full `context` object can include WorkItem text, event payloads,
+  workflow globals, upstream node outputs, document/artifact references, prompt
+  inputs, repository metadata, trace/correlation ids, and tenant-specific
+  routing data. There is no explicit per-node output contract or payload
+  minimization step before export.
+- This path is separate from event-subscription delivery. Existing event-bus
+  hardening covers registered event subscribers, encrypted subscription secrets,
+  and SSRF checks, but `EXTERNAL` execution dispatch still uses the workflow
+  node config as the destination and secret container.
+
+Impact:
+
+- An external executor receives the secret that was intended only for HMAC
+  verification, making the signature useless as a shared-secret boundary after
+  the first request.
+- A workflow designer can unintentionally export more tenant/run data than the
+  external executor needs, including sensitive documents or prompt context
+  carried in the runtime context.
+- Secrets stored in workflow node config are not managed as rotatable secret
+  references and can be copied through template exports, revisions, audit
+  payloads, pending execution payloads, or external webhook bodies.
+- Operations cannot distinguish governed event-bus deliveries from external
+  execution handoffs, so replay, retry, redaction, and forensic evidence remain
+  incomplete for this execution location.
+
+Required fixes:
+
+- Replace raw `webhookUrl` and `webhookSecret` node fields with a registered
+  external-executor connector or destination id. Store HMAC/API secrets in the
+  platform secret manager or encrypted destination table, not in workflow node
+  config.
+- Build the outbound body from explicit node input bindings and a minimal
+  execution envelope. Never include raw node config, raw secret material, or the
+  full workflow context by default.
+- Record external execution deliveries in Workflow Operations with tenant,
+  capability, workflow instance, node id, destination id, trace id, payload
+  digest, redaction mode, retry count, and outcome.
+- Apply the same destination policy, SSRF controls, TLS policy, timeout limits,
+  and tenant/capability authorization used by event-subscription delivery.
+- Add tests that prove `webhookSecret` is never present in the request body,
+  private/internal URLs are denied, unregistered destinations are denied in
+  strict mode, payloads contain only declared bindings, secrets are redacted from
+  pending execution and audit views, and failed external deliveries appear in
+  Workflow Operations.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
