@@ -19237,6 +19237,55 @@ Required fixes:
 - Update any replay/export/time-travel clients to detect and surface incomplete
   pages instead of silently rendering partial history.
 
+### 390. Board ingestion can leave split artifact/event evidence on mid-flow failure
+
+Evidence:
+
+- `ingest(...)` creates the `IngestedArtifact` row with `status: 'PARSING'` before
+  any board events are appended.
+- It immediately publishes `IngestionStarted` outbox evidence for that artifact,
+  before parsing, placement, extraction, or completion has succeeded.
+- Parse failure is handled by updating the artifact to `FAILED`, but the earlier
+  started outbox remains and there is no matching failed outbox/audit event.
+- After parsing, `ingest(...)` appends `INGESTION_STARTED`, then one
+  `OBJECT_CREATED` per placement, then updates the artifact to `EXTRACTING`.
+- Those `appendEvent(...)` calls are individual fenced writes outside a shared
+  ingestion transaction; a failure after one append can leave board objects or a
+  started event while the artifact remains `PARSING`.
+- The artifact is updated to `COMPLETED` before the final
+  `INGESTION_COMPLETED` board event, audit log, and completion outbox are written.
+- A failure in the final append/audit/outbox segment can therefore leave an
+  artifact marked `COMPLETED` without the board event that moment detection,
+  replay, and evidence views expect.
+
+Impact:
+
+- Operators can see artifacts stuck in `PARSING` or `EXTRACTING` with no durable
+  retry/dead-letter record explaining which placement or event write failed.
+- Board state can contain partial source cards for an artifact that never reaches
+  a completed ingestion lifecycle.
+- The artifact table can claim completion while the board event log has no
+  `INGESTION_COMPLETED`, so source-added moments and replay evidence become
+  inconsistent.
+- Retrying the same source after a partial failure can hit content-hash dedupe and
+  return the half-written artifact instead of repairing or replacing the missing
+  branch events.
+
+Required fixes:
+
+- Model ingestion as a durable command with explicit phases, attempt id,
+  idempotency key, last completed step, retry count, and failure reason.
+- Write artifact status transitions and board/outbox events through one
+  transactional command boundary where possible, or use a transactional outbox
+  plus resumable worker for external/model extraction.
+- Emit `IngestionFailed` audit/outbox evidence for parse, placement, extraction,
+  board-event append, and completion-publish failures.
+- Make retries resume or compensate from the recorded phase instead of relying on
+  board-wide content-hash dedupe.
+- Add tests for parse failure, failure after `INGESTION_STARTED`, failure after a
+  subset of placements, failure after artifact `COMPLETED` but before
+  `INGESTION_COMPLETED`, and retry after each partial state.
+
 ## Verified Improvements
 
 These are not gaps in the current worktree:
