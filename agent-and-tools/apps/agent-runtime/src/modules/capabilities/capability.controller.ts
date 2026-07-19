@@ -19,6 +19,7 @@ import { upsertWorldModel, getWorldModel, getChildWorldModels } from "./world-mo
 import { distillAndUpsertWorldModel } from "./bootstrap-phase3-distill";
 import { buildViews, listViews, getView, deleteView, viewBuildEnabled, isBuildInFlight } from "./world-model-view-builder.service";
 import { planViewBuild } from "./world-model-view-specs";
+import { getWorldModelSlice } from "./world-model-slice.service";
 import { isWorldModelViewKind, isViewStale } from "./world-model-views.types";
 // M61 Wire D — Verify-now command probe powering the wizard's per-row
 // "Verify" button. Spawns the cmd in an isolated tmp dir with a 10s
@@ -329,6 +330,30 @@ export const capabilityController = {
     const deleted = await deleteView(req.params.id, kind, domainKey);
     if (!deleted) return res.status(404).json({ error: "view not built for this capability" });
     return ok(res, { capabilityId: req.params.id, kind, domainKey, deleted: true }, 200);
+  },
+
+  // GET /capabilities/:id/world-model/slice?role=&task=&domainKey=
+  //
+  // The single call context-fabric makes per turn: hand it a role, get back the
+  // capability's world model plus only the views that role should read.
+  //
+  // 404 only when the capability has neither a world model nor any views. A
+  // parent capability with views but no world model is a valid slice — that is
+  // the whole point of building views for capabilities without repositories.
+  // `views: []` is likewise valid and means "nobody has built views yet", which
+  // is exactly today's behaviour for every caller.
+  async getWorldModelSliceForRole(req: Request, res: Response) {
+    assertCapabilityReadScope(req.user, req.params.id);
+    const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+    const slice = await getWorldModelSlice(req.params.id, {
+      role: str(req.query.role),
+      task: str(req.query.task),
+      domainKey: str(req.query.domainKey),
+    });
+    if (!slice.worldModel && slice.views.length === 0) {
+      return res.status(404).json({ error: "no world model or views for this capability" });
+    }
+    return ok(res, slice, 200);
   },
 
   // POST /capabilities/:id/world-model/redistill — refresh grounding on demand
