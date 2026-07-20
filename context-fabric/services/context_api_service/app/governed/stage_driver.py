@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .audit_emit import emit_governed_event
+from . import conversation_context
 from .history_compression import DEFAULT_RECENT_TURNS, compress_history
 from .llm_client import LLMGatewayError
 from .loop import GovernedStepResult, ToolCallOutcome
@@ -1773,6 +1774,18 @@ async def run_stage(
     feedback_message = _render_eval_feedback_message((vars or {}).get("eval_feedback"))
     if feedback_message is not None:
         history.insert(0, feedback_message)
+
+    # Cross-turn conversation memory. `initial_history` has been plumbed through
+    # four layers and hardcoded to [] at its only caller since it was added; this
+    # is what finally puts something in front of it. Goes at the very head
+    # because it is the oldest context in the list — older than the eval feedback
+    # (which is about the attempt that just failed) and older than anything the
+    # caller passed. Every message is `_cf_prelude`-tagged, so compress_history
+    # leaves it verbatim for the whole stage instead of breadcrumbing it away
+    # around turn 9. Returns [] with the flag off, making this a no-op.
+    conversation_prelude = await conversation_context.build(run_context)
+    if conversation_prelude:
+        history[0:0] = conversation_prelude
 
     result = StageRunResult(final_state=state)
 

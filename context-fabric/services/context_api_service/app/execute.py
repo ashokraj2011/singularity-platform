@@ -31,6 +31,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, Field
 
 from . import call_log, conversation_identity as _conversation_identity, events_store
+from .governed import conversation_context
 from .audit_gov_emit import emit_audit_event
 from .config import is_production_class_env, settings
 from .env_config import bounded_float_value
@@ -2736,11 +2737,20 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
         fallback=settings.default_governance_mode,
     )
 
+    # Prior turns for this conversation. THE fix for the stateless single turn:
+    # this endpoint is what the Ask sidecar, the Studio conductor, room-copilot,
+    # board-copilot and Event Horizon all reach, and it has always built
+    # `[system_prompt?, user_task]` with zero history. Returns [] unless
+    # CF_CONVERSATION_ENABLED is on AND the turn resolves to a conversation, so
+    # with the flag off `messages` below is byte-identical to what it was.
+    conversation_prelude = await conversation_context.build(rc)
+
     # The VERBATIM messages -- what this endpoint has always sent, and the
     # fallback for every path below that cannot compose.
     messages: list[dict[str, Any]] = []
     if req.system_prompt and req.system_prompt.strip():
         messages.append({"role": "system", "content": req.system_prompt})
+    messages.extend(conversation_prelude)
     messages.append({"role": "user", "content": req.task})
 
     # Run the turn through prompt-composer when enabled, so these callers stop
@@ -2794,7 +2804,12 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
             )
             single_turn_warnings.extend(compose_warnings)
             if composed_messages:
-                messages = composed_messages
+                # The composer replaces the whole list, so the history spliced in
+                # above would be discarded on this path. Re-splice it into what
+                # the composer produced -- after the system block, in front of
+                # the current user turn. No-op (same list object) when the
+                # prelude is empty.
+                messages = conversation_context.splice_prelude(composed_messages, conversation_prelude)
                 composed_turn = True
         except Exception as exc:  # pylint: disable=broad-except
             # Composer unreachable, slow, or erroring. The verbatim messages are

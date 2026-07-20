@@ -45,6 +45,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .conversation_budget import CF_PRELUDE_KEY
+
 DEFAULT_RECENT_TURNS = 8
 """Default sliding-window size. After the first 8 turns, each older
 turn collapses to a breadcrumb. Sized by inspection: 8 turns × ~3
@@ -63,6 +65,20 @@ _BREADCRUMB_MARKER = "[TURN-"
 _BREADCRUMB_TAIL = "-RECAP]"
 
 
+def _is_cf_prelude(msg: Any) -> bool:
+    """Injected conversation memory, tagged by conversation_budget.
+
+    Regardless of role. This is the whole point: injected history contains
+    ASSISTANT turns, and `_is_assistant_start` would otherwise read each one as
+    the start of a new turn group. On a long stage those groups fall out of the
+    sliding window and collapse into breadcrumbs — so the conversation would
+    work for eight turns and then silently evaporate around turn 9, with nothing
+    in the logs to say memory had been thrown away. Tagged messages are prelude
+    and prelude is never compressed.
+    """
+    return isinstance(msg, dict) and bool(msg.get(CF_PRELUDE_KEY))
+
+
 def _count_breadcrumbs(prelude: list[dict[str, Any]]) -> int:
     """Count "[TURN-N-RECAP]" messages in a prelude slice. Used to
     preserve monotonic turn-index numbering across multiple
@@ -73,6 +89,11 @@ def _count_breadcrumbs(prelude: list[dict[str, Any]]) -> int:
             continue
         if msg.get("role") != "user":
             continue
+        if _is_cf_prelude(msg):
+            # A user could paste "[TURN-3-RECAP]" into a chat. Injected
+            # conversation text is never one of OUR breadcrumbs, so it must not
+            # shift the numbering.
+            continue
         content = msg.get("content") or ""
         if isinstance(content, str) and content.startswith(_BREADCRUMB_MARKER) and _BREADCRUMB_TAIL in content:
             count += 1
@@ -82,7 +103,13 @@ def _count_breadcrumbs(prelude: list[dict[str, Any]]) -> int:
 def _is_assistant_start(msg: dict[str, Any]) -> bool:
     """A turn group starts at the assistant message that closed
     the prior LLM call. Anything else (user/system/tool) is either
-    prelude or part of the prior turn group."""
+    prelude or part of the prior turn group.
+
+    Injected conversation memory is exempt even when it is assistant-role: it
+    records what was said in an EARLIER conversation, not a tool-calling turn
+    this stage took."""
+    if _is_cf_prelude(msg):
+        return False
     return isinstance(msg, dict) and msg.get("role") == "assistant"
 
 
@@ -98,13 +125,21 @@ def _split_into_groups(
     the next assistant message. Tool messages and post-turn user
     injections (auto-verify, etc.) get bundled with the assistant
     they followed.
+
+    `_cf_prelude`-tagged messages always land in prelude, whatever their role
+    and wherever they appear. They arrive at the head of the list in practice,
+    so the routing is usually a no-op; making it unconditional means the
+    "never compressed" guarantee does not depend on a caller splicing them in
+    the right position.
     """
     prelude: list[dict[str, Any]] = []
     groups: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] | None = None
 
     for msg in messages:
-        if _is_assistant_start(msg):
+        if _is_cf_prelude(msg):
+            prelude.append(msg)
+        elif _is_assistant_start(msg):
             if current is not None:
                 groups.append(current)
             current = [msg]
