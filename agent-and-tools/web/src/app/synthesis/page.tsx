@@ -14,7 +14,7 @@ export default function SynthesisIndex() {
   const router = useRouter();
 
   useEffect(() => {
-    router.replace("/synthesis/hub");
+    router.replace("/synthesis/studio");
   }, [router]);
 
   return (
@@ -22,8 +22,8 @@ export default function SynthesisIndex() {
       <div className="text-center">
         <Loader2 size={20} className="mx-auto animate-spin text-secondary" />
         <p className="mt-3 text-sm font-semibold">Opening Synthesis workspace</p>
-        <Link href="/synthesis/hub" className="mt-2 inline-block text-xs text-secondary underline">
-          Open workspace hub
+        <Link href="/synthesis/studio" className="mt-2 inline-block text-xs text-secondary underline">
+          Open Synthesis Studio
         </Link>
       </div>
     </div>

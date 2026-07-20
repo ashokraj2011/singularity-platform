@@ -425,6 +425,11 @@ option. It posts multipart field `file` to
 `POST /api/studio/boards/:boardId/ingest-file`; the server infers the parser
 from the extension and applies the same 500 KB and extraction lifecycle rules.
 
+The guided conversation entry is `http://localhost:5180/synthesis/studio` (or
+`/synthesis`, which opens it after the session gate). It reuses the existing
+tenant-scoped workspace, thread, manifest, proposal, and governed-agent APIs;
+the right pane is refreshed from the server and links to full editing surfaces.
+
 The reader extracts text only: Office layout, charts, formulas, images, and
 macros are not interpreted. The current limit is 500 KB per source. The
 storage root is real-path checked to reject traversal and symlink escape;

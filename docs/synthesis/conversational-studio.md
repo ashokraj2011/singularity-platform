@@ -1,8 +1,9 @@
 # The Conversational Studio ("the big screen")
 
-**Status:** specified; the first document-ingestion slice is implemented in this
-checkout, while the conversational conductor and dual-pane surface remain
-planned. The specification was introduced in
+**Status:** the guarded document-ingestion slice and initial conversational
+conductor/dual-pane surface are implemented in this checkout. SSE streaming,
+card protocol, and full in-thread attachment lifecycle remain planned follow-on
+slices. The specification was introduced in
 `dca399eb` (#566) and its current implementation baseline was refreshed against
 `main` at `90eb9fb9` (#567).
 
@@ -12,8 +13,11 @@ driver, three agents, the proposal apply-registry and ask-with-history. The
 `experience/` module provides intake sessions, artifact validation → transmute →
 canonical-document, scaffold accept and the morning brief.
 
-What remains is the **conductor** that unifies them into one conversation,
-streaming, the workspace pane, gate cards, in-thread uploads, and the web surface.
+What remains is the event-stream and card protocol that will deepen the initial
+conductor: SSE streaming, live gate/plan cards, and true in-thread attachment
+lifecycles. The first usable conductor surface now unifies the existing agent
+turn, manifest, proposal, document, and context-reference services without
+adding a parallel mutation path.
 
 ---
 
@@ -47,7 +51,7 @@ produced nothing durable.
 | Ask | `/synthesis/ask` + history | Routed by the Conductor when a turn is a question |
 | Gates & generation | compile + gate; plans/validate/apply + receipts | GATE / PLAN card protocol; cards call existing endpoints |
 | Happy path | 7-step guided order (#565) | The same 7 steps become the thread's phase chips |
-| UI | — | The dual-pane screen |
+| UI | — | The dual-pane screen at `/synthesis/studio` |
 
 ### ⚠️ Correction to the original plan — document ingestion was a real dependency
 
@@ -88,6 +92,15 @@ errors set the artifact to `FAILED` and never emit a successful completion event
 The default Office readers intentionally cover text extraction, not layout,
 charts, formulas, images, or macros. The intake screen now exposes the guarded
 multipart upload route; provider-specific adapters remain follow-on work.
+
+**Implemented S1/S2 slice in this checkout.** `/synthesis/studio` is now the
+primary Synthesis entry. It creates or reuses a tenant-scoped workspace and
+working thread, routes each turn deterministically to the Facilitator, Evidence
+Curator, or Requirements Editor, records the routing decision as a fenced
+`SYSTEM_STATE` message, and delegates execution to the existing governed agent
+turn. The right-hand pane is a server-backed projection of phase, next action,
+sources, documents, proposals, and pending review. The pane currently refreshes
+by polling; SSE and in-thread binary attachments remain follow-on work.
 
 ### Invariant the spec correctly respects
 
@@ -215,13 +228,14 @@ of the conversational work** for the reasons in the correction above.
   failure semantics, and `storageRef` path support. *Demo: place a real BRD
   under `STUDIO_INGEST_STORAGE_ROOT`, call the existing ingest endpoint with its
   relative `storageRef`, and see extracted claims.*
-- **S1 — Message kinds + SSE + pane (1.5 wk).** Migration; SSE channel; pane
-  read-model + projector; thread renders existing agent-turns and ask in the new
-  shell, role picker temporarily visible. *Demo: a live thread with a live pane.*
-- **S2 — Conductor v1 + intake-in-thread (1.5 wk).** Deterministic routes plus
-  the classifier; the five-stage intake protocol conducted through the thread;
-  SCAFFOLD_REVIEW card → existing accept. *Demo: blank thread → accepted
-  scaffold, no role picker.*
+- **S1 — Message kinds + SSE + pane (partially implemented).** The pane read
+  model, thread projection, polling refresh, and system-state route messages are
+  shipped. SSE fan-out and formal message-kind migration remain. *Demo: a live
+  thread with a live pane.*
+- **S2 — Conductor v1 + intake-in-thread (initial slice implemented).**
+  Deterministic routes, governed role delegation, and the no-role-picker Studio
+  surface are shipped. The five-stage intake protocol, classifier, and
+  SCAFFOLD_REVIEW card remain. *Demo: blank thread → routed governed turn.*
 - **S3 — Evidence flow (1.5 wk).** In-thread ingestion using S0; Evidence Curator
   auto-turn on completion; CONTRADICTION and PROPOSAL cards; PROBE_OFFER. Wire
   `PROPOSE_CLAIM` + `FLAG_CONTRADICTION`. *Demo: drop two documents, adjudicate a

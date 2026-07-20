@@ -93,7 +93,14 @@ const synthesisIndex = fs.readFileSync(
   "utf8",
 );
 assert.doesNotMatch(synthesisIndex, /from ["']next\/navigation["'];?\s*\n.*redirect/, "Synthesis entry must not throw a server redirect below the client auth gate");
-assert.match(synthesisIndex, /router\.replace\("\/synthesis\/hub"\)/, "Synthesis entry should navigate after the session gate renders");
+assert.match(synthesisIndex, /router\.replace\("\/synthesis\/studio"\)/, "Synthesis entry should navigate after the session gate renders");
+const conversationalStudio = fs.readFileSync(
+  path.join(process.cwd(), "src/components/synthesis/screens/ConversationalStudioScreen.tsx"),
+  "utf8",
+);
+assert.match(conversationalStudio, /converse/, "Synthesis Studio should use the conductor endpoint");
+assert.match(conversationalStudio, /Workspace pane/, "Synthesis Studio should expose the durable workspace pane");
+assert.match(conversationalStudio, /Add source/, "Synthesis Studio should link users to source intake");
 
 const synthesisHub = fs.readFileSync(
   path.join(process.cwd(), "src/app/synthesis/hub/page.tsx"),

@@ -16,6 +16,7 @@ import { addBlock, updateBlock, removeBlock, pinBlock } from './block.service'
 import { createWorkspaceProposal, listProposals, getProposal, decideProposalItems, rebaseProposalItem } from './proposal.service'
 import { runAgentTurn } from './synthesis-agent.service'
 import { ask, askHistory } from './ask.service'
+import { converse, getPane, getThreadSnapshot } from './conductor.service'
 
 export const synthesisRouter: Router = Router()
 
@@ -225,6 +226,21 @@ const agentTurnSchema = z.object({
 })
 synthesisRouter.post('/workspaces/:workspaceId/threads/:threadId/agent-turn', validate(agentTurnSchema), wrap(async (req, res) => {
   res.json(await runAgentTurn(String(req.params.workspaceId), String(req.params.threadId), req.body.role, req.body.message, req, userIdOf(req)))
+}))
+
+// ── Conversational Studio conductor ────────────────────────────────────────────
+const converseSchema = z.object({
+  text: z.string().trim().min(1).max(10000),
+  inReplyTo: z.string().trim().min(1).optional(),
+})
+synthesisRouter.post('/workspaces/:workspaceId/threads/:threadId/converse', validate(converseSchema), wrap(async (req, res) => {
+  res.json(await converse(String(req.params.workspaceId), String(req.params.threadId), req.body.text, req, userIdOf(req)))
+}))
+synthesisRouter.get('/workspaces/:workspaceId/pane', wrap(async (req, res) => {
+  res.json(await getPane(String(req.params.workspaceId)))
+}))
+synthesisRouter.get('/workspaces/:workspaceId/threads/:threadId/snapshot', wrap(async (req, res) => {
+  res.json(await getThreadSnapshot(String(req.params.workspaceId), String(req.params.threadId)))
 }))
 
 // ── Ask Synthesis (5.1) — always-available Facilitator sidecar; project- OR session-scoped ─

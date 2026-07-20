@@ -20,6 +20,7 @@ import {
   ListTree,
   Map,
   MessagesSquare,
+  MessageCircle,
   Network,
   PanelLeftClose,
   PanelLeftOpen,
@@ -47,6 +48,7 @@ export interface SynNavItem {
 }
 
 export const SYN_NAV: SynNavItem[] = [
+  { href: "/synthesis/studio", label: "Synthesis Studio", icon: MessageCircle, hint: "Guided conversation and durable workspace", phase: "Orient" },
   { href: "/synthesis/hub", label: "Initiative Portfolio", icon: Home, hint: "Portfolio and active initiatives", phase: "Orient" },
   { href: "/synthesis/overview", label: "Initiative Overview", icon: LayoutDashboard, hint: "Signals, budgets, and activity", phase: "Orient" },
   { href: "/synthesis/business", label: "Business Alignment", icon: Target, hint: "Objectives, milestones, sponsor consent, and risk", phase: "Orient" },
