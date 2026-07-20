@@ -229,3 +229,43 @@ def test_prompt_override_still_wins_verbatim(monkeypatch):
 
     assert prompt == "just do it"
     assert called["grounding"] is False
+
+
+# ── the role ladder ──────────────────────────────────────────────────────────
+def test_declared_role_wins():
+    assert ce._resolve_copilot_role("developer", {"agentRole": "tester"}) == "developer"
+
+
+def test_falls_back_to_the_workflow_var():
+    """Rung 2 of the composed path's ladder: a workflow that sets agentRole as a
+    var but does not declare it on the node still gets its own role's view."""
+    assert ce._resolve_copilot_role(None, {"agentRole": "tester"}) == "tester"
+    assert ce._resolve_copilot_role("  ", {"agentRole": "tester"}) == "tester"
+
+
+def test_role_is_not_mangled():
+    """A role is a name, not an enum — the slice endpoint lowercases for lookup."""
+    assert ce._resolve_copilot_role("Product Owner", None) == "Product Owner"
+
+
+def test_no_role_is_a_valid_answer():
+    """agent-runtime applies its own fallback; guessing would be worse."""
+    assert ce._resolve_copilot_role(None, None) is None
+    assert ce._resolve_copilot_role(None, {"agentRole": "  "}) is None
+    assert ce._resolve_copilot_role(None, {"other": "x"}) is None
+
+
+def test_var_role_reaches_the_slice(monkeypatch):
+    seen: dict = {}
+
+    async def _fetch(**kw):
+        seen.update(kw)
+        return "## Capability grounding\n\n- ok"
+
+    monkeypatch.setattr(ce, "fetch_stage_grounding", _fetch)
+    _stub_code_context(monkeypatch, markdown="code")
+    _stub_distilled(monkeypatch, None)
+
+    _compose(agent_role=None, vars={"agentRole": "tester"})
+
+    assert seen["agent_role"] == "tester"

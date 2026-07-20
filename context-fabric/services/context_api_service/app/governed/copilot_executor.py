@@ -160,6 +160,26 @@ async def _fetch_distilled_world_model(capability_id: str, bearer: str | None) -
     return _render_distilled_world_model(wm, artifacts)
 
 
+def _resolve_copilot_role(agent_role: str | None, vars: dict[str, Any] | None) -> str | None:
+    """Which role is this stage playing? Picks the world-model slice.
+
+    Rungs 1 and 2 of the ladder ``_resolve_agent_role`` uses on the composed
+    path: the declared role, then the ``agentRole`` workflow var. Rung 3 there
+    infers a role from the stage's context/tool policy, which a copilot stage does
+    not carry — and None is a valid answer anyway, since the slice endpoint
+    applies its own fallback. Guessing wrong would be worse than saying nothing.
+
+    Not upper-cased or dash-replaced: a role is a name, not an enum, and the
+    slice endpoint lowercases for lookup.
+    """
+    if isinstance(agent_role, str) and agent_role.strip():
+        return agent_role.strip()
+    from_vars = (vars or {}).get("agentRole")
+    if isinstance(from_vars, str) and from_vars.strip():
+        return from_vars.strip()
+    return None
+
+
 async def _fetch_role_world_model(
     *,
     capability_id: str | None,
@@ -363,7 +383,7 @@ async def compose_copilot_prompt(
     # at the build and test commands.
     world_model_md, world_model_miss = await _fetch_role_world_model(
         capability_id=capability_id,
-        agent_role=agent_role,
+        agent_role=_resolve_copilot_role(agent_role, vars),
         run_context=run_context,
         task=resolved_task,
     )
