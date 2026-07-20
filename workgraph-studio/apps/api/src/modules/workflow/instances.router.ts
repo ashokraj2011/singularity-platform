@@ -1709,8 +1709,9 @@ export function buildCopilotWorkflowExport(
     '#',
     "# ANY TOOL: the `stages[].prompt` values are tool-agnostic. Run them in whatever",
     "# tool you like, then POST your results to `platform.resultEndpoint` in the",
-    "# `resultContract` shape below. PUSH your work to a branch so the platform can",
-    "# verify it in git (see resultContract.verification).",
+    "# `resultContract` shape below. PUSH your work to a branch and report the branch +",
+    "# commit — the platform records them alongside an advisory consistency check of what",
+    "# you posted; it does not fetch the branch (see resultContract.verification).",
     '#',
     "# EXTERNAL (SIGNAL_WAIT) runs: a stage with a `signalName` is a parked barrier.",
     '# When that phase is done, POST {} to `platform.signalEndpoint`/<signalName> (Bearer',
@@ -1765,7 +1766,10 @@ export function buildCopilotWorkflowExport(
     '      sha256: "<sha256 of the raw file bytes>"',
     '      contentBase64: "<base64 of file content>"',
     '      stageKey: "<one of stages[].key>"',
-    '  verification: "The platform fetches your pushed branch and checks the commit exists + changed-path coverage, then records an advisory verdict on the run. Results with no pushed branch are recorded as UNVERIFIED."',
+    // Describes what buildCopilotResultsVerdict actually does. It is a consistency signal
+    // computed from THIS payload, not a trust boundary: nothing is fetched from the remote,
+    // so keep this string in step with runtime/copilot-results-verify.ts.
+    '  verification: "Advisory only, and computed entirely from this payload — the platform does NOT fetch your branch or check that the commit exists. It recomputes sha256(contentBase64) and compares it to each reported sha256, cross-checks artifact paths against the changed files you yourself reported, and records whether a branch/commit was reported at all. Results reporting no branch/commit are recorded as UNVERIFIED; artifacts stay UNDER_REVIEW either way."',
   )
   if (story) {
     yaml.push('story: |', yamlBlock(story, 2))

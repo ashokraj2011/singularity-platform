@@ -267,3 +267,24 @@ describe('narrowSpecificationForExport', () => {
     expect(specification!.testObligations.map(t => t.id)).toEqual(['TO-back'])
   })
 })
+
+describe('the export describes verification honestly', () => {
+  it('does not claim the platform fetches the pushed branch', () => {
+    // copilot-results-verify hardcodes `remoteVerified: false` and performs no remote fetch;
+    // the export previously told the developer otherwise.
+    const { yaml } = build({ specification: narrow().specification })
+    expect(yaml).not.toContain('The platform fetches your pushed branch')
+    expect(yaml).not.toContain('checks the commit exists')
+  })
+
+  it('states what the advisory check actually does', () => {
+    const { doc } = exportedSpec({ specification: narrow().specification })
+    const verification: string = doc.resultContract.verification
+    expect(verification).toContain('Advisory only')
+    expect(verification).toContain('does NOT fetch your branch')
+    expect(verification).toContain('sha256')
+    // The self-reported nature of the coverage check is the part that was misleading.
+    expect(verification).toContain('you yourself reported')
+    expect(verification).toContain('UNVERIFIED')
+  })
+})
