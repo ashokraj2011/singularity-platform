@@ -86,6 +86,29 @@ export type CopilotExportSpecification = {
   warnings: string[]
 }
 
+/**
+ * The handoff records a returning submission must be registered against. Resolved alongside the
+ * specification because it is the SAME lookup — binding → scope → published generation, or the
+ * legacy DevelopmentTarget — and resolving it twice invites the two answers to drift.
+ *
+ * Never embedded in the exported YAML: these are internal record ids, not part of the contract
+ * handed to a developer's laptop.
+ */
+export type CopilotExportHandoffRef = {
+  workItemId: string
+  /** Scoped path: both ids present. Legacy path: both null, and `target` carries the handoff. */
+  developmentScopeId: string | null
+  handoffGenerationId: string | null
+  /** Repository the submission will be measured against. */
+  repository: string
+  /** Commit the handoff was cut from. */
+  baseCommitSha: string
+  /** Legacy DevelopmentTarget path only — submissions require it to be PUBLISHED. */
+  targetPublished: boolean
+  /** Which path registerSubmission must take. */
+  path: 'scoped' | 'legacy'
+}
+
 const asStringArray = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
 
@@ -224,20 +247,21 @@ export function narrowSpecificationForExport(input: {
 export async function loadCopilotExportSpecification(
   workCode: string,
   opts: { repository?: string; tenantId?: string } = {},
-): Promise<{ specification: CopilotExportSpecification | null; warnings: string[] }> {
+): Promise<{ specification: CopilotExportSpecification | null; warnings: string[]; handoffRef: CopilotExportHandoffRef | null }> {
   const warnings: string[] = []
   if (!workCode) {
-    return { specification: null, warnings: ['This run is not linked to a Work Item, so no design specification could be attached.'] }
+    return { specification: null, handoffRef: null, warnings: ['This run is not linked to a Work Item, so no design specification could be attached.'] }
   }
 
   type Resolved =
     | { ok: false; miss: string }
     | {
         ok: true
+        workItemId: string
         binding: { specificationVersionId: string; resolvedContentHash: string | null; resolvedPackage: unknown; requirementIds: unknown } | null
-        target: { specificationVersionId: string; requirementIds: unknown; reconciliationPolicy: unknown; status: string } | null
-        scope: { requirementIds: unknown } | null
-        handoff: { requirementIds: unknown; reconciliationPolicy: unknown } | null
+        target: { specificationVersionId: string; requirementIds: unknown; reconciliationPolicy: unknown; status: string; repository: string; baseCommitSha: string } | null
+        scope: { id: string; requirementIds: unknown } | null
+        handoff: { id: string; requirementIds: unknown; reconciliationPolicy: unknown; repository: string; baseCommitSha: string } | null
         spec: { id: string; version: number | null; status: string; contentHash: string | null; package: unknown }
       }
 
@@ -288,11 +312,36 @@ export async function loadCopilotExportSpecification(
       if (!spec) {
         return { ok: false, miss: `The specification bound to ${workCode} could not be loaded, so the export carries no specification block.` }
       }
-      return { ok: true, binding, target, scope, handoff, spec }
+      return { ok: true, workItemId: workItem.id, binding, target, scope, handoff, spec }
     }, opts.tenantId)
 
-    if (!resolved.ok) return { specification: null, warnings: [resolved.miss] }
-    const { binding, target, scope, handoff, spec } = resolved
+    if (!resolved.ok) return { specification: null, handoffRef: null, warnings: [resolved.miss] }
+    const { workItemId, binding, target, scope, handoff, spec } = resolved
+
+    // Which record a submission would be registered against. The scoped path needs BOTH a live
+    // scope and its PUBLISHED generation (submissions.service rejects a partial set); otherwise
+    // the legacy DevelopmentTarget carries the handoff.
+    const handoffRef: CopilotExportHandoffRef | null = scope && handoff
+      ? {
+          workItemId,
+          developmentScopeId: scope.id,
+          handoffGenerationId: handoff.id,
+          repository: handoff.repository,
+          baseCommitSha: handoff.baseCommitSha,
+          targetPublished: true,
+          path: 'scoped',
+        }
+      : target
+        ? {
+            workItemId,
+            developmentScopeId: null,
+            handoffGenerationId: null,
+            repository: target.repository,
+            baseCommitSha: target.baseCommitSha,
+            targetPublished: String(target.status) === 'PUBLISHED',
+            path: 'legacy',
+          }
+        : null
 
     // First record that declares a subset wins; an undeclared scope means "everything".
     const candidates: Array<[CopilotExportSpecification['scopeSource'], string[]]> = [
@@ -323,11 +372,12 @@ export async function loadCopilotExportSpecification(
     })
     // When the block is emitted its warnings ride inside it; surface them to the caller only
     // when there is no block to carry them.
-    return { specification: narrowed.specification, warnings: narrowed.specification ? [] : narrowed.warnings }
+    return { specification: narrowed.specification, handoffRef, warnings: narrowed.specification ? [] : narrowed.warnings }
   } catch (err) {
     // A spec lookup must never take the export down with it.
     return {
       specification: null,
+      handoffRef: null,
       warnings: [`The design specification could not be loaded (${err instanceof Error ? err.message : 'unknown error'}); the export carries no specification block.`],
     }
   }

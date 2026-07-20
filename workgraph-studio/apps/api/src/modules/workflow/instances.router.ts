@@ -19,6 +19,7 @@ import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { getWorkflowBudgetOverview } from './runtime/budget'
 import { buildCopilotResultsVerdict } from './runtime/copilot-results-verify'
+import { reconcileCopilotResults } from './runtime/copilot-results-reconcile'
 import { loadCopilotExportSpecification, type CopilotExportSpecification } from './runtime/copilot-export-spec'
 import { analyzeWorkflowInstance } from './formal-verification'
 import { copilotComposeTimeoutMs } from './copilot-compose-config'
@@ -1506,19 +1507,16 @@ function consumableContent(formData: unknown): string {
   return JSON.stringify(fd, null, 2)
 }
 
-// Ordered Copilot stages + the run-level header fields. Shared by the loader (to
-// know which stages to compose / mark done) and the YAML builder, so stage
-// selection happens exactly once.
-function copilotStagesFromNodes(
-  instance: { context: unknown },
-  nodes: CopilotExportNode[],
-  edges: Array<{ sourceNodeId: string; targetNodeId: string }>,
-): { stages: CopilotExportStage[]; repo: string; story: string; workCode: string; vars: Record<string, unknown> } {
-  const context = ((instance.context ?? {}) as Record<string, unknown>)
+// Which Work Item and repository a run is about. Split out of copilotStagesFromNodes because the
+// results post-back needs the same answer without rebuilding the whole stage list — and because a
+// second copy of this precedence would let the export and the results check disagree about which
+// Work Item the developer just implemented.
+export function copilotRunIdentity(
+  context: Record<string, unknown>,
+  nodeConfigs: Array<Record<string, unknown>>,
+): { repo: string; workCode: string; vars: Record<string, unknown>; globals: Record<string, unknown> } {
   const vars = (context._vars ?? {}) as Record<string, unknown>
   const globals = (context._globals ?? {}) as Record<string, unknown>
-  const cfgOf = (n: { config: unknown }) => (n.config ?? {}) as Record<string, unknown>
-  const interpolate = (s: string) => s.replace(/\{\{\s*instance\.vars\.(\w+)\s*\}\}/g, (_m, k) => String(vars[k] ?? ''))
   const firstString = (...values: unknown[]): string => {
     for (const value of values) {
       if (typeof value === 'string' && value.trim()) return value.trim()
@@ -1540,10 +1538,24 @@ function copilotStagesFromNodes(
     context.repositoryUrl,
     context.sourceUri,
     context.repository,
-    nodes.map(cfgOf).find(c => c.sourceUri)?.sourceUri,
+    nodeConfigs.find(c => c.sourceUri)?.sourceUri,
   )
+  return { repo, workCode: String(vars.workCode ?? ''), vars, globals }
+}
+
+// Ordered Copilot stages + the run-level header fields. Shared by the loader (to
+// know which stages to compose / mark done) and the YAML builder, so stage
+// selection happens exactly once.
+function copilotStagesFromNodes(
+  instance: { context: unknown },
+  nodes: CopilotExportNode[],
+  edges: Array<{ sourceNodeId: string; targetNodeId: string }>,
+): { stages: CopilotExportStage[]; repo: string; story: string; workCode: string; vars: Record<string, unknown> } {
+  const context = ((instance.context ?? {}) as Record<string, unknown>)
+  const cfgOf = (n: { config: unknown }) => (n.config ?? {}) as Record<string, unknown>
+  const { repo, workCode, vars } = copilotRunIdentity(context, nodes.map(cfgOf))
+  const interpolate = (s: string) => s.replace(/\{\{\s*instance\.vars\.(\w+)\s*\}\}/g, (_m, k) => String(vars[k] ?? ''))
   const story = String(vars.story ?? vars.workItemDescription ?? '')
-  const workCode = String(vars.workCode ?? '')
   // Map a node's artifact defs → the export's IN/OUT contract, interpolating the real
   // save path so a reader knows exactly where each doc lives / must be written.
   const artifactRefs = (defs: unknown, opts: { withTemplate: boolean }): CopilotArtifactRef[] => {
@@ -2235,7 +2247,7 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
     if (!parsed.success) return res.status(400).json({ error: 'invalid copilot results payload', issues: parsed.error.flatten() })
     const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
       where: { id },
-      select: { id: true, nodes: { select: { id: true } } },
+      select: { id: true, context: true, nodes: { select: { id: true, config: true } } },
     }), resolveTenantFromRequest(req))
     if (!instance) return res.status(404).json({ error: 'run not found' })
     const validNodeIds = new Set(instance.nodes.map(n => n.id))
@@ -2342,6 +2354,26 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
         createdArtifacts.push(consumable.id)
       }
     }
+    // Close the loop: register what came back as an ImplementationSubmission and reconcile it
+    // against the specification this run was handed. Runs AFTER the receipt and artifacts are
+    // durable, and never throws — a reconciliation that cannot run must not lose the import.
+    const identity = copilotRunIdentity(
+      (instance.context ?? {}) as Record<string, unknown>,
+      instance.nodes.map(n => (n.config ?? {}) as Record<string, unknown>),
+    )
+    const reconciliation = await reconcileCopilotResults({
+      payload,
+      workCode: identity.workCode,
+      runRepository: identity.repo || undefined,
+      actorId: req.user!.userId,
+      tenantId: resolveTenantFromRequest(req),
+    })
+    await logEvent('CopilotWorkflowResultsReconciled', 'WorkflowInstance', id, req.user!.userId, {
+      workflowEventId: eventId.id,
+      receiptId: receipt.id,
+      ...reconciliation,
+    })
+
     await publishOutbox('WorkflowInstance', id, 'CopilotWorkflowResultsImported', {
       actorId: req.user!.userId,
       receiptId: receipt.id,
@@ -2349,6 +2381,8 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
       status: payload.status,
       metrics: payload.metrics,
       artifactCount: createdArtifacts.length,
+      reconciliationStatus: reconciliation.status,
+      reconciliationRunId: reconciliation.reconciliationRunId,
     })
     res.status(201).json({
       ok: true,
@@ -2358,6 +2392,7 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
       artifactsCreated: createdArtifacts.length,
       artifactIds: createdArtifacts,
       verification,
+      reconciliation,
     })
   } catch (err) {
     next(err)
