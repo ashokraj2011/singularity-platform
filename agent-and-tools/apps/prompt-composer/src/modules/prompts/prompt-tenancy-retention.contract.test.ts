@@ -257,6 +257,30 @@ async function main(): Promise<void> {
     "startup.sh must apply <timestamp>_<name>/migration.sql",
   );
 
+  // ── 7. The retention sweep is OPT-IN ───────────────────────────────────
+  // It is irreversible: once contentSnapshot is nulled the text is gone and
+  // only layerHash remains. On by default it would fire on the FIRST boot
+  // after deploy and erase every snapshot past the default TTL — before anyone
+  // had chosen a retention period. The TTL is an open policy question, so the
+  // machinery ships ready and switched off.
+  assert.match(
+    retentionSrc, /PROMPT_SNAPSHOT_RETENTION_ENABLED/,
+    "retention must be gated by an explicit enable flag",
+  );
+  // The guard has to precede the sweep call, or boot still purges once.
+  const guardAt = retentionSrc.indexOf("if (!retentionEnabled())");
+  const sweepAt = retentionSrc.indexOf("void purgeExpiredSnapshots()");
+  assert.ok(guardAt > -1, "startSnapshotRetention must check the enable flag");
+  assert.ok(
+    guardAt < sweepAt,
+    "the enable check must come BEFORE the boot sweep, or first boot still purges",
+  );
+  // Default-off means the flag's absence must not read as enabled.
+  assert.doesNotMatch(
+    retentionSrc, /PROMPT_SNAPSHOT_RETENTION_ENABLED[^\n]*\?\?\s*["']true["']/,
+    "retention must default to disabled, not enabled",
+  );
+
   console.log("prompt-tenancy-retention.contract.test.ts: OK");
 }
 

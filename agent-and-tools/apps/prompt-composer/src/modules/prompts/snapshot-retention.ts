@@ -93,8 +93,35 @@ export async function purgeExpiredSnapshots(
 
 let timer: NodeJS.Timeout | null = null;
 
+/**
+ * Opt-in, deliberately.
+ *
+ * This sweep is irreversible: once contentSnapshot is nulled the prompt text is
+ * gone, and only layerHash remains. Enabled by default it would fire on the
+ * FIRST boot after deploy and erase every snapshot older than the default TTL,
+ * before anyone had chosen a retention period.
+ *
+ * The number is a policy decision that has not been made yet — 30 days is a
+ * proposal, not a finding. So the machinery ships ready and switched off:
+ * set PROMPT_SNAPSHOT_RETENTION_ENABLED=true once someone has actually decided
+ * the TTL and, if it matters to them, taken a backup.
+ *
+ * (Contrast startCapsuleGc, which is on by default — it drops regenerable cache
+ * entries. This destroys audit-trail content, which is not the same risk.)
+ */
+function retentionEnabled(): boolean {
+  return String(process.env.PROMPT_SNAPSHOT_RETENTION_ENABLED ?? "").trim().toLowerCase() === "true";
+}
+
 export function startSnapshotRetention(): void {
   if (timer) return;
+  if (!retentionEnabled()) {
+    logger.info(
+      { ttl_days: TTL_DAYS },
+      "[prompt-snapshot-retention] disabled (set PROMPT_SNAPSHOT_RETENTION_ENABLED=true to enable); no snapshots will be purged",
+    );
+    return;
+  }
   // Sweep once at boot so a service that was down past its TTL still
   // catches up, then on the interval.
   void purgeExpiredSnapshots();
