@@ -1210,6 +1210,13 @@ async def run_turn(
             model_alias=effective_model_alias,
             bearer=bearer,
             thinking_budget=thinking_budget,
+            # The two signals that let the gateway tell governed turns apart.
+            # Without them every turn looks identical to the policy engine, and
+            # "design and develop deserve a stronger model" has to be expressed
+            # by pinning aliases per stage in the caller — which is the env-var
+            # policy file this chain is removing.
+            stage=stage_key,
+            purpose=state.current_phase.value if state.current_phase else None,
             # Placement: when this run opted into laptop LLM (and a laptop is serving
             # model-run), call_gateway_chat dispatches over the bridge; otherwise it
             # uses the cloud gateway. None in the common case. See placement.py.

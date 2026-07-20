@@ -233,3 +233,45 @@ def test_the_governed_loop_tag_can_be_overridden():
         task_tag="planning",
     )
     assert body["task_tag"] == "planning"
+
+
+def test_the_governed_loop_sends_stage_and_purpose():
+    """A tag alone cannot distinguish a design turn from a develop turn.
+
+    Every governed turn is `agent_turn`, so a policy route keyed on
+    {task_tag: agent_turn, stage: develop} was UNMATCHABLE until stage crossed
+    the hop. That is not a cosmetic gap: it is the reason "code-heavy stages get
+    a stronger model" had to be expressed as a per-stage alias map in the
+    workbench, which is a policy file living in an env var.
+    """
+    from context_api_service.app.governed.llm_client import _build_chat_body
+
+    body = _build_chat_body(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None, model_alias=None, expected_provider=None, expected_model=None,
+        temperature=None, max_output_tokens=None, thinking_budget=None,
+        prompt_cache=False, prompt_cache_key=None,
+        stage="develop", purpose="implement",
+    )
+    assert body["task_tag"] == "agent_turn"
+    assert body["stage"] == "develop"
+    assert body["purpose"] == "implement"
+
+
+def test_stage_and_purpose_are_omitted_when_unknown():
+    """Absent must mean "the caller could not say", not "no stage".
+
+    Sending stage="" would make the field always present and never useful — a
+    route matching on it could not distinguish an untagged caller from a real
+    empty stage, and normalize_task_tag would drop it anyway.
+    """
+    from context_api_service.app.governed.llm_client import _build_chat_body
+
+    body = _build_chat_body(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None, model_alias=None, expected_provider=None, expected_model=None,
+        temperature=None, max_output_tokens=None, thinking_budget=None,
+        prompt_cache=False, prompt_cache_key=None,
+    )
+    assert "stage" not in body
+    assert "purpose" not in body

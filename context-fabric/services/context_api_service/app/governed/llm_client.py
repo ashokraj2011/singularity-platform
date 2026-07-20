@@ -281,6 +281,10 @@ async def call_gateway_chat(
     laptop_user_id: str | None = None,
     runtime_tenant_id: str | None = None,
     runtime_capability_tags: list[str] | None = None,
+    # WHAT this turn is, beyond "an agent turn". The gateway's policy engine can
+    # route on stage/purpose, but only if they cross the hop — see _build_chat_body.
+    stage: str | None = None,
+    purpose: str | None = None,
 ) -> ChatResponse:
     """POST one chat completion to llm-gateway.
 
@@ -324,6 +328,8 @@ async def call_gateway_chat(
         thinking_budget=thinking_budget,
         prompt_cache=prompt_cache,
         prompt_cache_key=prompt_cache_key,
+        stage=stage,
+        purpose=purpose,
     )
 
     # Runtime bridge placement: model-run is served by the connected MCP
@@ -417,6 +423,8 @@ def _build_chat_body(
     prompt_cache: bool | None,
     prompt_cache_key: str | None,
     task_tag: str | None = None,
+    stage: str | None = None,
+    purpose: str | None = None,
 ) -> dict[str, Any]:
     """Build the /v1/chat/completions request body. Shared by the cloud-gateway
     path and the laptop `model-run` path so both send byte-identical requests."""
@@ -426,6 +434,18 @@ def _build_chat_body(
     # GATEWAY_REQUIRE_TASK_TAG would have 400'd every governed turn, and until
     # then the biggest cost line was the one nobody could attribute.
     body["task_tag"] = task_tag or "agent_turn"
+    # STAGE was the missing half of that fix. Every governed turn arrived tagged
+    # `agent_turn` and nothing else, which made a policy route like
+    # {"task_tag": "agent_turn", "stage": "develop"} unmatchable -- the gateway
+    # could not tell a design turn from a develop turn, so "give code-heavy
+    # stages a stronger model" could only ever be expressed by pinning an alias
+    # per stage on the caller side. That is exactly the env-var-shaped policy
+    # this chain is dismantling. Omitted when unknown so the signal stays
+    # meaningful: absent means "the caller could not say", not "no stage".
+    if stage:
+        body["stage"] = stage
+    if purpose:
+        body["purpose"] = purpose
     if tools:
         body["tools"] = tools
     if model_alias:

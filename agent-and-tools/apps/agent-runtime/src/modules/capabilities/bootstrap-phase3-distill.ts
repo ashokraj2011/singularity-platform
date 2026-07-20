@@ -192,6 +192,23 @@ export async function buildArchitectureSliceFromSymbols(capabilityId: string): P
 // ANY failure (alias unset, gateway down, timeout, bad JSON) we fall back to the
 // heuristic README summary — onboarding NEVER blocks on the LLM.
 const DISTILL_MODEL_ALIAS = (process.env.WORLD_MODEL_DISTILL_MODEL_ALIAS ?? "").trim();
+
+// WHETHER to distill is now separate from WHICH model distills.
+//
+// `llmDistillEnabled()` used to be `DISTILL_MODEL_ALIAS.length > 0` — the alias
+// was the feature switch. That breaks the moment the gateway can choose a model
+// itself: an operator clearing the alias to get policy routing turns
+// distillation OFF, and because every failure here degrades silently to the
+// heuristic README summary, the only symptom is grounding that is quietly worse
+// than it was yesterday. Nothing errors, nothing logs, the onboarding still
+// "succeeds".
+//
+// Backward compatible: a set alias still counts as on, so existing deployments
+// are unaffected. The flag is how you say on WITHOUT naming a model — and,
+// newly, how you say off while keeping an alias configured.
+const DISTILL_ENABLED_RAW = (process.env.WORLD_MODEL_DISTILL_ENABLED ?? "").trim().toLowerCase();
+const DISTILL_TRUTHY = new Set(["1", "true", "yes", "on"]);
+const DISTILL_FALSY = new Set(["0", "false", "no", "off"]);
 const LLM_GATEWAY_URL = (process.env.LLM_GATEWAY_URL ?? "http://localhost:8001").replace(/\/+$/, "");
 const DISTILL_INPUT_CAP = 12_000;
 const DISTILL_TIMEOUT_MS = 45_000;
@@ -226,8 +243,11 @@ export function buildEnrichMessages(markdown: string): Array<{ role: string; con
   ];
 }
 
-/** True when LLM distillation is configured (an alias is set). */
+/** True when LLM distillation is switched on. Explicit flag wins in both
+ *  directions; unset, a configured alias still means on. */
 export function llmDistillEnabled(): boolean {
+  if (DISTILL_FALSY.has(DISTILL_ENABLED_RAW)) return false;
+  if (DISTILL_TRUTHY.has(DISTILL_ENABLED_RAW)) return true;
   return DISTILL_MODEL_ALIAS.length > 0;
 }
 
@@ -275,14 +295,18 @@ export function parseEnrichment(raw: string): WorldModelEnrichment | null {
  * heuristic README summary. Never throws.
  */
 export async function enrichWorldModelViaLLM(markdown: string): Promise<WorldModelEnrichment | null> {
-  if (!DISTILL_MODEL_ALIAS) return null;
+  // Gate on the FEATURE, not on the alias. These were the same check; now an
+  // enabled-but-unpinned deployment routes by task_tag instead of returning null.
+  if (!llmDistillEnabled()) return null;
   if (!markdown || !markdown.trim()) return null;
   try {
     const res = await fetch(`${LLM_GATEWAY_URL}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model_alias: DISTILL_MODEL_ALIAS,
+        // Omitted when unpinned — `model_alias: ""` would be a request for a
+        // model named empty string, not a request to choose one.
+        ...(DISTILL_MODEL_ALIAS ? { model_alias: DISTILL_MODEL_ALIAS } : {}),
         messages: buildEnrichMessages(markdown.trim()),
         temperature: 0,
         max_output_tokens: 1200,
