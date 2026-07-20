@@ -44,6 +44,7 @@ What this does NOT do (deliberately):
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -123,15 +124,31 @@ def _resolve_overlaps(matches: list[PiiMatch]) -> list[PiiMatch]:
     return out
 
 
-def detect_pii(text: str) -> list[PiiMatch]:
-    """Run all regex detectors against ``text``, return non-overlapping
+def detect_pii(
+    text: str, kinds: Collection[PiiKind] | None = None,
+) -> list[PiiMatch]:
+    """Run the regex detectors against ``text``, return non-overlapping
     matches in document order. Each match has confidence 1.0 except
     credit cards which additionally pass Luhn (failures simply don't
-    appear in the output)."""
+    appear in the output).
+
+    ``kinds`` restricts which detectors run. None (the default) means ALL
+    of them, so every existing caller — the tool-output mask at
+    loop.py:868 — is unchanged. The filter exists for outbound_pii.py,
+    which deliberately runs a narrower, higher-precision subset against
+    prompt text; see that module for why breadth is the wrong default on
+    the egress path.
+
+    Filtering happens BEFORE overlap resolution, which is the correct
+    order: a suppressed detector must not go on winning an overlap
+    against a detector the caller actually asked for.
+    """
     if not text:
         return []
     raw: list[PiiMatch] = []
     for kind, pattern in _PATTERNS:
+        if kinds is not None and kind not in kinds:
+            continue
         for m in pattern.finditer(text):
             value = m.group(0)
             if kind == "credit_card" and not _luhn_valid(value):
@@ -204,19 +221,26 @@ class MaskResult:
     applied: list[dict[str, Any]] = field(default_factory=list)
 
 
-def mask_pii(text: str, token_map: dict[str, str] | None = None) -> MaskResult:
+def mask_pii(
+    text: str,
+    token_map: dict[str, str] | None = None,
+    kinds: Collection[PiiKind] | None = None,
+) -> MaskResult:
     """Replace detected PII spans in ``text`` with stable tokens. Same
     (kind, value) always maps to the same token across calls within the
     given token_map. Returns the masked text, the updated token map
     (existing entries preserved + new ones appended), and a diagnostic
     list of what got masked this call (no values — counts only).
 
+    ``kinds`` is forwarded to detect_pii(); None means all detectors, so
+    existing callers are unchanged.
+
     Pure function: input ``token_map`` is not mutated. Caller assigns
     ``result.token_map`` back to its state.
     """
     if not text:
         return MaskResult(masked=text or "", token_map=dict(token_map or {}))
-    matches = detect_pii(text)
+    matches = detect_pii(text, kinds)
     if not matches:
         return MaskResult(masked=text, token_map=dict(token_map or {}))
 

@@ -288,6 +288,10 @@ export async function enrichWorldModelViaLLM(markdown: string): Promise<WorldMod
         max_output_tokens: 1200,
         task_tag: "world_model_distill",
         purpose: "readme_enrichment",
+        // Tagged since W2-1, but anonymous until now. Capability bootstrap runs
+        // on a schedule/trigger, not on anyone's behalf.
+        actor_id: "system:agent-runtime",
+        // No tenant_id: enrichWorldModelViaLLM takes only the README markdown.
       }),
       signal: AbortSignal.timeout(DISTILL_TIMEOUT_MS),
     });
