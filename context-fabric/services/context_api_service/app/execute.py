@@ -30,7 +30,7 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, Field
 
-from . import call_log, conversation_identity as _conversation_identity, events_store
+from . import call_log, conversation_identity as _conversation_identity, conversation_store, events_store
 from .governed import conversation_context, conversation_summarizer
 from .audit_gov_emit import emit_audit_event
 from .config import is_production_class_env, settings
@@ -2029,6 +2029,21 @@ def _on_startup() -> None:
     os.environ.setdefault("EVENTS_STORE_DB", es_db)
     events_store.DB_PATH = es_db
     events_store.init_db()
+
+    # The conversation store creates its own tables the same way. This call was
+    # missing: the module shipped, the summariser and budget layers imported it,
+    # and its own docstring claimed it ran "at startup alongside the other
+    # stores" — but nothing ever invoked it, so cf_conversations and
+    # cf_conversation_turns did not exist on a freshly provisioned database.
+    #
+    # Invisible until now because the feature is flag-gated off, so no code path
+    # had yet read a table that was not there. The first thing
+    # CF_CONVERSATION_ENABLED=true would have done is fail on a missing relation.
+    #
+    # Resolves its own target (CONVERSATION_STORE_DATABASE_URL, then the shared
+    # CONTEXT_FABRIC_DATABASE_URL, then SQLite), so there is no DB_PATH to set
+    # here. Idempotent, like the two above.
+    conversation_store.init_db()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
