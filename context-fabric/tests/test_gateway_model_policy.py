@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -347,8 +348,15 @@ def test_a_raising_readiness_probe_is_treated_as_unready(monkeypatch, tmp_path):
 
 
 # ── the feature gate ────────────────────────────────────────────────────────
-@pytest.mark.parametrize("value", ["", "false", "0", "no", "off", "maybe"])
+@pytest.mark.parametrize("value", ["false", "0", "no", "off", "FALSE"])
 def test_disabled_means_policy_never_decides(monkeypatch, tmp_path, value):
+    """An EXPLICIT false still switches the engine off entirely.
+
+    The default flipped to ON in B4, so "" and unrecognised values no longer
+    belong in this list — see test_the_gate_defaults_on. What must not change
+    is that an operator who writes false gets the pre-policy resolution path
+    back, without a restart.
+    """
     _write_policy(monkeypatch, tmp_path, {
         "version": 1,
         "tiers": BASE_TIERS,
@@ -369,6 +377,28 @@ def test_the_gate_accepts_the_usual_truthy_spellings(monkeypatch, value):
     assert model_policy.policy_enabled() is True
 
 
+def test_the_gate_defaults_on(monkeypatch):
+    """B4 — unset means ON.
+
+    The engine shipped dark through three changes so the env-var collapse and
+    budget degradation could be reviewed and reverted independently of routing
+    itself. Past that point, leaving it off means keeping a routing layer no
+    traffic reaches, which is the state this effort started in.
+    """
+    monkeypatch.delenv("GATEWAY_MODEL_POLICY_ENABLED", raising=False)
+    assert model_policy.policy_enabled() is True
+    monkeypatch.setenv("GATEWAY_MODEL_POLICY_ENABLED", "")
+    assert model_policy.policy_enabled() is True
+
+
+def test_an_unrecognised_gate_value_stays_on_and_warns(monkeypatch):
+    """`GATEWAY_MODEL_POLICY_ENABLED=ture` silently disabling routing is the
+    kind of typo that costs a week. Now it warns and keeps the default."""
+    monkeypatch.setenv("GATEWAY_MODEL_POLICY_ENABLED", "ture")
+    assert model_policy.policy_enabled() is True
+    assert any("ture" in w for w in model_policy.warnings())
+
+
 def test_disabled_leaves_the_resolution_path_untouched(monkeypatch, tmp_path):
     """The strongest form of "changes nothing": the router does not merely reach
     the same answer, it never enters the policy engine at all.
@@ -379,7 +409,10 @@ def test_disabled_leaves_the_resolution_path_untouched(monkeypatch, tmp_path):
     from llm_gateway_service.app import router as gw_router
 
     _write_policy(monkeypatch, tmp_path, {"version": 1, "tiers": BASE_TIERS, "defaultTier": "deep"})
-    monkeypatch.delenv("GATEWAY_MODEL_POLICY_ENABLED", raising=False)
+    # Explicit false, not unset: as of B4 unset means ON. The property under test
+    # is unchanged — an operator who switches this off gets the pre-policy
+    # resolution path, not a policy engine that politely declines.
+    monkeypatch.setenv("GATEWAY_MODEL_POLICY_ENABLED", "false")
 
     def _explode(**_kw):
         raise AssertionError("policy engine consulted while the feature gate is off")
@@ -691,9 +724,10 @@ def test_preview_honours_a_caller_pin(monkeypatch, tmp_path, _mock_catalog):
 
 
 def test_preview_works_with_policy_disabled(monkeypatch, tmp_path, _mock_catalog):
-    # The endpoint is useful before the engine is switched on: it still answers
-    # "which model would this call get", which is today the implicit default.
-    monkeypatch.delenv("GATEWAY_MODEL_POLICY_ENABLED", raising=False)
+    # The endpoint stays useful with the engine switched off: it still answers
+    # "which model would this call get", which is then the implicit default.
+    # Explicit false — as of B4 unset means ON.
+    monkeypatch.setenv("GATEWAY_MODEL_POLICY_ENABLED", "false")
     monkeypatch.delenv("GATEWAY_STRICT_DEFAULT_ALIAS", raising=False)
     result = _preview(task_tag="agent_turn")
     assert result.policy_enabled is False
@@ -1077,3 +1111,376 @@ def test_budget_state_survives_junk_rows():
         {"current_cost": 50, "cost_max_usd": 100},
     ])
     assert fraction == pytest.approx(0.5)
+
+
+# ── B4: same-tier availability failover ─────────────────────────────────────
+#
+# Failover is NOT degradation, and every test here exists to keep those two
+# apart:
+#   degraded_from  BUDGET. A different, cheaper TIER. Quality drops on purpose.
+#   fallback_from  AVAILABILITY. The SAME tier, ideally a different provider,
+#                  because the first one was down. Quality is unchanged.
+# Conflating them makes "our models got worse" and "our vendor had an outage"
+# the same line in the audit trail.
+
+MIXED_TIERS = {
+    "cheap":    ["claude-haiku-4-5-20251001"],
+    "standard": ["claude-sonnet-4-6"],
+    # Two providers on purpose — the whole point of a hop is to leave the pool
+    # that is having a bad afternoon.
+    "deep":     ["claude-opus-4-1", "gpt-4o", "claude-sonnet-4-6"],
+}
+
+PROVIDER_BY_ALIAS = {
+    "claude-opus-4-1": "anthropic",
+    "claude-sonnet-4-6": "anthropic",
+    "claude-haiku-4-5-20251001": "anthropic",
+    "gpt-4o": "openai",
+}
+
+
+def _failover_policy(**overrides):
+    policy = {
+        "version": 1,
+        "tiers": MIXED_TIERS,
+        "defaultTier": "deep",
+        "failoverWithinTier": True,
+    }
+    policy.update(overrides)
+    return policy
+
+
+def test_failover_is_off_unless_the_policy_says_true(monkeypatch, tmp_path):
+    """Off by default. Failover changes which model answered a request the
+    caller already believes succeeded — an operator opts into that."""
+    _write_policy(monkeypatch, tmp_path, _failover_policy(failoverWithinTier=False))
+    assert model_policy.failover_within_tier_enabled() is False
+    # ...and absent entirely is also off.
+    policy = _failover_policy()
+    del policy["failoverWithinTier"]
+    _write_policy(monkeypatch, tmp_path, policy)
+    assert model_policy.failover_within_tier_enabled() is False
+
+
+def test_a_non_boolean_failover_flag_is_not_coerced(monkeypatch, tmp_path):
+    """"yes" reading as truthy would enable a behaviour the operator did not
+    spell out. It warns and stays off."""
+    _write_policy(monkeypatch, tmp_path, _failover_policy(failoverWithinTier="yes"))
+    assert model_policy.failover_within_tier_enabled() is False
+    assert any("failoverWithinTier" in w for w in model_policy.warnings())
+
+
+def test_the_hop_prefers_a_DIFFERENT_provider(monkeypatch, tmp_path):
+    """A tier of two models behind one provider is two models behind one
+    capacity pool. Hopping between them during an Anthropic 529 mostly buys a
+    second 529 and a doubled latency bill."""
+    _write_policy(monkeypatch, tmp_path, _failover_policy())
+    hop = model_policy.next_in_tier(
+        "deep", after_alias="claude-opus-4-1",
+        is_ready=ALL_READY, provider_of=PROVIDER_BY_ALIAS.get,
+    )
+    # NOT claude-sonnet-4-6, which is next in the list but the same provider.
+    assert hop == "gpt-4o"
+
+
+def test_the_hop_falls_back_to_the_same_provider_when_that_is_all_there_is(monkeypatch, tmp_path):
+    """A per-MODEL rate limit is real, and a different model can clear it. So
+    provider diversity is a preference, not a requirement."""
+    _write_policy(monkeypatch, tmp_path, _failover_policy(
+        tiers={**MIXED_TIERS, "deep": ["claude-opus-4-1", "claude-sonnet-4-6"]},
+    ))
+    hop = model_policy.next_in_tier(
+        "deep", after_alias="claude-opus-4-1",
+        is_ready=ALL_READY, provider_of=PROVIDER_BY_ALIAS.get,
+    )
+    assert hop == "claude-sonnet-4-6"
+
+
+def test_the_hop_skips_unready_candidates(monkeypatch, tmp_path):
+    _write_policy(monkeypatch, tmp_path, _failover_policy())
+    hop = model_policy.next_in_tier(
+        "deep", after_alias="claude-opus-4-1",
+        is_ready=lambda alias: alias != "gpt-4o",
+        provider_of=PROVIDER_BY_ALIAS.get,
+    )
+    assert hop == "claude-sonnet-4-6"
+
+
+def test_a_single_entry_tier_has_nowhere_to_hop(monkeypatch, tmp_path):
+    _write_policy(monkeypatch, tmp_path, _failover_policy())
+    assert model_policy.next_in_tier(
+        "standard", after_alias="claude-sonnet-4-6",
+        is_ready=ALL_READY, provider_of=PROVIDER_BY_ALIAS.get,
+    ) is None
+
+
+def test_no_tier_means_no_hop(monkeypatch, tmp_path):
+    """A caller pin has no tier — it NAMED a model, and quietly answering with a
+    different one is precisely what a pin exists to prevent."""
+    _write_policy(monkeypatch, tmp_path, _failover_policy())
+    assert model_policy.next_in_tier(
+        None, after_alias="claude-opus-4-1", is_ready=ALL_READY,
+    ) is None
+    # An alias that is not in the tier at all cannot be positioned in it.
+    assert model_policy.next_in_tier(
+        "deep", after_alias="some-pinned-alias", is_ready=ALL_READY,
+    ) is None
+
+
+def test_no_hop_when_nothing_in_the_tier_is_ready(monkeypatch, tmp_path):
+    _write_policy(monkeypatch, tmp_path, _failover_policy())
+    assert model_policy.next_in_tier(
+        "deep", after_alias="claude-opus-4-1", is_ready=lambda _alias: False,
+    ) is None
+
+
+def test_a_readiness_probe_that_raises_does_not_break_failover(monkeypatch, tmp_path):
+    """Mirrors _first_ready. A probe that explodes must read as "not ready",
+    never as an exception escaping into a request that already failed once."""
+    _write_policy(monkeypatch, tmp_path, _failover_policy())
+
+    def _boom(alias):
+        if alias == "gpt-4o":
+            raise RuntimeError("catalog exploded")
+        return True
+
+    assert model_policy.next_in_tier(
+        "deep", after_alias="claude-opus-4-1",
+        is_ready=_boom, provider_of=PROVIDER_BY_ALIAS.get,
+    ) == "claude-sonnet-4-6"
+
+
+def test_fallback_and_degradation_are_separate_fields():
+    """The two must never collapse into one another. A call can in principle be
+    degraded AND failed over — cheaper tier because of budget, different
+    provider within it because of an outage — and the audit row has to say both."""
+    both = model_policy.RoutingDecision(
+        source="policy", tier="standard", alias="claude-sonnet-4-6",
+        reason="r", degraded_from="deep", degrade_reason="budget at 95%",
+        fallback_from="claude-sonnet-4-6",
+    ).as_dict()
+    assert both["degraded_from"] == "deep"
+    assert both["degrade_reason"] == "budget at 95%"
+    assert both["fallback_from"] == "claude-sonnet-4-6"
+
+    # ...and each is absent on its own when it did not happen.
+    clean = model_policy.RoutingDecision(
+        source="policy", tier="deep", alias="claude-opus-4-1", reason="r",
+    ).as_dict()
+    assert "fallback_from" not in clean
+    assert "degraded_from" not in clean
+
+
+def test_describe_surfaces_the_failover_setting(monkeypatch, tmp_path):
+    _write_policy(monkeypatch, tmp_path, _failover_policy())
+    assert model_policy.describe()["failover_within_tier"] is True
+
+
+# ── B4: the failover HOP, end to end through the router ─────────────────────
+@pytest.fixture
+def _two_provider_catalog(monkeypatch, tmp_path):
+    """A tier whose candidates span two REAL providers.
+
+    Not mock: the router short-circuits provider=="mock" before the dispatch
+    path, so a mock catalog would never reach the failover branch at all. Two
+    genuinely different providers is also the only shape where a hop buys
+    anything — the whole point is to leave the pool that is having a bad
+    afternoon. No network is involved; _dispatch_chat is stubbed per test.
+    """
+    catalog = tmp_path / "llm-models.json"
+    catalog.write_text(json.dumps([
+        {"id": "primary-deep", "provider": "anthropic", "model": "claude-deep"},
+        {"id": "backup-deep",  "provider": "openai",    "model": "gpt-deep"},
+    ]))
+    # A provider block is required: is_provider_allowed() refuses any non-mock
+    # provider that is absent from the external config, so an empty file would
+    # make both aliases unready and the hop untestable for the wrong reason.
+    providers = tmp_path / "llm-providers.json"
+    providers.write_text(json.dumps({
+        "providers": {
+            "anthropic": {"enabled": True, "baseUrl": "https://api.anthropic.test",
+                          "credentialEnv": "ANTHROPIC_API_KEY"},
+            "openai":    {"enabled": True, "baseUrl": "https://api.openai.test",
+                          "credentialEnv": "OPENAI_API_KEY"},
+        },
+    }))
+    monkeypatch.setattr(settings, "model_catalog_path", str(catalog))
+    monkeypatch.setattr(settings, "provider_config_path", str(providers))
+    # Credentials so both aliases read as READY — readiness is what the hop
+    # walks, and an unready backup is a different test.
+    monkeypatch.setattr(settings, "anthropic_api_key", "test-anthropic-key")
+    monkeypatch.setattr(settings, "openai_api_key", "test-openai-key")
+    provider_config.reset_cache_for_tests()
+    yield
+    provider_config.reset_cache_for_tests()
+
+
+def _chat_req(**kw):
+    from llm_gateway_service.app.types import ChatCompletionRequest
+
+    base = {"messages": [{"role": "user", "content": "hi"}], "task_tag": "agent_turn"}
+    base.update(kw)
+    return ChatCompletionRequest(**base)
+
+
+def _run_chat(req):
+    from llm_gateway_service.app.router import chat_completions
+
+    return asyncio.run(chat_completions(req, authorization=None))
+
+
+def test_a_failed_primary_hops_once_and_records_fallback_from(
+    monkeypatch, tmp_path, _two_provider_catalog,
+):
+    """The happy path of the unhappy path: primary is down, the hop serves, and
+    the response says so. A silent recovery would leave an operator with no way
+    to know their primary provider was down all afternoon."""
+    from llm_gateway_service.app import router as gw_router
+
+    _write_policy(monkeypatch, tmp_path, {
+        "version": 1,
+        "tiers": {"deep": ["primary-deep", "backup-deep"]},
+        "defaultTier": "deep",
+        "failoverWithinTier": True,
+    })
+
+    calls: list = []
+
+    async def _dispatch(req, *, provider, model, alias, credential):
+        calls.append(alias)
+        if alias == "primary-deep":
+            raise gw_router._UpstreamUnavailable(
+                alias=alias, status=502, detail="LLM_GATEWAY_UPSTREAM: boom",
+                summary="mock returned 529",
+            )
+        return SimpleNamespace(
+            content="ok", tool_calls=None, finish_reason="stop",
+            input_tokens=1, output_tokens=1, latency_ms=0,
+            provider=provider, model=model, model_alias=alias,
+            estimated_cost=None, routing=None,
+        )
+
+    monkeypatch.setattr(gw_router, "_dispatch_chat", _dispatch)
+
+    resp = _run_chat(_chat_req())
+
+    assert calls == ["primary-deep", "backup-deep"]        # exactly one hop
+    assert resp.routing["fallback_from"] == "primary-deep"
+    assert "failed over" in resp.routing["reason"]
+    # Availability, not budget. These must never be confused for one another.
+    assert "degraded_from" not in resp.routing
+
+
+def test_the_hop_is_bounded_to_one_and_reraises_the_ORIGINAL_error(
+    monkeypatch, tmp_path, _two_provider_catalog,
+):
+    """When the hop fails too, the caller sees the error for the model they
+    asked for. An error naming the fallback would send whoever reads it off to
+    investigate a model they never requested."""
+    from fastapi import HTTPException
+    from llm_gateway_service.app import router as gw_router
+
+    _write_policy(monkeypatch, tmp_path, {
+        "version": 1,
+        "tiers": {"deep": ["primary-deep", "backup-deep"]},
+        "defaultTier": "deep",
+        "failoverWithinTier": True,
+    })
+
+    calls: list = []
+
+    async def _all_down(req, *, provider, model, alias, credential):
+        calls.append(alias)
+        raise gw_router._UpstreamUnavailable(
+            alias=alias, status=502,
+            detail=f"LLM_GATEWAY_UPSTREAM: {alias} is down",
+            summary="down",
+        )
+
+    monkeypatch.setattr(gw_router, "_dispatch_chat", _all_down)
+
+    with pytest.raises(HTTPException) as exc:
+        _run_chat(_chat_req())
+
+    assert len(calls) == 2                       # one hop, then stop
+    assert "primary-deep is down" in str(exc.value.detail)
+    assert "backup-deep" not in str(exc.value.detail)
+
+
+def test_no_hop_when_failover_is_switched_off(monkeypatch, tmp_path, _two_provider_catalog):
+    from fastapi import HTTPException
+    from llm_gateway_service.app import router as gw_router
+
+    _write_policy(monkeypatch, tmp_path, {
+        "version": 1,
+        "tiers": {"deep": ["primary-deep", "backup-deep"]},
+        "defaultTier": "deep",
+        "failoverWithinTier": False,
+    })
+
+    calls: list = []
+
+    async def _down(req, *, provider, model, alias, credential):
+        calls.append(alias)
+        raise gw_router._UpstreamUnavailable(
+            alias=alias, status=502, detail="LLM_GATEWAY_UPSTREAM: down", summary="down",
+        )
+
+    monkeypatch.setattr(gw_router, "_dispatch_chat", _down)
+
+    with pytest.raises(HTTPException):
+        _run_chat(_chat_req())
+    assert calls == ["primary-deep"]             # no second attempt at all
+
+
+def test_a_pinned_caller_never_hops(monkeypatch, tmp_path, _two_provider_catalog):
+    """A pin NAMED a model. Quietly answering with a different one is exactly
+    what a pin exists to prevent, so a pinned call fails as it always did."""
+    from fastapi import HTTPException
+    from llm_gateway_service.app import router as gw_router
+
+    _write_policy(monkeypatch, tmp_path, {
+        "version": 1,
+        "tiers": {"deep": ["primary-deep", "backup-deep"]},
+        "defaultTier": "deep",
+        "failoverWithinTier": True,
+    })
+
+    calls: list = []
+
+    async def _down(req, *, provider, model, alias, credential):
+        calls.append(alias)
+        raise gw_router._UpstreamUnavailable(
+            alias=alias, status=502, detail="LLM_GATEWAY_UPSTREAM: down", summary="down",
+        )
+
+    monkeypatch.setattr(gw_router, "_dispatch_chat", _down)
+
+    with pytest.raises(HTTPException):
+        _run_chat(_chat_req(model_alias="primary-deep"))
+    assert calls == ["primary-deep"]
+
+
+def test_a_healthy_call_records_no_fallback(monkeypatch, tmp_path, _two_provider_catalog):
+    """The field's presence is the signal, so a normal call must not carry it."""
+    from llm_gateway_service.app import router as gw_router
+
+    _write_policy(monkeypatch, tmp_path, {
+        "version": 1,
+        "tiers": {"deep": ["primary-deep", "backup-deep"]},
+        "defaultTier": "deep",
+        "failoverWithinTier": True,
+    })
+
+    async def _fine(req, *, provider, model, alias, credential):
+        return SimpleNamespace(
+            content="ok", tool_calls=None, finish_reason="stop",
+            input_tokens=1, output_tokens=1, latency_ms=0,
+            provider=provider, model=model, model_alias=alias,
+            estimated_cost=None, routing=None,
+        )
+
+    monkeypatch.setattr(gw_router, "_dispatch_chat", _fine)
+
+    resp = _run_chat(_chat_req())
+    assert "fallback_from" not in resp.routing

@@ -93,5 +93,34 @@
       "claim_lowering": "standard"
     },
     "optOut": ["judge"]
-  }
+  },
+
+  "_failoverComment": [
+    "B4 — same-tier AVAILABILITY failover. Off by default.",
+    "",
+    "When the provider adapter has exhausted its own same-model transient",
+    "retries (429/503/529 with backoff), the call hops ONCE to another alias in",
+    "the SAME tier, preferring a different provider. Those retries answer 'is",
+    "this blip over yet'; this answers 'is this provider having a bad",
+    "afternoon', and retrying the same model harder cannot resolve the second.",
+    "",
+    "ONE hop, deliberately. Walking the tier turns one slow request into N",
+    "sequential provider timeouts while the caller waits — an availability",
+    "feature whose failure mode is a much slower outage is not one.",
+    "",
+    "NOT the same thing as budget degradation, and the audit trail keeps them",
+    "in separate columns:",
+    "  degraded_from  BUDGET. Cheaper TIER. Quality drops on purpose.",
+    "  fallback_from  AVAILABILITY. Same tier, different provider. Quality",
+    "                 unchanged; what changed is who answered.",
+    "",
+    "Only applies to policy-routed calls. A caller that pinned model_alias",
+    "NAMED a model, and quietly answering with a different one is exactly what",
+    "a pin exists to prevent — so a pinned call never hops.",
+    "",
+    "For this to buy anything, a tier needs candidates from more than one",
+    "provider. A tier list of two models behind one vendor is two models behind",
+    "one capacity pool."
+  ],
+  "failoverWithinTier": false
 }

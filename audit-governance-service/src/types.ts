@@ -31,6 +31,10 @@ export const llmCallPayload = z.object({
   // absent is the normal case and means "not degraded".
   degraded_from:  z.string().optional(),
   degrade_reason: z.string().optional(),
+  // B4 — the alias that was tried FIRST and could not serve. Availability, not
+  // budget: same tier, different provider. Kept separate from degraded_from so
+  // a vendor outage never reads as a quality decision.
+  fallback_from:  z.string().optional(),
 });
 
 export const approvalCreateSchema = z.object({

@@ -899,12 +899,20 @@ services:
       LLM_PROVIDER_CONFIG_PATH: /etc/singularity/llm-providers.json
       LLM_MODEL_CATALOG_PATH:   /etc/singularity/llm-models.json
       # B1 — declarative model-selection policy (task_tag -> tier -> alias list).
-      # SHIPS DARK: while GATEWAY_MODEL_POLICY_ENABLED is false the gateway does
-      # not consult the policy engine at all and resolution is unchanged. See
-      # .singularity/llm-policy.json.default for the file shape; a missing file
-      # degrades to an inert policy rather than failing the gateway.
+      #
+      # ON by default as of B4. It shipped dark through three changes so the
+      # *_MODEL_ALIAS collapse and budget degradation could each be reviewed and
+      # reverted on their own; past that, an engine no traffic reaches is the
+      # state this effort started in. Set false to get the pre-policy resolution
+      # path back — read per call, so no restart is needed.
+      #
+      # What "on" changes is narrower than it sounds: a caller still sending
+      # model_alias is a hard pin and still skips policy entirely. Only callers
+      # that stopped pinning are affected. See .singularity/llm-policy.json.default
+      # for the file shape; a missing file degrades to an inert policy rather
+      # than failing the gateway.
       LLM_POLICY_PATH: /etc/singularity/llm-policy.json
-      GATEWAY_MODEL_POLICY_ENABLED: ${GATEWAY_MODEL_POLICY_ENABLED:-false}
+      GATEWAY_MODEL_POLICY_ENABLED: ${GATEWAY_MODEL_POLICY_ENABLED:-true}
       # B3 — budget-aware tier DEGRADATION. Needs the policy engine on as well;
       # both default false. When on, the gateway reads the caller's scope
       # utilisation from audit-gov and may drop the chosen tier by ONE rung.

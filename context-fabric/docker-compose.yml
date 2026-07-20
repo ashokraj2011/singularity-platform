@@ -23,10 +23,11 @@ services:
     environment:
       - LLM_PROVIDER_CONFIG_PATH=/etc/singularity/llm-providers.json
       - LLM_MODEL_CATALOG_PATH=/etc/singularity/llm-models.json
-      # B1 — ships dark; while GATEWAY_MODEL_POLICY_ENABLED is false the policy
-      # engine is never consulted and resolution is unchanged.
+      # B1 — ON by default as of B4. Set false for the pre-policy resolution
+      # path; read per call, so no restart is needed. A caller still sending
+      # model_alias is a hard pin and skips policy either way.
       - LLM_POLICY_PATH=/etc/singularity/llm-policy.json
-      - GATEWAY_MODEL_POLICY_ENABLED=${GATEWAY_MODEL_POLICY_ENABLED:-false}
+      - GATEWAY_MODEL_POLICY_ENABLED=${GATEWAY_MODEL_POLICY_ENABLED:-true}
       # B3 — budget degradation. Ships dark, and cannot function end-to-end yet:
       # the budgets it reads are fed only by mcp-server's invoke path, so
       # direct-to-gateway spend is invisible. See app/budget_state.py.

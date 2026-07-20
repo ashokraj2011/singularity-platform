@@ -111,6 +111,16 @@ class RoutingDecision:
     # response, on the audit row, and on its own audit event.
     degraded_from: Optional[str] = None
     degrade_reason: Optional[str] = None
+    # B4 — availability failover. The alias that was tried FIRST and could not
+    # serve. Distinct from degraded_from in both cause and consequence:
+    #   degraded_from  BUDGET. A different, cheaper TIER. Quality drops on
+    #                  purpose, and it is a decision the platform made.
+    #   fallback_from  AVAILABILITY. The SAME tier, a different provider,
+    #                  because the first one was down. Quality is unchanged;
+    #                  what changed is who answered.
+    # Conflating them would make "our models got worse" and "our vendor had an
+    # outage" the same line in the audit trail.
+    fallback_from: Optional[str] = None
 
     def as_dict(self) -> Dict[str, Any]:
         block: Dict[str, Any] = {
@@ -126,18 +136,47 @@ class RoutingDecision:
         if self.degraded_from:
             block["degraded_from"] = self.degraded_from
             block["degrade_reason"] = self.degrade_reason
+        if self.fallback_from:
+            block["fallback_from"] = self.fallback_from
         return block
+
+
+_FALSY = {"0", "false", "no", "off"}
 
 
 def policy_enabled() -> bool:
     """Whether the policy engine participates in resolution at all.
 
-    Read per-call, like task_tags.require_task_tag(), because this is a rollout
-    kill switch: an operator watching a bad rollout must be able to flip it back
-    without a gateway restart, and a restart is exactly what you cannot get
-    quickly when routing is misbehaving.
+    DEFAULTS ON as of B4. It shipped dark through three changes so the collapse
+    of the *_MODEL_ALIAS env vars and the arrival of budget degradation could be
+    reviewed and reverted independently of the routing engine itself. Those are
+    in; leaving the engine switched off past that point would mean the platform
+    keeps a routing layer nobody's traffic reaches, which is the state this
+    whole effort started in.
+
+    What "on" actually changes is narrower than it sounds. A caller that still
+    sends model_alias is still a hard pin and still skips policy entirely, so
+    every caller that has not migrated behaves exactly as before. The callers
+    this affects are the ones that stopped pinning in the earlier changes.
+
+    Still read per-call, and an explicit false still wins: this is a rollout
+    kill switch, and a restart is exactly what you cannot get quickly when
+    routing is misbehaving.
     """
-    return os.getenv("GATEWAY_MODEL_POLICY_ENABLED", "").strip().lower() in _TRUTHY
+    raw = os.getenv("GATEWAY_MODEL_POLICY_ENABLED", "").strip().lower()
+    if raw in _FALSY:
+        return False
+    if raw in _TRUTHY:
+        return True
+    # Unset or unrecognised → on. An unrecognised value is warned about rather
+    # than treated as off, because "GATEWAY_MODEL_POLICY_ENABLED=ture" silently
+    # disabling routing is the kind of typo that costs a week.
+    if raw:
+        _warn(
+            f"GATEWAY_MODEL_POLICY_ENABLED={raw!r} is not a recognised boolean; "
+            "treating it as ON (the default). Use true/false."
+        )
+    return True
 
 
 def _policy_path() -> Path:
@@ -183,12 +222,76 @@ def _load_policy() -> Dict[str, Any]:
 def _empty_policy() -> Dict[str, Any]:
     return {
         "version": 1, "tiers": {}, "defaultTier": None, "routes": [], "escalate": {},
-        "budget": _empty_budget(),
+        "budget": _empty_budget(), "failoverWithinTier": False,
     }
 
 
 def _empty_budget() -> Dict[str, Any]:
     return {"degradeAtPercent": None, "floors": {}, "optOut": frozenset()}
+
+
+def failover_within_tier_enabled() -> bool:
+    """Whether a call may hop to another alias in its tier when the first is down.
+
+    Off by default (`failoverWithinTier: false`). Availability failover changes
+    which model answered a request the caller already believes succeeded, and
+    that is a decision an operator should opt into rather than inherit.
+    """
+    return bool(_load_policy().get("failoverWithinTier"))
+
+
+def next_in_tier(
+    tier: Optional[str],
+    *,
+    after_alias: Optional[str],
+    is_ready: Callable[[str], bool],
+    provider_of: Optional[Callable[[str], Optional[str]]] = None,
+) -> Optional[str]:
+    """The ONE alias to try after `after_alias` failed on availability grounds.
+
+    Returns None when there is nothing sensible to hop to, which is every case
+    the caller should treat as "let the original error stand".
+
+    Prefers a DIFFERENT PROVIDER where the tier offers one. A tier list like
+    ["claude-opus-4-1", "claude-sonnet-4-6"] is two models behind one provider's
+    capacity pool, so hopping between them during an Anthropic 529 mostly buys a
+    second 529 and a doubled latency bill. When every remaining candidate is the
+    same provider we still take the next one — a per-model rate limit is real
+    and a different model can clear it — but provider diversity comes first
+    because it is the failure this actually protects against.
+    """
+    if not tier or not after_alias:
+        return None
+    candidates = _load_policy()["tiers"].get(tier, [])
+    if after_alias not in candidates:
+        return None
+    remaining = [alias for alias in candidates if alias != after_alias]
+    if not remaining:
+        return None
+
+    def ready(alias: str) -> bool:
+        try:
+            return bool(is_ready(alias))
+        except Exception:  # noqa: BLE001 — a readiness probe must not fail the call
+            return False
+
+    ready_remaining = [alias for alias in remaining if ready(alias)]
+    if not ready_remaining:
+        return None
+
+    if provider_of is not None:
+        try:
+            failed_provider = provider_of(after_alias)
+        except Exception:  # noqa: BLE001
+            failed_provider = None
+        if failed_provider:
+            for alias in ready_remaining:
+                try:
+                    if provider_of(alias) != failed_provider:
+                        return alias
+                except Exception:  # noqa: BLE001
+                    continue
+    return ready_remaining[0]
 
 
 def _sanitize_policy(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -269,7 +372,26 @@ def _sanitize_policy(raw: Dict[str, Any]) -> Dict[str, Any]:
         "routes": routes,
         "escalate": escalate,
         "budget": _sanitize_budget(raw.get("budget"), tiers),
+        "failoverWithinTier": _sanitize_failover(raw.get("failoverWithinTier")),
     }
+
+
+def _sanitize_failover(raw: Any) -> bool:
+    """Availability failover is off unless the policy says exactly true.
+
+    A non-boolean is not coerced. `"failoverWithinTier": "yes"` reading as
+    truthy would enable a behaviour the operator did not spell out, and this one
+    changes which model answered a request that already looked successful.
+    """
+    if raw is None or raw is False:
+        return False
+    if raw is True:
+        return True
+    _warn(
+        f"Model policy failoverWithinTier {raw!r} ignored: expected true or false. "
+        "Availability failover stays OFF."
+    )
+    return False
 
 
 def _sanitize_budget(raw: Any, tiers: Dict[str, List[str]]) -> Dict[str, Any]:
@@ -708,6 +830,7 @@ def describe() -> Dict[str, Any]:
             "floors": dict(policy["budget"]["floors"]),
             "opt_out": sorted(policy["budget"]["optOut"]),
         },
+        "failover_within_tier": bool(policy.get("failoverWithinTier")),
         "warnings": list(_warnings),
     }
 
