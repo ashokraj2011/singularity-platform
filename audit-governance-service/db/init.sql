@@ -51,12 +51,29 @@ CREATE TABLE IF NOT EXISTS llm_calls (
   finish_reason   TEXT,
   cost_usd        NUMERIC(12, 6),                -- NULL when no rate-card row matched
   rate_card_id    UUID,
+  -- B3 (m76) — WHY this model, not just which. NULL means "not degraded", not
+  -- "unknown": the gateway sets these explicitly, so `degraded_from IS NOT NULL`
+  -- is the entire "what did budget pressure downgrade" query. Without them,
+  -- answering "why is this month's output worse" means correlating log lines
+  -- against the budgets table by timestamp.
+  degraded_from   TEXT,
+  degrade_reason  TEXT,
+  -- B4 (m77) — the OTHER reason a model nobody asked for served the call.
+  -- Separate from degraded_from on purpose: degradation is budget (cheaper
+  -- tier, quality drops deliberately), failover is availability (same tier,
+  -- different provider, quality unchanged). One column for both would make
+  -- "our models got worse" and "our vendor had an outage" the same row, and
+  -- those lead an operator to opposite actions.
+  fallback_from   TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_llm_calls_capability_time ON llm_calls(capability_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_trace           ON llm_calls(trace_id);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_provider_model  ON llm_calls(provider, model);
+-- Partial: degradations and failovers are meant to be rare, so these stay near-free.
+CREATE INDEX IF NOT EXISTS idx_llm_calls_degraded        ON llm_calls(created_at DESC) WHERE degraded_from IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_llm_calls_failover        ON llm_calls(created_at DESC) WHERE fallback_from IS NOT NULL;
 
 -- ─── rate_card ─────────────────────────────────────────────────────────────
 -- Provider × model → $ per 1k tokens. effective_from/_to lets pricing change

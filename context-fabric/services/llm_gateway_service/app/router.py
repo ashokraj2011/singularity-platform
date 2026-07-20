@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 from fastapi import APIRouter, Body, Header, HTTPException
 
 from .config import settings
+from . import budget_state
 from . import model_policy
 from . import provider_config
 from . import secret_redaction
@@ -118,7 +119,118 @@ def _alias_ready(alias: str) -> bool:
     return True
 
 
-def _resolve_provider_and_model_with_policy(
+class _UpstreamUnavailable(Exception):
+    """A provider call that failed for AVAILABILITY reasons, carrying enough to
+    re-raise the original error unchanged if failover does not help.
+
+    Availability failures are the only ones worth hopping for. A 400 is the
+    request's fault and every model in the tier will reject it identically; a
+    409 drift guard is the caller asserting something that is still false after
+    a hop. Trying another model for those burns a second provider call to
+    produce the same answer more slowly.
+    """
+
+    def __init__(self, *, alias: Optional[str], status: int, detail: str, summary: str):
+        super().__init__(detail)
+        self.alias = alias
+        self.status = status
+        self.detail = detail
+        self.summary = summary
+
+    def as_http(self) -> HTTPException:
+        return HTTPException(status_code=self.status, detail=self.detail)
+
+
+async def _dispatch_chat(
+    req: Any, *, provider: str, model: str, alias: Optional[str], credential: str,
+) -> Any:
+    """One provider call. Availability failures raise _UpstreamUnavailable."""
+    try:
+        if provider in ("openai", "openrouter"):
+            return await openai_provider.respond(
+                req, provider=provider, resolved_model=model, api_key=credential, model_alias=alias,
+            )
+        if provider == "anthropic":
+            return await anthropic_provider.respond(
+                req, resolved_model=model, api_key=credential, model_alias=alias,
+            )
+        raise HTTPException(status_code=400, detail=f"unsupported provider {provider}")
+    except anthropic_provider.AnthropicUpstreamError as exc:
+        status = 429 if exc.status_code == 429 else 502
+        raise _UpstreamUnavailable(
+            alias=alias, status=status,
+            detail=f"LLM_GATEWAY_UPSTREAM: {exc}",
+            summary=f"{provider} returned {exc.status_code}",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # openai_compat raises bare RuntimeError for any non-200, so the status
+        # is not recoverable here. Treated as availability because that is the
+        # overwhelmingly common cause of a 5xx from these adapters, and the cost
+        # of being wrong is one extra call rather than a wrong answer.
+        raise _UpstreamUnavailable(
+            alias=alias, status=502,
+            detail=f"LLM_GATEWAY_UPSTREAM: {exc}",
+            summary=f"{provider} call failed",
+        )
+
+
+def _failover_target(routing: Optional[Dict[str, Any]], alias: Optional[str]) -> Optional[str]:
+    """The one alias to hop to, or None to let the original failure stand.
+
+    Requires a policy-chosen TIER. A caller pin has no tier — it named a model,
+    and quietly answering with a different one is precisely what a pin exists to
+    prevent. Same for a resolution that never went through policy at all.
+    """
+    if not routing or not alias:
+        return None
+    if not model_policy.failover_within_tier_enabled():
+        return None
+    return model_policy.next_in_tier(
+        routing.get("tier"),
+        after_alias=alias,
+        is_ready=_alias_ready,
+        provider_of=_provider_for_alias,
+    )
+
+
+def _provider_for_alias(alias: str) -> Optional[str]:
+    try:
+        return provider_config.resolve_alias(alias).get("provider")
+    except provider_config.ProviderConfigError:
+        return None
+
+
+async def _budget_signal(req: Any) -> Tuple[Optional[float], str]:
+    """How much of this caller's budget is spent, or (None, why-not).
+
+    Scope preference is capability then tenant: a capability is the narrower,
+    more actionable envelope, and degrading one capability's background work is
+    a far more surgical response to budget pressure than degrading an entire
+    tenant.
+
+    NOTE what these fields are: attribution, not authorization. Any caller
+    behind the shared bearer can claim any tenant_id, which is exactly why they
+    are NOT policy `when` keys — see model_policy.MATCHABLE_SIGNALS. Budget is
+    applied after routing as a cost adjustment, never as a route match.
+    """
+    if not budget_state.degradation_enabled():
+        return None, ""
+    for scope_type, value in (
+        ("capability", getattr(req, "capability_id", None)),
+        ("tenant", getattr(req, "tenant_id", None)),
+    ):
+        scope_id = (value or "").strip() if isinstance(value, str) else ""
+        if not scope_id:
+            continue
+        state = await budget_state.fetch(scope_type, scope_id)
+        if state.known:
+            return state.used_fraction, state.reason
+    return None, "no capability_id or tenant_id to scope a budget by"
+
+
+async def _resolve_provider_and_model_with_policy(
     *,
     req: Any,
     identity: Dict[str, Optional[str]],
@@ -139,6 +251,10 @@ def _resolve_provider_and_model_with_policy(
         )
         return provider, model, alias, None
 
+    # Only fetched when degradation is on AND policy is live, so the default
+    # configuration adds no network hop to the request path.
+    budget_used_fraction, budget_note = await _budget_signal(req)
+
     decision = model_policy.resolve(
         model_alias=req.model_alias,
         expected_model=req.expected_model,
@@ -152,6 +268,8 @@ def _resolve_provider_and_model_with_policy(
             else model_policy.estimate_input_tokens(getattr(req, "messages", None))
         ),
         is_ready=_alias_ready,
+        budget_used_fraction=budget_used_fraction,
+        budget_note=budget_note,
     )
     # A decision with no alias (an expected_model pin, or any degrade) leaves the
     # caller's own alias in place — policy never removes a choice, it only makes
@@ -247,7 +365,7 @@ def remove_model(model_id: str, authorization: Optional[str] = Header(None)) -> 
 
 
 @router.post("/llm/route/preview", response_model=RoutePreviewResponse)
-def preview_route(
+async def preview_route(
     req: RoutePreviewRequest,
     authorization: Optional[str] = Header(None),
 ) -> RoutePreviewResponse:
@@ -284,7 +402,7 @@ def preview_route(
         messages=None,
     )
     try:
-        provider, model, alias, routing = _resolve_provider_and_model_with_policy(
+        provider, model, alias, routing = await _resolve_provider_and_model_with_policy(
             req=shim, identity=identity, estimated_input_tokens=estimated,
         )
     except HTTPException as exc:
@@ -327,7 +445,7 @@ async def chat_completions(
     # call is rejected (when required) before it costs anything upstream.
     identity = task_tags.resolve_task_identity(req, endpoint="chat_completions")
 
-    provider, model, alias, routing = _resolve_provider_and_model_with_policy(
+    provider, model, alias, routing = await _resolve_provider_and_model_with_policy(
         req=req, identity=identity,
     )
     if req.expected_provider and provider.lower() != req.expected_provider.lower():
@@ -366,6 +484,7 @@ async def chat_completions(
             endpoint="chat_completions", identity=identity, provider=provider, model=model,
             model_alias=alias or req.model_alias, req=req,
             input_tokens=resp.input_tokens, output_tokens=resp.output_tokens, estimated_cost=0.0,
+            routing=routing,
         )
         return resp
 
@@ -374,23 +493,45 @@ async def chat_completions(
         raise HTTPException(status_code=503, detail=f"provider {provider} is not configured (missing credential)")
 
     try:
-        if provider in ("openai", "openrouter"):
-            resp = await openai_provider.respond(
-                req, provider=provider, resolved_model=model, api_key=credential, model_alias=alias,
+        resp = await _dispatch_chat(req, provider=provider, model=model, alias=alias, credential=credential)
+    except _UpstreamUnavailable as first_failure:
+        # B4 — ONE same-tier availability hop, after the provider adapter has
+        # already exhausted its own same-model transient retries (429/503/529
+        # with backoff, see providers/anthropic.py). Those retries answer "is
+        # this blip over yet"; this answers "is this provider having a bad
+        # afternoon". Retrying the same model harder cannot resolve the second.
+        #
+        # Bounded to one hop on purpose. A walk down the tier turns one slow
+        # request into N sequential provider timeouts, and the caller is still
+        # waiting — an availability feature whose failure mode is a much slower
+        # outage is not an availability feature.
+        hop = _failover_target(routing, alias)
+        if hop is None:
+            raise first_failure.as_http()
+        try:
+            hop_provider, hop_model, hop_alias = _resolve_provider_and_model(
+                model_alias=hop, provider=None, model=None,
             )
-        elif provider == "anthropic":
-            resp = await anthropic_provider.respond(
-                req, resolved_model=model, api_key=credential, model_alias=alias,
+            hop_credential = settings.credential_for(hop_provider)
+            if not hop_credential:
+                raise first_failure.as_http()
+            resp = await _dispatch_chat(
+                req, provider=hop_provider, model=hop_model, alias=hop_alias, credential=hop_credential,
             )
-        else:
-            raise HTTPException(status_code=400, detail=f"unsupported provider {provider}")
-    except anthropic_provider.AnthropicUpstreamError as exc:
-        status = 429 if exc.status_code == 429 else 502
-        raise HTTPException(status_code=status, detail=f"LLM_GATEWAY_UPSTREAM: {exc}")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"LLM_GATEWAY_UPSTREAM: {exc}")
+        except _UpstreamUnavailable:
+            # The hop failed too. Surface the ORIGINAL error: the caller asked
+            # for the first model, and an error naming the fallback would send
+            # whoever reads it to investigate a model they never requested.
+            raise first_failure.as_http()
+        except HTTPException:
+            raise first_failure.as_http()
+        provider, model, alias = hop_provider, hop_model, hop_alias
+        routing = dict(routing or {})
+        routing["fallback_from"] = first_failure.alias
+        routing["reason"] = (
+            f"{routing.get('reason', '')}; failed over {first_failure.alias} -> {hop_alias} "
+            f"({first_failure.summary})"
+        ).lstrip("; ")
 
     # M56 — attach USD cost based on the catalog's per-model price.
     # Computed AFTER the provider call so we know the real token counts.
@@ -406,6 +547,7 @@ async def chat_completions(
         model_alias=alias or req.model_alias, req=req,
         input_tokens=resp.input_tokens, output_tokens=resp.output_tokens,
         estimated_cost=resp.estimated_cost,
+        routing=routing,
     )
     return resp
 
@@ -428,7 +570,7 @@ async def embeddings(
     # a second model into the same index, and that is precisely the silent
     # corruption the expected_model drift guard below exists to catch. Tier
     # routing and the readiness walk still apply.
-    provider, model, alias, routing = _resolve_provider_and_model_with_policy(
+    provider, model, alias, routing = await _resolve_provider_and_model_with_policy(
         req=req, identity=identity,
     )
     # Drift guard, matching /v1/chat/completions. This matters MORE here: a
@@ -455,7 +597,7 @@ async def embeddings(
         dim = len(vectors[0]) if vectors else 0
         task_tags.emit_call_audit(
             endpoint="embeddings", identity=identity, provider="mock", model=model or "mock-embed",
-            model_alias=alias, req=req, input_tokens=tokens,
+            model_alias=alias, req=req, input_tokens=tokens, routing=routing,
         )
         return EmbeddingsResponse(
             embeddings=vectors,
@@ -481,7 +623,7 @@ async def embeddings(
             dim = len(vectors[0]) if vectors else 0
             task_tags.emit_call_audit(
                 endpoint="embeddings", identity=identity, provider=provider, model=model,
-                model_alias=alias, req=req, input_tokens=tokens,
+                model_alias=alias, req=req, input_tokens=tokens, routing=routing,
             )
             return EmbeddingsResponse(
                 embeddings=vectors,

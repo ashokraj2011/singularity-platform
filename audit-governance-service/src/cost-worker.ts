@@ -47,13 +47,21 @@ export async function denormaliseLlmCall(eventId: string, traceId: string | null
     `INSERT INTO audit_governance.llm_calls
        (audit_event_id, trace_id, capability_id, tenant_id,
         provider, model, input_tokens, output_tokens, total_tokens,
-        latency_ms, finish_reason, cost_usd, rate_card_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        latency_ms, finish_reason, cost_usd, rate_card_id,
+        degraded_from, degrade_reason, fallback_from)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
     [
       eventId, traceId, capabilityId, tenantId,
       p.provider, p.model, p.input_tokens, p.output_tokens, total,
       p.latency_ms ?? null, p.finish_reason ?? null,
       costUsd, rateCardId,
+      // B3 — NULL means "not degraded", not "unknown". Persisted here so
+      // "what did budget pressure downgrade this month" is one WHERE clause
+      // rather than a log correlation against the budgets table by timestamp.
+      p.degraded_from ?? null, p.degrade_reason ?? null,
+      // B4 — availability, not budget. Deliberately a separate column: a vendor
+      // outage and a spend decision must never read as the same event.
+      p.fallback_from ?? null,
     ],
   );
 

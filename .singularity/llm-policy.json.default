@@ -59,5 +59,68 @@
   "escalateWhenInputTokensExceed": {
     "cheap": 60000,
     "standard": 150000
-  }
+  },
+
+  "_budgetComment": [
+    "B3 — budget-aware tier DEGRADATION. Requires GATEWAY_BUDGET_DEGRADATION_ENABLED",
+    "as well as GATEWAY_MODEL_POLICY_ENABLED; both default off.",
+    "",
+    "When the caller's scope (capability, else tenant) is at or past",
+    "degradeAtPercent of its audit-gov budget, the chosen tier moves DOWN exactly",
+    "one rung. One rung, like escalation, because this is a guard rail and not a",
+    "second routing system.",
+    "",
+    "Degradation is a SILENT quality regression by nature — the model still",
+    "answers, the answer is just worse — so it is loud by construction: it lands",
+    "on the response routing block, on the llm_calls row (degraded_from /",
+    "degrade_reason), and on its own llm_gateway.degradation audit event that",
+    "fires ONLY when a degradation actually happened.",
+    "",
+    "floors: a minimum tier budget pressure may never breach, per task_tag. A",
+    "judge demoted to a cheap model still returns a confident score, and a",
+    "confidently wrong grade is worse than no grade.",
+    "optOut: task tags budget pressure may never degrade at all.",
+    "",
+    "READ THE COVERAGE CAVEAT in app/budget_state.py before trusting a",
+    "percentage: `budgets` is fed from llm.call.completed audit events, whose",
+    "only producer today is mcp-server's invoke path. Spend from direct-to-",
+    "gateway callers is invisible, so the observed percentage is a LOWER BOUND."
+  ],
+  "budget": {
+    "degradeAtPercent": 90,
+    "floors": {
+      "judge": "standard",
+      "claim_lowering": "standard"
+    },
+    "optOut": ["judge"]
+  },
+
+  "_failoverComment": [
+    "B4 — same-tier AVAILABILITY failover. Off by default.",
+    "",
+    "When the provider adapter has exhausted its own same-model transient",
+    "retries (429/503/529 with backoff), the call hops ONCE to another alias in",
+    "the SAME tier, preferring a different provider. Those retries answer 'is",
+    "this blip over yet'; this answers 'is this provider having a bad",
+    "afternoon', and retrying the same model harder cannot resolve the second.",
+    "",
+    "ONE hop, deliberately. Walking the tier turns one slow request into N",
+    "sequential provider timeouts while the caller waits — an availability",
+    "feature whose failure mode is a much slower outage is not one.",
+    "",
+    "NOT the same thing as budget degradation, and the audit trail keeps them",
+    "in separate columns:",
+    "  degraded_from  BUDGET. Cheaper TIER. Quality drops on purpose.",
+    "  fallback_from  AVAILABILITY. Same tier, different provider. Quality",
+    "                 unchanged; what changed is who answered.",
+    "",
+    "Only applies to policy-routed calls. A caller that pinned model_alias",
+    "NAMED a model, and quietly answering with a different one is exactly what",
+    "a pin exists to prevent — so a pinned call never hops.",
+    "",
+    "For this to buy anything, a tier needs candidates from more than one",
+    "provider. A tier list of two models behind one vendor is two models behind",
+    "one capacity pool."
+  ],
+  "failoverWithinTier": false
 }

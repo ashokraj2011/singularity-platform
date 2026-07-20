@@ -60,6 +60,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from . import budget_state
 from .config import settings
 from .task_tags import normalize_task_tag
 
@@ -103,6 +104,23 @@ class RoutingDecision:
     alias: Optional[str]
     reason: str
     escalated_from: Optional[str] = None
+    # B3 — budget degradation. Set ONLY when budget pressure actually moved this
+    # call to a cheaper tier. Silent quality regression is the hardest failure
+    # mode in this whole engine to debug — the model still answers, the answer is
+    # just worse — so degradation is loud by construction: it lands on the
+    # response, on the audit row, and on its own audit event.
+    degraded_from: Optional[str] = None
+    degrade_reason: Optional[str] = None
+    # B4 — availability failover. The alias that was tried FIRST and could not
+    # serve. Distinct from degraded_from in both cause and consequence:
+    #   degraded_from  BUDGET. A different, cheaper TIER. Quality drops on
+    #                  purpose, and it is a decision the platform made.
+    #   fallback_from  AVAILABILITY. The SAME tier, a different provider,
+    #                  because the first one was down. Quality is unchanged;
+    #                  what changed is who answered.
+    # Conflating them would make "our models got worse" and "our vendor had an
+    # outage" the same line in the audit trail.
+    fallback_from: Optional[str] = None
 
     def as_dict(self) -> Dict[str, Any]:
         block: Dict[str, Any] = {
@@ -115,18 +133,50 @@ class RoutingDecision:
         # response body is itself the signal that an escalation fired.
         if self.escalated_from:
             block["escalated_from"] = self.escalated_from
+        if self.degraded_from:
+            block["degraded_from"] = self.degraded_from
+            block["degrade_reason"] = self.degrade_reason
+        if self.fallback_from:
+            block["fallback_from"] = self.fallback_from
         return block
+
+
+_FALSY = {"0", "false", "no", "off"}
 
 
 def policy_enabled() -> bool:
     """Whether the policy engine participates in resolution at all.
 
-    Read per-call, like task_tags.require_task_tag(), because this is a rollout
-    kill switch: an operator watching a bad rollout must be able to flip it back
-    without a gateway restart, and a restart is exactly what you cannot get
-    quickly when routing is misbehaving.
+    DEFAULTS ON as of B4. It shipped dark through three changes so the collapse
+    of the *_MODEL_ALIAS env vars and the arrival of budget degradation could be
+    reviewed and reverted independently of the routing engine itself. Those are
+    in; leaving the engine switched off past that point would mean the platform
+    keeps a routing layer nobody's traffic reaches, which is the state this
+    whole effort started in.
+
+    What "on" actually changes is narrower than it sounds. A caller that still
+    sends model_alias is still a hard pin and still skips policy entirely, so
+    every caller that has not migrated behaves exactly as before. The callers
+    this affects are the ones that stopped pinning in the earlier changes.
+
+    Still read per-call, and an explicit false still wins: this is a rollout
+    kill switch, and a restart is exactly what you cannot get quickly when
+    routing is misbehaving.
     """
-    return os.getenv("GATEWAY_MODEL_POLICY_ENABLED", "").strip().lower() in _TRUTHY
+    raw = os.getenv("GATEWAY_MODEL_POLICY_ENABLED", "").strip().lower()
+    if raw in _FALSY:
+        return False
+    if raw in _TRUTHY:
+        return True
+    # Unset or unrecognised → on. An unrecognised value is warned about rather
+    # than treated as off, because "GATEWAY_MODEL_POLICY_ENABLED=ture" silently
+    # disabling routing is the kind of typo that costs a week.
+    if raw:
+        _warn(
+            f"GATEWAY_MODEL_POLICY_ENABLED={raw!r} is not a recognised boolean; "
+            "treating it as ON (the default). Use true/false."
+        )
+    return True
 
 
 def _policy_path() -> Path:
@@ -170,7 +220,78 @@ def _load_policy() -> Dict[str, Any]:
 
 
 def _empty_policy() -> Dict[str, Any]:
-    return {"version": 1, "tiers": {}, "defaultTier": None, "routes": [], "escalate": {}}
+    return {
+        "version": 1, "tiers": {}, "defaultTier": None, "routes": [], "escalate": {},
+        "budget": _empty_budget(), "failoverWithinTier": False,
+    }
+
+
+def _empty_budget() -> Dict[str, Any]:
+    return {"degradeAtPercent": None, "floors": {}, "optOut": frozenset()}
+
+
+def failover_within_tier_enabled() -> bool:
+    """Whether a call may hop to another alias in its tier when the first is down.
+
+    Off by default (`failoverWithinTier: false`). Availability failover changes
+    which model answered a request the caller already believes succeeded, and
+    that is a decision an operator should opt into rather than inherit.
+    """
+    return bool(_load_policy().get("failoverWithinTier"))
+
+
+def next_in_tier(
+    tier: Optional[str],
+    *,
+    after_alias: Optional[str],
+    is_ready: Callable[[str], bool],
+    provider_of: Optional[Callable[[str], Optional[str]]] = None,
+) -> Optional[str]:
+    """The ONE alias to try after `after_alias` failed on availability grounds.
+
+    Returns None when there is nothing sensible to hop to, which is every case
+    the caller should treat as "let the original error stand".
+
+    Prefers a DIFFERENT PROVIDER where the tier offers one. A tier list like
+    ["claude-opus-4-1", "claude-sonnet-4-6"] is two models behind one provider's
+    capacity pool, so hopping between them during an Anthropic 529 mostly buys a
+    second 529 and a doubled latency bill. When every remaining candidate is the
+    same provider we still take the next one — a per-model rate limit is real
+    and a different model can clear it — but provider diversity comes first
+    because it is the failure this actually protects against.
+    """
+    if not tier or not after_alias:
+        return None
+    candidates = _load_policy()["tiers"].get(tier, [])
+    if after_alias not in candidates:
+        return None
+    remaining = [alias for alias in candidates if alias != after_alias]
+    if not remaining:
+        return None
+
+    def ready(alias: str) -> bool:
+        try:
+            return bool(is_ready(alias))
+        except Exception:  # noqa: BLE001 — a readiness probe must not fail the call
+            return False
+
+    ready_remaining = [alias for alias in remaining if ready(alias)]
+    if not ready_remaining:
+        return None
+
+    if provider_of is not None:
+        try:
+            failed_provider = provider_of(after_alias)
+        except Exception:  # noqa: BLE001
+            failed_provider = None
+        if failed_provider:
+            for alias in ready_remaining:
+                try:
+                    if provider_of(alias) != failed_provider:
+                        return alias
+                except Exception:  # noqa: BLE001
+                    continue
+    return ready_remaining[0]
 
 
 def _sanitize_policy(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -250,7 +371,103 @@ def _sanitize_policy(raw: Dict[str, Any]) -> Dict[str, Any]:
         "defaultTier": default_tier,
         "routes": routes,
         "escalate": escalate,
+        "budget": _sanitize_budget(raw.get("budget"), tiers),
+        "failoverWithinTier": _sanitize_failover(raw.get("failoverWithinTier")),
     }
+
+
+def _sanitize_failover(raw: Any) -> bool:
+    """Availability failover is off unless the policy says exactly true.
+
+    A non-boolean is not coerced. `"failoverWithinTier": "yes"` reading as
+    truthy would enable a behaviour the operator did not spell out, and this one
+    changes which model answered a request that already looked successful.
+    """
+    if raw is None or raw is False:
+        return False
+    if raw is True:
+        return True
+    _warn(
+        f"Model policy failoverWithinTier {raw!r} ignored: expected true or false. "
+        "Availability failover stays OFF."
+    )
+    return False
+
+
+def _sanitize_budget(raw: Any, tiers: Dict[str, List[str]]) -> Dict[str, Any]:
+    """Parse the `budget` block. Absent or broken → degradation is inert.
+
+    Same per-entry degrade as everywhere else in this file, with one deliberate
+    asymmetry: a malformed FLOOR is dropped, and dropping a floor makes
+    degradation MORE aggressive for that tag. So a bad floor is warned about
+    loudly and the tag is added to optOut instead — failing toward "do not
+    degrade this" rather than toward "degrade it without a floor".
+    """
+    budget = _empty_budget()
+    if raw is None:
+        return budget
+    if not isinstance(raw, dict):
+        _warn("Model policy `budget` must be an object; budget degradation is inert.")
+        return budget
+
+    threshold = raw.get("degradeAtPercent")
+    if threshold is not None:
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not (0 < threshold <= 100):
+            _warn(
+                f"Model policy budget.degradeAtPercent {threshold!r} ignored: "
+                "expected a number in (0, 100]."
+            )
+        else:
+            budget["degradeAtPercent"] = float(threshold)
+
+    opt_out = set()
+    raw_opt_out = raw.get("optOut")
+    if raw_opt_out is not None:
+        if not isinstance(raw_opt_out, list):
+            _warn("Model policy budget.optOut must be an array of task tags; ignoring it.")
+        else:
+            for entry in raw_opt_out:
+                tag = normalize_task_tag(entry)
+                if not tag:
+                    _warn(f"Model policy budget.optOut entry {entry!r} ignored: blank tag.")
+                    continue
+                opt_out.add(tag)
+
+    floors: Dict[str, str] = {}
+    raw_floors = raw.get("floors")
+    if raw_floors is not None:
+        if not isinstance(raw_floors, dict):
+            _warn("Model policy budget.floors must be an object of task_tag -> tier; ignoring it.")
+        else:
+            for tag_raw, tier_raw in raw_floors.items():
+                tag = normalize_task_tag(tag_raw)
+                tier = normalize_task_tag(tier_raw)
+                if not tag:
+                    _warn(f"Model policy budget floor {tag_raw!r} ignored: blank task tag.")
+                    continue
+                if not tier or tier not in tiers:
+                    # Fail toward NOT degrading. A dropped floor would quietly
+                    # widen how far budget pressure can push this tag down, and
+                    # floors exist precisely for the work where that must not
+                    # happen (a judge, a canonicalizer). So the tag opts out.
+                    _warn(
+                        f"Model policy budget floor for {tag!r} names undefined tier {tier_raw!r}; "
+                        f"treating {tag!r} as opted OUT of degradation rather than unfloored."
+                    )
+                    opt_out.add(tag)
+                    continue
+                if tier not in TIER_ORDER:
+                    _warn(
+                        f"Model policy budget floor for {tag!r} uses tier {tier!r}, which is outside "
+                        f"the known ladder ({', '.join(TIER_ORDER)}); it cannot bound a degradation step."
+                    )
+                    opt_out.add(tag)
+                    continue
+                floors[tag] = tier
+
+    budget["floors"] = floors
+    budget["optOut"] = frozenset(opt_out)
+    return budget
 
 
 def _sanitize_route(index: int, entry: Any, tiers: Dict[str, List[str]]) -> Optional[Dict[str, Any]]:
@@ -357,6 +574,81 @@ def _escalate_one_step(tier: str, estimated_input_tokens: int, escalate: Dict[st
     return TIER_ORDER[index + 1], tier
 
 
+def _degrade_one_step(
+    tier: str,
+    *,
+    task_tag: Optional[str],
+    budget_used_fraction: Optional[float],
+    budget_note: str,
+    budget: Dict[str, Any],
+    escalated_from: Optional[str] = None,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """Move DOWN at most one rung when the caller's budget is under pressure.
+
+    Returns (tier, degraded_from, degrade_reason). degraded_from is None unless
+    a degradation actually happened, so its presence anywhere is the signal.
+
+    The mirror of _escalate_one_step, with the same one-rung discipline and for
+    the same reason: this is a guard rail, not a second routing system. If a
+    class of work genuinely belongs on a cheaper model, that is a route an
+    operator should write down.
+
+    Five gates, checked in this order, all of which mean "leave it alone":
+      1. degradation is switched off, or the policy configures no threshold
+      2. SIZE ESCALATION ALREADY FIRED for this call
+      3. the task tag opted out — quality-non-negotiable work
+      4. there is no budget signal (None is not zero; see budget_state)
+      5. utilisation is below the threshold
+
+    Gate 2 deserves its own paragraph, because getting it wrong is silent.
+    Escalation and degradation each move exactly one rung, in opposite
+    directions, so running both on the same call nets out to NO CHANGE — the
+    engine would have escalated a 200k-token request to a tier that can hold it
+    and then handed it straight back to the tier that cannot. The result is not
+    a cheaper answer; it is a failed one that still costs money, and it fails
+    only for the large requests nobody tests with. Escalation is a CORRECTNESS
+    guard and degradation is a COST PREFERENCE, so correctness wins and the call
+    keeps the tier its size demands.
+
+    Then the FLOOR: a configured minimum tier that budget pressure can never
+    breach. A judge or a canonicalizer demoted to a cheap model still returns a
+    confident answer, and a confidently wrong grade is worse than no grade.
+    """
+    threshold = budget.get("degradeAtPercent")
+    if not budget_state.degradation_enabled() or threshold is None:
+        return tier, None, None
+    if escalated_from:
+        return tier, None, None
+    if task_tag and task_tag in budget["optOut"]:
+        return tier, None, None
+    if budget_used_fraction is None:
+        return tier, None, None
+    used_percent = budget_used_fraction * 100.0
+    if used_percent < threshold:
+        return tier, None, None
+    if tier not in TIER_ORDER:
+        return tier, None, None
+    index = TIER_ORDER.index(tier)
+    if index == 0:
+        return tier, None, None  # already the cheapest rung; nowhere to go
+
+    target = TIER_ORDER[index - 1]
+
+    floor = budget["floors"].get(task_tag or "")
+    if floor and floor in TIER_ORDER:
+        # A floor at or above the current tier means this call cannot move at all.
+        if TIER_ORDER.index(target) < TIER_ORDER.index(floor):
+            return tier, None, None
+
+    reason = (
+        f"budget at {used_percent:.0f}% (>= {threshold:.0f}% threshold); "
+        f"degraded {tier} -> {target}"
+    )
+    if budget_note:
+        reason += f"; {budget_note}"
+    return target, tier, reason
+
+
 def _first_ready(candidates: List[str], is_ready: Callable[[str], bool]) -> Tuple[Optional[str], List[str]]:
     """Walk the tier list and take the first alias whose provider is ready.
 
@@ -387,6 +679,11 @@ def resolve(
     purpose: Optional[str] = None,
     estimated_input_tokens: int = 0,
     is_ready: Callable[[str], bool],
+    # B3 — how much of the caller's budget is already spent, in [0, 1], or None
+    # for "no signal". Passed IN rather than fetched here so this module stays
+    # synchronous and pure: the router does the await, this decides.
+    budget_used_fraction: Optional[float] = None,
+    budget_note: str = "",
 ) -> Optional[RoutingDecision]:
     """Decide which alias should serve this call, or None to leave it alone.
 
@@ -467,6 +764,22 @@ def resolve(
             f"(~{estimated_input_tokens} input tokens > {threshold})"
         )
 
+    # Budget degradation runs AFTER size escalation, and defers to it: a call
+    # that escalated on size is never degraded on budget. See _degrade_one_step
+    # gate 2 — the two steps are one rung each in opposite directions, so
+    # applying both would net to nothing while looking, in the audit trail, like
+    # two decisions were made.
+    tier, degraded_from, degrade_reason = _degrade_one_step(
+        tier,
+        task_tag=signals["task_tag"],
+        budget_used_fraction=budget_used_fraction,
+        budget_note=budget_note,
+        budget=policy["budget"],
+        escalated_from=escalated_from,
+    )
+    if degraded_from:
+        reason_head += f"; {degrade_reason}"
+
     alias, skipped = _first_ready(tiers.get(tier, []), is_ready)
     if alias is None:
         _warn(
@@ -483,6 +796,8 @@ def resolve(
         alias=alias,
         reason=f"{reason_head}; chose {alias}",
         escalated_from=escalated_from,
+        degraded_from=degraded_from,
+        degrade_reason=degrade_reason,
     )
 
 
@@ -507,6 +822,15 @@ def describe() -> Dict[str, Any]:
         "default_tier": policy["defaultTier"],
         "route_count": len(policy["routes"]),
         "escalate_when_input_tokens_exceed": dict(policy["escalate"]),
+        # Surfaced so an operator can answer "is anything being degraded, and
+        # what is protected from it" without reading the policy file off disk.
+        "budget": {
+            "degradation_enabled": budget_state.degradation_enabled(),
+            "degrade_at_percent": policy["budget"]["degradeAtPercent"],
+            "floors": dict(policy["budget"]["floors"]),
+            "opt_out": sorted(policy["budget"]["optOut"]),
+        },
+        "failover_within_tier": bool(policy.get("failoverWithinTier")),
         "warnings": list(_warnings),
     }
 

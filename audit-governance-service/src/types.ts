@@ -25,6 +25,16 @@ export const llmCallPayload = z.object({
   total_tokens:   z.number().int().nonnegative().optional(),
   latency_ms:     z.number().int().nonnegative().optional(),
   finish_reason:  z.string().optional(),
+  // B3 — routing provenance. Present only when budget pressure moved the call
+  // to a cheaper tier than policy nominally routes it to. Optional because the
+  // overwhelming majority of producers neither degrade nor know what a tier is;
+  // absent is the normal case and means "not degraded".
+  degraded_from:  z.string().optional(),
+  degrade_reason: z.string().optional(),
+  // B4 — the alias that was tried FIRST and could not serve. Availability, not
+  // budget: same tier, different provider. Kept separate from degraded_from so
+  // a vendor outage never reads as a quality decision.
+  fallback_from:  z.string().optional(),
 });
 
 export const approvalCreateSchema = z.object({
