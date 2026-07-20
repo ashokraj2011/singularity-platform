@@ -19,6 +19,7 @@ import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { getWorkflowBudgetOverview } from './runtime/budget'
 import { buildCopilotResultsVerdict } from './runtime/copilot-results-verify'
+import { loadCopilotExportSpecification, type CopilotExportSpecification } from './runtime/copilot-export-spec'
 import { analyzeWorkflowInstance } from './formal-verification'
 import { copilotComposeTimeoutMs } from './copilot-compose-config'
 import {
@@ -1608,7 +1609,15 @@ function artifactRefYaml(refs: CopilotArtifactRef[], pad: string): string[] {
 export function buildCopilotWorkflowExport(
   instance: { id: string; name: string; context: unknown },
   computed: { stages: CopilotExportStage[]; repo: string; story: string; workCode: string },
-  extras: { fromPhase?: string; composedByNodeId?: Map<string, string>; completedByNodeId?: Map<string, CompletedPhaseData> } = {},
+  extras: {
+    fromPhase?: string
+    composedByNodeId?: Map<string, string>
+    completedByNodeId?: Map<string, CompletedPhaseData>
+    /** The design spec this run implements — resolved by the caller, embedded here. */
+    specification?: CopilotExportSpecification | null
+    /** Why there is no `specification:` block, when there isn't one. */
+    specificationWarnings?: string[]
+  } = {},
 ) {
   const { repo, story, workCode } = computed
   // The run's work branch (wi/<code>) + the base it's cut from — so the export tells
@@ -1760,6 +1769,96 @@ export function buildCopilotWorkflowExport(
   )
   if (story) {
     yaml.push('story: |', yamlBlock(story, 2))
+  }
+  // ── the design specification this run implements ─────────────────────────
+  // EMBEDDED, not referenced: a returning submission must echo `contentHash` and claim
+  // `requirements[].id` exactly, and a laptop with no platform token cannot fetch either.
+  const spec = extras.specification
+  if (spec) {
+    yaml.push(
+      '# The approved design spec this run implements. When you come back, your submission is',
+      '# checked against it: echo `specification.contentHash` as `specificationHash`, and claim',
+      '# ONLY the `specification.requirements[].id` values below — a claim naming any other id is',
+      '# rejected as out of scope. Build to the acceptance criteria; satisfy the test obligations.',
+      'specification:',
+      `  versionId: ${yamlString(spec.versionId)}`,
+      `  version: ${spec.version ?? 'null'}`,
+      `  status: ${yamlString(spec.status)}`,
+      `  contentHash: ${spec.contentHash ? yamlString(spec.contentHash) : 'null'}   # echo this back as submission specificationHash`,
+      '  scope:',
+      `    source: ${yamlString(spec.scopeSource)}`,
+      `    declared: ${spec.scopeDeclared}   # false = no subset was declared, so every requirement is in scope`,
+      '    requirementIds:',
+      ...(spec.requirements.length ? spec.requirements.map(r => `      - ${yamlString(r.id)}`) : ['      []']),
+      '  requirements:',
+    )
+    if (!spec.requirements.length) {
+      yaml.push('    []')
+    } else {
+      for (const r of spec.requirements) {
+        yaml.push(
+          `    - id: ${yamlString(r.id)}`,
+          `      type: ${yamlString(r.type)}`,
+          `      priority: ${yamlString(r.priority)}`,
+          `      risk: ${yamlString(r.risk)}`,
+          `      statement: ${yamlString(r.statement)}`,
+        )
+        if (r.rationale) yaml.push(`      rationale: ${yamlString(r.rationale)}`)
+        if (r.acceptanceCriterionIds.length) yaml.push(`      acceptanceCriterionIds: ${JSON.stringify(r.acceptanceCriterionIds)}`)
+        if (r.testObligationIds.length) yaml.push(`      testObligationIds: ${JSON.stringify(r.testObligationIds)}`)
+      }
+    }
+    yaml.push('  acceptanceCriteria:')
+    if (!spec.acceptanceCriteria.length) {
+      yaml.push('    []')
+    } else {
+      for (const c of spec.acceptanceCriteria) {
+        yaml.push(
+          `    - id: ${yamlString(c.id)}`,
+          `      requirementIds: ${JSON.stringify(c.requirementIds)}`,
+        )
+        for (const [key, values] of [['given', c.given], ['when', c.when], ['then', c.then]] as const) {
+          yaml.push(`      ${key}:`)
+          yaml.push(...(values.length ? values.map(v => `        - ${yamlString(v)}`) : ['        []']))
+        }
+      }
+    }
+    yaml.push('  testObligations:')
+    if (!spec.testObligations.length) {
+      yaml.push('    []')
+    } else {
+      for (const t of spec.testObligations) {
+        yaml.push(
+          `    - id: ${yamlString(t.id)}`,
+          `      verifies: ${JSON.stringify(t.verifies)}`,
+          `      kind: ${yamlString(t.kind)}`,
+        )
+        if (t.description) yaml.push(`      description: ${yamlString(t.description)}`)
+        yaml.push(`      requiredEvidence: ${JSON.stringify(t.requiredEvidence)}   # evidence kinds your submission must carry`)
+        yaml.push('      minimumCases:')
+        yaml.push(...(t.minimumCases.length ? t.minimumCases.map(m => `        - ${yamlString(m)}`) : ['        []']))
+      }
+    }
+    // Arbitrary/passthrough JSON — emitted as JSON, which is valid YAML flow style, so an
+    // evolving policy shape can never break the document.
+    yaml.push(
+      '  reconciliationPolicy:',
+      `    source: ${yamlString(spec.reconciliationPolicySource)}   # "handoff" overrides the specification's own policy`,
+      `    policy: ${JSON.stringify(spec.reconciliationPolicy ?? {})}`,
+    )
+    if (spec.warnings.length) {
+      yaml.push('  warnings:')
+      yaml.push(...spec.warnings.map(w => `    - ${yamlString(w)}`))
+    }
+  } else {
+    const specWarnings = extras.specificationWarnings ?? []
+    yaml.push(
+      '# No design specification is attached to this run — the work below is described only by',
+      '# `story` and the stage prompts. A submission cannot be spec-validated on return.',
+      'specification: null',
+      'specificationWarnings:',
+      ...(specWarnings.length ? specWarnings.map(w => `  - ${yamlString(w)}`) : ['  []']),
+    )
   }
   // ── completed phases — context only (full artifacts + diffs) ─────────────
   yaml.push('completed:')
@@ -1952,7 +2051,24 @@ async function loadCopilotExportData(id: string, opts: { fromPhase?: string } = 
     }
   }
 
-  return { ...buildCopilotWorkflowExport(instance, computed, { fromPhase: opts.fromPhase, composedByNodeId, completedByNodeId }), composeWarnings }
+  // The design spec the run implements. Resolved here (DB) and passed into the pure
+  // emitter; a miss degrades to no block + a warning rather than failing the export.
+  const { specification, warnings: specificationWarnings } = await loadCopilotExportSpecification(
+    computed.workCode,
+    { repository: computed.repo || undefined, tenantId },
+  )
+
+  return {
+    ...buildCopilotWorkflowExport(instance, computed, {
+      fromPhase: opts.fromPhase,
+      composedByNodeId,
+      completedByNodeId,
+      specification,
+      specificationWarnings,
+    }),
+    composeWarnings,
+    specificationWarnings,
+  }
 }
 
 // Export the run as a portable Copilot workflow YAML. The YAML includes an
