@@ -94,8 +94,13 @@ describe('Workgraph user-facing service-token boundary', () => {
     expect(codegen).toContain('requireVerifiedCallerBearer(req, "Code Foundry")')
     expect(codegen.indexOf('requireVerifiedCallerBearer(req, "Code Foundry")')).toBeLessThan(codegen.indexOf('proxyRequest(req, upstream, headers'))
     expect(codegen).not.toContain('headers.set("authorization", `Bearer ${token}`)')
-    expect(auditGov).toContain('requireVerifiedCallerBearer(req, "Audit Governance")')
-    expect(auditGov.indexOf('requireVerifiedCallerBearer(req, "Audit Governance")')).toBeLessThan(auditGov.indexOf('headers.set("authorization", `Bearer ${token}`)'))
+    // audit-gov uses the identity-returning variant so it can scope the read to
+    // the caller's tenant. requireVerifiedCallerBearer is now a wrapper around
+    // it, so the boundary this test guards — verify the caller BEFORE injecting
+    // the privileged service token — is unchanged.
+    expect(proxy).toContain('export async function verifyCallerBearer')
+    expect(auditGov).toContain('verifyCallerBearer(req, "Audit Governance")')
+    expect(auditGov.indexOf('verifyCallerBearer(req, "Audit Governance")')).toBeLessThan(auditGov.indexOf('headers.set("authorization", `Bearer ${token}`)'))
     expect(composer).toContain('requireVerifiedCallerBearer(request, "Prompt Composer")')
     expect(composer.indexOf('requireVerifiedCallerBearer(request, "Prompt Composer")')).toBeLessThan(composer.indexOf('if (composerServiceToken()) return null'))
     expect(llmSettings).toContain('requireVerifiedCallerBearer(request, "LLM settings")')

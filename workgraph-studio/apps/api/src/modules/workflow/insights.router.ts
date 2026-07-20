@@ -178,6 +178,37 @@ insightsRouter.get('/:id/events/stream', async (req: Request, res: Response, nex
 // / commits as they happen. Poll-based (the FE polls ~2s) — robust and simple vs proxying
 // audit-gov's SSE; fail-soft (searchByTracePrefix returns [] when audit-gov is down). Handoff
 // runs return [] until results post back.
+/**
+ * The tenant an audit-gov read for a run should be scoped to.
+ *
+ * audit-gov's query surface is fail-closed on tenant (its tenant-scope.ts): the
+ * service token authenticates the caller but says nothing about whose rows may
+ * be read, so every timeline read has to name the run's tenant.
+ *
+ * Deliberately its own narrow query rather than extra fields on the handlers'
+ * existing instance selects: those objects are serialized into responses (the
+ * run-insights handler returns one as `run`), and widening them to reach the
+ * tenant would have shipped the run `context` blob — arbitrary run variables —
+ * to every caller of those endpoints. A keyed lookup of two columns is cheap
+ * next to the audit-gov round trip it scopes.
+ *
+ * The column is authoritative when set. It is nullable, so runs predating it
+ * fall back to the tenant carried in the run context, which is what
+ * resolveRuntimeTenantId already reads for the runtime dial-in path. Returns
+ * undefined rather than a placeholder when neither yields one — the client then
+ * omits the header and audit-gov decides what an unscoped read means.
+ */
+async function auditTenantIdForInstance(instanceId: string): Promise<string | undefined> {
+  const found = await prisma.workflowInstance.findUnique({
+    where: { id: instanceId },
+    select: { tenantId: true, context: true },
+  })
+  if (!found) return undefined
+  const column = (found.tenantId ?? '').trim()
+  if (column) return column
+  return resolveRuntimeTenantId({ instanceContext: found.context })
+}
+
 insightsRouter.get('/:id/copilot-activity', async (req: Request, res: Response, next) => {
   try {
     const instanceId = String(req.params.id)
@@ -820,7 +851,7 @@ insightsRouter.get('/:id/ai-causality-report', async (req: Request, res: Respons
         }),
       ])
     })
-    const auditEvents = await fetchEventsForInstance(id, 500)
+    const auditEvents = await fetchEventsForInstance(id, 500, await auditTenantIdForInstance(id))
     if (!instance) return res.status(404).json({ code: 'NOT_FOUND', message: 'Workflow instance not found' })
 
     const nodeById = new Map(nodes.map(node => [node.id, node]))
@@ -1090,7 +1121,7 @@ async function buildInsightsResponse(id: string): Promise<InsightsResponse | nul
 
     if (!instance) return null
 
-    const events: AuditEvent[] = await fetchEventsForInstance(id, 500)
+    const events: AuditEvent[] = await fetchEventsForInstance(id, 500, await auditTenantIdForInstance(id))
     const rollup = rollupFromEvents(events)
 
     // Bucket events by node-id payload hint (workgraph publishOutbox doesn't
@@ -1992,8 +2023,9 @@ insightsRouter.get('/:id/trust-trace', async (req: Request, res: Response, next)
     const traceMap = await traceIdsByNodeForInstance(id)
     const traceIds = uniqueStrings(Array.from(traceMap.values()).flat())
     const traceEvents = new Map<string, AuditEvent[]>()
+    const traceTenantId = await auditTenantIdForInstance(id)
     await Promise.all(traceIds.map(async (traceId) => {
-      traceEvents.set(traceId, await fetchEventsForTrace(traceId, 500))
+      traceEvents.set(traceId, await fetchEventsForTrace(traceId, 500, traceTenantId))
     }))
     res.json(buildTrustTraceResponse(insights, traceMap, traceEvents))
   } catch (err) {
