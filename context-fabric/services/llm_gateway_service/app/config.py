@@ -1,10 +1,33 @@
 """M33 — LLM Gateway settings.
 
-This service is the ONLY place provider keys are read. It also owns the
-external provider config file (`.singularity/llm-providers.json`) and the
-model alias catalog (`.singularity/llm-models.json`, formerly `mcp-models.json`
-— a back-compat fallback to the old name remains in provider_config). Every
-other service calls the routes here over HTTP via `LLM_GATEWAY_URL`.
+This service owns the external provider config file
+(`.singularity/llm-providers.json`) and the model alias catalog
+(`.singularity/llm-models.json`, formerly `mcp-models.json` — a back-compat
+fallback to the old name remains in provider_config).
+
+WHERE PROVIDER KEYS ACTUALLY LIVE (corrected 2026-07-20). This docstring used to
+say "This service is the ONLY place provider keys are read." That was not true,
+and stating it here made the gap harder to find rather than easier:
+
+  • This gateway reads them from `.env.llm-secrets` via compose `env_file:`
+    (docker-compose.yml, the llm-gateway block). Note they are deliberately
+    ABSENT from its `environment:` block — `environment:` overrides `env_file:`,
+    so an empty var in the operator's shell would shadow the real value (M53).
+  • context-api ALSO receives OPENAI_API_KEY / OPENROUTER_API_KEY /
+    ANTHROPIC_API_KEY (docker-compose.yml ~656-658), for the CF direct-provider
+    hatch in `governed/direct_llm_client.py`. That hatch is off unless
+    CF_ALLOW_DIRECT_LLM is set, but the keys are in the process either way.
+  • workgraph reads `process.env[credentialEnv]` directly in
+    `DirectLlmTaskExecutor.ts` for DIRECT_LLM_TASK nodes. As of 2026-07-20 that
+    path is refused unless WORKGRAPH_ALLOW_DIRECT_LLM=true.
+
+So the accurate claim is narrower: this service is the only place keys are read
+*for gateway-governed traffic*, and the only place they SHOULD be read once the
+direct hatches are closed. `bin/check-secret-guardrails.sh` enforces the compose
+half of that — no service block may receive provider keys except this one, with
+context-api named as the single tracked exception.
+
+Every other service calls the routes here over HTTP via `LLM_GATEWAY_URL`.
 """
 from __future__ import annotations
 
@@ -83,6 +106,10 @@ class Settings(BaseSettings):
     # ./.singularity/ in bare-metal dev).
     provider_config_path: str = "/etc/singularity/llm-providers.json"
     model_catalog_path:   str = "/etc/singularity/llm-models.json"
+    # B1 — declarative model-selection policy (task_tag -> tier -> alias list).
+    # Read only when GATEWAY_MODEL_POLICY_ENABLED is set; a missing file
+    # degrades to an inert policy rather than failing the gateway.
+    llm_policy_path:      str = "/etc/singularity/llm-policy.json"
 
     # Per-provider env-var-resolved credentials (read ONLY here).
     openai_api_key:     Optional[str] = None
@@ -152,6 +179,7 @@ class Settings(BaseSettings):
             "LLM_MODEL_CATALOG_PATH",
             env.get("MCP_LLM_MODEL_CATALOG_PATH", self.model_catalog_path),
         )
+        self.llm_policy_path = env.get("LLM_POLICY_PATH", self.llm_policy_path)
         self.openai_api_key     = env.get("OPENAI_API_KEY")     or None
         self.openrouter_api_key = env.get("OPENROUTER_API_KEY") or None
         self.anthropic_api_key  = env.get("ANTHROPIC_API_KEY")  or None

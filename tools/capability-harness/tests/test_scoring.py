@@ -323,3 +323,52 @@ def test_score_task_to_dict_shape_is_stable() -> None:
     assert isinstance(d["oracles"], list)
     for oracle in d["oracles"]:
         assert set(oracle.keys()) == {"name", "passed", "score", "reason", "details"}
+
+
+# ── the gateway body: task identity + caller identity ───────────────────────
+#
+# The judge oracle reached the gateway UNTAGGED and ANONYMOUS. Untagged means it
+# 400s the moment GATEWAY_REQUIRE_TASK_TAG is set; anonymous means bench spend
+# was indistinguishable from production spend in any cost report. The injection
+# seam that already exists for the other tests lets us assert the actual body.
+
+
+def _body_capturing_poster(content: str = '{"score": 4, "reason": "ok"}'):
+    """Poster that records the body it was handed, then answers like the gateway."""
+    captured: dict = {}
+
+    def _poster(_url, body, _timeout):
+        captured.update(body)
+        return {"content": content}
+
+    return _poster, captured
+
+
+def test_llm_judge_tags_its_gateway_call() -> None:
+    poster, body = _body_capturing_poster()
+    oracle_llm_judge(
+        rubric="r", agent_output="a", reference_patch="p", _http_post=poster,
+    )
+    # "harness" rather than "judge": both describe this call, but the operator
+    # question is "what is the bench costing me", and merging bench spend into
+    # production audit-gov judging is what makes that unanswerable.
+    assert body["task_tag"] == "harness"
+
+
+def test_llm_judge_names_a_system_actor_never_null() -> None:
+    poster, body = _body_capturing_poster()
+    oracle_llm_judge(
+        rubric="r", agent_output="a", reference_patch="p", _http_post=poster,
+    )
+    assert body["actor_id"] == "system:capability-harness"
+    assert body["actor_id"] is not None
+
+
+def test_llm_judge_does_not_invent_a_tenant() -> None:
+    """The harness runs against fixtures, outside any tenant. A fabricated
+    tenant_id here would be indistinguishable downstream from a real one."""
+    poster, body = _body_capturing_poster()
+    oracle_llm_judge(
+        rubric="r", agent_output="a", reference_patch="p", _http_post=poster,
+    )
+    assert "tenant_id" not in body

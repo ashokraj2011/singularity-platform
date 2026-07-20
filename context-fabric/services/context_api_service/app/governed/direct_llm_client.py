@@ -36,6 +36,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from .conversation_budget import strip_internal_keys
 from .llm_client import ChatResponse, ChatToolCall, LLMGatewayError
 from ..response_json import UpstreamJsonError, response_json_object
 
@@ -269,8 +270,12 @@ def _message_content(value: Any) -> str:
 
 
 def _openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # This path copies unknown message keys straight through, so CF-internal
+    # markers (`_cf_prelude`) must come off before they reach OpenAI, which
+    # rejects unrecognised message fields. The anthropic mapper below rebuilds
+    # each message from role+content and so is already clean.
     result: list[dict[str, Any]] = []
-    for message in messages:
+    for message in strip_internal_keys(messages) or []:
         item = dict(message)
         if item.get("role") == "assistant" and isinstance(item.get("tool_calls"), list):
             calls = []

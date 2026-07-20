@@ -27,9 +27,16 @@ class GatewayEmbeddingProvider implements EmbeddingProvider {
 
   async embed(req: EmbeddingRequest): Promise<EmbeddingResponse> {
     const start = Date.now();
+    // EMBEDDING_MODEL_ALIAS is still read, and still wins when set — an operator
+    // who pinned an embedding model gets that model, because switching embedding
+    // models silently is how a vector index ends up with two models' vectors in
+    // it. What changed is the UNSET case: it now declares its task instead of
+    // arriving anonymous, so the gateway routes it by policy rather than falling
+    // back to whatever the global default alias happens to be.
     const modelAlias = process.env.EMBEDDING_MODEL_ALIAS?.trim();
     const result = await llmEmbed({
       input: [req.text],
+      task_tag: "embedding",
       ...(modelAlias ? { model_alias: modelAlias } : {}),
     });
     const vector = result.embeddings?.[0];

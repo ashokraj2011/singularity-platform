@@ -254,7 +254,8 @@ export function aggregateUsage(responses: Array<ExecuteResponse | null | undefin
 function plannerSystemPrompt(maxItems: number): string {
   return [
     'You are a product planning agent. You turn a goal into a MILESTONE-GROUPED roadmap of work items, and you converse to refine it.',
-    "You are given the CONVERSATION so far, the CURRENT ROADMAP (may be empty), a list of CAPABILITIES (id + name; the first is HOME), and — when available — REPO CONTEXT (each capability's real tech stack, build/test commands, architecture, conventions, and known risks) and DOCUMENTS (inputs the user attached).",
+    'The conversation so far reaches you as ACTUAL PRIOR MESSAGES, not as a block of text — read them as the running dialogue they are. The user message you are answering is the latest one.',
+    "You are also given the GOAL, the CURRENT ROADMAP (may be empty), a list of CAPABILITIES (id + name; the first is HOME), and — when available — REPO CONTEXT (each capability's real tech stack, build/test commands, architecture, conventions, and known risks) and DOCUMENTS (inputs the user attached).",
     'GROUND the plan in REPO CONTEXT and DOCUMENTS when present: write concrete, repo-accurate task titles and acceptance criteria, reuse the real build/test commands, respect the conventions, account for the known risks, and route each task to the capability whose repo best fits. Never invent stack details that contradict the REPO CONTEXT.',
     '',
     'Decide each turn:',
@@ -374,12 +375,25 @@ export function documentsBlock(documents?: PlannerDocument[]): string {
   ].join('\n')
 }
 
-function transcript(messages: ChatMessage[]): string {
-  return messages.map((m) => `${m.role}: ${m.content}`).join('\n')
-}
-
-function converseTask(
-  messages: ChatMessage[],
+/**
+ * The turn's STANDING CONTEXT: capabilities, repo grounding, attached
+ * documents, the goal, and the roadmap as it currently stands.
+ *
+ * This deliberately rides in the SYSTEM PROMPT, not in the task, and that
+ * split is the point of this change. context-fabric persists the task verbatim
+ * as the user's conversation turn; it does not persist system prompts. Sending
+ * this blob as the task would write a snapshot of the capability list and a
+ * stale roadmap JSON into the conversation, and every later turn would replay
+ * them back to the model as if the user had typed them. Volatile scaffolding
+ * belongs in the prompt that is rebuilt every turn; only what the human
+ * actually said belongs in the task.
+ *
+ * GOAL is included as the floor. If conversation memory is off, this plus the
+ * latest message is all the model gets — bounded and coherent, rather than the
+ * whole transcript or nothing.
+ */
+export function converseContext(
+  goal: string,
   plan: Milestone[],
   caps: AssignableCapability[],
   homeId: string,
@@ -394,17 +408,30 @@ function converseTask(
   if (repo) parts.push('', repo)
   const docs = documentsBlock(documents)
   if (docs) parts.push('', docs)
+  if (goal.trim()) parts.push('', 'GOAL (the original request this roadmap serves):', goal.trim())
   parts.push(
     '',
     'CURRENT ROADMAP (JSON):',
     plan.length ? JSON.stringify({ milestones: plan }, null, 2) : '(none yet)',
     '',
-    'CONVERSATION:',
-    transcript(messages),
-    '',
     'Respond with the JSON object only.',
   )
   return parts.join('\n')
+}
+
+/**
+ * The one thing the user actually said this turn.
+ *
+ * Everything before it now arrives as real conversation history from
+ * context-fabric instead of being flattened into this string. Falls back to
+ * the goal on the odd call that carries no user message at all.
+ */
+export function latestUserMessage(messages: ChatMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]
+    if (message.role === 'user' && message.content.trim()) return message.content
+  }
+  return ''
 }
 
 function criticPrompt(): string {
@@ -693,7 +720,22 @@ export async function converse(input: ConverseInput, actorId: string, callerToke
   const caps = await resolveAssignableCapabilities(input.capabilityId, allowChildren, callerToken)
   const allowed = new Set(caps.map((c) => c.id))
   const home = input.capabilityId
-  const runCtx = { capability_id: home, user_id: actorId, surface: 'planner' }
+  // `planner_session_id` is what makes this a conversation. Without it CF's
+  // planner rule finds no scope id and deliberately returns "no conversation"
+  // rather than pooling every planner chat under one key — so until now the
+  // planner sent surface:'planner' and got nothing back for it.
+  const runCtx = {
+    capability_id: home,
+    user_id: actorId,
+    surface: 'planner',
+    planner_session_id: sessionId,
+  }
+  // The critic is a DIFFERENT mind and must stay one. Its prompt opens "You are
+  // an INDEPENDENT reviewer… You did NOT create it", which is only true if it
+  // cannot see the conversation that produced the plan. Omitting the session id
+  // keeps it stateless — no history in, nothing written back — so its review
+  // stays a judgement of the roadmap rather than a continuation of the chat.
+  const criticRunCtx = { capability_id: home, user_id: actorId, surface: 'planner_critic' }
   const goal = input.messages.find((m) => m.role === 'user')?.content ?? ''
   const currentPlan = input.plan ?? []
 
@@ -701,20 +743,29 @@ export async function converse(input: ConverseInput, actorId: string, callerToke
   const base = {
     trace_id: plannerTraceId,
     run_context: runCtx,
-    system_prompt: plannerSystemPrompt(maxItems),
+    // Standing context rides in the system prompt; only the user's own words go
+    // in the task. See converseContext for why that split matters now that the
+    // task is persisted as a conversation turn.
+    system_prompt: [plannerSystemPrompt(maxItems), converseContext(goal, currentPlan, caps, home, input.documents)].join('\n\n'),
     model_overrides: { temperature: 0.3, maxOutputTokens: 3500 },
     limits: { outputTokenBudget: 3500, timeoutSec: 150 },
   }
 
   // 1) Planner / chat turn — one re-ask on parse failure.
-  const r1 = await contextFabricClient.executeGovernedTurn({ ...base, task: converseTask(input.messages, currentPlan, caps, home, input.documents) })
+  const r1 = await contextFabricClient.executeGovernedTurn({ ...base, task: latestUserMessage(input.messages) })
   const responses: Array<ExecuteResponse | null> = [r1]
   let parsed = parseConverse(r1.finalResponse)
   if (!parsed.ok) {
+    // The retry used to re-send the ENTIRE turn — capabilities, repo context,
+    // documents, roadmap JSON and the whole flattened transcript — a second
+    // time, to fix what is almost always a formatting error. It now sends the
+    // correction alone. CF still has the standing context (same system prompt)
+    // and, by this point, the failed exchange itself in the conversation, so
+    // the model knows exactly what it got wrong without being told again.
     const r1b = await contextFabricClient.executeGovernedTurn({
       ...base,
       model_overrides: { temperature: 0, maxOutputTokens: 3500 },
-      task: converseTask(input.messages, currentPlan, caps, home, input.documents) + `\n\nYour previous answer FAILED validation: ${parsed.error}\nReturn STRICT JSON only.`,
+      task: `Your previous answer FAILED validation: ${parsed.error}\nReturn STRICT JSON only.`,
     })
     responses.push(r1b)
     parsed = parseConverse(r1b.finalResponse)
@@ -781,7 +832,7 @@ export async function converse(input: ConverseInput, actorId: string, callerToke
   try {
     const rc = await contextFabricClient.executeGovernedTurn({
       trace_id: traceIdFromParts(['planner-critic', home], ':'),
-      run_context: runCtx,
+      run_context: criticRunCtx,
       system_prompt: criticPrompt(),
       task: criticTask(goal, sanitized.milestones, caps),
       model_overrides: { temperature: 0, maxOutputTokens: 1500 },

@@ -25,7 +25,7 @@
  */
 import { Router, Request, Response } from "express";
 import { boundedEnvInteger } from "./env";
-import { requireServiceAuth } from "./routes-events";
+import { requireServiceAuth } from "./service-auth";
 
 const MAX_SUBSCRIBERS = boundedEnvInteger("AUDIT_GOV_STREAM_MAX_SUBSCRIBERS", {
   defaultValue: 50,

@@ -30,7 +30,8 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, Field
 
-from . import call_log, events_store
+from . import call_log, conversation_identity as _conversation_identity, events_store
+from .governed import conversation_context, conversation_summarizer
 from .audit_gov_emit import emit_audit_event
 from .config import is_production_class_env, settings
 from .env_config import bounded_float_value
@@ -373,6 +374,18 @@ class RunContext(BaseModel):
     agent_role: Optional[str] = None
     user_id: Optional[str] = None
     trace_id: Optional[str] = None
+    # Which CONVERSATION this turn belongs to, when it belongs to one. Distinct
+    # from the per-call correlation tag below (see conversation_identity.py):
+    # that tag is a fresh uuid per non-workflow call, so nothing can accumulate
+    # under it. Additive and optional — absent means the turn is stateless,
+    # which is the correct answer for the one-shot extractors.
+    conversation_id: Optional[str] = None
+    # Which UI/product surface is calling. Already sent by most verbatim callers
+    # today (synthesis, room-copilot, board-copilot, planner…), but silently
+    # dropped on /execute because RunContext never declared it. Declaring it is
+    # what lets a conversation be derived without any caller change.
+    surface: Optional[str] = None
+    conversation_scope: Optional[str] = None
     branch_base: Optional[str] = None
     branch_name: Optional[str] = None
     source_type: Optional[str] = None
@@ -510,10 +523,15 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
         req.governance_mode or settings.default_governance_mode,
         fallback=settings.default_governance_mode,
     )
-    session_id = (
-        f"wf:{req.run_context.workflow_instance_id}:{req.run_context.workflow_node_id}"
-        if req.run_context.workflow_instance_id and req.run_context.workflow_node_id
-        else f"cf:{cf_call_id}"
+    # The per-call correlation tag. Same value as before, now produced by a
+    # named helper that says what it is. The local stays `session_id` because
+    # every persisted field downstream (call_log.session_id, receipts.sessionId)
+    # keeps that name — renaming the column would break audit consumers for no
+    # gain. Conversation state lives under run_context.conversation_id.
+    session_id = _conversation_identity.call_group_id(
+        req.run_context.workflow_instance_id,
+        req.run_context.workflow_node_id,
+        cf_call_id,
     )
 
     # M73-followup Slice 1 — fail-closed pre-flight. When the caller
@@ -2719,11 +2737,20 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
         fallback=settings.default_governance_mode,
     )
 
+    # Prior turns for this conversation. THE fix for the stateless single turn:
+    # this endpoint is what the Ask sidecar, the Studio conductor, room-copilot,
+    # board-copilot and Event Horizon all reach, and it has always built
+    # `[system_prompt?, user_task]` with zero history. Returns [] unless
+    # CF_CONVERSATION_ENABLED is on AND the turn resolves to a conversation, so
+    # with the flag off `messages` below is byte-identical to what it was.
+    conversation_prelude = await conversation_context.build(rc)
+
     # The VERBATIM messages -- what this endpoint has always sent, and the
     # fallback for every path below that cannot compose.
     messages: list[dict[str, Any]] = []
     if req.system_prompt and req.system_prompt.strip():
         messages.append({"role": "system", "content": req.system_prompt})
+    messages.extend(conversation_prelude)
     messages.append({"role": "user", "content": req.task})
 
     # Run the turn through prompt-composer when enabled, so these callers stop
@@ -2777,7 +2804,12 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
             )
             single_turn_warnings.extend(compose_warnings)
             if composed_messages:
-                messages = composed_messages
+                # The composer replaces the whole list, so the history spliced in
+                # above would be discarded on this path. Re-splice it into what
+                # the composer produced -- after the system block, in front of
+                # the current user turn. No-op (same list object) when the
+                # prelude is empty.
+                messages = conversation_context.splice_prelude(composed_messages, conversation_prelude)
                 composed_turn = True
         except Exception as exc:  # pylint: disable=broad-except
             # Composer unreachable, slow, or erroring. The verbatim messages are
@@ -2818,6 +2850,11 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
                 laptop_user_id=llm_laptop_target(rc),
                 runtime_tenant_id=runtime_tenant_target(rc),
                 runtime_capability_tags=runtime_capability_tags(rc),
+                # Caller attribution. This endpoint's callers (agent-service
+                # distillation, tool-service synthesis, contracts replay) declare
+                # actor_id/task_tag in run_context; CF is the hop that forwards
+                # them to the gateway.
+                run_context=rc,
             )
     except LLMGatewayError as exc:
         emit_audit_event(
@@ -2843,6 +2880,28 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
             "inputTokens": resp.input_tokens, "outputTokens": resp.output_tokens,
         },
     )
+
+    # Remember this exchange. Deliberately AFTER the gateway call, so a turn the
+    # LLM failed leaves the conversation untouched rather than storing a question
+    # with no answer. What goes in is `req.task` and the model's reply — NOT
+    # `messages`, which by this point may carry the composer's system prompt,
+    # platform layers and capability grounding. Persisting those would feed the
+    # platform's own scaffolding back next turn as if the user had said it.
+    # No-op unless CF_CONVERSATION_WRITE_ENABLED; never raises.
+    recorded = await conversation_context.record_turn(
+        rc,
+        user_text=req.task,
+        assistant_text=resp.content,
+        cf_call_id=f"governed-turn:{trace_id}",
+        trace_id=trace_id,
+    )
+    if recorded:
+        # Fold the far end of the conversation into a summary, IN THE
+        # BACKGROUND. Fire-and-forget on purpose: this is a second LLM call and
+        # it must never land on the latency of the first. The response below
+        # goes out while it is still thinking, and a summary that arrives late
+        # or never just means a few more turns ride verbatim.
+        conversation_summarizer.schedule(rc)
 
     total_tokens = resp.input_tokens + resp.output_tokens
     usage = {

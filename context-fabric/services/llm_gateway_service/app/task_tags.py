@@ -11,8 +11,13 @@ A tag is a coarse bucket. `stage` and `purpose` narrow it when the caller knows
 more. Deliberately a small closed vocabulary — free-form tags would fragment into
 a dozen spellings of the same thing and be useless for aggregation.
 
-Rollout is optional-then-required: an untagged call warns today and 400s once
-GATEWAY_REQUIRE_TASK_TAG is set, so callers can migrate without an outage.
+Rollout was optional-then-required, and this is the "then": an untagged call now
+400s by default. GATEWAY_REQUIRE_TASK_TAG=false reopens the warn-only phase as
+an escape hatch for a caller found untagged in production — see
+require_task_tag() for why that is a stopgap and not a fix.
+
+Embeddings are exempt: resolve_task_identity self-assigns EMBEDDING, since there
+is exactly one reason to call them.
 """
 from __future__ import annotations
 
@@ -51,13 +56,41 @@ KNOWN_TASK_TAGS = frozenset({
     HARNESS,
 })
 
-_TRUTHY = {"1", "true", "yes", "on"}
+_FALSEY = {"0", "false", "no", "off"}
 
 
 def require_task_tag() -> bool:
-    """Whether an untagged call is rejected. Read per-call so an operator can
-    flip it without a restart, and so tests can toggle it."""
-    return os.getenv("GATEWAY_REQUIRE_TASK_TAG", "").strip().lower() in _TRUTHY
+    """Whether an untagged call is rejected. DEFAULT TRUE.
+
+    Read per-call so an operator can flip it without a restart, and so tests can
+    toggle it.
+
+    The rollout was optional-then-required and this is the "then". Untagged
+    callers now get a 400 instead of a warning nobody reads, because a warning
+    is not a migration: an untagged call still costs money, and the whole point
+    of the tag is that the spend can be attributed after the fact — which is
+    impossible to backfill once the call has happened.
+
+    GATEWAY_REQUIRE_TASK_TAG=false is the escape hatch. It exists for exactly
+    one situation: a caller that turns out to be untagged in production and
+    needs to keep working while it is fixed. Turning it off is not a fix, and it
+    silently reopens the attribution hole for every caller at once, so set it
+    with an expiry in mind.
+
+    Embeddings are exempt in practice — resolve_task_identity self-assigns
+    EMBEDDING before this check, because there is exactly one reason to call
+    them.
+    """
+    raw = os.getenv("GATEWAY_REQUIRE_TASK_TAG", "").strip().lower()
+    if not raw:
+        return True
+    if raw in _FALSEY:
+        return False
+    # Anything else is treated as on, INCLUDING a typo. This is the fail-safe
+    # direction: a mistyped value that silently disabled enforcement would be
+    # invisible (calls keep working, tags quietly stop being required), whereas
+    # a mistyped value that leaves it on is loud and immediately diagnosable.
+    return True
 
 
 def normalize_task_tag(raw: Optional[str]) -> Optional[str]:
@@ -119,6 +152,54 @@ def resolve_task_identity(req: Any, *, endpoint: str) -> dict[str, Optional[str]
     }
 
 
+# B3 — the degradation event. A SEPARATE logger, not a field on the call line.
+#
+# The call line is emitted for every call, so a degradation field on it is a
+# needle in the highest-volume haystack the gateway produces. Budget degradation
+# is a quality-affecting decision made on the platform's behalf without anyone
+# asking, and its failure mode is invisible: the model still answers, the answer
+# is just worse. It gets its own channel so "did we degrade anything today" is a
+# filter on logger name, not a grep with a subclause.
+degrade_logger = logging.getLogger("llm_gateway.degradation")
+
+
+def emit_routing_downgrade_audit(
+    *,
+    identity: dict[str, Optional[str]],
+    provider: str,
+    model: str,
+    req: Any,
+    routing: Optional[dict[str, Any]],
+) -> None:
+    """Emit one event per call that budget pressure moved to a cheaper tier.
+
+    No-op when nothing was degraded — the event's existence IS the signal, so it
+    must never fire for a normal call. Never raises, for the same reason
+    emit_call_audit never raises.
+    """
+    if not routing or not routing.get("degraded_from"):
+        return
+    try:
+        degrade_logger.warning(
+            "llm_gateway.degraded task_tag=%s stage=%s purpose=%s degraded_from=%s to_tier=%s "
+            "alias=%s provider=%s model=%s reason=%s tenant_id=%s capability_id=%s trace_id=%s",
+            identity.get("task_tag") or "-",
+            identity.get("stage") or "-",
+            identity.get("purpose") or "-",
+            routing.get("degraded_from"),
+            routing.get("tier") or "-",
+            routing.get("alias") or "-",
+            provider,
+            model,
+            routing.get("degrade_reason") or "-",
+            getattr(req, "tenant_id", None) or "-",
+            getattr(req, "capability_id", None) or "-",
+            getattr(req, "trace_id", None) or "-",
+        )
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
 def emit_call_audit(
     *,
     endpoint: str,
@@ -130,6 +211,7 @@ def emit_call_audit(
     input_tokens: Optional[int] = None,
     output_tokens: Optional[int] = None,
     estimated_cost: Optional[float] = None,
+    routing: Optional[dict[str, Any]] = None,
 ) -> None:
     """
     One structured line per gateway call, carrying task identity alongside cost.
@@ -137,7 +219,11 @@ def emit_call_audit(
     This IS the gateway's audit trail today — there is no separate sink — so it
     is emitted for every call including mock, and it never raises: an audit
     failure must not fail the call it is describing.
+
+    When `routing` records a budget degradation, a distinct event is emitted
+    first on the llm_gateway.degradation logger. See emit_routing_downgrade_audit.
     """
+    emit_routing_downgrade_audit(identity=identity, provider=provider, model=model, req=req, routing=routing)
     try:
         logger.info(
             "llm_gateway.call endpoint=%s task_tag=%s stage=%s purpose=%s provider=%s model=%s "
