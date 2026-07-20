@@ -37,7 +37,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from .env_config import bounded_float_env, bounded_int_env
@@ -135,6 +135,7 @@ def _sanitize_captured_messages(messages: list[dict]) -> list[dict]:
     return out
 
 from .audit_emit import emit_governed_event
+from . import outbound_pii
 from . import placement as _placement
 from .llm_client import ChatResponse, ChatToolCall, LLMGatewayError, call_gateway_chat
 from .direct_llm_client import call_direct_chat, is_context_fabric_direct_route
@@ -1061,6 +1062,56 @@ async def run_turn(
         task=prompt.task,
     )
     messages = _build_messages(prompt, history, stage_grounding)
+
+    # Outbound PII mask (opt-in, shadow-first, OFF by default). CF masked PII in
+    # tool output on the way TOWARD the model but never in the prompt itself, so
+    # the operator-authored goal text — the likeliest place for a real SSN or a
+    # customer email — reached the provider verbatim.
+    #
+    # Positioned here on purpose: after _build_messages, before the token
+    # estimate, the audit capture AND both LLM routes. The audit capture must
+    # record what was actually sent, and both `call_direct_chat` and
+    # `call_gateway_chat` must get the same treatment — a mask that covers only
+    # the gateway route would leave the direct hatch as an unmasked bypass.
+    #
+    # THE ROUND TRIP: in enforce mode the token map GROWS, and those tokens must
+    # reach governed_step() below. The loop unmasks tool arguments against
+    # PhaseState.pii_token_map (loop.py:708, 786), so a model that echoes
+    # [EMAIL_1] into a tool call only gets the real address back if the token
+    # minted here is in that map. Hence the `replace(...)` — the map has to be on
+    # `state` before dispatch, not merely returned to our caller.
+    #
+    # In shadow mode outbound_pii returns the ORIGINAL map by construction, so
+    # this is a no-op there and no un-seen token can pollute the unmask path.
+    _pii_capability_id, _pii_tenant_id = outbound_pii.scope_from_run_context(run_context)
+    messages, _pii_token_map, _pii_mode, _pii_findings = outbound_pii.apply_to_messages(
+        messages,
+        token_map=state.pii_token_map,
+        capability_id=_pii_capability_id,
+        tenant_id=_pii_tenant_id,
+    )
+    if _pii_token_map != state.pii_token_map:
+        state = replace(state, pii_token_map=_pii_token_map)
+    if _pii_findings:
+        await emit_governed_event(
+            kind="governed.prompt_pii_masked",
+            state=state,
+            policy=policy,
+            run_context=run_context,
+            payload={
+                # Kind + count only. Never the matched value: this event is
+                # persisted, and a PII audit record that quotes the PII is worse
+                # than no record.
+                "mode": _pii_mode,
+                "findings": _pii_findings,
+                "total": sum(int(f["count"]) for f in _pii_findings),
+                # Explicit, so an operator reading the audit trail can tell
+                # "we would have masked" from "we did mask" without inferring it
+                # from the mode string.
+                "prompt_modified": _pii_mode == outbound_pii.MODE_ENFORCE,
+            },
+            severity="info",
+        )
     # G4 governance overlay — tools the governing entity blocks (or requires
     # approval for) are enforced, not just rendered as advisory text: excluded
     # from the LLM's tool list here and hard-refused at dispatch (governed_step).
