@@ -3,6 +3,7 @@ import { env } from "./config/env";
 import { logger } from "./config/logger";
 import { startSelfRegistration } from "./lib/platform-registry/register";
 import { startCapsuleGc, startCapsuleFailureAlerts } from "./modules/compose/capsule-gc";
+import { startSnapshotRetention } from "./modules/prompts/snapshot-retention";
 
 // M11.a — self-register with platform-registry (no-op if env unset)
 startSelfRegistration({
@@ -34,6 +35,12 @@ startCapsuleGc();
 // this an audit-gov outage or model regression silently leaves capsules
 // stuck on the RAW fallback indefinitely.
 startCapsuleFailureAlerts();
+
+// D3 — prompt-text retention. NULLs PromptAssemblyLayer.contentSnapshot once
+// the parent assembly is older than PROMPT_SNAPSHOT_TTL_DAYS (default 30),
+// keeping layerHash and every other column so the audit trail survives the
+// text. Updates only — no rows are deleted.
+startSnapshotRetention();
 
 app.listen(env.PORT, () => {
   logger.info(`[prompt-composer] listening on port ${env.PORT}`);

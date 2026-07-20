@@ -193,6 +193,15 @@ def oracle_llm_judge(
         "temperature": 0,
         "max_output_tokens": 400,
         "trace_id": "capability-harness-judge",
+        # Previously untagged, so it would 400 under GATEWAY_REQUIRE_TASK_TAG.
+        # "harness" over "judge" deliberately: both describe this call, but the
+        # question an operator asks is "how much is the bench costing me",
+        # and lumping bench spend in with production audit-gov judging is what
+        # makes that question unanswerable. task_tags.py:37.
+        "task_tag": "harness",
+        # Bench tooling. No human is waiting on any individual judge call.
+        "actor_id": "system:capability-harness",
+        # No tenant_id: the harness runs against fixtures, outside any tenant.
     }
     if model:
         body["model_alias"] = model

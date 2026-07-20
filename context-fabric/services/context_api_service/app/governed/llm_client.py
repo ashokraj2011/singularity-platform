@@ -285,6 +285,11 @@ async def call_gateway_chat(
     # route on stage/purpose, but only if they cross the hop — see _build_chat_body.
     stage: str | None = None,
     purpose: str | None = None,
+    # WHO this turn is for. The governed run_context has carried the actor and
+    # tenant all along (audit_emit.py reads them to stamp every governed event);
+    # they just never crossed this hop, so the audit trail knew who ran a stage
+    # while the LLM cost row for that same stage was anonymous.
+    run_context: dict[str, Any] | None = None,
 ) -> ChatResponse:
     """POST one chat completion to llm-gateway.
 
@@ -330,6 +335,7 @@ async def call_gateway_chat(
         prompt_cache_key=prompt_cache_key,
         stage=stage,
         purpose=purpose,
+        run_context=run_context,
     )
 
     # Runtime bridge placement: model-run is served by the connected MCP
@@ -410,6 +416,52 @@ async def call_gateway_chat(
     return ChatResponse.from_dict(payload)
 
 
+def caller_identity(run_context: dict[str, Any] | None) -> dict[str, str]:
+    """Extract gateway caller identity from a governed `run_context`.
+
+    Deliberately the SAME extraction audit_emit.py already does when it stamps
+    an audit event (`user_id`/`userId` → actor, `tenant_id`/`tenantId` →
+    tenant). The identity was never missing from context-fabric; it simply
+    never crossed the gateway hop, so audit-gov could say who ran a stage while
+    the LLM cost row for that same stage was anonymous.
+
+    Returns only the keys it actually resolved — an absent key is how the
+    gateway distinguishes "not propagated" from "explicitly none".
+
+    ATTRIBUTION, NOT AUTHORIZATION. The gateway sits behind one shared bearer,
+    so anything here is a claim, not a verified identity. Do not build tenant
+    isolation on it.
+    """
+    rc = run_context or {}
+    out: dict[str, str] = {}
+
+    # actor: an explicit actor_id wins so a background caller can declare
+    # "system:<service>" (the convention that keeps null meaning "somebody
+    # forgot to propagate it" rather than blurring into "no human involved").
+    actor = rc.get("actor_id") or rc.get("actorId") or rc.get("user_id") or rc.get("userId")
+    if actor:
+        out["actor_id"] = str(actor)
+
+    tenant = rc.get("tenant_id") or rc.get("tenantId") or rc.get("org_id") or rc.get("orgId")
+    if tenant:
+        out["tenant_id"] = str(tenant)
+
+    # session: prefer an explicit one; otherwise reuse the SAME conversation key
+    # execute.py already derives for memory/session storage (execute.py:513), so
+    # a cost row groups by the same session the transcript does rather than by a
+    # second, differently-spelled notion of "conversation".
+    session = rc.get("session_id") or rc.get("sessionId")
+    if not session:
+        instance = rc.get("workflow_instance_id") or rc.get("workflowInstanceId")
+        node = rc.get("workflow_node_id") or rc.get("workflowNodeId")
+        if instance and node:
+            session = f"wf:{instance}:{node}"
+    if session:
+        out["session_id"] = str(session)
+
+    return out
+
+
 def _build_chat_body(
     *,
     messages: list[dict[str, Any]],
@@ -425,9 +477,11 @@ def _build_chat_body(
     task_tag: str | None = None,
     stage: str | None = None,
     purpose: str | None = None,
+    run_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the /v1/chat/completions request body. Shared by the cloud-gateway
-    path and the laptop `model-run` path so both send byte-identical requests."""
+    path and the laptop `model-run` path so both send byte-identical requests --
+    which is also why laptop traffic gains caller attribution here for free."""
     body: dict[str, Any] = {"messages": messages}
     # W2-2 follow-through: the governed loop is the platform's highest-volume
     # agent path, and it was reaching the gateway UNTAGGED -- so flipping
@@ -446,6 +500,17 @@ def _build_chat_body(
         body["stage"] = stage
     if purpose:
         body["purpose"] = purpose
+    #
+    # A caller that knows better than "agent_turn" can say so either through the
+    # `task_tag` argument or via run_context (the route callers reach through
+    # /execute-governed-single-turn, which has no task_tag field of its own).
+    rc_tag = None
+    if isinstance(run_context, dict):
+        rc_tag = run_context.get("task_tag") or run_context.get("taskTag")
+    body["task_tag"] = task_tag or rc_tag or "agent_turn"
+    # WHO the turn is for. Merged in rather than set unconditionally so an
+    # unresolvable field is ABSENT, not null-in-the-body.
+    body.update(caller_identity(run_context))
     if tools:
         body["tools"] = tools
     if model_alias:

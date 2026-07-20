@@ -188,3 +188,74 @@ the issue to anyone running customer-data stages, and (2) ensure
 audit-gov's existing `pii.masked` event search reports zero events
 since the M71 cutover, so the silent-regression nature of the gap is
 documented in the audit trail.
+
+---
+
+## Follow-on (2026-07-20): the OUTBOUND prompt was never covered
+
+The fix above closed the tool-output direction. It did not close the prompt.
+
+`mask_pii_in_result` runs on tool output travelling *toward* the model
+(`loop.py:868`) and `unmask_pii_in_args` runs on tool arguments travelling
+*away* from it (`loop.py:708`, `loop.py:786`). The composed prompt itself —
+system prompt, goal/task text, stage grounding, code context — went to the
+provider verbatim. The operator-authored goal text is the single likeliest
+place in the whole loop for a real SSN or a customer's email address, and it
+was the one place with no mask at all.
+
+`governed/outbound_pii.py` closes it. Read that module's docstring before
+changing any of this; the short version:
+
+**Narrow on purpose.** Three kinds only — `ssn`, `email`, `credit_card`
+(Luhn-validated). `phone`, `zip9` and `ipv4` are deliberately EXCLUDED even
+though `pii_mask.detect_pii` supports them. Source code is full of things
+shaped like dotted quads and `NNNNN-NNNN`: version strings, byte offsets,
+netmasks, port ranges, ids, test fixtures. Masking `192.168.1.1` out of a
+config an agent was asked to debug does not over-redact a log — it produces a
+**confident wrong answer that looks exactly like a right one**. That is
+categorically different from a leaked secret, which is loud and findable. On
+the egress path, prefer the leak you can see to the corruption you cannot.
+
+This is the same reasoning that kept turn.py's generic
+`(api_key|secret|password|token)` rule out of
+`llm_gateway_service/app/secret_redaction.py`.
+
+**The round trip is the hard part.** Tokens minted for the prompt must land in
+the same `PhaseState.pii_token_map` the loop unmasks tool arguments against, or
+a model that faithfully echoes `[EMAIL_1]` into a tool call sends the literal
+string downstream. `turn.py` folds the returned map onto `state` before
+`governed_step()`. Correspondingly, **shadow mode mints no tokens at all** —
+allocating tokens the model never saw would make `unmask_pii_in_args` rewrite a
+literal `[EMAIL_1]` that a user legitimately typed.
+
+**Not covered:** the model's own prose. If the model writes `[EMAIL_1]` into a
+phase output, it stays a token there. That is pre-existing (masked tool results
+already put tokens in front of the model) and it is *visible* rather than
+silent. Unmasking assistant prose is a separate change with its own risk: it
+would rewrite tokens a user typed.
+
+### Rollout
+
+Off by default, and requires BOTH a mode and a named scope. An empty allowlist
+matches nothing — leaving a mode set with no scope must not enable it fleet-wide.
+
+| Env var | Values | Default |
+|---|---|---|
+| `CF_MASK_PROMPT_PII` | `off` \| `shadow` \| `enforce` | `off` |
+| `CF_MASK_PROMPT_PII_CAPABILITIES` | comma-separated capability ids, or `*` | empty (matches nothing) |
+| `CF_MASK_PROMPT_PII_TENANTS` | comma-separated tenant ids, or `*` | empty (matches nothing) |
+
+`shadow` logs and audits what enforcing *would* mask and changes nothing —
+prompt, token map and behaviour are all untouched. Measure there first; the
+residual false positives are real and worth counting per capability before
+enforcing:
+
+- an email in a copyright header, an `AUTHORS` file or a `Co-Authored-By:`
+  trailer is a real email and *will* be tokenised;
+- a 16-digit numeric literal can pass Luhn by chance (~1 in 10 of those that
+  match the shape at all).
+
+Audit: `governed.prompt_pii_masked`, carrying kind + count only, plus
+`prompt_modified` so an operator can tell "would have masked" from "did mask"
+without inferring it from the mode string. Values are never recorded — a PII
+audit record that quotes the PII is worse than no record.

@@ -57,10 +57,39 @@ if [ "$count" = "0" ]; then
   fi
 fi
 
-# Apply any migration files that aren't already recorded. Sort
-# ensures lexicographic order (m52 < m61 < m71_... < m74_...).
+# Apply any migration files that aren't already recorded. Two file layouts
+# coexist, exactly as in agent-runtime's wrapper:
+#   prisma/migrations/<timestamp>_<name>/migration.sql  — Prisma format
+#   prisma/migrations/*.sql                              — flat (older)
+# The directory layout is what `prisma migrate diff` produces, so it is what
+# new migrations use. Handling only the flat glob (as this script did before
+# D3) meant a correctly-authored Prisma migration was silently skipped — and
+# because the client IS regenerated from schema.prisma further down, that
+# produced exactly drift mode (1) above: a client expecting a column the DB
+# never got. Tracked under the directory name so the layout choice alone
+# doesn't re-run anything.
 MIGRATIONS_DIR="prisma/migrations"
 if [ -d "$MIGRATIONS_DIR" ]; then
+  # Directory-format first (Prisma convention).
+  for dir in $(ls -d "$MIGRATIONS_DIR"/*/ 2>/dev/null | sort); do
+    [ -e "$dir/migration.sql" ] || continue
+    name="$(basename "$dir")"
+    applied="$(psql "$DATABASE_URL" -tA -c \
+      "SELECT 1 FROM _singularity_startup_migrations WHERE name = '$name';")"
+    if [ "$applied" = "1" ]; then
+      continue
+    fi
+    echo "[prompt-composer] applying $name/migration.sql"
+    if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$dir/migration.sql"; then
+      psql "$DATABASE_URL" -q -c \
+        "INSERT INTO _singularity_startup_migrations (name, service) VALUES ('$name', 'prompt-composer');"
+    else
+      echo "[prompt-composer] FATAL: migration $name failed — aborting startup"
+      exit 1
+    fi
+  done
+  # Flat .sql (legacy / out-of-band patches). Sort ensures lexicographic
+  # order (m52 < m61 < m71_... < m74_...).
   for migration in $(ls "$MIGRATIONS_DIR"/*.sql 2>/dev/null | sort); do
     name="$(basename "$migration")"
     applied="$(psql "$DATABASE_URL" -tA -c \

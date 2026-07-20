@@ -45,6 +45,13 @@ interface GatewayChatRequest {
   // fixed here rather than threaded from every caller — anything reaching the
   // gateway through mcp-server is an agent turn by construction.
   task_tag?: string;
+  // WHO this call is for. Threaded from the invocation's CorrelationIds. Absent
+  // (rather than null) when the run really did not carry one — the gateway
+  // treats a missing actor as "somebody forgot to propagate it", which is the
+  // signal we want, not something to paper over with a fake value.
+  actor_id?: string;
+  tenant_id?: string;
+  session_id?: string;
 }
 
 interface GatewayChatResponse {
@@ -284,6 +291,12 @@ export async function llmRespond(req: LlmRequest, hooks?: LlmStreamHooks): Promi
     temperature: req.temperature,
     max_output_tokens: req.max_output_tokens,
     ...(req.prompt_cache?.enabled ? { prompt_cache: req.prompt_cache } : {}),
+    // Only forward what the caller actually resolved. Spreading `undefined`
+    // would serialise the key away anyway, but building it conditionally keeps
+    // "absent" and "explicitly empty" from ever collapsing into each other.
+    ...(req.actor_id ? { actor_id: req.actor_id } : {}),
+    ...(req.tenant_id ? { tenant_id: req.tenant_id } : {}),
+    ...(req.session_id ? { session_id: req.session_id } : {}),
   });
   // Surface final content via onDelta for parity with the prior non-streaming
   // path. Gateway-side SSE is a follow-up.

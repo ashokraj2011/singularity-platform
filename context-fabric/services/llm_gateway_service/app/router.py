@@ -18,6 +18,7 @@ from fastapi import APIRouter, Body, Header, HTTPException
 from .config import settings
 from . import model_policy
 from . import provider_config
+from . import secret_redaction
 from . import task_tags
 from .providers import anthropic as anthropic_provider
 from .providers import mock as mock_provider
@@ -341,6 +342,19 @@ async def chat_completions(
         )
     if not provider_config.is_provider_allowed(provider):
         raise HTTPException(status_code=400, detail=f"provider {provider} is not allowed by gateway config")
+
+    # Secret redaction before the provider call. The gateway is the only
+    # component every LLM egress on the platform crosses, so this is the one
+    # place a single implementation covers every caller. Applied to all
+    # providers including mock — traffic that skips measurement is traffic the
+    # shadow numbers understate. Defaults to shadow (count and log, send the
+    # body unchanged) and never raises; see secret_redaction.
+    req.messages = secret_redaction.redact_for_egress(
+        req.messages,
+        endpoint="chat_completions",
+        model_alias=alias or req.model_alias,
+        trace_id=req.trace_id,
+    )
 
     if provider == "mock":
         resp = await mock_provider.respond(req, resolved_model=model)

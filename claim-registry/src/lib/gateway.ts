@@ -23,11 +23,23 @@
  * without usable content raises.
  */
 export interface GatewayLlm {
-  complete(input: { system: string; task: string; traceId: string; modelAlias?: string }): Promise<string>;
+  complete(input: {
+    system: string;
+    task: string;
+    traceId: string;
+    modelAlias?: string;
+    /** Who this lowering pass is for. `system:claim-registry` when the event
+     *  had no capturer. Never null — null means "somebody forgot". */
+    actorId?: string;
+    /** Real, not defaulted: claim-registry is genuinely tenant-scoped
+     *  (currentRegistryTenant()), so this is one of the few call sites that
+     *  can honestly send a tenant. */
+    tenantId?: string;
+  }): Promise<string>;
 }
 
 export const defaultGatewayLlm: GatewayLlm = {
-  async complete({ system, task, traceId, modelAlias }) {
+  async complete({ system, task, traceId, modelAlias, actorId, tenantId }) {
     const base = process.env.LLM_GATEWAY_URL;
     if (!base) throw new Error('LLM_GATEWAY_URL is not set (M33: LLM work must route through the gateway)');
     // An explicit alias still pins. Unpinned, we send NO alias and let
@@ -49,6 +61,10 @@ export const defaultGatewayLlm: GatewayLlm = {
         // that no alias is sent by default, so it is ROUTABLE.
         task_tag: 'claim_lowering',
         trace_id: traceId,
+        // Tagged since W2-1, but still anonymous: "what did lowering cost" was
+        // answerable, "for whom" was not.
+        actor_id: actorId ?? 'system:claim-registry',
+        ...(tenantId ? { tenant_id: tenantId } : {}),
       }),
     });
     if (!res.ok) throw new Error(`LLM gateway returned ${res.status}`);
