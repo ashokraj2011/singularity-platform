@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+from context_api_service.app.governed.conversation_budget import CF_PRELUDE_KEY
 from context_api_service.app.governed.history_compression import (
     DEFAULT_RECENT_TURNS,
     _split_into_groups,
@@ -294,6 +295,122 @@ def test_breadcrumb_turn_index_preserved_across_compression_passes():
         "If this fails with duplicates like [1, 2, ..., 10, 1, 2, ..., 6], "
         "the turn-index reset bug has regressed."
     )
+
+
+def _prelude_user(content: str) -> dict:
+    return {"role": "user", "content": content, CF_PRELUDE_KEY: True}
+
+
+def _prelude_assistant(content: str) -> dict:
+    return {"role": "assistant", "content": content, CF_PRELUDE_KEY: True}
+
+
+def _conversation(pairs: int) -> list[dict]:
+    """Injected conversation memory, the shape conversation_budget produces:
+    alternating user/assistant, every message tagged."""
+    out: list[dict] = []
+    for i in range(pairs):
+        out.append(_prelude_user(f"prior question {i}"))
+        out.append(_prelude_assistant(f"prior answer {i}"))
+    return out
+
+
+def test_injected_assistant_turns_survive_past_turn_nine():
+    """THE reason `_cf_prelude` exists.
+
+    `_is_assistant_start` treats any assistant message as the start of a turn
+    group. Injected conversation memory contains assistant turns, so untagged it
+    would be split into turn groups of its own — groups that fall out of the
+    8-turn sliding window and collapse into "[TURN-N-RECAP]" breadcrumbs. The
+    memory would work for the first eight turns of a stage and then silently
+    evaporate around turn 9, with nothing in the logs to say it had happened.
+
+    Tagged, it is prelude: never grouped, never compressed, verbatim for the
+    whole stage.
+    """
+    prelude = _conversation(3)          # 6 messages, 3 of them assistant-role
+    msgs: list[dict] = list(prelude)
+    for i in range(14):                 # well past the 8-turn window
+        msgs.extend(_turn("read_file", {"path": f"f{i}.py"}, text=f"turn {i}"))
+
+    out = compress_history(msgs, recent_turns=DEFAULT_RECENT_TURNS)
+
+    # Compression definitely fired.
+    assert any("[TURN-" in str(m.get("content")) for m in out)
+    # Every injected message survived, verbatim and in order, at the head.
+    assert out[: len(prelude)] == prelude
+    # Specifically the assistant ones — the messages the bug would have eaten.
+    injected_assistants = [m for m in out if m.get(CF_PRELUDE_KEY) and m["role"] == "assistant"]
+    assert [m["content"] for m in injected_assistants] == [
+        "prior answer 0", "prior answer 1", "prior answer 2",
+    ]
+    # And none of them was turned into a breadcrumb.
+    assert not any(
+        "prior answer" in str(m.get("content")) and "[TURN-" in str(m.get("content"))
+        for m in out
+    )
+
+
+def test_untagged_assistant_history_is_what_the_marker_prevents():
+    """The counterexample, pinned so the fix cannot be quietly reverted.
+
+    Same history with the marker stripped: the injected assistant turns become
+    turn-group heads, fall out of the window, and come back as breadcrumbs.
+    """
+    untagged = [
+        {k: v for k, v in m.items() if k != CF_PRELUDE_KEY}
+        for m in _conversation(3)
+    ]
+    msgs: list[dict] = list(untagged)
+    for i in range(14):
+        msgs.extend(_turn("read_file", {"path": f"f{i}.py"}, text=f"turn {i}"))
+
+    out = compress_history(msgs, recent_turns=DEFAULT_RECENT_TURNS)
+    assert not any(m.get("content") == "prior answer 0" for m in out)
+
+
+def test_tagged_prelude_is_never_grouped_whatever_its_position():
+    """The guarantee does not depend on the caller splicing at index 0."""
+    msgs = [
+        *_turn("read_file", {"path": "a.py"}),
+        _prelude_assistant("injected mid-list"),
+        *_turn("read_file", {"path": "b.py"}),
+    ]
+    prelude, groups = _split_into_groups(msgs)
+    assert prelude == [_prelude_assistant("injected mid-list")]
+    assert len(groups) == 2
+    assert all(not m.get(CF_PRELUDE_KEY) for g in groups for m in g)
+
+
+def test_injected_text_that_looks_like_a_breadcrumb_does_not_shift_numbering():
+    """A user can paste "[TURN-3-RECAP]" into a chat. Injected conversation text
+    is never one of OUR breadcrumbs, so it must not offset the turn indices."""
+    msgs: list[dict] = [_prelude_user("[TURN-99-RECAP] pasted from a log")]
+    for i in range(12):
+        msgs.extend(_turn("read_file", {"path": f"f{i}.py"}))
+
+    out = compress_history(msgs, recent_turns=4)
+    breadcrumbs = [
+        m for m in out
+        if not m.get(CF_PRELUDE_KEY) and str(m.get("content")).startswith("[TURN-")
+    ]
+    indices = [
+        int(m["content"][len("[TURN-"):m["content"].index("-RECAP]")])
+        for m in breadcrumbs
+    ]
+    assert indices == list(range(1, 9))
+
+
+def test_prelude_marker_survives_repeated_compression_passes():
+    msgs: list[dict] = _conversation(2)
+    for i in range(10):
+        msgs.extend(_turn("read_file", {"path": f"f{i}.py"}))
+    once = compress_history(msgs, recent_turns=4)
+    for i in range(10, 16):
+        once.extend(_turn("read_file", {"path": f"f{i}.py"}))
+    twice = compress_history(once, recent_turns=4)
+
+    assert twice[:4] == _conversation(2)
 
 
 def test_breadcrumb_turn_index_preserved_across_three_passes():

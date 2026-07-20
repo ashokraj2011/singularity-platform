@@ -22,6 +22,7 @@ from typing import Any
 
 import httpx
 
+from .conversation_budget import strip_internal_keys
 from .env_config import bounded_float_env
 from ..response_json import UpstreamJsonError, response_json_object
 
@@ -481,8 +482,15 @@ def _build_chat_body(
 ) -> dict[str, Any]:
     """Build the /v1/chat/completions request body. Shared by the cloud-gateway
     path and the laptop `model-run` path so both send byte-identical requests --
-    which is also why laptop traffic gains caller attribution here for free."""
-    body: dict[str, Any] = {"messages": messages}
+    which is also why laptop traffic gains caller attribution here for free.
+
+    `strip_internal_keys` drops CF-only message markers (`_cf_prelude`) here,
+    at the last point before the wire. The gateway forwards message dicts to the
+    provider and OpenAI rejects unrecognised message fields, so a marker that
+    leaked this far would 400 the turn. Returns the same list untouched when
+    nothing is tagged, which is every request while conversation memory is off.
+    """
+    body: dict[str, Any] = {"messages": strip_internal_keys(messages)}
     # W2-2 follow-through: the governed loop is the platform's highest-volume
     # agent path, and it was reaching the gateway UNTAGGED -- so flipping
     # GATEWAY_REQUIRE_TASK_TAG would have 400'd every governed turn, and until

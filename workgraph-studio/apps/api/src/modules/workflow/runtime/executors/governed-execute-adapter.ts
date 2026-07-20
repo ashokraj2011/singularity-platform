@@ -98,7 +98,29 @@ export function executeReqToGovernedStageReq(req: ExecuteRequest, opts: {
     stage_key: stageKey,
     agent_role: opts.agentRole,
     vars,
-    initial_history: [],
+    // `initial_history: []` used to sit here, hardcoded, and it was the reason
+    // every workflow node reached the model with no idea what any other node
+    // had done. The parameter had been plumbed through four layers of CF and
+    // was never populated by anyone.
+    //
+    // It is now OMITTED rather than set. CF fills the history itself from its
+    // conversation store, keyed off `workflow_instance_id` — which
+    // `run_context` already carries (AgentTaskExecutor sets it) — and CF's rule
+    // scopes a workflow conversation to the INSTANCE, not the node. That is the
+    // whole point: PLAN, DESIGN and ACT on one instance are one continuous mind
+    // instead of three amnesiac ones.
+    //
+    // Deliberately NOT passing an explicit `conversation_id` in run_context.
+    // CF's identity resolver gives an explicit id its own branch, which returns
+    // `scope_kind: 'explicit'` and `surface: None` — and a None surface fails
+    // the CF_CONVERSATION_SURFACES allowlist check, so workflow memory would be
+    // silently dead. Letting CF derive it yields `surface: 'workflow'`,
+    // `scope_kind: 'instance'`, which is both correct and addressable by the
+    // allowlist. It also keeps CF's key format in one language.
+    //
+    // The wire parameter itself stays on GovernedStageRequest, optional, for
+    // replay and eval harnesses that need to pin an exact history. In
+    // production the populator is CF.
     run_context: (req.run_context ?? {}) as unknown as Record<string, unknown>,
     bearer: undefined,
     max_turns: opts.maxTurns ?? 25,
