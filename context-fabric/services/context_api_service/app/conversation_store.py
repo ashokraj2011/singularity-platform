@@ -36,10 +36,25 @@ tool_result with no matching tool_use) makes Anthropic 400 the whole request,
 and CF's governed loop has no orphan repair. If tool traffic is never persisted,
 it can never be replayed into a prompt half-formed.
 
-Tenancy is app-level, matching call_log and the rest of CF
-(`_resolve_read_tenant_scope` / `configured_tenant_ids_for_service_token`).
-Conversation turns are raw user text, so this is the weakest protection on the
-most sensitive data in the platform; forced RLS is a tracked follow-up.
+TENANCY. Conversation turns are raw user text — the most sensitive content the
+platform stores — so this store does NOT rely on the app-level scoping the rest
+of CF uses (`_resolve_read_tenant_scope` /
+`configured_tenant_ids_for_service_token`). Every function here opens its
+transaction through `_conn(tenant_id)`, which sets `app.tenant_id` transaction-
+locally so Postgres row-level security filters the query. See
+`conversation_rls.py`.
+
+Two consequences worth knowing before you add a caller:
+
+  * `tenant_id` defaults to None on the read functions, and None matches
+    NOTHING once RLS is forced — not everything. A caller that forgets it gets
+    an empty result, never another tenant's transcript.
+  * RLS is Postgres-only. On the SQLite target (the standalone/dev default)
+    there is no row-level security and tenancy is app-level again. A deployment
+    holding regulated conversation data must run this store on Postgres.
+
+Forcing RLS is a deliberate operator cutover, not something that happens at
+startup: `bin/enable-cf-conversation-forced-rls.py`.
 """
 from __future__ import annotations
 
@@ -54,6 +69,8 @@ from context_fabric_shared.database import (
     row_to_dict,
     rows_to_dicts,
 )
+
+from .conversation_rls import tenant_scoped_conn
 
 
 DEFAULT_CONVERSATION_DB = "./data/conversations.db"
@@ -77,6 +94,22 @@ def refresh_db_target() -> None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _conn(tenant_id: Optional[str]):
+    """Every store operation goes through here.
+
+    On Postgres this opens the transaction with `set_config('app.tenant_id', ...,
+    true)` so the RLS policy filters it. On SQLite it is a plain connection —
+    there is no row-level security to scope (see conversation_rls's docstring;
+    that gap is real and Postgres is required for regulated data).
+
+    `tenant_id=None` deliberately scopes to NOTHING once RLS is forced, rather
+    than to everything. Reads come back empty and writes fail the WITH CHECK.
+    That is the intended shape of a caller that forgot to pass a tenant: an
+    empty result, never another tenant's transcript.
+    """
+    return tenant_scoped_conn(DB_TARGET, tenant_id)
 
 
 def init_db() -> None:
@@ -159,7 +192,7 @@ def ensure_conversation(
 ) -> None:
     """Create the conversation row if absent. Safe to call on every turn."""
     now = _now()
-    with db_conn(DB_TARGET) as conn:
+    with _conn(tenant_id) as conn:
         existing = conn.execute(
             "SELECT conversation_id FROM cf_conversations WHERE conversation_id = ?",
             (conversation_id,),
@@ -206,9 +239,21 @@ def append_turn(
         return None
 
     now = _now()
-    with db_conn(DB_TARGET) as conn:
+    with _conn(tenant_id) as conn:
         # Claim the seq by incrementing head_seq in the same statement that reads
         # it, so two concurrent appends cannot both read N and both write N+1.
+        #
+        # tenant_id comes back in the same RETURNING. The turn is then stamped
+        # with the CONVERSATION's tenant rather than whatever the caller passed,
+        # which closes two holes at once: a caller that passed none cannot write
+        # a NULL-tenant turn (invisible to everyone after cutover, and Guard C of
+        # the cutover would refuse to proceed), and a caller that passed a
+        # different one cannot produce a split-brain transcript whose turns
+        # belong to another tenant than their conversation (Guard D).
+        #
+        # Under forced RLS the UPDATE itself is already tenant-filtered, so a
+        # mismatched caller finds no row and gets None. This makes the store
+        # correct on SQLite and BEFORE cutover too, where nothing else would.
         row = conn.execute(
             """
             UPDATE cf_conversations
@@ -217,15 +262,17 @@ def append_turn(
                    updated_at = ?,
                    last_turn_at = ?
              WHERE conversation_id = ?
-            RETURNING head_seq
+            RETURNING head_seq, tenant_id
             """,
             (tokens, now, now, conversation_id),
         ).fetchone()
         if row is None:
-            # No conversation row: the caller skipped ensure_conversation.
+            # No conversation row -- the caller skipped ensure_conversation, or
+            # (under forced RLS) named a tenant that does not own it.
             return None
         claimed = row_to_dict(row)
         seq = int(claimed["head_seq"])
+        owner_tenant_id = claimed.get("tenant_id")
         conn.execute(
             """
             INSERT INTO cf_conversation_turns (
@@ -235,14 +282,24 @@ def append_turn(
             """,
             (
                 str(uuid.uuid4()), conversation_id, seq, role, content, tokens,
-                cf_call_id, trace_id, tenant_id, now,
+                cf_call_id, trace_id, owner_tenant_id, now,
             ),
         )
         return seq
 
 
-def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
-    with db_conn(DB_TARGET) as conn:
+def get_conversation(
+    conversation_id: str, *, tenant_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """The conversation row, or None.
+
+    `tenant_id` scopes the read once RLS is forced. It defaults to None — which
+    then matches NOTHING rather than everything — so an unscoped caller gets None
+    instead of another tenant's conversation. Nothing reads this store yet (see
+    the module docstring), which is precisely why the parameter could be added
+    now, before there are callers to migrate.
+    """
+    with _conn(tenant_id) as conn:
         row = conn.execute(
             "SELECT * FROM cf_conversations WHERE conversation_id = ?",
             (conversation_id,),
@@ -250,15 +307,22 @@ def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
         return row_to_dict(row) if row else None
 
 
-def recent_turns(conversation_id: str, limit: int, *, after_seq: int = 0) -> List[Dict[str, Any]]:
+def recent_turns(
+    conversation_id: str, limit: int, *, after_seq: int = 0,
+    tenant_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """The newest `limit` turns after `after_seq`, returned oldest-first.
 
     Oldest-first because the result goes straight into a prompt. Selecting
     newest-first and reversing in the caller is how transcripts end up backwards.
+
+    This is the read that goes INTO A PROMPT, so it is the one that matters most
+    for isolation: a cross-tenant leak here does not just show up in an API
+    response, it gets sent to a model as though it were this tenant's history.
     """
     if limit <= 0:
         return []
-    with db_conn(DB_TARGET) as conn:
+    with _conn(tenant_id) as conn:
         rows = conn.execute(
             """
             SELECT * FROM (
@@ -274,12 +338,14 @@ def recent_turns(conversation_id: str, limit: int, *, after_seq: int = 0) -> Lis
         return rows_to_dicts(rows)
 
 
-def turns_through(conversation_id: str, through_seq: int) -> List[Dict[str, Any]]:
+def turns_through(
+    conversation_id: str, through_seq: int, *, tenant_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Every turn up to and including `through_seq`, oldest-first.
 
     This is the summariser's input: the span being folded into summary_text.
     """
-    with db_conn(DB_TARGET) as conn:
+    with _conn(tenant_id) as conn:
         rows = conn.execute(
             """
             SELECT * FROM cf_conversation_turns
@@ -292,7 +358,8 @@ def turns_through(conversation_id: str, through_seq: int) -> List[Dict[str, Any]
 
 
 def set_summary(
-    conversation_id: str, summary_text: str, through_seq: int, tokens: int = 0
+    conversation_id: str, summary_text: str, through_seq: int, tokens: int = 0,
+    *, tenant_id: Optional[str] = None,
 ) -> None:
     """Record a rolling summary covering everything up to `through_seq`.
 
@@ -300,7 +367,7 @@ def set_summary(
     summarisation runs can overlap, and the older one finishing last would
     otherwise discard the newer one's coverage.
     """
-    with db_conn(DB_TARGET) as conn:
+    with _conn(tenant_id) as conn:
         conn.execute(
             """
             UPDATE cf_conversations
