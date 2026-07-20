@@ -249,6 +249,11 @@ async function callGateway(messages: Array<{ role: string; content: string }>): 
         // but tagged so its spend is attributable at the gateway.
         task_tag: "world_model_distill",
         purpose: "world_model_view",
+        // Tagged since W2-1, but anonymous until now. View builds are triggered
+        // by capability changes, not by a person waiting on a result.
+        actor_id: "system:agent-runtime",
+        // No tenant_id: views are scoped by capability; Capability carries no
+        // tenant column on this branch.
       }),
       signal: AbortSignal.timeout(VIEW_TIMEOUT_MS),
     });

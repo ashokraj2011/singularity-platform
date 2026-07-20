@@ -101,6 +101,12 @@ const InvokeSchema = z.object({
   }).default({}),
   runContext: z.object({
     sessionId: z.string().optional(),
+    // The human on whose behalf this runs. New: the schema previously had no
+    // user/actor field at all, so anything a caller sent was stripped here and
+    // the gateway could never learn who the turn was for. Optional — an absent
+    // actor stays absent rather than becoming a fabricated "system:" claim,
+    // because these turns usually DO have a human behind them.
+    userId: z.string().optional(),
     capabilityId: z.string().optional(),
     tenantId: z.string().optional(),
     agentId: z.string().optional(),
@@ -279,6 +285,33 @@ interface LoopState {
      *  since the last successful mutation. Reset on mutation and on
      *  leaving ACT. Used by synthesizePhaseFrame to escalate urgency. */
     actReadsSinceLastMutation?: number;
+  };
+}
+
+/**
+ * Caller identity for the gateway hop, lifted off the invocation's correlation.
+ *
+ * mcp-server has always known who a run belongs to for its OWN audit store; the
+ * identity just stopped at this boundary, so the gateway's cost rows were
+ * anonymous for the platform's busiest LLM path.
+ *
+ * `actor_id` is deliberately NOT defaulted to "system:mcp-server". These are
+ * relayed agent turns, which normally DO have a human behind them — claiming
+ * otherwise would say "no human involved" about traffic that had one. Absent is
+ * the honest value, and it reads at the gateway as "somebody upstream did not
+ * propagate it", which is exactly the gap worth seeing.
+ *
+ * ATTRIBUTION, NOT AUTHORIZATION.
+ */
+function gatewayIdentityFrom(correlation: CorrelationIds): {
+  actor_id?: string;
+  tenant_id?: string;
+  session_id?: string;
+} {
+  return {
+    ...(correlation.userId ? { actor_id: correlation.userId } : {}),
+    ...(correlation.tenantId ? { tenant_id: correlation.tenantId } : {}),
+    ...(correlation.sessionId ? { session_id: correlation.sessionId } : {}),
   };
 }
 
@@ -1316,6 +1349,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
       temperature: state.modelConfig.temperature,
       max_output_tokens: state.modelConfig.maxTokens,
       prompt_cache: state.modelConfig.promptCache,
+      ...gatewayIdentityFrom(state.correlation),
     }, {
       onDelta: async (delta) => {
         if (!delta.content) return;
@@ -1463,6 +1497,7 @@ async function runLoop(state: LoopState): Promise<LoopOutcome> {
           tools: state.availableTools.filter((t) =>
             ["replace_text", "replace_range", "apply_patch", "write_file"].includes(t.name)
           ),
+          ...gatewayIdentityFrom(state.correlation),
         });
 
         state.totalInputTokens += applierResp.input_tokens;
@@ -2233,6 +2268,7 @@ async function forceMutationAfterMaxSteps(state: LoopState): Promise<LoopOutcome
       temperature: state.modelConfig.temperature,
       max_output_tokens: mutationFinalizationMaxTokens(state),
       prompt_cache: state.modelConfig.promptCache,
+      ...gatewayIdentityFrom(state.correlation),
     }, {
       onDelta: async (delta) => {
         if (!delta.content) return;
@@ -2518,6 +2554,7 @@ async function finalizeReadOnlyAfterMaxSteps(state: LoopState): Promise<LoopOutc
       temperature: state.modelConfig.temperature,
       max_output_tokens: state.modelConfig.maxTokens,
       prompt_cache: state.modelConfig.promptCache,
+      ...gatewayIdentityFrom(state.correlation),
     }, {
       onDelta: async (delta) => {
         if (!delta.content) return;

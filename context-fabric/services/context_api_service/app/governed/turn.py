@@ -1267,6 +1267,10 @@ async def run_turn(
             laptop_user_id=_placement.llm_laptop_target(run_context),
             runtime_tenant_id=_placement.runtime_tenant_target(run_context),
             runtime_capability_tags=_placement.runtime_capability_tags(run_context),
+            # Caller attribution. Same run_context the governed events above are
+            # already stamped from, so the LLM cost row and the audit trail name
+            # the same actor instead of only one of them doing so.
+            run_context=run_context,
         )
 
     await emit_governed_event(

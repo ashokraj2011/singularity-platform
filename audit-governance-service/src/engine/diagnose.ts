@@ -21,6 +21,9 @@
 import { query, queryOne } from "../db";
 import { readUpstreamJsonObject } from "./upstream-json";
 import { boundedEnvInteger } from "../env";
+// One actor constant per service, shared with llm-judge.ts, so the two gateway
+// call sites in audit-gov cannot drift into two spellings of the same service.
+import { GATEWAY_ACTOR_ID } from "./llm-judge";
 
 const LLM_GATEWAY_URL    = (process.env.LLM_GATEWAY_URL ?? "http://host.docker.internal:8001").replace(/\/$/, "");
 const ENGINE_MODEL_ALIAS = process.env.ENGINE_MODEL_ALIAS?.trim();
@@ -152,6 +155,14 @@ async function callLlmForDiagnosis(prompt: string): Promise<DiagnosisResult> {
         temperature: 0,
         max_output_tokens: 1500,
         trace_id: `audit-gov-diagnose-${Date.now()}`,
+        // Same bucket as llm-judge: the vocabulary's "judge" covers audit-gov
+        // LLM judging AND diagnosis (task_tags.py:32). Previously untagged,
+        // so it would 400 under GATEWAY_REQUIRE_TASK_TAG.
+        task_tag: "judge",
+        // Operator-triggered, but the operator's identity does not reach here:
+        // diagnoseIssue() takes only an issueId. The engine is the actor.
+        actor_id: GATEWAY_ACTOR_ID,
+        // No tenant_id — engine_issues rows are not tenant-scoped on this branch.
       }),
       signal: AbortSignal.timeout(ENGINE_TIMEOUT_MS),
     });

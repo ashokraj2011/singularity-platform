@@ -54,7 +54,16 @@ export async function lowerEvent(eventId: string, llm: GatewayLlm = defaultGatew
   try {
     const transcript = getPayload(event.payloadRef);
     const traceId = `claim-registry-lower-${eventId}-${randomUUID()}`;
-    const text = await llm.complete({ system: loweringSystemPrompt(), task: buildLoweringTask(transcript, { source: event.source }), traceId });
+    const text = await llm.complete({
+      system: loweringSystemPrompt(),
+      task: buildLoweringTask(transcript, { source: event.source }),
+      traceId,
+      // The person who captured the event is the one this lowering spend belongs
+      // to; the service actor is the fallback for machine-captured events.
+      actorId: event.capturedBy || 'system:claim-registry',
+      // A REAL tenant, already resolved above for the row reads.
+      tenantId,
+    });
     proposals = parseLoweringResponse(text);
   } catch (err) {
     await prisma.knowledgeEvent.update({ where: { id: eventId }, data: { loweringStatus: 'FAILED' as never } });
