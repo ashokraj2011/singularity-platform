@@ -644,6 +644,29 @@ services:
       EVENTS_STORE_DB: /app/data/call_log_events.db
       CONTEXT_MEMORY_DB: /app/data/context_memory.db
       SUMMARIZER_MODEL_ALIAS: ${SUMMARIZER_MODEL_ALIAS:-}
+      # ── Cross-turn conversation memory ─────────────────────────────────
+      # THIS CHANGES MODEL OUTPUTS. Until now every governed single turn
+      # reached the model as [system_prompt?, user_task] with zero prior
+      # turns: the Ask sidecar, the Studio conductor, room-copilot and
+      # board-copilot were all structurally amnesiac. With these on they see
+      # what was said earlier in the same thread / room / board.
+      #
+      # CF_CONVERSATION_SURFACES is the blast radius, and it is deliberately
+      # NOT empty — empty means "every surface that resolves to a
+      # conversation", which would sweep in workflow nodes too. Workflow
+      # memory is a much larger behaviour change (ACT would start seeing what
+      # PLAN said) and belongs to its own change, not to this one. Planner is
+      # likewise held back: it has its own cutover.
+      CF_CONVERSATION_ENABLED: ${CF_CONVERSATION_ENABLED:-true}
+      CF_CONVERSATION_WRITE_ENABLED: ${CF_CONVERSATION_WRITE_ENABLED:-true}
+      CF_CONVERSATION_SUMMARY_ENABLED: ${CF_CONVERSATION_SUMMARY_ENABLED:-true}
+      CF_CONVERSATION_SURFACES: ${CF_CONVERSATION_SURFACES:-synthesis,room_copilot,board_copilot}
+      # Tuning. Defaults live in conversation_budget / conversation_summarizer;
+      # these are here so an operator can find them without reading Python.
+      CF_CONVERSATION_VERBATIM_PAIRS: ${CF_CONVERSATION_VERBATIM_PAIRS:-6}
+      CF_CONVERSATION_TOKEN_BUDGET: ${CF_CONVERSATION_TOKEN_BUDGET:-12000}
+      CF_CONVERSATION_READ_TIMEOUT_SEC: ${CF_CONVERSATION_READ_TIMEOUT_SEC:-2.0}
+      CF_CONVERSATION_WRITE_TIMEOUT_SEC: ${CF_CONVERSATION_WRITE_TIMEOUT_SEC:-2.0}
       # Optional direct-provider route for explicitly marked workflow nodes.
       # Secrets are passed only to Context Fabric's process; node JSON carries
       # the env var name, never the value.

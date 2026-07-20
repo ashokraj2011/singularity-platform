@@ -49,6 +49,15 @@ _SURFACE_RULES: Dict[str, Tuple[str, Tuple[str, ...]]] = {
 
 # Surface aliases: callers already send these strings today, and normalising
 # here means no caller has to change its `surface` value to gain memory.
+#
+# EXACT MATCH ONLY, and that is load-bearing. `studio-board` is the Chronicler
+# and gets memory; `studio-board-ingest` is the claim extractor and must NOT.
+# They differ by a suffix, so any prefix or `startswith` matching here would
+# silently hand a one-shot extractor cross-document history — the precise
+# correctness regression rule 1 exists to prevent. Same shape applies to
+# `spec-generation`, `initiative-impact-assessment` and
+# `semantic-reconciliation`: all absent from this table, all deliberately
+# stateless. Adding a surface here is a decision, never a pattern.
 _SURFACE_ALIASES: Dict[str, str] = {
     "synthesis": "synthesis",
     "ask": "synthesis",
@@ -57,9 +66,16 @@ _SURFACE_ALIASES: Dict[str, str] = {
     "room": "room_copilot",
     "rooms": "room_copilot",
     "room-copilot": "room_copilot",
+    # What rooms/room-copilot.service.ts has actually been sending. It carried
+    # the right `room_id` all along and still resolved to no conversation,
+    # because this one string was missing from the table.
+    "studio-room": "room_copilot",
     "board": "board_copilot",
     "boards": "board_copilot",
     "board-copilot": "board_copilot",
+    # Likewise studio/board-moments.service.ts (the Chronicler). Right
+    # `board_id`, unrecognised surface, therefore permanently stateless.
+    "studio-board": "board_copilot",
     "planner": "planner",
 }
 
