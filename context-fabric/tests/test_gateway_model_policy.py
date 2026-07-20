@@ -420,18 +420,25 @@ def test_disabled_leaves_the_resolution_path_untouched(monkeypatch, tmp_path):
     monkeypatch.setattr(model_policy, "resolve", _explode)
     monkeypatch.setattr(
         gw_router, "_resolve_provider_and_model",
-        lambda **kw: ("anthropic", "claude-sonnet-4-6", kw.get("model_alias")),
+        lambda **kw: ("anthropic", "claude-sonnet-4-6", kw.get("model_alias"), "caller_pin"),
     )
 
     from types import SimpleNamespace
 
     req = SimpleNamespace(model_alias="pinned", provider=None, model=None,
                           expected_model=None, model_tier="deep", messages=[])
-    provider, model, alias, routing = asyncio.run(gw_router._resolve_provider_and_model_with_policy(
-        req=req, identity={"task_tag": "agent_turn", "stage": None, "purpose": None},
-    ))
+    provider, model, alias, routing_source, routing = asyncio.run(
+        gw_router._resolve_provider_and_model_with_policy(
+            req=req, identity={"task_tag": "agent_turn", "stage": None, "purpose": None},
+        )
+    )
     assert (provider, model, alias) == ("anthropic", "claude-sonnet-4-6", "pinned")
     assert routing is None  # no routing block at all, not an empty one
+    # ...but the m75 cost-row provenance still comes through. routing_source is
+    # NOT derived from the routing block: with policy off there is no block, and
+    # a cost row that cannot say how its model was chosen is the whole gap m75
+    # closed. This is the regression guard for that.
+    assert routing_source == "caller_pin"
 
 
 def test_the_routing_block_is_absent_on_responses_by_default():
@@ -661,9 +668,9 @@ def test_preview_agrees_with_the_real_resolution_path(monkeypatch, tmp_path, _mo
     identity = {"task_tag": "agent_turn", "stage": "develop", "purpose": None}
     req = SimpleNamespace(model_alias=None, provider=None, model=None,
                           expected_model=None, model_tier=None, messages=[])
-    provider, model, alias, routing = asyncio.run(gw_router._resolve_provider_and_model_with_policy(
-        req=req, identity=identity,
-    ))
+    provider, model, alias, _routing_source, routing = asyncio.run(
+        gw_router._resolve_provider_and_model_with_policy(req=req, identity=identity)
+    )
     preview = _preview(task_tag="agent_turn", stage="develop")
     assert (preview.provider, preview.model, preview.model_alias) == (provider, model, alias)
     assert preview.routing == routing
@@ -676,11 +683,13 @@ def test_preview_estimates_size_from_messages(monkeypatch, tmp_path, _mock_catal
         "defaultTier": "cheap",
         "escalateWhenInputTokensExceed": {"cheap": 100},
     })
-    small = _preview(messages=[{"role": "user", "content": "a" * 40}])
+    # task_tag is incidental to what this asserts, but route_preview is a tagged
+    # call site as of m75 and untagged calls are rejected by default.
+    small = _preview(task_tag="agent_turn", messages=[{"role": "user", "content": "a" * 40}])
     assert small.estimated_input_tokens == 10
     assert small.routing["tier"] == "cheap"
 
-    large = _preview(messages=[{"role": "user", "content": "a" * 4000}])
+    large = _preview(task_tag="agent_turn", messages=[{"role": "user", "content": "a" * 4000}])
     assert large.estimated_input_tokens == 1000
     assert large.routing["tier"] == "standard"
     assert large.routing["escalated_from"] == "cheap"
@@ -695,7 +704,7 @@ def test_preview_accepts_a_size_without_messages(monkeypatch, tmp_path, _mock_ca
         "defaultTier": "cheap",
         "escalateWhenInputTokensExceed": {"cheap": 60000},
     })
-    result = _preview(estimated_input_tokens=50_000_000)
+    result = _preview(task_tag="agent_turn", estimated_input_tokens=50_000_000)
     assert result.estimated_input_tokens == 50_000_000
     assert result.routing["tier"] == "standard"
 
@@ -705,7 +714,7 @@ def test_preview_reports_a_failure_instead_of_raising_one(monkeypatch, tmp_path,
     # would fail", not itself fail — otherwise the caller cannot tell a broken
     # preflight from a broken route.
     _write_policy(monkeypatch, tmp_path, {"version": 1, "tiers": BASE_TIERS, "defaultTier": "standard"})
-    result = _preview(model_alias="no-such-alias")
+    result = _preview(task_tag="agent_turn", model_alias="no-such-alias")
     assert result.ready is False
     assert "unknown model alias" in result.error
     assert result.model is None
@@ -752,9 +761,11 @@ def test_embeddings_route_by_tier_but_never_escalate_by_size(monkeypatch, tmp_pa
         "escalateWhenInputTokensExceed": {"cheap": 10},
     })
     req = EmbeddingsRequest(input=["x" * 100_000], task_tag="embedding")
-    _, _, alias, routing = asyncio.run(gw_router._resolve_provider_and_model_with_policy(
-        req=req, identity={"task_tag": "embedding", "stage": None, "purpose": None},
-    ))
+    _, _, alias, _routing_source, routing = asyncio.run(
+        gw_router._resolve_provider_and_model_with_policy(
+            req=req, identity={"task_tag": "embedding", "stage": None, "purpose": None},
+        )
+    )
     assert routing["tier"] == "cheap"
     assert "escalated_from" not in routing
     assert alias == "claude-haiku-4-5-20251001"

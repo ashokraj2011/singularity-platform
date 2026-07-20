@@ -211,6 +211,11 @@ export async function runJudge(input: JudgeInput): Promise<JudgeOutcome> {
         // degradation lands, so it can be given a FLOOR. A judge quietly demoted
         // to a cheap model still returns a confident score, which is the worst
         // shape a quality regression can take.
+        //
+        // This call also reached the gateway with no task_tag, so it would 400
+        // the moment GATEWAY_REQUIRE_TASK_TAG flips — and until then its spend
+        // was unattributable. "judge" is the vocabulary's bucket for exactly
+        // this (llm_gateway_service/app/task_tags.py).
         task_tag: "judge",
         purpose: "output_grading",
         ...(modelAlias ? { model_alias: modelAlias } : {}),
@@ -218,11 +223,6 @@ export async function runJudge(input: JudgeInput): Promise<JudgeOutcome> {
         temperature: 0,
         max_output_tokens: 800,
         trace_id: `audit-gov-judge-${Date.now()}`,
-        // This call reached the gateway with no task_tag, so it would 400 the
-        // moment GATEWAY_REQUIRE_TASK_TAG flips — and until then its spend was
-        // unattributable. "judge" is the vocabulary's bucket for exactly this
-        // (llm_gateway_service/app/task_tags.py).
-        task_tag: "judge",
         // Nobody is waiting on this: eval judging is engine-triggered work, so
         // "system:<service>" is the truthful actor. Never null — null is
         // reserved for "somebody forgot to propagate it".

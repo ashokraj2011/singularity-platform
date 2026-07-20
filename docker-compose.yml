@@ -946,6 +946,28 @@ services:
       LLM_GATEWAY_RATE_LIMIT_RETRIES: ${LLM_GATEWAY_RATE_LIMIT_RETRIES:-2}
       LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC: ${LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC:-65}
       LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC: ${LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC:-75}
+      # ── Cost emission → audit-governance-service (DARK BY DEFAULT) ────────
+      # The gateway is the only component that sees every LLM call, so it is
+      # the emitter for audit_governance.llm_calls (which is otherwise dead —
+      # its only real producer was the retired pre-M71 agent loop). Emission
+      # is fire-and-forget over HTTP; this service has no DB dependency and
+      # must not acquire one.
+      #
+      # DO NOT SET THIS TO true UNTIL AUDIT_GOV_REQUIRE_TENANT_SCOPE=enforce.
+      # audit-gov's query endpoints are fail-open on tenant today; they return
+      # nothing only because llm_calls is empty. Filling it with per-user cost
+      # and prompt hashes while those endpoints are still in shadow mode would
+      # start returning real cross-tenant data.
+      GATEWAY_AUDIT_EMIT_ENABLED: ${GATEWAY_AUDIT_EMIT_ENABLED:-false}
+      # audit-gov is not in this compose file — it runs from
+      # audit-governance-service/docker-compose.yml, so the same
+      # host.docker.internal default every other service here uses applies.
+      AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
+      # In-process retry queue. Bounded on purpose: at-most-once is the
+      # accepted trade, a durable outbox would mean the DB dependency above.
+      GATEWAY_AUDIT_EMIT_QUEUE_MAX: ${GATEWAY_AUDIT_EMIT_QUEUE_MAX:-1000}
+      GATEWAY_AUDIT_EMIT_TIMEOUT_SEC: ${GATEWAY_AUDIT_EMIT_TIMEOUT_SEC:-5}
       # Provider credentials — passed ONLY to this service. Every other
       # service in the stack is enforced to NOT receive these keys (CI guard
       # in M33.7).

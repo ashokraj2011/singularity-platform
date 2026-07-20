@@ -151,6 +151,10 @@ async function callLlmForDiagnosis(prompt: string): Promise<DiagnosisResult> {
         // it is audit-gov diagnosis rather than arriving with no identity at all
         // — which is what let this traffic silently share whatever the gateway's
         // global default alias was.
+        //
+        // Same bucket as llm-judge: the vocabulary's "judge" covers audit-gov
+        // LLM judging AND diagnosis (task_tags.py:32). Previously untagged, so
+        // it would 400 under GATEWAY_REQUIRE_TASK_TAG.
         task_tag: "judge",
         purpose: "diagnosis",
         ...(ENGINE_MODEL_ALIAS ? { model_alias: ENGINE_MODEL_ALIAS } : {}),
@@ -161,10 +165,6 @@ async function callLlmForDiagnosis(prompt: string): Promise<DiagnosisResult> {
         temperature: 0,
         max_output_tokens: 1500,
         trace_id: `audit-gov-diagnose-${Date.now()}`,
-        // Same bucket as llm-judge: the vocabulary's "judge" covers audit-gov
-        // LLM judging AND diagnosis (task_tags.py:32). Previously untagged,
-        // so it would 400 under GATEWAY_REQUIRE_TASK_TAG.
-        task_tag: "judge",
         // Operator-triggered, but the operator's identity does not reach here:
         // diagnoseIssue() takes only an issueId. The engine is the actor.
         actor_id: GATEWAY_ACTOR_ID,

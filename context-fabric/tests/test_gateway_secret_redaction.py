@@ -302,7 +302,11 @@ def _run_chat(monkeypatch, content):
         ChatMessage,
     )
 
-    monkeypatch.setattr(gw_router, "_resolve_provider_and_model", lambda **_kw: ("mock", "mock-fast", None))
+    # 4-tuple: the resolver reports routing_source alongside the resolution (m75).
+    monkeypatch.setattr(
+        gw_router, "_resolve_provider_and_model",
+        lambda **_kw: ("mock", "mock-fast", None, "fallback"),
+    )
     monkeypatch.setattr(gw_router.provider_config, "is_provider_allowed", lambda _p: True)
     monkeypatch.setattr(gw_router.settings, "gateway_bearer", "")
 
