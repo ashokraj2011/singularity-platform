@@ -70,6 +70,10 @@ dc exec -T \
   -e SEED_PREFER_LAPTOP="$PREFER_LAPTOP" \
   ${SEED_COPILOT_REPO_URL:+-e SEED_COPILOT_REPO_URL="$SEED_COPILOT_REPO_URL"} \
   workgraph-api npx ts-node --transpile-only prisma/seed-sdlc-copilot.ts || { echo "   ⚠ copilot seed failed"; fail=$((fail + 1)); }
+dc exec -T \
+  -e SEED_GOVERNANCE_MODE="$GOV" \
+  ${SEED_COPILOT_REPO_URL:+-e SEED_COPILOT_REPO_URL="$SEED_COPILOT_REPO_URL"} \
+  workgraph-api npx ts-node --transpile-only prisma/seed-spec-handoff.ts || { echo "   ⚠ spec-handoff seed failed"; fail=$((fail + 1)); }
 dc exec -T workgraph-api npx ts-node --transpile-only prisma/seed-workbench-parents.ts || { echo "   ⚠ workbench parent seed failed"; fail=$((fail + 1)); }
 
 if [ "${SEED_EVENT_VERIFIER_ENABLED:-true}" != "false" ]; then
