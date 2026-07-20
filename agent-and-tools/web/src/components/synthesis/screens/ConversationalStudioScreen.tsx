@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowUpRight, Bot, FilePlus2, MessageCircle, Paperclip, Plus, RefreshCw, Sparkles } from "lucide-react";
+import { ArrowUpRight, Bot, CheckCircle2, FilePlus2, MessageCircle, Paperclip, Plus, RefreshCw, Sparkles, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { workgraphFetch } from "@/lib/workgraph";
@@ -149,6 +149,8 @@ function Conversation({ workspaceId, threadId, paneProjectId, onError }: { works
   const messages = useSyn<{ items: StudioMessage[] }>(`/synthesis/workspaces/${workspaceId}/threads/${threadId}/messages`, { refreshInterval: 3000 });
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [replyTo, setReplyTo] = useState<{ id: string; label: string } | null>(null);
+  const [reviewedArtifacts, setReviewedArtifacts] = useState<Record<string, string>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -184,8 +186,8 @@ function Conversation({ workspaceId, threadId, paneProjectId, onError }: { works
     if (!value) return;
     setBusy(true); onError(null);
     try {
-      await workgraphFetch<ConverseResponse>(`/synthesis/workspaces/${workspaceId}/threads/${threadId}/converse`, { method: "POST", body: JSON.stringify({ text: value }) });
-      setText(""); await messages.mutate();
+      await workgraphFetch<ConverseResponse>(`/synthesis/workspaces/${workspaceId}/threads/${threadId}/converse`, { method: "POST", body: JSON.stringify({ text: value, ...(replyTo ? { inReplyTo: replyTo.id } : {}) }) });
+      setText(""); setReplyTo(null); await messages.mutate();
     } catch (cause) { onError(cause instanceof Error ? cause.message : "The studio could not complete that turn."); }
     finally { setBusy(false); }
   }
@@ -199,16 +201,27 @@ function Conversation({ workspaceId, threadId, paneProjectId, onError }: { works
     finally { setBusy(false); }
   }
 
+  async function reviewAttachment(message: StudioMessage, boardId: string, artifactId: string) {
+    setBusy(true); onError(null);
+    try {
+      const result = await workgraphFetch<{ artifact?: { status?: string } }>(`/synthesis/workspaces/${workspaceId}/threads/${threadId}/attachments/${encodeURIComponent(artifactId)}/review`, { method: "POST", body: JSON.stringify({ boardId }) });
+      setReviewedArtifacts((current) => ({ ...current, [artifactId]: result.artifact?.status ?? "HUMAN_REVIEWED" }));
+      await messages.mutate();
+    } catch (cause) { onError(cause instanceof Error ? cause.message : "The source could not be marked as reviewed."); }
+    finally { setBusy(false); }
+  }
+
   const items = messages.data?.items ?? [];
   return (
     <div className="flex h-full min-h-[28rem] flex-col">
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
         {messages.isLoading ? <SynSkeleton rows={4} /> : items.length === 0 ? (
           <div className="grid h-full place-items-center"><EmptyState icon={MessageCircle} title="Describe the outcome" description="Try: “We need a safer onboarding flow for enterprise customers.”" /></div>
-        ) : items.map((message) => <MessageBubble key={message.id} message={message} />)}
+        ) : items.map((message) => <MessageBubble key={message.id} message={message} reviewedStatus={message.content && typeof message.content.artifactId === "string" ? reviewedArtifacts[message.content.artifactId] : undefined} onFollowUp={(label) => setReplyTo({ id: message.id, label })} onReview={(boardId, artifactId) => void reviewAttachment(message, boardId, artifactId)} />)}
       </div>
       <div className="shrink-0 border-t border-outline-variant bg-surface-container-low p-3">
         <div className="mb-2 flex items-center gap-2 text-xs text-on-surface-variant"><Sparkles size={14} className="text-secondary" /><span>Routing is automatic. Add evidence, ask a question, or shape the specification.</span></div>
+        {replyTo ? <div className="mb-2 flex items-center gap-2 rounded-lg border border-secondary/30 bg-secondary-container/30 px-3 py-2 text-xs text-on-surface"><MessageCircle size={14} className="text-secondary" /><span className="min-w-0 flex-1 truncate">Following up on: {replyTo.label}</span><button type="button" className="icon-button h-6 w-6" title="Clear card follow-up" aria-label="Clear card follow-up" onClick={() => setReplyTo(null)}><X size={13} /></button></div> : null}
         <div className="flex items-end gap-2">
           <input ref={fileInputRef} type="file" className="hidden" accept=".txt,.md,.markdown,.pdf,.docx,.pptx,.xlsx" onChange={(event) => { const file = event.target.files?.[0]; if (file) void attach(file); event.currentTarget.value = ""; }} />
           <button type="button" className="icon-button mb-0.5" title="Attach source document" aria-label="Attach source document" onClick={() => fileInputRef.current?.click()} disabled={busy}><Paperclip size={16} /></button>
@@ -221,7 +234,7 @@ function Conversation({ workspaceId, threadId, paneProjectId, onError }: { works
   );
 }
 
-function MessageBubble({ message }: { message: StudioMessage }) {
+function MessageBubble({ message, reviewedStatus, onFollowUp, onReview }: { message: StudioMessage; reviewedStatus?: string; onFollowUp: (label: string) => void; onReview: (boardId: string, artifactId: string) => void }) {
   const content = message.content ?? {};
   const kind = typeof content.kind === "string" ? content.kind : "TEXT";
   const text = typeof content.text === "string" ? content.text : typeof content.error === "string" ? content.error : "";
@@ -232,15 +245,21 @@ function MessageBubble({ message }: { message: StudioMessage }) {
     return <div className="mx-auto flex max-w-xl items-center justify-center gap-2 py-1 text-center text-[11px] text-on-surface-variant"><span className="h-1.5 w-1.5 rounded-full bg-secondary" />{stateText || (route ? `Routed to ${route.toLowerCase()}` : "Studio state updated")}{phase ? <SynChip tone="neutral">{phase}</SynChip> : null}</div>;
   }
   if (kind === "ATTACHMENT") {
-    const attachment = (content.attachment ?? {}) as { filename?: string; documentKind?: string; status?: string; parseSummary?: { extraction?: { status?: string } } };
-    const status = attachment.status ?? attachment.parseSummary?.extraction?.status ?? "PARSING";
+    const attachment = (content.attachment ?? {}) as { artifactId?: string; boardId?: string; filename?: string; documentKind?: string; status?: string; parseSummary?: { extraction?: { status?: string }; layout?: Record<string, unknown>; worksheets?: unknown[]; formulas?: number } };
+    const status = reviewedStatus ?? attachment.status ?? attachment.parseSummary?.extraction?.status ?? "PARSING";
     const failed = status === "FAILED";
-    return <div className="mx-auto max-w-xl rounded-xl border border-outline-variant bg-surface-container px-3.5 py-3"><div className="flex items-center gap-2"><Paperclip size={15} className={failed ? "text-error" : "text-secondary"} /><strong className="truncate text-sm text-on-surface">{attachment.filename ?? "Source document"}</strong><SynChip tone={failed ? "error" : "success"}>{status}</SynChip></div><MonoMeta>{attachment.documentKind ?? "SOURCE"} · attached to initiative evidence</MonoMeta></div>;
+    const canReview = Boolean(attachment.boardId && attachment.artifactId) && !failed && status !== "HUMAN_REVIEWED";
+    const layout = attachment.parseSummary?.layout;
+    const layoutSummary = layout && typeof layout === "object" ? Object.entries(layout).filter(([key, value]) => ["paragraphs", "headings", "tables", "images", "slides", "formulas"].includes(key) && (typeof value === "string" || typeof value === "number")).map(([key, value]) => `${key}: ${value}`).join(" · ") : "";
+    return <div className="mx-auto max-w-xl rounded-xl border border-outline-variant bg-surface-container px-3.5 py-3"><div className="flex items-center gap-2"><Paperclip size={15} className={failed ? "text-error" : "text-secondary"} /><strong className="truncate text-sm text-on-surface">{attachment.filename ?? "Source document"}</strong><SynChip tone={failed ? "error" : status === "HUMAN_REVIEWED" ? "success" : "tertiary"}>{status}</SynChip>{canReview ? <button type="button" className="ml-auto inline-flex items-center gap-1 rounded-md border border-secondary/40 px-2 py-1 text-[11px] font-bold text-secondary hover:bg-secondary-container" onClick={() => onReview(attachment.boardId!, attachment.artifactId!)} disabled={Boolean(reviewedStatus)}><CheckCircle2 size={13} /> Review</button> : null}</div><MonoMeta>{attachment.documentKind ?? "SOURCE"} · attached to initiative evidence</MonoMeta>{layoutSummary ? <div className="mt-2 text-[11px] text-on-surface-variant">{layoutSummary}</div> : null}</div>;
+  }
+  if (kind === "ATTACHMENT_REVIEWED") {
+    return <div className="mx-auto flex max-w-xl items-center gap-2 rounded-lg border border-secondary/30 bg-secondary-container/25 px-3.5 py-2.5 text-xs text-on-surface"><CheckCircle2 size={15} className="text-secondary" /><span>{text || "Source reviewed by a human and admitted to the initiative evidence set."}</span></div>;
   }
   if (kind === "CARD") {
     const cardType = typeof content.cardType === "string" ? content.cardType : "ACTION";
     const actions = Array.isArray(content.actions) ? content.actions.filter((item): item is { label: string; href: string } => Boolean(item && typeof item === "object" && typeof (item as { label?: unknown }).label === "string" && typeof (item as { href?: unknown }).href === "string")) : [];
-    return <div className="mx-auto max-w-xl rounded-xl border border-tertiary/35 bg-tertiary-container/10 px-3.5 py-3"><div className="mb-1.5 flex flex-wrap items-center gap-2"><Sparkles size={15} className="text-tertiary" /><MonoMeta>{cardType.replaceAll("_", " ")}</MonoMeta><SynChip tone="tertiary">Next action</SynChip></div><p className="text-sm leading-6 text-on-surface">{text || "A governed review action is ready."}</p>{actions.length ? <div className="mt-3 flex flex-wrap gap-2">{actions.map(action => <Link key={`${action.label}:${action.href}`} href={action.href.startsWith("/") ? action.href : "/synthesis"} className="inline-flex items-center gap-1.5 rounded-md bg-secondary px-3 py-2 text-xs font-bold text-on-secondary hover:opacity-90">{action.label}<ArrowUpRight size={13} /></Link>)}</div> : null}{message.proposalId ? <Link href="/synthesis/desk" className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-secondary">Open review <ArrowUpRight size={13} /></Link> : null}</div>;
+    return <div className="mx-auto max-w-xl rounded-xl border border-tertiary/35 bg-tertiary-container/10 px-3.5 py-3"><div className="mb-1.5 flex flex-wrap items-center gap-2"><Sparkles size={15} className="text-tertiary" /><MonoMeta>{cardType.replaceAll("_", " ")}</MonoMeta><SynChip tone="tertiary">Next action</SynChip></div><p className="text-sm leading-6 text-on-surface">{text || "A governed review action is ready."}</p><div className="mt-3 flex flex-wrap gap-2"><button type="button" className="inline-flex items-center gap-1.5 rounded-md border border-secondary/40 bg-surface-container-lowest px-3 py-2 text-xs font-bold text-secondary hover:bg-secondary-container" onClick={() => onFollowUp(`the ${cardType.replaceAll("_", " ").toLowerCase()} card`)}><MessageCircle size={13} /> Follow up</button>{actions.map(action => <Link key={`${action.label}:${action.href}`} href={action.href.startsWith("/") ? action.href : "/synthesis"} className="inline-flex items-center gap-1.5 rounded-md bg-secondary px-3 py-2 text-xs font-bold text-on-secondary hover:opacity-90">{action.label}<ArrowUpRight size={13} /></Link>)}</div>{message.proposalId ? <Link href="/synthesis/desk" className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-secondary">Open review <ArrowUpRight size={13} /></Link> : null}</div>;
   }
   const agent = message.authorType === "AGENT";
   return (

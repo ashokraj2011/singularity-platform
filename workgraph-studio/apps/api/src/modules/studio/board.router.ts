@@ -12,7 +12,7 @@ import path from 'node:path'
 import { validate } from '../../middleware/validate'
 import { createBoard, listBoards, appendEvent, readState, listEvents, forkBranch, listBranches, abandonBranch } from './board.service'
 import { detectAndNarrate, listMoments, editMoment, rejectMoment } from './board-moments.service'
-import { ingest, listArtifacts, getArtifactClaims, acceptExtractedClaim, rejectExtractedClaim, MAX_INGEST_BYTES } from './board-ingestion.service'
+import { ingest, listArtifacts, getArtifactClaims, acceptExtractedClaim, rejectExtractedClaim, markArtifactReviewed, MAX_INGEST_BYTES } from './board-ingestion.service'
 import { diffBranches, mergeBranch, applyMergeItems, completeMerge } from './board-merge.service'
 import { synthesizeBoardObjects } from './board-synthesis'
 
@@ -226,6 +226,12 @@ studioBoardRouter.post('/boards/:boardId/artifacts/:artifactId/claims/:claimId/a
 studioBoardRouter.post('/boards/:boardId/artifacts/:artifactId/claims/:claimId/reject', async (req, res, next) => {
   try {
     res.json(await rejectExtractedClaim(boardIdOf(req), artifactIdOf(req), claimIdOf(req), userIdOf(req)))
+  } catch (err) { next(err) }
+})
+
+studioBoardRouter.post('/boards/:boardId/artifacts/:artifactId/review', async (req, res, next) => {
+  try {
+    res.json(await markArtifactReviewed(boardIdOf(req), artifactIdOf(req), userIdOf(req)))
   } catch (err) { next(err) }
 })
 

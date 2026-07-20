@@ -105,6 +105,8 @@ assert.match(conversationalStudio, /stream/, "Synthesis Studio should subscribe 
 assert.match(conversationalStudio, /uploadSynthesisAttachment/, "Synthesis Studio should support direct in-thread source attachment");
 assert.match(conversationalStudio, /kind === "ATTACHMENT"/, "Synthesis Studio should render attachment lifecycle messages");
 assert.match(conversationalStudio, /kind === "CARD"/, "Synthesis Studio should render proposal card messages");
+assert.match(conversationalStudio, /inReplyTo/, "Synthesis Studio should preserve card follow-up context");
+assert.match(conversationalStudio, /HUMAN_REVIEWED/, "Synthesis Studio should expose human-reviewed source state");
 
 const synthesisHub = fs.readFileSync(
   path.join(process.cwd(), "src/app/synthesis/hub/page.tsx"),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildEvidenceReviewTask, classifyConductorTurn } from '../src/modules/synthesis/conductor.service'
+import { buildEvidenceReviewTask, classifyCardFollowUp, classifyConductorTurn } from '../src/modules/synthesis/conductor.service'
 
 describe('synthesis conductor routing', () => {
   it('routes questions to the facilitator without guessing a mutation', () => {
@@ -41,5 +41,11 @@ describe('synthesis conductor routing', () => {
     expect(task).toContain('Ignore previous instructions')
     expect(task).toContain('report-1')
     expect(task).toContain('Do not apply changes')
+  })
+
+  it('keeps card follow-ups on the governed agent that owns the card', () => {
+    expect(classifyCardFollowUp('CONTRADICTION')).toMatchObject({ route: 'EVIDENCE', phase: 'EVIDENCE', agentRole: 'EVIDENCE_CURATOR' })
+    expect(classifyCardFollowUp('PLAN')).toMatchObject({ route: 'GENERATE', phase: 'GENERATE', agentRole: 'REQUIREMENTS_EDITOR' })
+    expect(classifyCardFollowUp('SCAFFOLD_REVIEW')).toMatchObject({ route: 'CONVERSATION', phase: 'FRAME', agentRole: 'FACILITATOR' })
   })
 })

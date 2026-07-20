@@ -20,7 +20,7 @@ import type { Prisma } from '@prisma/client'
 import { prisma } from '../../lib/prisma'
 import { currentTenantIdForDb } from '../../lib/tenant-db-context'
 import { logEvent, publishOutbox } from '../../lib/audit'
-import { NotFoundError, ValidationError } from '../../lib/errors'
+import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors'
 import { contextFabricClient } from '../../lib/context-fabric/client'
 import { classifyAddress, precheckTargetUrl } from '../../lib/ssrf-guard'
 import { appendEvent } from './board.service'
@@ -292,3 +292,32 @@ async function setClaimStatus(boardId: string, artifactId: string, claimId: stri
 }
 export const acceptExtractedClaim = (boardId: string, artifactId: string, claimId: string, userId: string) => setClaimStatus(boardId, artifactId, claimId, 'ACCEPTED', userId)
 export const rejectExtractedClaim = (boardId: string, artifactId: string, claimId: string, userId: string) => setClaimStatus(boardId, artifactId, claimId, 'REJECTED', userId)
+
+/** Move a successfully extracted source into the explicit human-review state. */
+export async function markArtifactReviewed(boardId: string, artifactId: string, userId: string) {
+  const artifact = await loadArtifact(boardId, artifactId)
+  if (artifact.status === 'HUMAN_REVIEWED') return shapeArtifact(artifact)
+  if (!['SUCCEEDED', 'VALID_EMPTY', 'PARTIAL'].includes(artifact.status)) {
+    throw new ConflictError(`Artifact ${artifactId} cannot be reviewed while it is ${artifact.status}.`)
+  }
+  const branch = await prisma.boardBranch.findFirst({ where: { id: artifact.branchId, boardId }, select: { name: true } })
+  if (!branch) throw new NotFoundError('BoardBranch', artifact.branchId)
+  const claimed = await prisma.ingestedArtifact.updateMany({
+    where: { id: artifactId, boardId, status: { in: ['SUCCEEDED', 'VALID_EMPTY', 'PARTIAL'] } },
+    data: { status: 'HUMAN_REVIEWED' },
+  })
+  if (claimed.count === 0) {
+    const latest = await loadArtifact(boardId, artifactId)
+    if (latest.status === 'HUMAN_REVIEWED') return shapeArtifact(latest)
+    throw new ConflictError(`Artifact ${artifactId} changed before it could be reviewed.`)
+  }
+  const updated = await loadArtifact(boardId, artifactId)
+  await appendEvent(boardId, branch.name, {
+    eventType: 'ARTIFACT_REVIEWED', objectIds: [`art:${artifactId}`],
+    payload: { artifactId, status: 'HUMAN_REVIEWED', reviewedById: userId },
+    causedBy: [{ kind: 'HUMAN_REVIEW', id: artifactId }],
+  }, { actorType: 'HUMAN', actorId: userId })
+  await logEvent('IngestedArtifactReviewed', 'IngestedArtifact', artifactId, userId, { boardId, status: 'HUMAN_REVIEWED' })
+  await publishOutbox('IngestedArtifact', artifactId, 'IngestionReviewed', { boardId, status: 'HUMAN_REVIEWED', reviewedById: userId })
+  return shapeArtifact(updated)
+}

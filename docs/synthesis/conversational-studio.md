@@ -42,12 +42,12 @@ produced nothing durable.
 
 | Layer | On main | This spec adds |
 |---|---|---|
-| Thread substrate | Workspace / Thread / Message, context-refs, immutable ContextManifest per turn | Message *kinds* (CARD, ATTACHMENT, SYSTEM_STATE); thread↔initiative binding checks |
+| Thread substrate | Workspace / Thread / Message, context-refs, immutable ContextManifest per turn | Message *kinds* (CARD, ATTACHMENT, ATTACHMENT_REVIEWED, SYSTEM_STATE); thread↔initiative binding checks |
 | Agent turns | `runAgentTurn` — single governed turn, ∩ permissions, autonomy disposition, PENDING proposals, honest failure notes | The **Conductor**: role-free turns routed to the right engine; phase state machine |
 | Agents | FACILITATOR, EVIDENCE_CURATOR, REQUIREMENTS_EDITOR @ L2_PROPOSE | Conductor as router, not a fourth persona |
 | Proposals | create / decide / rebase; apply-registry with EDIT_DOC_BLOCK + ADD_DOC_BLOCK wired, other verbs throwing by design | Wire the remaining verbs; inline proposal rendering |
 | Intake | session / turn / scaffold / accept | Conducted *through* the thread instead of a separate surface |
-| Artifacts | validation reports, transmute, canonical-document (`experience.router.ts:77,81`) | In-thread upload → truthful ATTACHMENT message → bounded Evidence Curator review; deeper completion cards remain planned |
+| Artifacts | validation reports, transmute, canonical-document (`experience.router.ts:77,81`) | In-thread upload → truthful ATTACHMENT message → bounded Evidence Curator review → explicit HUMAN_REVIEWED transition; deeper completion cards remain planned |
 | Ask | `/synthesis/ask` + history | Routed by the Conductor when a turn is a question |
 | Gates & generation | compile + gate; plans/validate/apply + receipts | GATE / PLAN card protocol; cards call existing endpoints |
 | Happy path | 7-step guided order (#565) | The same 7 steps become the thread's phase chips |
@@ -177,8 +177,10 @@ its outcome and disables its actions (targets are already idempotent server-side
    system-authored Evidence Curator turn for non-duplicate successful extraction.
    The turn receives source material as explicitly labeled DATA and can only
    produce governed claims, contradictions, citations, or questions.
-2. **Card follow-ups** (`inReplyTo`) → straight to that card's engine, no
-   classification.
+2. **Card follow-ups** (`inReplyTo`) → the server verifies that the card belongs
+   to this thread, then routes directly to its owning agent without reclassifying
+   the request. The Studio exposes a Follow up action and keeps the card context
+   visible while the reply is composed.
 3. **Interrogatives** → `ask.service`, scoped to the workspace's context-refs;
    cites, or says "we don't know" with a probe offer.
 4. **Phase directives** → a cheap governed classifier with strict enum output
@@ -246,16 +248,18 @@ of the conversational work** for the reasons in the correction above.
   bounded authenticated SSE stream are shipped. Pane/event fan-out and formal
   message-kind migration remain. *Demo: a live thread with a live pane.*
 - **S2 — Conductor v1 + intake-in-thread (initial slice implemented).**
-  Deterministic routes, governed role delegation, and the no-role-picker Studio
-  surface are shipped. The five-stage intake protocol, classifier, and
-  SCAFFOLD_REVIEW card remain. *Demo: blank thread → routed governed turn.*
+  Deterministic routes, governed role delegation, the no-role-picker Studio
+  surface, and the SCAFFOLD_REVIEW card are shipped. The five-stage intake
+  protocol and richer classifier remain. *Demo: blank thread → routed governed
+  turn.*
 - **S3 — Evidence flow (1.5 wk).** Evidence Curator auto-turn on completion;
-  CONTRADICTION and PROPOSAL cards; PROBE_OFFER. Wire
-  `PROPOSE_CLAIM` + `FLAG_CONTRADICTION`. *Demo: drop two documents, adjudicate a
-  real contradiction.*
-- **S4 — Gates + generation (1.5 wk).** Phase derivation; GATE and PLAN cards on
-  transitions; wire the requirement verbs including the ChangeRequest route.
-  *Demo: the full arc.*
+  CONTRADICTION and PROPOSAL cards; PROBE_OFFER. Automatic review and attachment
+  review transitions are now wired. Remaining work is richer domain-specific
+  card actions such as probe creation and decision adjudication. *Demo: drop two
+  documents, adjudicate a real contradiction.*
+- **S4 — Gates + generation (1.5 wk).** Phase derivation and GATE/PLAN cards on
+  transitions are shipped. Remaining work is wiring the requirement verbs,
+  including the ChangeRequest route. *Demo: the full arc.*
 - **S5 — Polish + hardening (1 wk).** Chronicler in-thread; card idempotency and
   double-action tests; injection suite per verb; accessibility; phase-regression
   honesty tests; SSE fan-out load test.

@@ -17,7 +17,7 @@ import { addBlock, updateBlock, removeBlock, pinBlock } from './block.service'
 import { createWorkspaceProposal, listProposals, getProposal, decideProposalItems, rebaseProposalItem } from './proposal.service'
 import { runAgentTurn } from './synthesis-agent.service'
 import { ask, askHistory } from './ask.service'
-import { attachSource, converse, getPane, getThreadSnapshot } from './conductor.service'
+import { attachSource, converse, getPane, getThreadSnapshot, reviewSource } from './conductor.service'
 import { MAX_INGEST_BYTES } from '../studio/board-ingestion.service'
 
 export const synthesisRouter: Router = Router()
@@ -236,7 +236,7 @@ const converseSchema = z.object({
   inReplyTo: z.string().trim().min(1).optional(),
 })
 synthesisRouter.post('/workspaces/:workspaceId/threads/:threadId/converse', validate(converseSchema), wrap(async (req, res) => {
-  res.json(await converse(String(req.params.workspaceId), String(req.params.threadId), req.body.text, req, userIdOf(req)))
+  res.json(await converse(String(req.params.workspaceId), String(req.params.threadId), req.body.text, req, userIdOf(req), req.body.inReplyTo))
 }))
 synthesisRouter.get('/workspaces/:workspaceId/pane', wrap(async (req, res) => {
   res.json(await getPane(String(req.params.workspaceId)))
@@ -292,6 +292,11 @@ synthesisRouter.post('/workspaces/:workspaceId/threads/:threadId/attachments', (
       .then((result) => res.status(201).json(result)).catch(next)
   })
 })
+
+const reviewAttachmentSchema = z.object({ boardId: z.string().trim().min(1) })
+synthesisRouter.post('/workspaces/:workspaceId/threads/:threadId/attachments/:artifactId/review', validate(reviewAttachmentSchema), wrap(async (req, res) => {
+  res.json(await reviewSource(String(req.params.workspaceId), String(req.params.threadId), req.body.boardId, String(req.params.artifactId), userIdOf(req)))
+}))
 
 // ── Ask Synthesis (5.1) — always-available Facilitator sidecar; project- OR session-scoped ─
 const askSchema = z.object({

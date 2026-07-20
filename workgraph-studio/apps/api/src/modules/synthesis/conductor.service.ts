@@ -15,7 +15,7 @@ import { listProposals } from './proposal.service'
 import { getWorkspace } from './workspace.service'
 import { runAgentTurn, type AgentTurnResult } from './synthesis-agent.service'
 import { createBoard, listBoards } from '../studio/board.service'
-import { ingest, MAX_INGEST_BYTES } from '../studio/board-ingestion.service'
+import { ingest, markArtifactReviewed, MAX_INGEST_BYTES } from '../studio/board-ingestion.service'
 import { validateBoardArtifacts } from '../experience/experience.service'
 import { ValidationError } from '../../lib/errors'
 
@@ -59,8 +59,9 @@ export async function converse(
   text: string,
   req: Request,
   actor: string,
+  inReplyTo?: string,
 ): Promise<ConductorResult> {
-  const decision = classifyConductorTurn(text)
+  const decision = inReplyTo ? await decisionForCard(workspaceId, threadId, inReplyTo) : classifyConductorTurn(text)
   await appendMessage(workspaceId, threadId, {
     role: 'SYSTEM',
     authorType: 'SYSTEM',
@@ -72,7 +73,7 @@ export async function converse(
       agentRole: decision.agentRole,
       reason: decision.reason,
     },
-    correlation: { conductorDecision: decision, generatedAt: new Date().toISOString() },
+    correlation: { conductorDecision: decision, ...(inReplyTo ? { inReplyTo } : {}), generatedAt: new Date().toISOString() },
     coalesceKey: `conductor-route:${threadId}:${randomUUID()}`,
   })
   const result = await runAgentTurn(workspaceId, threadId, decision.agentRole, text, req, actor)
@@ -80,6 +81,25 @@ export async function converse(
     try { await appendNextActionCard(workspaceId, threadId, decision) } catch { /* cards are advisory; the governed turn remains durable */ }
   }
   return { ...result, decision }
+}
+
+async function decisionForCard(workspaceId: string, threadId: string, messageId: string): Promise<ConductorDecision> {
+  const snapshot = await getThreadSnapshot(workspaceId, threadId)
+  const message = snapshot.items.find((item) => item.id === messageId)
+  const content = message?.content as Record<string, unknown> | undefined
+  if (!message || content?.kind !== 'CARD') throw new ValidationError('The referenced follow-up card is not part of this conversation.')
+  const cardType = typeof content.cardType === 'string' ? content.cardType : ''
+  return classifyCardFollowUp(cardType)
+}
+
+export function classifyCardFollowUp(cardType: string): ConductorDecision {
+  if (['EVIDENCE', 'CONTRADICTION', 'PROBE_OFFER'].includes(cardType)) {
+    return { route: 'EVIDENCE', phase: 'EVIDENCE', agentRole: 'EVIDENCE_CURATOR', reason: `The follow-up is attached to the ${cardType.toLowerCase()} card.` }
+  }
+  if (['GATE', 'PLAN', 'PROPOSAL'].includes(cardType)) {
+    return { route: cardType === 'PROPOSAL' ? 'CONVERSATION' : cardType === 'PLAN' ? 'GENERATE' : 'SPECIFY', phase: cardType === 'PLAN' ? 'GENERATE' : 'SPECIFY', agentRole: 'REQUIREMENTS_EDITOR', reason: `The follow-up is attached to the ${cardType.toLowerCase()} card.` }
+  }
+  return { route: 'CONVERSATION', phase: 'FRAME', agentRole: 'FACILITATOR', reason: `The follow-up is attached to the ${cardType || 'action'} card.` }
 }
 
 type StudioCard = {
@@ -310,4 +330,20 @@ export async function attachSource(workspaceId: string, threadId: string, input:
     }
   }
   return { artifact, message: message.message, boardId: board.id, deduped: message.deduped, card, evidenceReview, evidenceWarning }
+}
+
+/** Review an attachment through the conversation so the thread records the transition. */
+export async function reviewSource(workspaceId: string, threadId: string, boardId: string, artifactId: string, actor: string) {
+  const workspace = await getWorkspace(workspaceId)
+  const boards = await listBoards(workspace.specificationProjectId)
+  if (!boards.items.some((item) => item.id === boardId)) throw new ValidationError('The source board is not attached to this initiative.')
+  const artifact = await markArtifactReviewed(boardId, artifactId, actor)
+  const message = await appendMessage(workspaceId, threadId, {
+    role: 'SYSTEM',
+    authorType: 'SYSTEM',
+    content: { kind: 'ATTACHMENT_REVIEWED', artifactId, boardId, filename: artifact.filename, status: artifact.status, text: 'Source reviewed by a human and admitted to the initiative evidence set.' },
+    correlation: { artifactId, boardId, reviewedById: actor },
+    coalesceKey: `attachment-reviewed:${threadId}:${artifactId}`,
+  })
+  return { artifact, message: message.message, deduped: message.deduped }
 }

@@ -20,6 +20,7 @@ import {
   ShieldAlert,
   Sparkles,
   Target,
+  MessageCircle,
 } from "lucide-react";
 import { SynthesisShell } from "@/components/synthesis/SynthesisShell";
 import {
@@ -145,6 +146,9 @@ export default function WorkspaceHubPage() {
             <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" />
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search initiatives" className="h-9 w-56 rounded-lg border border-outline-variant bg-surface-container-low pl-9 pr-3 text-sm text-on-surface placeholder:text-on-surface-variant focus:border-secondary focus:outline-none" />
           </div>
+          <Link href="/synthesis/studio" title="Open the conversational Synthesis Studio">
+            <SynButton variant="secondary" icon={MessageCircle}>Conversation</SynButton>
+          </Link>
           <SynButton icon={Plus} onClick={() => setCreating((value) => !value)}>New initiative</SynButton>
         </>
       }
