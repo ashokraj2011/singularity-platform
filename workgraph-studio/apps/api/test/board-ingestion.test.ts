@@ -39,24 +39,34 @@ describe('defaultTextParser', () => {
 describe('defaultDocumentParser', () => {
   it('extracts addressable paragraphs from DOCX', async () => {
     const zip = new JSZip()
-    zip.file('word/document.xml', '<w:document><w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Goal</w:t></w:r></w:p><w:p><w:r><w:t>Ship safely</w:t></w:r></w:p></w:body></w:document>')
+    zip.file('word/document.xml', '<w:document><w:body><w:sectPr><w:pgSz w:w="12240" w:h="15840" w:orient="portrait"/></w:sectPr><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Goal</w:t></w:r></w:p><w:p><w:r><w:t>Ship safely</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>Owner</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Product</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>')
+    zip.file('word/media/image1.png', Buffer.from('image'))
     const parsed = await defaultDocumentParser.parse({ kind: 'DOCX', filename: 'brief.docx', content: await zip.generateAsync({ type: 'nodebuffer' }) })
-    expect(parsed.spans).toHaveLength(2)
+    expect(parsed.spans).toHaveLength(3)
     expect(parsed.spans[0]).toMatchObject({ title: 'Heading1', text: 'Goal' })
     expect(parsed.spans[1]!.text).toBe('Ship safely')
+    expect(parsed.spans[2]!.text).toBe('Owner | Product')
+    expect(parsed.summary).toMatchObject({ layout: { paragraphs: 2, headings: 1, tables: 1, images: 1, page: { width: '12240', height: '15840', orientation: 'portrait' } } })
   })
 
-  it('extracts slide text from PPTX and rows from XLSX', async () => {
+  it('extracts slide geometry and media metadata from PPTX', async () => {
     const pptx = new JSZip()
-    pptx.file('ppt/slides/slide1.xml', '<p:sld><a:t>Problem</a:t><a:t>Outcome</a:t></p:sld>')
+    pptx.file('ppt/slides/slide1.xml', '<p:sld><p:sp><p:nvSpPr><p:cNvPr name="Title"/></p:nvSpPr><a:xfrm><a:off x="10" y="20"/><a:ext cx="300" cy="400"/></a:xfrm><a:t>Problem</a:t></p:sp><a:t>Outcome</a:t><p:pic/><c:chart/></p:sld>')
     const pptParsed = await defaultDocumentParser.parse({ kind: 'PPTX', filename: 'story.pptx', content: await pptx.generateAsync({ type: 'nodebuffer' }) })
     expect(pptParsed.spans[0]).toMatchObject({ title: 'Slide 1', text: 'Problem Outcome' })
+    expect(pptParsed.summary).toMatchObject({ layout: [{ number: 1, shapes: 1, textShapes: 1, images: 1, charts: 1, geometry: [{ name: 'Title', text: 'Problem', bounds: { x: '10', y: '20', width: '300', height: '400' } }] }] })
+  })
 
+  it('extracts formulas, sheet metadata, merges, and table metadata from XLSX', async () => {
     const xlsx = new JSZip()
     xlsx.file('xl/sharedStrings.xml', '<sst><si><t>Capability</t></si><si><t>Ready</t></si></sst>')
-    xlsx.file('xl/worksheets/sheet1.xml', '<worksheet><sheetData><row><c t="s"><v>0</v></c><c t="s"><v>1</v></c></row></sheetData></worksheet>')
+    xlsx.file('xl/workbook.xml', '<workbook><sheets><sheet name="Status" sheetId="1" r:id="rId1"/></sheets></workbook>')
+    xlsx.file('xl/tables/table1.xml', '<table displayName="StatusTable" ref="A1:B2"></table>')
+    xlsx.file('xl/worksheets/sheet1.xml', '<worksheet><dimension ref="A1:B2"/><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2"><f>1+1</f><v>2</v></c><c r="B2"><v>3</v></c></row></sheetData><mergeCells><mergeCell ref="A1:B1"/></mergeCells></worksheet>')
     const xlsxParsed = await defaultDocumentParser.parse({ kind: 'XLSX', filename: 'status.xlsx', content: await xlsx.generateAsync({ type: 'nodebuffer' }) })
-    expect(xlsxParsed.spans[0]!.text).toBe('Capability | Ready')
+    expect(xlsxParsed.spans[0]!.text).toContain('A1=Capability | B1=Ready')
+    expect(xlsxParsed.spans[0]!.text).toContain('A2=2 [formula: 1+1]')
+    expect(xlsxParsed.summary).toMatchObject({ formulas: 1, worksheets: [{ name: 'Status', rows: 2, cells: 4, dimension: 'A1:B2', mergedRanges: ['A1:B1'], formulas: [{ ref: 'A2', expression: '1+1', cachedValue: '2' }] }], tables: [{ name: 'StatusTable', ref: 'A1:B2' }] })
   })
 
   it('supports PDF as a registered binary kind', () => {

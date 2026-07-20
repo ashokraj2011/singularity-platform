@@ -288,7 +288,7 @@ synthesisRouter.post('/workspaces/:workspaceId/threads/:threadId/attachments', (
     if (error) { next(error); return }
     const file = req.file
     if (!file) { res.status(400).json({ code: 'BAD_REQUEST', message: 'No file uploaded (expected multipart field "file").' }); return }
-    void attachSource(String(req.params.workspaceId), String(req.params.threadId), { filename: file.originalname, content: file.buffer }, userIdOf(req))
+    void attachSource(String(req.params.workspaceId), String(req.params.threadId), { filename: file.originalname, content: file.buffer }, userIdOf(req), req)
       .then((result) => res.status(201).json(result)).catch(next)
   })
 })

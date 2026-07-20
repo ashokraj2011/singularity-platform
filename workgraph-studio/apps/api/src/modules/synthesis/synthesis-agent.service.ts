@@ -39,13 +39,33 @@ export interface AgentTurnResult {
   manifestId: string
 }
 
-export async function runAgentTurn(workspaceId: string, threadId: string, roleRaw: string, userTurn: string, req: Request, actor: string): Promise<AgentTurnResult> {
+export interface AgentTurnOptions {
+  inputRole?: 'USER' | 'ASSISTANT' | 'SYSTEM'
+  inputAuthorType?: 'HUMAN' | 'AGENT' | 'SYSTEM'
+  inputContent?: Record<string, unknown>
+}
+
+export async function runAgentTurn(
+  workspaceId: string,
+  threadId: string,
+  roleRaw: string,
+  userTurn: string,
+  req: Request,
+  actor: string,
+  options: AgentTurnOptions = {},
+): Promise<AgentTurnResult> {
   const cfg = agentConfig(roleRaw)
   if (!cfg) throw new NotFoundError('AgentRole', roleRaw)
 
-  // 1-2. Manifest (gates the run) + the human's turn recorded against it.
+  // 1-2. Manifest (gates the run) + the initiating input recorded against it.
   const { manifest } = await buildManifest(workspaceId, threadId, req)
-  await appendMessage(workspaceId, threadId, { role: 'USER', authorType: 'HUMAN', authorId: actor, content: { text: userTurn }, contextManifestId: manifest.id })
+  await appendMessage(workspaceId, threadId, {
+    role: options.inputRole ?? 'USER',
+    authorType: options.inputAuthorType ?? 'HUMAN',
+    authorId: actor,
+    content: options.inputContent ?? { text: userTurn },
+    contextManifestId: manifest.id,
+  })
 
   // 3. Permission-inheritance (∩). v1: the surface is already studioAuthz-gated, so the
   // human-allowed set is the role's tools; a per-resource policy allow-list is a follow-on.

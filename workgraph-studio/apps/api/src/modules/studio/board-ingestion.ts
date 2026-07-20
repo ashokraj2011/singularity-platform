@@ -81,18 +81,52 @@ async function readZipEntry(zip: JSZip, name: string): Promise<string> {
   return entry.async('string')
 }
 
+function xmlAttribute(attrs: string, key: string): string | undefined {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = new RegExp(`(?:^|\\s)(?:[\\w-]+:)?${escaped}=(?:"([^"]*)"|'([^']*)')`).exec(attrs)
+  return match?.[1] ?? match?.[2]
+}
+
+function boundedText(value: string, max = 800): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, max)
+}
+
 async function parseDocx(content: Buffer, filename: string): Promise<ParsedArtifact> {
   const zip = await JSZip.loadAsync(content)
   const xml = await readZipEntry(zip, 'word/document.xml')
-  const spans = [...xml.matchAll(/<w:p\b[^>]*>([\s\S]*?)<\/w:p>/g)]
+  const bodyWithoutTables = xml.replace(/<w:tbl\b[\s\S]*?<\/w:tbl>/g, '')
+  const paragraphs = [...bodyWithoutTables.matchAll(/<w:p\b[^>]*>([\s\S]*?)<\/w:p>/g)]
     .map((match, index) => {
       const paragraph = match[1] ?? ''
       const text = xmlText(paragraph)
-      const style = /<w:pStyle\b[^>]*w:val="([^"]+)"/.exec(paragraph)?.[1]
+      const styleAttrs = /<w:pStyle\b([^>]*)\/?>(?:<\/w:pStyle>)?/.exec(paragraph)?.[1] ?? ''
+      const style = xmlAttribute(styleAttrs, 'val')
       return text ? { ref: `docx:p:${index}`, ...(style ? { title: style } : {}), text } : null
     })
     .filter((span): span is ParsedSpan => Boolean(span))
-  return { spans: spans.length ? spans : [{ ref: 'docx:0', title: filename, text: '' }], summary: { kind: 'DOCX', spans: spans.length, title: filename } }
+  const tables = [...xml.matchAll(/<w:tbl\b[^>]*>([\s\S]*?)<\/w:tbl>/g)].slice(0, 100).map((match, tableIndex) => {
+    const rows = [...(match[1] ?? '').matchAll(/<w:tr\b[^>]*>([\s\S]*?)<\/w:tr>/g)].map(row =>
+      [...(row[1] ?? '').matchAll(/<w:tc\b[^>]*>([\s\S]*?)<\/w:tc>/g)].map(cell => boundedText(xmlText(cell[1] ?? ''))).filter(Boolean).slice(0, 30),
+    ).filter(row => row.length).slice(0, 100)
+    return { index: tableIndex + 1, rows, columns: Math.max(0, ...rows.map(row => row.length)) }
+  }).filter(table => table.rows.length)
+  const tableSpans = tables.flatMap(table => table.rows.map((row, rowIndex) => ({
+    ref: `docx:table:${table.index}:row:${rowIndex}`,
+    title: `Table ${table.index} row ${rowIndex + 1}`,
+    text: row.join(' | '),
+  })))
+  const media = Object.entries(zip.files).filter(([name, entry]) => /^word\/media\//i.test(name) && !entry.dir).length
+  const headings = paragraphs.filter(span => /heading/i.test(span.title ?? '')).length
+  const section = /<w:pgSz\b([^>]*)\/?>(?:<\/w:pgSz>)?/.exec(xml)?.[1]
+  const spans = [...paragraphs, ...tableSpans]
+  return {
+    spans: spans.length ? spans : [{ ref: 'docx:0', title: filename, text: '' }],
+    summary: {
+      kind: 'DOCX', spans: spans.length, title: filename,
+      layout: { paragraphs: paragraphs.length, headings, tables: tables.length, images: media, page: section ? { width: xmlAttribute(section, 'w'), height: xmlAttribute(section, 'h'), orientation: xmlAttribute(section, 'orient') ?? 'portrait' } : null },
+      tables,
+    },
+  }
 }
 
 async function parsePptx(content: Buffer, filename: string): Promise<ParsedArtifact> {
@@ -102,12 +136,33 @@ async function parsePptx(content: Buffer, filename: string): Promise<ParsedArtif
     .sort((a, b) => Number(a.match(/slide(\d+)/i)?.[1] ?? 0) - Number(b.match(/slide(\d+)/i)?.[1] ?? 0))
   if (!names.length) throw new Error('Presentation does not contain any slides.')
   const spans: ParsedSpan[] = []
+  const slideMetadata: Array<Record<string, unknown>> = []
   for (const name of names) {
     const xml = await readZipEntry(zip, name)
+    const shapes = [...xml.matchAll(/<p:sp\b[^>]*>([\s\S]*?)<\/p:sp>/g)].map((match, shapeIndex) => {
+      const shape = match[1] ?? ''
+      const text = boundedText([...shape.matchAll(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/g)].map(item => decodeXml(item[1] ?? '')).join(' '))
+      const off = /<a:off\b([^>]*)\/?>(?:<\/a:off>)?/.exec(shape)?.[1] ?? ''
+      const ext = /<a:ext\b([^>]*)\/?>(?:<\/a:ext>)?/.exec(shape)?.[1] ?? ''
+      const nameAttr = /<p:cNvPr\b([^>]*)\/?>(?:<\/p:cNvPr>)?/.exec(shape)?.[1] ?? ''
+      return { index: shapeIndex + 1, name: xmlAttribute(nameAttr, 'name') ?? null, text, bounds: { x: xmlAttribute(off, 'x'), y: xmlAttribute(off, 'y'), width: xmlAttribute(ext, 'cx'), height: xmlAttribute(ext, 'cy') } }
+    })
     const text = [...xml.matchAll(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/g)].map(match => decodeXml(match[1] ?? '')).join(' ').replace(/\s+/g, ' ').trim()
     if (text) spans.push({ ref: `pptx:${spans.length}`, title: `Slide ${spans.length + 1}`, text })
+    const slideNumber = Number(name.match(/slide(\d+)/i)?.[1] ?? slideMetadata.length + 1)
+    slideMetadata.push({
+      number: slideNumber,
+      shapes: shapes.length,
+      textShapes: shapes.filter(shape => Boolean(shape.text)).length,
+      images: (xml.match(/<p:pic\b/g) ?? []).length,
+      charts: (xml.match(/<c:chart\b/g) ?? []).length,
+      geometry: shapes.slice(0, 80),
+    })
   }
-  return { spans: spans.length ? spans : [{ ref: 'pptx:0', title: filename, text: '' }], summary: { kind: 'PPTX', slides: names.length, spans: spans.length, title: filename } }
+  return {
+    spans: spans.length ? spans : [{ ref: 'pptx:0', title: filename, text: '' }],
+    summary: { kind: 'PPTX', slides: names.length, spans: spans.length, title: filename, layout: slideMetadata },
+  }
 }
 
 function sharedStringsFromXml(xml: string): string[] {
@@ -118,24 +173,49 @@ async function parseXlsx(content: Buffer, filename: string): Promise<ParsedArtif
   const zip = await JSZip.loadAsync(content)
   const sharedEntry = zip.file('xl/sharedStrings.xml')
   const shared = sharedEntry ? sharedStringsFromXml(await sharedEntry.async('string')) : []
+  const workbookEntry = zip.file('xl/workbook.xml')
+  const workbookXml = workbookEntry ? await workbookEntry.async('string') : ''
+  const sheetLabels = [...workbookXml.matchAll(/<sheet\b([^>]*)\/?>(?:<\/sheet>)?/g)].map(match => xmlAttribute(match[1] ?? '', 'name') ?? '')
+  const tableEntries = Object.keys(zip.files).filter(name => /^xl\/tables\/table\d+\.xml$/i.test(name))
+  const tables = await Promise.all(tableEntries.slice(0, 100).map(async name => {
+    const tableXml = await readZipEntry(zip, name)
+    const attrs = /<table\b([^>]*)>/.exec(tableXml)?.[1] ?? ''
+    return { name: xmlAttribute(attrs, 'displayName') ?? name.split('/').pop()?.replace(/\.xml$/i, '') ?? name, ref: xmlAttribute(attrs, 'ref') ?? null }
+  }))
   const sheets = Object.keys(zip.files)
     .filter(name => /^xl\/worksheets\/sheet\d+\.xml$/i.test(name))
     .sort((a, b) => Number(a.match(/sheet(\d+)/i)?.[1] ?? 0) - Number(b.match(/sheet(\d+)/i)?.[1] ?? 0))
   if (!sheets.length) throw new Error('Workbook does not contain any worksheets.')
   const spans: ParsedSpan[] = []
-  for (const name of sheets) {
+  const sheetMetadata: Array<Record<string, unknown>> = []
+  let formulaCount = 0
+  for (const [sheetIndex, name] of sheets.entries()) {
     const xml = await readZipEntry(zip, name)
-    const rows = [...xml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)].map(row => {
-      return [...(row[1] ?? '').matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)].map(cell => {
+    const cellRows = [...xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>/g)].slice(0, 500).map(row => {
+      const rowAttrs = row[1] ?? ''
+      const cells = [...(row[2] ?? '').matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)].slice(0, 100).map(cell => {
         const attrs = cell[1] ?? ''
-        const value = /<v\b[^>]*>([\s\S]*?)<\/v>/.exec(cell[2] ?? '')?.[1] ?? ''
+        const body = cell[2] ?? ''
+        const value = /<v\b[^>]*>([\s\S]*?)<\/v>/.exec(body)?.[1] ?? ''
         const decoded = decodeXml(value)
-        return /\bt="s"/.test(attrs) ? (shared[Number(decoded)] ?? decoded) : decoded
-      }).join(' | ')
-    }).filter(Boolean)
-    if (rows.length) spans.push({ ref: `xlsx:${spans.length}`, title: name.replace(/^xl\/worksheets\//, '').replace(/\.xml$/i, ''), text: rows.join('\n') })
+        const ref = xmlAttribute(attrs, 'r') ?? null
+        const formula = /<f\b[^>]*>([\s\S]*?)<\/f>/.exec(body)?.[1] ?? null
+        const inline = /<is\b[^>]*>([\s\S]*?)<\/is>/.exec(body)?.[1]
+        const cellValue = inline !== undefined ? xmlText(inline) : /\bt="s"/.test(attrs) ? (shared[Number(decoded)] ?? decoded) : decoded
+        if (formula) formulaCount += 1
+        return { ref, value: boundedText(cellValue, 500), formula: formula ? boundedText(decodeXml(formula), 500) : null }
+      })
+      return { row: xmlAttribute(rowAttrs, 'r') ?? null, cells }
+    })
+    const rows = cellRows.map(row => row.cells.map(cell => `${cell.ref ? `${cell.ref}=` : ''}${cell.value}${cell.formula ? ` [formula: ${cell.formula}]` : ''}`).join(' | ')).filter(Boolean)
+    const sheetName = sheetLabels[sheetIndex] || name.replace(/^xl\/worksheets\//, '').replace(/\.xml$/i, '')
+    if (rows.length) spans.push({ ref: `xlsx:${spans.length}`, title: sheetName, text: rows.join('\n') })
+    sheetMetadata.push({ name: sheetName, rows: cellRows.length, cells: cellRows.reduce((total, row) => total + row.cells.length, 0), formulas: cellRows.flatMap(row => row.cells).filter(cell => Boolean(cell.formula)).slice(0, 100).map(cell => ({ ref: cell.ref, expression: cell.formula, cachedValue: cell.value })), dimension: xmlAttribute(/<dimension\b([^>]*)\/?>(?:<\/dimension>)?/.exec(xml)?.[1] ?? '', 'ref') ?? null, mergedRanges: [...xml.matchAll(/<mergeCell\b([^>]*)\/?>(?:<\/mergeCell>)?/g)].slice(0, 200).map(match => xmlAttribute(match[1] ?? '', 'ref')).filter(Boolean) })
   }
-  return { spans: spans.length ? spans : [{ ref: 'xlsx:0', title: filename, text: '' }], summary: { kind: 'XLSX', sheets: sheets.length, spans: spans.length, title: filename } }
+  return {
+    spans: spans.length ? spans : [{ ref: 'xlsx:0', title: filename, text: '' }],
+    summary: { kind: 'XLSX', sheets: sheets.length, spans: spans.length, title: filename, formulas: formulaCount, worksheets: sheetMetadata, tables },
+  }
 }
 
 async function parsePdf(content: Buffer, filename: string): Promise<ParsedArtifact> {

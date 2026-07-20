@@ -228,7 +228,8 @@ function MessageBubble({ message }: { message: StudioMessage }) {
   const route = typeof content.route === "string" ? content.route : null;
   const phase = typeof content.phase === "string" ? content.phase : null;
   if (kind === "SYSTEM_STATE") {
-    return <div className="mx-auto flex max-w-xl items-center justify-center gap-2 py-1 text-center text-[11px] text-on-surface-variant"><span className="h-1.5 w-1.5 rounded-full bg-secondary" />{route ? `Routed to ${route.toLowerCase()}` : "Studio state updated"}{phase ? <SynChip tone="neutral">{phase}</SynChip> : null}</div>;
+    const stateText = typeof content.text === "string" ? content.text : "";
+    return <div className="mx-auto flex max-w-xl items-center justify-center gap-2 py-1 text-center text-[11px] text-on-surface-variant"><span className="h-1.5 w-1.5 rounded-full bg-secondary" />{stateText || (route ? `Routed to ${route.toLowerCase()}` : "Studio state updated")}{phase ? <SynChip tone="neutral">{phase}</SynChip> : null}</div>;
   }
   if (kind === "ATTACHMENT") {
     const attachment = (content.attachment ?? {}) as { filename?: string; documentKind?: string; status?: string; parseSummary?: { extraction?: { status?: string } } };

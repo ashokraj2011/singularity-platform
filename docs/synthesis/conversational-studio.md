@@ -14,8 +14,8 @@ driver, three agents, the proposal apply-registry and ask-with-history. The
 canonical-document, scaffold accept and the morning brief.
 
 What remains is the deeper card protocol and attachment lifecycle work: live
-gate/plan/contradiction cards, automatic evidence turns, and human-reviewed
-attachment state transitions. The first usable conductor surface now unifies the existing agent
+card follow-up contracts and human-reviewed attachment state transitions. The
+first usable conductor surface now unifies the existing agent
 turn, manifest, proposal, document, and context-reference services without
 adding a parallel mutation path.
 
@@ -47,7 +47,7 @@ produced nothing durable.
 | Agents | FACILITATOR, EVIDENCE_CURATOR, REQUIREMENTS_EDITOR @ L2_PROPOSE | Conductor as router, not a fourth persona |
 | Proposals | create / decide / rebase; apply-registry with EDIT_DOC_BLOCK + ADD_DOC_BLOCK wired, other verbs throwing by design | Wire the remaining verbs; inline proposal rendering |
 | Intake | session / turn / scaffold / accept | Conducted *through* the thread instead of a separate surface |
-| Artifacts | validation reports, transmute, canonical-document (`experience.router.ts:77,81`) | In-thread upload → truthful ATTACHMENT message; deeper completion cards remain planned |
+| Artifacts | validation reports, transmute, canonical-document (`experience.router.ts:77,81`) | In-thread upload → truthful ATTACHMENT message → bounded Evidence Curator review; deeper completion cards remain planned |
 | Ask | `/synthesis/ask` + history | Routed by the Conductor when a turn is a question |
 | Gates & generation | compile + gate; plans/validate/apply + receipts | GATE / PLAN card protocol; cards call existing endpoints |
 | Happy path | 7-step guided order (#565) | The same 7 steps become the thread's phase chips |
@@ -89,8 +89,11 @@ resolves the real path, rejects traversal and symlink escape, requires a regular
 file, and enforces a 500 KB bound. URL ingestion uses the existing SSRF guard,
 rejects credentials and redirects, and applies the same bound. Binary parser
 errors set the artifact to `FAILED` and never emit a successful completion event.
-The default Office readers intentionally cover text extraction, not layout,
-charts, formulas, images, or macros. The intake screen now exposes the guarded
+The default Office readers cover bounded text plus useful structural metadata:
+Word tables, headings, page size, and embedded-image counts; PowerPoint shape
+geometry, image/chart counts; and Excel sheet names, cell references, formulas,
+merged ranges, and table names. They do not render pages, execute formulas,
+perform image OCR, or run macros. The intake screen now exposes the guarded
 multipart upload route; provider-specific adapters remain follow-on work.
 
 **Implemented S1/S2 slice in this checkout.** `/synthesis/studio` is now the
@@ -169,8 +172,11 @@ its outcome and disables its actions (targets are already idempotent server-side
 **Routing, deterministic first:**
 
 1. **Attachments present** → the attachment route ingests the file through the
-   guarded board pipeline and appends an ATTACHMENT message. Automatic Evidence
-   Curator turns after extraction remain a follow-on slice.
+   guarded board pipeline, appends an ATTACHMENT message, projects the existing
+   validation report as an EVIDENCE or CONTRADICTION card, and starts a bounded
+   system-authored Evidence Curator turn for non-duplicate successful extraction.
+   The turn receives source material as explicitly labeled DATA and can only
+   produce governed claims, contradictions, citations, or questions.
 2. **Card follow-ups** (`inReplyTo`) → straight to that card's engine, no
    classification.
 3. **Interrogatives** → `ask.service`, scoped to the workspace's context-refs;
@@ -232,7 +238,9 @@ of the conversational work** for the reasons in the correction above.
   guarded source resolution, parser registry (PDF/DOCX/PPTX/XLSX), per-format
   failure semantics, and `storageRef` path support. *Demo: place a real BRD
   under `STUDIO_INGEST_STORAGE_ROOT`, call the existing ingest endpoint with its
-  relative `storageRef`, and see extracted claims.*
+  relative `storageRef`, and see extracted claims.* Office structural metadata
+  is included in the parse summary, while rendering/OCR/formula execution are
+  intentionally outside this adapter.
 - **S1 — Message kinds + SSE + pane (partially implemented).** The pane read
   model, thread projection, polling refresh, system-state route messages, and
   bounded authenticated SSE stream are shipped. Pane/event fan-out and formal
