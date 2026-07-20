@@ -10,11 +10,13 @@ Plus introspection:
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import APIRouter, Body, Header, HTTPException
 
 from .config import settings
+from . import model_policy
 from . import provider_config
 from . import task_tags
 from .providers import anthropic as anthropic_provider
@@ -25,6 +27,8 @@ from .types import (
     ChatCompletionResponse,
     EmbeddingsRequest,
     EmbeddingsResponse,
+    RoutePreviewRequest,
+    RoutePreviewResponse,
 )
 
 
@@ -97,6 +101,69 @@ def _resolve_provider_and_model(
     raise HTTPException(status_code=400, detail="model_alias is required; no default alias is configured")
 
 
+def _alias_ready(alias: str) -> bool:
+    """Whether a catalog alias can actually serve traffic right now.
+
+    The readiness probe the policy engine walks its tier list with. Deliberately
+    the SAME two calls _resolve_provider_and_model makes, so an alias policy
+    considers ready is exactly one that would not have 503'd. (validate_model_entry
+    already covers is_provider_allowed, via provider_unready_reasons.)
+    """
+    try:
+        entry = provider_config.resolve_alias(alias)
+        provider_config.validate_model_entry(entry, _credentials())
+    except provider_config.ProviderConfigError:
+        return False
+    return True
+
+
+def _resolve_provider_and_model_with_policy(
+    *,
+    req: Any,
+    identity: Dict[str, Optional[str]],
+    estimated_input_tokens: Optional[int] = None,
+) -> Tuple[str, str, Optional[str], Optional[Dict[str, Any]]]:
+    """Resolution with the B1 policy engine in front of it.
+
+    While GATEWAY_MODEL_POLICY_ENABLED is unset — the default — this returns
+    before touching the policy engine at all, so the resolution path is
+    byte-identical to the pre-policy gateway and the routing block is absent.
+    That early return is the feature gate; everything below it is dark.
+    """
+    if not model_policy.policy_enabled():
+        provider, model, alias = _resolve_provider_and_model(
+            model_alias=req.model_alias,
+            provider=req.provider,
+            model=req.model,
+        )
+        return provider, model, alias, None
+
+    decision = model_policy.resolve(
+        model_alias=req.model_alias,
+        expected_model=req.expected_model,
+        model_tier=getattr(req, "model_tier", None),
+        task_tag=identity.get("task_tag"),
+        stage=identity.get("stage"),
+        purpose=identity.get("purpose"),
+        estimated_input_tokens=(
+            estimated_input_tokens
+            if estimated_input_tokens is not None
+            else model_policy.estimate_input_tokens(getattr(req, "messages", None))
+        ),
+        is_ready=_alias_ready,
+    )
+    # A decision with no alias (an expected_model pin, or any degrade) leaves the
+    # caller's own alias in place — policy never removes a choice, it only makes
+    # one where there was none.
+    chosen_alias = decision.alias if (decision and decision.alias) else req.model_alias
+    provider, model, alias = _resolve_provider_and_model(
+        model_alias=chosen_alias,
+        provider=req.provider,
+        model=req.model,
+    )
+    return provider, model, alias, (decision.as_dict() if decision else None)
+
+
 @router.get("/health")
 def health() -> Dict[str, Any]:
     return {"status": "ok", "service": "llm-gateway", "version": "0.1.0"}
@@ -117,6 +184,7 @@ def list_providers(authorization: Optional[str] = Header(None)) -> Dict[str, Any
             "upstream_timeout_sec": settings.upstream_timeout_sec,
         },
         "providers": provider_config.list_provider_status(credentials),
+        "policy": model_policy.describe(),
         "warnings": provider_config.warnings(),
     }
 
@@ -177,6 +245,74 @@ def remove_model(model_id: str, authorization: Optional[str] = Header(None)) -> 
     return {"deleted": model_id}
 
 
+@router.post("/llm/route/preview", response_model=RoutePreviewResponse)
+def preview_route(
+    req: RoutePreviewRequest,
+    authorization: Optional[str] = Header(None),
+) -> RoutePreviewResponse:
+    """Resolve a call WITHOUT making it.
+
+    context-fabric needs the model before the call, not after: its token-budget
+    preflight has to know the context window it is packing for, and a caller
+    doing an `expected_model` drift check needs something to compare against.
+    Without this, a policy-routed caller could only learn its model by spending
+    a provider call to find out.
+
+    Runs the SAME resolution function the real endpoints run. Duplicating the
+    logic here would produce a preview that agrees with the call right up until
+    the day it quietly stops.
+    """
+    _check_auth(authorization)
+    identity = task_tags.resolve_task_identity(req, endpoint="route_preview")
+    # A caller that knows its size but not its content sends the size. Passed
+    # through as a number rather than as a synthesised message: building a
+    # stand-in string would let any caller allocate megabytes by naming a large
+    # token count, on an endpoint whose whole point is that it is cheap.
+    estimated = max(
+        req.estimated_input_tokens
+        if req.estimated_input_tokens is not None
+        else model_policy.estimate_input_tokens(req.messages),
+        0,
+    )
+    shim = SimpleNamespace(
+        model_alias=req.model_alias,
+        provider=req.provider,
+        model=req.model,
+        expected_model=req.expected_model,
+        model_tier=req.model_tier,
+        messages=None,
+    )
+    try:
+        provider, model, alias, routing = _resolve_provider_and_model_with_policy(
+            req=shim, identity=identity, estimated_input_tokens=estimated,
+        )
+    except HTTPException as exc:
+        return RoutePreviewResponse(
+            policy_enabled=model_policy.policy_enabled(),
+            estimated_input_tokens=estimated,
+            ready=False,
+            error=str(exc.detail),
+            warnings=model_policy.warnings(),
+        )
+    return RoutePreviewResponse(
+        provider=provider,
+        model=model,
+        model_alias=alias,
+        routing=routing,
+        policy_enabled=model_policy.policy_enabled(),
+        estimated_input_tokens=estimated,
+        ready=True,
+        warnings=model_policy.warnings(),
+    )
+
+
+@router.get("/llm/policy")
+def get_policy(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+    """What policy is loaded and whether it is live. Config, never secrets."""
+    _check_auth(authorization)
+    return model_policy.describe()
+
+
 @router.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(
     req: ChatCompletionRequest,
@@ -190,10 +326,8 @@ async def chat_completions(
     # call is rejected (when required) before it costs anything upstream.
     identity = task_tags.resolve_task_identity(req, endpoint="chat_completions")
 
-    provider, model, alias = _resolve_provider_and_model(
-        model_alias=req.model_alias,
-        provider=req.provider,
-        model=req.model,
+    provider, model, alias, routing = _resolve_provider_and_model_with_policy(
+        req=req, identity=identity,
     )
     if req.expected_provider and provider.lower() != req.expected_provider.lower():
         raise HTTPException(
@@ -210,6 +344,7 @@ async def chat_completions(
 
     if provider == "mock":
         resp = await mock_provider.respond(req, resolved_model=model)
+        resp.routing = routing
         # Mock has no real cost; leave as zero (the mock provider already
         # sets estimated_cost=0 on its responses). Still audited: a mock run
         # that never appears in the log looks like a run that never happened.
@@ -251,6 +386,7 @@ async def chat_completions(
         resp.input_tokens,
         resp.output_tokens,
     )
+    resp.routing = routing
     task_tags.emit_call_audit(
         endpoint="chat_completions", identity=identity, provider=provider, model=model,
         model_alias=alias or req.model_alias, req=req,
@@ -271,10 +407,15 @@ async def embeddings(
 
     identity = task_tags.resolve_task_identity(req, endpoint="embeddings")
 
-    provider, model, alias = _resolve_provider_and_model(
-        model_alias=req.model_alias,
-        provider=req.provider,
-        model=req.model,
+    # Note what is deliberately NOT wired here: size escalation. An
+    # EmbeddingsRequest carries `input`, not `messages`, so the estimate is 0 and
+    # embeddings never escalate a tier — which is correct, not an oversight.
+    # Routing a long input to a "deeper" embedding model would write vectors from
+    # a second model into the same index, and that is precisely the silent
+    # corruption the expected_model drift guard below exists to catch. Tier
+    # routing and the readiness walk still apply.
+    provider, model, alias, routing = _resolve_provider_and_model_with_policy(
+        req=req, identity=identity,
     )
     # Drift guard, matching /v1/chat/completions. This matters MORE here: a
     # silently-changed chat model produces one visibly-off answer, whereas a
@@ -311,6 +452,7 @@ async def embeddings(
             input_tokens=tokens,
             latency_ms=int((time.time() - start) * 1000),
             estimated_cost=provider_config.compute_embedding_cost(alias, tokens),
+            routing=routing,
         )
 
     credential = settings.credential_for(provider)
@@ -336,6 +478,7 @@ async def embeddings(
                 input_tokens=tokens,
                 latency_ms=int((time.time() - start) * 1000),
                 estimated_cost=provider_config.compute_embedding_cost(alias, tokens),
+                routing=routing,
             )
     except HTTPException:
         raise

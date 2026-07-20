@@ -181,6 +181,13 @@ class ChatCompletionResponse(BaseModel):
     # requested / not supported by the provider.
     prompt_cache: Optional[Dict[str, Any]] = None
 
+    # B1 — how this model got chosen: {source, tier, alias, reason,
+    # escalated_from?}. None when the policy engine is disabled, which is the
+    # default, so the field's mere presence tells a caller policy is live.
+    # `reason` is a single human-readable audit line — a routing layer nobody
+    # can read back is one nobody will trust with the production default.
+    routing: Optional[Dict[str, Any]] = None
+
 
 class EmbeddingsRequest(BaseModel):
     # Normal callers must pass `model_alias` or rely on the gateway's default
@@ -230,3 +237,55 @@ class EmbeddingsResponse(BaseModel):
     # called here, so the largest cost line would have landed in llm_calls with
     # cost_usd NULL. None when the catalog prices this model at nothing.
     estimated_cost: Optional[float] = None
+    # B1 — same routing provenance as ChatCompletionResponse. Embeddings are the
+    # highest-volume traffic here, so leaving them without routing provenance
+    # would leave the biggest cost line unable to answer "why this model".
+    routing: Optional[Dict[str, Any]] = None
+
+
+class RoutePreviewRequest(BaseModel):
+    """What POST /llm/route/preview needs to answer "which model would you pick".
+
+    Deliberately NOT ChatCompletionRequest: a preview must be cheap to ask for,
+    and forcing a caller to assemble a full messages array (which
+    ChatCompletionRequest requires) just to learn the model would push callers
+    into guessing instead. Send the messages if you have them, or send the size
+    if that is all you know.
+    """
+
+    model_alias: Optional[str] = None
+    provider:    Optional[str] = None
+    model:       Optional[str] = None
+    expected_provider: Optional[str] = None
+    expected_model:    Optional[str] = None
+
+    task_tag: Optional[str] = None
+    stage:    Optional[str] = None
+    purpose:  Optional[str] = None
+    model_tier: Optional[str] = None
+
+    messages: Optional[List[ChatMessage]] = None
+    # Escape hatch for a caller that knows its size but not its content, or that
+    # is previewing a request it has not built yet.
+    estimated_input_tokens: Optional[int] = None
+
+
+class RoutePreviewResponse(BaseModel):
+    """The resolution CF needs BEFORE the call, for its token-budget preflight
+    and its own expected_model check.
+
+    Resolution failures come back as ready=false + `error` rather than as a 4xx.
+    A preflight whose job is to report what would happen should report "this
+    would 503", not itself 503 — otherwise the caller cannot tell a broken
+    preflight from a broken route.
+    """
+
+    provider: Optional[str] = None
+    model:    Optional[str] = None
+    model_alias: Optional[str] = None
+    routing: Optional[Dict[str, Any]] = None
+    policy_enabled: bool = False
+    estimated_input_tokens: int = 0
+    ready: bool = True
+    error: Optional[str] = None
+    warnings: List[str] = Field(default_factory=list)
