@@ -37,7 +37,7 @@ def _client_returning(handler):
         async def __aexit__(self, *_a):
             return False
 
-        async def get(self, url, params=None):
+        async def get(self, url, params=None, headers=None):
             return handler(url, params or {})
 
     return _FakeClient
@@ -58,7 +58,7 @@ def _fetch(monkeypatch, handler, **kwargs):
 def test_slice_returns_world_model_and_views(monkeypatch):
     captured = {}
 
-    def handler(url, params):
+    def handler(url, params=None, **_kw):
         captured["url"] = url
         captured["params"] = params
         return _json_response(
@@ -91,7 +91,7 @@ def test_slice_returns_world_model_and_views(monkeypatch):
 def test_slice_omits_empty_query_params(monkeypatch):
     captured = {}
 
-    def handler(url, params):
+    def handler(url, params=None, **_kw):
         captured["params"] = params
         return _json_response({"data": {"worldModel": None, "views": []}})
 
@@ -151,7 +151,7 @@ def test_server_errors_request_a_fallback(monkeypatch, status):
 
 
 def test_transport_error_requests_a_fallback(monkeypatch):
-    def handler(url, params):
+    def handler(url, params=None, **_kw):
         raise httpx.ConnectError("refused", request=httpx.Request("GET", url))
 
     wm, views, warning = _fetch(monkeypatch, handler)
@@ -268,7 +268,7 @@ def test_api_base_keeps_empty_empty():
 def test_slice_requests_the_mounted_path(monkeypatch):
     captured = {}
 
-    def handler(url, params):
+    def handler(url, params=None, **_kw):
         captured["url"] = url
         return _json_response({"success": True, "data": {"worldModel": None, "views": []}})
 
@@ -281,7 +281,7 @@ def test_capability_wide_fetch_requests_the_mounted_path(monkeypatch):
     have left the fallback path still 404ing."""
     captured = {}
 
-    def handler(url, params):
+    def handler(url, params=None, **_kw):
         captured["url"] = url
         return _json_response({"success": True, "data": {"capabilityId": "cap-1"}})
 

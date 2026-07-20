@@ -208,6 +208,23 @@ def agent_runtime_api_base(agent_runtime_url: Optional[str]) -> str:
     return base if base.endswith("/api/v1") else f"{base}/api/v1"
 
 
+def _agent_runtime_headers() -> Optional[dict]:
+    """Auth for the agent-runtime world-model reads.
+
+    agent-runtime gates `/api/v1/capabilities` with `requireAuth`, which accepts
+    a service principal (`servicePrincipalFromToken`, auth.middleware.ts:123).
+    These two fetches previously sent no Authorization header at all, so once the
+    M61 URL bug was fixed the 404 simply became a 401 — the same silent
+    "world_model.skipped" outcome, a different status code. Verified against a
+    live stack: `/capabilities/...` 404s, `/api/v1/capabilities/...` 401s.
+
+    None when no token is configured, which preserves today's behaviour for a
+    deployment running agent-runtime without auth.
+    """
+    token = (settings.iam_service_token or "").strip()
+    return {"authorization": f"Bearer {token}"} if token else None
+
+
 async def fetch_capability_world_model(
     agent_runtime_url: str,
     capability_id: str,
@@ -233,7 +250,7 @@ async def fetch_capability_world_model(
     url = f"{agent_runtime_api_base(agent_runtime_url)}/capabilities/{capability_id}/world-model"
     try:
         async with httpx.AsyncClient(timeout=timeout_sec) as client:
-            resp = await client.get(url)
+            resp = await client.get(url, headers=_agent_runtime_headers())
         if resp.status_code == 404:
             # Capability exists but no world-model row has been seeded yet
             # (pre-M61 bootstrap, or Phase 1 worker still running). Not a
@@ -298,7 +315,7 @@ async def fetch_capability_world_model_slice(
         params["domainKey"] = domain_key
     try:
         async with httpx.AsyncClient(timeout=timeout_sec) as client:
-            resp = await client.get(url, params=params)
+            resp = await client.get(url, params=params, headers=_agent_runtime_headers())
         if resp.status_code == 404:
             # Neither a world model nor any views. Not a failure, and NOT a
             # reason to fall back — the legacy endpoint would 404 too.
