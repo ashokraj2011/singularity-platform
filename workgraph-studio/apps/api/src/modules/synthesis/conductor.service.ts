@@ -16,6 +16,7 @@ import { getWorkspace } from './workspace.service'
 import { runAgentTurn, type AgentTurnResult } from './synthesis-agent.service'
 import { createBoard, listBoards } from '../studio/board.service'
 import { ingest, MAX_INGEST_BYTES } from '../studio/board-ingestion.service'
+import { validateBoardArtifacts } from '../experience/experience.service'
 import { ValidationError } from '../../lib/errors'
 
 export type ConductorPhase = 'FRAME' | 'EVIDENCE' | 'DECIDE' | 'SPECIFY' | 'GENERATE' | 'QUESTION' | 'CHITCHAT'
@@ -75,7 +76,54 @@ export async function converse(
     coalesceKey: `conductor-route:${threadId}:${randomUUID()}`,
   })
   const result = await runAgentTurn(workspaceId, threadId, decision.agentRole, text, req, actor)
+  if (result.disposition.kind !== 'BLOCKED') {
+    try { await appendNextActionCard(workspaceId, threadId, decision) } catch { /* cards are advisory; the governed turn remains durable */ }
+  }
   return { ...result, decision }
+}
+
+type StudioCard = {
+  cardType: 'SCAFFOLD_REVIEW' | 'GATE' | 'PLAN'
+  text: string
+  payload: Record<string, unknown>
+  action: { label: string; href: string }
+}
+
+/** Project the next governed surface without creating a second mutation path. */
+async function appendNextActionCard(workspaceId: string, threadId: string, decision: ConductorDecision) {
+  const pane = await getPane(workspaceId)
+  const projectId = pane.workspace.specificationProjectId
+  let card: StudioCard | null = null
+  if (decision.route === 'CONVERSATION' && pane.counts.documents === 0 && pane.counts.contextRefs === 0 && pane.counts.proposals === 0) {
+    card = {
+      cardType: 'SCAFFOLD_REVIEW',
+      text: 'The initiative is framed. Review the guided intake scaffold to turn the conversation into durable evidence and a safe specification starting point.',
+      payload: { status: 'ACTION_REQUIRED', projectId },
+      action: { label: 'Open scaffold review', href: `/synthesis/intake?project=${encodeURIComponent(projectId)}` },
+    }
+  } else if (decision.route === 'SPECIFY') {
+    card = {
+      cardType: 'GATE',
+      text: 'Specification work is ready for a human checkpoint before it becomes an execution contract.',
+      payload: { status: 'ACTION_REQUIRED', projectId, checks: ['requirements', 'acceptance criteria', 'evidence coverage'] },
+      action: { label: 'Review specification', href: `/synthesis/spec?project=${encodeURIComponent(projectId)}` },
+    }
+  } else if (decision.route === 'GENERATE') {
+    card = {
+      cardType: 'PLAN',
+      text: 'The initiative is ready to shape into governed delivery work. Review the generation plan before applying it.',
+      payload: { status: 'ACTION_REQUIRED', projectId, source: 'CONDUCTOR' },
+      action: { label: 'Open generation plan', href: `/synthesis/generate?project=${encodeURIComponent(projectId)}` },
+    }
+  }
+  if (!card) return null
+  return appendMessage(workspaceId, threadId, {
+    role: 'SYSTEM',
+    authorType: 'SYSTEM',
+    content: { kind: 'CARD', cardType: card.cardType, text: card.text, payload: card.payload, actions: [card.action] },
+    correlation: { conductorCard: card.cardType, projectId },
+    coalesceKey: `conductor-card:${threadId}:${card.cardType}:${pane.counts.documents}:${pane.counts.contextRefs}:${pane.counts.proposals}`,
+  })
 }
 
 export async function getPane(workspaceId: string) {
@@ -153,6 +201,8 @@ export async function attachSource(workspaceId: string, threadId: string, input:
     filename: input.filename,
     content: input.content,
   }, { actorId: actor })
+  let report: Awaited<ReturnType<typeof validateBoardArtifacts>> | null = null
+  try { report = await validateBoardArtifacts(board.id, actor) } catch { /* upload remains durable; validation is retryable from Source Intake */ }
   const message = await appendMessage(workspaceId, threadId, {
     role: 'SYSTEM',
     authorType: 'SYSTEM',
@@ -171,5 +221,26 @@ export async function attachSource(workspaceId: string, threadId: string, input:
     correlation: { artifactId: artifact.id, boardId: board.id },
     coalesceKey: `attachment:${threadId}:${artifact.contentHash}`,
   })
-  return { artifact, message: message.message, boardId: board.id, deduped: message.deduped }
+  let card: { message: unknown; deduped: boolean } | null = null
+  if (report) {
+    const tensions = Array.isArray(report.tensions) ? report.tensions : []
+    const cardType = tensions.length ? 'CONTRADICTION' : 'EVIDENCE'
+    const cardMessage = await appendMessage(workspaceId, threadId, {
+      role: 'SYSTEM',
+      authorType: 'SYSTEM',
+      content: {
+        kind: 'CARD',
+        cardType,
+        text: tensions.length
+          ? `${tensions.length} cross-source contradiction${tensions.length === 1 ? '' : 's'} need human adjudication.`
+          : 'The source pile has a validation report ready for review.',
+        payload: { reportId: report.id, boardId: board.id, tensionCount: tensions.length, status: tensions.length ? 'ACTION_REQUIRED' : 'READY' },
+        actions: [{ label: tensions.length ? 'Review contradictions' : 'Review evidence', href: `/synthesis/intake?project=${encodeURIComponent(workspace.specificationProjectId)}&report=${encodeURIComponent(report.id)}` }],
+      },
+      correlation: { artifactId: artifact.id, reportId: report.id, boardId: board.id },
+      coalesceKey: `evidence-report:${threadId}:${report.id}`,
+    })
+    card = { message: cardMessage.message, deduped: cardMessage.deduped }
+  }
+  return { artifact, message: message.message, boardId: board.id, deduped: message.deduped, card }
 }

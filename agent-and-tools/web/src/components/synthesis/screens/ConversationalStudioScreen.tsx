@@ -236,6 +236,11 @@ function MessageBubble({ message }: { message: StudioMessage }) {
     const failed = status === "FAILED";
     return <div className="mx-auto max-w-xl rounded-xl border border-outline-variant bg-surface-container px-3.5 py-3"><div className="flex items-center gap-2"><Paperclip size={15} className={failed ? "text-error" : "text-secondary"} /><strong className="truncate text-sm text-on-surface">{attachment.filename ?? "Source document"}</strong><SynChip tone={failed ? "error" : "success"}>{status}</SynChip></div><MonoMeta>{attachment.documentKind ?? "SOURCE"} · attached to initiative evidence</MonoMeta></div>;
   }
+  if (kind === "CARD") {
+    const cardType = typeof content.cardType === "string" ? content.cardType : "ACTION";
+    const actions = Array.isArray(content.actions) ? content.actions.filter((item): item is { label: string; href: string } => Boolean(item && typeof item === "object" && typeof (item as { label?: unknown }).label === "string" && typeof (item as { href?: unknown }).href === "string")) : [];
+    return <div className="mx-auto max-w-xl rounded-xl border border-tertiary/35 bg-tertiary-container/10 px-3.5 py-3"><div className="mb-1.5 flex flex-wrap items-center gap-2"><Sparkles size={15} className="text-tertiary" /><MonoMeta>{cardType.replaceAll("_", " ")}</MonoMeta><SynChip tone="tertiary">Next action</SynChip></div><p className="text-sm leading-6 text-on-surface">{text || "A governed review action is ready."}</p>{actions.length ? <div className="mt-3 flex flex-wrap gap-2">{actions.map(action => <Link key={`${action.label}:${action.href}`} href={action.href.startsWith("/") ? action.href : "/synthesis"} className="inline-flex items-center gap-1.5 rounded-md bg-secondary px-3 py-2 text-xs font-bold text-on-secondary hover:opacity-90">{action.label}<ArrowUpRight size={13} /></Link>)}</div> : null}{message.proposalId ? <Link href="/synthesis/desk" className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-secondary">Open review <ArrowUpRight size={13} /></Link> : null}</div>;
+  }
   const agent = message.authorType === "AGENT";
   return (
     <div className={`flex ${agent ? "justify-start" : "justify-end"}`}>

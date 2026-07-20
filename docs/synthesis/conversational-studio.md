@@ -148,7 +148,7 @@ token-by-token streaming (event-level first).
   the truthful chain `UPLOADED → PARSING → EXTRACTING → {SUCCEEDED | VALID_EMPTY
   | PARTIAL | FAILED} → HUMAN_REVIEWED`. Updated in place, revision-tracked. **A
   failed extraction renders as failed, never as silent completion.**
-- **`CARD`** — `{ cardType, payload, actions[] }`. v1 types: `CONTRADICTION`,
+- **`CARD`** — `{ cardType, payload, actions[] }`. v1 types: `EVIDENCE`, `CONTRADICTION`,
   `SCAFFOLD_REVIEW`, `PROPOSAL`, `GATE`, `PLAN`, `RECEIPT`, `BRIEF`,
   `PROBE_OFFER`. Every action carries its target endpoint and args; the client
   POSTs to the **existing** route. Cards are remote controls, not new APIs.
