@@ -38,6 +38,17 @@ describe('contract-bound execution hardening', () => {
     expect(supersededSpecificationFinding('APPROVED', 3)).toBeNull()
   })
 
+  it('never verifies a dynamic plan whose verdict matrix was never assessed', () => {
+    const outcome = dynamicCompletionOutcome(2, [{ status: 'PASS' }, { status: 'PASS' }], 'NOT_VERIFIED')
+    expect(outcome).toMatchObject({
+      completePlan: true,
+      allPassed: true,
+      status: 'NOT_VERIFIED',
+      reconciliationState: 'NOT_VERIFIED',
+    })
+    expect(outcome.status).not.toBe('VERIFIED_PASS')
+  })
+
   it('never verifies an all-skipped dynamic plan', () => {
     const outcome = dynamicCompletionOutcome(2, [{ status: 'SKIPPED' }, { status: 'SKIPPED' }], 'PASSED')
     expect(outcome).toMatchObject({

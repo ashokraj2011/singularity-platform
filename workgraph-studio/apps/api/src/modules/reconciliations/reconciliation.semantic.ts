@@ -108,14 +108,17 @@ export function parseSemanticJudgments(text: string): SemanticJudgment[] {
 
 export interface SemanticOverlayResult {
   verdicts: SemanticVerdict[]
-  status: 'PASSED' | 'PARTIAL' | 'FAILED'
-  summary: { total: number; pass: number; partial: number; fail: number; notApplicable: number; assessed: number }
+  status: 'PASSED' | 'PARTIAL' | 'FAILED' | 'NOT_VERIFIED'
+  summary: { total: number; pass: number; partial: number; fail: number; notApplicable: number; notVerified: number; assessed: number }
 }
 
 /**
  * Overlay semantic judgments on the deterministic verdicts. NOT_SATISFIED → FAIL; SATISFIED lifts a
  * PASS/PARTIAL to PASS; PARTIAL caps a PASS/PARTIAL at PARTIAL; UNCLEAR (or no judgment) keeps the
- * deterministic verdict. Semantic never overturns a structural FAIL (e.g. unclaimed) or NOT_APPLICABLE.
+ * deterministic verdict. Semantic never overturns a structural FAIL (e.g. unclaimed), a
+ * NOT_APPLICABLE, or a NOT_VERIFIED — the last because an LLM asked to judge a requirement that
+ * carries no claim at all can still answer SATISFIED, and a model opinion is not evidence that
+ * something unassessed is in fact done.
  */
 export function applySemanticJudgments(current: SemanticVerdict[], judgments: SemanticJudgment[]): SemanticOverlayResult {
   const byReq = new Map(judgments.map((j) => [j.requirementId, j]))
@@ -126,7 +129,7 @@ export function applySemanticJudgments(current: SemanticVerdict[], judgments: Se
     assessed++
     const why = (fallback: string) => `Semantic review: ${j.rationale ?? fallback}`
     if (j.judgment === 'NOT_SATISFIED') return { ...v, verdict: 'FAIL', rationale: why('requirement not satisfied by the implementation.') }
-    if (v.verdict === 'FAIL' || v.verdict === 'NOT_APPLICABLE') return v // don't overturn structural facts
+    if (v.verdict === 'FAIL' || v.verdict === 'NOT_APPLICABLE' || v.verdict === 'NOT_VERIFIED') return v // don't overturn structural facts
     if (j.judgment === 'PARTIAL') return { ...v, verdict: 'PARTIAL', rationale: why('partially satisfied.') }
     return { ...v, verdict: 'PASS', rationale: why('satisfied by the implementation.') } // SATISFIED
   })
@@ -135,10 +138,17 @@ export function applySemanticJudgments(current: SemanticVerdict[], judgments: Se
   const mustFail = verdicts.some((v) => v.priority === 'MUST' && v.verdict === 'FAIL')
   const anyFail = verdicts.some((v) => v.verdict === 'FAIL')
   const anyPartial = verdicts.some((v) => v.verdict === 'PARTIAL')
-  const status = mustFail ? 'FAILED' : anyFail || anyPartial ? 'PARTIAL' : 'PASSED'
+  const anyNotVerified = verdicts.some((v) => v.verdict === 'NOT_VERIFIED')
+  const status: SemanticOverlayResult['status'] = mustFail
+    ? 'FAILED'
+    : anyFail || anyPartial
+      ? 'PARTIAL'
+      : anyNotVerified || verdicts.length === 0
+        ? 'NOT_VERIFIED'
+        : 'PASSED'
   return {
     verdicts,
     status,
-    summary: { total: verdicts.length, pass: count('PASS'), partial: count('PARTIAL'), fail: count('FAIL'), notApplicable: count('NOT_APPLICABLE'), assessed },
+    summary: { total: verdicts.length, pass: count('PASS'), partial: count('PARTIAL'), fail: count('FAIL'), notApplicable: count('NOT_APPLICABLE'), notVerified: count('NOT_VERIFIED'), assessed },
   }
 }

@@ -72,4 +72,21 @@ describe('applyTestResults', () => {
     expect(r.summary.testsPassed).toBe(0)
     expect(r.summary.testsFailed).toBe(0)
   })
+
+  // Passing tests never lift a NOT_VERIFIED verdict, so a matrix that still holds one proved
+  // nothing about that requirement. If such a run rolled up to PASSED, dynamicCompletionOutcome
+  // would promote it to VERIFIED_PASS and mark the Work Item VERIFIED.
+  it('does not roll an unassessed matrix up to PASSED even when every executed test passed', () => {
+    const unassessed = [
+      { requirementId: 'REQ-1', priority: 'MUST', verdict: 'NOT_VERIFIED', rationale: 'no claims submitted' },
+      { requirementId: 'REQ-2', priority: 'SHOULD', verdict: 'NOT_VERIFIED', rationale: 'no claims submitted' },
+    ]
+    const r = applyTestResults(unassessed, [
+      { requirementIds: ['REQ-1'], status: 'PASS' },
+      { requirementIds: ['REQ-2'], status: 'PASS' },
+    ])
+    expect(r.verdicts.every((v) => v.verdict === 'NOT_VERIFIED')).toBe(true)
+    expect(r.status).toBe('NOT_VERIFIED')
+    expect(r.status).not.toBe('PASSED')
+  })
 })
