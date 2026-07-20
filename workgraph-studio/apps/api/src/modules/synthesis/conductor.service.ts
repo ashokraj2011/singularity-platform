@@ -14,6 +14,9 @@ import { listMessages, appendMessage } from './message.service'
 import { listProposals } from './proposal.service'
 import { getWorkspace } from './workspace.service'
 import { runAgentTurn, type AgentTurnResult } from './synthesis-agent.service'
+import { createBoard, listBoards } from '../studio/board.service'
+import { ingest, MAX_INGEST_BYTES } from '../studio/board-ingestion.service'
+import { ValidationError } from '../../lib/errors'
 
 export type ConductorPhase = 'FRAME' | 'EVIDENCE' | 'DECIDE' | 'SPECIFY' | 'GENERATE' | 'QUESTION' | 'CHITCHAT'
 export type ConductorRoute = 'QUESTION' | 'EVIDENCE' | 'SPECIFY' | 'GENERATE' | 'CONVERSATION'
@@ -122,4 +125,51 @@ export async function getPane(workspaceId: string) {
 export async function getThreadSnapshot(workspaceId: string, threadId: string) {
   const messages = await listMessages(workspaceId, threadId)
   return { items: messages.items, headSeq: messages.items.at(-1)?.seq ?? 0 }
+}
+
+function documentKind(filename: string): string | null {
+  const extension = filename.toLowerCase().slice(filename.lastIndexOf('.'))
+  return ({
+    '.txt': 'TEXT', '.md': 'MARKDOWN', '.markdown': 'MARKDOWN', '.pdf': 'PDF',
+    '.docx': 'DOCX', '.pptx': 'PPTX', '.xlsx': 'XLSX',
+  } as Record<string, string>)[extension] ?? null
+}
+
+export interface AttachmentInput {
+  filename: string
+  content: Buffer
+}
+
+/** Attach a source to the initiative and announce it in the active thread. */
+export async function attachSource(workspaceId: string, threadId: string, input: AttachmentInput, actor: string) {
+  if (input.content.length > MAX_INGEST_BYTES) throw new ValidationError('Source file exceeds the 500 KB ingestion limit.')
+  const kind = documentKind(input.filename)
+  if (!kind) throw new ValidationError('Supported source files are .txt, .md, .pdf, .docx, .pptx, and .xlsx.')
+  const workspace = await getWorkspace(workspaceId)
+  const boards = await listBoards(workspace.specificationProjectId)
+  const board = boards.items[0] ?? await createBoard(workspace.specificationProjectId, 'Synthesis Sources', actor)
+  const artifact = await ingest(board.id, 'main', {
+    kind,
+    filename: input.filename,
+    content: input.content,
+  }, { actorId: actor })
+  const message = await appendMessage(workspaceId, threadId, {
+    role: 'SYSTEM',
+    authorType: 'SYSTEM',
+    content: {
+      kind: 'ATTACHMENT',
+      attachment: {
+        artifactId: artifact.id,
+        boardId: board.id,
+        filename: artifact.filename,
+        documentKind: artifact.kind,
+        status: artifact.status,
+        contentHash: artifact.contentHash,
+        parseSummary: artifact.parseSummary,
+      },
+    },
+    correlation: { artifactId: artifact.id, boardId: board.id },
+    coalesceKey: `attachment:${threadId}:${artifact.contentHash}`,
+  })
+  return { artifact, message: message.message, boardId: board.id, deduped: message.deduped }
 }

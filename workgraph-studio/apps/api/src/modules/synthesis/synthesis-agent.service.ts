@@ -70,7 +70,7 @@ export async function runAgentTurn(workspaceId: string, threadId: string, roleRa
     correlation = resp.correlation as unknown as Record<string, unknown>
     tokens = (resp.tokensUsed ?? {}) as unknown as Record<string, unknown>
   } catch (err) {
-    const note = await appendMessage(workspaceId, threadId, { role: 'SYSTEM', authorType: 'SYSTEM', content: { error: (err as Error).message, agentRole: cfg.role }, contextManifestId: manifest.id })
+    const note = await appendMessage(workspaceId, threadId, { role: 'SYSTEM', authorType: 'SYSTEM', content: { kind: 'SYSTEM_STATE', state: 'FAILED', error: (err as Error).message, agentRole: cfg.role }, contextManifestId: manifest.id })
     return { message: note.message, disposition: { kind: 'BLOCKED', reason: 'governed turn failed' }, proposalId: null, manifestId: manifest.id }
   }
 
@@ -97,7 +97,14 @@ export async function runAgentTurn(workspaceId: string, threadId: string, roleRa
 
   const assistant = await appendMessage(workspaceId, threadId, {
     role: 'ASSISTANT', authorType: 'AGENT', agentRole: cfg.role,
-    content: { text: parsed.message, disposition, citations: parsed.citations },
+    content: {
+      kind: proposalId ? 'CARD' : 'TEXT',
+      ...(proposalId ? {
+        cardType: 'PROPOSAL',
+        actions: [{ label: 'Review proposal', href: '/synthesis/desk' }],
+      } : {}),
+      text: parsed.message, disposition, citations: parsed.citations,
+    },
     contextManifestId: manifest.id, proposalId, correlation, tokens,
   })
   return { message: assistant.message, disposition, proposalId, manifestId: manifest.id }

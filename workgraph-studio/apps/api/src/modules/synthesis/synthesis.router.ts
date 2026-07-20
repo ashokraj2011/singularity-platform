@@ -6,6 +6,7 @@
  */
 import { Router, type Request, type Response, type NextFunction } from 'express'
 import { z } from 'zod'
+import multer from 'multer'
 import { validate } from '../../middleware/validate'
 import { createWorkspace, getWorkspace, listWorkspaces, createThread, listThreads } from './workspace.service'
 import { appendMessage, listMessages } from './message.service'
@@ -16,7 +17,8 @@ import { addBlock, updateBlock, removeBlock, pinBlock } from './block.service'
 import { createWorkspaceProposal, listProposals, getProposal, decideProposalItems, rebaseProposalItem } from './proposal.service'
 import { runAgentTurn } from './synthesis-agent.service'
 import { ask, askHistory } from './ask.service'
-import { converse, getPane, getThreadSnapshot } from './conductor.service'
+import { attachSource, converse, getPane, getThreadSnapshot } from './conductor.service'
+import { MAX_INGEST_BYTES } from '../studio/board-ingestion.service'
 
 export const synthesisRouter: Router = Router()
 
@@ -242,6 +244,54 @@ synthesisRouter.get('/workspaces/:workspaceId/pane', wrap(async (req, res) => {
 synthesisRouter.get('/workspaces/:workspaceId/threads/:threadId/snapshot', wrap(async (req, res) => {
   res.json(await getThreadSnapshot(String(req.params.workspaceId), String(req.params.threadId)))
 }))
+synthesisRouter.get('/workspaces/:workspaceId/threads/:threadId/stream', async (req, res) => {
+  const workspaceId = String(req.params.workspaceId)
+  const threadId = String(req.params.threadId)
+  const initial = typeof req.query.afterSeq === 'string' ? Number(req.query.afterSeq) : 0
+  let afterSeq = Number.isFinite(initial) && initial >= 0 ? initial : 0
+  let closed = false
+  let ticking = false
+  const startedAt = Date.now()
+  let timer: ReturnType<typeof setInterval> | undefined
+  const finish = () => { closed = true; if (timer) clearInterval(timer); if (!res.writableEnded) res.end() }
+  const send = (event: string, data: unknown) => {
+    if (!closed && !res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+  }
+  const tick = async () => {
+    if (closed || ticking) return
+    ticking = true
+    try {
+      const snapshot = await getThreadSnapshot(workspaceId, threadId)
+      const fresh = snapshot.items.filter((item) => item.seq > afterSeq)
+      for (const item of fresh) send('message.appended', item)
+      afterSeq = Math.max(afterSeq, snapshot.headSeq)
+      send('stream.heartbeat', { headSeq: afterSeq })
+      if (Date.now() - startedAt >= 25_000) finish()
+    } catch (error) {
+      if (!closed) { send('stream.error', { message: error instanceof Error ? error.message : 'Thread stream failed.' }); finish() }
+    } finally { ticking = false }
+  }
+  res.status(200).set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' })
+  res.flushHeaders()
+  res.on('close', finish)
+  timer = setInterval(() => { void tick() }, 1000)
+  send('stream.ready', { workspaceId, threadId, afterSeq })
+  await tick()
+})
+
+const attachmentUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_INGEST_BYTES } })
+synthesisRouter.post('/workspaces/:workspaceId/threads/:threadId/attachments', (req, res, next) => {
+  attachmentUpload.single('file')(req, res, (error: unknown) => {
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      res.status(413).json({ code: 'PAYLOAD_TOO_LARGE', message: 'Source file exceeds the 500 KB ingestion limit.' }); return
+    }
+    if (error) { next(error); return }
+    const file = req.file
+    if (!file) { res.status(400).json({ code: 'BAD_REQUEST', message: 'No file uploaded (expected multipart field "file").' }); return }
+    void attachSource(String(req.params.workspaceId), String(req.params.threadId), { filename: file.originalname, content: file.buffer }, userIdOf(req))
+      .then((result) => res.status(201).json(result)).catch(next)
+  })
+})
 
 // ── Ask Synthesis (5.1) — always-available Facilitator sidecar; project- OR session-scoped ─
 const askSchema = z.object({

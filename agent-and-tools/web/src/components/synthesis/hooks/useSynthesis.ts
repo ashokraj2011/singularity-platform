@@ -294,6 +294,36 @@ export async function uploadStudioArtifact(
   return parsed as UploadedStudioArtifact;
 }
 
+export interface SynthesisAttachmentResponse {
+  artifact: UploadedStudioArtifact;
+  boardId: string;
+  message: unknown;
+  deduped: boolean;
+}
+
+/** Upload a source directly from the guided conversation into its initiative board. */
+export async function uploadSynthesisAttachment(
+  workspaceId: string,
+  threadId: string,
+  file: File,
+): Promise<SynthesisAttachmentResponse> {
+  const body = new FormData();
+  body.append("file", file);
+  const url = `/api/workgraph/synthesis/workspaces/${encodeURIComponent(workspaceId)}/threads/${encodeURIComponent(threadId)}/attachments`;
+  let response: Response;
+  try {
+    response = await fetch(apiPath(url), { method: "POST", headers: authHeaders(), body });
+  } catch (cause) {
+    throw new Error(cause instanceof Error ? cause.message : "Source upload failed");
+  }
+  const { raw, parsed, parseError } = await readResponseBody(response);
+  if (!response.ok) throw new Error(responseMessage(parsed, raw, `Source upload failed (${response.status})`));
+  if (parseError || !parsed || typeof parsed !== "object") {
+    throw new Error(invalidApiResponseMessage(url, raw, parseError));
+  }
+  return parsed as SynthesisAttachmentResponse;
+}
+
 /* ─── Specification + work items (the spec/traceability spine) ───────────── */
 
 export function useProjectSpec(

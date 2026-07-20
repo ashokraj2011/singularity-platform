@@ -101,6 +101,10 @@ const conversationalStudio = fs.readFileSync(
 assert.match(conversationalStudio, /converse/, "Synthesis Studio should use the conductor endpoint");
 assert.match(conversationalStudio, /Workspace pane/, "Synthesis Studio should expose the durable workspace pane");
 assert.match(conversationalStudio, /Add source/, "Synthesis Studio should link users to source intake");
+assert.match(conversationalStudio, /stream/, "Synthesis Studio should subscribe to the authenticated thread stream");
+assert.match(conversationalStudio, /uploadSynthesisAttachment/, "Synthesis Studio should support direct in-thread source attachment");
+assert.match(conversationalStudio, /kind === "ATTACHMENT"/, "Synthesis Studio should render attachment lifecycle messages");
+assert.match(conversationalStudio, /kind === "CARD"/, "Synthesis Studio should render proposal card messages");
 
 const synthesisHub = fs.readFileSync(
   path.join(process.cwd(), "src/app/synthesis/hub/page.tsx"),

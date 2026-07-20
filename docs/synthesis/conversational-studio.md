@@ -1,9 +1,9 @@
 # The Conversational Studio ("the big screen")
 
-**Status:** the guarded document-ingestion slice and initial conversational
-conductor/dual-pane surface are implemented in this checkout. SSE streaming,
-card protocol, and full in-thread attachment lifecycle remain planned follow-on
-slices. The specification was introduced in
+**Status:** the guarded document-ingestion slice, initial conversational
+conductor/dual-pane surface, event-level SSE stream, proposal-card rendering,
+and direct in-thread source attachment are implemented in this checkout. The
+specification was introduced in
 `dca399eb` (#566) and its current implementation baseline was refreshed against
 `main` at `90eb9fb9` (#567).
 
@@ -13,9 +13,9 @@ driver, three agents, the proposal apply-registry and ask-with-history. The
 `experience/` module provides intake sessions, artifact validation → transmute →
 canonical-document, scaffold accept and the morning brief.
 
-What remains is the event-stream and card protocol that will deepen the initial
-conductor: SSE streaming, live gate/plan cards, and true in-thread attachment
-lifecycles. The first usable conductor surface now unifies the existing agent
+What remains is the deeper card protocol and attachment lifecycle work: live
+gate/plan/contradiction cards, automatic evidence turns, and human-reviewed
+attachment state transitions. The first usable conductor surface now unifies the existing agent
 turn, manifest, proposal, document, and context-reference services without
 adding a parallel mutation path.
 
@@ -47,7 +47,7 @@ produced nothing durable.
 | Agents | FACILITATOR, EVIDENCE_CURATOR, REQUIREMENTS_EDITOR @ L2_PROPOSE | Conductor as router, not a fourth persona |
 | Proposals | create / decide / rebase; apply-registry with EDIT_DOC_BLOCK + ADD_DOC_BLOCK wired, other verbs throwing by design | Wire the remaining verbs; inline proposal rendering |
 | Intake | session / turn / scaffold / accept | Conducted *through* the thread instead of a separate surface |
-| Artifacts | validation reports, transmute, canonical-document (`experience.router.ts:77,81`) | In-thread upload → truthful ATTACHMENT lifecycle + completion CARD |
+| Artifacts | validation reports, transmute, canonical-document (`experience.router.ts:77,81`) | In-thread upload → truthful ATTACHMENT message; deeper completion cards remain planned |
 | Ask | `/synthesis/ask` + history | Routed by the Conductor when a turn is a question |
 | Gates & generation | compile + gate; plans/validate/apply + receipts | GATE / PLAN card protocol; cards call existing endpoints |
 | Happy path | 7-step guided order (#565) | The same 7 steps become the thread's phase chips |
@@ -99,8 +99,11 @@ working thread, routes each turn deterministically to the Facilitator, Evidence
 Curator, or Requirements Editor, records the routing decision as a fenced
 `SYSTEM_STATE` message, and delegates execution to the existing governed agent
 turn. The right-hand pane is a server-backed projection of phase, next action,
-sources, documents, proposals, and pending review. The pane currently refreshes
-by polling; SSE and in-thread binary attachments remain follow-on work.
+sources, documents, proposals, and pending review. The thread also exposes an
+authenticated event-level SSE stream with a bounded polling projector and
+heartbeat, plus a multipart attachment route that reuses guarded board
+ingestion. Proposal-producing turns render as CARD messages. Pane and artifact
+state events remain follow-on work.
 
 ### Invariant the spec correctly respects
 
@@ -158,14 +161,16 @@ its outcome and disables its actions (targets are already idempotent server-side
 
 ## The Conductor
 
-`POST /synthesis/workspaces/:id/threads/:tid/converse { text?, attachments[]? }`
+`POST /synthesis/workspaces/:id/threads/:tid/converse { text }` plus
+`POST /synthesis/workspaces/:id/threads/:tid/attachments` (multipart field
+`file`) for direct source attachment.
 — the screen's single entry point. `agent-turn` remains for direct/tool use.
 
 **Routing, deterministic first:**
 
-1. **Attachments present** → ingestion per file; ATTACHMENT messages appended,
-   lifecycle streamed; on completion an Evidence Curator turn runs over the
-   extraction with any text as framing.
+1. **Attachments present** → the attachment route ingests the file through the
+   guarded board pipeline and appends an ATTACHMENT message. Automatic Evidence
+   Curator turns after extraction remain a follow-on slice.
 2. **Card follow-ups** (`inReplyTo`) → straight to that card's engine, no
    classification.
 3. **Interrogatives** → `ask.service`, scoped to the workspace's context-refs;
@@ -181,12 +186,12 @@ classifier output is logged with the turn so routing itself is auditable.
 Misroutes are corrected conversationally, which re-routes with the classifier
 bypassed.
 
-**Streaming.** SSE per thread: `message.appended`, `message.updated`,
-`pane.updated`, `phase.changed`, `turn.status`. v1 streams at **event
-granularity** — a turn appears when complete, with honest THINKING/RUNNING status
-between. This ships weeks earlier than token streaming and leaves the
-governed-turn contract untouched. Token-level is a v1.1 change inside
-`executeGovernedTurn` only.
+**Streaming.** SSE per thread: `message.appended` is implemented now, with
+heartbeats and a bounded polling projector. `message.updated`, `pane.updated`,
+`phase.changed`, and `turn.status` remain the next event-level additions. The
+stream is event-granular — a turn appears when complete — and leaves the
+governed-turn contract untouched. Token-level streaming is a later change
+inside `executeGovernedTurn` only.
 
 **Pane.** `GET /synthesis/workspaces/:id/pane` — a read-model projection,
 event-refreshed: counters, top-N claims by stakes×recency with confidence,
@@ -229,15 +234,15 @@ of the conversational work** for the reasons in the correction above.
   under `STUDIO_INGEST_STORAGE_ROOT`, call the existing ingest endpoint with its
   relative `storageRef`, and see extracted claims.*
 - **S1 — Message kinds + SSE + pane (partially implemented).** The pane read
-  model, thread projection, polling refresh, and system-state route messages are
-  shipped. SSE fan-out and formal message-kind migration remain. *Demo: a live
-  thread with a live pane.*
+  model, thread projection, polling refresh, system-state route messages, and
+  bounded authenticated SSE stream are shipped. Pane/event fan-out and formal
+  message-kind migration remain. *Demo: a live thread with a live pane.*
 - **S2 — Conductor v1 + intake-in-thread (initial slice implemented).**
   Deterministic routes, governed role delegation, and the no-role-picker Studio
   surface are shipped. The five-stage intake protocol, classifier, and
   SCAFFOLD_REVIEW card remain. *Demo: blank thread → routed governed turn.*
-- **S3 — Evidence flow (1.5 wk).** In-thread ingestion using S0; Evidence Curator
-  auto-turn on completion; CONTRADICTION and PROPOSAL cards; PROBE_OFFER. Wire
+- **S3 — Evidence flow (1.5 wk).** Evidence Curator auto-turn on completion;
+  CONTRADICTION and PROPOSAL cards; PROBE_OFFER. Wire
   `PROPOSE_CLAIM` + `FLAG_CONTRADICTION`. *Demo: drop two documents, adjudicate a
   real contradiction.*
 - **S4 — Gates + generation (1.5 wk).** Phase derivation; GATE and PLAN cards on
