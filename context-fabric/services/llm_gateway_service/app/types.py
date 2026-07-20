@@ -112,6 +112,31 @@ class ChatCompletionRequest(BaseModel):
     stage:    Optional[str] = None
     purpose:  Optional[str] = None
 
+    # WHO this call is for. task_tag answered "what kind of work"; these answer
+    # "on whose behalf". Without them "what did this user's LLM traffic cost
+    # today" is not a hard query, it is an impossible one — no LLM record
+    # anywhere in the platform carried an actor.
+    #
+    # ATTRIBUTION, NOT AUTHORIZATION. The gateway sits behind a single shared
+    # bearer, so any caller can claim any actor_id or tenant_id. Sufficient for
+    # cost reporting and debugging; categorically insufficient to found tenant
+    # isolation on. Do not build RLS on these.
+    #
+    # Convention once callers migrate: actor_id is never null. A human is a user
+    # id; a background call is "system:<service-name>". That keeps null meaning
+    # "somebody forgot to propagate it" rather than blurring into "no human".
+    actor_id:   Optional[str] = None
+    tenant_id:  Optional[str] = None
+    # The conversation this turn belongs to, when there is one. Carried so a
+    # cost row can be grouped by conversation without joining back through CF.
+    session_id: Optional[str] = None
+
+    # Soft routing hint: "cheap" | "standard" | "deep". Distinct from
+    # model_alias, which is a hard pin that skips policy entirely. A tier says
+    # "pick something in this class for me"; policy resolves it against the
+    # catalog. Inert until the policy engine ships.
+    model_tier: Optional[str] = None
+
 
 class ToolCall(BaseModel):
     id: str
@@ -163,6 +188,13 @@ class EmbeddingsRequest(BaseModel):
     model_alias: Optional[str] = None
     provider:    Optional[str] = None
     model:       Optional[str] = None
+    # Drift guard, mirroring ChatCompletionRequest. Absent here until now, and
+    # the omission mattered MORE on this endpoint than on chat: a silent
+    # embedding-model change corrupts a vector index rather than producing one
+    # visibly-off answer. Mixing 1536-dim mock output into a real index is
+    # exactly the failure a hard 409 should have been preventing all along.
+    expected_provider: Optional[str] = None
+    expected_model:    Optional[str] = None
 
     input: List[str]
 
@@ -176,6 +208,14 @@ class EmbeddingsRequest(BaseModel):
     stage:    Optional[str] = None
     purpose:  Optional[str] = None
 
+    # Same caller identity as ChatCompletionRequest. See the note there: these
+    # are attribution, not authorization.
+    actor_id:   Optional[str] = None
+    tenant_id:  Optional[str] = None
+    session_id: Optional[str] = None
+
+    model_tier: Optional[str] = None
+
 
 class EmbeddingsResponse(BaseModel):
     embeddings: List[List[float]]
@@ -185,3 +225,8 @@ class EmbeddingsResponse(BaseModel):
     model_alias: Optional[str] = None
     input_tokens: int = 0
     latency_ms: int = 0
+    # Embeddings are the highest-volume traffic on this gateway and were the
+    # only endpoint with no cost path at all — compute_estimated_cost was never
+    # called here, so the largest cost line would have landed in llm_calls with
+    # cost_usd NULL. None when the catalog prices this model at nothing.
+    estimated_cost: Optional[float] = None

@@ -263,6 +263,32 @@ def compute_estimated_cost(
     return round(cost, 6)
 
 
+def compute_embedding_cost(alias: Optional[str], input_tokens: int) -> Optional[float]:
+    """Cost for an embedding call, which has input tokens only.
+
+    Separate from compute_estimated_cost deliberately. That function requires
+    BOTH prices and returns None if either is missing — correct for chat, wrong
+    here: an embedding model produces no output, so a catalog author has every
+    reason to omit outputPricePerMtok. Reusing it would have produced a cost
+    path that silently returns None for any realistically-configured embedding
+    model, which is worse than having no cost path at all because it looks like
+    it works.
+
+    Embeddings are the highest-volume traffic on this gateway, so this is the
+    largest cost line in the platform.
+    """
+    if not alias:
+        return None
+    try:
+        entry = resolve_alias(alias)
+    except ProviderConfigError:
+        return None
+    input_rate = _safe_price_per_mtok(entry.get("inputPricePerMtok"))
+    if input_rate is None:
+        return None
+    return round((input_tokens * input_rate) / 1_000_000.0, 6)
+
+
 def _safe_price_per_mtok(value: Any) -> Optional[float]:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
