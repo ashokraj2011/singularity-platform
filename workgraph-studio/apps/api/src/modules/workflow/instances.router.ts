@@ -1602,7 +1602,10 @@ function artifactRefYaml(refs: CopilotArtifactRef[], pad: string): string[] {
   return out
 }
 
-function buildCopilotWorkflowExport(
+// Exported for unit tests: this is a PURE function (already-loaded instance +
+// already-composed prompts in, strings out), so the emitted artifact can be
+// asserted without Postgres, context-fabric or a network.
+export function buildCopilotWorkflowExport(
   instance: { id: string; name: string; context: unknown },
   computed: { stages: CopilotExportStage[]; repo: string; story: string; workCode: string },
   extras: { fromPhase?: string; composedByNodeId?: Map<string, string>; completedByNodeId?: Map<string, CompletedPhaseData> } = {},
@@ -1675,6 +1678,11 @@ function buildCopilotWorkflowExport(
     '#                 run each:  copilot -p "<prompt>" --allow-all   (in order).',
     '#                 each stage lists `reads[]` (input docs + paths to open) and',
     '#                 `produces[]` (docs to write: name, format, save-path, template).',
+    "#   Each `stages[].prompt` is SELF-CONTAINED: it embeds this capability's",
+    '#                 world model — the repo\'s own agent rules (CLAUDE.md /',
+    '#                 AGENTS.md), build system and test commands — so an',
+    '#                 off-platform run is grounded exactly like an in-platform',
+    '#                 one, with no call back to the platform to resolve it.',
     '#   Documents live at each stage\'s produces[].path on repository.branch',
     '#   (deliverables/<workItem>/<role>/…) — read/write the real files there.',
     '#',
