@@ -70,14 +70,32 @@ describe("cost-worker llm_calls INSERT", () => {
     expect(source).toContain("if (inserted.length === 0) return;");
   });
 
-  it("prefers the rate card and falls back to the emitter's catalog price", () => {
-    // Order matters: rate_card first keeps existing behaviour bit-for-bit, and
-    // the catalog price only fills rows that would otherwise be unpriced.
-    const rateBranch = source.indexOf('priceSource = "rate_card"');
+  it("prefers the payload's catalog price and falls back to the rate card", () => {
+    // Order matters, and it is the REVERSE of what shipped in M75. The gateway
+    // catalog prices per alias; rate_card is keyed (provider, model) and cannot
+    // express two aliases on one model priced differently. The catalog price is
+    // the one the gateway actually charged, so it wins; rate_card only prices
+    // payloads that carry no price of their own.
+    //
+    // Behavioural coverage of the same rule is in cost-worker-price-precedence
+    // .test.ts, which runs the real function against a mocked db. This
+    // assertion is the cheap structural backstop: it fails if someone reorders
+    // the branches back without touching behaviour-visible code.
     const catalogBranch = source.indexOf("costUsd = p.cost_usd;");
-    expect(rateBranch).toBeGreaterThan(-1);
-    expect(catalogBranch).toBeGreaterThan(rateBranch);
+    const rateBranch = source.indexOf('priceSource = "rate_card"');
+    expect(catalogBranch).toBeGreaterThan(-1);
+    expect(rateBranch).toBeGreaterThan(catalogBranch);
     expect(source).toContain('p.price_source ?? "emitter_catalog"');
+  });
+
+  it("does not query the rate card when the payload already carries a price", () => {
+    // The lookup must sit INSIDE the fallback branch, not before it. A rate
+    // card SELECT on every call would be a wasted round trip per LLM egress on
+    // the hottest path audit-gov has, and it would tempt a future edit into
+    // reusing that row for a price it did not produce.
+    const catalogBranch = source.indexOf("costUsd = p.cost_usd;");
+    const lookup = source.indexOf("FROM audit_governance.rate_card");
+    expect(lookup).toBeGreaterThan(catalogBranch);
   });
 
   it("never writes prompt or response text", () => {
