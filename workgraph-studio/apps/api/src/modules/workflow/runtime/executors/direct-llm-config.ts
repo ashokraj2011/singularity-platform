@@ -389,19 +389,34 @@ export function normalizeDirectLlmConfig(rawValue: unknown, failures: DirectLlmC
  * gateway, so it carries no task tag, no gateway audit line and no cost
  * attribution -- see docs/llm-egress-boundary.md.
  *
- * DEFAULTS TO ALLOWED, because unlike context-fabric's direct route there is no
- * alternative egress in this executor to fall through to: turning it off with no
- * migration in place would break every DIRECT_LLM_TASK rather than reroute it.
- * This is a POLICY CONTROL, not the migration. A deployment that requires all
- * generation to pass the gateway can set WORKGRAPH_ALLOW_DIRECT_LLM=false and
- * have those nodes fail loudly instead of egressing quietly.
+ * DEFAULTS TO REFUSED (changed 2026-07-20). The previous default was ALLOWED,
+ * justified by "no alternative egress exists in this executor to fall through
+ * to". That premise no longer holds: workgraph reaches governed, task-tagged,
+ * centrally-audited generation through Context Fabric --
+ * `contextFabricClient.executeGovernedSingleTurn` (src/lib/context-fabric/
+ * client.ts, POST /api/v1/execute-governed-single-turn) for one-shot calls, and
+ * AGENT_TASK -> /execute for loops. config.ts:127 records that workgraph's own
+ * LLM_GATEWAY_URL / LLM_GATEWAY_BEARER were retired precisely because one-shot
+ * calls route through CF now.
+ *
+ * Be precise about what that does and does not buy: the alternative egress is
+ * CF's governed API, NOT a gateway call this executor can make itself --
+ * workgraph has no gateway client at all. So an existing DIRECT_LLM_TASK node
+ * does not silently reroute when this flips. It FAILS, loudly, until someone
+ * moves it to AGENT_TASK or the governed single-turn path. That migration cost
+ * is the point rather than a regression: the alternative was quiet, untagged,
+ * uncosted provider traffic from a node nobody had to opt into.
+ *
+ * A deployment mid-migration sets WORKGRAPH_ALLOW_DIRECT_LLM=true to restore the
+ * old behaviour. Unrecognised values keep the safe default rather than being
+ * guessed at, so an ambiguous configuration never silently opens egress.
  *
  * Mock is exempt at the call sites: it reaches no network.
  */
 export function directLlmEgressAllowed(): boolean {
   const raw = (process.env.WORKGRAPH_ALLOW_DIRECT_LLM ?? '').trim().toLowerCase()
-  if (!raw) return true
-  return !['0', 'false', 'no', 'off'].includes(raw)
+  if (!raw) return false
+  return ['1', 'true', 'yes', 'on'].includes(raw)
 }
 
 export function credentialEnvAllowed(name: string): boolean {
