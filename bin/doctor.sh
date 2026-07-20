@@ -385,7 +385,7 @@ if db_up singularity; then
 else fail "cannot reach DB 'singularity'" "Postgres / creds"; fi
 
 if db_up workgraph; then
-  wg_seed_fix="(cd workgraph-studio/apps/api && DATABASE_URL=$wg_url npm run prisma:seed && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-sdlc-main.ts && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-sdlc-copilot.ts && DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-workbench-parents.ts)"
+  wg_seed_fix="(cd workgraph-studio/apps/api && DATABASE_URL=$wg_url npm run prisma:seed && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-sdlc-workbench.ts && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-sdlc-main.ts && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-sdlc-copilot.ts && SEED_CAPABILITY_ID=11111111-2222-3333-4444-555555555555 SEED_TEAM_ID=50000000-0000-0000-0000-000000000001 DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-spec-handoff.ts && DATABASE_URL=$wg_url npx ts-node --transpile-only prisma/seed-workbench-parents.ts)"
   missing_workflows=$(psql_rows workgraph "with expected(name, profile, type_key) as (values
     ('SDLC — Capability Implementation (Workbench)', 'workbench', 'SDLC'),
     ('Bug Fix (Workbench)', 'workbench', 'BUGFIX'),
@@ -394,7 +394,8 @@ if db_up workgraph; then
     ('Epic → Story (Parent → Child)', 'main', 'GENERAL'),
     ('SDLC implementation loop', 'workbench', 'SDLC'),
     ('SDLC Delivery', 'main', 'SDLC'),
-    ('SDLC (Copilot CLI)', 'main', 'SDLC')
+    ('SDLC (Copilot CLI)', 'main', 'SDLC'),
+    ('Spec Handoff (Off-Platform Development)', 'main', 'SDLC')
   )
   select e.name
   from expected e
@@ -402,7 +403,7 @@ if db_up workgraph; then
     on w.name=e.name and w.profile=e.profile and w.\"workflowTypeKey\"=e.type_key and w.\"archivedAt\" is null
   where w.id is null
   order by e.name")
-  [ -z "$missing_workflows" ] && pass "SDLC + demo workflow templates seeded (8/8)" \
+  [ -z "$missing_workflows" ] && pass "SDLC + demo workflow templates seeded (9/9)" \
     || fail "missing workflow seed(s): $(printf '%s' "$missing_workflows" | paste -sd ', ' -)" "$wg_seed_fix"
 
   event_verifier_workflow=$(psql_q workgraph "select count(*) from workflow_templates where name='Event Verifier · DOCUMENT_REVIEW' and profile='main' and \"workflowTypeKey\"='VERIFIER_DOCUMENT_REVIEW' and \"archivedAt\" is null")

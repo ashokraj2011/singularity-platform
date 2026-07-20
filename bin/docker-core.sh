@@ -744,6 +744,10 @@ run_seed() {
     -e SEED_PREFER_LAPTOP="${SEED_PREFER_LAPTOP:-true}" \
     ${SEED_COPILOT_REPO_URL:+-e SEED_COPILOT_REPO_URL="$SEED_COPILOT_REPO_URL"} \
     "$WORKGRAPH" sh -lc 'cd /app/apps/api && DATABASE_URL="$WORKGRAPH_DATABASE_URL_ADMIN" npx ts-node --transpile-only prisma/seed-sdlc-copilot.ts'
+  docker exec -T \
+    -e SEED_GOVERNANCE_MODE="${SEED_GOVERNANCE_MODE:-fail_open}" \
+    ${SEED_COPILOT_REPO_URL:+-e SEED_COPILOT_REPO_URL="$SEED_COPILOT_REPO_URL"} \
+    "$WORKGRAPH" sh -lc 'cd /app/apps/api && DATABASE_URL="$WORKGRAPH_DATABASE_URL_ADMIN" npx ts-node --transpile-only prisma/seed-spec-handoff.ts'
   docker exec -T "$WORKGRAPH" sh -lc 'cd /app/apps/api && DATABASE_URL="$WORKGRAPH_DATABASE_URL_ADMIN" npx ts-node --transpile-only prisma/seed-workbench-parents.ts'
 
   if [ "$WITH_AUDIT" = "1" ] && docker ps --format '{{.Names}}' | grep -qx "$AUDIT_PG"; then
