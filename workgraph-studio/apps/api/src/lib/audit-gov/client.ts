@@ -23,6 +23,23 @@ function authHeader(): Record<string, string> {
   return token ? { authorization: `Bearer ${token}` } : {}
 }
 
+/**
+ * Tenant scope for audit-gov's query surface (see its tenant-scope.ts).
+ *
+ * The service token says WHICH SERVICE is asking; it does not say whose rows
+ * may be read. Every read here belongs to a specific workflow run, so the run's
+ * tenant is what scopes it.
+ *
+ * Omitted when the run has no tenant: audit-gov is the authority on what an
+ * unscoped read means (it logs one in shadow and refuses it under enforce).
+ * Substituting a placeholder here would silently scope the read to the wrong
+ * tenant, which is worse than a refusal the caller can see.
+ */
+function scopeHeader(tenantId?: string): Record<string, string> {
+  const tenant = (tenantId ?? '').trim()
+  return tenant ? { 'x-tenant-id': tenant } : {}
+}
+
 type AuditGovBody = UpstreamJsonBody
 
 async function readAuditGovBody(res: Response): Promise<AuditGovBody> {
@@ -37,13 +54,17 @@ function auditGovErrorText(path: string, status: number, body: AuditGovBody, max
   return `audit-gov ${path} -> ${status}: ${upstreamSnippet(text, max) || 'empty response body'}`
 }
 
-async function getJson<T>(path: string, query: Record<string, string | undefined>): Promise<T | null> {
+async function getJson<T>(
+  path: string,
+  query: Record<string, string | undefined>,
+  tenantId?: string,
+): Promise<T | null> {
   const url = new URL(path, config.AUDIT_GOV_URL.replace(/\/?$/, '/'))
   for (const [k, v] of Object.entries(query)) if (v) url.searchParams.set(k, v)
   try {
     const res = await fetch(url, {
       method: 'GET',
-      headers: authHeader(),
+      headers: { ...authHeader(), ...scopeHeader(tenantId) },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
     const body = await readAuditGovBody(res)
@@ -103,13 +124,14 @@ export interface UpstreamResult<T> {
 export async function getJsonStrict<T>(
   path: string,
   query: Record<string, string | undefined> = {},
+  tenantId?: string,
 ): Promise<UpstreamResult<T>> {
   const url = new URL(path, config.AUDIT_GOV_URL.replace(/\/?$/, '/'))
   for (const [k, v] of Object.entries(query)) if (v) url.searchParams.set(k, v)
   try {
     const res = await fetch(url, {
       method: 'GET',
-      headers: authHeader(),
+      headers: { ...authHeader(), ...scopeHeader(tenantId) },
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
     const body = await readAuditGovBody(res)
@@ -164,13 +186,13 @@ export interface AuditEvent {
   created_at: string
 }
 
-export async function fetchEventsForInstance(instanceId: string, limit = 200): Promise<AuditEvent[]> {
+export async function fetchEventsForInstance(instanceId: string, limit = 200, tenantId?: string): Promise<AuditEvent[]> {
   // Three lookups in parallel — workgraph events write subject_id=instanceId
   // via publishOutbox; cf / mcp events write trace_id=instanceId when callers
   // pass that through (best-effort).
   const [bySubject, byTrace] = await Promise.all([
-    getJson<{ items: AuditEvent[] }>('api/v1/audit/timeline', { subject_id: instanceId, limit: String(limit) }),
-    getJson<{ items: AuditEvent[] }>('api/v1/audit/timeline', { trace_id: instanceId, limit: String(limit) }),
+    getJson<{ items: AuditEvent[] }>('api/v1/audit/timeline', { subject_id: instanceId, limit: String(limit) }, tenantId),
+    getJson<{ items: AuditEvent[] }>('api/v1/audit/timeline', { trace_id: instanceId, limit: String(limit) }, tenantId),
   ])
   const seen = new Set<string>()
   const out: AuditEvent[] = []
@@ -183,11 +205,11 @@ export async function fetchEventsForInstance(instanceId: string, limit = 200): P
   return out
 }
 
-export async function fetchEventsForTrace(traceId: string, limit = 200): Promise<AuditEvent[]> {
+export async function fetchEventsForTrace(traceId: string, limit = 200, tenantId?: string): Promise<AuditEvent[]> {
   const body = await getJson<{ items: AuditEvent[] }>('api/v1/audit/timeline', {
     trace_id: traceId,
     limit: String(limit),
-  })
+  }, tenantId)
   return body?.items ?? []
 }
 
@@ -233,6 +255,7 @@ export async function fetchEvalFeedback(args: {
   blueprintSessionId?: string
   stageKey?: string
   failedOnly?: boolean
+  tenantId?: string
 }): Promise<EvalFeedback | null> {
   if (!args.workflowInstanceId && !args.blueprintSessionId) {
     return null
@@ -246,6 +269,7 @@ export async function fetchEvalFeedback(args: {
   const body = await getJson<{ feedback: EvalFeedback | null }>(
     'api/v1/engine/eval-feedback',
     params,
+    args.tenantId,
   )
   return body?.feedback ?? null
 }

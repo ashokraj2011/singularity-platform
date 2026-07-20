@@ -28,6 +28,64 @@ export const glossaryTermSchema = z.object({
   definition: z.string().trim().max(2000).default(''),
 })
 
+/**
+ * Requirement obligations — the checkable grammar beside the prose.
+ *
+ * A requirement's `statement` is prose, so "does this diff implement REQ-3" is only decidable by a
+ * judge. An obligation is a small TYPED assertion attached to that requirement which a machine can
+ * decide on its own. Prose stays authoritative for humans; obligations move individual, mechanical
+ * facts out of the judgement column so coverage becomes measurable rather than binary.
+ *
+ * Deliberately narrow — two kinds, both backed by machinery that already exists:
+ *   SYMBOL   — a named symbol of a given kind lives at a given path (tree-sitter AST index).
+ *   CONTRACT — a contract declared in `contracts[]` is well-formed, declares the named
+ *              operations/fields, and its artifact is delivered by the submission.
+ *
+ * HASH SAFETY: `obligations` is `.optional()` on the requirement, NOT `.default([])`. Zod omits an
+ * absent optional key entirely, so a requirement that declares no obligations parses to exactly the
+ * object it parsed to before this field existed, and `specificationContentHash` (which canonicalizes
+ * over present keys) is unchanged. A `.default([])` would inject `obligations: []` into every
+ * requirement and re-hash every frozen SpecificationVersion. See test/specification-obligations.test.ts.
+ */
+export const OBLIGATION_KINDS = ['SYMBOL', 'CONTRACT'] as const
+
+/**
+ * Symbol kinds the AST index actually classifies (mcp-server `kindOf`). Intentionally NOT including
+ * an `exported` assertion: the index stores no export flag — it is only recoverable by regexing the
+ * stored `signature` text, which misses `export { x }` re-export lists and is meaningless for Go
+ * (capitalisation) and Java (modifiers). Asserting exported-ness would be a check we cannot honour.
+ */
+export const SYMBOL_KINDS = ['function', 'class', 'method', 'interface', 'type', 'enum', 'const'] as const
+
+export const symbolObligationSchema = z.object({
+  id: idString,
+  kind: z.literal('SYMBOL'),
+  /** Repository-relative path the symbol is expected to live in. */
+  path: z.string().trim().min(1).max(600),
+  /** Symbol name, matched exactly. */
+  symbol: z.string().trim().min(1).max(200),
+  /** Optional expected symbol kind; omitted means "any kind". */
+  symbolKind: z.enum(SYMBOL_KINDS).optional(),
+})
+
+export const contractObligationSchema = z.object({
+  id: idString,
+  kind: z.literal('CONTRACT'),
+  /** id of an entry in the package's `contracts[]`. */
+  contractId: idString,
+  /** Optional repository path of the artifact carrying this contract; checked against the manifest. */
+  path: z.string().trim().max(600).optional(),
+  /** OPENAPI: `METHOD /path` operations that must be declared by the contract. */
+  operations: z.array(z.string().trim().min(1).max(300)).optional(),
+  /** JSON_SCHEMA: top-level property names that must be declared by the contract. */
+  fields: z.array(z.string().trim().min(1).max(200)).optional(),
+})
+
+export const requirementObligationSchema = z.discriminatedUnion('kind', [
+  symbolObligationSchema,
+  contractObligationSchema,
+])
+
 export const specificationRequirementSchema = z.object({
   id: idString,
   type: z.enum(REQUIREMENT_TYPES).catch('FUNCTIONAL').default('FUNCTIONAL'),
@@ -39,6 +97,8 @@ export const specificationRequirementSchema = z.object({
   objectiveRefs: z.array(z.string().uuid()).default([]),
   acceptanceCriterionIds: z.array(idString).default([]),
   testObligationIds: z.array(idString).default([]),
+  // Optional by design — see HASH SAFETY above. Never give this a default.
+  obligations: z.array(requirementObligationSchema).optional(),
 })
 
 export const acceptanceCriterionSchema = z.object({
@@ -173,6 +233,10 @@ export const specificationPackageBodySchema = z.object({
   decisions: z.array(specificationDecisionSchema).default([]),
 })
 
+export type SymbolObligation = z.infer<typeof symbolObligationSchema>
+export type ContractObligation = z.infer<typeof contractObligationSchema>
+export type RequirementObligation = z.infer<typeof requirementObligationSchema>
+export type SpecificationContract = z.infer<typeof specificationContractSchema>
 export type SpecificationRequirement = z.infer<typeof specificationRequirementSchema>
 export type AcceptanceCriterion = z.infer<typeof acceptanceCriterionSchema>
 export type TestObligation = z.infer<typeof testObligationSchema>

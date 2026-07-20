@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { iamApiBase } from "@/lib/platformServices";
 import { boundedSecondsEnv } from "@/lib/serverEnvBounds";
 import { jsonishMessage, readJsonish } from "./_json";
+import { readVerifiedCaller, type VerifiedCaller } from "./_tenant";
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -72,12 +73,34 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-export async function requireVerifiedCallerBearer(req: NextRequest, serviceName: string): Promise<NextResponse | null> {
+/**
+ * The outcome of verifying a caller: either a failure response, or the identity
+ * IAM vouched for.
+ *
+ * `caller` can be null on success — the `/me` fallback below identifies a user
+ * but IAM's MeResponse does not populate `tenant_ids`, so a caller verified that
+ * way carries no tenant. Consumers must handle "verified but unscopable" rather
+ * than assuming success implies a tenant.
+ */
+export type VerifiedCallerResult =
+  | { response: NextResponse; caller: null }
+  | { response: null; caller: VerifiedCaller | null };
+
+/**
+ * Verifies the caller's bearer token against IAM and RETURNS the resulting
+ * identity.
+ *
+ * `requireVerifiedCallerBearer` below is the long-standing entry point and
+ * discards this identity; it stays as a thin wrapper so the dozen-odd routes
+ * that only care about the failure case are untouched. Routes that need to know
+ * WHO called — to scope a downstream read to their tenant — call this instead.
+ */
+export async function verifyCallerBearer(req: NextRequest, serviceName: string): Promise<VerifiedCallerResult> {
   const required = requireCallerBearer(req, serviceName);
-  if (required) return required;
+  if (required) return { response: required, caller: null };
 
   const token = callerBearerToken(req);
-  if (!token) return authInvalid(serviceName, "missing bearer token");
+  if (!token) return { response: authInvalid(serviceName, "missing bearer token"), caller: null };
 
   const base = iamApiBase();
   const serviceToken = process.env.IAM_SERVICE_TOKEN?.trim();
@@ -96,18 +119,28 @@ export async function requireVerifiedCallerBearer(req: NextRequest, serviceName:
       if (verify.ok) {
         const verifyBody = await readJsonish(verify);
         if (verifyBody.parseError || !isRecord(verifyBody.data)) {
-          return authInvalid(
-            serviceName,
-            `IAM verify returned an invalid response: ${verifyBody.text || verify.statusText || "empty body"}`,
-            503,
-          );
+          return {
+            response: authInvalid(
+              serviceName,
+              `IAM verify returned an invalid response: ${verifyBody.text || verify.statusText || "empty body"}`,
+              503,
+            ),
+            caller: null,
+          };
         }
         const body = verifyBody.data as { valid?: boolean; user?: unknown; reason?: string };
-        if (body?.valid && isUserLike(body.user)) return null;
-        return authInvalid(serviceName, jsonishMessage(body, "IAM rejected token"));
+        // The primary path, and the only one that yields tenants: IAM's
+        // VerifyResponse.user is TokenUserOut, which carries `tenant_ids`.
+        if (body?.valid && isUserLike(body.user)) {
+          return { response: null, caller: readVerifiedCaller(body.user) };
+        }
+        return { response: authInvalid(serviceName, jsonishMessage(body, "IAM rejected token")), caller: null };
       }
       if (verify.status === 401 || verify.status === 403) {
-        return authInvalid(serviceName, `IAM verify rejected platform service token (${verify.status})`, 503);
+        return {
+          response: authInvalid(serviceName, `IAM verify rejected platform service token (${verify.status})`, 503),
+          caller: null,
+        };
       }
     } catch {
       // Fall through to /me validation with the caller token.
@@ -121,23 +154,47 @@ export async function requireVerifiedCallerBearer(req: NextRequest, serviceName:
       cache: "no-store",
       signal: AbortSignal.timeout(PROXY_AUTH_TIMEOUT_MS),
     });
-    if (me.status === 401 || me.status === 403) return authInvalid(serviceName, `IAM rejected token (${me.status})`);
+    if (me.status === 401 || me.status === 403) {
+      return { response: authInvalid(serviceName, `IAM rejected token (${me.status})`), caller: null };
+    }
     const meBody = await readJsonish(me);
-    if (!me.ok) return authInvalid(serviceName, jsonishMessage(meBody.data, `IAM /me returned ${me.status}`), 503);
+    if (!me.ok) {
+      return {
+        response: authInvalid(serviceName, jsonishMessage(meBody.data, `IAM /me returned ${me.status}`), 503),
+        caller: null,
+      };
+    }
     if (meBody.parseError) {
-      return authInvalid(
-        serviceName,
-        `IAM /me returned an invalid response: ${meBody.text || me.statusText || "empty body"}`,
-        503,
-      );
+      return {
+        response: authInvalid(
+          serviceName,
+          `IAM /me returned an invalid response: ${meBody.text || me.statusText || "empty body"}`,
+          503,
+        ),
+        caller: null,
+      };
     }
     const user = meBody.data;
-    if (!isUserLike(user)) return authInvalid(serviceName, "IAM response did not identify a user");
-    return null;
+    if (!isUserLike(user)) {
+      return { response: authInvalid(serviceName, "IAM response did not identify a user"), caller: null };
+    }
+    // Authenticated, but NOT tenant-bearing: IAM's `/me` builds a MeResponse
+    // without passing tenant_ids (singularity-iam-service/app/main.py), so the
+    // field falls back to its empty default. A caller verified down this path
+    // resolves to no tenant rather than a wrong one.
+    return { response: null, caller: readVerifiedCaller(user) };
   } catch (err) {
     const message = err instanceof Error ? err.message : "IAM verification failed";
-    return authInvalid(serviceName, message, 503);
+    return { response: authInvalid(serviceName, message, 503), caller: null };
   }
+}
+
+/**
+ * Back-compatible wrapper: failure response or null, identity discarded.
+ * Prefer `verifyCallerBearer` in new code.
+ */
+export async function requireVerifiedCallerBearer(req: NextRequest, serviceName: string): Promise<NextResponse | null> {
+  return (await verifyCallerBearer(req, serviceName)).response;
 }
 
 export async function proxyRequest(
