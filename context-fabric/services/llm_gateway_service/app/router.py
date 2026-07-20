@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional, Tuple
 from fastapi import APIRouter, Body, Header, HTTPException
 
 from .config import settings
+from . import budget_state
 from . import model_policy
 from . import provider_config
 from . import task_tags
@@ -117,7 +118,35 @@ def _alias_ready(alias: str) -> bool:
     return True
 
 
-def _resolve_provider_and_model_with_policy(
+async def _budget_signal(req: Any) -> Tuple[Optional[float], str]:
+    """How much of this caller's budget is spent, or (None, why-not).
+
+    Scope preference is capability then tenant: a capability is the narrower,
+    more actionable envelope, and degrading one capability's background work is
+    a far more surgical response to budget pressure than degrading an entire
+    tenant.
+
+    NOTE what these fields are: attribution, not authorization. Any caller
+    behind the shared bearer can claim any tenant_id, which is exactly why they
+    are NOT policy `when` keys — see model_policy.MATCHABLE_SIGNALS. Budget is
+    applied after routing as a cost adjustment, never as a route match.
+    """
+    if not budget_state.degradation_enabled():
+        return None, ""
+    for scope_type, value in (
+        ("capability", getattr(req, "capability_id", None)),
+        ("tenant", getattr(req, "tenant_id", None)),
+    ):
+        scope_id = (value or "").strip() if isinstance(value, str) else ""
+        if not scope_id:
+            continue
+        state = await budget_state.fetch(scope_type, scope_id)
+        if state.known:
+            return state.used_fraction, state.reason
+    return None, "no capability_id or tenant_id to scope a budget by"
+
+
+async def _resolve_provider_and_model_with_policy(
     *,
     req: Any,
     identity: Dict[str, Optional[str]],
@@ -138,6 +167,10 @@ def _resolve_provider_and_model_with_policy(
         )
         return provider, model, alias, None
 
+    # Only fetched when degradation is on AND policy is live, so the default
+    # configuration adds no network hop to the request path.
+    budget_used_fraction, budget_note = await _budget_signal(req)
+
     decision = model_policy.resolve(
         model_alias=req.model_alias,
         expected_model=req.expected_model,
@@ -151,6 +184,8 @@ def _resolve_provider_and_model_with_policy(
             else model_policy.estimate_input_tokens(getattr(req, "messages", None))
         ),
         is_ready=_alias_ready,
+        budget_used_fraction=budget_used_fraction,
+        budget_note=budget_note,
     )
     # A decision with no alias (an expected_model pin, or any degrade) leaves the
     # caller's own alias in place — policy never removes a choice, it only makes
@@ -246,7 +281,7 @@ def remove_model(model_id: str, authorization: Optional[str] = Header(None)) -> 
 
 
 @router.post("/llm/route/preview", response_model=RoutePreviewResponse)
-def preview_route(
+async def preview_route(
     req: RoutePreviewRequest,
     authorization: Optional[str] = Header(None),
 ) -> RoutePreviewResponse:
@@ -283,7 +318,7 @@ def preview_route(
         messages=None,
     )
     try:
-        provider, model, alias, routing = _resolve_provider_and_model_with_policy(
+        provider, model, alias, routing = await _resolve_provider_and_model_with_policy(
             req=shim, identity=identity, estimated_input_tokens=estimated,
         )
     except HTTPException as exc:
@@ -326,7 +361,7 @@ async def chat_completions(
     # call is rejected (when required) before it costs anything upstream.
     identity = task_tags.resolve_task_identity(req, endpoint="chat_completions")
 
-    provider, model, alias, routing = _resolve_provider_and_model_with_policy(
+    provider, model, alias, routing = await _resolve_provider_and_model_with_policy(
         req=req, identity=identity,
     )
     if req.expected_provider and provider.lower() != req.expected_provider.lower():
@@ -352,6 +387,7 @@ async def chat_completions(
             endpoint="chat_completions", identity=identity, provider=provider, model=model,
             model_alias=alias or req.model_alias, req=req,
             input_tokens=resp.input_tokens, output_tokens=resp.output_tokens, estimated_cost=0.0,
+            routing=routing,
         )
         return resp
 
@@ -392,6 +428,7 @@ async def chat_completions(
         model_alias=alias or req.model_alias, req=req,
         input_tokens=resp.input_tokens, output_tokens=resp.output_tokens,
         estimated_cost=resp.estimated_cost,
+        routing=routing,
     )
     return resp
 
@@ -414,7 +451,7 @@ async def embeddings(
     # a second model into the same index, and that is precisely the silent
     # corruption the expected_model drift guard below exists to catch. Tier
     # routing and the readiness walk still apply.
-    provider, model, alias, routing = _resolve_provider_and_model_with_policy(
+    provider, model, alias, routing = await _resolve_provider_and_model_with_policy(
         req=req, identity=identity,
     )
     # Drift guard, matching /v1/chat/completions. This matters MORE here: a
@@ -441,7 +478,7 @@ async def embeddings(
         dim = len(vectors[0]) if vectors else 0
         task_tags.emit_call_audit(
             endpoint="embeddings", identity=identity, provider="mock", model=model or "mock-embed",
-            model_alias=alias, req=req, input_tokens=tokens,
+            model_alias=alias, req=req, input_tokens=tokens, routing=routing,
         )
         return EmbeddingsResponse(
             embeddings=vectors,
@@ -467,7 +504,7 @@ async def embeddings(
             dim = len(vectors[0]) if vectors else 0
             task_tags.emit_call_audit(
                 endpoint="embeddings", identity=identity, provider=provider, model=model,
-                model_alias=alias, req=req, input_tokens=tokens,
+                model_alias=alias, req=req, input_tokens=tokens, routing=routing,
             )
             return EmbeddingsResponse(
                 embeddings=vectors,
