@@ -34,6 +34,23 @@ const VIEWS_MODEL_ALIAS = (
   process.env.WORLD_MODEL_DISTILL_MODEL_ALIAS ??
   ""
 ).trim();
+
+// WHETHER views build is now a separate question from WHICH model builds them.
+//
+// It used to be one question: `viewBuildEnabled()` returned
+// `VIEWS_MODEL_ALIAS.length > 0`. That conflates a feature switch with a model
+// choice, and it fails in the dangerous direction — an operator who unsets the
+// alias to let the gateway's policy engine pick a model does not get a
+// policy-routed view build, they get NO view build, and the only symptom is a
+// 409 that blames configuration they just "fixed".
+//
+// Backward compatible on purpose: a deployment that has only ever set the alias
+// keeps working, because a set alias still counts as "on". The new flag is how
+// you say "on" WITHOUT naming a model.
+const VIEWS_ENABLED_RAW = (process.env.WORLD_MODEL_VIEWS_ENABLED ?? "").trim().toLowerCase();
+const TRUTHY = new Set(["1", "true", "yes", "on"]);
+const FALSY = new Set(["0", "false", "no", "off"]);
+
 const LLM_GATEWAY_URL = (process.env.LLM_GATEWAY_URL ?? "http://localhost:8001").replace(/\/+$/, "");
 const VIEW_TIMEOUT_MS = 90_000;
 const VIEW_MAX_OUTPUT_TOKENS = 6_000;
@@ -41,9 +58,15 @@ const MAX_SYMBOL_ROWS = 2_000;
 const MAX_ARTIFACTS = 20;
 const ARTIFACT_CONTENT_CAP = 4_000;
 
-/** True when view distillation is configured. Unlike the core README distillation
- *  there is NO heuristic fallback — a role view without an LLM is not worth writing. */
+/** True when view distillation is switched on. Unlike the core README distillation
+ *  there is NO heuristic fallback — a role view without an LLM is not worth writing.
+ *
+ *  Explicit flag wins in BOTH directions: setting it off disables views even with
+ *  an alias configured, which is the "stop spending on this" switch that did not
+ *  previously exist. Unset, a configured alias still means on. */
 export function viewBuildEnabled(): boolean {
+  if (FALSY.has(VIEWS_ENABLED_RAW)) return false;
+  if (TRUTHY.has(VIEWS_ENABLED_RAW)) return true;
   return VIEWS_MODEL_ALIAS.length > 0;
 }
 
@@ -234,14 +257,21 @@ export async function gatherGrounding(
   };
 }
 
-/** One gateway turn for one view. Returns raw content, or null on any failure. */
-async function callGateway(messages: Array<{ role: string; content: string }>): Promise<string | null> {
+/** What one gateway turn produced, plus which model actually served it. */
+type GatewayTurn = { content: string; modelAlias: string | null };
+
+/** One gateway turn for one view. Returns null on any failure.
+ *
+ *  The alias is sent only when one is configured. Sending `model_alias: ""`
+ *  would be a request for a model literally named empty string; omitting it is
+ *  how a caller says "route this by what it is". */
+async function callGateway(messages: Array<{ role: string; content: string }>): Promise<GatewayTurn | null> {
   try {
     const res = await fetch(`${LLM_GATEWAY_URL}/v1/chat/completions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model_alias: VIEWS_MODEL_ALIAS,
+        ...(VIEWS_MODEL_ALIAS ? { model_alias: VIEWS_MODEL_ALIAS } : {}),
         messages,
         temperature: 0,
         max_output_tokens: VIEW_MAX_OUTPUT_TOKENS,
@@ -258,8 +288,16 @@ async function callGateway(messages: Array<{ role: string; content: string }>): 
       signal: AbortSignal.timeout(VIEW_TIMEOUT_MS),
     });
     if (!res.ok) return null;
-    const body = (await readUpstreamJsonObject(res, "LLM gateway world-model view")) as { content?: string };
-    return body.content ?? null;
+    // The gateway echoes back the alias it resolved. That is the provenance worth
+    // storing: with policy routing the caller no longer knows what served the
+    // call, and "which model wrote this view" is exactly the question a stale or
+    // wrong view prompts.
+    const body = (await readUpstreamJsonObject(res, "LLM gateway world-model view")) as {
+      content?: string;
+      model_alias?: string;
+    };
+    if (typeof body.content !== "string" || !body.content) return null;
+    return { content: body.content, modelAlias: body.model_alias?.trim() || null };
   } catch {
     return null;
   }
@@ -298,12 +336,15 @@ async function buildOne(capabilityId: string, req: ViewBuildRequest): Promise<Vi
     evidence: [] as unknown as Prisma.InputJsonValue,
     status: "BUILDING",
     buildError: null,
-    generatedBy: VIEWS_MODEL_ALIAS,
+    // Null, not "", when policy will choose: the row is honest that the model is
+    // not yet known rather than claiming a model named empty string. Overwritten
+    // below with whatever actually served the call.
+    generatedBy: VIEWS_MODEL_ALIAS || null,
   };
   await prisma.capabilityWorldModelViewDoc.upsert({
     where,
     create: seed,
-    update: { status: "BUILDING", buildError: null, generatedBy: VIEWS_MODEL_ALIAS },
+    update: { status: "BUILDING", buildError: null, generatedBy: VIEWS_MODEL_ALIAS || null },
   });
 
   const fail = async (error: string): Promise<ViewBuildOutcome> => {
@@ -321,10 +362,10 @@ async function buildOne(capabilityId: string, req: ViewBuildRequest): Promise<Vi
     return fail("no grounding available for this capability — nothing to distil");
   }
 
-  const raw = await callGateway(buildViewMessages(spec, grounding.pack));
-  if (!raw) return fail("gateway call failed or returned no content");
+  const turn = await callGateway(buildViewMessages(spec, grounding.pack));
+  if (!turn) return fail("gateway call failed or returned no content");
 
-  const parsed = parseViewResponse(raw, spec, { commit: grounding.sourceCommit });
+  const parsed = parseViewResponse(turn.content, spec, { commit: grounding.sourceCommit });
   if (!parsed) return fail("response was not usable strict JSON with contentMd");
 
   await prisma.capabilityWorldModelViewDoc.update({
@@ -340,7 +381,9 @@ async function buildOne(capabilityId: string, req: ViewBuildRequest): Promise<Vi
       contentHash: parsed.contentHash,
       status: "READY",
       buildError: parsed.warnings.length ? parsed.warnings.join("; ").slice(0, 1000) : null,
-      generatedBy: VIEWS_MODEL_ALIAS,
+      // What actually served, not what was configured. Under policy routing those
+      // are different answers, and only the first one can explain a bad view.
+      generatedBy: turn.modelAlias ?? VIEWS_MODEL_ALIAS ?? null,
     },
   });
   return { kind: req.kind, domainKey, status: "READY", warnings: parsed.warnings };
@@ -387,7 +430,7 @@ export async function buildViews(capabilityId: string, requests: ViewBuildReques
   if (existing) return existing;
 
   if (!viewBuildEnabled()) {
-    throw new ValidationError("World-model view distillation is not configured (set WORLD_MODEL_VIEWS_MODEL_ALIAS).");
+    throw new ValidationError("World-model view distillation is switched off (set WORLD_MODEL_VIEWS_ENABLED=true).");
   }
 
   // The slot is claimed with no await between the check and the set. Awaiting

@@ -260,8 +260,12 @@ export const capabilityController = {
     await assertCapabilityMutable(req.params.id, "Capability is archived; world-model maintenance is read-only.");
     if (!viewBuildEnabled()) {
       return res.status(409).json({
-        error: "world-model view distillation is not configured",
-        fixCommand: "set WORLD_MODEL_VIEWS_MODEL_ALIAS (or WORLD_MODEL_DISTILL_MODEL_ALIAS) to a configured gateway model alias",
+        error: "world-model view distillation is switched off",
+        // Naming a model is no longer how you switch this on. The old fix command
+        // said to set WORLD_MODEL_VIEWS_MODEL_ALIAS, which told an operator that
+        // the feature and the model were the same setting — they are not, and an
+        // operator who cleared the alias to get policy routing got this 409.
+        fixCommand: "set WORLD_MODEL_VIEWS_ENABLED=true (optionally pin WORLD_MODEL_VIEWS_MODEL_ALIAS; unset, the gateway policy picks the model)",
       });
     }
     if (isBuildInFlight(req.params.id)) {

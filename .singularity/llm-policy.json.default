@@ -22,7 +22,19 @@
     "",
     "Everything else is a rule you wrote down. There is deliberately no cost or",
     "latency optimizer and no quality-based escalation: this platform has no",
-    "quality signal to tune against, so such a router would be fitting noise."
+    "quality signal to tune against, so such a router would be fitting noise.",
+    "",
+    "The three agent_turn/stage routes below were migrated out of",
+    "WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES — a built-in {stageKey: alias} map in",
+    "blueprint.router.ts, overridable by an env var holding JSON. That is a",
+    "routing rule, and it was expressed as a caller-side alias PIN, which this",
+    "gateway treats as a hard pin and skips policy for entirely. So while that",
+    "map was applied at launch, workbench traffic could not be routed at all.",
+    "The rule is preserved as written — code-heavy stages get a stronger model",
+    "than the agent_turn default — but the model is now named by TIER, so the",
+    "absolute choice follows the tier table above rather than a frozen alias.",
+    "Changing it is a policy edit, not a redeploy plus a relaunch of every",
+    "in-flight session."
   ],
   "version": 1,
   "tiers": {
@@ -40,7 +52,9 @@
     { "when": { "task_tag": "judge" }, "tier": "standard" },
     { "when": { "task_tag": "planning" }, "tier": "deep" },
     { "when": { "task_tag": "agent_turn" }, "tier": "standard" },
-    { "when": { "task_tag": "agent_turn", "stage": "develop" }, "tier": "deep" }
+    { "when": { "task_tag": "agent_turn", "stage": "design" }, "tier": "deep" },
+    { "when": { "task_tag": "agent_turn", "stage": "develop" }, "tier": "deep" },
+    { "when": { "task_tag": "agent_turn", "stage": "fix" }, "tier": "deep" }
   ],
   "escalateWhenInputTokensExceed": {
     "cheap": 60000,

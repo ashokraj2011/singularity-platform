@@ -147,12 +147,16 @@ for (const handler of ["listWorldModelViews", "getWorldModelView"] as const) {
   assert.doesNotMatch(body, /assertCapabilityMutable/, `${handler} should stay readable for archived capabilities`);
 }
 
-// An unconfigured gateway is a 409, not a 202. There is no heuristic fallback
+// A switched-off builder is a 409, not a 202. There is no heuristic fallback
 // for a role view, so enqueuing the build would only produce FAILED rows.
+//
+// The fix command must name the ENABLE flag, not the alias. Pointing an operator
+// at WORLD_MODEL_VIEWS_MODEL_ALIAS taught them the feature and the model were one
+// setting, so clearing the alias to get policy routing silently disabled views.
 assert.match(
   controller,
-  /if \(!viewBuildEnabled\(\)\) \{[\s\S]*?res\.status\(409\)[\s\S]*?fixCommand:[\s\S]*?WORLD_MODEL_VIEWS_MODEL_ALIAS/,
-  "an unconfigured builder should 409 with a fix command",
+  /if \(!viewBuildEnabled\(\)\) \{[\s\S]*?res\.status\(409\)[\s\S]*?fixCommand:[\s\S]*?WORLD_MODEL_VIEWS_ENABLED/,
+  "a switched-off builder should 409 with a fix command naming the enable flag",
 );
 assert.match(
   controller,

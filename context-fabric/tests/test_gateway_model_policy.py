@@ -485,10 +485,22 @@ def test_the_shipped_example_policy_parses_without_warnings(monkeypatch):
     assert model_policy.warnings() == []
     assert described["default_tier"] == "standard"
     assert set(described["tiers"]) == {"cheap", "standard", "deep"}
-    assert described["route_count"] == 9
+    assert described["route_count"] == 11
     # And it routes: the stage-specific agent_turn rule must beat the broad one.
     assert model_policy.resolve(task_tag="agent_turn", stage="develop", is_ready=ALL_READY).tier == "deep"
-    assert model_policy.resolve(task_tag="agent_turn", stage="design", is_ready=ALL_READY).tier == "standard"
+
+    # The three stages migrated out of WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES.
+    # Asserted by NAME rather than by route_count, because the thing that must
+    # not regress is the RULE — code-heavy stages get a stronger model than the
+    # agent_turn default — and a count check would still pass if someone deleted
+    # `design` and added something unrelated.
+    for stage in ("design", "develop", "fix"):
+        decision = model_policy.resolve(task_tag="agent_turn", stage=stage, is_ready=ALL_READY)
+        assert decision.tier == "deep", f"stage {stage} lost its stronger-model rule"
+    # …and the relationship is what matters: an unlisted stage stays on the
+    # broad agent_turn rule, one tier below.
+    assert model_policy.resolve(task_tag="agent_turn", stage="review", is_ready=ALL_READY).tier == "standard"
+    assert model_policy.resolve(task_tag="agent_turn", is_ready=ALL_READY).tier == "standard"
 
     # Tier entries are CATALOG IDS, not raw provider model names — a distinction
     # that is easy to get wrong because the two happen to coincide for some

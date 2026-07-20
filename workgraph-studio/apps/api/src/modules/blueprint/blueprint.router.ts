@@ -64,21 +64,33 @@ function positiveIntEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 const WORKBENCH_DEFAULT_MODEL_ALIAS = process.env.WORKBENCH_DEFAULT_MODEL_ALIAS?.trim() || undefined
-// Default per-stage model map applied at launch when the operator doesn't pass
-// stageModelAliases: code-heavy stages (design/develop) get a stronger model
-// (Sonnet) than the cheap global default (Haiku), matching the model catalog's
-// recommendation. Override per-launch via body.stageModelAliases, or globally
-// via WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES (JSON map of stageKey→alias).
-const WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES: Record<string, string> = (() => {
+
+// WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES was a policy file living in an env var.
+//
+// It held a JSON map of stageKey→alias, with a built-in default that gave the
+// code-heavy stages (design/develop/fix) a stronger model. That is a routing
+// rule — "this class of work deserves a better model" — and it was expressed
+// the only way the platform allowed at the time: by pinning an alias in the
+// caller. The pin then travelled to the gateway as `model_alias`, which the
+// policy engine treats as a HARD PIN and skips policy for entirely. So as long
+// as this map was applied at launch, workbench traffic could never be routed.
+//
+// The rule now lives in llm-policy.json as `routes` keyed on
+// {task_tag: agent_turn, stage: design|develop|fix}, which is possible because
+// the governed path now sends `stage` (see governed/llm_client.py).
+//
+// The env var is still READ, so an operator who set it keeps their pins for one
+// release. What is gone is the BUILT-IN default: an unset env var no longer
+// silently pins three stages, it lets policy decide. An operator's explicit
+// per-launch `body.stageModelAliases` still wins over both.
+const WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES: Record<string, string> | undefined = (() => {
   const raw = process.env.WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES?.trim()
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw)
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, string>
-    } catch { /* fall through to built-in default */ }
-  }
-  // design/develop (SDLC) + fix (bug-fix) are the code-heavy stages.
-  return { design: 'claude-sonnet-4-5', develop: 'claude-sonnet-4-5', fix: 'claude-sonnet-4-5' }
+  if (!raw) return undefined
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, string>
+  } catch { /* a malformed map is not a reason to invent pins */ }
+  return undefined
 })()
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
@@ -1154,8 +1166,15 @@ blueprintRouter.post('/sessions', validate(createSessionSchema), async (req, res
         reuseUnchangedAttempt: body.reuseUnchangedAttempt,
         governanceMode,
         modelAlias: body.modelAlias ?? routedWorkbenchAlias ?? WORKBENCH_DEFAULT_MODEL_ALIAS,
+        // Persisted only when SOMEONE ASKED for it — the operator per launch, or
+        // the env var. There is no built-in fallback map any more: with one,
+        // every session froze three stage pins at launch time, and a pin skips
+        // policy at the gateway. A rule you cannot change without relaunching
+        // every session is not a policy, it is a snapshot.
         stageModelAliases: sanitizeStageModelAliases(body.stageModelAliases)
-          ?? sanitizeStageModelAliases(WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES),
+          ?? (WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES
+            ? sanitizeStageModelAliases(WORKBENCH_DEFAULT_STAGE_MODEL_ALIASES)
+            : undefined),
         stagePhaseModelAliases: sanitizeStagePhaseModelAliases(body.stagePhaseModelAliases),
         maxContextTokens: body.maxContextTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxContextTokens,
         maxOutputTokens: body.maxOutputTokens ?? DEFAULT_WORKBENCH_EXECUTION_CONFIG.maxOutputTokens,
