@@ -33,6 +33,16 @@ const DEFAULT_JUDGE_TIMEOUT_MS = boundedEnvInteger("JUDGE_TIMEOUT_MS", {
 });
 const DEFAULT_JUDGE_THRESHOLD = 3; // pass when judge scores >= 3 on a 1-5 scale
 
+/**
+ * Gateway actor for this service's background LLM traffic.
+ *
+ * The `system:<service-name>` form is load-bearing: it lets the gateway tell
+ * "no human involved" apart from "the caller failed to propagate an actor",
+ * which a null actor_id would conflate. Exported so the guard test can assert
+ * every gateway call site here uses it.
+ */
+export const GATEWAY_ACTOR_ID = "system:audit-governance-service";
+
 export interface JudgeInput {
   /** Optional rubric text. If absent, looked up by stage_type. */
   rubricText?: string;
@@ -196,11 +206,30 @@ export async function runJudge(input: JudgeInput): Promise<JudgeOutcome> {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        // JUDGE_MODEL_ALIAS / ENGINE_MODEL_ALIAS still win when set. Unset, this
+        // declares itself as judging so policy can route it — and, once budget
+        // degradation lands, so it can be given a FLOOR. A judge quietly demoted
+        // to a cheap model still returns a confident score, which is the worst
+        // shape a quality regression can take.
+        //
+        // This call also reached the gateway with no task_tag, so it would 400
+        // the moment GATEWAY_REQUIRE_TASK_TAG flips — and until then its spend
+        // was unattributable. "judge" is the vocabulary's bucket for exactly
+        // this (llm_gateway_service/app/task_tags.py).
+        task_tag: "judge",
+        purpose: "output_grading",
         ...(modelAlias ? { model_alias: modelAlias } : {}),
         messages,
         temperature: 0,
         max_output_tokens: 800,
         trace_id: `audit-gov-judge-${Date.now()}`,
+        // Nobody is waiting on this: eval judging is engine-triggered work, so
+        // "system:<service>" is the truthful actor. Never null — null is
+        // reserved for "somebody forgot to propagate it".
+        actor_id: GATEWAY_ACTOR_ID,
+        // No tenant_id: JudgeInput carries no tenant, and the eval rows this
+        // scores are not tenant-scoped on this branch. Inventing a default
+        // would make a fabricated value indistinguishable from a real one.
       }),
       signal: AbortSignal.timeout(timeoutMs),
     });

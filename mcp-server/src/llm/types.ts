@@ -32,6 +32,17 @@ export interface LlmRequest {
   tools?: ToolDescriptorForLlm[];
   temperature?: number;
   max_output_tokens?: number;
+
+  // ── caller identity (gateway attribution) ────────────────────────────────
+  // WHO this call is for. mcp-server already threads a full CorrelationIds
+  // through its own audit store; these carry the same identity ONE HOP FURTHER
+  // so the gateway's cost row is attributable too.
+  //
+  // ATTRIBUTION, NOT AUTHORIZATION — the gateway is behind one shared bearer,
+  // so any of these is a claim. Do not gate access on them.
+  actor_id?: string;
+  tenant_id?: string;
+  session_id?: string;
 }
 
 export interface LlmStreamHooks {

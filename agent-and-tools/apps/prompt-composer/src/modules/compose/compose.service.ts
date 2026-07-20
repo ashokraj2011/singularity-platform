@@ -1025,6 +1025,10 @@ export const composeService = {
         finalPromptHash,
         modelProvider: null,
         modelName: requestedModelAlias,
+        // D3 — tenant is part of the reuse key. Without it a preview compose
+        // could hand back a row created by another tenant, and the row would
+        // stay attributed to whoever wrote it first, silently mixing the two.
+        tenantId: input.tenantId ?? null,
       },
       orderBy: { createdAt: "desc" },
     }) : null;
@@ -1042,6 +1046,9 @@ export const composeService = {
         finalPromptPreview: finalPrompt.slice(0, 4000),
         estimatedInputTokens,
         traceId: resolvedTraceId,
+        // D3 — tenant attribution for the prompt text stored on this row.
+        // NULL when the caller did not supply one; see schema.prisma.
+        tenantId: input.tenantId ?? null,
         // M25 — per-step citations for Run Insights + audit-replay.
         evidenceRefs: (evidenceRefs.length > 0
           ? evidenceRefs

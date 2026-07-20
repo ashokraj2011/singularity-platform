@@ -10,12 +10,18 @@ Plus introspection:
 """
 from __future__ import annotations
 
+import uuid
+from types import SimpleNamespace
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import APIRouter, Body, Header, HTTPException
 
 from .config import settings
+from . import audit_emit
+from . import budget_state
+from . import model_policy
 from . import provider_config
+from . import secret_redaction
 from . import task_tags
 from .providers import anthropic as anthropic_provider
 from .providers import mock as mock_provider
@@ -25,6 +31,8 @@ from .types import (
     ChatCompletionResponse,
     EmbeddingsRequest,
     EmbeddingsResponse,
+    RoutePreviewRequest,
+    RoutePreviewResponse,
 )
 
 
@@ -55,8 +63,14 @@ def _resolve_provider_and_model(
     model_alias: Optional[str],
     provider: Optional[str],
     model: Optional[str],
-) -> Tuple[str, str, Optional[str]]:
-    """Return (provider, model, resolved_alias) or raise 400 / 503."""
+) -> Tuple[str, str, Optional[str], str]:
+    """Return (provider, model, resolved_alias, routing_source) or raise 400/503.
+
+    routing_source records HOW the model was chosen, using the vocabulary the
+    m75 llm_calls column documents: caller_pin | policy | default | fallback.
+    Without it, "the caller asked for this" and "we picked this because nothing
+    was configured" are indistinguishable on the cost row.
+    """
     if model_alias:
         try:
             entry = provider_config.resolve_alias(model_alias)
@@ -65,7 +79,7 @@ def _resolve_provider_and_model(
             raise HTTPException(status_code=503, detail=str(exc))
         except provider_config.ProviderConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        return entry["provider"], entry["model"], model_alias
+        return entry["provider"], entry["model"], model_alias, "caller_pin"
 
     if provider or model:
         if not settings.allow_caller_provider_override:
@@ -77,7 +91,7 @@ def _resolve_provider_and_model(
         reasons = provider_config.provider_unready_reasons(p, _credentials().get(p))
         if reasons:
             raise HTTPException(status_code=503, detail=f"provider {p} is not ready: {'; '.join(reasons)}")
-        return p, m, None
+        return p, m, None, "caller_pin"
 
     # No alias and no provider/model: use the configured default alias. If no
     # model catalog exists, the only implicit fallback allowed is mock.
@@ -90,11 +104,206 @@ def _resolve_provider_and_model(
             raise HTTPException(status_code=503, detail=str(exc))
         except provider_config.ProviderConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        return entry["provider"], entry["model"], alias
+        return entry["provider"], entry["model"], alias, "default"
     p = provider_config.default_provider()
     if p == "mock":
-        return "mock", provider_config.provider_default_model("mock") or "mock-fast", None
+        return "mock", provider_config.provider_default_model("mock") or "mock-fast", None, "fallback"
     raise HTTPException(status_code=400, detail="model_alias is required; no default alias is configured")
+
+
+def _alias_ready(alias: str) -> bool:
+    """Whether a catalog alias can actually serve traffic right now.
+
+    The readiness probe the policy engine walks its tier list with. Deliberately
+    the SAME two calls _resolve_provider_and_model makes, so an alias policy
+    considers ready is exactly one that would not have 503'd. (validate_model_entry
+    already covers is_provider_allowed, via provider_unready_reasons.)
+    """
+    try:
+        entry = provider_config.resolve_alias(alias)
+        provider_config.validate_model_entry(entry, _credentials())
+    except provider_config.ProviderConfigError:
+        return False
+    return True
+
+
+class _UpstreamUnavailable(Exception):
+    """A provider call that failed for AVAILABILITY reasons, carrying enough to
+    re-raise the original error unchanged if failover does not help.
+
+    Availability failures are the only ones worth hopping for. A 400 is the
+    request's fault and every model in the tier will reject it identically; a
+    409 drift guard is the caller asserting something that is still false after
+    a hop. Trying another model for those burns a second provider call to
+    produce the same answer more slowly.
+    """
+
+    def __init__(self, *, alias: Optional[str], status: int, detail: str, summary: str):
+        super().__init__(detail)
+        self.alias = alias
+        self.status = status
+        self.detail = detail
+        self.summary = summary
+
+    def as_http(self) -> HTTPException:
+        return HTTPException(status_code=self.status, detail=self.detail)
+
+
+async def _dispatch_chat(
+    req: Any, *, provider: str, model: str, alias: Optional[str], credential: str,
+) -> Any:
+    """One provider call. Availability failures raise _UpstreamUnavailable."""
+    try:
+        if provider in ("openai", "openrouter"):
+            return await openai_provider.respond(
+                req, provider=provider, resolved_model=model, api_key=credential, model_alias=alias,
+            )
+        if provider == "anthropic":
+            return await anthropic_provider.respond(
+                req, resolved_model=model, api_key=credential, model_alias=alias,
+            )
+        raise HTTPException(status_code=400, detail=f"unsupported provider {provider}")
+    except anthropic_provider.AnthropicUpstreamError as exc:
+        status = 429 if exc.status_code == 429 else 502
+        raise _UpstreamUnavailable(
+            alias=alias, status=status,
+            detail=f"LLM_GATEWAY_UPSTREAM: {exc}",
+            summary=f"{provider} returned {exc.status_code}",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # openai_compat raises bare RuntimeError for any non-200, so the status
+        # is not recoverable here. Treated as availability because that is the
+        # overwhelmingly common cause of a 5xx from these adapters, and the cost
+        # of being wrong is one extra call rather than a wrong answer.
+        raise _UpstreamUnavailable(
+            alias=alias, status=502,
+            detail=f"LLM_GATEWAY_UPSTREAM: {exc}",
+            summary=f"{provider} call failed",
+        )
+
+
+def _failover_target(routing: Optional[Dict[str, Any]], alias: Optional[str]) -> Optional[str]:
+    """The one alias to hop to, or None to let the original failure stand.
+
+    Requires a policy-chosen TIER. A caller pin has no tier — it named a model,
+    and quietly answering with a different one is precisely what a pin exists to
+    prevent. Same for a resolution that never went through policy at all.
+    """
+    if not routing or not alias:
+        return None
+    if not model_policy.failover_within_tier_enabled():
+        return None
+    return model_policy.next_in_tier(
+        routing.get("tier"),
+        after_alias=alias,
+        is_ready=_alias_ready,
+        provider_of=_provider_for_alias,
+    )
+
+
+def _provider_for_alias(alias: str) -> Optional[str]:
+    try:
+        return provider_config.resolve_alias(alias).get("provider")
+    except provider_config.ProviderConfigError:
+        return None
+
+
+async def _budget_signal(req: Any) -> Tuple[Optional[float], str]:
+    """How much of this caller's budget is spent, or (None, why-not).
+
+    Scope preference is capability then tenant: a capability is the narrower,
+    more actionable envelope, and degrading one capability's background work is
+    a far more surgical response to budget pressure than degrading an entire
+    tenant.
+
+    NOTE what these fields are: attribution, not authorization. Any caller
+    behind the shared bearer can claim any tenant_id, which is exactly why they
+    are NOT policy `when` keys — see model_policy.MATCHABLE_SIGNALS. Budget is
+    applied after routing as a cost adjustment, never as a route match.
+    """
+    if not budget_state.degradation_enabled():
+        return None, ""
+    for scope_type, value in (
+        ("capability", getattr(req, "capability_id", None)),
+        ("tenant", getattr(req, "tenant_id", None)),
+    ):
+        scope_id = (value or "").strip() if isinstance(value, str) else ""
+        if not scope_id:
+            continue
+        state = await budget_state.fetch(scope_type, scope_id)
+        if state.known:
+            return state.used_fraction, state.reason
+    return None, "no capability_id or tenant_id to scope a budget by"
+
+
+async def _resolve_provider_and_model_with_policy(
+    *,
+    req: Any,
+    identity: Dict[str, Optional[str]],
+    estimated_input_tokens: Optional[int] = None,
+) -> Tuple[str, str, Optional[str], str, Optional[Dict[str, Any]]]:
+    """Resolution with the B1 policy engine in front of it.
+
+    While GATEWAY_MODEL_POLICY_ENABLED is unset — the default — this returns
+    before touching the policy engine at all, so the resolution path is
+    byte-identical to the pre-policy gateway and the routing block is absent.
+    That early return is the feature gate; everything below it is dark.
+
+    Returns (provider, model, alias, routing_source, routing). The two
+    provenance values answer different questions and BOTH are needed: the
+    m75 `routing_source` string is the cost row's account of how the model was
+    chosen and is always populated, while the B1 `routing` block is the policy
+    engine's decision and is None whenever policy did not make one. Deriving
+    routing_source from the routing block alone would leave every cost row
+    unattributed in a policy-off configuration.
+    """
+    if not model_policy.policy_enabled():
+        provider, model, alias, routing_source = _resolve_provider_and_model(
+            model_alias=req.model_alias,
+            provider=req.provider,
+            model=req.model,
+        )
+        return provider, model, alias, routing_source, None
+
+    # Only fetched when degradation is on AND policy is live, so the default
+    # configuration adds no network hop to the request path.
+    budget_used_fraction, budget_note = await _budget_signal(req)
+
+    decision = model_policy.resolve(
+        model_alias=req.model_alias,
+        expected_model=req.expected_model,
+        model_tier=getattr(req, "model_tier", None),
+        task_tag=identity.get("task_tag"),
+        stage=identity.get("stage"),
+        purpose=identity.get("purpose"),
+        estimated_input_tokens=(
+            estimated_input_tokens
+            if estimated_input_tokens is not None
+            else model_policy.estimate_input_tokens(getattr(req, "messages", None))
+        ),
+        is_ready=_alias_ready,
+        budget_used_fraction=budget_used_fraction,
+        budget_note=budget_note,
+    )
+    # A decision with no alias (an expected_model pin, or any degrade) leaves the
+    # caller's own alias in place — policy never removes a choice, it only makes
+    # one where there was none.
+    chosen_alias = decision.alias if (decision and decision.alias) else req.model_alias
+    provider, model, alias, routing_source = _resolve_provider_and_model(
+        model_alias=chosen_alias,
+        provider=req.provider,
+        model=req.model,
+    )
+    routing = decision.as_dict() if decision else None
+    # When policy actually made the call, its own source is the more specific
+    # answer (caller_tier, policy, policy_default...). The two vocabularies are
+    # deliberately the same strings where they overlap — model_policy's
+    # SOURCE_CALLER_PIN is the resolver's "caller_pin" — so this narrows the
+    # attribution without ever changing it.
+    routing_source = (routing or {}).get("source") or routing_source
+    return provider, model, alias, routing_source, routing
 
 
 @router.get("/health")
@@ -117,6 +326,7 @@ def list_providers(authorization: Optional[str] = Header(None)) -> Dict[str, Any
             "upstream_timeout_sec": settings.upstream_timeout_sec,
         },
         "providers": provider_config.list_provider_status(credentials),
+        "policy": model_policy.describe(),
         "warnings": provider_config.warnings(),
     }
 
@@ -177,6 +387,74 @@ def remove_model(model_id: str, authorization: Optional[str] = Header(None)) -> 
     return {"deleted": model_id}
 
 
+@router.post("/llm/route/preview", response_model=RoutePreviewResponse)
+async def preview_route(
+    req: RoutePreviewRequest,
+    authorization: Optional[str] = Header(None),
+) -> RoutePreviewResponse:
+    """Resolve a call WITHOUT making it.
+
+    context-fabric needs the model before the call, not after: its token-budget
+    preflight has to know the context window it is packing for, and a caller
+    doing an `expected_model` drift check needs something to compare against.
+    Without this, a policy-routed caller could only learn its model by spending
+    a provider call to find out.
+
+    Runs the SAME resolution function the real endpoints run. Duplicating the
+    logic here would produce a preview that agrees with the call right up until
+    the day it quietly stops.
+    """
+    _check_auth(authorization)
+    identity = task_tags.resolve_task_identity(req, endpoint="route_preview")
+    # A caller that knows its size but not its content sends the size. Passed
+    # through as a number rather than as a synthesised message: building a
+    # stand-in string would let any caller allocate megabytes by naming a large
+    # token count, on an endpoint whose whole point is that it is cheap.
+    estimated = max(
+        req.estimated_input_tokens
+        if req.estimated_input_tokens is not None
+        else model_policy.estimate_input_tokens(req.messages),
+        0,
+    )
+    shim = SimpleNamespace(
+        model_alias=req.model_alias,
+        provider=req.provider,
+        model=req.model,
+        expected_model=req.expected_model,
+        model_tier=req.model_tier,
+        messages=None,
+    )
+    try:
+        provider, model, alias, _routing_source, routing = await _resolve_provider_and_model_with_policy(
+            req=shim, identity=identity, estimated_input_tokens=estimated,
+        )
+    except HTTPException as exc:
+        return RoutePreviewResponse(
+            policy_enabled=model_policy.policy_enabled(),
+            estimated_input_tokens=estimated,
+            ready=False,
+            error=str(exc.detail),
+            warnings=model_policy.warnings(),
+        )
+    return RoutePreviewResponse(
+        provider=provider,
+        model=model,
+        model_alias=alias,
+        routing=routing,
+        policy_enabled=model_policy.policy_enabled(),
+        estimated_input_tokens=estimated,
+        ready=True,
+        warnings=model_policy.warnings(),
+    )
+
+
+@router.get("/llm/policy")
+def get_policy(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+    """What policy is loaded and whether it is live. Config, never secrets."""
+    _check_auth(authorization)
+    return model_policy.describe()
+
+
 @router.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(
     req: ChatCompletionRequest,
@@ -190,10 +468,14 @@ async def chat_completions(
     # call is rejected (when required) before it costs anything upstream.
     identity = task_tags.resolve_task_identity(req, endpoint="chat_completions")
 
-    provider, model, alias = _resolve_provider_and_model(
-        model_alias=req.model_alias,
-        provider=req.provider,
-        model=req.model,
+    # One identity for this call, minted before anything can fail, echoed on
+    # the response and carried on the cost event so the two join exactly.
+    gateway_call_id = str(uuid.uuid4())
+    # Hash + length only. The joined prompt text never leaves this function.
+    prompt_sha, prompt_chars = audit_emit.fingerprint_messages(req.messages)
+
+    provider, model, alias, routing_source, routing = await _resolve_provider_and_model_with_policy(
+        req=req, identity=identity,
     )
     if req.expected_provider and provider.lower() != req.expected_provider.lower():
         raise HTTPException(
@@ -208,8 +490,23 @@ async def chat_completions(
     if not provider_config.is_provider_allowed(provider):
         raise HTTPException(status_code=400, detail=f"provider {provider} is not allowed by gateway config")
 
+    # Secret redaction before the provider call. The gateway is the only
+    # component every LLM egress on the platform crosses, so this is the one
+    # place a single implementation covers every caller. Applied to all
+    # providers including mock — traffic that skips measurement is traffic the
+    # shadow numbers understate. Defaults to shadow (count and log, send the
+    # body unchanged) and never raises; see secret_redaction.
+    req.messages = secret_redaction.redact_for_egress(
+        req.messages,
+        endpoint="chat_completions",
+        model_alias=alias or req.model_alias,
+        trace_id=req.trace_id,
+    )
+
     if provider == "mock":
         resp = await mock_provider.respond(req, resolved_model=model)
+        resp.gateway_call_id = gateway_call_id
+        resp.routing = routing
         # Mock has no real cost; leave as zero (the mock provider already
         # sets estimated_cost=0 on its responses). Still audited: a mock run
         # that never appears in the log looks like a run that never happened.
@@ -217,6 +514,12 @@ async def chat_completions(
             endpoint="chat_completions", identity=identity, provider=provider, model=model,
             model_alias=alias or req.model_alias, req=req,
             input_tokens=resp.input_tokens, output_tokens=resp.output_tokens, estimated_cost=0.0,
+            routing=routing,
+        )
+        _emit_chat_cost_event(
+            gateway_call_id=gateway_call_id, req=req, resp=resp, identity=identity,
+            provider=provider, model=model, alias=alias, routing_source=routing_source,
+            prompt_sha=prompt_sha, prompt_chars=prompt_chars,
         )
         return resp
 
@@ -225,23 +528,51 @@ async def chat_completions(
         raise HTTPException(status_code=503, detail=f"provider {provider} is not configured (missing credential)")
 
     try:
-        if provider in ("openai", "openrouter"):
-            resp = await openai_provider.respond(
-                req, provider=provider, resolved_model=model, api_key=credential, model_alias=alias,
+        resp = await _dispatch_chat(req, provider=provider, model=model, alias=alias, credential=credential)
+    except _UpstreamUnavailable as first_failure:
+        # B4 — ONE same-tier availability hop, after the provider adapter has
+        # already exhausted its own same-model transient retries (429/503/529
+        # with backoff, see providers/anthropic.py). Those retries answer "is
+        # this blip over yet"; this answers "is this provider having a bad
+        # afternoon". Retrying the same model harder cannot resolve the second.
+        #
+        # Bounded to one hop on purpose. A walk down the tier turns one slow
+        # request into N sequential provider timeouts, and the caller is still
+        # waiting — an availability feature whose failure mode is a much slower
+        # outage is not an availability feature.
+        hop = _failover_target(routing, alias)
+        if hop is None:
+            raise first_failure.as_http()
+        try:
+            # The hop's own routing_source is deliberately discarded: resolving a
+            # failover target necessarily looks like a "caller_pin" to the base
+            # resolver, and recording that would claim the caller asked for a
+            # model it never named. The failover is reported by routing's
+            # fallback_from below, which B4 made a separate field precisely so a
+            # vendor outage never reads as a routing choice.
+            hop_provider, hop_model, hop_alias, _hop_routing_source = _resolve_provider_and_model(
+                model_alias=hop, provider=None, model=None,
             )
-        elif provider == "anthropic":
-            resp = await anthropic_provider.respond(
-                req, resolved_model=model, api_key=credential, model_alias=alias,
+            hop_credential = settings.credential_for(hop_provider)
+            if not hop_credential:
+                raise first_failure.as_http()
+            resp = await _dispatch_chat(
+                req, provider=hop_provider, model=hop_model, alias=hop_alias, credential=hop_credential,
             )
-        else:
-            raise HTTPException(status_code=400, detail=f"unsupported provider {provider}")
-    except anthropic_provider.AnthropicUpstreamError as exc:
-        status = 429 if exc.status_code == 429 else 502
-        raise HTTPException(status_code=status, detail=f"LLM_GATEWAY_UPSTREAM: {exc}")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"LLM_GATEWAY_UPSTREAM: {exc}")
+        except _UpstreamUnavailable:
+            # The hop failed too. Surface the ORIGINAL error: the caller asked
+            # for the first model, and an error naming the fallback would send
+            # whoever reads it to investigate a model they never requested.
+            raise first_failure.as_http()
+        except HTTPException:
+            raise first_failure.as_http()
+        provider, model, alias = hop_provider, hop_model, hop_alias
+        routing = dict(routing or {})
+        routing["fallback_from"] = first_failure.alias
+        routing["reason"] = (
+            f"{routing.get('reason', '')}; failed over {first_failure.alias} -> {hop_alias} "
+            f"({first_failure.summary})"
+        ).lstrip("; ")
 
     # M56 — attach USD cost based on the catalog's per-model price.
     # Computed AFTER the provider call so we know the real token counts.
@@ -251,13 +582,66 @@ async def chat_completions(
         resp.input_tokens,
         resp.output_tokens,
     )
+    resp.gateway_call_id = gateway_call_id
+    resp.routing = routing
     task_tags.emit_call_audit(
         endpoint="chat_completions", identity=identity, provider=provider, model=model,
         model_alias=alias or req.model_alias, req=req,
         input_tokens=resp.input_tokens, output_tokens=resp.output_tokens,
         estimated_cost=resp.estimated_cost,
+        routing=routing,
+    )
+    _emit_chat_cost_event(
+        gateway_call_id=gateway_call_id, req=req, resp=resp, identity=identity,
+        provider=provider, model=model, alias=alias, routing_source=routing_source,
+        prompt_sha=prompt_sha, prompt_chars=prompt_chars,
     )
     return resp
+
+
+def _emit_chat_cost_event(
+    *,
+    gateway_call_id: str,
+    req: ChatCompletionRequest,
+    resp: ChatCompletionResponse,
+    identity: Dict[str, Optional[str]],
+    provider: str,
+    model: str,
+    alias: Optional[str],
+    routing_source: str,
+    prompt_sha: Optional[str],
+    prompt_chars: Optional[int],
+) -> None:
+    """Hand the completed call to the cost emitter.
+
+    Dark by default (GATEWAY_AUDIT_EMIT_ENABLED), fire-and-forget, and it never
+    raises — see audit_emit's module docstring. `task_tags.emit_call_audit`
+    above stays the last-resort record whether or not this lands.
+    """
+    response_sha, response_chars = audit_emit.fingerprint(resp.content)
+    audit_emit.emit_llm_call(
+        gateway_call_id=gateway_call_id,
+        endpoint="chat_completions",
+        provider=provider,
+        model=model,
+        model_alias=alias or req.model_alias,
+        identity=identity,
+        input_tokens=resp.input_tokens,
+        output_tokens=resp.output_tokens,
+        latency_ms=resp.latency_ms,
+        finish_reason=resp.finish_reason,
+        routing_source=routing_source,
+        estimated_cost=resp.estimated_cost,
+        trace_id=req.trace_id,
+        capability_id=req.capability_id,
+        tenant_id=req.tenant_id,
+        actor_id=req.actor_id,
+        run_id=req.run_id,
+        prompt_sha256=prompt_sha,
+        prompt_chars=prompt_chars,
+        response_sha256=response_sha,
+        response_chars=response_chars,
+    )
 
 
 @router.post("/v1/embeddings", response_model=EmbeddingsResponse)
@@ -271,11 +655,38 @@ async def embeddings(
 
     identity = task_tags.resolve_task_identity(req, endpoint="embeddings")
 
-    provider, model, alias = _resolve_provider_and_model(
-        model_alias=req.model_alias,
-        provider=req.provider,
-        model=req.model,
+    gateway_call_id = str(uuid.uuid4())
+    # Input texts are fingerprinted, never carried. Embeddings are the
+    # highest-volume traffic here, so this is the path where shipping text
+    # would hurt most — in bytes on the wire and in what ends up retained.
+    prompt_sha, prompt_chars = audit_emit.fingerprint(
+        "\x1e".join(t for t in req.input if isinstance(t, str))
     )
+
+    # Note what is deliberately NOT wired here: size escalation. An
+    # EmbeddingsRequest carries `input`, not `messages`, so the estimate is 0 and
+    # embeddings never escalate a tier — which is correct, not an oversight.
+    # Routing a long input to a "deeper" embedding model would write vectors from
+    # a second model into the same index, and that is precisely the silent
+    # corruption the expected_model drift guard below exists to catch. Tier
+    # routing and the readiness walk still apply.
+    provider, model, alias, routing_source, routing = await _resolve_provider_and_model_with_policy(
+        req=req, identity=identity,
+    )
+    # Drift guard, matching /v1/chat/completions. This matters MORE here: a
+    # silently-changed chat model produces one visibly-off answer, whereas a
+    # silently-changed embedding model corrupts a vector index, and mixing
+    # 1536-dim mock vectors into a real one is not detectable by reading rows.
+    if req.expected_provider and provider.lower() != req.expected_provider.lower():
+        raise HTTPException(
+            status_code=409,
+            detail=f"resolved provider {provider} does not match expected provider {req.expected_provider}",
+        )
+    if req.expected_model and model != req.expected_model:
+        raise HTTPException(
+            status_code=409,
+            detail=f"resolved model {model} does not match expected model {req.expected_model}",
+        )
     if not provider_config.is_provider_allowed(provider):
         raise HTTPException(status_code=400, detail=f"provider {provider} is not allowed by gateway config")
 
@@ -284,9 +695,16 @@ async def embeddings(
     if provider == "mock":
         vectors, tokens = await mock_provider.embed(req.input, resolved_model=model or "mock-embed")
         dim = len(vectors[0]) if vectors else 0
+        latency_ms = int((time.time() - start) * 1000)
         task_tags.emit_call_audit(
             endpoint="embeddings", identity=identity, provider="mock", model=model or "mock-embed",
-            model_alias=alias, req=req, input_tokens=tokens,
+            model_alias=alias, req=req, input_tokens=tokens, routing=routing,
+        )
+        _emit_embedding_cost_event(
+            gateway_call_id=gateway_call_id, req=req, identity=identity, provider="mock",
+            model=model or "mock-embed", alias=alias, routing_source=routing_source,
+            input_tokens=tokens, latency_ms=latency_ms,
+            prompt_sha=prompt_sha, prompt_chars=prompt_chars,
         )
         return EmbeddingsResponse(
             embeddings=vectors,
@@ -295,7 +713,13 @@ async def embeddings(
             model=model or "mock-embed",
             model_alias=alias,
             input_tokens=tokens,
-            latency_ms=int((time.time() - start) * 1000),
+            # One latency_ms only. Both sides supplied it; `latency_ms` is the
+            # local computed above from the same `start`, so this is the same
+            # number without re-reading the clock after the emit calls.
+            latency_ms=latency_ms,
+            gateway_call_id=gateway_call_id,
+            estimated_cost=provider_config.compute_embedding_cost(alias, tokens),
+            routing=routing,
         )
 
     credential = settings.credential_for(provider)
@@ -308,9 +732,16 @@ async def embeddings(
                 req.input, provider=provider, resolved_model=model, api_key=credential,
             )
             dim = len(vectors[0]) if vectors else 0
+            latency_ms = int((time.time() - start) * 1000)
             task_tags.emit_call_audit(
                 endpoint="embeddings", identity=identity, provider=provider, model=model,
-                model_alias=alias, req=req, input_tokens=tokens,
+                model_alias=alias, req=req, input_tokens=tokens, routing=routing,
+            )
+            _emit_embedding_cost_event(
+                gateway_call_id=gateway_call_id, req=req, identity=identity, provider=provider,
+                model=model, alias=alias, routing_source=routing_source,
+                input_tokens=tokens, latency_ms=latency_ms,
+                prompt_sha=prompt_sha, prompt_chars=prompt_chars,
             )
             return EmbeddingsResponse(
                 embeddings=vectors,
@@ -319,10 +750,57 @@ async def embeddings(
                 model=model,
                 model_alias=alias,
                 input_tokens=tokens,
-                latency_ms=int((time.time() - start) * 1000),
+                # See the mock branch: one latency_ms, taken from the local.
+                latency_ms=latency_ms,
+                gateway_call_id=gateway_call_id,
+                estimated_cost=provider_config.compute_embedding_cost(alias, tokens),
+                routing=routing,
             )
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"LLM_GATEWAY_UPSTREAM: {exc}")
     raise HTTPException(status_code=400, detail=f"embeddings not supported for provider {provider}")
+
+
+def _emit_embedding_cost_event(
+    *,
+    gateway_call_id: str,
+    req: EmbeddingsRequest,
+    identity: Dict[str, Optional[str]],
+    provider: str,
+    model: str,
+    alias: Optional[str],
+    routing_source: str,
+    input_tokens: int,
+    latency_ms: int,
+    prompt_sha: Optional[str],
+    prompt_chars: Optional[int],
+) -> None:
+    """Cost event for an embeddings call.
+
+    output_tokens is 0 — embeddings produce vectors, not tokens — and there is
+    no response fingerprint for the same reason: a vector is not content a
+    hash of which would tell anyone anything.
+    """
+    audit_emit.emit_llm_call(
+        gateway_call_id=gateway_call_id,
+        endpoint="embeddings",
+        provider=provider,
+        model=model,
+        model_alias=alias or req.model_alias,
+        identity=identity,
+        input_tokens=input_tokens,
+        output_tokens=0,
+        latency_ms=latency_ms,
+        routing_source=routing_source,
+        estimated_cost=provider_config.compute_estimated_cost(
+            alias or req.model_alias, input_tokens, 0,
+        ),
+        trace_id=req.trace_id,
+        capability_id=req.capability_id,
+        tenant_id=req.tenant_id,
+        actor_id=req.actor_id,
+        prompt_sha256=prompt_sha,
+        prompt_chars=prompt_chars,
+    )

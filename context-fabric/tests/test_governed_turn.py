@@ -1129,3 +1129,205 @@ async def test_governance_overlay_renders_into_prompt_vars(monkeypatch):
         },
     )
     assert seen_vars and "Governed by: Security" in (seen_vars[0].get("governance_facts") or "")
+
+
+# ── outbound prompt PII masking (wiring into run_turn) ──────────────────────
+#
+# outbound_pii.py owns the masking rules and is unit-tested in
+# tests/test_outbound_pii.py. These tests cover the part that only run_turn can
+# get wrong: that the masked messages are the ones that actually reach the
+# provider, and that the token map lands on PhaseState BEFORE governed_step, so
+# the existing unmask at loop.py:708/786 can reverse a token the model echoes
+# back into a tool argument.
+
+
+def _pii_upstreams(monkeypatch, captured: dict):
+    """Wire the three upstreams run_turn touches, capturing the outgoing
+    messages. Returns nothing; the caller reads `captured`."""
+    async def fake_load_stage_policy(stage_key, agent_role, *, bearer=None):
+        return _policy([], phase=Phase.PLAN)
+
+    async def fake_resolve_prompt(*, stage_key, agent_role, phase, vars=None, bearer=None, **_kwargs):
+        return _prompt(task="Email bob@example.com about ssn 123-45-6789 on host 192.168.1.1.")
+
+    async def fake_call_gateway(*, messages, tools, model_alias=None, temperature=None,
+                                max_output_tokens=None, bearer=None, **_kwargs):
+        captured["messages"] = messages
+        return ChatResponse(
+            content="ok",
+            tool_calls=[ChatToolCall(
+                id="t1",
+                name=SUBMIT_PHASE_OUTPUT,
+                arguments={
+                    "payload": {
+                        "target_files": ["src/eval.py"],
+                        "test_strategy": {"commands": ["pytest tests/"]},
+                        "risk_level": "low",
+                    },
+                    "next_phase": "EXPLORE",
+                },
+            )],
+            finish_reason="tool_calls",
+            input_tokens=10,
+            output_tokens=5,
+            latency_ms=1,
+            provider="mock",
+            model="mock-fast",
+            model_alias="mock-fast",
+            estimated_cost=0.0,
+        )
+
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.load_stage_policy", fake_load_stage_policy
+    )
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.resolve_phase_prompt", fake_resolve_prompt
+    )
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.call_gateway_chat", fake_call_gateway
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_turn_leaves_the_prompt_alone_by_default(monkeypatch):
+    """Default is OFF. An unconfigured deployment must send exactly what it
+    sends today."""
+    monkeypatch.delenv("CF_MASK_PROMPT_PII", raising=False)
+    monkeypatch.delenv("CF_MASK_PROMPT_PII_CAPABILITIES", raising=False)
+    captured: dict = {}
+    _pii_upstreams(monkeypatch, captured)
+
+    turn = await run_turn(
+        state=PhaseState.fresh("loop.stage", "DEVELOPER"),
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        run_context={"capability_id": "cap-1"},
+    )
+
+    body = "\n".join(m.get("content", "") for m in captured["messages"] if isinstance(m.get("content"), str))
+    assert "bob@example.com" in body
+    assert "123-45-6789" in body
+    assert turn.next_state.pii_token_map == {}
+
+
+@pytest.mark.asyncio
+async def test_run_turn_masks_the_outgoing_prompt_when_enforced(monkeypatch):
+    monkeypatch.setenv("CF_MASK_PROMPT_PII", "enforce")
+    monkeypatch.setenv("CF_MASK_PROMPT_PII_CAPABILITIES", "cap-1")
+    captured: dict = {}
+    _pii_upstreams(monkeypatch, captured)
+
+    turn = await run_turn(
+        state=PhaseState.fresh("loop.stage", "DEVELOPER"),
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        run_context={"capability_id": "cap-1"},
+    )
+
+    body = "\n".join(m.get("content", "") for m in captured["messages"] if isinstance(m.get("content"), str))
+    assert "bob@example.com" not in body
+    assert "123-45-6789" not in body
+    assert "[EMAIL_1]" in body and "[SSN_1]" in body
+    # Excluded on purpose — masking this is how an agent debugging a config
+    # gets a confidently wrong answer.
+    assert "192.168.1.1" in body
+
+    # THE ROUND TRIP: the tokens must survive onto the state the caller
+    # persists, or the next turn's unmask has nothing to reverse against.
+    assert turn.next_state.pii_token_map["[EMAIL_1]"] == "bob@example.com"
+    assert turn.next_state.pii_token_map["[SSN_1]"] == "123-45-6789"
+
+
+@pytest.mark.asyncio
+async def test_run_turn_shadow_mode_sends_the_original_prompt(monkeypatch):
+    """Shadow measures; it must not change the prompt OR the state."""
+    monkeypatch.setenv("CF_MASK_PROMPT_PII", "shadow")
+    monkeypatch.setenv("CF_MASK_PROMPT_PII_CAPABILITIES", "cap-1")
+    captured: dict = {}
+    _pii_upstreams(monkeypatch, captured)
+
+    turn = await run_turn(
+        state=PhaseState.fresh("loop.stage", "DEVELOPER"),
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        run_context={"capability_id": "cap-1"},
+    )
+
+    body = "\n".join(m.get("content", "") for m in captured["messages"] if isinstance(m.get("content"), str))
+    assert "bob@example.com" in body
+    assert "123-45-6789" in body
+    assert turn.next_state.pii_token_map == {}
+
+
+@pytest.mark.asyncio
+async def test_run_turn_does_not_mask_for_an_unlisted_capability(monkeypatch):
+    monkeypatch.setenv("CF_MASK_PROMPT_PII", "enforce")
+    monkeypatch.setenv("CF_MASK_PROMPT_PII_CAPABILITIES", "some-other-cap")
+    captured: dict = {}
+    _pii_upstreams(monkeypatch, captured)
+
+    await run_turn(
+        state=PhaseState.fresh("loop.stage", "DEVELOPER"),
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        run_context={"capability_id": "cap-1"},
+    )
+
+    body = "\n".join(m.get("content", "") for m in captured["messages"] if isinstance(m.get("content"), str))
+    assert "bob@example.com" in body
+
+
+@pytest.mark.asyncio
+async def test_run_turn_masks_the_direct_provider_route_too(monkeypatch):
+    """The CF direct hatch bypasses the gateway. If the mask only covered
+    call_gateway_chat, the direct route would be an unmasked bypass."""
+    monkeypatch.setenv("CF_MASK_PROMPT_PII", "enforce")
+    monkeypatch.setenv("CF_MASK_PROMPT_PII_CAPABILITIES", "cap-1")
+    captured: dict = {}
+    _pii_upstreams(monkeypatch, captured)
+
+    async def fake_call_direct(*, messages, tools, model_alias=None, run_context=None,
+                               max_output_tokens=None, **_kwargs):
+        captured["messages"] = messages
+        captured["route"] = "direct"
+        return ChatResponse(
+            content="ok",
+            tool_calls=[ChatToolCall(
+                id="t1",
+                name=SUBMIT_PHASE_OUTPUT,
+                arguments={
+                    "payload": {
+                        "target_files": ["src/eval.py"],
+                        "test_strategy": {"commands": ["pytest tests/"]},
+                        "risk_level": "low",
+                    },
+                    "next_phase": "EXPLORE",
+                },
+            )],
+            finish_reason="tool_calls",
+            input_tokens=10, output_tokens=5, latency_ms=1,
+            provider="anthropic", model="m", model_alias="m", estimated_cost=0.0,
+        )
+
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.is_context_fabric_direct_route",
+        lambda *_a, **_kw: True,
+    )
+    monkeypatch.setattr(
+        "context_api_service.app.governed.turn.call_direct_chat", fake_call_direct
+    )
+
+    await run_turn(
+        state=PhaseState.fresh("loop.stage", "DEVELOPER"),
+        stage_key="loop.stage",
+        agent_role="DEVELOPER",
+        run_context={"capability_id": "cap-1"},
+    )
+
+    # Without this the test would pass even if the gateway route had run, since
+    # both routes mask -- and then it would be proving nothing about the hatch.
+    assert captured.get("route") == "direct"
+
+    body = "\n".join(m.get("content", "") for m in captured["messages"] if isinstance(m.get("content"), str))
+    assert "bob@example.com" not in body
+    assert "[EMAIL_1]" in body

@@ -933,6 +933,40 @@ services:
       # External config files declare providers + model aliases. Mounted RO.
       LLM_PROVIDER_CONFIG_PATH: /etc/singularity/llm-providers.json
       LLM_MODEL_CATALOG_PATH:   /etc/singularity/llm-models.json
+      # B1 — declarative model-selection policy (task_tag -> tier -> alias list).
+      #
+      # ON by default as of B4. It shipped dark through three changes so the
+      # *_MODEL_ALIAS collapse and budget degradation could each be reviewed and
+      # reverted on their own; past that, an engine no traffic reaches is the
+      # state this effort started in. Set false to get the pre-policy resolution
+      # path back — read per call, so no restart is needed.
+      #
+      # What "on" changes is narrower than it sounds: a caller still sending
+      # model_alias is a hard pin and still skips policy entirely. Only callers
+      # that stopped pinning are affected. See .singularity/llm-policy.json.default
+      # for the file shape; a missing file degrades to an inert policy rather
+      # than failing the gateway.
+      LLM_POLICY_PATH: /etc/singularity/llm-policy.json
+      GATEWAY_MODEL_POLICY_ENABLED: ${GATEWAY_MODEL_POLICY_ENABLED:-true}
+      # B3 — budget-aware tier DEGRADATION. Needs the policy engine on as well;
+      # both default false. When on, the gateway reads the caller's scope
+      # utilisation from audit-gov and may drop the chosen tier by ONE rung.
+      #
+      # SHIPS DARK, and it would not function today even if switched on: the
+      # `budgets` table is fed from llm.call.completed audit events, whose only
+      # producer is mcp-server's invoke path. Direct-to-gateway spend is
+      # invisible to it, so the utilisation figure is a LOWER BOUND. Turning
+      # this on before the gateway emits its own call events would degrade on
+      # partial data. See app/budget_state.py for the full caveat.
+      GATEWAY_BUDGET_DEGRADATION_ENABLED: ${GATEWAY_BUDGET_DEGRADATION_ENABLED:-false}
+      GATEWAY_BUDGET_CACHE_TTL_SEC: ${GATEWAY_BUDGET_CACHE_TTL_SEC:-60}
+      GATEWAY_BUDGET_TIMEOUT_SEC: ${GATEWAY_BUDGET_TIMEOUT_SEC:-2}
+      # Unset → no budget signal → nothing is ever degraded (fail open).
+      AUDIT_GOV_URL: ${AUDIT_GOV_URL:-}
+      # When no catalog entry is marked "default": true the gateway falls back to
+      # the FIRST entry, so catalog ORDER silently decides the platform default.
+      # Set true to refuse that fallback instead. Warned either way.
+      GATEWAY_STRICT_DEFAULT_ALIAS: ${GATEWAY_STRICT_DEFAULT_ALIAS:-false}
       # Optional bearer that every consumer must present. Empty = open in dev.
       LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
       # When ALLOW_CALLER_PROVIDER_OVERRIDE=false the gateway refuses
@@ -947,6 +981,28 @@ services:
       LLM_GATEWAY_RATE_LIMIT_RETRIES: ${LLM_GATEWAY_RATE_LIMIT_RETRIES:-2}
       LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC: ${LLM_GATEWAY_RATE_LIMIT_RETRY_DELAY_SEC:-65}
       LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC: ${LLM_GATEWAY_RATE_LIMIT_MAX_SLEEP_SEC:-75}
+      # ── Cost emission → audit-governance-service (DARK BY DEFAULT) ────────
+      # The gateway is the only component that sees every LLM call, so it is
+      # the emitter for audit_governance.llm_calls (which is otherwise dead —
+      # its only real producer was the retired pre-M71 agent loop). Emission
+      # is fire-and-forget over HTTP; this service has no DB dependency and
+      # must not acquire one.
+      #
+      # DO NOT SET THIS TO true UNTIL AUDIT_GOV_REQUIRE_TENANT_SCOPE=enforce.
+      # audit-gov's query endpoints are fail-open on tenant today; they return
+      # nothing only because llm_calls is empty. Filling it with per-user cost
+      # and prompt hashes while those endpoints are still in shadow mode would
+      # start returning real cross-tenant data.
+      GATEWAY_AUDIT_EMIT_ENABLED: ${GATEWAY_AUDIT_EMIT_ENABLED:-false}
+      # audit-gov is not in this compose file — it runs from
+      # audit-governance-service/docker-compose.yml, so the same
+      # host.docker.internal default every other service here uses applies.
+      AUDIT_GOV_URL: ${AUDIT_GOV_URL:-http://host.docker.internal:8500}
+      AUDIT_GOV_SERVICE_TOKEN: ${AUDIT_GOV_SERVICE_TOKEN:-dev-audit-gov-service-token}
+      # In-process retry queue. Bounded on purpose: at-most-once is the
+      # accepted trade, a durable outbox would mean the DB dependency above.
+      GATEWAY_AUDIT_EMIT_QUEUE_MAX: ${GATEWAY_AUDIT_EMIT_QUEUE_MAX:-1000}
+      GATEWAY_AUDIT_EMIT_TIMEOUT_SEC: ${GATEWAY_AUDIT_EMIT_TIMEOUT_SEC:-5}
       # Provider credentials — passed ONLY to this service. Every other
       # service in the stack is enforced to NOT receive these keys (CI guard
       # in M33.7).

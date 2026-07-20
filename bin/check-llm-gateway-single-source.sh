@@ -64,7 +64,15 @@ DIRECT_PROVIDER_PATHS='context-fabric/services/context_api_service/app/governed/
 # meaningless. They remain bound to the single tagged gateway (model_alias), so
 # they belong here rather than in DIRECT_PROVIDER_PATHS. Agent/task turns get no
 # such exemption: those must go composer + context-fabric + tagged gateway.
-DIRECT_GATEWAY_PATHS='agent-and-tools/packages/shared/src/llm-gateway/|agent-and-tools/apps/agent-runtime/src/modules/capabilities/bootstrap-phase3-distill\.ts|agent-and-tools/apps/agent-runtime/src/modules/capabilities/world-model-view-builder\.service\.ts|claim-registry/src/lib/gateway\.ts|audit-governance-service/src/engine/|audit-governance-service/test/|tools/capability-harness/|tests/chaos/|context-fabric/services/context_api_service/app/governed/llm_client\.py|context-fabric/services/context_api_service/app/governed/turn\.py|context-fabric/services/context_api_service/app/laptop_registry\.py|bin/copilot-cli-server\.js'
+#
+# Test directories are listed alongside them for a different reason: a test that
+# asserts what the gateway contract looks like has to NAME the endpoint, and a
+# test file cannot make a production call. audit-governance-service/test/ and
+# tests/chaos/ were already exempt on exactly that basis; context-fabric/tests/
+# and the shared package's test/ were not, so the gateway-contract tests added
+# alongside these fields tripped a guard about runtime egress by quoting a URL
+# inside an assertion.
+DIRECT_GATEWAY_PATHS='agent-and-tools/packages/shared/src/llm-gateway/|agent-and-tools/packages/shared/test/|agent-and-tools/apps/agent-runtime/src/modules/capabilities/bootstrap-phase3-distill\.ts|agent-and-tools/apps/agent-runtime/src/modules/capabilities/world-model-view-builder\.service\.ts|claim-registry/src/lib/gateway\.ts|audit-governance-service/src/engine/|audit-governance-service/test/|tools/capability-harness/|tests/chaos/|context-fabric/tests/|context-fabric/services/context_api_service/app/governed/llm_client\.py|context-fabric/services/context_api_service/app/governed/turn\.py|context-fabric/services/context_api_service/app/laptop_registry\.py|bin/copilot-cli-server\.js'
 
 # Lines that are pure comments (// /* * # docstrings) don't introduce a
 # runtime call — strip them when grepping. Be a bit lenient (we strip only

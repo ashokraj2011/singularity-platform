@@ -98,6 +98,14 @@ class ChatCompletionRequest(BaseModel):
     trace_id: Optional[str] = None
     run_id:   Optional[str] = None
     capability_id: Optional[str] = None
+    # WHO the call is for. ATTRIBUTION, NOT AUTHORIZATION — the gateway sits
+    # behind one shared bearer, so any caller can claim any actor. Good enough
+    # to answer "what did this user's traffic cost"; categorically not good
+    # enough to found isolation on. Convention (m75): a human is a user id, a
+    # background call is 'system:<service>', and absent keeps meaning "the
+    # caller did not propagate it".
+    actor_id:  Optional[str] = None
+    tenant_id: Optional[str] = None
 
     # WHAT this call is for. Until now the gateway knew which model it was
     # asked for and nothing about why — task identity lived inside context-fabric
@@ -111,6 +119,31 @@ class ChatCompletionRequest(BaseModel):
     task_tag: Optional[str] = None
     stage:    Optional[str] = None
     purpose:  Optional[str] = None
+
+    # WHO this call is for. task_tag answered "what kind of work"; these answer
+    # "on whose behalf". Without them "what did this user's LLM traffic cost
+    # today" is not a hard query, it is an impossible one — no LLM record
+    # anywhere in the platform carried an actor.
+    #
+    # ATTRIBUTION, NOT AUTHORIZATION. The gateway sits behind a single shared
+    # bearer, so any caller can claim any actor_id or tenant_id. Sufficient for
+    # cost reporting and debugging; categorically insufficient to found tenant
+    # isolation on. Do not build RLS on these.
+    #
+    # Convention once callers migrate: actor_id is never null. A human is a user
+    # id; a background call is "system:<service-name>". That keeps null meaning
+    # "somebody forgot to propagate it" rather than blurring into "no human".
+    actor_id:   Optional[str] = None
+    tenant_id:  Optional[str] = None
+    # The conversation this turn belongs to, when there is one. Carried so a
+    # cost row can be grouped by conversation without joining back through CF.
+    session_id: Optional[str] = None
+
+    # Soft routing hint: "cheap" | "standard" | "deep". Distinct from
+    # model_alias, which is a hard pin that skips policy entirely. A tier says
+    # "pick something in this class for me"; policy resolves it against the
+    # catalog. Inert until the policy engine ships.
+    model_tier: Optional[str] = None
 
 
 class ToolCall(BaseModel):
@@ -129,6 +162,14 @@ class ChatCompletionResponse(BaseModel):
     provider: str
     model: str
     model_alias: Optional[str] = None
+    # A UUID minted by the gateway for THIS call and echoed here. The gateway
+    # is the only component that sees every LLM egress, so it is the only one
+    # that can hand out a call identity — callers put it on their own trace
+    # event (governed.llm_response) so the trace and the audit_governance
+    # cost row join EXACTLY, instead of heuristically by trace_id + timestamp
+    # proximity. Also the dedup key behind llm_calls' partial unique index, so
+    # a retried emission cannot double-count spend.
+    gateway_call_id: Optional[str] = None
     # M56 — USD cost per call computed from the model catalog's
     # inputPricePerMtok / outputPricePerMtok fields. None when the
     # catalog has no prices for this model (so the workbench can show
@@ -156,6 +197,13 @@ class ChatCompletionResponse(BaseModel):
     # requested / not supported by the provider.
     prompt_cache: Optional[Dict[str, Any]] = None
 
+    # B1 — how this model got chosen: {source, tier, alias, reason,
+    # escalated_from?}. None when the policy engine is disabled, which is the
+    # default, so the field's mere presence tells a caller policy is live.
+    # `reason` is a single human-readable audit line — a routing layer nobody
+    # can read back is one nobody will trust with the production default.
+    routing: Optional[Dict[str, Any]] = None
+
 
 class EmbeddingsRequest(BaseModel):
     # Normal callers must pass `model_alias` or rely on the gateway's default
@@ -163,11 +211,21 @@ class EmbeddingsRequest(BaseModel):
     model_alias: Optional[str] = None
     provider:    Optional[str] = None
     model:       Optional[str] = None
+    # Drift guard, mirroring ChatCompletionRequest. Absent here until now, and
+    # the omission mattered MORE on this endpoint than on chat: a silent
+    # embedding-model change corrupts a vector index rather than producing one
+    # visibly-off answer. Mixing 1536-dim mock output into a real index is
+    # exactly the failure a hard 409 should have been preventing all along.
+    expected_provider: Optional[str] = None
+    expected_model:    Optional[str] = None
 
     input: List[str]
 
     trace_id: Optional[str] = None
     capability_id: Optional[str] = None
+    # Same attribution-not-authorization caveat as ChatCompletionRequest.
+    actor_id:  Optional[str] = None
+    tenant_id: Optional[str] = None
 
     # Same task identity as ChatCompletionRequest — embeddings are the highest-
     # volume gateway traffic, so leaving them untagged would leave the biggest
@@ -175,6 +233,14 @@ class EmbeddingsRequest(BaseModel):
     task_tag: Optional[str] = None
     stage:    Optional[str] = None
     purpose:  Optional[str] = None
+
+    # Same caller identity as ChatCompletionRequest. See the note there: these
+    # are attribution, not authorization.
+    actor_id:   Optional[str] = None
+    tenant_id:  Optional[str] = None
+    session_id: Optional[str] = None
+
+    model_tier: Optional[str] = None
 
 
 class EmbeddingsResponse(BaseModel):
@@ -185,3 +251,65 @@ class EmbeddingsResponse(BaseModel):
     model_alias: Optional[str] = None
     input_tokens: int = 0
     latency_ms: int = 0
+    # Same call identity as ChatCompletionResponse. Embeddings are the
+    # highest-volume gateway traffic, so this is where the dedup key earns
+    # the most: without it the biggest cost line is also the one most likely
+    # to be double-counted by a retry.
+    gateway_call_id: Optional[str] = None
+    # Embeddings are the highest-volume traffic on this gateway and were the
+    # only endpoint with no cost path at all — compute_estimated_cost was never
+    # called here, so the largest cost line would have landed in llm_calls with
+    # cost_usd NULL. None when the catalog prices this model at nothing.
+    estimated_cost: Optional[float] = None
+    # B1 — same routing provenance as ChatCompletionResponse. Embeddings are the
+    # highest-volume traffic here, so leaving them without routing provenance
+    # would leave the biggest cost line unable to answer "why this model".
+    routing: Optional[Dict[str, Any]] = None
+
+
+class RoutePreviewRequest(BaseModel):
+    """What POST /llm/route/preview needs to answer "which model would you pick".
+
+    Deliberately NOT ChatCompletionRequest: a preview must be cheap to ask for,
+    and forcing a caller to assemble a full messages array (which
+    ChatCompletionRequest requires) just to learn the model would push callers
+    into guessing instead. Send the messages if you have them, or send the size
+    if that is all you know.
+    """
+
+    model_alias: Optional[str] = None
+    provider:    Optional[str] = None
+    model:       Optional[str] = None
+    expected_provider: Optional[str] = None
+    expected_model:    Optional[str] = None
+
+    task_tag: Optional[str] = None
+    stage:    Optional[str] = None
+    purpose:  Optional[str] = None
+    model_tier: Optional[str] = None
+
+    messages: Optional[List[ChatMessage]] = None
+    # Escape hatch for a caller that knows its size but not its content, or that
+    # is previewing a request it has not built yet.
+    estimated_input_tokens: Optional[int] = None
+
+
+class RoutePreviewResponse(BaseModel):
+    """The resolution CF needs BEFORE the call, for its token-budget preflight
+    and its own expected_model check.
+
+    Resolution failures come back as ready=false + `error` rather than as a 4xx.
+    A preflight whose job is to report what would happen should report "this
+    would 503", not itself 503 — otherwise the caller cannot tell a broken
+    preflight from a broken route.
+    """
+
+    provider: Optional[str] = None
+    model:    Optional[str] = None
+    model_alias: Optional[str] = None
+    routing: Optional[Dict[str, Any]] = None
+    policy_enabled: bool = False
+    estimated_input_tokens: int = 0
+    ready: bool = True
+    error: Optional[str] = None
+    warnings: List[str] = Field(default_factory=list)

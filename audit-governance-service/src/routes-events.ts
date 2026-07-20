@@ -10,11 +10,10 @@
  * worker runs per-event sequentially — fine at the volumes we're targeting.
  */
 import { Router, NextFunction, Request, Response } from "express";
-import { timingSafeEqual } from "node:crypto";
 import { query } from "./db";
 import { eventSchema, authzDecisionSchema } from "./types";
 import { denormaliseLlmCall } from "./cost-worker";
-import { boundedEnvInteger } from "./env";
+import { boundedEnvInteger, boundedInteger } from "./env";
 // M63 Slice D — pure-function risk classifier mapping (kind, severity)
 // → low/medium/high/critical so the search UI can filter by blast radius
 // independently of "did the call succeed."
@@ -23,15 +22,16 @@ import { classifyRisk } from "./risk-classifier";
 // when nobody's connected; non-blocking otherwise (just enqueues onto
 // each subscriber's bounded buffer).
 import { broadcastAuditEvent } from "./routes-stream";
+// M35.1 — the shared service-auth gate. It lives in its own module so that
+// routes-stream can use it without importing this one back (see service-auth.ts
+// for why that cycle is worth avoiding). Re-exported below because seven other
+// routers import it from here.
+import { requireServiceAuth } from "./service-auth";
+
+export { requireServiceAuth };
 
 export const eventsRouter = Router();
 
-const SERVICE_TOKEN = process.env.AUDIT_GOV_SERVICE_TOKEN ?? "";
-// M35.1 — anonymous mode is OPT-IN only. Previously it auto-enabled when
-// SERVICE_TOKEN was unset in non-production NODE_ENV; that silently allowed
-// unauthenticated event ingest whenever someone forgot to set the env var.
-// Now you MUST explicitly set AUDIT_GOV_ALLOW_ANONYMOUS_DEV=1 to allow it.
-const ALLOW_ANON_DEV = process.env.AUDIT_GOV_ALLOW_ANONYMOUS_DEV === "1";
 const RATE_LIMIT_WINDOW_MS = boundedEnvInteger("AUDIT_GOV_EVENT_RATE_WINDOW_MS", {
   defaultValue: 60_000,
   min: 1_000,
@@ -47,6 +47,62 @@ const EVENT_BATCH_MAX = boundedEnvInteger("AUDIT_GOV_EVENT_BATCH_MAX", {
   min: 1,
   max: 5_000,
 });
+
+// Per-source ceiling override. One global limit cannot fit both a service that
+// emits a handful of governance decisions an hour and one that emits a row per
+// LLM call — the llm-gateway emitter is the latter, and embeddings are the
+// highest-volume traffic on the platform, so a shared 2k/min would throttle it
+// the moment it is switched on. Batching does not dodge the limit either:
+// weight counts as events.length below, by design.
+//
+// Format: JSON object of source_service → max events per window, e.g.
+//   AUDIT_GOV_EVENT_RATE_MAX_BY_SOURCE='{"llm-gateway":20000}'
+// Each value goes through the same bounds as the global limit, so a typo'd or
+// hostile entry cannot disable rate limiting; malformed JSON falls back to the
+// global limit for every source rather than failing boot.
+export function parseRateMaxBySource(
+  raw: string | undefined,
+  fallback: number,
+): Record<string, number> {
+  if (!raw || !raw.trim()) return {};
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
+  } catch {
+    // eslint-disable-next-line no-console
+    console.warn("[audit-gov] AUDIT_GOV_EVENT_RATE_MAX_BY_SOURCE is not valid JSON; ignoring");
+    return {};
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    // eslint-disable-next-line no-console
+    console.warn("[audit-gov] AUDIT_GOV_EVENT_RATE_MAX_BY_SOURCE must be a JSON object; ignoring");
+    return {};
+  }
+  const out: Record<string, number> = {};
+  for (const [source, value] of Object.entries(decoded as Record<string, unknown>)) {
+    if (!source.trim()) continue;
+    if (typeof value !== "string" && typeof value !== "number") continue;
+    // Same bounds as AUDIT_GOV_EVENT_RATE_MAX. An out-of-range or unparseable
+    // value falls back to the global limit for that source — never to
+    // "unlimited", which is what a raw Number() would have given for a typo.
+    out[source.trim()] = boundedInteger(value, {
+      defaultValue: fallback,
+      min: 1,
+      max: 100_000,
+    });
+  }
+  return out;
+}
+
+const RATE_LIMIT_MAX_BY_SOURCE = parseRateMaxBySource(
+  process.env.AUDIT_GOV_EVENT_RATE_MAX_BY_SOURCE,
+  RATE_LIMIT_MAX,
+);
+
+export function rateLimitMaxFor(source: string): number {
+  return RATE_LIMIT_MAX_BY_SOURCE[source] ?? RATE_LIMIT_MAX;
+}
+
 const buckets = new Map<string, { resetAt: number; count: number }>();
 
 // M35.1 — known source services. Events with `source_service` outside this
@@ -58,12 +114,16 @@ const ALLOWED_SOURCE_SERVICES = (process.env.AUDIT_GOV_ALLOWED_SOURCE_SERVICES ?
   .map(s => s.trim())
   .filter(Boolean);
 
-function actorKey(req: Request): string {
-  const source = typeof req.body?.source_service === "string"
+function sourceOf(req: Request): string {
+  return typeof req.body?.source_service === "string"
     ? req.body.source_service
     : Array.isArray(req.body?.events) && typeof req.body.events[0]?.source_service === "string"
       ? req.body.events[0].source_service
       : "unknown";
+}
+
+function actorKey(req: Request): string {
+  const source = sourceOf(req);
   const tenant = typeof req.body?.tenant_id === "string"
     ? req.body.tenant_id
     : Array.isArray(req.body?.events) && typeof req.body.events[0]?.tenant_id === "string"
@@ -72,36 +132,10 @@ function actorKey(req: Request): string {
   return `${req.ip}:${source}:${tenant}`;
 }
 
-// M35.1 — exported so the engine router (engine/routes.ts) can apply the same
-// auth contract to its mutation endpoints.
-export function requireServiceAuth(req: Request, res: Response, next: NextFunction): void {
-  const header = req.headers.authorization;
-  const token = typeof header === "string" && header.startsWith("Bearer ")
-    ? header.slice(7)
-    : String(req.headers["x-service-token"] ?? "");
-  if (SERVICE_TOKEN) {
-    // Constant-time compare to close a timing side-channel on the token.
-    const a = Buffer.from(token, "utf8");
-    const b = Buffer.from(SERVICE_TOKEN, "utf8");
-    const lenOk = a.length === b.length;
-    const eq = lenOk ? timingSafeEqual(a, b) : (timingSafeEqual(b, Buffer.alloc(b.length)), false);
-    if (!eq) {
-      res.status(401).json({ error: "invalid service token" });
-      return;
-    }
-    next();
-    return;
-  }
-  if (!ALLOW_ANON_DEV) {
-    res.status(503).json({ error: "AUDIT_GOV_SERVICE_TOKEN is required" });
-    return;
-  }
-  next();
-}
-
 function rateLimit(req: Request, res: Response, next: NextFunction): void {
   const now = Date.now();
   const key = actorKey(req);
+  const limit = rateLimitMaxFor(sourceOf(req));
   const current = buckets.get(key);
   const weight = Array.isArray(req.body?.events) ? req.body.events.length : 1;
   if (!current || current.resetAt <= now) {
@@ -109,10 +143,10 @@ function rateLimit(req: Request, res: Response, next: NextFunction): void {
     next();
     return;
   }
-  if (current.count + weight > RATE_LIMIT_MAX) {
+  if (current.count + weight > limit) {
     res.status(429).json({
       error: "rate_limited",
-      limit: RATE_LIMIT_MAX,
+      limit,
       window_ms: RATE_LIMIT_WINDOW_MS,
       retry_after_ms: current.resetAt - now,
     });

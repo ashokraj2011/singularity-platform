@@ -1181,8 +1181,11 @@ async function callProvider(args: DirectLlmProviderRequest): Promise<DirectLlmCh
   // provider socket outside the gateway.
   if (!directLlmEgressAllowed()) {
     throw new Error(
-      'Direct LLM egress is disabled (WORKGRAPH_ALLOW_DIRECT_LLM=false). This node bypasses the '
-      + 'platform LLM gateway; route it through a governed AGENT_TASK or re-enable the policy.',
+      'Direct LLM egress is refused by default. This node opens a provider socket outside the '
+      + 'platform LLM gateway, so the call carries no task tag, no gateway audit line and no cost '
+      + 'attribution. Route it through a governed AGENT_TASK (which reaches the model via Context '
+      + 'Fabric), or set WORKGRAPH_ALLOW_DIRECT_LLM=true to opt this deployment back into direct '
+      + 'egress.',
     )
   }
 

@@ -155,7 +155,7 @@ explicitly reports `estimated_cost: 0`.
 | Path | Control | Default |
 |---|---|---|
 | §2 CF direct | `CF_ALLOW_DIRECT_LLM` | **off** |
-| workgraph direct | `WORKGRAPH_ALLOW_DIRECT_LLM` — refuses direct provider egress from `DIRECT_LLM_TASK` and the direct tool loop | **allowed** (no alternative egress exists yet, so off would break those nodes rather than reroute them) |
+| workgraph direct | `WORKGRAPH_ALLOW_DIRECT_LLM` — refuses direct provider egress from `DIRECT_LLM_TASK` and the direct tool loop | **refused** (changed 2026-07-20; set `=true` to opt back in) |
 | §3 laptop | `ENTERPRISE_LLM_GATEWAY=true` — hard kill switch, laptop never dispatched | off |
 | §3 laptop | `PREFER_LAPTOP_LLM` (fleet), `run_context.prefer_laptop_llm` (per run) | off |
 | §3 laptop | `RUNTIME_HTTP_FALLBACK_ENABLED` — when off, a missing runtime fails loudly instead of silently using the cloud | off |
@@ -167,6 +167,29 @@ explicitly reports `estimated_cost: 0`.
 inside the boundary.** It forces cloud MCP + cloud LLM and never dispatches to a
 laptop. Deployments that must not have model traffic leaving the gateway should
 set it.
+
+> **`WORKGRAPH_ALLOW_DIRECT_LLM` default flipped to refused, 2026-07-20.** The
+> old default was *allowed*, on the grounds that this executor had no
+> alternative egress to fall through to. That premise expired: workgraph reaches
+> governed generation through Context Fabric — `executeGovernedSingleTurn`
+> (`workgraph-studio/apps/api/src/lib/context-fabric/client.ts`) for one-shot
+> calls, `AGENT_TASK` → `/execute` for loops — and its own `LLM_GATEWAY_URL` /
+> `LLM_GATEWAY_BEARER` were retired for exactly that reason (`config.ts:127`).
+>
+> Be precise about the migration cost, because it is real: the alternative
+> egress is CF's governed API, **not** a gateway call `DIRECT_LLM_TASK` can make
+> itself — workgraph has no gateway client. Existing `DIRECT_LLM_TASK` nodes
+> therefore do **not** silently reroute. They fail loudly until someone moves
+> them to `AGENT_TASK` or the governed single-turn path. Quiet, untagged,
+> uncosted egress becomes a visible failure; that is the intended trade.
+
+**Provider-key custody is now enforced, not merely documented.**
+`bin/check-secret-guardrails.sh` asserts that no service block in any tracked
+compose file receives a provider key, with `llm-gateway` as the custodian and
+`context-api` as the single named exception (it holds keys for the §2 hatch).
+`llm_gateway_service/app/config.py` used to claim the gateway was "the ONLY
+place provider keys are read"; that claim was false — see the corrected
+docstring for where they actually live.
 
 There is **no control that disables `copilot_execute`.** It is unconditionally
 registered and `requires_approval: false`. See *Open questions*.

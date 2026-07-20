@@ -16,6 +16,10 @@ import { config } from "../config";
 
 export interface CorrelationIds {
   traceId?: string;
+  // WHO launched this invocation. Absent until a caller sends it — /mcp/invoke's
+  // runContext carried tenant, session, agent and capability but never a human,
+  // so every LLM call relayed through here reached the gateway anonymous.
+  userId?: string;
   sessionId?: string;
   runId?: string;
   runStepId?: string;

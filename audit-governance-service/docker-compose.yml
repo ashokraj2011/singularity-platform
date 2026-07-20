@@ -64,6 +64,16 @@ services:
       # which lives in the main compose; this container reaches it via
       # host.docker.internal:8001 since audit-gov is in its own compose.
       LLM_GATEWAY_URL: ${LLM_GATEWAY_URL:-http://host.docker.internal:8001}
+      # Per-source ingest ceiling override, JSON: {"source_service": max}.
+      # The global AUDIT_GOV_EVENT_RATE_MAX (2000/60s per ip:source:tenant)
+      # cannot fit both a service emitting a few governance decisions an hour
+      # and llm-gateway emitting a row per LLM call — and embeddings are the
+      # highest-volume traffic on the platform. Batching does not dodge the
+      # limit (weight counts as events.length, by design), so the gateway cost
+      # emitter needs this raised before it is switched on. Each value is
+      # bounded exactly like the global limit, so a typo cannot disable rate
+      # limiting; malformed JSON falls back to the global limit for everyone.
+      AUDIT_GOV_EVENT_RATE_MAX_BY_SOURCE: ${AUDIT_GOV_EVENT_RATE_MAX_BY_SOURCE:-{"llm-gateway":20000}}
       # Operator log lake. Filesystem is the default for local/dev and writes
       # raw NDJSON to the mounted audit_log_data volume. Set
       # LOG_STORAGE_BACKEND=s3 plus the LOG_S3_* variables to write batches to

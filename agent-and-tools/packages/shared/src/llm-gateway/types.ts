@@ -28,7 +28,26 @@ export interface ToolCall {
 
 export type FinishReason = "stop" | "tool_call" | "length" | "error";
 
-export interface ChatCompletionRequest {
+/**
+ * WHAT a call is for, as opposed to WHICH model it wants.
+ *
+ * The gateway's policy engine routes on these. Until they existed on this
+ * interface every TS caller could only express intent by naming a model, which
+ * is why the platform accumulated twenty-odd `*_MODEL_ALIAS` env vars: an alias
+ * was the only vocabulary available for saying "this is background distillation,
+ * not an agent turn". A caller that sends `task_tag` and no alias is asking the
+ * gateway to choose; a caller that sends an alias is pinning, and pins still win.
+ */
+export interface TaskIdentity {
+  /** Coarse bucket: agent_turn, embedding, summarise, judge, capsule_compile, … */
+  task_tag?: string;
+  /** Narrows the tag when the caller knows the workflow stage. */
+  stage?: string;
+  /** Narrows the tag when the caller knows the specific job. */
+  purpose?: string;
+}
+
+export interface ChatCompletionRequest extends TaskIdentity {
   /** Preferred — pick a curated alias from .singularity/llm-models.json. */
   model_alias?: string;
 
@@ -44,6 +63,34 @@ export interface ChatCompletionRequest {
   trace_id?: string;
   run_id?: string;
   capability_id?: string;
+
+  /**
+   * WHAT this call is for — one of the gateway's task-tag vocabulary
+   * (llm_gateway_service/app/task_tags.py). This client does NOT default it:
+   * every caller has a different bucket (capsule_compile, summarise, judge, …)
+   * and a hardcoded default here would relabel all of them as one thing, which
+   * is worse than untagged because it looks correct.
+   */
+  task_tag?: string;
+  /** Narrower than task_tag, when the caller knows more. */
+  stage?: string;
+  purpose?: string;
+
+  /**
+   * WHO this call is for.
+   *
+   * Convention: `actor_id` is never null. A human is a user id; a background
+   * call is `system:<service-name>`. That keeps null meaning "somebody forgot to
+   * propagate it" instead of blurring into "no human involved".
+   *
+   * ATTRIBUTION, NOT AUTHORIZATION — the gateway sits behind one shared bearer,
+   * so any caller can claim any actor or tenant. Fine for cost reporting;
+   * categorically not a basis for tenant isolation.
+   */
+  actor_id?: string;
+  /** Only set this where the caller genuinely has a tenant. Never a default. */
+  tenant_id?: string;
+  session_id?: string;
 }
 
 export interface ChatCompletionResponse {
@@ -58,11 +105,20 @@ export interface ChatCompletionResponse {
   model_alias?: string;
 }
 
-export interface EmbeddingsRequest {
+export interface EmbeddingsRequest extends TaskIdentity {
   model_alias?: string;
   input: string[];
   trace_id?: string;
   capability_id?: string;
+  /** Defaults to "embedding" at the gateway — there is only one reason to call
+   *  this endpoint — so callers only set it to say something more specific. */
+  task_tag?: string;
+  stage?: string;
+  purpose?: string;
+  /** See ChatCompletionRequest: attribution, not authorization. */
+  actor_id?: string;
+  tenant_id?: string;
+  session_id?: string;
 }
 
 export interface EmbeddingsResponse {

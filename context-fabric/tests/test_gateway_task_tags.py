@@ -10,8 +10,9 @@ What is pinned here:
     aggregate together instead of splitting a cost line in two
   - an UNKNOWN tag warns but passes; blocking a new caller at the hop would be
     worse than logging one it does not recognise yet
-  - an ABSENT tag warns today and 400s once GATEWAY_REQUIRE_TASK_TAG is set,
-    so callers migrate without an outage
+  - an ABSENT tag now 400s BY DEFAULT; GATEWAY_REQUIRE_TASK_TAG=false reopens
+    the warn-only phase as an escape hatch, and an unrecognised value fails
+    safe to required rather than silently disabling enforcement
   - audit emission never raises: a logging failure must not fail the call it
     is describing
 """
@@ -84,12 +85,63 @@ def test_unknown_tag_warns_but_passes_through(caplog):
     assert any("unknown_task_tag" in r.getMessage() for r in caplog.records)
 
 
-def test_missing_tag_warns_when_not_required(monkeypatch, caplog):
-    monkeypatch.delenv("GATEWAY_REQUIRE_TASK_TAG", raising=False)
+def test_missing_tag_warns_when_explicitly_not_required(monkeypatch, caplog):
+    """The warn-only phase still exists, but it is now opt-IN. Reaching it takes
+    a deliberate GATEWAY_REQUIRE_TASK_TAG=false, which is the escape hatch for a
+    caller found untagged in production."""
+    monkeypatch.setenv("GATEWAY_REQUIRE_TASK_TAG", "false")
     with caplog.at_level(logging.WARNING, logger="llm_gateway.task"):
         identity = task_tags.resolve_task_identity(_req(), endpoint="chat_completions")
     assert identity["task_tag"] is None
     assert any("untagged_call" in r.getMessage() for r in caplog.records)
+
+
+def test_tag_is_required_by_default(monkeypatch):
+    """THE FLIP. With nothing configured, an untagged chat call is rejected.
+
+    This is the whole behaviour change: before, an unset variable meant warn and
+    continue, so the untagged callers stayed untagged indefinitely and their
+    spend stayed unattributable. Attribution cannot be backfilled after the call
+    has happened, which is why the warning had to become a 400."""
+    monkeypatch.delenv("GATEWAY_REQUIRE_TASK_TAG", raising=False)
+    assert task_tags.require_task_tag() is True
+    with pytest.raises(HTTPException) as exc:
+        task_tags.resolve_task_identity(_req(), endpoint="chat_completions")
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize("raw", ["", "   "])
+def test_blank_config_is_treated_as_required(monkeypatch, raw):
+    """An empty or whitespace value is indistinguishable from unset, so it takes
+    the same default rather than silently disabling enforcement."""
+    monkeypatch.setenv("GATEWAY_REQUIRE_TASK_TAG", raw)
+    assert task_tags.require_task_tag() is True
+
+
+@pytest.mark.parametrize("typo", ["flase", "off ", "disabled", "no-thanks", "2"])
+def test_an_unrecognised_value_fails_safe_to_required(monkeypatch, typo):
+    """A typo must not disable enforcement. Failing open would be invisible —
+    calls keep working while tags quietly stop being required — whereas failing
+    closed is loud and immediately diagnosable. Note "off " with the trailing
+    space IS recognised, since the value is stripped; "no-thanks" is not."""
+    monkeypatch.setenv("GATEWAY_REQUIRE_TASK_TAG", typo)
+    expected = typo.strip() in {"0", "false", "no", "off"}
+    assert task_tags.require_task_tag() is (not expected)
+
+
+@pytest.mark.parametrize("flag", ["0", "false", "FALSE", "no", "off"])
+def test_the_escape_hatch_accepts_the_usual_spellings(monkeypatch, flag):
+    monkeypatch.setenv("GATEWAY_REQUIRE_TASK_TAG", flag)
+    assert task_tags.require_task_tag() is False
+
+
+def test_embeddings_are_exempt_from_the_requirement(monkeypatch):
+    """Embeddings self-assign before the check, so the flip cannot 400 them.
+    This is what keeps every embedding call site — the highest-volume traffic on
+    the platform — working without a code change."""
+    monkeypatch.delenv("GATEWAY_REQUIRE_TASK_TAG", raising=False)
+    identity = task_tags.resolve_task_identity(_req(), endpoint="embeddings")
+    assert identity["task_tag"] == task_tags.EMBEDDING
 
 
 @pytest.mark.parametrize("flag", ["1", "true", "TRUE", "yes", "on"])
@@ -233,3 +285,45 @@ def test_the_governed_loop_tag_can_be_overridden():
         task_tag="planning",
     )
     assert body["task_tag"] == "planning"
+
+
+def test_the_governed_loop_sends_stage_and_purpose():
+    """A tag alone cannot distinguish a design turn from a develop turn.
+
+    Every governed turn is `agent_turn`, so a policy route keyed on
+    {task_tag: agent_turn, stage: develop} was UNMATCHABLE until stage crossed
+    the hop. That is not a cosmetic gap: it is the reason "code-heavy stages get
+    a stronger model" had to be expressed as a per-stage alias map in the
+    workbench, which is a policy file living in an env var.
+    """
+    from context_api_service.app.governed.llm_client import _build_chat_body
+
+    body = _build_chat_body(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None, model_alias=None, expected_provider=None, expected_model=None,
+        temperature=None, max_output_tokens=None, thinking_budget=None,
+        prompt_cache=False, prompt_cache_key=None,
+        stage="develop", purpose="implement",
+    )
+    assert body["task_tag"] == "agent_turn"
+    assert body["stage"] == "develop"
+    assert body["purpose"] == "implement"
+
+
+def test_stage_and_purpose_are_omitted_when_unknown():
+    """Absent must mean "the caller could not say", not "no stage".
+
+    Sending stage="" would make the field always present and never useful — a
+    route matching on it could not distinguish an untagged caller from a real
+    empty stage, and normalize_task_tag would drop it anyway.
+    """
+    from context_api_service.app.governed.llm_client import _build_chat_body
+
+    body = _build_chat_body(
+        messages=[{"role": "user", "content": "hi"}],
+        tools=None, model_alias=None, expected_provider=None, expected_model=None,
+        temperature=None, max_output_tokens=None, thinking_budget=None,
+        prompt_cache=False, prompt_cache_key=None,
+    )
+    assert "stage" not in body
+    assert "purpose" not in body

@@ -16,7 +16,22 @@ export const eventSchema = z.object({
 export type Event = z.infer<typeof eventSchema>;
 
 /** payload shape of `llm.call.completed` events. The cost worker reads these
- *  fields when denormalising into llm_calls. */
+ *  fields when denormalising into llm_calls.
+ *
+ *  IMPORTANT — this schema is a SILENT gate. cost-worker.ts safeParses the
+ *  payload and returns quietly when it fails, so a field that is not declared
+ *  here is stripped without a word, and a field declared too strictly takes the
+ *  ENTIRE cost row down with it. That is why:
+ *
+ *    - every M75 field below is optional (a legacy emitter that sends only the
+ *      original seven fields keeps working unchanged), and
+ *    - the shape-constrained ones carry `.catch(undefined)` so a malformed
+ *      value degrades that one column to NULL instead of dropping the row.
+ *      Losing gateway_call_id is an inconvenience; losing the spend is not.
+ *
+ *  Never add a prompt or response TEXT field here. llm_calls is aggregated;
+ *  fingerprints and char counts are what belong on it (see m75 migration).
+ */
 export const llmCallPayload = z.object({
   provider:       z.string(),
   model:          z.string(),
@@ -25,6 +40,49 @@ export const llmCallPayload = z.object({
   total_tokens:   z.number().int().nonnegative().optional(),
   latency_ms:     z.number().int().nonnegative().optional(),
   finish_reason:  z.string().optional(),
+
+  // ── M75 identity ─────────────────────────────────────────────────────────
+  // ATTRIBUTION, NOT AUTHORIZATION — the gateway sits behind one shared bearer
+  // so any caller can claim any actor. Never found isolation on this.
+  actor_id:        z.string().optional(),
+
+  // ── M75 routing provenance ───────────────────────────────────────────────
+  model_alias:     z.string().optional(),
+  task_tag:        z.string().optional(),
+  stage:           z.string().optional(),
+  purpose:         z.string().optional(),
+  endpoint:        z.string().optional(),
+  routing_source:  z.string().optional(),
+  // B3 — present only when budget pressure moved the call to a cheaper tier
+  // than policy nominally routes it to. Optional because the overwhelming
+  // majority of producers neither degrade nor know what a tier is; absent is
+  // the normal case and means "not degraded".
+  degraded_from:   z.string().optional(),
+  degrade_reason:  z.string().optional(),
+  // B4 — the alias that was tried FIRST and could not serve. Availability, not
+  // budget: same tier, different provider. Kept separate from degraded_from so
+  // a vendor outage never reads as a quality decision.
+  fallback_from:   z.string().optional(),
+
+  // ── M75 price provenance ─────────────────────────────────────────────────
+  // The emitter's own catalog price. Used only when this schema's rate_card
+  // has no row for (provider, model) — see cost-worker. price_source records
+  // which of the two produced cost_usd, so a disagreement is visible rather
+  // than mysterious.
+  cost_usd:        z.number().nonnegative().optional().catch(undefined),
+  price_source:    z.string().optional(),
+
+  // ── M75 correlation ──────────────────────────────────────────────────────
+  // Minted by the gateway, echoed on its response, unique-indexed here. Lets
+  // the trace event and the cost row join EXACTLY instead of heuristically by
+  // trace_id + timestamp proximity.
+  gateway_call_id: z.string().uuid().optional().catch(undefined),
+
+  // ── M75 content fingerprints (NEVER content) ─────────────────────────────
+  prompt_sha256:   z.string().optional(),
+  response_sha256: z.string().optional(),
+  prompt_chars:    z.number().int().nonnegative().optional().catch(undefined),
+  response_chars:  z.number().int().nonnegative().optional().catch(undefined),
 });
 
 export const approvalCreateSchema = z.object({

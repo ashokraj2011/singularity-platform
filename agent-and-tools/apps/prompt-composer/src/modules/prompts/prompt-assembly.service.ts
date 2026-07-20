@@ -174,6 +174,8 @@ export const promptAssemblyService = {
         agentTemplateId: input.agentTemplateId,
         agentBindingId: input.agentBindingId ?? null,
         capabilityId: capabilityId ?? null,
+        // D3 — tenant attribution; NULL when the caller did not supply one.
+        tenantId: input.tenantId ?? null,
         workflowExecutionId: input.workflowExecutionId ?? null,
         promptProfileId: template.basePromptProfileId ?? null,
         modelProvider: input.modelProvider ?? null,
