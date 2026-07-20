@@ -73,6 +73,13 @@ def call_gateway(gateway_url: str) -> Callable[[str], httpx.Response]:
                 json={
                     "model_alias": model_alias,
                     "messages": [{"role": "user", "content": "chaos smoke probe"}],
+                    # Required since GATEWAY_REQUIRE_TASK_TAG defaults on. Without
+                    # it every chaos test 400s at the gate and the retry/failover
+                    # behaviour they exist to prove is never exercised — which
+                    # would look like a passing suite asserting on the wrong 4xx.
+                    # "harness" is the vocabulary's bucket for exactly this:
+                    # test harnesses and chaos tooling.
+                    "task_tag": "harness",
                 },
             )
     return _call

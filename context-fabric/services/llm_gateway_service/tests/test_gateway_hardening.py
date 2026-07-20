@@ -272,11 +272,15 @@ def test_expected_model_guard_rejects_alias_drift_before_provider_call(monkeypat
         raise AssertionError("provider dispatch must not run when expected_model mismatches")
 
     monkeypatch.setattr(router.mock_provider, "respond", should_not_dispatch)
+    # task_tag is incidental to what this test checks, but chat_completions
+    # resolves task identity BEFORE the expected-model guard, so an untagged
+    # request now 400s at the gate and never reaches the assertion below.
     req = router.ChatCompletionRequest(
         model_alias="mock",
         expected_provider="mock",
         expected_model="mock-slow",
         messages=[{"role": "user", "content": "hello"}],
+        task_tag="harness",
     )
 
     with pytest.raises(HTTPException) as exc:
@@ -441,7 +445,13 @@ def test_openai_chat_invalid_json_surfaces_as_upstream_error(monkeypatch: pytest
 
     monkeypatch.setattr(openai.httpx, "AsyncClient", FakeClient)
 
-    req = router.ChatCompletionRequest(model_alias="openai-test", messages=[{"role": "user", "content": "hello"}])
+    # Tagged so the request reaches the upstream-error path under test rather
+    # than being rejected at the task-tag gate.
+    req = router.ChatCompletionRequest(
+        model_alias="openai-test",
+        messages=[{"role": "user", "content": "hello"}],
+        task_tag="harness",
+    )
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(router.chat_completions(req))
@@ -542,10 +552,13 @@ def test_anthropic_invalid_json_surfaces_as_upstream_error(monkeypatch: pytest.M
 
     monkeypatch.setattr(anthropic.httpx, "AsyncClient", FakeClient)
 
+    # Tagged so the request reaches the upstream-error path under test rather
+    # than being rejected at the task-tag gate.
     req = router.ChatCompletionRequest(
         model_alias="anthropic",
         messages=[{"role": "user", "content": "hello"}],
         max_output_tokens=10,
+        task_tag="harness",
     )
 
     with pytest.raises(HTTPException) as exc:

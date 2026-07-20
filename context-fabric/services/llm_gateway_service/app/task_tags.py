@@ -11,8 +11,13 @@ A tag is a coarse bucket. `stage` and `purpose` narrow it when the caller knows
 more. Deliberately a small closed vocabulary — free-form tags would fragment into
 a dozen spellings of the same thing and be useless for aggregation.
 
-Rollout is optional-then-required: an untagged call warns today and 400s once
-GATEWAY_REQUIRE_TASK_TAG is set, so callers can migrate without an outage.
+Rollout was optional-then-required, and this is the "then": an untagged call now
+400s by default. GATEWAY_REQUIRE_TASK_TAG=false reopens the warn-only phase as
+an escape hatch for a caller found untagged in production — see
+require_task_tag() for why that is a stopgap and not a fix.
+
+Embeddings are exempt: resolve_task_identity self-assigns EMBEDDING, since there
+is exactly one reason to call them.
 """
 from __future__ import annotations
 
@@ -51,13 +56,41 @@ KNOWN_TASK_TAGS = frozenset({
     HARNESS,
 })
 
-_TRUTHY = {"1", "true", "yes", "on"}
+_FALSEY = {"0", "false", "no", "off"}
 
 
 def require_task_tag() -> bool:
-    """Whether an untagged call is rejected. Read per-call so an operator can
-    flip it without a restart, and so tests can toggle it."""
-    return os.getenv("GATEWAY_REQUIRE_TASK_TAG", "").strip().lower() in _TRUTHY
+    """Whether an untagged call is rejected. DEFAULT TRUE.
+
+    Read per-call so an operator can flip it without a restart, and so tests can
+    toggle it.
+
+    The rollout was optional-then-required and this is the "then". Untagged
+    callers now get a 400 instead of a warning nobody reads, because a warning
+    is not a migration: an untagged call still costs money, and the whole point
+    of the tag is that the spend can be attributed after the fact — which is
+    impossible to backfill once the call has happened.
+
+    GATEWAY_REQUIRE_TASK_TAG=false is the escape hatch. It exists for exactly
+    one situation: a caller that turns out to be untagged in production and
+    needs to keep working while it is fixed. Turning it off is not a fix, and it
+    silently reopens the attribution hole for every caller at once, so set it
+    with an expiry in mind.
+
+    Embeddings are exempt in practice — resolve_task_identity self-assigns
+    EMBEDDING before this check, because there is exactly one reason to call
+    them.
+    """
+    raw = os.getenv("GATEWAY_REQUIRE_TASK_TAG", "").strip().lower()
+    if not raw:
+        return True
+    if raw in _FALSEY:
+        return False
+    # Anything else is treated as on, INCLUDING a typo. This is the fail-safe
+    # direction: a mistyped value that silently disabled enforcement would be
+    # invisible (calls keep working, tags quietly stop being required), whereas
+    # a mistyped value that leaves it on is loud and immediately diagnosable.
+    return True
 
 
 def normalize_task_tag(raw: Optional[str]) -> Optional[str]:
