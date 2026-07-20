@@ -210,10 +210,34 @@ model PromptAssembly {
   // join queries.
   immutableContractId  String?
 
+  // D3 — tenant attribution for the prompt text this row stores.
+  //
+  // NULLABLE ON PURPOSE, and deliberately not backfilled: rows written
+  // before this column existed carry no recoverable tenant, and there is
+  // no trustworthy source to derive one from after the fact. A guessed
+  // tenant on audit data is worse than an honest NULL.
+  //
+  // This is a self-asserted field supplied by the caller, so it is an
+  // attribution aid — NOT an authorization boundary. Enforcing isolation
+  // (RLS) needs a tenant id the database can trust; see the PR notes.
+  tenantId             String?
+
+  // D3 — the LLM gateway's own call id, echoed back on the gateway
+  // response. Lets an operator walk prompt → cost by joining
+  // `audit_governance.llm_calls.gateway_call_id` directly, instead of
+  // guessing the match from traceId plus timestamp proximity.
+  // Nothing populates this yet — the gateway mints it in a later change.
+  gatewayCallId        String?
+
   layers PromptAssemblyLayer[]
 
   @@index([traceId])
   @@index([immutableContractId])
+  // Time-ordered per-tenant reads ("this tenant's recent assemblies") are
+  // the access pattern that matters, hence the composite rather than a
+  // bare tenantId index.
+  @@index([tenantId, createdAt])
+  @@index([gatewayCallId])
 }
 
 // M25.5 — Context Compiler: precompiled task contexts (capsules).

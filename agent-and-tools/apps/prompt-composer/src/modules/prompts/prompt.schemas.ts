@@ -53,6 +53,10 @@ export const assembleSchema = z.object({
   agentTemplateId: z.string().uuid(),
   agentBindingId: z.string().uuid().optional(),
   capabilityId: z.string().uuid().optional(),
+  // D3 — see composeSchema.tenantId. Optional here too; this is the second
+  // route that creates PromptAssembly rows, and leaving it out would have
+  // left half the write surface unattributed.
+  tenantId: z.string().min(1).max(180).optional(),
   workflowExecutionId: z.string().optional(),
   workflowPhase: z.string().optional(),
   task: z.string().min(1),
