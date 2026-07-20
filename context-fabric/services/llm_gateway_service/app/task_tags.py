@@ -152,6 +152,54 @@ def resolve_task_identity(req: Any, *, endpoint: str) -> dict[str, Optional[str]
     }
 
 
+# B3 — the degradation event. A SEPARATE logger, not a field on the call line.
+#
+# The call line is emitted for every call, so a degradation field on it is a
+# needle in the highest-volume haystack the gateway produces. Budget degradation
+# is a quality-affecting decision made on the platform's behalf without anyone
+# asking, and its failure mode is invisible: the model still answers, the answer
+# is just worse. It gets its own channel so "did we degrade anything today" is a
+# filter on logger name, not a grep with a subclause.
+degrade_logger = logging.getLogger("llm_gateway.degradation")
+
+
+def emit_routing_downgrade_audit(
+    *,
+    identity: dict[str, Optional[str]],
+    provider: str,
+    model: str,
+    req: Any,
+    routing: Optional[dict[str, Any]],
+) -> None:
+    """Emit one event per call that budget pressure moved to a cheaper tier.
+
+    No-op when nothing was degraded — the event's existence IS the signal, so it
+    must never fire for a normal call. Never raises, for the same reason
+    emit_call_audit never raises.
+    """
+    if not routing or not routing.get("degraded_from"):
+        return
+    try:
+        degrade_logger.warning(
+            "llm_gateway.degraded task_tag=%s stage=%s purpose=%s degraded_from=%s to_tier=%s "
+            "alias=%s provider=%s model=%s reason=%s tenant_id=%s capability_id=%s trace_id=%s",
+            identity.get("task_tag") or "-",
+            identity.get("stage") or "-",
+            identity.get("purpose") or "-",
+            routing.get("degraded_from"),
+            routing.get("tier") or "-",
+            routing.get("alias") or "-",
+            provider,
+            model,
+            routing.get("degrade_reason") or "-",
+            getattr(req, "tenant_id", None) or "-",
+            getattr(req, "capability_id", None) or "-",
+            getattr(req, "trace_id", None) or "-",
+        )
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
 def emit_call_audit(
     *,
     endpoint: str,
@@ -163,6 +211,7 @@ def emit_call_audit(
     input_tokens: Optional[int] = None,
     output_tokens: Optional[int] = None,
     estimated_cost: Optional[float] = None,
+    routing: Optional[dict[str, Any]] = None,
 ) -> None:
     """
     One structured line per gateway call, carrying task identity alongside cost.
@@ -170,7 +219,11 @@ def emit_call_audit(
     This IS the gateway's audit trail today — there is no separate sink — so it
     is emitted for every call including mock, and it never raises: an audit
     failure must not fail the call it is describing.
+
+    When `routing` records a budget degradation, a distinct event is emitted
+    first on the llm_gateway.degradation logger. See emit_routing_downgrade_audit.
     """
+    emit_routing_downgrade_audit(identity=identity, provider=provider, model=model, req=req, routing=routing)
     try:
         logger.info(
             "llm_gateway.call endpoint=%s task_tag=%s stage=%s purpose=%s provider=%s model=%s "

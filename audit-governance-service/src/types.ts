@@ -53,8 +53,15 @@ export const llmCallPayload = z.object({
   purpose:         z.string().optional(),
   endpoint:        z.string().optional(),
   routing_source:  z.string().optional(),
+  // B3 — present only when budget pressure moved the call to a cheaper tier
+  // than policy nominally routes it to. Optional because the overwhelming
+  // majority of producers neither degrade nor know what a tier is; absent is
+  // the normal case and means "not degraded".
   degraded_from:   z.string().optional(),
   degrade_reason:  z.string().optional(),
+  // B4 — the alias that was tried FIRST and could not serve. Availability, not
+  // budget: same tier, different provider. Kept separate from degraded_from so
+  // a vendor outage never reads as a quality decision.
   fallback_from:   z.string().optional(),
 
   // ── M75 price provenance ─────────────────────────────────────────────────

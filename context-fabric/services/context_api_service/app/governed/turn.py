@@ -37,7 +37,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from .env_config import bounded_float_env, bounded_int_env
@@ -135,6 +135,7 @@ def _sanitize_captured_messages(messages: list[dict]) -> list[dict]:
     return out
 
 from .audit_emit import emit_governed_event
+from . import outbound_pii
 from . import placement as _placement
 from .llm_client import ChatResponse, ChatToolCall, LLMGatewayError, call_gateway_chat
 from .direct_llm_client import call_direct_chat, is_context_fabric_direct_route
@@ -1061,6 +1062,56 @@ async def run_turn(
         task=prompt.task,
     )
     messages = _build_messages(prompt, history, stage_grounding)
+
+    # Outbound PII mask (opt-in, shadow-first, OFF by default). CF masked PII in
+    # tool output on the way TOWARD the model but never in the prompt itself, so
+    # the operator-authored goal text — the likeliest place for a real SSN or a
+    # customer email — reached the provider verbatim.
+    #
+    # Positioned here on purpose: after _build_messages, before the token
+    # estimate, the audit capture AND both LLM routes. The audit capture must
+    # record what was actually sent, and both `call_direct_chat` and
+    # `call_gateway_chat` must get the same treatment — a mask that covers only
+    # the gateway route would leave the direct hatch as an unmasked bypass.
+    #
+    # THE ROUND TRIP: in enforce mode the token map GROWS, and those tokens must
+    # reach governed_step() below. The loop unmasks tool arguments against
+    # PhaseState.pii_token_map (loop.py:708, 786), so a model that echoes
+    # [EMAIL_1] into a tool call only gets the real address back if the token
+    # minted here is in that map. Hence the `replace(...)` — the map has to be on
+    # `state` before dispatch, not merely returned to our caller.
+    #
+    # In shadow mode outbound_pii returns the ORIGINAL map by construction, so
+    # this is a no-op there and no un-seen token can pollute the unmask path.
+    _pii_capability_id, _pii_tenant_id = outbound_pii.scope_from_run_context(run_context)
+    messages, _pii_token_map, _pii_mode, _pii_findings = outbound_pii.apply_to_messages(
+        messages,
+        token_map=state.pii_token_map,
+        capability_id=_pii_capability_id,
+        tenant_id=_pii_tenant_id,
+    )
+    if _pii_token_map != state.pii_token_map:
+        state = replace(state, pii_token_map=_pii_token_map)
+    if _pii_findings:
+        await emit_governed_event(
+            kind="governed.prompt_pii_masked",
+            state=state,
+            policy=policy,
+            run_context=run_context,
+            payload={
+                # Kind + count only. Never the matched value: this event is
+                # persisted, and a PII audit record that quotes the PII is worse
+                # than no record.
+                "mode": _pii_mode,
+                "findings": _pii_findings,
+                "total": sum(int(f["count"]) for f in _pii_findings),
+                # Explicit, so an operator reading the audit trail can tell
+                # "we would have masked" from "we did mask" without inferring it
+                # from the mode string.
+                "prompt_modified": _pii_mode == outbound_pii.MODE_ENFORCE,
+            },
+            severity="info",
+        )
     # G4 governance overlay — tools the governing entity blocks (or requires
     # approval for) are enforced, not just rendered as advisory text: excluded
     # from the LLM's tool list here and hard-refused at dispatch (governed_step).
@@ -1210,12 +1261,23 @@ async def run_turn(
             model_alias=effective_model_alias,
             bearer=bearer,
             thinking_budget=thinking_budget,
+            # The two signals that let the gateway tell governed turns apart.
+            # Without them every turn looks identical to the policy engine, and
+            # "design and develop deserve a stronger model" has to be expressed
+            # by pinning aliases per stage in the caller — which is the env-var
+            # policy file this chain is removing.
+            stage=stage_key,
+            purpose=state.current_phase.value if state.current_phase else None,
             # Placement: when this run opted into laptop LLM (and a laptop is serving
             # model-run), call_gateway_chat dispatches over the bridge; otherwise it
             # uses the cloud gateway. None in the common case. See placement.py.
             laptop_user_id=_placement.llm_laptop_target(run_context),
             runtime_tenant_id=_placement.runtime_tenant_target(run_context),
             runtime_capability_tags=_placement.runtime_capability_tags(run_context),
+            # Caller attribution. Same run_context the governed events above are
+            # already stamped from, so the LLM cost row and the audit trail name
+            # the same actor instead of only one of them doing so.
+            run_context=run_context,
         )
 
     await emit_governed_event(

@@ -122,6 +122,13 @@ export async function denormaliseLlmCall(eventId: string, traceId: string | null
       // "who" and is not always the LLM caller.
       p.actor_id ?? null, p.model_alias ?? null, p.task_tag ?? null,
       p.stage ?? null, p.purpose ?? null, p.endpoint ?? null,
+      // B3 — degraded_from/degrade_reason: NULL means "not degraded", not
+      // "unknown". Persisted here so "what did budget pressure downgrade this
+      // month" is one WHERE clause rather than a log correlation against the
+      // budgets table by timestamp.
+      // B4 — fallback_from is availability, not budget. Deliberately a separate
+      // column: a vendor outage and a spend decision must never read as the
+      // same event.
       p.routing_source ?? null, p.degraded_from ?? null,
       p.degrade_reason ?? null, p.fallback_from ?? null,
       priceSource, p.gateway_call_id ?? null,

@@ -2818,6 +2818,11 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
                 laptop_user_id=llm_laptop_target(rc),
                 runtime_tenant_id=runtime_tenant_target(rc),
                 runtime_capability_tags=runtime_capability_tags(rc),
+                # Caller attribution. This endpoint's callers (agent-service
+                # distillation, tool-service synthesis, contracts replay) declare
+                # actor_id/task_tag in run_context; CF is the hop that forwards
+                # them to the gateway.
+                run_context=rc,
             )
     except LLMGatewayError as exc:
         emit_audit_event(

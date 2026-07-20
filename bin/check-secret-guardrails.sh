@@ -212,6 +212,104 @@ for file in "${local_env_files[@]}"; do
   scan_env_file "$file"
 done
 
+# ── Provider-key custody across compose files ───────────────────────────────
+#
+# llm_gateway_service/app/config.py claimed for a long time that the gateway is
+# "the ONLY place provider keys are read". It was not: docker-compose.yml hands
+# OPENAI_API_KEY / OPENROUTER_API_KEY / ANTHROPIC_API_KEY to context-api too. A
+# docstring is not a control, so this is the control.
+#
+# The rule: no service block in any compose file may receive a provider key,
+# except the ones named below. Adding a key to a new service now fails CI
+# instead of quietly widening the blast radius of a credential leak.
+#
+# WHY THE GATEWAY IS NOT IN THE ALLOWLIST AS A REQUIREMENT. It is allowed, but
+# it does not actually declare these keys inline: M53 moved them to
+# `.env.llm-secrets` via `env_file:`, precisely because compose's `environment:`
+# block OVERRIDES `env_file:` and an empty var in the operator's shell was
+# shadowing real values on every recreate. So the gateway block legitimately has
+# ZERO provider keys in it, and asserting their presence would fight that fix.
+# This check therefore bounds WHO MAY have them, not who must.
+PROVIDER_KEY_RE='(OPENAI_API_KEY|OPENROUTER_API_KEY|ANTHROPIC_API_KEY|COPILOT_PROVIDER_API_KEY|COPILOT_TOKEN|AZURE_OPENAI_API_KEY|GEMINI_API_KEY|MISTRAL_API_KEY|COHERE_API_KEY)'
+
+# service name -> why it is allowed. Keep this list SHORT and justified; each
+# entry is a service whose process can read a provider credential.
+provider_key_allowed_service() {
+  case "$1" in
+    # The gateway itself. This is the intended custodian.
+    llm-gateway|singularity-llm-gateway)
+      return 0 ;;
+    # NAMED EXCEPTION (tracked). context-api holds provider keys for the CF
+    # direct-provider hatch in governed/direct_llm_client.py. The hatch is shut
+    # unless CF_ALLOW_DIRECT_LLM is set, but the keys are in the process either
+    # way, so this is a real second custodian and is recorded as one rather than
+    # explained away. Closing it means deleting those keys from the context-api
+    # block and retiring the hatch -- at which point this entry should go too.
+    context-api)
+      return 0 ;;
+  esac
+  return 1
+}
+
+scan_compose_provider_keys() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+
+  # Attribute each provider-key line to its enclosing service block. Compose
+  # service names sit at a fixed indent directly under `services:`; anything
+  # deeper belongs to the service last seen. Lines outside `services:` (YAML
+  # anchors, x-extensions) are reported under a synthetic name so they cannot
+  # slip through unattributed.
+  while IFS='|' read -r lineno service key; do
+    [[ -n "$key" ]] || continue
+    if ! provider_key_allowed_service "$service"; then
+      fail_msg "provider key outside the gateway custody boundary: $file:$lineno service='$service' key=$key (only llm-gateway may hold provider keys; context-api is the one tracked exception)"
+    fi
+  done < <(awk -v keyre="$PROVIDER_KEY_RE" '
+    # Enter/leave the top-level services: mapping.
+    /^services:[[:space:]]*$/ { in_services = 1; service = ""; service_indent = -1; next }
+    /^[^[:space:]#]/ { if ($0 !~ /^services:/) { in_services = 0; service = "" } }
+
+    {
+      line = $0
+      if (line ~ /^[[:space:]]*#/) next
+
+      # A service name: the shallowest non-comment mapping key inside services:.
+      if (in_services && match(line, /^[[:space:]]+/)) {
+        indent = RLENGTH
+        if (line ~ /^[[:space:]]+[A-Za-z0-9_.-]+:[[:space:]]*$/) {
+          if (service_indent == -1 || indent < service_indent) {
+            service_indent = indent
+          }
+          if (indent == service_indent) {
+            name = line
+            sub(/^[[:space:]]+/, "", name)
+            sub(/:[[:space:]]*$/, "", name)
+            service = name
+          }
+        }
+      }
+
+      # A provider key ASSIGNMENT. Anchored on "KEY:" at line start (after
+      # indent) so a key NAME appearing inside a value -- e.g.
+      # CONTEXT_FABRIC_DIRECT_LLM_ALLOWED_CREDENTIAL_ENVS: ${...:-OPENAI_API_KEY,...}
+      # -- is correctly NOT treated as handing that service the key.
+      if (match(line, /^[[:space:]]*-?[[:space:]]*[A-Za-z0-9_]+[[:space:]]*[:=]/)) {
+        assigned = line
+        sub(/^[[:space:]]*-?[[:space:]]*/, "", assigned)
+        sub(/[[:space:]]*[:=].*$/, "", assigned)
+        if (assigned ~ "^" keyre "$") {
+          printf "%d|%s|%s\n", NR, (service == "" ? "(top-level)" : service), assigned
+        }
+      }
+    }
+  ' "$file")
+}
+
+while IFS= read -r compose_file; do
+  scan_compose_provider_keys "$compose_file"
+done < <(git ls-files | grep -E '(^|/)docker-compose[^/]*\.ya?ml$' || true)
+
 if [[ "$fail" -ne 0 ]]; then
   echo "Secret guardrails failed. Move secrets to ignored local env/key files and commit only references such as env var names." >&2
   exit 1

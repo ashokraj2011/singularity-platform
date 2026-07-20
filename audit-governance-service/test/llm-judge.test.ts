@@ -317,4 +317,31 @@ describe("runJudge gateway request shape", () => {
     const body = JSON.parse((mock.mock.calls[0][1] as RequestInit).body as string);
     expect(body.model_alias).toBeUndefined();
   });
+
+  it("declares task_tag=judge so the call is routable without an alias", async () => {
+    // The previous test proves the call can go out with NO model choice at all.
+    // That is only safe if it goes out with an IDENTITY instead — otherwise the
+    // gateway has nothing to route on and judging silently inherits whatever the
+    // global default alias is. A judge on an unknown model is the one model
+    // choice on this platform that must never be accidental.
+    const mock = mockGatewayResponse({
+      body: { content: '{"score": 5, "reason": "ok"}', finish_reason: "stop" },
+    });
+    await runJudge({ ...BASE_INPUT, modelAlias: "" });
+    const body = JSON.parse((mock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.task_tag).toBe("judge");
+    expect(body.purpose).toBe("output_grading");
+  });
+
+  it("still sends an explicit model_alias alongside task_tag", async () => {
+    const mock = mockGatewayResponse({
+      body: { content: '{"score": 5, "reason": "ok"}', finish_reason: "stop" },
+    });
+    await runJudge({ ...BASE_INPUT, modelAlias: "operator-pinned" });
+    const body = JSON.parse((mock.mock.calls[0][1] as RequestInit).body as string);
+    // Both travel. The gateway decides precedence (an alias is a hard pin);
+    // the caller's job is to stop withholding the identity, not to arbitrate.
+    expect(body.model_alias).toBe("operator-pinned");
+    expect(body.task_tag).toBe("judge");
+  });
 });

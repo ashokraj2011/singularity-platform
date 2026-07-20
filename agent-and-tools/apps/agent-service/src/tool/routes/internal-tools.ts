@@ -177,6 +177,7 @@ internalToolsRoutes.post("/summarise_text", async (req: Request, res: Response) 
     systemPrompt,
     message: `Summarise:\n${String(text).slice(0, 12_000)}`,
     traceId: `tool-summarise-${Date.now()}`,
+    taskTag: "summarise",
   });
   res.json({ summary: r.slice(0, cap) });
 });
@@ -195,6 +196,12 @@ internalToolsRoutes.post("/extract_entities", async (req: Request, res: Response
     systemPrompt: extractSystemPrompt,
     message: `Kinds: ${wanted}\n\nText:\n${String(text).slice(0, 12_000)}`,
     traceId: `tool-entities-${Date.now()}`,
+    // Not "summarise" — entity extraction is a different job, and reusing the
+    // neighbouring tool's tag would quietly merge two cost lines. The closest
+    // TRUE value in the existing vocabulary is direct_llm_task (task_tags.py:27):
+    // a discrete non-agent LLM task. Inventing "extract_entities" would only
+    // trip the gateway's unknown-tag warning.
+    taskTag: "direct_llm_task",
   });
   // Best-effort JSON parse with synthetic empty fallback (mock provider noise).
   const m = r.match(/\{[\s\S]*\}/);
@@ -207,7 +214,16 @@ internalToolsRoutes.post("/extract_entities", async (req: Request, res: Response
 //
 // Pure synthesis calls go through Context Fabric. No gateway URL or provider
 // keys live in tool-service.
-async function callContextFabricSingleTurn(opts: { systemPrompt: string; message: string; traceId: string }): Promise<string> {
+async function callContextFabricSingleTurn(opts: {
+  systemPrompt: string;
+  message: string;
+  traceId: string;
+  /** Gateway task bucket. Required rather than defaulted: this helper serves two
+   *  genuinely different tools, and picking one tag for both would misfile the
+   *  other while looking correct. Must be a value from the gateway vocabulary
+   *  (llm_gateway_service/app/task_tags.py). */
+  taskTag: string;
+}): Promise<string> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (CONTEXT_FABRIC_SERVICE_TOKEN) headers["x-service-token"] = CONTEXT_FABRIC_SERVICE_TOKEN;
   const res = await fetch(`${CONTEXT_FABRIC_URL}/api/v1/execute-governed-single-turn`, {
@@ -222,7 +238,19 @@ async function callContextFabricSingleTurn(opts: { systemPrompt: string; message
         temperature: 0,
         maxOutputTokens: 1500,
       },
-      run_context: { trace_id: opts.traceId, source_type: "tool-service-internal" },
+      run_context: {
+        trace_id: opts.traceId,
+        source_type: "tool-service-internal",
+        // Forwarded onto the gateway body by CF's governed single-turn endpoint.
+        // Untagged before this, so these landed under CF's "agent_turn" default
+        // and were indistinguishable from real agent turns.
+        task_tag: opts.taskTag,
+        // These tools are invoked BY an agent mid-run, not by a person, and the
+        // invoking run's user does not reach this route.
+        actor_id: "system:agent-service",
+        // No tenant_id: the internal-tools routes receive only {text, ...} —
+        // there is no tenant anywhere in scope to read.
+      },
       limits: {
         timeoutSec: CONTEXT_FABRIC_SINGLE_TURN_CONFIG.timeoutSec,
       },

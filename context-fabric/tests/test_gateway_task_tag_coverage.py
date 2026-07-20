@@ -15,26 +15,37 @@ that POSTs a chat completion to the gateway, reads each file, and asserts a tag
 is set. A new call site added without a tag fails here rather than in
 production.
 
-THIS TEST IS EXPECTED TO FAIL ON THIS BRANCH. That is the point.
+STATUS: #578 HAS LANDED, AND THIS FILE IS NOW GREEN.
 
-The sites in PENDING_PR_578 are tagged by PR #578
-(feat/gateway-caller-identity-propagation), which is NOT an ancestor of this
-branch. This branch flips the flag; #578 does the tagging. The failure lists
-exactly which callers would 400, so the blocker is visible in CI instead of
-living in a PR description nobody reads at merge time.
+It was written to fail by design: this branch flips the flag, and PR #578
+(feat/gateway-caller-identity-propagation) does the tagging, so while #578 was
+not an ancestor the failure listed exactly which callers would 400. #578 is now
+in main and merged here, so every row is tagged and there is no pending set left
+— a red in this file is a real gap again, not an expected state.
 
-It is self-clearing: nothing here hardcodes a failure. Once #578 lands, the same
-assertions read the same files and pass with no edit. If it still fails after
-#578, the coverage genuinely is not complete and the flag flip is not safe.
+Clearing it needed two fixes to the detector, because #578's tagging was correct
+but invisible to the regexes:
 
-WHY NOT JUST DO THE TAGGING HERE
+  - The scan read COMMENTS as code. #578 documented the mcp-relay gap in a
+    comment that spells out `task_tag: "agent_turn"`, which made a correctly
+    forwarding shared transport read as one hardcoding a bucket — the file was
+    reported as the very violation it was warning about. Comments are stripped
+    before any regex runs.
 
-Because #578 already did it, across 30 files, and several of the sites cannot be
-tagged without its type changes — agent-and-tools/packages/shared/src/llm-gateway
-has no task_tag on either ChatCompletionRequest (types.ts) or the runtime zod
-schema (client.ts), so no caller can pass one until that lands. Re-implementing
-it here would mean two independent taggings of the same call sites in two open
-PRs, and a guaranteed conflict when they meet.
+  - Forwarding was only recognised in the `task_tag: req.task_tag` field-copy
+    form. The shared client forwards the caller's whole validated request
+    (`body: JSON.stringify(req)`), which carries the tag precisely because the
+    schema declares it. That form now counts, and since wiring independently
+    requires the schema entry, it is not a weaker check.
+
+WHY THE TAGGING ITSELF WAS NOT DONE HERE
+
+Because #578 already did it, across 30 files, and several of the sites could not
+be tagged without its type changes — agent-and-tools/packages/shared/src/llm-gateway
+had no task_tag on either ChatCompletionRequest (types.ts) or the runtime zod
+schema (client.ts), so no caller could pass one until that landed. Doing it here
+too would have meant two independent taggings of the same call sites in two open
+PRs, and a guaranteed conflict when they met.
 
 SCOPE: chat completions only. Embeddings self-assign EMBEDDING in
 resolve_task_identity before the requirement is checked, so an embeddings call
@@ -114,27 +125,28 @@ CALL_SITES = [
         "chaos suite's call_gateway fixture — real HTTP, would 400 the whole suite",
         "harness",
     ),
-    # ── owned by PR #578, absent from this branch ────────────────────────────
+    # ── formerly pending on #578; now landed and regression-guarded ──────────
+    # #578 merged to main ahead of this branch, so these six carry no `pending`
+    # marker any more: they are held to the same standard as every row above,
+    # and a regression at any of them fails the covered-site tests directly
+    # rather than being excused as known-outstanding work.
     Site(
         "agent-and-tools/packages/shared/src/llm-gateway/client.ts",
         "shared llmRespond — the D1 direct-to-gateway chat leg. A dozen "
         "unrelated callers share it, so it must forward theirs, not invent one. "
-        "Blocks every caller behind it until #578: task_tag is on neither the TS "
-        "interface nor the runtime zod schema, so nobody can pass one at all",
+        "#578 put task_tag on the zod schema and the direct leg posts the whole "
+        "validated request, so the caller's tag rides through untouched",
         kind="forwards",
-        pending="#578",
     ),
     Site(
         "audit-governance-service/src/engine/llm-judge.ts",
         "audit-gov LLM judge",
         "judge",
-        pending="#578",
     ),
     Site(
         "audit-governance-service/src/engine/diagnose.ts",
         "audit-gov trace diagnosis",
         "judge",
-        pending="#578",
     ),
     Site(
         # #578 files this under `harness` rather than `judge`. Both are in the
@@ -143,19 +155,16 @@ CALL_SITES = [
         "tools/capability-harness/scoring.py",
         "capability-harness scoring oracle",
         "harness",
-        pending="#578",
     ),
     Site(
         "agent-and-tools/apps/agent-runtime/src/lib/llm/summarise.ts",
-        "code summarisation — dead-ended behind the shared client above",
+        "code summarisation — was dead-ended behind the shared client above",
         "summarise",
-        pending="#578",
     ),
     Site(
         "agent-and-tools/apps/prompt-composer/src/modules/compose/llm-capsule-compiler.ts",
-        "context-capsule precompiler — dead-ended behind the shared client above",
+        "context-capsule precompiler — was dead-ended behind the shared client above",
         "capsule_compile",
-        pending="#578",
     ),
 ]
 
@@ -177,10 +186,18 @@ _TAG_RE = re.compile(r"""task_tag["']?\]?\s*[:=]\s*[^"'\n]{0,40}["']([a-z_]+)["'
 # A transport forwarding a caller's tag: `task_tag: req.task_tag`, including
 # inside a conditional spread.
 _FORWARD_RE = re.compile(r"task_tag\s*:\s*\w+\.task_tag")
+# …or forwarding the caller's whole validated request object, which carries
+# every schema field including the tag: `body: JSON.stringify(req)`. This is not
+# a weaker signal than an explicit field copy — _is_wired independently requires
+# the schema entry, and without that entry the field is stripped before it is
+# sent. Recognising only the field-copy form made a correctly-forwarding client
+# read as untagged, which is a false alarm on the one check that gates a merge.
+_FORWARD_BODY_RE = re.compile(r"JSON\.stringify\(\s*\w+\s*\)")
 # …and declaring it on the request schema. Without a schema entry the field is
 # stripped before it is ever sent, so a caller's tag looks set and silently is
 # not — the failure mode is identical to never passing one.
 _SCHEMA_RE = re.compile(r"task_tag\s*:\s*z\.")
+_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
 
 
 def _read(site: Site) -> str:
@@ -192,7 +209,26 @@ def _read(site: Site) -> str:
             "  If it moved, update CALL_SITES in this file. If the caller is "
             "gone, delete the row. Do NOT delete the row to make this pass."
         )
-    return path.read_text(encoding="utf-8")
+    return _strip_comments(path.read_text(encoding="utf-8"))
+
+
+def _strip_comments(text: str) -> str:
+    """Prose about a tag is not a tag.
+
+    #578 documented the mcp-relay gap in a comment that spells out
+    `task_tag: "agent_turn"`. Scanned as code that reads as a shared transport
+    hardcoding a bucket — precisely what this module fails the build for — so a
+    correct file was reported as the violation it was warning about.
+
+    Only whole-line and block comments are removed. Cutting `//` out of the
+    middle of a line would eat the rest of any line containing a URL, which is
+    a worse failure than the one being fixed.
+    """
+    text = _BLOCK_COMMENT_RE.sub("", text)
+    return "\n".join(
+        line for line in text.splitlines()
+        if not line.lstrip().startswith(("//", "#"))
+    )
 
 
 def _tags_in(site: Site) -> list[str]:
@@ -203,7 +239,8 @@ def _is_wired(site: Site) -> bool:
     """Whether this site meets its own obligation — set a tag, or forward one."""
     if site.kind == "forwards":
         body = _read(site)
-        return bool(_FORWARD_RE.search(body)) and bool(_SCHEMA_RE.search(body))
+        forwards = bool(_FORWARD_RE.search(body)) or bool(_FORWARD_BODY_RE.search(body))
+        return forwards and bool(_SCHEMA_RE.search(body))
     return bool(_tags_in(site))
 
 
@@ -279,14 +316,15 @@ def test_every_tag_actually_found_is_a_known_tag():
     )
 
 
-# ── failing by design until #578 lands ──────────────────────────────────────
+# ── the whole-repo check: green since #578 landed ───────────────────────────
 
 def test_every_gateway_call_site_is_tagged():
-    """FAILS ON THIS BRANCH BY DESIGN. See the module docstring.
+    """Was red by design until #578 landed; it is green now. See the module
+    docstring.
 
-    Self-clearing: it reads the real files, so it passes the moment #578 lands
-    without anyone editing this test. Do not merge this branch while it is red —
-    the flag flip 400s every caller listed below.
+    It reads the real files, so it cleared itself the moment #578 merged. A
+    failure here is now a genuine coverage gap: the flag flip 400s every caller
+    listed below.
     """
     untagged = [s for s in CALL_SITES if not _is_wired(s)]
     assert not untagged, (
@@ -303,10 +341,9 @@ def test_every_gateway_call_site_is_tagged():
             + (f"  [owned by PR {s.pending}]" if s.pending else "")
             for s in untagged
         )
-        + "\n\nAll of these land in PR #578 (feat/gateway-caller-identity-"
-          "propagation), which is not an ancestor of this branch. THIS BRANCH "
-          "MUST NOT MERGE BEFORE #578. Rebasing onto #578 clears this with no "
-          "edit to the test."
+        + "\n\nPR #578 (feat/gateway-caller-identity-propagation) tagged these "
+          "and is already in main, so this is no longer an expected state: a "
+          "call site listed here has genuinely lost or never had its tag."
     )
 
 

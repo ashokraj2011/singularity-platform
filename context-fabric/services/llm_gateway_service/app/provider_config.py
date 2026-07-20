@@ -6,6 +6,7 @@ Mounted into this container; no other service mounts these files after M33.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 from contextlib import contextmanager
@@ -14,6 +15,11 @@ from typing import Iterator
 from typing import Any, Dict, List, Optional
 
 from .config import settings
+
+
+logger = logging.getLogger("llm_gateway.provider_config")
+
+_TRUTHY = {"1", "true", "yes", "on"}
 
 
 # Copilot is intentionally absent from the gateway provider catalog. Copilot
@@ -124,13 +130,61 @@ def default_provider() -> str:
     return provider if provider in SUPPORTED_PROVIDERS else "mock"
 
 
+def strict_default_alias() -> bool:
+    """Whether an unmarked catalog may still supply an implicit default.
+
+    Read per-call so an operator can flip it without a gateway restart, matching
+    task_tags.require_task_tag().
+    """
+    return os.getenv("GATEWAY_STRICT_DEFAULT_ALIAS", "").strip().lower() in _TRUTHY
+
+
 def default_model_alias() -> Optional[str]:
-    for entry in _load_catalog():
+    """The platform's default model alias.
+
+    When no catalog entry is marked `"default": true` this falls back to the
+    FIRST entry — and used to do so in complete silence. That made catalog
+    ORDER a load-bearing production setting nobody knew was one: a reorder in
+    the /llm-settings UI, or a `DELETE /llm/models` removing the entry that
+    happened to be first, silently repointed every untargeted call on the
+    platform at a different model. No log line, no warning, no diff.
+
+    The fallback is preserved (removing it outright would break every deployment
+    with an unmarked catalog), but it is now visible in `warnings()` and in the
+    gateway log, and refusable via GATEWAY_STRICT_DEFAULT_ALIAS.
+    """
+    catalog = _load_catalog()
+    for entry in catalog:
         if entry.get("default"):
             return entry.get("id")
-    if _load_catalog():
-        return _load_catalog()[0].get("id")
-    return None
+    if not catalog:
+        return None
+    implicit = catalog[0].get("id")
+    if strict_default_alias():
+        _warn_once(
+            f"No model catalog entry is marked default and GATEWAY_STRICT_DEFAULT_ALIAS is set; "
+            f"refusing the implicit fallback to {implicit}. Mark one entry \"default\": true."
+        )
+        return None
+    _warn_once(
+        f"No model catalog entry is marked default; falling back to the first entry ({implicit}). "
+        f"Catalog order is silently deciding the platform default — mark one entry "
+        f"\"default\": true, or set GATEWAY_STRICT_DEFAULT_ALIAS=true to refuse."
+    )
+    return implicit
+
+
+def _warn_once(message: str) -> None:
+    """Append + log a config warning at most once per cache generation.
+
+    Dedup matters here: default_model_alias() runs on the hot path for every
+    untargeted call, and a per-request log line would bury the signal it exists
+    to raise.
+    """
+    if message in _warnings:
+        return
+    _warnings.append(message)
+    logger.warning("llm_gateway.provider_config %s", message)
 
 
 def provider_settings(provider: str) -> Dict[str, Any]:
@@ -261,6 +315,32 @@ def compute_estimated_cost(
     # precision is plenty for accounting and avoids float noise in JSON).
     cost = (input_tokens * input_rate + output_tokens * output_rate) / 1_000_000.0
     return round(cost, 6)
+
+
+def compute_embedding_cost(alias: Optional[str], input_tokens: int) -> Optional[float]:
+    """Cost for an embedding call, which has input tokens only.
+
+    Separate from compute_estimated_cost deliberately. That function requires
+    BOTH prices and returns None if either is missing — correct for chat, wrong
+    here: an embedding model produces no output, so a catalog author has every
+    reason to omit outputPricePerMtok. Reusing it would have produced a cost
+    path that silently returns None for any realistically-configured embedding
+    model, which is worse than having no cost path at all because it looks like
+    it works.
+
+    Embeddings are the highest-volume traffic on this gateway, so this is the
+    largest cost line in the platform.
+    """
+    if not alias:
+        return None
+    try:
+        entry = resolve_alias(alias)
+    except ProviderConfigError:
+        return None
+    input_rate = _safe_price_per_mtok(entry.get("inputPricePerMtok"))
+    if input_rate is None:
+        return None
+    return round((input_tokens * input_rate) / 1_000_000.0, 6)
 
 
 def _safe_price_per_mtok(value: Any) -> Optional[float]:

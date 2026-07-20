@@ -43,6 +43,12 @@ export async function summariseSymbol(input: SummariseInput): Promise<string | n
   try {
     const result = await Promise.race([
       llmRespond({
+        // SUMMARISE_MODEL_ALIAS still wins when set (a pin is a pin). Unset, this
+        // call now says what it is instead of arriving anonymous — one-line
+        // symbol summaries are the cheapest work on the platform and should be
+        // routed as such, which policy can decide and an env var cannot.
+        task_tag: "summarise",
+        purpose: "symbol_summary",
         ...(MODEL_ALIAS ? { model_alias: MODEL_ALIAS } : {}),
         messages: [
           { role: "system", content: systemPrompt },
@@ -51,6 +57,15 @@ export async function summariseSymbol(input: SummariseInput): Promise<string | n
         max_output_tokens: 200,
         temperature: 0,
         trace_id: `summarise-${input.symbolName}`,
+        // Previously untagged. This is per-symbol indexing work, so it fans out
+        // to a high call count on a big repo — precisely the traffic you want
+        // separable in a cost report, and precisely what was invisible.
+        task_tag: "summarise",
+        // Runs during code indexing, not on anyone's behalf.
+        actor_id: "system:agent-runtime",
+        // No tenant_id: SummariseInput is a code symbol (name/type/language/
+        // path/snippet). The capability that owns the symbol is not threaded
+        // into this function, so there is no tenant to read.
       }),
       new Promise<never>((_, rej) =>
         setTimeout(() => rej(new Error("summarise timeout")), TIMEOUT_MS),

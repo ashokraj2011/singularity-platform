@@ -898,6 +898,40 @@ services:
       # External config files declare providers + model aliases. Mounted RO.
       LLM_PROVIDER_CONFIG_PATH: /etc/singularity/llm-providers.json
       LLM_MODEL_CATALOG_PATH:   /etc/singularity/llm-models.json
+      # B1 — declarative model-selection policy (task_tag -> tier -> alias list).
+      #
+      # ON by default as of B4. It shipped dark through three changes so the
+      # *_MODEL_ALIAS collapse and budget degradation could each be reviewed and
+      # reverted on their own; past that, an engine no traffic reaches is the
+      # state this effort started in. Set false to get the pre-policy resolution
+      # path back — read per call, so no restart is needed.
+      #
+      # What "on" changes is narrower than it sounds: a caller still sending
+      # model_alias is a hard pin and still skips policy entirely. Only callers
+      # that stopped pinning are affected. See .singularity/llm-policy.json.default
+      # for the file shape; a missing file degrades to an inert policy rather
+      # than failing the gateway.
+      LLM_POLICY_PATH: /etc/singularity/llm-policy.json
+      GATEWAY_MODEL_POLICY_ENABLED: ${GATEWAY_MODEL_POLICY_ENABLED:-true}
+      # B3 — budget-aware tier DEGRADATION. Needs the policy engine on as well;
+      # both default false. When on, the gateway reads the caller's scope
+      # utilisation from audit-gov and may drop the chosen tier by ONE rung.
+      #
+      # SHIPS DARK, and it would not function today even if switched on: the
+      # `budgets` table is fed from llm.call.completed audit events, whose only
+      # producer is mcp-server's invoke path. Direct-to-gateway spend is
+      # invisible to it, so the utilisation figure is a LOWER BOUND. Turning
+      # this on before the gateway emits its own call events would degrade on
+      # partial data. See app/budget_state.py for the full caveat.
+      GATEWAY_BUDGET_DEGRADATION_ENABLED: ${GATEWAY_BUDGET_DEGRADATION_ENABLED:-false}
+      GATEWAY_BUDGET_CACHE_TTL_SEC: ${GATEWAY_BUDGET_CACHE_TTL_SEC:-60}
+      GATEWAY_BUDGET_TIMEOUT_SEC: ${GATEWAY_BUDGET_TIMEOUT_SEC:-2}
+      # Unset → no budget signal → nothing is ever degraded (fail open).
+      AUDIT_GOV_URL: ${AUDIT_GOV_URL:-}
+      # When no catalog entry is marked "default": true the gateway falls back to
+      # the FIRST entry, so catalog ORDER silently decides the platform default.
+      # Set true to refuse that fallback instead. Warned either way.
+      GATEWAY_STRICT_DEFAULT_ALIAS: ${GATEWAY_STRICT_DEFAULT_ALIAS:-false}
       # Optional bearer that every consumer must present. Empty = open in dev.
       LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
       # When ALLOW_CALLER_PROVIDER_OVERRIDE=false the gateway refuses
