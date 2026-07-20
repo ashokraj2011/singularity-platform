@@ -30,7 +30,7 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, Field
 
-from . import call_log, events_store
+from . import call_log, conversation_identity as _conversation_identity, events_store
 from .audit_gov_emit import emit_audit_event
 from .config import is_production_class_env, settings
 from .env_config import bounded_float_value
@@ -373,6 +373,18 @@ class RunContext(BaseModel):
     agent_role: Optional[str] = None
     user_id: Optional[str] = None
     trace_id: Optional[str] = None
+    # Which CONVERSATION this turn belongs to, when it belongs to one. Distinct
+    # from the per-call correlation tag below (see conversation_identity.py):
+    # that tag is a fresh uuid per non-workflow call, so nothing can accumulate
+    # under it. Additive and optional — absent means the turn is stateless,
+    # which is the correct answer for the one-shot extractors.
+    conversation_id: Optional[str] = None
+    # Which UI/product surface is calling. Already sent by most verbatim callers
+    # today (synthesis, room-copilot, board-copilot, planner…), but silently
+    # dropped on /execute because RunContext never declared it. Declaring it is
+    # what lets a conversation be derived without any caller change.
+    surface: Optional[str] = None
+    conversation_scope: Optional[str] = None
     branch_base: Optional[str] = None
     branch_name: Optional[str] = None
     source_type: Optional[str] = None
@@ -510,10 +522,15 @@ async def execute(req: ExecuteRequest, x_service_token: Optional[str] = Header(d
         req.governance_mode or settings.default_governance_mode,
         fallback=settings.default_governance_mode,
     )
-    session_id = (
-        f"wf:{req.run_context.workflow_instance_id}:{req.run_context.workflow_node_id}"
-        if req.run_context.workflow_instance_id and req.run_context.workflow_node_id
-        else f"cf:{cf_call_id}"
+    # The per-call correlation tag. Same value as before, now produced by a
+    # named helper that says what it is. The local stays `session_id` because
+    # every persisted field downstream (call_log.session_id, receipts.sessionId)
+    # keeps that name — renaming the column would break audit consumers for no
+    # gain. Conversation state lives under run_context.conversation_id.
+    session_id = _conversation_identity.call_group_id(
+        req.run_context.workflow_instance_id,
+        req.run_context.workflow_node_id,
+        cf_call_id,
     )
 
     # M73-followup Slice 1 — fail-closed pre-flight. When the caller
