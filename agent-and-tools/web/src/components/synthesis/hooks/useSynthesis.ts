@@ -2,7 +2,13 @@
 
 import useSWR, { type SWRConfiguration } from "swr";
 import { workgraphFetch } from "@/lib/workgraph";
-import { apiPath, authHeaders } from "@/lib/api";
+import {
+  apiPath,
+  authHeaders,
+  invalidApiResponseMessage,
+  readResponseBody,
+  responseMessage,
+} from "@/lib/api";
 import type {
   CanvasObject,
   CanvasViewport,
@@ -249,6 +255,43 @@ export async function uploadCanvasImage(
     throw new Error(message);
   }
   return data as UploadedCanvasImage;
+}
+
+export interface UploadedStudioArtifact {
+  id: string;
+  boardId: string;
+  branchId: string;
+  kind: string;
+  filename: string;
+  status: string;
+  contentHash: string;
+  parseSummary?: unknown;
+  sourceSpans?: unknown;
+  extractedClaims?: unknown;
+}
+
+/** Upload a source document through the same authenticated board ingestion lifecycle. */
+export async function uploadStudioArtifact(
+  boardId: string,
+  file: File,
+  branch = "main",
+): Promise<UploadedStudioArtifact> {
+  const body = new FormData();
+  body.append("branch", branch);
+  body.append("file", file);
+  const url = `/api/workgraph/studio/boards/${encodeURIComponent(boardId)}/ingest-file`;
+  let response: Response;
+  try {
+    response = await fetch(apiPath(url), { method: "POST", headers: authHeaders(), body });
+  } catch (cause) {
+    throw new Error(cause instanceof Error ? cause.message : "Source upload failed");
+  }
+  const { raw, parsed, parseError } = await readResponseBody(response);
+  if (!response.ok) throw new Error(responseMessage(parsed, raw, `Source upload failed (${response.status})`));
+  if (parseError || !parsed || typeof parsed !== "object") {
+    throw new Error(invalidApiResponseMessage(url, raw, parseError));
+  }
+  return parsed as UploadedStudioArtifact;
 }
 
 /* ─── Specification + work items (the spec/traceability spine) ───────────── */

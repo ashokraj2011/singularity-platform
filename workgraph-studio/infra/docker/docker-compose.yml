@@ -53,6 +53,8 @@ services:
       MINIO_ACCESS_KEY: workgraph
       MINIO_SECRET_KEY: workgraph_secret
       MINIO_BUCKET: workgraph-documents
+      STUDIO_INGEST_STORAGE_ROOT: /workspace/downloads
+      STUDIO_INGEST_ALLOW_PRIVATE_URLS: ${STUDIO_INGEST_ALLOW_PRIVATE_URLS:-false}
       CORS_ORIGINS: http://localhost:3000,http://localhost:5173
       # M5 — kept for back-compat; M8 routes AGENT_TASK through context-fabric
       PROMPT_COMPOSER_URL: ${PROMPT_COMPOSER_URL:-http://host.docker.internal:3004}

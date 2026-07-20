@@ -150,6 +150,14 @@ assert.match(ideaScreen, /FactVotingView/, "the Idea Board should expose fact re
 assert.match(ideaScreen, /StrategyCanvas/, "the Idea Board should expose the freeform Strategy Canvas");
 assert.match(ideaScreen, /setView\("canvas"\)/, "the Strategy Canvas should be a selectable workspace view");
 
+const intakeScreen = fs.readFileSync(
+  path.join(process.cwd(), "src/components/synthesis/screens/IntakeWorkspaceScreen.tsx"),
+  "utf8",
+);
+assert.match(intakeScreen, /Upload document/, "source intake should expose a browser document upload mode");
+assert.match(intakeScreen, /uploadStudioArtifact/, "source intake should use the authenticated multipart ingestion helper");
+assert.match(intakeScreen, /\.pdf.*\.docx.*\.pptx.*\.xlsx/, "source intake should advertise the supported binary document formats");
+
 const boardCanvas = fs.readFileSync(
   path.join(process.cwd(), "src/components/studio/BoardCanvas.tsx"),
   "utf8",

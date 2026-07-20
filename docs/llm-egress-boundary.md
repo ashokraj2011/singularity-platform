@@ -8,9 +8,14 @@ the network path.
 
 This document records exactly where the line falls, what sits on each side, and
 which questions are still open. It is descriptive, not aspirational: everything
-below was verified against the code at the commit that introduced this file, with
-file references. Where something could not be verified from this repository, it
-says so rather than guessing.
+below was re-verified against `main` at `90eb9fb9`, with file references. Where
+something could not be verified from this repository, it says so rather than
+guessing.
+
+For this document, **INSIDE** means gateway-governed and centrally auditable.
+Context Fabric's direct provider hatch is CF-controlled, but it is **outside the
+LLM gateway boundary** because it bypasses gateway task tags, gateway audit, and
+gateway cost attribution.
 
 ---
 
@@ -45,7 +50,7 @@ Agent turns dispatched through context-fabric to the cloud LLM gateway.
 
 This is the only path where the full rule holds end to end.
 
-### 2. Context Fabric direct LLM — INSIDE, but gated OFF
+### 2. Context Fabric direct LLM — CF-controlled, outside the gateway boundary
 
 `llm_route=context_fabric_direct` opens a provider socket from inside CF,
 skipping the gateway.
@@ -73,11 +78,11 @@ cloud.
 ~45-line translator (`clients/singularity-desktop/src/gateway-shim.js`) which
 forwards to a local Copilot bridge. No auth, no rate card, no cost, no audit.
 
-> **Known sharp edge in 3b.** The shim reads `model_alias` and maps it through a
-> `modelMap` that the desktop app never populates, so **every alias collapses to
-> the shim's default model** and the alias is echoed back in the response as if it
-> had been honoured. A run can therefore report a model it did not use. This is a
-> real defect, not a boundary condition — see *Open questions*.
+> **Alias handling in 3b.** The desktop now maps the provider-neutral `copilot`
+> and `default` aliases to the configured local model. Other non-empty aliases
+> are passed through as concrete upstream model ids; they no longer silently
+> collapse to the default. If the local bridge does not support that model, it
+> returns an upstream error instead of producing a misleading receipt.
 
 ### 4. Copilot-as-agent (`copilot_execute`) — OUTSIDE
 
@@ -185,11 +190,7 @@ Decisions, not tasks — each needs a human call:
    does not, 3a is closer to 3b than this document's framing implies, and the
    table above should be revised.
 
-4. **Fix the 3b alias defect.** The shim discarding `model_alias` while echoing it
-   back is a correctness bug independent of the boundary question — a run can
-   report a model it did not use.
-
-5. **Should `GATEWAY_REQUIRE_TASK_TAG` be turned on?** Now that context-fabric's
+4. **Should `GATEWAY_REQUIRE_TASK_TAG` be turned on?** Now that context-fabric's
    governed loop tags its calls, the remaining untagged callers should be swept
    before flipping it.
 

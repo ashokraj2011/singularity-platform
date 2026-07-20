@@ -1040,6 +1040,10 @@ services:
       MINIO_ACCESS_KEY: workgraph
       MINIO_SECRET_KEY: workgraph_secret
       MINIO_BUCKET: workgraph-documents
+      # Synthesis/Studio local source ingestion. storageRef is relative to the
+      # read-only downloads mount and is real-path checked by the API.
+      STUDIO_INGEST_STORAGE_ROOT: /workspace/downloads
+      STUDIO_INGEST_ALLOW_PRIVATE_URLS: ${STUDIO_INGEST_ALLOW_PRIVATE_URLS:-false}
       WORKGRAPH_INTERNAL_TOKEN: ${WORKGRAPH_INTERNAL_TOKEN:-dev-workgraph-internal-token}
       WORKGRAPH_EVENT_SECRET_KEY: ${WORKGRAPH_EVENT_SECRET_KEY:-dev-workgraph-event-secret-min-32-chars}
       WORKGRAPH_INCOMING_EVENT_SECRETS: '${WORKGRAPH_INCOMING_EVENT_SECRETS:-{"agent-runtime":"dev-workgraph-incoming-event-secret-min-32-chars","agent-service":"dev-workgraph-incoming-event-secret-min-32-chars","tool-service":"dev-workgraph-incoming-event-secret-min-32-chars","iam":"dev-workgraph-incoming-event-secret-min-32-chars"}}'

@@ -76,6 +76,18 @@ function _readJson(req) {
 }
 
 // ── http server ───────────────────────────────────────────────────────────────
+// Resolve a platform alias to a concrete model understood by the local bridge.
+// Explicit mappings win; otherwise a non-empty alias is treated as the concrete
+// upstream model id. Unknown aliases therefore fail at the bridge instead of
+// silently running the configured default model.
+function resolveModelAlias(modelAlias, { defaultModel, modelMap = {} }) {
+  const alias = typeof modelAlias === 'string' ? modelAlias.trim() : ''
+  if (!alias) return { model: defaultModel, alias: null }
+  const mapped = modelMap[alias]
+  if (typeof mapped === 'string' && mapped.trim()) return { model: mapped.trim(), alias }
+  return { model: alias, alias }
+}
+
 // opts: { copilotBase, defaultModel, modelMap?, bearer?, log? }
 function createShimServer(opts) {
   const copilotBase = (opts.copilotBase || 'http://localhost:4141').replace(/\/$/, '')
@@ -96,7 +108,8 @@ function createShimServer(opts) {
     try {
       const sgBody = await _readJson(req)
       const modelAlias = sgBody.model_alias || null
-      const model = (modelAlias && modelMap[modelAlias]) || defaultModel
+      const resolved = resolveModelAlias(modelAlias, { defaultModel, modelMap })
+      const model = resolved.model
       const openaiReq = sgToOpenAI(sgBody, { model })
 
       const headers = { 'content-type': 'application/json' }
@@ -123,4 +136,4 @@ function createShimServer(opts) {
   })
 }
 
-module.exports = { sgToOpenAI, openAIToSg, createShimServer }
+module.exports = { sgToOpenAI, openAIToSg, resolveModelAlias, createShimServer }

@@ -127,8 +127,11 @@ export function validateArtifactPile(artifacts: ArtifactForValidation[]) {
 
   for (const artifact of artifacts) {
     const rootCitation = `${artifact.id}#${artifact.sourceSpans[0]?.ref ?? 'document'}`
-    if (artifact.status !== 'COMPLETED') {
+    const extractionResolved = ['COMPLETED', 'SUCCEEDED', 'VALID_EMPTY', 'PARTIAL'].includes(artifact.status)
+    if (!extractionResolved) {
       findings.push({ id: `incomplete:${artifact.id}`, kind: 'COMPLETENESS', severity: 'ERROR', title: `${artifact.filename} has not completed ingestion`, consequence: 'The pile cannot be treated as a complete source set.', citationRefs: [rootCitation] })
+    } else if (artifact.status === 'PARTIAL') {
+      findings.push({ id: `partial:${artifact.id}`, kind: 'COMPLETENESS', severity: 'WARNING', title: `${artifact.filename} produced only a partial claim extraction`, consequence: 'Review the source before relying on the extracted claim set.', citationRefs: [rootCitation] })
     } else if (artifact.extractedClaims.length === 0) {
       findings.push({ id: `empty:${artifact.id}`, kind: 'COMPLETENESS', severity: 'WARNING', title: `${artifact.filename} produced no addressable claims`, consequence: 'Important assertions may remain untraceable until a human reviews the source.', citationRefs: [rootCitation] })
     }

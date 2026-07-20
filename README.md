@@ -371,6 +371,11 @@ export DATABASE_URL_WORKGRAPH="$DATABASE_URL_WORKGRAPH_RUNTIME"
 export DATABASE_URL_AUDIT_GOV="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/audit_governance"
 export DATABASE_URL_CONTEXT_FABRIC="postgresql://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/singularity_context_fabric"
 export CONTEXT_FABRIC_DATABASE_URL="$DATABASE_URL_CONTEXT_FABRIC"
+# Synthesis/Studio document ingestion. storageRef is relative to this directory
+# and is never allowed to escape it. The default compose stack mounts the same
+# host directory at /workspace/downloads inside workgraph-api.
+export STUDIO_INGEST_STORAGE_ROOT="$PWD/.singularity/downloads"
+export STUDIO_INGEST_ALLOW_PRIVATE_URLS="false"
 
 # Shared JWT secret (32+ chars — workgraph-api enforces)
 export JWT_SECRET="dev-secret-change-in-prod-min-32-chars!!"
@@ -399,6 +404,32 @@ EOF
 
 source .env.local
 ```
+
+Studio ingestion accepts exactly one of `content`, `url`, or `storageRef` at
+`POST /api/studio/boards/:boardId/ingest`. The built-in parser handles
+`TEXT`, `MARKDOWN`, `MD`, `URL`, `PDF`, `DOCX`, `PPTX`, and `XLSX`. For a local
+document, copy it under `.singularity/downloads` and send a relative
+`storageRef` as shown below.
+
+```bash
+mkdir -p .singularity/downloads
+cp ./requirements/brief.docx .singularity/downloads/brief.docx
+curl -X POST "http://localhost:8080/api/studio/boards/$BOARD_ID/ingest" \
+  -H "authorization: Bearer $IAM_ACCESS_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"branch":"main","kind":"DOCX","filename":"brief.docx","storageRef":"brief.docx"}'
+```
+
+The Synthesis **Document pile** also has an authenticated `Upload document`
+option. It posts multipart field `file` to
+`POST /api/studio/boards/:boardId/ingest-file`; the server infers the parser
+from the extension and applies the same 500 KB and extraction lifecycle rules.
+
+The reader extracts text only: Office layout, charts, formulas, images, and
+macros are not interpreted. The current limit is 500 KB per source. The
+storage root is real-path checked to reject traversal and symlink escape;
+private URL resolution remains disabled unless explicitly enabled for local
+development.
 
 ### 3. Install + push schemas (one-time)
 ```bash

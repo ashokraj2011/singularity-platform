@@ -2,7 +2,11 @@
 // Plain-node tests for the local LLM shim translation (no test framework).
 //   node test/gateway-shim.test.js   →  exits non-zero on failure.
 const assert = require('node:assert')
-const { sgToOpenAI, openAIToSg } = require('../src/gateway-shim')
+const { sgToOpenAI, openAIToSg, resolveModelAlias } = require('../src/gateway-shim')
+
+assert.deepEqual(resolveModelAlias(null, { defaultModel: 'gpt-4o' }), { model: 'gpt-4o', alias: null })
+assert.deepEqual(resolveModelAlias('copilot', { defaultModel: 'gpt-4o', modelMap: { copilot: 'claude-sonnet-4-6' } }), { model: 'claude-sonnet-4-6', alias: 'copilot' })
+assert.deepEqual(resolveModelAlias('claude-sonnet-4-6', { defaultModel: 'gpt-4o', modelMap: {} }), { model: 'claude-sonnet-4-6', alias: 'claude-sonnet-4-6' })
 
 // request: singularity-gateway → OpenAI
 const oi = sgToOpenAI({

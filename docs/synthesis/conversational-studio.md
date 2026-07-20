@@ -1,6 +1,10 @@
 # The Conversational Studio ("the big screen")
 
-**Status:** specified, not started. Grounded against `main` at `462f5f8` (#565).
+**Status:** specified; the first document-ingestion slice is implemented in this
+checkout, while the conversational conductor and dual-pane surface remain
+planned. The specification was introduced in
+`dca399eb` (#566) and its current implementation baseline was refreshed against
+`main` at `90eb9fb9` (#567).
 
 This is a **completion spec, not a greenfield one**. The R1A `synthesis/` module
 already provides the workspace/thread/message substrate, the governed agent-turn
@@ -45,18 +49,18 @@ produced nothing durable.
 | Happy path | 7-step guided order (#565) | The same 7 steps become the thread's phase chips |
 | UI | — | The dual-pane screen |
 
-### ⚠️ Correction to the original plan — there is no document reader
+### ⚠️ Correction to the original plan — document ingestion was a real dependency
 
 The original draft stated *"Dependencies: none on unbuilt work — every card
 targets an endpoint already on main."* **That is not true of file ingestion**,
 and file ingestion is what the flagship demo opens with.
 
-Verified on `main`:
+Verified on the `main` baseline:
 
-- `board-ingestion.service.ts:84` **hard-rejects `storageRef`**:
+- `board-ingestion.service.ts` **hard-rejected `storageRef`**:
   `'storageRef ingestion is not configured for this deployment; provide extracted content or a URL.'`
-- The parser supports **`TEXT`, `MARKDOWN`, `MD`, `URL` only** (`:130`). PDF /
-  DOCX / PPTX / XLSX are noted in-file as pluggable but absent.
+- The parser supported **`TEXT`, `MARKDOWN`, `MD`, `URL` only**. PDF / DOCX /
+  PPTX / XLSX were noted in-file as pluggable but absent.
 - The only PDF/DOCX dependency in the repo is in
   `business-alignment.exports.ts` — a document **writer**, for generating signed
   readouts. A docx writer is not a docx reader.
@@ -67,6 +71,23 @@ in the plan and it must be its own slice**, ahead of the conversational work —
 not folded into a sprint that also builds evidence flow and wires two apply
 verbs. It is independently valuable: it unblocks the *existing* intake surface
 whether or not the dual pane ships.
+
+The existing text/URL path now preserves this same failure contract: a claim
+extractor timeout or malformed response leaves the source placed on the board but
+marks the artifact `FAILED`; a valid empty envelope is `VALID_EMPTY`, and a mixed
+valid/invalid bare array is `PARTIAL`. No extraction error is represented as
+`COMPLETED`.
+
+**Implemented S0 slice in this checkout.** The default parser registry now reads
+PDF, DOCX, PPTX, and XLSX content into addressable source spans. `storageRef` is
+accepted only as a path relative to `STUDIO_INGEST_STORAGE_ROOT`; the service
+resolves the real path, rejects traversal and symlink escape, requires a regular
+file, and enforces a 500 KB bound. URL ingestion uses the existing SSRF guard,
+rejects credentials and redirects, and applies the same bound. Binary parser
+errors set the artifact to `FAILED` and never emit a successful completion event.
+The default Office readers intentionally cover text extraction, not layout,
+charts, formulas, images, or macros. The intake screen now exposes the guarded
+multipart upload route; provider-specific adapters remain follow-on work.
 
 ### Invariant the spec correctly respects
 
@@ -189,10 +210,11 @@ not by the registry's good intentions.
 Revised from the original five sprints: **document ingestion is pulled out ahead
 of the conversational work** for the reasons in the correction above.
 
-- **S0 — Document ingestion (own slice).** Storage, parser registry (PDF/DOCX at
-  minimum), per-format failure semantics, `storageRef` path opened. Independently
-  valuable: unblocks the existing intake surface on its own. *Demo: drop a real
-  BRD into today's intake and see extracted claims.*
+- **S0 — Document ingestion (implemented in this checkout).** Storage-root
+  guarded source resolution, parser registry (PDF/DOCX/PPTX/XLSX), per-format
+  failure semantics, and `storageRef` path support. *Demo: place a real BRD
+  under `STUDIO_INGEST_STORAGE_ROOT`, call the existing ingest endpoint with its
+  relative `storageRef`, and see extracted claims.*
 - **S1 — Message kinds + SSE + pane (1.5 wk).** Migration; SSE channel; pane
   read-model + projector; thread renders existing agent-turns and ask in the new
   shell, role picker temporarily visible. *Demo: a live thread with a live pane.*

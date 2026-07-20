@@ -49,7 +49,16 @@ const logs = []
 // ── local LLM shim lifecycle ───────────────────────────────────────────────
 function startShim(s) {
   if (shim) return
-  shim = createShimServer({ copilotBase: s.copilotBaseUrl, defaultModel: s.localModel, log: pushLog })
+  const localModel = String(s.localModel || '').trim() || 'gpt-4o'
+  shim = createShimServer({
+    copilotBase: s.copilotBaseUrl,
+    defaultModel: localModel,
+    // The gateway catalog uses a provider-neutral `copilot` alias while the
+    // local bridge needs the concrete model configured by the user. Concrete
+    // aliases are also accepted by the shim and passed through unchanged.
+    modelMap: { copilot: localModel, default: localModel, [localModel]: localModel },
+    log: pushLog,
+  })
   shim.on('error', (e) => { pushLog(`✗ local LLM shim error: ${e.message}`); shim = null })
   shim.listen(s.shimPort)
 }

@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ArchiveRestore, Check, ChevronRight, FileCheck2, FilePlus2, Files, MessageSquareText, Plus, Scale, ShieldAlert, Sparkles } from "lucide-react";
 import { workgraphFetch } from "@/lib/workgraph";
 import { SynthesisShell } from "@/components/synthesis/SynthesisShell";
 import { NoProjectSelected, ProjectPicker, useSelectedProjectId } from "@/components/synthesis/ProjectPicker";
-import { useSyn } from "@/components/synthesis/hooks/useSynthesis";
+import { uploadStudioArtifact, useSyn } from "@/components/synthesis/hooks/useSynthesis";
 import { EmptyState, MonoMeta, StageHeader, SynButton, SynChip, SynError, SynSkeleton } from "@/components/synthesis/ui/kit";
 import type { DiscoverySession, SynArtifactValidationReport } from "@/components/synthesis/types";
 
@@ -95,14 +95,56 @@ function ArtifactPile({ projectId }: { projectId: string }) {
   const [boardId, setBoardId] = useState("");
   const artifacts = useSyn<{ items: Artifact[] }>(boardId ? `/studio/boards/${boardId}/artifacts` : null);
   const reports = useSyn<{ items: SynArtifactValidationReport[] }>(boardId ? `/studio/experience/boards/${boardId}/validation-reports` : null);
-  const [kind, setKind] = useState("MARKDOWN"); const [filename, setFilename] = useState(""); const [content, setContent] = useState(""); const [url, setUrl] = useState("");
-  const [busy, setBusy] = useState<string | null>(null); const [error, setError] = useState<string | null>(null); const [canonical, setCanonical] = useState<string | null>(null); const [decisionId, setDecisionId] = useState<string | null>(null);
+  const [sourceType, setSourceType] = useState<"TEXT" | "URL" | "FILE">("TEXT");
+  const [filename, setFilename] = useState("");
+  const [content, setContent] = useState("");
+  const [url, setUrl] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [canonical, setCanonical] = useState<string | null>(null);
+  const [decisionId, setDecisionId] = useState<string | null>(null);
   useEffect(() => { if (!boardId && boards.data?.items[0]?.id) setBoardId(boards.data.items[0].id); }, [boardId, boards.data]);
   const latest = reports.data?.items[0];
-  async function act(key: string, operation: () => Promise<unknown>) { setBusy(key); setError(null); try { await operation(); await Promise.all([boards.mutate(), artifacts.mutate(), reports.mutate()]); } catch (cause) { setError(cause instanceof Error ? cause.message : "The operation failed."); } finally { setBusy(null); } }
-  async function createBoard() { const created = await workgraphFetch<Board>(`/studio/projects/${projectId}/boards`, { method: "POST", body: JSON.stringify({ name: "Source Intake" }) }); setBoardId(created.id); }
-  async function ingest() { if (!boardId) return; await workgraphFetch(`/studio/boards/${boardId}/ingest`, { method: "POST", body: JSON.stringify({ branch: "main", kind, filename: filename || (kind === "URL" ? url : "source.md"), ...(kind === "URL" ? { url } : { content }) }) }); setFilename(""); setContent(""); setUrl(""); }
-  async function generate(reportId: string) { setBusy(`document:${reportId}`); setError(null); try { const result = await workgraphFetch<{ markdown: string }>(`/studio/experience/validation-reports/${reportId}/canonical-document`); setCanonical(result.markdown); } catch (cause) { setError(cause instanceof Error ? cause.message : "The canonical document could not be generated."); } finally { setBusy(null); } }
+  const settledStatuses = new Set(["COMPLETED", "SUCCEEDED", "VALID_EMPTY", "PARTIAL"]);
+  const canIngest = sourceType === "FILE" ? Boolean(file) : sourceType === "URL" ? url.trim().length > 0 : content.trim().length >= 8;
+
+  async function act(key: string, operation: () => Promise<unknown>) {
+    setBusy(key); setError(null);
+    try { await operation(); await Promise.all([boards.mutate(), artifacts.mutate(), reports.mutate()]); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "The operation failed."); }
+    finally { setBusy(null); }
+  }
+  async function createBoard() {
+    const created = await workgraphFetch<Board>(`/studio/projects/${projectId}/boards`, { method: "POST", body: JSON.stringify({ name: "Source Intake" }) });
+    setBoardId(created.id);
+  }
+  async function ingest() {
+    if (!boardId) return;
+    if (sourceType === "FILE") {
+      if (!file) return;
+      await uploadStudioArtifact(boardId, file);
+    } else {
+      await workgraphFetch(`/studio/boards/${boardId}/ingest`, {
+        method: "POST",
+        body: JSON.stringify({
+          branch: "main",
+          kind: sourceType === "URL" ? "URL" : "MARKDOWN",
+          filename: filename || (sourceType === "URL" ? url : "source.md"),
+          ...(sourceType === "URL" ? { url } : { content }),
+        }),
+      });
+    }
+    setFilename(""); setContent(""); setUrl(""); setFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+  async function generate(reportId: string) {
+    setBusy(`document:${reportId}`); setError(null);
+    try { const result = await workgraphFetch<{ markdown: string }>(`/studio/experience/validation-reports/${reportId}/canonical-document`); setCanonical(result.markdown); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "The canonical document could not be generated."); }
+    finally { setBusy(null); }
+  }
   async function createTensionDecision(report: SynArtifactValidationReport, tension: ValidationTension) {
     setBusy(`decision:${tension.id}`); setError(null); setDecisionId(null);
     try {
@@ -120,7 +162,32 @@ function ArtifactPile({ projectId }: { projectId: string }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "The decision dossier could not be created."); }
     finally { setBusy(null); }
   }
-  return <div className="space-y-7">{error ? <SynError message={error} /> : null}{decisionId ? <div className="flex flex-wrap items-center gap-3 border-l-4 border-secondary bg-secondary-container/35 px-4 py-3 text-sm text-on-surface"><Scale size={16} /><span>The contradiction is now a governed decision dossier. No source assertion has been accepted yet.</span><Link className="font-bold text-secondary" href={`/synthesis/decisions?project=${projectId}`}>Compare options and request review</Link></div> : null}<div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]"><label className="grid gap-1 text-xs font-bold text-on-surface-variant">Source board<select className="h-10 rounded-md border border-outline-variant bg-surface-container-lowest px-3 text-sm text-on-surface" value={boardId} onChange={event => setBoardId(event.target.value)}><option value="">Choose a board</option>{(boards.data?.items ?? []).map(board => <option key={board.id} value={board.id}>{board.name}</option>)}</select></label><div className="flex items-end"><SynButton variant="secondary" icon={Plus} disabled={Boolean(busy)} onClick={() => void act("board", createBoard)}>New source board</SynButton></div></div>{boardId ? <section className="grid gap-5 border-y border-outline-variant py-6 lg:grid-cols-[340px_minmax(0,1fr)]"><div><div className="flex items-center gap-2"><FilePlus2 size={17} className="text-secondary" /><h2 className="font-black text-on-surface">Add source</h2></div><div className="mt-4 grid gap-3"><label className="grid gap-1 text-xs font-bold text-on-surface-variant">Source type<select className="h-10 rounded-md border border-outline-variant bg-surface-container-lowest px-3" value={kind} onChange={event => setKind(event.target.value)}><option value="MARKDOWN">Markdown or text</option><option value="URL">URL</option></select></label><label className="grid gap-1 text-xs font-bold text-on-surface-variant">Name<input className="h-10 rounded-md border border-outline-variant bg-surface-container-lowest px-3" value={filename} onChange={event => setFilename(event.target.value)} placeholder="requirements.md" /></label>{kind === "URL" ? <label className="grid gap-1 text-xs font-bold text-on-surface-variant">URL<input className="h-10 rounded-md border border-outline-variant bg-surface-container-lowest px-3" value={url} onChange={event => setUrl(event.target.value)} placeholder="https://…" /></label> : <label className="grid gap-1 text-xs font-bold text-on-surface-variant">Content<textarea className="min-h-36 rounded-md border border-outline-variant bg-surface-container-lowest p-3 text-sm" value={content} onChange={event => setContent(event.target.value)} /></label>}<SynButton icon={FilePlus2} disabled={Boolean(busy) || (kind === "URL" ? !url : content.trim().length < 8)} onClick={() => void act("ingest", ingest)}>{busy === "ingest" ? "Ingesting…" : "Add to pile"}</SynButton></div></div><div><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Files size={17} className="text-secondary" /><h2 className="font-black text-on-surface">Document pile</h2><SynChip>{artifacts.data?.items.length ?? 0}</SynChip></div><SynButton variant="secondary" icon={FileCheck2} disabled={Boolean(busy) || !artifacts.data?.items.length} onClick={() => void act("validate", () => workgraphFetch(`/studio/experience/boards/${boardId}/validation-reports`, { method: "POST" }))}>{busy === "validate" ? "Validating…" : "Validate pile"}</SynButton></div>{artifacts.isLoading ? <SynSkeleton rows={3} /> : !artifacts.data?.items.length ? <EmptyState icon={Files} title="The pile is empty" /> : <div className="mt-4 divide-y divide-outline-variant border-y border-outline-variant">{artifacts.data.items.map(artifact => <div key={artifact.id} className="flex items-center gap-3 py-3"><FileCheck2 size={16} className={artifact.status === "COMPLETED" ? "text-secondary" : "text-tertiary"} /><div className="min-w-0 flex-1"><strong className="block truncate text-sm text-on-surface">{artifact.filename}</strong><MonoMeta>{artifact.kind}</MonoMeta></div><SynChip tone={artifact.status === "COMPLETED" ? "success" : "tertiary"}>{artifact.status}</SynChip></div>)}</div>}</div></section> : null}{latest ? <ValidationReport report={latest} busy={busy} onTransmute={() => act(`transmute:${latest.id}`, () => workgraphFetch(`/studio/experience/validation-reports/${latest.id}/transmute`, { method: "POST" }))} onGenerate={() => generate(latest.id)} onCreateDecision={(tension) => createTensionDecision(latest, tension)} /> : null}{canonical ? <section><div className="mb-2 flex items-center gap-2"><FileCheck2 size={17} className="text-secondary" /><h2 className="font-black text-on-surface">Canonical source brief</h2></div><pre className="max-h-96 overflow-auto whitespace-pre-wrap border border-outline-variant bg-surface-container-lowest p-5 text-xs leading-6 text-on-surface">{canonical}</pre></section> : null}</div>;
+  return (
+    <div className="space-y-7">
+      {error ? <SynError message={error} /> : null}
+      {decisionId ? <div className="flex flex-wrap items-center gap-3 border-l-4 border-secondary bg-secondary-container/35 px-4 py-3 text-sm text-on-surface"><Scale size={16} /><span>The contradiction is now a governed decision dossier. No source assertion has been accepted yet.</span><Link className="font-bold text-secondary" href={`/synthesis/decisions?project=${projectId}`}>Compare options and request review</Link></div> : null}
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]"><label className="grid gap-1 text-xs font-bold text-on-surface-variant">Source board<select className="h-10 rounded-md border border-outline-variant bg-surface-container-lowest px-3 text-sm text-on-surface" value={boardId} onChange={event => setBoardId(event.target.value)}><option value="">Choose a board</option>{(boards.data?.items ?? []).map(board => <option key={board.id} value={board.id}>{board.name}</option>)}</select></label><div className="flex items-end"><SynButton variant="secondary" icon={Plus} disabled={Boolean(busy)} onClick={() => void act("board", createBoard)}>New source board</SynButton></div></div>
+      {boardId ? <section className="grid gap-5 border-y border-outline-variant py-6 lg:grid-cols-[340px_minmax(0,1fr)]"><div>
+        <div className="flex items-center gap-2"><FilePlus2 size={17} className="text-secondary" /><h2 className="font-black text-on-surface">Add source</h2></div>
+        <div className="mt-4 grid gap-3">
+          <label className="grid gap-1 text-xs font-bold text-on-surface-variant">Source type<select className="h-10 rounded-md border border-outline-variant bg-surface-container-lowest px-3" value={sourceType} onChange={event => setSourceType(event.target.value as "TEXT" | "URL" | "FILE")}><option value="TEXT">Paste text or Markdown</option><option value="FILE">Upload document</option><option value="URL">Link</option></select></label>
+          {sourceType === "FILE" ? <>
+            <label className="grid gap-1 text-xs font-bold text-on-surface-variant">Document<input ref={fileInputRef} type="file" accept=".txt,.md,.markdown,.pdf,.docx,.pptx,.xlsx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => setFile(event.target.files?.[0] ?? null)} className="block w-full rounded-md border border-outline-variant bg-surface-container-lowest px-3 py-2 text-xs text-on-surface" /></label>
+            <p className="text-[11px] leading-5 text-on-surface-variant">Supports TXT, Markdown, PDF, Word, PowerPoint, and Excel up to 500 KB. Text, layout-independent evidence is extracted; the original file is not executed.</p>
+          </> : <>
+            <label className="grid gap-1 text-xs font-bold text-on-surface-variant">Name<input className="h-10 rounded-md border border-outline-variant bg-surface-container-lowest px-3" value={filename} onChange={event => setFilename(event.target.value)} placeholder={sourceType === "URL" ? "requirements.html" : "requirements.md"} /></label>
+            {sourceType === "URL" ? <label className="grid gap-1 text-xs font-bold text-on-surface-variant">URL<input className="h-10 rounded-md border border-outline-variant bg-surface-container-lowest px-3" value={url} onChange={event => setUrl(event.target.value)} placeholder="https://…" /></label> : <label className="grid gap-1 text-xs font-bold text-on-surface-variant">Content<textarea className="min-h-36 rounded-md border border-outline-variant bg-surface-container-lowest p-3 text-sm" value={content} onChange={event => setContent(event.target.value)} /></label>}
+          </>}
+          <SynButton icon={FilePlus2} disabled={Boolean(busy) || !canIngest} onClick={() => void act("ingest", ingest)}>{busy === "ingest" ? "Ingesting…" : sourceType === "FILE" ? "Upload and add" : "Add to pile"}</SynButton>
+        </div>
+      </div><div>
+        <div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Files size={17} className="text-secondary" /><h2 className="font-black text-on-surface">Document pile</h2><SynChip>{artifacts.data?.items.length ?? 0}</SynChip></div><SynButton variant="secondary" icon={FileCheck2} disabled={Boolean(busy) || !artifacts.data?.items.length} onClick={() => void act("validate", () => workgraphFetch(`/studio/experience/boards/${boardId}/validation-reports`, { method: "POST" }))}>{busy === "validate" ? "Validating…" : "Validate pile"}</SynButton></div>
+        {artifacts.isLoading ? <SynSkeleton rows={3} /> : !artifacts.data?.items.length ? <EmptyState icon={Files} title="The pile is empty" /> : <div className="mt-4 divide-y divide-outline-variant border-y border-outline-variant">{artifacts.data.items.map(artifact => { const settled = settledStatuses.has(artifact.status); const failed = artifact.status === "FAILED"; return <div key={artifact.id} className="flex items-center gap-3 py-3"><FileCheck2 size={16} className={settled ? "text-secondary" : failed ? "text-error" : "text-tertiary"} /><div className="min-w-0 flex-1"><strong className="block truncate text-sm text-on-surface">{artifact.filename}</strong><MonoMeta>{artifact.kind}</MonoMeta></div><SynChip tone={settled ? "success" : failed ? "error" : "tertiary"}>{artifact.status}</SynChip></div>; })}</div>}
+      </div></section> : null}
+      {latest ? <ValidationReport report={latest} busy={busy} onTransmute={() => act(`transmute:${latest.id}`, () => workgraphFetch(`/studio/experience/validation-reports/${latest.id}/transmute`, { method: "POST" }))} onGenerate={() => generate(latest.id)} onCreateDecision={(tension) => createTensionDecision(latest, tension)} /> : null}
+      {canonical ? <section><div className="mb-2 flex items-center gap-2"><FileCheck2 size={17} className="text-secondary" /><h2 className="font-black text-on-surface">Canonical source brief</h2></div><pre className="max-h-96 overflow-auto whitespace-pre-wrap border border-outline-variant bg-surface-container-lowest p-5 text-xs leading-6 text-on-surface">{canonical}</pre></section> : null}
+    </div>
+  );
 }
 
 function ValidationReport({ report, busy, onTransmute, onGenerate, onCreateDecision }: { report: SynArtifactValidationReport; busy: string | null; onTransmute: () => Promise<void>; onGenerate: () => Promise<void>; onCreateDecision: (tension: ValidationTension) => Promise<void> }) {

@@ -7,14 +7,47 @@
  */
 import { Router, type Request } from 'express'
 import { z } from 'zod'
+import multer from 'multer'
+import path from 'node:path'
 import { validate } from '../../middleware/validate'
 import { createBoard, listBoards, appendEvent, readState, listEvents, forkBranch, listBranches, abandonBranch } from './board.service'
 import { detectAndNarrate, listMoments, editMoment, rejectMoment } from './board-moments.service'
-import { ingest, listArtifacts, getArtifactClaims, acceptExtractedClaim, rejectExtractedClaim } from './board-ingestion.service'
+import { ingest, listArtifacts, getArtifactClaims, acceptExtractedClaim, rejectExtractedClaim, MAX_INGEST_BYTES } from './board-ingestion.service'
 import { diffBranches, mergeBranch, applyMergeItems, completeMerge } from './board-merge.service'
 import { synthesizeBoardObjects } from './board-synthesis'
 
 export const studioBoardRouter: Router = Router()
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_INGEST_BYTES } })
+const UPLOAD_KIND_BY_EXTENSION: Record<string, string> = {
+  '.txt': 'TEXT',
+  '.md': 'MARKDOWN',
+  '.markdown': 'MARKDOWN',
+  '.pdf': 'PDF',
+  '.docx': 'DOCX',
+  '.pptx': 'PPTX',
+  '.xlsx': 'XLSX',
+}
+
+function uploadKind(filename: string): string | null {
+  return UPLOAD_KIND_BY_EXTENSION[path.extname(filename).toLowerCase()] ?? null
+}
+
+function uploadFilename(filename: string): string {
+  const safe = path.basename(filename).replace(/[^a-zA-Z0-9._ -]/g, '_').trim()
+  return (safe || 'uploaded-source').slice(0, 300)
+}
+
+function uploadMiddleware(req: Request, res: import('express').Response, next: import('express').NextFunction) {
+  upload.single('file')(req, res, (error: unknown) => {
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      res.status(413).json({ code: 'PAYLOAD_TOO_LARGE', message: 'Source file exceeds the 500 KB ingestion limit.' })
+      return
+    }
+    if (error) { next(error); return }
+    next()
+  })
+}
 
 const createBoardSchema = z.object({
   name: z.string().trim().min(1).max(200),
@@ -47,6 +80,9 @@ const ingestSchema = z.object({
   content: z.string().max(500_000).optional(),
   url: z.string().url().max(2000).optional(),
   storageRef: z.string().max(500).optional(),
+}).superRefine((value, ctx) => {
+  const sources = [value.content !== undefined, value.url !== undefined, value.storageRef !== undefined].filter(Boolean).length
+  if (sources !== 1) ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Provide exactly one ingestion source: content, url, or storageRef.', path: ['content'] })
 })
 const synthesizeSchema = z.object({
   objectIds: z.array(z.string().trim().min(1).max(200)).max(500).optional(),
@@ -145,6 +181,27 @@ studioBoardRouter.post('/boards/:boardId/ingest', validate(ingestSchema), async 
   try {
     const { branch, ...input } = req.body
     res.status(201).json(await ingest(boardIdOf(req), branch, input, { actorId: userIdOf(req) }))
+  } catch (err) { next(err) }
+})
+
+studioBoardRouter.post('/boards/:boardId/ingest-file', uploadMiddleware, async (req, res, next) => {
+  try {
+    const file = req.file
+    if (!file) {
+      res.status(400).json({ code: 'BAD_REQUEST', message: 'No file uploaded (expected multipart field "file").' })
+      return
+    }
+    const kind = uploadKind(file.originalname)
+    if (!kind) {
+      res.status(400).json({ code: 'UNSUPPORTED_FILE_TYPE', message: 'Supported source files are .txt, .md, .pdf, .docx, .pptx, and .xlsx.' })
+      return
+    }
+    const branch = typeof req.body?.branch === 'string' && req.body.branch.trim() ? req.body.branch.trim() : 'main'
+    res.status(201).json(await ingest(boardIdOf(req), branch, {
+      kind,
+      filename: uploadFilename(file.originalname),
+      content: file.buffer,
+    }, { actorId: userIdOf(req) }))
   } catch (err) { next(err) }
 })
 
