@@ -1688,7 +1688,77 @@ def _evaluate_governance_block(
     return blocked
 
 
-async def run_stage(
+def _stage_task_text(
+    vars: dict[str, Any] | None, run_context: dict[str, Any] | None
+) -> str:
+    """What the human actually asked this stage to do.
+
+    `vars["task"]` is where governed-execute-adapter folds the legacy
+    ExecuteRequest.task; `run_context["task"]` is where the workflow AGENT_TASK
+    path passes it (the /execute-governed-stage route has no top-level task, so
+    both spellings are live). Neither is guaranteed — a stage driven purely by
+    templated vars has no free-text task at all, and gets no conversation turn.
+    """
+    for source in (vars or {}, run_context or {}):
+        value = source.get("task")
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _stage_final_text(result: StageRunResult) -> str:
+    """The last thing the model actually SAID during the stage.
+
+    Walks backwards rather than taking `turns[-1]`, because the final turn of a
+    stage is frequently a pure tool call whose assistant content is empty; the
+    substantive answer is a turn or two earlier. Returns "" when the stage
+    produced no prose at all (an LLM_ERROR halt, typically), which record_turn
+    treats as "nothing to remember".
+    """
+    for turn in reversed(result.turns or []):
+        llm = turn.get("llm") if isinstance(turn, dict) else None
+        content = (llm or {}).get("content") if isinstance(llm, dict) else None
+        if isinstance(content, str) and content.strip():
+            return content
+    return ""
+
+
+async def run_stage(**kwargs: Any) -> StageRunResult:
+    """Drive a stage to a halt, then record the exchange in conversation memory.
+
+    A thin wrapper around `_run_stage_loop`, which holds the real signature and
+    all the behaviour. It exists for one reason: the loop has ~20 terminal
+    `return result` sites and the write belongs at ALL of them and NONE of the
+    turns in between. Wrapping the whole loop makes that structural — one write
+    per stage, whichever halt fired, so a 25-turn stage stores one exchange
+    rather than 25. Adding the write at each return site instead would have been
+    twenty chances to miss one.
+
+    `**kwargs` rather than a repeated parameter list, deliberately: duplicating
+    fifteen keyword-only parameters across two functions is a drift hazard, and
+    every caller already passes them by name. Wrong arguments still fail loudly,
+    just one frame in.
+
+    The recorded exchange is the stage TASK and the model's last substantive
+    text — not the per-turn tool traffic, and not the receipts digest the
+    adapter synthesises for `finalResponse`. Writing is a no-op unless
+    CF_CONVERSATION_WRITE_ENABLED, and never raises.
+
+    Known edge, accepted: a stage that halts APPROVAL_PENDING and is later
+    resumed records an exchange at each halt, so the task text appears twice in
+    the conversation. Both halts really happened and the two answers differ, so
+    this is noisy rather than wrong.
+    """
+    result = await _run_stage_loop(**kwargs)
+    await conversation_context.record_turn(
+        kwargs.get("run_context"),
+        user_text=_stage_task_text(kwargs.get("vars"), kwargs.get("run_context")),
+        assistant_text=_stage_final_text(result),
+    )
+    return result
+
+
+async def _run_stage_loop(
     *,
     state: PhaseState,
     stage_key: str,

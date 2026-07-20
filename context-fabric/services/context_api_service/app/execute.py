@@ -2876,6 +2876,21 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
         },
     )
 
+    # Remember this exchange. Deliberately AFTER the gateway call, so a turn the
+    # LLM failed leaves the conversation untouched rather than storing a question
+    # with no answer. What goes in is `req.task` and the model's reply — NOT
+    # `messages`, which by this point may carry the composer's system prompt,
+    # platform layers and capability grounding. Persisting those would feed the
+    # platform's own scaffolding back next turn as if the user had said it.
+    # No-op unless CF_CONVERSATION_WRITE_ENABLED; never raises.
+    await conversation_context.record_turn(
+        rc,
+        user_text=req.task,
+        assistant_text=resp.content,
+        cf_call_id=f"governed-turn:{trace_id}",
+        trace_id=trace_id,
+    )
+
     total_tokens = resp.input_tokens + resp.output_tokens
     usage = {
         "modelAlias": resp.model_alias, "provider": resp.provider, "model": resp.model,
