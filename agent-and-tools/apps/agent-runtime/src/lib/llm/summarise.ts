@@ -43,6 +43,12 @@ export async function summariseSymbol(input: SummariseInput): Promise<string | n
   try {
     const result = await Promise.race([
       llmRespond({
+        // SUMMARISE_MODEL_ALIAS still wins when set (a pin is a pin). Unset, this
+        // call now says what it is instead of arriving anonymous — one-line
+        // symbol summaries are the cheapest work on the platform and should be
+        // routed as such, which policy can decide and an env var cannot.
+        task_tag: "summarise",
+        purpose: "symbol_summary",
         ...(MODEL_ALIAS ? { model_alias: MODEL_ALIAS } : {}),
         messages: [
           { role: "system", content: systemPrompt },

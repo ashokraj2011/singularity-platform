@@ -74,6 +74,9 @@ export async function compileCapsuleViaLlm(
     const systemPrompt = await loadSystemPrompt();
     const result = await Promise.race([
       llmRespond({
+        // CAPSULE_COMPILE_MODEL_ALIAS still wins when set. Unset, the call is
+        // routed by what it is rather than by a global default alias.
+        task_tag: "capsule_compile",
         ...(MODEL_ALIAS ? { model_alias: MODEL_ALIAS } : {}),
         messages: [
           { role: "system", content: systemPrompt },

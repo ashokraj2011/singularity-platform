@@ -40,6 +40,25 @@ const ToolDescriptorSchema = z.object({
   input_schema: z.record(z.unknown()),
 });
 
+// Task identity — WHAT the call is for. Declared here so it survives Zod
+// validation and reaches the gateway's policy engine, which routes on it.
+// Without these three fields a TS caller had exactly one way to express intent
+// (name a model), which is the whole reason the platform grew twenty-odd
+// `*_MODEL_ALIAS` env vars.
+const TaskIdentityShape = {
+  task_tag: z.string().min(1).optional(),
+  stage: z.string().min(1).optional(),
+  purpose: z.string().min(1).optional(),
+  // Caller identity rides the same shape as task identity. It MUST live here
+  // rather than only at the call sites: anything absent from this schema is
+  // stripped by Zod, so a caller that set actor_id would watch it vanish at
+  // this hop with no error — the same silent-drop bug this file already fixed
+  // once for trace_id/capability_id.
+  actor_id: z.string().min(1).optional(),
+  tenant_id: z.string().min(1).optional(),
+  session_id: z.string().min(1).optional(),
+};
+
 const ChatCompletionRequestSchema = z.object({
   model_alias: z.string().min(1).optional(),
   messages: z.array(ChatMessageSchema).min(1, "messages cannot be empty"),
@@ -50,15 +69,7 @@ const ChatCompletionRequestSchema = z.object({
   trace_id: z.string().optional(),
   run_id: z.string().optional(),
   capability_id: z.string().optional(),
-  // Task + caller identity. Declared here so the D1 direct-to-gateway path
-  // below can forward them; without a schema entry a caller's tag would look
-  // like it was sent and be silently invisible to validation.
-  task_tag: z.string().optional(),
-  stage: z.string().optional(),
-  purpose: z.string().optional(),
-  actor_id: z.string().optional(),
-  tenant_id: z.string().optional(),
-  session_id: z.string().optional(),
+  ...TaskIdentityShape,
 });
 
 const EmbeddingsRequestSchema = z.object({
@@ -66,12 +77,7 @@ const EmbeddingsRequestSchema = z.object({
   input: z.array(z.string()).min(1, "input cannot be empty"),
   trace_id: z.string().optional(),
   capability_id: z.string().optional(),
-  task_tag: z.string().optional(),
-  stage: z.string().optional(),
-  purpose: z.string().optional(),
-  actor_id: z.string().optional(),
-  tenant_id: z.string().optional(),
-  session_id: z.string().optional(),
+  ...TaskIdentityShape,
 });
 
 const MOCK_SENTINEL = "mock";
@@ -167,6 +173,14 @@ function normalizeFinishReason(reason: string | undefined): ChatCompletionRespon
   return "error";
 }
 
+// KNOWN GAP — the mcp relay does not carry task identity. `/mcp/invoke` takes a
+// nested {modelConfig, runContext} shape with no home for task_tag/stage/purpose,
+// and mcp-server's own gateway client hardcodes `task_tag: "agent_turn"` on the
+// far side. So a caller that declares `task_tag: "summarise"` and reaches the
+// gateway VIA the relay is billed as an agent turn. Only the D1 direct path
+// (LLM_GATEWAY_URL set) preserves the caller's declared tag today. Closing this
+// means widening the /mcp/invoke contract, which is a bigger blast radius than
+// collapsing env vars — deliberately left for its own change.
 async function invokeMcp(req: ChatCompletionRequest): Promise<McpInvokeData> {
   const url = mcpUrl();
   if (url === MOCK_SENTINEL) {
@@ -304,25 +318,18 @@ export async function llmEmbed(req: EmbeddingsRequest): Promise<EmbeddingsRespon
   const directUrl = gatewayDirectUrl();
   if (directUrl) {
     // D1 — direct-to-gateway (skip the mcp relay). Wire-identical response shape.
-    // Field-by-field rather than a spread of `req` — and that is exactly why the
-    // identity fields have to be listed: anything not named here is dropped
-    // silently, so a caller that set actor_id/tenant_id would have seen it
-    // vanish at this hop with no error.
+    //
+    // The body is `req` wholesale, matching llmRespond. It used to be rebuilt
+    // field-by-field as `{input, model_alias?}`, which silently dropped
+    // trace_id and capability_id — and would have dropped task_tag too, so a
+    // caller that stopped pinning an alias and started declaring its task would
+    // have arrived at the gateway carrying neither. An allowlist that has to be
+    // updated every time the wire type grows a field is a drop waiting to happen;
+    // the request type IS the allowlist.
     const res = await fetch(`${directUrl}/v1/embeddings`, {
       method: "POST",
       headers: gatewayDirectHeaders(),
-      body: JSON.stringify({
-        input: req.input,
-        ...(req.model_alias ? { model_alias: req.model_alias } : {}),
-        ...(req.trace_id ? { trace_id: req.trace_id } : {}),
-        ...(req.capability_id ? { capability_id: req.capability_id } : {}),
-        ...(req.task_tag ? { task_tag: req.task_tag } : {}),
-        ...(req.stage ? { stage: req.stage } : {}),
-        ...(req.purpose ? { purpose: req.purpose } : {}),
-        ...(req.actor_id ? { actor_id: req.actor_id } : {}),
-        ...(req.tenant_id ? { tenant_id: req.tenant_id } : {}),
-        ...(req.session_id ? { session_id: req.session_id } : {}),
-      }),
+      body: JSON.stringify(req),
       signal: AbortSignal.timeout(mcpTimeoutMs()),
     });
     const text = await res.text();

@@ -147,6 +147,12 @@ async function callLlmForDiagnosis(prompt: string): Promise<DiagnosisResult> {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        // ENGINE_MODEL_ALIAS still wins when set. Unset, the call declares that
+        // it is audit-gov diagnosis rather than arriving with no identity at all
+        // — which is what let this traffic silently share whatever the gateway's
+        // global default alias was.
+        task_tag: "judge",
+        purpose: "diagnosis",
         ...(ENGINE_MODEL_ALIAS ? { model_alias: ENGINE_MODEL_ALIAS } : {}),
         messages: [
           { role: "system", content: systemPrompt },
