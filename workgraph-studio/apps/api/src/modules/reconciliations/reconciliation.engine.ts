@@ -3,6 +3,7 @@ import {
   type DiffValidation,
   type DiffViolation,
 } from '../workflow/runtime/executors/governance/diffVsDesign'
+import type { ObligationResult } from './reconciliation.obligations'
 
 /**
  * Deterministic reconciliation engine (spec §15, "Layer 1"). Pure — no LLM, no code execution,
@@ -50,6 +51,12 @@ export interface ReconciliationInput {
   deviations: EngineDeviation[]
   /** files the submission changed (from the diff or declared FILE/TEST evidence). */
   changedFiles: string[]
+  /**
+   * Results of the requirements' declared obligations, pre-evaluated by the service (resolving a
+   * symbol inventory is I/O, and this module stays pure). Omitted/empty for every specification that
+   * declares no obligations, which is why those runs behave exactly as they did before.
+   */
+  obligationResults?: ObligationResult[]
 }
 
 export interface EngineVerdict {
@@ -82,6 +89,9 @@ export interface ReconciliationResult {
     errorFindings: number
     warningFindings: number
     policyBreach: boolean
+    /** Present only when the specification declared obligations — absent otherwise, so a run
+     *  without obligations produces exactly the result shape it always has. */
+    obligations?: { total: number; pass: number; fail: number; notVerified: number }
   }
 }
 
@@ -100,6 +110,11 @@ export function reconcile(input: ReconciliationInput): ReconciliationResult {
     : input.requirements
 
   const claimByReq = new Map(input.claims.map((c) => [c.requirementId, c]))
+  const obligationsByReq = new Map<string, ObligationResult[]>()
+  for (const o of input.obligationResults ?? []) {
+    if (!obligationsByReq.has(o.requirementId)) obligationsByReq.set(o.requirementId, [])
+    obligationsByReq.get(o.requirementId)!.push(o)
+  }
   const deviatedReqs = new Set(input.deviations.map((d) => d.requirementId).filter(Boolean) as string[])
 
   // Required evidence kinds per requirement.
@@ -163,6 +178,27 @@ export function reconcile(input: ReconciliationInput): ReconciliationResult {
       findings.push({ requirementId: req.id, kind: 'missing-test-evidence', severity: 'WARNING', message: `Requirement ${req.id} has test obligations but no TEST evidence.` })
     }
 
+    // Declared obligations — mechanical checks the requirement carries itself. These rank WITH the
+    // existing path/evidence checks as structural evidence: a FAILED obligation is an observed
+    // contradiction between the spec and the submission, so it fails the requirement outright (and
+    // outranks a self-declared PARTIAL). An obligation that could NOT be evaluated is a gap, never a
+    // pass — it caps the requirement at PARTIAL rather than letting it through as PASS.
+    const obligations = obligationsByReq.get(req.id) ?? []
+    const failedObligations = obligations.filter((o) => o.status === 'FAIL')
+    const unverifiedObligations = obligations.filter((o) => o.status === 'NOT_VERIFIED')
+    for (const o of failedObligations) {
+      findings.push({ requirementId: req.id, kind: 'obligation-failed', severity: 'ERROR', message: `Requirement ${req.id}: obligation ${o.obligationId} (${o.kind}) failed — ${o.detail}` })
+    }
+    for (const o of unverifiedObligations) {
+      findings.push({ requirementId: req.id, kind: 'obligation-not-verified', severity: 'WARNING', message: `Requirement ${req.id}: obligation ${o.obligationId} (${o.kind}) could not be verified — ${o.detail}` })
+    }
+    if (failedObligations.length) {
+      return { ...base, verdict: 'FAIL', rationale: `Failed ${failedObligations.length} declared obligation(s): ${failedObligations.map((o) => o.obligationId).join(', ')}.` }
+    }
+    if (unverifiedObligations.length) {
+      gaps.push(`${unverifiedObligations.length} declared obligation(s) could not be verified`)
+    }
+
     if (claim.status === 'PARTIAL') {
       return { ...base, verdict: 'PARTIAL', rationale: gaps.length ? `Claimed partial; ${gaps.join('; ')}.` : 'Claimed partial by the implementer.' }
     }
@@ -172,6 +208,18 @@ export function reconcile(input: ReconciliationInput): ReconciliationResult {
     }
     return { ...base, verdict: 'PASS', rationale: 'Claimed implemented with all required evidence present.' }
   })
+
+  const allObligations = input.obligationResults ?? []
+  const obligationSummary = allObligations.length
+    ? {
+        obligations: {
+          total: allObligations.length,
+          pass: allObligations.filter((o) => o.status === 'PASS').length,
+          fail: allObligations.filter((o) => o.status === 'FAIL').length,
+          notVerified: allObligations.filter((o) => o.status === 'NOT_VERIFIED').length,
+        },
+      }
+    : {}
 
   const count = (v: VerdictValue) => verdicts.filter((x) => x.verdict === v).length
   const mustFail = verdicts.some((v) => v.priority === 'MUST' && v.verdict === 'FAIL')
@@ -193,6 +241,7 @@ export function reconcile(input: ReconciliationInput): ReconciliationResult {
       errorFindings: findings.filter((f) => f.severity === 'ERROR').length,
       warningFindings: findings.filter((f) => f.severity === 'WARNING').length,
       policyBreach,
+      ...obligationSummary,
     },
   }
 }

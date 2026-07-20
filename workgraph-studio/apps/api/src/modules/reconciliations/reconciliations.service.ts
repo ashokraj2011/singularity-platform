@@ -8,6 +8,7 @@ import { ConflictError, NotFoundError, ValidationError } from '../../lib/errors'
 import { specificationPackageBodySchema } from '../specifications/specification.schemas'
 import type { DiffValidation } from '../workflow/runtime/executors/governance/diffVsDesign'
 import { reconcile, type ReconciliationInput } from './reconciliation.engine'
+import { evaluateObligations, type SymbolFactSource } from './reconciliation.obligations'
 import { buildTestPlan, applyTestResults, type TestResult, type CurrentVerdict } from './reconciliation.dynamic'
 import { runSemanticPass } from './reconciliation.semantic.service'
 import type { SemanticVerdict } from './reconciliation.semantic'
@@ -144,6 +145,49 @@ function changedFilesOf(manifest: Prisma.JsonValue, claims: EngineClaimLike[]): 
   return [...files]
 }
 
+/**
+ * Resolve the symbol inventory a submission's SYMBOL obligations can be checked against.
+ *
+ * There is no symbol index reachable from this service. The live tree-sitter index is a SQLite file
+ * scoped to a mounted sandbox in mcp-server, and the `CapabilityCodeSymbol` table in agent-runtime is
+ * legacy, extraction-gated off by default, and queryable only by embedding similarity — neither can
+ * answer "does repo X have symbol Y in file Z" from here. So the only inventory available today is
+ * one the submitting side reports, because it is the only party that can see the tree:
+ *
+ *   manifest.symbolIndex = {
+ *     coveredPaths: ["src/tenant-scope.ts", ...],   // files the inventory actually walked
+ *     symbols: [{ path, symbol, symbolKind }, ...]
+ *   }
+ *
+ * `coveredPaths` is required. Without it an absent symbol cannot be distinguished from an unindexed
+ * file, and the obligation would silently harden into a false FAIL. An inventory with no covered
+ * paths is treated as no inventory at all — every SYMBOL obligation then reads NOT_VERIFIED.
+ *
+ * Provenance is recorded as MANIFEST (self-reported, mechanically produced) rather than INDEX
+ * (read from a trusted index) so a PASS is never mistaken for an independently verified fact.
+ */
+function symbolFactsOf(manifest: Prisma.JsonValue): SymbolFactSource | null {
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return null
+  const raw = (manifest as Record<string, unknown>).symbolIndex
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const o = raw as Record<string, unknown>
+  const coveredPaths = Array.isArray(o.coveredPaths) ? o.coveredPaths.filter((p): p is string => typeof p === 'string') : []
+  if (coveredPaths.length === 0) return null
+  const symbols = Array.isArray(o.symbols)
+    ? o.symbols
+        .map((s) => {
+          const so = (s && typeof s === 'object' && !Array.isArray(s) ? s : {}) as Record<string, unknown>
+          return {
+            path: String(so.path ?? ''),
+            symbol: String(so.symbol ?? ''),
+            symbolKind: typeof so.symbolKind === 'string' ? so.symbolKind : undefined,
+          }
+        })
+        .filter((s) => s.path && s.symbol)
+    : []
+  return { provenance: 'MANIFEST', symbols, coveredPaths }
+}
+
 type EngineClaimLike = { requirementId: string; status: string; evidence: { kind: string; ref: string }[] }
 
 function asClaims(value: Prisma.JsonValue): EngineClaimLike[] {
@@ -234,6 +278,16 @@ export async function startReconciliation(workItemId: string, submissionId: stri
   const reconciliationPolicySource = scopedPath ? handoff?.reconciliationPolicy : target?.reconciliationPolicy
   const repository = scopedPath ? handoff!.repository : target!.repository
   const claims = asClaims(submission.claims)
+  const changedFiles = changedFilesOf(submission.manifest, claims)
+
+  // Evaluate the requirements' declared obligations (spec §15, mechanical layer). Requirements that
+  // declare none produce no results, so this is a no-op for every specification authored so far.
+  const inObligationScope = (id: string) => scopeRequirementIds.length === 0 || scopeRequirementIds.includes(id)
+  const obligationResults = evaluateObligations(
+    body.requirements.filter((r) => inObligationScope(r.id)).map((r) => ({ id: r.id, obligations: r.obligations })),
+    { contracts: body.contracts, changedFiles, symbolFacts: symbolFactsOf(submission.manifest) },
+  )
+
   const input: ReconciliationInput = {
     requirements: body.requirements.map((r) => ({ id: r.id, priority: r.priority, testObligationIds: r.testObligationIds })),
     scopeRequirementIds,
@@ -246,7 +300,8 @@ export async function startReconciliation(workItemId: string, submissionId: stri
     diffValidation: toDiffValidation(reconciliationPolicySource ?? {}, forbiddenPathsSource ?? []),
     claims,
     deviations: asDeviations(submission.deviations),
-    changedFiles: changedFilesOf(submission.manifest, claims),
+    changedFiles,
+    ...(obligationResults.length ? { obligationResults } : {}),
   }
 
   const result = reconcile(input)
