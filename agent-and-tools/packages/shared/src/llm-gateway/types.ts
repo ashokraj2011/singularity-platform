@@ -28,7 +28,26 @@ export interface ToolCall {
 
 export type FinishReason = "stop" | "tool_call" | "length" | "error";
 
-export interface ChatCompletionRequest {
+/**
+ * WHAT a call is for, as opposed to WHICH model it wants.
+ *
+ * The gateway's policy engine routes on these. Until they existed on this
+ * interface every TS caller could only express intent by naming a model, which
+ * is why the platform accumulated twenty-odd `*_MODEL_ALIAS` env vars: an alias
+ * was the only vocabulary available for saying "this is background distillation,
+ * not an agent turn". A caller that sends `task_tag` and no alias is asking the
+ * gateway to choose; a caller that sends an alias is pinning, and pins still win.
+ */
+export interface TaskIdentity {
+  /** Coarse bucket: agent_turn, embedding, summarise, judge, capsule_compile, … */
+  task_tag?: string;
+  /** Narrows the tag when the caller knows the workflow stage. */
+  stage?: string;
+  /** Narrows the tag when the caller knows the specific job. */
+  purpose?: string;
+}
+
+export interface ChatCompletionRequest extends TaskIdentity {
   /** Preferred — pick a curated alias from .singularity/llm-models.json. */
   model_alias?: string;
 
@@ -58,7 +77,7 @@ export interface ChatCompletionResponse {
   model_alias?: string;
 }
 
-export interface EmbeddingsRequest {
+export interface EmbeddingsRequest extends TaskIdentity {
   model_alias?: string;
   input: string[];
   trace_id?: string;

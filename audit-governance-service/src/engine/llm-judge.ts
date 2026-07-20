@@ -196,6 +196,13 @@ export async function runJudge(input: JudgeInput): Promise<JudgeOutcome> {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        // JUDGE_MODEL_ALIAS / ENGINE_MODEL_ALIAS still win when set. Unset, this
+        // declares itself as judging so policy can route it — and, once budget
+        // degradation lands, so it can be given a FLOOR. A judge quietly demoted
+        // to a cheap model still returns a confident score, which is the worst
+        // shape a quality regression can take.
+        task_tag: "judge",
+        purpose: "output_grading",
         ...(modelAlias ? { model_alias: modelAlias } : {}),
         messages,
         temperature: 0,
