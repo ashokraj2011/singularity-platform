@@ -69,6 +69,19 @@ export function validateSpecificationBody(body: SpecificationPackageBody): SpecV
     body.requirements.filter((r) => r.testObligationIds.some((id) => !testObligationIds.has(id))).map((r) => r.id),
     'All requirement → test-obligation references resolve', 'Requirements referencing unknown test obligations')
 
+  // Requirement obligations — the checkable grammar beside the prose. These checks are emitted ONLY
+  // when the specification actually declares obligations, so a spec authored before they existed
+  // gets the exact same check list, count, and verdict it got before.
+  const obligations = body.requirements.flatMap((r) => (r.obligations ?? []).map((o) => ({ requirementId: r.id, obligation: o })))
+  if (obligations.length > 0) {
+    const contractIds = new Set(body.contracts.map((c) => c.id))
+    check('obligation-ids-unique', 'error', duplicates(obligations.map((x) => x.obligation.id)),
+      'Every obligation has a unique id', 'Duplicate obligation ids')
+    check('obligation-contract-refs-valid', 'error',
+      obligations.filter((x) => x.obligation.kind === 'CONTRACT' && !contractIds.has(x.obligation.contractId)).map((x) => x.obligation.id),
+      'All obligation → contract references resolve', 'Obligations referencing unknown contracts')
+  }
+
   // MUST requirements cannot enter an executable contract without a verification strategy.
   check('must-has-test-obligation', 'error',
     body.requirements.filter((r) => r.priority === 'MUST' && r.testObligationIds.length === 0).map((r) => r.id),
