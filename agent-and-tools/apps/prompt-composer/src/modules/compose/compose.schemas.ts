@@ -54,6 +54,12 @@ export const composeSchema = z.object({
   agentTemplateId: z.string().uuid(),
   agentBindingId: z.string().uuid().optional(),
   capabilityId: z.string().uuid().optional(),
+  // D3 — tenant that owns this prompt. OPTIONAL so every existing caller
+  // keeps composing unchanged; when supplied it is stamped onto the
+  // PromptAssembly row. Not a uuid() because tenant ids are not uniformly
+  // uuids across the platform, and rejecting a caller's real tenant id on
+  // a format technicality would lose the attribution we are trying to gain.
+  tenantId: z.string().min(1).max(180).optional(),
   task: z.string().min(1).max(4_000),
   workflowContext: z.object({
     instanceId: z.string().min(1),
