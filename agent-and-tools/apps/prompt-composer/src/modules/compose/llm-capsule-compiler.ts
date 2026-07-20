@@ -82,6 +82,16 @@ export async function compileCapsuleViaLlm(
         temperature: 0,
         max_output_tokens: 800,
         trace_id: traceIdFromParts(["capsule-compile", Date.now()]),
+        // Previously untagged — it would 400 under GATEWAY_REQUIRE_TASK_TAG,
+        // and its spend was indistinguishable from agent traffic even though
+        // it is background compression. "capsule_compile" is the vocabulary's
+        // bucket for precisely this (task_tags.py:31).
+        task_tag: "capsule_compile",
+        // Cache-warming work with no human waiting on it.
+        actor_id: "system:prompt-composer",
+        // No tenant_id: compileCapsuleViaLlm receives only (intent, chunks).
+        // The capsule cache key is (capability, agent, intent) — no tenant is
+        // in scope here, and guessing one would be worse than admitting it.
       }),
       new Promise<never>((_, rej) =>
         setTimeout(() => rej(new Error("capsule compile timeout")), TIMEOUT_MS),

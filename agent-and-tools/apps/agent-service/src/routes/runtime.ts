@@ -155,6 +155,10 @@ async function synthesiseCandidates(args: {
   candidateType: string;
   candidates: Array<{ id: string; content: string; confidence?: number }>;
   traceId: string;
+  /** Who triggered the distillation. A real user id when the request was
+   *  authenticated; "system:agent-service" when it wasn't. Never null — null
+   *  is reserved for "somebody forgot to propagate it". */
+  actorId: string;
 }): Promise<DistilledMemoryEntry[]> {
   // M36.4 — distillation system prompt now lives in prompt-composer
   // (SystemPrompt key "agent-service.distillation"). Edit + re-seed to change.
@@ -188,6 +192,15 @@ async function synthesiseCandidates(args: {
         capability_id: args.capabilityId,
         agent_id: args.agentUid,
         source_type: "agent-service-distillation",
+        // Task + caller identity for the gateway. This call does not reach the
+        // gateway directly — it goes through CF's governed single-turn endpoint,
+        // which forwards run_context identity onto the gateway body. Without a
+        // tag here the turn would land under CF's "agent_turn" default, filing
+        // background distillation as interactive agent spend.
+        task_tag: "world_model_distill",
+        actor_id: args.actorId,
+        // No tenant_id: learning_candidates / DistilledMemory are scoped by
+        // capability, not tenant, and AuthUser carries no tenant either.
       },
       limits: {
         timeoutSec: CONTEXT_FABRIC_SINGLE_TURN_CONFIG.timeoutSec,
@@ -261,6 +274,11 @@ runtimeRoutes.post("/learning-candidates/distill", async (req: Request, res: Res
     candidateType: candidate_type,
     candidates: cands.map((c) => ({ id: c.id, content: c.content, confidence: c.confidence ?? undefined })),
     traceId,
+    // A human triggered this distillation, so attribute it to them when the
+    // request was authenticated. The service actor is the fallback, not the
+    // default — stamping a system actor over a known user would erase the person
+    // whose spend this actually is.
+    actorId: req.user?.user_id ?? "system:agent-service",
   });
 
   // Write DistilledMemory rows (Prisma table; raw SQL because agent-service

@@ -50,6 +50,15 @@ const ChatCompletionRequestSchema = z.object({
   trace_id: z.string().optional(),
   run_id: z.string().optional(),
   capability_id: z.string().optional(),
+  // Task + caller identity. Declared here so the D1 direct-to-gateway path
+  // below can forward them; without a schema entry a caller's tag would look
+  // like it was sent and be silently invisible to validation.
+  task_tag: z.string().optional(),
+  stage: z.string().optional(),
+  purpose: z.string().optional(),
+  actor_id: z.string().optional(),
+  tenant_id: z.string().optional(),
+  session_id: z.string().optional(),
 });
 
 const EmbeddingsRequestSchema = z.object({
@@ -57,6 +66,12 @@ const EmbeddingsRequestSchema = z.object({
   input: z.array(z.string()).min(1, "input cannot be empty"),
   trace_id: z.string().optional(),
   capability_id: z.string().optional(),
+  task_tag: z.string().optional(),
+  stage: z.string().optional(),
+  purpose: z.string().optional(),
+  actor_id: z.string().optional(),
+  tenant_id: z.string().optional(),
+  session_id: z.string().optional(),
 });
 
 const MOCK_SENTINEL = "mock";
@@ -192,6 +207,13 @@ async function invokeMcp(req: ChatCompletionRequest): Promise<McpInvokeData> {
         traceId: req.trace_id,
         runId: req.run_id,
         capabilityId: req.capability_id,
+        // The relay hop has to carry identity too, or a caller's actor/tenant
+        // survives the direct path above and evaporates on this one — the same
+        // call attributed two different ways depending on an env var.
+        // mcp-server re-emits these to the gateway as actor_id/tenant_id.
+        userId: req.actor_id,
+        tenantId: req.tenant_id,
+        sessionId: req.session_id,
       },
       limits: {
         maxSteps: req.tools?.length ? 6 : 1,
@@ -236,6 +258,12 @@ export async function llmRespond(req: ChatCompletionRequest): Promise<ChatComple
   const directUrl = gatewayDirectUrl();
   if (directUrl && mcpUrl() !== MOCK_SENTINEL) {
     // D1 — direct-to-gateway (skip the mcp relay). Wire-identical response shape.
+    //
+    // This is a SHARED client with a dozen unrelated callers (capsule compile,
+    // symbol summarise, grounding, …), so it forwards the caller's own task_tag
+    // and identity verbatim rather than stamping one here. A hardcoded tag at
+    // this layer would file every caller's spend under a single wrong bucket —
+    // and it would look right, which is the failure mode worth avoiding.
     const res = await fetch(`${directUrl}/v1/chat/completions`, {
       method: "POST",
       headers: gatewayDirectHeaders(),
@@ -276,10 +304,25 @@ export async function llmEmbed(req: EmbeddingsRequest): Promise<EmbeddingsRespon
   const directUrl = gatewayDirectUrl();
   if (directUrl) {
     // D1 — direct-to-gateway (skip the mcp relay). Wire-identical response shape.
+    // Field-by-field rather than a spread of `req` — and that is exactly why the
+    // identity fields have to be listed: anything not named here is dropped
+    // silently, so a caller that set actor_id/tenant_id would have seen it
+    // vanish at this hop with no error.
     const res = await fetch(`${directUrl}/v1/embeddings`, {
       method: "POST",
       headers: gatewayDirectHeaders(),
-      body: JSON.stringify({ input: req.input, ...(req.model_alias ? { model_alias: req.model_alias } : {}) }),
+      body: JSON.stringify({
+        input: req.input,
+        ...(req.model_alias ? { model_alias: req.model_alias } : {}),
+        ...(req.trace_id ? { trace_id: req.trace_id } : {}),
+        ...(req.capability_id ? { capability_id: req.capability_id } : {}),
+        ...(req.task_tag ? { task_tag: req.task_tag } : {}),
+        ...(req.stage ? { stage: req.stage } : {}),
+        ...(req.purpose ? { purpose: req.purpose } : {}),
+        ...(req.actor_id ? { actor_id: req.actor_id } : {}),
+        ...(req.tenant_id ? { tenant_id: req.tenant_id } : {}),
+        ...(req.session_id ? { session_id: req.session_id } : {}),
+      }),
       signal: AbortSignal.timeout(mcpTimeoutMs()),
     });
     const text = await res.text();
@@ -298,6 +341,9 @@ export async function llmEmbed(req: EmbeddingsRequest): Promise<EmbeddingsRespon
       runContext: {
         traceId: req.trace_id,
         capabilityId: req.capability_id,
+        userId: req.actor_id,
+        tenantId: req.tenant_id,
+        sessionId: req.session_id,
       },
     }),
     signal: AbortSignal.timeout(mcpTimeoutMs()),
