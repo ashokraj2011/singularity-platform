@@ -80,7 +80,10 @@ def test_slice_returns_world_model_and_views(monkeypatch):
     assert warning is None
     assert wm and wm["capabilityId"] == "cap-1"
     assert [v["kind"] for v in views] == ["core_summary", "development"]
-    assert captured["url"].endswith("/capabilities/cap-1/world-model/slice")
+    # The FULL url, not just the suffix: agent-runtime mounts everything under
+    # /api/v1, and a suffix-only assertion is exactly what let this endpoint be
+    # requested at the wrong path — 404ing silently — since it was written.
+    assert captured["url"] == "http://rt/api/v1/capabilities/cap-1/world-model/slice"
     assert captured["params"]["role"] == "developer"
     assert captured["params"]["task"] == "add a migration"
 
@@ -234,3 +237,57 @@ def test_no_signal_yields_none():
 def test_role_resolution_never_raises_on_odd_input():
     assert execute_mod._resolve_agent_role(SimpleNamespace()) is None
     assert execute_mod._resolve_agent_role(SimpleNamespace(run_context=None, vars=None)) is None
+
+
+# ── the API prefix ───────────────────────────────────────────────────────────
+# agent-runtime mounts every resource under /api/v1 (app.ts), but AGENT_RUNTIME_URL
+# is a bare host:port in every deployment path we ship. Both fetches below used the
+# bare value, so they requested /capabilities/... and 404'd — and because the slice
+# fetch reports a 404 as "no world model yet" with NO warning, the result was
+# indistinguishable from a capability that had never been distilled. Every consumer
+# (composed /execute, the governed stage loop, the copilot executor) silently ran
+# with no CODE_AGENT_RULES and no CODE_WORLD_MODEL.
+def test_api_base_adds_the_prefix():
+    assert prompt_context.agent_runtime_api_base("http://rt") == "http://rt/api/v1"
+    assert prompt_context.agent_runtime_api_base("http://rt/") == "http://rt/api/v1"
+
+
+def test_api_base_is_idempotent():
+    """A deployment that later sets the variable WITH the suffix must not get
+    /api/v1/api/v1."""
+    assert prompt_context.agent_runtime_api_base("http://rt/api/v1") == "http://rt/api/v1"
+    assert prompt_context.agent_runtime_api_base("http://rt/api/v1/") == "http://rt/api/v1"
+
+
+def test_api_base_keeps_empty_empty():
+    """Unset agent-runtime stays unset — the fetches short-circuit on it."""
+    assert prompt_context.agent_runtime_api_base("") == ""
+    assert prompt_context.agent_runtime_api_base(None) == ""
+
+
+def test_slice_requests_the_mounted_path(monkeypatch):
+    captured = {}
+
+    def handler(url, params):
+        captured["url"] = url
+        return _json_response({"success": True, "data": {"worldModel": None, "views": []}})
+
+    _fetch(monkeypatch, handler, role="developer")
+    assert captured["url"] == "http://rt/api/v1/capabilities/cap-1/world-model/slice"
+
+
+def test_capability_wide_fetch_requests_the_mounted_path(monkeypatch):
+    """The legacy fallback had the same defect, so fixing only the slice would
+    have left the fallback path still 404ing."""
+    captured = {}
+
+    def handler(url, params):
+        captured["url"] = url
+        return _json_response({"success": True, "data": {"capabilityId": "cap-1"}})
+
+    monkeypatch.setattr(prompt_context.httpx, "AsyncClient", _client_returning(handler))
+    wm, warning = asyncio.run(
+        prompt_context.fetch_capability_world_model("http://rt", "cap-1", 2.0)
+    )
+    assert warning is None and wm["capabilityId"] == "cap-1"
+    assert captured["url"] == "http://rt/api/v1/capabilities/cap-1/world-model"

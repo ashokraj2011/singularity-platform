@@ -182,6 +182,32 @@ async def build_code_context_package(
         return None, f"mcp.code_context.skipped: unexpected error {exc!s}"
 
 
+def agent_runtime_api_base(agent_runtime_url: Optional[str]) -> str:
+    """Normalise an agent-runtime base URL to its API root.
+
+    agent-runtime mounts every resource under ``/api/v1`` (app.ts), but
+    ``AGENT_RUNTIME_URL`` is configured as a bare host:port in every deployment
+    path we ship — docker-compose, bin/docker-core.sh, bin/bare-metal.sh,
+    bin/configure-platform.py. So the prefix has to be added here.
+
+    Both world-model fetches below used the bare value and therefore requested
+    ``/capabilities/:id/world-model*``, which 404s. That was invisible: the slice
+    fetch treats 404 as "this capability has no world model yet" and returns no
+    warning at all, so every consumer — the composed /execute path, the governed
+    stage loop, and the copilot executor — silently rendered no CODE_AGENT_RULES
+    and no CODE_WORLD_MODEL layers, indistinguishable from a capability that had
+    genuinely never been distilled.
+
+    Idempotent, so a deployment that later sets the variable WITH the suffix
+    keeps working. Mirrors ``_agent_runtime_api_base`` in execute.py, which is
+    how every other agent-runtime call in this service already builds its URL.
+    """
+    base = (agent_runtime_url or "").rstrip("/")
+    if not base:
+        return ""
+    return base if base.endswith("/api/v1") else f"{base}/api/v1"
+
+
 async def fetch_capability_world_model(
     agent_runtime_url: str,
     capability_id: str,
@@ -204,7 +230,7 @@ async def fetch_capability_world_model(
     """
     if not agent_runtime_url or not capability_id:
         return None, None
-    url = f"{agent_runtime_url.rstrip('/')}/capabilities/{capability_id}/world-model"
+    url = f"{agent_runtime_api_base(agent_runtime_url)}/capabilities/{capability_id}/world-model"
     try:
         async with httpx.AsyncClient(timeout=timeout_sec) as client:
             resp = await client.get(url)
@@ -262,7 +288,7 @@ async def fetch_capability_world_model_slice(
     """
     if not agent_runtime_url or not capability_id:
         return None, [], None
-    url = f"{agent_runtime_url.rstrip('/')}/capabilities/{capability_id}/world-model/slice"
+    url = f"{agent_runtime_api_base(agent_runtime_url)}/capabilities/{capability_id}/world-model/slice"
     params: dict[str, str] = {}
     if role:
         params["role"] = role
