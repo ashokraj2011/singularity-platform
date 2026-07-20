@@ -290,6 +290,20 @@ async def embeddings(
         provider=req.provider,
         model=req.model,
     )
+    # Drift guard, matching /v1/chat/completions. This matters MORE here: a
+    # silently-changed chat model produces one visibly-off answer, whereas a
+    # silently-changed embedding model corrupts a vector index, and mixing
+    # 1536-dim mock vectors into a real one is not detectable by reading rows.
+    if req.expected_provider and provider.lower() != req.expected_provider.lower():
+        raise HTTPException(
+            status_code=409,
+            detail=f"resolved provider {provider} does not match expected provider {req.expected_provider}",
+        )
+    if req.expected_model and model != req.expected_model:
+        raise HTTPException(
+            status_code=409,
+            detail=f"resolved model {model} does not match expected model {req.expected_model}",
+        )
     if not provider_config.is_provider_allowed(provider):
         raise HTTPException(status_code=400, detail=f"provider {provider} is not allowed by gateway config")
 
@@ -310,6 +324,7 @@ async def embeddings(
             model_alias=alias,
             input_tokens=tokens,
             latency_ms=int((time.time() - start) * 1000),
+            estimated_cost=provider_config.compute_embedding_cost(alias, tokens),
         )
 
     credential = settings.credential_for(provider)
@@ -334,6 +349,7 @@ async def embeddings(
                 model_alias=alias,
                 input_tokens=tokens,
                 latency_ms=int((time.time() - start) * 1000),
+                estimated_cost=provider_config.compute_embedding_cost(alias, tokens),
             )
     except HTTPException:
         raise
