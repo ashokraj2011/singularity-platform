@@ -23,6 +23,10 @@ services:
     environment:
       - LLM_PROVIDER_CONFIG_PATH=/etc/singularity/llm-providers.json
       - LLM_MODEL_CATALOG_PATH=/etc/singularity/llm-models.json
+      # B1 — ships dark; while GATEWAY_MODEL_POLICY_ENABLED is false the policy
+      # engine is never consulted and resolution is unchanged.
+      - LLM_POLICY_PATH=/etc/singularity/llm-policy.json
+      - GATEWAY_MODEL_POLICY_ENABLED=${GATEWAY_MODEL_POLICY_ENABLED:-false}
       - ALLOW_CALLER_PROVIDER_OVERRIDE=${LLM_GATEWAY_ALLOW_OVERRIDE:-false}
       - PUBLIC_BASE_URL=${LLM_GATEWAY_PUBLIC_URL:-http://host.docker.internal:8001}
       # M11.a — self-register with platform-registry (no-op if unreachable).

@@ -898,6 +898,17 @@ services:
       # External config files declare providers + model aliases. Mounted RO.
       LLM_PROVIDER_CONFIG_PATH: /etc/singularity/llm-providers.json
       LLM_MODEL_CATALOG_PATH:   /etc/singularity/llm-models.json
+      # B1 — declarative model-selection policy (task_tag -> tier -> alias list).
+      # SHIPS DARK: while GATEWAY_MODEL_POLICY_ENABLED is false the gateway does
+      # not consult the policy engine at all and resolution is unchanged. See
+      # .singularity/llm-policy.json.default for the file shape; a missing file
+      # degrades to an inert policy rather than failing the gateway.
+      LLM_POLICY_PATH: /etc/singularity/llm-policy.json
+      GATEWAY_MODEL_POLICY_ENABLED: ${GATEWAY_MODEL_POLICY_ENABLED:-false}
+      # When no catalog entry is marked "default": true the gateway falls back to
+      # the FIRST entry, so catalog ORDER silently decides the platform default.
+      # Set true to refuse that fallback instead. Warned either way.
+      GATEWAY_STRICT_DEFAULT_ALIAS: ${GATEWAY_STRICT_DEFAULT_ALIAS:-false}
       # Optional bearer that every consumer must present. Empty = open in dev.
       LLM_GATEWAY_BEARER: ${LLM_GATEWAY_BEARER:-}
       # When ALLOW_CALLER_PROVIDER_OVERRIDE=false the gateway refuses

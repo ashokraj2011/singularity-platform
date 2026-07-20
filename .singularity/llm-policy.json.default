@@ -1,0 +1,49 @@
+{
+  "_comment": [
+    "B1 — declarative model-selection policy for the LLM gateway.",
+    "Copy to llm-policy.json and set GATEWAY_MODEL_POLICY_ENABLED=true to activate.",
+    "While that flag is false this file is never read and routing is unchanged.",
+    "",
+    "The alias strings in `tiers` are catalog ids from llm-models.json, NOT raw",
+    "provider model names. Tiers are LISTS: resolution walks down them and takes",
+    "the first alias whose provider is ready, so a missing credential costs you",
+    "the second entry instead of a 503.",
+    "",
+    "Route matching: most-specific `when` wins (by count of matched keys); ties",
+    "break by the order routes appear in this file. `when` may only contain",
+    "task_tag, stage and purpose — a route naming any other key is DROPPED with a",
+    "warning rather than silently matching more broadly than you wrote it.",
+    "",
+    "escalateWhenInputTokensExceed moves the chosen tier up exactly ONE rung",
+    "(cheap -> standard -> deep) when the estimated input exceeds the threshold.",
+    "That estimate is chars/4 over the request messages. It is the only automatic",
+    "signal here, and it exists because 'distill a README' and 'distill a 200-file",
+    "repo' arrive under the same task_tag and only one belongs on a cheap model.",
+    "",
+    "Everything else is a rule you wrote down. There is deliberately no cost or",
+    "latency optimizer and no quality-based escalation: this platform has no",
+    "quality signal to tune against, so such a router would be fitting noise."
+  ],
+  "version": 1,
+  "tiers": {
+    "cheap": ["claude-haiku-4-5-20251001"],
+    "standard": ["claude-sonnet-4-6"],
+    "deep": ["claude-opus-4-1", "claude-sonnet-4-6"]
+  },
+  "defaultTier": "standard",
+  "routes": [
+    { "when": { "task_tag": "world_model_distill" }, "tier": "cheap" },
+    { "when": { "task_tag": "capsule_compile" }, "tier": "cheap" },
+    { "when": { "task_tag": "summarise" }, "tier": "cheap" },
+    { "when": { "task_tag": "claim_lowering" }, "tier": "cheap" },
+    { "when": { "task_tag": "discovery" }, "tier": "standard" },
+    { "when": { "task_tag": "judge" }, "tier": "standard" },
+    { "when": { "task_tag": "planning" }, "tier": "deep" },
+    { "when": { "task_tag": "agent_turn" }, "tier": "standard" },
+    { "when": { "task_tag": "agent_turn", "stage": "develop" }, "tier": "deep" }
+  ],
+  "escalateWhenInputTokensExceed": {
+    "cheap": 60000,
+    "standard": 150000
+  }
+}

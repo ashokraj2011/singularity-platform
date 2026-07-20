@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     # ./.singularity/ in bare-metal dev).
     provider_config_path: str = "/etc/singularity/llm-providers.json"
     model_catalog_path:   str = "/etc/singularity/llm-models.json"
+    # B1 — declarative model-selection policy (task_tag -> tier -> alias list).
+    # Read only when GATEWAY_MODEL_POLICY_ENABLED is set; a missing file
+    # degrades to an inert policy rather than failing the gateway.
+    llm_policy_path:      str = "/etc/singularity/llm-policy.json"
 
     # Per-provider env-var-resolved credentials (read ONLY here).
     openai_api_key:     Optional[str] = None
@@ -175,6 +179,7 @@ class Settings(BaseSettings):
             "LLM_MODEL_CATALOG_PATH",
             env.get("MCP_LLM_MODEL_CATALOG_PATH", self.model_catalog_path),
         )
+        self.llm_policy_path = env.get("LLM_POLICY_PATH", self.llm_policy_path)
         self.openai_api_key     = env.get("OPENAI_API_KEY")     or None
         self.openrouter_api_key = env.get("OPENROUTER_API_KEY") or None
         self.anthropic_api_key  = env.get("ANTHROPIC_API_KEY")  or None
