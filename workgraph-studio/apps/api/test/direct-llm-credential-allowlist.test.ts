@@ -82,28 +82,31 @@ describe('direct LLM egress policy', () => {
     else process.env.WORKGRAPH_ALLOW_DIRECT_LLM = ORIGINAL_POLICY
   })
 
-  it('defaults to ALLOWED', () => {
-    // Unlike context-fabric's direct route, this executor has no alternative
-    // egress to fall through to. Defaulting off would break every
-    // DIRECT_LLM_TASK rather than reroute it, so the default preserves
-    // behaviour and the flag is an opt-in policy control.
+  it('defaults to REFUSED', () => {
+    // Changed 2026-07-20. The old default was ALLOWED on the grounds that this
+    // executor had no alternative egress; workgraph now reaches governed,
+    // task-tagged generation through Context Fabric, so unconfigured no longer
+    // means "open a provider socket".
     delete process.env.WORKGRAPH_ALLOW_DIRECT_LLM
-    expect(directLlmEgressAllowed()).toBe(true)
+    expect(directLlmEgressAllowed()).toBe(false)
     process.env.WORKGRAPH_ALLOW_DIRECT_LLM = ''
-    expect(directLlmEgressAllowed()).toBe(true)
+    expect(directLlmEgressAllowed()).toBe(false)
   })
 
-  it('can be turned off so direct egress fails loudly', () => {
-    for (const off of ['false', 'FALSE', '0', 'no', 'off', ' Off ']) {
-      process.env.WORKGRAPH_ALLOW_DIRECT_LLM = off
-      expect(directLlmEgressAllowed()).toBe(false)
+  it('can be opted back in for a deployment mid-migration', () => {
+    for (const on of ['true', 'TRUE', '1', 'yes', 'on', ' On ']) {
+      process.env.WORKGRAPH_ALLOW_DIRECT_LLM = on
+      expect(directLlmEgressAllowed()).toBe(true)
     }
   })
 
-  it('treats anything else as allowed rather than silently blocking', () => {
-    for (const on of ['true', '1', 'yes', 'on', 'anything']) {
-      process.env.WORKGRAPH_ALLOW_DIRECT_LLM = on
-      expect(directLlmEgressAllowed()).toBe(true)
+  it('treats an unrecognised value as refused rather than guessing', () => {
+    // Fail-closed on ambiguity: a typo in a deployment's env must never be the
+    // thing that opens untagged egress. This is the inverse of the pre-2026-07-20
+    // behaviour, where 'anything' meant allowed.
+    for (const off of ['false', 'FALSE', '0', 'no', 'off', ' Off ', 'anything', 'ture']) {
+      process.env.WORKGRAPH_ALLOW_DIRECT_LLM = off
+      expect(directLlmEgressAllowed()).toBe(false)
     }
   })
 

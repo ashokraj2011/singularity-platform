@@ -302,9 +302,11 @@ export async function defaultCallToolProvider(req: DirectLlmToolProviderRequest)
   if (!directLlmEgressAllowed()) {
     throw new DirectLlmToolLoopError(
       'DIRECT_LLM_EGRESS_DISABLED',
-      'Direct LLM egress is disabled (WORKGRAPH_ALLOW_DIRECT_LLM=false). The direct tool loop '
-      + 'bypasses the platform LLM gateway; route this node through a governed AGENT_TASK or '
-      + 're-enable the policy.',
+      'Direct LLM egress is refused by default. The direct tool loop opens a provider socket '
+      + 'outside the platform LLM gateway, so the call carries no task tag, no gateway audit '
+      + 'line and no cost attribution. Route this node through a governed AGENT_TASK (which '
+      + 'reaches the model via Context Fabric), or set WORKGRAPH_ALLOW_DIRECT_LLM=true to opt '
+      + 'this deployment back into direct egress.',
     )
   }
   const apiKey = req.credentialEnv ? process.env[req.credentialEnv] : undefined
