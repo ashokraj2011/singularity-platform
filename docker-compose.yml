@@ -655,12 +655,17 @@ services:
       # NOT empty — empty means "every surface that resolves to a
       # conversation", which would sweep in workflow nodes too. Workflow
       # memory is a much larger behaviour change (ACT would start seeing what
-      # PLAN said) and belongs to its own change, not to this one. Planner is
-      # likewise held back: it has its own cutover.
+      # PLAN said) and belongs to its own change, not to this one.
+      #
+      # `planner` is REQUIRED here, not optional. The planner used to flatten
+      # its whole transcript into the task string; that code is gone, and it
+      # now depends on CF for history. Dropping it from this list does not
+      # return the planner to its old behaviour — it makes the planner
+      # stateless, which is strictly worse. See planner.service.ts.
       CF_CONVERSATION_ENABLED: ${CF_CONVERSATION_ENABLED:-true}
       CF_CONVERSATION_WRITE_ENABLED: ${CF_CONVERSATION_WRITE_ENABLED:-true}
       CF_CONVERSATION_SUMMARY_ENABLED: ${CF_CONVERSATION_SUMMARY_ENABLED:-true}
-      CF_CONVERSATION_SURFACES: ${CF_CONVERSATION_SURFACES:-synthesis,room_copilot,board_copilot}
+      CF_CONVERSATION_SURFACES: ${CF_CONVERSATION_SURFACES:-synthesis,room_copilot,board_copilot,planner}
       # Tuning. Defaults live in conversation_budget / conversation_summarizer;
       # these are here so an operator can find them without reading Python.
       CF_CONVERSATION_VERBATIM_PAIRS: ${CF_CONVERSATION_VERBATIM_PAIRS:-6}
