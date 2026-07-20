@@ -49,6 +49,10 @@ def test_missing_provider_config_defaults_to_mock_only(monkeypatch: pytest.Monke
         "mock",
         "mock-fast",
         None,
+        # Nothing was configured and nothing was asked for, so this is the
+        # implicit mock fallback — not a caller's choice and not a configured
+        # default. The cost row records the difference (m75 routing_source).
+        "fallback",
     )
 
 
@@ -249,6 +253,9 @@ def test_mock_alias_succeeds(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "mock",
         "mock-fast",
         "mock",
+        # The caller named an alias, so the model is their pin rather than
+        # anything policy or defaulting chose for them.
+        "caller_pin",
     )
 
 

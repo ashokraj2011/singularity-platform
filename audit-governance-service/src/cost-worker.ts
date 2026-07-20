@@ -36,26 +36,66 @@ export async function denormaliseLlmCall(eventId: string, traceId: string | null
 
   let costUsd: number | null = null;
   let rateCardId: string | null = null;
+  // M75 — which of the two independent price sources produced cost_usd.
+  // rate_card is keyed (provider, model); the emitter's catalog is keyed by
+  // alias and can price two aliases on one model differently, which rate_card
+  // cannot express. rate_card WINS when it matches, so existing behaviour is
+  // bit-for-bit unchanged; the catalog price only fills rows that would
+  // otherwise have been silently unpriced.
+  let priceSource: string | null = null;
   if (rate) {
     const inRate = parseFloat(rate.input_per_1k_usd);
     const outRate = parseFloat(rate.output_per_1k_usd);
     costUsd = (p.input_tokens / 1000) * inRate + (p.output_tokens / 1000) * outRate;
     rateCardId = rate.id;
+    priceSource = "rate_card";
+  } else if (typeof p.cost_usd === "number") {
+    costUsd = p.cost_usd;
+    priceSource = p.price_source ?? "emitter_catalog";
   }
 
-  await query(
+  const inserted = await query<{ id: string }>(
     `INSERT INTO audit_governance.llm_calls
        (audit_event_id, trace_id, capability_id, tenant_id,
         provider, model, input_tokens, output_tokens, total_tokens,
-        latency_ms, finish_reason, cost_usd, rate_card_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        latency_ms, finish_reason, cost_usd, rate_card_id,
+        actor_id, model_alias, task_tag, stage, purpose, endpoint,
+        routing_source, degraded_from, degrade_reason, fallback_from,
+        price_source, gateway_call_id,
+        prompt_sha256, response_sha256, prompt_chars, response_chars)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+             $14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+     ON CONFLICT (gateway_call_id) WHERE gateway_call_id IS NOT NULL
+       DO NOTHING
+     RETURNING id`,
     [
       eventId, traceId, capabilityId, tenantId,
       p.provider, p.model, p.input_tokens, p.output_tokens, total,
       p.latency_ms ?? null, p.finish_reason ?? null,
       costUsd, rateCardId,
+      // M75 identity + provenance. actor_id rides the payload rather than the
+      // envelope because the envelope's actor_id is the audit_events notion of
+      // "who" and is not always the LLM caller.
+      p.actor_id ?? null, p.model_alias ?? null, p.task_tag ?? null,
+      p.stage ?? null, p.purpose ?? null, p.endpoint ?? null,
+      p.routing_source ?? null, p.degraded_from ?? null,
+      p.degrade_reason ?? null, p.fallback_from ?? null,
+      priceSource, p.gateway_call_id ?? null,
+      p.prompt_sha256 ?? null, p.response_sha256 ?? null,
+      p.prompt_chars ?? null, p.response_chars ?? null,
     ],
   );
+  // ON CONFLICT DO NOTHING, not a raised unique violation: the m75 index
+  // exists so a retried emission cannot double-count spend, and a quiet
+  // no-op achieves that without turning an at-most-once emitter's retry
+  // into a 500 on POST /events (which would also abort the SSE broadcast
+  // and the rest of ingestOne for an event that is already recorded).
+  //
+  // A conflict means this exact gateway call is ALREADY accounted for, so
+  // everything downstream of the row must be skipped too. Bumping budgets on
+  // a duplicate would double-count the spend the unique index was added to
+  // prevent — the row would be deduped while the budget silently was not.
+  if (inserted.length === 0) return;
 
   // M65 Slice 1A — Populate token_savings_runs when the payload carries
   // prompt-cache or compression metrics. This used to live in

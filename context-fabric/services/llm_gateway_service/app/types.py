@@ -98,6 +98,14 @@ class ChatCompletionRequest(BaseModel):
     trace_id: Optional[str] = None
     run_id:   Optional[str] = None
     capability_id: Optional[str] = None
+    # WHO the call is for. ATTRIBUTION, NOT AUTHORIZATION — the gateway sits
+    # behind one shared bearer, so any caller can claim any actor. Good enough
+    # to answer "what did this user's traffic cost"; categorically not good
+    # enough to found isolation on. Convention (m75): a human is a user id, a
+    # background call is 'system:<service>', and absent keeps meaning "the
+    # caller did not propagate it".
+    actor_id:  Optional[str] = None
+    tenant_id: Optional[str] = None
 
     # WHAT this call is for. Until now the gateway knew which model it was
     # asked for and nothing about why — task identity lived inside context-fabric
@@ -129,6 +137,14 @@ class ChatCompletionResponse(BaseModel):
     provider: str
     model: str
     model_alias: Optional[str] = None
+    # A UUID minted by the gateway for THIS call and echoed here. The gateway
+    # is the only component that sees every LLM egress, so it is the only one
+    # that can hand out a call identity — callers put it on their own trace
+    # event (governed.llm_response) so the trace and the audit_governance
+    # cost row join EXACTLY, instead of heuristically by trace_id + timestamp
+    # proximity. Also the dedup key behind llm_calls' partial unique index, so
+    # a retried emission cannot double-count spend.
+    gateway_call_id: Optional[str] = None
     # M56 — USD cost per call computed from the model catalog's
     # inputPricePerMtok / outputPricePerMtok fields. None when the
     # catalog has no prices for this model (so the workbench can show
@@ -168,6 +184,9 @@ class EmbeddingsRequest(BaseModel):
 
     trace_id: Optional[str] = None
     capability_id: Optional[str] = None
+    # Same attribution-not-authorization caveat as ChatCompletionRequest.
+    actor_id:  Optional[str] = None
+    tenant_id: Optional[str] = None
 
     # Same task identity as ChatCompletionRequest — embeddings are the highest-
     # volume gateway traffic, so leaving them untagged would leave the biggest
@@ -185,3 +204,8 @@ class EmbeddingsResponse(BaseModel):
     model_alias: Optional[str] = None
     input_tokens: int = 0
     latency_ms: int = 0
+    # Same call identity as ChatCompletionResponse. Embeddings are the
+    # highest-volume gateway traffic, so this is where the dedup key earns
+    # the most: without it the biggest cost line is also the one most likely
+    # to be double-counted by a retry.
+    gateway_call_id: Optional[str] = None
