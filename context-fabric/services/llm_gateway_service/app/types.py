@@ -98,14 +98,6 @@ class ChatCompletionRequest(BaseModel):
     trace_id: Optional[str] = None
     run_id:   Optional[str] = None
     capability_id: Optional[str] = None
-    # WHO the call is for. ATTRIBUTION, NOT AUTHORIZATION — the gateway sits
-    # behind one shared bearer, so any caller can claim any actor. Good enough
-    # to answer "what did this user's traffic cost"; categorically not good
-    # enough to found isolation on. Convention (m75): a human is a user id, a
-    # background call is 'system:<service>', and absent keeps meaning "the
-    # caller did not propagate it".
-    actor_id:  Optional[str] = None
-    tenant_id: Optional[str] = None
 
     # WHAT this call is for. Until now the gateway knew which model it was
     # asked for and nothing about why — task identity lived inside context-fabric
@@ -223,9 +215,6 @@ class EmbeddingsRequest(BaseModel):
 
     trace_id: Optional[str] = None
     capability_id: Optional[str] = None
-    # Same attribution-not-authorization caveat as ChatCompletionRequest.
-    actor_id:  Optional[str] = None
-    tenant_id: Optional[str] = None
 
     # Same task identity as ChatCompletionRequest — embeddings are the highest-
     # volume gateway traffic, so leaving them untagged would leave the biggest
