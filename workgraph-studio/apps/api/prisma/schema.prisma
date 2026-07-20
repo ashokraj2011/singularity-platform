@@ -2962,6 +2962,9 @@ enum ReconciliationStatus {
   PASSED
   FAILED
   PARTIAL
+  // The run completed but measured nothing — no change manifest, or no claims to assess.
+  // Distinct from FAILED, which asserts the implementation was checked and found wanting.
+  NOT_VERIFIED
   ERROR
   CANCELLED
 }

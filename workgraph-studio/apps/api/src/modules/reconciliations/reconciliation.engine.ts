@@ -19,7 +19,11 @@ import type { ObligationResult } from './reconciliation.obligations'
 
 export type VerdictValue = 'PASS' | 'PARTIAL' | 'FAIL' | 'NOT_APPLICABLE' | 'NOT_VERIFIED'
 export type FindingSeverity = 'ERROR' | 'WARNING' | 'INFO'
-export type RunStatus = 'PASSED' | 'PARTIAL' | 'FAILED'
+/**
+ * NOT_VERIFIED is "nothing was assessed", distinct from FAILED ("assessed and refuted").
+ * It exists so an unproven run cannot read as PASSED — see `reconcile` below.
+ */
+export type RunStatus = 'PASSED' | 'PARTIAL' | 'FAILED' | 'NOT_VERIFIED'
 
 export interface EngineRequirement {
   id: string
@@ -51,6 +55,13 @@ export interface ReconciliationInput {
   deviations: EngineDeviation[]
   /** files the submission changed (from the diff or declared FILE/TEST evidence). */
   changedFiles: string[]
+  /**
+   * Automated callers set this. A human filing a submission by hand is asserting the change
+   * exists; a machine posting results back is not — for it, an empty change manifest means the
+   * run proved nothing about any code, so the verdict must be NOT_VERIFIED rather than a
+   * warning attached to an otherwise-clean PASS. Default false keeps the human path unchanged.
+   */
+  requireChangeManifest?: boolean
   /**
    * Results of the requirements' declared obligations, pre-evaluated by the service (resolving a
    * symbol inventory is I/O, and this module stays pure). Omitted/empty for every specification that
@@ -89,6 +100,8 @@ export interface ReconciliationResult {
     errorFindings: number
     warningFindings: number
     policyBreach: boolean
+    /** true ⇒ the run measured nothing, so its verdict carries no assurance either way. */
+    unproven: boolean
     /** Present only when the specification declared obligations — absent otherwise, so a run
      *  without obligations produces exactly the result shape it always has. */
     obligations?: { total: number; pass: number; fail: number; notVerified: number }
@@ -124,19 +137,40 @@ export function reconcile(input: ReconciliationInput): ReconciliationResult {
     requiredKinds.get(e.requirementId)!.add(e.kind)
   }
 
-  // Run-level path/test policy (reused DIFF_VS_DESIGN evaluator). Only when a policy exists and
-  // we actually have a change manifest to check — absence of files is a WARNING, not a breach.
+  // `unproven` means the run had nothing to measure. It is deliberately NOT a failure — a failure
+  // asserts the implementation is wrong, and we do not know that. It only forbids PASSED.
+  let unproven = false
+
+  // Run-level path/test policy (reused DIFF_VS_DESIGN evaluator). Needs a change manifest to check.
+  //
+  // An empty manifest is treated differently by caller kind. For a human submission it stays a
+  // WARNING attached to the policy (the historical behaviour). For an automated caller it is an
+  // ERROR that makes the whole run unproven, and it applies whether or not a policy is configured:
+  // if no files changed, no policy — and no claim — was actually tested by anything.
   let policyBreach = false
-  if (hasPolicy(input.diffValidation)) {
-    if (input.changedFiles.length === 0) {
+  if (input.changedFiles.length === 0) {
+    if (input.requireChangeManifest) {
+      unproven = true
+      findings.push({ kind: 'no-change-manifest', severity: 'ERROR', message: 'No changed files were reported, so this reconciliation could not check the implementation against the specification. Nothing is verified.' })
+    } else if (hasPolicy(input.diffValidation)) {
       findings.push({ kind: 'no-change-manifest', severity: 'WARNING', message: 'Reconciliation policy is set but no changed files were available to check.' })
-    } else {
-      for (const v of evaluateDiffVsDesign({ pathsTouched: input.changedFiles }, input.diffValidation)) {
-        if (!POLICY_KINDS.has(v.kind)) continue
-        policyBreach = true
-        findings.push({ kind: v.kind, severity: 'ERROR', message: v.detail })
-      }
     }
+  } else if (hasPolicy(input.diffValidation)) {
+    for (const v of evaluateDiffVsDesign({ pathsTouched: input.changedFiles }, input.diffValidation)) {
+      if (!POLICY_KINDS.has(v.kind)) continue
+      policyBreach = true
+      findings.push({ kind: v.kind, severity: 'ERROR', message: v.detail })
+    }
+  }
+
+  // A submission that carried NO claims at all has not been refuted — it has not been assessed.
+  // Marking every requirement FAIL (the pre-existing behaviour) produces a wall of red that reads
+  // identically to a genuinely refuted implementation, so operators learn to ignore it. One
+  // run-level ERROR finding + NOT_VERIFIED verdicts says the same thing legibly.
+  const noClaimsSubmitted = input.claims.length === 0
+  if (noClaimsSubmitted && scope.length > 0) {
+    unproven = true
+    findings.push({ kind: 'no-claims-submitted', severity: 'ERROR', message: `The submission made no claims, so none of the ${scope.length} in-scope requirement(s) were assessed. Nothing is verified.` })
   }
 
   const verdicts: EngineVerdict[] = scope.map((req) => {
@@ -146,6 +180,13 @@ export function reconcile(input: ReconciliationInput): ReconciliationResult {
     const base = { requirementId: req.id, priority: req.priority, claimStatus: claim?.status ?? null, evidence }
 
     if (!claim) {
+      // Unassessed vs refuted. When the submission claimed nothing at all, this requirement was
+      // never looked at (one run-level finding already says so). When the submission DID make
+      // claims and simply omitted this one, that omission is a real gap in a real attempt — it
+      // stays a FAIL, exactly as before.
+      if (noClaimsSubmitted) {
+        return { ...base, verdict: 'NOT_VERIFIED', rationale: 'The submission made no claims, so this requirement was not assessed.' }
+      }
       findings.push({ requirementId: req.id, kind: 'unclaimed-requirement', severity: 'ERROR', message: `In-scope requirement ${req.id} has no claim in the submission.` })
       return { ...base, verdict: 'FAIL', rationale: 'No claim for this in-scope requirement.' }
     }
@@ -225,7 +266,19 @@ export function reconcile(input: ReconciliationInput): ReconciliationResult {
   const mustFail = verdicts.some((v) => v.priority === 'MUST' && v.verdict === 'FAIL')
   const anyFail = verdicts.some((v) => v.verdict === 'FAIL')
   const anyPartial = verdicts.some((v) => v.verdict === 'PARTIAL')
-  const status: RunStatus = policyBreach || mustFail ? 'FAILED' : anyFail || anyPartial ? 'PARTIAL' : 'PASSED'
+  const anyNotVerified = verdicts.some((v) => v.verdict === 'NOT_VERIFIED')
+  // An empty matrix is not a clean one: with nothing in scope, nothing was checked.
+  if (verdicts.length === 0) unproven = true
+
+  // A real breach or refutation still outranks "unproven" — those are things we DO know.
+  // Everything unproven lands on NOT_VERIFIED, which is the one thing PASSED must never absorb.
+  const status: RunStatus = policyBreach || mustFail
+    ? 'FAILED'
+    : anyFail || anyPartial
+      ? 'PARTIAL'
+      : unproven || anyNotVerified
+        ? 'NOT_VERIFIED'
+        : 'PASSED'
 
   return {
     status,
@@ -241,6 +294,7 @@ export function reconcile(input: ReconciliationInput): ReconciliationResult {
       errorFindings: findings.filter((f) => f.severity === 'ERROR').length,
       warningFindings: findings.filter((f) => f.severity === 'WARNING').length,
       policyBreach,
+      unproven,
       ...obligationSummary,
     },
   }

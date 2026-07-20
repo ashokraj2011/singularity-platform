@@ -31,6 +31,7 @@ from .dispatch import ToolDispatchError, dispatch_tool
 from .phase_state import Phase, PhaseState
 from .placement import mcp_laptop_target, runtime_capability_tags, runtime_tenant_target
 from .stage_driver import StageRunResult
+from .stage_grounding import fetch_stage_grounding
 
 _VAR_RE = re.compile(r"\{\{\s*instance\.vars\.([\w]+)\s*\}\}")
 
@@ -157,6 +158,64 @@ async def _fetch_distilled_world_model(capability_id: str, bearer: str | None) -
     except Exception:  # noqa: BLE001 — best-effort fallback
         return None
     return _render_distilled_world_model(wm, artifacts)
+
+
+def _resolve_copilot_role(agent_role: str | None, vars: dict[str, Any] | None) -> str | None:
+    """Which role is this stage playing? Picks the world-model slice.
+
+    Rungs 1 and 2 of the ladder ``_resolve_agent_role`` uses on the composed
+    path: the declared role, then the ``agentRole`` workflow var. Rung 3 there
+    infers a role from the stage's context/tool policy, which a copilot stage does
+    not carry — and None is a valid answer anyway, since the slice endpoint
+    applies its own fallback. Guessing wrong would be worse than saying nothing.
+
+    Not upper-cased or dash-replaced: a role is a name, not an enum, and the
+    slice endpoint lowercases for lookup.
+    """
+    if isinstance(agent_role, str) and agent_role.strip():
+        return agent_role.strip()
+    from_vars = (vars or {}).get("agentRole")
+    if isinstance(from_vars, str) and from_vars.strip():
+        return from_vars.strip()
+    return None
+
+
+async def _fetch_role_world_model(
+    *,
+    capability_id: str | None,
+    agent_role: str | None,
+    run_context: dict[str, Any] | None,
+    task: str,
+) -> tuple[str | None, str | None]:
+    """The ROLE-SCOPED capability world model for this stage, rendered for the prompt.
+
+    Deliberately delegates to ``fetch_stage_grounding`` — the very helper the
+    governed loop uses (``turn.py`` calls it for every governed stage). Copilot was
+    the one executor that called neither it nor the compose path, so it ran without
+    the repo's own agent rules, build system and test commands while every governed
+    agent got them. Reusing the helper means copilot gets the SAME role-scoped
+    slice, the same rendering and the same budget rather than a second, subtly
+    divergent grounding path that could drift.
+
+    ``fetch_stage_grounding`` reads the capability from ``run_context``, but the
+    copilot-handoff export passes ``capability_id`` as its own argument and its
+    run_context need not carry one — so fill it in before delegating.
+
+    Returns ``(block, reason)``. ``reason`` is set only when there is no block, so
+    the happy path stays quiet and a miss is always explainable.
+    """
+    rc = dict(run_context or {})
+    if capability_id and not (rc.get("capability_id") or rc.get("capabilityId")):
+        rc["capability_id"] = capability_id
+    if not (rc.get("capability_id") or rc.get("capabilityId")):
+        return None, "world_model.skipped: no capability_id for this stage"
+    try:
+        block = await fetch_stage_grounding(run_context=rc, agent_role=agent_role, task=task)
+    except Exception as exc:  # noqa: BLE001 — grounding is context; it must never fail a stage
+        return None, f"world_model.skipped: {exc}"
+    if not block:
+        return None, "world_model.skipped: no world model or role views for this capability"
+    return block, None
 
 
 def _fenced(content: str, lang: str = "markdown") -> str:
@@ -315,6 +374,20 @@ async def compose_copilot_prompt(
         code_md = ""
         world_model_reason = f"code_context exception: {exc}"
 
+    # The capability WORLD MODEL — the same role-scoped slice every governed agent
+    # receives. This is a different thing from the code context above and both are
+    # wanted: the code slice says which FILES matter for this task, the world model
+    # says how this repository expects to be worked in (its CLAUDE.md / AGENTS.md
+    # rules, build system, test commands, README summary). Copilot edits files
+    # directly and unattended, so it is the executor that can least afford to guess
+    # at the build and test commands.
+    world_model_md, world_model_miss = await _fetch_role_world_model(
+        capability_id=capability_id,
+        agent_role=_resolve_copilot_role(agent_role, vars),
+        run_context=run_context,
+        task=resolved_task,
+    )
+
     description = _work_item_description(vars)
     role = (agent_role or "").strip()
 
@@ -329,26 +402,43 @@ async def compose_copilot_prompt(
     if description and description != resolved_task.strip():
         parts.append(f"## Work item\n{description}")
     parts.append(f"## Your task\n{resolved_task.strip()}")
+    # Conventions before contents: the repo's own rules and commands, then the slice
+    # of files this task touches.
+    if world_model_md:
+        parts.append(world_model_md)
+    log = logging.getLogger("context_api.compose_copilot")
     if code_md.strip():
         parts.append(f"## Repository world model (code context)\n{code_md.strip()}")
+    elif world_model_md:
+        # No live code slice, but the agent DOES have real role-scoped grounding, so
+        # it is not flying blind and the prompt needs no apology in it. Still log the
+        # miss — a persistently unavailable code-context bridge is worth seeing.
+        if world_model_reason:
+            log.info(
+                "no code context, world model present (stage=%s capability=%s): %s",
+                stage_key, capability_id, world_model_reason,
+            )
     else:
-        # Live code-context build unavailable → fall back to the capability's DISTILLED
-        # world model (stack + README + key artifacts) so the prompt is STILL grounded
-        # even when the laptop code-context bridge isn't serving a live index. Only if
-        # that's also empty do we surface the diagnostic (logs + inline) instead of
-        # silently dropping the section.
+        # Neither a live code slice nor a role-scoped world model. Only NOW is the
+        # distilled capability model worth a second round-trip: it renders the same
+        # underlying data the slice would have returned, only more crudely, so
+        # fetching it when grounding already succeeded would duplicate content and
+        # spend latency for nothing. Previously this was the ONLY way the world model
+        # ever reached copilot, which meant it arrived precisely when the agent was
+        # already worst-informed; now it is a genuine last resort.
         fallback_md = await _fetch_distilled_world_model(capability_id, bearer) if capability_id else None
         if fallback_md:
             parts.append(f"## Repository world model (capability knowledge)\n{fallback_md}")
-        elif world_model_reason:
-            logging.getLogger("context_api.compose_copilot").warning(
+        elif world_model_reason or world_model_miss:
+            reason = "; ".join(r for r in (world_model_reason, world_model_miss) if r)
+            log.warning(
                 "no repo world model (stage=%s capability=%s): %s",
-                stage_key, capability_id, world_model_reason,
+                stage_key, capability_id, reason,
             )
             parts.append(
                 "## Repository world model (code context)\n"
                 "_Unavailable for this run — read the repository files directly to build your context._\n"
-                f"_diagnostic: {world_model_reason}_"
+                f"_diagnostic: {reason}_"
             )
     # Stage IN/OUT document contract — the documents this stage READS (inputs, with
     # their repo paths) and must PRODUCE (outputs, with format). Empty when the node

@@ -19,6 +19,8 @@ import { evaluateEdge } from './runtime/EdgeEvaluator'
 import { assertTemplatePermission, assertInstancePermission } from '../../lib/permissions/workflowTemplate'
 import { getWorkflowBudgetOverview } from './runtime/budget'
 import { buildCopilotResultsVerdict } from './runtime/copilot-results-verify'
+import { reconcileCopilotResults } from './runtime/copilot-results-reconcile'
+import { loadCopilotExportSpecification, type CopilotExportSpecification } from './runtime/copilot-export-spec'
 import { analyzeWorkflowInstance } from './formal-verification'
 import { copilotComposeTimeoutMs } from './copilot-compose-config'
 import {
@@ -1505,19 +1507,16 @@ function consumableContent(formData: unknown): string {
   return JSON.stringify(fd, null, 2)
 }
 
-// Ordered Copilot stages + the run-level header fields. Shared by the loader (to
-// know which stages to compose / mark done) and the YAML builder, so stage
-// selection happens exactly once.
-function copilotStagesFromNodes(
-  instance: { context: unknown },
-  nodes: CopilotExportNode[],
-  edges: Array<{ sourceNodeId: string; targetNodeId: string }>,
-): { stages: CopilotExportStage[]; repo: string; story: string; workCode: string; vars: Record<string, unknown> } {
-  const context = ((instance.context ?? {}) as Record<string, unknown>)
+// Which Work Item and repository a run is about. Split out of copilotStagesFromNodes because the
+// results post-back needs the same answer without rebuilding the whole stage list — and because a
+// second copy of this precedence would let the export and the results check disagree about which
+// Work Item the developer just implemented.
+export function copilotRunIdentity(
+  context: Record<string, unknown>,
+  nodeConfigs: Array<Record<string, unknown>>,
+): { repo: string; workCode: string; vars: Record<string, unknown>; globals: Record<string, unknown> } {
   const vars = (context._vars ?? {}) as Record<string, unknown>
   const globals = (context._globals ?? {}) as Record<string, unknown>
-  const cfgOf = (n: { config: unknown }) => (n.config ?? {}) as Record<string, unknown>
-  const interpolate = (s: string) => s.replace(/\{\{\s*instance\.vars\.(\w+)\s*\}\}/g, (_m, k) => String(vars[k] ?? ''))
   const firstString = (...values: unknown[]): string => {
     for (const value of values) {
       if (typeof value === 'string' && value.trim()) return value.trim()
@@ -1539,10 +1538,24 @@ function copilotStagesFromNodes(
     context.repositoryUrl,
     context.sourceUri,
     context.repository,
-    nodes.map(cfgOf).find(c => c.sourceUri)?.sourceUri,
+    nodeConfigs.find(c => c.sourceUri)?.sourceUri,
   )
+  return { repo, workCode: String(vars.workCode ?? ''), vars, globals }
+}
+
+// Ordered Copilot stages + the run-level header fields. Shared by the loader (to
+// know which stages to compose / mark done) and the YAML builder, so stage
+// selection happens exactly once.
+function copilotStagesFromNodes(
+  instance: { context: unknown },
+  nodes: CopilotExportNode[],
+  edges: Array<{ sourceNodeId: string; targetNodeId: string }>,
+): { stages: CopilotExportStage[]; repo: string; story: string; workCode: string; vars: Record<string, unknown> } {
+  const context = ((instance.context ?? {}) as Record<string, unknown>)
+  const cfgOf = (n: { config: unknown }) => (n.config ?? {}) as Record<string, unknown>
+  const { repo, workCode, vars } = copilotRunIdentity(context, nodes.map(cfgOf))
+  const interpolate = (s: string) => s.replace(/\{\{\s*instance\.vars\.(\w+)\s*\}\}/g, (_m, k) => String(vars[k] ?? ''))
   const story = String(vars.story ?? vars.workItemDescription ?? '')
-  const workCode = String(vars.workCode ?? '')
   // Map a node's artifact defs → the export's IN/OUT contract, interpolating the real
   // save path so a reader knows exactly where each doc lives / must be written.
   const artifactRefs = (defs: unknown, opts: { withTemplate: boolean }): CopilotArtifactRef[] => {
@@ -1602,10 +1615,21 @@ function artifactRefYaml(refs: CopilotArtifactRef[], pad: string): string[] {
   return out
 }
 
-function buildCopilotWorkflowExport(
+// Exported for unit tests: this is a PURE function (already-loaded instance +
+// already-composed prompts in, strings out), so the emitted artifact can be
+// asserted without Postgres, context-fabric or a network.
+export function buildCopilotWorkflowExport(
   instance: { id: string; name: string; context: unknown },
   computed: { stages: CopilotExportStage[]; repo: string; story: string; workCode: string },
-  extras: { fromPhase?: string; composedByNodeId?: Map<string, string>; completedByNodeId?: Map<string, CompletedPhaseData> } = {},
+  extras: {
+    fromPhase?: string
+    composedByNodeId?: Map<string, string>
+    completedByNodeId?: Map<string, CompletedPhaseData>
+    /** The design spec this run implements — resolved by the caller, embedded here. */
+    specification?: CopilotExportSpecification | null
+    /** Why there is no `specification:` block, when there isn't one. */
+    specificationWarnings?: string[]
+  } = {},
 ) {
   const { repo, story, workCode } = computed
   // The run's work branch (wi/<code>) + the base it's cut from — so the export tells
@@ -1675,6 +1699,11 @@ function buildCopilotWorkflowExport(
     '#                 run each:  copilot -p "<prompt>" --allow-all   (in order).',
     '#                 each stage lists `reads[]` (input docs + paths to open) and',
     '#                 `produces[]` (docs to write: name, format, save-path, template).',
+    "#   Each `stages[].prompt` is SELF-CONTAINED: it embeds this capability's",
+    '#                 world model — the repo\'s own agent rules (CLAUDE.md /',
+    '#                 AGENTS.md), build system and test commands — so an',
+    '#                 off-platform run is grounded exactly like an in-platform',
+    '#                 one, with no call back to the platform to resolve it.',
     '#   Documents live at each stage\'s produces[].path on repository.branch',
     '#   (deliverables/<workItem>/<role>/…) — read/write the real files there.',
     '#',
@@ -1692,8 +1721,9 @@ function buildCopilotWorkflowExport(
     '#',
     "# ANY TOOL: the `stages[].prompt` values are tool-agnostic. Run them in whatever",
     "# tool you like, then POST your results to `platform.resultEndpoint` in the",
-    "# `resultContract` shape below. PUSH your work to a branch so the platform can",
-    "# verify it in git (see resultContract.verification).",
+    "# `resultContract` shape below. PUSH your work to a branch and report the branch +",
+    "# commit — the platform records them alongside an advisory consistency check of what",
+    "# you posted; it does not fetch the branch (see resultContract.verification).",
     '#',
     "# EXTERNAL (SIGNAL_WAIT) runs: a stage with a `signalName` is a parked barrier.",
     '# When that phase is done, POST {} to `platform.signalEndpoint`/<signalName> (Bearer',
@@ -1748,10 +1778,103 @@ function buildCopilotWorkflowExport(
     '      sha256: "<sha256 of the raw file bytes>"',
     '      contentBase64: "<base64 of file content>"',
     '      stageKey: "<one of stages[].key>"',
-    '  verification: "The platform fetches your pushed branch and checks the commit exists + changed-path coverage, then records an advisory verdict on the run. Results with no pushed branch are recorded as UNVERIFIED."',
+    // Describes what buildCopilotResultsVerdict actually does. It is a consistency signal
+    // computed from THIS payload, not a trust boundary: nothing is fetched from the remote,
+    // so keep this string in step with runtime/copilot-results-verify.ts.
+    '  verification: "Advisory only, and computed entirely from this payload — the platform does NOT fetch your branch or check that the commit exists. It recomputes sha256(contentBase64) and compares it to each reported sha256, cross-checks artifact paths against the changed files you yourself reported, and records whether a branch/commit was reported at all. Results reporting no branch/commit are recorded as UNVERIFIED; artifacts stay UNDER_REVIEW either way."',
   )
   if (story) {
     yaml.push('story: |', yamlBlock(story, 2))
+  }
+  // ── the design specification this run implements ─────────────────────────
+  // EMBEDDED, not referenced: a returning submission must echo `contentHash` and claim
+  // `requirements[].id` exactly, and a laptop with no platform token cannot fetch either.
+  const spec = extras.specification
+  if (spec) {
+    yaml.push(
+      '# The approved design spec this run implements. When you come back, your submission is',
+      '# checked against it: echo `specification.contentHash` as `specificationHash`, and claim',
+      '# ONLY the `specification.requirements[].id` values below — a claim naming any other id is',
+      '# rejected as out of scope. Build to the acceptance criteria; satisfy the test obligations.',
+      'specification:',
+      `  versionId: ${yamlString(spec.versionId)}`,
+      `  version: ${spec.version ?? 'null'}`,
+      `  status: ${yamlString(spec.status)}`,
+      `  contentHash: ${spec.contentHash ? yamlString(spec.contentHash) : 'null'}   # echo this back as submission specificationHash`,
+      '  scope:',
+      `    source: ${yamlString(spec.scopeSource)}`,
+      `    declared: ${spec.scopeDeclared}   # false = no subset was declared, so every requirement is in scope`,
+      '    requirementIds:',
+      ...(spec.requirements.length ? spec.requirements.map(r => `      - ${yamlString(r.id)}`) : ['      []']),
+      '  requirements:',
+    )
+    if (!spec.requirements.length) {
+      yaml.push('    []')
+    } else {
+      for (const r of spec.requirements) {
+        yaml.push(
+          `    - id: ${yamlString(r.id)}`,
+          `      type: ${yamlString(r.type)}`,
+          `      priority: ${yamlString(r.priority)}`,
+          `      risk: ${yamlString(r.risk)}`,
+          `      statement: ${yamlString(r.statement)}`,
+        )
+        if (r.rationale) yaml.push(`      rationale: ${yamlString(r.rationale)}`)
+        if (r.acceptanceCriterionIds.length) yaml.push(`      acceptanceCriterionIds: ${JSON.stringify(r.acceptanceCriterionIds)}`)
+        if (r.testObligationIds.length) yaml.push(`      testObligationIds: ${JSON.stringify(r.testObligationIds)}`)
+      }
+    }
+    yaml.push('  acceptanceCriteria:')
+    if (!spec.acceptanceCriteria.length) {
+      yaml.push('    []')
+    } else {
+      for (const c of spec.acceptanceCriteria) {
+        yaml.push(
+          `    - id: ${yamlString(c.id)}`,
+          `      requirementIds: ${JSON.stringify(c.requirementIds)}`,
+        )
+        for (const [key, values] of [['given', c.given], ['when', c.when], ['then', c.then]] as const) {
+          yaml.push(`      ${key}:`)
+          yaml.push(...(values.length ? values.map(v => `        - ${yamlString(v)}`) : ['        []']))
+        }
+      }
+    }
+    yaml.push('  testObligations:')
+    if (!spec.testObligations.length) {
+      yaml.push('    []')
+    } else {
+      for (const t of spec.testObligations) {
+        yaml.push(
+          `    - id: ${yamlString(t.id)}`,
+          `      verifies: ${JSON.stringify(t.verifies)}`,
+          `      kind: ${yamlString(t.kind)}`,
+        )
+        if (t.description) yaml.push(`      description: ${yamlString(t.description)}`)
+        yaml.push(`      requiredEvidence: ${JSON.stringify(t.requiredEvidence)}   # evidence kinds your submission must carry`)
+        yaml.push('      minimumCases:')
+        yaml.push(...(t.minimumCases.length ? t.minimumCases.map(m => `        - ${yamlString(m)}`) : ['        []']))
+      }
+    }
+    // Arbitrary/passthrough JSON — emitted as JSON, which is valid YAML flow style, so an
+    // evolving policy shape can never break the document.
+    yaml.push(
+      '  reconciliationPolicy:',
+      `    source: ${yamlString(spec.reconciliationPolicySource)}   # "handoff" overrides the specification's own policy`,
+      `    policy: ${JSON.stringify(spec.reconciliationPolicy ?? {})}`,
+    )
+    if (spec.warnings.length) {
+      yaml.push('  warnings:')
+      yaml.push(...spec.warnings.map(w => `    - ${yamlString(w)}`))
+    }
+  } else {
+    const specWarnings = extras.specificationWarnings ?? []
+    yaml.push(
+      '# No design specification is attached to this run — the work below is described only by',
+      '# `story` and the stage prompts. A submission cannot be spec-validated on return.',
+      'specification: null',
+      'specificationWarnings:',
+      ...(specWarnings.length ? specWarnings.map(w => `  - ${yamlString(w)}`) : ['  []']),
+    )
   }
   // ── completed phases — context only (full artifacts + diffs) ─────────────
   yaml.push('completed:')
@@ -1944,7 +2067,24 @@ async function loadCopilotExportData(id: string, opts: { fromPhase?: string } = 
     }
   }
 
-  return { ...buildCopilotWorkflowExport(instance, computed, { fromPhase: opts.fromPhase, composedByNodeId, completedByNodeId }), composeWarnings }
+  // The design spec the run implements. Resolved here (DB) and passed into the pure
+  // emitter; a miss degrades to no block + a warning rather than failing the export.
+  const { specification, warnings: specificationWarnings } = await loadCopilotExportSpecification(
+    computed.workCode,
+    { repository: computed.repo || undefined, tenantId },
+  )
+
+  return {
+    ...buildCopilotWorkflowExport(instance, computed, {
+      fromPhase: opts.fromPhase,
+      composedByNodeId,
+      completedByNodeId,
+      specification,
+      specificationWarnings,
+    }),
+    composeWarnings,
+    specificationWarnings,
+  }
 }
 
 // Export the run as a portable Copilot workflow YAML. The YAML includes an
@@ -2107,7 +2247,7 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
     if (!parsed.success) return res.status(400).json({ error: 'invalid copilot results payload', issues: parsed.error.flatten() })
     const instance = await withTenantDbTransaction(prisma, (tx) => tx.workflowInstance.findUnique({
       where: { id },
-      select: { id: true, nodes: { select: { id: true } } },
+      select: { id: true, context: true, nodes: { select: { id: true, config: true } } },
     }), resolveTenantFromRequest(req))
     if (!instance) return res.status(404).json({ error: 'run not found' })
     const validNodeIds = new Set(instance.nodes.map(n => n.id))
@@ -2214,6 +2354,26 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
         createdArtifacts.push(consumable.id)
       }
     }
+    // Close the loop: register what came back as an ImplementationSubmission and reconcile it
+    // against the specification this run was handed. Runs AFTER the receipt and artifacts are
+    // durable, and never throws — a reconciliation that cannot run must not lose the import.
+    const identity = copilotRunIdentity(
+      (instance.context ?? {}) as Record<string, unknown>,
+      instance.nodes.map(n => (n.config ?? {}) as Record<string, unknown>),
+    )
+    const reconciliation = await reconcileCopilotResults({
+      payload,
+      workCode: identity.workCode,
+      runRepository: identity.repo || undefined,
+      actorId: req.user!.userId,
+      tenantId: resolveTenantFromRequest(req),
+    })
+    await logEvent('CopilotWorkflowResultsReconciled', 'WorkflowInstance', id, req.user!.userId, {
+      workflowEventId: eventId.id,
+      receiptId: receipt.id,
+      ...reconciliation,
+    })
+
     await publishOutbox('WorkflowInstance', id, 'CopilotWorkflowResultsImported', {
       actorId: req.user!.userId,
       receiptId: receipt.id,
@@ -2221,6 +2381,8 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
       status: payload.status,
       metrics: payload.metrics,
       artifactCount: createdArtifacts.length,
+      reconciliationStatus: reconciliation.status,
+      reconciliationRunId: reconciliation.reconciliationRunId,
     })
     res.status(201).json({
       ok: true,
@@ -2230,6 +2392,7 @@ workflowInstancesRouter.post('/:id/export/copilot-results', async (req, res, nex
       artifactsCreated: createdArtifacts.length,
       artifactIds: createdArtifacts,
       verification,
+      reconciliation,
     })
   } catch (err) {
     next(err)

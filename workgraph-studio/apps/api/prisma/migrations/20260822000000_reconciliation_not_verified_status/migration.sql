@@ -1,0 +1,12 @@
+-- A reconciliation run that measured nothing.
+--
+-- ReconciliationStatus could previously only say PASSED / PARTIAL / FAILED (plus the
+-- declared/verified/error states). None of those fit a run that had no change manifest to
+-- check, or a submission that made no claims to assess: FAILED asserts the implementation was
+-- examined and found wanting, which is a stronger claim than the run can support, and PASSED
+-- reads as clean. NOT_VERIFIED is the honest third answer, and it is the one the automated
+-- results post-back returns whenever it cannot actually check anything.
+--
+-- Additive enum value: no backfill, no rewrite of existing rows. Nothing emits it until the
+-- accompanying application change ships, so this is safe to apply ahead of the code.
+ALTER TYPE "ReconciliationStatus" ADD VALUE IF NOT EXISTS 'NOT_VERIFIED';

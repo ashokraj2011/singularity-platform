@@ -11,7 +11,7 @@
  *   - a requirement with no executed tests     -> unchanged (verified stays false)
  */
 
-export type RunStatus = 'PASSED' | 'PARTIAL' | 'FAILED'
+export type RunStatus = 'PASSED' | 'PARTIAL' | 'FAILED' | 'NOT_VERIFIED'
 
 export interface TestPlanEntry {
   obligationId: string
@@ -124,7 +124,17 @@ export function applyTestResults(current: CurrentVerdict[], results: TestResult[
   const mustFail = verdicts.some((v) => v.priority === 'MUST' && v.verdict === 'FAIL')
   const anyFail = verdicts.some((v) => v.verdict === 'FAIL')
   const anyPartial = verdicts.some((v) => v.verdict === 'PARTIAL')
-  const status: RunStatus = mustFail ? 'FAILED' : anyFail || anyPartial ? 'PARTIAL' : 'PASSED'
+  // Passing tests do not lift a NOT_VERIFIED verdict (see the overlay above), so a matrix that
+  // still holds one was never assessed — it must not roll up to PASSED, which is the only status
+  // `dynamicCompletionOutcome` will promote to VERIFIED_PASS.
+  const anyNotVerified = verdicts.some((v) => v.verdict === 'NOT_VERIFIED')
+  const status: RunStatus = mustFail
+    ? 'FAILED'
+    : anyFail || anyPartial
+      ? 'PARTIAL'
+      : anyNotVerified || verdicts.length === 0
+        ? 'NOT_VERIFIED'
+        : 'PASSED'
 
   return {
     verdicts,

@@ -13,6 +13,27 @@ const verdicts = (): SemanticVerdict[] => [
   { requirementId: 'REQ-3', priority: 'MUST', verdict: 'FAIL', claimStatus: null, rationale: 'unclaimed', evidence: [] },
 ]
 
+describe('applySemanticJudgments — unassessed requirements', () => {
+  const unassessed = (): SemanticVerdict[] => [
+    { requirementId: 'REQ-1', priority: 'MUST', verdict: 'NOT_VERIFIED', claimStatus: null, rationale: 'no claims submitted', evidence: [] },
+  ]
+
+  it('refuses to lift a NOT_VERIFIED verdict to PASS on a SATISFIED judgment', () => {
+    // A model asked about a requirement carrying no claim can still answer SATISFIED. Model
+    // opinion is not evidence that unassessed work was in fact done.
+    const r = applySemanticJudgments(unassessed(), [{ requirementId: 'REQ-1', judgment: 'SATISFIED' }])
+    expect(r.verdicts[0].verdict).toBe('NOT_VERIFIED')
+    expect(r.status).toBe('NOT_VERIFIED')
+    expect(r.status).not.toBe('PASSED')
+  })
+
+  it('still lets the judge refute an unassessed requirement outright', () => {
+    const r = applySemanticJudgments(unassessed(), [{ requirementId: 'REQ-1', judgment: 'NOT_SATISFIED' }])
+    expect(r.verdicts[0].verdict).toBe('FAIL')
+    expect(r.status).toBe('FAILED')
+  })
+})
+
 describe('applySemanticJudgments', () => {
   it('drops a requirement to FAIL when the judge says NOT_SATISFIED', () => {
     const r = applySemanticJudgments(verdicts(), [{ requirementId: 'REQ-1', judgment: 'NOT_SATISFIED', rationale: 'missing the core behavior' }])

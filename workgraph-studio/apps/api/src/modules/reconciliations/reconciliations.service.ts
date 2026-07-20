@@ -221,7 +221,13 @@ function asDeviations(value: Prisma.JsonValue): { requirementId?: string; kind: 
  * handoff (spec §15). Synchronous — the deterministic layer runs no customer code, so there is no
  * queue here; the dynamic (test-execution) layer will enqueue a runner job in a later phase.
  */
-export async function startReconciliation(workItemId: string, submissionId: string, actorId: string, mode: ReconciliationMode = 'DETERMINISTIC') {
+export async function startReconciliation(
+  workItemId: string,
+  submissionId: string,
+  actorId: string,
+  mode: ReconciliationMode = 'DETERMINISTIC',
+  opts: { requireChangeManifest?: boolean } = {},
+) {
   const workItem = await loadWorkItem(workItemId)
 
   const submission = await prisma.implementationSubmission.findUnique({ where: { id: submissionId } })
@@ -302,6 +308,9 @@ export async function startReconciliation(workItemId: string, submissionId: stri
     deviations: asDeviations(submission.deviations),
     changedFiles,
     ...(obligationResults.length ? { obligationResults } : {}),
+    // Set only by automated callers (the copilot results post-back). A person filing a
+    // submission by hand is asserting the change exists; a git event is not.
+    requireChangeManifest: opts.requireChangeManifest === true,
   }
 
   const result = reconcile(input)
@@ -356,11 +365,18 @@ export async function startReconciliation(workItemId: string, submissionId: stri
   const traceId = `recon-${runId}`
   const tenantId = workItem.tenantId ?? currentTenantIdForDb() ?? undefined
   const now = new Date()
+  // `finalStatus` (the engine/semantic verdict) otherwise does not reach the run row: the
+  // deterministic path records only that it ran, and the dynamic path overwrites the status when
+  // the runner reports. The one case that must not be flattened into "declared consistent" is an
+  // unproven run — there were no declared facts to be consistent with. Everything else keeps its
+  // existing status so this stays a fail-safe rather than a re-modelling of the deterministic path.
   const runStatus = willRunDynamic
     ? 'RUNNING'
-    : mode === 'SEMANTIC'
-      ? 'SEMANTICALLY_REVIEWED'
-      : 'DECLARED_CONSISTENT'
+    : finalStatus === 'NOT_VERIFIED'
+      ? 'NOT_VERIFIED'
+      : mode === 'SEMANTIC'
+        ? 'SEMANTICALLY_REVIEWED'
+        : 'DECLARED_CONSISTENT'
   const runMode = willRunDynamic ? 'DYNAMIC' : mode
 
   const run = await withTenantDbTransaction(prisma, async (tx) => {

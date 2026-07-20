@@ -56,19 +56,30 @@ function str(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim() : null
 }
 
+/**
+ * The set of files a results payload reports as changed: git.changedFiles / legacy git.status
+ * (array) ∪ each stage.changedFiles. The exporter writes both names; keep status for older
+ * runner payloads already in the wild.
+ *
+ * Exported because the auto-reconciliation path measures the same delta this verdict describes.
+ * Two definitions of "what changed" would let the receipt and the reconciliation disagree.
+ */
+export function reportedChangedFiles(payload: CopilotResultsPayload): string[] {
+  const git = (payload.git ?? {}) as Record<string, unknown>
+  const files = new Set<string>()
+  if (Array.isArray(git.changedFiles)) for (const f of git.changedFiles) if (typeof f === 'string' && f.trim()) files.add(f.trim())
+  if (Array.isArray(git.status)) for (const f of git.status) if (typeof f === 'string' && f.trim()) files.add(f.trim())
+  for (const s of payload.stages ?? []) for (const f of s.changedFiles ?? []) if (typeof f === 'string' && f.trim()) files.add(f.trim())
+  return [...files]
+}
+
 export function buildCopilotResultsVerdict(payload: CopilotResultsPayload, checkedAt: string): CopilotResultsVerdict {
   const git = (payload.git ?? {}) as Record<string, unknown>
   const branch = str(git.branch)
   const commitSha = str(git.commitSha) ?? str(git.commit_sha)
   const pushed = Boolean(branch || commitSha)
 
-  // Reported changed files: git.changedFiles / legacy git.status (array) ∪ each
-  // stage.changedFiles. The exporter now writes both names; keep status for
-  // older runner payloads already in the wild.
-  const reportedChanged = new Set<string>()
-  if (Array.isArray(git.changedFiles)) for (const f of git.changedFiles) if (typeof f === 'string') reportedChanged.add(f)
-  if (Array.isArray(git.status)) for (const f of git.status) if (typeof f === 'string') reportedChanged.add(f)
-  for (const s of payload.stages ?? []) for (const f of s.changedFiles ?? []) reportedChanged.add(f)
+  const reportedChanged = new Set<string>(reportedChangedFiles(payload))
 
   // Integrity: recompute sha256 of the posted content vs the reported sha256.
   const artifacts = payload.artifacts ?? []
