@@ -653,19 +653,26 @@ services:
       #
       # CF_CONVERSATION_SURFACES is the blast radius, and it is deliberately
       # NOT empty — empty means "every surface that resolves to a
-      # conversation", which would sweep in workflow nodes too. Workflow
-      # memory is a much larger behaviour change (ACT would start seeing what
-      # PLAN said) and belongs to its own change, not to this one.
+      # conversation", which would still sweep in surfaces nobody has looked
+      # at. Every entry below is a deliberate decision.
       #
       # `planner` is REQUIRED here, not optional. The planner used to flatten
       # its whole transcript into the task string; that code is gone, and it
       # now depends on CF for history. Dropping it from this list does not
       # return the planner to its old behaviour — it makes the planner
       # stateless, which is strictly worse. See planner.service.ts.
+      #
+      # `workflow` IS THE BIG ONE. It makes a workflow instance a single
+      # continuous conversation across its nodes, so ACT sees what PLAN said.
+      # That is the intent, and it is the largest behaviour change in this
+      # whole effort — every governed stage on an instance now reads the
+      # earlier stages' exchanges. Remove `workflow` from this list to put
+      # workflow nodes back to being independent minds; everything else keeps
+      # working.
       CF_CONVERSATION_ENABLED: ${CF_CONVERSATION_ENABLED:-true}
       CF_CONVERSATION_WRITE_ENABLED: ${CF_CONVERSATION_WRITE_ENABLED:-true}
       CF_CONVERSATION_SUMMARY_ENABLED: ${CF_CONVERSATION_SUMMARY_ENABLED:-true}
-      CF_CONVERSATION_SURFACES: ${CF_CONVERSATION_SURFACES:-synthesis,room_copilot,board_copilot,planner}
+      CF_CONVERSATION_SURFACES: ${CF_CONVERSATION_SURFACES:-synthesis,room_copilot,board_copilot,planner,workflow}
       # Tuning. Defaults live in conversation_budget / conversation_summarizer;
       # these are here so an operator can find them without reading Python.
       CF_CONVERSATION_VERBATIM_PAIRS: ${CF_CONVERSATION_VERBATIM_PAIRS:-6}
