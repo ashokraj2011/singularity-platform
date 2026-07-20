@@ -31,7 +31,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, Field
 
 from . import call_log, conversation_identity as _conversation_identity, events_store
-from .governed import conversation_context
+from .governed import conversation_context, conversation_summarizer
 from .audit_gov_emit import emit_audit_event
 from .config import is_production_class_env, settings
 from .env_config import bounded_float_value
@@ -2883,13 +2883,20 @@ async def execute_governed_single_turn(req: GovernedSingleTurnRequest, x_service
     # platform layers and capability grounding. Persisting those would feed the
     # platform's own scaffolding back next turn as if the user had said it.
     # No-op unless CF_CONVERSATION_WRITE_ENABLED; never raises.
-    await conversation_context.record_turn(
+    recorded = await conversation_context.record_turn(
         rc,
         user_text=req.task,
         assistant_text=resp.content,
         cf_call_id=f"governed-turn:{trace_id}",
         trace_id=trace_id,
     )
+    if recorded:
+        # Fold the far end of the conversation into a summary, IN THE
+        # BACKGROUND. Fire-and-forget on purpose: this is a second LLM call and
+        # it must never land on the latency of the first. The response below
+        # goes out while it is still thinking, and a summary that arrives late
+        # or never just means a few more turns ride verbatim.
+        conversation_summarizer.schedule(rc)
 
     total_tokens = resp.input_tokens + resp.output_tokens
     usage = {

@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .audit_emit import emit_governed_event
-from . import conversation_context
+from . import conversation_context, conversation_summarizer
 from .history_compression import DEFAULT_RECENT_TURNS, compress_history
 from .llm_client import LLMGatewayError
 from .loop import GovernedStepResult, ToolCallOutcome
@@ -1750,11 +1750,16 @@ async def run_stage(**kwargs: Any) -> StageRunResult:
     this is noisy rather than wrong.
     """
     result = await _run_stage_loop(**kwargs)
-    await conversation_context.record_turn(
+    recorded = await conversation_context.record_turn(
         kwargs.get("run_context"),
         user_text=_stage_task_text(kwargs.get("vars"), kwargs.get("run_context")),
         assistant_text=_stage_final_text(result),
     )
+    if recorded:
+        # Background summarisation. Never awaited — see conversation_summarizer:
+        # a stage that has just finished must not then wait on an LLM call to
+        # tidy up its own history.
+        conversation_summarizer.schedule(kwargs.get("run_context"))
     return result
 
 
