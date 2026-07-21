@@ -26,6 +26,7 @@ export type NodeType =
   | 'RUN_PYTHON'
   | 'EVENT_EMIT'
   | 'GOVERNANCE_GATE'
+  | 'RECONCILE'
 
 export type EdgeType =
   | 'SEQUENTIAL'

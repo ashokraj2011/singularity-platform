@@ -18,6 +18,7 @@ import {
   Calendar, AlertTriangle, Search, Filter, Activity, Coins, Cpu,
   SlidersHorizontal, Plus, Trash2, GitFork, ShieldAlert,
   Minimize2, GripVertical, HelpCircle, BookOpen, ChevronDown, Lock, Download, Braces, PenLine, Network, Terminal, Send,
+  ClipboardCheck,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import {
@@ -69,6 +70,7 @@ const NODE_VISUAL: Record<string, { color: string; Icon: React.ElementType }> = 
   GOVERNANCE_GATE:     { color: DOMAIN.governance, Icon: Shield },
   POLICY_CHECK:        { color: DOMAIN.governance, Icon: Shield },
   VERIFIER:            { color: DOMAIN.governance, Icon: Shield },
+  RECONCILE:           { color: DOMAIN.governance, Icon: ClipboardCheck },
   EVAL_GATE:           { color: DOMAIN.governance, Icon: Activity },
   // decision / routing / parallel
   DECISION_GATE:       { color: DOMAIN.decision, Icon: GitMerge },
@@ -106,7 +108,7 @@ const NODE_SHAPE: Record<string, NodeShape> = {
   START: 'terminal', END: 'terminal',
   SCHEDULED_START: 'event', EVENT_TRIGGER_START: 'event', SERVER_TIME_INIT: 'event',
   DECISION_GATE: 'gate', INCLUSIVE_GATEWAY: 'gate', EVENT_GATEWAY: 'gate',
-  APPROVAL: 'guard', GOVERNANCE_GATE: 'guard', POLICY_CHECK: 'guard', VERIFIER: 'guard', EVAL_GATE: 'guard',
+  APPROVAL: 'guard', GOVERNANCE_GATE: 'guard', POLICY_CHECK: 'guard', VERIFIER: 'guard', EVAL_GATE: 'guard', RECONCILE: 'guard',
   PARALLEL_FORK: 'parallel', PARALLEL_JOIN: 'parallel', FOREACH: 'parallel',
   TIMER: 'event', SIGNAL_WAIT: 'event', SIGNAL_EMIT: 'event', EVENT_EMIT: 'event',
   // all task-like node types (AGENT_TASK, TOOL_REQUEST, GIT_PUSH, …) fall through to 'task'
@@ -142,7 +144,7 @@ const NODE_LABELS: Record<string, string> = {
   START: 'Start', END: 'End',
   HUMAN_TASK: 'Human Task', AGENT_TASK: 'Agent Task', DIRECT_LLM_TASK: 'Direct LLM Task', WORKBENCH_TASK: 'Workbench Task', APPROVAL: 'Approval',
   DECISION_GATE: 'Decision Gate', CONSUMABLE_CREATION: 'Create Artifact',
-  TOOL_REQUEST: 'Tool Request', CREATE_BRANCH: 'Create Branch', GIT_PUSH: 'Git Push', RAISE_PR: 'Raise PR', POLICY_CHECK: 'Policy Check', EVAL_GATE: 'Eval Gate', VERIFIER: 'Verifier', GOVERNANCE_GATE: 'Governance Gate',
+  TOOL_REQUEST: 'Tool Request', CREATE_BRANCH: 'Create Branch', GIT_PUSH: 'Git Push', RAISE_PR: 'Raise PR', POLICY_CHECK: 'Policy Check', EVAL_GATE: 'Eval Gate', VERIFIER: 'Verifier', GOVERNANCE_GATE: 'Governance Gate', RECONCILE: 'Reconcile vs Spec',
   TIMER: 'Timer', SIGNAL_WAIT: 'Signal Wait', SIGNAL_EMIT: 'Signal Emit',
   CALL_WORKFLOW: 'Sub-workflow', WORK_ITEM: 'Work Item',
   FOREACH: 'For Each', PARALLEL_FORK: 'Parallel Fork', PARALLEL_JOIN: 'Parallel Join',
@@ -290,6 +292,18 @@ const VERIFIER_NODE_CONFIG = {
   requireDocuments: false,
 }
 
+// RECONCILE defaults. startMode:'manual' because this is human-invoked by design — and
+// executionLocation must stay SERVER for that gate to fire at all (on the mid-run advance path
+// the execution-location gate runs BEFORE gateNodeStart, so a non-SERVER node queues to
+// pending_executions and its startMode is silently ignored).
+const RECONCILE_NODE_CONFIG = {
+  startMode: 'manual',
+  mode: 'DETERMINISTIC',
+  requireVerifiedPass: false,
+  requireChangeManifest: true,
+  submissionId: '',
+}
+
 const GIT_PUSH_NODE_CONFIG = {
   remote: 'origin',
   requireApproval: true,
@@ -338,7 +352,7 @@ const NODE_GROUPS: Array<{ label: string; types: string[] }> = [
   { label: 'Human Review', types: ['HUMAN_TASK', 'APPROVAL'] },
   { label: 'Decisions', types: ['DECISION_GATE', 'PARALLEL_FORK', 'PARALLEL_JOIN', 'INCLUSIVE_GATEWAY', 'EVENT_GATEWAY', 'FOREACH'] },
   { label: 'Data & Integration', types: ['WORK_ITEM', 'CONSUMABLE_CREATION', 'SET_CONTEXT', 'DATA_SINK', 'EVENT_EMIT'] },
-  { label: 'Reliability & Governance', types: ['TIMER', 'POLICY_CHECK', 'EVAL_GATE', 'VERIFIER', 'GOVERNANCE_GATE', 'ERROR_CATCH'] },
+  { label: 'Reliability & Governance', types: ['TIMER', 'POLICY_CHECK', 'EVAL_GATE', 'VERIFIER', 'RECONCILE', 'GOVERNANCE_GATE', 'ERROR_CATCH'] },
   { label: 'Advanced', types: ['TOOL_REQUEST', 'RUN_PYTHON', 'CREATE_BRANCH', 'GIT_PUSH', 'RAISE_PR', 'CALL_WORKFLOW', 'SIGNAL_WAIT', 'SIGNAL_EMIT'] },
 ]
 
@@ -835,6 +849,7 @@ const NODE_DESCRIPTIONS: Record<string, string> = {
   POLICY_CHECK: 'Check a governance policy before the workflow continues.',
   EVAL_GATE: 'Run deterministic evaluators and continue only when criteria pass.',
   VERIFIER: 'Run the built-in governed verifier on prior stage documents; continue only when they meet the standards.',
+  RECONCILE: 'Measure the developer\'s implementation submission against the frozen specification, requirement by requirement, and continue only on a real verdict.',
   TIMER: 'Wait until a duration or scheduled instant has passed.',
   SIGNAL_WAIT: 'Wait for an external event or signal.',
   SIGNAL_EMIT: 'Publish a signal for other waits or workflows.',
@@ -1453,6 +1468,7 @@ const NODE_USAGE_TIPS: Record<string, string> = {
   POLICY_CHECK:      'Use WARN mode during testing — it logs failures without blocking the workflow.',
   EVAL_GATE:         'Default is strict: current run traces must pass all selected evaluators.',
   VERIFIER:          'Place AFTER a stage that produces documents for the governed verifier. For direct provider calls with profile/URL prompts, use Direct LLM Task.',
+  RECONCILE:         'Place AFTER an implementation submission exists (the developer posted results back, or one was registered by hand). Defaults to manual start so a human triggers the check. A run that measures nothing halts as NOT_VERIFIED — that is not a failure, it means nothing was checked.',
   CONSUMABLE_CREATION: 'Produces a reviewed artifact (consumable) that downstream steps can consume.',
 }
 
@@ -4144,6 +4160,8 @@ export function WorkflowStudioPage() {
                               ? { label: 'Eval Gate', config: EVAL_GATE_NODE_CONFIG }
                               : type === 'VERIFIER'
                                 ? { label: 'Verifier', config: VERIFIER_NODE_CONFIG }
+                              : type === 'RECONCILE'
+                                ? { label: 'Reconcile vs Spec', config: RECONCILE_NODE_CONFIG }
                               : type === 'GIT_PUSH'
                                 ? { label: 'Git Push', config: GIT_PUSH_NODE_CONFIG }
                                 : null

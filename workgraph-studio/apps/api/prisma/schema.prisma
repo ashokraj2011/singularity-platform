@@ -53,6 +53,9 @@ enum NodeType {
   RAISE_PR
   CREATE_BRANCH
   DISCOVERY
+  // Runs the real requirement-by-requirement reconciliation of an implementation
+  // submission against the frozen SpecificationVersion (startReconciliation).
+  RECONCILE
 }
 
 enum ExecutionLocation {

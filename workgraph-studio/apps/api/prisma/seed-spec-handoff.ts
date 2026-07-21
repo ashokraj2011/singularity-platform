@@ -12,7 +12,8 @@
  *   2. A human freezes a SpecificationVersion and publishes the developer handoff.
  *   3. The run PARKS on a SIGNAL_WAIT barrier while a developer builds the change
  *      OFF-PLATFORM with their own agent, from the exported Copilot workflow YAML.
- *   4. A human then triggers a manual-start VERIFIER to validate what came back.
+ *   4. A human then triggers a manual-start RECONCILE node, which measures what came
+ *      back against the frozen specification, requirement by requirement.
  *
  * Topology:
  *   START → CREATE_BRANCH
@@ -20,8 +21,8 @@
  *         → AGENT_TASK Design (governed, on-platform)
  *         → HUMAN_TASK Freeze specification
  *         → HUMAN_TASK Developer handoff
- *         → SIGNAL_WAIT Await off-platform implementation   ← the pause
- *         → VERIFIER Validate change against specification  ← startMode:'manual'
+ *         → SIGNAL_WAIT Await off-platform implementation    ← the pause
+ *         → RECONCILE Reconcile change against specification ← startMode:'manual'
  *         → APPROVAL Accept reconciliation verdict
  *         → END
  *
@@ -42,23 +43,37 @@
  * by this seed — both are existing export behaviour. Where no world model exists the
  * export degrades with a warning, which is correct.
  *
- * ── How the human-invoked validation works ───────────────────────────────────
- * READ THIS BEFORE ASSUMING THE VERIFIER RECONCILES. It does not.
- *
+ * ── How the human-invoked reconciliation works ───────────────────────────────
  * `startMode:'manual'` leaves the node ACTIVE with `config._awaitingStart=true`; a
  * human triggers it with POST /workflow-instances/:id/nodes/:nodeId/start. That is a
- * real, verified gate. What the VERIFIER then runs is the verifier agent against the
- * run's DOCUMENTS with the criteria below — it is document validation, not the
- * requirement-by-requirement spec reconciliation.
+ * real, verified gate, and `startAwaitingNode` passes the triggering user's id through
+ * as the actor — so the reconciliation run is attributed to the person who asked for it.
  *
- * The actual reconciliation (verdict matrix vs. the frozen SpecificationVersion) has
- * NO node type. It is reached two ways, both of which already exist:
- *   • automatically, when the developer's runner POSTs results to
- *     /export/copilot-results (reconcileCopilotResults → startReconciliation), or
- *   • by hand, POST /api/work-items/:id/submissions/:sid/reconcile — the
- *     ReconciliationStudio UI.
- * The trailing APPROVAL node is where a human signs off on that verdict. The
- * workflow GATES on the reconciliation; it cannot PERFORM it.
+ * The RECONCILE node then calls `startReconciliation` — the SAME service
+ * ReconciliationStudio and the copilot results post-back use — against the frozen
+ * SpecificationVersion, producing the per-requirement verdict matrix inside the run.
+ * The workflow now PERFORMS the reconciliation; it no longer merely gates on one
+ * somebody ran elsewhere. (Earlier revisions of this template approximated it with a
+ * VERIFIER node, which validates DOCUMENTS against criteria — a different, weaker check.)
+ *
+ * The two pre-existing routes still work and are unchanged: the developer's runner
+ * POSTing to /export/copilot-results (reconcileCopilotResults → startReconciliation),
+ * and POST /api/work-items/:id/submissions/:sid/reconcile by hand. The node reconciles
+ * the most recent non-REJECTED submission, so it reads whatever those produced.
+ *
+ * What advances and what halts is deliberate and is NOT symmetric:
+ *   • VERIFIED_PASS / PASSED           → advance (an executed, fully passing test plan)
+ *   • DECLARED_CONSISTENT /            → advance, labelled DECLARED — the claims line up
+ *     SEMANTICALLY_REVIEWED              but nothing ran. The Work Item does NOT become
+ *                                        VERIFIED; only VERIFIED_PASS does that
+ *                                        (applyReconciliationCompletionGate).
+ *   • NOT_VERIFIED                     → HALT. The run measured nothing. This is not a
+ *                                        failure and is recorded under its own mutation
+ *                                        type + audit event so it can never be skimmed as
+ *                                        one, and never advances as if verified.
+ *   • FAILED / PARTIAL / ERROR         → HALT. Measured, and found wanting.
+ *   • RUNNING (DYNAMIC)                → HALT as AWAITING_TESTS until the runner reports.
+ * The trailing APPROVAL node is where a human signs off on the verdict.
  *
  * NOT auto-routed — seeds no workItemRoutingPolicy, so it never supersedes the
  * in-platform SDLC route. A PUBLISHED, COMMON template picked explicitly in guided
@@ -145,7 +160,7 @@ async function upsertNode(n: { id: string; nodeType: string; label: string; conf
       // executionLocation MUST stay SERVER. On the mid-run advance path the
       // executionLocation gate runs BEFORE gateNodeStart, so a non-SERVER node
       // queues to pending_executions and its startMode is silently ignored — the
-      // manual-start VERIFIER below would never gate.
+      // manual-start RECONCILE below would never gate.
       label: n.label, config, executionLocation: 'SERVER', positionX: n.x, positionY: 200,
     },
   })
@@ -340,39 +355,56 @@ async function main(): Promise<void> {
   // ── Human-invoked validation ───────────────────────────────────────────────
   // startMode:'manual' → the flow reaches this node, gateNodeStart marks it
   // _awaitingStart and does NOT execute it. A human triggers it with
-  // POST /workflow-instances/:id/nodes/:nodeId/start (the run view's Start button).
+  // POST /workflow-instances/:id/nodes/:nodeId/start (the run view's Start button),
+  // and startAwaitingNode passes THAT person's id through as the actor — which is
+  // what the reconciliation run is attributed to.
   //
-  // What runs is the VERIFIER agent over the run's documents against `criteria`.
-  // It is NOT the requirement-by-requirement reconciliation — no node type invokes
-  // startReconciliation. See the APPROVAL node below.
+  // This is the real reconciliation: RECONCILE calls startReconciliation against the
+  // frozen SpecificationVersion and produces the per-requirement verdict matrix.
+  //
+  // Outcomes (see ReconcileExecutor):
+  //   advance  VERIFIED  — an executed, fully passing test plan (VERIFIED_PASS/PASSED)
+  //   advance  DECLARED  — claims consistent with the spec (DECLARED_CONSISTENT /
+  //                        SEMANTICALLY_REVIEWED). Real but weaker: nothing executed.
+  //   halt     NOT_VERIFIED — the run measured NOTHING. Not a failure.
+  //   halt     FAILED       — measured and found wanting.
+  //   halt     AWAITING_TESTS / HALTED
+  //
+  // requireChangeManifest defaults to true in the executor, so an empty diff comes back
+  // NOT_VERIFIED rather than clean. Expect NOT_VERIFIED when the developer's post-back
+  // declared no per-requirement claims — that is the honest answer, and the halt message
+  // says exactly what to do about it.
   await upsertNode({
-    id: N_VALIDATE, nodeType: 'VERIFIER', label: 'Validate change against specification', x: xOf(N_VALIDATE),
+    id: N_VALIDATE, nodeType: 'RECONCILE', label: 'Reconcile change against specification', x: xOf(N_VALIDATE),
     config: {
       startMode: 'manual',
-      scope: 'ALL', requireDocuments: false,
-      criteria: 'The returned implementation and test report must satisfy every in-scope requirement and ' +
-        'acceptance criterion of the frozen specification, be consistent with the approved design, and ' +
-        'evidence that the declared test obligations were actually run. Flag any requirement that is ' +
-        'unaddressed, partially addressed, or contradicted by the returned documents.',
-      standard: { scope: 'ALL', requireDocuments: 'false' },
+      mode: 'DETERMINISTIC',
+      // false → a DECLARED_CONSISTENT result advances to the human sign-off below, labelled
+      // as a declaration check rather than a verified pass. Set true to refuse anything
+      // short of an executed, fully passing test plan (pair it with mode:'DYNAMIC').
+      requireVerifiedPass: false,
+      standard: { startMode: 'manual', mode: 'DETERMINISTIC' },
+      inputArtifacts: artifactDefs([A.implementation, A.testReport], 'INPUT'),
     },
   })
 
   // ── Accept the reconciliation verdict ──────────────────────────────────────
-  // The reconciliation itself is produced OUTSIDE the graph — automatically when the
-  // developer POSTs results to /export/copilot-results, or on demand via
-  // POST /api/work-items/:id/submissions/:sid/reconcile (ReconciliationStudio).
-  // This node is where a human reads that verdict matrix and signs off.
+  // The RECONCILE node above produced the verdict matrix inside the run. This node is
+  // where a human reads it and signs off — the graph performs the reconciliation, a
+  // person still owns accepting it.
   await upsertNode({
     id: N_ACCEPT, nodeType: 'APPROVAL', label: 'Accept reconciliation verdict', x: xOf(N_ACCEPT),
     config: {
       assignmentMode: 'TEAM_QUEUE', teamId: TEAM_ID,
       description:
         'Review the reconciliation verdict matrix before accepting the change.\n\n' +
-        'Open the Work Item → Reconciliation. If the developer posted results back to ' +
-        '/export/copilot-results a reconciliation already ran against the frozen specification; ' +
-        'otherwise start one there against their submission. Check the per-requirement verdicts, then ' +
-        'approve or reject here.',
+        'The previous node ran the reconciliation against the frozen specification and recorded a ' +
+        'per-requirement verdict matrix; its run id is in the run context under `reconcile`. Open the ' +
+        'Work Item → Reconciliation to read the verdicts and findings, then approve or reject here.\n\n' +
+        'If you are seeing this step, the reconciliation returned either VERIFIED (an executed, fully ' +
+        'passing test plan) or DECLARED (the developer\'s claims are consistent with the specification, ' +
+        'but nothing was executed). Check which one before approving — DECLARED does NOT make the Work ' +
+        'Item verified.',
       inputArtifacts: artifactDefs([A.implementation, A.testReport], 'INPUT'),
     },
   })
@@ -385,10 +417,10 @@ async function main(): Promise<void> {
 
   console.log(`✓ "${WF_NAME}" (${WF_ID})`)
   console.log('  START → CREATE_BRANCH → Requirements → Design → Freeze spec → Handoff →')
-  console.log(`  SIGNAL_WAIT(${HANDOFF_SIGNAL}) → VERIFIER(manual start) → APPROVAL → END`)
+  console.log(`  SIGNAL_WAIT(${HANDOFF_SIGNAL}) → RECONCILE(manual start) → APPROVAL → END`)
   console.log('  export: GET /api/workgraph/workflow-instances/:id/export/copilot-yaml?fromPhase=IMPLEMENTATION')
   console.log(`  release the barrier: POST /api/workgraph/workflow-instances/:id/signals/${HANDOFF_SIGNAL}`)
-  console.log('  then a human clicks Start on "Validate change against specification".')
+  console.log('  then a human clicks Start on "Reconcile change against specification".')
   console.log('  NOT auto-routed — pick this template explicitly in guided launch.')
 }
 
