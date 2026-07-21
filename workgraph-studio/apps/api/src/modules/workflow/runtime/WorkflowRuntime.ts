@@ -34,6 +34,7 @@ import { activateParallelJoin } from './executors/ParallelJoinExecutor'
 import { activateSignalEmit } from './executors/SignalEmitExecutor'
 import { activateEventEmit } from './executors/EventEmitExecutor'
 import { activateVerifier } from './executors/VerifierExecutor'
+import { activateReconcile } from './executors/ReconcileExecutor'
 import { activateGovernanceGate } from './executors/GovernanceGateExecutor'
 import { activateSetContext } from './executors/SetContextExecutor'
 import { activateErrorCatch } from './executors/ErrorCatchExecutor'
@@ -574,6 +575,7 @@ function clearBlockedContext(context: Record<string, unknown>, nodeType?: string
     '_blockedByEvalGate',
     '_blockedByGovernanceGate',
     '_blockedByVerifier',
+    '_blockedByReconcile',
     '_blockedByPathStall',
   ]
   for (const key of knownKeys) {
@@ -584,6 +586,7 @@ function clearBlockedContext(context: Record<string, unknown>, nodeType?: string
       (nodeType === 'EVAL_GATE' && key === '_blockedByEvalGate') ||
       (nodeType === 'GOVERNANCE_GATE' && key === '_blockedByGovernanceGate') ||
       (nodeType === 'VERIFIER' && key === '_blockedByVerifier') ||
+      (nodeType === 'RECONCILE' && key === '_blockedByReconcile') ||
       (['DECISION_GATE', 'INCLUSIVE_GATEWAY'].includes(nodeType) && key === '_blockedByPathStall')
     ) {
       delete next[key]
@@ -921,6 +924,17 @@ async function executeServerNode(
       // advances only when they meet the standards. On a fail the executor already
       // set the node BLOCKED + instance PAUSED (reason in _blockedByVerifier).
       const result = await activateVerifier(node, instance, actorId)
+      if (result.passed) await advance(instance.id, node.id, { ...context, ...result.output }, actorId, undefined, tenantId)
+      break
+    }
+    case 'RECONCILE': {
+      // The real spec reconciliation as a node: measures the implementation submission
+      // against the frozen SpecificationVersion via startReconciliation. Advances only on
+      // VERIFIED (executed, fully passing plan) or DECLARED (claims consistent). An
+      // unproven run (NOT_VERIFIED) halts the node — the executor already set it BLOCKED +
+      // instance PAUSED (reason in _blockedByReconcile), and records it under a DIFFERENT
+      // mutation type and audit event than a measured failure, so the two never read alike.
+      const result = await activateReconcile(node, instance, actorId)
       if (result.passed) await advance(instance.id, node.id, { ...context, ...result.output }, actorId, undefined, tenantId)
       break
     }

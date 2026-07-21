@@ -1,0 +1,13 @@
+-- RECONCILE node type: run the real spec reconciliation as ONE action inside the workflow.
+--
+-- Until now the requirement-by-requirement comparison of an implementation submission against
+-- the frozen SpecificationVersion (startReconciliation) had NO node type. A workflow could only
+-- GATE on a reconciliation a human had already run in ReconciliationStudio; it could not perform
+-- one. The seeded Spec Handoff template approximated it with a VERIFIER node, which validates
+-- DOCUMENTS against criteria — not the verdict matrix.
+--
+-- Additive enum value: no backfill, no rewrite of existing rows. No workflow references
+-- RECONCILE until the accompanying seed/designer change ships, so this is safe to apply ahead of
+-- the code. IF NOT EXISTS keeps re-application idempotent; mirrors
+-- 20260707120000_add_raise_pr_node_type.
+ALTER TYPE "NodeType" ADD VALUE IF NOT EXISTS 'RECONCILE';

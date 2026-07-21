@@ -40,6 +40,13 @@ const FRICTION_LABELS: Record<string, string> = {
   VERIFIER_BLOCKED: 'verifier block',
   POLICY_CHECK_BLOCKED: 'policy block',
   GIT_PUSH_BLOCKED: 'git-push block',
+  // RECONCILE keeps three separate labels on purpose: "measured nothing" and "measured and
+  // found wanting" are different frictions, and collapsing them would teach the next run the
+  // wrong lesson.
+  RECONCILE_FAILED: 'reconciliation failed',
+  RECONCILE_NOT_VERIFIED: 'reconciliation unproven',
+  RECONCILE_AWAITING_TESTS: 'reconciliation awaiting tests',
+  RECONCILE_HALTED: 'reconciliation halted',
   NODE_MANUAL_COMPLETION: 'manual completion',
   COMPENSATION_STARTED: 'compensation',
 }

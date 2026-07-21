@@ -1687,6 +1687,7 @@ function blockingDetailsForNode(
     node.nodeType === 'EVAL_GATE' ? '_blockedByEvalGate' :
     node.nodeType === 'GOVERNANCE_GATE' ? '_blockedByGovernanceGate' :
     node.nodeType === 'VERIFIER' ? '_blockedByVerifier' :
+    node.nodeType === 'RECONCILE' ? '_blockedByReconcile' :
     ['DECISION_GATE', 'INCLUSIVE_GATEWAY'].includes(node.nodeType) ? '_blockedByPathStall' :
     ''
   const direct = blockKey ? asRecord(context[blockKey]) : {}

@@ -31,7 +31,7 @@ import {
   ShieldCheck, CornerUpLeft, Library, Download, Maximize2, Activity, Copy, Pencil, UserPlus,
   Play, Radio, Bot, Cpu, GitBranch, GitMerge, Package, Wrench, Shield, User, Clock,
   Database, Workflow, Repeat, Shuffle, Zap, RadioTower, Terminal, Network, Square,
-  ChevronDown, Upload, Paperclip, Loader2,
+  ChevronDown, Upload, Paperclip, Loader2, ClipboardCheck,
 } from 'lucide-react'
 import { api } from '../../lib/api'
 import { MarkdownView } from './MarkdownView'
@@ -94,6 +94,7 @@ const RUN_NODE_VISUAL: Record<string, { color: string; Icon: ElementType; domain
   GOVERNANCE_GATE: { color: RUN_DOMAIN.governance, Icon: Shield, domain: 'Governance' },
   POLICY_CHECK: { color: RUN_DOMAIN.governance, Icon: Shield, domain: 'Policy' },
   VERIFIER: { color: RUN_DOMAIN.governance, Icon: ShieldCheck, domain: 'Verifier' },
+  RECONCILE: { color: RUN_DOMAIN.governance, Icon: ClipboardCheck, domain: 'Reconciliation' },
   EVAL_GATE: { color: RUN_DOMAIN.governance, Icon: Activity, domain: 'Evaluator' },
   DECISION_GATE: { color: RUN_DOMAIN.decision, Icon: GitMerge, domain: 'Decision' },
   INCLUSIVE_GATEWAY: { color: RUN_DOMAIN.decision, Icon: Shuffle, domain: 'Gateway' },
@@ -135,6 +136,7 @@ const RUN_NODE_LABELS: Record<string, string> = {
   POLICY_CHECK: 'Policy Check',
   EVAL_GATE: 'Eval Gate',
   VERIFIER: 'Verifier',
+  RECONCILE: 'Reconcile vs Spec',
   GOVERNANCE_GATE: 'Governance Gate',
   TIMER: 'Timer',
   SIGNAL_WAIT: 'Signal Wait',
@@ -1659,6 +1661,37 @@ function BlockReasonBody({ info }: { info: unknown }) {
     )
   }
   if (typeof o?.pushError === 'string') return <div>{o.pushError}</div> // GIT_PUSH
+  // RECONCILE. The whole point of this branch is that "measured nothing" and "measured and
+  // found wanting" must not render alike: unproven is amber and says nothing was checked,
+  // a real failure is red and says the spec was not satisfied.
+  if (typeof o?.unproven === 'boolean' && typeof o?.outcome === 'string' && typeof o?.status === 'string') {
+    const status = String(o.status).toUpperCase()
+    const tone = status === 'FAILED' ? '#dc2626' : status === 'AWAITING_TESTS' ? '#0284c7' : '#d97706'
+    const headline = status === 'NOT_VERIFIED'
+      ? 'NOT VERIFIED — nothing was measured'
+      : status === 'FAILED'
+        ? 'FAILED — measured against the specification and found wanting'
+        : status === 'AWAITING_TESTS'
+          ? 'AWAITING TESTS — no verdict yet'
+          : 'HALTED — the reconciliation could not run'
+    return (
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.4, color: tone, border: `1px solid ${tone}`, borderRadius: 4, padding: '1px 5px' }}>
+            {headline}
+          </span>
+        </div>
+        <div>{String(o.outcome)}</div>
+        {typeof o.runStatus === 'string' && (
+          <div style={{ marginTop: 4, opacity: 0.75, fontSize: 11 }}>
+            Reconciliation run status: <strong>{String(o.runStatus)}</strong>
+            {typeof o.verdictCount === 'number' ? ` · ${o.verdictCount} requirement verdict(s)` : null}
+            {typeof o.findingCount === 'number' ? ` · ${o.findingCount} finding(s)` : null}
+          </div>
+        )}
+      </div>
+    )
+  }
   if (Array.isArray(o?.missingEvidence) && o.missingEvidence.length > 0) { // EVAL_GATE
     return <ul style={{ margin: 0, paddingLeft: 16 }}>{(o.missingEvidence as string[]).map((m, i) => <li key={i}>{m}</li>)}</ul>
   }

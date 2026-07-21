@@ -10,7 +10,7 @@ import {
   Box, Star, Briefcase, Database, Globe, Mail, Phone,
   Calendar, AlertTriangle, Search, Filter, Activity,
   GitFork, ShieldAlert, SlidersHorizontal, Play, Square, Braces,
-  Terminal, Send,
+  Terminal, Send, ClipboardCheck,
 } from 'lucide-react'
 import type { Node } from 'reactflow'
 import { fetchAgents, fetchStudioAgents, deriveStudioAgent, fetchTools, fetchCapabilities, registrySource, type RegistryAgent } from '../../lib/registry'
@@ -619,6 +619,18 @@ const NODE_META: Record<string, {
       { key: 'criteria', label: 'Verification criteria', placeholder: 'extra standards this stage’s docs must meet (optional)', multiline: true },
       { key: 'documentNames', label: 'Document name filter', placeholder: 'e.g. REQUIREMENTS, DESIGN — comma-separated, optional (all if blank)' },
       { key: 'requireDocuments', label: 'Block if no documents', placeholder: 'false' },
+    ],
+  },
+  RECONCILE: {
+    label: 'Reconcile vs Spec', color: '#7c3aed', Icon: ClipboardCheck,
+    description: 'Measures the developer\'s implementation submission against the frozen SpecificationVersion, requirement by requirement, and records the verdict matrix — the same reconciliation ReconciliationStudio runs. Advances on VERIFIED (an executed, fully passing test plan) or DECLARED (claims consistent with the spec). It HALTS on NOT_VERIFIED, which means the run measured nothing — that is not a failure, and it is recorded separately from one. Defaults to manual start: a human triggers the check. Keep execution location on Server, or the manual-start gate never fires.',
+    standardFields: [
+      { key: 'startMode', label: 'Start mode', placeholder: 'manual (auto | manual | event)' },
+      { key: 'mode', label: 'Reconciliation mode', placeholder: 'DETERMINISTIC | DYNAMIC | SEMANTIC' },
+      { key: 'requireVerifiedPass', label: 'Require an executed passing test plan', placeholder: 'false — true refuses a declaration-only result' },
+      { key: 'requireChangeManifest', label: 'Treat an empty diff as unproven', placeholder: 'true' },
+      { key: 'submissionId', label: 'Submission id', placeholder: 'optional — defaults to the latest non-rejected submission' },
+      { key: 'workItemId', label: 'Work Item id', placeholder: 'optional — defaults to the Work Item this run is linked to' },
     ],
   },
   RUN_PYTHON: {
