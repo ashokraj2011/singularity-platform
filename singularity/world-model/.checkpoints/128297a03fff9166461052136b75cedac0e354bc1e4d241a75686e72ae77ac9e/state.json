@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "key": "128297a03fff9166461052136b75cedac0e354bc1e4d241a75686e72ae77ac9e",
+  "identity": {
+    "schemaVersion": 1,
+    "sourceTreeSha256": "sha256:1c025ffb6f8660a137513902b0b28346307adcc854e449e0ef27f4be2f33ad47",
+    "repositoryCommit": "d5107f2c28f258f6e15f961323fe9029b46b6f5d",
+    "repositoryBranch": "sflow/govern/singularity-platform-de85b243",
+    "builderPromptSha256": "cd93d41ccc98e4ccc09550c60cc79ad6c5a6004d7f8ea66cec596640ab73ffb4",
+    "requestedViews": [
+      "architecture",
+      "business",
+      "development",
+      "operations",
+      "release",
+      "security",
+      "testing"
+    ],
+    "task": null,
+    "focus": null,
+    "depth": "deep",
+    "generationRouting": {
+      "mode": "task-routed",
+      "mappingRevision": "e6c626eb0d6d591074bbd86b11ea61527cc12d326a9f9ae12fe72c6273b6e5e6",
+      "discoveryTask": "analyze",
+      "synthesisTask": "reason"
+    }
+  },
+  "createdAt": "2026-08-26T06:33:33.256Z",
+  "updatedAt": "2026-08-26T06:33:33.256Z",
+  "status": "in_progress",
+  "views": {}
+}

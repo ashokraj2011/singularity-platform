@@ -1,10 +1,10 @@
 {
   "schema_version": "3.0",
-  "generated_at": "2026-08-26T06:24:43.267Z",
+  "generated_at": "2026-08-26T08:03:38.567Z",
   "generated_date": "26 August 2026",
   "builder_version": "2.1-light",
   "builder_prompt_sha256": "511654826223e40b93c54f48f9b773f155e3364326d41aa98108dea7217d75cd",
-  "repository_commit": "de85b24340d8f72eacf0f9b19ba6ce36806afdf2",
+  "repository_commit": "d5107f2c28f258f6e15f961323fe9029b46b6f5d",
   "repository_branch": "sflow/govern/singularity-platform-de85b243",
   "working_tree_clean": false,
   "generated_for_phase": null,
@@ -69,6 +69,21 @@
         "core/brief"
       ],
       "reused": []
+    },
+    {
+      "id": "light-1787731418889",
+      "generated_at": "2026-08-26T08:03:38.567Z",
+      "source_tree_sha256": "sha256:1c025ffb6f8660a137513902b0b28346307adcc854e449e0ef27f4be2f33ad47",
+      "provider": null,
+      "requested": [
+        "core/brief"
+      ],
+      "produced": [
+        "core/brief"
+      ],
+      "reused": [
+        "core/brief"
+      ]
     }
   ]
 }
