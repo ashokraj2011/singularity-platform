@@ -1,0 +1,310 @@
+{
+  "schemaVersion": 1,
+  "mode": "deterministic-light",
+  "title": "@agentandtools/agent-runtime",
+  "repository": {
+    "commit": "de85b24340d8f72eacf0f9b19ba6ce36806afdf2",
+    "branch": "sflow/govern/singularity-platform-de85b243"
+  },
+  "counts": {
+    "files": 2753,
+    "source": 2193,
+    "tests": 580,
+    "manifests": 56,
+    "deployment": 5
+  },
+  "languages": {
+    "TypeScript": 1750,
+    "Python": 375,
+    "Shell": 59,
+    "JavaScript": 9
+  },
+  "topDirectories": {
+    "workgraph-studio": 912,
+    "agent-and-tools": 772,
+    "context-fabric": 276,
+    "mcp-server": 171,
+    "singularity-code-foundry": 137,
+    "singularity-iam-service": 86,
+    "docs": 85,
+    "bin": 83,
+    "audit-governance-service": 67,
+    "claim-registry": 50,
+    "tools": 20,
+    "(root)": 19,
+    "singularity-desktop": 15,
+    "platform-registry": 12,
+    ".singularity": 8,
+    "clients": 8,
+    "pseudo-iam-service": 7,
+    "seed": 7,
+    "branding": 6,
+    "tests": 4,
+    "deploy": 3,
+    "edge-gateway": 3,
+    ".github": 1,
+    "scripts": 1
+  },
+  "packages": [
+    {
+      "path": "agent-and-tools/apps/agent-runtime/package.json",
+      "name": "@agentandtools/agent-runtime",
+      "scripts": [
+        "build",
+        "dev",
+        "pretest:contracts",
+        "prisma:dev",
+        "prisma:generate",
+        "prisma:migrate",
+        "prisma:seed",
+        "start",
+        "test:contracts"
+      ],
+      "dependencies": [
+        "@agentandtools/shared",
+        "@mermaid-js/mermaid-cli",
+        "@opentelemetry/api",
+        "@opentelemetry/auto-instrumentations-node",
+        "@opentelemetry/exporter-trace-otlp-http",
+        "@opentelemetry/resources",
+        "@opentelemetry/sdk-node",
+        "@opentelemetry/semantic-conventions",
+        "@prisma/client",
+        "@types/cors",
+        "@types/express",
+        "@types/jsonwebtoken",
+        "@types/multer",
+        "@types/node",
+        "@types/pdf-parse",
+        "@types/pg",
+        "@types/uuid",
+        "ajv",
+        "ajv-formats",
+        "cors",
+        "dotenv",
+        "express",
+        "express-async-errors",
+        "helmet",
+        "jsonwebtoken",
+        "multer",
+        "pdf-parse",
+        "pg",
+        "pino",
+        "pino-pretty"
+      ]
+    },
+    {
+      "path": "agent-and-tools/apps/agent-service/package.json",
+      "name": "@agentandtools/agent-service",
+      "scripts": [
+        "build",
+        "dev",
+        "start",
+        "test:contracts"
+      ],
+      "dependencies": [
+        "@agentandtools/shared",
+        "@opentelemetry/api",
+        "@opentelemetry/auto-instrumentations-node",
+        "@opentelemetry/exporter-trace-otlp-http",
+        "@opentelemetry/resources",
+        "@opentelemetry/sdk-node",
+        "@opentelemetry/semantic-conventions",
+        "@types/cors",
+        "@types/express",
+        "@types/jsonwebtoken",
+        "@types/node",
+        "@types/pg",
+        "ajv",
+        "cors",
+        "crypto",
+        "dotenv",
+        "express",
+        "express-async-errors",
+        "helmet",
+        "jsonwebtoken",
+        "pg",
+        "ts-node-dev",
+        "typescript",
+        "zod"
+      ]
+    },
+    {
+      "path": "agent-and-tools/apps/prompt-composer/package.json",
+      "name": "@agentandtools/prompt-composer",
+      "scripts": [
+        "build",
+        "dev",
+        "prisma:dev",
+        "prisma:generate",
+        "prisma:migrate",
+        "prisma:seed",
+        "seed",
+        "start",
+        "test:contracts",
+        "test:m25-benchmark"
+      ],
+      "dependencies": [
+        "@agentandtools/shared",
+        "@mermaid-js/mermaid-cli",
+        "@prisma/client",
+        "@types/cors",
+        "@types/express",
+        "@types/jsonwebtoken",
+        "@types/node",
+        "@types/uuid",
+        "cors",
+        "dotenv",
+        "express",
+        "express-async-errors",
+        "helmet",
+        "jsonwebtoken",
+        "pino",
+        "pino-pretty",
+        "prisma",
+        "prisma-erd-generator",
+        "ts-node",
+        "ts-node-dev",
+        "typescript",
+        "uuid",
+        "zod"
+      ]
+    },
+    {
+      "path": "agent-and-tools/package.json",
+      "name": "agent-and-tools",
+      "scripts": [
+        "build",
+        "db:init",
+        "dev",
+        "docker:down",
+        "docker:up"
+      ],
+      "dependencies": [
+        "concurrently"
+      ]
+    },
+    {
+      "path": "agent-and-tools/packages/shared/package.json",
+      "name": "@agentandtools/shared",
+      "scripts": [
+        "build",
+        "dev",
+        "test",
+        "test:watch"
+      ],
+      "dependencies": [
+        "typescript",
+        "vitest",
+        "zod"
+      ]
+    },
+    {
+      "path": "agent-and-tools/packages/tool-registry/package.json",
+      "name": "@agentandtools/tool-registry",
+      "scripts": [
+        "build",
+        "dev"
+      ],
+      "dependencies": [
+        "typescript"
+      ]
+    },
+    {
+      "path": "agent-and-tools/web/package.json",
+      "name": "@agentandtools/web",
+      "scripts": [
+        "build",
+        "dev",
+        "posttest:contracts",
+        "start",
+        "test:contracts",
+        "test:routes"
+      ],
+      "dependencies": [
+        "@base-ui/react",
+        "@hookform/resolvers",
+        "@monaco-editor/react",
+        "@radix-ui/react-alert-dialog",
+        "@radix-ui/react-dialog",
+        "@radix-ui/react-dropdown-menu",
+        "@radix-ui/react-label",
+        "@radix-ui/react-popover",
+        "@radix-ui/react-scroll-area",
+        "@radix-ui/react-select",
+        "@radix-ui/react-separator",
+        "@radix-ui/react-slot",
+        "@radix-ui/react-tabs",
+        "@radix-ui/react-toast",
+        "@tanstack/react-query",
+        "@tanstack/react-query-devtools",
+        "@types/node",
+        "@types/react",
+        "@types/react-dom",
+        "autoprefixer",
+        "axios",
+        "class-variance-authority",
+        "clsx",
+        "cmdk",
+        "elkjs",
+        "idb",
+        "lucide-react",
+        "monaco-editor",
+        "motion",
+        "next"
+      ]
+    },
+    {
+      "path": "audit-governance-service/package.json",
+      "name": "audit-governance-service",
+      "scripts": [
+        "build",
+        "dev",
+        "start",
+        "test",
+        "test:coverage",
+        "test:watch"
+      ],
+      "dependencies": [
+        "@types/cors",
+        "@types/express",
+        "@types/node",
+        "@types/pg",
+        "@types/supertest",
+        "@types/uuid",
+        "@vitest/coverage-v8",
+        "cors",
+        "dotenv",
+        "express",
+        "express-async-errors",
+        "helmet",
+        "pg",
+        "supertest",
+        "ts-node",
+        "ts-node-dev",
+        "typescript",
+        "uuid",
+        "vitest",
+        "zod"
+      ]
+    }
+  ],
+  "commands": [
+    "npm run build",
+    "npm run db:init",
+    "npm run dev",
+    "npm run docker:down",
+    "npm run docker:up",
+    "npm run posttest:contracts",
+    "npm run pretest:contracts",
+    "npm run prisma:dev",
+    "npm run prisma:generate",
+    "npm run prisma:migrate",
+    "npm run prisma:seed",
+    "npm run seed",
+    "npm run start",
+    "npm run test",
+    "npm run test:contracts",
+    "npm run test:coverage"
+  ]
+}
