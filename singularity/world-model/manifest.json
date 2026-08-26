@@ -1,0 +1,74 @@
+{
+  "schema_version": "3.0",
+  "generated_at": "2026-08-26T06:24:43.267Z",
+  "generated_date": "26 August 2026",
+  "builder_version": "2.1-light",
+  "builder_prompt_sha256": "511654826223e40b93c54f48f9b773f155e3364326d41aa98108dea7217d75cd",
+  "repository_commit": "de85b24340d8f72eacf0f9b19ba6ce36806afdf2",
+  "repository_branch": "sflow/govern/singularity-platform-de85b243",
+  "working_tree_clean": false,
+  "generated_for_phase": null,
+  "analysis_depth": "light",
+  "source_tree_sha256": "sha256:1c025ffb6f8660a137513902b0b28346307adcc854e449e0ef27f4be2f33ad47",
+  "generator": {
+    "type": "deterministic-local",
+    "model": null,
+    "model_tokens": 0
+  },
+  "core": {
+    "brief": "core/summary.brief.md",
+    "summary": "core/summary.md",
+    "model": {
+      "path": "core/model.json"
+    },
+    "tiers": {
+      "brief": {
+        "status": "ready",
+        "path": "core/summary.brief.md",
+        "bytes": 926,
+        "sha256": "3a86e47076b6325be6c2427066e5b261314ee8ee2154db879efdbdf2a7325233"
+      },
+      "full": {
+        "status": "ready",
+        "path": "core/summary.md",
+        "bytes": 8043,
+        "sha256": "47d7f5801cf2906154ad8c5d0e0a614e0f19ae4f6da67ff0c838c04520cfc360"
+      }
+    }
+  },
+  "path_index": {
+    "path": "index/path-map.json"
+  },
+  "views": {},
+  "views_generated": [],
+  "requested_views": [],
+  "domains": [],
+  "task_guides": [],
+  "evidence": {
+    "path": "evidence/evidence.jsonl"
+  },
+  "generation": {
+    "parallel": false,
+    "strategy": "deterministic-light",
+    "max_workers": 0,
+    "discovery_views": [],
+    "degraded_views": [],
+    "resumed_views": [],
+    "pending_views_at_start": []
+  },
+  "materializations": [
+    {
+      "id": "light-1787725484390",
+      "generated_at": "2026-08-26T06:24:43.267Z",
+      "source_tree_sha256": "sha256:1c025ffb6f8660a137513902b0b28346307adcc854e449e0ef27f4be2f33ad47",
+      "provider": null,
+      "requested": [
+        "core/brief"
+      ],
+      "produced": [
+        "core/brief"
+      ],
+      "reused": []
+    }
+  ]
+}
