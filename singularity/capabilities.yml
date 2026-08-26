@@ -1,0 +1,15 @@
+version: 1
+
+# Capability policy is inherited from each top-level capability toward its children.
+# Missing values inherit. Empty allowlists mean deny-all; required obligations
+# such as checks and protected paths are accumulated.
+capabilities:
+  singularity-platfrom:
+    name: singularity
+    kind: delivery
+    parent: null
+    repository: singularity-platform
+    jira:
+      projectKey: kk
+    teams:
+      - kkk
