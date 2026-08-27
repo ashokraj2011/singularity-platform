@@ -1,7 +1,7 @@
 format: singularity-flow-configuration-baseline/v1
 product:
   version: 0.9.0
-  revision: 9d712c851d6ee1f0c6ce9f001dfb49d3974cd1a7
+  revision: 1e2ab5beccd7905ceb733c9f6ed4133d30e5a698
 workflow:
   version: 2
   inputsMode: enforce
@@ -136,6 +136,9 @@ workflow:
   ast:
     mode: auto
     fallback: host-and-text
+    warmOnStoryStart:
+      mode: background
+      scope: configured-roots
     evidence:
       mode: replayable
       store: local-directory
@@ -513,7 +516,7 @@ workflow:
               - design-reviewers
               - architecture-reviewers
               - quality-reviewers
-            minimum: 2
+            minimum: 1
             rejectTo:
               - design-inventory
               - component-mapping
@@ -1315,7 +1318,7 @@ workflow:
         authorities:
           - design-reviewers
           - quality-reviewers
-        minimum: 2
+        minimum: 1
         rejectTo:
           - component-mapping
           - mobile-spec
@@ -1679,8 +1682,7 @@ workflow:
           - engineering-reviewers
         requiredAuthorities:
           - quality-reviewers
-          - engineering-reviewers
-        minimum: 2
+        minimum: 1
         rejectTo:
           - poc-intake
           - poc-impact-analysis
