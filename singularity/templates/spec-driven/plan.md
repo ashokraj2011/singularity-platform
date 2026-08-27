@@ -24,7 +24,7 @@ planning aid; the authority on what actually changed remains reconciliation `[SP
 
 | Surface | Change | Serves |
 |---|---|---|
-| `<path or module>` | <what changes> | REQ-001 |
+| `<path or module>` | <what changes> | [{{work.id}}:REQ-001] |
 
 ## Sequencing
 
@@ -37,7 +37,7 @@ requirement that will be argued about at verification.
 
 | Clause | Proof |
 |---|---|
-| REQ-001 | <test, check, or evidence> |
+| [{{work.id}}:REQ-001] | <test, check, or evidence> |
 
 ## Constitution articles
 
