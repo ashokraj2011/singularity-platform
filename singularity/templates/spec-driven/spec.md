@@ -76,13 +76,20 @@ Limits, sizes, counts, timeouts, and what happens exactly at and beyond each one
 
 Numbered, testable, one obligation each. Cite the scenario each serves.
 
-- **REQ-001** — <requirement>. *(S1)*
-- **REQ-002** — <requirement>. *(S1, S2)*
+- <requirement>. *(S1)* [{{work.id}}:REQ-001]
+- <requirement>. *(S1, S2)* [{{work.id}}:REQ-002]
+
+Acceptance criteria use the same stable, namespaced form:
+
+- <observable acceptance outcome>. *(S1)* [{{work.id}}:AC-001]
 
 ## Non-functional requirements
 
 Latency, throughput, availability, accessibility, privacy, retention. State the number and how it
 will be measured; "fast" is not a requirement.
+
+Use governed requirement anchors here too (for example `[{{work.id}}:REQ-003]`); `NFR-001` by
+itself is only a display label and is not a stable clause identity.
 
 ## Constitution articles
 

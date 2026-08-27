@@ -1,7 +1,7 @@
 format: singularity-flow-configuration-baseline/v1
 product:
   version: 0.9.0
-  revision: 5a5c8062a6df32d3b1fd54d9cf5b4955bc9112cd
+  revision: 70e005c66b247f62c4afa89222527686c1d3d191
 workflow:
   version: 2
   inputsMode: enforce
@@ -751,6 +751,8 @@ workflow:
             - poc-validation
     spec-driven-standard:
       label: Spec-Driven Standard
+      spec:
+        mode: enforce
       phases:
         - specification
         - planning
@@ -1857,7 +1859,7 @@ assets:
   .github/agents/architect.agent.md:
     sha256: 28dceea24f5990cb48decf09cff11b29071febdf58a64f9253a09ec19e99d58b
   .github/agents/developer.agent.md:
-    sha256: 274adbcae64ecb9896bd9f53ef8c21a3109918fb7015496e0a8d8b5f57cc143b
+    sha256: b3ecdcba0c9ebe4cb31eb30232471111822392bf960aa6a67ac92178691dcaf5
   .github/agents/mobile-architect.agent.md:
     sha256: c0d882e1b6a6a946e4573756aa156e4ca918b578634baa35e6fccb74a595b698
   .github/agents/poc-analyst.agent.md:
@@ -2059,8 +2061,8 @@ assets:
   singularity/templates/spec-driven/convergence.md:
     sha256: eb257477afca0229ed858875499736c57498015aaee0a527b714356819a9dde2
   singularity/templates/spec-driven/plan.md:
-    sha256: 3e0676d5a5c384fbc3bf3f3320f495017254c349fca42ef5f5c3c93ea94b2ec0
+    sha256: 069190d022b9423a996c7c8a88de3d7ef457336398a8e3d5bb639115eb6d674a
   singularity/templates/spec-driven/release.md:
-    sha256: f091ec3cec891f0236a3a51a798dd43c401c992dfbcdc05b592eb119ebd2f692
+    sha256: ce6e1d1995c68158f4209063b3cb954eceab8576e1c8db76bfaed27a805a8908
   singularity/templates/spec-driven/spec.md:
-    sha256: 37c4fb807258773b3944399e2cf8dca7cc375dfcb2d906e0e72a9cae54efd8cf
+    sha256: 27424a624b1dab57323fd7482ac62708bd42d11ba42e41c102f94e15182fe485

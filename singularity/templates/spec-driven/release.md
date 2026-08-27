@@ -5,6 +5,10 @@ says what it proves.
 
 ## Requirement trace
 
+Use the complete governed anchors from the approved specification, for example
+`[{{work.id}}:REQ-001]` and `[{{work.id}}:AC-001]`. Bare display labels such as `REQ-001` do not
+bind release evidence to the approved clause.
+
 | Clause | Evidence | Verdict |
 |---|---|---|
 
