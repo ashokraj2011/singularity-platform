@@ -1,3 +1,51 @@
+adhoc:
+  enabled: true
+  entry:
+    allowExplicitStart: true
+    allowUnstartedLanding: true
+    defaultMode: in-place
+  baseline:
+    requireExactRevision: true
+    dirtyStart: ask
+    upstreamUse: confirm-if-commits-ahead
+  localWork:
+    allowed: true
+  executionUnits:
+    allowed: true
+    default: null
+  scope:
+    maximumTouchedResources: 20
+    maximumRepositoriesForDirectLanding: 1
+  externalEffects:
+    mode: governed-device-only
+    outsideGovernanceBehavior: promote-or-reconcile
+  protectedPaths:
+    behavior: promote
+  directLanding:
+    enabled: true
+    maximumRisk: low
+    requireIntentConfirmation: true
+    requireDispositionCoverage: true
+    requireVerification: true
+    requireHumanDecision: policy
+  promotion:
+    triggers:
+      repositoriesGreaterThan: 1
+      protectedPathTouched: true
+      architectureDecisionRequired: true
+      externalEffectRequired: true
+      estimatedRemainingTasksGreaterThan: 3
+      uncertainEffect: true
+  executionCeilings:
+    activeMinutes: 480
+    modelInvocations: 30
+    deviceCalls: 100
+  discard:
+    backup: required
+    backupRetentionDays: 14
+  telemetry:
+    contentFree: true
+    individualScoring: false
 approvalAuthorities:
   architecture-reviewers:
     allowAnyGitIdentity: false

@@ -1,7 +1,7 @@
 format: singularity-flow-configuration-baseline/v1
 product:
   version: 0.9.0
-  revision: 5fd72160afe0e54d393c99f652dc69ef04377bc9
+  revision: 7f0581d592cd0edc674e0a0f022a00da731f1966
 workflow:
   version: 2
   inputsMode: enforce
@@ -45,6 +45,54 @@ workflow:
       allowClarificationAnswers: false
       allowSequenceOverrides: false
       allowScopeExpansion: false
+  adhoc:
+    enabled: true
+    entry:
+      allowExplicitStart: true
+      allowUnstartedLanding: true
+      defaultMode: in-place
+    baseline:
+      requireExactRevision: true
+      dirtyStart: ask
+      upstreamUse: confirm-if-commits-ahead
+    localWork:
+      allowed: true
+    executionUnits:
+      allowed: true
+      default: null
+    scope:
+      maximumTouchedResources: 20
+      maximumRepositoriesForDirectLanding: 1
+    externalEffects:
+      mode: governed-device-only
+      outsideGovernanceBehavior: promote-or-reconcile
+    protectedPaths:
+      behavior: promote
+    directLanding:
+      enabled: true
+      maximumRisk: low
+      requireIntentConfirmation: true
+      requireDispositionCoverage: true
+      requireVerification: true
+      requireHumanDecision: policy
+    promotion:
+      triggers:
+        repositoriesGreaterThan: 1
+        protectedPathTouched: true
+        architectureDecisionRequired: true
+        externalEffectRequired: true
+        estimatedRemainingTasksGreaterThan: 3
+        uncertainEffect: true
+    executionCeilings:
+      activeMinutes: 480
+      modelInvocations: 30
+      deviceCalls: 100
+    discard:
+      backup: required
+      backupRetentionDays: 14
+    telemetry:
+      contentFree: true
+      individualScoring: false
   git:
     remote: origin
     publish: required
